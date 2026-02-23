@@ -5,13 +5,15 @@
 # Build and optionally push tt-lang Docker images
 #
 # Usage:
-#   ./build-docker-images.sh [MLIR_SHA] [--check-only] [--no-push] [--no-cache]
+#   ./build-docker-images.sh [MLIR_SHA] [--check-only] [--no-push] [--no-cache] [--image-type <base|dist|ird>]
 #
 # Arguments:
-#   MLIR_SHA     - tt-mlir commit SHA (defaults to third-party/tt-mlir.commit)
-#   --check-only - Only check if images exist, don't build
-#   --no-push    - Build locally but don't push to registry
-#   --no-cache   - Build from scratch without using Docker cache
+#   MLIR_SHA          - tt-mlir commit SHA (defaults to third-party/tt-mlir.commit)
+#   --check-only      - Only check if images exist, don't build
+#   --no-push         - Build locally but don't push to registry
+#   --no-cache        - Build from scratch without using Docker cache
+#   --image-type TYPE - Build only the specified image type (base, dist, or ird)
+#                       Default (no flag) builds all three
 #
 # Must be run from the repository root directory
 
@@ -22,6 +24,7 @@ MLIR_SHA=""
 CHECK_ONLY=false
 NO_PUSH=false
 NO_CACHE=false
+IMAGE_TYPE=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -37,6 +40,10 @@ while [[ $# -gt 0 ]]; do
             NO_CACHE=true
             shift
             ;;
+        --image-type)
+            IMAGE_TYPE="$2"
+            shift 2
+            ;;
         *)
             if [ -z "$MLIR_SHA" ]; then
                 MLIR_SHA="$1"
@@ -46,10 +53,19 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Validate --image-type if provided
+if [ -n "$IMAGE_TYPE" ] && [ "$IMAGE_TYPE" != "base" ] && [ "$IMAGE_TYPE" != "dist" ] && [ "$IMAGE_TYPE" != "ird" ]; then
+    echo "ERROR: Invalid --image-type '$IMAGE_TYPE'. Must be one of: base, dist, ird"
+    exit 1
+fi
+
 # Default to pinned tt-mlir commit if not specified
 if [ -z "$MLIR_SHA" ]; then
     MLIR_SHA=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
 fi
+
+# Pinned tt-mlir CI Docker image tag (used as base image in Dockerfile)
+MLIR_TAG=$(cat third-party/tt-mlir-docker-tag | tr -d '[:space:]')
 
 REPO=tenstorrent/tt-lang
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -67,6 +83,7 @@ echo "tt-mlir SHA: $MLIR_SHA"
 echo "Check only: $CHECK_ONLY"
 echo "No push: $NO_PUSH"
 echo "No cache: $NO_CACHE"
+[ -n "$IMAGE_TYPE" ] && echo "Image type: $IMAGE_TYPE"
 echo ""
 
 # Get version from git tags (e.g., v0.1.0 or v0.1.0-5-gabc1234 for dev builds)
@@ -167,11 +184,16 @@ build_image() {
 # Always use the same Dockerfile (builds tt-mlir via FetchContent against pre-built toolchain)
 DOCKERFILE=".github/containers/Dockerfile"
 
-# Build images in dependency order
-build_image "tt-lang-base-ubuntu-22-04" .github/containers/Dockerfile.base ""
-build_image "tt-lang-ci-ubuntu-22-04" "$DOCKERFILE" ci
-build_image "tt-lang-dist-ubuntu-22-04" "$DOCKERFILE" dist
-build_image "tt-lang-ird-ubuntu-22-04" "$DOCKERFILE" ird
+# Build images — filtered by --image-type if specified, otherwise build all three
+if [[ -z "$IMAGE_TYPE" || "$IMAGE_TYPE" == "base" ]]; then
+    build_image "tt-lang-base-ubuntu-22-04" .github/containers/Dockerfile.base ""
+fi
+if [[ -z "$IMAGE_TYPE" || "$IMAGE_TYPE" == "dist" ]]; then
+    build_image "tt-lang-dist-ubuntu-22-04" "$DOCKERFILE" dist
+fi
+if [[ -z "$IMAGE_TYPE" || "$IMAGE_TYPE" == "ird" ]]; then
+    build_image "tt-lang-ird-ubuntu-22-04"  "$DOCKERFILE" ird
+fi
 
 
 # Final cleanup of all unused Docker resources
@@ -182,34 +204,41 @@ echo "Final disk space:"
 df -h | head -2
 echo ""
 
+# Compute image names once — NO_PUSH only affects the registry prefix
+if [ "$NO_PUSH" = false ]; then
+    BASE_IMAGE="ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
+    DIST_IMAGE="ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
+    IRD_IMAGE="ghcr.io/$REPO/tt-lang-ird-ubuntu-22-04:$DOCKER_TAG"
+    PUSH_LABEL="built and pushed"
+else
+    BASE_IMAGE="tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
+    DIST_IMAGE="tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
+    IRD_IMAGE="tt-lang-ird-ubuntu-22-04:$DOCKER_TAG"
+    PUSH_LABEL="built locally"
+fi
+
+# Primary output image for this run
+case "$IMAGE_TYPE" in
+    base) OUTPUT_IMAGE="$BASE_IMAGE" ;;
+    ird)  OUTPUT_IMAGE="$IRD_IMAGE"  ;;
+    *)    OUTPUT_IMAGE="$DIST_IMAGE" ;;  # dist or all
+esac
+
 echo "=== Build Complete ==="
 echo ""
-
-if [ "$NO_PUSH" = false ]; then
-    echo "Images built and pushed:"
-    echo "  - ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
-    echo "  - ghcr.io/$REPO/tt-lang-ci-ubuntu-22-04:$DOCKER_TAG (tt-mlir toolchain)"
-    echo "  - ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG (pre-built tt-lang)"
-    echo "  - ghcr.io/$REPO/tt-lang-ird-ubuntu-22-04:$DOCKER_TAG (dev tools)"
-
-    # Write dist image name to file for workflow consumption
-    DIST_IMAGE="ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
-    echo "$DIST_IMAGE" > .docker-image-name
-    echo ""
-    echo "DIST_IMAGE_NAME:"
-    echo "$DIST_IMAGE"
+if [ -n "$IMAGE_TYPE" ]; then
+    echo "Image $PUSH_LABEL: $OUTPUT_IMAGE"
 else
-    echo "Local images built:"
-    echo "  - tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
-    echo "  - tt-lang-ci-ubuntu-22-04:$DOCKER_TAG (tt-mlir toolchain)"
-    echo "  - tt-lang-dist-ubuntu-22-04:$DOCKER_TAG (pre-built tt-lang)"
-    echo "  - tt-lang-ird-ubuntu-22-04:$DOCKER_TAG (dev tools)"
-
-    # Write local dist image name to file for workflow consumption
-    DIST_IMAGE="tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
-    echo "$DIST_IMAGE" > .docker-image-name
-    echo ""
-    echo "DIST_IMAGE_NAME:"
-    echo "$DIST_IMAGE"
+    echo "Images $PUSH_LABEL:"
+    echo "  - $BASE_IMAGE"
+    echo "  - $DIST_IMAGE (pre-built tt-lang)"
+    echo "  - $IRD_IMAGE (dev tools)"
 fi
+
+# Write dist image name to file for workflow consumption
+if [[ -z "$IMAGE_TYPE" || "$IMAGE_TYPE" == "dist" ]]; then
+    echo "$DIST_IMAGE" > .docker-image-name
+fi
+
 echo ""
+echo "$OUTPUT_IMAGE"

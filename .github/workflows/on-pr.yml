@@ -23,7 +23,7 @@ jobs:
     secrets: inherit
 
   build:
-    uses: ./.github/workflows/call-build-tt-mlir-fetchcontent.yml
+    uses: ./.github/workflows/call-build.yml
     secrets: inherit
 
   test-sim:

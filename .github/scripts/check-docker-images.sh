@@ -35,8 +35,8 @@ if [ $EXIT_CODE -eq 0 ]; then
     DOCKER_IMAGE=$(tail -n 1 /tmp/docker-check.log)
     echo "docker-image=$DOCKER_IMAGE" >> "$GITHUB_OUTPUT"
 
-    # Create base variant by replacing -ubuntu- with -base-ubuntu-
-    DOCKER_IMAGE_BASE="${DOCKER_IMAGE/tt-lang-ubuntu/tt-lang-base-ubuntu}"
+    # Derive base image name from dist image name
+    DOCKER_IMAGE_BASE="${DOCKER_IMAGE/tt-lang-dist-ubuntu/tt-lang-base-ubuntu}"
     echo "docker-image-base=$DOCKER_IMAGE_BASE" >> "$GITHUB_OUTPUT"
 
     echo "✓ Docker images already exist"
