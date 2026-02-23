@@ -6,13 +6,19 @@
 // TTL Annotate CB Associations Pass
 //===----------------------------------------------------------------------===//
 //
-// Analysis pass that annotates ttl.compute block arguments with CB index
-// associations. This enables subsequent conversion passes to find the correct
-// CB without fragile state management across multi-phase lowering.
+// Analysis pass that annotates CB index associations on TTL ops. This enables
+// subsequent conversion passes to find the correct CB without SSA
+// tracing across multi-phase lowering.
+//
+// Annotations:
+// - ttl.compute: each input block argument gets a ttl.cb_index.<N> attribute
+// - ttl.tile_bcast: gets a ttl.output_cb_index attribute (the output operand
+//   may trace to iter_args after loop lowering, making SSA-based lookup fail)
 //
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
@@ -83,6 +89,25 @@ struct TTLAnnotateCBAssociationsPass
         // Store the mapping on the compute op itself using an attribute.
         setCBIndexAttr(compute, idx, cbIndex);
       }
+    });
+
+    // Annotate tile_bcast ops with their output CB index so the
+    // conversion pass can look it up without SSA tracing.
+    func.walk([&](TileBcastOp bcast) {
+      Value output = bcast.getOutput();
+      // Trace through tensor.extract to the source tensor.
+      if (auto extract = output.getDefiningOp<mlir::tensor::ExtractOp>()) {
+        output = extract.getTensor();
+      }
+      Value cb = getAttachedCB(output);
+      if (!cb) {
+        return;
+      }
+      auto bindOp = cb.getDefiningOp<BindCBOp>();
+      if (!bindOp) {
+        return;
+      }
+      bcast->setAttr(kOutputCBIndexAttrName, bindOp.getCbIndexAttr());
     });
   }
 };

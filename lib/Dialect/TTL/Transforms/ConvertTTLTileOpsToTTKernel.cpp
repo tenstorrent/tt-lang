@@ -692,21 +692,22 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
     auto outCB = lookupAndConvertCB(op.getOutput(), funcOp, typeConverter,
                                     rewriter, loc);
     if (failed(outCB)) {
-      // After loop lowering in fused blocks, the output operand traces to
-      // iter_args. Find the output CB from init_sfpu or init_binary.
-      funcOp->walk([&](Operation *initOp) {
-        if (auto sfpu = dyn_cast<InitSFPUOp>(initOp)) {
-          outCB = utils::convertTTLCBToTTKernel(sfpu.getOcb(), rewriter, loc,
+      // Use the output CB index annotation from ttl-annotate-cb-associations.
+      if (auto cbIdx =
+              op->getAttrOfType<IntegerAttr>(kOutputCBIndexAttrName)) {
+        Value cb;
+        funcOp->walk([&](BindCBOp bindOp) {
+          if (bindOp.getCbIndexAttr().getInt() == cbIdx.getInt()) {
+            cb = bindOp.getResult();
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        });
+        if (cb) {
+          outCB = utils::convertTTLCBToTTKernel(cb, rewriter, loc,
                                                 typeConverter);
-          return WalkResult::interrupt();
         }
-        if (auto binary = dyn_cast<InitBinaryOp>(initOp)) {
-          outCB = utils::convertTTLCBToTTKernel(binary.getOutCb(), rewriter,
-                                                loc, typeConverter);
-          return WalkResult::interrupt();
-        }
-        return WalkResult::advance();
-      });
+      }
       if (failed(outCB)) {
         return rewriter.notifyMatchFailure(op, "cannot find/convert output CB");
       }

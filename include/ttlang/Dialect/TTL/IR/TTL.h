@@ -58,6 +58,11 @@ constexpr llvm::StringLiteral kTileLoopAttrName("ttl.tile_loop");
 constexpr llvm::StringLiteral
     kFullLinStridesAttrName("ttl.full_linearization_strides");
 
+/// Output CB index attribute: annotated on tile_bcast ops by
+/// ttl-annotate-cb-associations so the conversion pass can find the output
+/// CB without SSA tracing.
+constexpr llvm::StringLiteral kOutputCBIndexAttrName("ttl.output_cb_index");
+
 /// Per-tile offset attribute: set on ops in unrolled bodies. Carries the
 /// linearized tile offset within the subblock. Used by
 /// computeCBTileIndexFromLoops to compute correct CB indices without tile
