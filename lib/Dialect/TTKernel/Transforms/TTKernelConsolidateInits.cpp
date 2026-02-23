@@ -241,6 +241,10 @@ static bool analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
       if (auto pack = dyn_cast<ttk::PackTileOp>(inner)) {
         if (!outputCB) {
           outputCB = pack.getOutCb();
+        } else if (outputCB != pack.getOutCb()) {
+          // TODO: Extend to emit one common init per distinct output CB.
+          pack->emitWarning("sync region packs to multiple output CBs; "
+                            "common init only configured for the first");
         }
       }
     });
