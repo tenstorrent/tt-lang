@@ -163,16 +163,20 @@ def TTLLowerToLoops
 
 def TTLBatchDSTSync
     : Pass<"ttl-batch-dst-sync", "::mlir::func::FuncOp"> {
-  let summary = "Batch DST synchronization for fully-unrollable tile loops";
+  let summary = "Batch DST synchronization via subblock unrolling";
   let description = [{
-    When all tile iterations fit in DST capacity, fully unrolls the tile loop
-    nest and rewrites per-tile acquire/commit/wait/release to a single batched
-    sync cycle. Patches dst_idx attributes and copy_tile dst_index operands to
-    use distinct DST slots per tile. Sets ttl.tile_offset on tile_store ops so
-    downstream CB index computation remains correct without enclosing loops.
+    Computes a subblock of tiles that fits in DST capacity, unrolls those
+    iterations, and rewrites per-tile acquire/commit/wait/release to a single
+    batched sync cycle per subblock. Inner dimensions are greedily fully
+    unrolled; at most one outer dimension is partially unrolled. Each unrolled
+    tile gets a unique DST slot.
+
+    Sets ttl.tile_offset and ttl.subblock_stride on tile_store ops so
+    downstream CB index computation remains correct with partially-unrolled
+    remaining loops.
 
     Skips loop nests that contain CB-input ops (bcast, reduce) or CB lifecycle
-    ops, or where total trip count exceeds DST capacity.
+    ops, or where no subblock factor > 1 can be found.
   }];
 
   let options = [

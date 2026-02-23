@@ -54,15 +54,73 @@ inline Value linearizeLoopIndices(OpBuilder &builder, Location loc,
   return result;
 }
 
+/// Compute linearized iteration index from normalized loop IVs.
+/// Handles non-unit step by dividing IV by step and using trip counts
+/// (UB/step) for stride computation.
+inline Value
+linearizeNormalizedLoopIndices(OpBuilder &builder, Location loc,
+                               SmallVectorImpl<scf::ForOp> &loops) {
+  if (loops.empty()) {
+    return builder.create<arith::ConstantIndexOp>(loc, 0);
+  }
+
+  Value result = builder.create<arith::ConstantIndexOp>(loc, 0);
+  for (size_t i = 0; i < loops.size(); ++i) {
+    scf::ForOp loop = loops[loops.size() - 1 - i];
+    Value iterIdx = loop.getInductionVar();
+    auto step = getConstantIntValue(loop.getStep());
+    assert(step && "expected constant step");
+    if (*step > 1) {
+      Value stepVal = builder.create<arith::ConstantIndexOp>(loc, *step);
+      iterIdx = builder.create<arith::DivUIOp>(loc, iterIdx, stepVal);
+    }
+
+    Value stride = builder.create<arith::ConstantIndexOp>(loc, 1);
+    for (size_t j = i + 1; j < loops.size(); ++j) {
+      scf::ForOp innerLoop = loops[loops.size() - 1 - j];
+      auto innerUB = getConstantIntValue(innerLoop.getUpperBound());
+      auto innerStep = getConstantIntValue(innerLoop.getStep());
+      assert(innerUB && innerStep && "expected constant bounds");
+      int64_t tripCount = *innerUB / *innerStep;
+      stride = builder.create<arith::MulIOp>(
+          loc, stride,
+          builder.create<arith::ConstantIndexOp>(loc, tripCount));
+    }
+    Value term = builder.create<arith::MulIOp>(loc, iterIdx, stride);
+    result = builder.create<arith::AddIOp>(loc, result, term);
+  }
+  return result;
+}
+
 /// Compute linearized CB tile index from enclosing scf.for loops.
 /// When cbShapeRank > 0, only the innermost cbShapeRank loops are used.
 /// Returns constant 0 if not inside any loops.
+///
+/// When subblock_stride is set on the op, uses normalized loop indices
+/// (handles non-unit step from partial unrolling) and scales by the
+/// subblock stride before adding tile_offset.
 inline Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder,
                                          size_t cbShapeRank = 0) {
   SmallVector<scf::ForOp> loops = collectEnclosingLoops(op);
 
   if (cbShapeRank > 0 && loops.size() > cbShapeRank) {
     loops.resize(cbShapeRank);
+  }
+
+  Location loc = op->getLoc();
+
+  if (auto subblockStride =
+          op->getAttrOfType<IntegerAttr>(kSubblockStrideAttrName)) {
+    auto tileOffset = op->getAttrOfType<IntegerAttr>(kTileOffsetAttrName);
+    assert(tileOffset && "subblock_stride set without tile_offset");
+
+    Value base = linearizeNormalizedLoopIndices(builder, loc, loops);
+    Value strideVal = builder.create<arith::ConstantIndexOp>(
+        loc, subblockStride.getInt());
+    Value scaledBase = builder.create<arith::MulIOp>(loc, base, strideVal);
+    Value offsetVal =
+        builder.create<arith::ConstantIndexOp>(loc, tileOffset.getInt());
+    return builder.create<arith::AddIOp>(loc, scaledBase, offsetVal);
   }
 
   for (scf::ForOp loop : loops) {

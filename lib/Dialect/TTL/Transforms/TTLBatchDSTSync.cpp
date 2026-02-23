@@ -9,9 +9,10 @@
 // After lower-to-loops, each tile loop iteration has its own DST sync cycle:
 //   acquire -> copy -> compute -> commit -> wait -> store -> release
 //
-// When all tiles fit in DST, this pass fully unrolls the tile loop and
-// rewrites to a single batched sync cycle. Each unrolled tile gets a unique
-// DST slot, eliminating per-tile sync overhead.
+// This pass computes a subblock of tiles that fits in DST capacity, unrolls
+// those iterations, and rewrites to a single batched sync cycle per subblock.
+// Inner dimensions are fully unrolled; at most one outer dimension is partially
+// unrolled. Each unrolled tile gets a unique DST slot.
 //
 //===----------------------------------------------------------------------===//
 
@@ -66,19 +67,6 @@ static std::optional<int64_t> getConstantTripCount(scf::ForOp loop) {
   return *ub;
 }
 
-/// Compute total trip count for a loop nest. Returns nullopt on failure.
-static std::optional<int64_t>
-getTotalTripCount(ArrayRef<scf::ForOp> nest) {
-  int64_t total = 1;
-  for (scf::ForOp loop : nest) {
-    auto tc = getConstantTripCount(loop);
-    if (!tc)
-      return std::nullopt;
-    total *= *tc;
-  }
-  return total;
-}
-
 /// Max dst_idx attribute value + 1 in a block (DST registers per iteration).
 static int64_t computeDSTPerIter(scf::ForOp innerLoop) {
   int64_t maxIdx = -1;
@@ -126,6 +114,42 @@ static bool isInnermostLoop(scf::ForOp loop) {
 }
 
 //===----------------------------------------------------------------------===//
+// Subblock computation
+//===----------------------------------------------------------------------===//
+
+/// Return the largest divisor of n that is <= limit.
+static int64_t largestDivisorUpTo(int64_t n, int64_t limit) {
+  for (int64_t d = std::min(n, limit); d >= 1; --d) {
+    if (n % d == 0)
+      return d;
+  }
+  return 1;
+}
+
+/// Compute per-dimension subblock factors (innermost first) that maximize
+/// the product while keeping product * dstPerIter <= capacity.
+/// Each factor divides its dimension size. Greedily fills from innermost
+/// outward; stops after the first partially-unrolled dimension.
+static SmallVector<int64_t>
+computeSubblockFactors(ArrayRef<int64_t> dimSizes, int64_t maxBatch) {
+  SmallVector<int64_t> factors(dimSizes.size(), 1);
+  int64_t remaining = maxBatch;
+
+  for (size_t i = 0; i < dimSizes.size(); ++i) {
+    if (remaining < 2)
+      break;
+    int64_t factor = largestDivisorUpTo(dimSizes[i], remaining);
+    if (factor <= 1)
+      break;
+    factors[i] = factor;
+    remaining /= factor;
+    if (factor < dimSizes[i])
+      break;
+  }
+  return factors;
+}
+
+//===----------------------------------------------------------------------===//
 // DST index patching
 //===----------------------------------------------------------------------===//
 
@@ -160,8 +184,11 @@ static void patchCopyTileDstIndex(CopyTileOp copyTile, int64_t iterK,
 
 /// Walk the unrolled region, patch DST indices per iteration, and rewrite
 /// per-tile sync ops into a single batched sync cycle.
+/// When subblockStride > 0, sets ttl.subblock_stride on stores for downstream
+/// CB index computation with partially-unrolled remaining loops.
 static void rewriteUnrolledRegion(Block::iterator startIt,
-                                  Block::iterator endIt, int64_t dstPerIter) {
+                                  Block::iterator endIt, int64_t dstPerIter,
+                                  int64_t subblockStride) {
   // First pass: patch indices and collect ops to move/erase.
   OpBuilder builder(startIt->getContext());
   int64_t iterK = -1;
@@ -200,9 +227,12 @@ static void rewriteUnrolledRegion(Block::iterator startIt,
     if (!firstDSTOp && (isTileComputeOp(op) || isa<CopyDstOp>(op)))
       firstDSTOp = op;
 
-    // Set tile_offset on tile_store for downstream CB index computation.
+    // Set tile_offset and subblock_stride on tile_store.
     if (auto store = dyn_cast<TileStoreOp>(op)) {
       store->setAttr(kTileOffsetAttrName, builder.getI64IntegerAttr(iterK));
+      if (subblockStride > 0)
+        store->setAttr(kSubblockStrideAttrName,
+                       builder.getI64IntegerAttr(subblockStride));
       allStores.push_back(store);
     }
   }
@@ -262,8 +292,19 @@ struct TTLBatchDSTSyncPass
       SmallVector<scf::ForOp> nest = collectLoopNest(innerLoop);
       if (hasUnsafeOps(nest))
         continue;
-      auto totalTrip = getTotalTripCount(nest);
-      if (!totalTrip || *totalTrip <= 1)
+
+      // Collect per-dimension trip counts (innermost first).
+      SmallVector<int64_t> dimSizes;
+      bool validNest = true;
+      for (scf::ForOp loop : nest) {
+        auto tc = getConstantTripCount(loop);
+        if (!tc) {
+          validNest = false;
+          break;
+        }
+        dimSizes.push_back(*tc);
+      }
+      if (!validNest)
         continue;
 
       int64_t dstPerIter = computeDSTPerIter(innerLoop);
@@ -272,34 +313,63 @@ struct TTLBatchDSTSyncPass
 
       uint32_t capacity =
           dstCapacity > 0 ? dstCapacity : inferDSTCapacity(innerLoop);
-      if (*totalTrip * dstPerIter > static_cast<int64_t>(capacity))
+      int64_t maxBatch = static_cast<int64_t>(capacity) / dstPerIter;
+
+      auto factors = computeSubblockFactors(dimSizes, maxBatch);
+      int64_t subblockProduct = 1;
+      for (int64_t f : factors)
+        subblockProduct *= f;
+      if (subblockProduct <= 1)
         continue;
 
-      // Record anchors before unrolling.
+      // Record anchors before unrolling (used when all loops disappear).
       scf::ForOp outerLoop = nest.back();
       Operation *beforeLoop = outerLoop->getPrevNode();
       Operation *afterLoop = outerLoop->getNextNode();
       Block *parentBlock = outerLoop->getBlock();
 
-      // Fully unroll: innermost first.
+      // Unroll loops innermost first. Track the innermost remaining loop.
+      scf::ForOp innermostRemaining;
       bool unrollFailed = false;
-      for (scf::ForOp loop : nest) {
-        if (failed(loopUnrollFull(loop))) {
-          unrollFailed = true;
-          break;
+      for (size_t i = 0; i < nest.size(); ++i) {
+        int64_t factor = factors[i];
+        if (factor <= 1) {
+          if (!innermostRemaining)
+            innermostRemaining = nest[i];
+          continue;
+        }
+        if (factor == dimSizes[i]) {
+          if (failed(loopUnrollFull(nest[i]))) {
+            unrollFailed = true;
+            break;
+          }
+        } else {
+          if (failed(loopUnrollByFactor(nest[i], factor))) {
+            unrollFailed = true;
+            break;
+          }
+          if (!innermostRemaining)
+            innermostRemaining = nest[i];
         }
       }
       if (unrollFailed)
         continue;
 
-      // Locate the unrolled ops between the anchors.
-      auto startIt = beforeLoop
-                         ? std::next(Block::iterator(beforeLoop))
-                         : parentBlock->begin();
-      auto endIt = afterLoop ? Block::iterator(afterLoop)
-                             : parentBlock->end();
+      // Identify the rewrite region.
+      Block::iterator startIt, endIt;
+      int64_t subblockStride = 0;
+      if (innermostRemaining) {
+        Block *body = innermostRemaining.getBody();
+        startIt = body->begin();
+        endIt = Block::iterator(body->getTerminator());
+        subblockStride = subblockProduct;
+      } else {
+        startIt = beforeLoop ? std::next(Block::iterator(beforeLoop))
+                             : parentBlock->begin();
+        endIt = afterLoop ? Block::iterator(afterLoop) : parentBlock->end();
+      }
 
-      rewriteUnrolledRegion(startIt, endIt, dstPerIter);
+      rewriteUnrolledRegion(startIt, endIt, dstPerIter, subblockStride);
     }
   }
 };

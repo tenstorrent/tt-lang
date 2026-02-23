@@ -74,15 +74,25 @@ func.func @binary_add_2_tiles(%a: tensor<2x!ttcore.tile<32x32, bf16>>,
 
 // -----
 
-// Test: 2x2 binary add does NOT batch (dstPerIter=3, totalTrip=4, 4*3=12>8).
-// Loops should remain.
+// Test: 2x2 binary add subblocks inner dim (dstPerIter=3, maxBatch=8/3=2).
+// Inner dim (2) fully unrolled, outer loop remains.
 
-// CHECK-LABEL: func.func @binary_add_2x2_skip
+// CHECK-LABEL: func.func @binary_add_2x2_subblock
 // CHECK: scf.for
-// CHECK: scf.for
+// CHECK-NOT: scf.for
 // CHECK: ttl.tile_regs_acquire
+// CHECK: ttl.copy_tile {{.*}} {dst_idx = 0 : i32}
+// CHECK: ttl.copy_tile {{.*}} {dst_idx = 1 : i32}
+// CHECK: ttl.tile_add {{.*}} {dst_idx = 2 : i32}
+// CHECK: ttl.copy_tile {{.*}} {dst_idx = 3 : i32}
+// CHECK: ttl.copy_tile {{.*}} {dst_idx = 4 : i32}
+// CHECK: ttl.tile_add {{.*}} {dst_idx = 5 : i32}
+// CHECK: ttl.tile_regs_commit
+// CHECK: ttl.tile_regs_wait
+// CHECK: ttl.tile_store {{.*}} {ttl.subblock_stride = 2 : i64, ttl.tile_offset = 0 : i64}
+// CHECK: ttl.tile_store {{.*}} {ttl.subblock_stride = 2 : i64, ttl.tile_offset = 1 : i64}
 // CHECK: ttl.tile_regs_release
-func.func @binary_add_2x2_skip(%a: tensor<2x2x!ttcore.tile<32x32, bf16>>,
+func.func @binary_add_2x2_subblock(%a: tensor<2x2x!ttcore.tile<32x32, bf16>>,
                                 %b: tensor<2x2x!ttcore.tile<32x32, bf16>>,
                                 %view: tensor<2x2x!ttcore.tile<32x32, bf16>>) {
   %c0 = arith.constant 0 : index
@@ -180,11 +190,21 @@ func.func @f32_2x2_batch(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 
 // -----
 
-// Test: f32 3x2 exceeds capacity (dstPerIter=1, totalTrip=6, 6>4). Skips.
+// Test: f32 3x2 subblocks inner dim (dstPerIter=1, capacity=4, maxBatch=4).
+// Inner dim (2) fully unrolled, outer loop (3) remains.
 
-// CHECK-LABEL: func.func @f32_3x2_skip
+// CHECK-LABEL: func.func @f32_3x2_subblock
 // CHECK: scf.for
-func.func @f32_3x2_skip(%a: tensor<3x2x!ttcore.tile<32x32, f32>>,
+// CHECK-NOT: scf.for
+// CHECK: ttl.tile_regs_acquire
+// CHECK: ttl.tile_exp {{.*}} {dst_idx = 0 : i32}
+// CHECK: ttl.tile_exp {{.*}} {dst_idx = 1 : i32}
+// CHECK: ttl.tile_regs_commit
+// CHECK: ttl.tile_regs_wait
+// CHECK: ttl.tile_store {{.*}} {ttl.subblock_stride = 2 : i64, ttl.tile_offset = 0 : i64}
+// CHECK: ttl.tile_store {{.*}} {ttl.subblock_stride = 2 : i64, ttl.tile_offset = 1 : i64}
+// CHECK: ttl.tile_regs_release
+func.func @f32_3x2_subblock(%a: tensor<3x2x!ttcore.tile<32x32, f32>>,
                           %view: tensor<3x2x!ttcore.tile<32x32, f32>>) {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -255,6 +275,159 @@ func.func @single_tile_skip(%a: tensor<1x!ttcore.tile<32x32, bf16>>,
     ttl.tile_regs_commit
     ttl.tile_regs_wait
     ttl.tile_store %exp, %view : !ttcore.tile<32x32, bf16>, tensor<1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_regs_release
+  }
+  return
+}
+
+// -----
+
+// Test: 6x4 unary with partial outer unrolling (dstPerIter=1, capacity=8).
+// Inner dim (4) fully unrolled, outer dim (6) partially unrolled by 2.
+// Subblock [4, 2] = 8 tiles. Outer loop: for i = 0 to 6 step 2 (3 iterations).
+
+// CHECK-LABEL: func.func @unary_6x4_subblock
+// CHECK: scf.for
+// CHECK-NOT: scf.for
+// CHECK: ttl.tile_regs_acquire
+// CHECK: ttl.tile_exp {{.*}} {dst_idx = 0 : i32}
+// CHECK: ttl.tile_exp {{.*}} {dst_idx = 1 : i32}
+// CHECK: ttl.tile_exp {{.*}} {dst_idx = 2 : i32}
+// CHECK: ttl.tile_exp {{.*}} {dst_idx = 3 : i32}
+// CHECK: ttl.tile_exp {{.*}} {dst_idx = 4 : i32}
+// CHECK: ttl.tile_exp {{.*}} {dst_idx = 5 : i32}
+// CHECK: ttl.tile_exp {{.*}} {dst_idx = 6 : i32}
+// CHECK: ttl.tile_exp {{.*}} {dst_idx = 7 : i32}
+// CHECK: ttl.tile_regs_commit
+// CHECK: ttl.tile_regs_wait
+// CHECK: ttl.tile_store {{.*}} {ttl.subblock_stride = 8 : i64, ttl.tile_offset = 0 : i64}
+// CHECK: ttl.tile_store {{.*}} {ttl.subblock_stride = 8 : i64, ttl.tile_offset = 1 : i64}
+// CHECK: ttl.tile_store {{.*}} {ttl.subblock_stride = 8 : i64, ttl.tile_offset = 2 : i64}
+// CHECK: ttl.tile_store {{.*}} {ttl.subblock_stride = 8 : i64, ttl.tile_offset = 3 : i64}
+// CHECK: ttl.tile_store {{.*}} {ttl.subblock_stride = 8 : i64, ttl.tile_offset = 4 : i64}
+// CHECK: ttl.tile_store {{.*}} {ttl.subblock_stride = 8 : i64, ttl.tile_offset = 5 : i64}
+// CHECK: ttl.tile_store {{.*}} {ttl.subblock_stride = 8 : i64, ttl.tile_offset = 6 : i64}
+// CHECK: ttl.tile_store {{.*}} {ttl.subblock_stride = 8 : i64, ttl.tile_offset = 7 : i64}
+// CHECK: ttl.tile_regs_release
+func.func @unary_6x4_subblock(%a: tensor<6x4x!ttcore.tile<32x32, bf16>>,
+                                %view: tensor<6x4x!ttcore.tile<32x32, bf16>>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c6 = arith.constant 6 : index
+  scf.for %i = %c0 to %c6 step %c1 {
+    scf.for %j = %c0 to %c4 step %c1 {
+      %ext = tensor.extract %a[%i, %j] : tensor<6x4x!ttcore.tile<32x32, bf16>>
+      ttl.tile_regs_acquire
+      %tok, %tile = ttl.copy_tile %ext, %j, %c0 {dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
+      %exp = ttl.tile_exp %tile {dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>
+      ttl.tile_regs_commit
+      ttl.tile_regs_wait
+      ttl.tile_store %exp, %view : !ttcore.tile<32x32, bf16>, tensor<6x4x!ttcore.tile<32x32, bf16>>
+      ttl.tile_regs_release
+    }
+  }
+  return
+}
+
+// -----
+
+// Test: 1D partial unroll (9 tiles, capacity=8). largestDivisor(9,8)=3.
+// Loop partially unrolled by 3 (step=3). 3 subblocks of 3 tiles.
+
+// CHECK-LABEL: func.func @unary_9_partial
+// CHECK: scf.for
+// CHECK: ttl.tile_regs_acquire
+// CHECK: ttl.tile_exp {{.*}} {dst_idx = 0 : i32}
+// CHECK: ttl.tile_exp {{.*}} {dst_idx = 1 : i32}
+// CHECK: ttl.tile_exp {{.*}} {dst_idx = 2 : i32}
+// CHECK: ttl.tile_regs_commit
+// CHECK: ttl.tile_regs_wait
+// CHECK: ttl.tile_store {{.*}} {ttl.subblock_stride = 3 : i64, ttl.tile_offset = 0 : i64}
+// CHECK: ttl.tile_store {{.*}} {ttl.subblock_stride = 3 : i64, ttl.tile_offset = 1 : i64}
+// CHECK: ttl.tile_store {{.*}} {ttl.subblock_stride = 3 : i64, ttl.tile_offset = 2 : i64}
+// CHECK: ttl.tile_regs_release
+func.func @unary_9_partial(%a: tensor<9x!ttcore.tile<32x32, bf16>>,
+                            %view: tensor<9x!ttcore.tile<32x32, bf16>>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c9 = arith.constant 9 : index
+  scf.for %i = %c0 to %c9 step %c1 {
+    %ext = tensor.extract %a[%i] : tensor<9x!ttcore.tile<32x32, bf16>>
+    ttl.tile_regs_acquire
+    %tok, %tile = ttl.copy_tile %ext, %i, %c0 {dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
+    %exp = ttl.tile_exp %tile {dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>
+    ttl.tile_regs_commit
+    ttl.tile_regs_wait
+    ttl.tile_store %exp, %view : !ttcore.tile<32x32, bf16>, tensor<9x!ttcore.tile<32x32, bf16>>
+    ttl.tile_regs_release
+  }
+  return
+}
+
+// -----
+
+// Test: Binary 4-tile with partial unroll (dstPerIter=3, maxBatch=8/3=2).
+// largestDivisor(4,2)=2. Loop step=2. 2 tiles batched per sync cycle.
+
+// CHECK-LABEL: func.func @binary_4_partial
+// CHECK: scf.for
+// CHECK: ttl.tile_regs_acquire
+// CHECK: ttl.copy_tile {{.*}} {dst_idx = 0 : i32}
+// CHECK: ttl.copy_tile {{.*}} {dst_idx = 1 : i32}
+// CHECK: ttl.tile_add {{.*}} {dst_idx = 2 : i32}
+// CHECK: ttl.copy_tile {{.*}} {dst_idx = 3 : i32}
+// CHECK: ttl.copy_tile {{.*}} {dst_idx = 4 : i32}
+// CHECK: ttl.tile_add {{.*}} {dst_idx = 5 : i32}
+// CHECK: ttl.tile_regs_commit
+// CHECK: ttl.tile_regs_wait
+// CHECK: ttl.tile_store {{.*}} {ttl.subblock_stride = 2 : i64, ttl.tile_offset = 0 : i64}
+// CHECK: ttl.tile_store {{.*}} {ttl.subblock_stride = 2 : i64, ttl.tile_offset = 1 : i64}
+// CHECK: ttl.tile_regs_release
+func.func @binary_4_partial(%a: tensor<4x!ttcore.tile<32x32, bf16>>,
+                              %b: tensor<4x!ttcore.tile<32x32, bf16>>,
+                              %view: tensor<4x!ttcore.tile<32x32, bf16>>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  scf.for %i = %c0 to %c4 step %c1 {
+    %ext_a = tensor.extract %a[%i] : tensor<4x!ttcore.tile<32x32, bf16>>
+    %ext_b = tensor.extract %b[%i] : tensor<4x!ttcore.tile<32x32, bf16>>
+    ttl.tile_regs_acquire
+    %tok_a, %tile_a = ttl.copy_tile %ext_a, %i, %c0 {dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
+    %tok_b, %tile_b = ttl.copy_tile %ext_b, %i, %c1 {dst_idx = 1 : i32} : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
+    %sum = ttl.tile_add %tile_a, %tile_b {dst_idx = 2 : i32} : !ttcore.tile<32x32, bf16>
+    ttl.tile_regs_commit
+    ttl.tile_regs_wait
+    ttl.tile_store %sum, %view : !ttcore.tile<32x32, bf16>, tensor<4x!ttcore.tile<32x32, bf16>>
+    ttl.tile_regs_release
+  }
+  return
+}
+
+// -----
+
+// Test: Prime tile count (11 bf16, capacity=8). No divisor > 1 fits.
+// Loop remains unchanged.
+
+// CHECK-LABEL: func.func @unary_prime_skip
+// CHECK: scf.for
+// CHECK: ttl.tile_regs_acquire
+// CHECK: ttl.tile_regs_release
+// CHECK-NOT: ttl.tile_offset
+func.func @unary_prime_skip(%a: tensor<11x!ttcore.tile<32x32, bf16>>,
+                             %view: tensor<11x!ttcore.tile<32x32, bf16>>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c11 = arith.constant 11 : index
+  scf.for %i = %c0 to %c11 step %c1 {
+    %ext = tensor.extract %a[%i] : tensor<11x!ttcore.tile<32x32, bf16>>
+    ttl.tile_regs_acquire
+    %tok, %tile = ttl.copy_tile %ext, %i, %c0 {dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
+    %exp = ttl.tile_exp %tile {dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>
+    ttl.tile_regs_commit
+    ttl.tile_regs_wait
+    ttl.tile_store %exp, %view : !ttcore.tile<32x32, bf16>, tensor<11x!ttcore.tile<32x32, bf16>>
     ttl.tile_regs_release
   }
   return
