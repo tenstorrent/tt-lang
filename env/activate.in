@@ -40,8 +40,14 @@ export PYTHONPATH="\
 ${TT_LANG_HOME}/python:\
 ${TT_LANG_HOME}/test:\
 @TTMLIR_PATH@/python_packages:\
-@TTMLIR_PATH@/ttrt/runtime/ttnn:\
 $PYTHONPATH"
+
+# Add ttnn runtime path only on machines with Tenstorrent hardware.
+# The ttnn runtime (_ttnn.so) conflicts with nanobind types already registered
+# by libTTMLIRPythonCAPI.so, so we only add it when actually needed for HW execution.
+if [ -e /dev/tenstorrent ]; then
+  export PYTHONPATH="@TTMLIR_PATH@/python_packages/ttrt/runtime/ttnn:$PYTHONPATH"
+fi
 
 # Set LD_LIBRARY_PATH to find tt-mlir shared libraries (e.g., _ttnncpp.so)
 export LD_LIBRARY_PATH="@TTMLIR_PATH@/lib:${TTMLIR_TOOLCHAIN_DIR}/lib:${LD_LIBRARY_PATH}"

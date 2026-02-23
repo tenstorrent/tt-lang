@@ -51,13 +51,23 @@ permissions:
   contents: read
 
 jobs:
+  get-mlir-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      mlir-tag: ${{ steps.read.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        run: echo "tag=$(cat third-party/tt-mlir-docker-tag | tr -d '[:space:]')" >> $GITHUB_OUTPUT
+
   test-n150:
+    needs: [get-mlir-tag]
     name: "Hardware Tests (${{ inputs.runs-on }})"
     runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.runs-on) }}
     timeout-minutes: ${{ inputs.timeout }}
 
     container:
-      image: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:latest
+      image: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:${{ needs.get-mlir-tag.outputs.mlir-tag }}
       options: --device /dev/tenstorrent
       volumes:
         - /dev/hugepages:/dev/hugepages

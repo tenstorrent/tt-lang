@@ -18,16 +18,37 @@ fi
 
 echo "Normalizing tt-mlir installation at: $INSTALL_DIR"
 
-# Find all symlinks first (before we start modifying the filesystem)
+ABS_INSTALL_DIR=$(cd "$INSTALL_DIR" && pwd)
+
+# The cmake install creates a python_packages/ directory that contains the
+# canonical copies of all Python packages. It also creates top-level symlinks
+# (e.g., ttrt/ -> python_packages/ttrt/) for build-tree compatibility.
+#
+# We want to keep only python_packages/ and remove the duplicate top-level
+# symlinks, then normalize any remaining symlinks that point outside the
+# install dir.
+
+# Pass 1: Remove top-level symlinks that point into python_packages/ (duplicates).
+for link in "$INSTALL_DIR"/*/; do
+    link="${link%/}"  # strip trailing slash
+    [ -L "$link" ] || continue
+    target=$(readlink -f "$link")
+    case "$target" in
+        "$ABS_INSTALL_DIR/python_packages"*)
+            echo "  Removing duplicate symlink: $link -> $target"
+            rm "$link"
+            ;;
+    esac
+done
+
+# Pass 2: Replace remaining symlinks with actual files.
 mapfile -t symlinks < <(find "$INSTALL_DIR" -type l)
 
-echo "Found ${#symlinks[@]} symlinks to process"
+echo "Found ${#symlinks[@]} symlinks to normalize"
 
-# Replace each symlink with its target
 for link in "${symlinks[@]}"; do
     target=$(readlink -f "$link")
     if [ -e "$target" ]; then
-        # Remove symlink and copy the target
         rm "$link"
         if [ -d "$target" ]; then
             cp -r "$target" "$link"
