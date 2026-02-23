@@ -82,7 +82,7 @@ fi
 TT_METAL_SRC="build/_deps/tt-mlir-src/third_party/tt-metal/src/tt-metal"
 if [ -d "$TT_METAL_SRC/tools/tracy" ]; then
     mkdir -p "$TTMLIR_TOOLCHAIN_DIR/python_packages/tracy"
-    cp -pr "$TT_METAL_SRC/tools/tracy/"*.py "$TTMLIR_TOOLCHAIN_DIR/python_packages/tracy/"
+    cp -pr "$TT_METAL_SRC/tools/tracy/"*.py "$TTMLIR_TOOLCHAIN_DIR/python_packages/tracy/" 2>/dev/null || true
     echo "Copied Tracy Python module"
 fi
 

@@ -53,6 +53,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Validate --image-type if provided
+if [ -n "$IMAGE_TYPE" ] && [ "$IMAGE_TYPE" != "base" ] && [ "$IMAGE_TYPE" != "dist" ] && [ "$IMAGE_TYPE" != "ird" ]; then
+    echo "ERROR: Invalid --image-type '$IMAGE_TYPE'. Must be one of: base, dist, ird"
+    exit 1
+fi
+
 # Default to pinned tt-mlir commit if not specified
 if [ -z "$MLIR_SHA" ]; then
     MLIR_SHA=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')

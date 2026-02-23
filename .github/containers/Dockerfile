@@ -78,7 +78,7 @@ RUN chmod -R 777 $TTMLIR_TOOLCHAIN_DIR
 COPY dev-requirements.txt /tmp/dev-requirements.txt
 RUN $TTMLIR_TOOLCHAIN_DIR/venv/bin/python -m pip install -r /tmp/dev-requirements.txt tt-smi --no-cache-dir && \
     rm /tmp/dev-requirements.txt && \
-    rm -f /etc/apt/sources.list.d/kitware*.list 2>/dev/null || true && \
+    (rm -f /etc/apt/sources.list.d/kitware*.list 2>/dev/null || true) && \
     apt-get update && apt-get install -y \
     ssh \
     sudo \
