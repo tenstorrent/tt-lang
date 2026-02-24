@@ -205,12 +205,12 @@ class TTLGenericCompiler(TTCompilerBase):
         else:
             source_line = f"<line {file_lineno}>"
 
-        before_name = f"{self.name}_L{file_lineno}_before"
-        after_name = f"{self.name}_L{file_lineno}_after"
+        base_name = f"{self.name}_L{file_lineno}"
+        before_name = f"{base_name}_before"
+        after_name = f"{base_name}_after"
 
         if self.line_mapper:
-            self.line_mapper.register_signpost(before_name, file_lineno, source_line)
-            self.line_mapper.register_signpost(after_name, file_lineno, source_line)
+            self.line_mapper.register_signpost(base_name, file_lineno, source_line)
 
         self._emit_signpost(before_name)
         self._current_signpost_line = file_lineno
@@ -234,8 +234,9 @@ class TTLGenericCompiler(TTCompilerBase):
 
         file_lineno = node.lineno + self.line_offset
         prefix = "implicit_" if implicit else ""
-        before_name = f"{self.name}_L{file_lineno}_{prefix}{op_name}_before"
-        after_name = f"{self.name}_L{file_lineno}_{prefix}{op_name}_after"
+        base_name = f"{self.name}_L{file_lineno}_{prefix}{op_name}"
+        before_name = f"{base_name}_before"
+        after_name = f"{base_name}_after"
 
         if self.source_lines and 0 < node.lineno <= len(self.source_lines):
             source_line = self.source_lines[node.lineno - 1].strip()
@@ -243,8 +244,7 @@ class TTLGenericCompiler(TTCompilerBase):
             source_line = f"<line {file_lineno}>"
 
         if self.line_mapper:
-            self.line_mapper.register_signpost(before_name, file_lineno, source_line)
-            self.line_mapper.register_signpost(after_name, file_lineno, source_line)
+            self.line_mapper.register_signpost(base_name, file_lineno, source_line)
 
         with self._loc_for_node(node):
             self._emit_signpost(before_name)

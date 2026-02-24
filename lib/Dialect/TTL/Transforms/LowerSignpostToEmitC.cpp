@@ -29,12 +29,23 @@ struct SignpostLowering : OpConversionPattern<SignpostOp> {
   LogicalResult
   matchAndRewrite(SignpostOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // Emit DeviceZoneScopedN wrapped in braces to avoid variable conflicts.
     auto loc = op.getLoc();
-    createEmitCVerbatim(loc, "{", rewriter);
-    createEmitCVerbatim(
-        loc, "DeviceZoneScopedN(\"" + op.getName().str() + "\");", rewriter);
-    createEmitCVerbatim(loc, "}", rewriter);
+    StringRef name = op.getName();
+
+    if (name.ends_with("_before")) {
+      // Open a scope with a profiler zone spanning the wrapped code.
+      auto baseName = name.drop_back(strlen("_before"));
+      createEmitCVerbatim(loc, "{", rewriter);
+      createEmitCVerbatim(
+          loc, "DeviceZoneScopedN(\"" + baseName.str() + "\");", rewriter);
+    } else if (name.ends_with("_after")) {
+      // Close the scope opened by the corresponding _before signpost.
+      createEmitCVerbatim(loc, "}", rewriter);
+    } else {
+      return op.emitError("signpost name must end with _before or _after, got: "
+                          + name);
+    }
+
     rewriter.eraseOp(op);
     return success();
   }

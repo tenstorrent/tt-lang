@@ -80,29 +80,22 @@ def parse_signpost_name(signpost: str) -> Tuple[Optional[str], bool]:
     Parse op name and implicit flag from signpost name.
 
     Returns (op_name, is_implicit) where op_name is None for line-only signposts.
-    Format: "<kernel>_L<lineno>[_[implicit_]<op>]_before|after"
+    Format: "<kernel>_L<lineno>[_[implicit_]<op>]"
     Examples:
-      "compute_L52_before" -> (None, False)
-      "dm_read_L52_cb_wait_before" -> ("cb_wait", False)
-      "dm_write_L52_implicit_cb_pop_before" -> ("cb_pop", True)
+      "compute_L52" -> (None, False)
+      "dm_read_L52_cb_wait" -> ("cb_wait", False)
+      "dm_write_L52_implicit_cb_pop" -> ("cb_pop", True)
     """
-    parts = signpost.rsplit("_", 1)  # Split off before/after
-    if len(parts) != 2 or parts[1] not in ("before", "after"):
-        return None, False
-
-    middle = parts[0]
-
-    # Find the _L<num>_ marker to split kernel name from rest
     import re
 
-    m = re.search(r"_L\d+_", middle)
+    m = re.search(r"_L\d+_", signpost)
     if m is None:
         # Line-only signpost: "<kernel>_L<num>"
         return None, False
 
-    rest = middle[m.end() :]  # e.g., "cb_wait" or "implicit_cb_pop"
+    rest = signpost[m.end() :]  # e.g., "cb_wait" or "implicit_cb_pop"
     if rest.startswith("implicit_"):
-        return rest[9:], True
+        return rest[len("implicit_") :], True
     return rest, False
 
 
@@ -136,6 +129,9 @@ def parse_device_profile_csv(
 ) -> List[ProfileResult]:
     """
     Parse the device profile CSV and extract signpost timing data.
+
+    Each scoped signpost in the CSV has a base name (e.g. "compute_L52")
+    with ZONE_START/ZONE_END timestamps spanning the actual work.
 
     Args:
         csv_path: Path to profile_log_device.csv
@@ -508,11 +504,23 @@ def print_profile_report(
     print()
 
     # Roofline model visualization
+    # Subtract synchronization wait cycles (cb_wait, cb_reserve) from compute
+    # threads. These ops block waiting for DM and don't represent compute work.
+    _SYNC_OPS = {"cb_wait", "cb_reserve"}
+    thread_sync_cycles = defaultdict(int)
+    for r in results:
+        if r.op_name in _SYNC_OPS:
+            thread_sync_cycles[r.thread] += r.cycles
+
     dm_threads = ["NCRISC", "BRISC"]
     compute_threads = ["TRISC_0", "TRISC_1", "TRISC_2"]
 
     memory_cycles = max((thread_cycles.get(t, 0) for t in dm_threads), default=0)
-    compute_cycles = max((thread_cycles.get(t, 0) for t in compute_threads), default=0)
+    compute_work = {
+        t: thread_cycles.get(t, 0) - thread_sync_cycles.get(t, 0)
+        for t in compute_threads
+    }
+    compute_cycles = max(compute_work.values(), default=0)
 
     if memory_cycles > 0 or compute_cycles > 0:
         total_bottleneck = memory_cycles + compute_cycles
