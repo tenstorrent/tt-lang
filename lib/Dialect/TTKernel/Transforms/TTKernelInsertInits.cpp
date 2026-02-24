@@ -2,14 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//===----------------------------------------------------------------------===//
-// TTKernel Insert Inits Pass
-//===----------------------------------------------------------------------===//
 //
-// Single source of truth for all init ops in the TTKernel pipeline.
-// Inserts both common inits (init_sfpu, binary_op_init_common) that configure
-// UNPACK + PACK data format routing, and per-op inits (exp_tile_init,
-// add_tiles_init, etc.) that configure the MATH pipeline.
+// Implementation of the TTKernelInsertInits pass, which inserts both common
+// inits (init_sfpu, binary_op_init_common) that configure UNPACK + PACK data
+// format routing, and per-op inits (exp_tile_init, add_tiles_init, etc.) that
+// configure the MATH pipeline.
 //
 // Two phases:
 //   1. Common inits: one per sync region, hoisted above enclosing loops.
@@ -20,13 +17,7 @@
 //      The init key is (init op TypeID, operand values). An init is inserted
 //      only when the key changes. Tracking resets at sync boundaries.
 //
-// TODO: Consecutive same-type ops still get a full init (e.g., add_tiles_init)
-// on every type switch. tt-metal exposes init_short variants
-// (add_tiles_init_short, mul_tiles_init_short) that reconfigure UNPACK+MATH
-// without touching PACK, but TTKernel only models mm_init_short /
-// mm_block_init_short (matmul). Adding the elementwise init_short ops to
-// TTKernel would let this pass emit cheaper re-inits when only the op type
-// changes but the output CB stays the same.
+// TODO(#329): Emit init_short variants for cheaper re-inits on type switches.
 //
 //===----------------------------------------------------------------------===//
 
@@ -157,9 +148,11 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
   return map;
 }
 
-/// Compute a key that identifies when an init op needs to change.
-/// Init key: identifies which compute ops can share a single init call.
-/// Two consecutive ops with the same key need only one init before the group.
+/// Init key: consecutive ops with the same key share a single init call.
+/// The key captures everything that an init op configures in hardware:
+/// the op type (MATH pipeline selection), CB operands (UNPACK source routing),
+/// and discriminator (e.g., bcast type). When the key is unchanged, the
+/// hardware is already configured correctly and re-init can be skipped.
 struct InitKey {
   mlir::TypeID typeId;
   llvm::SmallVector<Value, 2> operands;
@@ -255,10 +248,11 @@ static bool analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
 
 /// Find the outermost enclosing insertion point by walking up through
 /// compiler-generated loops (marked with ttl.tile_loop or
-/// ttl.subblock_stride). These loops have invariant CB configuration across
-/// iterations, so hoisting the common init above them is always safe.
+/// ttl.subblock_stride). By construction, these loops iterate over tiles
+/// within a single ttl.compute whose input/output CBs are fixed, so the
+/// CB configuration is invariant across iterations and hoisting is safe.
 /// Stops at unmarked loops to avoid hoisting past user loops that could
-/// contain multiple sync regions with different init types.
+/// contain multiple sync regions with different CB configurations.
 ///
 /// TODO: A more aggressive strategy would analyze all sync regions inside an
 /// unmarked loop and hoist if they all need the same init type. This would

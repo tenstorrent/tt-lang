@@ -6,53 +6,8 @@
 // TTL Schedule Operations Pass
 //===----------------------------------------------------------------------===//
 //
-// Reorders tile operations within sync regions (acquire -> commit) to group by
-// operation kind. This enables init insertion in the subsequent
-// convert-ttl-to-ttkernel + ttkernel-insert-inits passes.
-//
-// After lower-to-loops unrolls tile loops for DST maximization, each tile
-// iteration produces interleaved ops of different kinds:
-//
-//   copy(0); add(0); mul(0); exp(0); copy(1); add(1); mul(1); exp(1); ...
-//
-// This pass reorders to group ops at the same dependency level:
-//
-//   copy(0); copy(1); add(0); add(1); mul(0); mul(1); exp(0); exp(1); ...
-//
-// The reordering respects both SSA data dependencies AND DST register hazards.
-// SSA only captures RAW (true) dependencies. When compute chains reuse the same
-// DST slot (e.g., copy b -> dst1, consume dst1, then copy c -> dst1), we must
-// also track anti-dependencies (WAR) and output dependencies (WAW) to prevent
-// the scheduler from moving a write before a prior read of the same slot.
-// In principle, DST index renaming (re-running assign-dst) could eliminate
-// these false dependencies, but DST capacity is small (8 bf16 / 4 f32 slots)
-// and already fully utilized by subblocking, so we conservatively respect them
-// here.
-//
-// For each op, we compute its dependency depth considering:
-//   - RAW (Read-After-Write): captured by SSA def-use chains
-//   - WAW (Write-After-Write): two ops writing the same DST index must maintain
-//     their original order
-//   - WAR (Write-After-Read): an op writing to a DST index must come after all
-//     prior reads of that index (since the write would clobber the value)
-//
-// Ops at the same depth are independent and can be freely reordered. Within
-// each depth level, ops are sorted by (category, typeId, dstIdx) to maximize
-// grouping.
-//
-// Stores are not reordered (they are already after the commit/wait boundary,
-// placed by reorderStoresAfterSync in lower-to-loops).
-//
-// References:
-//   - Hennessy & Patterson, "Computer Architecture: A Quantitative Approach",
-//     Chapter 3 (ILP): defines RAW, WAR, WAW data hazards through shared
-//     registers. The DST register file is analogous to a hardware register
-//     file.
-//   - Cooper & Torczon, "Engineering a Compiler", Chapter 12 (Instruction
-//     Scheduling): list scheduling using a data-precedence graph with
-//     topological depth levels -- the same algorithm used here.
-//   - Benoit de Dinechin & Sid Touati, "Advanced Backend Optimization", Part 2:
-//   Instruction scheduling
+// This file implements tile operation scheduling within DST sync regions.
+// See the ttl-schedule-operations pass description in Passes.td.
 //
 //===----------------------------------------------------------------------===//
 

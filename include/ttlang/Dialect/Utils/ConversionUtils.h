@@ -17,24 +17,31 @@
 
 namespace mlir::tt::ttl::utils {
 
-/// Compute CB tile index from enclosing scf.for loops with an optional
-/// stride transform applied to each constant stride before IR emission.
+/// Compute a linearized CB tile index from enclosing loop induction variables.
 ///
-/// Only considers loops annotated by the compiler:
-/// - Tile iteration loops (ttl.tile_loop): stride from attribute.
-/// - Subblock loops (ttl.subblock_stride): stride from attribute.
-/// Unmarked loops (user loops, external loops) are ignored.
+/// CB tiles are addressed by a flat index into the CB's tile buffer. The
+/// lower-to-loops and subblock passes create nested scf.for loops whose IVs
+/// correspond to positions in the iteration domain. Each loop carries a
+/// constant stride attribute (row-major stride of that dimension in the full
+/// tensor). The linearized index is:
 ///
-/// The strideTransform is applied to each stride and tile_offset at C++
-/// compile time (integer arithmetic on constants). This enables callers
-/// to extract per-dimension components (e.g., stride/numCols for row index)
-/// without generating runtime divui/remui operations.
+///   index = sum(IV[d] * stride[d]) + tile_offset
 ///
-/// When cbShapeRank > 0, only the innermost cbShapeRank tile loops are used.
-/// Returns constant 0 if not inside any recognized loops.
+/// over all compiler-annotated loops (ttl.tile_loop for tile iteration,
+/// ttl.subblock_stride for subblock iteration). Unmarked loops (user loops,
+/// streaming loops) are ignored because they do not affect intra-CB indexing.
 ///
-/// Returns failure with diagnostics for unexpected loop structures (dynamic
-/// bounds, non-zero lower bounds, etc.).
+/// The `strideTransform` callback is applied to each stride at C++ compile
+/// time before emitting IR. This lets callers extract per-dimension components
+/// (e.g., stride / numCols for a row index) without runtime division.
+///
+/// When `cbShapeRank > 0`, only the innermost cbShapeRank tile loops
+/// contribute, for CBs with lower rank than the iteration domain.
+///
+/// Note: this assumes DMA kernels write tiles into CBs in row-major order,
+/// which is the case for all current tt-metal reader kernels. If a future
+/// layout changes the CB tile ordering, the stride computation here would
+/// need to account for it.
 inline FailureOr<Value> computeCBTileIndexFromLoops(
     Operation *op, OpBuilder &builder, size_t cbShapeRank,
     llvm::function_ref<int64_t(int64_t)> strideTransform) {

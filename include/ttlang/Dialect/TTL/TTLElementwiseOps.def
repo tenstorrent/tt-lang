@@ -50,9 +50,8 @@
 #define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #endif
 
-// FPU binary ops: read both operands from CB, write result to DST.
-// These are the FPU-engine counterparts of the SFPU binary ops above.
-// Only used when both operands are block arguments (CB-backed).
+// FPU binary ops: CB[src0], CB[src1] -> DST[dst]
+// E.g., TTL_FPU_BINARY_TILE_OP(Add, AddTileOp, AddTilesInitOp, AddTilesOp)
 #ifndef TTL_FPU_BINARY_TILE_OP
 #define TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #endif

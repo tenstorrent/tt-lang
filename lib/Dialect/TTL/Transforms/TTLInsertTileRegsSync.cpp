@@ -6,15 +6,15 @@
 // TTL Insert Tile Regs Sync Pass
 //===----------------------------------------------------------------------===//
 //
-// This pass inserts DST register synchronization operations for ttl.compute
-// ops to enforce the MATH/PACK thread synchronization protocol required by
-// the hardware DST register bank.
+// The TTLInsertTileRegsSyncPass inserts DST register synchronization operations
+// for ttl.compute ops to enforce the MATH/PACK thread synchronization protocol
+// required by the hardware DST register bank.
 //
 // This pass only inserts sync ops (acquire/commit/wait/release). Common init
 // ops (init_sfpu, binary_op_init_common) and per-op init ops are inserted
 // later by the ttkernel-insert-inits pass after conversion to TTKernel.
 //
-// Two modes of sync placement:
+// Sync op placement depends on whether the compute is subblocked or not:
 //
 // 1. Subblocked computes (has ttl.full_linearization_strides):
 //    Sync ops go OUTSIDE the compute body. One sync cycle covers all tiles

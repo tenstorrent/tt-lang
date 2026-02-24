@@ -307,9 +307,12 @@ def TTLScheduleOperations
     one init per consecutive group of same-type ops.
 
     Ops are sorted by (dependency depth, category, TypeID, init affinity,
-    dst_idx). Dependency depth is computed considering RAW (SSA def-use),
-    WAW (same DST write index), and WAR (write after prior read of same DST
-    index) hazards. Ops at the same depth are independent and can be reordered.
+    dst_idx). Dependency depth considers RAW (SSA def-use), WAW (same DST
+    write index), and WAR (write after prior read of same DST index) hazards.
+    Ops at the same depth are independent and can be reordered.
+
+    Only tile ops between `tile_regs_acquire` and `tile_regs_commit` are
+    scheduled. Store ops (after the commit/wait boundary) are not reordered.
 
     Category ordering:
       CopyTile < Bcast < FPUBinary < SFPUUnary < SFPUBinary < CopyDst
@@ -332,6 +335,11 @@ def TTLScheduleOperations
     %e1 = ttl.tile_exp %s1 {dst_idx = 1}       // depth 1
     ttl.tile_regs_commit
     ```
+
+    References:
+    - Hennessy & Patterson, "Computer Architecture", Ch. 3: RAW/WAR/WAW hazards
+    - Cooper & Torczon, "Engineering a Compiler", Ch. 12: list scheduling with
+      topological depth levels
   }];
 
   let dependentDialects = [];

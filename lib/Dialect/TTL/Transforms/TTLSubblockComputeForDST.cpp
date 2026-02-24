@@ -6,21 +6,9 @@
 // TTL Subblock Compute For DST Pass
 //===----------------------------------------------------------------------===//
 //
-// Partitions ttl.compute operations into DST-sized subblocks. Uses the
-// ttl.unroll_factor attribute (set by ttl-assign-dst) to partition the
-// iteration space into subblocks. Each subblock becomes an inner ttl.compute
-// that processes unroll_factor tiles per DST sync cycle.
-//
-// Multi-dimensional iteration spaces are partitioned across multiple dimensions
-// to fill DST. For each dimension, the subblock size is chosen as a divisor of
-// the dimension size, maximizing the total subblock size (product of per-dim
-// subblock sizes) while staying within unroll_factor. This approach handles
-// non-identity indexing maps (broadcast, reduction) because
-// getTiledImplementation maps iteration domain offsets/sizes to per-operand
-// slices via the indexing maps.
-//
-// The outer loop(s) are side-effect-only (no iter_args) because stores are
-// explicit side effects (ttl.tile_store) referencing external reserve views.
+// This file partitions ttl.compute into DST-sized subblocks via
+// TilingInterface. See the ttl-subblock-compute-for-dst pass description in
+// Passes.td.
 //
 //===----------------------------------------------------------------------===//
 
