@@ -7,12 +7,10 @@
 from __future__ import annotations
 
 import ast
-import dataclasses
 import functools
 import inspect
 import os
 import random
-import sys
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
 
@@ -102,58 +100,7 @@ def _get_tensor_cache_info(tensor) -> tuple:
     return (shape, dtype, memory_space, layout)
 
 
-@dataclasses.dataclass(frozen=True)
-class CompilerOptions:
-    """Compiler pipeline options for kernel compilation.
-
-    Frozen so it's hashable and usable directly as a cache key component.
-    Does NOT include TTNN compute config (fp32_dest_acc_en, dst_full_sync_en).
-    """
-
-    maximize_dst: bool = True
-    enable_fpu_binary_ops: bool = True
-
-    # All recognised option tokens (used to filter sys.argv).
-    # No type annotation so dataclasses doesn't treat this as a field.
-    _COMPILER_OPTIONS = frozenset(
-        {
-            "--maximize-dst",
-            "--no-maximize-dst",
-            "--enable-fpu-binary-ops",
-            "--no-fpu-binary-ops",
-        }
-    )
-
-    @staticmethod
-    def from_string(options: Optional[str]) -> "CompilerOptions":
-        """Parse CuTe-style option string.
-
-        When *options* is ``None`` the returned object carries all defaults.
-        Tokens that appear later in the string override earlier ones, so
-        ``"--maximize-dst --no-maximize-dst"`` results in
-        ``maximize_dst=False``.
-        """
-        kwargs: dict = {}
-        if options:
-            for token in options.split():
-                if token == "--maximize-dst":
-                    kwargs["maximize_dst"] = True
-                elif token == "--no-maximize-dst":
-                    kwargs["maximize_dst"] = False
-                elif token == "--enable-fpu-binary-ops":
-                    kwargs["enable_fpu_binary_ops"] = True
-                elif token == "--no-fpu-binary-ops":
-                    kwargs["enable_fpu_binary_ops"] = False
-                else:
-                    raise ValueError(f"Unknown kernel option: {token!r}")
-        return CompilerOptions(**kwargs)
-
-    @staticmethod
-    def _options_from_argv() -> str:
-        """Extract recognised compiler options from ``sys.argv``."""
-        return " ".join(
-            arg for arg in sys.argv[1:] if arg in CompilerOptions._COMPILER_OPTIONS
-        )
+from .compiler_options import CompilerOptions
 
 
 def _make_cache_key(
@@ -1263,10 +1210,9 @@ def pykernel_gen(
             # Extract runtime options (allow per-call override via kwarg).
             # Merge: explicit options (decorator or kwarg) as base,
             # then sys.argv options as higher-priority override.
-            explicit_options = kwargs.pop("options", options) or ""
-            argv_options = CompilerOptions._options_from_argv()
-            merged_options = f"{explicit_options} {argv_options}".strip() or None
-            compiler_options = CompilerOptions.from_string(merged_options)
+            base = CompilerOptions.from_string(kwargs.pop("options", options))
+            argv_overrides = CompilerOptions.from_argv()
+            compiler_options = base.merge(argv_overrides)
 
             resolved_grid = _resolve_grid(grid, args, kwargs)
             fp32_override = fp32_dest_acc_en

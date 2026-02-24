@@ -14,7 +14,7 @@ from typing import Any, Optional
 from ttmlir.ir import Module
 from ttmlir.passmanager import PassManager
 
-from ttl.ttl_api import CompilerOptions
+from ttl.compiler_options import CompilerOptions
 
 from .device_arch import get_mock_arch_from_device
 
