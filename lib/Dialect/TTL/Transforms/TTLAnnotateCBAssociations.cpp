@@ -12,7 +12,8 @@
 //
 // Annotations:
 // - ttl.compute: each input block argument gets a ttl.cb_index.<N> attribute
-// - ttl.tile_bcast: gets a ttl.output_cb_index attribute (the output operand
+// - ttl.tile_bcast: gets a ttl.bcast_output_cb_index attribute (the output
+// operand
 //   may trace to iter_args after loop lowering, making SSA-based lookup fail)
 //
 //===----------------------------------------------------------------------===//
@@ -107,7 +108,7 @@ struct TTLAnnotateCBAssociationsPass
       if (!bindOp) {
         return;
       }
-      bcast->setAttr(kOutputCBIndexAttrName, bindOp.getCbIndexAttr());
+      bcast->setAttr(kBcastOutputCBIndexAttrName, bindOp.getCbIndexAttr());
     });
   }
 };

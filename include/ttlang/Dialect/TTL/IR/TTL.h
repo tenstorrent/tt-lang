@@ -34,40 +34,29 @@ inline constexpr llvm::StringRef kCBIndexAttrPrefix = "ttl.cb_index.";
 inline constexpr llvm::StringRef kFp32DestAccEnAttrName = "fp32_dest_acc_en";
 inline constexpr llvm::StringRef kDstFullSyncEnAttrName = "dst_full_sync_en";
 
-/// FPU binary attribute: marks add/sub/mul ops that should use the FPU
-/// execution engine (reads from CB) instead of SFPU (reads from DST).
+/// Marks binary ops that use the FPU engine (reads from CB) instead of SFPU.
 constexpr llvm::StringLiteral kFPUBinaryAttrName("ttl.fpu_binary");
 
-/// Subblock stride attribute: marks scf.for loops created by the subblock pass
-/// with the linearized stride for that loop's dimension. Used by
-/// computeCBTileIndexFromLoops to distinguish subblock loops from tile
-/// iteration loops and compute correct absolute CB offsets.
+/// Linearized stride for a subblock loop dimension. Distinguishes subblock
+/// loops from tile iteration loops for CB index computation.
 constexpr llvm::StringLiteral kSubblockStrideAttrName("ttl.subblock_stride");
 
-/// Tile loop attribute: marks scf.for loops created by lower-to-loops as tile
-/// iteration loops. Carries the linearization stride (from the full tensor
-/// shape) as an index value. Used by computeCBTileIndexFromLoops to compute
-/// correct absolute CB indices — the stride may differ from the loop's upper
+/// Linearization stride on a tile iteration loop. May differ from the loop
 /// bound when the compute has been subblocked.
 constexpr llvm::StringLiteral kTileLoopAttrName("ttl.tile_loop");
 
-/// Full linearization strides attribute: set on inner ComputeOps created by
-/// the subblock pass. Contains the row-major strides from the original (full)
-/// tensor shape. Lower-to-loops reads this to annotate tile loops with correct
-/// strides for CB indexing.
+/// Linearized tile offset within a subblock, used for CB index computation
+/// in unrolled (loop-free) bodies.
+constexpr llvm::StringLiteral kTileOffsetAttrName("ttl.tile_offset");
+
+/// Row-major strides of the full (pre-subblock) iteration domain, carried
+/// on subblocked ComputeOps so tile loops get correct CB linearization strides.
 constexpr llvm::StringLiteral
     kFullLinStridesAttrName("ttl.full_linearization_strides");
 
-/// Output CB index attribute: annotated on tile_bcast ops by
-/// ttl-annotate-cb-associations so the conversion pass can find the output
-/// CB without SSA tracing.
-constexpr llvm::StringLiteral kOutputCBIndexAttrName("ttl.output_cb_index");
-
-/// Per-tile offset attribute: set on ops in unrolled bodies. Carries the
-/// linearized tile offset within the subblock. Used by
-/// computeCBTileIndexFromLoops to compute correct CB indices without tile
-/// loops.
-constexpr llvm::StringLiteral kTileOffsetAttrName("ttl.tile_offset");
+/// Output CB index on tile_bcast ops, avoiding SSA tracing during lowering.
+constexpr llvm::StringLiteral
+    kBcastOutputCBIndexAttrName("ttl.bcast_output_cb_index");
 
 /// Trait for tile compute operations (add, mul, exp, etc.).
 template <typename ConcreteType>

@@ -693,7 +693,8 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
                                     rewriter, loc);
     if (failed(outCB)) {
       // Use the output CB index annotation from ttl-annotate-cb-associations.
-      if (auto cbIdx = op->getAttrOfType<IntegerAttr>(kOutputCBIndexAttrName)) {
+      if (auto cbIdx =
+              op->getAttrOfType<IntegerAttr>(kBcastOutputCBIndexAttrName)) {
         Value cb;
         funcOp->walk([&](BindCBOp bindOp) {
           if (bindOp.getCbIndexAttr().getInt() == cbIdx.getInt()) {
