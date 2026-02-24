@@ -188,7 +188,7 @@ def print_profile_report(
     all_source_lines: Dict[str, List[str]],
     thread_to_kernel: Dict[str, str],
     line_mapper: Optional[SourceLineMapper] = None,
-    cb_wait_to_dma: Optional[Dict[Tuple[str, int], Tuple[str, int, int]]] = None,
+    cb_wait_to_dma: Optional[Dict[Tuple[str, int], Tuple[str, int, int, str]]] = None,
     dma_producer_to_cb: Optional[Dict[Tuple[str, int], int]] = None,
     kernel_line_offsets: Optional[Dict[str, int]] = None,
 ):
@@ -345,9 +345,9 @@ def print_profile_report(
                         if consumer_dma_info or producer_cb_idx is not None:
                             indent = 27 + len(source_line)
                             if consumer_dma_info:
-                                barrier_kernel, barrier_line, cb_idx = consumer_dma_info
+                                barrier_kernel, barrier_line, cb_idx, label = consumer_dma_info
                                 dma_cb_bg = Colors.cb_bg(cb_idx)
-                                remark = f"waiting for DMA @ line {barrier_line} ({barrier_kernel})"
+                                remark = f"waiting for {label} @ line {barrier_line} ({barrier_kernel})"
                                 if dma_cb_bg:
                                     remark = f"{dma_cb_bg}{remark}{Colors.RESET}"
                                 is_last = producer_cb_idx is None
@@ -406,9 +406,9 @@ def print_profile_report(
 
                         # Show DMA attribution for consumer (cb_wait) with CB background color
                         if consumer_dma_info:
-                            barrier_kernel, barrier_line, cb_idx = consumer_dma_info
+                            barrier_kernel, barrier_line, cb_idx, label = consumer_dma_info
                             dma_cb_bg = Colors.cb_bg(cb_idx)
-                            remark = f"waiting for DMA @ line {barrier_line} ({barrier_kernel})"
+                            remark = f"waiting for {label} @ line {barrier_line} ({barrier_kernel})"
                             if dma_cb_bg:
                                 remark = f"{dma_cb_bg}{remark}{Colors.RESET}"
                             is_last = producer_cb_idx is None
@@ -461,9 +461,9 @@ def print_profile_report(
                         if consumer_dma_info or producer_cb_idx is not None:
                             indent = 27 + len(source_line)
                             if consumer_dma_info:
-                                barrier_kernel, barrier_line, cb_idx = consumer_dma_info
+                                barrier_kernel, barrier_line, cb_idx, label = consumer_dma_info
                                 dma_cb_bg = Colors.cb_bg(cb_idx)
-                                remark = f"waiting for DMA @ line {barrier_line} ({barrier_kernel})"
+                                remark = f"waiting for {label} @ line {barrier_line} ({barrier_kernel})"
                                 if dma_cb_bg:
                                     remark = f"{dma_cb_bg}{remark}{Colors.RESET}"
                                 is_last = producer_cb_idx is None
@@ -503,9 +503,8 @@ def print_profile_report(
         )
     print()
 
-    # Roofline model visualization
-    # Subtract synchronization wait cycles (cb_wait, cb_reserve) from compute
-    # threads. These ops block waiting for DM and don't represent compute work.
+    # Roofline: subtract sync waits (cb_wait, cb_reserve) from all threads
+    # to isolate actual work cycles.
     _SYNC_OPS = {"cb_wait", "cb_reserve"}
     thread_sync_cycles = defaultdict(int)
     for r in results:
@@ -514,44 +513,73 @@ def print_profile_report(
 
     dm_threads = ["NCRISC", "BRISC"]
     compute_threads = ["TRISC_0", "TRISC_1", "TRISC_2"]
+    active_threads = [t for t in sorted_threads if thread_cycles.get(t, 0) > 0]
 
-    memory_cycles = max((thread_cycles.get(t, 0) for t in dm_threads), default=0)
-    compute_work = {
-        t: thread_cycles.get(t, 0) - thread_sync_cycles.get(t, 0)
-        for t in compute_threads
-    }
-    compute_cycles = max(compute_work.values(), default=0)
+    if active_threads:
+        print("ROOFLINE ANALYSIS")
+        print("=" * 100)
+        print(f"  {'Thread':<12} {'Total':>10}   - {'Sync Waits':>10}   = {'Work':>10}")
+        print(f"  {'-'*12} {'-'*10}   - {'-'*10}   = {'-'*10}")
 
-    if memory_cycles > 0 or compute_cycles > 0:
-        total_bottleneck = memory_cycles + compute_cycles
-        # Position on roofline: 0 = compute bound, 1 = memory bound, 0.5 = balanced
-        memory_ratio = memory_cycles / total_bottleneck if total_bottleneck > 0 else 0.5
-
-        # Determine bound type and percentage
-        if memory_cycles > compute_cycles:
-            bound_type = "memory"
-            bound_pct = 100 * (memory_cycles - compute_cycles) / memory_cycles
-        elif compute_cycles > memory_cycles:
-            bound_type = "compute"
-            bound_pct = 100 * (compute_cycles - memory_cycles) / compute_cycles
-        else:
-            bound_type = "balanced"
-            bound_pct = 0
-
-        # Draw ASCII roofline (40 chars wide)
-        roof_width = 40
-        marker_pos = int(memory_ratio * (roof_width - 1))
-        roof_line = "─" * marker_pos + "●" + "─" * (roof_width - 1 - marker_pos)
-
-        if bound_type == "balanced":
-            print(f"  Perfectly balanced!")
-        else:
-            print(f"  {bound_pct:.0f}% {bound_type} bound")
-        print(f"  Compute ├{roof_line}┤ Memory")
-        print(
-            f"          {compute_cycles:,} cycles{' ' * (roof_width - 12)}{memory_cycles:,} cycles"
-        )
+        thread_work = {}
+        for thread in active_threads:
+            total = thread_cycles.get(thread, 0)
+            sync = thread_sync_cycles.get(thread, 0)
+            work = total - sync
+            thread_work[thread] = work
+            print(
+                f"  {thread:<12} {total:>10,}   - {sync:>10,}   = {work:>10,}"
+            )
         print()
+
+        active_dm = [t for t in dm_threads if t in thread_work]
+        active_compute = [t for t in compute_threads if t in thread_work]
+
+        memory_best = max(active_dm, key=lambda t: thread_work[t]) if active_dm else None
+        compute_best = max(active_compute, key=lambda t: thread_work[t]) if active_compute else None
+
+        memory_cycles = thread_work.get(memory_best, 0) if memory_best else 0
+        compute_cycles = thread_work.get(compute_best, 0) if compute_best else 0
+
+        if memory_cycles > 0 or compute_cycles > 0:
+            if memory_best:
+                print(f"  Memory:  {memory_cycles:>10,} cycles  ({memory_best})")
+            if compute_best:
+                print(f"  Compute: {compute_cycles:>10,} cycles  ({compute_best})")
+            print()
+
+            total_bottleneck = memory_cycles + compute_cycles
+            memory_ratio = (
+                memory_cycles / total_bottleneck if total_bottleneck > 0 else 0.5
+            )
+
+            if memory_cycles > compute_cycles:
+                bound_type = "memory"
+                bound_pct = 100 * (memory_cycles - compute_cycles) / memory_cycles
+            elif compute_cycles > memory_cycles:
+                bound_type = "compute"
+                bound_pct = 100 * (compute_cycles - memory_cycles) / compute_cycles
+            else:
+                bound_type = "balanced"
+                bound_pct = 0
+
+            roof_width = 40
+            marker_pos = int(memory_ratio * (roof_width - 1))
+            roof_line = (
+                "─" * marker_pos + "●" + "─" * (roof_width - 1 - marker_pos)
+            )
+
+            if bound_type == "balanced":
+                print(f"  Perfectly balanced!")
+            else:
+                print(f"  {bound_pct:.0f}% {bound_type} bound")
+            print(f"  Compute ├{roof_line}┤ Memory")
+            print(
+                f"          {compute_cycles:,} cycles"
+                f"{' ' * (roof_width - 12)}"
+                f"{memory_cycles:,} cycles"
+            )
+            print()
 
     print("=" * 100)
     print()
@@ -577,14 +605,16 @@ def load_cb_flow_graph(csv_path: Path) -> Optional[Dict]:
 
 def build_cb_wait_to_dma_map(
     cb_flow: Optional[Dict],
-) -> Dict[Tuple[str, int], Tuple[str, int, int]]:
-    """Build mapping from cb_wait locations to DMA barrier locations.
+) -> Dict[Tuple[str, int], Tuple[str, int, int, str]]:
+    """Build mapping from cb_wait locations to their barrier sources.
 
-    Only maps consumers waiting for DMA reads (data flowing into CB).
-    cb_wait ops waiting for compute output (where DMA is a write) are not mapped.
+    For read-direction CBs (DMA reads into CB, compute consumes):
+      compute's cb_wait -> DMA read barrier with label "DMA"
+    For write-direction CBs (compute produces, DMA writes from CB):
+      DM write's cb_wait -> compute producer with label "compute"
 
     Returns:
-        Dict mapping (kernel, line) of cb_wait -> (barrier_kernel, barrier_line, cb_index)
+        Dict mapping (kernel, line) -> (source_kernel, source_line, cb_index, label)
     """
     if not cb_flow:
         return {}
@@ -593,26 +623,47 @@ def build_cb_wait_to_dma_map(
     for cb_info in cb_flow.get("circular_buffers", []):
         cb_index = cb_info.get("cb_index", -1)
 
-        # Only consider DMA read barriers (data flowing INTO CB)
+        # Read direction: DMA reads into CB, compute consumes via cb_wait
         read_barriers = [
             op for op in cb_info.get("wait_ops", []) if op.get("direction") == "read"
         ]
-        if not read_barriers:
+        if read_barriers:
+            barrier_op = read_barriers[0]
+            barrier_kernel = barrier_op.get("kernel", "")
+            barrier_line = barrier_op.get("line", -1)
+
+            for consumer in cb_info.get("consumers", []):
+                consumer_kernel = consumer.get("kernel", "")
+                consumer_line = consumer.get("line", -1)
+                if consumer_line > 0:
+                    result[(consumer_kernel, consumer_line)] = (
+                        barrier_kernel,
+                        barrier_line,
+                        cb_index,
+                        "DMA",
+                    )
             continue
 
-        barrier_op = read_barriers[0]
-        barrier_kernel = barrier_op.get("kernel", "")
-        barrier_line = barrier_op.get("line", -1)
-
-        for consumer in cb_info.get("consumers", []):
-            consumer_kernel = consumer.get("kernel", "")
-            consumer_line = consumer.get("line", -1)
-            if consumer_line > 0:
-                result[(consumer_kernel, consumer_line)] = (
-                    barrier_kernel,
-                    barrier_line,
-                    cb_index,
-                )
+        # Write direction: compute produces, DM writes from CB via cb_wait
+        write_dma = [
+            op for op in cb_info.get("dma_ops", []) if op.get("direction") == "write"
+        ]
+        if write_dma:
+            producers = cb_info.get("producers", [])
+            if producers:
+                producer = producers[0]
+                producer_kernel = producer.get("kernel", "")
+                producer_line = producer.get("line", -1)
+                for consumer in cb_info.get("consumers", []):
+                    consumer_kernel = consumer.get("kernel", "")
+                    consumer_line = consumer.get("line", -1)
+                    if consumer_line > 0:
+                        result[(consumer_kernel, consumer_line)] = (
+                            producer_kernel,
+                            producer_line,
+                            cb_index,
+                            "compute",
+                        )
 
     return result
 
