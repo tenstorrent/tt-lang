@@ -323,7 +323,8 @@ types.
 | Broadcast | `CBInput` | CB | 0 | 1 |
 | Reduce | `CBInput` + `Accumulating` | CB (input + scaler) | 0 | 1 |
 | Matmul | `CBInput` + `Accumulating` | CB (A + B) | 0 | 1 |
-| Transpose | `CBInput` | CB | 0 | 1 |
+| Transpose (CB) | `CBInput` | CB | 0 | 1 |
+| Transpose (DST) | `DSTInputs` + `InPlace` | DST | 0 (in-place) | 0 (overwrites) |
 
 FPU binary ops consume 0 DST input slots. For `exp(a + b)`, the FPU add
 reads from CBs and writes to DST; the SFPU exp operates in-place. The

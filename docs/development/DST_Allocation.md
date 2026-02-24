@@ -104,6 +104,34 @@ accumulates the matrix product into a fresh DST slot:
   be called multiple times per kernel to re-enter matmul mode after
   other operations.
 
+**Transpose (CB → DST)** (`transpose_wh_tile`) reads a tile from a CB,
+transposes width and height dimensions (B[w,h] = A[h,w]), and writes
+the result to a fresh DST slot:
+- Input stays in CB (`TTLCBInputTileOpTrait`)
+- Output gets a fresh DST slot (not in-place)
+- `inputs_footprint = 0`
+- **Init constraint**: `transpose_wh_init(icb, ocb)` performs a full
+  init (configures UNPACK + MATH + PACK). `transpose_wh_init_short(icb)`
+  reconfigures UNPACK + MATH only (for switching from another op).
+  `transpose_wh_uninit(icb, ocb)` must be called after the last
+  transpose before re-initializing for another operation.
+- **Int32 path**: For int32 data, the hardware uses a different code
+  path internally: `copy_tile_to_dst` with `UnpackToDestEn` followed by
+  `transpose_dest` (an in-place DST transpose). For non-int32 data, the
+  transpose is performed during unpack via the XY transpose flag.
+
+**Transpose (in-place DST)** (`transpose_wh_dest`) transposes a tile
+already in a DST register in-place (B[w,h] = A[h,w]):
+- Output reuses the input's DST slot
+- No additional DST allocation needed
+- `inputs_footprint = 0` for standalone transpose
+- **Init**: `transpose_wh_dest_init_short()` takes no arguments
+  (configures MATH only).
+- **Note**: Present in tt-metal (`compute_kernel_api/transpose_wh_dest.h`)
+  but not yet modeled in the TTKernel dialect. Will need TTKernel ops
+  (`transpose_wh_dest`, `transpose_wh_dest_init_short`) and a TTL op
+  before it can be used in the compiler pipeline.
+
 The following table summarizes DST slot requirements per category:
 
 | Category | Input Source | DST Input Slots | DST Output Slots | In-Place | Accumulates |
@@ -115,6 +143,8 @@ The following table summarizes DST slot requirements per category:
 | Broadcast | CB | 0 | 1 (fresh) | No | No |
 | Reduce | CB (input + scaler) | 0 | 1 (fresh) | No | Yes (reduction dim) |
 | Matmul | CB (A + B) | 0 | 1 (fresh) | No | Yes (K dim) |
+| Transpose (CB) | CB | 0 | 1 (fresh) | No | No |
+| Transpose (DST) | DST | 0 | 0 (overwrites input) | Yes | No |
 
 ### Operation Category Traits
 
@@ -141,6 +171,8 @@ Each operation category is uniquely identified by its trait combination:
 | Broadcast | | x | | |
 | Reduce | | x | | x |
 | Matmul | | x | | x |
+| Transpose (CB) | | x | | |
+| Transpose (DST) | x | | x | |
 
 The allocator queries these traits compositionally:
 - `hasTrait<TTLCBInputTileOpTrait>()` -> operand stays in CB (no DST
