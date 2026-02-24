@@ -64,35 +64,39 @@ def signpost_test_kernel(inp, out):
 # CHECK: #include "tools/profiler/kernel_profiler.hpp"
 # CHECK: void kernel_main()
 
-# Check for cb_wait signpost (scoped around the operation)
-# CHECK: DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_wait")
+# Check for cb_wait signpost (explicit DFB operation)
+# CHECK: DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_wait_before")
 # CHECK: cb_wait_front(
+# CHECK: DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_wait_after")
 
-# Check for cb_reserve signpost (scoped around the operation)
-# CHECK: DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_reserve")
+# Check for cb_reserve signpost (explicit DFB operation)
+# CHECK: DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_reserve_before")
 # CHECK: cb_reserve_back(
+# CHECK: DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_reserve_after")
 
 # Check for implicit cb_push signpost (from 'with' exit)
-# CHECK: DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_push")
+# CHECK: DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_push_before")
 # CHECK: cb_push_back(
+# CHECK: DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_push_after")
 
 # Check for implicit cb_pop signpost (from 'with' exit)
-# CHECK: DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_pop")
+# CHECK: DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_pop_before")
 # CHECK: cb_pop_front(
+# CHECK: DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_pop_after")
 
 # Check dm_read kernel has signposts
 # CHECK: === dm_read kernel written to
 # CHECK: // dm_read
 # CHECK: #include "tools/profiler/kernel_profiler.hpp"
 # CHECK: void kernel_main()
-# CHECK: DeviceZoneScopedN("dm_read_L{{[0-9]+}}_cb_reserve")
+# CHECK: DeviceZoneScopedN("dm_read_L{{[0-9]+}}_cb_reserve_before")
 
 # Check dm_write kernel has signposts
 # CHECK: === dm_write kernel written to
 # CHECK: // dm_write
 # CHECK: #include "tools/profiler/kernel_profiler.hpp"
 # CHECK: void kernel_main()
-# CHECK: DeviceZoneScopedN("dm_write_L{{[0-9]+}}_cb_wait")
+# CHECK: DeviceZoneScopedN("dm_write_L{{[0-9]+}}_cb_wait_before")
 
 
 if __name__ == "__main__":
