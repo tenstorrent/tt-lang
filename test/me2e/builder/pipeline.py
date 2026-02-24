@@ -70,7 +70,7 @@ def compile_ttl_to_ttkernel(
         # TTL to TTKernel conversion (module-level pass).
         f"convert-ttl-to-ttkernel,"
         # Insert minimal init ops before compute ops.
-        f"ttkernel-consolidate-inits,"
+        f"ttkernel-insert-inits,"
         f"canonicalize,"
         f"cse,"
         # Lower to EmitC.

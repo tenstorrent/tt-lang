@@ -142,7 +142,7 @@ def TTLInsertTileRegsSync
 
     This pass only inserts sync ops. Common init ops (init_sfpu,
     binary_op_init_common) and per-op init ops are inserted by the
-    ttkernel-consolidate-inits pass after conversion to TTKernel.
+    ttkernel-insert-inits pass after conversion to TTKernel.
   }];
 
   let dependentDialects = [
@@ -221,7 +221,7 @@ def TTLScheduleOperations
   let description = [{
     Reorders TTL tile operations within sync regions (acquire -> commit)
     to group by operation kind. This enables init consolidation in the
-    subsequent ttkernel-consolidate-inits pass.
+    subsequent ttkernel-insert-inits pass.
 
     Within each sync region, tile ops are sorted by category:
     CopyTile < Bcast < FPUBinary < SFPUUnary < SFPUBinary < CopyDst.
@@ -231,8 +231,8 @@ def TTLScheduleOperations
   let dependentDialects = [];
 }
 
-def TTKernelConsolidateInits
-    : Pass<"ttkernel-consolidate-inits", "::mlir::ModuleOp"> {
+def TTKernelInsertInits
+    : Pass<"ttkernel-insert-inits", "::mlir::ModuleOp"> {
   let summary = "Insert minimal init ops before TTKernel compute ops";
   let description = [{
     Single source of truth for all init ops. Inserts both common inits

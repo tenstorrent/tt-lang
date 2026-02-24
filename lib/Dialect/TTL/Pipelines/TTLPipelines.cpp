@@ -40,9 +40,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   pm.addPass(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLConvertTTLToTTKernel());
-  if (options.consolidateInits) {
-    pm.addPass(createTTKernelConsolidateInits());
-  }
+  pm.addPass(createTTKernelInsertInits());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
   if (options.lowerToEmitC) {

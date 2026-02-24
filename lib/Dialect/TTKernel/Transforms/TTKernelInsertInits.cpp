@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //===----------------------------------------------------------------------===//
-// TTKernel Init Consolidation Pass
+// TTKernel Insert Inits Pass
 //===----------------------------------------------------------------------===//
 //
 // Single source of truth for all init ops in the TTKernel pipeline.
@@ -42,13 +42,13 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 
-#define DEBUG_TYPE "ttkernel-consolidate-inits"
+#define DEBUG_TYPE "ttkernel-insert-inits"
 
 namespace mlir::tt::ttl {
 
 namespace ttk = mlir::tt::ttkernel;
 
-#define GEN_PASS_DEF_TTKERNELCONSOLIDATEINITS
+#define GEN_PASS_DEF_TTKERNELINSERTINITS
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
@@ -306,8 +306,8 @@ static void insertCommonInits(ModuleOp moduleOp) {
 // Pass implementation
 //===----------------------------------------------------------------------===//
 
-struct TTKernelConsolidateInitsPass
-    : public impl::TTKernelConsolidateInitsBase<TTKernelConsolidateInitsPass> {
+struct TTKernelInsertInitsPass
+    : public impl::TTKernelInsertInitsBase<TTKernelInsertInitsPass> {
 
   void runOnOperation() override {
     auto moduleOp = getOperation();

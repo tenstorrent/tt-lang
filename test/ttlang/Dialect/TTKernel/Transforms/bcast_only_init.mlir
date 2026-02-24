@@ -3,7 +3,7 @@
 // for unary_bcast_init from pack_tile. Without this, the init is silently
 // skipped and the bcast produces incorrect results.
 
-// RUN: ttlang-opt %s --ttkernel-consolidate-inits | FileCheck %s
+// RUN: ttlang-opt %s --ttkernel-insert-inits | FileCheck %s
 
 // CHECK-LABEL: func.func @bcast_only
 // CHECK-DAG: %[[IN_CB:.*]] = ttkernel.get_compile_time_arg_val(0)

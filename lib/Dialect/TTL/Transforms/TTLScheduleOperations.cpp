@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 //
 // Reorders tile operations within sync regions (acquire -> commit) to group by
-// operation kind. This enables init consolidation in the subsequent
-// convert-ttl-to-ttkernel + ttkernel-consolidate-inits passes.
+// operation kind. This enables init insertion in the subsequent
+// convert-ttl-to-ttkernel + ttkernel-insert-inits passes.
 //
 // After lower-to-loops unrolls tile loops for DST maximization, each tile
 // iteration produces interleaved ops of different kinds:

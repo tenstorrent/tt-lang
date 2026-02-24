@@ -1,7 +1,7 @@
-// RUN: ttlang-opt --convert-ttl-to-ttkernel --ttkernel-consolidate-inits %s | FileCheck %s
-// RUN: ttlang-opt --ttkernel-consolidate-inits %s | FileCheck %s --check-prefix=FPU
-// RUN: ttlang-opt --ttkernel-consolidate-inits %s | FileCheck %s --check-prefix=COMMON
-// Summary: Tests for ttkernel-consolidate-inits pass.
+// RUN: ttlang-opt --convert-ttl-to-ttkernel --ttkernel-insert-inits %s | FileCheck %s
+// RUN: ttlang-opt --ttkernel-insert-inits %s | FileCheck %s --check-prefix=FPU
+// RUN: ttlang-opt --ttkernel-insert-inits %s | FileCheck %s --check-prefix=COMMON
+// Summary: Tests for ttkernel-insert-inits pass.
 //
 // Phase 1 (common init): Inserts init_sfpu or binary_op_init_common before
 // each sync region (tile_regs_acquire ... tile_regs_release).
@@ -95,7 +95,7 @@ func.func @mixed_binary(
 }
 
 // Test 5: FPU binary ops (add_tiles, mul_tiles) -> one init per group
-// Uses TTKernel ops directly (second RUN line with --ttkernel-consolidate-inits only).
+// Uses TTKernel ops directly (second RUN line with --ttkernel-insert-inits only).
 // 2 add_tiles then 2 mul_tiles -> 1 add_tiles_init + 1 mul_tiles_init
 // FPU-LABEL: func.func @fpu_binary_consolidation
 // FPU-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)

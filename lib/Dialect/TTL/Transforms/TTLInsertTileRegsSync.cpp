@@ -12,7 +12,7 @@
 //
 // This pass only inserts sync ops (acquire/commit/wait/release). Common init
 // ops (init_sfpu, binary_op_init_common) and per-op init ops are inserted
-// later by the ttkernel-consolidate-inits pass after conversion to TTKernel.
+// later by the ttkernel-insert-inits pass after conversion to TTKernel.
 //
 // Two modes of sync placement:
 //

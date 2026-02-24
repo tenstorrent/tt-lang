@@ -1,6 +1,6 @@
 // Tests for init_binary: parse/print roundtrip and sync insertion behavior.
 // Verifies init_binary parses correctly and that TTLInsertTileRegsSync does
-// NOT emit init ops (init ops are handled by ttkernel-consolidate-inits).
+// NOT emit init ops (init ops are handled by ttkernel-insert-inits).
 //
 // Parse/print roundtrip:
 // RUN: ttlang-opt %s --split-input-file | FileCheck %s --check-prefix=PARSE

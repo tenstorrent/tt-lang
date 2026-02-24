@@ -43,7 +43,7 @@ file responsible.
 | 10 | Integrated unrolling in lower-to-loops | Done | `ConvertTTLComputeToSCF.cpp` |
 | 11 | Subblock-level synchronization insertion | Done | `TTLInsertTileRegsSync.cpp` |
 | 12 | Operation grouping (by-kind scheduling) | Done | `TTLScheduleOperations.cpp` |
-| 13 | Init consolidation | Done | `TTKernelConsolidateInits.cpp` |
+| 13 | Init insertion | Done | `TTKernelInsertInits.cpp` |
 | 14 | DST spilling (CB-based) | Not started | — |
 
 Components 1-13 are implemented on the `bnorris/max-dst` branch.
@@ -67,7 +67,7 @@ lower-to-loops              ← unrolled emit for inner subblock [10]
 schedule-operations         ← group by kind, place commit/wait [12]
 annotate-cb-associations
 convert-ttl-to-ttkernel     ← [5, 6]
-ttkernel-consolidate-inits  ← one init per consecutive group [13]
+ttkernel-insert-inits       ← one init per consecutive group [13]
 canonicalize, cse
 ```
 
@@ -483,9 +483,9 @@ Full-init operations (broadcast `unary_bcast_init`, reduce
 `reduce_init`) configure UNPACK + MATH + PACK and must appear before
 any short-init operations to avoid clobbering PACK configuration.
 
-`TTKernelConsolidateInits` is the single source of truth for all init
-ops. The conversion pass does not emit init ops; the consolidation pass
-inserts them in two phases:
+`TTKernelInsertInits` is the single source of truth for all init
+ops. The conversion pass does not emit init ops; this pass inserts
+them in two phases:
 
 - **Phase 1 (common inits)**: For each sync region
   (`tile_regs_acquire` ... `tile_regs_release`), inserts
@@ -553,7 +553,7 @@ pipeline option to gate the optimization passes.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `maximize-dst` | true | Enable subblock partitioning and operation scheduling |
-| `consolidate-inits` | true | Enable init consolidation (one init per compute op group) |
+| ~~`consolidate-inits`~~ | ~~true~~ | ~~Removed: init insertion is now unconditional~~ |
 | `enable-fpu-binary-ops` | true | Use FPU execution for binary add/sub/mul when both operands are CB-backed |
 | `lower-to-emitc` | false | Lower TTKernel to EmitC (for C++ translation) |
 
@@ -562,7 +562,7 @@ Python API equivalents (`CompilerOptions` in `ttl_api.py`):
 | Python option | CLI flag | Pipeline option |
 |---------------|----------|-----------------|
 | `maximize_dst` | `--no-maximize-dst` | `maximize-dst=0` |
-| `consolidate_inits` | `--no-consolidate-inits` | `consolidate-inits=0` |
+| ~~`consolidate_inits`~~ | ~~removed~~ | ~~removed~~ |
 | `enable_fpu_binary_ops` | `--no-fpu-binary-ops` | `enable-fpu-binary-ops=0` |
 
 Environment variable: `TTLANG_COMPILER_OPTIONS` (space-separated flags).
@@ -588,7 +588,7 @@ insert-tile-regs-sync       ← per-tile sync (baseline behavior)
 lower-to-loops
 annotate-cb-associations
 convert-ttl-to-ttkernel
-ttkernel-consolidate-inits  ← still runs if consolidate-inits=true
+ttkernel-insert-inits
 ```
 
 No `subblock-compute-for-dst` or `schedule-operations`. Each tile gets
@@ -633,7 +633,7 @@ they invoke passes directly, not through the pipeline.
 5. `schedule-operations` runs after `lower-to-loops` because it
    reorders individual tile ops (not `ttl.compute` ops). It operates
    within the sync region established by `insert-tile-regs-sync`.
-6. `ttkernel-consolidate-inits` runs after `convert-ttl-to-ttkernel`
+6. `ttkernel-insert-inits` runs after `convert-ttl-to-ttkernel`
    because it operates on TTKernel ops, not TTL ops. Scheduling
    (component 12) must have already grouped same-kind ops for
    consolidation to be maximally effective.

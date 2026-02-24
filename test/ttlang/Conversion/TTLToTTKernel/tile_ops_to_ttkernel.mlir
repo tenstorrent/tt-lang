@@ -1,9 +1,9 @@
-// RUN: ttlang-opt --convert-ttl-to-ttkernel --ttkernel-consolidate-inits %s | FileCheck %s
+// RUN: ttlang-opt --convert-ttl-to-ttkernel --ttkernel-insert-inits %s | FileCheck %s
 // Summary: Tests for ttl.tile_* op lowering to TTKernel with init consolidation.
 //
 // This tests the tile op patterns followed by init consolidation. The
 // convert-ttl-to-ttkernel pass emits compute ops without inits, then
-// ttkernel-consolidate-inits inserts the minimal set of init ops.
+// ttkernel-insert-inits inserts the minimal set of init ops.
 //
 // TODO(#124): Add DST lifecycle wrapper tests once full pipeline is integrated.
 

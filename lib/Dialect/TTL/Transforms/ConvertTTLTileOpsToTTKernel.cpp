@@ -275,7 +275,7 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
     int64_t dstIdx = dstIdxAttr.getInt();
     Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
 
-    // Emit compute op (init inserted by ttkernel-consolidate-inits pass).
+    // Emit compute op (init inserted by ttkernel-insert-inits pass).
     rewriter.create<TTKernelComputeOp>(loc, dstIdxVal);
 
     // Replace all uses with a placeholder (the value is now in DST register)
@@ -330,7 +330,7 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
     Value src1 = rewriter.create<arith::ConstantIndexOp>(loc, src1Idx);
     Value odst = rewriter.create<arith::ConstantIndexOp>(loc, odstIdx);
 
-    // Emit compute op (init inserted by ttkernel-consolidate-inits pass).
+    // Emit compute op (init inserted by ttkernel-insert-inits pass).
     rewriter.create<TTKernelComputeOp>(loc, src0, src1, odst);
 
     rewriter.replaceOp(op, adaptor.getLhs());
@@ -371,7 +371,7 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
     Value dst0 = rewriter.create<arith::ConstantIndexOp>(loc, dst0Idx);
     Value dst1 = rewriter.create<arith::ConstantIndexOp>(loc, dst1Idx);
 
-    // Emit compute op (init inserted by ttkernel-consolidate-inits pass).
+    // Emit compute op (init inserted by ttkernel-insert-inits pass).
     rewriter.create<TTKernelComputeOp>(loc, dst0, dst1, dst0);
 
     rewriter.replaceOp(op, adaptor.getLhs());
@@ -429,7 +429,7 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
       return failure();
     }
 
-    // Emit compute op (init inserted by ttkernel-consolidate-inits pass).
+    // Emit compute op (init inserted by ttkernel-insert-inits pass).
     rewriter.create<TTKernelComputeOp>(loc, *lhsCB, *rhsCB, *cbIdx, *cbIdx,
                                        dstIdx);
 
@@ -482,7 +482,7 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
     }
 
     // Emit the copy from CB[src_index] to DST[dst_index]
-    // (init inserted by ttkernel-consolidate-inits pass).
+    // (init inserted by ttkernel-insert-inits pass).
     rewriter.create<ttk::CopyTileOp>(loc, cb, adaptor.getSrcIndex(),
                                      adaptor.getDstIndex());
 
@@ -532,7 +532,7 @@ struct TTLCopyDstToTTKernel : OpConversionPattern<CopyDstOp> {
     Value srcIdx = rewriter.create<arith::ConstantIndexOp>(loc, *srcDstIdx);
     Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstDstIdx);
 
-    // Emit copy_dest_values (init inserted by ttkernel-consolidate-inits pass).
+    // Emit copy_dest_values (init inserted by ttkernel-insert-inits pass).
     // copy_dest_values(dst0, dst1) copies DST[dst1] -> DST[dst0].
     rewriter.create<ttk::CopyDestValuesOp>(loc, dstIdx, srcIdx);
 
@@ -744,7 +744,7 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
 
     auto ttkAttr = convertBcastType(op.getBcastType());
 
-    // Emit compute op (init inserted by ttkernel-consolidate-inits pass).
+    // Emit compute op (init inserted by ttkernel-insert-inits pass).
     rewriter.create<ttk::UnaryBcastTileOp>(loc, *inCB, inCBIdx, dstIdx,
                                            ttkAttr);
 

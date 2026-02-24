@@ -3,11 +3,11 @@
 // compute where the FPU binary uses inputs 0 and 2 (skipping 1) verifies
 // that binary_op_init_common references the correct CBs.
 //
-// The common init is now emitted by ttkernel-consolidate-inits (not the sync
+// The common init is now emitted by ttkernel-insert-inits (not the sync
 // pass), so this test runs the full pipeline through conversion.
 
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-consolidate-inits, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
