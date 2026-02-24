@@ -136,9 +136,7 @@ def parse_kernel_durations(
     _KERNEL_ZONES = {"BRISC-KERNEL", "NCRISC-KERNEL", "TRISC-KERNEL"}
 
     zone_starts: Dict[Tuple[int, str, int, int], int] = {}
-    durations: Dict[int, Dict[str, List[int]]] = defaultdict(
-        lambda: defaultdict(list)
-    )
+    durations: Dict[int, Dict[str, List[int]]] = defaultdict(lambda: defaultdict(list))
 
     with open(csv_path) as f:
         # Skip the two header lines (arch info + column names)
@@ -492,6 +490,7 @@ def run(
         ]:
             if json_durs and csv_durs and sorted(json_durs) != sorted(csv_durs):
                 import sys
+
                 print(
                     f"[noc_summary] WARNING: {label} durations differ for "
                     f"program {summary.program_id}: "

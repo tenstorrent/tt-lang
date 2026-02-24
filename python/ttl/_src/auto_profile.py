@@ -345,7 +345,9 @@ def print_profile_report(
                         if consumer_dma_info or producer_cb_idx is not None:
                             indent = 27 + len(source_line)
                             if consumer_dma_info:
-                                barrier_kernel, barrier_line, cb_idx, label = consumer_dma_info
+                                barrier_kernel, barrier_line, cb_idx, label = (
+                                    consumer_dma_info
+                                )
                                 dma_cb_bg = Colors.cb_bg(cb_idx)
                                 remark = f"waiting for {label} @ line {barrier_line} ({barrier_kernel})"
                                 if dma_cb_bg:
@@ -406,7 +408,9 @@ def print_profile_report(
 
                         # Show DMA attribution for consumer (cb_wait) with CB background color
                         if consumer_dma_info:
-                            barrier_kernel, barrier_line, cb_idx, label = consumer_dma_info
+                            barrier_kernel, barrier_line, cb_idx, label = (
+                                consumer_dma_info
+                            )
                             dma_cb_bg = Colors.cb_bg(cb_idx)
                             remark = f"waiting for {label} @ line {barrier_line} ({barrier_kernel})"
                             if dma_cb_bg:
@@ -461,7 +465,9 @@ def print_profile_report(
                         if consumer_dma_info or producer_cb_idx is not None:
                             indent = 27 + len(source_line)
                             if consumer_dma_info:
-                                barrier_kernel, barrier_line, cb_idx, label = consumer_dma_info
+                                barrier_kernel, barrier_line, cb_idx, label = (
+                                    consumer_dma_info
+                                )
                                 dma_cb_bg = Colors.cb_bg(cb_idx)
                                 remark = f"waiting for {label} @ line {barrier_line} ({barrier_kernel})"
                                 if dma_cb_bg:
@@ -527,16 +533,20 @@ def print_profile_report(
             sync = thread_sync_cycles.get(thread, 0)
             work = total - sync
             thread_work[thread] = work
-            print(
-                f"  {thread:<12} {total:>10,}   - {sync:>10,}   = {work:>10,}"
-            )
+            print(f"  {thread:<12} {total:>10,}   - {sync:>10,}   = {work:>10,}")
         print()
 
         active_dm = [t for t in dm_threads if t in thread_work]
         active_compute = [t for t in compute_threads if t in thread_work]
 
-        memory_best = max(active_dm, key=lambda t: thread_work[t]) if active_dm else None
-        compute_best = max(active_compute, key=lambda t: thread_work[t]) if active_compute else None
+        memory_best = (
+            max(active_dm, key=lambda t: thread_work[t]) if active_dm else None
+        )
+        compute_best = (
+            max(active_compute, key=lambda t: thread_work[t])
+            if active_compute
+            else None
+        )
 
         memory_cycles = thread_work.get(memory_best, 0) if memory_best else 0
         compute_cycles = thread_work.get(compute_best, 0) if compute_best else 0
@@ -565,9 +575,7 @@ def print_profile_report(
 
             roof_width = 40
             marker_pos = int(memory_ratio * (roof_width - 1))
-            roof_line = (
-                "─" * marker_pos + "●" + "─" * (roof_width - 1 - marker_pos)
-            )
+            roof_line = "─" * marker_pos + "●" + "─" * (roof_width - 1 - marker_pos)
 
             if bound_type == "balanced":
                 print(f"  Perfectly balanced!")

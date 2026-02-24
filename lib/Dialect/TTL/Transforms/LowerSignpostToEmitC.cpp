@@ -26,13 +26,18 @@ static void createEmitCVerbatim(Location loc, StringRef value,
 
 // Check if an operation or any of its nested ops are in the ttkernel dialect.
 static bool containsTTKernelOp(Operation *op) {
-  if (op->getDialect() && op->getDialect()->getNamespace() == "ttkernel")
+  if (op->getDialect() && op->getDialect()->getNamespace() == "ttkernel") {
     return true;
-  for (auto &region : op->getRegions())
-    for (auto &block : region)
-      for (auto &nested : block)
-        if (containsTTKernelOp(&nested))
+  }
+  for (auto &region : op->getRegions()) {
+    for (auto &block : region) {
+      for (auto &nested : block) {
+        if (containsTTKernelOp(&nested)) {
           return true;
+        }
+      }
+    }
+  }
   return false;
 }
 
@@ -49,11 +54,13 @@ static SignpostOp findMatchingAfter(SignpostOp beforeOp,
 
   for (auto *op = beforeOp->getNextNode(); op; op = op->getNextNode()) {
     if (auto signpost = dyn_cast<SignpostOp>(op)) {
-      if (signpost.getName() == afterName)
+      if (signpost.getName() == afterName) {
         return signpost;
+      }
     }
-    if (containsTTKernelOp(op))
+    if (containsTTKernelOp(op)) {
       hasInterestingOps = true;
+    }
   }
   return nullptr;
 }
@@ -79,8 +86,8 @@ struct SignpostLowering : OpConversionPattern<SignpostOp> {
       if (hasInterestingOps) {
         std::string baseName = name.drop_back(strlen("_before")).str();
         createEmitCVerbatim(loc, "{", rewriter);
-        createEmitCVerbatim(
-            loc, "DeviceZoneScopedN(\"" + baseName + "\");", rewriter);
+        createEmitCVerbatim(loc, "DeviceZoneScopedN(\"" + baseName + "\");",
+                            rewriter);
         keptAfterNames.insert(baseName);
       }
     } else if (name.ends_with("_after")) {
