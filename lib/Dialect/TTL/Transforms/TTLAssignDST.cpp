@@ -270,7 +270,9 @@ static SmallVector<Operation *> getSortedConsumers(Value v) {
 
 /// Check if any consumer is an in-place operation (overwrites DST input).
 static bool hasInPlaceConsumer(ArrayRef<Operation *> consumers) {
-  return llvm::any_of(consumers, [](Operation *op) { return isInPlaceOp(op); });
+  return llvm::any_of(consumers, [](Operation *op) {
+    return op->hasTrait<TTLInPlaceOpTrait>();
+  });
 }
 
 /// Phase 1: Insert copy operations for multi-consumer values where any
@@ -428,7 +430,7 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
   // must share the same DST index so the lowered instruction (e.g.,
   // exp_tile(dst_idx)) operates on the correct register.
   for (Operation &op : *body) {
-    if (!isInPlaceOp(&op)) {
+    if (!op.hasTrait<TTLInPlaceOpTrait>()) {
       continue;
     }
 

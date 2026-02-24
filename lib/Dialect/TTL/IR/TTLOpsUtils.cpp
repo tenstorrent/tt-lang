@@ -4,9 +4,6 @@
 
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelTraits.h"
-
 namespace mlir::tt::ttl {
 
 //===----------------------------------------------------------------------===//
@@ -23,6 +20,8 @@ TileOpCategory classifyTileOp(Operation *op) {
   if (isa<TileBcastOp>(op)) {
     return TileOpCategory::Bcast;
   }
+  // TODO: add TileOpCategory::Transpose case when TTL transpose op is added.
+
   // FPU binary: marked by kFPUBinaryAttrName attribute.
   if (op->hasAttr(kFPUBinaryAttrName)) {
     return TileOpCategory::FPUBinary;
@@ -34,33 +33,6 @@ TileOpCategory classifyTileOp(Operation *op) {
   // SFPU binary: tile binary ops that read both operands from DST.
   if (op->hasTrait<TTLTileBinaryOpTrait>()) {
     return TileOpCategory::SFPUBinary;
-  }
-  return TileOpCategory::Unknown;
-}
-
-TileOpCategory classifyTTKernelComputeOp(Operation *op) {
-  namespace ttk = mlir::tt::ttkernel;
-
-  if (isa<ttk::CopyTileOp>(op)) {
-    return TileOpCategory::CopyTile;
-  }
-  if (isa<ttk::CopyDestValuesOp>(op)) {
-    return TileOpCategory::CopyDst;
-  }
-  if (isa<ttk::UnaryBcastTileOp>(op)) {
-    return TileOpCategory::Bcast;
-  }
-  // FPU ops (add_tiles, sub_tiles, mul_tiles, matmul_tiles, etc.).
-  if (op->hasTrait<ttk::TTKernelFPUOpTrait>()) {
-    return TileOpCategory::FPUBinary;
-  }
-  // SFPU ops (exp_tile, add_binary_tile, etc.).
-  if (op->hasTrait<ttk::TTKernelSFPUOpTrait>()) {
-    // SFPU binary ops have TTKernelBinaryOpTrait.
-    if (op->hasTrait<ttk::TTKernelBinaryOpTrait>()) {
-      return TileOpCategory::SFPUBinary;
-    }
-    return TileOpCategory::SFPUUnary;
   }
   return TileOpCategory::Unknown;
 }

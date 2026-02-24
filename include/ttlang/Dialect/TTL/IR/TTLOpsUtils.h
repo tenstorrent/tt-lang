@@ -98,26 +98,6 @@ inline bool isTileBinaryOp(mlir::Operation *op) {
   return op->hasTrait<TTLTileBinaryOpTrait>();
 }
 
-/// Check if an operation consumes at least one operand from DST.
-inline bool isDSTInputOp(mlir::Operation *op) {
-  return op->hasTrait<TTLDSTInputsTrait>();
-}
-
-/// Check if an operation overwrites its DST input in-place.
-inline bool isInPlaceOp(mlir::Operation *op) {
-  return op->hasTrait<TTLInPlaceOpTrait>();
-}
-
-/// Check if an operation accumulates across invocations.
-inline bool isAccumulatingOp(mlir::Operation *op) {
-  return op->hasTrait<TTLAccumulatingOpTrait>();
-}
-
-/// Check if an operation carries an explicit output CB operand.
-inline bool isCBOutputOp(mlir::Operation *op) {
-  return op->hasTrait<TTLCBOutputTileOpTrait>();
-}
-
 /// Check if an operation reads inputs from CB at runtime, either by static
 /// trait (bcast, copy_tile) or by runtime FPU binary marking.
 inline bool isCBInputOp(mlir::Operation *op) {
@@ -182,20 +162,17 @@ void emitFusionFailureDiagnostics(mlir::Operation *op,
 enum class TileOpCategory : uint8_t {
   CopyTile = 0,   // CB -> DST copy (must precede all DST compute)
   Bcast = 1,      // CB -> DST with PACK config (full init)
-  FPUBinary = 2,  // CB -> DST FPU (UNPACK+MATH init)
-  SFPUUnary = 3,  // DST -> DST in-place (MATH-only init)
-  SFPUBinary = 4, // DST -> DST binary (MATH-only init)
-  CopyDst = 5,    // DST -> DST copy
+  Transpose = 2,  // CB -> DST transpose (full init, requires uninit)
+  FPUBinary = 3,  // CB -> DST FPU (UNPACK+MATH init)
+  SFPUUnary = 4,  // DST -> DST in-place (MATH-only init)
+  SFPUBinary = 5, // DST -> DST binary (MATH-only init)
+  CopyDst = 6,    // DST -> DST copy
   Unknown = 255
 };
 
 /// Classify a TTL tile op into its category.
 /// Uses TTL traits and attributes for O(1) per-call classification.
 TileOpCategory classifyTileOp(mlir::Operation *op);
-
-/// Classify a TTKernel compute op into its category.
-/// Uses TTKernel traits for O(1) per-call classification.
-TileOpCategory classifyTTKernelComputeOp(mlir::Operation *op);
 
 /// Find the first operation of type OpTy in the block preceding the given
 /// operation. Scans backwards from the operation, stopping at block start or

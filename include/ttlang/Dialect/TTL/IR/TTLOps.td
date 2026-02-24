@@ -617,12 +617,13 @@ def TTL_BcastOp : TTL_Op<"bcast", []> {
   let assemblyFormat = "$input `,` $output $bcast_type attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
 }
 
-def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait, TTL_CBOutputTileOpTrait]> {
+def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait]> {
   let summary = "Tile-level broadcast operation";
   let description = [{
     Broadcasts a row, column, or scalar tile into a full 32x32 tile.
     Maps to ttkernel.unary_bcast_init + ttkernel.unary_bcast.
-    Reads directly from circular buffer (not DST), writes to DST.
+    Reads input from CB, writes result to DST. The output operand carries
+    the output CB for init-time PACK configuration only.
   }];
   let arguments = (ins AnyType:$input, AnyType:$output, TTL_BcastTypeAttr:$bcast_type);
   let results = (outs AnyType:$result);
