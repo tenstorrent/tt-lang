@@ -172,28 +172,33 @@ A *block* represents memory acquired from a dataflow buffer. Block size is deter
 
 ```py
 # ---------------------
-# Element-wise with broadcast: Y = sqrt(A^2 + B^2)
+# Element-wise with broadcast with two outputs: Y = sqrt(A^2 + B^2), Z = sqrt(A^2 - B^2)
 #
 # Tensor   Torch shape  Shape in tiles
 # A        N            NT
 # B        1            1
 # Y        N            NT
+# Z        N            NT
 #
 # NT = N // TILE_SIZE
 
 a_dfb = ttl.make_dataflow_buffer_like(A, shape = (1, ))
 b_dfb = ttl.make_dataflow_buffer_like(B, shape = (1, ))
 y_dfb = ttl.make_dataflow_buffer_like(Y, shape = (1, ))
+z_dfb = ttl.make_dataflow_buffer_like(Z, shape = (1, ))
 
 @ttl.datamovement()
 def elwise_read():
     for nt in range(NT):
+
         # acquire a_blk and b_blk from a_dfb and b_dfb:
+
         with (
             a_dfb.reserve() as a_blk,
-            b_dfb.reserve() as b_blk
+            b_dfb.reserve() as b_blk,
         ):
             # then copy:
+
             a_xf = ttl.copy(A[nt], a_blk)
             b_xf = ttl.copy(B[0], b_blk)
 
@@ -205,17 +210,25 @@ def elwise_read():
 @ttl.compute()
 def elwise_compute():
     for _ in range(NT):
-        # acquire a_blk, b_blk and y_blk from a_dfb, b_dfb and y_dfb:
+
+        # acquire a_blk, b_blk, y_blk and z_blk from a_dfb, b_dfb, y_dfb and z_dfb:
+
         with (
             a_dfb.wait() as a_blk,
             b_dfb.wait() as b_blk,
             y_dfb.reserve() as y_blk,
+            z_dfb.reserve() as z_blk,
         ):
-            # then compute y = sqrt(a^2 + b^2):
+            # then compute y = sqrt(a^2 + b^2) and z = sqrt(a^2 - b^2):
+
             a_squared = a_blk ** 2
             b_squared = b_blk ** 2
+
             y = ttl.math.sqrt(a_squared + ttl.math.broadcast(b_squared, dims=[0]))
+            z = ttl.math.sqrt(a_squared - ttl.math.broadcast(b_squared, dims=[0]))
+
             y_blk.store(y)
+            z_blk.store(z)
 
             # release a_blk, b_blk and y_blk
 
@@ -223,14 +236,22 @@ def elwise_compute():
 @ttl.datamovement()
 def elwise_write():
     for nt in range(NT):
-        # acquire y_blk from y_dfb:
-        with y_dfb.wait() as y_blk:
+
+        # acquire y_blk and z_blk from y_dfb and z_dfb:
+
+        with (
+            y_dfb.wait() as y_blk,
+            z_dfb.wait() as z_blk,
+        ):
 
             # then copy:
-            y_xf = ttl.copy(y_blk, Y[nt])
-            y_xf.wait()
 
-            # release y_blk
+            y_xf = ttl.copy(y_blk, Y[nt])
+            z_xf = ttl.copy(z_blk, Z[nt])
+            y_xf.wait()
+            z_xf.wait()
+
+            # release y_blk and z_blk
 ```
 
 #### Matmul example
@@ -260,22 +281,28 @@ def matmul_read():
     for it in range(IT):
         for mt in range(MT):
             for nt in range(NT):
+
                 # acquire c_blk from c_dfb:
+
                 with c_dfb.reserve() as c_blk:
 
                     # then copy:
+
                     c_xf = ttl.copy(C[mt, nt], c_blk)
                     c_xf.wait()
 
                     # release c_blk
 
                 for kt in range(KT):
+
                     # acquire a_blk and b_blk from a_dfb and b_dfb:
+
                     with (
                         a_dfb.reserve() as a_blk,
-                        b_dfb.reserve() as b_blk
+                        b_dfb.reserve() as b_blk,
                     ):
                         # then copy:
+
                         a_xf = ttl.copy(A[it, mt, kt], a_blk)
                         b_xf = ttl.copy(B[kt, nt], b_blk)
 
@@ -289,23 +316,31 @@ def matmul_compute():
     for _ in range(IT):
         for _ in range(MT):
             for _ in range(NT):
+
                 # acquire y_blk from y_dfb:
+
                 with y_dfb.reserve() as y_blk:
+
                     # acquire c_blk from c_dfb:
+
                     with c_dfb.wait() as c_blk:
 
                         # then compute: y = c:
+
                         y_blk.store(c_blk, acc=True)
 
                         # release c_blk
 
                     for _ in range(KT):
+
                         # acquire a_blk and b_blk from a_dfb and b_dfb:
+
                         with (
                             a_dfb.wait() as a_blk,
-                            b_dfb.wait() as b_blk
+                            b_dfb.wait() as b_blk,
                         ):
                             # then compute y += a @ b:
+
                             y_blk.store(a_blk @ b_blk, acc=True)
 
                             # release a_blk and b_blk
@@ -317,10 +352,13 @@ def matmul_write():
     for it in range(IT):
         for mt in range(MT):
             for nt in range(NT):
+
                 # acquire y_blk from y_dfb:
+
                 with y_dfb.wait() as y_blk:
 
                     # then copy:
+
                     y_xf = ttl.copy(y_blk, Y[it, mt, nt])
                     y_xf.wait()
 
@@ -418,19 +456,22 @@ net = ttl.PipeNet([ttl.Pipe(
 
 @ttl.datamovement()
 def dm():
-    # reserve blk:
     with dfb.reserve() as blk:
 
         def pipe_src(pipe):
+
             # write data into blk
             # ...
 
             # then copy blk to pipe:
+
             xf = ttl.copy(blk, pipe)
             xf.wait()
 
         def pipe_dst(pipe):
+
             # copy blk from pipe:
+
             xf = ttl.copy(pipe, blk)
             xf.wait()
 
@@ -459,19 +500,22 @@ net = ttl.PipeNet([ttl.Pipe(
 
 @ttl.datamovement()
 def dm():
-    # reserve blk:
     with dfb.reserve() as blk:
 
         def pipe_src(pipe):
+
             # write data into blk
             # ...
 
             # then copy blk to pipe:
+
             xf = ttl.copy(blk, pipe)
             xf.wait()
 
         def pipe_dst(pipe):
+
             # copy blk from pipe:
+
             xf = ttl.copy(pipe, blk)
             xf.wait()
 
@@ -504,19 +548,22 @@ net = ttl.PipeNet([ttl.Pipe(
 
 @ttl.datamovement()
 def dm():
-    # reserve blk
     with dfb.reserve() as blk:
 
         def pipe_src(pipe):
+
             # write data into blk
             # ...
 
             # then copy blk to pipe:
+
             xf = ttl.copy(blk, pipe)
             xf.wait()
 
         def pipe_dst(pipe):
+
             # copy blk from pipe:
+
             xf = ttl.copy(pipe, blk)
             xf.wait()
 
@@ -553,22 +600,25 @@ net = ttl.PipeNet([ttl.Pipe(
 @ttl.datamovement()
 def dm():
 
-    # reserve blk_to_send and blk_received:
     with (
         dfb_to_send.reserve() as blk_to_send,
-        dfb_received.reserve() as blk_received
+        dfb_received.reserve() as blk_received,
     ):
 
         def pipe_src(pipe):
+
             # write data into blk_to_send
             # ...
 
             # then copy blk to blk_to_send:
+
             xf = ttl.copy(blk_to_send, pipe)
             xf.wait()
 
         def pipe_dst(pipe):
+
             # copy blk_received from pipe:
+
             xf = ttl.copy(pipe, blk_received)
             xf.wait()
 
@@ -605,10 +655,13 @@ end_ct = min(start_ct + cols_per_core, col_tiles)
 def dm():
     for ct in range(start_ct, end_ct):
         for rt in range(row_tiles // g):
+
             # acquire a_blk from a_dfb:
+
             with a_dfb.reserve() as a_blk:
 
                 # then copy from a tensor slice of matching shape:
+
                 row_slice = slice(rt * g, (rt + 1) * g) # explicit row slice
                 a_xf = ttl.copy(
                     A[row_slice, ct:ct + 1], # in-line col slice
@@ -641,10 +694,13 @@ all_barrier = my_barrier.get_remote_multicast()
 @ttl.datamovement()
 def dm():
     if core_num == 0:
+
         # do something on core 0 while non-0 cores wait...
+
         all_barrier.set(1)
     else:
         my_barrier.wait_eq(1)
+
         # core 0 is done
 ```
 
@@ -659,10 +715,13 @@ non_0_core_count = grid_size(dims = 1) - 1
 @ttl.datamovement()
 def dm():
     if core_num != 0:
+
         # do something on non-0 cores while core 0 waits...
+
         core_0_barrier.inc(1)
     else:
         my_barrier.wait_eq(non_0_core_count)
+
         # non-0 cores are done
 ```
 
