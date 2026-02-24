@@ -138,7 +138,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Src
   SOURCES
     _src/__init__.py
     _src/auto_profile.py
-    _src/noc_summary.py
+    _src/perf_summary.py
     _src/ttl_ast.py
     _src/tensor_registry.py
 )

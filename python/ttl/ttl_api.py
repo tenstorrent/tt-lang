@@ -213,7 +213,7 @@ def _run_perf_dump(tensors: tuple, kernel_name: str):
     ttl-dump-cb-flow-graph pass), and pipe graph from
     /tmp/ttlang_pipe_graph.json (copied from compiler temp file).
     """
-    from ._src.noc_summary import run as noc_summary_run
+    from ._src.perf_summary import run as perf_summary_run
 
     # Flush profiler data from device (requires mid-run dump)
     if os.environ.get("TT_METAL_PROFILER_MID_RUN_DUMP") != "1":
@@ -243,7 +243,7 @@ def _run_perf_dump(tensors: tuple, kernel_name: str):
             f"Profiler logs directory not found: {logs_path}\n"
             "Ensure TT_METAL_DEVICE_PROFILER_NOC_EVENTS=1 is set"
         )
-    result = noc_summary_run(logs_path, names=[kernel_name])
+    result = perf_summary_run(logs_path, names=[kernel_name])
     if result:
         print(result)
 

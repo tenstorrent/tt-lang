@@ -3,15 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-NOC event profiler summary tool.
+Performance summary tool.
 
 Parses NOC trace JSON and device profiler CSV produced by tt-metal
 when TT_METAL_DEVICE_PROFILER_NOC_EVENTS=1 is set.
 
 Usage:
-    python -m ttl._src.noc_summary                    # default: $TT_METAL_HOME/generated/profiler/.logs/
-    python -m ttl._src.noc_summary --path /tmp/        # override path
-    python -m ttl._src.noc_summary --path /tmp/ --json  # machine-readable output
+    python -m ttl._src.perf_summary                    # default: $TT_METAL_HOME/generated/profiler/.logs/
+    python -m ttl._src.perf_summary --path /tmp/        # override path
+    python -m ttl._src.perf_summary --path /tmp/ --json  # machine-readable output
 """
 
 import argparse
@@ -492,7 +492,7 @@ def run(
                 import sys
 
                 print(
-                    f"[noc_summary] WARNING: {label} durations differ for "
+                    f"[perf_summary] WARNING: {label} durations differ for "
                     f"program {summary.program_id}: "
                     f"NOC JSON {sorted(json_durs)} vs CSV {sorted(csv_durs)}",
                     file=sys.stderr,
@@ -520,7 +520,7 @@ def run(
         return json.dumps(result, indent=2)
 
     lines = []
-    lines.append("=== NOC PROFILER SUMMARY ===")
+    lines.append("=== PERF SUMMARY ===")
     lines.append(f"arch: {arch}, freq: {freq_mhz} MHz, max_compute_cores: {max_cores}")
     lines.append(
         f"programs: {len(summaries)} (listed in dispatch order, includes ttnn ops)"
