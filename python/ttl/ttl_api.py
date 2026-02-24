@@ -12,6 +12,7 @@ import functools
 import inspect
 import os
 import random
+import sys
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
 
@@ -110,12 +111,28 @@ class CompilerOptions:
     """
 
     maximize_dst: bool = True
-    consolidate_inits: bool = True
     enable_fpu_binary_ops: bool = True
+
+    # All recognised option tokens (used to filter sys.argv).
+    # No type annotation so dataclasses doesn't treat this as a field.
+    _COMPILER_OPTIONS = frozenset(
+        {
+            "--maximize-dst",
+            "--no-maximize-dst",
+            "--enable-fpu-binary-ops",
+            "--no-fpu-binary-ops",
+        }
+    )
 
     @staticmethod
     def from_string(options: Optional[str]) -> "CompilerOptions":
-        """Parse CuTe-style option string."""
+        """Parse CuTe-style option string.
+
+        When *options* is ``None`` the returned object carries all defaults.
+        Tokens that appear later in the string override earlier ones, so
+        ``"--maximize-dst --no-maximize-dst"`` results in
+        ``maximize_dst=False``.
+        """
         kwargs: dict = {}
         if options:
             for token in options.split():
@@ -123,10 +140,6 @@ class CompilerOptions:
                     kwargs["maximize_dst"] = True
                 elif token == "--no-maximize-dst":
                     kwargs["maximize_dst"] = False
-                elif token == "--consolidate-inits":
-                    kwargs["consolidate_inits"] = True
-                elif token == "--no-consolidate-inits":
-                    kwargs["consolidate_inits"] = False
                 elif token == "--enable-fpu-binary-ops":
                     kwargs["enable_fpu_binary_ops"] = True
                 elif token == "--no-fpu-binary-ops":
@@ -134,6 +147,13 @@ class CompilerOptions:
                 else:
                     raise ValueError(f"Unknown kernel option: {token!r}")
         return CompilerOptions(**kwargs)
+
+    @staticmethod
+    def _options_from_argv() -> str:
+        """Extract recognised compiler options from ``sys.argv``."""
+        return " ".join(
+            arg for arg in sys.argv[1:] if arg in CompilerOptions._COMPILER_OPTIONS
+        )
 
 
 def _make_cache_key(
@@ -1079,8 +1099,7 @@ def _compile_kernel(
             pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
 
         pipeline_passes.append("convert-ttl-to-ttkernel")
-        if compiler_options.consolidate_inits:
-            pipeline_passes.append("ttkernel-consolidate-inits")
+        pipeline_passes.append("ttkernel-consolidate-inits")
 
         if is_auto_profile_enabled():
             pipeline_passes.append("ttl-lower-signpost-to-emitc")
@@ -1241,9 +1260,13 @@ def pykernel_gen(
 
         @functools.wraps(f)
         def _wrapper(*args, **kwargs):
-            # Extract runtime options (allow per-call override via kwarg)
-            runtime_options = kwargs.pop("options", options)
-            compiler_options = CompilerOptions.from_string(runtime_options)
+            # Extract runtime options (allow per-call override via kwarg).
+            # Merge: explicit options (decorator or kwarg) as base,
+            # then sys.argv options as higher-priority override.
+            explicit_options = kwargs.pop("options", options) or ""
+            argv_options = CompilerOptions._options_from_argv()
+            merged_options = f"{explicit_options} {argv_options}".strip() or None
+            compiler_options = CompilerOptions.from_string(merged_options)
 
             resolved_grid = _resolve_grid(grid, args, kwargs)
             fp32_override = fp32_dest_acc_en
