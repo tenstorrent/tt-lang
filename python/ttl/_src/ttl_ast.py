@@ -221,6 +221,9 @@ class TTLGenericCompiler(TTCompilerBase):
             self._emit_signpost(f"{self.name}_L{self._current_signpost_line}_after")
             self._current_signpost_line = None
 
+    def _on_scope_exit(self):
+        self._close_final_signpost()
+
     def _try_emit_auto_signposts(self, node, visit_fn):
         """Emit line-based signposts if auto-profiling is enabled."""
         self._emit_line_signpost_if_needed(node)
@@ -536,6 +539,8 @@ class TTLGenericCompiler(TTCompilerBase):
             # Process each with-item: acquire resources and track for release
             releases = []  # [(release_op, cb_val), ...] in acquisition order
 
+            self._on_scope_exit()
+
             for item in node.items:
                 context_expr = item.context_expr
                 optional_vars = item.optional_vars
@@ -601,6 +606,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
             for stmt in node.body:
                 self.visit(stmt)
+
+            self._on_scope_exit()
 
             # Release in reverse order (implicit ops from with statement)
             for op_name, release_op, cb_val, expr_node in reversed(releases):
