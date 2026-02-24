@@ -51,6 +51,9 @@ class ProgramSummary:
     # Zone timing (per-core kernel durations)
     brisc_durations: List[int] = field(default_factory=list)
     ncrisc_durations: List[int] = field(default_factory=list)
+    trisc0_durations: List[int] = field(default_factory=list)
+    trisc1_durations: List[int] = field(default_factory=list)
+    trisc2_durations: List[int] = field(default_factory=list)
     # Destination cores (for L1 traffic)
     l1_destinations: Set[Tuple[int, int]] = field(default_factory=set)
     dram_destinations: Set[Tuple[int, int]] = field(default_factory=set)
@@ -112,6 +115,62 @@ def parse_chip_info(logs_path: Path) -> Tuple[str, int, int]:
         max_cores = int(m.group(1))
 
     return arch, freq, max_cores
+
+
+def parse_kernel_durations(
+    logs_path: Path,
+) -> Dict[int, Dict[str, List[int]]]:
+    """Parse per-thread kernel durations from profile_log_device.csv.
+
+    Extracts ZONE_START/ZONE_END pairs for *-KERNEL zones across all RISC
+    threads.  Grouped by run_host_id so callers can merge into the right
+    ProgramSummary.
+
+    Returns:
+        {run_host_id: {thread_name: [duration_cycles, ...], ...}, ...}
+    """
+    csv_path = logs_path / "profile_log_device.csv"
+    if not csv_path.exists():
+        return {}
+
+    _KERNEL_ZONES = {"BRISC-KERNEL", "NCRISC-KERNEL", "TRISC-KERNEL"}
+
+    zone_starts: Dict[Tuple[int, str, int, int], int] = {}
+    durations: Dict[int, Dict[str, List[int]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+
+    with open(csv_path) as f:
+        # Skip the two header lines (arch info + column names)
+        f.readline()
+        f.readline()
+        for line in f:
+            parts = line.split(",")
+            if len(parts) < 12:
+                continue
+            thread = parts[3].strip()
+            zone = parts[10].strip()
+            zone_type = parts[11].strip()
+
+            if zone not in _KERNEL_ZONES:
+                continue
+
+            try:
+                ts = int(parts[5].strip())
+                run_id = int(parts[7].strip())
+                cx, cy = int(parts[1].strip()), int(parts[2].strip())
+            except (ValueError, IndexError):
+                continue
+
+            key = (run_id, thread, cx, cy)
+            if zone_type == "ZONE_START":
+                zone_starts[key] = ts
+            elif zone_type == "ZONE_END" and key in zone_starts:
+                duration = ts - zone_starts[key]
+                durations[run_id][thread].append(duration)
+                del zone_starts[key]
+
+    return dict(durations)
 
 
 def _collect_compute_cores_from_zones(events: list) -> Set[Tuple[int, int]]:
@@ -348,20 +407,25 @@ def format_summary(
         lines.append(f"  DRAM channels:  {len(summary.dram_destinations)}")
 
     # Kernel durations (from zone events)
-    if summary.brisc_durations or summary.ncrisc_durations:
+    all_thread_durs = [
+        ("BRISC", summary.brisc_durations),
+        ("NCRISC", summary.ncrisc_durations),
+        ("TRISC_0", summary.trisc0_durations),
+        ("TRISC_1", summary.trisc1_durations),
+        ("TRISC_2", summary.trisc2_durations),
+    ]
+    if any(durs for _, durs in all_thread_durs):
         lines.append(f"  kernel time:")
-        if summary.brisc_durations:
-            mn, mx = min(summary.brisc_durations), max(summary.brisc_durations)
-            lines.append(
-                f"    BRISC:  {_format_cycles(mn, freq_mhz)} - "
-                f"{_format_cycles(mx, freq_mhz)}"
-            )
-        if summary.ncrisc_durations:
-            mn, mx = min(summary.ncrisc_durations), max(summary.ncrisc_durations)
-            lines.append(
-                f"    NCRISC: {_format_cycles(mn, freq_mhz)} - "
-                f"{_format_cycles(mx, freq_mhz)}"
-            )
+        for label, durs in all_thread_durs:
+            if durs:
+                mn, mx = min(durs), max(durs)
+                if mn == mx:
+                    lines.append(f"    {label:<8} {_format_cycles(mn, freq_mhz)}")
+                else:
+                    lines.append(
+                        f"    {label:<8} {_format_cycles(mn, freq_mhz)} - "
+                        f"{_format_cycles(mx, freq_mhz)}"
+                    )
 
     return "\n".join(lines)
 
@@ -410,6 +474,36 @@ def run(
     summaries = []
     for tf in trace_files:
         summaries.append(parse_noc_trace(Path(tf)))
+
+    # Merge kernel durations from CSV (all 5 threads)
+    csv_durations = parse_kernel_durations(logs_path)
+    for summary in summaries:
+        per_thread = csv_durations.get(summary.program_id, {})
+        csv_brisc = per_thread.get("BRISC", [])
+        csv_ncrisc = per_thread.get("NCRISC", [])
+        summary.trisc0_durations = per_thread.get("TRISC_0", [])
+        summary.trisc1_durations = per_thread.get("TRISC_1", [])
+        summary.trisc2_durations = per_thread.get("TRISC_2", [])
+
+        # Cross-check CSV vs NOC JSON durations for DM threads
+        for label, json_durs, csv_durs in [
+            ("BRISC", summary.brisc_durations, csv_brisc),
+            ("NCRISC", summary.ncrisc_durations, csv_ncrisc),
+        ]:
+            if json_durs and csv_durs and sorted(json_durs) != sorted(csv_durs):
+                import sys
+                print(
+                    f"[noc_summary] WARNING: {label} durations differ for "
+                    f"program {summary.program_id}: "
+                    f"NOC JSON {sorted(json_durs)} vs CSV {sorted(csv_durs)}",
+                    file=sys.stderr,
+                )
+
+        # Use CSV as source of truth (it has per-core granularity)
+        if csv_brisc:
+            summary.brisc_durations = csv_brisc
+        if csv_ncrisc:
+            summary.ncrisc_durations = csv_ncrisc
 
     if output_json:
         json_programs = []
