@@ -215,6 +215,23 @@ def _run_perf_dump(tensors: tuple, kernel_name: str):
     """
     from ._src.noc_summary import run as noc_summary_run
 
+    # Flush profiler data from device (requires mid-run dump)
+    if os.environ.get("TT_METAL_PROFILER_MID_RUN_DUMP") != "1":
+        print(
+            "[perf_dump] WARNING: TT_METAL_PROFILER_MID_RUN_DUMP=1 not set, "
+            "profiler data may be stale"
+        )
+    device = None
+    for tensor in tensors:
+        if is_ttnn_tensor(tensor) and hasattr(tensor, "device"):
+            device = tensor.device()
+            break
+    if device is not None:
+        try:
+            ttnn.ReadDeviceProfiler(device)
+        except Exception as e:
+            print(f"[perf_dump] WARNING: Failed to read device profiler: {e}")
+
     tt_metal_home = os.environ.get("TT_METAL_HOME", "")
     if not tt_metal_home:
         raise ValueError("TTLANG_PERF_DUMP=1 requires TT_METAL_HOME to be set")
