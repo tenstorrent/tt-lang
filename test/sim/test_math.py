@@ -227,7 +227,7 @@ def test_all_broadcast_forms():
 
     Note: We can't test with .store() on temporary blocks created via from_list(),
     as those are already in DONE state. The patterns above are what work in real code
-    with circular buffers.
+    with dataflow buffers.
     """
     # Setup: 'a' is MxN (2x3) and 'b' is Mx1 (2x1)
     t_a = [

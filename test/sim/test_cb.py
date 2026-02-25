@@ -6,12 +6,8 @@ Tests for DataflowBuffer.
 
 Covers the high-level DataflowBuffer interface (tensor-aware operations,
 context manager syntax, state machine enforcement) and the low-level ring-buffer
-primitives (reserve/wait/push/pop, threading, error contracts, per-core limits).
+primitives (reserve/wait/push/pop, error contracts, per-core limits).
 """
-
-import threading
-import time
-from typing import List, Tuple
 
 import pytest
 import torch
@@ -39,8 +35,7 @@ from python.sim.blockstate import (
     BlockAcquisition,
 )
 from python.sim.ttnnsim import Tensor
-from python.sim.dfbstate import DFBSlot
-from python.sim.errors import DFBContractError, DFBTimeoutError
+from python.sim.errors import DFBContractError
 
 
 @pytest.fixture(autouse=True)
@@ -70,13 +65,7 @@ def configured_dfb8() -> DataflowBuffer:
     return DataflowBuffer(element=element, shape=(1, 1), buffer_factor=8)
 
 
-@pytest.fixture
-def timeout_seconds() -> float:
-    """Return a short timeout value for timeout tests."""
-    return 0.1
-
-
-def test_circular_buffer_basic() -> None:
+def test_dataflow_buffer_basic() -> None:
     """Test basic DataflowBuffer operations."""
     element = make_ones_tile()
     dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
@@ -109,7 +98,7 @@ def test_circular_buffer_basic() -> None:
     print("Basic DataflowBuffer test passed!")
 
 
-def test_circular_buffer_multi_tile() -> None:
+def test_dataflow_buffer_multi_tile() -> None:
     """Test DataflowBuffer with multiple tiles per operation."""
     element = make_ones_tile()
     dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=3)
@@ -250,7 +239,7 @@ def test_copy_in_dm_thread_context() -> None:
         )
         c_in_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
 
-        # Verify the circular buffers were created correctly
+        # Verify the dataflow buffers were created correctly
         assert a_in_dfb.shape == (granularity, 1)
         assert a_in_dfb.capacity_tiles == granularity * 2
         assert c_in_dfb.shape == (1, 1)
@@ -953,7 +942,7 @@ def test_push_validates_expected_state() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_circular_buffer_basic_flow(configured_dfb8: DataflowBuffer) -> None:
+def test_dataflow_buffer_basic_flow(configured_dfb8: DataflowBuffer) -> None:
     """Test ring-buffer mechanics via private primitives."""
     dfb = configured_dfb8
     stats = dfb.stats()
@@ -1000,47 +989,6 @@ def test_circular_buffer_basic_flow(configured_dfb8: DataflowBuffer) -> None:
     dfb._pop_front(8)
     stats = dfb.stats()
     assert stats.visible == 0
-
-
-def test_per_instance_timeout_effect() -> None:
-    """Test that a DataflowBuffer-level timeout fires correctly."""
-    element = make_ones_tile()
-    dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=4, timeout=0.2)
-    start = time.perf_counter()
-    with pytest.raises(DFBTimeoutError, match="timed out after 0.2s"):
-        dfb._wait_front(1)
-    elapsed = time.perf_counter() - start
-    assert elapsed < 0.4
-
-
-def test_threaded_produce_consume(configured_dfb: DataflowBuffer) -> None:
-    """Test blocking produce/consume across threads via private primitives."""
-    dfb = configured_dfb
-    result: List[List[DFBSlot]] = []
-
-    def consumer() -> None:
-        dfb._wait_front(4)
-        result.append(dfb._get_read_ptr().to_list())
-        dfb._pop_front(4)
-
-    t = threading.Thread(target=consumer)
-    t.start()
-
-    time.sleep(0.5)
-
-    dfb._reserve_back(4)
-    ptr = dfb._get_write_ptr()
-    test_tensors = [make_full_tensor(32, 32, 100.0 + i) for i in range(4)]
-    ptr.store(test_tensors)
-    dfb._push_back(4)
-    t.join(timeout=1)
-
-    assert len(result) == 1
-    assert len(result[0]) == 4
-    for i in range(4):
-        val = result[0][i]
-        assert val is not None
-        assert tensors_exact_equal(val, test_tensors[i])
 
 
 def test_dfb_pages_nonblocking(configured_dfb8: DataflowBuffer) -> None:
@@ -1123,57 +1071,6 @@ def test_get_write_ptr_requires_reserve(configured_dfb: DataflowBuffer) -> None:
         DFBContractError, match="get_write_ptr requires prior dfb_reserve_back"
     ):
         dfb._get_write_ptr()
-
-
-def test_multiple_consumers_error(timeout_seconds: float) -> None:
-    """Test that only one thread may call _wait_front at a time."""
-    element = make_ones_tile()
-    dfb = DataflowBuffer(
-        element=element, shape=(1, 1), buffer_factor=4, timeout=timeout_seconds
-    )
-    errors: List[str] = []
-
-    def consumer() -> None:
-        try:
-            dfb._wait_front(4)
-        except (DFBContractError, DFBTimeoutError) as e:
-            errors.append(str(e))
-
-    t1 = threading.Thread(target=consumer)
-    t2 = threading.Thread(target=consumer)
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
-    assert any(
-        "Only one consumer thread may wait on a DFB at a time" in msg for msg in errors
-    )
-
-
-def test_multiple_producers_error(timeout_seconds: float) -> None:
-    """Test that only one thread may call _reserve_back at a time."""
-    element = make_ones_tile()
-    dfb = DataflowBuffer(
-        element=element, shape=(1, 1), buffer_factor=4, timeout=timeout_seconds
-    )
-    errors: List[str] = []
-
-    def producer() -> None:
-        try:
-            dfb._reserve_back(4)
-        except (DFBContractError, DFBTimeoutError) as e:
-            errors.append(str(e))
-
-    t1 = threading.Thread(target=producer)
-    t2 = threading.Thread(target=producer)
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
-    assert any(
-        "Only one producer thread may reserve on a DFB at a time" in msg
-        for msg in errors
-    )
 
 
 def test_per_core_dfb_limit_exceeds_max() -> None:

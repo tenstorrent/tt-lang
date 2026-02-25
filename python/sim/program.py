@@ -119,7 +119,6 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                             element=value.element,
                             shape=value.shape,
                             buffer_factor=value.buffer_factor,
-                            timeout=value.timeout,
                         )
                         setattr(new_dfb, "_name", key)
                         core_context[key] = new_dfb
@@ -181,12 +180,12 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                 scheduler.run()
 
                 # Validate all DataflowBuffers have no pending blocks
-                self._validate_circular_buffers(all_core_contexts)
+                self._validate_dataflow_buffers(all_core_contexts)
             finally:
                 # Clear scheduler
                 set_scheduler(None)
 
-        def _validate_circular_buffers(
+        def _validate_dataflow_buffers(
             self, all_core_contexts: List[Dict[str, Any]]
         ) -> None:
             """Validate that all DataflowBuffers have no pending blocks at end of execution.

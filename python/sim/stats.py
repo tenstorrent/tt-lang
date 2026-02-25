@@ -230,7 +230,7 @@ def record_pipe_read(pipe: AnyPipe, block_data: "list[Tensor]") -> None:
 
 
 def register_dfb_name(dfb: Any, name: str) -> None:
-    """Register a name for a circular buffer.
+    """Register a name for a dataflow buffer.
 
     Args:
         dfb: The DFB to name
@@ -241,7 +241,7 @@ def register_dfb_name(dfb: Any, name: str) -> None:
 
 
 def _get_dfb_name(dfb: Any) -> str:
-    """Get the name of a circular buffer.
+    """Get the name of a dataflow buffer.
 
     Args:
         dfb: The DFB to get a name for

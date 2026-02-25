@@ -94,7 +94,7 @@ def compute() -> Callable[[FunctionType], BindableTemplate]:
     Decorator to mark a function as a compute operation.
 
     The decorated function will be executed on compute cores and can access
-    the core context including circular buffers and core index.
+    the core context including dataflow buffers and core index.
 
     Returns:
         A BindableTemplate that can be bound to specific execution contexts
@@ -123,7 +123,7 @@ def datamovement() -> Callable[[FunctionType], BindableTemplate]:
     Decorator to mark a function as a data movement operation.
 
     The decorated function will handle data transfers between memory and
-    circular buffers, and can access the core context.
+    dataflow buffers, and can access the core context.
 
     Returns:
         A BindableTemplate that can be bound to specific execution contexts

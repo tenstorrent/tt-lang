@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-sim package: simulation components for TT-Lang including circular buffers, tensors, and copy operations.
+sim package: simulation components for TT-Lang including dataflow buffers, tensors, and copy operations.
 """
 
 from . import ttnnsim as ttnn

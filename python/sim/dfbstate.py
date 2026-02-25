@@ -6,14 +6,13 @@
 _CState and related internal state management for dfbsim.
 """
 
-from threading import Condition, RLock, Thread
 from typing import List, Optional
 
 from .errors import DFBContractError, DFBNotConfigured
 from .ttnnsim import Tensor
 from .typedefs import Count, Index, Shape, Size, Span
 
-# Type alias for circular buffer slots
+# Type alias for dataflow buffer slots
 DFBSlot = Optional[Tensor]
 
 
@@ -30,11 +29,6 @@ class DFBState:
         "last_wait_target",
         "last_reserve_target",
         "configured",
-        "lock",
-        "can_consume",
-        "can_produce",
-        "consumer_waiting",
-        "producer_reserving",
         "shape",
     )
 
@@ -48,11 +42,6 @@ class DFBState:
         self.last_wait_target: Count = 0
         self.last_reserve_target: Count = 0
         self.configured = False
-        self.lock = RLock()
-        self.can_consume = Condition(self.lock)
-        self.can_produce = Condition(self.lock)
-        self.consumer_waiting: Optional[Thread] = None
-        self.producer_reserving: Optional[Thread] = None
         self.shape: Shape  # Shape in tiles (rows, cols)
 
     def require_configured(self) -> None:
@@ -85,10 +74,4 @@ class DFBState:
         self.reserved = 0
         self.step = None
         self.last_wait_target = 0
-        self.consumer_waiting = None
-        self.producer_reserving = None
         self.configured = True
-        with self.can_consume:
-            self.can_consume.notify_all()
-        with self.can_produce:
-            self.can_produce.notify_all()
