@@ -5,14 +5,68 @@
 Function decorators for compute and data movement operations.
 
 This module provides decorators for marking functions as compute or data movement
-operations within the simulation framework.
+operations within the simulation framework, along with the BindableTemplate protocol
+and the rebind_func_with_ctx utility used by Program to bind decorated functions to
+per-core execution contexts.
 """
 
-from types import FunctionType
-from typing import Any, Callable, Dict, List
+import types
+from types import CellType, FunctionType
+from typing import Any, Callable, Dict, List, Protocol
 
-from .block import ThreadType
-from .program import BindableTemplate, rebind_func_with_ctx
+from .blockstate import ThreadType
+
+
+class BindableTemplate(Protocol):
+    """Protocol for templates that can be bound to a specific execution context."""
+
+    __name__: str
+
+    def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
+        """Bind the template to a specific execution context."""
+        ...
+
+
+def _make_cell(value: Any) -> CellType:
+    """Create a real closure cell holding `value`."""
+
+    def inner() -> Any:
+        return value
+
+    assert inner.__closure__ is not None
+    return inner.__closure__[0]
+
+
+def rebind_func_with_ctx(func: FunctionType, ctx: Dict[str, Any]) -> FunctionType:
+    """
+    Create a new function from `func` but with:
+      - globals = func.__globals__ + ctx
+      - closure cells rebuilt from ctx when possible
+    so that names like `out_dfb` that were captured will now point to the per-core objects.
+    """
+    freevars = func.__code__.co_freevars
+    orig_closure = func.__closure__ or ()
+    orig_cell_map: Dict[str, CellType] = {
+        name: cell for name, cell in zip(freevars, orig_closure)
+    }
+
+    new_cells: List[CellType] = []
+    for name in freevars:
+        if name in ctx:
+            new_cells.append(_make_cell(ctx[name]))
+        else:
+            # fall back to original cell if we don't have an override
+            new_cells.append(orig_cell_map[name])
+
+    # merge globals with ctx so globals-based lookups also see per-core state
+    new_globals: Dict[str, Any] = dict(func.__globals__)
+    new_globals.update(ctx)
+
+    new_func = types.FunctionType(
+        func.__code__, new_globals, func.__name__, func.__defaults__, tuple(new_cells)
+    )
+    return new_func
+
 
 # Thread registry for automatic collection of @compute and @datamovement threads
 _thread_registry: List[BindableTemplate] = []

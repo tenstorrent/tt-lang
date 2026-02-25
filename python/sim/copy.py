@@ -2,14 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """
-Copy operation simulation for CircularBuffer operations.
+Copy operation simulation for DataflowBuffer operations.
 
 This module provides a simplified copy implementation for simulation purposes,
 enabling data transfer operations between tensors and Blocks in the
-CircularBuffer system.
+DataflowBuffer system.
 """
 
-from .block import Block
+from .dfb import Block
 from .copyhandlers import (
     CopyEndpoint,
     CopyEndpointType,
@@ -178,11 +178,11 @@ def copy(
 
     Example:
         # Transfer from tensor to circular buffer
-        tx = copy(tensor_slice, cb_block)
+        tx = copy(tensor_slice, dfb_block)
         tx.wait()
 
         # Transfer from circular buffer to tensor
-        tx = copy(cb_block, tensor_slice)
+        tx = copy(dfb_block, tensor_slice)
         tx.wait()
     """
     return CopyTransaction(src, dst)

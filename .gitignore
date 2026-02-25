@@ -4,6 +4,7 @@ third_party/tt-metal
 third_party/ttnn-python
 .DS_STORE
 .vscode/*
+.venv/*
 .cache
 .claude/*
 *pycache*

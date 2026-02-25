@@ -11,67 +11,14 @@ functions across multiple cores with proper context binding and error handling.
 import copy
 import inspect
 import types
-from types import CellType, FunctionType
-from typing import Any, Callable, Dict, List, Protocol
+from typing import Any, Dict, List
 
-from .block import ThreadType
-from .cb import CircularBuffer
-from .cbapi import CBAPI
+from .dfb import DFBAPI, DataflowBuffer
+from .decorators import BindableTemplate
+from .blockstate import ThreadType
 from .greenlet_scheduler import GreenletScheduler, set_scheduler
 from .ttnnsim import Tensor
 from .typedefs import Shape
-
-
-# Protocol for templates that have a bind method
-class BindableTemplate(Protocol):
-    """Protocol for templates that can be bound to a specific execution context."""
-
-    __name__: str
-
-    def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
-        """Bind the template to a specific execution context."""
-        ...
-
-
-def _make_cell(value: Any) -> CellType:
-    """Create a real closure cell holding `value`."""
-
-    def inner() -> Any:
-        return value
-
-    assert inner.__closure__ is not None
-    return inner.__closure__[0]
-
-
-def rebind_func_with_ctx(func: FunctionType, ctx: Dict[str, Any]) -> FunctionType:
-    """
-    Create a new function from `func` but with:
-      - globals = func.__globals__ + ctx
-      - closure cells rebuilt from ctx when possible
-    so that names like `out_cb` that were captured will now point to the per-core objects.
-    """
-    freevars = func.__code__.co_freevars
-    orig_closure = func.__closure__ or ()
-    orig_cell_map: Dict[str, CellType] = {
-        name: cell for name, cell in zip(freevars, orig_closure)
-    }
-
-    new_cells: List[CellType] = []
-    for name in freevars:
-        if name in ctx:
-            new_cells.append(_make_cell(ctx[name]))
-        else:
-            # fall back to original cell if we don't have an override
-            new_cells.append(orig_cell_map[name])
-
-    # merge globals with ctx so globals-based lookups also see per-core state
-    new_globals: Dict[str, Any] = dict(func.__globals__)
-    new_globals.update(ctx)
-
-    new_func = types.FunctionType(
-        func.__code__, new_globals, func.__name__, func.__defaults__, tuple(new_cells)
-    )
-    return new_func
 
 
 def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
@@ -98,7 +45,7 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                 self.context.update(frame.f_back.f_locals)
 
             # Extract closure variables from thread functions and add to context
-            # This ensures variables like CBs that were defined in the kernel function
+            # This ensures variables like DFBs that were defined in the kernel function
             # are available for per-core copying
             for tmpl in self.functions:
                 if hasattr(tmpl, "__wrapped__"):
@@ -134,11 +81,11 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                 core: Core number to build context for
 
             Returns:
-                Dictionary containing per-core context with fresh CircularBuffers
+                Dictionary containing per-core context with fresh DataflowBuffers
             """
             memo: Dict[int, Any] = {}
             core_context: Dict[str, Any] = {}
-            api = CBAPI()  # new CBAPI per core
+            api = DFBAPI()  # new DFBAPI per core
 
             for key, value in self.context.items():
                 # Skip module objects (e.g., local imports like `from python.sim import ttnn`)
@@ -153,17 +100,17 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                     case Tensor():
                         core_context[key] = value
                         memo[id(value)] = value
-                    case CircularBuffer():
-                        # create a fresh CB for this core
-                        new_cb = CircularBuffer(
+                    case DataflowBuffer():
+                        # create a fresh DFB for this core
+                        new_dfb = DataflowBuffer(
                             element=value.element,
                             shape=value.shape,
                             buffer_factor=value.buffer_factor,
                             api=api,
                         )
                         # Store the variable name for debugging
-                        setattr(new_cb, "_name", key)
-                        core_context[key] = new_cb
+                        setattr(new_dfb, "_name", key)
+                        core_context[key] = new_dfb
                     case _:
                         core_context[key] = copy.deepcopy(value, memo)
 
@@ -223,7 +170,7 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                 # Run scheduler
                 scheduler.run()
 
-                # Validate all CircularBuffers have no pending blocks
+                # Validate all DataflowBuffers have no pending blocks
                 self._validate_circular_buffers(all_core_contexts)
             finally:
                 # Clear scheduler
@@ -232,19 +179,19 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
         def _validate_circular_buffers(
             self, all_core_contexts: List[Dict[str, Any]]
         ) -> None:
-            """Validate that all CircularBuffers have no pending blocks at end of execution.
+            """Validate that all DataflowBuffers have no pending blocks at end of execution.
 
             Args:
-                all_core_contexts: List of per-core contexts containing CircularBuffers
+                all_core_contexts: List of per-core contexts containing DataflowBuffers
 
             Raises:
-                RuntimeError: If any CircularBuffer has pending blocks
+                RuntimeError: If any DataflowBuffer has pending blocks
             """
             errors: List[str] = []
             for core_idx, core_context in enumerate(all_core_contexts):
                 for key, value in core_context.items():
                     match value:
-                        case CircularBuffer():
+                        case DataflowBuffer():
                             try:
                                 value.validate_no_pending_blocks()
                             except RuntimeError as e:
@@ -254,7 +201,7 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
 
             if errors:
                 raise RuntimeError(
-                    "Kernel execution completed with incomplete CircularBuffer operations:\n"
+                    "Kernel execution completed with incomplete DataflowBuffer operations:\n"
                     + "\n".join(errors)
                 )
 

@@ -27,7 +27,7 @@ If it fails, STOP and ask the user to fix their remote setup.
 
 Use `--perf` as your primary profiling tool. Use `--auto-profile` only when you need per-line cycle breakdown to diagnose a specific bottleneck.
 
-Log is at `/tmp/ttlang_test_output.log` on the remote. Grep for `THREAD SUMMARY`, `NOC PROFILER SUMMARY`, `DFB FLOW GRAPH`, `PIPE GRAPH`.
+Log is at `/tmp/ttlang_test_output.log` on the remote. Grep for `THREAD SUMMARY`, `PERF SUMMARY`, `DFB FLOW GRAPH`, `PIPE GRAPH`.
 
 ## Task
 
@@ -51,7 +51,7 @@ Three goals, in priority order:
 
 ### 1. Maximize Core Utilization (target: 100%)
 
-The kernel MUST use all available cores. If the kernel runs on `grid=(1, 1)`, it is leaving performance on the table. Partition work across cores using the multicore patterns from `/ttl-import`. Check `NOC PROFILER SUMMARY` for grid size.
+The kernel MUST use all available cores. If the kernel runs on `grid=(1, 1)`, it is leaving performance on the table. Partition work across cores using the multicore patterns from `/ttl-import`. Check `PERF SUMMARY` for grid size.
 
 ### 2. Reduce DRAM Traffic
 
@@ -62,7 +62,7 @@ Minimize unnecessary DRAM reads and writes. Key strategies:
 
 Note: if tensors are small enough, moving them to L1 memory space (`ttnn.L1_MEMORY_CONFIG`) avoids DRAM reads entirely, but this only helps when the data actually fits.
 
-Check `NOC PROFILER SUMMARY` for DRAM read/write volumes and effective bandwidth.
+Check `PERF SUMMARY` for DRAM read/write volumes and effective bandwidth.
 
 ### 3. Increase DFB Block Size
 
@@ -77,7 +77,7 @@ Run the kernel with `--hw` to confirm it produces correct results. If it fails, 
 ### Step 1: Establish Baseline
 
 Run with `--perf --hw` to get baseline metrics. Record:
-- **Wall time** (duration in us from `NOC PROFILER SUMMARY`) -- this is your ground truth
+- **Wall time** (duration in us from `PERF SUMMARY`) -- this is your ground truth
 - Grid size and core count
 - DRAM read/write volumes
 - Effective bandwidth

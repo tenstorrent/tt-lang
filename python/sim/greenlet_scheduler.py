@@ -9,11 +9,11 @@ yield transformations. Each thread (compute/DM) runs in its own greenlet,
 and blocking operations (wait/reserve) switch back to the scheduler.
 """
 
-from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from greenlet import greenlet
 
-from .block import ThreadType
+from .blockstate import ThreadType
 
 
 # Global scheduler algorithm selection
@@ -66,8 +66,11 @@ class GreenletScheduler:
 
     def __init__(self) -> None:
         """Initialize the scheduler."""
-        # Active greenlets: name -> (greenlet, blocking_obj, operation, thread_type, block_location)
-        self._active: Dict[str, Tuple[greenlet, Any, str, ThreadType, str]] = {}
+        # Active greenlets: name -> (greenlet, blocking_obj, operation, thread_type, block_location, raw_loc)
+        # raw_loc is Optional[Tuple[str, int]] = (filename, lineno) for pretty-printing
+        self._active: Dict[
+            str, Tuple[greenlet, Any, str, ThreadType, str, Optional[Tuple[str, int]]]
+        ] = {}
         # Completed greenlets
         self._completed: List[str] = []
         # Main greenlet for the scheduler
@@ -103,7 +106,7 @@ class GreenletScheduler:
 
         g = greenlet(wrapped_func)
         # Initially not blocked (will start when scheduled)
-        self._active[name] = (g, None, "", thread_type, "")
+        self._active[name] = (g, None, "", thread_type, "", None)
         # Initialize last run time to 0 (never run)
         self._last_run[name] = 0
         # Thread hasn't made progress yet
@@ -116,7 +119,7 @@ class GreenletScheduler:
         to the scheduler.
 
         Args:
-            blocking_obj: Object being waited on (CircularBuffer or CopyTransaction)
+            blocking_obj: Object being waited on (DataflowBuffer or CopyTransaction)
             operation: Operation name ("wait" or "reserve")
         """
         if self._current_name is None:
@@ -129,6 +132,7 @@ class GreenletScheduler:
 
         frame = inspect.currentframe()
         location_str = ""
+        raw_loc: Optional[Tuple[str, int]] = None
         if frame and frame.f_back:
             # Walk up the call stack to find user code
             caller_frame = frame.f_back
@@ -138,17 +142,19 @@ class GreenletScheduler:
                 if "/python/sim/" not in filename and "greenlet" not in filename:
                     lineno = caller_frame.f_lineno
                     location_str = f" at {filename}:{lineno}"
+                    raw_loc = (filename, lineno)
                     break
                 caller_frame = caller_frame.f_back
 
         # Update active entry with blocking info and location
-        g, _, _, thread_type, _ = self._active[self._current_name]
+        g, _, _, thread_type, _, _ = self._active[self._current_name]
         self._active[self._current_name] = (
             g,
             blocking_obj,
             operation,
             thread_type,
             location_str,
+            raw_loc,
         )
 
         # Switch back to scheduler
@@ -190,6 +196,143 @@ class GreenletScheduler:
             )
         self._has_made_progress[self._current_name] = True
 
+    def _extract_source_location(
+        self, exception: Exception
+    ) -> Tuple[Optional[str], Optional[int], Optional[int]]:
+        """Extract source location from exception traceback.
+
+        Returns:
+            Tuple of (source_file, source_line, source_col)
+        """
+        import traceback
+
+        tb = traceback.extract_tb(exception.__traceback__)
+        source_file = None
+        source_line = None
+        source_col = None
+
+        for frame in tb:
+            # Skip internal greenlet/scheduler/simulator frames
+            if (
+                "greenlet_scheduler.py" not in frame.filename
+                and "greenlet" not in frame.filename
+                and "/python/sim/" not in frame.filename
+            ):
+                source_file = frame.filename
+                source_line = frame.lineno
+                source_col = getattr(frame, "colno", None) or 1
+                break
+
+        return source_file, source_line, source_col
+
+    def _print_pretty_error(
+        self,
+        name: str,
+        exception: Exception,
+        source_file: str,
+        source_line: int,
+        source_col: Optional[int],
+    ) -> bool:
+        """Print error with pretty formatting using TTLangCompileError.
+
+        Args:
+            name: Thread name
+            exception: The exception that was raised
+            source_file: Path to source file
+            source_line: Line number in source file
+            source_col: Column number in source file (defaults to 1 if None)
+
+        Returns:
+            True if pretty printing succeeded, False if TTLangCompileError not available
+        """
+        try:
+            TTLangCompileError = _get_ttlang_compile_error()
+            compile_error = TTLangCompileError(
+                f"{type(exception).__name__}: {exception}",
+                source_file=source_file,
+                line=source_line,
+                col=source_col or 1,
+            )
+            print(f"\n❌ Error in {name}:")
+            print(compile_error.format())
+            print("-" * 50)
+            return True
+        except ImportError:
+            return False
+
+    def _print_basic_error(
+        self,
+        name: str,
+        exception: Exception,
+        source_file: Optional[str],
+        source_line: Optional[int],
+        include_traceback: bool = False,
+    ) -> None:
+        """Print error with basic formatting.
+
+        Args:
+            name: Thread name
+            exception: The exception that was raised
+            source_file: Path to source file (if available)
+            source_line: Line number in source file (if available)
+            include_traceback: Whether to include full traceback
+        """
+        print(f"\n❌ Error in {name}:")
+        if source_file and source_line:
+            print(f"  File: {source_file}:{source_line}")
+        print(f"  {type(exception).__name__}: {exception}")
+
+        if include_traceback:
+            import traceback
+
+            tb_str = "".join(
+                traceback.format_exception(
+                    type(exception), exception, exception.__traceback__
+                )
+            )
+            print(f"\nFull traceback:")
+            print(tb_str)
+
+        if not include_traceback:
+            print("-" * 50)
+
+    def _format_and_raise_thread_error(
+        self,
+        name: str,
+        exception: Exception,
+        include_traceback: bool = False,
+    ) -> None:
+        """Format thread error with source location and re-raise.
+
+        Args:
+            name: Thread name
+            exception: The exception that was raised
+            include_traceback: Whether to include full traceback in fallback
+
+        Raises:
+            RuntimeError: Always raises with formatted error message
+        """
+        # Extract source location
+        source_file, source_line, source_col = self._extract_source_location(exception)
+
+        # Try pretty formatting if we have source location
+        if source_file and source_line:
+            pretty_printed = self._print_pretty_error(
+                name, exception, source_file, source_line, source_col
+            )
+            if not pretty_printed:
+                # Fallback if TTLangCompileError is not available
+                self._print_basic_error(
+                    name, exception, source_file, source_line, include_traceback
+                )
+        else:
+            # No source location available
+            self._print_basic_error(name, exception, None, None, include_traceback)
+
+        # Re-raise with thread name included
+        error_msg = f"{name}: {type(exception).__name__}: {exception}"
+        raise RuntimeError(error_msg) from exception
+
     def _initialization_phase(self) -> None:
         """Run all threads sequentially until they first block.
 
@@ -200,10 +343,10 @@ class GreenletScheduler:
         one block_if_needed check). Threads that blocked on their first check
         keep ts=0, giving them priority in fair scheduling.
         """
-        from .block import set_current_thread_type, clear_current_thread_type
+        from .blockstate import set_current_thread_type, clear_current_thread_type
 
         for name in list(self._active.keys()):
-            g, blocking_obj, _, thread_type, _ = self._active[name]
+            g, blocking_obj, _, thread_type, _, _ = self._active[name]
 
             # All threads should start unblocked in init phase
             if blocking_obj is not None:
@@ -236,57 +379,8 @@ class GreenletScheduler:
                 clear_current_thread_type()
                 self._current_name = None
 
-                # Format error with thread name and source location using pretty printing
-                import traceback
-
-                # Extract source location from traceback
-                # Look for the first frame that's in user code (not in python/sim)
-                tb = traceback.extract_tb(e.__traceback__)
-                source_file = None
-                source_line = None
-                source_col = None
-                for frame in tb:
-                    # Skip internal greenlet/scheduler/simulator frames
-                    if (
-                        "greenlet_scheduler.py" not in frame.filename
-                        and "greenlet" not in frame.filename
-                        and "/python/sim/" not in frame.filename
-                    ):
-                        source_file = frame.filename
-                        source_line = frame.lineno
-                        source_col = getattr(frame, "colno", None) or 1
-                        break
-
-                # Use TTLangCompileError for pretty formatting if we have source location
-                if source_file and source_line:
-                    try:
-                        TTLangCompileError = _get_ttlang_compile_error()
-                        compile_error = TTLangCompileError(
-                            f"{type(e).__name__}: {e}",
-                            source_file=source_file,
-                            line=source_line,
-                            col=source_col,
-                        )
-                        print(f"\n❌ Error in {name}:")
-                        print(compile_error.format())
-                        print("-" * 50)
-                        # Re-raise with thread name included for test compatibility
-                        error_msg = f"{name}: {type(e).__name__}: {e}"
-                        raise RuntimeError(error_msg) from e
-                    except ImportError:
-                        # Fallback if TTLangCompileError is not available
-                        pass
-
-                # Fallback to basic formatting
-                print(f"\n❌ Error in {name}:")
-                if source_file and source_line:
-                    print(f"  File: {source_file}:{source_line}")
-                print(f"  {type(e).__name__}: {e}")
-                print("-" * 50)
-
-                # Re-raise with thread name included
-                error_msg = f"{name}: {type(e).__name__}: {e}"
-                raise RuntimeError(error_msg) from e
+                # Format and raise error with source location
+                self._format_and_raise_thread_error(name, e)
 
             clear_current_thread_type()
 
@@ -345,7 +439,9 @@ class GreenletScheduler:
                     # Thread may have completed during this iteration
                     continue
 
-                g, blocking_obj, blocked_op, thread_type, location = self._active[name]
+                g, blocking_obj, blocked_op, thread_type, location, _ = self._active[
+                    name
+                ]
 
                 # If thread is blocked, check if it can proceed
                 if blocking_obj is not None:
@@ -355,13 +451,16 @@ class GreenletScheduler:
                         continue
 
                     # Unblocked! Clear blocking state
-                    self._active[name] = (g, None, "", thread_type, "")
+                    self._active[name] = (g, None, "", thread_type, "", None)
 
                 # Set current thread for block_current_thread()
                 self._current_name = name
 
                 # Run thread until it blocks or completes
-                from .block import set_current_thread_type, clear_current_thread_type
+                from .blockstate import (
+                    set_current_thread_type,
+                    clear_current_thread_type,
+                )
 
                 set_current_thread_type(thread_type)
                 try:
@@ -389,64 +488,9 @@ class GreenletScheduler:
                     clear_current_thread_type()
                     self._current_name = None
 
-                    # Format error with thread name and source location using pretty printing
-                    import traceback
-
-                    # Extract source location from traceback
-                    # Look for the first frame that's in user code (not in python/sim)
-                    tb = traceback.extract_tb(e.__traceback__)
-                    source_file = None
-                    source_line = None
-                    source_col = None
-                    for frame in tb:
-                        # Skip internal greenlet/scheduler/simulator frames
-                        if (
-                            "greenlet_scheduler.py" not in frame.filename
-                            and "greenlet" not in frame.filename
-                            and "/python/sim/" not in frame.filename
-                        ):
-                            source_file = frame.filename
-                            source_line = frame.lineno
-                            source_col = getattr(frame, "colno", None) or 1
-                            break
-
-                    # Use TTLangCompileError for pretty formatting if we have source location
-                    if source_file and source_line:
-                        try:
-                            TTLangCompileError = _get_ttlang_compile_error()
-                            compile_error = TTLangCompileError(
-                                f"{type(e).__name__}: {e}",
-                                source_file=source_file,
-                                line=source_line,
-                                col=source_col,
-                            )
-                            print(f"\n❌ Error in {name}:")
-                            print(compile_error.format())
-                            print("-" * 50)
-                            # Re-raise with thread name included for test compatibility
-                            # Note: The traceback will be suppressed at top level
-                            error_msg = f"{name}: {type(e).__name__}: {e}"
-                            raise RuntimeError(error_msg) from e
-                        except ImportError:
-                            # Fallback if TTLangCompileError is not available
-                            pass
-
-                    # Fallback to basic formatting
-                    print(f"\nError in {name}:")
-                    if source_file and source_line:
-                        print(f"  File: {source_file}:{source_line}")
-                    print(f"  {type(e).__name__}: {e}")
-
-                    # Also print full traceback for debugging
-                    tb_str = "".join(
-                        traceback.format_exception(type(e), e, e.__traceback__)
-                    )
-                    print(f"\nFull traceback:")
-                    print(tb_str)
-
-                    # Re-raise with original exception chained
-                    error_msg = f"{name}: {type(e).__name__}: {e}"
-                    raise RuntimeError(error_msg) from e
+                    # Format and raise error with source location
+                    # Include full traceback for main loop errors (more debugging info)
+                    self._format_and_raise_thread_error(name, e, include_traceback=True)
                 finally:
                     clear_current_thread_type()
 
@@ -460,73 +504,120 @@ class GreenletScheduler:
                 blocked_groups: dict[tuple[str, str, str], list[str]] = defaultdict(
                     list
                 )
+                # Track raw (filename, lineno) per group for pretty printing
+                blocked_raw_locs: dict[
+                    tuple[str, str, str], Optional[Tuple[str, int]]
+                ] = {}
 
-                for name, (g, blocking_obj, op, _, location) in self._active.items():
+                for name, (
+                    g,
+                    blocking_obj,
+                    op,
+                    _,
+                    location,
+                    raw_loc,
+                ) in self._active.items():
                     obj_desc = self._get_obj_description(blocking_obj)
                     key = (op, obj_desc, location)
                     # Extract core identifier by removing thread type suffix
                     # e.g., "core0-compute" -> "core0", "core0-dm0" -> "core0"
                     core_id = name.rsplit("-", 1)[0] if "-" in name else name
                     blocked_groups[key].append(core_id)
+                    if key not in blocked_raw_locs:
+                        blocked_raw_locs[key] = raw_loc
 
-                # Format grouped messages
-                blocked_info: List[str] = []
+                # Format and print grouped messages with pretty source context
+                print("\nDeadlock detected: all generators blocked")
                 for (op, obj_desc, location), core_ids in blocked_groups.items():
                     # Remove duplicates and sort for consistent output
                     unique_cores = sorted(set(core_ids), key=lambda x: (len(x), x))
 
                     if len(unique_cores) == 1:
-                        blocked_info.append(
-                            f"  {unique_cores[0]}: blocked on {op}(){obj_desc}{location}"
-                        )
+                        cores_label = unique_cores[0]
                     else:
-                        # Compress multiple cores blocked at same location
-                        # Extract numeric part from core IDs (e.g., "core0" -> "0")
-                        core_numbers: list[str] = []
-                        for core_id in unique_cores:
-                            # Handle both "core0" and potential other formats
-                            if core_id.startswith("core"):
-                                core_numbers.append(core_id[4:])
-                            else:
-                                core_numbers.append(core_id)
-                        cores_str = ", ".join(core_numbers)
-                        blocked_info.append(
-                            f"  blocked on {op}(){obj_desc}{location} (cores: {cores_str})"
+                        core_numbers: list[int] = [
+                            int(core_id[4:]) for core_id in unique_cores
+                        ]
+                        cores_label = f"cores: {self._format_core_ranges(core_numbers)}"
+
+                    raw_loc = blocked_raw_locs.get((op, obj_desc, location))
+                    if raw_loc:
+                        filename, lineno = raw_loc
+                        TTLangCompileError = _get_ttlang_compile_error()
+                        compile_error = TTLangCompileError(
+                            f"deadlock: blocked on {op}(){obj_desc} ({cores_label})",
+                            source_file=filename,
+                            line=lineno,
+                            col=1,
+                        )
+                        print(compile_error.format())
+                    else:
+                        print(
+                            f"  blocked on {op}(){obj_desc}{location} ({cores_label})"
                         )
 
                 raise RuntimeError(
-                    f"Deadlock detected: all generators blocked\n"
-                    + "\n".join(blocked_info)
-                )
+                    "Deadlock detected: all generators blocked"
+                ) from RuntimeError("deadlock")
+
+    def _format_core_ranges(self, core_numbers: list[int]) -> str:
+        """Format a list of core numbers as ranges.
+
+        Args:
+            core_numbers: Sorted list of core numbers (e.g., [0, 1, 2, 3, 8, 9, 10, 11])
+
+        Returns:
+            Formatted string with ranges (e.g., "0-3, 8-11")
+        """
+        if not core_numbers:
+            return ""
+
+        # Sort to ensure consecutive numbers are adjacent
+        sorted_cores = sorted(core_numbers)
+        ranges: list[str] = []
+        start = sorted_cores[0]
+        end = sorted_cores[0]
+
+        for i in range(1, len(sorted_cores)):
+            if sorted_cores[i] == end + 1:
+                # Consecutive, extend the range
+                end = sorted_cores[i]
+            else:
+                # Gap found, save the current range and start a new one
+                if start == end:
+                    ranges.append(str(start))
+                else:
+                    ranges.append(f"{start}-{end}")
+                start = sorted_cores[i]
+                end = sorted_cores[i]
+
+        # Add the final range
+        if start == end:
+            ranges.append(str(start))
+        else:
+            ranges.append(f"{start}-{end}")
+
+        return ", ".join(ranges)
 
     def _get_obj_description(self, obj: Any) -> str:
         """Get a brief description of an object for debugging output."""
         if obj is None:
             return ""
 
-        from .block import Block
-        from .cb import CircularBuffer
-        from .pipe import Pipe
-        from .ttnnsim import Tensor
-        from .typedefs import AnyPipe
-
-        match obj:
-            case Block():
+        class_name = type(obj).__name__
+        match class_name:
+            case "Block":
                 return " on Block"
-            case CircularBuffer() if hasattr(obj, "_name"):
-                name = getattr(obj, "_name", "unknown")
-                return f" on CircularBuffer({name})"
-            case CircularBuffer():
-                return " on CircularBuffer"
-            case Pipe():
-                pipe = cast(AnyPipe, obj)
-                return f" on Pipe({pipe.src_core}->{pipe.dst_core_range})"
-            case Tensor():
+            case "DataflowBuffer":
+                name = getattr(obj, "_name", None)
+                return f" on DataflowBuffer({name})" if name else " on DataflowBuffer"
+            case "Pipe":
+                src = getattr(obj, "src_core", "?")
+                dst = getattr(obj, "dst_core_range", "?")
+                return f" on Pipe({src}->{dst})"
+            case "Tensor":
                 return " on Tensor"
             case _:
-                class_name = (
-                    obj.__class__.__name__ if hasattr(obj, "__class__") else str(obj)
-                )
                 return f" on {class_name}"
 
 

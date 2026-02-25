@@ -207,6 +207,66 @@ def _run_profiling_pipeline(
         print(f"[Auto-profile] Failed to parse profile CSV: {e}")
 
 
+def _run_perf_dump(tensors: tuple, kernel_name: str):
+    """
+    Run NOC profiler summary and print CB flow / pipe graph after execution.
+
+    Called after kernel execution when TTLANG_PERF_DUMP=1 is set.
+    Reads NOC traces from $TT_METAL_HOME/generated/profiler/.logs/,
+    CB flow graph from /tmp/ttlang_cb_flow_graph.json (written by
+    ttl-dump-cb-flow-graph pass), and pipe graph from
+    /tmp/ttlang_pipe_graph.json (copied from compiler temp file).
+    """
+    from ._src.perf_summary import run as perf_summary_run
+
+    # Flush profiler data from device (requires mid-run dump)
+    if os.environ.get("TT_METAL_PROFILER_MID_RUN_DUMP") != "1":
+        print(
+            "[perf_dump] WARNING: TT_METAL_PROFILER_MID_RUN_DUMP=1 not set, "
+            "profiler data may be stale"
+        )
+    device = None
+    for tensor in tensors:
+        if is_ttnn_tensor(tensor) and hasattr(tensor, "device"):
+            device = tensor.device()
+            break
+    if device is not None:
+        try:
+            ttnn.ReadDeviceProfiler(device)
+        except Exception as e:
+            print(f"[perf_dump] WARNING: Failed to read device profiler: {e}")
+
+    tt_metal_home = os.environ.get("TT_METAL_HOME", "")
+    if not tt_metal_home:
+        raise ValueError("TTLANG_PERF_DUMP=1 requires TT_METAL_HOME to be set")
+
+    # NOC profiler summary
+    logs_path = Path(tt_metal_home) / "generated" / "profiler" / ".logs"
+    if not logs_path.exists():
+        raise ValueError(
+            f"Profiler logs directory not found: {logs_path}\n"
+            "Ensure TT_METAL_DEVICE_PROFILER_NOC_EVENTS=1 is set"
+        )
+    result = perf_summary_run(logs_path, names=[kernel_name])
+    if result:
+        print(result)
+
+    # CB flow graph (written by ttl-dump-cb-flow-graph pass)
+    cb_flow_path = Path("/tmp/ttlang_cb_flow_graph.json")
+    if not cb_flow_path.exists():
+        raise ValueError(f"CB flow graph not found: {cb_flow_path}")
+    print("=== CB FLOW GRAPH ===")
+    print(cb_flow_path.read_text())
+
+    # Pipe graph (copied from compiler temp file)
+    pipe_graph_path = Path("/tmp/ttlang_pipe_graph.json")
+    if not pipe_graph_path.exists():
+        print(f"[perf_dump] WARNING: Pipe graph not found: {pipe_graph_path}")
+    else:
+        print("=== PIPE GRAPH ===")
+        print(pipe_graph_path.read_text())
+
+
 def _detect_memory_space_from_tensor(tensor, default: str) -> str:
     """Detect memory space (L1/DRAM) from a ttnn tensor's buffer type."""
     mem_config = tensor.memory_config()
@@ -1034,7 +1094,18 @@ def _compile_kernel(
             pipeline_passes.append("func.func(ttl-schedule-operations)")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
 
-        # Add auto-profiling passes if enabled
+        # Add CB flow graph dump if auto-profiling or perf dump is enabled
+        perf_dump = os.environ.get("TTLANG_PERF_DUMP") == "1"
+        if perf_dump:
+            # Remove stale outputs from previous runs
+            for stale in ("/tmp/ttlang_cb_flow_graph.json", "/tmp/ttlang_pipe_graph.json"):
+                try:
+                    os.remove(stale)
+                except FileNotFoundError:
+                    pass
+        if perf_dump:
+            pipeline_passes.append(
+                'ttl-dump-cb-flow-graph{output="/tmp/ttlang_cb_flow_graph.json"}')
         if is_auto_profile_enabled():
             if "TTLANG_PROFILE_CSV" in os.environ:
                 cb_flow_json = str(Path(os.environ["TTLANG_PROFILE_CSV"]).parent / "cb_flow_graph.json")
@@ -1265,6 +1336,11 @@ def pykernel_gen(
                         compiled_kernel.thread_to_kernel,
                         compiled_kernel.kernel_line_offsets,
                     )
+
+                # Run perf dump once, then disable to avoid noise
+                if os.environ.get("TTLANG_PERF_DUMP") == "1":
+                    _run_perf_dump(args, f.__name__)
+                    del os.environ["TTLANG_PERF_DUMP"]
 
                 return result
 

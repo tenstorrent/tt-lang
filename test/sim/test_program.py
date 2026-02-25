@@ -19,8 +19,8 @@ import torch.testing as tt_testing
 from test_utils import make_ones_tensor, make_zeros_tensor
 
 from python.sim import TILE_SHAPE, copy, ttl, ttnn
-from python.sim.program import _make_cell  # type: ignore[reportPrivateUsage]
-from python.sim.program import Program, rebind_func_with_ctx
+from python.sim.decorators import _make_cell, rebind_func_with_ctx  # type: ignore[reportPrivateUsage]
+from python.sim.program import Program
 
 
 class TestBasicExecution:
@@ -464,10 +464,10 @@ class TestBlockCompletion:
 
         input_tensor = ttnn.rand((32, 32))
 
-        # Should raise RuntimeError about incomplete CircularBuffer operations
+        # Should raise RuntimeError about incomplete DataflowBuffer operations
         with pytest.raises(
             RuntimeError,
-            match="Kernel execution completed with incomplete CircularBuffer operations",
+            match="Kernel execution completed with incomplete DataflowBuffer operations",
         ):
             test_kernel(input_tensor)
 
@@ -505,10 +505,10 @@ class TestBlockCompletion:
 
         input_tensor = ttnn.rand((32, 32))
 
-        # Should raise RuntimeError about incomplete CircularBuffer operations
+        # Should raise RuntimeError about incomplete DataflowBuffer operations
         with pytest.raises(
             RuntimeError,
-            match="Kernel execution completed with incomplete CircularBuffer operations",
+            match="Kernel execution completed with incomplete DataflowBuffer operations",
         ):
             test_kernel(input_tensor)
 
@@ -557,20 +557,20 @@ class TestBlockCompletion:
         test_kernel(input_tensor, output_tensor)
 
     def test_multiple_dfbs_with_errors(self) -> None:
-        """Test that errors from multiple CBs are all reported."""
+        """Test that errors from multiple DFBs are all reported."""
 
         @ttl.kernel(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor):
-            from python.sim.cb import CircularBuffer
+            from python.sim.dfb import DataflowBuffer
 
             # Create multiple circular buffers
             element = make_ones_tensor(32, 32)
-            dfb1 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
-            dfb2 = CircularBuffer(element=element, shape=(1, 1), buffer_factor=2)
+            dfb1 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+            dfb2 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
 
             @ttl.datamovement()
             def dm0():
-                # Both CBs have incomplete operations
+                # Both DFBs have incomplete operations
                 block1 = dfb1.reserve()
                 slice_data = input_data[0:1, 0:1]
                 tx = copy(slice_data, block1)
@@ -592,10 +592,10 @@ class TestBlockCompletion:
 
         input_tensor = ttnn.rand((32, 32))
 
-        # Should raise RuntimeError mentioning multiple CBs
+        # Should raise RuntimeError mentioning multiple DFBs
         with pytest.raises(
             RuntimeError,
-            match="Kernel execution completed with incomplete CircularBuffer operations",
+            match="Kernel execution completed with incomplete DataflowBuffer operations",
         ):
             test_kernel(input_tensor)
 
@@ -903,7 +903,7 @@ class TestCooperativeScheduling:
 
             @ttl.compute()
             def compute():
-                # Compute reads from CBs, processes, and writes to output DFB
+                # Compute reads from DFBs, processes, and writes to output DFB
                 for i in range(2):
                     block_a = dfb_a.wait()
                     block_b = dfb_b.wait()
@@ -919,7 +919,7 @@ class TestCooperativeScheduling:
 
             @ttl.datamovement()
             def dm0():
-                # DM0: Copy input tensors to CBs
+                # DM0: Copy input tensors to DFBs
                 for i in range(2):
                     block_a = dfb_a.reserve()
                     tx_a = copy(a[i : i + 1, 0:1], block_a)

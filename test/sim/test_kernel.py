@@ -12,7 +12,7 @@ import pytest
 from test_utils import make_zeros_tensor
 
 from python.sim import ttl, ttnn
-from python.sim.kernel import flatten_core_index
+from python.sim.corecontext import flatten_core_index
 from python.sim.typedefs import Shape
 
 

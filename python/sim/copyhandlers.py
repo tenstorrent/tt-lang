@@ -26,7 +26,7 @@ from typing import (
     Union,
 )
 
-from .block import Block
+from .dfb import Block
 from .constants import COPY_PIPE_TIMEOUT, TILE_SHAPE
 from .pipe import AnySrcPipeIdentity, DstPipeIdentity, SrcPipeIdentity
 from .stats import (
@@ -36,7 +36,8 @@ from .stats import (
     record_pipe_write,
 )
 from .ttnnsim import Tensor
-from .typedefs import AnyDst, AnyPipe, CoreCoord, Count, Pipe, Shape
+from .pipe import AnyDst, AnyPipe, Pipe
+from .typedefs import CoreCoord, Count, Shape
 
 if TYPE_CHECKING:
     from .pipe import SrcPipeIdentity
@@ -153,6 +154,32 @@ _pipe_buffer: Dict[AnyPipe, _PipeEntry] = {}
 _pipe_registry_lock = threading.Lock()
 
 
+def _get_or_create_pipe_entry(pipe: AnyPipe) -> _PipeEntry:
+    """Get or create pipe buffer entry for a given pipe.
+
+    This helper ensures atomic initialization of pipe entries so all threads
+    see the same entry object and its lock.
+
+    Args:
+        pipe: The pipe to get or create an entry for
+
+    Returns:
+        The pipe entry containing queue, event, lock, and next_msg_id
+    """
+    with _pipe_registry_lock:
+        entry = _pipe_buffer.get(pipe)
+        if entry is None:
+            new_entry: _PipeEntry = {
+                "queue": deque(),
+                "event": threading.Event(),
+                "lock": threading.Lock(),
+                "next_msg_id": 0,
+            }
+            _pipe_buffer[pipe] = new_entry
+            entry = new_entry
+        return entry
+
+
 class CopyTransferHandler(Protocol):
     """Protocol for copy transfer handlers."""
 
@@ -242,19 +269,8 @@ class BlockToPipeHandler:
         # Record pipe write statistics
         record_pipe_write(dst, src_data)
 
-        # Initialize per-pipe state atomically so all threads see the
-        # same entry (and therefore the same per-entry lock).
-        with _pipe_registry_lock:
-            entry = _pipe_buffer.get(dst)
-            if entry is None:
-                new_entry: _PipeEntry = {
-                    "queue": deque(),
-                    "event": threading.Event(),
-                    "lock": threading.Lock(),
-                    "next_msg_id": 0,
-                }
-                _pipe_buffer[dst] = new_entry
-                entry = new_entry
+        # Get or create pipe entry atomically
+        entry = _get_or_create_pipe_entry(dst)
 
         # Calculate number of receivers based on dst_core_range type
         num_receivers: int = 1
@@ -415,18 +431,8 @@ class PipeToBlockHandler:
         # usage and provides a cleaner synchronization primitive for tests.
         start_time = time.time()
 
-        # Ensure entry exists atomically so we can safely access event/lock.
-        with _pipe_registry_lock:
-            entry = _pipe_buffer.get(src)
-            if entry is None:
-                new_entry: _PipeEntry = {
-                    "queue": deque(),
-                    "event": threading.Event(),
-                    "lock": threading.Lock(),
-                    "next_msg_id": 0,
-                }
-                _pipe_buffer[src] = new_entry
-                entry = new_entry
+        # Get or create pipe entry atomically
+        entry = _get_or_create_pipe_entry(src)
         event: threading.Event = entry["event"]
         queue: Deque[Tuple[List[Tensor], Count, int, set[int]]] = entry["queue"]
         lock: threading.Lock = entry["lock"]
@@ -461,7 +467,7 @@ class PipeToBlockHandler:
 
                 # Get current core ID for tracking which messages this core has received
                 try:
-                    from .kernel import core
+                    from .corecontext import core
 
                     core_id = core(dims=1)
                     core_id_available = True
@@ -550,29 +556,47 @@ class PipeToBlockHandler:
 class BlockToSrcPipeIdentityHandler:
     """Handler for Block → SrcPipeIdentity (delegates to Block → Pipe)."""
 
+    def __init__(self) -> None:
+        self._delegate: CopyTransferHandler | None = None
+
+    def _get_delegate(self) -> CopyTransferHandler:
+        """Lazy initialization of delegate handler."""
+        if self._delegate is None:
+            self._delegate = handler_registry[(Block, Pipe)]
+        return self._delegate
+
     def validate(self, src: Block, dst: AnySrcPipeIdentity) -> None:
         # Delegate to the Pipe handler
-        BlockToPipeHandler().validate(src, dst.pipe)
+        self._get_delegate().validate(src, dst.pipe)
 
     def transfer(self, src: Block, dst: AnySrcPipeIdentity) -> None:
         # Delegate to the Pipe handler
-        BlockToPipeHandler().transfer(src, dst.pipe)
+        self._get_delegate().transfer(src, dst.pipe)
 
     def can_wait(self, src: Block, dst: AnySrcPipeIdentity) -> bool:
-        return BlockToPipeHandler().can_wait(src, dst.pipe)
+        return self._get_delegate().can_wait(src, dst.pipe)
 
 
 @register_copy_handler(DstPipeIdentity, Block)
 class DstPipeIdentityToBlockHandler:
     """Handler for DstPipeIdentity → Block (delegates to Pipe → Block)."""
 
+    def __init__(self) -> None:
+        self._delegate: CopyTransferHandler | None = None
+
+    def _get_delegate(self) -> CopyTransferHandler:
+        """Lazy initialization of delegate handler."""
+        if self._delegate is None:
+            self._delegate = handler_registry[(Pipe, Block)]
+        return self._delegate
+
     def validate(self, src: DstPipeIdentity, dst: Block) -> None:
         # Delegate to the Pipe handler
-        PipeToBlockHandler().validate(src.pipe, dst)
+        self._get_delegate().validate(src.pipe, dst)
 
     def transfer(self, src: DstPipeIdentity, dst: Block) -> None:
         # Delegate to the Pipe handler
-        PipeToBlockHandler().transfer(src.pipe, dst)
+        self._get_delegate().transfer(src.pipe, dst)
 
     def can_wait(self, src: DstPipeIdentity, dst: Block) -> bool:
-        return PipeToBlockHandler().can_wait(src.pipe, dst)
+        return self._get_delegate().can_wait(src.pipe, dst)

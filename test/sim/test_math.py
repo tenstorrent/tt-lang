@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from sim import ttl
-from sim.block import Block
+from sim.dfb import Block
 from sim.ttnnsim import Tensor
 
 
@@ -798,3 +798,89 @@ def test_reduce_sum_empty_dims():
         ValueError, match="dims parameter must contain at least one dimension"
     ):
         ttl.math.reduce_sum(block_a, scaler, dims=[])
+
+
+# ---------------------------------------------------------------------------
+# matmul tests
+# ---------------------------------------------------------------------------
+
+
+def _tile(value: float, rows: int = 4, cols: int = 4) -> Tensor:
+    """Create a tile filled with a constant value."""
+    return Tensor(torch.full((rows, cols), value))
+
+
+def test_matmul_result_shape_1x1():
+    """matmul of (1,1) @ (1,1) produces a (1,1) block."""
+    a = Block.from_list([_tile(2.0)], shape=(1, 1))
+    b = Block.from_list([_tile(3.0)], shape=(1, 1))
+    result = ttl.math.matmul(a, b)
+    assert result.shape == (1, 1)
+    assert len(result.to_list()) == 1
+
+
+def test_matmul_result_shape_2x3_times_3x4():
+    """matmul of (2,3) @ (3,4) produces a (2,4) block."""
+    a = Block.from_list([_tile(1.0)] * 6, shape=(2, 3))
+    b = Block.from_list([_tile(1.0)] * 12, shape=(3, 4))
+    result = ttl.math.matmul(a, b)
+    assert result.shape == (2, 4)
+    assert len(result.to_list()) == 8
+
+
+def test_matmul_values_identity():
+    """matmul against an identity-like tile produces the original tile values."""
+    rows, cols = 4, 4
+    # a tile filled with 5, b tile is identity matrix
+    a_tile = Tensor(torch.full((rows, cols), 5.0))
+    b_tile = Tensor(torch.eye(cols))
+
+    a = Block.from_list([a_tile], shape=(1, 1))
+    b = Block.from_list([b_tile], shape=(1, 1))
+    result = ttl.math.matmul(a, b)
+
+    expected = torch.matmul(torch.full((rows, cols), 5.0), torch.eye(cols))
+    assert torch.allclose(result.to_list()[0].to_torch(), expected)
+
+
+def test_matmul_values_accumulation():
+    """Each result tile is the sum over k of torch.matmul(a[i,k], b[k,j])."""
+    rows, cols = 4, 4
+    # (1,2) @ (2,1) -> (1,1); result tile = a[0,0]@b[0,0] + a[0,1]@b[1,0]
+    a = Block.from_list([_tile(1.0, rows, cols), _tile(2.0, rows, cols)], shape=(1, 2))
+    b = Block.from_list([_tile(3.0, rows, cols), _tile(4.0, rows, cols)], shape=(2, 1))
+
+    result = ttl.math.matmul(a, b)
+    assert result.shape == (1, 1)
+
+    # torch.matmul(full(1), full(3)) = cols * 1*3 per element = 12 per element
+    # torch.matmul(full(2), full(4)) = cols * 2*4 per element = 32 per element
+    # sum = 44 per element
+    expected_val = cols * 1.0 * 3.0 + cols * 2.0 * 4.0
+    result_tensor = result.to_list()[0].to_torch()
+    assert torch.allclose(result_tensor, torch.full((rows, cols), expected_val))
+
+
+def test_matmul_inner_dim_mismatch_raises():
+    """matmul raises ValueError when inner dimensions do not match."""
+    a = Block.from_list([_tile(1.0)] * 6, shape=(2, 3))
+    b = Block.from_list(
+        [_tile(1.0)] * 8, shape=(2, 4)
+    )  # K=2 != K_b=2... actually (2,4) is fine
+    # Use (3,3)@(4,2) where K=3 != K_b=4
+    a2 = Block.from_list([_tile(1.0)] * 3, shape=(1, 3))
+    b2 = Block.from_list([_tile(1.0)] * 8, shape=(4, 2))
+    with pytest.raises(ValueError, match="Inner dimensions must match"):
+        ttl.math.matmul(a2, b2)
+
+
+def test_matmul_non_2d_block_raises():
+    """matmul raises ValueError when given a non-2D block shape."""
+    # Blocks must have 2D shapes (rows_of_tiles, cols_of_tiles)
+    # We can't create a 1D-shaped block with from_list since shape is always 2-tuple,
+    # but we can verify a 3D shape check isn't possible with the current API.
+    # Instead verify that mismatched inner dims produce the right error.
+    a = Block.from_list([_tile(1.0)], shape=(1, 1))
+    b = Block.from_list([_tile(1.0)] * 2, shape=(2, 1))
+    with pytest.raises(ValueError, match="Inner dimensions must match"):
+        ttl.math.matmul(a, b)

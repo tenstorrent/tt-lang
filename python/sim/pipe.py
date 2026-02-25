@@ -10,10 +10,82 @@ This module provides:
 - PipeIdentity classes: Wrappers exposing pipe source/destination information
 """
 
-from typing import Any, Callable, Generic, List, Union
+from dataclasses import dataclass
+from typing import Any, Callable, Generic, List, TypeVar, Union
 
-from .kernel import core, flatten_core_index, grid_size
-from .typedefs import AnyDst, CoreCoord, CoreRange, Pipe, DstT
+from .corecontext import core, flatten_core_index, grid_size
+from .typedefs import CoreCoord, CoreRange
+
+# Type variable for Pipe destination type
+DstT = TypeVar("DstT", CoreCoord, CoreRange)
+
+# Union of valid destination types for Pipe
+AnyDst = Union[CoreCoord, CoreRange]
+
+
+@dataclass(frozen=True)
+class Pipe(Generic[DstT]):
+    """
+    Represents a pipe for NoC communication.
+
+    A pipe describes a data transfer from a source core to destination core(s).
+    Can be used for both unicast (single destination) and multicast (multiple destinations).
+
+    Type Parameters:
+        DstT: The type of the destination - CoreCoord or CoreRange
+
+    Attributes:
+        src_core: Core coordinates of the source/sender. Can be:
+                 - Index: Single 1D core (e.g., 0, 1, 2)
+                 - Tuple[Index, ...]: Multi-dimensional core (e.g., (0, 1), (1, 2, 3))
+
+        dst_core_range: Destination specification. Can be:
+                       - CoreCoord: Single destination core (unicast)
+                         Example: 5 or (1, 2)
+                       - CoreRange: Range of destination cores using slices (multicast)
+                         Example: (0, slice(1, 4)) means cores (0,1), (0,2), (0,3)
+    """
+
+    src_core: CoreCoord
+    dst_core_range: DstT
+
+    def has_current_core(self) -> bool:
+        """Check if the current core participates in this pipe (either as source or destination).
+
+        This is useful for early-exit patterns where non-participating cores should skip work.
+        Must be called within a kernel context.
+
+        Returns:
+            True if the current core is either the source or in the destination range.
+        """
+        # Check if current core is the source
+        current_core_linear = core(dims=1)
+        pipe_src_linear = flatten_core_index(self.src_core)
+        if current_core_linear == pipe_src_linear:
+            return True
+
+        return core_in_dst_range(self.dst_core_range)
+
+    def __hash__(self) -> int:
+        """Custom hash implementation to handle slices and nested tuples."""
+
+        def make_hashable(obj: Any) -> Any:
+            """Convert potentially unhashable objects to hashable equivalents."""
+            match obj:
+                case slice():
+                    return (obj.start, obj.stop, obj.step)  # type: ignore[return-value]
+                case list():
+                    return tuple(make_hashable(item) for item in obj)  # type: ignore[misc]
+                case tuple():
+                    return tuple(make_hashable(item) for item in obj)  # type: ignore[misc]
+                case _:
+                    return obj
+
+        return hash((make_hashable(self.src_core), make_hashable(self.dst_core_range)))
+
+
+# Union of Pipe instances with different destination types
+AnyPipe = Union[Pipe[CoreCoord], Pipe[CoreRange]]
 
 
 class SrcPipeIdentity(Generic[DstT]):

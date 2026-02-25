@@ -148,6 +148,41 @@ Run `/ttl-help` in Claude Code to see all available commands. Here is a summary:
     List all available TT-Lang slash commands with descriptions and examples.
 ```
 
+## Perf Summary
+
+Set `TTLANG_PERF_DUMP=1` to print a NOC traffic and per-thread wall time summary after kernel execution.
+
+**Required environment variables** (must be exported before running):
+```bash
+export TT_METAL_HOME=/path/to/tt-metal
+export TT_METAL_DEVICE_PROFILER=1
+export TT_METAL_DEVICE_PROFILER_NOC_EVENTS=1
+export TT_METAL_PROFILER_MID_RUN_DUMP=1
+export TTLANG_PERF_DUMP=1
+python path/to/program.py  # just run with python
+```
+
+**Sample output:**
+```
+--- Program 1024 (__demo_kernel) ---
+grid: 1x1 (1 cores)
+duration: 2,225,436 cycles (1.65 ms)
+  DRAM read:          5.4 MB  (2790 transfers)
+  DRAM write:         5.0 MB  (2582 transfers)
+  effective BW:   6.7 GB/s (total payload / duration)
+  transfer size:  2.0 KB (uniform)
+  barriers:       57 read (1 per 49 reads), 161 write (1 per 16 writes)
+  noc reads:      NOC_0=2790
+  noc writes:     NOC_1=2582
+  DRAM channels:  16
+  kernel time:
+    BRISC    2,225,356 cycles (1.65 ms)
+    NCRISC   2,211,871 cycles (1.64 ms)
+    TRISC_0  2,222,025 cycles (1.65 ms)
+    TRISC_1  2,222,876 cycles (1.65 ms)
+    TRISC_2  2,222,358 cycles (1.65 ms)
+```
+
 ## Auto-Profiling
 
 TT-Lang includes built-in auto-profiling that instruments kernels with signposts and generates per-line cycle count reports.

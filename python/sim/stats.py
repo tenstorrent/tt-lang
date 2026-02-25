@@ -16,7 +16,8 @@ if TYPE_CHECKING:
     from .ttnnsim import Tensor
 
 from .constants import TILE_SHAPE
-from .typedefs import AnyPipe, CoreCoord, CoreRange
+from .pipe import AnyPipe
+from .typedefs import CoreCoord, CoreRange
 
 # Statistics collection state
 _stats_enabled = False
@@ -26,11 +27,11 @@ _stats_by_name: dict[str, dict[str, int]] = defaultdict(
 _pipe_stats_by_name: dict[str, dict[str, int]] = defaultdict(
     lambda: {"reads": 0, "writes": 0, "tiles_read": 0, "tiles_written": 0}
 )
-_cb_stats_by_name: dict[str, dict[str, int]] = defaultdict(
+_dfb_stats_by_name: dict[str, dict[str, int]] = defaultdict(
     lambda: {"reserves": 0, "waits": 0, "tiles_reserved": 0, "tiles_waited": 0}
 )
 _stats_lock = threading.Lock()
-_cb_name_counter = 0
+_dfb_name_counter = 0
 
 
 def enable_stats() -> None:
@@ -52,12 +53,12 @@ def is_stats_enabled() -> bool:
 
 def reset_stats() -> None:
     """Reset all collected statistics."""
-    global _stats_by_name, _pipe_stats_by_name, _cb_stats_by_name, _cb_name_counter
+    global _stats_by_name, _pipe_stats_by_name, _dfb_stats_by_name, _dfb_name_counter
     with _stats_lock:
         _stats_by_name.clear()
         _pipe_stats_by_name.clear()
-        _cb_stats_by_name.clear()
-        _cb_name_counter = 0
+        _dfb_stats_by_name.clear()
+        _dfb_name_counter = 0
 
 
 def register_tensor_name(tensor: "Tensor", name: str) -> None:
@@ -228,94 +229,94 @@ def record_pipe_read(pipe: AnyPipe, block_data: "list[Tensor]") -> None:
         _pipe_stats_by_name[name]["tiles_read"] += num_tiles
 
 
-def register_cb_name(cb: Any, name: str) -> None:
+def register_dfb_name(dfb: Any, name: str) -> None:
     """Register a name for a circular buffer.
 
     Args:
-        cb: The CB to name
-        name: The name to associate with this CB
+        dfb: The DFB to name
+        name: The name to associate with this DFB
     """
     # Set as attribute so it persists
-    cb._stats_name = name  # type: ignore
+    dfb._stats_name = name  # type: ignore
 
 
-def _get_cb_name(cb: Any) -> str:
+def _get_dfb_name(dfb: Any) -> str:
     """Get the name of a circular buffer.
 
     Args:
-        cb: The CB to get a name for
+        dfb: The DFB to get a name for
 
     Returns:
-        The CB's name
+        The DFB's name
     """
-    # Check if CB has a registered name
-    name = getattr(cb, "_stats_name", None)
+    # Check if DFB has a registered name
+    name = getattr(dfb, "_stats_name", None)
     if name:
         return name
 
-    # Generate a name based on CB ID if available
-    cb_id = getattr(cb, "_cb_id", None)
-    if cb_id is not None:
-        return f"cb_{cb_id}"
+    # Generate a name based on DFB ID if available
+    dfb_id = getattr(dfb, "_dfb_id", None)
+    if dfb_id is not None:
+        return f"dfb_{dfb_id}"
 
     # Fall back to generating a unique name
-    global _cb_name_counter
+    global _dfb_name_counter
     with _stats_lock:
-        _cb_name_counter += 1
-        counter = _cb_name_counter
-    return f"cb_unnamed_{counter}"
+        _dfb_name_counter += 1
+        counter = _dfb_name_counter
+    return f"dfb_unnamed_{counter}"
 
 
-def record_cb_reserve(cb: Any, num_tiles: int) -> None:
-    """Record a reserve (write allocation) operation on a CB.
+def record_dfb_reserve(dfb: Any, num_tiles: int) -> None:
+    """Record a reserve (write allocation) operation on a DFB.
 
     Args:
-        cb: The CB being reserved from
+        dfb: The DFB being reserved from
         num_tiles: Number of tiles being reserved
     """
     if not _stats_enabled:
         return
 
-    name = _get_cb_name(cb)
+    name = _get_dfb_name(dfb)
 
     with _stats_lock:
-        _cb_stats_by_name[name]["reserves"] += 1
-        _cb_stats_by_name[name]["tiles_reserved"] += num_tiles
+        _dfb_stats_by_name[name]["reserves"] += 1
+        _dfb_stats_by_name[name]["tiles_reserved"] += num_tiles
 
 
-def record_cb_wait(cb: Any, num_tiles: int) -> None:
-    """Record a wait (read) operation on a CB.
+def record_dfb_wait(dfb: Any, num_tiles: int) -> None:
+    """Record a wait (read) operation on a DFB.
 
     Args:
-        cb: The CB being waited on
+        dfb: The DFB being waited on
         num_tiles: Number of tiles being waited for
     """
     if not _stats_enabled:
         return
 
-    name = _get_cb_name(cb)
+    name = _get_dfb_name(dfb)
 
     with _stats_lock:
-        _cb_stats_by_name[name]["waits"] += 1
-        _cb_stats_by_name[name]["tiles_waited"] += num_tiles
+        _dfb_stats_by_name[name]["waits"] += 1
+        _dfb_stats_by_name[name]["tiles_waited"] += num_tiles
 
 
 def print_stats() -> None:
-    """Print collected tensor, pipe, and CB statistics."""
+    """Print collected tensor, pipe, and DFB statistics."""
     # Take a snapshot of the statistics under lock
     with _stats_lock:
         has_tensor_stats = bool(_stats_by_name)
         has_pipe_stats = bool(_pipe_stats_by_name)
-        has_cb_stats = bool(_cb_stats_by_name)
+        has_dfb_stats = bool(_dfb_stats_by_name)
 
-        if not has_tensor_stats and not has_pipe_stats and not has_cb_stats:
+        if not has_tensor_stats and not has_pipe_stats and not has_dfb_stats:
             print("\nNo statistics collected.")
             return
 
         # Copy data to avoid holding lock during printing
         tensor_stats_copy = dict(_stats_by_name)
         pipe_stats_copy = dict(_pipe_stats_by_name)
-        cb_stats_copy = dict(_cb_stats_by_name)
+        dfb_stats_copy = dict(_dfb_stats_by_name)
 
     # Print tensor statistics
     if has_tensor_stats:
@@ -397,17 +398,17 @@ def print_stats() -> None:
         )
         print("=" * 74)
 
-    # Print CB statistics
-    if has_cb_stats:
+    # Print DFB statistics
+    if has_dfb_stats:
         print("\n" + "=" * 74)
-        print("Circular Buffer Statistics")
+        print("Dataflow Buffer Statistics")
         print("=" * 74)
 
         # Sort by name for consistent output
-        sorted_cbs = sorted(cb_stats_copy.items())
+        sorted_dfbs = sorted(dfb_stats_copy.items())
 
         print(
-            f"{'CB':<20} {'Reserves':>10} {'Waits':>10} {'Tiles Reserved':>16} {'Tiles Waited':>14}"
+            f"{'DFB':<20} {'Reserves':>10} {'Waits':>10} {'Tiles Reserved':>16} {'Tiles Waited':>14}"
         )
         print("-" * 74)
 
@@ -416,7 +417,7 @@ def print_stats() -> None:
         total_tiles_reserved = 0
         total_tiles_waited = 0
 
-        for name, stats in sorted_cbs:
+        for name, stats in sorted_dfbs:
             reserves = stats["reserves"]
             waits = stats["waits"]
             tiles_reserved = stats["tiles_reserved"]

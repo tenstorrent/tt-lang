@@ -18,6 +18,10 @@ import argparse
 from pathlib import Path
 from typing import Any
 
+from .stats import enable_stats, print_stats
+from .kernel import set_default_grid
+from .greenlet_scheduler import set_scheduler_algorithm
+
 
 def setup_simulator_imports() -> None:
     """
@@ -27,7 +31,7 @@ def setup_simulator_imports() -> None:
     implementations when run under ttlang-sim.
     """
     # Import simulator implementations
-    from sim import ttl, ttnn
+    from . import ttl, ttnn
 
     # Shadow compiler imports with simulator versions
     sys.modules["ttl"] = ttl  # type: ignore[assignment]
@@ -66,10 +70,9 @@ def run_file(filepath: str, argv: list[str]) -> None:
             exec(code, exec_globals)
         except RuntimeError as e:
             # RuntimeError with __cause__ is from greenlet scheduler exception handling
-            # and already has formatted error printed - suppress traceback
+            # (including deadlocks) and already has formatted error printed - suppress traceback
             if e.__cause__ is not None:
                 sys.exit(1)
-            # RuntimeError without __cause__ (like deadlock) should show filtered traceback
             print(f"\nError executing {file_path.name}:", file=sys.stderr)
             _print_filtered_traceback(e, file_path)
             sys.exit(1)
@@ -209,13 +212,11 @@ def main() -> None:
 
     # Configure scheduler algorithm if specified
     if args.scheduler:
-        from sim.greenlet_scheduler import set_scheduler_algorithm
 
         set_scheduler_algorithm(args.scheduler)
 
     # Enable tensor statistics collection if requested
     if args.show_stats:
-        from sim.stats import enable_stats
 
         enable_stats()
 
@@ -228,8 +229,6 @@ def main() -> None:
             rows, cols = int(parts[0].strip()), int(parts[1].strip())
             if rows <= 0 or cols <= 0:
                 raise ValueError("Grid dimensions must be positive")
-
-            from sim.kernel import set_default_grid
 
             set_default_grid((rows, cols))
         except ValueError as e:
@@ -251,8 +250,6 @@ def main() -> None:
     finally:
         # Print tensor statistics if enabled
         if args.show_stats:
-            from sim.stats import print_stats
-
             print_stats()
 
 

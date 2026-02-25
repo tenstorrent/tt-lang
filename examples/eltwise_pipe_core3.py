@@ -6,7 +6,7 @@ import math
 
 import ttl
 import ttnn
-from sim.typedefs import Pipe
+
 from utils.correctness import assert_with_ulp
 
 

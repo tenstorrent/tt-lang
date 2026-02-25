@@ -198,19 +198,19 @@ class TTLGenericCompiler(TTCompilerBase):
             return
 
         if self._current_signpost_line is not None:
-            self._emit_signpost(f"line_{self._current_signpost_line}_after")
+            self._emit_signpost(f"{self.name}_L{self._current_signpost_line}_after")
 
         if self.source_lines and 0 < node.lineno <= len(self.source_lines):
             source_line = self.source_lines[node.lineno - 1].strip()
         else:
             source_line = f"<line {file_lineno}>"
 
-        before_name = f"line_{file_lineno}_before"
-        after_name = f"line_{file_lineno}_after"
+        base_name = f"{self.name}_L{file_lineno}"
+        before_name = f"{base_name}_before"
+        after_name = f"{base_name}_after"
 
         if self.line_mapper:
-            self.line_mapper.register_signpost(before_name, file_lineno, source_line)
-            self.line_mapper.register_signpost(after_name, file_lineno, source_line)
+            self.line_mapper.register_signpost(base_name, file_lineno, source_line)
 
         self._emit_signpost(before_name)
         self._current_signpost_line = file_lineno
@@ -218,8 +218,11 @@ class TTLGenericCompiler(TTCompilerBase):
     def _close_final_signpost(self):
         """Close the final signpost at the end of function body."""
         if self.auto_profile_enabled and self._current_signpost_line is not None:
-            self._emit_signpost(f"line_{self._current_signpost_line}_after")
+            self._emit_signpost(f"{self.name}_L{self._current_signpost_line}_after")
             self._current_signpost_line = None
+
+    def _on_scope_exit(self):
+        self._close_final_signpost()
 
     def _try_emit_auto_signposts(self, node, visit_fn):
         """Emit line-based signposts if auto-profiling is enabled."""
@@ -234,8 +237,9 @@ class TTLGenericCompiler(TTCompilerBase):
 
         file_lineno = node.lineno + self.line_offset
         prefix = "implicit_" if implicit else ""
-        before_name = f"line_{file_lineno}_{prefix}{op_name}_before"
-        after_name = f"line_{file_lineno}_{prefix}{op_name}_after"
+        base_name = f"{self.name}_L{file_lineno}_{prefix}{op_name}"
+        before_name = f"{base_name}_before"
+        after_name = f"{base_name}_after"
 
         if self.source_lines and 0 < node.lineno <= len(self.source_lines):
             source_line = self.source_lines[node.lineno - 1].strip()
@@ -243,8 +247,7 @@ class TTLGenericCompiler(TTCompilerBase):
             source_line = f"<line {file_lineno}>"
 
         if self.line_mapper:
-            self.line_mapper.register_signpost(before_name, file_lineno, source_line)
-            self.line_mapper.register_signpost(after_name, file_lineno, source_line)
+            self.line_mapper.register_signpost(base_name, file_lineno, source_line)
 
         with self._loc_for_node(node):
             self._emit_signpost(before_name)
@@ -536,6 +539,8 @@ class TTLGenericCompiler(TTCompilerBase):
             # Process each with-item: acquire resources and track for release
             releases = []  # [(release_op, cb_val), ...] in acquisition order
 
+            self._on_scope_exit()
+
             for item in node.items:
                 context_expr = item.context_expr
                 optional_vars = item.optional_vars
@@ -601,6 +606,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
             for stmt in node.body:
                 self.visit(stmt)
+
+            self._on_scope_exit()
 
             # Release in reverse order (implicit ops from with statement)
             for op_name, release_op, cb_val, expr_node in reversed(releases):

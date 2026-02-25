@@ -7,15 +7,16 @@ sim package: simulation components for TT-Lang including circular buffers, tenso
 """
 
 from . import ttnnsim as ttnn
-from .cbapi import CBAPI, CBStats
-from .constants import MAX_CBS, TILE_SHAPE
+from .dfb import DFBAPI, DFBStats
+from .constants import MAX_DFBS, TILE_SHAPE
 from .copy import CopyTransaction, copy
 from .decorators import compute, datamovement
-from .kernel import core, kernel
-from .pipe import DstPipeIdentity, PipeNet, SrcPipeIdentity
+from .corecontext import core
+from .kernel import kernel
+from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
 from .program import Program
 from .ttnnsim import TTNN_AVAILABLE
-from .typedefs import CoreCoord, CoreRange, DstT, Pipe, Shape
+from .typedefs import CoreCoord, CoreRange, Shape
 
 
 # Create ttl.math namespace object
@@ -48,19 +49,20 @@ class _TTLNamespace:
     """TT-Lang namespace for DSL constructs."""
 
     def __init__(self):
-        from .cb import make_circular_buffer_like
+        from .dfb import make_dataflow_buffer_like
         from .constants import TILE_SHAPE
         from .copy import copy
         from .decorators import compute, datamovement
-        from .kernel import core, grid_size, kernel
+        from .corecontext import core, grid_size
+        from .kernel import kernel
         from . import math as math_module
-        from .pipe import DstPipeIdentity, PipeNet, SrcPipeIdentity
+        from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
         from .program import Program
-        from .typedefs import CoreCoord, CoreRange, DstT, Pipe, Shape, Size
+        from .typedefs import CoreCoord, CoreRange, Shape, Size
 
         self.kernel = kernel
         self.grid_size = grid_size
-        self.make_dataflow_buffer_like = make_circular_buffer_like
+        self.make_dataflow_buffer_like = make_dataflow_buffer_like
         self.compute = compute
         self.datamovement = datamovement
         self.core = core
@@ -83,8 +85,8 @@ class _TTLNamespace:
 ttl = _TTLNamespace()
 
 __all__ = [
-    "CBAPI",
-    "CBStats",
+    "DFBAPI",
+    "DFBStats",
     "CoreCoord",
     "CoreRange",
     "DstT",
@@ -94,7 +96,7 @@ __all__ = [
     "SrcPipeIdentity",
     "DstPipeIdentity",
     "TILE_SHAPE",
-    "MAX_CBS",
+    "MAX_DFBS",
     "copy",
     "CopyTransaction",
     "Program",

@@ -114,6 +114,10 @@ class TTCompilerBase(PyKernelAstBase):
         self.source_code = kwargs.get("_source_code", "")
 
     # Control Flow
+    def _on_scope_exit(self):
+        """Hook for subclasses to act before exiting a scoped body."""
+        pass
+
     def visit_If(self, node):
         # NOTE: else-if blocks are not supported in SCF dialect
         if_cond = self.visit(node.test)
@@ -143,10 +147,12 @@ class TTCompilerBase(PyKernelAstBase):
             )
         if_exp = scf.IfOp(cond=if_cond, hasElse=bool(node.orelse))
 
+        self._on_scope_exit()
         with InsertionPoint(if_exp.then_block), Location.unknown():
             self.symbol_tables.append({})
             for stmt in node.body:
                 self.visit(stmt)
+            self._on_scope_exit()
             scf.YieldOp([])
             self.symbol_tables.pop()
 
@@ -155,6 +161,7 @@ class TTCompilerBase(PyKernelAstBase):
                 self.symbol_tables.append({})
                 for stmt in node.orelse:
                     self.visit(stmt)
+                self._on_scope_exit()
                 scf.YieldOp([])
                 self.symbol_tables.pop()
 
@@ -199,6 +206,7 @@ class TTCompilerBase(PyKernelAstBase):
             comment = self._get_source_comment_block(node)
             emitc.verbatim(comment, [])
 
+        self._on_scope_exit()
         for_op = scf.ForOp(lower_bound, upper_bound, step)
         with InsertionPoint(for_op.body), Location.unknown():
             self.symbol_tables.append({})
@@ -208,6 +216,7 @@ class TTCompilerBase(PyKernelAstBase):
 
             for stmt in node.body:
                 self.visit(stmt)
+            self._on_scope_exit()
             scf.YieldOp([])
             self.symbol_tables.pop()
 
