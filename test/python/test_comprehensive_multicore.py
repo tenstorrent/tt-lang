@@ -160,7 +160,7 @@ def compute_expected(a, b, c):
     return exp1, exp2, exp3
 
 
-def test_comprehensive_multicore(device):
+def test_comprehensive_multicore(device, compiler_options):
     """Test comprehensive multicore kernel with mixed DRAM/L1 tensors."""
     # Random inputs
     a_torch = torch.rand(TENSOR_SHAPE, dtype=torch.bfloat16) * 2.0 - 1.0
@@ -182,7 +182,7 @@ def test_comprehensive_multicore(device):
     c = to_l1(c_torch, device)
     out3 = to_l1(out3_torch, device)
 
-    comprehensive_kernel(a, b, c, out1, out2, out3)
+    comprehensive_kernel(a, b, c, out1, out2, out3, options=compiler_options)
 
     # Verify grid_size
     x_size, y_size = ttl.grid_size(dims=2)

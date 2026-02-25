@@ -152,6 +152,131 @@ def test_multicore_loop(device, grid_shape):
     assert torch.allclose(result.float(), expected.float(), rtol=0.02, atol=0.5)
 
 
+# =============================================================================
+# Block DFB multicore tests - DFB shape > (1, 1) to trigger DST subblocking
+# =============================================================================
+
+# Format: (tiles_per_core_row, tiles_per_core_col, grid_rows, grid_cols)
+BLOCK_GRID_CONFIGS = [
+    (3, 3, 1, 1),  # 9 tiles per block, single core
+    (3, 3, 2, 2),  # 9 tiles per block, 2x2 grid
+    (3, 3, 4, 4),  # 9 tiles per block, 4x4 grid
+    (4, 4, 1, 1),  # 16 tiles per block, single core
+    (4, 4, 2, 2),  # 16 tiles per block, 2x2 grid
+]
+
+MULTICORE_BLOCK_KERNEL_TEMPLATE = '''
+import ttl
+
+@ttl.kernel(grid=({grid_cols}, {grid_rows}))
+def multicore_block(lhs, rhs, out):
+    """Multicore kernel with block DFB: exp(lhs) + sqrt(rhs)."""
+    TPCR = {tiles_per_core_row}
+    TPCC = {tiles_per_core_col}
+
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(TPCR, TPCC), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(TPCR, TPCC), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(TPCR, TPCC), buffer_factor=2)
+
+    @ttl.compute()
+    def fused_compute():
+        with lhs_dfb.wait() as lhs_tile, rhs_dfb.wait() as rhs_tile:
+            with out_dfb.reserve() as out_tile:
+                result = ttl.math.exp(lhs_tile) + ttl.math.sqrt(rhs_tile)
+                out_tile.store(result)
+
+    @ttl.datamovement()
+    def dm_read():
+        x, y = ttl.core(dims=2)
+        row = y * TPCR
+        col = x * TPCC
+        with lhs_dfb.reserve() as lhs_blk, rhs_dfb.reserve() as rhs_blk:
+            tx_lhs = ttl.copy(lhs[row:row + TPCR, col:col + TPCC], lhs_blk)
+            tx_rhs = ttl.copy(rhs[row:row + TPCR, col:col + TPCC], rhs_blk)
+            tx_lhs.wait()
+            tx_rhs.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        x, y = ttl.core(dims=2)
+        row = y * TPCR
+        col = x * TPCC
+        with out_dfb.wait() as out_blk:
+            tx = ttl.copy(out_blk, out[row:row + TPCR, col:col + TPCC])
+            tx.wait()
+
+'''
+
+_block_kernel_cache = {}
+
+
+def make_block_kernel(
+    tiles_per_core_row: int,
+    tiles_per_core_col: int,
+    grid_rows: int,
+    grid_cols: int,
+):
+    """Generate a block DFB multicore kernel."""
+    cache_key = (tiles_per_core_row, tiles_per_core_col, grid_rows, grid_cols)
+    if cache_key in _block_kernel_cache:
+        return _block_kernel_cache[cache_key]
+
+    code = MULTICORE_BLOCK_KERNEL_TEMPLATE.format(
+        tiles_per_core_row=tiles_per_core_row,
+        tiles_per_core_col=tiles_per_core_col,
+        grid_rows=grid_rows,
+        grid_cols=grid_cols,
+    )
+
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".py",
+        delete=False,
+        prefix=f"block_{tiles_per_core_row}x{tiles_per_core_col}_{grid_rows}x{grid_cols}_",
+    ) as f:
+        f.write(code)
+        temp_path = f.name
+
+    spec = importlib.util.spec_from_file_location("block_kernel_module", temp_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    temp_kernel_files.append(temp_path)
+
+    kernel = module.multicore_block
+    _block_kernel_cache[cache_key] = kernel
+    return kernel
+
+
+@pytest.mark.parametrize(
+    "config",
+    BLOCK_GRID_CONFIGS,
+    ids=[f"block{tpr}x{tpc}_grid{gr}x{gc}" for tpr, tpc, gr, gc in BLOCK_GRID_CONFIGS],
+)
+def test_multicore_block(device, config, compiler_options):
+    """Test multicore kernel with block DFB (>8 tiles) to exercise DST subblocking."""
+    tiles_per_core_row, tiles_per_core_col, grid_rows, grid_cols = config
+    height = grid_rows * tiles_per_core_row * TILE_SIZE
+    width = grid_cols * tiles_per_core_col * TILE_SIZE
+    kernel = make_block_kernel(
+        tiles_per_core_row, tiles_per_core_col, grid_rows, grid_cols
+    )
+
+    # Random inputs: small values for lhs (exp overflow), positive for rhs (sqrt)
+    lhs_torch = torch.rand((height, width), dtype=torch.bfloat16) * 0.5
+    rhs_torch = torch.rand((height, width), dtype=torch.bfloat16) * 4.0 + 0.1
+    out_torch = torch.zeros((height, width), dtype=torch.bfloat16)
+    expected = torch.exp(lhs_torch) + torch.sqrt(rhs_torch)
+
+    lhs = to_dram(lhs_torch, device)
+    rhs = to_dram(rhs_torch, device)
+    out = to_dram(out_torch, device)
+
+    kernel(lhs, rhs, out, options=compiler_options)
+    result = ttnn.to_torch(out)
+
+    assert torch.allclose(result.float(), expected.float(), rtol=0.02, atol=0.5)
+
+
 if __name__ == "__main__":
     import sys
 

@@ -355,7 +355,7 @@ def make_multitile_kernel(
         for ty, tx, gc, gr, dfbr, dfbc in MULTITILE_UNEVEN_CONFIGS
     ],
 )
-def test_multitile_uneven_grid(device, config):
+def test_multitile_uneven_grid(device, config, compiler_options):
     """Test multitile kernel execution with uneven grid distribution."""
     tiles_y, tiles_x, grid_cols, grid_rows, dfb_rows, dfb_cols = config
     height, width = tiles_to_shape(tiles_y, tiles_x)
@@ -373,7 +373,7 @@ def test_multitile_uneven_grid(device, config):
     rhs = to_dram(rhs_torch, device)
     out = to_dram(out_torch, device)
 
-    kernel(lhs, rhs, out)
+    kernel(lhs, rhs, out, options=compiler_options)
     result = ttnn.to_torch(out)
 
     assert torch.allclose(

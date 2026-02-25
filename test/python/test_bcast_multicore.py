@@ -330,6 +330,7 @@ def expected_row_bcast_result(shape, value, dtype=torch.bfloat16):
 # Pre-create kernels for each granularity (avoids recompilation in parametrize)
 _bcast_kernel_g1 = make_bcast_granularity_kernel(1)
 _bcast_kernel_g2 = make_bcast_granularity_kernel(2)
+_bcast_kernel_g4 = make_bcast_granularity_kernel(4)
 
 
 @pytest.mark.parametrize(
@@ -337,15 +338,17 @@ _bcast_kernel_g2 = make_bcast_granularity_kernel(2)
     [
         (1, _bcast_kernel_g1),
         (2, _bcast_kernel_g2),
+        (4, _bcast_kernel_g4),
     ],
-    ids=["granularity_1x1", "granularity_2x2"],
+    ids=["granularity_1x1", "granularity_2x2", "granularity_4x4"],
 )
-def test_bcast_multicore_granularity(device, granularity, kernel):
+def test_bcast_multicore_granularity(device, granularity, kernel, compiler_options):
     """Test ttl.math.broadcast with different DFB granularities on 8x8 grid.
 
     Validates that broadcast works correctly with varying DFB block sizes:
     - granularity=1: 1x1 tile blocks (baseline)
     - granularity=2: 2x2 tile blocks (4 tiles per block)
+    - granularity=4: 4x4 tile blocks (16 tiles per block, triggers DST subblocking)
 
     Each test uses shape divisible by grid and granularity:
     - 8x8 grid * granularity * 32 tile_size
@@ -362,7 +365,7 @@ def test_bcast_multicore_granularity(device, granularity, kernel):
     inp = to_dram(inp_torch, device)
     out = to_dram(out_torch, device)
 
-    kernel(inp, out)
+    kernel(inp, out, options=compiler_options)
     result = ttnn.to_torch(out)
 
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
