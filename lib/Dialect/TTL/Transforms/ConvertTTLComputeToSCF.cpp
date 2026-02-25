@@ -13,6 +13,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
 
@@ -182,7 +183,7 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     for (auto [idx, range] : llvm::enumerate(iterDomain)) {
       Value lb = getValueOrCreateConstantIndexOp(rewriter, loc, range.offset);
       Value ub = getValueOrCreateConstantIndexOp(rewriter, loc, range.size);
-      Value step = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      Value step = getValueOrCreateConstantIndexOp(rewriter, loc, range.stride);
       lowerBounds.push_back(lb);
       upperBounds.push_back(ub);
       steps.push_back(step);
@@ -207,21 +208,22 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     // from the iteration domain (which IS the full shape).
     auto fullStridesAttr =
         op->getAttrOfType<DenseI64ArrayAttr>(kFullLinStridesAttrName);
-    for (auto [idx, loop] : llvm::enumerate(loopNest.loops)) {
-      int64_t stride;
-      if (fullStridesAttr) {
-        stride = fullStridesAttr[idx];
-      } else {
-        // Compute stride from iteration domain: product of dims after idx.
-        stride = 1;
-        for (size_t j = idx + 1; j < iterDomain.size(); ++j) {
-          auto sizeAttr =
-              dyn_cast<IntegerAttr>(iterDomain[j].size.dyn_cast<Attribute>());
-          if (sizeAttr) {
-            stride *= sizeAttr.getInt();
-          }
-        }
+    SmallVector<int64_t> domainStrides;
+    if (!fullStridesAttr) {
+      // Extract static sizes from iteration domain.
+      SmallVector<int64_t> domainSizes;
+      domainSizes.reserve(iterDomain.size());
+      for (auto &range : iterDomain) {
+        auto size = getConstantIntValue(range.size);
+        assert(size && "iteration domain must have static sizes for "
+                       "linearization stride computation");
+        domainSizes.push_back(*size);
       }
+      domainStrides = computeStrides(domainSizes);
+    }
+    for (auto [idx, loop] : llvm::enumerate(loopNest.loops)) {
+      int64_t stride =
+          fullStridesAttr ? fullStridesAttr[idx] : domainStrides[idx];
       loop->setAttr(kTileLoopAttrName, rewriter.getIndexAttr(stride));
     }
 
@@ -299,13 +301,7 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
   int64_t dstPerIteration = maxDstIdx + 1;
 
   // Compute local (subblock-shape) strides for linearizing tile index.
-  SmallVector<int64_t> localStrides(rank);
-  for (int64_t d = 0; d < rank; ++d) {
-    localStrides[d] = 1;
-    for (int64_t j = d + 1; j < rank; ++j) {
-      localStrides[d] *= dimSizes[j];
-    }
-  }
+  SmallVector<int64_t> localStrides = computeStrides(dimSizes);
 
   // Unroll from innermost to outermost. Each loop is fully unrolled
   // (factor = trip count). The annotateFn tags every cloned op with its
@@ -369,16 +365,10 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
     }
 
     // Compute linearized tile index (for DST assignment).
-    int64_t tileIdx = 0;
-    for (int64_t d = 0; d < rank; ++d) {
-      tileIdx += dimIndices[d] * localStrides[d];
-    }
+    int64_t tileIdx = linearize(dimIndices, localStrides);
 
     // Compute tile_offset using full strides (for CB indexing).
-    int64_t tileOffset = 0;
-    for (int64_t d = 0; d < rank; ++d) {
-      tileOffset += dimIndices[d] * fullStrides[d];
-    }
+    int64_t tileOffset = linearize(dimIndices, fullStrides);
 
     int64_t dstBase = tileIdx * dstPerIteration;
 
@@ -456,13 +446,11 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
 ///   acquire -> [stores interleaved with compute] -> commit -> wait -> release
 /// and moves any tile_store ops found between acquire and commit to after
 /// wait, preserving their relative order. This separates the math phase
-/// (acquire→commit) from the pack phase (wait→release).
+/// (acquire->commit) from the pack phase (wait->release).
 static void reorderStoresAfterSync(Block *block) {
-  // Snapshot ops to avoid iterator invalidation during moves.
-  SmallVector<Operation *> ops;
-  for (Operation &op : *block) {
-    ops.push_back(&op);
-  }
+  // Copy the ops to avoid iterator invalidation during moves.
+  SmallVector<Operation *> ops = llvm::to_vector(
+      llvm::map_range(*block, [](Operation &op) { return &op; }));
 
   SmallVector<TileStoreOp> storesToHoist;
   bool inComputeRegion = false;
