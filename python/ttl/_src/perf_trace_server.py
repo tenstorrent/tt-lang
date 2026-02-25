@@ -6,8 +6,9 @@
 Perfetto trace server for tt-lang profiler data.
 
 Converts device profiler CSV to Chrome Trace Event format and serves
-it over HTTP so Perfetto UI can load it directly. Serves whatever
-profiler data exists in $TT_METAL_HOME/generated/profiler/.logs/.
+it over HTTP. An HTML landing page fetches the trace from the same
+origin and pushes it into Perfetto UI via postMessage, avoiding
+HTTPS/mixed-content issues.
 
 Use TTLANG_PERF_SERV=1 alongside other profiler flags (e.g.
 TTLANG_SIGNPOST_PROFILE=1) to automatically serve the trace after
@@ -44,6 +45,38 @@ _WRAPPER_ZONES = frozenset(
         "TRISC-KERNEL",
     }
 )
+
+# HTML page that fetches trace.json from same origin and pushes it
+# into Perfetto via postMessage. No HTTPS required.
+_LANDING_HTML = """\
+<!DOCTYPE html>
+<html>
+<head><title>TTLang Trace</title></head>
+<body>
+<p>Loading trace into Perfetto...</p>
+<script>
+async function openTrace() {
+  const resp = await fetch('/trace.json');
+  const buf = await resp.arrayBuffer();
+  const win = window.open('https://ui.perfetto.dev/');
+  const timer = setInterval(() => win.postMessage('PING', 'https://ui.perfetto.dev'), 50);
+  window.addEventListener('message', (evt) => {
+    if (evt.data !== 'PONG') return;
+    clearInterval(timer);
+    win.postMessage({
+      perfetto: {
+        buffer: buf,
+        title: 'TTLang Trace',
+      }
+    }, 'https://ui.perfetto.dev');
+    document.querySelector('p').textContent = 'Trace loaded! You can close this tab.';
+  });
+}
+openTrace();
+</script>
+</body>
+</html>
+"""
 
 
 def _parse_chip_freq(header_line: str) -> Optional[float]:
@@ -129,24 +162,30 @@ def csv_to_trace_events(csv_path: Path) -> List[dict]:
 
 
 class _TraceHandler(http.server.BaseHTTPRequestHandler):
-    """HTTP handler that serves trace JSON with CORS headers."""
+    """HTTP handler that serves the landing page and trace JSON."""
 
     trace_json: bytes = b""
 
     def do_GET(self):
+        if self.path == "/trace.json":
+            self._serve_json()
+        else:
+            self._serve_landing()
+
+    def _serve_landing(self):
+        body = _LANDING_HTML.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_json(self):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Length", str(len(self.trace_json)))
         self.end_headers()
         self.wfile.write(self.trace_json)
-
-    def do_OPTIONS(self):
-        self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "*")
-        self.end_headers()
 
     def log_message(self, format, *args):
         pass
@@ -173,8 +212,8 @@ def _get_container_ip() -> Optional[str]:
 def serve_trace(csv_path: Path, port: Optional[int] = None):
     """Convert CSV to trace and start HTTP server.
 
-    Prints SSH tunnel instructions and Perfetto URL, then blocks
-    until the user presses Enter.
+    Serves an HTML landing page that auto-opens Perfetto and pushes
+    the trace data via postMessage. Blocks until Enter is pressed.
     """
     events = csv_to_trace_events(csv_path)
     if not events:
@@ -191,10 +230,8 @@ def serve_trace(csv_path: Path, port: Optional[int] = None):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
-    hostname = socket.getfqdn()
     user = os.environ.get("USER", "user")
     container_ip = _get_container_ip()
-    # SSH -L can target the container IP directly through the host
     bind_addr = container_ip or "localhost"
 
     print()
@@ -205,10 +242,10 @@ def serve_trace(csv_path: Path, port: Optional[int] = None):
     print(f"  Serving on port {port}")
     print()
     print("  From your local machine, run:")
-    print(f"    ssh -L {port}:{bind_addr}:{port} {user}@<server>")
+    print(f"    ssh -N -L {port}:{bind_addr}:{port} {user}@<server>")
     print()
     print("  Then open:")
-    print(f"    https://ui.perfetto.dev/#!/?url=http://localhost:{port}/trace.json")
+    print(f"    http://localhost:{port}")
     print()
     print("  Press Enter to stop the server...")
     print("=" * 70)
