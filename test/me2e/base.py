@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 import torch
-from utils.correctness import assert_with_ulp
+from utils.correctness import assert_pcc, assert_with_ulp
 
 from .config import get_maximum_ulp_threshold
 
@@ -229,6 +229,11 @@ class ME2ETestBase:
         # Compare using ULP, specify None to use defaults based on dtype.
         # Override self.ULP_THRESHOLD in subclasses as needed.
         ulp_threshold = getattr(self, "ULP_THRESHOLD", None)
-        if not ulp_threshold:
-            ulp_threshold = get_maximum_ulp_threshold(golden.dtype)
+        default_ulp = get_maximum_ulp_threshold(golden.dtype)
+        if ulp_threshold:
+            if ulp_threshold > default_ulp:
+                # Relaxed ULP -- use PCC as a complementary check.
+                assert_pcc(golden.float(), result.float())
+        else:
+            ulp_threshold = default_ulp
         assert_with_ulp(golden, result, ulp_threshold=ulp_threshold)

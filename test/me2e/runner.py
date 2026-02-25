@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import torch
-from utils.correctness import assert_with_ulp
+from utils.correctness import assert_pcc, assert_with_ulp
 
 from .builder.kernels import (
     KernelSpec,
@@ -155,10 +155,14 @@ def run_compute_test(
             )
 
         # 6. Validate against golden.
+        default_ulp = get_maximum_ulp_threshold(golden.dtype)
         if op.ulp_threshold_overrides and golden.dtype in op.ulp_threshold_overrides:
             ulp_threshold = op.ulp_threshold_overrides[golden.dtype]
+            if ulp_threshold > default_ulp:
+                # Relaxed ULP -- use PCC as a complementary structural check.
+                assert_pcc(golden.float(), result.float())
         else:
-            ulp_threshold = get_maximum_ulp_threshold(golden.dtype)
+            ulp_threshold = default_ulp
         assert_with_ulp(golden, result, ulp_threshold=ulp_threshold)
 
     finally:
