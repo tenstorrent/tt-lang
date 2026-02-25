@@ -12,6 +12,7 @@ and prints a per-region cycle count summary.
 
 import csv
 import os
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -68,29 +69,50 @@ def parse_signpost_zones(
 
 
 def format_report(zones: List[Tuple[str, str, int]]) -> str:
-    """Format the signpost profile report."""
+    """Format the signpost profile report, aggregated by (name, thread)."""
     if not zones:
         return ""
 
+    # Aggregate by (name, thread), preserving first-seen order
+    aggregated: Dict[Tuple[str, str], List[int]] = {}
+    for name, thread, cycles in zones:
+        key = (name, thread)
+        if key not in aggregated:
+            aggregated[key] = []
+        aggregated[key].append(cycles)
+
     lines = []
     lines.append("")
-    lines.append("=" * 70)
+    lines.append("=" * 80)
     lines.append("SIGNPOST PROFILE")
-    lines.append("=" * 70)
+    lines.append("=" * 80)
     lines.append("")
 
-    # Find max name length for alignment
-    max_name = max(len(z[0]) for z in zones)
+    max_name = max(len(k[0]) for k in aggregated)
     col_w = max(max_name, 4) + 2
 
-    lines.append(f"  {'NAME':<{col_w}} {'THREAD':<12} {'CYCLES':>12}")
-    lines.append(f"  {'-' * col_w} {'-' * 12} {'-' * 12}")
+    lines.append(
+        f"  {'NAME':<{col_w}} {'THREAD':<12} "
+        f"{'COUNT':>6} {'TOTAL':>12} {'AVG':>10} {'MIN':>10} {'MAX':>10}"
+    )
+    lines.append(
+        f"  {'-' * col_w} {'-' * 12} "
+        f"{'-' * 6} {'-' * 12} {'-' * 10} {'-' * 10} {'-' * 10}"
+    )
 
-    for name, thread, cycles in zones:
-        lines.append(f"  {name:<{col_w}} {thread:<12} {cycles:>12,}")
+    for (name, thread), cycles_list in aggregated.items():
+        count = len(cycles_list)
+        total = sum(cycles_list)
+        avg = total // count
+        lo = min(cycles_list)
+        hi = max(cycles_list)
+        lines.append(
+            f"  {name:<{col_w}} {thread:<12} "
+            f"{count:>6} {total:>12,} {avg:>10,} {lo:>10,} {hi:>10,}"
+        )
 
     lines.append("")
-    lines.append("=" * 70)
+    lines.append("=" * 80)
     lines.append("")
     return "\n".join(lines)
 

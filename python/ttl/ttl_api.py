@@ -272,7 +272,12 @@ def _run_signpost_profile(tensors: tuple):
     """
     from ._src.signpost_profile import run as signpost_profile_run
 
-    # Flush profiler data from device
+    # Flush profiler data from device (requires mid-run dump)
+    if os.environ.get("TT_METAL_PROFILER_MID_RUN_DUMP") != "1":
+        print(
+            "[signpost_profile] WARNING: TT_METAL_PROFILER_MID_RUN_DUMP=1 not set, "
+            "profiler data may be stale"
+        )
     device = None
     for tensor in tensors:
         if is_ttnn_tensor(tensor) and hasattr(tensor, "device"):
