@@ -579,11 +579,11 @@ class TTLGenericCompiler(TTCompilerBase):
                     )
                 name = self._extract_signpost_name(first_item.context_expr)
                 self._on_scope_exit()
-                self._emit_signpost(f"{name}_before")
+                self._emit_signpost(f"ttl_{name}_before")
                 for stmt in node.body:
                     self.visit(stmt)
                 self._on_scope_exit()
-                self._emit_signpost(f"{name}_after")
+                self._emit_signpost(f"ttl_{name}_after")
                 return
 
             # Process each with-item: acquire resources and track for release
