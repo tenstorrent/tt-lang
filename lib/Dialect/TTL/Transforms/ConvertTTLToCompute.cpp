@@ -153,10 +153,15 @@ collectInterleavedsignposts(const ElementwiseTraceResult &trace,
   // the signpost is leading (before all fused ops).
   SmallVector<std::pair<Operation *, Operation *>> result;
 
+  auto isUserSignpost = [](Operation *op) {
+    auto sp = dyn_cast<SignpostOp>(op);
+    return sp && sp.getName().starts_with("ttl_");
+  };
+
   // Leading signposts: walk backwards from first fused op.
   SmallVector<Operation *> leading;
   for (auto *op = firstFused->getPrevNode(); op; op = op->getPrevNode()) {
-    if (isa<SignpostOp>(op))
+    if (isUserSignpost(op))
       leading.push_back(op);
     else
       break;
@@ -170,7 +175,7 @@ collectInterleavedsignposts(const ElementwiseTraceResult &trace,
        op = op->getNextNode()) {
     if (fusedSet.contains(op)) {
       prevFused = op;
-    } else if (isa<SignpostOp>(op)) {
+    } else if (isUserSignpost(op)) {
       result.push_back({op, prevFused});
     }
   }
@@ -178,7 +183,7 @@ collectInterleavedsignposts(const ElementwiseTraceResult &trace,
   // Trailing signposts: walk forward from last fused op, skipping
   // non-signpost ops (store, attach_cb) until cb_push/cb_pop.
   for (auto *op = lastFused->getNextNode(); op; op = op->getNextNode()) {
-    if (isa<SignpostOp>(op)) {
+    if (isUserSignpost(op)) {
       result.push_back({op, lastFused});
     } else if (isa<CBPushOp>(op) || isa<CBPopOp>(op)) {
       break;

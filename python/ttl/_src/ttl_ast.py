@@ -578,6 +578,17 @@ class TTLGenericCompiler(TTCompilerBase):
                         node, "signpost() does not produce a value ('as' not supported)"
                     )
                 name = self._extract_signpost_name(first_item.context_expr)
+                if self.auto_profile_enabled:
+                    import warnings
+                    warnings.warn(
+                        f"signpost('{name}') ignored: user-defined signposts "
+                        "are disabled when TTLANG_AUTO_PROFILE=1. "
+                        "Run one profiling mode at a time.",
+                        stacklevel=2,
+                    )
+                    for stmt in node.body:
+                        self.visit(stmt)
+                    return
                 self._on_scope_exit()
                 self._emit_signpost(f"ttl_{name}_before")
                 for stmt in node.body:
