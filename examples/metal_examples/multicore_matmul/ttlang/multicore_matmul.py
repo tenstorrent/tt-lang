@@ -128,7 +128,7 @@ def test_multicore_matmul_tt_lang(M, K, N):
         ttnn.to_torch(a).to(torch.bfloat16), ttnn.to_torch(b).to(torch.bfloat16)
     )
     result = ttnn.to_torch(c).to(torch.bfloat16)
-    assert_with_ulp(golden, result, pcc_threshold=None)
+    assert_with_ulp(golden, result, pcc_threshold=0)
 
     ttnn.close_device(device)
 

@@ -219,7 +219,6 @@ DEFAULT_PCC_THRESHOLDS = {
     torch.float16: 0.99,
 }
 
-_USE_DEFAULT = object()  # distinguishes "caller didn't pass" from explicit value
 
 
 # TODO: add support for ttnn.Tensor inputs when ttnn module is part of tt-lang dependencies
@@ -228,7 +227,7 @@ def assert_with_ulp(
     actual_result: torch.Tensor,
     ulp_threshold=10,
     allow_nonfinite=False,
-    pcc_threshold=_USE_DEFAULT,
+    pcc_threshold=None,
 ):
     """
     Assert that two tensors are similar within a given distance expressed in Units of Least Precision (ULP)
@@ -249,9 +248,9 @@ def assert_with_ulp(
             If enabled, differences between non-finite values at the same positions will trigger an assertion.
         pcc_threshold (float | None, optional): Minimum Pearson correlation coefficient,
             enforced as a fallback alongside ULP. Catches structural errors that relaxed ULP
-            thresholds might miss. Set to None to disable. When not specified, a per-dtype
-            default from DEFAULT_PCC_THRESHOLDS is used. An explicit value always overrides
-            the per-dtype default.
+            thresholds might miss. None (default) uses the per-dtype value from
+            DEFAULT_PCC_THRESHOLDS. Set to 0 to disable. An explicit positive value always
+            overrides the per-dtype default.
 
     Notes:
         The length of a single ULP is measured using the difference between two consecutive floating point numbers.
@@ -312,19 +311,17 @@ def assert_with_ulp(
     assert ulp_passed, ulp_message
 
     # Resolve PCC threshold: explicit value wins, otherwise look up per-dtype
-    # default.  None disables the check entirely.
-    if pcc_threshold is _USE_DEFAULT:
+    # default.  0 disables the check entirely.
+    if pcc_threshold is None:
         pcc_threshold = DEFAULT_PCC_THRESHOLDS.get(
             expected_result.dtype, DEFAULT_PCC_THRESHOLDS[torch.float32]
         )
 
-    if pcc_threshold is not None and expected_result.numel() > 1:
+    if pcc_threshold > 0 and expected_result.numel() > 1:
         combined = torch.stack(
             [expected_result.flatten().float(), actual_result.flatten().float()]
         )
         pcc = torch.corrcoef(combined)[0, 1].item()
-        assert pcc >= pcc_threshold, (
-            f"PCC {pcc} < {pcc_threshold} ({ulp_message})"
-        )
+        assert pcc >= pcc_threshold, f"PCC {pcc} < {pcc_threshold} ({ulp_message})"
 
     return ulp_passed, ulp_message
