@@ -286,9 +286,7 @@ def _run_signpost_profile(tensors: tuple):
 
     tt_metal_home = os.environ.get("TT_METAL_HOME", "")
     if not tt_metal_home:
-        raise ValueError(
-            "TTLANG_SIGNPOST_PROFILE=1 requires TT_METAL_HOME to be set"
-        )
+        raise ValueError("TTLANG_SIGNPOST_PROFILE=1 requires TT_METAL_HOME to be set")
 
     logs_path = Path(tt_metal_home) / "generated" / "profiler" / ".logs"
     if not logs_path.exists():
