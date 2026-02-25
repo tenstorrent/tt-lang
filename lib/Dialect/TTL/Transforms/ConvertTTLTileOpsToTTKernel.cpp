@@ -127,6 +127,30 @@ static FailureOr<Value> lookupAndConvertCB(Value operand, func::FuncOp funcOp,
 // DST lifecycle ops
 //===----------------------------------------------------------------------===//
 
+/// Trivial 1:1 op conversion: replaces SourceOp with TargetOp (no operands,
+/// no results, no type conversion). Modeled after upstream
+/// OneToOneConvertToLLVMPattern.
+template <typename SourceOp, typename TargetOp>
+struct TTLSimpleOneToOne : OpConversionPattern<SourceOp> {
+  using OpConversionPattern<SourceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor /*adaptor*/,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<TargetOp>(op);
+    return success();
+  }
+};
+
+using TTLTileRegsAcquireToTTKernel =
+    TTLSimpleOneToOne<TileRegsAcquireOp, ttk::TileRegsAcquireOp>;
+using TTLTileRegsCommitToTTKernel =
+    TTLSimpleOneToOne<TileRegsCommitOp, ttk::TileRegsCommitOp>;
+using TTLTileRegsWaitToTTKernel =
+    TTLSimpleOneToOne<TileRegsWaitOp, ttk::TileRegsWaitOp>;
+using TTLTileRegsReleaseToTTKernel =
+    TTLSimpleOneToOne<TileRegsReleaseOp, ttk::TileRegsReleaseOp>;
+
 struct TTLInitSFPUToTTKernel : OpConversionPattern<InitSFPUOp> {
   using OpConversionPattern<InitSFPUOp>::OpConversionPattern;
 
@@ -172,50 +196,6 @@ struct TTLInitBinaryToTTKernel : OpConversionPattern<InitBinaryOp> {
   }
 };
 
-struct TTLTileRegsAcquireToTTKernel : OpConversionPattern<TileRegsAcquireOp> {
-  using OpConversionPattern<TileRegsAcquireOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(TileRegsAcquireOp op, OpAdaptor /*adaptor*/,
-                  ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<ttk::TileRegsAcquireOp>(op);
-    return success();
-  }
-};
-
-struct TTLTileRegsCommitToTTKernel : OpConversionPattern<TileRegsCommitOp> {
-  using OpConversionPattern<TileRegsCommitOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(TileRegsCommitOp op, OpAdaptor /*adaptor*/,
-                  ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<ttk::TileRegsCommitOp>(op);
-    return success();
-  }
-};
-
-struct TTLTileRegsWaitToTTKernel : OpConversionPattern<TileRegsWaitOp> {
-  using OpConversionPattern<TileRegsWaitOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(TileRegsWaitOp op, OpAdaptor /*adaptor*/,
-                  ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<ttk::TileRegsWaitOp>(op);
-    return success();
-  }
-};
-
-struct TTLTileRegsReleaseToTTKernel : OpConversionPattern<TileRegsReleaseOp> {
-  using OpConversionPattern<TileRegsReleaseOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(TileRegsReleaseOp op, OpAdaptor /*adaptor*/,
-                  ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<ttk::TileRegsReleaseOp>(op);
-    return success();
-  }
-};
-
 //===----------------------------------------------------------------------===//
 // Helpers
 //===----------------------------------------------------------------------===//
@@ -238,10 +218,7 @@ static std::optional<int64_t> getDstIndexFromValue(Value v) {
   }
   Operation *owner = opRes.getOwner();
   if (auto copy = dyn_cast<CopyTileOp>(owner)) {
-    if (auto constIdx = dyn_cast_or_null<arith::ConstantIndexOp>(
-            copy.getDstIndex().getDefiningOp())) {
-      return constIdx.value();
-    }
+    return getConstantIntValue(copy.getDstIndex());
   }
   if (auto attr = owner->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
     return attr.getInt();
@@ -449,33 +426,13 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
       return rewriter.notifyMatchFailure(op, "copy_tile not in function");
     }
 
-    Value cb = lookupCBByIndex(op.getSrc(), funcOp);
-    if (!cb) {
-      return rewriter.notifyMatchFailure(op, "cannot find attached cb for src");
+    auto cbResult = lookupAndConvertCB(op.getSrc(), funcOp,
+                                       this->getTypeConverter(), rewriter, loc);
+    if (failed(cbResult)) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot find/convert attached cb for src");
     }
-
-    // Convert !ttl.cb to !ttkernel.cb.
-    auto *typeConverter = this->getTypeConverter();
-    Type targetCbTy;
-    if (auto ttkCb = mlir::dyn_cast<ttk::CBType>(cb.getType())) {
-      targetCbTy = ttkCb;
-    } else if (auto ttlCb = mlir::dyn_cast<CircularBufferType>(cb.getType())) {
-      targetCbTy = ttk::CBType::get(cb.getContext(), ttlCb.getTotalElements(),
-                                    ttlCb.getElementType());
-    }
-    if (!targetCbTy) {
-      return rewriter.notifyMatchFailure(op,
-                                         "failed to determine cb target type");
-    }
-    if (!typeConverter) {
-      return rewriter.notifyMatchFailure(op, "no type converter available");
-    }
-    cb = typeConverter->materializeTargetConversion(rewriter, loc, targetCbTy,
-                                                    cb);
-    if (!cb || cb.getType() != targetCbTy) {
-      return rewriter.notifyMatchFailure(op,
-                                         "failed to materialize ttkernel.cb");
-    }
+    Value cb = *cbResult;
 
     // Emit the copy from CB[src_index] to DST[dst_index]
     // (init inserted by ttkernel-insert-inits pass).
