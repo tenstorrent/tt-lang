@@ -12,6 +12,7 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
+include "mlir/Interfaces/IndexingMapOpInterface.td"
 include "mlir/Interfaces/TilingInterface.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
 include "mlir/IR/OpBase.td"
@@ -223,6 +224,7 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     AttrSizedOperandSegments,
     SingleBlockImplicitTerminator<"YieldOp">,
     DeclareOpInterfaceMethods<DestinationStyleOpInterface>,
+    IndexingMapOpInterface,
     DeclareOpInterfaceMethods<TilingInterface,
       ["getLoopIteratorTypes", "getIterationDomain",
        "getTiledImplementation", "getResultTilePosition"]>
@@ -276,6 +278,20 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 
     // Return the number of outputs.
     unsigned getNumOutputs() { return getOutputs().size(); }
+
+    // Return the static shape of the operand's tensor type.
+    // Required by IndexingMapOpInterface default implementations
+    // (getStaticOperandShape, getStaticLoopRanges).
+    ArrayRef<int64_t> getShape(OpOperand *opOperand) {
+      return cast<RankedTensorType>(opOperand->get().getType()).getShape();
+    }
+
+    // Return iterator types as a vector of utils::IteratorType.
+    SmallVector<utils::IteratorType> getIteratorTypesArray();
+
+    // Return a flat list of all operand dimensions as OpFoldResults.
+    SmallVector<OpFoldResult> createFlatListOfOperandDims(OpBuilder &b,
+                                                          Location loc);
   }];
 }
 
