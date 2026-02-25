@@ -1102,15 +1102,10 @@ def _compile_kernel(
 
         pipeline_passes += [
             "convert-ttl-to-ttkernel",
-        ]
-
-        if is_auto_profile_enabled():
-            pipeline_passes.append("ttl-lower-signpost-to-emitc")
-
-        pipeline_passes += [
             "canonicalize",
             "cse",
             "lower-affine",
+            "ttl-lower-signpost-to-emitc",
             "convert-ttkernel-to-emitc",
             "symbol-dce",
         ]
