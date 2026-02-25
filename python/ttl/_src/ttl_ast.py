@@ -523,19 +523,69 @@ class TTLGenericCompiler(TTCompilerBase):
             raise ValueError(msg)
         return RankedTensorType.get(cb_type.shape, cb_type.element_type)
 
+    def _is_signpost_call(self, context_expr):
+        """Check if a with-item context expression is a signpost call."""
+        if not isinstance(context_expr, ast.Call):
+            return False
+        func = context_expr.func
+        # with signpost("name"):
+        if isinstance(func, ast.Name) and func.id == "signpost":
+            return True
+        # with ttl.signpost("name"):
+        if isinstance(func, ast.Attribute) and func.attr == "signpost":
+            return True
+        return False
+
+    def _extract_signpost_name(self, context_expr):
+        """Extract and validate the string name from a signpost call."""
+        if len(context_expr.args) != 1 or context_expr.keywords:
+            self._raise_error(
+                context_expr, "signpost() requires exactly one string argument"
+            )
+        name_arg = context_expr.args[0]
+        if not isinstance(name_arg, ast.Constant) or not isinstance(
+            name_arg.value, str
+        ):
+            self._raise_error(
+                context_expr, "signpost() argument must be a string literal"
+            )
+        return name_arg.value
+
     def visit_With(self, node):
         """
-        Handle 'with' for CircularBuffer acquire/release.
+        Handle 'with' for CircularBuffer acquire/release or signpost scopes.
 
-        Acquire ops (wait/reserve) are generated left-to-right.
-        Release ops (pop/push) are generated in reverse order at scope end.
+        Signpost scopes:
+            with ttl.signpost("my_region"):
+                ...  # emits _before/_after signpost pair
 
-        Example:
+        CB acquire/release:
             with lhs_cb.wait() as l, rhs_cb.wait() as r, out_cb.reserve() as o:
                 ...
                 # releases in reverse order: push(out), pop(rhs), pop(lhs)
         """
         with self._loc_for_node(node):
+            # Check for signpost scope
+            first_item = node.items[0]
+            if self._is_signpost_call(first_item.context_expr):
+                if len(node.items) > 1:
+                    self._raise_error(
+                        node,
+                        "signpost() cannot be combined with other with-items",
+                    )
+                if first_item.optional_vars is not None:
+                    self._raise_error(
+                        node, "signpost() does not produce a value ('as' not supported)"
+                    )
+                name = self._extract_signpost_name(first_item.context_expr)
+                self._on_scope_exit()
+                self._emit_signpost(f"{name}_before")
+                for stmt in node.body:
+                    self.visit(stmt)
+                self._on_scope_exit()
+                self._emit_signpost(f"{name}_after")
+                return
+
             # Process each with-item: acquire resources and track for release
             releases = []  # [(release_op, cb_val), ...] in acquisition order
 
