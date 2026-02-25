@@ -159,6 +159,17 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
+def _get_container_ip() -> Optional[str]:
+    """Return this container's IP if running inside Docker, else None."""
+    if not Path("/.dockerenv").exists():
+        return None
+    try:
+        hostname = socket.gethostname()
+        return socket.gethostbyname(hostname)
+    except socket.gaierror:
+        return None
+
+
 def serve_trace(csv_path: Path, port: Optional[int] = None):
     """Convert CSV to trace and start HTTP server.
 
@@ -181,6 +192,10 @@ def serve_trace(csv_path: Path, port: Optional[int] = None):
     thread.start()
 
     hostname = socket.getfqdn()
+    user = os.environ.get("USER", "user")
+    container_ip = _get_container_ip()
+    # SSH -L can target the container IP directly through the host
+    bind_addr = container_ip or "localhost"
 
     print()
     print("=" * 70)
@@ -189,10 +204,10 @@ def serve_trace(csv_path: Path, port: Optional[int] = None):
     print(f"  {len(events)} trace events ready")
     print(f"  Serving on port {port}")
     print()
-    print("  If running remotely, open an SSH tunnel:")
-    print(f"    ssh -L {port}:localhost:{port} {os.environ.get('USER', 'user')}@{hostname}")
+    print("  From your local machine, run:")
+    print(f"    ssh -L {port}:{bind_addr}:{port} {user}@<server>")
     print()
-    print("  Then open Perfetto:")
+    print("  Then open:")
     print(f"    https://ui.perfetto.dev/#!/?url=http://localhost:{port}/trace.json")
     print()
     print("  Press Enter to stop the server...")
