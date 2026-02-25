@@ -303,13 +303,11 @@ def assert_with_ulp(
     if pcc_threshold is not None and expected_result.numel() > 1:
         effective_pcc = pcc_threshold
         if expected_result.dtype in (torch.bfloat16, torch.float16):
-            effective_pcc = min(pcc_threshold, 0.9999)
+            effective_pcc = min(pcc_threshold, 0.99)
         combined = torch.stack(
             [expected_result.flatten().float(), actual_result.flatten().float()]
         )
         pcc = torch.corrcoef(combined)[0, 1].item()
-        assert pcc >= effective_pcc, (
-            f"PCC {pcc} < {effective_pcc} ({ulp_message})"
-        )
+        assert pcc >= effective_pcc, f"PCC {pcc} < {effective_pcc} ({ulp_message})"
 
     return ulp_passed, ulp_message

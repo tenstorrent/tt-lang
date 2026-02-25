@@ -1,7 +1,6 @@
-// Summary: In a bcast-only TTKernel function (no init_sfpu or
-// binary_op_init_common), the consolidation pass must derive the output CB
-// for unary_bcast_init from pack_tile. Without this, the init is silently
-// skipped and the bcast produces incorrect results.
+// Summary: In a bcast-only TTKernel function, the consolidation pass derives
+// the output CB for unary_bcast_init from the ttl.bcast_output_cb_index
+// attribute on the unary_bcast op (propagated during TTL -> TTKernel lowering).
 
 // RUN: ttlang-opt %s --ttkernel-insert-inits | FileCheck %s
 
@@ -19,7 +18,7 @@ func.func @bcast_only() {
   %out_cb = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
   %c0 = arith.constant 0 : index
   ttkernel.tile_regs_acquire() : () -> ()
-  ttkernel.unary_bcast(%in_cb, %c0, %c0, <col>) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  ttkernel.unary_bcast(%in_cb, %c0, %c0, <col>) {ttl.bcast_output_cb_index = 1 : index} : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
   ttkernel.tile_regs_commit() : () -> ()
   ttkernel.tile_regs_wait() : () -> ()
   ttkernel.pack_tile(%c0, %out_cb, %c0, false) : (index, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index) -> ()

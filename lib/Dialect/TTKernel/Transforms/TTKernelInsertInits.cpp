@@ -109,40 +109,30 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
   map[mlir::TypeID::get<ttk::UnaryBcastTileOp>()] = {
       [](OpBuilder &b, Location l, Operation *computeOp) {
         auto bcastOp = cast<ttk::UnaryBcastTileOp>(computeOp);
-        // Bcast init needs in_cb and out_cb. The compute op only has in_cb.
-        // Derive out_cb from pack_tile (always present when bcast result is
-        // packed to output), falling back to init_sfpu/binary_op_init_common.
         auto funcOp = computeOp->getParentOfType<func::FuncOp>();
+        assert(funcOp && "unary_bcast must be inside a function");
+
+        // Look up output CB via the annotated index (validated in
+        // runOnOperation precondition check).
+        auto cbIdxAttr =
+            computeOp->getAttrOfType<IntegerAttr>(kBcastOutputCBIndexAttrName);
+        assert(cbIdxAttr && "expected ttl.bcast_output_cb_index attribute");
+
+        // After TTL -> TTKernel lowering, bind_cb becomes
+        // get_compile_time_arg_val with arg_index matching the CB index.
         Value outCB;
-        if (funcOp) {
-          // Primary: derive from pack_tile (works for bcast-only functions).
-          funcOp->walk([&](ttk::PackTileOp pack) {
-            outCB = pack.getOutCb();
+        int64_t cbIdx = cbIdxAttr.getInt();
+        funcOp->walk([&](ttk::GetCompileArgValOp argOp) {
+          if (static_cast<int64_t>(argOp.getArgIndex()) == cbIdx) {
+            outCB = argOp.getResult();
             return WalkResult::interrupt();
-          });
-          // Fallback: derive from existing init ops.
-          if (!outCB) {
-            funcOp->walk([&](Operation *op) {
-              if (auto sfpu = dyn_cast<ttk::InitSFPUOp>(op)) {
-                outCB = sfpu.getOcb();
-                return WalkResult::interrupt();
-              }
-              if (auto binary = dyn_cast<ttk::BinaryOpInitCommonOp>(op)) {
-                outCB = binary.getOutCb();
-                return WalkResult::interrupt();
-              }
-              return WalkResult::advance();
-            });
           }
-        }
-        if (outCB) {
-          b.create<ttk::UnaryBcastInitOp>(l, bcastOp.getInCb(), outCB,
-                                          bcastOp.getBcastTypeAttr());
-        } else {
-          computeOp->emitWarning(
-              "cannot derive output CB for unary_bcast_init; "
-              "no pack_tile, init_sfpu, or binary_op_init_common found");
-        }
+          return WalkResult::advance();
+        });
+        assert(outCB && "get_compile_time_arg_val must exist for cb_index");
+
+        b.create<ttk::UnaryBcastInitOp>(l, bcastOp.getInCb(), outCB,
+                                        bcastOp.getBcastTypeAttr());
       }};
 
   return map;
@@ -309,12 +299,23 @@ struct TTKernelInsertInitsPass
     // Phase 1: Insert common inits (init_sfpu / binary_op_init_common).
     insertCommonInits(moduleOp);
 
+    // Validate preconditions: all unary_bcast ops must carry the output CB
+    // index attribute (set during TTL -> TTKernel lowering).
+    bool hadError = false;
+    moduleOp->walk([&](ttk::UnaryBcastTileOp bcastOp) {
+      if (!bcastOp->hasAttr(kBcastOutputCBIndexAttrName)) {
+        bcastOp->emitOpError("missing ttl.bcast_output_cb_index attribute; "
+                             "cannot insert unary_bcast_init");
+        hadError = true;
+      }
+    });
+    if (hadError) {
+      signalPassFailure();
+      return;
+    }
+
     // Phase 2: Insert per-op inits for compute ops.
     auto computeToInit = buildComputeToInitMap();
-
-    // Walk all blocks (including nested ones inside scf.for loops).
-    // Each block tracks init state independently - sync regions don't cross
-    // block boundaries.
     moduleOp->walk([&](Block *block) {
       std::optional<InitKey> prevKey;
 

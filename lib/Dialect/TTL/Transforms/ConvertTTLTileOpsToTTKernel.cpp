@@ -737,8 +737,15 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
     auto ttkAttr = convertBcastType(op.getBcastType());
 
     // Emit compute op (init inserted by ttkernel-insert-inits pass).
-    rewriter.create<ttk::UnaryBcastTileOp>(loc, *inCB, inCBIdx, dstIdx,
-                                           ttkAttr);
+    auto bcastOp = rewriter.create<ttk::UnaryBcastTileOp>(loc, *inCB, inCBIdx,
+                                                          dstIdx, ttkAttr);
+
+    // Propagate output CB index so ttkernel-insert-inits can derive the
+    // output CB for unary_bcast_init without walking the function.
+    if (auto cbIdx =
+            op->getAttrOfType<IntegerAttr>(kBcastOutputCBIndexAttrName)) {
+      bcastOp->setAttr(kBcastOutputCBIndexAttrName, cbIdx);
+    }
 
     rewriter.replaceOp(op, adaptor.getInput());
     return success();
