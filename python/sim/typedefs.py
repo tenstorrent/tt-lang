@@ -31,9 +31,21 @@ Size = PositiveInt
 Index = NaturalInt
 Count = NaturalInt
 CoreCoord = Union[Index, Tuple[Index, ...]]
-CoreRange = Tuple[Union[Index, slice], ...]
+
+# A single dimension selector: either a non-negative integer coordinate or a
+# slice range.  Used for core ranges and tensor tile-coordinate keys.
+Selector = Union[Index, slice]
+
+CoreRange = Tuple[Selector, ...]
 
 Shape = Tuple[Size, ...]
+
+# Valid key type for Tensor.__getitem__ / __setitem__: a tuple of 2 to
+# MAX_TENSOR_DIMS elements, each an int (single tile coordinate) or slice
+# (tile-coordinate range).  The last two elements index the tile row and
+# tile column; preceding elements are batch indices (implicit tile size 1,
+# so tile-space and element-space are identical for those dimensions).
+TensorKey = Tuple[Selector, ...]
 _MAX_DFBS: Size = 32  # Fixed pool of circular buffers
 DFBID = Annotated[NaturalInt, Field(ge=0, lt=_MAX_DFBS)]
 

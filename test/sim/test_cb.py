@@ -27,6 +27,7 @@ from test_utils import (
 )
 
 from python.sim import TILE_SHAPE, copy, ttnn
+from python.sim.constants import MAX_TENSOR_DIMS
 from python.sim.dfb import (
     DFBAPI,
     Block,
@@ -233,7 +234,9 @@ def test_error_handling(api: DFBAPI) -> None:
         DataflowBuffer(element=element, shape=(0, 1), api=api)  # Invalid shape
 
     with pytest.raises(ValueError):
-        DataflowBuffer(element=element, shape=(1, 2, 3), api=api)  # type: ignore # Wrong shape dimensions
+        DataflowBuffer(
+            element=element, shape=(1,) * (MAX_TENSOR_DIMS + 1), api=api
+        )  # Too many dims
 
     # Test invalid buffer factor
     with pytest.raises(ValueError):

@@ -11,8 +11,10 @@ This module provides:
 - DataflowBuffer: high-level tensor-aware circular buffer wrapper
 """
 
+import math
 import operator as _op
 import threading
+from itertools import product as _product
 from typing import (
     Annotated,
     Any,
@@ -39,7 +41,7 @@ from .blockstate import (
     get_current_thread_type,
 )
 from .dfbstate import DFBSlot, DFBState
-from .constants import DFB_DEFAULT_TIMEOUT, MAX_DFBS, TILE_SHAPE
+from .constants import DFB_DEFAULT_TIMEOUT, MAX_DFBS, MAX_TENSOR_DIMS, TILE_SHAPE
 from .errors import DFBContractError, DFBTimeoutError
 from .stats import record_dfb_reserve, record_dfb_wait
 from .ttnnsim import Tensor
@@ -516,6 +518,78 @@ class Block:
         Returns the actual tensor values from the buffer.
         """
         return [self.get_item(i) for i in range(len(self))]
+
+    def to_tensor(self) -> Tensor:
+        """Assemble all tiles into a single ttnnsim.Tensor.
+
+        Converts the block's tile grid to an element-space tensor with shape
+        (*batch, TM * tile_h, TK * tile_w), where the block's tile shape is
+        (*batch, TM, TK) and (tile_h, tile_w) is the element shape of each
+        stored tile.  Tiles with a size-1 dimension (degenerate tiles) are
+        supported and contribute their actual element size to the output.
+
+        Returns:
+            A ttnnsim.Tensor whose element shape corresponds to this block.
+        """
+        tiles = self.to_list()
+        tile_shape = self._shape
+        nb = len(tile_shape) - 2
+        batch = tile_shape[:nb]
+        TM, TK = tile_shape[nb], tile_shape[nb + 1]
+
+        # Use the actual tile element shape rather than the TILE_SHAPE constant
+        # so that degenerate (size-1) tiles are handled correctly.
+        first_raw = tiles[0].to_torch()
+        tile_h, tile_w = first_raw.shape[-2], first_raw.shape[-1]
+
+        stacked = torch.stack([t.to_torch() for t in tiles])  # (total, tile_h, tile_w)
+        tile_grid = stacked.reshape(*tile_shape, tile_h, tile_w)
+
+        # Interleave tile-row/col dims with their element dims:
+        # (*batch, TM, TK, r, c) -> (*batch, TM, r, TK, c)
+        perm = list(range(nb)) + [nb, nb + 2, nb + 1, nb + 3]
+        elem_tensor = tile_grid.permute(*perm).reshape(*batch, TM * tile_h, TK * tile_w)
+        return Tensor(elem_tensor)
+
+    @classmethod
+    def from_tensor(cls, t: Tensor) -> "Block":
+        """Create a temporary Block by splitting a ttnnsim.Tensor into tiles.
+
+        Divides the last two element dimensions by TILE_SHAPE to get the tile
+        counts; preceding dimensions become batch dimensions.  Each (32, 32)
+        region of the last two dimensions becomes one tile in the block.
+
+        Args:
+            t: Source tensor whose last two dimensions are multiples of
+               TILE_SHAPE.
+
+        Returns:
+            A temporary Block with tile shape (*batch, TM, TK).
+
+        Raises:
+            ValueError: If the tensor has fewer than 2 dimensions or its last
+                two dimensions are not multiples of TILE_SHAPE.
+        """
+        elem_shape = t.shape
+        if len(elem_shape) < 2:
+            raise ValueError(
+                f"Tensor must have at least 2 dimensions for tile splitting, "
+                f"got {len(elem_shape)}"
+            )
+        H, W = elem_shape[-2], elem_shape[-1]
+        # A dimension of 1 is treated as a single degenerate tile (consistent
+        # with _validate_tile_alignment in ttnnsim.Tensor).
+        if (H != 1 and H % TILE_SHAPE[0] != 0) or (W != 1 and W % TILE_SHAPE[1] != 0):
+            raise ValueError(
+                f"Last two tensor dimensions ({H}, {W}) must be multiples of "
+                f"TILE_SHAPE {TILE_SHAPE}, or exactly 1"
+            )
+        batch_shape = elem_shape[:-2]
+        TM = 1 if H == 1 else H // TILE_SHAPE[0]
+        TK = 1 if W == 1 else W // TILE_SHAPE[1]
+        tile_shape: Shape = (*batch_shape, TM, TK)
+        tiles = [t[coords] for coords in _product(*[range(d) for d in tile_shape])]
+        return cls.from_list(tiles, shape=tile_shape)
 
     def copy_as_dest(self, items: Sequence[Tensor]) -> None:
         """Store items into the block as part of a copy operation.
@@ -1042,7 +1116,6 @@ class DFBAPI:
         return self._timeout
 
 
-# TODO: Should this class now be private?
 class DataflowBuffer:
     """
     High-level circular buffer interface for tensor operations.
@@ -1088,8 +1161,10 @@ class DataflowBuffer:
             ValueError: If shape or buffer_factor are invalid
             RuntimeError: If DFB allocation fails
         """
-        if len(shape) != 2:
-            raise ValueError(f"Shape must be a 2-tuple, got {shape}")
+        if not (2 <= len(shape) <= MAX_TENSOR_DIMS):
+            raise ValueError(
+                f"Shape must have between 2 and {MAX_TENSOR_DIMS} dimensions, got {shape}"
+            )
 
         self.element = element
         self._shape = shape
@@ -1103,8 +1178,8 @@ class DataflowBuffer:
         self._pending_reserved_block: Optional[Block] = None
         self._pending_waited_block: Optional[Block] = None
 
-        # Calculate total capacity in tiles
-        self._tiles_per_operation = shape[0] * shape[1]
+        # Calculate total capacity in tiles (product of all shape dimensions)
+        self._tiles_per_operation = math.prod(shape)
         self._capacity_tiles = self._tiles_per_operation * buffer_factor
 
         # Only allocate and configure if API is provided
@@ -1312,7 +1387,7 @@ class DataflowBuffer:
         api.dfb_pop_front(dfb_id, self._tiles_per_operation)
 
     @property
-    def shape(self) -> Tuple[Size, Size]:
+    def shape(self) -> Shape:
         """Get the shape (in tiles) for wait/reserve operations."""
         return self._shape
 
@@ -1447,57 +1522,19 @@ def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
 def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
     """Matrix multiplication of two blocks.
 
-    Performs matrix multiplication across the tile grid. If block a has shape (M, K)
-    and block b has shape (K, N), the result will have shape (M, N).
-
-    Each output tile [i, j] is computed as the sum of torch.matmul(a[i, k], b[k, j])
-    for all k from 0 to K-1.
+    Converts each block to a ttnnsim.Tensor, delegates to torch.matmul via the
+    @ operator, then converts the result back to a Block.  The output tile
+    shape follows PyTorch's matmul broadcasting rules applied to the
+    element-space tensors, with the last two dimensions divided by TILE_SHAPE.
 
     Args:
-        a: First input block with shape (M, K)
-        b: Second input block with shape (K, N)
-        _output_hint: Optional output block hint (unused in simulator)
+        a: First input block.
+        b: Second input block.
+        _output_hint: Optional output block hint (unused in simulator).
 
     Returns:
-        Block with shape (M, N) containing the matrix multiplication result
-
-    Note:
-        This is equivalent to the @ operator. In the spec, matmul is BlockExpr.__matmul__,
-        but this function is provided for convenience in the simulator.
+        Block whose tile shape corresponds to the matmul output shape.
     """
-    a_shape = a._shape  # type: ignore[attr-defined]
-    b_shape = b._shape  # type: ignore[attr-defined]
-
-    if len(a_shape) != 2 or len(b_shape) != 2:
-        raise ValueError(
-            f"matmul requires 2D blocks, got shapes {a_shape} and {b_shape}"
-        )
-
-    M, K = a_shape
-    K_b, N = b_shape
-
-    if K != K_b:
-        raise ValueError(
-            f"Inner dimensions must match for matmul: {a_shape} @ {b_shape}"
-        )
-
-    a_tensors = a.to_list()
-    b_tensors = b.to_list()
-
-    # Output tile [i, j] = sum over k of (a[i, k] @ b[k, j])
-    result_tensors: List[Tensor] = []
-    for i in range(M):
-        for j in range(N):
-            acc: Optional[torch.Tensor] = None
-            for k in range(K):
-                a_tile = a_tensors[i * K + k].to_torch()
-                b_tile = b_tensors[k * N + j].to_torch()
-                partial = torch.matmul(a_tile, b_tile)
-                acc = partial if acc is None else acc + partial
-
-            assert acc is not None, "K must be > 0 for matmul"
-            result_tensors.append(Tensor(acc))
-
-    result_block = Block.from_list(result_tensors, shape=(M, N))
+    result_block = Block.from_tensor(a.to_tensor() @ b.to_tensor())
     track_source_blocks(result_block, a, b)
     return result_block

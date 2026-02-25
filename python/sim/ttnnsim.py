@@ -32,8 +32,8 @@ except ImportError:
     ttnn = None  # type: ignore[assignment]
     TTNN_AVAILABLE = False  # type: ignore[reportConstantRedefinition]
 
-from .constants import TILE_SHAPE
-from .typedefs import Count, IndexType, Shape
+from .constants import MAX_TENSOR_DIMS, TILE_SHAPE
+from .typedefs import Count, IndexType, Selector, Shape, TensorKey
 
 # Public constants (mirror TTL constants)
 TILE_SIZE: int = TILE_SHAPE[0]
@@ -105,9 +105,14 @@ def broadcast_tensors(
     # Apply operation with PyTorch broadcasting
     result_batched = op(left_reshaped, right_reshaped)
 
-    # Flatten back to list of tiles
-    num_result_tiles = result_batched.shape[0] * result_batched.shape[1]
-    result_flat = result_batched.reshape(num_result_tiles, *result_batched.shape[2:])
+    # Flatten all grid dimensions back to a flat tile list
+    grid_ndim = len(left_shape)
+    num_result_tiles = 1
+    for d in result_batched.shape[:grid_ndim]:
+        num_result_tiles *= d
+    result_flat = result_batched.reshape(
+        num_result_tiles, *result_batched.shape[grid_ndim:]
+    )
 
     # Wrap each result tile in Tensor
     return [Tensor(result_flat[i]) for i in range(num_result_tiles)]
@@ -249,49 +254,42 @@ class Tensor:
     def dtype(self) -> torch.dtype:
         return self._tensor.dtype
 
-    def _is_tile_indexable(self) -> bool:
-        """Check if tensor can use tile-based indexing.
-
-        A tensor is tile-indexable if it's 2D and each dimension is either:
-        - A multiple of the corresponding TILE_SHAPE dimension, OR
-        - A degenerate dimension (size 1)
-        """
-        if len(self._tensor.shape) != 2:
-            return False
-
-        for dim_size, tile_dim in zip(self._tensor.shape, TILE_SHAPE):
-            # Allow degenerate dimensions (size 1) or tile-aligned dimensions
-            if dim_size != 1 and dim_size % tile_dim != 0:
-                return False
-
-        return True
-
     def _validate_tile_alignment(self) -> None:
         """Validate that this tensor supports tile-style indexing.
 
+        The last two dimensions must be tile-aligned (or degenerate). Leading
+        batch dimensions may have any size.
+
         Raises:
-            ValueError: If tensor is not 2D or non-degenerate dimensions are
-                not multiples of the corresponding tile dimension.
+            ValueError: If the tensor has fewer than 2 or more than MAX_TENSOR_DIMS
+                dimensions, or if the last two non-degenerate dimensions are not
+                multiples of the corresponding tile dimension.
         """
-        if len(self._tensor.shape) != 2:
-            raise ValueError("Tile-style indexing requires a 2D tensor")
-        for i, dim_size in enumerate(self._tensor.shape):
+        ndim = len(self._tensor.shape)
+        if ndim < 2 or ndim > MAX_TENSOR_DIMS:
+            raise ValueError(
+                f"Tile-style indexing requires 2 to {MAX_TENSOR_DIMS} dimensions, "
+                f"got {ndim}D tensor"
+            )
+        for i, (dim_size, tile_dim) in enumerate(
+            zip(self._tensor.shape[-2:], TILE_SHAPE)
+        ):
             if dim_size == 1:
                 continue
-            if dim_size % TILE_SHAPE[i] != 0:
+            if dim_size % tile_dim != 0:
                 raise ValueError(
-                    f"Tensor dimension {i} has size {dim_size} which is not "
-                    f"a multiple of tile dimension {TILE_SHAPE[i]}"
+                    f"Tensor dimension {ndim - 2 + i} has size {dim_size} which is not "
+                    f"a multiple of tile dimension {tile_dim}"
                 )
 
     @staticmethod
-    def _normalize_tile_index(index: Union[int, slice]) -> slice:
+    def _normalize_tile_index(selector: Selector) -> slice:
         """Convert an integer tile index to a unit slice, or return slice as-is."""
-        match index:
+        match selector:
             case int():
-                return slice(index, index + 1)
+                return slice(selector, selector + 1)
             case _:
-                return index
+                return selector
 
     @staticmethod
     def _validate_tile_slice(s: slice, dim_name: str) -> None:
@@ -316,74 +314,49 @@ class Tensor:
                 f"got slice({s.start}, {s.stop}, {s.step}). Only simple slices are supported."
             )
 
-    def _tile_getitem(
-        self, row_key: Union[int, slice], col_key: Union[int, slice]
-    ) -> torch.Tensor:
-        """Read a tile-coordinate region and return an element-space torch.Tensor."""
-        self._validate_tile_alignment()
-        row_slice = self._normalize_tile_index(row_key)
-        col_slice = self._normalize_tile_index(col_key)
-        self._validate_tile_slice(row_slice, "row")
-        self._validate_tile_slice(col_slice, "col")
-        return self._tensor[
-            row_slice.start * TILE_SHAPE[0] : row_slice.stop * TILE_SHAPE[0],
-            col_slice.start * TILE_SHAPE[1] : col_slice.stop * TILE_SHAPE[1],
-        ]
+    def _to_element_key(self, key: TensorKey) -> TensorKey:
+        """Translate a tile-coordinate key to an element-space index tuple.
 
-    def _tile_setitem(
-        self,
-        row_key: Union[int, slice],
-        col_key: Union[int, slice],
-        value: torch.Tensor,
-    ) -> None:
-        """Write a tile-coordinate region from an element-space torch.Tensor."""
-        self._validate_tile_alignment()
-        row_slice = self._normalize_tile_index(row_key)
-        col_slice = self._normalize_tile_index(col_key)
-        self._validate_tile_slice(row_slice, "row")
-        self._validate_tile_slice(col_slice, "col")
-        self._tensor[
-            row_slice.start * TILE_SHAPE[0] : row_slice.stop * TILE_SHAPE[0],
-            col_slice.start * TILE_SHAPE[1] : col_slice.stop * TILE_SHAPE[1],
-        ] = value
+        The last two elements of the key are tile-row and tile-col coordinates,
+        scaled by TILE_SHAPE to produce element-space slices.  Preceding batch
+        elements are passed through unchanged (implicit tile size 1, so
+        tile-space and element-space are identical for those dimensions).
 
-    def __getitem__(self, key: Any) -> "Tensor":
-        result: Tensor
-        match key:
-            case (int() as m, int() as k) if self._is_tile_indexable():
-                result = Tensor(self._tile_getitem(m, k))
-            case (int(), int()):
-                result = Tensor(self._tensor.__getitem__(key))
-            case (int() | slice(), int() | slice()):
-                # Cast the matched tuple to typed coords; avoids Unknown slice type args
-                # that Pyright assigns when narrowing Any with a class pattern.
-                row_k, col_k = cast(Tuple[Union[int, slice], Union[int, slice]], key)
-                result = Tensor(self._tile_getitem(row_k, col_k))
-            case _:  # type: ignore[misc]
-                result = Tensor(self._tensor.__getitem__(key))
+        Args:
+            key: Tuple of 2 to MAX_TENSOR_DIMS elements (int or slice each).
+
+        Returns:
+            Tuple suitable for indexing the underlying torch.Tensor directly.
+
+        Raises:
+            ValueError: If key length is outside [2, MAX_TENSOR_DIMS], the
+                tensor is not tile-aligned, or a tile slice has missing or
+                stepped bounds.
+        """
+        if len(key) < 2 or len(key) > MAX_TENSOR_DIMS:
+            raise ValueError(
+                f"Key must have 2 to {MAX_TENSOR_DIMS} elements, got {len(key)}"
+            )
+        self._validate_tile_alignment()
+        *batch, row_k, col_k = key
+        row_s = self._normalize_tile_index(row_k)
+        col_s = self._normalize_tile_index(col_k)
+        self._validate_tile_slice(row_s, "row")
+        self._validate_tile_slice(col_s, "col")
+        return (
+            *batch,
+            slice(row_s.start * TILE_SHAPE[0], row_s.stop * TILE_SHAPE[0]),
+            slice(col_s.start * TILE_SHAPE[1], col_s.stop * TILE_SHAPE[1]),
+        )
+
+    def __getitem__(self, key: TensorKey) -> "Tensor":
+        result = Tensor(self._tensor[cast(Any, self._to_element_key(key))])
         if hasattr(self, "_name"):
             result._name = self._name  # type: ignore
         return result
 
-    def __setitem__(self, key: Any, value: Union["Tensor", torch.Tensor, Any]) -> None:
-        def _unwrap(v: Union["Tensor", torch.Tensor, Any]) -> Any:
-            match v:
-                case Tensor() as t:
-                    return t._tensor
-                case _:
-                    return v
-
-        match key:
-            case (int() as m, int() as k) if self._is_tile_indexable():
-                self._tile_setitem(m, k, _unwrap(value))
-            case (int(), int()):
-                self._tensor.__setitem__(key, _unwrap(value))
-            case (int() | slice(), int() | slice()):
-                # Cast the matched tuple to typed coords; same rationale as __getitem__.
-                row_k, col_k = cast(Tuple[Union[int, slice], Union[int, slice]], key)
-                self._tile_setitem(row_k, col_k, _unwrap(value))
-            case _:  # type: ignore[misc]
-                self._tensor.__setitem__(key, _unwrap(value))
+    def __setitem__(self, key: TensorKey, value: "Tensor") -> None:
+        self._tensor[cast(Any, self._to_element_key(key))] = value._tensor
 
     def __repr__(self) -> str:
         return f"Tensor(shape={tuple(self._tensor.shape)}, dtype={self._tensor.dtype})"

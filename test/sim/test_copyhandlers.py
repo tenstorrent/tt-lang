@@ -72,22 +72,22 @@ class TestHandlerRegistry:
 class TestCopyValidationErrors:
     """Test validation and error handling in copy handlers."""
 
-    def test_non_2d_tensor_to_block_fails(self, api: "DFBAPI") -> None:
-        """Test that copying a non-2D tensor to Block raises ValueError."""
+    def test_nd_tensor_tile_count_mismatch_to_block_fails(self, api: "DFBAPI") -> None:
+        """Test that an N-D tensor with mismatched total tile count raises ValueError."""
         import torch
         from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
-        # Create a 3D torch tensor
-        torch_3d = torch.ones(32, 32, 32)
+        # 3D tensor (2, 32, 32) has 2 total tiles; block (1, 1) has 1 total tile.
+        torch_3d = torch.ones(2, 32, 32)
         tensor_3d = ttnn.Tensor(torch_3d)
 
         dfb = DataflowBuffer(
             element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
         )
 
-        with pytest.raises(ValueError, match="Tensor must be 2-dimensional"):
+        with pytest.raises(ValueError, match="does not match"):
             with dfb.reserve() as block:
                 copy(tensor_3d, block)
 

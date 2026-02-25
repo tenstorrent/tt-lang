@@ -113,6 +113,7 @@ def assert_success_output(code: int, out: str) -> None:
             "eltwise_pipe_core3.py",
             marks=requires_ttnn,
         ),
+        "matmul.py",
         "singlecore_matmul.py",
         "multicore_matmul.py",
         "matmul_1d.py",
@@ -190,7 +191,7 @@ def test_eltwise_add2_fails_with_expected_error(scheduler: str) -> None:
     ), f"Expected eltwise_add_error.py to fail, but it exited with code 0"
     # Check for the core error message (shape mismatch)
     assert (
-        "Tensor shape (32, 32) (=(1, 1) tiles) does not match Block shape (2, 2) tiles"
+        "Tensor shape (32, 32) does not match Block shape (2, 2) (total tiles: 1 vs 4)"
         in out
     ), f"Expected error message not found in output:\n{out}"
 

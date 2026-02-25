@@ -27,7 +27,7 @@ from typing import (
 )
 
 from .dfb import Block
-from .constants import COPY_PIPE_TIMEOUT, TILE_SHAPE
+from .constants import COPY_PIPE_TIMEOUT, MAX_TENSOR_DIMS, TILE_SHAPE
 from .pipe import AnySrcPipeIdentity, DstPipeIdentity, SrcPipeIdentity
 from .stats import (
     record_tensor_read,
@@ -98,35 +98,6 @@ def tile_count(tensor_shape: Shape, tile_shape: Shape) -> Count:
                 for tensor_dim, tile_dim in zip(tensor_shape, tile_shape)
             ]
         )
-    )
-
-
-def tensor_shape_in_tiles_with_skip(tensor_shape: Shape, tile_shape: Shape) -> Shape:
-    """Convert tensor shape to tile dimensions, preserving size-1 dimensions.
-
-    Unlike tensor_shape_in_tiles, this returns 1 for dimensions that are already
-    size 1, rather than attempting to divide by tile dimension. This allows
-    tensors like (N, 1) or (1, N) to be properly validated against blocks.
-
-    Args:
-        tensor_shape: Shape of the tensor (height, width, ...)
-        tile_shape: Shape of each tile (height, width, ...)
-
-    Returns:
-        Shape in tiles, with size-1 dimensions preserved as 1
-
-    Example:
-        tensor_shape_in_tiles_with_skip((2048, 1), (32, 32)) = (64, 1)
-        tensor_shape_in_tiles_with_skip((1, 64), (32, 32)) = (1, 2)
-    """
-    if len(tensor_shape) != len(tile_shape):
-        raise ValueError(
-            f"tensor_shape and tile_shape must have same dimensions: "
-            f"{len(tensor_shape)} vs {len(tile_shape)}"
-        )
-    return tuple(
-        1 if dim_size == 1 else dim_size // tile_dim
-        for dim_size, tile_dim in zip(tensor_shape, tile_shape)
     )
 
 
@@ -314,46 +285,34 @@ class BlockToPipeHandler:
 
 @register_copy_handler(Tensor, Block)
 class TensorToBlockHandler:
-    """Handler for TTNN.Tensor → Block transfers using tile-level indexing."""
+    """Handler for TTNN.Tensor -> Block transfers using tile-level indexing."""
 
     def validate(self, src: Tensor, dst: Block) -> None:
-        if len(src.shape) != 2:
-            raise ValueError(f"Tensor must be 2-dimensional, got shape {src.shape}")
-
-        # Validate tensor shape matches block shape (in tiles)
-        block_shape = dst.shape
-        src_shape_in_tiles = tensor_shape_in_tiles_with_skip(src.shape, TILE_SHAPE)
-        if src_shape_in_tiles != block_shape:
+        ndim = len(src.shape)
+        if not (2 <= ndim <= MAX_TENSOR_DIMS):
             raise ValueError(
-                f"Tensor shape {src.shape} (={src_shape_in_tiles} tiles) does not match "
-                f"Block shape {block_shape} tiles (={tuple(d * t for d, t in zip(block_shape, TILE_SHAPE))} elements)"
+                f"Tensor must have 2 to {MAX_TENSOR_DIMS} dimensions, got shape {src.shape}"
+            )
+        H, W = src.shape[-2], src.shape[-1]
+        if (H != 1 and H % TILE_SHAPE[0] != 0) or (W != 1 and W % TILE_SHAPE[1] != 0):
+            raise ValueError(
+                f"Tensor last two dimensions ({H}, {W}) must be multiples of "
+                f"TILE_SHAPE {TILE_SHAPE} (or exactly 1), got shape {src.shape}"
+            )
+        TM = 1 if H == 1 else H // TILE_SHAPE[0]
+        TK = 1 if W == 1 else W // TILE_SHAPE[1]
+        src_total = int(prod((*src.shape[:-2], TM, TK)))
+        block_total = int(prod(dst.shape))
+        if src_total != block_total:
+            raise ValueError(
+                f"Tensor shape {src.shape} does not match Block shape {dst.shape} "
+                f"(total tiles: {src_total} vs {block_total})"
             )
 
     def transfer(self, src: Tensor, dst: Block) -> None:
-        """Transfer tensor data to Block using tile-level indexing.
-
-        Extracts tiles from src using tile coordinates and stores them as
-        ttnn.Tensor objects in the Block slots.
-        """
-        # Record tensor read
+        """Transfer tensor data to Block by splitting src into tiles."""
         record_tensor_read(src)
-
-        # Calculate tile count, handling size-1 dimensions properly
-        shape_in_tiles = tensor_shape_in_tiles_with_skip(src.shape, TILE_SHAPE)
-        num_tiles = int(prod(shape_in_tiles))
-        width_tiles = shape_in_tiles[1]
-
-        tiles: List[Tensor] = []
-        for tile_idx in range(num_tiles):
-            # Convert linear index to 2D tile coordinates
-            h_tile = tile_idx // width_tiles
-            w_tile = tile_idx % width_tiles
-
-            # Extract single tile using tile coordinates [h:h+1, w:w+1]
-            tile = src[h_tile : h_tile + 1, w_tile : w_tile + 1]
-            tiles.append(tile)
-
-        dst.copy_as_dest(tiles)
+        dst.copy_as_dest(Block.from_tensor(src).to_list())
 
     def can_wait(self, src: Tensor, dst: Block) -> bool:
         return True
@@ -361,46 +320,35 @@ class TensorToBlockHandler:
 
 @register_copy_handler(Block, Tensor)
 class BlockToTensorHandler:
-    """Handler for Block → TTNN.Tensor transfers using tile-level indexing."""
+    """Handler for Block -> TTNN.Tensor transfers using tile-level indexing."""
 
     def validate(self, src: Block, dst: Tensor) -> None:
-        # Validate tensor is 2D
-        if len(dst.shape) != 2:
-            raise ValueError(f"Tensor must be 2-dimensional, got shape {dst.shape}")
-
-        # Validate tensor shape matches block shape (in tiles)
-        block_shape = src.shape
-        dst_shape_in_tiles = tensor_shape_in_tiles_with_skip(dst.shape, TILE_SHAPE)
-        if dst_shape_in_tiles != block_shape:
+        ndim = len(dst.shape)
+        if not (2 <= ndim <= MAX_TENSOR_DIMS):
             raise ValueError(
-                f"Tensor shape {dst.shape} (={dst_shape_in_tiles} tiles) does not match "
-                f"Block shape {block_shape} tiles (={tuple(d * t for d, t in zip(block_shape, TILE_SHAPE))} elements)"
+                f"Tensor must have 2 to {MAX_TENSOR_DIMS} dimensions, got shape {dst.shape}"
+            )
+        H, W = dst.shape[-2], dst.shape[-1]
+        if (H != 1 and H % TILE_SHAPE[0] != 0) or (W != 1 and W % TILE_SHAPE[1] != 0):
+            raise ValueError(
+                f"Tensor last two dimensions ({H}, {W}) must be multiples of "
+                f"TILE_SHAPE {TILE_SHAPE} (or exactly 1), got shape {dst.shape}"
+            )
+        TM = 1 if H == 1 else H // TILE_SHAPE[0]
+        TK = 1 if W == 1 else W // TILE_SHAPE[1]
+        dst_total = int(prod((*dst.shape[:-2], TM, TK)))
+        block_total = int(prod(src.shape))
+        if dst_total != block_total:
+            raise ValueError(
+                f"Tensor shape {dst.shape} does not match Block shape {src.shape} "
+                f"(total tiles: {dst_total} vs {block_total})"
             )
 
     def transfer(self, src: Block, dst: Tensor) -> None:
-        """Transfer Block data to tensor using tile-level indexing.
-
-        Retrieves ttnn.Tensor objects from Block slots and places them into
-        the destination tensor using tile coordinates.
-        """
-        # Record tensor write
+        """Transfer Block data to tensor by assembling src tiles into element space."""
         record_tensor_write(dst)
-
-        # Calculate tile count, handling size-1 dimensions properly
-        shape_in_tiles = tensor_shape_in_tiles_with_skip(dst.shape, TILE_SHAPE)
-        dst_tiles = int(prod(shape_in_tiles))
-        width_tiles = shape_in_tiles[1]
-
-        for tile_idx in range(dst_tiles):
-            # Convert linear index to 2D tile coordinates
-            h_tile = tile_idx // width_tiles
-            w_tile = tile_idx % width_tiles
-
-            # Get tile from Block (this is a ttnn.Tensor)
-            tile = src.get_item(tile_idx)
-
-            # Place tile into destination using tile coordinates [h:h+1, w:w+1]
-            dst[h_tile : h_tile + 1, w_tile : w_tile + 1] = tile
+        dst_raw = dst.to_torch()
+        dst_raw.copy_(src.to_tensor().to_torch().reshape(dst_raw.shape))
 
     def can_wait(self, src: Block, dst: Tensor) -> bool:
         return True
