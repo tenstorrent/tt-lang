@@ -156,7 +156,12 @@ def run_compute_test(
         ulp_threshold = None
         if op.ulp_threshold_overrides and golden.dtype in op.ulp_threshold_overrides:
             ulp_threshold = op.ulp_threshold_overrides[golden.dtype]
-        validate_against_golden(golden, result, ulp_threshold=ulp_threshold)
+        pcc_threshold = None
+        if op.pcc_threshold_overrides and golden.dtype in op.pcc_threshold_overrides:
+            pcc_threshold = op.pcc_threshold_overrides[golden.dtype]
+        validate_against_golden(
+            golden, result, ulp_threshold=ulp_threshold, pcc_threshold=pcc_threshold
+        )
 
     finally:
         # Cleanup temporary kernel directory.

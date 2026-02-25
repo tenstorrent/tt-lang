@@ -224,7 +224,10 @@ class ME2ETestBase:
         result = torch.load(result_file)
         golden = torch.load(golden_file)
 
-        # Compare using ULP (with PCC backup when ULP is relaxed).
-        # Override self.ULP_THRESHOLD in subclasses as needed.
+        # Compare using ULP and PCC.
+        # Override self.ULP_THRESHOLD / self.PCC_THRESHOLD in subclasses as needed.
         ulp_threshold = getattr(self, "ULP_THRESHOLD", None)
-        validate_against_golden(golden, result, ulp_threshold=ulp_threshold)
+        pcc_threshold = getattr(self, "PCC_THRESHOLD", None)
+        validate_against_golden(
+            golden, result, ulp_threshold=ulp_threshold, pcc_threshold=pcc_threshold
+        )

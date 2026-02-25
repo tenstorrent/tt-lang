@@ -9,14 +9,14 @@ import math
 import torch
 
 
-def assert_pcc(golden, actual, threshold=0.99):
+def assert_pcc(golden, actual, threshold=0.9999):
     """
     Assert Pearson correlation coefficient is above threshold.
 
     Args:
         golden: Expected tensor
         actual: Actual output tensor
-        threshold: Minimum acceptable PCC (default 0.99)
+        threshold: Minimum acceptable PCC (default 0.9999, consistent with tt-metal)
 
     Raises:
         AssertionError: If PCC < threshold
