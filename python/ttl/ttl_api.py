@@ -1119,11 +1119,7 @@ def _compile_kernel(
         pipeline_passes.append("convert-ttl-to-ttkernel")
         pipeline_passes.append("ttkernel-insert-inits")
 
-        if is_auto_profile_enabled():
-            pipeline_passes.append("ttl-lower-signpost-to-emitc")
-
         pipeline_passes += [
-            "convert-ttl-to-ttkernel",
             "canonicalize",
             "cse",
             "lower-affine",
