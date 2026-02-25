@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """
-Tests for DataflowBuffer and DFBAPI.
+Tests for DataflowBuffer.
 
 Covers the high-level DataflowBuffer interface (tensor-aware operations,
-context manager syntax, state machine enforcement) and the low-level DFBAPI
-(reserve/wait/push/pop primitives, threading, error contracts, DFB allocation).
+context manager syntax, state machine enforcement) and the low-level ring-buffer
+primitives (reserve/wait/push/pop, threading, error contracts, per-core limits).
 """
 
 import threading
@@ -29,7 +29,6 @@ from test_utils import (
 from python.sim import TILE_SHAPE, copy, ttnn
 from python.sim.constants import MAX_TENSOR_DIMS
 from python.sim.dfb import (
-    DFBAPI,
     Block,
     DataflowBuffer,
 )
@@ -42,7 +41,6 @@ from python.sim.blockstate import (
 from python.sim.ttnnsim import Tensor
 from python.sim.dfbstate import DFBSlot
 from python.sim.errors import DFBContractError, DFBTimeoutError
-from python.sim.typedefs import DFBID
 
 
 @pytest.fixture(autouse=True)
@@ -59,65 +57,49 @@ def setup_thread_context(compute_thread_context):
 
 
 @pytest.fixture
-def api():
-    """Provide a fresh DFBAPI instance for each test."""
-    return DFBAPI()
-
-
-@pytest.fixture
-def configured_dfb(api: DFBAPI) -> Tuple[DFBAPI, DFBID]:
-    """Create a configured DFB with capacity 4."""
-    dfb_id = 0
-    api.host_configure_dfb(dfb_id, 4, shape=(1, 1))
-    return api, dfb_id
-
-
-@pytest.fixture
-def configured_dfb8(api: DFBAPI) -> Tuple[DFBAPI, DFBID]:
-    """Create a configured DFB with capacity 8."""
-    dfb_id = 0
-    api.host_configure_dfb(dfb_id, 8, shape=(1, 1))
-    return api, dfb_id
-
-
-@pytest.fixture
-def timeout_api() -> DFBAPI:
-    """Create a DFBAPI instance with short timeout for timeout tests."""
-    return DFBAPI(timeout=0.1)
-
-
-def test_circular_buffer_basic(api: DFBAPI) -> None:
-    """Test basic DataflowBuffer operations."""
-    # Create a dataflow buffer for single tiles with buffer factor 2
+def configured_dfb() -> DataflowBuffer:
+    """Create a DataflowBuffer with capacity 4 (shape=(1,1), buffer_factor=4)."""
     element = make_ones_tile()
-    dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    return DataflowBuffer(element=element, shape=(1, 1), buffer_factor=4)
 
-    # Verify basic properties
+
+@pytest.fixture
+def configured_dfb8() -> DataflowBuffer:
+    """Create a DataflowBuffer with capacity 8 (shape=(1,1), buffer_factor=8)."""
+    element = make_ones_tile()
+    return DataflowBuffer(element=element, shape=(1, 1), buffer_factor=8)
+
+
+@pytest.fixture
+def timeout_seconds() -> float:
+    """Return a short timeout value for timeout tests."""
+    return 0.1
+
+
+def test_circular_buffer_basic() -> None:
+    """Test basic DataflowBuffer operations."""
+    element = make_ones_tile()
+    dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+
     assert dfb.shape == (1, 1)
-    assert dfb.capacity_tiles == 2  # 1*1*2
+    assert dfb.capacity_tiles == 2
     assert dfb.buffer_factor == 2
 
-    # Test the buffer workflow
-    # Producer: reserve -> write -> push
     write_view = dfb.reserve()
-    assert len(write_view) == 1  # Should have space for 1 tile
+    assert len(write_view) == 1
 
-    # Simulate writing data
     test_data = make_ones_tile()
     write_view.store([test_data])
     write_view.push()
 
-    # Consumer: wait -> read -> pop
     read_view = dfb.wait()
-    assert len(read_view) == 1  # Should have 1 tile available
+    assert len(read_view) == 1
 
-    # Use waited block as source (STORE_SRC) before pop
-    out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
     out_block = out_dfb.reserve()
     out_block.store(read_view)
     out_block.push()
 
-    # Verify data was transferred correctly
     read_data = read_view.to_list()
     assert read_data[0] is not None
     assert tensors_equal(read_data[0], test_data)
@@ -127,15 +109,13 @@ def test_circular_buffer_basic(api: DFBAPI) -> None:
     print("Basic DataflowBuffer test passed!")
 
 
-def test_circular_buffer_multi_tile(api: DFBAPI) -> None:
+def test_circular_buffer_multi_tile() -> None:
     """Test DataflowBuffer with multiple tiles per operation."""
-    # Create a dataflow buffer for 2x1 tiles (2 tiles per operation)
     element = make_ones_tile()
-    dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=3, api=api)
+    dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=3)
 
-    # Verify properties
     assert dfb.shape == (2, 1)
-    assert dfb.capacity_tiles == 6  # 2*1*3
+    assert dfb.capacity_tiles == 6
 
     # Test reserve/push
     write_view = dfb.reserve()
@@ -156,12 +136,11 @@ def test_circular_buffer_multi_tile(api: DFBAPI) -> None:
     assert len(read_view) == 2  # Should have 2 tiles available
 
     # Use waited block as source (STORE_SRC) before pop
-    out_dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=2, api=api)
+    out_dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=2)
     out_block = out_dfb.reserve()
     out_block.store(read_view)
     out_block.push()
 
-    # Verify data was transferred correctly
     read_data = read_view.to_list()
     for i in range(2):
         assert read_data[i] is not None
@@ -176,22 +155,15 @@ def test_circular_buffer_multi_tile(api: DFBAPI) -> None:
     print("Multi-tile DataflowBuffer test passed!")
 
 
-def test_copy_operations_with_dm_context(api: DFBAPI) -> None:
-    """Test copy operations between tensor and DataflowBuffer with proper DM thread context.
-
-    This replaces the old test_copy_operations that was disabled due to lack of thread context.
-    """
-
-    # Set DM thread context (required for copy operations)
+def test_copy_operations_with_dm_context() -> None:
+    """Test copy operations between tensor and DataflowBuffer with proper DM thread context."""
     set_current_thread_type(ThreadType.DM)
 
     try:
-        # Create test tensors
-        tensor_a = make_rand_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)  # 2x2 tiles
+        tensor_a = make_rand_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
 
-        # Create dataflow buffer
         element = make_ones_tile()
-        dfb_a = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+        dfb_a = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
 
         # Test copy from tensor to dataflow buffer (DM thread can do this)
         dfb_view = dfb_a.reserve()
@@ -226,24 +198,21 @@ def test_copy_operations_with_dm_context(api: DFBAPI) -> None:
     print("Copy operations with DM context test passed!")
 
 
-def test_error_handling(api: DFBAPI) -> None:
+def test_error_handling() -> None:
     """Test error conditions."""
-    # Test invalid shape
     element = make_ones_tile()
     with pytest.raises(ValueError):
-        DataflowBuffer(element=element, shape=(0, 1), api=api)  # Invalid shape
+        DataflowBuffer(element=element, shape=(0, 1))  # Invalid shape element
 
     with pytest.raises(ValueError):
         DataflowBuffer(
-            element=element, shape=(1,) * (MAX_TENSOR_DIMS + 1), api=api
+            element=element, shape=(1,) * (MAX_TENSOR_DIMS + 1)
         )  # Too many dims
 
-    # Test invalid buffer factor
     with pytest.raises(ValueError):
-        DataflowBuffer(element=element, shape=(1, 1), buffer_factor=0, api=api)
+        DataflowBuffer(element=element, shape=(1, 1), buffer_factor=0)
 
-    # Test operations without proper setup
-    dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
 
     # # Can't push without reserve - DFBAPI will catch this
     # with pytest.raises(DFBContractError):
@@ -260,7 +229,7 @@ def test_error_handling(api: DFBAPI) -> None:
     print("Error handling test passed!")
 
 
-def test_copy_in_dm_thread_context(api: DFBAPI) -> None:
+def test_copy_in_dm_thread_context() -> None:
     """Test copy operations with proper DM thread context.
 
     This test demonstrates the full workflow:
@@ -269,21 +238,17 @@ def test_copy_in_dm_thread_context(api: DFBAPI) -> None:
     """
 
     try:
-        # Create tensors
         rows, cols = 128, 128
         granularity = 4
 
         a_in = make_rand_tensor(rows, cols)
         c_in = make_rand_tensor(TILE_SHAPE[0], cols)
 
-        # Create circular buffers
         element = make_ones_tile()
         a_in_dfb = DataflowBuffer(
-            element=element, shape=(granularity, 1), buffer_factor=2, api=api
+            element=element, shape=(granularity, 1), buffer_factor=2
         )
-        c_in_dfb = DataflowBuffer(
-            element=element, shape=(1, 1), buffer_factor=2, api=api
-        )
+        c_in_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
 
         # Verify the circular buffers were created correctly
         assert a_in_dfb.shape == (granularity, 1)
@@ -324,17 +289,14 @@ def test_copy_in_dm_thread_context(api: DFBAPI) -> None:
         assert c_list[0] is not None
         assert a_list[0] is not None
 
-        # In COMPUTE thread, wait() blocks must be used as STORE_SRC before pop
-        out_dfb = DataflowBuffer(
-            element=element, shape=(1, 1), buffer_factor=2, api=api
-        )
+        out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
         out_block = out_dfb.reserve()
         out_block.store(c_data)
         out_block.push()
         c_data.pop()
 
         out_dfb2 = DataflowBuffer(
-            element=element, shape=(granularity, 1), buffer_factor=2, api=api
+            element=element, shape=(granularity, 1), buffer_factor=2
         )
         out_block2 = out_dfb2.reserve()
         out_block2.store(a_data)
@@ -348,7 +310,7 @@ def test_copy_in_dm_thread_context(api: DFBAPI) -> None:
     print("Copy in DM thread context test passed!")
 
 
-def test_single_pending_reserve_constraint(api: DFBAPI) -> None:
+def test_single_pending_reserve_constraint() -> None:
     """Test that only one reserve() is allowed before push()."""
     from python.sim.copy import copy
 
@@ -356,7 +318,7 @@ def test_single_pending_reserve_constraint(api: DFBAPI) -> None:
 
     try:
         element = make_ones_tile()
-        dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+        dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
 
         # Create a source tensor for copy operations
         src_tensor = make_ones_tile()
@@ -389,7 +351,7 @@ def test_single_pending_reserve_constraint(api: DFBAPI) -> None:
         clear_current_thread_type()
 
 
-def test_single_pending_wait_constraint(api: DFBAPI) -> None:
+def test_single_pending_wait_constraint() -> None:
     """Test that only one wait() is allowed before pop()."""
     from python.sim.copy import copy
 
@@ -397,9 +359,8 @@ def test_single_pending_wait_constraint(api: DFBAPI) -> None:
 
     try:
         element = make_ones_tile()
-        dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+        dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
 
-        # First populate the DFB with data (using DM thread)
         set_current_thread_type(ThreadType.DM)
         block = dfb.reserve()
         test_data = make_rand_tensor(TILE_SHAPE[0], TILE_SHAPE[1])
@@ -421,11 +382,7 @@ def test_single_pending_wait_constraint(api: DFBAPI) -> None:
         ):
             dfb.wait()
 
-        # After pop(), should be able to wait() again (if there's more data)
-        # Use waited block as STORE_SRC before pop
-        out_dfb = DataflowBuffer(
-            element=element, shape=(1, 1), buffer_factor=2, api=api
-        )
+        out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
         out_block = out_dfb.reserve()
         out_block.store(data1)
         out_block.push()
@@ -450,20 +407,14 @@ def test_single_pending_wait_constraint(api: DFBAPI) -> None:
         clear_current_thread_type()
 
 
-def test_reserve_store_push_pop_workflow(api: DFBAPI) -> None:
-    """Test the complete reserve->store->push->wait->pop workflow.
-
-    This tests the primary usage pattern for compute operations without
-    using copy (which requires DM thread context).
-    """
+def test_reserve_store_push_pop_workflow() -> None:
+    """Test the complete reserve->store->push->wait->pop workflow."""
     import torch
     from python.sim import ttnn, TILE_SHAPE
 
-    # Create dataflow buffer
     element = make_zeros_tile()
-    dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=2, api=api)
+    dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=2)
 
-    # Producer: reserve -> store -> push
     with dfb.reserve() as write_block:
         # Create test data
         data = [
@@ -472,8 +423,7 @@ def test_reserve_store_push_pop_workflow(api: DFBAPI) -> None:
         ]
         write_block.store(data)
 
-    # Consumer: wait -> read -> pop
-    out_dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=4, api=api)
+    out_dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=4)
     with dfb.wait() as read_block:
         # Use waited block as STORE_SRC before context exit
         out_block = out_dfb.reserve()
@@ -503,96 +453,70 @@ def test_reserve_store_push_pop_workflow(api: DFBAPI) -> None:
     print("Reserve-store-push-pop workflow test passed!")
 
 
-def test_make_dataflow_buffer_like_basic(api: DFBAPI) -> None:
+def test_make_dataflow_buffer_like_basic() -> None:
     """Test make_dataflow_buffer_like with basic usage."""
     from python.sim import ttl
 
-    # Create a tensor
     x = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
 
-    # Create a dataflow buffer like x
     x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
 
-    # Verify it's a DataflowBuffer with correct properties
     assert isinstance(x_dfb, DataflowBuffer)
     assert x_dfb.shape == (1, 1)
     assert x_dfb.capacity_tiles == 2
     assert x_dfb.buffer_factor == 2
 
-    # Verify it's not initialized (no API)
-    assert x_dfb._api is None  # type: ignore[reportPrivateUsage]
-    assert x_dfb._dfb_id is None  # type: ignore[reportPrivateUsage]
-
-    # Verify that using it without initialization raises an error
-    with pytest.raises(RuntimeError, match="not properly initialized"):
-        x_dfb.reserve()
+    # DFBs are always initialized; the full reserve/store/push cycle should succeed.
+    blk = x_dfb.reserve()
+    blk.store([make_zeros_tile()])
+    blk.push()
 
     print("make_dataflow_buffer_like basic test passed!")
 
 
-def test_make_dataflow_buffer_like_infers_type(api: DFBAPI) -> None:
+def test_make_dataflow_buffer_like_infers_type() -> None:
     """Test that make_dataflow_buffer_like correctly infers the element type."""
     from python.sim import ttl
 
-    # Create a tensor
     tensor = make_rand_tensor(TILE_SHAPE[0], TILE_SHAPE[1])
 
-    # Create a dataflow buffer like the tensor
     dfb = ttl.make_dataflow_buffer_like(tensor, shape=(2, 2), buffer_factor=3)
 
-    # Verify properties
     assert dfb.shape == (2, 2)
-    assert dfb.capacity_tiles == 12  # 2*2*3
+    assert dfb.capacity_tiles == 12
     assert dfb.buffer_factor == 3
-
-    # Verify it's not initialized
-    assert dfb._api is None  # type: ignore[reportPrivateUsage]
-
-    # Verify error when used without initialization
-    with pytest.raises(RuntimeError, match="not properly initialized"):
-        dfb.reserve()
 
     print("make_dataflow_buffer_like type inference test passed!")
 
 
-def test_make_dataflow_buffer_like_multiple_tensors(api: DFBAPI) -> None:
+def test_make_dataflow_buffer_like_multiple_tensors() -> None:
     """Test make_dataflow_buffer_like with multiple different tensors."""
     from python.sim import ttl
 
-    # Create different tensors
     a = make_rand_tensor(TILE_SHAPE[0] * 4, TILE_SHAPE[1] * 4)
     b = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
     c = make_ones_tensor(TILE_SHAPE[0], TILE_SHAPE[1])
 
-    # Create circular buffers for each
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 1), buffer_factor=2)
     c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 2), buffer_factor=3)
 
-    # Verify all have correct properties
     assert a_dfb.shape == (1, 1)
     assert a_dfb.capacity_tiles == 2
 
     assert b_dfb.shape == (2, 1)
-    assert b_dfb.capacity_tiles == 4  # 2*1*2
+    assert b_dfb.capacity_tiles == 4
 
     assert c_dfb.shape == (1, 2)
-    assert c_dfb.capacity_tiles == 6  # 1*2*3
-
-    # Verify they're all uninitialized
-    for dfb in [a_dfb, b_dfb, c_dfb]:
-        assert dfb._api is None  # type: ignore[reportPrivateUsage]
-        with pytest.raises(RuntimeError, match="not properly initialized"):
-            dfb.reserve()
+    assert c_dfb.capacity_tiles == 6
 
     print("make_dataflow_buffer_like multiple tensors test passed!")
 
 
-def test_make_dataflow_buffer_like_with_example_pattern(api: DFBAPI) -> None:
+def test_make_dataflow_buffer_like_with_example_pattern() -> None:
     """Test make_dataflow_buffer_like with realistic example pattern."""
     from python.sim import ttl
 
-    # Simulate example usage
     a_in = make_rand_tensor(128, 128)
     b_in = make_rand_tensor(128, 128)
     out = make_zeros_tensor(128, 128)
@@ -600,7 +524,6 @@ def test_make_dataflow_buffer_like_with_example_pattern(api: DFBAPI) -> None:
     granularity = 4
     buffer_factor = 2
 
-    # Create circular buffers using make_dataflow_buffer_like
     a_dfb = ttl.make_dataflow_buffer_like(
         a_in, shape=(granularity, 1), buffer_factor=buffer_factor
     )
@@ -611,25 +534,17 @@ def test_make_dataflow_buffer_like_with_example_pattern(api: DFBAPI) -> None:
         out, shape=(granularity, 1), buffer_factor=buffer_factor
     )
 
-    # Verify all buffers have correct configuration
     for dfb in [a_dfb, b_dfb, out_dfb]:
         assert dfb.shape == (granularity, 1)
         assert dfb.capacity_tiles == granularity * buffer_factor
-        # Verify they're uninitialized
-        assert dfb._api is None  # type: ignore[reportPrivateUsage]
-
-    # Verify that operations fail without initialization
-    with pytest.raises(RuntimeError, match="not properly initialized"):
-        a_dfb.reserve()
 
     print("make_dataflow_buffer_like example pattern test passed!")
 
 
-def test_can_wait_and_can_reserve(api: DFBAPI) -> None:
+def test_can_wait_and_can_reserve() -> None:
     """Test can_wait() and can_reserve() methods."""
-    # Create a dataflow buffer with buffer factor 2 (capacity = 2 tiles)
     element = make_ones_tile()
-    dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
 
     # Initially, buffer is empty
     # can_reserve should return True (we have 2 free tiles)
@@ -657,8 +572,7 @@ def test_can_wait_and_can_reserve(api: DFBAPI) -> None:
     assert dfb.can_wait() is True  # Still have data to read
     assert dfb.can_reserve() is False  # No free space
 
-    # Wait for the first tile
-    out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
     read1 = dfb.wait()
 
     # After wait(), we have 1 tile read-locked, 1 tile still visible, 0 tiles free
@@ -689,11 +603,10 @@ def test_can_wait_and_can_reserve(api: DFBAPI) -> None:
     print("can_wait() and can_reserve() test passed!")
 
 
-def test_can_methods_multi_tile(api: DFBAPI) -> None:
+def test_can_methods_multi_tile() -> None:
     """Test can_wait() and can_reserve() with multi-tile operations."""
-    # Create a buffer that handles 2 tiles per operation, capacity = 6 tiles
     element = make_ones_tile()
-    dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=3, api=api)
+    dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=3)
 
     # Initially empty
     assert dfb.can_reserve() is True  # 6 free tiles, need 2
@@ -744,28 +657,24 @@ def test_can_methods_multi_tile(api: DFBAPI) -> None:
     print("can_wait() and can_reserve() multi-tile test passed!")
 
 
-def test_can_methods_uninitialized(api: DFBAPI) -> None:
-    """Test that can_wait() and can_reserve() fail on uninitialized DFBs."""
+def test_can_methods_always_work() -> None:
+    """Test that can_wait() and can_reserve() work on freshly created DFBs."""
     from python.sim import ttl
 
     x = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
     dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
 
-    # Both methods should raise RuntimeError on uninitialized DFB
-    with pytest.raises(RuntimeError, match="not properly initialized"):
-        dfb.can_wait()
+    # DFBs are always initialized; both methods should return valid results.
+    assert dfb.can_wait() is False  # empty buffer
+    assert dfb.can_reserve() is True  # free space available
 
-    with pytest.raises(RuntimeError, match="not properly initialized"):
-        dfb.can_reserve()
-
-    print("can_wait() and can_reserve() uninitialized test passed!")
+    print("can_wait() and can_reserve() always-initialized test passed!")
 
 
-def test_context_manager_syntax(api: DFBAPI) -> None:
+def test_context_manager_syntax() -> None:
     """Test the context manager (with statement) syntax for reserve and wait."""
-    # Create a dataflow buffer
     element = make_ones_tile()
-    dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
 
     # Test reserve with context manager
     test_data = make_ones_tile()
@@ -774,41 +683,33 @@ def test_context_manager_syntax(api: DFBAPI) -> None:
         # push() is automatically called on exit
 
     # Test wait with context manager
-    out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
     with dfb.wait() as read_view:
-        # Use waited block as STORE_SRC before pop() is automatically called on exit
         out_block = out_dfb.reserve()
         out_block.store(read_view)
         out_block.push()
-        # pop() is automatically called on exit
 
-    # Verify that we can still use the old style (backward compatibility)
     write_view2 = dfb.reserve()
     write_view2.store([make_zeros_tile()])
     write_view2.push()
 
     read_view2 = dfb.wait()
-    # Use waited block as STORE_SRC before pop
     out_block2 = out_dfb.reserve()
     out_block2.store(read_view2)
     out_block2.push()
     read_view2.pop()
 
-    # Test with multiple context managers on same line
-    dfb.reset()  # Reset to clean state
+    dfb.reset()
 
-    # Write data first
     with dfb.reserve() as w1:
         w1.store([make_ones_tile()])
 
-    # Create another DFB for multi-context test
-    dfb2 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    dfb2 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
     with dfb2.reserve() as w2:
         w2.store([make_zeros_tile()])
 
-    # Test multiple wait contexts (simulating the matmul pattern)
-    out_dfb3 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
-    out_dfb4 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    out_dfb3 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+    out_dfb4 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
     with dfb.wait() as r1, dfb2.wait() as r2:
         # Use waited blocks as STORE_SRC before context managers exit and call pop
         out_block3 = out_dfb3.reserve()
@@ -830,10 +731,10 @@ def test_context_manager_syntax(api: DFBAPI) -> None:
     print("Context manager syntax test passed!")
 
 
-def test_store_accumulate_first_assigns(api: DFBAPI) -> None:
+def test_store_accumulate_first_assigns() -> None:
     """Test that the first store(acc=True) assigns instead of accumulates."""
     element = make_zeros_tile()
-    dfb = DataflowBuffer(element=element, shape=(3, 1), buffer_factor=2, api=api)
+    dfb = DataflowBuffer(element=element, shape=(3, 1), buffer_factor=2)
 
     with dfb.reserve() as block:
         # Create test values
@@ -866,10 +767,10 @@ def test_store_accumulate_first_assigns(api: DFBAPI) -> None:
     print("Store accumulate first assigns test passed!")
 
 
-def test_store_accumulate_vs_regular_store(api: DFBAPI) -> None:
+def test_store_accumulate_vs_regular_store() -> None:
     """Test that regular store() and store(acc=True) have different paths."""
     element = make_zeros_tile()
-    dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=2, api=api)
+    dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=2)
 
     import torch
     from python.sim import ttnn, TILE_SHAPE
@@ -882,8 +783,7 @@ def test_store_accumulate_vs_regular_store(api: DFBAPI) -> None:
         ]
         block1.store(values)  # Regular store
 
-    # Verify we can read it back
-    out_dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=2, api=api)
+    out_dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=2)
     with dfb.wait() as block_read:
         # Use waited block as STORE_SRC before context exit
         out_block = out_dfb.reserve()
@@ -912,10 +812,10 @@ def test_store_accumulate_vs_regular_store(api: DFBAPI) -> None:
     print("Store accumulate vs regular store test passed!")
 
 
-def test_block_state_machine_restrictions(api: DFBAPI) -> None:
+def test_block_state_machine_restrictions() -> None:
     """Test that block state machine enforces access restrictions."""
     element = make_zeros_tile()
-    dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
 
     import torch
     from python.sim import ttnn, TILE_SHAPE
@@ -941,7 +841,7 @@ def test_block_state_machine_restrictions(api: DFBAPI) -> None:
         read_block.store([ttnn.Tensor(torch.full(TILE_SHAPE, 10.0))])
 
     # Use waited block as STORE_SRC before pop
-    out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+    out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
     out_block = out_dfb.reserve()
     out_block.store(read_block)
     out_block.push()
@@ -950,7 +850,7 @@ def test_block_state_machine_restrictions(api: DFBAPI) -> None:
     print("Block state machine restrictions test passed!")
 
 
-def test_copy_sets_block_to_na_state(api: DFBAPI) -> None:
+def test_copy_sets_block_to_na_state() -> None:
     """Test that copy operations set blocks to NA (No Access) state."""
     from python.sim.typedefs import Span
     import torch
@@ -1002,18 +902,14 @@ def test_copy_sets_block_to_na_state(api: DFBAPI) -> None:
     print("Copy sets block to NA state test passed!")
 
 
-def test_push_validates_expected_state(api: DFBAPI) -> None:
-    """Test that push() validates the block is in a valid state before completing.
-
-    This test verifies that push() can only be called on reserve() blocks
-    (not wait() blocks) and only when PUSH is in the expected operations.
-    """
+def test_push_validates_expected_state() -> None:
+    """Test that push() validates the block is in a valid state before completing."""
 
     set_current_thread_type(ThreadType.COMPUTE)
 
     try:
         element = make_ones_tile()
-        dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
+        dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
 
         # Create a block in WAIT state (POP expected)
         # First, populate the DFB
@@ -1041,9 +937,7 @@ def test_push_validates_expected_state(api: DFBAPI) -> None:
             waited_block.mark_push_complete()
 
         # Clean up properly - use waited block as STORE_SRC before pop
-        out_dfb = DataflowBuffer(
-            element=element, shape=(1, 1), buffer_factor=2, api=api
-        )
+        out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
         out_block = out_dfb.reserve()
         out_block.store(waited_block)
         out_block.push()
@@ -1051,96 +945,94 @@ def test_push_validates_expected_state(api: DFBAPI) -> None:
 
         print("Push validates expected state test passed!")
     finally:
-
         clear_current_thread_type()
 
 
 # ---------------------------------------------------------------------------
-# DFBAPI low-level tests
+# Ring-buffer primitive tests (low-level DataflowBuffer internals)
 # ---------------------------------------------------------------------------
 
 
-def test_circular_buffer_basic_flow(configured_dfb8: Tuple[DFBAPI, DFBID]):
-    api, dfb0 = configured_dfb8
-    stats = api.dfb_stats(dfb0)
+def test_circular_buffer_basic_flow(configured_dfb8: DataflowBuffer) -> None:
+    """Test ring-buffer mechanics via private primitives."""
+    dfb = configured_dfb8
+    stats = dfb.stats()
     assert stats.capacity == 8
     assert stats.visible == 0
 
-    # Reserve and write 4 tiles
-    api.dfb_reserve_back(dfb0, 4)
-    ptr = api.get_write_ptr(dfb0)
+    dfb._reserve_back(4)
+    ptr = dfb._get_write_ptr()
     test_tensors = [make_full_tensor(32, 32, i + 1.0) for i in range(4)]
     ptr.store(test_tensors)
-    api.dfb_push_back(dfb0, 4)
-    stats = api.dfb_stats(dfb0)
+    dfb._push_back(4)
+    stats = dfb.stats()
     assert stats.visible == 4
     assert stats.free == 4
 
-    # Wait and read
-    api.dfb_wait_front(dfb0, 4)
-    read_values = api.get_read_ptr(dfb0).to_list()
+    dfb._wait_front(4)
+    read_values = dfb._get_read_ptr().to_list()
     assert len(read_values) == 4
     for i in range(4):
         val = read_values[i]
         assert val is not None
         assert tensors_exact_equal(val, test_tensors[i])
-    api.dfb_pop_front(dfb0, 4)
-    stats = api.dfb_stats(dfb0)
+    dfb._pop_front(4)
+    stats = dfb.stats()
     assert stats.visible == 0
 
-    # Reserve full capacity and write
-    api.dfb_reserve_back(dfb0, 8)
-    ptr = api.get_write_ptr(dfb0)
+    dfb._reserve_back(8)
+    ptr = dfb._get_write_ptr()
     test_tensors = [make_full_tensor(32, 32, float(i)) for i in range(8)]
     ptr.store(test_tensors)
-    api.dfb_push_back(dfb0, 8)
-    stats = api.dfb_stats(dfb0)
+    dfb._push_back(8)
+    stats = dfb.stats()
     assert stats.visible == 8
 
-    # Cumulative wait and read
-    api.dfb_wait_front(dfb0, 4)
-    api.dfb_wait_front(dfb0, 8)
-    read_values = api.get_read_ptr(dfb0).to_list()
+    # Cumulative wait: each call raises the target by one step.
+    dfb._wait_front(4)
+    dfb._wait_front(8)
+    read_values = dfb._get_read_ptr().to_list()
     assert len(read_values) == 8
     for i in range(8):
         val = read_values[i]
         assert val is not None
         assert tensors_exact_equal(val, test_tensors[i])
-    api.dfb_pop_front(dfb0, 8)
-    stats = api.dfb_stats(dfb0)
+    dfb._pop_front(8)
+    stats = dfb.stats()
     assert stats.visible == 0
 
 
-def test_per_instance_timeout_effect():
-    api = DFBAPI(timeout=0.2)
-    dfb = 3
-    api.host_configure_dfb(dfb, 4, shape=(1, 1))
+def test_per_instance_timeout_effect() -> None:
+    """Test that a DataflowBuffer-level timeout fires correctly."""
+    element = make_ones_tile()
+    dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=4, timeout=0.2)
     start = time.perf_counter()
     with pytest.raises(DFBTimeoutError, match="timed out after 0.2s"):
-        api.dfb_wait_front(dfb, 1)
+        dfb._wait_front(1)
     elapsed = time.perf_counter() - start
     assert elapsed < 0.4
 
 
-def test_threaded_produce_consume(configured_dfb: Tuple[DFBAPI, DFBID]):
-    api, dfb0 = configured_dfb
+def test_threaded_produce_consume(configured_dfb: DataflowBuffer) -> None:
+    """Test blocking produce/consume across threads via private primitives."""
+    dfb = configured_dfb
     result: List[List[DFBSlot]] = []
 
-    def consumer():
-        api.dfb_wait_front(dfb0, 4)
-        result.append(api.get_read_ptr(dfb0).to_list())
-        api.dfb_pop_front(dfb0, 4)
+    def consumer() -> None:
+        dfb._wait_front(4)
+        result.append(dfb._get_read_ptr().to_list())
+        dfb._pop_front(4)
 
     t = threading.Thread(target=consumer)
     t.start()
 
     time.sleep(0.5)
 
-    api.dfb_reserve_back(dfb0, 4)
-    ptr = api.get_write_ptr(dfb0)
+    dfb._reserve_back(4)
+    ptr = dfb._get_write_ptr()
     test_tensors = [make_full_tensor(32, 32, 100.0 + i) for i in range(4)]
     ptr.store(test_tensors)
-    api.dfb_push_back(dfb0, 4)
+    dfb._push_back(4)
     t.join(timeout=1)
 
     assert len(result) == 1
@@ -1151,85 +1043,99 @@ def test_threaded_produce_consume(configured_dfb: Tuple[DFBAPI, DFBID]):
         assert tensors_exact_equal(val, test_tensors[i])
 
 
-def test_dfb_pages_nonblocking(configured_dfb8: Tuple[DFBAPI, DFBID]):
-    api, dfb2 = configured_dfb8
+def test_dfb_pages_nonblocking(configured_dfb8: DataflowBuffer) -> None:
+    """Test non-blocking availability checks via stats()."""
+    dfb = configured_dfb8
 
-    assert not api.dfb_pages_available_at_front(dfb2, 1)
-    assert api.dfb_pages_reservable_at_back(dfb2, 8)
+    assert dfb.stats().visible == 0
+    assert dfb.stats().free == 8
 
-    api.dfb_reserve_back(dfb2, 4)
-    assert api.dfb_pages_reservable_at_back(dfb2, 4)
+    dfb._reserve_back(4)
+    assert dfb.stats().free == 4
 
-    ptr = api.get_write_ptr(dfb2)
+    ptr = dfb._get_write_ptr()
     test_tensors = [make_full_tensor(32, 32, i + 1.0) for i in range(4)]
     ptr.store(test_tensors)
-    api.dfb_push_back(dfb2, 4)
-    assert api.dfb_pages_available_at_front(dfb2, 4)
-    assert api.dfb_pages_available_at_front(dfb2, 2)
+    dfb._push_back(4)
+    assert dfb.stats().visible == 4
 
-    api.dfb_wait_front(dfb2, 4)
-    api.dfb_pop_front(dfb2, 4)
-    assert not api.dfb_pages_available_at_front(dfb2, 1)
+    dfb._wait_front(4)
+    dfb._pop_front(4)
+    assert dfb.stats().visible == 0
 
 
-def test_dfb_pages_available_out_of_range_error(configured_dfb: Tuple[DFBAPI, DFBID]):
-    api, dfb = configured_dfb
+def test_dfb_pages_available_out_of_range_error(configured_dfb: DataflowBuffer) -> None:
+    """Test that _wait_front raises when num_tiles exceeds capacity."""
+    dfb = configured_dfb
     with pytest.raises(DFBContractError, match="num_tiles must be <= capacity"):
-        api.dfb_pages_available_at_front(dfb, 5)
+        dfb._wait_front(5)
 
 
-def test_dfb_pages_reservable_out_of_range_error(configured_dfb: Tuple[DFBAPI, DFBID]):
-    api, dfb = configured_dfb
+def test_dfb_pages_reservable_out_of_range_error(
+    configured_dfb: DataflowBuffer,
+) -> None:
+    """Test that _reserve_back raises when num_tiles exceeds capacity."""
+    dfb = configured_dfb
     with pytest.raises(DFBContractError, match="num_tiles must be <= capacity"):
-        api.dfb_pages_reservable_at_back(dfb, 5)
+        dfb._reserve_back(5)
 
 
-def test_dfb_pages_reservable_divisibility_error(configured_dfb8: Tuple[DFBAPI, DFBID]):
-    api, dfb = configured_dfb8
+def test_dfb_pages_reservable_divisibility_error(
+    configured_dfb8: DataflowBuffer,
+) -> None:
+    """Test that _reserve_back raises on non-divisible num_tiles."""
+    dfb = configured_dfb8
     with pytest.raises(
         DFBContractError, match="First num_tiles=5 must evenly divide capacity=8"
     ):
-        api.dfb_pages_reservable_at_back(dfb, 5)
+        dfb._reserve_back(5)
 
 
-def test_dfb_pages_available_divisibility_error(configured_dfb8: Tuple[DFBAPI, DFBID]):
-    api, dfb = configured_dfb8
-    api.dfb_reserve_back(dfb, 4)
-    ptr = api.get_write_ptr(dfb)
+def test_dfb_pages_available_divisibility_error(
+    configured_dfb8: DataflowBuffer,
+) -> None:
+    """Test that _wait_front raises on non-divisible num_tiles."""
+    dfb = configured_dfb8
+    dfb._reserve_back(4)
+    ptr = dfb._get_write_ptr()
     test_tensors = [make_full_tensor(32, 32, i + 1.0) for i in range(4)]
     ptr.store(test_tensors)
-    api.dfb_push_back(dfb, 4)
+    dfb._push_back(4)
     with pytest.raises(
         DFBContractError, match="First num_tiles=3 must evenly divide capacity=8"
     ):
-        api.dfb_pages_available_at_front(dfb, 3)
+        dfb._wait_front(3)
 
 
-def test_get_read_ptr_requires_wait(configured_dfb: Tuple[DFBAPI, DFBID]):
-    api, dfb = configured_dfb
+def test_get_read_ptr_requires_wait(configured_dfb: DataflowBuffer) -> None:
+    """Test that _get_read_ptr raises without a prior _wait_front."""
+    dfb = configured_dfb
     with pytest.raises(
         DFBContractError, match="get_read_ptr requires prior dfb_wait_front"
     ):
-        api.get_read_ptr(dfb)
+        dfb._get_read_ptr()
 
 
-def test_get_write_ptr_requires_reserve(configured_dfb: Tuple[DFBAPI, DFBID]):
-    api, dfb = configured_dfb
+def test_get_write_ptr_requires_reserve(configured_dfb: DataflowBuffer) -> None:
+    """Test that _get_write_ptr raises without a prior _reserve_back."""
+    dfb = configured_dfb
     with pytest.raises(
         DFBContractError, match="get_write_ptr requires prior dfb_reserve_back"
     ):
-        api.get_write_ptr(dfb)
+        dfb._get_write_ptr()
 
 
-def test_multiple_consumers_error(timeout_api: DFBAPI):
-    api = timeout_api
-    dfb = 0
-    api.host_configure_dfb(dfb, 4, shape=(1, 1))
+def test_multiple_consumers_error(timeout_seconds: float) -> None:
+    """Test that only one thread may call _wait_front at a time."""
+    element = make_ones_tile()
+    dfb = DataflowBuffer(
+        element=element, shape=(1, 1), buffer_factor=4, timeout=timeout_seconds
+    )
     errors: List[str] = []
 
-    def consumer():
+    def consumer() -> None:
         try:
-            api.dfb_wait_front(dfb, 4)
+            dfb._wait_front(4)
         except (DFBContractError, DFBTimeoutError) as e:
             errors.append(str(e))
 
@@ -1244,15 +1150,17 @@ def test_multiple_consumers_error(timeout_api: DFBAPI):
     )
 
 
-def test_multiple_producers_error(timeout_api: DFBAPI):
-    api = timeout_api
-    dfb = 0
-    api.host_configure_dfb(dfb, 4, shape=(1, 1))
+def test_multiple_producers_error(timeout_seconds: float) -> None:
+    """Test that only one thread may call _reserve_back at a time."""
+    element = make_ones_tile()
+    dfb = DataflowBuffer(
+        element=element, shape=(1, 1), buffer_factor=4, timeout=timeout_seconds
+    )
     errors: List[str] = []
 
-    def producer():
+    def producer() -> None:
         try:
-            api.dfb_reserve_back(dfb, 4)
+            dfb._reserve_back(4)
         except (DFBContractError, DFBTimeoutError) as e:
             errors.append(str(e))
 
@@ -1268,62 +1176,43 @@ def test_multiple_producers_error(timeout_api: DFBAPI):
     )
 
 
-def test_allocate_dfb_id(api: DFBAPI):
-    """Test that allocate_dfb_id allocates sequential IDs."""
-    dfb_id0 = api.allocate_dfb_id()
-    dfb_id1 = api.allocate_dfb_id()
-    dfb_id2 = api.allocate_dfb_id()
-
-    assert dfb_id0 == 0
-    assert dfb_id1 == 1
-    assert dfb_id2 == 2
-
-
-def test_allocate_dfb_id_thread_safe(api: DFBAPI):
-    """Test that allocate_dfb_id is thread-safe."""
-    allocated_ids: List[DFBID] = []
-    lock = threading.Lock()
-
-    def allocate():
-        dfb_id = api.allocate_dfb_id()
-        with lock:
-            allocated_ids.append(dfb_id)
-
-    threads = [threading.Thread(target=allocate) for _ in range(10)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    assert len(allocated_ids) == 10
-    assert len(set(allocated_ids)) == 10
-    assert sorted(allocated_ids) == list(range(10))
-
-
-def test_allocate_dfb_id_exceeds_max():
-    """Test that allocating more than MAX_DFBS raises RuntimeError."""
+def test_per_core_dfb_limit_exceeds_max() -> None:
+    """Test that Program raises when a kernel's DataflowBuffer count exceeds MAX_DFBS."""
     from python.sim.constants import MAX_DFBS
+    from python.sim.program import Program
+    from python.sim import ttl
 
-    api = DFBAPI()
-    for _ in range(MAX_DFBS):
-        api.allocate_dfb_id()
+    assert MAX_DFBS == 32
 
-    with pytest.raises(
-        RuntimeError, match=f"Maximum number of circular buffers exceeded: {MAX_DFBS}"
-    ):
-        api.allocate_dfb_id()
+    element = make_ones_tile()
+
+    @ttl.compute()
+    def noop_compute():
+        pass
+
+    @ttl.datamovement()
+    def noop_dm():
+        pass
+
+    prog = Program(noop_compute, noop_dm, noop_dm, grid=(1,))
+
+    # Inject MAX_DFBS + 1 DataflowBuffers into the context.
+    for i in range(MAX_DFBS + 1):
+        prog.context[f"dfb_{i}"] = DataflowBuffer(element=element, shape=(1, 1))
+
+    with pytest.raises(RuntimeError, match="exceeds the hardware limit"):
+        prog()
 
 
-def test_heterogeneous_dfbs_in_same_api():
-    """Test that a single DFBAPI instance can handle multiple circular buffers."""
+def test_heterogeneous_dfbs_independent() -> None:
+    """Test that multiple DataflowBuffers operate independently."""
     set_current_thread_type(ThreadType.COMPUTE)
 
     try:
-        api = DFBAPI()
         element = make_full_tensor(32, 32, 1.0)
 
-        dfb1 = DataflowBuffer(element=element, shape=(2, 2), buffer_factor=2, api=api)
-        dfb2 = DataflowBuffer(element=element, shape=(2, 2), buffer_factor=2, api=api)
+        dfb1 = DataflowBuffer(element=element, shape=(2, 2), buffer_factor=2)
+        dfb2 = DataflowBuffer(element=element, shape=(2, 2), buffer_factor=2)
 
         write1 = dfb1.reserve()
         test_tensors_1 = [make_full_tensor(32, 32, i + 1.0) for i in range(len(write1))]
@@ -1348,26 +1237,19 @@ def test_heterogeneous_dfbs_in_same_api():
         write2_2.store(read2)
         read2.pop()
         write2_2.push()
-
-        assert dfb1._api is api  # type: ignore
-        assert dfb2._api is api  # type: ignore
     finally:
         set_current_thread_type(None)
 
 
-def test_default_api_heterogeneous():
-    """Test that an explicit API can handle multiple circular buffers."""
+def test_two_dfbs_independent_state() -> None:
+    """Test that two DataflowBuffers have fully independent ring-buffer state."""
     set_current_thread_type(ThreadType.COMPUTE)
 
     try:
-        api = DFBAPI()
         element = make_full_tensor(32, 32, 1.0)
 
-        dfb1 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
-        dfb2 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2, api=api)
-
-        assert dfb1._api is dfb2._api  # type: ignore
-        assert dfb1._api is api  # type: ignore
+        dfb1 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+        dfb2 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
 
         write1 = dfb1.reserve()
         write1.store([make_full_tensor(32, 32, 42.0)])

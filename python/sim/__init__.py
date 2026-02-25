@@ -7,7 +7,7 @@ sim package: simulation components for TT-Lang including circular buffers, tenso
 """
 
 from . import ttnnsim as ttnn
-from .dfb import DFBAPI, DFBStats
+from .dfb import DFBStats
 from .constants import MAX_DFBS, TILE_SHAPE
 from .copy import CopyTransaction, copy
 from .decorators import compute, datamovement
@@ -85,7 +85,6 @@ class _TTLNamespace:
 ttl = _TTLNamespace()
 
 __all__ = [
-    "DFBAPI",
     "DFBStats",
     "CoreCoord",
     "CoreRange",

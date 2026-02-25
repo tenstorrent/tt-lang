@@ -20,16 +20,10 @@ from test_utils import (
 )
 
 from python.sim.blockstate import BlockAcquisition, ThreadType, set_current_thread_type
-from python.sim.dfb import DFBAPI, Block, DataflowBuffer, Span
+from python.sim.dfb import Block, DataflowBuffer, Span
 from python.sim.dfbstate import DFBSlot
 from python.sim.copy import CopyTransaction, copy
 from python.sim.pipe import Pipe
-
-
-@pytest.fixture
-def api():
-    """Provide a fresh DFBAPI instance for each test."""
-    return DFBAPI()
 
 
 @pytest.fixture(autouse=True)
@@ -335,16 +329,14 @@ class TestCopyWaitIdempotency:
 class TestCopyWithStateMachine:
     """Test copy operations using DataflowBuffer (conforming to state machine)."""
 
-    def test_copy_tensor_to_block_with_reserve(self, api: "DFBAPI") -> None:
+    def test_copy_tensor_to_block_with_reserve(self) -> None:
         """Test Tensor -> Block copy using reserve() in DM thread."""
 
         # Set DM thread context for copy operations
         set_current_thread_type(ThreadType.DM)
 
         source = make_rand_tensor(64, 32)  # 2x1 tiles
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(2, 1), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(2, 1), buffer_factor=2)
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -354,15 +346,13 @@ class TestCopyWithStateMachine:
             block_data = block.to_list()
             assert tensors_equal(block_data[0], source[0:1, 0:1])
 
-    def test_copy_block_to_tensor_with_wait(self, api: "DFBAPI") -> None:
+    def test_copy_block_to_tensor_with_wait(self) -> None:
         """Test Block -> Tensor copy using wait() in DM thread."""
 
         set_current_thread_type(ThreadType.DM)
 
         # Setup: Fill DFB with data using reserve->store->push pattern
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(2, 1), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(2, 1), buffer_factor=2)
         source = make_rand_tensor(64, 32)
 
         with dfb.reserve() as block:
@@ -383,15 +373,13 @@ class TestCopyWithStateMachine:
         assert tensors_equal(dest_tile0, source_tile0)
         assert tensors_equal(dest_tile1, source_tile1)
 
-    def test_copy_single_tile_tensor_to_block(self, api: "DFBAPI") -> None:
+    def test_copy_single_tile_tensor_to_block(self) -> None:
         """Test single tile Tensor -> Block copy."""
 
         set_current_thread_type(ThreadType.DM)
 
         source = make_ones_tile()
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -401,15 +389,13 @@ class TestCopyWithStateMachine:
             block_data = block.to_list()
             assert tensors_equal(block_data[0], source)
 
-    def test_copy_multi_tile_tensor_to_block(self, api: "DFBAPI") -> None:
+    def test_copy_multi_tile_tensor_to_block(self) -> None:
         """Test multi-tile Tensor -> Block copy."""
 
         set_current_thread_type(ThreadType.DM)
 
         source = make_rand_tensor(128, 32)  # 4x1 tiles
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(4, 1), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(4, 1), buffer_factor=2)
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -420,17 +406,17 @@ class TestCopyWithStateMachine:
             for i in range(4):
                 assert tensors_equal(block_data[i], source[i : i + 1, 0:1])
 
-    def test_copy_with_pipe_single_tile(self, api: "DFBAPI") -> None:
+    def test_copy_with_pipe_single_tile(self) -> None:
         """Test Block -> Pipe -> Block copy with single tile."""
 
         set_current_thread_type(ThreadType.DM)
 
         tile = make_full_tile(123.0)
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         pipe = Pipe(210, 211)
 
@@ -455,7 +441,7 @@ class TestCopyWithStateMachine:
 
         assert tensors_equal(result, tile)
 
-    def test_copy_with_pipe_multiple_tiles(self, api: "DFBAPI") -> None:
+    def test_copy_with_pipe_multiple_tiles(self) -> None:
         """Test Block -> Pipe -> Block copy with multiple tiles."""
 
         set_current_thread_type(ThreadType.DM)
@@ -463,10 +449,10 @@ class TestCopyWithStateMachine:
 
         source = make_rand_tensor(64, 32)  # 2x1 tiles
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(2, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(2, 1), buffer_factor=2
         )
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(2, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(2, 1), buffer_factor=2
         )
         pipe = Pipe((26, 3), (26, slice(4, 6)))
 
@@ -497,15 +483,13 @@ class TestCopyWithStateMachine:
         assert tensors_equal(result_tile0, source_tile0)
         assert tensors_equal(result_tile1, source_tile1)
 
-    def test_copy_sequential_transfers(self, api: "DFBAPI") -> None:
+    def test_copy_sequential_transfers(self) -> None:
         """Test multiple sequential copy operations."""
 
         set_current_thread_type(ThreadType.DM)
 
         source = make_rand_tensor(64, 32)  # 2 tiles
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(2, 1), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(2, 1), buffer_factor=2)
         result = make_rand_tensor(64, 32)
 
         # Stage 1: Load tensor to DFB
@@ -526,15 +510,13 @@ class TestCopyWithStateMachine:
         assert tensors_equal(result_tile0, source_tile0)
         assert tensors_equal(result_tile1, source_tile1)
 
-    def test_copy_wait_idempotency(self, api: "DFBAPI") -> None:
+    def test_copy_wait_idempotency(self) -> None:
         """Test that calling wait() multiple times is safe."""
 
         set_current_thread_type(ThreadType.DM)
 
         source = make_ones_tile()
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -547,15 +529,13 @@ class TestCopyWithStateMachine:
             block_data = block.to_list()
             assert tensors_equal(block_data[0], source)
 
-    def test_copy_can_wait_before_and_after(self, api: "DFBAPI") -> None:
+    def test_copy_can_wait_before_and_after(self) -> None:
         """Test can_wait() functionality."""
 
         set_current_thread_type(ThreadType.DM)
 
         source = make_ones_tile()
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -568,15 +548,13 @@ class TestCopyWithStateMachine:
             assert tx.can_wait() is True
             assert tx.is_completed is True
 
-    def test_copy_multi_tile_can_wait(self, api: "DFBAPI") -> None:
+    def test_copy_multi_tile_can_wait(self) -> None:
         """Test can_wait() with multi-tile transfer."""
 
         set_current_thread_type(ThreadType.DM)
 
         source = make_rand_tensor(64, 64)  # 2x2 tiles
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(2, 2), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(2, 2), buffer_factor=2)
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -587,17 +565,17 @@ class TestCopyWithStateMachine:
             assert tx.can_wait() is True
             assert tx.is_completed
 
-    def test_copy_with_pipe_can_wait(self, api: "DFBAPI") -> None:
+    def test_copy_with_pipe_can_wait(self) -> None:
         """Test can_wait() with pipe transfers."""
 
         set_current_thread_type(ThreadType.DM)
 
         pipe = Pipe(10, 20)
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
 
         # Send data to pipe
@@ -625,16 +603,14 @@ class TestCopyWithStateMachine:
 class TestCopyTransactionProperties:
     """Test CopyTransaction properties and state."""
 
-    def test_is_completed_property(self, api: "DFBAPI") -> None:
+    def test_is_completed_property(self) -> None:
         """Test that is_completed property correctly reflects transaction state."""
         from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
         source = make_ones_tile()
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -651,16 +627,14 @@ class TestCopyTransactionProperties:
             assert tx.is_completed is True
             assert tx.is_completed is True
 
-    def test_multiple_wait_on_completed_transaction(self, api: "DFBAPI") -> None:
+    def test_multiple_wait_on_completed_transaction(self) -> None:
         """Test that calling wait() multiple times on completed transaction is safe."""
         from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
         source = make_rand_tensor(64, 32)
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(2, 1), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(2, 1), buffer_factor=2)
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -675,7 +649,7 @@ class TestCopyTransactionProperties:
             tx.wait()
             assert tx.is_completed is True
 
-    def test_can_wait_reflects_handler_behavior(self, api: "DFBAPI") -> None:
+    def test_can_wait_reflects_handler_behavior(self) -> None:
         """Test that can_wait() correctly delegates to handler."""
         from python.sim.copy import copy
 
@@ -683,9 +657,7 @@ class TestCopyTransactionProperties:
 
         # Tensor -> Block is always synchronous
         source = make_ones_tile()
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -700,7 +672,7 @@ class TestCopyTransactionProperties:
 class TestCopyContextManagerExtraction:
     """Test that copy works with both raw blocks and context managers."""
 
-    def test_copy_with_context_managers(self, api: "DFBAPI") -> None:
+    def test_copy_with_context_managers(self) -> None:
         """Test copy operations using context managers with Pipe."""
         from python.sim.copy import copy
 
@@ -708,10 +680,10 @@ class TestCopyContextManagerExtraction:
 
         source = make_full_tile(42.0)
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         pipe = Pipe(1000, 1001)
 
@@ -740,16 +712,14 @@ class TestCopyContextManagerExtraction:
 
         assert tensors_equal(result, source)
 
-    def test_mixed_context_managers_and_tensors(self, api: "DFBAPI") -> None:
+    def test_mixed_context_managers_and_tensors(self) -> None:
         """Test mixing context managers with raw tensors."""
         from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
         source = make_full_tile(3.14)
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
 
         # Tensor -> Context manager
         with dfb.reserve() as ctx:
@@ -768,16 +738,14 @@ class TestCopyContextManagerExtraction:
 class TestCopyErrorConditions:
     """Test error conditions and edge cases in copy operations."""
 
-    def test_copy_creates_transaction_immediately(self, api: "DFBAPI") -> None:
+    def test_copy_creates_transaction_immediately(self) -> None:
         """Test that copy() creates transaction immediately, not on wait()."""
         from python.sim.copy import copy, CopyTransaction
 
         set_current_thread_type(ThreadType.DM)
 
         source = make_ones_tile()
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
 
         with dfb.reserve() as block:
             # copy() should return a CopyTransaction immediately

@@ -46,8 +46,6 @@ Shape = Tuple[Size, ...]
 # tile column; preceding elements are batch indices (implicit tile size 1,
 # so tile-space and element-space are identical for those dimensions).
 TensorKey = Tuple[Selector, ...]
-_MAX_DFBS: Size = 32  # Fixed pool of circular buffers
-DFBID = Annotated[NaturalInt, Field(ge=0, lt=_MAX_DFBS)]
 
 
 @dataclass(frozen=True)
