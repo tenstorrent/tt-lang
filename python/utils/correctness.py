@@ -9,14 +9,14 @@ import math
 import torch
 
 
-def assert_pcc(golden, actual, threshold=0.99):
+def assert_pcc(golden, actual, threshold=0.9999):
     """
     Assert Pearson correlation coefficient is above threshold.
 
     Args:
         golden: Expected tensor
         actual: Actual output tensor
-        threshold: Minimum acceptable PCC (default 0.99)
+        threshold: Minimum acceptable PCC (default 0.9999, consistent with tt-metal)
 
     Raises:
         AssertionError: If PCC < threshold
@@ -234,8 +234,6 @@ def assert_with_ulp(
         ulp_threshold (float, optional): Maximum tolerated ULP distance. Defaults to 10.
         allow_nonfinite (bool, optional): If disabled, any non-finite value (NaN, +inf, -inf) will trigger an assertion.
             If enabled, differences between non-finite values at the same positions will trigger an assertion.
-        pcc_threshold (float, optional): Minimum Pearson correlation coefficient, always enforced as a fallback alongside ULP.
-            Catches structural errors that relaxed ULP thresholds might miss. Set to None to disable. Defaults to 0.99999.
 
     Notes:
         The length of a single ULP is measured using the difference between two consecutive floating point numbers.

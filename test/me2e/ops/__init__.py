@@ -68,6 +68,16 @@ OP_ULP_THRESHOLD_OVERRIDES: Dict[str, Dict[torch.dtype, int]] = {
     "mul": {torch.float32: 2**16},
 }
 
+# Per-op PCC threshold overrides keyed by dtype.
+# Default is 0.9999 (consistent with tt-metal). Override for ops where
+# hardware precision limitations reduce correlation.
+# Values below are aligned with tt-metal test thresholds.
+OP_PCC_THRESHOLD_OVERRIDES: Dict[str, Dict[torch.dtype, float]] = {
+    "exp": {torch.float32: 0.9998},
+    "tanh": {torch.float32: 0.993},
+    "recip": {torch.bfloat16: 0.999},
+}
+
 
 def _parse_elementwise_ops_def() -> Dict[str, int]:
     """
@@ -115,8 +125,9 @@ class OpTestBase(ME2ETestBase):
     INPUT_SHAPE = (2, 2)  # Grid shape in tiles
     INPUT_DTYPE = torch.bfloat16
 
-    # Comparison tolerance (auto-computed from dtype if None)
+    # Comparison tolerances (auto-computed from dtype if None)
     ULP_THRESHOLD: Optional[float] = None
+    PCC_THRESHOLD: Optional[float] = None
 
     # Input value range
     MIN_VALUE = -1.0
@@ -240,6 +251,10 @@ def generate_op_test_classes() -> Dict[str, Type[OpTestBase]]:
                 overrides = OP_ULP_THRESHOLD_OVERRIDES[op_name]
                 if dtype in overrides:
                     attrs["ULP_THRESHOLD"] = overrides[dtype]
+            if op_name in OP_PCC_THRESHOLD_OVERRIDES:
+                overrides = OP_PCC_THRESHOLD_OVERRIDES[op_name]
+                if dtype in overrides:
+                    attrs["PCC_THRESHOLD"] = overrides[dtype]
 
             # Create class dynamically with dtype suffix.
             class_name = f"Test{op_name.capitalize()}{dtype_suffix}"
