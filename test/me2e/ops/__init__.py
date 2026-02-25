@@ -60,6 +60,12 @@ OP_ULP_THRESHOLD_OVERRIDES: Dict[str, Dict[torch.dtype, int]] = {
     # precision for f32. tt-metal's own tests skip log f32 on WH/BH due to
     # "very high abs and relative diff". Measured ULP ~2^21.
     "log": {torch.float32: 2**22},
+    # FPU binary f32: hardware computes at reduced precision.  PCC > 0.99999
+    # and allclose(rtol=1e-3, atol=1e-3) passes, but near-zero values inflate
+    # ULP distance.  Measured max ULP: add ~2^23.5, sub ~2^23.5, mul ~2^15.2.
+    "add": {torch.float32: 2**24},
+    "sub": {torch.float32: 2**24},
+    "mul": {torch.float32: 2**16},
 }
 
 
