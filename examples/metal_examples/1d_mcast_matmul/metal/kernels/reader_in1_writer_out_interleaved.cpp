@@ -84,8 +84,6 @@ void kernel_main() {
       uint32_t in1_tensor_current_inner_dim_block_start_tile_id =
           in1_tensor_current_w_dim_block_tile_id;
       for (uint32_t block = 0; block < num_blocks_inner_dim; ++block) {
-
-        << ENDL();
         // Operand 1
         cb_reserve_back(cb_id_in1, in1_block_num_tiles);
 
@@ -128,14 +126,12 @@ void kernel_main() {
             }
             out_tensor_sb_row_start_tile_id += out_tensor_stride_h;
           }
-
           noc_async_write_barrier();
           cb_pop_front(cb_id_out0, out_subblock_tile_count);
           out_tensor_sbw_start_tile_id += out_tensor_next_subblock_stride_w;
         }
         out_tensor_sbh_start_tile_id += out_tensor_next_subblock_stride_h;
       }
-
       in1_tensor_current_w_dim_block_tile_id +=
           in1_tensor_next_w_dim_block_stride;
       out_tensor_current_w_dim_block_tile_id +=

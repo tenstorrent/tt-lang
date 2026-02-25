@@ -10,11 +10,6 @@
 #include "compute_kernel_api/transpose_wh.h"
 #include "internal/mod_div_lib.h"
 
-// Please update
-// tests/tt_metal/tt_metal/perf_microbenchmark/1_compute_mm/kernels/bmm_large_block_zm_fused_bias_activation_copy.cpp
-// when making any changes to this file.
-// Have to keep a copy because cannot import ttnn into tests/tt_metal.
-
 namespace NAMESPACE {
 
 void MAIN {
@@ -64,7 +59,6 @@ void MAIN {
         cb_wait_front(in0_cb_id, in0_block_num_tiles);
         cb_wait_front(in1_cb_id, in1_block_num_tiles);
 
-        << block << ENDL();
         // start of being handled by compiler
         int a_index_subblock_offset = 0;
         for (uint32_t a_subblock = 0; a_subblock < in0_num_subblocks;
@@ -75,7 +69,6 @@ void MAIN {
             tile_regs_acquire();
 
             if (enable_reload) {
-
               copy_tile_to_dst_init_short(mm_partials_cb_id);
               cb_wait_front(mm_partials_cb_id, out_subblock_num_tiles);
               for (uint32_t i = 0; i < out_subblock_num_tiles; i++) {
@@ -115,9 +108,7 @@ void MAIN {
                 pack_tile(i, out_cb_id);
               }
               cb_push_back(out_cb_id, out_subblock_num_tiles);
-
             } else {
-
               // Wait for tiles in output buffer to be written out since interm
               // and output share memory
               if (block == 0) {
@@ -131,9 +122,7 @@ void MAIN {
               }
               cb_push_back(mm_partials_cb_id, out_subblock_num_tiles);
             }
-
             tile_regs_release();
-
             b_index_subblock_offset += out_subblock_w;
           }
           a_index_subblock_offset += in0_subblock_num_tiles;
@@ -145,8 +134,6 @@ void MAIN {
         // end of compiler subblock generation
         cb_pop_front(in0_cb_id, in0_block_num_tiles);
         cb_pop_front(in1_cb_id, in1_block_num_tiles);
-
-        << block << ENDL();
       }
     }
   }

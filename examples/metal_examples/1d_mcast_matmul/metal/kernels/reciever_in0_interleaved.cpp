@@ -42,7 +42,6 @@ void kernel_main() {
       for (uint32_t block = 0; block < num_blocks_inner_dim; ++block) {
         // Operand 0
         cb_reserve_back(cb_id_in0, in0_block_num_tiles);
-
         // Set in0 semaphore value to INVALID
         noc_semaphore_set(in0_mcast_receiver_semaphore_addr_ptr, INVALID);
         // Atomic increment source core counter

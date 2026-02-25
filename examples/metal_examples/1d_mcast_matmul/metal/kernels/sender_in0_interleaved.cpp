@@ -130,16 +130,12 @@ void kernel_main() {
             in0_mcast_num_cores, true);
         // might not be needed for wh
         noc_async_writes_flushed();
-
         // We should also multicast the flag to destinations
         // num_dests must not include source, since we are NOT really doing a
         // local copy!
-
-        << ENDL();
         noc_semaphore_set_multicast(in0_mcast_receiver_semaphore_addr,
                                     in0_mcast_receiver_semaphore_noc_addr,
                                     in0_mcast_num_cores);
-
         // Common for sharded and interleaved paths
         cb_push_back(cb_id_in0, in0_block_num_tiles);
       }
@@ -147,6 +143,4 @@ void kernel_main() {
     in0_tensor_current_h_dim_block_tile_id +=
         in0_tensor_next_h_dim_block_stride;
   }
-
-  // noc_async_write_barrier(); // also blocking when restricted to noc 0
 }
