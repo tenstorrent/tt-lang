@@ -452,3 +452,84 @@ func.func @tile_multidim_remainder_3x3(%a: tensor<3x3x!ttcore.tile<32x32, f32>>)
 
   func.return %result : tensor<3x3x!ttcore.tile<32x32, f32>>
 }
+
+// -----
+
+#map_identity = affine_map<(d0, d1) -> (d0, d1)>
+#map_col_bcast = affine_map<(d0, d1) -> (d0, 0)>
+
+// Purpose: 4x4 output with col-broadcast input B (4x1). Exercises
+// mapOffsetsAndSizes with broadcast indexing map containing a constant
+// expression for the column dimension. Verifies that the broadcast dim
+// retains its original size (1) in extract_slice rather than being
+// incorrectly set to the iteration-domain size (4).
+// DST capacity=8, dstPerIteration=1, totalTiles=16.
+// unroll_factor = min(8/1, 16) = 8.
+// Multi-dim tiling: tileSizes=[2,4], product=8. Loop on dim 0 (0 to 4 step 2).
+// ASSIGN-LABEL: func.func @subblock_broadcast_col
+// ASSIGN:         ttl.compute
+// ASSIGN-SAME:    ttl.unroll_factor = 8 : i64
+// TILED-LABEL:  func.func @subblock_broadcast_col
+// TILED:        %[[C0:.*]] = arith.constant 0 : index
+// TILED-NEXT:   %[[C4:.*]] = arith.constant 4 : index
+// TILED-NEXT:   %[[C2:.*]] = arith.constant 2 : index
+// TILED-NEXT:   scf.for %[[IV:.*]] = %[[C0]] to %[[C4]] step %[[C2]] {
+// A: identity map, full 2x4 subblock slice.
+// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [2, 4] [1, 1] : tensor<4x4x!ttcore.tile<32x32, f32>> to tensor<2x4x!ttcore.tile<32x32, f32>>
+// B: col broadcast map -- broadcast dim (col) keeps original size 1.
+// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [2, 1] [1, 1] : tensor<4x1x!ttcore.tile<32x32, f32>> to tensor<2x1x!ttcore.tile<32x32, f32>>
+// Output: identity map, full 2x4 subblock slice.
+// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [2, 4] [1, 1] : tensor<4x4x!ttcore.tile<32x32, f32>> to tensor<2x4x!ttcore.tile<32x32, f32>>
+// Tiled compute has broadcast-aware operand shapes.
+// TILED-NEXT:     {{.*}} = ttl.compute
+// TILED-SAME:     tensor<2x4x!ttcore.tile<32x32, f32>>
+// TILED-SAME:     tensor<2x1x!ttcore.tile<32x32, f32>>
+// TILED-SAME:     ttl.full_linearization_strides
+// TILED:            ttl.tile_add
+// TILED-NEXT:       ttl.tile_store
+// TILED-NEXT:       ttl.yield
+// TILED-NEXT:     } -> tensor<2x4x!ttcore.tile<32x32, f32>>
+// TILED-NEXT:   }
+// LOWER-LABEL:  func.func @subblock_broadcast_col
+// Multi-dim subblocked: outer scf.for (step 2 on dim 0), inner 8 unrolled
+// tile_add ops. Broadcast input always accessed at column 0.
+// LOWER-NOT:    tensor.collapse_shape
+// LOWER:        scf.for {{.*}} = {{.*}} to {{.*}} step
+// LOWER:          ttl.tile_regs_acquire
+// LOWER:          ttl.tile_add {{.*}} {dst_idx = 0
+// LOWER:          ttl.tile_add {{.*}} {dst_idx = 7
+// LOWER:          ttl.tile_regs_commit
+// LOWER:          ttl.tile_regs_wait
+// LOWER:          ttl.tile_store
+// LOWER:          ttl.tile_store
+// LOWER:          ttl.tile_regs_release
+func.func @subblock_broadcast_col(
+    %a: tensor<4x4x!ttcore.tile<32x32, f32>>,
+    %b: tensor<4x1x!ttcore.tile<32x32, f32>>)
+    -> tensor<4x4x!ttcore.tile<32x32, f32>> {
+  %init = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
+
+  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[4, 1], !ttcore.tile<32x32, f32>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 16, buffer_factor = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
+
+  %a_cb = ttl.attach_cb %a, %cb0 : (tensor<4x4x!ttcore.tile<32x32, f32>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x4x!ttcore.tile<32x32, f32>>
+  %b_cb = ttl.attach_cb %b, %cb1 : (tensor<4x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[4, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x1x!ttcore.tile<32x32, f32>>
+  %init_cb = ttl.attach_cb %init, %cb2 : (tensor<4x4x!ttcore.tile<32x32, f32>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x4x!ttcore.tile<32x32, f32>>
+
+  %reserve = ttl.cb_reserve %cb2 : <[4, 4], !ttcore.tile<32x32, f32>, 2> -> tensor<4x4x!ttcore.tile<32x32, f32>>
+
+  %result = ttl.compute
+      ins(%a_cb, %b_cb : tensor<4x4x!ttcore.tile<32x32, f32>>, tensor<4x1x!ttcore.tile<32x32, f32>>)
+      outs(%init_cb : tensor<4x4x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [#map_identity, #map_col_bcast, #map_identity],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %b_tile: !ttcore.tile<32x32, f32>,
+       %out_tile: !ttcore.tile<32x32, f32>):
+    %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
+    ttl.tile_store %sum, %reserve : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
+    ttl.yield %sum : !ttcore.tile<32x32, f32>
+  } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+
+  func.return %result : tensor<4x4x!ttcore.tile<32x32, f32>>
+}
