@@ -6,17 +6,13 @@
 // TTL Tile Ops to TTKernel Lowering
 //===----------------------------------------------------------------------===//
 //
-// This file lowers TTL tile operations (ttl.tile_* and ttl.copy_tile) to
-// TTKernel operations using DialectConversion.
-// Future work (TODO #124):
-// - DST lifecycle wrapper (acquire/commit/wait/release) around loop iterations
-// - copy_tile (CB → DST) before compute, pack_tile (DST → CB) after
+// Lowers TTL tile-level operations to TTKernel using DialectConversion.
+// This file covers compute ops (unary SFPU, binary SFPU/FPU, broadcast), data
+// movement ops (copy_tile, copy_dst, pack_tile), and DST register lifecycle
+// ops (tile_regs_acquire/commit/wait/release).
 //
-// Following LLVM/MLIR best practices:
-// - Generic template patterns for tile op categories
-// - Type aliases for op-to-op mappings
-// - Batch pattern registration via patterns.add<...>
-// - Explicit state passing for copy_tile (CB → DST) to avoid multipleIR walks
+// Unary and binary compute ops are lowered via generic template patterns
+// instantiated from TTLElementwiseOps.def.
 //
 //===----------------------------------------------------------------------===//
 
@@ -571,7 +567,7 @@ static ttk::BcastType convertBcastType(ttl::BcastType ttlType) {
 /// Returns std::nullopt if the shape cannot be determined.
 static std::optional<std::pair<int64_t, int64_t>>
 getCBTileGridShape(Value operand, func::FuncOp funcOp) {
-  // First, try to get shape from TTL CB type.
+  // Try to get shape from TTL CB type.
   Value cb = lookupCBByIndex(operand, funcOp);
   if (cb) {
     if (auto ttlCb = mlir::dyn_cast<CircularBufferType>(cb.getType())) {
@@ -582,8 +578,8 @@ getCBTileGridShape(Value operand, func::FuncOp funcOp) {
     }
   }
 
-  // If that fails, try to extract shape from the tensor type.
-  // After loop lowering, the operand comes from tensor.extract.
+  // After loop lowering, the operand comes from tensor.extract. Trace back
+  // to the underlying tensor.
   Value tensor = operand;
   if (auto extract = operand.getDefiningOp<tensor::ExtractOp>()) {
     tensor = extract.getTensor();
@@ -592,7 +588,6 @@ getCBTileGridShape(Value operand, func::FuncOp funcOp) {
   // Trace through unrealized conversion casts.
   tensor = traceUnrealizedCasts(tensor);
 
-  // Check if we have a ranked tensor with a 2D tile shape.
   if (auto tensorTy = mlir::dyn_cast<RankedTensorType>(tensor.getType())) {
     if (tensorTy.getRank() == 2) {
       return std::make_pair(tensorTy.getDimSize(0), tensorTy.getDimSize(1));
@@ -609,9 +604,8 @@ static bool hasBcastShapeExpansion(Value input, Value output,
                                    func::FuncOp funcOp) {
   auto inShape = getCBTileGridShape(input, funcOp);
   auto outShape = getCBTileGridShape(output, funcOp);
-  if (!inShape || !outShape) {
-    return false;
-  }
+  assert(inShape && outShape &&
+         "expected 2D tile grid shapes for broadcast operands");
 
   int64_t inRows = inShape->first;
   int64_t inCols = inShape->second;
@@ -649,10 +643,8 @@ static FailureOr<Value> computeBcastShapeExpansionIndex(ttl::TileBcastOp op,
 
   // Get output CB shape to determine numCols for index decomposition.
   auto outShape = getCBTileGridShape(op.getOutput(), funcOp);
-  if (!outShape) {
-    return op->emitOpError()
-           << "cannot determine output CB tile grid shape for bcast indexing";
-  }
+  assert(outShape && "expected 2D tile grid shape for broadcast output");
+
   int64_t numCols = outShape->second;
 
   // Extract row or col component from each stride at compile time.
@@ -822,11 +814,8 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);
   patterns.add<TTLCopyDstToTTKernel>(ctx);
 
-  // CB -> DST ops with attribute need the type converter.
+  // Bcast ops need the type converter for CB lookup.
   patterns.add<TTLTileBcastToTTKernel>(*typeConverter, ctx);
-
-  // TODO(#124): Add DST lifecycle wrapper pattern for loop iterations
-  // (acquire/commit/wait/release + copy_tile/pack_tile)
 }
 
 } // namespace mlir::tt::ttl
