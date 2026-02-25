@@ -30,18 +30,6 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 namespace {
 
-/// Compute total static elements in a tensor shape. Returns 0 for dynamic dims.
-static int64_t getTotalElements(RankedTensorType type) {
-  int64_t total = 1;
-  for (int64_t dim : type.getShape()) {
-    if (dim == ShapedType::kDynamic) {
-      return 0;
-    }
-    total *= dim;
-  }
-  return total;
-}
-
 /// Get the iteration domain for a ComputeOp. The verifier ensures that the
 /// maximum tensor rank equals iterator_types.size(). Use the tensor with the
 /// largest shape for loop bounds (handles broadcasts where output is larger
@@ -58,7 +46,7 @@ static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
   for (Value operand : llvm::concat<Value>(op.getInputs(), op.getOutputs())) {
     auto type = cast<RankedTensorType>(operand.getType());
     int64_t rank = type.getRank();
-    int64_t elements = getTotalElements(type);
+    int64_t elements = type.getNumElements();
     if (rank > maxRank || (rank == maxRank && elements > maxElements)) {
       maxRank = rank;
       maxElements = elements;

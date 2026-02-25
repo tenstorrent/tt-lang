@@ -281,18 +281,6 @@ mlir::MutableOperandRange mlir::tt::ttl::ComputeOp::getDpsInitsMutable() {
 // ComputeOp - TilingInterface implementations
 //===----------------------------------------------------------------------===//
 
-/// Compute total static elements in a tensor shape. Returns 0 for dynamic dims.
-static int64_t getTotalElements(mlir::RankedTensorType type) {
-  int64_t total = 1;
-  for (int64_t dim : type.getShape()) {
-    if (dim == mlir::ShapedType::kDynamic) {
-      return 0;
-    }
-    total *= dim;
-  }
-  return total;
-}
-
 mlir::SmallVector<mlir::utils::IteratorType>
 mlir::tt::ttl::ComputeOp::getLoopIteratorTypes() {
   mlir::SmallVector<mlir::utils::IteratorType> result;
@@ -320,7 +308,7 @@ mlir::tt::ttl::ComputeOp::getIterationDomain(mlir::OpBuilder &b) {
        llvm::concat<mlir::Value>(getInputs(), getOutputs())) {
     auto type = mlir::cast<mlir::RankedTensorType>(operand.getType());
     int64_t rank = type.getRank();
-    int64_t elements = getTotalElements(type);
+    int64_t elements = type.getNumElements();
     if (rank > maxRank || (rank == maxRank && elements > maxElements)) {
       maxRank = rank;
       maxElements = elements;
