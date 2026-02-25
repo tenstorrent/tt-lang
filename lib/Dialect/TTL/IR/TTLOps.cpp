@@ -278,7 +278,7 @@ mlir::MutableOperandRange mlir::tt::ttl::ComputeOp::getDpsInitsMutable() {
 }
 
 //===----------------------------------------------------------------------===//
-// ComputeOp - TilingInterface implementations
+// ComputeOp - TilingInterface implementations (used for subblocking)
 //===----------------------------------------------------------------------===//
 
 mlir::SmallVector<mlir::utils::IteratorType>
@@ -412,7 +412,7 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
     tiledOutputs.push_back(slice);
   }
 
-  // Build the tiled compute op with smaller operands.
+  // Build the tiled compute op with sub-block operands.
   mlir::SmallVector<mlir::Type> tiledResultTypes;
   for (mlir::Value out : tiledOutputs) {
     tiledResultTypes.push_back(out.getType());
@@ -439,7 +439,7 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::getResultTilePosition(
     mlir::SmallVector<mlir::OpFoldResult> &resultOffsets,
     mlir::SmallVector<mlir::OpFoldResult> &resultSizes) {
   // Apply the output indexing map to map iteration domain -> result tensor.
-  size_t numInputs = getInputs().size();
+  size_t numInputs = getNumInputs();
   mlir::AffineMap map = mlir::cast<mlir::AffineMapAttr>(
                             getIndexingMaps()[numInputs + resultNumber])
                             .getValue();
