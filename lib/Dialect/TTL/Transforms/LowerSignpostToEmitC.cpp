@@ -59,9 +59,9 @@ static bool hasEscapingValues(SignpostOp beforeOp, SignpostOp afterOp) {
        op = op->getNextNode()) {
     for (auto result : op->getResults()) {
       for (auto *user : result.getUsers()) {
-        if (user->getBlock() != scopeBlock ||
-            afterOp->isBeforeInBlock(user))
+        if (user->getBlock() != scopeBlock || afterOp->isBeforeInBlock(user)) {
           return true;
+        }
       }
     }
   }
@@ -119,8 +119,7 @@ struct SignpostLowering : OpConversionPattern<SignpostOp> {
                  "PLEASE FILE A BUG.";
         } else {
           createEmitCVerbatim(loc, "{", rewriter);
-          createEmitCVerbatim(loc,
-                              "DeviceZoneScopedN(\"" + baseName + "\");",
+          createEmitCVerbatim(loc, "DeviceZoneScopedN(\"" + baseName + "\");",
                               rewriter);
           keptAfterNames.insert(baseName);
         }
