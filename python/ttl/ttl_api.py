@@ -1123,9 +1123,11 @@ def _compile_kernel(
             pipeline_passes.append("ttl-lower-signpost-to-emitc")
 
         pipeline_passes += [
+            "convert-ttl-to-ttkernel",
             "canonicalize",
             "cse",
             "lower-affine",
+            "ttl-lower-signpost-to-emitc",
             "convert-ttkernel-to-emitc",
             "symbol-dce",
         ]

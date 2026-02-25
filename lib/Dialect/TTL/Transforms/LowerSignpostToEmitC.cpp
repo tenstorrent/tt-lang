@@ -24,15 +24,42 @@ static void createEmitCVerbatim(Location loc, StringRef value,
   rewriter.create(state);
 }
 
-// Check if an operation or any of its nested ops are in the ttkernel dialect.
+// Cheap ttkernel ops that should not trigger profiling scopes. These are
+// coordinate lookups that define values used throughout the kernel body.
+static bool isSkippedOp(Operation *op) {
+  auto name = op->getName().getStringRef();
+  return name == "ttkernel.my_x" || name == "ttkernel.my_y" ||
+         name == "ttkernel.my_logical_x_" || name == "ttkernel.my_logical_y_";
+}
+
+// Check if an operation or any of its nested ops are profiling-worthy
+// ttkernel ops (i.e. ttkernel dialect and not on the skip list).
 static bool containsTTKernelOp(Operation *op) {
-  if (op->getDialect() && op->getDialect()->getNamespace() == "ttkernel") {
+  if (op->getDialect() && op->getDialect()->getNamespace() == "ttkernel" &&
+      !isSkippedOp(op)) {
     return true;
   }
   for (auto &region : op->getRegions()) {
     for (auto &block : region) {
       for (auto &nested : block) {
         if (containsTTKernelOp(&nested)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+// Check if any op between beforeOp and afterOp defines a value used after
+// afterOp in the same block, or in a different block entirely.
+static bool hasEscapingValues(SignpostOp beforeOp, SignpostOp afterOp) {
+  Block *scopeBlock = beforeOp->getBlock();
+  for (auto *op = beforeOp->getNextNode(); op != afterOp.getOperation();
+       op = op->getNextNode()) {
+    for (auto result : op->getResults()) {
+      for (auto *user : result.getUsers()) {
+        if (user->getBlock() != scopeBlock || afterOp->isBeforeInBlock(user)) {
           return true;
         }
       }
@@ -81,14 +108,21 @@ struct SignpostLowering : OpConversionPattern<SignpostOp> {
 
     if (name.ends_with("_before")) {
       bool hasInterestingOps = false;
-      findMatchingAfter(op, hasInterestingOps);
+      SignpostOp afterOp = findMatchingAfter(op, hasInterestingOps);
 
       if (hasInterestingOps) {
         std::string baseName = name.drop_back(strlen("_before")).str();
-        createEmitCVerbatim(loc, "{", rewriter);
-        createEmitCVerbatim(loc, "DeviceZoneScopedN(\"" + baseName + "\");",
-                            rewriter);
-        keptAfterNames.insert(baseName);
+        if (afterOp && hasEscapingValues(op, afterOp)) {
+          op.emitWarning("skipping profiler scope for '")
+              << baseName
+              << "': value defined in scope is used after scope exits. "
+                 "PLEASE FILE A BUG.";
+        } else {
+          createEmitCVerbatim(loc, "{", rewriter);
+          createEmitCVerbatim(loc, "DeviceZoneScopedN(\"" + baseName + "\");",
+                              rewriter);
+          keptAfterNames.insert(baseName);
+        }
       }
     } else if (name.ends_with("_after")) {
       std::string baseName = name.drop_back(strlen("_after")).str();

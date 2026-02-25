@@ -327,13 +327,14 @@ mlir::tt::ttl::ComputeOp::createFlatListOfOperandDims(mlir::OpBuilder &b,
 /// Map iteration-domain offsets/sizes to operand-space offsets/sizes/strides
 /// via the indexing map. Simplified version of linalg's computeSliceParameters
 /// (mlir/lib/Dialect/Linalg/Utils/Utils.cpp) for projected-permutation maps.
-static void mapOffsetsAndSizes(
-    mlir::OpBuilder &b, mlir::Location loc, mlir::AffineMap map,
-    mlir::Value operand, llvm::ArrayRef<mlir::OpFoldResult> offsets,
-    llvm::ArrayRef<mlir::OpFoldResult> sizes,
-    mlir::SmallVectorImpl<mlir::OpFoldResult> &operandOffsets,
-    mlir::SmallVectorImpl<mlir::OpFoldResult> &operandSizes,
-    mlir::SmallVectorImpl<mlir::OpFoldResult> &operandStrides) {
+static void
+mapOffsetsAndSizes(mlir::OpBuilder &b, mlir::Location loc, mlir::AffineMap map,
+                   mlir::Value operand,
+                   llvm::ArrayRef<mlir::OpFoldResult> offsets,
+                   llvm::ArrayRef<mlir::OpFoldResult> sizes,
+                   mlir::SmallVectorImpl<mlir::OpFoldResult> &operandOffsets,
+                   mlir::SmallVectorImpl<mlir::OpFoldResult> &operandSizes,
+                   mlir::SmallVectorImpl<mlir::OpFoldResult> &operandStrides) {
   auto operandTy = mlir::cast<mlir::RankedTensorType>(operand.getType());
   int64_t rank = operandTy.getRank();
   operandOffsets.resize(rank, b.getIndexAttr(0));
@@ -342,11 +343,12 @@ static void mapOffsetsAndSizes(
 
   // Default: full operand dim (used for broadcast dims not in the map).
   for (int64_t i = 0; i < rank; ++i) {
-    if (operandTy.isDynamicDim(i))
+    if (operandTy.isDynamicDim(i)) {
       operandSizes[i] =
           b.create<mlir::tensor::DimOp>(loc, operand, i).getResult();
-    else
+    } else {
       operandSizes[i] = b.getIndexAttr(operandTy.getDimSize(i));
+    }
   }
 
   // Override with iteration-domain offsets/sizes for mapped dims.
