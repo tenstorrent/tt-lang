@@ -220,7 +220,6 @@ DEFAULT_PCC_THRESHOLDS = {
 }
 
 
-
 # TODO: add support for ttnn.Tensor inputs when ttnn module is part of tt-lang dependencies
 def assert_with_ulp(
     expected_result: torch.Tensor,
