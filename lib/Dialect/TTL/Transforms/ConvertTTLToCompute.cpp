@@ -141,13 +141,15 @@ collectInterleavedsignposts(const ElementwiseTraceResult &trace,
   Operation *lastFused = nullptr;
   for (auto &op : *sinkOp->getBlock()) {
     if (fusedSet.contains(&op)) {
-      if (!firstFused)
+      if (!firstFused) {
         firstFused = &op;
+      }
       lastFused = &op;
     }
   }
-  if (!firstFused)
+  if (!firstFused) {
     return {};
+  }
 
   // Result: pairs of (signpost, insertAfterThisFusedOp). nullptr means
   // the signpost is leading (before all fused ops).
@@ -161,13 +163,15 @@ collectInterleavedsignposts(const ElementwiseTraceResult &trace,
   // Leading signposts: walk backwards from first fused op.
   SmallVector<Operation *> leading;
   for (auto *op = firstFused->getPrevNode(); op; op = op->getPrevNode()) {
-    if (isUserSignpost(op))
+    if (isUserSignpost(op)) {
       leading.push_back(op);
-    else
+    } else {
       break;
+    }
   }
-  for (auto it = leading.rbegin(); it != leading.rend(); ++it)
+  for (auto it = leading.rbegin(); it != leading.rend(); ++it) {
     result.push_back({*it, nullptr});
+  }
 
   // Interleaved signposts: walk from first to last fused op.
   Operation *prevFused = nullptr;
@@ -314,14 +318,16 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
           break;
         }
       }
-      if (!found)
+      if (!found) {
         trailingSignposts.push_back(sp);
+      }
     }
   }
 
   // Emit leading signposts
-  for (auto sp : leadingSignposts)
+  for (auto sp : leadingSignposts) {
     rewriter.create<SignpostOp>(sp.getLoc(), sp.getNameAttr());
+  }
 
   // Emit tile ops in topological order, with interleaved signposts
   Value finalResult;
@@ -329,8 +335,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     // Emit signposts that precede this fused op
     auto it = signpostsBefore.find(op);
     if (it != signpostsBefore.end()) {
-      for (auto sp : it->second)
+      for (auto sp : it->second) {
         rewriter.create<SignpostOp>(sp.getLoc(), sp.getNameAttr());
+      }
     }
 
     Value tileResult;
@@ -392,8 +399,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   }
 
   // Erase the original signpost ops (now cloned into compute body).
-  for (auto &[signpostOp, _] : signpostPairs)
+  for (auto &[signpostOp, _] : signpostPairs) {
     rewriter.eraseOp(signpostOp);
+  }
 
   return success();
 }

@@ -61,7 +61,7 @@ def parse_signpost_zones(
                 starts[key] = timestamp
             elif zone_type == "ZONE_END" and key in starts:
                 duration = timestamp - starts[key]
-                display_name = zone_name[len(_USER_PREFIX):]
+                display_name = zone_name[len(_USER_PREFIX) :]
                 results.append((display_name, thread, duration))
                 del starts[key]
 

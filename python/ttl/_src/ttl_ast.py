@@ -580,6 +580,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 name = self._extract_signpost_name(first_item.context_expr)
                 if self.auto_profile_enabled:
                     import warnings
+
                     warnings.warn(
                         f"signpost('{name}') ignored: user-defined signposts "
                         "are disabled when TTLANG_AUTO_PROFILE=1. "
