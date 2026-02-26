@@ -16,9 +16,6 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/PatternMatch.h"
-
 #define DEBUG_TYPE "ttl-schedule-operations"
 
 namespace mlir::tt::ttl {
@@ -145,13 +142,11 @@ computeDepthLevels(llvm::ArrayRef<Operation *> tileOps) {
 
   for (auto *op : tileOps) {
     unsigned maxPredLevel = 0;
-    bool hasPred = false;
 
     // RAW dependencies (SSA def-use chains).
     for (Value operand : op->getOperands()) {
       if (auto *defOp = operand.getDefiningOp()) {
         if (tileOpSet.contains(defOp)) {
-          hasPred = true;
           maxPredLevel = std::max(maxPredLevel, levels[defOp] + 1);
         }
       }
@@ -170,14 +165,12 @@ computeDepthLevels(llvm::ArrayRef<Operation *> tileOps) {
     if (writeIdx != std::numeric_limits<int64_t>::max()) {
       // WAW: must come after the previous writer to this DST index.
       if (auto it = lastWriter.find(writeIdx); it != lastWriter.end()) {
-        hasPred = true;
         maxPredLevel = std::max(maxPredLevel, levels[it->second] + 1);
       }
       // WAR: must come after all readers of the previous value at this index.
       if (auto it = pendingReaders.find(writeIdx); it != pendingReaders.end()) {
         for (Operation *reader : it->second) {
           if (reader != op) {
-            hasPred = true;
             maxPredLevel = std::max(maxPredLevel, levels[reader] + 1);
           }
         }
@@ -187,13 +180,13 @@ computeDepthLevels(llvm::ArrayRef<Operation *> tileOps) {
       pendingReaders[writeIdx].clear();
     }
 
-    levels[op] = hasPred ? maxPredLevel : 0;
+    levels[op] = maxPredLevel;
   }
   return levels;
 }
 
 /// Process a single sync region: reorder tile ops between acquire and commit.
-static void scheduleOpsInRegion(llvm::SmallVectorImpl<Operation *> &tileOps) {
+static void scheduleOpsInRegion(ArrayRef<Operation *> tileOps) {
   if (tileOps.size() <= 1) {
     return;
   }
@@ -210,20 +203,12 @@ static void scheduleOpsInRegion(llvm::SmallVectorImpl<Operation *> &tileOps) {
                     static_cast<unsigned>(i), op});
   }
 
-  // Sort by (depth, category, typeID, initAffinity, dst_idx, originalPos).
-  llvm::sort(keys);
-
-  // Check if already in order (avoid unnecessary moves).
-  bool alreadySorted = true;
-  for (unsigned i = 0; i < keys.size(); ++i) {
-    if (keys[i].originalPosition != i) {
-      alreadySorted = false;
-      break;
-    }
-  }
-  if (alreadySorted) {
+  // Skip sort and IR mutation if already in order.
+  if (llvm::is_sorted(keys)) {
     return;
   }
+
+  llvm::sort(keys);
 
   // Reposition ops using moveBefore. Place each op before the first
   // non-tile-op after the region, maintaining sorted order.
