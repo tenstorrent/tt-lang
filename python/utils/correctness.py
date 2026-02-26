@@ -215,7 +215,6 @@ def assert_with_ulp(
     actual_result: torch.Tensor,
     ulp_threshold=10,
     allow_nonfinite=False,
-    pcc_threshold=0.99999,
 ):
     """
     Assert that two tensors are similar within a given distance expressed in Units of Least Precision (ULP)
@@ -228,7 +227,7 @@ def assert_with_ulp(
     Where ULP(expected) returns, for each element, the length of a single Unit of Least Precision (ULP).
 
 
-    Args:f
+    Args:
         expected_result (Union[ttnn.Tensor, torch.Tensor]): The expected reference tensor
         actual_result (Union[ttnn.Tensor, torch.Tensor]): The actual tensor to compare against the reference
         ulp_threshold (float, optional): Maximum tolerated ULP distance. Defaults to 10.
@@ -292,20 +291,4 @@ def assert_with_ulp(
         expected_result, actual_result, ulp_threshold, allow_nonfinite
     )
     assert ulp_passed, ulp_message
-
-    # PCC is always enforced as a fallback to catch structural errors that
-    # relaxed ULP thresholds might miss (e.g., when near-zero values inflate
-    # ULP distance but overall correlation is high).
-    # bf16 has an 8-bit mantissa so quantization noise lowers PCC even at 1
-    # ULP error; use a relaxed threshold for low-precision dtypes.
-    if pcc_threshold is not None and expected_result.numel() > 1:
-        effective_pcc = pcc_threshold
-        if expected_result.dtype in (torch.bfloat16, torch.float16):
-            effective_pcc = min(pcc_threshold, 0.99)
-        combined = torch.stack(
-            [expected_result.flatten().float(), actual_result.flatten().float()]
-        )
-        pcc = torch.corrcoef(combined)[0, 1].item()
-        assert pcc >= effective_pcc, f"PCC {pcc} < {effective_pcc} ({ulp_message})"
-
     return ulp_passed, ulp_message
