@@ -149,29 +149,26 @@ static Value buildTensorAccessor(Location loc,
   return accessor.getResult();
 }
 
-/// Erase individually unused function arguments and update the function type.
 template <typename FuncLike>
 static bool eraseUnusedArguments(FuncLike funcLike) {
   if (funcLike.getNumArguments() == 0) {
     return false;
   }
+  if (llvm::any_of(funcLike.getArguments(),
+                   [](BlockArgument arg) { return !arg.use_empty(); })) {
+    return false;
+  }
 
   llvm::BitVector argsToErase(funcLike.getNumArguments());
-  for (auto arg : funcLike.getArguments()) {
-    if (arg.use_empty()) {
-      argsToErase.set(arg.getArgNumber());
-    }
-  }
-  if (argsToErase.none()) {
-    return false;
+  for (unsigned idx = 0; idx < funcLike.getNumArguments(); ++idx) {
+    argsToErase.set(idx);
   }
   if (failed(funcLike.eraseArguments(argsToErase))) {
     return false;
   }
 
-  auto newType =
-      FunctionType::get(funcLike.getContext(), funcLike.getArgumentTypes(),
-                        funcLike.getFunctionType().getResults());
+  auto newType = FunctionType::get(funcLike.getContext(), TypeRange{},
+                                   funcLike.getFunctionType().getResults());
   funcLike.setType(newType);
   return true;
 }
@@ -479,7 +476,9 @@ materializeTensorAccessor(Value tensor, Value bankBase, int64_t pageSizeBytes,
                           Operation *op, ConversionPatternRewriter &rewriter) {
   auto argIdx = getTensorFuncArgIndex(tensor);
   if (failed(argIdx)) {
-    return failure();
+    // Callers (lowerTensorCBCopy) already guard this via
+    // getBufferAddressFromRuntimeArg, so this is unreachable.
+    llvm_unreachable("tensor must be a function argument");
   }
 
   auto loc = tensor.getLoc();
@@ -1011,7 +1010,18 @@ static void cleanupComputeKernels(ModuleOp mod, MLIRContext &ctx) {
     removeTensorDataflowOps(func);
 
     // Erase unused function arguments. Compute kernels get data from CBs.
-    eraseUnusedArguments(func);
+    // Only erase arguments that have no uses.
+    if (func.getNumArguments() > 0) {
+      llvm::BitVector argsToErase(func.getNumArguments());
+      for (unsigned i = 0; i < func.getNumArguments(); ++i) {
+        if (func.getArgument(i).use_empty()) {
+          argsToErase.set(i);
+        }
+      }
+      if (argsToErase.any()) {
+        (void)func.eraseArguments(argsToErase);
+      }
+    }
 
     // For compute kernels, update function to return void.
     if (!func.getResultTypes().empty()) {
