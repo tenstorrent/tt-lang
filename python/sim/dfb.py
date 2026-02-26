@@ -42,16 +42,9 @@ from .constants import MAX_TENSOR_DIMS, TILE_SHAPE
 from .errors import DFBContractError
 from .stats import record_dfb_reserve, record_dfb_wait
 from .ttnnsim import Tensor
-from .typedefs import Index, Shape, Size, Span
+from .typedefs import Index, Shape, Size
 
 
-# Notice that get_read_ptr and get_write_ptr return a C++ pointer which does not
-# necessarily make sense in a python context. So we need something that can
-# access the elements of the dfb (as a pointer would) from the position the
-# pointer points. To hide needless index arithmetic, we also add the ability to
-# wrap around. Notice also that it handles a list and a capacity, instead of a
-# _DFBState, a deliberate choice to make it closer in spirit to a pointer and
-# minimizing the state that is exposed.
 class Block:
     """A logically contiguous window into the ring, possibly wrapping.
     Provides list-like access to elements while respecting wrap-around.
@@ -67,8 +60,6 @@ class Block:
 
     __slots__ = (
         "_buf",
-        "_capacity",
-        "_span",
         "_shape",
         "_acquisition",
         "_thread_type",
@@ -84,25 +75,20 @@ class Block:
     #       function. In our case, we don't want the copy of the list, we want to use the
     #       original list as is. This is a limitation of pydantic's validate_call, and
     #       perhaps a good reason to look for other frameworks that don't do that! (beartype?)
-    # @validate_call
     def __init__(
         self,
-        buf: List[DFBSlot],
-        capacity: Size,
-        span: Span,
+        tiles: List[DFBSlot],
         shape: Shape,
         acquisition: BlockAcquisition,
         thread_type: ThreadType,
         is_temporary: bool = False,
         dfb: Optional["DataflowBuffer"] = None,
     ):
-        self._buf = buf
-        self._capacity = capacity
-        self._span = span
+        self._buf = tiles
         self._shape = shape
         self._is_temporary = is_temporary
         self._source_blocks: List["Block"] = []  # Track source wait() blocks
-        self.dfb = dfb  # Reference to DataflowBuffer for context manager cleanup
+        self.dfb = dfb  # Reference to DataflowBuffer for context manager support
 
         # State machine variables
         self._acquisition: BlockAcquisition = acquisition
@@ -197,14 +183,9 @@ class Block:
         tensors: List[Tensor],
         shape: Shape,
     ) -> "Block":
-        """Create a temporary Block from a list of tensors (computation result).
-
-        Temporary blocks are not backed by DFB storage and don't support wrap-around.
-        """
+        """Create a temporary Block from a list of tensors (computation result)."""
         return cls(
-            buf=cast(List[DFBSlot], tensors),
-            capacity=len(tensors),
-            span=Span(0, len(tensors)),
+            tiles=cast(List[DFBSlot], tensors),
             shape=shape,
             acquisition=BlockAcquisition.RESERVE,  # Temporary blocks use RESERVE semantics
             thread_type=ThreadType.COMPUTE,  # Temporary blocks are from compute operations
@@ -374,7 +355,7 @@ class Block:
         self._expected_ops = set()  # Empty = DONE
 
     def __len__(self) -> Size:
-        return self._span.length
+        return len(self._buf)
 
     @property
     def is_temporary(self) -> bool:
@@ -456,15 +437,9 @@ class Block:
         External code should not index blocks.
         """
         self._check_can_read()
-        if not (0 <= idx < self._span.length):
+        if not (0 <= idx < len(self._buf)):
             raise IndexError(idx)
-
-        # Temporary blocks don't wrap around
-        if self._is_temporary:
-            value = self._buf[idx]
-        else:
-            value = self._buf[(self._span.start + idx) % self._capacity]
-
+        value = self._buf[idx]
         if value is None:
             raise ValueError(f"Reading uninitialized or consumed slot at index {idx}")
         return value
@@ -490,23 +465,18 @@ class Block:
     def write_slot(self, idx: Index, value: Tensor) -> None:
         """Internal method to write to a slot. Only used by store() and copy handlers."""
         self._check_can_write()
-        if not (0 <= idx < self._span.length):
+        if not (0 <= idx < len(self._buf)):
             raise IndexError(idx)
-
-        # Temporary blocks don't wrap around
-        if self._is_temporary:
-            self._buf[idx] = value
-        else:
-            self._buf[(self._span.start + idx) % self._capacity] = value
+        self._buf[idx] = value
 
     @validate_call
     def pop_idx(self, idx: Index) -> None:
-        if not (0 <= idx < self._span.length):
+        if not (0 <= idx < len(self._buf)):
             raise IndexError(idx)
-        value = self._buf[(self._span.start + idx) % self._capacity]
+        value = self._buf[idx]
         if value is None:
             raise ValueError(f"Popping uninitialized or consumed slot at index {idx}")
-        self._buf[(self._span.start + idx) % self._capacity] = None
+        self._buf[idx] = None
 
     def to_list(self) -> List[Tensor]:
         """Convert block contents to a list.
@@ -598,13 +568,13 @@ class Block:
         Args:
             items: Sequence of tensors to store
         """
-        if len(items) != self._span.length:
+        if len(items) != len(self._buf):
             raise ValueError("Length mismatch in copy_as_dest()")
 
         # Store data without state checks - block is in NA state during copy
         # which is correct for the state machine, but we need to write the data
         for i, v in enumerate(items):
-            self._buf[(self._span.start + i) % self._capacity] = v
+            self._buf[i] = v
 
     @staticmethod
     def _infer_broadcast_shape(left_shape: Shape, right_shape: Shape) -> Shape:
@@ -670,7 +640,7 @@ class Block:
             case _:
                 items_seq = items
 
-        if len(items_seq) != self._span.length:
+        if len(items_seq) != len(self._buf):
             raise ValueError("Length mismatch in store()")
 
         # Check write access first (provides better error message for NA state)
@@ -862,15 +832,18 @@ class Block:
 
 
 class DFBStats(NamedTuple):
-    """Statistics for a dataflow buffer."""
+    """Statistics for a dataflow buffer.
 
-    capacity: int
-    visible: int
-    reserved: int
-    free: int
-    step: Optional[int]
-    head: int
-    list: List[Optional[object]]
+    All counts (capacity, visible, reserved, free) are in operations, where
+    one operation equals tiles_per_op tiles (= math.prod(shape)).
+    """
+
+    capacity: int  # total slots (= buffer_factor)
+    visible: int  # slots ready to consume
+    reserved: int  # slots reserved for writing
+    free: int  # slots available for reservation
+    head: int  # current read slot index
+    slots: List[Optional[object]]  # slot list: None=empty, List=filled (for debugging)
 
 
 class DataflowBuffer:
@@ -929,134 +902,13 @@ class DataflowBuffer:
         self._pending_reserved_block: Optional[Block] = None
         self._pending_waited_block: Optional[Block] = None
 
-        self._tiles_per_operation = math.prod(shape)
-        self._capacity_tiles = self._tiles_per_operation * buffer_factor
-
         # Create and configure the ring-buffer state immediately.
         self._state = DFBState()
-        self._state.cap = self._capacity_tiles
+        self._state.cap = buffer_factor
+        self._state.tiles_per_op = math.prod(shape)
         self._state.shape = shape
+        self._state.buf = [None] * buffer_factor
         self._state.reset()
-
-    # ------------------------------------------------------------------
-    # Private ring-buffer primitives (mirror the former DFBAPI methods)
-    # ------------------------------------------------------------------
-
-    def _wait_front(self, num_tiles: Size) -> None:
-        """Assert that num_tiles are visible at the read end of the buffer.
-
-        block_if_needed() must have been called first to ensure the condition is met.
-        """
-        state = self._state
-        state.require_configured()
-        state.check_num_tiles(num_tiles)
-        if state.step is None:
-            state.step = num_tiles
-        else:
-            if num_tiles != state.last_wait_target + state.step:
-                raise DFBContractError(
-                    "dfb_wait_front must be cumulative with an increment of the initial number of tiles"
-                    " requested until a pop occurs"
-                )
-        assert state.visible >= num_tiles, (
-            f"dfb_wait_front: expected {num_tiles} visible tiles, got {state.visible}. "
-            "block_if_needed() should have been called first."
-        )
-        state.last_wait_target = num_tiles
-
-    def _reserve_back(self, num_tiles: Size) -> None:
-        """Assert that num_tiles of free space are available and reserve them.
-
-        block_if_needed() must have been called first to ensure the condition is met.
-        """
-        state = self._state
-        state.require_configured()
-        state.check_num_tiles(num_tiles)
-        if num_tiles < state.reserved:
-            raise DFBContractError("reserve target cannot regress within epoch")
-        assert state.free() >= num_tiles, (
-            f"dfb_reserve_back: expected {num_tiles} free tiles, got {state.free()}. "
-            "block_if_needed() should have been called first."
-        )
-        state.reserved = num_tiles
-        state.last_reserve_target = num_tiles
-
-    def _push_back(self, num_tiles: Size) -> None:
-        """Commit num_tiles to the visible region."""
-        state = self._state
-        state.require_configured()
-        state.check_num_tiles(num_tiles)
-        if num_tiles > state.reserved:
-            raise DFBContractError(
-                f"dfb_push_back({num_tiles}) exceeds reserved={state.reserved}"
-            )
-        state.reserved -= num_tiles
-        state.visible += num_tiles
-
-    def _pop_front(self, num_tiles: Size) -> None:
-        """Consume num_tiles from the front of the visible region."""
-        state = self._state
-        state.require_configured()
-        state.check_num_tiles(num_tiles)
-        if num_tiles > state.visible:
-            raise DFBContractError(
-                f"dfb_pop_front({num_tiles}) exceeds visible={state.visible}"
-            )
-        span = state.front_span(num_tiles)
-        thread_type = get_current_thread_type()
-        view = Block(
-            state.buf,
-            state.cap,
-            span,
-            state.shape,
-            BlockAcquisition.WAIT,
-            thread_type,
-        )
-        for i in range(len(view)):
-            view.pop_idx(i)
-        state.head = (state.head + num_tiles) % state.cap
-        state.visible -= num_tiles
-        state.last_wait_target = 0
-
-    def _get_read_ptr(self) -> Block:
-        """Return a Block view over the current visible region (requires prior _wait_front)."""
-        state = self._state
-        state.require_configured()
-        if state.last_wait_target <= 0:
-            raise DFBContractError("get_read_ptr requires prior dfb_wait_front")
-        if state.visible < state.last_wait_target:
-            raise DFBContractError("read window invalidated; call dfb_wait_front again")
-        span = state.front_span(state.last_wait_target)
-        thread_type = get_current_thread_type()
-        return Block(
-            state.buf,
-            state.cap,
-            span,
-            state.shape,
-            BlockAcquisition.WAIT,
-            thread_type,
-        )
-
-    def _get_write_ptr(self) -> Block:
-        """Return a Block view over the current reserved region (requires prior _reserve_back)."""
-        state = self._state
-        state.require_configured()
-        if state.last_reserve_target <= 0:
-            raise DFBContractError("get_write_ptr requires prior dfb_reserve_back")
-        if state.reserved < state.last_reserve_target:
-            raise DFBContractError(
-                "write window invalidated; call dfb_reserve_back again"
-            )
-        span = state.back_span(state.last_reserve_target)
-        thread_type = get_current_thread_type()
-        return Block(
-            state.buf,
-            state.cap,
-            span,
-            state.shape,
-            BlockAcquisition.RESERVE,
-            thread_type,
-        )
 
     # ------------------------------------------------------------------
     # Public interface
@@ -1065,9 +917,8 @@ class DataflowBuffer:
     def wait(self) -> Block:
         """Wait for data to be available and return a read view.
 
-        This method blocks until the required number of tiles (as specified by
-        the shape parameter) are available for reading. It returns a Block
-        that provides access to the available data.
+        Blocks until one operation slot is visible, then returns a Block
+        providing access to that slot's tiles.
 
         Usage:
             blk = dfb.wait()
@@ -1078,7 +929,7 @@ class DataflowBuffer:
             Block providing read access to the available tiles
 
         Raises:
-            DFBContractError: If called incorrectly (e.g., calling wait() twice without pop())
+            RuntimeError: If called again before pop()
         """
         if self._pending_waited_block is not None:
             raise RuntimeError(
@@ -1091,12 +942,25 @@ class DataflowBuffer:
 
         block_if_needed(self, "wait")
 
-        self._wait_front(self._tiles_per_operation)
-        block = self._get_read_ptr()
-        block.dfb = self  # Set DFB reference for context manager support
+        state = self._state
+        state.require_configured()
+        assert state.visible >= 1, (
+            f"wait: expected >=1 visible operations, got {state.visible}. "
+            "block_if_needed() should have been called first."
+        )
+        slot = state.buf[state.head]
+        assert slot is not None, "Visible slot has no data — internal inconsistency."
+        thread_type = get_current_thread_type()
+        block = Block(
+            tiles=slot,
+            shape=state.shape,
+            acquisition=BlockAcquisition.WAIT,
+            thread_type=thread_type,
+        )
+        block.dfb = self
         self._pending_waited_block = block
 
-        record_dfb_wait(self, self._tiles_per_operation)
+        record_dfb_wait(self, state.tiles_per_op)
 
         return block
 
@@ -1104,19 +968,15 @@ class DataflowBuffer:
         """Check if wait() can proceed without blocking.
 
         Returns:
-            True if sufficient data is available for wait(), False otherwise
+            True if at least one complete operation slot is ready to consume.
         """
-        return self._state.visible >= self._tiles_per_operation
+        return self._state.visible >= 1
 
     def reserve(self) -> Block:
-        """Reserve space for writing and return a write view.
+        """Reserve one operation slot for writing and return a write view.
 
-        This method blocks until there is sufficient space to write the required
-        number of tiles (as specified by the shape parameter). It returns a Block
-        that provides access to the reserved space.
-
-        The reserved block is automatically initialized with zero tensors using
-        TILE_SHAPE dimensions and the element's dtype before being returned.
+        Blocks until a free slot is available. The slot is zero-initialized
+        before being returned.
 
         Usage:
             blk = dfb.reserve()
@@ -1124,10 +984,10 @@ class DataflowBuffer:
             blk.push()  # manual push required
 
         Returns:
-            Block providing write access to the reserved space
+            Block providing write access to the reserved slot
 
         Raises:
-            DFBContractError: If called incorrectly (e.g., calling reserve() twice without push())
+            RuntimeError: If called again before push()
         """
         if self._pending_reserved_block is not None:
             raise RuntimeError(
@@ -1140,17 +1000,30 @@ class DataflowBuffer:
 
         block_if_needed(self, "reserve")
 
-        self._reserve_back(self._tiles_per_operation)
-        block = self._get_write_ptr()
-        block.dfb = self  # Set DFB reference for context manager support
-
+        state = self._state
+        state.require_configured()
+        assert state.free() >= 1, (
+            f"reserve: expected >=1 free operation slots, got {state.free()}. "
+            "block_if_needed() should have been called first."
+        )
+        slot_idx = state.back_slot()
         zero_tensor = Tensor(torch.zeros(TILE_SHAPE, dtype=self.element.dtype))
-        for i in range(len(block)):
-            block.write_slot(i, zero_tensor)
+        slot: List[DFBSlot] = [zero_tensor] * state.tiles_per_op
+        state.buf[slot_idx] = slot
+        state.reserved += 1
+
+        thread_type = get_current_thread_type()
+        block = Block(
+            tiles=slot,
+            shape=state.shape,
+            acquisition=BlockAcquisition.RESERVE,
+            thread_type=thread_type,
+        )
+        block.dfb = self
 
         self._pending_reserved_block = block
 
-        record_dfb_reserve(self, self._tiles_per_operation)
+        record_dfb_reserve(self, state.tiles_per_op)
 
         return block
 
@@ -1158,41 +1031,48 @@ class DataflowBuffer:
         """Check if reserve() can proceed without blocking.
 
         Returns:
-            True if sufficient space is available for reserve(), False otherwise
+            True if at least one operation slot is free.
         """
-        return self._state.free() >= self._tiles_per_operation
+        return self._state.free() >= 1
 
     def push_block(self) -> None:
-        """Finalize a write operation, making reserved data visible to consumers.
+        """Make the reserved slot visible to consumers.
 
-        This method must be called after reserve() and writing data to the
-        returned Block.
+        Must be called after reserve() and writing data to the returned Block.
 
         Raises:
-            DFBContractError: If called without a prior reserve() or if the
-                           push amount exceeds what was reserved
+            DFBContractError: If no slot was reserved.
         """
         if self._pending_reserved_block is not None:
             self._pending_reserved_block.mark_push_complete()
             self._pending_reserved_block = None
 
-        self._push_back(self._tiles_per_operation)
+        state = self._state
+        state.require_configured()
+        if state.reserved < 1:
+            raise DFBContractError("push_block: no reserved operation slot to push")
+        state.reserved -= 1
+        state.visible += 1
 
     def pop_block(self) -> None:
-        """Finalize a read operation, freeing consumed data.
+        """Free the consumed slot, advancing the read pointer.
 
-        This method must be called after wait() and reading data from the
-        returned Block.
+        Must be called after wait() and reading data from the returned Block.
 
         Raises:
-            DFBContractError: If called without a prior wait() or if the
-                           pop amount exceeds what is visible
+            DFBContractError: If no slot was waited on.
         """
         if self._pending_waited_block is not None:
             self._pending_waited_block.mark_pop_complete()
             self._pending_waited_block = None
 
-        self._pop_front(self._tiles_per_operation)
+        state = self._state
+        state.require_configured()
+        if state.visible < 1:
+            raise DFBContractError("pop_block: no visible operation slot to pop")
+        state.buf[state.head] = None
+        state.head = (state.head + 1) % state.cap
+        state.visible -= 1
 
     @property
     def shape(self) -> Shape:
@@ -1202,7 +1082,7 @@ class DataflowBuffer:
     @property
     def capacity_tiles(self) -> Size:
         """Get the total capacity of the buffer in tiles."""
-        return self._capacity_tiles
+        return self._state.cap * self._state.tiles_per_op
 
     @property
     def buffer_factor(self) -> Size:
@@ -1210,16 +1090,15 @@ class DataflowBuffer:
         return self._buffer_factor
 
     def stats(self) -> DFBStats:
-        """Get current buffer statistics."""
+        """Get current buffer statistics (all counts in operations)."""
         self._state.require_configured()
         return DFBStats(
             capacity=self._state.cap,
             visible=self._state.visible,
             reserved=self._state.reserved,
             free=self._state.free(),
-            step=self._state.step,
             head=self._state.head,
-            list=list(self._state.buf),
+            slots=list(self._state.buf),
         )
 
     def reset(self) -> None:
@@ -1280,7 +1159,7 @@ class DataflowBuffer:
     def __repr__(self) -> str:
         return (
             f"DataflowBuffer(shape={self._shape}, "
-            f"capacity_tiles={self._capacity_tiles}, buffer_factor={self._buffer_factor})"
+            f"capacity_tiles={self.capacity_tiles}, buffer_factor={self._buffer_factor})"
         )
 
 

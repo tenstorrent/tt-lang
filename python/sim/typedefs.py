@@ -6,7 +6,6 @@
 Type aliases with Pydantic constraints for runtime validation.
 """
 
-from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Annotated, Tuple, Union
 
@@ -46,16 +45,3 @@ Shape = Tuple[Size, ...]
 # tile column; preceding elements are batch indices (implicit tile size 1,
 # so tile-space and element-space are identical for those dimensions).
 TensorKey = Tuple[Selector, ...]
-
-
-@dataclass(frozen=True)
-class Span:
-    """A span representing a contiguous range in a ring buffer.
-
-    Attributes:
-        start: Inclusive index in underlying ring
-        length: Number of tiles
-    """
-
-    start: Index  # inclusive index in underlying ring
-    length: Size  # number of tiles

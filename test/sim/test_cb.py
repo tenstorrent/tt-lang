@@ -34,8 +34,8 @@ from python.sim.blockstate import (
     ThreadType,
     BlockAcquisition,
 )
+from python.sim.dfbstate import DFBSlot
 from python.sim.ttnnsim import Tensor
-from python.sim.errors import DFBContractError
 
 
 @pytest.fixture(autouse=True)
@@ -841,7 +841,6 @@ def test_block_state_machine_restrictions() -> None:
 
 def test_copy_sets_block_to_na_state() -> None:
     """Test that copy operations set blocks to NA (No Access) state."""
-    from python.sim.typedefs import Span
     import torch
     from python.sim import ttnn
 
@@ -850,10 +849,8 @@ def test_copy_sets_block_to_na_state() -> None:
 
     try:
         # Create a block manually in DM thread context
-        buf = [None, None]
-        block = Block(
-            buf, 2, Span(0, 2), (2, 1), BlockAcquisition.RESERVE, ThreadType.DM
-        )
+        tiles: List[DFBSlot] = [None, None]
+        block = Block(tiles, (2, 1), BlockAcquisition.RESERVE, ThreadType.DM)
 
         # Create source tensor
         source_tensor = ttnn.Tensor(torch.ones((64, 32)))
@@ -938,139 +935,103 @@ def test_push_validates_expected_state() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Ring-buffer primitive tests (low-level DataflowBuffer internals)
+# Ring-buffer operation tests
 # ---------------------------------------------------------------------------
 
 
 def test_dataflow_buffer_basic_flow(configured_dfb8: DataflowBuffer) -> None:
-    """Test ring-buffer mechanics via private primitives."""
-    dfb = configured_dfb8
-    stats = dfb.stats()
+    """Test ring-buffer mechanics via the public API at operation granularity."""
+    element = make_ones_tile()
+    in_dfb = configured_dfb8
+    out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=8)
+
+    stats = in_dfb.stats()
     assert stats.capacity == 8
     assert stats.visible == 0
+    assert stats.free == 8
 
-    dfb._reserve_back(4)
-    ptr = dfb._get_write_ptr()
+    # Push 4 operations one by one, verify stats update correctly.
     test_tensors = [make_full_tensor(32, 32, i + 1.0) for i in range(4)]
-    ptr.store(test_tensors)
-    dfb._push_back(4)
-    stats = dfb.stats()
+    for t in test_tensors:
+        blk = in_dfb.reserve()
+        blk.store([t])
+        blk.push()
+
+    stats = in_dfb.stats()
     assert stats.visible == 4
     assert stats.free == 4
 
-    dfb._wait_front(4)
-    read_values = dfb._get_read_ptr().to_list()
-    assert len(read_values) == 4
+    # Consume 4 operations: route through out_dfb to satisfy the COMPUTE state machine.
     for i in range(4):
-        val = read_values[i]
-        assert val is not None
-        assert tensors_exact_equal(val, test_tensors[i])
-    dfb._pop_front(4)
-    stats = dfb.stats()
+        read_blk = in_dfb.wait()
+        out_blk = out_dfb.reserve()
+        out_blk.store(read_blk)
+        out_blk.push()
+        read_blk.pop()
+
+        stored = out_dfb.wait()
+        values = stored.to_list()
+        assert len(values) == 1
+        assert tensors_exact_equal(values[0], test_tensors[i])
+        drain_blk = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+        drain = drain_blk.reserve()
+        drain.store(stored)
+        drain.push()
+        stored.pop()
+
+    stats = in_dfb.stats()
     assert stats.visible == 0
 
-    dfb._reserve_back(8)
-    ptr = dfb._get_write_ptr()
-    test_tensors = [make_full_tensor(32, 32, float(i)) for i in range(8)]
-    ptr.store(test_tensors)
-    dfb._push_back(8)
-    stats = dfb.stats()
-    assert stats.visible == 8
+    # Fill buffer completely (8 operations) then drain, exercising ring wraparound.
+    test_tensors2 = [make_full_tensor(32, 32, float(i)) for i in range(8)]
+    for t in test_tensors2:
+        blk = in_dfb.reserve()
+        blk.store([t])
+        blk.push()
 
-    # Cumulative wait: each call raises the target by one step.
-    dfb._wait_front(4)
-    dfb._wait_front(8)
-    read_values = dfb._get_read_ptr().to_list()
-    assert len(read_values) == 8
+    stats = in_dfb.stats()
+    assert stats.visible == 8
+    assert stats.free == 0
+
+    out_dfb2 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=8)
     for i in range(8):
-        val = read_values[i]
-        assert val is not None
-        assert tensors_exact_equal(val, test_tensors[i])
-    dfb._pop_front(8)
-    stats = dfb.stats()
+        read_blk = in_dfb.wait()
+        out_blk = out_dfb2.reserve()
+        out_blk.store(read_blk)
+        out_blk.push()
+        read_blk.pop()
+
+    stats = in_dfb.stats()
     assert stats.visible == 0
 
 
 def test_dfb_pages_nonblocking(configured_dfb8: DataflowBuffer) -> None:
-    """Test non-blocking availability checks via stats()."""
+    """Test that stats() reflects operation-granularity state at each step."""
+    element = make_ones_tile()
     dfb = configured_dfb8
+    out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
 
     assert dfb.stats().visible == 0
     assert dfb.stats().free == 8
 
-    dfb._reserve_back(4)
-    assert dfb.stats().free == 4
+    # After reserve: one slot is reserved, free decreases.
+    blk = dfb.reserve()
+    assert dfb.stats().reserved == 1
+    assert dfb.stats().free == 7
 
-    ptr = dfb._get_write_ptr()
-    test_tensors = [make_full_tensor(32, 32, i + 1.0) for i in range(4)]
-    ptr.store(test_tensors)
-    dfb._push_back(4)
-    assert dfb.stats().visible == 4
+    # After push: reserved becomes visible.
+    blk.store([make_full_tensor(32, 32, 1.0)])
+    blk.push()
+    assert dfb.stats().visible == 1
+    assert dfb.stats().reserved == 0
 
-    dfb._wait_front(4)
-    dfb._pop_front(4)
+    # After wait+pop: visible decreases (route through out_dfb per COMPUTE state machine).
+    read_blk = dfb.wait()
+    out_blk = out_dfb.reserve()
+    out_blk.store(read_blk)
+    out_blk.push()
+    read_blk.pop()
     assert dfb.stats().visible == 0
-
-
-def test_dfb_pages_available_out_of_range_error(configured_dfb: DataflowBuffer) -> None:
-    """Test that _wait_front raises when num_tiles exceeds capacity."""
-    dfb = configured_dfb
-    with pytest.raises(DFBContractError, match="num_tiles must be <= capacity"):
-        dfb._wait_front(5)
-
-
-def test_dfb_pages_reservable_out_of_range_error(
-    configured_dfb: DataflowBuffer,
-) -> None:
-    """Test that _reserve_back raises when num_tiles exceeds capacity."""
-    dfb = configured_dfb
-    with pytest.raises(DFBContractError, match="num_tiles must be <= capacity"):
-        dfb._reserve_back(5)
-
-
-def test_dfb_pages_reservable_divisibility_error(
-    configured_dfb8: DataflowBuffer,
-) -> None:
-    """Test that _reserve_back raises on non-divisible num_tiles."""
-    dfb = configured_dfb8
-    with pytest.raises(
-        DFBContractError, match="First num_tiles=5 must evenly divide capacity=8"
-    ):
-        dfb._reserve_back(5)
-
-
-def test_dfb_pages_available_divisibility_error(
-    configured_dfb8: DataflowBuffer,
-) -> None:
-    """Test that _wait_front raises on non-divisible num_tiles."""
-    dfb = configured_dfb8
-    dfb._reserve_back(4)
-    ptr = dfb._get_write_ptr()
-    test_tensors = [make_full_tensor(32, 32, i + 1.0) for i in range(4)]
-    ptr.store(test_tensors)
-    dfb._push_back(4)
-    with pytest.raises(
-        DFBContractError, match="First num_tiles=3 must evenly divide capacity=8"
-    ):
-        dfb._wait_front(3)
-
-
-def test_get_read_ptr_requires_wait(configured_dfb: DataflowBuffer) -> None:
-    """Test that _get_read_ptr raises without a prior _wait_front."""
-    dfb = configured_dfb
-    with pytest.raises(
-        DFBContractError, match="get_read_ptr requires prior dfb_wait_front"
-    ):
-        dfb._get_read_ptr()
-
-
-def test_get_write_ptr_requires_reserve(configured_dfb: DataflowBuffer) -> None:
-    """Test that _get_write_ptr raises without a prior _reserve_back."""
-    dfb = configured_dfb
-    with pytest.raises(
-        DFBContractError, match="get_write_ptr requires prior dfb_reserve_back"
-    ):
-        dfb._get_write_ptr()
 
 
 def test_per_core_dfb_limit_exceeds_max() -> None:
