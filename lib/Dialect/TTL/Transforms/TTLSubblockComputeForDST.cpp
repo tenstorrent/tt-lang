@@ -17,12 +17,11 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Interfaces/TilingInterface.h"
-
-#include "llvm/Support/Debug.h"
-
 #define DEBUG_TYPE "ttl-subblock-compute-for-dst"
 
 namespace mlir::tt::ttl {
@@ -133,26 +132,24 @@ private:
     SmallVector<int64_t> dimSizes(rank);
     int64_t totalTiles = 1;
     for (int64_t d = 0; d < rank; ++d) {
-      auto sizeAttr =
-          dyn_cast<IntegerAttr>(iterDomain[d].size.dyn_cast<Attribute>());
-      if (!sizeAttr) {
+      auto sizeVal = getConstantIntValue(iterDomain[d].size);
+      if (!sizeVal) {
         return computeOp.emitOpError(
             "dynamic dimension not supported for DST tiling");
       }
-      dimSizes[d] = sizeAttr.getInt();
+      dimSizes[d] = *sizeVal;
       totalTiles *= dimSizes[d];
     }
+
+    // Compute full-tensor row-major strides for tile offset computation.
+    // Used for loop annotation, full linearization strides attribute, and
+    // linearized index offset adjustment.
+    SmallVector<int64_t> fullStrides = computeStrides(dimSizes);
 
     // When unroll_factor >= total tiles, no outer loop is needed -- the compute
     // op already fits in one DST sync region. Set strides so lower-to-loops
     // can annotate tile loops with correct CB linearization strides.
     if (unrollFactor >= totalTiles) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "Skipping tiling: unroll_factor (" << unrollFactor
-                 << ") >= total tiles (" << totalTiles << ")\n");
-
-      // Compute full-tensor row-major strides for tile offset computation.
-      SmallVector<int64_t> fullStrides = computeStrides(dimSizes);
       computeOp->setAttr(kFullLinStridesAttrName,
                          b.getDenseI64ArrayAttr(fullStrides));
       return success();
@@ -169,8 +166,6 @@ private:
 
     // If subblock product is 1, no subblocking benefit -- skip.
     if (subblockProduct <= 1) {
-      LLVM_DEBUG(llvm::dbgs() << "Skipping tiling: subblock product is "
-                              << subblockProduct << "\n");
       return success();
     }
 
@@ -197,12 +192,8 @@ private:
     for (size_t i = 0; i < tiledDims.size(); ++i) {
       auto forOp = b.create<scf::ForOp>(loc, c0, upperBounds[i], steps[i]);
 
-      int64_t d = tiledDims[i];
-      int64_t stride = 1;
-      for (int64_t j = d + 1; j < rank; ++j) {
-        stride *= dimSizes[j];
-      }
-      forOp->setAttr(kSubblockStrideAttrName, b.getIndexAttr(stride));
+      forOp->setAttr(kSubblockStrideAttrName,
+                     b.getIndexAttr(fullStrides[tiledDims[i]]));
 
       loopIVs.push_back(forOp.getInductionVar());
       b.setInsertionPointToStart(forOp.getBody());
@@ -220,22 +211,10 @@ private:
       offsets[tiledDims[i]] = loopIVs[i];
     }
 
-    // Use TilingInterface to create the tiled compute op.
+    // Use TilingInterface to create the subblocked compute op.
     auto tiledResult = computeOp.getTiledImplementation(b, offsets, sizes);
     if (failed(tiledResult)) {
       return failure();
-    }
-
-    // Compute full-tensor row-major strides for tile loop annotation.
-    // These are needed by lower-to-loops to annotate tile loops with correct
-    // CB linearization strides (which differ from the subblock shape bounds).
-    SmallVector<int64_t> fullStrides(rank);
-    for (int64_t d = 0; d < rank; ++d) {
-      int64_t stride = 1;
-      for (int64_t j = d + 1; j < rank; ++j) {
-        stride *= dimSizes[j];
-      }
-      fullStrides[d] = stride;
     }
 
     // Remove the unroll_factor attribute from the tiled inner compute,
@@ -253,15 +232,10 @@ private:
           OpBuilder::InsertionGuard guard(b);
           b.setInsertionPointAfter(linIdx);
 
-          // Compute offset = sum(loopIV[d] * stride[d]) where
-          // stride[d] = product of dimSizes[j] for j > d.
+          // Compute offset = sum(loopIV[d] * fullStrides[d]) for tiled dims.
           Value offset;
           for (size_t i = 0; i < tiledDims.size(); ++i) {
-            int64_t d = tiledDims[i];
-            int64_t stride = 1;
-            for (int64_t j = d + 1; j < rank; ++j) {
-              stride *= dimSizes[j];
-            }
+            int64_t stride = fullStrides[tiledDims[i]];
 
             Value contribution;
             if (stride == 1) {
@@ -293,24 +267,6 @@ private:
     // The outer loop(s) are side-effect-only; results flow through tile_store.
     computeOp.replaceAllUsesWith(computeOp.getOutputs());
     computeOp.erase();
-
-    LLVM_DEBUG({
-      llvm::dbgs() << "Tiled compute op: " << rank << "D [";
-      for (int64_t d = 0; d < rank; ++d) {
-        llvm::dbgs() << dimSizes[d];
-        if (d < rank - 1) {
-          llvm::dbgs() << "x";
-        }
-      }
-      llvm::dbgs() << "] -> subblocks of [";
-      for (int64_t d = 0; d < rank; ++d) {
-        llvm::dbgs() << subblockSizes[d];
-        if (d < rank - 1) {
-          llvm::dbgs() << "x";
-        }
-      }
-      llvm::dbgs() << "] (" << subblockProduct << " tiles)\n";
-    });
 
     return success();
   }
