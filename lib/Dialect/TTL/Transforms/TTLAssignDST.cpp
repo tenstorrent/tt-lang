@@ -73,12 +73,11 @@ constexpr std::uint32_t kDefaultDSTCapacity = 8;
 constexpr int64_t kPlaceholderIndex = std::numeric_limits<int64_t>::max();
 
 /// Compute DST capacity based on operation types and device config.
+/// Returns failure for mixed f32/non-f32 tile arguments
 /// TODO(#264): Handle mixed dtypes - if compute block has both f32 and bf16
 /// tile arguments, should we use f32 capacity (4 tiles, safer) or error?
-/// Consider emitting warning for mixed dtypes since f32 config reduces
-/// available DST capacity and may cause unexpected capacity overflow.
-static std::uint32_t computeDSTCapacity(ComputeOp computeOp) {
-  // Capacity by datatype and buffering mode (see )
+static FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
+  // Capacity by datatype and buffering mode:
   //   Double-buffering (default):
   //     - f16/bf16: 8 tiles
   //     - f32: 4 tiles
@@ -100,19 +99,17 @@ static std::uint32_t computeDSTCapacity(ComputeOp computeOp) {
   Type elementType;
   bool sawF32 = false;
   bool sawNonF32 = false;
-  Block *body = &computeOp.getRegion().front();
-  if (body) {
-    for (BlockArgument arg : body->getArguments()) {
-      std::optional<Type> currentType = getTileElementType(arg.getType());
-      if (currentType) {
-        if (!elementType) {
-          elementType = *currentType;
-        }
-        if (currentType->isF32()) {
-          sawF32 = true;
-        } else {
-          sawNonF32 = true;
-        }
+  Block &body = computeOp.getRegion().front();
+  for (BlockArgument arg : body.getArguments()) {
+    std::optional<Type> currentType = getTileElementType(arg.getType());
+    if (currentType) {
+      if (!elementType) {
+        elementType = *currentType;
+      }
+      if (currentType->isF32()) {
+        sawF32 = true;
+      } else {
+        sawNonF32 = true;
       }
     }
   }
@@ -123,9 +120,10 @@ static std::uint32_t computeDSTCapacity(ComputeOp computeOp) {
   }
 
   if (sawF32 && sawNonF32) {
-    computeOp.emitWarning(
-        "Mixed f32 and non-f32 tile arguments detected; "
-        "dst capacity uses f32 limits when fp32_dest_acc_en is enabled.");
+    return computeOp.emitOpError(
+        "mixed f32 and non-f32 tile arguments; "
+        "DST capacity uses f32 limits (4 tiles) which may produce "
+        "incorrect results");
   }
 
   if (!elementType) {
@@ -157,20 +155,13 @@ static bool isTileValue(Value v) { return isa<ttcore::TileType>(v.getType()); }
 
 using MergedClasses = llvm::EquivalenceClasses<Value>;
 
-static Value getLeaderOrInsert(MergedClasses &merged, Value v) {
-  return merged.getOrInsertLeaderValue(v);
-}
-
-static SmallVector<Value> getAllMerged(MergedClasses &merged, Value v) {
-  SmallVector<Value> result;
+/// Return all values in the merged equivalence class of `v`.
+/// If `v` is not in any class, returns just `v` itself.
+static SmallVector<Value> getMergedValues(MergedClasses &merged, Value v) {
   if (!merged.contains(v)) {
-    result.push_back(v);
-    return result;
+    return {v};
   }
-  for (Value member : merged.members(v)) {
-    result.push_back(member);
-  }
-  return result;
+  return SmallVector<Value>(merged.members(v));
 }
 
 //===----------------------------------------------------------------------===//
@@ -213,14 +204,18 @@ static FailureOr<AffineMapAttr> computeIndexMapAttr(BlockArgument arg,
 
 /// Allocate a DST register and create a CopyTileOp for a block argument.
 /// Looks up assignment first; falls back to allocating a free register.
-static FailureOr<CopyTileOp>
-createCopyTileForArg(BlockArgument arg, ComputeOp computeOp, OpBuilder &builder,
-                     const DenseMap<Value, std::uint32_t> &dstAssignment,
-                     llvm::SmallBitVector &inUse,
-                     DenseMap<Value, std::uint32_t> &dstIndexForValue) {
+/// If dstIndexOverride is provided, it takes precedence over the assignment
+/// map.
+static FailureOr<CopyTileOp> createCopyTileForArg(
+    BlockArgument arg, ComputeOp computeOp, OpBuilder &builder,
+    const DenseMap<Value, std::uint32_t> &dstAssignment,
+    llvm::SmallBitVector &inUse,
+    DenseMap<Value, std::uint32_t> &dstIndexForValue,
+    std::optional<std::uint32_t> dstIndexOverride = std::nullopt) {
   std::uint32_t assignedDstIndex = 0;
-  auto it = dstAssignment.find(arg);
-  if (it != dstAssignment.end()) {
+  if (dstIndexOverride) {
+    assignedDstIndex = *dstIndexOverride;
+  } else if (auto it = dstAssignment.find(arg); it != dstAssignment.end()) {
     assignedDstIndex = it->second;
   } else {
     int freeReg = inUse.find_first_unset();
@@ -390,7 +385,7 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
         if (!isTileValue(operand)) {
           continue;
         }
-        if (intervals.find(operand) == intervals.end()) {
+        if (!intervals.count(operand)) {
           // Block argument: start at (first_use - 1) to enable register reuse.
           // Args consumed at position N get allocated before outputs produced
           // at N, allowing outputs to reuse the consumed args' registers.
@@ -456,14 +451,14 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
   // interval (the union of all their individual intervals).
   DenseSet<Value> processed;
   for (auto &[value, interval] : intervals) {
-    Value root = getLeaderOrInsert(merged, value);
+    Value root = merged.getOrInsertLeaderValue(value);
     if (processed.contains(root)) {
       continue;
     }
     processed.insert(root);
 
     // Find all values in this merged set and compute the union interval
-    auto allMerged = getAllMerged(merged, value);
+    auto allMerged = getMergedValues(merged, value);
     if (allMerged.size() <= 1) {
       continue;
     }
@@ -586,7 +581,7 @@ static FailureOr<std::uint32_t> linearScanAllocateFiltered(
     }
 
     // Skip if merged set already processed
-    Value root = getLeaderOrInsert(merged, interval->value);
+    Value root = merged.getOrInsertLeaderValue(interval->value);
     if (processedRoots.contains(root)) {
       continue;
     }
@@ -623,7 +618,7 @@ static FailureOr<std::uint32_t> linearScanAllocateFiltered(
     maxDstUsed = maxDstUsed ? std::max(*maxDstUsed, regIdx) : regIdx;
 
     // Assign to all values in the merged set
-    auto allMerged = getAllMerged(merged, interval->value);
+    auto allMerged = getMergedValues(merged, interval->value);
     for (Value mergedVal : allMerged) {
       if (!assignment.count(mergedVal)) {
         assignment[mergedVal] = regIdx;
@@ -649,7 +644,6 @@ static FailureOr<std::uint32_t> linearScanAllocateFiltered(
 //===----------------------------------------------------------------------===//
 
 struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
-  using Base = impl::TTLAssignDSTBase<TTLAssignDSTPass>;
   using Base::Base;
 
   void runOnOperation() override {
@@ -657,17 +651,21 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
 
     funcOp.walk([&](ComputeOp computeOp) {
       Block *body = &computeOp.getRegion().front();
-      if (!body) {
-        return;
-      }
 
       auto yieldOp = dyn_cast<YieldOp>(body->getTerminator());
       if (!yieldOp) {
         return;
       }
 
-      std::uint32_t capacity =
-          dstCapacity == 0 ? computeDSTCapacity(computeOp) : dstCapacity;
+      std::uint32_t capacity = dstCapacity;
+      if (capacity == 0) {
+        auto computed = computeDSTCapacity(computeOp);
+        if (failed(computed)) {
+          signalPassFailure();
+          return;
+        }
+        capacity = *computed;
+      }
 
       OpBuilder builder(body, body->begin());
 
@@ -720,7 +718,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
             [&](Value val) {
               // For separate output region mode, check if any member of the
               // merged set is yielded. If so, defer the entire set to Phase 4.
-              auto allMerged = getAllMerged(merged, val);
+              auto allMerged = getMergedValues(merged, val);
               return llvm::none_of(allMerged, [&](Value member) {
                 return isYieldedValue(member, yieldOp);
               });
@@ -826,15 +824,16 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         }
 
         // Use the placeholder's DST assignment if available.
+        std::optional<std::uint32_t> dstOverride;
         auto placeholderIt = dstAssignment.find(placeholder.getDstTile());
-        DenseMap<Value, std::uint32_t> lookupOverride(dstAssignment);
         if (placeholderIt != dstAssignment.end()) {
-          lookupOverride[arg] = placeholderIt->second;
+          dstOverride = placeholderIt->second;
         }
 
         builder.setInsertionPoint(placeholder);
-        auto newCopy = createCopyTileForArg(
-            arg, computeOp, builder, lookupOverride, inUse, dstIndexForValue);
+        auto newCopy =
+            createCopyTileForArg(arg, computeOp, builder, dstAssignment, inUse,
+                                 dstIndexForValue, dstOverride);
         if (failed(newCopy)) {
           signalPassFailure();
           return;
