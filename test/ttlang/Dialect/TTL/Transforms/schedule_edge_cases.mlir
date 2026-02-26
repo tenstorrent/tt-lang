@@ -67,37 +67,11 @@ func.func @single_type_already_sorted(
 // =============================================================================
 // Test 2: Three-type chain: copy + FPU binary + SFPU unary
 // =============================================================================
-// Purpose: Exercises all three main scheduling categories (CopyTile, FPUBinary,
-// SFPUUnary) in a single sync region. With 2 tiles, the per-tile order is
-// copy/add/exp interleaved. After scheduling: copies grouped, adds grouped,
-// exps grouped.
-//
-// Chain: exp(a + b) where a needs copy_tile (for exp), add is FPU binary.
-// Wait, that doesn't work because exp takes the add result, not a.
-// Instead: abs(a) then add(abs_result, b) → copy + abs + add.
-// But add has a computed operand → SFPU not FPU.
-//
-// Simpler: a + b (FPU) producing a result, then tanh of that result (SFPU).
-// This gives us: add_tiles (FPU, depth 0), tanh_tile (SFPU, depth 1).
-// With 2 tiles: add0, tanh0, add1, tanh1 → already sorted by depth.
-//
-// To force reordering, we need ops at the SAME depth with different categories.
-// Copy + FPU at depth 0: copy(a)->dst for tanh, add(a,b)->dst for result.
-// Then at depth 1: tanh(dst), add_result consumed.
-//
-// The real test that exercises reordering with mixed categories:
-// tanh(a) + b: copy(a)->dst, tanh, copy(b)->dst, add_tiles(a,b).
-// Wait, the add uses tanh result + b. If b is block arg, add is SFPU (one
-// operand computed). So:
-// depth 0: copy_tile(a), copy_tile(b)
-// depth 1: tanh(dst0)
-// depth 2: add(tanh_result, b_copy) → SFPU binary
-// All at different depths → already sorted.
-//
-// For actual mixed-depth-0 reordering: need independent ops at depth 0.
-// Two independent operations: FPU add(a,b) and copy_tile(c) for subsequent exp.
-// depth 0: add_tiles(a,b) at FPUBinary=3, copy_tile(c) at CopyTile=0
-// After scheduling: copy_tile(c) before add_tiles(a,b).
+// Purpose: Exercises reordering across three scheduling categories (CopyTile=0,
+// FPUBinary=3, SFPUUnary=4) in a single sync region. Two independent depth-0
+// operations: FPU add(a,b) and copy_tile(c) for subsequent exp. Without
+// scheduling, add_tiles appears before copy_tile; after scheduling, copy_tile
+// (category 0) is grouped before add_tiles (category 3).
 
 // CHECK-LABEL: func.func @copy_before_fpu_reorder
 // CHECK:       ttkernel.tile_regs_acquire

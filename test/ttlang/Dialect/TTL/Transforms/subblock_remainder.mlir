@@ -1,5 +1,5 @@
 // Test: DST subblocking with non-divisible tile counts adjusts subblock size.
-// A 3x3 tensor has 9 tiles. With DST capacity=8 and 1 FPU op (dstPerIteration=1),
+// A 3x3 tensor has 9 tiles. With DST capacity=8 and 1 unary op (dstPerIteration=1),
 // the initial unroll_factor=8, but no subblock of size 8 evenly divides 9.
 // Multi-dim tiling finds tileSizes=[1,3] (product=3), producing 3 subblocks
 // of 3 tiles each with constant loop bounds. Loop on dim 0 (0 to 3 step 1).

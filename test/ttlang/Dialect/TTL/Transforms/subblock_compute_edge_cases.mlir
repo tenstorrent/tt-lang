@@ -39,6 +39,7 @@
 // LOWER:            ttl.tile_exp {{.*}} {dst_idx = 3
 // LOWER:            ttl.tile_regs_commit
 // LOWER:            ttl.tile_regs_wait
+// LOWER:            ttl.tile_store
 // LOWER:            ttl.tile_regs_release
 func.func @subblock_2d_6x6(%a: tensor<6x6x!ttcore.tile<32x32, f32>>)
     -> tensor<6x6x!ttcore.tile<32x32, f32>> {
@@ -223,7 +224,7 @@ func.func @subblock_row_broadcast(
 
 // -----
 
-#map_identity2 = affine_map<(d0, d1) -> (d0, d1)>
+#map_identity = affine_map<(d0, d1) -> (d0, d1)>
 #map_scalar_bcast = affine_map<(d0, d1) -> (0, 0)>
 
 // =============================================================================
@@ -273,7 +274,7 @@ func.func @subblock_scalar_broadcast(
   %result = ttl.compute
       ins(%a_cb, %c_cb : tensor<6x6x!ttcore.tile<32x32, f32>>, tensor<1x1x!ttcore.tile<32x32, f32>>)
       outs(%init_cb : tensor<6x6x!ttcore.tile<32x32, f32>>)
-      {indexing_maps = [#map_identity2, #map_scalar_bcast, #map_identity2],
+      {indexing_maps = [#map_identity, #map_scalar_bcast, #map_identity],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %c_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):

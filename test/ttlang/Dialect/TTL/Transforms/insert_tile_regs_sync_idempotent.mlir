@@ -68,5 +68,5 @@ func.func @idempotent_subblocked(%arg0: tensor<1x8x!ttcore.tile<32x32, f32>>) ->
       ttl.tile_store %exp, %out_view : !ttcore.tile<32x32, f32>, tensor<1x8x!ttcore.tile<32x32, f32>>
       ttl.yield %exp : !ttcore.tile<32x32, f32>
   } -> tensor<1x8x!ttcore.tile<32x32, f32>>
-  return %result : tensor<1x8x!ttcore.tile<32x32, f32>>
+  func.return %result : tensor<1x8x!ttcore.tile<32x32, f32>>
 }

@@ -48,11 +48,11 @@ func.func @init_binary_different_types() attributes {ttl.kernel_thread = #ttkern
 // =============================================================================
 // Test 3: FPU binary add -> sync pass does NOT emit init ops
 // =============================================================================
-// CHECK-LABEL: func.func @fpu_binary_gets_init_binary
+// CHECK-LABEL: func.func @fpu_binary_no_init_from_sync
 // CHECK-NOT:     ttl.init_binary
 // CHECK-NOT:     ttl.init_sfpu
 // CHECK:         ttl.compute
-func.func @fpu_binary_gets_init_binary(
+func.func @fpu_binary_no_init_from_sync(
     %a: tensor<1x1x!ttcore.tile<32x32, f32>>,
     %b: tensor<1x1x!ttcore.tile<32x32, f32>>)
     -> tensor<1x1x!ttcore.tile<32x32, f32>> {
@@ -82,11 +82,11 @@ func.func @fpu_binary_gets_init_binary(
 // =============================================================================
 // Test 4: SFPU-only (exp) -> sync pass does NOT emit init ops
 // =============================================================================
-// CHECK-LABEL: func.func @sfpu_only_gets_init_sfpu
+// CHECK-LABEL: func.func @sfpu_only_no_init_from_sync
 // CHECK-NOT:     ttl.init_sfpu
 // CHECK-NOT:     ttl.init_binary
 // CHECK:         ttl.compute
-func.func @sfpu_only_gets_init_sfpu(
+func.func @sfpu_only_no_init_from_sync(
     %a: tensor<1x1x!ttcore.tile<32x32, bf16>>)
     -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
   %c0 = arith.constant 0 : index
@@ -114,11 +114,11 @@ func.func @sfpu_only_gets_init_sfpu(
 // =============================================================================
 // Test 5: Mixed FPU + SFPU compute -> sync pass does NOT emit init ops
 // =============================================================================
-// CHECK-LABEL: func.func @mixed_fpu_sfpu_gets_init_binary
+// CHECK-LABEL: func.func @mixed_fpu_sfpu_no_init_from_sync
 // CHECK-NOT:     ttl.init_binary
 // CHECK-NOT:     ttl.init_sfpu
 // CHECK:         ttl.compute
-func.func @mixed_fpu_sfpu_gets_init_binary(
+func.func @mixed_fpu_sfpu_no_init_from_sync(
     %a: tensor<1x1x!ttcore.tile<32x32, f32>>,
     %b: tensor<1x1x!ttcore.tile<32x32, f32>>)
     -> tensor<1x1x!ttcore.tile<32x32, f32>> {
@@ -153,11 +153,11 @@ func.func @mixed_fpu_sfpu_gets_init_binary(
 // =============================================================================
 // This simulates the output of ttl-assign-dst{enable-fpu-binary-ops=0} where
 // binary ops use copy_tile instead of FPU CB reads.
-// CHECK-LABEL: func.func @sfpu_binary_add_gets_init_sfpu
+// CHECK-LABEL: func.func @sfpu_binary_add_no_init_from_sync
 // CHECK-NOT:     ttl.init_sfpu
 // CHECK-NOT:     ttl.init_binary
 // CHECK:         ttl.compute
-func.func @sfpu_binary_add_gets_init_sfpu(
+func.func @sfpu_binary_add_no_init_from_sync(
     %a: tensor<1x1x!ttcore.tile<32x32, f32>>,
     %b: tensor<1x1x!ttcore.tile<32x32, f32>>)
     -> tensor<1x1x!ttcore.tile<32x32, f32>> {

@@ -57,10 +57,8 @@ func.func @copy_tile_with_bcast_and_add(
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Two inputs both consumed by DST-reading binary ops. Both should get
-// copy_tile inserted. This verifies that the CBInputTileOpTrait on copy_tile
-// itself doesn't interfere with copy_tile insertion for block args.
-// FPU binary: both operands are block args, so no copy_tile needed.
+// Two inputs consumed by a binary add where both operands are block args.
+// FPU binary: reads directly from CB, so no copy_tile needed.
 // CHECK-LABEL: func.func @two_inputs_both_need_copy
 func.func @two_inputs_both_need_copy(
     %a: tensor<2x2x!ttcore.tile<32x32, f32>>,

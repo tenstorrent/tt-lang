@@ -77,6 +77,7 @@
 // SFPU:           ttkernel.pack_tile({{.*}}, %[[CB2]], {{.*}}, true)
 // SFPU:           ttkernel.tile_regs_release
 // SFPU-NOT:   ttl.attach_cb
+// SFPU-NOT:   ttl.copy_tile
 func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                 %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {

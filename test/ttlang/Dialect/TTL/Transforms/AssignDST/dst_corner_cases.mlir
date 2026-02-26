@@ -416,9 +416,10 @@ func.func @intermediate_reuse_late(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 //   %mul = tile_mul %x, %y // Binary uses same x
 //
 // The unary op (abs) would clobber x before the binary ops can use it.
-// Phase 1 inserts copy_tile only for abs (last unary consumer).
-// The binary consumers (add, mul) share a single copy created later.
-// Result: 2 copies of x total (one for abs, one shared by add/mul).
+// Phase 1 inserts copy_tile for abs (unary consumer needs DST).
+// The binary consumers (add, mul) are FPU binary (both operands are block
+// args), so they read from CB and need no copy_tile.
+// Result: 1 copy of x total (for abs only).
 
 // CHECK-LABEL: func.func @unary_and_binary_consumers
 // CHECK: ttl.compute
@@ -454,7 +455,7 @@ func.func @unary_and_binary_consumers(%i0: tensor<32x32xf32>,
   ^bb0(%x: !ttcore.tile<32x32, f32>, %y: !ttcore.tile<32x32, f32>,
        %out: !ttcore.tile<32x32, f32>):
     // x is used by abs (unary), add (binary), and mul (binary)
-    // Phase 1 inserts copy_tile for abs and add; mul uses original
+    // Phase 1 inserts copy_tile for abs; add and mul are FPU binary (no copy)
     %abs = ttl.tile_abs %x : !ttcore.tile<32x32, f32>
     %add = ttl.tile_add %x, %y : !ttcore.tile<32x32, f32>
     %mul = ttl.tile_mul %x, %y : !ttcore.tile<32x32, f32>

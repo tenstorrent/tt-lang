@@ -8,7 +8,7 @@
 // CHECK-DAG: %[[IN_CB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK-DAG: %[[OUT_CB:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: ttkernel.tile_regs_acquire
-// unary_bcast_init must be emitted with out_cb derived from pack_tile.
+// unary_bcast_init must be emitted with out_cb derived from bcast_output_cb_index attr.
 // CHECK: ttkernel.unary_bcast_init(%[[IN_CB]], %[[OUT_CB]], <col>)
 // CHECK-NEXT: ttkernel.unary_bcast(%[[IN_CB]],
 // CHECK: ttkernel.tile_regs_commit

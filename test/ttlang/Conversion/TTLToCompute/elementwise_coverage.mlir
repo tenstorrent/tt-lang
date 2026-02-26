@@ -146,6 +146,7 @@ func.func @all_binary_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<2
   %mul_cb = ttl.attach_cb %mul, %cb6 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %b_cb3 = ttl.attach_cb %b, %cb7 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
+  // tile_max is not FPU binary (only add/sub/mul support FPU path)
   // CHECK: ttl.tile_max
   %max = ttl.max %mul_cb, %b_cb3 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -239,8 +240,8 @@ func.func @dst_assignment_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: te
   // CHECK-DAG: %[[CB3:.+]] = ttl.bind_cb{cb_index = 3
   // CHECK-DAG: %[[CB4:.+]] = ttl.bind_cb{cb_index = 4
   // CHECK-DAG: %[[CB5:.+]] = ttl.bind_cb{cb_index = 5
-  // CHECK: %[[A_CB:.+]] = ttl.attach_cb %[[A:arg0]], %[[CB0]]
-  // CHECK: %[[B_CB:.+]] = ttl.attach_cb %[[B:arg1]], %[[CB1]]
+  // CHECK: %[[A_CB:.+]] = ttl.attach_cb %[[A]], %[[CB0]]
+  // CHECK: %[[B_CB:.+]] = ttl.attach_cb %[[B:.*]], %[[CB1]]
   %a_cb = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %b_cb = ttl.attach_cb %b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

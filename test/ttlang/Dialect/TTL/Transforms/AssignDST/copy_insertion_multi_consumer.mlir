@@ -87,18 +87,18 @@ func.func @multi_consumer_two_unary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // Binary ops don't modify their inputs, so no protection needed.
 // DEBUG: Max DST usage: 3 / 8 registers
 
-// CHECK-LABEL: func.func @multi_consumer_all_binary
-// CHECK: ttl.compute
-// CHECK: ^bb0
+// IR-LABEL: func.func @multi_consumer_all_binary
+// IR: ttl.compute
+// IR: ^bb0
 // tile_mul is FPU binary (both operands are block args) - no copy_tile for mul operands
-// CHECK: %[[MUL:.*]] = ttl.tile_mul %{{.*}}, %{{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
+// IR: %[[MUL:.*]] = ttl.tile_mul %{{.*}}, %{{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
 // Third operand (c_tile) needs copy_tile since it's a block arg used by non-FPU-binary ops
-// CHECK: ttl.copy_tile
-// CHECK: %[[ADD1:.*]] = ttl.tile_add %[[MUL]], %{{.*}} {dst_idx = 2 : i32}
+// IR: ttl.copy_tile
+// IR: %[[ADD1:.*]] = ttl.tile_add %[[MUL]], %{{.*}} {dst_idx = 2 : i32}
 // SEPARATE: ttl.tile_add {{.*}} {dst_idx = 2 : i32}
-// CHECK: %[[SUB:.*]] = ttl.tile_sub %[[MUL]], %{{.*}} {dst_idx = 0 : i32}
+// IR: %[[SUB:.*]] = ttl.tile_sub %[[MUL]], %{{.*}} {dst_idx = 0 : i32}
 // SEPARATE: ttl.tile_sub {{.*}} {dst_idx = 3 : i32}
-// CHECK: ttl.yield
+// IR: ttl.yield
 
 func.func @multi_consumer_all_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                      %b: tensor<2x2x!ttcore.tile<32x32, f32>>,

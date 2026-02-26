@@ -1,6 +1,8 @@
-// Tests for integrated unrolling in lower-to-loops: when a compute is marked
-// with ttl.fully_unroll, lower-to-loops emits N unrolled copies of the body
-// with incrementing DST indices and tile offsets, instead of creating scf.for.
+// Tests for integrated unrolling in lower-to-loops: when a compute has
+// ttl.full_linearization_strides (set by ttl-subblock-compute-for-dst),
+// lower-to-loops creates tile loops marked with ttl.should_unroll and fully
+// unrolls them -- emitting N copies with incrementing DST indices and tile
+// offsets instead of retaining scf.for loops.
 
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8},ttl-subblock-compute-for-dst,ttl-insert-tile-regs-sync,ttl-lower-to-loops))' --split-input-file | FileCheck %s
 
@@ -61,6 +63,7 @@ func.func @unroll_unary_1x4(%a: tensor<1x4x!ttcore.tile<32x32, f32>>)
 // copies with correct dst_idx (0-3) and tile_offset (0-3). No scf.for loops.
 // CHECK-LABEL: func.func @unroll_binary_1x4
 // CHECK-NOT:   scf.for
+// CHECK:       ttl.tile_regs_acquire
 // CHECK:       ttl.tile_add {{.*}} {dst_idx = 0 : i32{{.*}}ttl.tile_offset = 0
 // CHECK:       ttl.tile_add {{.*}} {dst_idx = 1 : i32{{.*}}ttl.tile_offset = 1
 // CHECK:       ttl.tile_add {{.*}} {dst_idx = 2 : i32{{.*}}ttl.tile_offset = 2
@@ -71,6 +74,7 @@ func.func @unroll_unary_1x4(%a: tensor<1x4x!ttcore.tile<32x32, f32>>)
 // CHECK:       ttl.tile_store {{.*}} {ttl.tile_offset = 1
 // CHECK:       ttl.tile_store {{.*}} {ttl.tile_offset = 2
 // CHECK:       ttl.tile_store {{.*}} {ttl.tile_offset = 3
+// CHECK:       ttl.tile_regs_release
 func.func @unroll_binary_1x4(
     %a: tensor<1x4x!ttcore.tile<32x32, f32>>,
     %b: tensor<1x4x!ttcore.tile<32x32, f32>>)
@@ -160,6 +164,7 @@ func.func @unroll_subblocked_4x4(%a: tensor<4x4x!ttcore.tile<32x32, f32>>)
 // Tile positions: (0,0)=0, (0,1)=1, ..., (0,3)=3, (1,0)=4, ..., (1,3)=7.
 // CHECK-LABEL: func.func @unroll_2d_offsets_2x4
 // CHECK-NOT:   scf.for
+// CHECK:       ttl.tile_regs_acquire
 // CHECK:       ttl.copy_tile {{.*}} {dst_idx = 0 : i32, ttl.tile_offset = 0
 // CHECK:       ttl.copy_tile {{.*}} {dst_idx = 1 : i32, ttl.tile_offset = 1
 // CHECK:       ttl.copy_tile {{.*}} {dst_idx = 2 : i32, ttl.tile_offset = 2
@@ -168,6 +173,10 @@ func.func @unroll_subblocked_4x4(%a: tensor<4x4x!ttcore.tile<32x32, f32>>)
 // CHECK:       ttl.copy_tile {{.*}} {dst_idx = 5 : i32, ttl.tile_offset = 5
 // CHECK:       ttl.copy_tile {{.*}} {dst_idx = 6 : i32, ttl.tile_offset = 6
 // CHECK:       ttl.copy_tile {{.*}} {dst_idx = 7 : i32, ttl.tile_offset = 7
+// CHECK:       ttl.tile_regs_commit
+// CHECK:       ttl.tile_regs_wait
+// CHECK:       ttl.tile_store
+// CHECK:       ttl.tile_regs_release
 func.func @unroll_2d_offsets_2x4(%a: tensor<2x4x!ttcore.tile<32x32, f32>>)
     -> tensor<2x4x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x4x!ttcore.tile<32x32, f32>>
