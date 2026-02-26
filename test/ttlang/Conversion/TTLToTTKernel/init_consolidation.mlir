@@ -258,3 +258,60 @@ func.func @common_init_not_hoisted_past_unmarked_loop() {
   }
   func.return
 }
+
+// Test 11: Nested compiler loops (tile_loop wrapping subblock_stride) -> common
+// init hoisted above both loops.
+// COMMON-LABEL: func.func @common_init_hoisted_above_nested_compiler_loops
+// COMMON-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// COMMON-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// COMMON: ttkernel.init_sfpu(%[[CB0]], %[[CB2]])
+// COMMON-NEXT: scf.for
+// COMMON: scf.for
+// COMMON: ttkernel.tile_regs_acquire
+// COMMON: ttkernel.exp_tile(
+// COMMON: ttkernel.tile_regs_release
+func.func @common_init_hoisted_above_nested_compiler_loops() {
+  %cb0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %cb2 = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  scf.for %i = %c0 to %c4 step %c1 {
+    scf.for %j = %c0 to %c4 step %c1 {
+      ttkernel.tile_regs_acquire() : () -> ()
+      ttkernel.copy_tile(%cb0, %j, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index) -> ()
+      ttkernel.exp_tile(%c0) : (index) -> ()
+      ttkernel.pack_tile(%c0, %cb2, %j, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index) -> ()
+      ttkernel.tile_regs_release() : () -> ()
+    } {ttl.subblock_stride = 1 : index}
+  } {ttl.tile_loop = 1 : index}
+  func.return
+}
+
+// Test 12: CopyTile from different CBs -> separate copy_tile_init per CB group.
+// After scheduling (or manual pre-grouping), copies from cb0 are consecutive
+// and copies from cb1 are consecutive. Each group gets its own init.
+// FPU-LABEL: func.func @copy_tile_init_per_cb
+// FPU-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// FPU-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// FPU: ttkernel.copy_tile_init(%[[CB0]])
+// FPU-NEXT: ttkernel.copy_tile(%[[CB0]],
+// FPU-NOT: ttkernel.copy_tile_init
+// FPU: ttkernel.copy_tile(%[[CB0]],
+// FPU: ttkernel.copy_tile_init(%[[CB1]])
+// FPU-NEXT: ttkernel.copy_tile(%[[CB1]],
+// FPU-NOT: ttkernel.copy_tile_init
+// FPU: ttkernel.copy_tile(%[[CB1]],
+func.func @copy_tile_init_per_cb() {
+  %cb0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %cb1 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  // Copies from cb0 (grouped)
+  ttkernel.copy_tile(%cb0, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index) -> ()
+  ttkernel.copy_tile(%cb0, %c1, %c1) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index) -> ()
+  // Copies from cb1 (grouped) -> new init
+  ttkernel.copy_tile(%cb1, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index) -> ()
+  ttkernel.copy_tile(%cb1, %c1, %c1) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index) -> ()
+  func.return
+}

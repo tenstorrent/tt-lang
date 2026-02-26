@@ -63,7 +63,7 @@ for example in $TUTORIAL_FILES; do
     echo "----------------------------------------"
     echo "Running: $example_name"
     echo "----------------------------------------"
-    
+
     if python3 "$example" 2>&1; then
         echo -e "${GREEN}✓ PASSED${NC}: $example_name"
         PASSED_EXAMPLES+=("$example_name")
