@@ -94,6 +94,7 @@ def tt_lang_upsample_nearest_rowwise_interleaved(
                 for h_1 in range(scale_factor[0]):
                     for w_1 in range(scale_factor[1]):
                         out_wr = ttl.copy(out_blk, output[n, h * scale_factor[0] + h_1, w * scale_factor[1] + w_1, :])
+                        out_wr.wait()
 
 
 
