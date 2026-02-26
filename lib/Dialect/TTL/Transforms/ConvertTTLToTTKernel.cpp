@@ -39,12 +39,6 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-using mlir::LogicalResult;
-using mlir::PatternRewriter;
-using mlir::RewritePatternSet;
-using mlir::TypeConverter;
-using mlir::UnrealizedConversionCastOp;
-using mlir::ValueRange;
 using mlir::func::FuncOp;
 namespace ttk = mlir::tt::ttkernel;
 
@@ -955,12 +949,7 @@ lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
 
   RewritePatternSet computePatterns(&ctx);
   populateTTLTileOpsToTTKernelPatterns(&typeConverter, computePatterns);
-  if (failed(applyPartialConversion(mod, computeTarget,
-                                    std::move(computePatterns)))) {
-    return failure();
-  }
-
-  return success();
+  return applyPartialConversion(mod, computeTarget, std::move(computePatterns));
 }
 
 /// Phase 3: Remove structural TTL ops (AttachCBOp, ComputeOp, YieldOp).
@@ -988,11 +977,7 @@ removeStructuralTTLOps(ModuleOp mod, MLIRContext &ctx,
   // Apply FuncKernelFinalize as a greedy rewrite after tile lowering.
   RewritePatternSet finalizePatterns(&ctx);
   finalizePatterns.add<FuncKernelFinalize>(&ctx);
-  if (failed(applyPatternsGreedily(mod, std::move(finalizePatterns)))) {
-    return failure();
-  }
-
-  return success();
+  return applyPatternsGreedily(mod, std::move(finalizePatterns));
 }
 
 /// Remove dead tensor ops from a compute kernel function.
