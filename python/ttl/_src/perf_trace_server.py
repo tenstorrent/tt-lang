@@ -270,7 +270,13 @@ def _get_csv_path(logs_path: Optional[Path] = None) -> Path:
     if not tt_metal_home:
         raise ValueError("TT_METAL_HOME not set and no path provided")
 
-    return Path(tt_metal_home) / "generated" / "profiler" / ".logs" / "profile_log_device.csv"
+    return (
+        Path(tt_metal_home)
+        / "generated"
+        / "profiler"
+        / ".logs"
+        / "profile_log_device.csv"
+    )
 
 
 def main():

@@ -1364,9 +1364,7 @@ def pykernel_gen(
                 if os.environ.get("TTLANG_PERF_SERV") == "1":
                     tt_metal_home = os.environ.get("TT_METAL_HOME", "")
                     if not tt_metal_home:
-                        raise ValueError(
-                            "TTLANG_PERF_SERV=1 requires TT_METAL_HOME"
-                        )
+                        raise ValueError("TTLANG_PERF_SERV=1 requires TT_METAL_HOME")
                     csv_path = (
                         Path(tt_metal_home)
                         / "generated"
