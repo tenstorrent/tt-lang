@@ -11,15 +11,6 @@ import ttl
 from utils.correctness import assert_with_ulp
 from utils.block_allocation import split_work_to_cores
 
-def get_number_of_cores(grid_range):
-    total_cores = 0
-    if len(grid_range) != 0:
-        start = grid_range[0]
-        end = grid_range[1]
-        x_range = end[0] - start[0] + 1
-        y_range = end[1] - start[1] + 1
-        total_cores += x_range * y_range
-    return total_cores
 
 @ttl.kernel(grid=(8,8))
 def tt_lang_upsample_nearest_rowwise_interleaved(
