@@ -62,7 +62,7 @@ convert-ttl-to-compute
 set-compute-kernel-config
 assign-dst                  ← DST allocation + unroll_factor [1, 2, 7, 8]
 subblock-compute-for-dst    ← outer loop over subblocks [3, 4]
-insert-tile-regs-sync       ← one sync cycle per subblock [11]
+insert-tile-regs-sync       ← one sync region per subblock [11]
 lower-to-loops              ← unrolled emit for inner subblock [10]
 schedule-operations         ← group by kind, place commit/wait [12]
 annotate-cb-associations
@@ -178,7 +178,7 @@ DST capacity depends on data type and double-buffering: **8 tiles for
 bf16** (16 physical / 2), **4 tiles for f32** (16 / 2 / 2).
 `dstPerIter` is the number of DST registers consumed per tile iteration
 (1 for unary/FPU-binary chains, 2+ for SFPU binary). `unrollFactor` is
-the maximum number of tiles that fit in DST per sync cycle:
+the maximum number of tiles that fit in DST per sync region:
 `min(floor(capacity / dstPerIter), totalTiles)`. The subblocking pass
 finds the largest subblock with tile count ≤ `unrollFactor`, subject to
 each dimension dividing evenly, so `tiles/subblock` may be less than
@@ -399,11 +399,11 @@ This approach was chosen over a separate unrolling pass (prototyped on
 
 Current `TTLInsertTileRegsSync` wraps each `ttl.compute` body with
 acquire/commit/wait/release (per-tile when placed before
-lower-to-loops). The target is one sync cycle per subblock.
+lower-to-loops). The target is one sync region per subblock.
 
 After subblocking, each inner `ttl.compute` fits in DST by construction.
 Sync insertion wraps the entire inner compute with one acquire/release
-cycle — the same placement as today, but now one cycle covers all tiles
+region — the same placement as today, but now one region covers all tiles
 in the subblock rather than just one tile:
 
 ```mlir
@@ -522,7 +522,7 @@ savings from larger subblocks.
 The full DST maximization pipeline is operational. The pipeline computes
 the correct subblock size (with FPU-aware DST pressure), partitions the
 iteration space via TilingInterface, emits unrolled subblock bodies with
-one sync cycle per subblock, groups operations by kind, and consolidates
+one sync region per subblock, groups operations by kind, and consolidates
 init ops. FPU binary detection (component 8) marks
 `tile_add`/`tile_sub`/`tile_mul` with both block-arg operands as
 `ttl.fpu_binary`, reducing per-iteration DST pressure (0 input slots

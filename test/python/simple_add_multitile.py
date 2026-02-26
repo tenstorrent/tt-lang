@@ -12,7 +12,7 @@ Multi-tile add kernel - verifies correct tile indexing across 2x2 tile grid.
 
 Uses 64x64 tensors (2x2 tiles of 32x32). All 4 tiles fit in DST (capacity=8
 for bf16), so the tile loops are fully unrolled into 4 add_tiles + pack_tile
-pairs with incrementing indices, wrapped by a single sync cycle.
+pairs with incrementing indices, wrapped by a single sync region.
 """
 
 import os
@@ -101,7 +101,7 @@ def add_multitile_kernel(lhs, rhs, out):
 # =============================================================================
 # All 4 tiles (2x2) fit in DST, so tile loops are fully unrolled into
 # 4 add_tiles + pack_tile pairs with incrementing indices, wrapped by
-# a single acquire/commit/wait/release sync cycle.
+# a single acquire/commit/wait/release sync region.
 
 # CHECK-CPP: // add_compute
 # CHECK-CPP: void kernel_main()
@@ -114,7 +114,7 @@ def add_multitile_kernel(lhs, rhs, out):
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
 
-# Single sync cycle wrapping all 4 unrolled tiles
+# Single sync region wrapping all 4 unrolled tiles
 # CHECK-CPP: tile_regs_acquire();
 
 # One consolidated init for the entire group of add_tiles

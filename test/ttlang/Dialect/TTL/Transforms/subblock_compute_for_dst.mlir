@@ -22,7 +22,7 @@
 // TILED-SAME:   ttl.full_linearization_strides
 // TILED-SAME:   ttl.unroll_factor = 8 : i64
 // LOWER-LABEL:  func.func @no_tiling_when_all_fit
-// No subblocking: 8 unrolled copies, no loops. One sync cycle wrapping
+// No subblocking: 8 unrolled copies, no loops. One sync region wrapping
 // all copies. Stores hoisted after wait.
 // LOWER-NOT:    scf.for
 // LOWER:        ttl.tile_regs_acquire
@@ -78,7 +78,7 @@ func.func @no_tiling_when_all_fit(%a: tensor<1x8x!ttcore.tile<32x32, f32>>)
 // TILED-SAME:   ttl.full_linearization_strides
 // TILED-SAME:   ttl.unroll_factor = 8 : i64
 // LOWER-LABEL:  func.func @tile_binary_1x8
-// No subblocking: 8 unrolled FPU binary copies, no loops. One sync cycle.
+// No subblocking: 8 unrolled FPU binary copies, no loops. One sync region.
 // Stores hoisted after wait.
 // LOWER-NOT:    scf.for
 // LOWER:        ttl.tile_regs_acquire
@@ -153,7 +153,7 @@ func.func @tile_binary_1x8(
 // TILED-NEXT:   }
 // LOWER-LABEL:  func.func @tile_multidim_2x8
 // Multi-dim subblocked: outer scf.for (step 1 on dim 0), inner unrolled 8
-// copies. One sync cycle per subblock iteration. Stores hoisted after wait.
+// copies. One sync region per subblock iteration. Stores hoisted after wait.
 // LOWER-NOT:    tensor.collapse_shape
 // LOWER:        scf.for %[[OUTER:.*]] = {{.*}} to {{.*}} step
 // LOWER:          ttl.tile_regs_acquire
@@ -279,7 +279,7 @@ func.func @no_subblocking_multidim(%a: tensor<2x4x!ttcore.tile<32x32, f32>>)
 // TILED-NEXT:   }
 // LOWER-LABEL:  func.func @subblock_multidim_4x4
 // Multi-dim subblocked: outer scf.for (step 2 on dim 0), inner 8 unrolled
-// copies. One sync cycle per subblock iteration. Stores hoisted after wait.
+// copies. One sync region per subblock iteration. Stores hoisted after wait.
 // LOWER-NOT:    tensor.collapse_shape
 // LOWER:        scf.for %[[OUTER:.*]] = {{.*}} to {{.*}} step
 // LOWER:          ttl.tile_regs_acquire
@@ -411,7 +411,7 @@ func.func @no_subblocking_binary(
 // TILED-NEXT:   }
 // LOWER-LABEL:  func.func @tile_multidim_remainder_3x3
 // Multi-dim subblocked with adjusted subblock size: outer loop step 1,
-// inner 3 unrolled copies. One sync cycle per subblock iteration.
+// inner 3 unrolled copies. One sync region per subblock iteration.
 // Stores hoisted after wait.
 // LOWER-NOT:    tensor.collapse_shape
 // LOWER:        scf.for %[[OUTER:.*]] = {{.*}} to {{.*}} step

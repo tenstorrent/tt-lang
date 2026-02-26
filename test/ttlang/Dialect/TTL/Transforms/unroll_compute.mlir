@@ -8,7 +8,7 @@
 
 // Purpose: 1x4 unary -- 4 tiles all fit in DST. Verify all 4 unrolled copies
 // have correct dst_idx (0-3), tile_offset (0-3), and no scf.for loops.
-// One sync cycle wraps all copies (acquire before, commit/wait/release after).
+// One sync region wraps all copies (acquire before, commit/wait/release after).
 // CHECK-LABEL: func.func @unroll_unary_1x4
 // CHECK-NOT:   scf.for
 // CHECK:       ttl.tile_regs_acquire
@@ -108,7 +108,7 @@ func.func @unroll_binary_1x4(
 
 // Purpose: 4x4 subblocked -- totalTiles=16, unroll_factor=8.
 // Subblock sizes [2,4], outer scf.for on dim 0 (step 2).
-// Inner body has 8 unrolled copies. One sync cycle per subblock iteration.
+// Inner body has 8 unrolled copies. One sync region per subblock iteration.
 // CHECK-LABEL: func.func @unroll_subblocked_4x4
 // CHECK:       scf.for %[[IV:.*]] =
 // CHECK:         ttl.tile_regs_acquire

@@ -931,7 +931,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       }
 
       //=== Compute and attach unroll_factor ===
-      // unroll_factor = how many tiles can be processed per DST sync cycle.
+      // unroll_factor = how many tiles can be processed per DST sync region.
       // dstPerIteration = DST registers used per single tile iteration.
       // unroll_factor = min(floor(capacity / dstPerIteration), totalTiles).
       if (!dstAssignment.empty()) {

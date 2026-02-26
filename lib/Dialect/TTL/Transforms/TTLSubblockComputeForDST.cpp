@@ -144,7 +144,7 @@ private:
     }
 
     // When unroll_factor >= total tiles, no outer loop is needed -- the compute
-    // op already fits in one DST sync cycle. Set strides so lower-to-loops
+    // op already fits in one DST sync region. Set strides so lower-to-loops
     // can annotate tile loops with correct CB linearization strides.
     if (unrollFactor >= totalTiles) {
       LLVM_DEBUG(llvm::dbgs()

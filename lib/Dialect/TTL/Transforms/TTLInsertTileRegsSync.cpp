@@ -17,19 +17,19 @@
 // Sync op placement depends on whether the compute is subblocked or not:
 //
 // 1. Subblocked computes (has ttl.full_linearization_strides):
-//    Sync ops go OUTSIDE the compute body. One sync cycle covers all tiles
+//    Sync ops go OUTSIDE the compute body. One sync region covers all tiles
 //    in the subblock. Lower-to-loops then unrolls the body into N tile copies
-//    that share the single sync cycle. Store hoisting later moves pack/store
+//    that share the single sync region. Store hoisting later moves pack/store
 //    ops after the wait barrier.
-//    DST lifecycle per subblock:
+//    DST sync region per subblock:
 //      acquire -> [N x compute] -> commit -> wait -> [N x pack] -> release
 //
 // 2. Non-subblocked computes (no ttl.full_linearization_strides):
 //    Sync ops go INSIDE the compute body (per-tile sync). This is the
 //    original behavior for computes that haven't been through the subblocking
 //    pass. Lower-to-loops creates tile loops, and each iteration has its own
-//    sync cycle.
-//    DST lifecycle per tile:
+//    sync region.
+//    DST sync region per tile:
 //      acquire -> [compute] -> commit -> wait -> [pack] -> release
 //
 //===----------------------------------------------------------------------===//
@@ -40,7 +40,6 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "llvm/ADT/TypeSwitch.h"
 
 #define DEBUG_TYPE "ttl-insert-tile-regs-sync"
 
@@ -58,15 +57,14 @@ struct TTLInsertTileRegsSyncPass
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
 
-    WalkResult result = funcOp.walk([&](ComputeOp computeOp) -> WalkResult {
-      Operation *computeOperation = computeOp.getOperation();
+    funcOp.walk([&](ComputeOp computeOp) {
       Location loc = computeOp.getLoc();
 
       // Find existing acquire preceding this compute. Stop at another compute
       // op since each compute has its own lifecycle ops.
       auto stopAtCompute = [](Operation *op) { return isa<ComputeOp>(op); };
       TileRegsAcquireOp existingAcquire =
-          findPrecedingOp<TileRegsAcquireOp>(computeOperation, stopAtCompute);
+          findPrecedingOp<TileRegsAcquireOp>(computeOp, stopAtCompute);
 
       OpBuilder builder(computeOp);
 
@@ -76,37 +74,74 @@ struct TTLInsertTileRegsSyncPass
       bool isSubblocked = computeOp->hasAttr(kFullLinStridesAttrName);
 
       if (isSubblocked) {
-        // Outside placement: one sync cycle covers all tiles in the subblock.
+        // Outside placement: one sync region covers all tiles in the subblock.
         // After lower-to-loops unrolls the body, all tile ops appear inside
         // the sync region (between acquire and release).
         if (!existingAcquire) {
-          builder.setInsertionPoint(computeOperation);
+          builder.setInsertionPoint(computeOp);
           builder.create<TileRegsAcquireOp>(loc);
         }
 
-        // Insert commit, wait, release after the compute op.
-        builder.setInsertionPointAfter(computeOperation);
-        builder.create<TileRegsCommitOp>(loc);
-        builder.create<TileRegsWaitOp>(loc);
-        builder.create<TileRegsReleaseOp>(loc);
+        // Scan for existing sync ops after this compute, stopping at the
+        // next compute op since each compute has its own sync lifecycle.
+        TileRegsCommitOp existingCommit = nullptr;
+        TileRegsWaitOp existingWait = nullptr;
+        TileRegsReleaseOp existingRelease = nullptr;
+        for (auto it = std::next(Block::iterator(computeOp)),
+                  end = computeOp->getBlock()->end();
+             it != end; ++it) {
+          if (isa<ComputeOp>(&*it)) {
+            break;
+          }
+          if (auto commit = dyn_cast<TileRegsCommitOp>(&*it)) {
+            existingCommit = commit;
+          } else if (auto wait = dyn_cast<TileRegsWaitOp>(&*it)) {
+            existingWait = wait;
+          } else if (auto release = dyn_cast<TileRegsReleaseOp>(&*it)) {
+            existingRelease = release;
+          }
+        }
+
+        // Insert commit, wait, release after the compute op if not present.
+        builder.setInsertionPointAfter(computeOp);
+        if (!existingCommit) {
+          builder.create<TileRegsCommitOp>(loc);
+        }
+        if (!existingWait) {
+          builder.create<TileRegsWaitOp>(loc);
+        }
+        if (!existingRelease) {
+          builder.create<TileRegsReleaseOp>(loc);
+        }
       } else {
-        // Inside placement: per-tile sync (original behavior).
+        // Inside placement: per-tile sync.
         Block &body = computeOp.getRegion().front();
-
-        if (!existingAcquire) {
-          builder.setInsertionPointToStart(&body);
-          builder.create<TileRegsAcquireOp>(loc);
-        }
         auto *terminator = body.getTerminator();
 
+        // Scan the body for existing sync and store ops.
         SmallVector<TileStoreOp> storeOps;
+        TileRegsAcquireOp acquireOp = nullptr;
         TileRegsCommitOp commitOp = nullptr;
         TileRegsWaitOp waitOp = nullptr;
+        TileRegsReleaseOp releaseOp = nullptr;
         for (Operation &op : body.without_terminator()) {
-          TypeSwitch<Operation *>(&op)
-              .Case<TileStoreOp>([&](auto store) { storeOps.push_back(store); })
-              .Case<TileRegsCommitOp>([&](auto commit) { commitOp = commit; })
-              .Case<TileRegsWaitOp>([&](auto wait) { waitOp = wait; });
+          if (auto store = dyn_cast<TileStoreOp>(&op)) {
+            storeOps.push_back(store);
+          } else if (auto acquire = dyn_cast<TileRegsAcquireOp>(&op)) {
+            acquireOp = acquire;
+          } else if (auto commit = dyn_cast<TileRegsCommitOp>(&op)) {
+            commitOp = commit;
+          } else if (auto wait = dyn_cast<TileRegsWaitOp>(&op)) {
+            waitOp = wait;
+          } else if (auto release = dyn_cast<TileRegsReleaseOp>(&op)) {
+            releaseOp = release;
+          }
+        }
+
+        // Acquire: at start of compute body.
+        if (!existingAcquire && !acquireOp) {
+          builder.setInsertionPointToStart(&body);
+          builder.create<TileRegsAcquireOp>(loc);
         }
 
         // Insert commit + wait before the first tile_store.
@@ -127,16 +162,12 @@ struct TTLInsertTileRegsSyncPass
         }
 
         // Release: at end of compute body (before yield).
-        builder.setInsertionPoint(terminator);
-        builder.create<TileRegsReleaseOp>(loc);
+        if (!releaseOp) {
+          builder.setInsertionPoint(terminator);
+          builder.create<TileRegsReleaseOp>(loc);
+        }
       }
-
-      return WalkResult::advance();
     });
-
-    if (result.wasInterrupted()) {
-      signalPassFailure();
-    }
   }
 };
 
