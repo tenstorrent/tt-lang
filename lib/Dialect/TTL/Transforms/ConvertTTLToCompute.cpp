@@ -97,7 +97,7 @@ static FailureOr<Value> findOrAllocateOutputCB(Operation *op) {
     }
   }
   return op->emitError("no unused bind_cb found for output; ensure a "
-                        "ttl.bind_cb exists for the output tensor");
+                       "ttl.bind_cb exists for the output tensor");
 }
 
 //===----------------------------------------------------------------------===//

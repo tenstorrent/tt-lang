@@ -62,6 +62,12 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
     return getAttachedCB(slice.getSource());
   }
 
+  // Trace through tensor.extract (scalar element extraction, e.g. bcast
+  // output).
+  if (auto extract = tensor.getDefiningOp<mlir::tensor::ExtractOp>()) {
+    return getAttachedCB(extract.getTensor());
+  }
+
   if (auto attach = tensor.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
     return attach.getCb();
   }

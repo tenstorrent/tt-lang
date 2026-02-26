@@ -43,49 +43,22 @@ struct TTLAnnotateCBAssociationsPass
       // block argument with its cb_index.
       for (auto [idx, input] : llvm::enumerate(compute.getInputs())) {
         Value cb = getAttachedCB(input);
-        if (!cb) {
-          // Emit a warning if no CB is found. This may cause downstream
-          // lowering failures if the input is used in copy_tile operations.
-          // The compute verifier should catch this, but we warn here for
-          // better diagnostics.
-          auto diag = compute.emitWarning()
-                      << "input " << idx
-                      << " does not have an attached circular buffer";
-          diag.attachNote(input.getLoc()) << "input defined here";
-          diag.attachNote(compute.getLoc())
-              << "to fix: add 'ttl.attach_cb' or 'ttl.cb_wait' before this "
-                 "compute operation, e.g.:\n"
-              << "  %cb = ttl.bind_cb {cb_index = N, ...}\n"
-              << "  %attached = ttl.attach_cb <input>, %cb\n"
-              << "  or\n"
-              << "  %view = ttl.cb_wait %cb, <num_pages>";
+        // ComputeOp verifier rejects inputs without attached CBs, so this
+        // should never be null after verification.
+        assert(cb && "ComputeOp input must have attached CB (verifier bug?)");
+
+        // Extract cb_index from the CB. If the CB is not from bind_cb
+        // (e.g., a function argument), skip annotation — the cb_index
+        // is not locally available.
+        auto bindOp = cb.getDefiningOp<BindCBOp>();
+        if (!bindOp) {
           continue;
         }
 
-        // Extract cb_index from the CB.
-        IntegerAttr cbIndexAttr;
-        if (auto bindOp = cb.getDefiningOp<BindCBOp>()) {
-          cbIndexAttr = bindOp.getCbIndexAttr();
-        } else {
-          // CB is not from bind_cb (shouldn't happen in well-formed IR).
-          auto diag = compute.emitWarning()
-                      << "input " << idx
-                      << " has a circular buffer that is not from ttl.bind_cb";
-          diag.attachNote(cb.getLoc()) << "circular buffer defined here";
-          diag.attachNote(compute.getLoc())
-              << "all circular buffers must be created with ttl.bind_cb";
-          continue;
-        }
-
-        // Validate cb_index is in valid range [0, 31].
-        int64_t cbIndex = cbIndexAttr.getInt();
-        if (cbIndex < 0 || cbIndex >= kMaxCircularBuffers) {
-          compute.emitError("input ")
-              << idx << " has invalid cb_index " << cbIndex
-              << " (must be in range [0, " << (kMaxCircularBuffers - 1) << "])";
-          signalPassFailure();
-          return;
-        }
+        // BindCBOp verifier rejects cb_index outside [0, 31].
+        int64_t cbIndex = bindOp.getCbIndexAttr().getInt();
+        assert(cbIndex >= 0 && cbIndex < kMaxCircularBuffers &&
+               "cb_index out of range (BindCBOp verifier bug?)");
 
         // Store the mapping on the compute op itself using an attribute.
         setCBIndexAttr(compute, idx, cbIndex);
@@ -96,18 +69,28 @@ struct TTLAnnotateCBAssociationsPass
     // conversion pass can look it up without SSA tracing.
     func.walk([&](TileBcastOp bcast) {
       Value output = bcast.getOutput();
-      // Trace through tensor.extract to the source tensor.
-      if (auto extract = output.getDefiningOp<mlir::tensor::ExtractOp>()) {
-        output = extract.getTensor();
-      }
+      // getAttachedCB traces through tensor.extract automatically.
       Value cb = getAttachedCB(output);
       if (!cb) {
+        bcast.emitError("output does not have an attached circular buffer");
+        signalPassFailure();
         return;
       }
       auto bindOp = cb.getDefiningOp<BindCBOp>();
       if (!bindOp) {
+        auto diag = bcast.emitError()
+                    << "output circular buffer is not from ttl.bind_cb; "
+                       "cb_index required for broadcast lowering";
+        diag.attachNote(cb.getLoc()) << "circular buffer defined here";
+        signalPassFailure();
         return;
       }
+
+      // BindCBOp verifier rejects cb_index outside [0, 31].
+      int64_t cbIndex = bindOp.getCbIndexAttr().getInt();
+      assert(cbIndex >= 0 && cbIndex < kMaxCircularBuffers &&
+             "cb_index out of range (BindCBOp verifier bug?)");
+
       bcast->setAttr(kBcastOutputCBIndexAttrName, bindOp.getCbIndexAttr());
     });
   }
