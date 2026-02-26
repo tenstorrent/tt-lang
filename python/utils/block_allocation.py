@@ -198,8 +198,8 @@ def split_work_to_cores(
         if len(simplified_grid_size) == 1:
             work_per_core = units_to_divide // total_cores
             remaining_work = units_to_divide % total_cores
-            end_coord_1 = ((0,) * (len(grid_size) - 1)) + (remaining_work,)
-            start_coord_2 = ((0,) * (len(grid_size) - 1)) + (remaining_work + 1,)
+            end_coord_1 = ((0,) * (len(grid_size) - 1)) + (remaining_work - 1,)
+            start_coord_2 = ((0,) * (len(grid_size) - 1)) + (remaining_work,)
             end_coord_2 = ((0,) * (len(grid_size) - 1)) + (total_cores - 1,)
             return (
                 total_cores,
