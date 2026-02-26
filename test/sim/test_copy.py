@@ -8,8 +8,6 @@ Tests the copy transfer functionality between tensors and Blocks,
 including error handling and edge cases.
 """
 
-from typing import List
-
 import pytest
 from test_utils import (
     make_full_tile,
@@ -21,7 +19,7 @@ from test_utils import (
 
 from python.sim.blockstate import BlockAcquisition, ThreadType, set_current_thread_type
 from python.sim.dfb import Block, DataflowBuffer
-from python.sim.dfbstate import DFBSlot
+from python.sim.ttnnsim import Tensor
 from python.sim.copy import CopyTransaction, copy
 from python.sim.pipe import Pipe
 
@@ -51,16 +49,14 @@ class TestCopyTransaction:
             CopyTransaction(tensor1, tensor2)
 
         # Block → Block not supported
-        tiles1: List[DFBSlot] = [None, None]
-        tiles2: List[DFBSlot] = [None, None]
         block1 = Block(
-            tiles1,
+            make_rand_tensor(64, 32),
             shape=(2, 1),
             acquisition=BlockAcquisition.RESERVE,
             thread_type=ThreadType.DM,
         )
         block2 = Block(
-            tiles2,
+            make_rand_tensor(64, 32),
             shape=(2, 1),
             acquisition=BlockAcquisition.RESERVE,
             thread_type=ThreadType.DM,
@@ -75,20 +71,17 @@ class TestTensorToBlockCopy:
     """Test copy operations from tensor to Block."""
 
     def test_transfer_mismatched_tile_count(self) -> None:
-        """Test that mismatched tile count raises ValueError."""
-        # 3 tiles in tensor but block expects 2 tiles
-        source = make_rand_tensor(96, 32)  # 3x1 tiles
-        tiles: List[DFBSlot] = [None, None]
+        """Test that mismatched element shape raises ValueError."""
+        # Tensor is 3x1 tiles (96x32) but block expects 2x1 tiles (64x32)
+        source = make_rand_tensor(96, 32)
         block = Block(
-            tiles,
+            make_rand_tensor(64, 32),
             shape=(2, 1),
             acquisition=BlockAcquisition.RESERVE,
             thread_type=ThreadType.DM,
-        )  # Expects 2x1 tiles
+        )
 
-        with pytest.raises(
-            ValueError, match="Tensor shape .* does not match Block shape"
-        ):
+        with pytest.raises(ValueError, match="does not match Block shape"):
             copy(source, block)
 
 
@@ -97,11 +90,8 @@ class TestBlockToTensorCopy:
 
     def test_transfer_shape_mismatch(self) -> None:
         """Test that shape mismatch between Block and tensor raises ValueError."""
-        tile0 = make_ones_tile()
-        tile1 = make_zeros_tile()
-        tiles: List[DFBSlot] = [tile0, tile1]
         block = Block(
-            tiles,
+            make_rand_tensor(64, 32),
             shape=(2, 1),
             acquisition=BlockAcquisition.WAIT,
             thread_type=ThreadType.DM,
@@ -110,9 +100,7 @@ class TestBlockToTensorCopy:
         # Wrong destination shape
         destination = make_rand_tensor(96, 32)  # 3x1 tiles, but Block is 2x1
 
-        with pytest.raises(
-            ValueError, match="Tensor shape .* does not match Block shape"
-        ):
+        with pytest.raises(ValueError, match="does not match Tensor shape"):
             copy(block, destination)
 
 
@@ -152,9 +140,8 @@ class TestCopySourceLocking:
     def test_cannot_write_to_block_source_before_wait(self) -> None:
         """Test that writing to Block source before wait() raises RuntimeError."""
         # Create source block with data
-        tiles: List[DFBSlot] = [make_ones_tile(), make_zeros_tile()]
         source_block = Block(
-            tiles,
+            make_rand_tensor(64, 32),
             shape=(2, 1),
             acquisition=BlockAcquisition.WAIT,
             thread_type=ThreadType.DM,
@@ -172,15 +159,13 @@ class TestCopySourceLocking:
             RuntimeError,
             match="Cannot write to Block.*has no access.*NAR state",
         ):
-            source_block.store([make_zeros_tile(), make_zeros_tile()])
+            source_block.store(Block.from_tensor(make_rand_tensor(64, 32)))
 
         # After wait(), the block still doesn't support store() because it's a wait() block
         tx.wait()
         # wait() blocks cannot use store() per state machine - they expect STORE_SRC
         with pytest.raises(RuntimeError, match="Cannot perform store.*Expected one of"):
-            source_block.store(
-                [make_zeros_tile(), make_zeros_tile()]
-            )  # Should still fail
+            source_block.store(Block.from_tensor(make_rand_tensor(64, 32)))
 
     # Removed: test_can_read_from_block_source_before_wait - covered by TestCopyWithStateMachine
 
@@ -193,10 +178,9 @@ class TestCopyDestinationLocking:
         # Create source tensor (non-Block, so no state changes)
         source_tensor = make_rand_tensor(64, 32)
 
-        # Create destination block (needs to have slots initialized for read to work)
-        tiles: List[DFBSlot] = [make_ones_tile(), make_zeros_tile()]
+        # Create destination block
         dest_block = Block(
-            tiles,
+            make_rand_tensor(64, 32),
             shape=(2, 1),
             acquisition=BlockAcquisition.RESERVE,
             thread_type=ThreadType.DM,
@@ -221,9 +205,8 @@ class TestCopyDestinationLocking:
         source_tensor = make_rand_tensor(64, 32)
 
         # Create destination block
-        tiles: List[DFBSlot] = [None, None]
         dest_block = Block(
-            tiles,
+            make_rand_tensor(64, 32),
             shape=(2, 1),
             acquisition=BlockAcquisition.RESERVE,
             thread_type=ThreadType.DM,
@@ -237,7 +220,7 @@ class TestCopyDestinationLocking:
             RuntimeError,
             match="Cannot write to Block.*copy destination.*copy lock error.*NAW",
         ):
-            dest_block.store([make_ones_tile(), make_ones_tile()])
+            dest_block.store(Block.from_tensor(make_rand_tensor(64, 32)))
 
         # After wait(), block expects PUSH (not store) per state machine
         tx.wait()
@@ -246,7 +229,7 @@ class TestCopyDestinationLocking:
             RuntimeError,
             match="Cannot perform store.*Expected one of",
         ):
-            dest_block.store([make_ones_tile(), make_ones_tile()])
+            dest_block.store(Block.from_tensor(make_rand_tensor(64, 32)))
 
 
 class TestMultipleCopyOperations:
@@ -255,9 +238,8 @@ class TestMultipleCopyOperations:
     def test_cannot_use_same_block_as_source_and_destination(self) -> None:
         """Test that a block cannot be both source and destination simultaneously."""
         # Create block
-        tiles: List[DFBSlot] = [make_ones_tile(), make_zeros_tile()]
         block = Block(
-            tiles,
+            make_rand_tensor(64, 32),
             shape=(2, 1),
             acquisition=BlockAcquisition.WAIT,
             thread_type=ThreadType.DM,

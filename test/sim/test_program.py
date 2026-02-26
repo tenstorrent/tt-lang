@@ -19,6 +19,7 @@ import torch.testing as tt_testing
 from test_utils import make_ones_tensor, make_zeros_tensor
 
 from python.sim import TILE_SHAPE, copy, ttl, ttnn
+from python.sim.dfb import Block
 from python.sim.decorators import _make_cell, rebind_func_with_ctx  # type: ignore[reportPrivateUsage]
 from python.sim.program import Program
 
@@ -206,7 +207,9 @@ class TestMultiCore:
                 core_y, core_x = cast(tuple[int, int], ttl.core(dims=2))
                 out_block = out_dfb.reserve()
                 # Each core writes its coordinates
-                out_block.store([make_ones_tensor(32, 32) * (core_y * 10 + core_x)])
+                out_block.store(
+                    Block.from_tensor(make_ones_tensor(32, 32) * (core_y * 10 + core_x))
+                )
                 out_block.push()
 
             @ttl.datamovement()
@@ -256,7 +259,9 @@ class TestContextIsolation:
                 core_id = cast(int, ttl.core(dims=1))
                 # Each core reserves/pushes independently
                 block = dfb.reserve()
-                block.store([make_ones_tensor(32, 32) * (core_id + 100)])
+                block.store(
+                    Block.from_tensor(make_ones_tensor(32, 32) * (core_id + 100))
+                )
                 block.push()
 
             @ttl.datamovement()
@@ -302,7 +307,7 @@ class TestContextIsolation:
                 # Read from shared tensor and store (not copy)
                 # Add core_id to distinguish which core wrote
                 data = shared[0:1, 0:1] + core_id
-                block.store([data])
+                block.store(Block.from_tensor(data))
                 block.push()
 
             @ttl.datamovement()

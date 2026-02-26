@@ -193,36 +193,36 @@ def _calculate_block_tiles(block_data: "list[Tensor]") -> int:
     return sum(_calculate_tensor_tiles(tensor) for tensor in block_data)
 
 
-def record_pipe_write(pipe: AnyPipe, block_data: "list[Tensor]") -> None:
+def record_pipe_write(pipe: AnyPipe, block_data: "Tensor") -> None:
     """Record a write (send) operation on a pipe.
 
     Args:
         pipe: The pipe being written to
-        block_data: List of tensors being sent through the pipe
+        block_data: Tensor being sent through the pipe
     """
     if not _stats_enabled:
         return
 
     name = _get_pipe_name(pipe)
-    num_tiles = _calculate_block_tiles(block_data)
+    num_tiles = _calculate_tensor_tiles(block_data)
 
     with _stats_lock:
         _pipe_stats_by_name[name]["writes"] += 1
         _pipe_stats_by_name[name]["tiles_written"] += num_tiles
 
 
-def record_pipe_read(pipe: AnyPipe, block_data: "list[Tensor]") -> None:
+def record_pipe_read(pipe: AnyPipe, block_data: "Tensor") -> None:
     """Record a read (receive) operation on a pipe.
 
     Args:
         pipe: The pipe being read from
-        block_data: List of tensors being received from the pipe
+        block_data: Tensor being received from the pipe
     """
     if not _stats_enabled:
         return
 
     name = _get_pipe_name(pipe)
-    num_tiles = _calculate_block_tiles(block_data)
+    num_tiles = _calculate_tensor_tiles(block_data)
 
     with _stats_lock:
         _pipe_stats_by_name[name]["reads"] += 1

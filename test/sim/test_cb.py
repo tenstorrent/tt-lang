@@ -23,6 +23,7 @@ from test_utils import (
 )
 
 from python.sim import TILE_SHAPE, copy, ttnn
+from python.sim.ttnnsim import Tensor
 from python.sim.constants import MAX_TENSOR_DIMS
 from python.sim.dfb import (
     Block,
@@ -34,8 +35,6 @@ from python.sim.blockstate import (
     ThreadType,
     BlockAcquisition,
 )
-from python.sim.dfbstate import DFBSlot
-from python.sim.ttnnsim import Tensor
 
 
 @pytest.fixture(autouse=True)
@@ -78,7 +77,7 @@ def test_dataflow_buffer_basic() -> None:
     assert len(write_view) == 1
 
     test_data = make_ones_tile()
-    write_view.store([test_data])
+    write_view.store(Block.from_tensor(test_data))
     write_view.push()
 
     read_view = dfb.wait()
@@ -110,13 +109,15 @@ def test_dataflow_buffer_multi_tile() -> None:
     write_view = dfb.reserve()
     assert len(write_view) == 2  # Should have space for 2 tiles
 
-    # Fill with test data
-    tiles = []
-    for i in range(2):
-        tile = ttnn.rand(TILE_SHAPE)
-        tile.to_torch().fill_(float(i + 1))
-        tiles.append(tile)
-    write_view.store(tiles)
+    # Fill with test data: assemble two (32, 32) tiles into one (64, 32) tensor
+    import torch as _torch
+
+    tile0 = ttnn.rand(TILE_SHAPE)
+    tile0.to_torch().fill_(1.0)
+    tile1 = ttnn.rand(TILE_SHAPE)
+    tile1.to_torch().fill_(2.0)
+    assembled = ttnn.Tensor(_torch.cat([tile0.to_torch(), tile1.to_torch()], dim=0))
+    write_view.store(Block.from_tensor(assembled))
 
     write_view.push()
 
@@ -405,12 +406,15 @@ def test_reserve_store_push_pop_workflow() -> None:
     dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=2)
 
     with dfb.reserve() as write_block:
-        # Create test data
-        data = [
-            ttnn.Tensor(torch.full(TILE_SHAPE, 5.0)),
-            ttnn.Tensor(torch.full(TILE_SHAPE, 10.0)),
-        ]
-        write_block.store(data)
+        write_block.store(
+            Block.from_list(
+                [
+                    ttnn.Tensor(torch.full(TILE_SHAPE, 5.0)),
+                    ttnn.Tensor(torch.full(TILE_SHAPE, 10.0)),
+                ],
+                shape=(2, 1),
+            )
+        )
 
     out_dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=4)
     with dfb.wait() as read_block:
@@ -422,11 +426,15 @@ def test_reserve_store_push_pop_workflow() -> None:
     # Test multiple iterations
     for i in range(3):
         with dfb.reserve() as write_block:
-            data = [
-                ttnn.Tensor(torch.full(TILE_SHAPE, float(i * 2))),
-                ttnn.Tensor(torch.full(TILE_SHAPE, float(i * 2 + 1))),
-            ]
-            write_block.store(data)
+            write_block.store(
+                Block.from_list(
+                    [
+                        ttnn.Tensor(torch.full(TILE_SHAPE, float(i * 2))),
+                        ttnn.Tensor(torch.full(TILE_SHAPE, float(i * 2 + 1))),
+                    ],
+                    shape=(2, 1),
+                )
+            )
 
         with dfb.wait() as read_block:
             # Use waited block as STORE_SRC before context exit
@@ -457,7 +465,7 @@ def test_make_dataflow_buffer_like_basic() -> None:
 
     # DFBs are always initialized; the full reserve/store/push cycle should succeed.
     blk = x_dfb.reserve()
-    blk.store([make_zeros_tile()])
+    blk.store(Block.from_tensor(make_zeros_tile()))
     blk.push()
 
     print("make_dataflow_buffer_like basic test passed!")
@@ -543,7 +551,7 @@ def test_can_wait_and_can_reserve() -> None:
 
     # Reserve and push one tile
     block = dfb.reserve()
-    block.store([make_ones_tile()])
+    block.store(Block.from_tensor(make_ones_tile()))
     block.push()
 
     # Now we have 1 tile visible, 1 tile free
@@ -554,7 +562,7 @@ def test_can_wait_and_can_reserve() -> None:
     block = dfb.reserve()
     tile = ttnn.rand(TILE_SHAPE)
     tile.to_torch().fill_(2.0)
-    block.store([tile])
+    block.store(Block.from_tensor(tile))
     block.push()
 
     # Now we have 2 tiles visible, 0 tiles free
@@ -603,12 +611,10 @@ def test_can_methods_multi_tile() -> None:
 
     # Reserve and push 2 tiles
     block = dfb.reserve()
-    tiles = []
-    for i in range(2):
-        tile = ttnn.rand(TILE_SHAPE)
-        tile.to_torch().fill_(float(i + 1))
-        tiles.append(tile)
-    block.store(tiles)
+    tile0, tile1 = ttnn.rand(TILE_SHAPE), ttnn.rand(TILE_SHAPE)
+    tile0.to_torch().fill_(1.0)
+    tile1.to_torch().fill_(2.0)
+    block.store(Block.from_list([tile0, tile1], shape=(2, 1)))
     block.push()
 
     # 2 visible, 4 free
@@ -617,12 +623,10 @@ def test_can_methods_multi_tile() -> None:
 
     # Reserve and push 2 more tiles
     block = dfb.reserve()
-    tiles = []
-    for i in range(2):
-        tile = ttnn.rand(TILE_SHAPE)
-        tile.to_torch().fill_(float(i + 3))
-        tiles.append(tile)
-    block.store(tiles)
+    tile0, tile1 = ttnn.rand(TILE_SHAPE), ttnn.rand(TILE_SHAPE)
+    tile0.to_torch().fill_(3.0)
+    tile1.to_torch().fill_(4.0)
+    block.store(Block.from_list([tile0, tile1], shape=(2, 1)))
     block.push()
 
     # 4 visible, 2 free
@@ -631,12 +635,10 @@ def test_can_methods_multi_tile() -> None:
 
     # Reserve and push 2 more tiles (buffer full)
     block = dfb.reserve()
-    tiles = []
-    for i in range(2):
-        tile = ttnn.rand(TILE_SHAPE)
-        tile.to_torch().fill_(float(i + 5))
-        tiles.append(tile)
-    block.store(tiles)
+    tile0, tile1 = ttnn.rand(TILE_SHAPE), ttnn.rand(TILE_SHAPE)
+    tile0.to_torch().fill_(5.0)
+    tile1.to_torch().fill_(6.0)
+    block.store(Block.from_list([tile0, tile1], shape=(2, 1)))
     block.push()
 
     # 6 visible, 0 free
@@ -668,7 +670,7 @@ def test_context_manager_syntax() -> None:
     # Test reserve with context manager
     test_data = make_ones_tile()
     with dfb.reserve() as write_view:
-        write_view.store([test_data])
+        write_view.store(Block.from_tensor(test_data))
         # push() is automatically called on exit
 
     # Test wait with context manager
@@ -679,7 +681,7 @@ def test_context_manager_syntax() -> None:
         out_block.push()
 
     write_view2 = dfb.reserve()
-    write_view2.store([make_zeros_tile()])
+    write_view2.store(Block.from_tensor(make_zeros_tile()))
     write_view2.push()
 
     read_view2 = dfb.wait()
@@ -691,11 +693,11 @@ def test_context_manager_syntax() -> None:
     dfb.reset()
 
     with dfb.reserve() as w1:
-        w1.store([make_ones_tile()])
+        w1.store(Block.from_tensor(make_ones_tile()))
 
     dfb2 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
     with dfb2.reserve() as w2:
-        w2.store([make_zeros_tile()])
+        w2.store(Block.from_tensor(make_zeros_tile()))
 
     out_dfb3 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
     out_dfb4 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
@@ -726,25 +728,31 @@ def test_store_accumulate_first_assigns() -> None:
     dfb = DataflowBuffer(element=element, shape=(3, 1), buffer_factor=2)
 
     with dfb.reserve() as block:
-        # Create test values
         import torch
         from python.sim import ttnn, TILE_SHAPE
 
-        values1 = [
-            ttnn.Tensor(torch.full(TILE_SHAPE, 5.0)),
-            ttnn.Tensor(torch.full(TILE_SHAPE, 10.0)),
-            ttnn.Tensor(torch.full(TILE_SHAPE, 15.0)),
-        ]
+        values1 = Block.from_list(
+            [
+                ttnn.Tensor(torch.full(TILE_SHAPE, 5.0)),
+                ttnn.Tensor(torch.full(TILE_SHAPE, 10.0)),
+                ttnn.Tensor(torch.full(TILE_SHAPE, 15.0)),
+            ],
+            shape=(3, 1),
+        )
 
         # First store(acc=True) - should assign (y = x), not accumulate (y += x)
         block.store(values1, acc=True)
 
+        values2 = Block.from_list(
+            [
+                ttnn.Tensor(torch.full(TILE_SHAPE, 3.0)),
+                ttnn.Tensor(torch.full(TILE_SHAPE, 6.0)),
+                ttnn.Tensor(torch.full(TILE_SHAPE, 9.0)),
+            ],
+            shape=(3, 1),
+        )
+
         # Second store(acc=True) - should accumulate (y += x)
-        values2 = [
-            ttnn.Tensor(torch.full(TILE_SHAPE, 3.0)),
-            ttnn.Tensor(torch.full(TILE_SHAPE, 6.0)),
-            ttnn.Tensor(torch.full(TILE_SHAPE, 9.0)),
-        ]
         block.store(values2, acc=True)
 
         # Verify results using to_list()
@@ -766,11 +774,15 @@ def test_store_accumulate_vs_regular_store() -> None:
 
     # Test 1: Regular store() followed by push (cannot use store(acc=True) after)
     with dfb.reserve() as block1:
-        values = [
-            ttnn.Tensor(torch.full(TILE_SHAPE, 7.0)),
-            ttnn.Tensor(torch.full(TILE_SHAPE, 14.0)),
-        ]
-        block1.store(values)  # Regular store
+        block1.store(
+            Block.from_list(
+                [
+                    ttnn.Tensor(torch.full(TILE_SHAPE, 7.0)),
+                    ttnn.Tensor(torch.full(TILE_SHAPE, 14.0)),
+                ],
+                shape=(2, 1),
+            )
+        )  # Regular store
 
     out_dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=2)
     with dfb.wait() as block_read:
@@ -781,17 +793,27 @@ def test_store_accumulate_vs_regular_store() -> None:
 
     # Test 2: store(acc=True) path - can be called multiple times
     with dfb.reserve() as block2:
-        values1 = [
-            ttnn.Tensor(torch.full(TILE_SHAPE, 2.0)),
-            ttnn.Tensor(torch.full(TILE_SHAPE, 4.0)),
-        ]
-        block2.store(values1, acc=True)  # First: assigns
+        block2.store(
+            Block.from_list(
+                [
+                    ttnn.Tensor(torch.full(TILE_SHAPE, 2.0)),
+                    ttnn.Tensor(torch.full(TILE_SHAPE, 4.0)),
+                ],
+                shape=(2, 1),
+            ),
+            acc=True,
+        )  # First: assigns
 
-        values2 = [
-            ttnn.Tensor(torch.full(TILE_SHAPE, 3.0)),
-            ttnn.Tensor(torch.full(TILE_SHAPE, 6.0)),
-        ]
-        block2.store(values2, acc=True)  # Second: accumulates
+        block2.store(
+            Block.from_list(
+                [
+                    ttnn.Tensor(torch.full(TILE_SHAPE, 3.0)),
+                    ttnn.Tensor(torch.full(TILE_SHAPE, 6.0)),
+                ],
+                shape=(2, 1),
+            ),
+            acc=True,
+        )  # Second: accumulates
 
         # Verify accumulation worked: 2+3=5, 4+6=10
         result = block2.to_list()
@@ -817,8 +839,7 @@ def test_block_state_machine_restrictions() -> None:
         _ = block[0]
 
     # Store makes it RO (for regular store) or RW (for acc store)
-    values = [ttnn.Tensor(torch.full(TILE_SHAPE, 5.0))]
-    block.store(values, acc=True)
+    block.store(Block.from_tensor(ttnn.Tensor(torch.full(TILE_SHAPE, 5.0))), acc=True)
 
     block.push()
 
@@ -827,7 +848,7 @@ def test_block_state_machine_restrictions() -> None:
 
     # Cannot write - wait() blocks expect STORE_SRC, not STORE
     with pytest.raises(RuntimeError, match="Cannot perform store.*Expected one of"):
-        read_block.store([ttnn.Tensor(torch.full(TILE_SHAPE, 10.0))])
+        read_block.store(Block.from_tensor(ttnn.Tensor(torch.full(TILE_SHAPE, 10.0))))
 
     # Use waited block as STORE_SRC before pop
     out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
@@ -849,8 +870,12 @@ def test_copy_sets_block_to_na_state() -> None:
 
     try:
         # Create a block manually in DM thread context
-        tiles: List[DFBSlot] = [None, None]
-        block = Block(tiles, (2, 1), BlockAcquisition.RESERVE, ThreadType.DM)
+        block = Block(
+            ttnn.Tensor(torch.zeros((64, 32))),
+            (2, 1),
+            BlockAcquisition.RESERVE,
+            ThreadType.DM,
+        )
 
         # Create source tensor
         source_tensor = ttnn.Tensor(torch.ones((64, 32)))
@@ -866,15 +891,7 @@ def test_copy_sets_block_to_na_state() -> None:
         with pytest.raises(
             RuntimeError, match="Cannot write to Block.*copy lock error.*NAW"
         ):
-            from python.sim import TILE_SHAPE
-
-            # Need 2 items for block with span length 2
-            block.store(
-                [
-                    ttnn.Tensor(torch.full(TILE_SHAPE, 5.0)),
-                    ttnn.Tensor(torch.full(TILE_SHAPE, 6.0)),
-                ]
-            )
+            block.store(Block.from_tensor(ttnn.Tensor(torch.ones((64, 32)))))
 
         # After tx.wait(), block becomes RW (can do more operations)
         tx.wait()
@@ -954,7 +971,7 @@ def test_dataflow_buffer_basic_flow(configured_dfb8: DataflowBuffer) -> None:
     test_tensors = [make_full_tensor(32, 32, i + 1.0) for i in range(4)]
     for t in test_tensors:
         blk = in_dfb.reserve()
-        blk.store([t])
+        blk.store(Block.from_tensor(t))
         blk.push()
 
     stats = in_dfb.stats()
@@ -986,7 +1003,7 @@ def test_dataflow_buffer_basic_flow(configured_dfb8: DataflowBuffer) -> None:
     test_tensors2 = [make_full_tensor(32, 32, float(i)) for i in range(8)]
     for t in test_tensors2:
         blk = in_dfb.reserve()
-        blk.store([t])
+        blk.store(Block.from_tensor(t))
         blk.push()
 
     stats = in_dfb.stats()
@@ -1020,7 +1037,7 @@ def test_dfb_pages_nonblocking(configured_dfb8: DataflowBuffer) -> None:
     assert dfb.stats().free == 7
 
     # After push: reserved becomes visible.
-    blk.store([make_full_tensor(32, 32, 1.0)])
+    blk.store(Block.from_tensor(make_full_tensor(32, 32, 1.0)))
     blk.push()
     assert dfb.stats().visible == 1
     assert dfb.stats().reserved == 0
@@ -1073,8 +1090,12 @@ def test_heterogeneous_dfbs_independent() -> None:
         dfb2 = DataflowBuffer(element=element, shape=(2, 2), buffer_factor=2)
 
         write1 = dfb1.reserve()
-        test_tensors_1 = [make_full_tensor(32, 32, i + 1.0) for i in range(len(write1))]
-        write1.store(test_tensors_1)
+        write1.store(
+            Block.from_list(
+                [make_full_tensor(32, 32, i + 1.0) for i in range(len(write1))],
+                shape=(2, 2),
+            )
+        )
         write1.push()
 
         read1 = dfb1.wait()
@@ -1084,10 +1105,12 @@ def test_heterogeneous_dfbs_independent() -> None:
         write1_2.push()
 
         write2 = dfb2.reserve()
-        test_tensors_2 = [
-            make_full_tensor(32, 32, i + 10.0) for i in range(len(write2))
-        ]
-        write2.store(test_tensors_2)
+        write2.store(
+            Block.from_list(
+                [make_full_tensor(32, 32, i + 10.0) for i in range(len(write2))],
+                shape=(2, 2),
+            )
+        )
         write2.push()
 
         read2 = dfb2.wait()
@@ -1110,11 +1133,11 @@ def test_two_dfbs_independent_state() -> None:
         dfb2 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
 
         write1 = dfb1.reserve()
-        write1.store([make_full_tensor(32, 32, 42.0)])
+        write1.store(Block.from_tensor(make_full_tensor(32, 32, 42.0)))
         write1.push()
 
         write2 = dfb2.reserve()
-        write2.store([make_full_tensor(32, 32, 0.0)])
+        write2.store(Block.from_tensor(make_full_tensor(32, 32, 0.0)))
         write2.push()
 
         read1 = dfb1.wait()

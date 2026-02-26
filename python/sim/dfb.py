@@ -20,9 +20,7 @@ from typing import (
     List,
     NamedTuple,
     Optional,
-    Sequence,
     Union,
-    cast,
 )
 
 import torch
@@ -37,12 +35,29 @@ from .blockstate import (
     STATE_TRANSITIONS,
     get_current_thread_type,
 )
-from .dfbstate import DFBSlot, DFBState
+from .dfbstate import DFBState
 from .constants import MAX_TENSOR_DIMS, TILE_SHAPE
 from .errors import DFBContractError
 from .stats import record_dfb_reserve, record_dfb_wait
 from .ttnnsim import Tensor
 from .typedefs import Index, Shape, Size
+
+
+def tile_count_from_tensor(t: Tensor) -> int:
+    """Return the number of tiles a Tensor represents.
+
+    The last two element dimensions are divided by TILE_SHAPE (treating H==1 or
+    W==1 as degenerate single-tile dimensions).  Leading dimensions are batch
+    dimensions each contributing independently.
+    """
+    s = t.shape
+    if len(s) < 2:
+        raise ValueError(f"Tensor must have at least 2 dimensions, got {len(s)}")
+    H, W = s[-2], s[-1]
+    TM = 1 if H == 1 else H // TILE_SHAPE[0]
+    TK = 1 if W == 1 else W // TILE_SHAPE[1]
+    batch = s[:-2]
+    return math.prod((*batch, TM, TK))
 
 
 class Block:
@@ -68,6 +83,8 @@ class Block:
         "_is_temporary",
         "_source_blocks",  # Track wait() blocks that contributed to this temporary block
         "dfb",  # Reference to DataflowBuffer for context manager cleanup
+        "dfb_state",  # DFBState reference for updating ring-buffer slot on copy_as_dest
+        "dfb_slot_idx",  # Index of this block's slot in the ring buffer
     )
 
     # TODO: We can't do @validate_call here. There reason is that @validate_call actually
@@ -77,18 +94,20 @@ class Block:
     #       perhaps a good reason to look for other frameworks that don't do that! (beartype?)
     def __init__(
         self,
-        tiles: List[DFBSlot],
+        tensor: Tensor,
         shape: Shape,
         acquisition: BlockAcquisition,
         thread_type: ThreadType,
         is_temporary: bool = False,
         dfb: Optional["DataflowBuffer"] = None,
     ):
-        self._buf = tiles
+        self._buf = tensor
         self._shape = shape
         self._is_temporary = is_temporary
         self._source_blocks: List["Block"] = []  # Track source wait() blocks
         self.dfb = dfb  # Reference to DataflowBuffer for context manager support
+        self.dfb_state: Optional[DFBState] = None
+        self.dfb_slot_idx: int = -1
 
         # State machine variables
         self._acquisition: BlockAcquisition = acquisition
@@ -176,21 +195,6 @@ class Block:
                 "Block.push() is only valid for blocks acquired from a DataflowBuffer."
             )
         self.dfb.push_block()
-
-    @classmethod
-    def from_list(
-        cls,
-        tensors: List[Tensor],
-        shape: Shape,
-    ) -> "Block":
-        """Create a temporary Block from a list of tensors (computation result)."""
-        return cls(
-            tiles=cast(List[DFBSlot], tensors),
-            shape=shape,
-            acquisition=BlockAcquisition.RESERVE,  # Temporary blocks use RESERVE semantics
-            thread_type=ThreadType.COMPUTE,  # Temporary blocks are from compute operations
-            is_temporary=True,
-        )
 
     def _validate_state(self, operation: str, expected_op: ExpectedOp) -> None:
         """Validate that the current operation is allowed in the current state.
@@ -355,7 +359,7 @@ class Block:
         self._expected_ops = set()  # Empty = DONE
 
     def __len__(self) -> Size:
-        return len(self._buf)
+        return math.prod(self._shape)
 
     @property
     def is_temporary(self) -> bool:
@@ -431,18 +435,15 @@ class Block:
         # Note: We allow writing in MR/RW/A states as appropriate for the operation
 
     def get_item(self, idx: Index) -> Tensor:
-        """Internal method to get item with lock checking.
+        """Return a single tile by flat index (row-major order across self._shape).
 
-        This is used internally by copy handlers and other internal operations.
-        External code should not index blocks.
+        Delegates to to_list() which does not require tile-aligned dimensions.
         """
         self._check_can_read()
-        if not (0 <= idx < len(self._buf)):
+        n = math.prod(self._shape)
+        if not (0 <= idx < n):
             raise IndexError(idx)
-        value = self._buf[idx]
-        if value is None:
-            raise ValueError(f"Reading uninitialized or consumed slot at index {idx}")
-        return value
+        return self.to_list()[idx]
 
     @validate_call
     def __getitem__(self, idx: Index) -> Tensor:
@@ -462,90 +463,90 @@ class Block:
             "Direct assignment to Block is not allowed. Use block.store() or copy() instead."
         )
 
-    def write_slot(self, idx: Index, value: Tensor) -> None:
-        """Internal method to write to a slot. Only used by store() and copy handlers."""
-        self._check_can_write()
-        if not (0 <= idx < len(self._buf)):
-            raise IndexError(idx)
-        self._buf[idx] = value
-
-    @validate_call
-    def pop_idx(self, idx: Index) -> None:
-        if not (0 <= idx < len(self._buf)):
-            raise IndexError(idx)
-        value = self._buf[idx]
-        if value is None:
-            raise ValueError(f"Popping uninitialized or consumed slot at index {idx}")
-        self._buf[idx] = None
-
     def to_list(self) -> List[Tensor]:
-        """Convert block contents to a list.
+        """Split the backing Tensor into individual tiles.
 
-        This is a convenience method for tests and debugging.
-        Returns the actual tensor values from the buffer.
+        Returns tiles in row-major order across self._shape.  Each tile is a
+        slice of the backing tensor — no tile-alignment constraints are imposed
+        so non-standard tile sizes (e.g. in tests) are supported.
         """
-        return [self.get_item(i) for i in range(len(self))]
+        buf = self._buf.to_torch()
+        shape = self._shape
+        nb = len(shape) - 2
+        TM, TK = shape[nb], shape[nb + 1]
+        H, W = buf.shape[-2], buf.shape[-1]
+        tile_h = H // TM if TM > 0 else 1
+        tile_w = W // TK if TK > 0 else 1
+
+        tiles: List[Tensor] = []
+        for coords in _product(*[range(d) for d in shape]):
+            batch_idx = coords[:nb]
+            r, c = coords[nb], coords[nb + 1]
+            slices = (
+                *batch_idx,
+                slice(r * tile_h, (r + 1) * tile_h),
+                slice(c * tile_w, (c + 1) * tile_w),
+            )
+            tiles.append(Tensor(buf[slices]))
+        return tiles
 
     def to_tensor(self) -> Tensor:
-        """Assemble all tiles into a single ttnnsim.Tensor.
+        """Return the backing multi-tile Tensor directly."""
+        return self._buf
 
-        Converts the block's tile grid to an element-space tensor with shape
-        (*batch, TM * tile_h, TK * tile_w), where the block's tile shape is
-        (*batch, TM, TK) and (tile_h, tile_w) is the element shape of each
-        stored tile.  Tiles with a size-1 dimension (degenerate tiles) are
-        supported and contribute their actual element size to the output.
+    @classmethod
+    def from_list(
+        cls,
+        tensors: List[Tensor],
+        shape: Shape,
+    ) -> "Block":
+        """Create a temporary Block by assembling a list of tiles into a Tensor.
 
-        Returns:
-            A ttnnsim.Tensor whose element shape corresponds to this block.
+        Tiles must be in row-major order across shape.  The resulting Block
+        owns a freshly assembled multi-tile Tensor with element shape derived
+        from the individual tile sizes.
         """
-        tiles = self.to_list()
-        tile_shape = self._shape
-        nb = len(tile_shape) - 2
-        batch = tile_shape[:nb]
-        TM, TK = tile_shape[nb], tile_shape[nb + 1]
-
-        # Use the actual tile element shape rather than the TILE_SHAPE constant
-        # so that degenerate (size-1) tiles are handled correctly.
-        first_raw = tiles[0].to_torch()
+        nb = len(shape) - 2
+        batch = shape[:nb]
+        TM, TK = shape[nb], shape[nb + 1]
+        first_raw = tensors[0].to_torch()
         tile_h, tile_w = first_raw.shape[-2], first_raw.shape[-1]
-
-        stacked = torch.stack([t.to_torch() for t in tiles])  # (total, tile_h, tile_w)
-        tile_grid = stacked.reshape(*tile_shape, tile_h, tile_w)
-
-        # Interleave tile-row/col dims with their element dims:
-        # (*batch, TM, TK, r, c) -> (*batch, TM, r, TK, c)
+        stacked = torch.stack([t.to_torch() for t in tensors])
+        tile_grid = stacked.reshape(*shape, tile_h, tile_w)
+        # (*batch, TM, TK, r, c) -> (*batch, TM, r, TK, c) -> (*batch, TM*r, TK*c)
         perm = list(range(nb)) + [nb, nb + 2, nb + 1, nb + 3]
         elem_tensor = tile_grid.permute(*perm).reshape(*batch, TM * tile_h, TK * tile_w)
-        return Tensor(elem_tensor)
+        return cls(
+            tensor=Tensor(elem_tensor),
+            shape=shape,
+            acquisition=BlockAcquisition.RESERVE,
+            thread_type=ThreadType.COMPUTE,
+            is_temporary=True,
+        )
 
     @classmethod
     def from_tensor(cls, t: Tensor) -> "Block":
-        """Create a temporary Block by splitting a ttnnsim.Tensor into tiles.
+        """Create a temporary Block wrapping a ttnnsim.Tensor.
 
-        Divides the last two element dimensions by TILE_SHAPE to get the tile
-        counts; preceding dimensions become batch dimensions.  Each (32, 32)
-        region of the last two dimensions becomes one tile in the block.
+        Infers the tile-grid shape from the tensor's element dimensions.
+        The last two element dimensions must be multiples of TILE_SHAPE (or
+        exactly 1 for degenerate tiles).
 
         Args:
-            t: Source tensor whose last two dimensions are multiples of
-               TILE_SHAPE.
+            t: Source tensor.
 
         Returns:
-            A temporary Block with tile shape (*batch, TM, TK).
+            A temporary Block backed directly by t (no copy).
 
         Raises:
-            ValueError: If the tensor has fewer than 2 dimensions or its last
-                two dimensions are not multiples of TILE_SHAPE.
+            ValueError: If the tensor dimensions are not tile-aligned.
         """
         elem_shape = t.shape
         if len(elem_shape) < 2:
             raise ValueError(
-                f"Tensor must have at least 2 dimensions for tile splitting, "
-                f"got {len(elem_shape)}"
+                f"Tensor must have at least 2 dimensions, got {len(elem_shape)}"
             )
         H, W = elem_shape[-2], elem_shape[-1]
-        # A dimension of 1 is treated as a single degenerate tile (consistent
-        # with _validate_tile_alignment in ttnnsim.Tensor).
         if (H != 1 and H % TILE_SHAPE[0] != 0) or (W != 1 and W % TILE_SHAPE[1] != 0):
             raise ValueError(
                 f"Last two tensor dimensions ({H}, {W}) must be multiples of "
@@ -555,26 +556,49 @@ class Block:
         TM = 1 if H == 1 else H // TILE_SHAPE[0]
         TK = 1 if W == 1 else W // TILE_SHAPE[1]
         tile_shape: Shape = (*batch_shape, TM, TK)
-        tiles = [t[coords] for coords in _product(*[range(d) for d in tile_shape])]
-        return cls.from_list(tiles, shape=tile_shape)
+        return cls(
+            tensor=t,
+            shape=tile_shape,
+            acquisition=BlockAcquisition.RESERVE,
+            thread_type=ThreadType.COMPUTE,
+            is_temporary=True,
+        )
 
-    def copy_as_dest(self, items: Sequence[Tensor]) -> None:
-        """Store items into the block as part of a copy operation.
+    def copy_as_dest(self, tensor: Tensor) -> None:
+        """Store tensor into this block as part of a copy operation.
 
-        This method is used by copy handlers and does NOT update the state machine.
-        State transitions for copy operations are handled by mark_copy_as_dest()
-        (called when CopyTransaction is created) and mark_tx_wait_complete().
+        Used by copy handlers; does NOT update the state machine.  Validates
+        that the source and destination represent the same number of tiles.
+
+        If element shapes differ (e.g. degenerate vs. standard tiles), the
+        backing tensor is replaced and the ring-buffer slot is updated so that
+        wait() consumers see the correct tensor.
 
         Args:
-            items: Sequence of tensors to store
-        """
-        if len(items) != len(self._buf):
-            raise ValueError("Length mismatch in copy_as_dest()")
+            tensor: Tensor to store in this block.
 
-        # Store data without state checks - block is in NA state during copy
-        # which is correct for the state machine, but we need to write the data
-        for i, v in enumerate(items):
-            self._buf[i] = v
+        Raises:
+            ValueError: If tensor tile count does not match this block's shape.
+        """
+        # Validate tile count compatibility: same number of tiles, same ndim
+        src_tile_count = tile_count_from_tensor(tensor)
+        dst_tile_count = math.prod(self._shape)
+        if src_tile_count != dst_tile_count:
+            raise ValueError(
+                f"Shape mismatch in copy_as_dest(): "
+                f"source tensor {tensor.shape} has {src_tile_count} tiles, "
+                f"but block {self._shape} expects {dst_tile_count} tiles"
+            )
+
+        if tensor.shape == self._buf.shape:
+            # Fast path: same element shape — copy data in-place
+            self._buf.to_torch().copy_(tensor.to_torch())
+        else:
+            # Shape differs (e.g. degenerate tile): replace the tensor reference
+            # and update the ring-buffer slot so consumers see the new tensor.
+            self._buf = tensor
+            if self.dfb_state is not None:
+                self.dfb_state.buf[self.dfb_slot_idx] = tensor
 
     @staticmethod
     def _infer_broadcast_shape(left_shape: Shape, right_shape: Shape) -> Shape:
@@ -606,121 +630,68 @@ class Block:
 
         return result_shape
 
-    # @validate_call
-    def store(self, items: Union["Block", Sequence[Tensor]], acc: bool = False) -> None:
-        """Store items into the block.
+    def store(self, items: "Block", acc: bool = False) -> None:
+        """Store data into this block.
 
         Args:
-            items: Block or sequence of tensors to store
-            acc: If True, accumulate with existing values (+=), otherwise assign (=)
-                 Note: First store(acc=True) does assignment (y=x), subsequent ones accumulate (y+=x)
+            items: A Block whose tile count matches this block.
+            acc: If True, accumulate with existing values (+=), otherwise
+                 assign (=).  The first store(acc=True) always assigns.
+
+        Raises:
+            ValueError: If the source tile count does not match this block's.
         """
-        # Convert Block to sequence if needed, and track source blocks
-        source_blocks_to_mark: List["Block"] = []
-
-        # Convert items to sequence
-        items_seq: Sequence[Tensor]
-        match items:
-            case Block():
-                items_seq = items.to_list()
-                # Check if this is a wait() Compute block being stored directly
-                if (
-                    items._acquisition == BlockAcquisition.WAIT
-                    and items._thread_type == ThreadType.COMPUTE
-                    and ExpectedOp.STORE_SRC in items._expected_ops
-                ):
-                    source_blocks_to_mark.append(items)
-                # Check if this is a temporary block with tracked source wait() blocks
-                elif items._is_temporary and items._source_blocks:
-                    source_blocks_to_mark.extend(
-                        blk
-                        for blk in items._source_blocks
-                        if ExpectedOp.STORE_SRC in blk._expected_ops
-                    )
-            case _:
-                items_seq = items
-
-        if len(items_seq) != len(self._buf):
-            raise ValueError("Length mismatch in store()")
-
-        # Check write access first (provides better error message for NA state)
+        # Check write access before touching items so state-machine errors are
+        # always surfaced first.
         self._check_can_write()
 
-        # Mark all wait() Compute source blocks as used
+        src_tensor = items._buf
+        source_blocks_to_mark: List["Block"] = []
+        # Track wait() Compute source blocks for state machine
+        if (
+            items._acquisition == BlockAcquisition.WAIT
+            and items._thread_type == ThreadType.COMPUTE
+            and ExpectedOp.STORE_SRC in items._expected_ops
+        ):
+            source_blocks_to_mark.append(items)
+        elif items._is_temporary and items._source_blocks:
+            source_blocks_to_mark.extend(
+                blk
+                for blk in items._source_blocks
+                if ExpectedOp.STORE_SRC in blk._expected_ops
+            )
+
+        # Validate tile counts match
+        src_tiles = tile_count_from_tensor(src_tensor)
+        dst_tiles = math.prod(self._shape)
+        if src_tiles != dst_tiles:
+            raise ValueError(
+                f"Shape mismatch in store(): "
+                f"source {src_tensor.shape} ({src_tiles} tiles) vs "
+                f"block {self._shape} ({dst_tiles} tiles)"
+            )
+
+        # Mark source wait() blocks as consumed
         for source_block in source_blocks_to_mark:
             source_block.mark_store_read_complete()
 
-        # Determine if this is the first store(acc=True) by checking if we're in MW state
         is_first_acc_store = acc and self._access_state == AccessState.MW
-
-        # Mark state machine transition BEFORE actual store (needed for acc=True to read)
         self.mark_store_complete(acc=acc)
 
-        if acc:
-            if is_first_acc_store:
-                # First store(acc=True): Just assign (y = x), don't accumulate
-                for i, v in enumerate(items_seq):
-                    self.write_slot(i, v)
-            else:
-                # Subsequent store(acc=True): Accumulate (y += x)
-                for i, v in enumerate(items_seq):
-                    self.write_slot(i, self.get_item(i) + v)
-        else:
-            # Regular assignment
-            for i, v in enumerate(items_seq):
-                self.write_slot(i, v)
-
-    def _apply_binary_op(
-        self,
-        left: "Block",
-        right: "Block",
-        op: Callable[[Any, Any], Any],
-    ) -> List[Tensor]:
-        """Element-wise binary op: left (op) right.
-
-        Supports NumPy-style implicit broadcasting when shapes are compatible.
-        """
-        len_left = len(left)
-        len_right = len(right)
-        left_shape = left._shape
-        right_shape = right._shape
-
-        # Check if shapes match exactly - fast path
-        if left_shape == right_shape and len_left == len_right:
-            return [op(left.get_item(i), right.get_item(i)) for i in range(len_left)]
-
-        # Check if broadcasting is valid using standard broadcasting rules
-        # For now, require same number of dimensions
-        if len(left_shape) != len(right_shape):
-            raise ValueError(
-                f"Cannot broadcast: dimension mismatch between shapes {left_shape} and {right_shape}. "
-                f"Shapes must have the same number of dimensions."
+        if acc and not is_first_acc_store:
+            # Subsequent accumulate: y += x (requires matching shapes)
+            self._buf.to_torch().add_(
+                src_tensor.to_torch().reshape(self._buf.to_torch().shape)
             )
-
-        # Check each dimension is compatible for broadcasting
-        # Compatible means: equal, or one of them is 1
-        for i, (l_dim, r_dim) in enumerate(zip(left_shape, right_shape)):
-            if l_dim != r_dim and l_dim != 1 and r_dim != 1:
-                raise ValueError(
-                    f"Cannot broadcast: incompatible shapes {left_shape} and {right_shape}. "
-                    f"Dimension {i} has sizes {l_dim} and {r_dim} which are incompatible "
-                    f"(must be equal or one must be 1)."
-                )
-
-        # Shapes are compatible - perform the operation with broadcasting
-        from .ttnnsim import broadcast_tensors
-
-        # Convert to list and ensure all slots are Tensors (not None)
-        left_list = left.to_list()
-        right_list = right.to_list()
-
-        # Type cast to assert these are Tensors (they should be, as blocks with data should have no None slots)
-        left_tensors: List[Tensor] = left_list  # type: ignore[assignment]
-        right_tensors: List[Tensor] = right_list  # type: ignore[assignment]
-
-        return broadcast_tensors(
-            left_tensors, right_tensors, left_shape, right_shape, op
-        )
+        elif src_tensor.shape == self._buf.shape:
+            # Fast path: same element shape — copy in-place
+            self._buf.to_torch().copy_(src_tensor.to_torch())
+        else:
+            # Degenerate tile: element shapes differ but tile counts match.
+            # Replace the backing tensor and update the ring-buffer slot if needed.
+            self._buf = src_tensor
+            if self.dfb_state is not None:
+                self.dfb_state.buf[self.dfb_slot_idx] = src_tensor
 
     def _binary_op(
         self,
@@ -729,14 +700,48 @@ class Block:
     ) -> "Block":
         """Element-wise binary op: self (op) other.
 
+        Applies op on the underlying Tensors (PyTorch broadcasting applies).
+        Validates that tile-grid shapes are broadcast-compatible.
+
         Tracks wait() Compute blocks that contribute to the result.
         """
-        result_list = self._apply_binary_op(self, other, op)
+        left_shape = self._shape
+        right_shape = other._shape
 
-        # Infer result shape using broadcasting rules
-        result_shape = self._infer_broadcast_shape(self._shape, other._shape)
+        # Validate broadcast compatibility at the tile-grid level
+        if len(left_shape) != len(right_shape):
+            raise ValueError(
+                f"Cannot broadcast: dimension mismatch between shapes "
+                f"{left_shape} and {right_shape}."
+            )
+        for i, (l_dim, r_dim) in enumerate(zip(left_shape, right_shape)):
+            if l_dim != r_dim and l_dim != 1 and r_dim != 1:
+                raise ValueError(
+                    f"Cannot broadcast: incompatible shapes {left_shape} and "
+                    f"{right_shape}. Dimension {i} has sizes {l_dim} and {r_dim}."
+                )
 
-        result_block = Block.from_list(result_list, result_shape)
+        result_shape = self._infer_broadcast_shape(left_shape, right_shape)
+
+        if left_shape == right_shape:
+            # Fast path: shapes match, operate on packed tensors directly.
+            result_block = Block(
+                tensor=op(self._buf, other._buf),
+                shape=result_shape,
+                acquisition=BlockAcquisition.RESERVE,
+                thread_type=ThreadType.COMPUTE,
+                is_temporary=True,
+            )
+        else:
+            # Tile-grid broadcasting: tile-grid dims are entangled with element
+            # dims in the packed tensor, so PyTorch cannot broadcast them
+            # automatically.  Fall back to tile-by-tile ops.
+            from .ttnnsim import broadcast_tensors
+
+            result_tiles = broadcast_tensors(
+                self.to_list(), other.to_list(), left_shape, right_shape, op
+            )
+            result_block = Block.from_list(result_tiles, result_shape)
 
         # Track source wait() blocks that contributed to this result
         for block in [self, other]:
@@ -747,7 +752,6 @@ class Block:
             ):
                 result_block._source_blocks.append(block)
             elif block._is_temporary:
-                # Temporary blocks may have their own source blocks to propagate
                 result_block._source_blocks.extend(block._source_blocks)
 
         return result_block
@@ -779,12 +783,13 @@ class Block:
         """
         match other:
             case int():
-                # Scalar power - apply to each tensor in the block
-                block_list = self.to_list()
-                result_tensors: List[Tensor] = [t**other for t in block_list]
-                result_block = Block.from_list(result_tensors, shape=self._shape)
-
-                # Track source wait() blocks
+                result_block = Block(
+                    tensor=self._buf**other,
+                    shape=self._shape,
+                    acquisition=BlockAcquisition.RESERVE,
+                    thread_type=ThreadType.COMPUTE,
+                    is_temporary=True,
+                )
                 if (
                     not self._is_temporary
                     and self._acquisition == BlockAcquisition.WAIT
@@ -793,10 +798,8 @@ class Block:
                     result_block._source_blocks.append(self)
                 elif self._is_temporary:
                     result_block._source_blocks.extend(self._source_blocks)
-
                 return result_block
             case _:
-                # Block power
                 return self._binary_op(other, _op.pow)
 
     def __matmul__(self, other: "Block") -> "Block":
@@ -821,6 +824,11 @@ class Block:
         return self._access_state
 
     @property
+    def raw_tensor(self) -> Tensor:
+        """Return the backing multi-tile Tensor (for copy handlers and stats)."""
+        return self._buf
+
+    @property
     def expected_ops(self) -> set[ExpectedOp]:
         """Get the set of expected operations for this block."""
         return self._expected_ops
@@ -843,7 +851,9 @@ class DFBStats(NamedTuple):
     reserved: int  # slots reserved for writing
     free: int  # slots available for reservation
     head: int  # current read slot index
-    slots: List[Optional[object]]  # slot list: None=empty, List=filled (for debugging)
+    slots: List[
+        Optional[Tensor]
+    ]  # slot list: None=empty or a multi-tile Tensor (for debugging)
 
 
 class DataflowBuffer:
@@ -905,7 +915,6 @@ class DataflowBuffer:
         # Create and configure the ring-buffer state immediately.
         self._state = DFBState()
         self._state.cap = buffer_factor
-        self._state.tiles_per_op = math.prod(shape)
         self._state.shape = shape
         self._state.buf = [None] * buffer_factor
         self._state.reset()
@@ -952,7 +961,7 @@ class DataflowBuffer:
         assert slot is not None, "Visible slot has no data — internal inconsistency."
         thread_type = get_current_thread_type()
         block = Block(
-            tiles=slot,
+            tensor=slot,
             shape=state.shape,
             acquisition=BlockAcquisition.WAIT,
             thread_type=thread_type,
@@ -960,7 +969,7 @@ class DataflowBuffer:
         block.dfb = self
         self._pending_waited_block = block
 
-        record_dfb_wait(self, state.tiles_per_op)
+        record_dfb_wait(self, math.prod(state.shape))
 
         return block
 
@@ -1007,23 +1016,29 @@ class DataflowBuffer:
             "block_if_needed() should have been called first."
         )
         slot_idx = state.back_slot()
-        zero_tensor = Tensor(torch.zeros(TILE_SHAPE, dtype=self.element.dtype))
-        slot: List[DFBSlot] = [zero_tensor] * state.tiles_per_op
+        # Build element-space shape: (*batch, TM * tile_h, TK * tile_w)
+        nb = len(state.shape) - 2
+        batch = state.shape[:nb]
+        TM, TK = state.shape[nb], state.shape[nb + 1]
+        elem_shape = (*batch, TM * TILE_SHAPE[0], TK * TILE_SHAPE[1])
+        slot = Tensor(torch.zeros(elem_shape, dtype=self.element.dtype))
         state.buf[slot_idx] = slot
         state.reserved += 1
 
         thread_type = get_current_thread_type()
         block = Block(
-            tiles=slot,
+            tensor=slot,
             shape=state.shape,
             acquisition=BlockAcquisition.RESERVE,
             thread_type=thread_type,
         )
         block.dfb = self
+        block.dfb_state = state
+        block.dfb_slot_idx = slot_idx
 
         self._pending_reserved_block = block
 
-        record_dfb_reserve(self, state.tiles_per_op)
+        record_dfb_reserve(self, math.prod(state.shape))
 
         return block
 
@@ -1082,7 +1097,7 @@ class DataflowBuffer:
     @property
     def capacity_tiles(self) -> Size:
         """Get the total capacity of the buffer in tiles."""
-        return self._state.cap * self._state.tiles_per_op
+        return self._state.cap * math.prod(self._state.shape)
 
     @property
     def buffer_factor(self) -> Size:

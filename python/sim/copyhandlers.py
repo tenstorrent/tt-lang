@@ -27,7 +27,7 @@ from typing import (
 )
 
 from .dfb import Block
-from .constants import COPY_PIPE_TIMEOUT, MAX_TENSOR_DIMS, TILE_SHAPE
+from .constants import COPY_PIPE_TIMEOUT
 from .pipe import AnySrcPipeIdentity, DstPipeIdentity, SrcPipeIdentity
 from .stats import (
     record_tensor_read,
@@ -110,7 +110,7 @@ def tile_count(tensor_shape: Shape, tile_shape: Shape) -> Count:
 # In a real implementation this would be handled by NoC hardware.
 class _PipeEntry(TypedDict):
     queue: Deque[
-        Tuple[List[Tensor], Count, int, set[int]]
+        Tuple[Tensor, Count, int, set[int]]
     ]  # (data, remaining, msg_id, receivers_who_got_it)
     event: threading.Event
     lock: threading.Lock
@@ -235,7 +235,7 @@ class BlockToPipeHandler:
 
     def transfer(self, src: Block, dst: AnyPipe) -> None:
         """Pipe send: store data in shared buffer accessible by all cores."""
-        src_data = [src.get_item(i) for i in range(len(src))]
+        src_data = src.raw_tensor
 
         # Record pipe write statistics
         record_pipe_write(dst, src_data)
@@ -288,31 +288,21 @@ class TensorToBlockHandler:
     """Handler for TTNN.Tensor -> Block transfers using tile-level indexing."""
 
     def validate(self, src: Tensor, dst: Block) -> None:
-        ndim = len(src.shape)
-        if not (2 <= ndim <= MAX_TENSOR_DIMS):
-            raise ValueError(
-                f"Tensor must have 2 to {MAX_TENSOR_DIMS} dimensions, got shape {src.shape}"
-            )
-        H, W = src.shape[-2], src.shape[-1]
-        if (H != 1 and H % TILE_SHAPE[0] != 0) or (W != 1 and W % TILE_SHAPE[1] != 0):
-            raise ValueError(
-                f"Tensor last two dimensions ({H}, {W}) must be multiples of "
-                f"TILE_SHAPE {TILE_SHAPE} (or exactly 1), got shape {src.shape}"
-            )
-        TM = 1 if H == 1 else H // TILE_SHAPE[0]
-        TK = 1 if W == 1 else W // TILE_SHAPE[1]
-        src_total = int(prod((*src.shape[:-2], TM, TK)))
-        block_total = int(prod(dst.shape))
-        if src_total != block_total:
+        from .dfb import tile_count_from_tensor
+        import math
+
+        src_tiles = tile_count_from_tensor(src)
+        dst_tiles = math.prod(dst.shape)
+        if src_tiles != dst_tiles:
             raise ValueError(
                 f"Tensor shape {src.shape} does not match Block shape {dst.shape} "
-                f"(total tiles: {src_total} vs {block_total})"
+                f"(tile counts: {src_tiles} vs {dst_tiles})"
             )
 
     def transfer(self, src: Tensor, dst: Block) -> None:
-        """Transfer tensor data to Block by splitting src into tiles."""
+        """Transfer tensor data into Block."""
         record_tensor_read(src)
-        dst.copy_as_dest(Block.from_tensor(src).to_list())
+        dst.copy_as_dest(src)
 
     def can_wait(self, src: Tensor, dst: Block) -> bool:
         return True
@@ -323,32 +313,23 @@ class BlockToTensorHandler:
     """Handler for Block -> TTNN.Tensor transfers using tile-level indexing."""
 
     def validate(self, src: Block, dst: Tensor) -> None:
-        ndim = len(dst.shape)
-        if not (2 <= ndim <= MAX_TENSOR_DIMS):
+        from .dfb import tile_count_from_tensor
+        import math
+
+        src_tiles = math.prod(src.shape)
+        dst_tiles = tile_count_from_tensor(dst)
+        if src_tiles != dst_tiles:
             raise ValueError(
-                f"Tensor must have 2 to {MAX_TENSOR_DIMS} dimensions, got shape {dst.shape}"
-            )
-        H, W = dst.shape[-2], dst.shape[-1]
-        if (H != 1 and H % TILE_SHAPE[0] != 0) or (W != 1 and W % TILE_SHAPE[1] != 0):
-            raise ValueError(
-                f"Tensor last two dimensions ({H}, {W}) must be multiples of "
-                f"TILE_SHAPE {TILE_SHAPE} (or exactly 1), got shape {dst.shape}"
-            )
-        TM = 1 if H == 1 else H // TILE_SHAPE[0]
-        TK = 1 if W == 1 else W // TILE_SHAPE[1]
-        dst_total = int(prod((*dst.shape[:-2], TM, TK)))
-        block_total = int(prod(src.shape))
-        if dst_total != block_total:
-            raise ValueError(
-                f"Tensor shape {dst.shape} does not match Block shape {src.shape} "
-                f"(total tiles: {dst_total} vs {block_total})"
+                f"Block shape {src.shape} does not match Tensor shape {dst.shape} "
+                f"(tile counts: {src_tiles} vs {dst_tiles})"
             )
 
     def transfer(self, src: Block, dst: Tensor) -> None:
-        """Transfer Block data to tensor by assembling src tiles into element space."""
+        """Transfer Block data into tensor."""
         record_tensor_write(dst)
         dst_raw = dst.to_torch()
-        dst_raw.copy_(src.to_tensor().to_torch().reshape(dst_raw.shape))
+        src_raw = src.raw_tensor.to_torch()
+        dst_raw.copy_(src_raw.reshape(dst_raw.shape))
 
     def can_wait(self, src: Block, dst: Tensor) -> bool:
         return True
@@ -382,7 +363,7 @@ class PipeToBlockHandler:
         # Get or create pipe entry atomically
         entry = _get_or_create_pipe_entry(src)
         event: threading.Event = entry["event"]
-        queue: Deque[Tuple[List[Tensor], Count, int, set[int]]] = entry["queue"]
+        queue: Deque[Tuple[Tensor, Count, int, set[int]]] = entry["queue"]
         lock: threading.Lock = entry["lock"]
 
         while True:
@@ -427,7 +408,7 @@ class PipeToBlockHandler:
                 # Find the first message in the queue that this core hasn't received yet
                 # This handles buffer_factor>1 where the same core may have multiple
                 # pending receives but should get different messages
-                src_data: List[Tensor] | None = None
+                src_data: Tensor | None = None
                 remaining_receivers: Count | None = None
                 msg_id_to_recv: int | None = None
                 receivers_set: set[int] | None = None
@@ -464,10 +445,10 @@ class PipeToBlockHandler:
                         case _:
                             raise TypeError("core_id should be int when dims=1")
 
-                if len(dst) != len(src_data):
+                if src_data.shape != dst.raw_tensor.shape:
                     raise ValueError(
-                        f"Destination Block length ({len(dst)}) "
-                        f"does not match pipe data length ({len(src_data)})"
+                        f"Destination Block shape {dst.raw_tensor.shape} "
+                        f"does not match pipe data shape {src_data.shape}"
                     )
 
                 dst.copy_as_dest(src_data)

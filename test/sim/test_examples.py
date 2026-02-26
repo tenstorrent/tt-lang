@@ -191,7 +191,7 @@ def test_eltwise_add2_fails_with_expected_error(scheduler: str) -> None:
     ), f"Expected eltwise_add_error.py to fail, but it exited with code 0"
     # Check for the core error message (shape mismatch)
     assert (
-        "Tensor shape (32, 32) does not match Block shape (2, 2) (total tiles: 1 vs 4)"
+        "Tensor shape (32, 32) does not match Block shape (2, 2) (tile counts: 1 vs 4)"
         in out
     ), f"Expected error message not found in output:\n{out}"
 

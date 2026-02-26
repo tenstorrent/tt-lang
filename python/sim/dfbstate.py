@@ -6,10 +6,11 @@
 DFBState: internal ring-buffer state for DataflowBuffer.
 
 All counters (cap, head, visible, reserved) are in units of operations.  buf
-is a list of cap slots; each slot is either None (empty) or a List[DFBSlot]
-holding tiles_per_op tiles.  This means Block views are handed a direct
-reference to a slot list -- no span arithmetic or ring-buffer wrapping needed
-inside Block.
+is a list of cap slots; each slot is either None (empty) or a single Tensor
+holding the entire operation's data in element space (shape determined by the
+DataflowBuffer's tile-grid shape and TILE_SHAPE).  Block views hold a
+reference to the same Tensor object so that in-place writes are immediately
+visible in the ring buffer.
 """
 
 from typing import List, Optional
@@ -18,18 +19,11 @@ from .errors import DFBNotConfigured
 from .ttnnsim import Tensor
 from .typedefs import Index, Shape, Size
 
-# Type alias for a single tile slot
-DFBSlot = Optional[Tensor]
-
-# Type alias for one operation's tile list (one ring-buffer slot)
-DFBOpSlot = Optional[List[DFBSlot]]
-
 
 class DFBState:
     __slots__ = (
         "cap",  # capacity in operations (= buffer_factor)
-        "tiles_per_op",  # tiles per operation (= math.prod(shape))
-        "buf",  # ring buffer: List[DFBOpSlot], length = cap
+        "buf",  # ring buffer: List[Optional[Tensor]], length = cap
         "head",  # current read slot index (in operations)
         "visible",  # number of complete operations ready to consume
         "reserved",  # number of complete operations reserved for writing
@@ -39,8 +33,7 @@ class DFBState:
 
     def __init__(self):
         self.cap: Size = 1
-        self.tiles_per_op: Size = 1
-        self.buf: List[DFBOpSlot] = []
+        self.buf: List[Optional[Tensor]] = []
         self.head: Index = 0
         self.visible: Size = 0
         self.reserved: Size = 0

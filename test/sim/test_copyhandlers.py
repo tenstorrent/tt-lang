@@ -161,7 +161,7 @@ class TestPipeErrorHandling:
         # Try to receive into 1-tile block
         with pytest.raises(
             ValueError,
-            match="Destination Block length .* does not match pipe data length",
+            match="Destination Block shape .* does not match pipe data shape",
         ):
             with dst_dfb.reserve() as dst_block:
                 tx_recv = copy(pipe, dst_block)
