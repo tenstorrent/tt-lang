@@ -8,7 +8,6 @@ Tracks tensor read/write operations and provides summary reporting.
 """
 
 import math
-import threading
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any, Union
 
@@ -30,7 +29,6 @@ _pipe_stats_by_name: dict[str, dict[str, int]] = defaultdict(
 _dfb_stats_by_name: dict[str, dict[str, int]] = defaultdict(
     lambda: {"reserves": 0, "waits": 0, "tiles_reserved": 0, "tiles_waited": 0}
 )
-_stats_lock = threading.Lock()
 _dfb_name_counter = 0
 
 
@@ -54,11 +52,10 @@ def is_stats_enabled() -> bool:
 def reset_stats() -> None:
     """Reset all collected statistics."""
     global _stats_by_name, _pipe_stats_by_name, _dfb_stats_by_name, _dfb_name_counter
-    with _stats_lock:
-        _stats_by_name.clear()
-        _pipe_stats_by_name.clear()
-        _dfb_stats_by_name.clear()
-        _dfb_name_counter = 0
+    _stats_by_name.clear()
+    _pipe_stats_by_name.clear()
+    _dfb_stats_by_name.clear()
+    _dfb_name_counter = 0
 
 
 def register_tensor_name(tensor: "Tensor", name: str) -> None:
@@ -119,9 +116,8 @@ def record_tensor_read(tensor: "Tensor") -> None:
     name = _get_tensor_name(tensor)
     num_tiles = _calculate_tensor_tiles(tensor)
 
-    with _stats_lock:
-        _stats_by_name[name]["reads"] += 1
-        _stats_by_name[name]["tiles_read"] += num_tiles
+    _stats_by_name[name]["reads"] += 1
+    _stats_by_name[name]["tiles_read"] += num_tiles
 
 
 def record_tensor_write(tensor: "Tensor") -> None:
@@ -136,9 +132,8 @@ def record_tensor_write(tensor: "Tensor") -> None:
     name = _get_tensor_name(tensor)
     num_tiles = _calculate_tensor_tiles(tensor)
 
-    with _stats_lock:
-        _stats_by_name[name]["writes"] += 1
-        _stats_by_name[name]["tiles_written"] += num_tiles
+    _stats_by_name[name]["writes"] += 1
+    _stats_by_name[name]["tiles_written"] += num_tiles
 
 
 def _get_pipe_name(pipe: AnyPipe) -> str:
@@ -181,18 +176,6 @@ def _get_pipe_name(pipe: AnyPipe) -> str:
     return f"pipe_{src_str}_to_{dst_str}"
 
 
-def _calculate_block_tiles(block_data: "list[Tensor]") -> int:
-    """Calculate the total number of tiles in a block's data.
-
-    Args:
-        block_data: List of tensors in the block
-
-    Returns:
-        Total number of tiles
-    """
-    return sum(_calculate_tensor_tiles(tensor) for tensor in block_data)
-
-
 def record_pipe_write(pipe: AnyPipe, block_data: "Tensor") -> None:
     """Record a write (send) operation on a pipe.
 
@@ -206,9 +189,8 @@ def record_pipe_write(pipe: AnyPipe, block_data: "Tensor") -> None:
     name = _get_pipe_name(pipe)
     num_tiles = _calculate_tensor_tiles(block_data)
 
-    with _stats_lock:
-        _pipe_stats_by_name[name]["writes"] += 1
-        _pipe_stats_by_name[name]["tiles_written"] += num_tiles
+    _pipe_stats_by_name[name]["writes"] += 1
+    _pipe_stats_by_name[name]["tiles_written"] += num_tiles
 
 
 def record_pipe_read(pipe: AnyPipe, block_data: "Tensor") -> None:
@@ -224,9 +206,8 @@ def record_pipe_read(pipe: AnyPipe, block_data: "Tensor") -> None:
     name = _get_pipe_name(pipe)
     num_tiles = _calculate_tensor_tiles(block_data)
 
-    with _stats_lock:
-        _pipe_stats_by_name[name]["reads"] += 1
-        _pipe_stats_by_name[name]["tiles_read"] += num_tiles
+    _pipe_stats_by_name[name]["reads"] += 1
+    _pipe_stats_by_name[name]["tiles_read"] += num_tiles
 
 
 def register_dfb_name(dfb: Any, name: str) -> None:
@@ -261,10 +242,8 @@ def _get_dfb_name(dfb: Any) -> str:
 
     # Fall back to generating a unique name
     global _dfb_name_counter
-    with _stats_lock:
-        _dfb_name_counter += 1
-        counter = _dfb_name_counter
-    return f"dfb_unnamed_{counter}"
+    _dfb_name_counter += 1
+    return f"dfb_unnamed_{_dfb_name_counter}"
 
 
 def record_dfb_reserve(dfb: Any, num_tiles: int) -> None:
@@ -279,9 +258,8 @@ def record_dfb_reserve(dfb: Any, num_tiles: int) -> None:
 
     name = _get_dfb_name(dfb)
 
-    with _stats_lock:
-        _dfb_stats_by_name[name]["reserves"] += 1
-        _dfb_stats_by_name[name]["tiles_reserved"] += num_tiles
+    _dfb_stats_by_name[name]["reserves"] += 1
+    _dfb_stats_by_name[name]["tiles_reserved"] += num_tiles
 
 
 def record_dfb_wait(dfb: Any, num_tiles: int) -> None:
@@ -296,27 +274,23 @@ def record_dfb_wait(dfb: Any, num_tiles: int) -> None:
 
     name = _get_dfb_name(dfb)
 
-    with _stats_lock:
-        _dfb_stats_by_name[name]["waits"] += 1
-        _dfb_stats_by_name[name]["tiles_waited"] += num_tiles
+    _dfb_stats_by_name[name]["waits"] += 1
+    _dfb_stats_by_name[name]["tiles_waited"] += num_tiles
 
 
 def print_stats() -> None:
     """Print collected tensor, pipe, and DFB statistics."""
-    # Take a snapshot of the statistics under lock
-    with _stats_lock:
-        has_tensor_stats = bool(_stats_by_name)
-        has_pipe_stats = bool(_pipe_stats_by_name)
-        has_dfb_stats = bool(_dfb_stats_by_name)
+    has_tensor_stats = bool(_stats_by_name)
+    has_pipe_stats = bool(_pipe_stats_by_name)
+    has_dfb_stats = bool(_dfb_stats_by_name)
 
-        if not has_tensor_stats and not has_pipe_stats and not has_dfb_stats:
-            print("\nNo statistics collected.")
-            return
+    if not has_tensor_stats and not has_pipe_stats and not has_dfb_stats:
+        print("\nNo statistics collected.")
+        return
 
-        # Copy data to avoid holding lock during printing
-        tensor_stats_copy = dict(_stats_by_name)
-        pipe_stats_copy = dict(_pipe_stats_by_name)
-        dfb_stats_copy = dict(_dfb_stats_by_name)
+    tensor_stats_copy = dict(_stats_by_name)
+    pipe_stats_copy = dict(_pipe_stats_by_name)
+    dfb_stats_copy = dict(_dfb_stats_by_name)
 
     # Print tensor statistics
     if has_tensor_stats:

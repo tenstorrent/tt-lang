@@ -18,5 +18,3 @@ TILE_SHAPE: Shape = (_TILE_SIZE, _TILE_SIZE)  # Standard tile shape (32x32)
 
 # Maximum number of tensor dimensions supported by the simulator (batch dims + 2 tile dims)
 MAX_TENSOR_DIMS = 6
-
-COPY_PIPE_TIMEOUT = 2.0  # Timeout for pipe copy operations
