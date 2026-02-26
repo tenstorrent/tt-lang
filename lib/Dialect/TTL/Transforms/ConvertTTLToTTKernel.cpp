@@ -432,13 +432,8 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
 
 /// Compute CTA index for a tensor function argument.
 /// Reads ttl.base_cta_index and ttl.crta_indices from parent function.
-/// Returns baseCTA + crtaIndices[localArgIdx].
-static FailureOr<int32_t> computeCTAIndex(Value tensor, Operation *op) {
-  auto argIdx = getTensorFuncArgIndex(tensor);
-  if (failed(argIdx)) {
-    return op->emitError("tensor must be a function argument");
-  }
-
+/// Returns baseCTA + crtaIndices[argIdx].
+static FailureOr<int32_t> computeCTAIndex(unsigned argIdx, Operation *op) {
   auto parentFunc = op->getParentOfType<func::FuncOp>();
   if (!parentFunc) {
     return op->emitError("operation must be inside a function");
@@ -456,16 +451,46 @@ static FailureOr<int32_t> computeCTAIndex(Value tensor, Operation *op) {
            << kCRTAIndicesAttr << " attribute";
   }
 
-  if (*argIdx >= crtaIndicesAttr.size()) {
+  if (argIdx >= crtaIndicesAttr.size()) {
     return op->emitError("argument index out of range for ")
            << kCRTAIndicesAttr;
   }
 
   int64_t baseCTA = baseCTAAttr.getInt();
   int64_t globalTensorIdx =
-      mlir::cast<IntegerAttr>(crtaIndicesAttr[*argIdx]).getInt();
+      mlir::cast<IntegerAttr>(crtaIndicesAttr[argIdx]).getInt();
 
   return static_cast<int32_t>(baseCTA + globalTensorIdx);
+}
+
+/// Validate TTNNLayoutAttr encoding on a tensor and return the page size.
+/// Rejects sharded (#118) and row-major (#173) layouts with diagnostics.
+static FailureOr<int64_t> getValidatedPageSize(Value tensor, Operation *op) {
+  auto tensorTy = llvm::dyn_cast<RankedTensorType>(tensor.getType());
+  if (!tensorTy) {
+    return op->emitError("expected RankedTensorType for tensor accessor");
+  }
+
+  auto layoutAttr =
+      mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
+  if (!layoutAttr) {
+    return op->emitError(
+        "tensor must have TTNNLayoutAttr encoding for accessor "
+        "materialization; Python layer should reject tensors without TTNN "
+        "layout");
+  }
+
+  if (layoutAttr.hasShardedTensorMemoryLayout()) {
+    return op->emitError("sharded memory layout not yet supported for tensor "
+                         "accessor; see GH issue #118");
+  }
+
+  if (!layoutAttr.isTiled()) {
+    return op->emitError("row-major (non-tiled) layout not yet supported for "
+                         "tensor accessor; see GH issue #173");
+  }
+
+  return layoutAttr.getElementSizeBytes();
 }
 
 /// Create a TensorAccessor from a tensor type and bank base address.
@@ -483,43 +508,8 @@ static FailureOr<int32_t> computeCTAIndex(Value tensor, Operation *op) {
 static FailureOr<Value>
 materializeTensorAccessor(Value tensor, Value bankBase, Operation *op,
                           ConversionPatternRewriter &rewriter) {
-  auto tensorTy = llvm::dyn_cast<RankedTensorType>(tensor.getType());
-  if (!tensorTy) {
-    return op->emitError("expected RankedTensorType for tensor accessor");
-  }
-
-  // Require TTNNLayoutAttr encoding - no fallback to contiguous layout.
-  auto layoutAttr =
-      mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
-  if (!layoutAttr) {
-    return op->emitError(
-        "tensor must have TTNNLayoutAttr encoding for accessor "
-        "materialization; Python layer should reject tensors without TTNN "
-        "layout");
-  }
-
-  // Reject sharded layouts - not yet supported (see GH issue #118).
-  // Python error: "TTNN interop requires interleaved tensors"
-  if (layoutAttr.hasShardedTensorMemoryLayout()) {
-    return op->emitError("sharded memory layout not yet supported for tensor "
-                         "accessor; see GH issue #118");
-  }
-
-  // Reject row-major (non-tiled) layouts - not yet supported (see GH #173).
-  // Python error: "Only tiled CBs supported"
-  if (!layoutAttr.isTiled()) {
-    return op->emitError("row-major (non-tiled) layout not yet supported for "
-                         "tensor accessor; see GH issue #173");
-  }
-
-  auto loc = tensor.getLoc();
-
-  // Derive page size from the actual layout encoding.
-  // For tiled interleaved layouts, page size = tile size in bytes.
-  int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
-
-  auto ctaIndex = computeCTAIndex(tensor, op);
-  if (failed(ctaIndex)) {
+  auto pageSizeBytes = getValidatedPageSize(tensor, op);
+  if (failed(pageSizeBytes)) {
     return failure();
   }
 
@@ -527,12 +517,19 @@ materializeTensorAccessor(Value tensor, Value bankBase, Operation *op,
   if (failed(argIdx)) {
     return failure();
   }
-  int32_t crtaIndex = static_cast<int32_t>(*argIdx);
 
-  auto pageSize = rewriter.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
+  auto loc = tensor.getLoc();
 
-  return buildTensorAccessor(loc, rewriter, *ctaIndex, crtaIndex, bankBase,
-                             pageSize);
+  auto ctaIndex = computeCTAIndex(*argIdx, op);
+  if (failed(ctaIndex)) {
+    return failure();
+  }
+
+  auto pageSize =
+      rewriter.create<arith::ConstantIntOp>(loc, *pageSizeBytes, 32);
+
+  return buildTensorAccessor(loc, rewriter, *ctaIndex,
+                             static_cast<int32_t>(*argIdx), bankBase, pageSize);
 }
 
 /// Extract tile grid shape from a Value if it's a static tensor.
@@ -634,19 +631,15 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
   int64_t tensorTilesX = tensorTileGridShape.second;
 
   // Get page size for CB address arithmetic.
-  auto tensorTy = mlir::cast<RankedTensorType>(tensor.getType());
-  auto layoutAttr =
-      mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
-  if (!layoutAttr) {
-    return rewriter.notifyMatchFailure(
-        op, "tensor must have TTNNLayoutAttr encoding");
+  auto pageSizeBytes = getValidatedPageSize(tensor, op);
+  if (failed(pageSizeBytes)) {
+    return failure();
   }
-  int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
 
   auto indexTy = rewriter.getIndexType();
   auto cbPtrIdx = rewriter.create<arith::IndexCastOp>(loc, indexTy, cbPtr);
   auto pageSizeIdx =
-      rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
+      rewriter.create<arith::ConstantIndexOp>(loc, *pageSizeBytes);
   auto i32Ty = rewriter.getI32Type();
 
   emitTileLoop(
