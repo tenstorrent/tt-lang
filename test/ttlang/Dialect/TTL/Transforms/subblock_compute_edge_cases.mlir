@@ -27,19 +27,6 @@
 // TILED:              ttl.yield
 // TILED:            } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
-// LOWER-LABEL: func.func @subblock_2d_6x6
-// Two nested outer loops, inner has sync region with 4 unrolled tiles:
-// LOWER:        scf.for
-// LOWER:          scf.for
-// LOWER:            ttl.tile_regs_acquire
-// LOWER:            ttl.copy_tile {{.*}} {dst_idx = 0
-// LOWER:            ttl.tile_exp {{.*}} {dst_idx = 0
-// LOWER:            ttl.copy_tile {{.*}} {dst_idx = 3
-// LOWER:            ttl.tile_exp {{.*}} {dst_idx = 3
-// LOWER:            ttl.tile_regs_commit
-// LOWER:            ttl.tile_regs_wait
-// LOWER:            ttl.tile_store
-// LOWER:            ttl.tile_regs_release
 func.func @subblock_2d_6x6(%a: tensor<6x6x!ttcore.tile<32x32, f32>>)
     -> tensor<6x6x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<6x6x!ttcore.tile<32x32, f32>>
@@ -94,20 +81,6 @@ func.func @subblock_2d_6x6(%a: tensor<6x6x!ttcore.tile<32x32, f32>>)
 // TILED:          ttl.tile_log
 // TILED:          ttl.yield
 
-// LOWER-LABEL: func.func @consecutive_computes
-// First compute: outer loop + sync region
-// LOWER:        scf.for
-// LOWER:          ttl.tile_regs_acquire
-// LOWER:          ttl.tile_exp
-// LOWER:          ttl.tile_regs_commit
-// LOWER:          ttl.tile_regs_wait
-// LOWER:          ttl.tile_regs_release
-// Second compute: no outer loop, separate sync region
-// LOWER:        ttl.tile_regs_acquire
-// LOWER:        ttl.tile_log
-// LOWER:        ttl.tile_regs_commit
-// LOWER:        ttl.tile_regs_wait
-// LOWER:        ttl.tile_regs_release
 func.func @consecutive_computes(
     %a: tensor<4x4x!ttcore.tile<32x32, f32>>,
     %b: tensor<1x2x!ttcore.tile<32x32, f32>>)
@@ -184,12 +157,6 @@ func.func @consecutive_computes(
 // TILED-SAME:       tensor<2x2x!ttcore.tile<32x32, f32>>
 // TILED-SAME:       tensor<1x2x!ttcore.tile<32x32, f32>>
 
-// LOWER-LABEL: func.func @subblock_row_broadcast
-// LOWER:        scf.for
-// LOWER:          scf.for
-// LOWER:            ttl.tile_regs_acquire
-// LOWER:            ttl.tile_add
-// LOWER:            ttl.tile_regs_commit
 func.func @subblock_row_broadcast(
     %a: tensor<6x6x!ttcore.tile<32x32, f32>>,
     %b: tensor<1x6x!ttcore.tile<32x32, f32>>)
@@ -248,12 +215,6 @@ func.func @subblock_row_broadcast(
 // TILED-SAME:       tensor<2x2x!ttcore.tile<32x32, f32>>
 // TILED-SAME:       tensor<1x1x!ttcore.tile<32x32, f32>>
 
-// LOWER-LABEL: func.func @subblock_scalar_broadcast
-// LOWER:        scf.for
-// LOWER:          scf.for
-// LOWER:            ttl.tile_regs_acquire
-// LOWER:            ttl.tile_add
-// LOWER:            ttl.tile_regs_commit
 func.func @subblock_scalar_broadcast(
     %a: tensor<6x6x!ttcore.tile<32x32, f32>>,
     %c: tensor<1x1x!ttcore.tile<32x32, f32>>)

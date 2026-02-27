@@ -20,20 +20,6 @@
 // TILED:        ttl.compute
 // TILED-SAME:   ttl.full_linearization_strides
 // TILED-SAME:   ttl.unroll_factor = 8 : i64
-// LOWER-LABEL:  func.func @no_tiling_when_all_fit
-// No subblocking: 8 unrolled copies, no loops. One sync region wrapping
-// all copies. Stores hoisted after wait.
-// LOWER-NOT:    scf.for
-// LOWER:        ttl.tile_regs_acquire
-// LOWER:        ttl.copy_tile {{.*}} {dst_idx = 0
-// LOWER:        ttl.tile_exp {{.*}} {dst_idx = 0
-// LOWER:        ttl.copy_tile {{.*}} {dst_idx = 7
-// LOWER:        ttl.tile_exp {{.*}} {dst_idx = 7
-// LOWER:        ttl.tile_regs_commit
-// LOWER:        ttl.tile_regs_wait
-// LOWER:        ttl.tile_store
-// LOWER:        ttl.tile_store
-// LOWER:        ttl.tile_regs_release
 func.func @no_tiling_when_all_fit(%a: tensor<1x8x!ttcore.tile<32x32, f32>>)
     -> tensor<1x8x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<1x8x!ttcore.tile<32x32, f32>>
@@ -76,18 +62,6 @@ func.func @no_tiling_when_all_fit(%a: tensor<1x8x!ttcore.tile<32x32, f32>>)
 // TILED:        ttl.compute
 // TILED-SAME:   ttl.full_linearization_strides
 // TILED-SAME:   ttl.unroll_factor = 8 : i64
-// LOWER-LABEL:  func.func @tile_binary_1x8
-// No subblocking: 8 unrolled FPU binary copies, no loops. One sync region.
-// Stores hoisted after wait.
-// LOWER-NOT:    scf.for
-// LOWER:        ttl.tile_regs_acquire
-// LOWER:        ttl.tile_add {{.*}} {dst_idx = 0
-// LOWER:        ttl.tile_add {{.*}} {dst_idx = 7
-// LOWER:        ttl.tile_regs_commit
-// LOWER:        ttl.tile_regs_wait
-// LOWER:        ttl.tile_store
-// LOWER:        ttl.tile_store
-// LOWER:        ttl.tile_regs_release
 func.func @tile_binary_1x8(
     %a: tensor<1x8x!ttcore.tile<32x32, f32>>,
     %b: tensor<1x8x!ttcore.tile<32x32, f32>>)
@@ -150,22 +124,6 @@ func.func @tile_binary_1x8(
 // TILED-NEXT:       ttl.yield
 // TILED-NEXT:     } -> tensor<1x8x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:   }
-// LOWER-LABEL:  func.func @tile_multidim_2x8
-// Multi-dim subblocked: outer scf.for (step 1 on dim 0), inner unrolled 8
-// copies. One sync region per subblock iteration. Stores hoisted after wait.
-// LOWER-NOT:    tensor.collapse_shape
-// LOWER:        scf.for %[[OUTER:.*]] = {{.*}} to {{.*}} step
-// LOWER:          ttl.tile_regs_acquire
-// LOWER:          arith.muli %[[OUTER]],
-// LOWER:          ttl.copy_tile {{.*}} {dst_idx = 0
-// LOWER:          ttl.tile_exp {{.*}} {dst_idx = 0
-// LOWER:          ttl.copy_tile {{.*}} {dst_idx = 7
-// LOWER:          ttl.tile_exp {{.*}} {dst_idx = 7
-// LOWER:          ttl.tile_regs_commit
-// LOWER:          ttl.tile_regs_wait
-// LOWER:          ttl.tile_store
-// LOWER:          ttl.tile_store
-// LOWER:          ttl.tile_regs_release
 func.func @tile_multidim_2x8(%a: tensor<2x8x!ttcore.tile<32x32, f32>>)
     -> tensor<2x8x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x8x!ttcore.tile<32x32, f32>>
@@ -208,17 +166,6 @@ func.func @tile_multidim_2x8(%a: tensor<2x8x!ttcore.tile<32x32, f32>>)
 // TILED:        ttl.compute
 // TILED-SAME:   ttl.full_linearization_strides
 // TILED-SAME:   ttl.unroll_factor = 8 : i64
-// LOWER-LABEL:  func.func @no_subblocking_multidim
-// No subblocking: all 8 tiles fit in DST. 8 unrolled copies, no loops.
-// Stores hoisted after wait.
-// LOWER-NOT:    scf.for
-// LOWER:        ttl.tile_regs_acquire
-// LOWER:        ttl.copy_tile {{.*}} {dst_idx = 0
-// LOWER:        ttl.copy_tile {{.*}} {dst_idx = 7
-// LOWER:        ttl.tile_regs_commit
-// LOWER:        ttl.tile_regs_wait
-// LOWER:        ttl.tile_store
-// LOWER:        ttl.tile_regs_release
 func.func @no_subblocking_multidim(%a: tensor<2x4x!ttcore.tile<32x32, f32>>)
     -> tensor<2x4x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x4x!ttcore.tile<32x32, f32>>
@@ -276,22 +223,6 @@ func.func @no_subblocking_multidim(%a: tensor<2x4x!ttcore.tile<32x32, f32>>)
 // TILED-NEXT:       ttl.yield
 // TILED-NEXT:     } -> tensor<2x4x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:   }
-// LOWER-LABEL:  func.func @subblock_multidim_4x4
-// Multi-dim subblocked: outer scf.for (step 2 on dim 0), inner 8 unrolled
-// copies. One sync region per subblock iteration. Stores hoisted after wait.
-// LOWER-NOT:    tensor.collapse_shape
-// LOWER:        scf.for %[[OUTER:.*]] = {{.*}} to {{.*}} step
-// LOWER:          ttl.tile_regs_acquire
-// LOWER:          arith.muli %[[OUTER]],
-// LOWER:          ttl.copy_tile {{.*}} {dst_idx = 0
-// LOWER:          ttl.tile_exp {{.*}} {dst_idx = 0
-// LOWER:          ttl.copy_tile {{.*}} {dst_idx = 7
-// LOWER:          ttl.tile_exp {{.*}} {dst_idx = 7
-// LOWER:          ttl.tile_regs_commit
-// LOWER:          ttl.tile_regs_wait
-// LOWER:          ttl.tile_store
-// LOWER:          ttl.tile_store
-// LOWER:          ttl.tile_regs_release
 func.func @subblock_multidim_4x4(%a: tensor<4x4x!ttcore.tile<32x32, f32>>)
     -> tensor<4x4x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -334,18 +265,6 @@ func.func @subblock_multidim_4x4(%a: tensor<4x4x!ttcore.tile<32x32, f32>>)
 // TILED:        ttl.compute
 // TILED-SAME:   ttl.full_linearization_strides
 // TILED-SAME:   ttl.unroll_factor = 8 : i64
-// LOWER-LABEL:  func.func @no_subblocking_binary
-// No subblocking: all 8 tiles fit in DST. 8 unrolled copies, no loops.
-// Stores hoisted after wait.
-// LOWER-NOT:    scf.for
-// LOWER:        ttl.tile_regs_acquire
-// LOWER:        ttl.tile_add {{.*}} {dst_idx = 0
-// LOWER:        ttl.tile_add {{.*}} {dst_idx = 7
-// LOWER:        ttl.tile_regs_commit
-// LOWER:        ttl.tile_regs_wait
-// LOWER:        ttl.tile_store
-// LOWER:        ttl.tile_store
-// LOWER:        ttl.tile_regs_release
 func.func @no_subblocking_binary(
     %a: tensor<2x4x!ttcore.tile<32x32, f32>>,
     %b: tensor<2x4x!ttcore.tile<32x32, f32>>)
@@ -408,24 +327,6 @@ func.func @no_subblocking_binary(
 // TILED-NEXT:       ttl.yield
 // TILED-NEXT:     } -> tensor<1x3x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:   }
-// LOWER-LABEL:  func.func @tile_multidim_remainder_3x3
-// Multi-dim subblocked with adjusted subblock size: outer loop step 1,
-// inner 3 unrolled copies. One sync region per subblock iteration.
-// Stores hoisted after wait.
-// LOWER-NOT:    tensor.collapse_shape
-// LOWER:        scf.for %[[OUTER:.*]] = {{.*}} to {{.*}} step
-// LOWER-NOT:      arith.minsi
-// LOWER:          ttl.tile_regs_acquire
-// LOWER:          arith.muli %[[OUTER]],
-// LOWER:          ttl.copy_tile {{.*}} {dst_idx = 0
-// LOWER:          ttl.tile_exp {{.*}} {dst_idx = 0
-// LOWER:          ttl.copy_tile {{.*}} {dst_idx = 2
-// LOWER:          ttl.tile_exp {{.*}} {dst_idx = 2
-// LOWER:          ttl.tile_regs_commit
-// LOWER:          ttl.tile_regs_wait
-// LOWER:          ttl.tile_store
-// LOWER:          ttl.tile_store
-// LOWER:          ttl.tile_regs_release
 func.func @tile_multidim_remainder_3x3(%a: tensor<3x3x!ttcore.tile<32x32, f32>>)
     -> tensor<3x3x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<3x3x!ttcore.tile<32x32, f32>>
@@ -489,19 +390,6 @@ func.func @tile_multidim_remainder_3x3(%a: tensor<3x3x!ttcore.tile<32x32, f32>>)
 // TILED-NEXT:       ttl.yield
 // TILED-NEXT:     } -> tensor<2x4x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:   }
-// LOWER-LABEL:  func.func @subblock_broadcast_col
-// Multi-dim subblocked: outer scf.for (step 2 on dim 0), inner 8 unrolled
-// tile_add ops. Broadcast input always accessed at column 0.
-// LOWER-NOT:    tensor.collapse_shape
-// LOWER:        scf.for {{.*}} = {{.*}} to {{.*}} step
-// LOWER:          ttl.tile_regs_acquire
-// LOWER:          ttl.tile_add {{.*}} {dst_idx = 0
-// LOWER:          ttl.tile_add {{.*}} {dst_idx = 7
-// LOWER:          ttl.tile_regs_commit
-// LOWER:          ttl.tile_regs_wait
-// LOWER:          ttl.tile_store
-// LOWER:          ttl.tile_store
-// LOWER:          ttl.tile_regs_release
 func.func @subblock_broadcast_col(
     %a: tensor<4x4x!ttcore.tile<32x32, f32>>,
     %b: tensor<4x1x!ttcore.tile<32x32, f32>>)

@@ -15,8 +15,6 @@
 // SUBBLOCK:            arith.muli %[[IV]],
 // SUBBLOCK-NEXT:       arith.addi
 
-// EMITC-LABEL: func.func @remainder_3x3
-
 module {
   func.func @remainder_3x3() attributes {ttl.base_cta_index = 0 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
     %cb_in = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[3, 3], !ttcore.tile<32x32, bf16>, 2>

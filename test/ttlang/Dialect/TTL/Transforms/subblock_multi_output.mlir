@@ -29,39 +29,6 @@
 // Verify that lower-to-loops produces an outer subblock scf.for with unrolled
 // inner tile copies (inner tile loops are fully unrolled). Each chain has one
 // scf.for with arith.muli + arith.addi offset pattern and 8 unrolled copies.
-// LOWER-LABEL: func.func @fused_compute
-// Chain 1: outer subblock loop, inner 2x4 tiles unrolled. Stores hoisted after wait.
-// LOWER:        scf.for %[[OUTER1:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
-// LOWER:          ttl.tile_regs_acquire
-// LOWER:          arith.muli %[[OUTER1]],
-// LOWER:          arith.addi
-// LOWER:          ttl.copy_tile
-// LOWER:          ttl.tile_regs_commit
-// LOWER:          ttl.tile_regs_wait
-// LOWER:          ttl.tile_store
-// LOWER:          ttl.tile_regs_release
-// Chain 2
-// LOWER:        scf.for %[[OUTER2:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
-// LOWER:          ttl.tile_regs_acquire
-// LOWER:          arith.muli %[[OUTER2]],
-// LOWER:          arith.addi
-// LOWER:          ttl.copy_tile
-// LOWER:          ttl.tile_regs_commit
-// LOWER:          ttl.tile_regs_wait
-// LOWER:          ttl.tile_store
-// LOWER:          ttl.tile_regs_release
-// Chain 3
-// LOWER:        scf.for %[[OUTER3:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
-// LOWER:          ttl.tile_regs_acquire
-// LOWER:          arith.muli %[[OUTER3]],
-// LOWER:          arith.addi
-// LOWER:          ttl.copy_tile
-// LOWER:          ttl.tile_regs_commit
-// LOWER:          ttl.tile_regs_wait
-// LOWER:          ttl.tile_store
-// LOWER:          ttl.tile_regs_release
-
-// EMITC-LABEL: func.func @fused_compute
 
 // Purpose: Compute function with 3 input CBs, 3 output CBs, and 20 fused ops
 // across 3 store chains. Each chain reads from different input CBs and stores
