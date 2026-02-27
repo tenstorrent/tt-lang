@@ -1,6 +1,7 @@
 // Summary: verify DST assignment and copy insertion on 4D tensors
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 separate-output-region=1}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 enable-fpu-binary-ops=0}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SFPU
 
 // Verify no placeholder copies remain in final IR
 // CHECK-NOT: placeholder
@@ -32,6 +33,18 @@ func.func @add_4d(%a: tensor<3x6x4x2x!ttcore.tile<32x32, f32>>,
 // SEPARATE-LABEL: func.func @add_4d
 // SEPARATE:      %[[ADDS:.*]] = ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
 // SEPARATE-NEXT: ttl.yield %[[ADDS]]
+//
+// SFPU path: verify 4D linearization (d0*48 + d1*8 + d2*2 + d3) and copy_tile
+// Map appears at module scope, so check before the label.
+// SFPU-DAG:     [[$MAP:#map[0-9]*]] = affine_map<(d0, d1, d2, d3) -> (d0 * 48 + d1 * 8 + d2 * 2 + d3)>
+// SFPU-LABEL: func.func @add_4d
+// SFPU:         ttl.compute
+// SFPU:         ^bb0(%[[AS:.*]]: !ttcore.tile<32x32, f32>, %[[BS:.*]]: !ttcore.tile<32x32, f32>, %{{.*}}: !ttcore.tile<32x32, f32>):
+// SFPU-NEXT:      %[[LIN:.*]] = ttl.linearized_index [[$MAP]]
+// SFPU-NEXT:      %{{.*}}, %[[DA:.*]] = ttl.copy_tile %[[AS]], %[[LIN]], %{{.*}} {dst_idx = 0 : i32}
+// SFPU-NEXT:      %{{.*}}, %[[DB:.*]] = ttl.copy_tile %[[BS]], %[[LIN]], %{{.*}} {dst_idx = 1 : i32}
+// SFPU-NEXT:      %[[ADDS:.*]] = ttl.tile_add %[[DA]], %[[DB]] {dst_idx = 0 : i32}
+// SFPU-NEXT:      ttl.yield %[[ADDS]]
   %result = ttl.compute
       ins(%a_cb, %b_cb : tensor<3x6x4x2x!ttcore.tile<32x32, f32>>,
                          tensor<3x6x4x2x!ttcore.tile<32x32, f32>>)

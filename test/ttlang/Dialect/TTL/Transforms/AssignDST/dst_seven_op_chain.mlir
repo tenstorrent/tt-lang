@@ -60,8 +60,8 @@
 // SFPU-NEXT:        ttl.tile_regs_release
 // SFPU-NEXT:        ttl.yield %[[SQRTS]]
 //
-// CHECK:             %[[VIEW:.*]] = ttl.cb_reserve %[[CB2]]
-// CHECK:             ttl.tile_regs_commit
+// CHECK-NEXT:        %[[VIEW:.*]] = ttl.cb_reserve %[[CB2]]
+// CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        ttl.tile_store %[[SQRT]], %[[VIEW]]
 // CHECK-NEXT:        ttl.tile_regs_release

@@ -671,17 +671,23 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       OpBuilder builder(body, body->begin());
 
       //=== Phase 0: FPU Binary Detection ===
-      // Mark add/sub/mul ops as FPU-eligible when both operands are block
-      // arguments (CB-backed). FPU reads from CB, needing 0 DST input slots.
+      // Mark add/sub/mul ops as FPU-eligible when both operands are input
+      // block arguments (CB-backed). FPU reads from CB, needing 0 DST input
+      // slots. Output block arguments are excluded because they may represent
+      // accumulation patterns that require DST copy_tile.
       LLVM_DEBUG(llvm::dbgs() << "=== Phase 0: FPU Binary Detection ===\n");
       if (enableFPUBinaryOps) {
+        unsigned numInputs = computeOp.getNumInputs();
         for (Operation &op : *body) {
           if (!isa<AddTileOp, SubTileOp, MulTileOp>(&op)) {
             continue;
           }
           Value lhs = op.getOperand(0);
           Value rhs = op.getOperand(1);
-          if (isa<BlockArgument>(lhs) && isa<BlockArgument>(rhs)) {
+          auto lhsArg = dyn_cast<BlockArgument>(lhs);
+          auto rhsArg = dyn_cast<BlockArgument>(rhs);
+          if (lhsArg && rhsArg && lhsArg.getArgNumber() < numInputs &&
+              rhsArg.getArgNumber() < numInputs) {
             op.setAttr(kFPUBinaryAttrName, builder.getUnitAttr());
             LLVM_DEBUG({
               llvm::dbgs() << "Phase 0: Marked FPU binary: " << op.getName()

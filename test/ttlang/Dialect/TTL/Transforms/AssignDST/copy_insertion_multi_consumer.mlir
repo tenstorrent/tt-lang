@@ -92,6 +92,8 @@ func.func @multi_consumer_two_unary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // IR: ^bb0
 // tile_mul is FPU binary (both operands are block args) - no copy_tile for mul operands
 // IR: %[[MUL:.*]] = ttl.tile_mul %{{.*}}, %{{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
+// No copy_dst needed - binary consumers don't modify their DST inputs
+// IR-NOT: ttl.copy_dst
 // Third operand (c_tile) needs copy_tile since it's a block arg used by non-FPU-binary ops
 // IR: ttl.copy_tile
 // IR: %[[ADD1:.*]] = ttl.tile_add %[[MUL]], %{{.*}} {dst_idx = 2 : i32}
