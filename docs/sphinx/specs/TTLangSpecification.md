@@ -18,6 +18,7 @@
 * [9. Semaphore](#9-semaphore)
 * [Appendix A. Glossary](#appendix-a-glossary)
 * [Appendix B. Block operators and math functions](#appendix-b-block-operators-and-math-functions)
+* [Appendix C. Naming guidelines](#appendix-c-naming-guidelines)
 
 ## 0. Versions
 
@@ -863,3 +864,13 @@ def dm():
 | `ttl.math.mask(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with 0. |
 | `ttl.math.mask_posinf(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with positive infinity. |
 | `ttl.math.where(condition: ttl.BlockExpr, true_value: ttl.BlockExpr, false_value: ttl.BlockExpr) -> ttl.BlockExpr` | For each element in specified condition block return the corresponding element from `true_value` if true (condition element equals to 1) or the element from `false_value` if false (condition element equals to 0) |
+
+## Appendix C. Naming guidelines
+
+| Object | Guideline |
+| :---- | :---- |
+| Tensor | Snake case. Example `attention_mask`, `bias2`. |
+| Dataflow buffer | Snake case with `dfb` suffix. Example `attention_mask_dfb`, `bias_dfb2` |
+| Block | Snake case with `blk` suffix. Example `attention_mask_blk`, `bias_blk2` |
+| Transfer handle | Snake case with `xf` suffix. Example `attention_mask_xf`, `bias_xf2` |
+| Pipe net | Snake case with `net` suffix. Example `mcast_attention_mask_net`, `bias_net2` |
