@@ -62,6 +62,3 @@ generated/pykernels/*
 **/temp/
 
 test/temp
-
-# Old simulator setup script
-setup_simulator.sh
