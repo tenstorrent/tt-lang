@@ -105,6 +105,54 @@ def TTLSetComputeKernelConfig
   ];
 }
 
+def TTLSubblockComputeForDST
+    : Pass<"ttl-subblock-compute-for-dst", "::mlir::func::FuncOp"> {
+  let summary = "Partition ttl.compute into DST-sized subblocks";
+  let description = [{
+    Partitions the iteration space of `ttl.compute` operations into subblocks
+    that fit in the DST register file. Uses the `ttl.unroll_factor` attribute
+    (set by `ttl-assign-dst`) to determine the subblock size.
+
+    `ComputeOp` implements `TilingInterface`, and this pass tiles it along its
+    iteration dimensions to produce smaller inner `ttl.compute` ops wrapped in
+    `scf.for` loops -- analogous to tiling `linalg` structured ops.
+
+    For each `ttl.compute` with `ttl.unroll_factor > 1`, generates an outer
+    `scf.for` loop with `tensor.extract_slice` ops to create sub-tensors for
+    each subblock. The inner `ttl.compute` operates on the smaller sub-tensors
+    and carries `ttl.full_linearization_strides` for index adjustment.
+
+    Example (4x4 tensor, DST capacity 8, subblock 2x4):
+    ```mlir
+    // Before (16 tiles, unroll_factor=8):
+    %r = ttl.compute ins(%a) outs(%init)
+        {ttl.unroll_factor = 8 : i64} {
+      ^bb0(%a_tile, %out_tile):
+        %exp = ttl.tile_exp %a_tile
+        ttl.yield %exp
+    } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+
+    // After (outer loop over dim 0 in steps of 2):
+    scf.for %iv = %c0 to %c4 step %c2 {
+      %s_in  = tensor.extract_slice %a[%iv, 0] [2, 4] [1, 1]
+      %s_out = tensor.extract_slice %init[%iv, 0] [2, 4] [1, 1]
+      ttl.compute ins(%s_in) outs(%s_out)
+          {ttl.full_linearization_strides = dense<[4, 1]>} {
+        ^bb0(%a_tile, %out_tile):
+          %exp = ttl.tile_exp %a_tile
+          ttl.yield %exp
+      } -> tensor<2x4x!ttcore.tile<32x32, f32>>
+    }
+    ```
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
+    "::mlir::tensor::TensorDialect"
+  ];
+}
+
 def TTLInsertTileRegsSync
     : Pass<"ttl-insert-tile-regs-sync", "::mlir::func::FuncOp"> {
   let summary = "Insert tile_regs_* synchronization ops around ttl.compute";

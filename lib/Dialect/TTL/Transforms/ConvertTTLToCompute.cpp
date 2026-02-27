@@ -62,15 +62,22 @@ static Value getReserveViewFromStore(StoreOp storeOp) {
   return Value();
 }
 
-/// Find unused bind_cb ops in the function that can be used for output CBs.
-/// Returns bind_cb ops that are not used by any attach_cb op.
-// TODO: Use AnalysisManager to cache CB usage analysis and avoid re-walking
-// the function for each operation.
-static SmallVector<BindCBOp> findUnusedBindCBs(Operation *op) {
-  SmallVector<BindCBOp> unused;
+/// Find the output CB for an operation. The output CB may already be wired
+/// via attach_cb (e.g., for stores), or it may only exist as a bind_cb that
+/// hasn't been claimed by any attach_cb yet. The latter happens when the
+/// user's Python code declares the output CB but the tensor-level
+/// store/attach wiring hasn't been established at this point in the pipeline.
+///
+/// TODO(#338): Establish output CB wiring before this pass runs so the
+/// unclaimed-bind_cb fallback is unnecessary.
+static FailureOr<Value> findOrAllocateOutputCB(Operation *op) {
+  Value outCb = findOutputCB(op);
+  if (outCb) {
+    return outCb;
+  }
   auto parentFunc = op->getParentOfType<func::FuncOp>();
   if (!parentFunc) {
-    return unused;
+    return op->emitError("op not in function");
   }
 
   // Collect all bind_cb ops and used CBs in a single walk.
@@ -84,14 +91,13 @@ static SmallVector<BindCBOp> findUnusedBindCBs(Operation *op) {
     }
   });
 
-  // Return unused ones
   for (auto bindOp : allBindCBs) {
     if (!usedCBs.contains(bindOp.getResult())) {
-      unused.push_back(bindOp);
+      return bindOp.getResult();
     }
   }
-
-  return unused;
+  return op->emitError("no unused bind_cb found for output; ensure a "
+                       "ttl.bind_cb exists for the output tensor");
 }
 
 //===----------------------------------------------------------------------===//
@@ -130,32 +136,51 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   }
 
   // Find output CB
-  Value outCb = findOutputCB(sinkOp);
-  if (!outCb) {
-    auto unusedCBs = findUnusedBindCBs(sinkOp);
-    if (unusedCBs.empty()) {
-      return sinkOp->emitError("no unused bind_cb found for output");
-    }
-    outCb = unusedCBs.front().getResult();
+  auto outCbResult = findOrAllocateOutputCB(sinkOp);
+  if (failed(outCbResult)) {
+    return failure();
   }
+  Value outCb = *outCbResult;
 
   Location loc = sinkOp->getLoc();
   MLIRContext *ctx = rewriter.getContext();
 
-  // Build indexing maps: identity for each input and output
+  // Build indexing maps: broadcast-aware for inputs, identity for output.
+  // When an input has size 1 in a dimension but the output doesn't, that
+  // dimension is broadcast and the map should project to constant 0.
+  // This is required for TilingInterface: without correct maps, subblocking
+  // would create out-of-bounds slices on broadcast dimensions.
   SmallVector<Attribute> maps;
   AffineMap identityMap =
       AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
   for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
-    maps.push_back(AffineMapAttr::get(identityMap));
+    auto inputType = getTensorType(trace.rootInputs[i]);
+    if (inputType && inputType.getRank() == type.getRank()) {
+      SmallVector<AffineExpr> exprs;
+      bool hasBroadcast = false;
+      for (int64_t d = 0; d < type.getRank(); ++d) {
+        if (inputType.getDimSize(d) == 1 && type.getDimSize(d) != 1) {
+          exprs.push_back(getAffineConstantExpr(0, ctx));
+          hasBroadcast = true;
+        } else {
+          exprs.push_back(getAffineDimExpr(d, ctx));
+        }
+      }
+      if (hasBroadcast) {
+        maps.push_back(
+            AffineMapAttr::get(AffineMap::get(type.getRank(), 0, exprs, ctx)));
+      } else {
+        maps.push_back(AffineMapAttr::get(identityMap));
+      }
+    } else {
+      maps.push_back(AffineMapAttr::get(identityMap));
+    }
   }
   maps.push_back(AffineMapAttr::get(identityMap)); // output
 
   // Build iterator types: all parallel
-  SmallVector<Attribute> iterTypes;
-  for (int64_t i = 0; i < type.getRank(); ++i) {
-    iterTypes.push_back(rewriter.getStringAttr("parallel"));
-  }
+  SmallVector<Attribute> iterTypes(type.getRank(),
+                                   rewriter.getStringAttr("parallel"));
 
   // Create init tensor and attach to output CB
   Value init = buildInitTensor(rewriter, loc, type, trace.rootInputs[0]);
@@ -270,36 +295,24 @@ static LogicalResult buildBinaryCompute(Operation *op,
     return failure();
   }
 
-  // Find the output CB. First check if there's an attach_cb that uses this
-  // result, and use that CB. Otherwise, find an unused bind_cb.
-  Value outCb = findOutputCB(op);
-  if (!outCb) {
-    auto unusedCBs = findUnusedBindCBs(op);
-    if (unusedCBs.empty()) {
-      return op->emitError("no unused bind_cb found for output; ensure a "
-                           "ttl.bind_cb exists for the output tensor");
-    }
-    outCb = unusedCBs.front().getResult();
+  // Find the output CB (attached or unclaimed bind_cb).
+  auto outCbResult = findOrAllocateOutputCB(op);
+  if (failed(outCbResult)) {
+    return failure();
   }
+  Value outCb = *outCbResult;
 
   Location loc = op->getLoc();
   MLIRContext *ctx = rewriter.getContext();
 
   // Build identity indexing maps: (d0, d1, ...) -> (d0, d1, ...)
-  SmallVector<Attribute> maps;
   AffineMap identityMap =
       AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
-  // inputs
-  maps.push_back(AffineMapAttr::get(identityMap));
-  maps.push_back(AffineMapAttr::get(identityMap));
-  // outputs
-  maps.push_back(AffineMapAttr::get(identityMap));
+  SmallVector<Attribute> maps(3, AffineMapAttr::get(identityMap));
 
   // Build iterator types: all parallel
-  SmallVector<Attribute> iterTypes;
-  for (int64_t i = 0; i < type.getRank(); ++i) {
-    iterTypes.push_back(rewriter.getStringAttr("parallel"));
-  }
+  SmallVector<Attribute> iterTypes(type.getRank(),
+                                   rewriter.getStringAttr("parallel"));
 
   // Create init tensor and attach to output CB.
   Value init = buildInitTensor(rewriter, loc, type, lhs);
@@ -354,35 +367,24 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
     return failure();
   }
 
-  // Find the output CB. First check if there's an attach_cb that uses this
-  // result, and use that CB. Otherwise, find an unused bind_cb.
-  Value outCb = findOutputCB(op);
-  if (!outCb) {
-    auto unusedCBs = findUnusedBindCBs(op);
-    if (unusedCBs.empty()) {
-      return op->emitError("no unused bind_cb found for output; ensure a "
-                           "ttl.bind_cb exists for the output tensor");
-    }
-    outCb = unusedCBs.front().getResult();
+  // Find the output CB (attached or unclaimed bind_cb).
+  auto outCbResult = findOrAllocateOutputCB(op);
+  if (failed(outCbResult)) {
+    return failure();
   }
+  Value outCb = *outCbResult;
 
   Location loc = op->getLoc();
   MLIRContext *ctx = rewriter.getContext();
 
   // Build identity indexing maps: (d0, d1, ...) -> (d0, d1, ...)
-  SmallVector<Attribute> maps;
   AffineMap identityMap =
       AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
-  // input
-  maps.push_back(AffineMapAttr::get(identityMap));
-  // output
-  maps.push_back(AffineMapAttr::get(identityMap));
+  SmallVector<Attribute> maps(2, AffineMapAttr::get(identityMap));
 
   // Build iterator types: all parallel
-  SmallVector<Attribute> iterTypes;
-  for (int64_t i = 0; i < type.getRank(); ++i) {
-    iterTypes.push_back(rewriter.getStringAttr("parallel"));
-  }
+  SmallVector<Attribute> iterTypes(type.getRank(),
+                                   rewriter.getStringAttr("parallel"));
 
   // Create init tensor and attach to output CB.
   Value init = buildInitTensor(rewriter, loc, type, input);

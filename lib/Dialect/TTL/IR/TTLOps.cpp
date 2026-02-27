@@ -6,8 +6,12 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 
 #include "TTLOpsVerifyUtils.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/StructuredOpsUtils.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectImplementation.h" // IWYU pragma: keep
+#include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h" // IWYU pragma: keep
@@ -272,6 +276,193 @@ void mlir::tt::ttl::ComputeOp::print(mlir::OpAsmPrinter &p) {
 
 mlir::MutableOperandRange mlir::tt::ttl::ComputeOp::getDpsInitsMutable() {
   return getOutputsMutable();
+}
+
+//===----------------------------------------------------------------------===//
+// ComputeOp - Helper methods (supplements IndexingMapOpInterface defaults)
+//===----------------------------------------------------------------------===//
+
+/// Convert the iterator_types attribute from string attrs ("parallel",
+/// "reduction") to the utils::IteratorType enum.
+mlir::SmallVector<mlir::utils::IteratorType>
+mlir::tt::ttl::ComputeOp::getIteratorTypesArray() {
+  mlir::SmallVector<mlir::utils::IteratorType> result;
+  for (mlir::Attribute attr : getIteratorTypes()) {
+    auto strAttr = mlir::cast<mlir::StringAttr>(attr);
+    if (strAttr.getValue() == "parallel") {
+      result.push_back(mlir::utils::IteratorType::parallel);
+    } else {
+      result.push_back(mlir::utils::IteratorType::reduction);
+    }
+  }
+  return result;
+}
+
+/// Collect every dimension of every operand (inputs then outputs) into a flat
+/// list. Static dimensions become IndexAttrs; dynamic dimensions become
+/// tensor::DimOp results.
+mlir::SmallVector<mlir::OpFoldResult>
+mlir::tt::ttl::ComputeOp::createFlatListOfOperandDims(mlir::OpBuilder &b,
+                                                      mlir::Location loc) {
+  mlir::SmallVector<mlir::OpFoldResult> allDims;
+  for (mlir::Value operand :
+       llvm::concat<mlir::Value>(getInputs(), getOutputs())) {
+    auto ty = mlir::cast<mlir::RankedTensorType>(operand.getType());
+    for (int64_t i = 0; i < ty.getRank(); ++i) {
+      if (ty.isDynamicDim(i)) {
+        allDims.push_back(
+            b.create<mlir::tensor::DimOp>(loc, operand, i).getResult());
+      } else {
+        allDims.push_back(b.getIndexAttr(ty.getDimSize(i)));
+      }
+    }
+  }
+  return allDims;
+}
+
+//===----------------------------------------------------------------------===//
+// ComputeOp - TilingInterface implementations (used for subblocking)
+//===----------------------------------------------------------------------===//
+
+/// Map iteration-domain offsets/sizes to operand-space offsets/sizes/strides
+/// via the indexing map. Simplified version of linalg's computeSliceParameters
+/// (mlir/lib/Dialect/Linalg/Utils/Utils.cpp) for projected-permutation maps.
+static void
+mapOffsetsAndSizes(mlir::OpBuilder &b, mlir::Location loc, mlir::AffineMap map,
+                   mlir::Value operand,
+                   llvm::ArrayRef<mlir::OpFoldResult> offsets,
+                   llvm::ArrayRef<mlir::OpFoldResult> sizes,
+                   mlir::SmallVectorImpl<mlir::OpFoldResult> &operandOffsets,
+                   mlir::SmallVectorImpl<mlir::OpFoldResult> &operandSizes,
+                   mlir::SmallVectorImpl<mlir::OpFoldResult> &operandStrides) {
+  auto operandTy = mlir::cast<mlir::RankedTensorType>(operand.getType());
+  int64_t rank = operandTy.getRank();
+  operandOffsets.resize(rank, b.getIndexAttr(0));
+  operandSizes.resize(rank);
+  operandStrides.resize(rank, b.getIndexAttr(1));
+
+  // Default: full operand dim (used for broadcast dims not in the map).
+  for (int64_t i = 0; i < rank; ++i) {
+    if (operandTy.isDynamicDim(i)) {
+      operandSizes[i] =
+          b.create<mlir::tensor::DimOp>(loc, operand, i).getResult();
+    } else {
+      operandSizes[i] = b.getIndexAttr(operandTy.getDimSize(i));
+    }
+  }
+
+  // Override with iteration-domain offsets/sizes for mapped dims.
+  for (unsigned resIdx = 0; resIdx < map.getNumResults(); ++resIdx) {
+    mlir::AffineExpr expr = map.getResult(resIdx);
+    if (auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr)) {
+      unsigned dimPos = dimExpr.getPosition();
+      operandOffsets[resIdx] = offsets[dimPos];
+      operandSizes[resIdx] = sizes[dimPos];
+    }
+  }
+}
+
+mlir::SmallVector<mlir::utils::IteratorType>
+mlir::tt::ttl::ComputeOp::getLoopIteratorTypes() {
+  return getIteratorTypesArray();
+}
+
+/// Use getShapesToLoopsMap() to look up which operand dimension provides
+/// the bound for each loop.
+mlir::SmallVector<mlir::Range>
+mlir::tt::ttl::ComputeOp::getIterationDomain(mlir::OpBuilder &b) {
+  mlir::SmallVector<mlir::Range> domain;
+  mlir::Location loc = getLoc();
+
+  mlir::SmallVector<mlir::OpFoldResult> allDims =
+      createFlatListOfOperandDims(b, loc);
+  mlir::AffineMap shapesToLoops = getShapesToLoopsMap();
+
+  for (mlir::AffineExpr loopExpr : shapesToLoops.getResults()) {
+    auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(loopExpr);
+    assert(dimExpr &&
+           "expected AffineDimExpr from inversePermutation of projected "
+           "permutation indexing maps");
+    mlir::OpFoldResult size = allDims[dimExpr.getPosition()];
+    domain.push_back(mlir::Range{b.getIndexAttr(0), size, b.getIndexAttr(1)});
+  }
+  return domain;
+}
+
+llvm::FailureOr<mlir::TilingResult>
+mlir::tt::ttl::ComputeOp::getTiledImplementation(
+    mlir::OpBuilder &b, llvm::ArrayRef<mlir::OpFoldResult> offsets,
+    llvm::ArrayRef<mlir::OpFoldResult> sizes) {
+  mlir::Location loc = getLoc();
+  mlir::SmallVector<mlir::AffineMap> indexingMaps = getIndexingMapsArray();
+
+  // Create extract_slice for each input operand.
+  mlir::SmallVector<mlir::Value> tiledInputs;
+  mlir::SmallVector<mlir::Operation *> generatedSlices;
+  for (auto [idx, input] : llvm::enumerate(getInputs())) {
+    mlir::SmallVector<mlir::OpFoldResult> operandOffsets, operandSizes,
+        operandStrides;
+    mapOffsetsAndSizes(b, loc, indexingMaps[idx], input, offsets, sizes,
+                       operandOffsets, operandSizes, operandStrides);
+
+    auto slice = b.create<mlir::tensor::ExtractSliceOp>(
+        loc, input, operandOffsets, operandSizes, operandStrides);
+    tiledInputs.push_back(slice);
+    generatedSlices.push_back(slice);
+  }
+
+  // Create extract_slice for each output operand.
+  size_t numInputs = getInputs().size();
+  mlir::SmallVector<mlir::Value> tiledOutputs;
+  for (auto [idx, output] : llvm::enumerate(getOutputs())) {
+    mlir::SmallVector<mlir::OpFoldResult> operandOffsets, operandSizes,
+        operandStrides;
+    mapOffsetsAndSizes(b, loc, indexingMaps[numInputs + idx], output, offsets,
+                       sizes, operandOffsets, operandSizes, operandStrides);
+
+    auto slice = b.create<mlir::tensor::ExtractSliceOp>(
+        loc, output, operandOffsets, operandSizes, operandStrides);
+    tiledOutputs.push_back(slice);
+    generatedSlices.push_back(slice);
+  }
+
+  // Build the tiled compute op with sub-block operands.
+  mlir::SmallVector<mlir::Type> tiledResultTypes;
+  for (mlir::Value out : tiledOutputs) {
+    tiledResultTypes.push_back(out.getType());
+  }
+
+  auto tiledOp =
+      b.create<ComputeOp>(loc, tiledResultTypes, tiledInputs, tiledOutputs,
+                          getIndexingMapsAttr(), getIteratorTypesAttr());
+
+  // Clone the body region into the new compute op.
+  mlir::IRMapping mapping;
+  getBody().cloneInto(&tiledOp.getBody(), mapping);
+
+  mlir::TilingResult result;
+  result.tiledOps.push_back(tiledOp);
+  result.tiledValues = tiledOp.getResults();
+  result.generatedSlices = std::move(generatedSlices);
+  return result;
+}
+
+mlir::LogicalResult mlir::tt::ttl::ComputeOp::getResultTilePosition(
+    mlir::OpBuilder &b, unsigned resultNumber,
+    llvm::ArrayRef<mlir::OpFoldResult> offsets,
+    llvm::ArrayRef<mlir::OpFoldResult> sizes,
+    mlir::SmallVector<mlir::OpFoldResult> &resultOffsets,
+    mlir::SmallVector<mlir::OpFoldResult> &resultSizes) {
+  mlir::Location loc = getLoc();
+  mlir::SmallVector<mlir::AffineMap> indexingMaps = getIndexingMapsArray();
+  mlir::AffineMap map = indexingMaps[getNumInputs() + resultNumber];
+  mlir::Value output = getOutputs()[resultNumber];
+
+  mlir::SmallVector<mlir::OpFoldResult> strides;
+  mapOffsetsAndSizes(b, loc, map, output, offsets, sizes, resultOffsets,
+                     resultSizes, strides);
+
+  return mlir::success();
 }
 
 //===----------------------------------------------------------------------===//
