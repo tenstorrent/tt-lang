@@ -492,7 +492,7 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
   // (getDstRegInPlace() = false). We achieve the same by extending FPU binary
   // result intervals so the linear scan allocator assigns distinct registers.
   //
-  // TODO: This wastes DST capacity. The proper fix is to pass
+  // TODO(#343): This wastes DST capacity. The proper fix is to pass
   // acc_to_dest=false to add_tiles_init/sub_tiles_init/mul_tiles_init in
   // tt-mlir's TTKernel dialect (currently has a FIXME in TTKernelOps.td).
   // With explicit overwrite mode, DST reuse between FPU binary ops would be
@@ -653,10 +653,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
     funcOp.walk([&](ComputeOp computeOp) {
       Block *body = &computeOp.getRegion().front();
 
-      auto yieldOp = dyn_cast<YieldOp>(body->getTerminator());
-      if (!yieldOp) {
-        return;
-      }
+      auto yieldOp = cast<YieldOp>(body->getTerminator());
 
       std::uint32_t capacity = dstCapacity;
       if (capacity == 0) {
