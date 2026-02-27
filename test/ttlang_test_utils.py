@@ -167,13 +167,13 @@ def to_l1(torch_tensor, device):
 # =============================================================================
 
 
-def assert_pcc(golden, actual, threshold=0.99):
+def assert_pcc(golden, actual, threshold=0.9999):
     """Assert Pearson correlation coefficient between tensors exceeds threshold.
 
     Args:
         golden: Expected tensor values
         actual: Actual tensor values from computation
-        threshold: Minimum PCC required (default 0.99)
+        threshold: Minimum PCC required (default 0.9999, consistent with tt-metal)
 
     Raises:
         AssertionError: If PCC is below threshold

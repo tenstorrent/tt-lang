@@ -60,6 +60,22 @@ OP_ULP_THRESHOLD_OVERRIDES: Dict[str, Dict[torch.dtype, int]] = {
     # precision for f32. tt-metal's own tests skip log f32 on WH/BH due to
     # "very high abs and relative diff". Measured ULP ~2^21.
     "log": {torch.float32: 2**22},
+    # FPU binary f32: hardware computes at reduced precision.  PCC > 0.99999
+    # and allclose(rtol=1e-3, atol=1e-3) passes, but near-zero values inflate
+    # ULP distance.  Measured max ULP: add ~2^23.5, sub ~2^23.5, mul ~2^15.2.
+    "add": {torch.float32: 2**24},
+    "sub": {torch.float32: 2**24},
+    "mul": {torch.float32: 2**16},
+}
+
+# Per-op PCC threshold overrides keyed by dtype.
+# Default is 0.9999 (consistent with tt-metal). Override for ops where
+# hardware precision limitations reduce correlation.
+# Values below are aligned with tt-metal test thresholds.
+OP_PCC_THRESHOLD_OVERRIDES: Dict[str, Dict[torch.dtype, float]] = {
+    "exp": {torch.float32: 0.9998},
+    "tanh": {torch.float32: 0.993},
+    "recip": {torch.bfloat16: 0.999},
 }
 
 
@@ -109,8 +125,9 @@ class OpTestBase(ME2ETestBase):
     INPUT_SHAPE = (2, 2)  # Grid shape in tiles
     INPUT_DTYPE = torch.bfloat16
 
-    # Comparison tolerance (auto-computed from dtype if None)
+    # Comparison tolerances (auto-computed from dtype if None)
     ULP_THRESHOLD: Optional[float] = None
+    PCC_THRESHOLD: Optional[float] = None
 
     # Input value range
     MIN_VALUE = -1.0
@@ -234,6 +251,10 @@ def generate_op_test_classes() -> Dict[str, Type[OpTestBase]]:
                 overrides = OP_ULP_THRESHOLD_OVERRIDES[op_name]
                 if dtype in overrides:
                     attrs["ULP_THRESHOLD"] = overrides[dtype]
+            if op_name in OP_PCC_THRESHOLD_OVERRIDES:
+                overrides = OP_PCC_THRESHOLD_OVERRIDES[op_name]
+                if dtype in overrides:
+                    attrs["PCC_THRESHOLD"] = overrides[dtype]
 
             # Create class dynamically with dtype suffix.
             class_name = f"Test{op_name.capitalize()}{dtype_suffix}"
