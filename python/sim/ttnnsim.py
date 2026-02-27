@@ -237,6 +237,30 @@ def close_device(device: Device) -> None:
     return None
 
 
+def tile_count_from_tensor(t: "Tensor") -> int:
+    """Return the number of tiles a Tensor represents.
+
+    For 2-D+ tensors the last two element dimensions are divided by TILE_SHAPE
+    (treating H==1 or W==1 as degenerate single-tile dimensions); leading
+    dimensions are batch dimensions each contributing independently.
+
+    For 1-D tensors the single dimension is divided by TILE_SHAPE[0] (treating
+    size==1 as a degenerate single-tile dimension); there are no batch dims.
+    """
+    import math
+
+    s = t.shape
+    if len(s) == 1:
+        W = s[0]
+        TK = 1 if W == 1 else W // TILE_SHAPE[0]
+        return TK
+    H, W = s[-2], s[-1]
+    TM = 1 if H == 1 else H // TILE_SHAPE[0]
+    TK = 1 if W == 1 else W // TILE_SHAPE[1]
+    batch = s[:-2]
+    return math.prod((*batch, TM, TK))
+
+
 class Tensor:
     """TTNN-like Tensor wrapper built on torch.Tensor.
 
@@ -244,6 +268,8 @@ class Tensor:
     """
 
     def __init__(self, tensor: torch.Tensor) -> None:
+        if tensor.ndim < 1:
+            raise ValueError(f"Tensor must have at least 1 dimension, got 0-d scalar")
         self._tensor: torch.Tensor = tensor
 
     @property
@@ -257,20 +283,29 @@ class Tensor:
     def _validate_tile_alignment(self) -> None:
         """Validate that this tensor supports tile-style indexing.
 
-        The last two dimensions must be tile-aligned (or degenerate). Leading
-        batch dimensions may have any size.
+        For 2-D+ tensors the last two dimensions must be tile-aligned (or
+        degenerate); leading batch dimensions may have any size.
+        For 1-D tensors the single dimension must be a multiple of TILE_SHAPE[0]
+        (or exactly 1).
 
         Raises:
-            ValueError: If the tensor has fewer than 2 or more than MAX_TENSOR_DIMS
-                dimensions, or if the last two non-degenerate dimensions are not
-                multiples of the corresponding tile dimension.
+            ValueError: If the tensor has fewer than 1 or more than MAX_TENSOR_DIMS
+                dimensions, or if the tile dimensions are not aligned.
         """
         ndim = len(self._tensor.shape)
-        if ndim < 2 or ndim > MAX_TENSOR_DIMS:
+        if ndim < 1 or ndim > MAX_TENSOR_DIMS:
             raise ValueError(
-                f"Tile-style indexing requires 2 to {MAX_TENSOR_DIMS} dimensions, "
+                f"Tile-style indexing requires 1 to {MAX_TENSOR_DIMS} dimensions, "
                 f"got {ndim}D tensor"
             )
+        if ndim == 1:
+            dim_size = self._tensor.shape[0]
+            if dim_size != 1 and dim_size % TILE_SHAPE[0] != 0:
+                raise ValueError(
+                    f"Tensor dimension 0 has size {dim_size} which is not "
+                    f"a multiple of tile dimension {TILE_SHAPE[0]}"
+                )
+            return
         for i, (dim_size, tile_dim) in enumerate(
             zip(self._tensor.shape[-2:], TILE_SHAPE)
         ):
@@ -333,11 +368,23 @@ class Tensor:
                 tensor is not tile-aligned, or a tile slice has missing or
                 stepped bounds.
         """
+        self._validate_tile_alignment()
+        ndim = len(self._tensor.shape)
+        if ndim == 1:
+            # 1-D tensor: key must be a single tile-grid selector.
+            if len(key) != 1:
+                raise ValueError(
+                    f"1-D tensor requires a 1-element key, got {len(key)} elements"
+                )
+            col_s = self._normalize_tile_index(key[0])
+            self._validate_tile_slice(col_s, "col")
+            return (slice(col_s.start * TILE_SHAPE[0], col_s.stop * TILE_SHAPE[0]),)
+        # 2-D+ tensor: key must have 2 to MAX_TENSOR_DIMS elements.
         if len(key) < 2 or len(key) > MAX_TENSOR_DIMS:
             raise ValueError(
-                f"Key must have 2 to {MAX_TENSOR_DIMS} elements, got {len(key)}"
+                f"Key must have 2 to {MAX_TENSOR_DIMS} elements for a {ndim}-D tensor, "
+                f"got {len(key)}"
             )
-        self._validate_tile_alignment()
         *batch, row_k, col_k = key
         row_s = self._normalize_tile_index(row_k)
         col_s = self._normalize_tile_index(col_k)
@@ -350,12 +397,17 @@ class Tensor:
         )
 
     def __getitem__(self, key: TensorKey) -> "Tensor":
+        # Python passes a bare int/slice (not a tuple) for single-element indexing.
+        if not isinstance(key, tuple):
+            key = (key,)
         result = Tensor(self._tensor[cast(Any, self._to_element_key(key))])
         if hasattr(self, "_name"):
             result._name = self._name  # type: ignore
         return result
 
     def __setitem__(self, key: TensorKey, value: "Tensor") -> None:
+        if not isinstance(key, tuple):
+            key = (key,)
         self._tensor[cast(Any, self._to_element_key(key))] = value._tensor
 
     def __repr__(self) -> str:

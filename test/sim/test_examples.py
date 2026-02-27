@@ -118,6 +118,7 @@ def assert_success_output(code: int, out: str) -> None:
         "multicore_matmul.py",
         "matmul_1d.py",
         "matmul_1d_mcast.py",
+        "eltwise_1d_broadcast.py",
         pytest.param(
             "tutorial/ttnn_base.py",
             marks=requires_ttnn,

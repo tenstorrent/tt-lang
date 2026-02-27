@@ -7,14 +7,13 @@ Statistics collection for simulator operations.
 Tracks tensor read/write operations and provides summary reporting.
 """
 
-import math
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any, Union
 
 if TYPE_CHECKING:
     from .ttnnsim import Tensor
 
-from .constants import TILE_SHAPE
+from .ttnnsim import tile_count_from_tensor
 from .pipe import AnyPipe
 from .typedefs import CoreCoord, CoreRange
 
@@ -86,22 +85,8 @@ def _get_tensor_name(tensor: "Tensor") -> str:
 
 
 def _calculate_tensor_tiles(tensor: "Tensor") -> int:
-    """Calculate the number of tiles in a tensor.
-
-    Args:
-        tensor: The tensor to calculate tiles for
-
-    Returns:
-        Number of tiles (rounded up for partial tiles)
-    """
-    if len(tensor.shape) != 2:
-        # For non-2D tensors, return 0 or calculate differently
-        return 0
-
-    # Calculate tiles in each dimension (round up for partial tiles)
-    tiles_h = math.ceil(tensor.shape[0] / TILE_SHAPE[0])
-    tiles_w = math.ceil(tensor.shape[1] / TILE_SHAPE[1])
-    return tiles_h * tiles_w
+    """Calculate the number of tiles in a tensor."""
+    return tile_count_from_tensor(tensor)
 
 
 def record_tensor_read(tensor: "Tensor") -> None:

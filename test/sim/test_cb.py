@@ -1242,6 +1242,162 @@ def test_matmul_1x4_times_4x1_values():
     ), f"Expected all values to be {expected_value}, got {result_tensor[0, 0]}"
 
 
+# ---------------------------------------------------------------------------
+# 1-D tensor support tests
+# ---------------------------------------------------------------------------
+
+
+def test_1d_tile_count_from_tensor():
+    """tile_count_from_tensor correctly counts tiles in a 1-D tensor."""
+    from python.sim.dfb import tile_count_from_tensor
+
+    assert tile_count_from_tensor(Tensor(torch.zeros(32))) == 1
+    assert tile_count_from_tensor(Tensor(torch.zeros(64))) == 2
+    assert tile_count_from_tensor(Tensor(torch.zeros(128))) == 4
+    # Degenerate: size==1 counts as 1 tile
+    assert tile_count_from_tensor(Tensor(torch.zeros(1))) == 1
+
+
+def test_1d_block_from_tensor():
+    """Block.from_tensor infers shape (TK,) for a 1-D tensor."""
+    t = Tensor(torch.zeros(64))
+    b = Block.from_tensor(t)
+    assert b.shape == (2,), f"Expected shape (2,) but got {b.shape}"
+    assert len(b) == 2
+
+
+def test_1d_block_to_list():
+    """Block.to_list splits a 1-D block into individual tile vectors."""
+    data = torch.arange(64, dtype=torch.float32)
+    b = Block.from_tensor(Tensor(data))
+    tiles = b.to_list()
+    assert len(tiles) == 2
+    assert tiles[0].to_torch().shape == (32,)
+    assert tiles[1].to_torch().shape == (32,)
+    assert torch.allclose(tiles[0].to_torch(), data[:32])
+    assert torch.allclose(tiles[1].to_torch(), data[32:])
+
+
+def test_1d_block_from_list():
+    """Block.from_list assembles 1-D tile vectors into a single 1-D Block."""
+    t0 = Tensor(torch.ones(32) * 1.0)
+    t1 = Tensor(torch.ones(32) * 2.0)
+    b = Block.from_list([t0, t1], shape=(2,))
+    assert b.shape == (2,)
+    raw = b.to_tensor().to_torch()
+    assert raw.shape == (64,)
+    assert torch.allclose(raw[:32], torch.ones(32))
+    assert torch.allclose(raw[32:], torch.ones(32) * 2.0)
+
+
+def test_1d_dataflow_buffer_reserve_push_wait_pop():
+    """DataflowBuffer with 1-D shape correctly reserves, pushes, and delivers data."""
+    from python.sim.blockstate import (
+        ThreadType,
+        set_current_thread_type,
+        clear_current_thread_type,
+    )
+
+    element = Tensor(torch.zeros(32))
+    dfb = DataflowBuffer(element=element, shape=(1,), buffer_factor=2)
+
+    assert dfb.shape == (1,)
+    assert dfb.capacity_tiles == 2
+
+    set_current_thread_type(ThreadType.COMPUTE)
+    try:
+        write = dfb.reserve()
+        assert len(write) == 1
+
+        data = Tensor(torch.arange(32, dtype=torch.float32))
+        write.store(Block.from_tensor(data))
+        write.push()
+
+        read = dfb.wait()
+        assert len(read) == 1
+        result = read.to_list()
+        assert len(result) == 1
+        assert result[0].to_torch().shape == (32,)
+        assert torch.allclose(result[0].to_torch(), data.to_torch())
+
+        out_dfb = DataflowBuffer(element=element, shape=(1,), buffer_factor=2)
+        out_block = out_dfb.reserve()
+        out_block.store(read)
+        out_block.push()
+        read.pop()
+    finally:
+        clear_current_thread_type()
+
+
+def test_1d_multi_tile_dataflow_buffer():
+    """DataflowBuffer with 1-D shape (4,) operates over 4 tiles per operation."""
+    from python.sim.blockstate import (
+        ThreadType,
+        set_current_thread_type,
+        clear_current_thread_type,
+    )
+
+    element = Tensor(torch.zeros(32))
+    dfb = DataflowBuffer(element=element, shape=(4,), buffer_factor=2)
+
+    assert dfb.shape == (4,)
+    assert dfb.capacity_tiles == 8
+
+    set_current_thread_type(ThreadType.COMPUTE)
+    try:
+        write = dfb.reserve()
+        assert len(write) == 4
+        # Element tensor should be (128,) = 4 * 32
+        assert write.to_tensor().to_torch().shape == (128,)
+
+        tiles = [Tensor(torch.full((32,), float(i))) for i in range(4)]
+        write.store(Block.from_list(tiles, shape=(4,)))
+        write.push()
+
+        read = dfb.wait()
+        result = read.to_list()
+        assert len(result) == 4
+        for i, tile in enumerate(result):
+            assert torch.allclose(tile.to_torch(), torch.full((32,), float(i)))
+
+        out_dfb = DataflowBuffer(element=element, shape=(4,), buffer_factor=2)
+        out_block = out_dfb.reserve()
+        out_block.store(read)
+        out_block.push()
+        read.pop()
+    finally:
+        clear_current_thread_type()
+
+
+def test_1d_tensor_tile_aligned_validation():
+    """1-D tensors that are not tile-aligned (or size 1) are rejected by from_tensor."""
+    from python.sim.dfb import Block
+
+    # Aligned: 32, 64, 1
+    Block.from_tensor(Tensor(torch.zeros(32)))
+    Block.from_tensor(Tensor(torch.zeros(64)))
+    Block.from_tensor(Tensor(torch.zeros(1)))
+
+    # Not aligned
+    with pytest.raises(ValueError, match="multiple of TILE_SHAPE"):
+        Block.from_tensor(Tensor(torch.zeros(33)))
+
+    with pytest.raises(ValueError, match="multiple of TILE_SHAPE"):
+        Block.from_tensor(Tensor(torch.zeros(16)))
+
+
+def test_1d_arithmetic_on_blocks():
+    """Basic arithmetic on 1-D blocks works element-wise."""
+    a = Block.from_tensor(Tensor(torch.ones(64) * 2.0))
+    b = Block.from_tensor(Tensor(torch.ones(64) * 3.0))
+    c = a + b
+    assert c.shape == (2,)
+    assert torch.allclose(c.to_tensor().to_torch(), torch.ones(64) * 5.0)
+
+    d = a * b
+    assert torch.allclose(d.to_tensor().to_torch(), torch.ones(64) * 6.0)
+
+
 if __name__ == "__main__":
     import sys
 

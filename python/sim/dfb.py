@@ -39,25 +39,8 @@ from .dfbstate import DFBState
 from .constants import MAX_TENSOR_DIMS, TILE_SHAPE
 from .errors import DFBContractError
 from .stats import record_dfb_reserve, record_dfb_wait
-from .ttnnsim import Tensor
+from .ttnnsim import Tensor, tile_count_from_tensor
 from .typedefs import Index, Shape, Size
-
-
-def tile_count_from_tensor(t: Tensor) -> int:
-    """Return the number of tiles a Tensor represents.
-
-    The last two element dimensions are divided by TILE_SHAPE (treating H==1 or
-    W==1 as degenerate single-tile dimensions).  Leading dimensions are batch
-    dimensions each contributing independently.
-    """
-    s = t.shape
-    if len(s) < 2:
-        raise ValueError(f"Tensor must have at least 2 dimensions, got {len(s)}")
-    H, W = s[-2], s[-1]
-    TM = 1 if H == 1 else H // TILE_SHAPE[0]
-    TK = 1 if W == 1 else W // TILE_SHAPE[1]
-    batch = s[:-2]
-    return math.prod((*batch, TM, TK))
 
 
 class Block:
@@ -472,6 +455,14 @@ class Block:
         """
         buf = self._buf.to_torch()
         shape = self._shape
+
+        if len(shape) == 1:
+            # 1-D: single tile-grid dimension, no batch dims.
+            TK = shape[0]
+            W = buf.shape[-1]
+            tile_w = W // TK if TK > 0 else 1
+            return [Tensor(buf[slice(c * tile_w, (c + 1) * tile_w)]) for c in range(TK)]
+
         nb = len(shape) - 2
         TM, TK = shape[nb], shape[nb + 1]
         H, W = buf.shape[-2], buf.shape[-1]
@@ -506,16 +497,22 @@ class Block:
         owns a freshly assembled multi-tile Tensor with element shape derived
         from the individual tile sizes.
         """
-        nb = len(shape) - 2
-        batch = shape[:nb]
-        TM, TK = shape[nb], shape[nb + 1]
-        first_raw = tensors[0].to_torch()
-        tile_h, tile_w = first_raw.shape[-2], first_raw.shape[-1]
-        stacked = torch.stack([t.to_torch() for t in tensors])
-        tile_grid = stacked.reshape(*shape, tile_h, tile_w)
-        # (*batch, TM, TK, r, c) -> (*batch, TM, r, TK, c) -> (*batch, TM*r, TK*c)
-        perm = list(range(nb)) + [nb, nb + 2, nb + 1, nb + 3]
-        elem_tensor = tile_grid.permute(*perm).reshape(*batch, TM * tile_h, TK * tile_w)
+        if len(shape) == 1:
+            # 1-D: tiles are contiguous vectors; just concatenate along dim 0.
+            elem_tensor = torch.cat([t.to_torch() for t in tensors], dim=0)
+        else:
+            nb = len(shape) - 2
+            batch = shape[:nb]
+            TM, TK = shape[nb], shape[nb + 1]
+            first_raw = tensors[0].to_torch()
+            tile_h, tile_w = first_raw.shape[-2], first_raw.shape[-1]
+            stacked = torch.stack([t.to_torch() for t in tensors])
+            tile_grid = stacked.reshape(*shape, tile_h, tile_w)
+            # (*batch, TM, TK, r, c) -> (*batch, TM, r, TK, c) -> (*batch, TM*r, TK*c)
+            perm = list(range(nb)) + [nb, nb + 2, nb + 1, nb + 3]
+            elem_tensor = tile_grid.permute(*perm).reshape(
+                *batch, TM * tile_h, TK * tile_w
+            )
         return cls(
             tensor=Tensor(elem_tensor),
             shape=shape,
@@ -542,20 +539,28 @@ class Block:
             ValueError: If the tensor dimensions are not tile-aligned.
         """
         elem_shape = t.shape
-        if len(elem_shape) < 2:
-            raise ValueError(
-                f"Tensor must have at least 2 dimensions, got {len(elem_shape)}"
-            )
-        H, W = elem_shape[-2], elem_shape[-1]
-        if (H != 1 and H % TILE_SHAPE[0] != 0) or (W != 1 and W % TILE_SHAPE[1] != 0):
-            raise ValueError(
-                f"Last two tensor dimensions ({H}, {W}) must be multiples of "
-                f"TILE_SHAPE {TILE_SHAPE}, or exactly 1"
-            )
-        batch_shape = elem_shape[:-2]
-        TM = 1 if H == 1 else H // TILE_SHAPE[0]
-        TK = 1 if W == 1 else W // TILE_SHAPE[1]
-        tile_shape: Shape = (*batch_shape, TM, TK)
+        if len(elem_shape) == 1:
+            W = elem_shape[0]
+            if W != 1 and W % TILE_SHAPE[0] != 0:
+                raise ValueError(
+                    f"1-D tensor dimension ({W},) must be a multiple of "
+                    f"TILE_SHAPE[0]={TILE_SHAPE[0]}, or exactly 1"
+                )
+            TK = 1 if W == 1 else W // TILE_SHAPE[0]
+            tile_shape: Shape = (TK,)
+        else:
+            H, W = elem_shape[-2], elem_shape[-1]
+            if (H != 1 and H % TILE_SHAPE[0] != 0) or (
+                W != 1 and W % TILE_SHAPE[1] != 0
+            ):
+                raise ValueError(
+                    f"Last two tensor dimensions ({H}, {W}) must be multiples of "
+                    f"TILE_SHAPE {TILE_SHAPE}, or exactly 1"
+                )
+            batch_shape = elem_shape[:-2]
+            TM = 1 if H == 1 else H // TILE_SHAPE[0]
+            TK = 1 if W == 1 else W // TILE_SHAPE[1]
+            tile_shape = (*batch_shape, TM, TK)
         return cls(
             tensor=t,
             shape=tile_shape,
@@ -896,9 +901,9 @@ class DataflowBuffer:
         Raises:
             ValueError: If shape or buffer_factor are invalid
         """
-        if not (2 <= len(shape) <= MAX_TENSOR_DIMS):
+        if not (1 <= len(shape) <= MAX_TENSOR_DIMS):
             raise ValueError(
-                f"Shape must have between 2 and {MAX_TENSOR_DIMS} dimensions, got {shape}"
+                f"Shape must have between 1 and {MAX_TENSOR_DIMS} dimensions, got {shape}"
             )
         if any(s <= 0 for s in shape):
             raise ValueError(f"Shape elements must be positive, got {shape}")
@@ -1016,11 +1021,15 @@ class DataflowBuffer:
             "block_if_needed() should have been called first."
         )
         slot_idx = state.back_slot()
-        # Build element-space shape: (*batch, TM * tile_h, TK * tile_w)
-        nb = len(state.shape) - 2
-        batch = state.shape[:nb]
-        TM, TK = state.shape[nb], state.shape[nb + 1]
-        elem_shape = (*batch, TM * TILE_SHAPE[0], TK * TILE_SHAPE[1])
+        # Build element-space shape.
+        if len(state.shape) == 1:
+            TK = state.shape[0]
+            elem_shape = (TK * TILE_SHAPE[0],)
+        else:
+            nb = len(state.shape) - 2
+            batch = state.shape[:nb]
+            TM, TK = state.shape[nb], state.shape[nb + 1]
+            elem_shape = (*batch, TM * TILE_SHAPE[0], TK * TILE_SHAPE[1])
         slot = Tensor(torch.zeros(elem_shape, dtype=self.element.dtype))
         state.buf[slot_idx] = slot
         state.reserved += 1
