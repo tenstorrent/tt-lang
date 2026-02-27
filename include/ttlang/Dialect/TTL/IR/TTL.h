@@ -27,12 +27,39 @@ class TTLTileOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileOpTrait> {};
 
 /// Attribute names.
-inline constexpr llvm::StringRef kDstIdxAttrName = "dst_idx";
-inline constexpr llvm::StringRef kCBIndexAttrPrefix = "ttl.cb_index.";
+constexpr llvm::StringLiteral kDstIdxAttrName("dst_idx");
+constexpr llvm::StringLiteral kCBIndexAttrPrefix("ttl.cb_index.");
 
-/// Runtime configuration attributes
-inline constexpr llvm::StringRef kFp32DestAccEnAttrName = "fp32_dest_acc_en";
-inline constexpr llvm::StringRef kDstFullSyncEnAttrName = "dst_full_sync_en";
+/// Runtime configuration attributes.
+constexpr llvm::StringLiteral kFp32DestAccEnAttrName("fp32_dest_acc_en");
+constexpr llvm::StringLiteral kDstFullSyncEnAttrName("dst_full_sync_en");
+
+/// Marks binary ops that use the FPU engine (reads from CB) instead of SFPU.
+constexpr llvm::StringLiteral kFPUBinaryAttrName("ttl.fpu_binary");
+
+/// Number of tiles to process per DST sync region (set by TTLAssignDST).
+constexpr llvm::StringLiteral kUnrollFactorAttrName("ttl.unroll_factor");
+
+/// Linearized stride for a subblock loop dimension. Distinguishes subblock
+/// loops from tile iteration loops for CB index computation.
+constexpr llvm::StringLiteral kSubblockStrideAttrName("ttl.subblock_stride");
+
+/// Linearization stride on a tile iteration loop. May differ from the loop
+/// bound when the compute has been subblocked.
+constexpr llvm::StringLiteral kTileLoopAttrName("ttl.tile_loop");
+
+/// Linearized tile offset within a subblock, used for CB index computation
+/// in unrolled (loop-free) bodies.
+constexpr llvm::StringLiteral kTileOffsetAttrName("ttl.tile_offset");
+
+/// Row-major strides of the full (pre-subblock) iteration domain, carried
+/// on subblocked ComputeOps so tile loops get correct CB linearization strides.
+constexpr llvm::StringLiteral
+    kFullLinStridesAttrName("ttl.full_linearization_strides");
+
+/// Output CB index on tile_bcast ops, avoiding SSA tracing during lowering.
+constexpr llvm::StringLiteral
+    kBcastOutputCBIndexAttrName("ttl.bcast_output_cb_index");
 
 /// Trait for tile compute operations (add, mul, exp, etc.).
 template <typename ConcreteType>
@@ -65,6 +92,29 @@ class TTLTileBinaryOpTrait
 template <typename ConcreteType>
 class TTLCBInputTileOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLCBInputTileOpTrait> {};
+
+/// Trait for tile operations with at least one operand consumed from DST.
+template <typename ConcreteType>
+class TTLDSTInputsTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLDSTInputsTrait> {};
+
+/// Trait for tile operations whose result overwrites the DST input in-place.
+template <typename ConcreteType>
+class TTLInPlaceOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLInPlaceOpTrait> {};
+
+/// Trait for tile operations that accumulate across multiple invocations.
+template <typename ConcreteType>
+class TTLAccumulatingOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLAccumulatingOpTrait> {};
+
+/// Trait for tile operations that carry an explicit output CB operand.
+/// These operations' init functions configure the PACK thread and require
+/// the output CB identifier. Affects init consolidation ordering: full-init
+/// ops (PACK-configuring) must precede short-init ops.
+template <typename ConcreteType>
+class TTLCBOutputTileOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLCBOutputTileOpTrait> {};
 
 //===----------------------------------------------------------------------===//
 // CB Index Attribute Helpers

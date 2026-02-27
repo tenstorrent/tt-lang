@@ -14,6 +14,11 @@
 // - Block arg and all unary results should have the same interval [0, 3]
 // - All values get allocated to the same DST register
 
+// Verify Phase 0 finds no FPU binary ops (only unary ops)
+// CHECK: === Phase 0: FPU Binary Detection ===
+// CHECK-NOT: Marked FPU binary
+// CHECK: === Phase 1: Copy Insertion ===
+
 // Verify Phase 2 merging happens
 // CHECK: === Phase 2: Build Live Intervals ===
 // CHECK: Phase 2: Merged
@@ -80,9 +85,13 @@ func.func @unary_chain_shared_dst(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 //   yield %1
 //
 // Expected: tile_mul and tile_abs share the same DST (merged interval [0, 2])
-// Block args have short intervals [0, 0] since they're only used by tile_mul
+// FPU binary: block args don't need DST registers
 
-// Verify binary→unary merging
+// Verify Phase 0 detects FPU binary
+// CHECK: === Phase 0: FPU Binary Detection ===
+// CHECK: Phase 0: Marked FPU binary: ttl.tile_mul
+
+// Verify binary->unary merging
 // CHECK: === Phase 2: Build Live Intervals ===
 // CHECK: Phase 2: Merged
 // CHECK-SAME: tile_mul
@@ -96,28 +105,16 @@ func.func @unary_chain_shared_dst(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 // The merged set (tile_mul + tile_abs) should have [0, 2]
 // CHECK-DAG: tile_mul{{.*}}: [0, 2]
 // CHECK-DAG: tile_abs{{.*}}: [0, 2]
-// Block args should have [-1, 0] (start at -1)
-// CHECK-DAG: block argument{{.*}}: [-1, 0]
-// CHECK-DAG: block argument{{.*}}: [-1, 0]
 
-// Verify allocation: merged set of 2 values allocated to DST[0]
+// Verify allocation: FPU binary means block args don't need DST, so only
+// the merged set needs allocation. Gets DST[0] directly.
 // CHECK: === Phase 3: Linear Scan Allocation ===
-// CHECK: Allocated DST[0]
-// CHECK-SAME: (merged set size: 1)
-// CHECK: Allocated DST[1]
-// CHECK-SAME: (merged set size: 1)
-// Verify register expiry and reuse - block args expire after first use
-// CHECK: Expired interval for
-// CHECK-SAME: freed DST[0]
-// CHECK: Expired interval for
-// CHECK-SAME: freed DST[1]
-// Now the binary→unary merged set gets allocated to the freed DST[0]
 // CHECK: Allocated DST[0]
 // CHECK-SAME: (merged set size: 2)
 
-// Verify max DST usage output
+// Verify max DST usage output (only 1 register needed now)
 // CHECK: === Final DST Assignment ===
-// CHECK: Max DST usage: 2 / 8 registers
+// CHECK: Max DST usage: 1 / 8 registers
 
 func.func @binary_then_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                    %b: tensor<2x2x!ttcore.tile<32x32, f32>>)

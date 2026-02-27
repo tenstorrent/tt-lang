@@ -9,6 +9,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "llvm/ADT/SetVector.h"
 #include <optional>
 
@@ -56,6 +57,17 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
   // Trace through unrealized conversion casts (from dialect conversion).
   tensor = traceUnrealizedCasts(tensor);
 
+  // Trace through tensor.extract_slice (from compute subblocking).
+  if (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+    return getAttachedCB(slice.getSource());
+  }
+
+  // Trace through tensor.extract (scalar element extraction, e.g. bcast
+  // output).
+  if (auto extract = tensor.getDefiningOp<mlir::tensor::ExtractOp>()) {
+    return getAttachedCB(extract.getTensor());
+  }
+
   if (auto attach = tensor.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
     return attach.getCb();
   }
@@ -90,6 +102,13 @@ inline bool isTileUnaryOp(mlir::Operation *op) {
 /// Check if an operation is a tile-level binary op (writes to fresh DST slot).
 inline bool isTileBinaryOp(mlir::Operation *op) {
   return op->hasTrait<TTLTileBinaryOpTrait>();
+}
+
+/// Check if an operation reads inputs from CB at runtime, either by static
+/// trait (bcast, copy_tile) or by runtime FPU binary marking.
+inline bool isCBInputOp(mlir::Operation *op) {
+  return op->hasTrait<TTLCBInputTileOpTrait>() ||
+         op->hasAttr(kFPUBinaryAttrName);
 }
 
 /// Check if an operation is any elementwise tensor op (unary or binary).
@@ -139,6 +158,27 @@ ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value);
 /// Emit diagnostics explaining why elementwise fusion failed.
 void emitFusionFailureDiagnostics(mlir::Operation *op,
                                   const ElementwiseTraceResult &trace);
+
+//===----------------------------------------------------------------------===//
+// Tile operation categories for scheduling and init consolidation
+//===----------------------------------------------------------------------===//
+
+/// Operation categories for scheduling and init consolidation.
+/// Sort order matters: lower values are scheduled first within sync regions.
+enum class TileOpCategory : uint8_t {
+  CopyTile = 0,   // CB -> DST copy (must precede all DST compute)
+  Bcast = 1,      // CB -> DST with PACK config (full init)
+  Transpose = 2,  // CB -> DST transpose (full init, requires uninit)
+  FPUBinary = 3,  // CB -> DST FPU (UNPACK+MATH init)
+  SFPUUnary = 4,  // DST -> DST in-place (MATH-only init)
+  SFPUBinary = 5, // DST -> DST binary (MATH-only init)
+  CopyDst = 6,    // DST -> DST copy
+  Unknown = 255
+};
+
+/// Classify a TTL tile op into its category.
+/// Uses TTL traits and attributes for O(1) per-call classification.
+TileOpCategory classifyTileOp(mlir::Operation *op);
 
 /// Find the first operation of type OpTy in the block preceding the given
 /// operation. Scans backwards from the operation, stopping at block start or

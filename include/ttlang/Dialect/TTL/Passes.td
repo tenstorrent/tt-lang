@@ -41,16 +41,16 @@ def TTLAssignDST
     : Pass<"ttl-assign-dst", "::mlir::func::FuncOp"> {
   let summary = "DST allocation with copy insertion, interval analysis, and linear scan";
   let description = [{
-    DST register allocator using linear scan allocation with unary operation
+    DST register allocator using linear scan allocation with in-place operation
     merging. Implements the algorithm from DST_Allocation.md:
 
     Phase 1: Copy insertion for multi-consumer values
-    - When a value has multiple consumers and any is unary (overwrites in-place),
+    - When a value has multiple consumers and any is in-place (overwrites input),
       inserts ttl.copy_dst operations for all but the last consumer
 
-    Phase 2: Build live intervals with unary merging
+    Phase 2: Build live intervals with in-place merging
     - Builds interval [start, end] for each tile value
-    - Merges intervals for unary ops (input and output share same DST)
+    - Merges intervals for in-place ops (input and output share same DST)
 
     Phase 3: Linear scan allocation for inputs/intermediates
     - Allocates DST[0..k-1] for input block arguments and intermediate values
@@ -72,7 +72,10 @@ def TTLAssignDST
            "For single-buffering mode (dst_full_sync_en=true), use: "
            "f32=8, f16/bf16=16. For double-buffering (default): f32=4, f16/bf16=8.">,
     Option<"separateOutputRegion", "separate-output-region", "bool", "false",
-           "Allocate outputs in separate DST region (needed for reductions and some loop optimizations).">
+           "Allocate outputs in separate DST region (needed for reductions and some loop optimizations).">,
+    Option<"enableFPUBinaryOps", "enable-fpu-binary-ops", "bool", "true",
+           "Use FPU for binary add/sub/mul when both operands come from CBs. "
+           "When disabled, binary ops use the SFPU path instead.">
   ];
 
   let dependentDialects = [

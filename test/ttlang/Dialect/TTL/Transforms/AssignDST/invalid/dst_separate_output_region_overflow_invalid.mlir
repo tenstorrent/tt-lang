@@ -54,14 +54,13 @@ func.func @separate_output_region_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f3
        %out0_tile: !ttcore.tile<32x32, f32>,
        %out1_tile: !ttcore.tile<32x32, f32>,
        %out2_tile: !ttcore.tile<32x32, f32>):
-    // Inputs a and b need to be live together (use 2 registers in Phase 3).
-    // Intermediate operation keeps them live.
-    // CHECK-DAG: ttl.tile_add {{.*}} {dst_idx = 0 : i32}
+    // tile_add with two block args is FPU binary (no copy_tile needed for inputs).
+    // CHECK: ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
     %intermediate = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
 
+    // c_tile needs copy_tile since it's a block arg used by non-FPU-binary ops.
+    // CHECK: ttl.copy_tile
     // Three outputs that need to be live simultaneously.
-    // With separate-output-region, outputs start at inputsFootprint (2),
-    // so only registers 2 and 3 are available. Three outputs exceed this.
     // CHECK-DAG: ttl.tile_add {{.*}} {dst_idx = 2 : i32}
     %out0 = ttl.tile_add %intermediate, %c_tile : !ttcore.tile<32x32, f32>
     // CHECK-DAG: ttl.tile_mul {{.*}} {dst_idx = 0 : i32}
