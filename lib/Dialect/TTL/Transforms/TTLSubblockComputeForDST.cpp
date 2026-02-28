@@ -21,7 +21,11 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/Interfaces/TilingInterface.h"
+
+#include <numeric>
+
 #define DEBUG_TYPE "ttl-subblock-compute-for-dst"
 
 namespace mlir::tt::ttl {
@@ -50,7 +54,7 @@ computeMultiDimSubblockSizes(ArrayRef<int64_t> dimSizes, int64_t unrollFactor) {
 
   SmallVector<int64_t> bestSizes(rank, 1);
   int64_t bestProduct = 1;
-  SmallVector<int64_t> current(rank);
+  SmallVector<int64_t> current(rank, 1);
 
   // Return true if `a` should be preferred over `b` when products are equal.
   // Prefers larger inner (higher-index) dimensions to minimize outer loops.
@@ -67,10 +71,12 @@ computeMultiDimSubblockSizes(ArrayRef<int64_t> dimSizes, int64_t unrollFactor) {
   std::function<void(int64_t, int64_t)> search;
   search = [&](int64_t dim, int64_t currentProduct) {
     if (dim == rank) {
+      // All dimensions have been assigned. Update best if this candidate
+      // has a larger product, or the same product but larger inner dimensions.
       if (currentProduct > bestProduct ||
           (currentProduct == bestProduct && prefersInner(current, bestSizes))) {
         bestProduct = currentProduct;
-        bestSizes.assign(current.begin(), current.end());
+        bestSizes = current;
       }
       return;
     }
@@ -95,18 +101,18 @@ struct TTLSubblockComputeForDSTPass
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
 
-    // Collect compute ops to tile (avoid modifying while walking).
-    SmallVector<ComputeOp> opsToTile;
+    // Collect compute ops to sub-block (avoid modifying while walking).
+    SmallVector<ComputeOp> opsToSubblock;
     funcOp.walk([&](ComputeOp computeOp) {
       auto unrollAttr =
           computeOp->getAttrOfType<IntegerAttr>("ttl.unroll_factor");
       if (unrollAttr && unrollAttr.getInt() > 1) {
-        opsToTile.push_back(computeOp);
+        opsToSubblock.push_back(computeOp);
       }
     });
 
-    for (ComputeOp computeOp : opsToTile) {
-      if (failed(tileComputeOp(computeOp))) {
+    for (ComputeOp computeOp : opsToSubblock) {
+      if (failed(subblockComputeOp(computeOp))) {
         signalPassFailure();
         return;
       }
@@ -114,7 +120,7 @@ struct TTLSubblockComputeForDSTPass
   }
 
 private:
-  LogicalResult tileComputeOp(ComputeOp computeOp) {
+  LogicalResult subblockComputeOp(ComputeOp computeOp) {
     auto unrollAttr =
         computeOp->getAttrOfType<IntegerAttr>("ttl.unroll_factor");
     int64_t unrollFactor = unrollAttr.getInt();
@@ -122,47 +128,80 @@ private:
 
     OpBuilder b(computeOp);
     SmallVector<Range> iterDomain = computeOp.getIterationDomain(b);
-    if (iterDomain.empty()) {
-      return computeOp.emitOpError("empty iteration domain");
-    }
-
     int64_t rank = iterDomain.size();
 
-    // Collect dim sizes and compute total tiles.
+    // Collect dim sizes, iterator types, and identify parallel dimensions.
     SmallVector<int64_t> dimSizes(rank);
     int64_t totalTiles = 1;
+    SmallVector<utils::IteratorType> iterTypes =
+        computeOp.getIteratorTypesArray();
     for (int64_t d = 0; d < rank; ++d) {
       auto sizeVal = getConstantIntValue(iterDomain[d].size);
       if (!sizeVal) {
         return computeOp.emitOpError(
-            "dynamic dimension not supported for DST tiling");
+            "dynamic dimension not supported for DST subblocking");
       }
       dimSizes[d] = *sizeVal;
       totalTiles *= dimSizes[d];
     }
 
-    // Compute full-tensor row-major strides for tile offset computation.
-    // Used for loop annotation, full linearization strides attribute, and
-    // linearized index offset adjustment.
-    SmallVector<int64_t> fullStrides = computeStrides(dimSizes);
+    // Compute row-major strides over the CB block shape for tile offset
+    // computation. Used for loop annotation, full linearization strides
+    // attribute, and linearized index offset adjustment.
+    SmallVector<int64_t> blockStrides = computeStrides(dimSizes);
 
     // When unroll_factor >= total tiles, no outer loop is needed -- the compute
     // op already fits in one DST sync region. Set strides so lower-to-loops
     // can annotate tile loops with correct CB linearization strides.
     if (unrollFactor >= totalTiles) {
       computeOp->setAttr(kFullLinStridesAttrName,
-                         b.getDenseI64ArrayAttr(fullStrides));
+                         b.getDenseI64ArrayAttr(blockStrides));
       return success();
     }
 
-    // Compute multi-dimensional subblock sizes that maximize DST utilization.
-    SmallVector<int64_t> subblockSizes =
-        computeMultiDimSubblockSizes(dimSizes, unrollFactor);
-
-    int64_t subblockProduct = 1;
-    for (int64_t ss : subblockSizes) {
-      subblockProduct *= ss;
+    // Only parallel dimensions are candidates for subblocking; reduction
+    // dimensions must be fully included in each subblock in this
+    // implementation.
+    SmallVector<int64_t> parallelDimSizes;
+    SmallVector<int64_t> parallelDimIndices;
+    int64_t reductionProduct = 1;
+    for (int64_t d = 0; d < rank; ++d) {
+      if (iterTypes[d] == utils::IteratorType::parallel) {
+        parallelDimSizes.push_back(dimSizes[d]);
+        parallelDimIndices.push_back(d);
+      } else {
+        reductionProduct *= dimSizes[d];
+      }
     }
+
+    // If reduction dims alone exceed the DST capacity, no subblocking is
+    // possible with this pass.
+    if (reductionProduct > unrollFactor) {
+      return success();
+    }
+
+    // Budget remaining for parallel dimensions after accounting for reductions.
+    int64_t parallelBudget = unrollFactor / reductionProduct;
+
+    // Compute subblock sizes for parallel dimensions only.
+    SmallVector<int64_t> parallelSubblockSizes =
+        computeMultiDimSubblockSizes(parallelDimSizes, parallelBudget);
+
+    // Expand back to full-rank subblock sizes: reduction dims get their full
+    // size, parallel dims get the computed subblock size.
+    SmallVector<int64_t> subblockSizes(rank);
+    int64_t parallelIdx = 0;
+    for (int64_t d = 0; d < rank; ++d) {
+      if (iterTypes[d] == utils::IteratorType::parallel) {
+        subblockSizes[d] = parallelSubblockSizes[parallelIdx++];
+      } else {
+        subblockSizes[d] = dimSizes[d];
+      }
+    }
+
+    int64_t subblockProduct =
+        std::accumulate(subblockSizes.begin(), subblockSizes.end(), int64_t{1},
+                        std::multiplies<>());
 
     // If subblock product is 1, no subblocking benefit -- skip.
     // TODO: consider supporting peeling/remainder loops for dimensions whose
@@ -173,98 +212,111 @@ private:
       return success();
     }
 
-    // Create loop bounds before entering loop nesting.
-    Value c0 = b.create<arith::ConstantIndexOp>(loc, 0);
-    SmallVector<Value> upperBounds;
-    SmallVector<Value> steps;
-    SmallVector<int64_t> tiledDims;
+    // Collect loop bounds for subblocked dimensions.
+    SmallVector<Value> lowerBounds, upperBounds, steps;
+    SmallVector<int64_t> subblockedDims;
     for (int64_t d = 0; d < rank; ++d) {
       if (subblockSizes[d] < dimSizes[d]) {
+        lowerBounds.push_back(b.create<arith::ConstantIndexOp>(loc, 0));
         upperBounds.push_back(
             b.create<arith::ConstantIndexOp>(loc, dimSizes[d]));
         steps.push_back(
             b.create<arith::ConstantIndexOp>(loc, subblockSizes[d]));
-        tiledDims.push_back(d);
+        subblockedDims.push_back(d);
       }
     }
 
-    // Create nested scf.for loops for tiled dimensions.
-    // Annotate each with ttl.subblock_stride so downstream passes
-    // (computeCBTileIndexFromLoops) can distinguish subblock loops from tile
-    // iteration loops and compute correct linearized CB offsets.
-    SmallVector<Value> loopIVs;
-    for (size_t i = 0; i < tiledDims.size(); ++i) {
-      auto forOp = b.create<scf::ForOp>(loc, c0, upperBounds[i], steps[i]);
+    // Build nested scf.for loops via buildLoopNest and subblock the compute
+    // inside the innermost loop body. The loops carry no iter_args; results
+    // flow through tile_store side effects.
+    bool subblockingFailed = false;
+    scf::LoopNest loopNest = scf::buildLoopNest(
+        b, loc, lowerBounds, upperBounds, steps, ValueRange{},
+        [&](OpBuilder &nestedBuilder, Location nestedLoc, ValueRange ivs,
+            ValueRange /*iterArgs*/) -> scf::ValueVector {
+          // Build offsets and sizes for getTiledImplementation.
+          SmallVector<OpFoldResult> offsets(rank,
+                                            nestedBuilder.getIndexAttr(0));
+          SmallVector<OpFoldResult> sizes;
+          for (int64_t d = 0; d < rank; ++d) {
+            sizes.push_back(nestedBuilder.getIndexAttr(subblockSizes[d]));
+          }
+          for (size_t i = 0; i < subblockedDims.size(); ++i) {
+            offsets[subblockedDims[i]] = ivs[i];
+          }
 
-      forOp->setAttr(kSubblockStrideAttrName,
-                     b.getIndexAttr(fullStrides[tiledDims[i]]));
+          // Use TilingInterface to create the subblocked compute op.
+          auto tiledResult =
+              computeOp.getTiledImplementation(nestedBuilder, offsets, sizes);
+          if (failed(tiledResult)) {
+            // Can't return failure() from within the lambda; propagate via
+            // flag.
+            subblockingFailed = true;
+            return {};
+          }
 
-      loopIVs.push_back(forOp.getInductionVar());
-      b.setInsertionPointToStart(forOp.getBody());
-    }
+          // Remove the unroll_factor attribute from the subblocked inner
+          // compute, set full linearization strides, and offset linearized
+          // indices.
+          for (Operation *tiledOp : tiledResult->tiledOps) {
+            tiledOp->removeAttr("ttl.unroll_factor");
+            tiledOp->setAttr(kFullLinStridesAttrName,
+                             nestedBuilder.getDenseI64ArrayAttr(blockStrides));
 
-    // Build offsets and sizes for getTiledImplementation.
-    SmallVector<OpFoldResult> offsets(rank, b.getIndexAttr(0));
-    SmallVector<OpFoldResult> sizes;
-    for (int64_t d = 0; d < rank; ++d) {
-      sizes.push_back(b.getIndexAttr(subblockSizes[d]));
-    }
+            if (auto innerCompute = dyn_cast<ComputeOp>(tiledOp)) {
+              SmallVector<LinearizedIndexOp> linIdxOps;
+              innerCompute.getBody().front().walk(
+                  [&](LinearizedIndexOp op) { linIdxOps.push_back(op); });
+              for (LinearizedIndexOp linIdx : linIdxOps) {
+                OpBuilder::InsertionGuard guard(nestedBuilder);
+                nestedBuilder.setInsertionPointAfter(linIdx);
 
-    // Set offsets for tiled dimensions to their loop IVs.
-    for (size_t i = 0; i < tiledDims.size(); ++i) {
-      offsets[tiledDims[i]] = loopIVs[i];
-    }
+                // Compute offset = sum(iv[d] * blockStrides[d]) for subblocked
+                // dims.
+                Value offset;
+                for (size_t i = 0; i < subblockedDims.size(); ++i) {
+                  int64_t stride = blockStrides[subblockedDims[i]];
 
-    // Use TilingInterface to create the subblocked compute op.
-    auto tiledResult = computeOp.getTiledImplementation(b, offsets, sizes);
-    if (failed(tiledResult)) {
+                  Value contribution;
+                  if (stride == 1) {
+                    contribution = ivs[i];
+                  } else {
+                    Value strideVal =
+                        nestedBuilder.create<arith::ConstantIndexOp>(nestedLoc,
+                                                                     stride);
+                    contribution = nestedBuilder.create<arith::MulIOp>(
+                        nestedLoc, ivs[i], strideVal);
+                  }
+
+                  offset = offset ? nestedBuilder.create<arith::AddIOp>(
+                                        nestedLoc, offset, contribution)
+                                  : contribution;
+                }
+
+                if (offset) {
+                  Value adjusted = nestedBuilder.create<arith::AddIOp>(
+                      nestedLoc, linIdx.getResult(), offset);
+                  linIdx.getResult().replaceAllUsesExcept(
+                      adjusted, adjusted.getDefiningOp());
+                }
+              }
+            }
+          }
+          // The loops carry no iter_args (results use tile_store)
+          return {};
+        });
+
+    if (subblockingFailed) {
       return failure();
     }
 
-    // Remove the unroll_factor attribute from the tiled inner compute,
-    // set full linearization strides, and offset linearized indices.
-    for (Operation *tiledOp : tiledResult->tiledOps) {
-      tiledOp->removeAttr("ttl.unroll_factor");
-      tiledOp->setAttr(kFullLinStridesAttrName,
-                       b.getDenseI64ArrayAttr(fullStrides));
-
-      if (auto innerCompute = dyn_cast<ComputeOp>(tiledOp)) {
-        SmallVector<LinearizedIndexOp> linIdxOps;
-        innerCompute.getBody().front().walk(
-            [&](LinearizedIndexOp op) { linIdxOps.push_back(op); });
-        for (LinearizedIndexOp linIdx : linIdxOps) {
-          OpBuilder::InsertionGuard guard(b);
-          b.setInsertionPointAfter(linIdx);
-
-          // Compute offset = sum(loopIV[d] * fullStrides[d]) for tiled dims.
-          Value offset;
-          for (size_t i = 0; i < tiledDims.size(); ++i) {
-            int64_t stride = fullStrides[tiledDims[i]];
-
-            Value contribution;
-            if (stride == 1) {
-              contribution = loopIVs[i];
-            } else {
-              Value strideVal = b.create<arith::ConstantIndexOp>(loc, stride);
-              contribution =
-                  b.create<arith::MulIOp>(loc, loopIVs[i], strideVal);
-            }
-
-            if (!offset) {
-              offset = contribution;
-            } else {
-              offset = b.create<arith::AddIOp>(loc, offset, contribution);
-            }
-          }
-
-          if (offset) {
-            Value adjusted =
-                b.create<arith::AddIOp>(loc, linIdx.getResult(), offset);
-            linIdx.getResult().replaceAllUsesExcept(adjusted,
-                                                    adjusted.getDefiningOp());
-          }
-        }
-      }
+    // Annotate each loop with ttl.subblock_stride so downstream passes
+    // (computeCBTileIndexFromLoops) can distinguish subblock loops from tile
+    // iteration loops and compute correct linearized CB offsets.
+    for (size_t i = 0; i < subblockedDims.size(); ++i) {
+      loopNest.loops[i]->setAttr(
+          kSubblockStrideAttrName,
+          b.getIndexAttr(blockStrides[subblockedDims[i]]));
     }
 
     // Replace the original compute op with its output operands.
