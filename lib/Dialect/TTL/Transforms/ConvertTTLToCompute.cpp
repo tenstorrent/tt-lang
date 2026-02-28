@@ -382,7 +382,7 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
       AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
   SmallVector<Attribute> maps(2, AffineMapAttr::get(identityMap));
 
-  // Build iterator types: all parallel
+  // Build iterator types: all parallel for now
   SmallVector<Attribute> iterTypes(type.getRank(),
                                    rewriter.getStringAttr("parallel"));
 

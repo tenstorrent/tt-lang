@@ -101,11 +101,11 @@ struct TTLSubblockComputeForDSTPass
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
 
-    // Collect compute ops to sub-block (avoid modifying while walking).
+    // Collect compute ops to subblock (avoid modifying while walking).
     SmallVector<ComputeOp> opsToSubblock;
     funcOp.walk([&](ComputeOp computeOp) {
       auto unrollAttr =
-          computeOp->getAttrOfType<IntegerAttr>("ttl.unroll_factor");
+          computeOp->getAttrOfType<IntegerAttr>(kUnrollFactorAttrName);
       if (unrollAttr && unrollAttr.getInt() > 1) {
         opsToSubblock.push_back(computeOp);
       }
@@ -122,7 +122,7 @@ struct TTLSubblockComputeForDSTPass
 private:
   LogicalResult subblockComputeOp(ComputeOp computeOp) {
     auto unrollAttr =
-        computeOp->getAttrOfType<IntegerAttr>("ttl.unroll_factor");
+        computeOp->getAttrOfType<IntegerAttr>(kUnrollFactorAttrName);
     int64_t unrollFactor = unrollAttr.getInt();
     Location loc = computeOp.getLoc();
 
@@ -130,7 +130,7 @@ private:
     SmallVector<Range> iterDomain = computeOp.getIterationDomain(b);
     int64_t rank = iterDomain.size();
 
-    // Collect dim sizes, iterator types, and identify parallel dimensions.
+    // Collect dim sizes and compute total tile count.
     SmallVector<int64_t> dimSizes(rank);
     int64_t totalTiles = 1;
     SmallVector<utils::IteratorType> iterTypes =
@@ -141,8 +141,8 @@ private:
       totalTiles *= dimSizes[d];
     }
 
-    // Compute row-major strides over the CB block shape for tile offset
-    // computation. Used for loop annotation, full linearization strides
+    // Compute row-major strides over the CB block iteration domain for tile
+    // offset computation. Used for loop annotation, CB linearization strides
     // attribute, and linearized index offset adjustment.
     SmallVector<int64_t> blockStrides = computeStrides(dimSizes);
 
@@ -223,7 +223,7 @@ private:
     }
 
     // Build nested scf.for loops via buildLoopNest and subblock the compute
-    // inside the innermost loop body. The loops carry no iter_args; results
+    // inside the innermost loop body. The loops have no iter_args; results
     // flow through tile_store side effects.
     bool subblockingFailed = false;
     scf::LoopNest loopNest = scf::buildLoopNest(
@@ -245,8 +245,6 @@ private:
           auto tiledResult =
               computeOp.getTiledImplementation(nestedBuilder, offsets, sizes);
           if (failed(tiledResult)) {
-            // Can't return failure() from within the lambda; propagate via
-            // flag.
             subblockingFailed = true;
             return {};
           }
@@ -255,7 +253,7 @@ private:
           // compute, set full linearization strides, and offset linearized
           // indices.
           for (Operation *tiledOp : tiledResult->tiledOps) {
-            tiledOp->removeAttr("ttl.unroll_factor");
+            tiledOp->removeAttr(kUnrollFactorAttrName);
             tiledOp->setAttr(kFullLinStridesAttrName,
                              nestedBuilder.getDenseI64ArrayAttr(blockStrides));
 
@@ -298,7 +296,7 @@ private:
               }
             }
           }
-          // The loops carry no iter_args (results use tile_store)
+          // The loops have no iter_args (results use tile_store)
           return {};
         });
 

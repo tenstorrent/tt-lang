@@ -44,8 +44,9 @@ constexpr llvm::StringLiteral kUnrollFactorAttrName("ttl.unroll_factor");
 /// loops from tile iteration loops for CB index computation.
 constexpr llvm::StringLiteral kSubblockStrideAttrName("ttl.subblock_stride");
 
-/// Row-major strides of the full (pre-subblock) iteration domain, carried
-/// on subblocked ComputeOps so tile loops get correct CB linearization strides.
+/// Row-major strides of the CB block iteration domain (before subblocking),
+/// carried on subblocked ComputeOps so tile loops get correct CB linearization
+/// strides.
 constexpr llvm::StringLiteral
     kFullLinStridesAttrName("ttl.full_linearization_strides");
 

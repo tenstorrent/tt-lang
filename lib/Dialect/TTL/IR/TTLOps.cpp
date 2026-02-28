@@ -299,23 +299,17 @@ mlir::tt::ttl::ComputeOp::getIteratorTypesArray() {
 }
 
 /// Collect every dimension of every operand (inputs then outputs) into a flat
-/// list. Static dimensions become IndexAttrs; dynamic dimensions become
-/// tensor::DimOp results.
+/// list of IndexAttrs. All dimensions are static (enforced by the verifier).
 mlir::SmallVector<mlir::OpFoldResult>
 mlir::tt::ttl::ComputeOp::createFlatListOfOperandDims(mlir::OpBuilder &b,
                                                       mlir::Location loc) {
   mlir::SmallVector<mlir::OpFoldResult> allDims;
   for (mlir::Value operand :
        llvm::concat<mlir::Value>(getInputs(), getOutputs())) {
-    auto ty = mlir::cast<mlir::RankedTensorType>(operand.getType());
-    for (int64_t i = 0; i < ty.getRank(); ++i) {
-      if (ty.isDynamicDim(i)) {
-        allDims.push_back(
-            b.create<mlir::tensor::DimOp>(loc, operand, i).getResult());
-      } else {
-        allDims.push_back(b.getIndexAttr(ty.getDimSize(i)));
-      }
-    }
+    auto shape =
+        mlir::cast<mlir::RankedTensorType>(operand.getType()).getShape();
+    auto dims = getAsIndexOpFoldResult(b.getContext(), shape);
+    allDims.append(dims.begin(), dims.end());
   }
   return allDims;
 }
@@ -338,18 +332,10 @@ mapOffsetsAndSizes(mlir::OpBuilder &b, mlir::Location loc, mlir::AffineMap map,
   auto operandTy = mlir::cast<mlir::RankedTensorType>(operand.getType());
   int64_t rank = operandTy.getRank();
   operandOffsets.resize(rank, b.getIndexAttr(0));
-  operandSizes.resize(rank);
-  operandStrides.resize(rank, b.getIndexAttr(1));
-
   // Default: full operand dim (used for broadcast dims not in the map).
-  for (int64_t i = 0; i < rank; ++i) {
-    if (operandTy.isDynamicDim(i)) {
-      operandSizes[i] =
-          b.create<mlir::tensor::DimOp>(loc, operand, i).getResult();
-    } else {
-      operandSizes[i] = b.getIndexAttr(operandTy.getDimSize(i));
-    }
-  }
+  // All dimensions are static (enforced by the ComputeOp verifier).
+  operandSizes = getAsIndexOpFoldResult(b.getContext(), operandTy.getShape());
+  operandStrides.resize(rank, b.getIndexAttr(1));
 
   // Override with iteration-domain offsets/sizes for mapped dims.
   for (unsigned resIdx = 0; resIdx < map.getNumResults(); ++resIdx) {
@@ -426,15 +412,10 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
     generatedSlices.push_back(slice);
   }
 
-  // Build the tiled compute op with sub-block operands.
-  mlir::SmallVector<mlir::Type> tiledResultTypes;
-  for (mlir::Value out : tiledOutputs) {
-    tiledResultTypes.push_back(out.getType());
-  }
-
-  auto tiledOp =
-      b.create<ComputeOp>(loc, tiledResultTypes, tiledInputs, tiledOutputs,
-                          getIndexingMapsAttr(), getIteratorTypesAttr());
+  // Build the tiled compute op with subblock operands.
+  auto tiledOp = b.create<ComputeOp>(
+      loc, mlir::TypeRange(tiledOutputs), tiledInputs, tiledOutputs,
+      getIndexingMapsAttr(), getIteratorTypesAttr());
 
   // Clone the body region into the new compute op.
   mlir::IRMapping mapping;
@@ -447,6 +428,8 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
   return result;
 }
 
+/// Map iteration-domain offsets/sizes to the result tensor's offsets/sizes
+/// via the output's indexing map.
 mlir::LogicalResult mlir::tt::ttl::ComputeOp::getResultTilePosition(
     mlir::OpBuilder &b, unsigned resultNumber,
     llvm::ArrayRef<mlir::OpFoldResult> offsets,
