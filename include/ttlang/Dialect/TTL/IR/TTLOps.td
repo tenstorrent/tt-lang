@@ -283,7 +283,8 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     // Required by IndexingMapOpInterface default implementations
     // (getStaticOperandShape, getStaticLoopRanges).
     ArrayRef<int64_t> getShape(OpOperand *opOperand) {
-      return cast<RankedTensorType>(opOperand->get().getType()).getShape();
+      auto shape = cast<RankedTensorType>(opOperand->get().getType()).getShape();
+      return shape;
     }
 
     // Return iterator types as a vector of utils::IteratorType.

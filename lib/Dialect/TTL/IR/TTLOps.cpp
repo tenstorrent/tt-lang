@@ -681,6 +681,9 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   // Inputs.
   for (size_t i = 0; i < numInputs; ++i) {
     auto tensorTy = mlir::cast<RankedTensorType>(getInputs()[i].getType());
+    if (!tensorTy.hasStaticShape()) {
+      return emitOpError("input ") << i << " must have a static shape";
+    }
     if (failed(requireAttachedCB(getInputs()[i], i, "input"))) {
       return failure();
     }
@@ -697,6 +700,9 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   size_t outputStart = numInputs;
   for (size_t i = 0; i < numOutputs; ++i) {
     auto tensorTy = mlir::cast<RankedTensorType>(getOutputs()[i].getType());
+    if (!tensorTy.hasStaticShape()) {
+      return emitOpError("output ") << i << " must have a static shape";
+    }
     if (failed(requireAttachedCB(getOutputs()[i], i, "output"))) {
       return failure();
     }

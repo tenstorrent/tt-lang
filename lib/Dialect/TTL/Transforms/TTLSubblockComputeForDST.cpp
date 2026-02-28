@@ -136,12 +136,8 @@ private:
     SmallVector<utils::IteratorType> iterTypes =
         computeOp.getIteratorTypesArray();
     for (int64_t d = 0; d < rank; ++d) {
-      auto sizeVal = getConstantIntValue(iterDomain[d].size);
-      if (!sizeVal) {
-        return computeOp.emitOpError(
-            "dynamic dimension not supported for DST subblocking");
-      }
-      dimSizes[d] = *sizeVal;
+      // ComputeOp verifier guarantees static shapes.
+      dimSizes[d] = *getConstantIntValue(iterDomain[d].size);
       totalTiles *= dimSizes[d];
     }
 

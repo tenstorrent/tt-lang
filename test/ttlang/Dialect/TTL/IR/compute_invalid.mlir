@@ -287,6 +287,62 @@ func.func @compute_no_inputs(
 
 
 
+// Test: Dynamic input shape
+func.func @compute_dynamic_input(
+    %a: tensor<?x2x!ttcore.tile<32x32, f32>>,
+    %cba: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+    %cbout: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+    -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %a_att = ttl.attach_cb %a, %cba
+      : (tensor<?x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<?x2x!ttcore.tile<32x32, f32>>
+  %init_att = ttl.attach_cb %init, %cbout
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{input 0 must have a static shape}}
+  %0 = ttl.compute
+      ins(%a_att : tensor<?x2x!ttcore.tile<32x32, f32>>)
+      outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
+    ttl.yield %arg0 : !ttcore.tile<32x32, f32>
+  } -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
+// Test: Dynamic output shape
+func.func @compute_dynamic_output(
+    %a: tensor<2x2x!ttcore.tile<32x32, f32>>,
+    %out: tensor<?x2x!ttcore.tile<32x32, f32>>,
+    %cba: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+    %cbout: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+    -> tensor<?x2x!ttcore.tile<32x32, f32>> {
+  %a_att = ttl.attach_cb %a, %cba
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %out_att = ttl.attach_cb %out, %cbout
+      : (tensor<?x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<?x2x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{output 0 must have a static shape}}
+  %0 = ttl.compute
+      ins(%a_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      outs(%out_att : tensor<?x2x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
+    ttl.yield %arg0 : !ttcore.tile<32x32, f32>
+  } -> tensor<?x2x!ttcore.tile<32x32, f32>>
+  func.return %0 : tensor<?x2x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
 // Test: More iterator dimensions than any tensor rank (catches malformed IR
 // where iteration domain doesn't correspond to any actual tensor).
 func.func @compute_iterator_exceeds_tensor_rank(
