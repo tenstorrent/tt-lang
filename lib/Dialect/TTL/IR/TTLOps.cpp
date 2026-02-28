@@ -413,13 +413,18 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
            << expectedMaps << " indexing maps but got " << mapsAttr.size();
   }
 
-  // Verify iterator_types contains only "parallel" or "reduction".
-  for (mlir::Attribute attr : getIteratorTypes()) {
+  // Verify iterator_types and track reduction dims for map validation.
+  // Reduction dims may appear in input maps but must not appear in output maps.
+  SmallVector<bool> isReductionDim(getIteratorTypes().size(), false);
+  for (auto [idx, attr] : llvm::enumerate(getIteratorTypes())) {
     auto strAttr = mlir::dyn_cast<mlir::StringAttr>(attr);
     if (!strAttr || (strAttr.getValue() != "parallel" &&
                      strAttr.getValue() != "reduction")) {
       return emitOpError(
           "iterator_types must contain only 'parallel' or 'reduction'");
+    }
+    if (strAttr.getValue() == "reduction") {
+      isReductionDim[idx] = true;
     }
   }
 
@@ -472,12 +477,45 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
              << expectedResults << " results to match operand rank, but got "
              << map.getNumResults();
     }
-    return mlir::success();
+    return success();
+  };
+
+  // Unlike linalg.generic (which allows arbitrary affine maps), ttl.compute
+  // requires projected-permutation indexing maps: each result is a unique
+  // dimension or a constant 0 (broadcast). This is sufficient for all spec
+  // operations (element-wise, broadcast, matmul, reductions, transpose) and
+  // enables downstream tiling and loop lowering to assume a direct
+  // iteration-to-element mapping. Constant-0 results encode broadcast and
+  // require the corresponding tensor dimension to be 1.
+  // Examples of invalid maps: (d0, d1)->(d0 + d1), (d0, d1)->(1),
+  // (d0, d1, d2)->(d0, d0), (d0)[s0]->(d0 + s0).
+  auto validateMapStructure =
+      [&](AffineMap map, RankedTensorType tensorTy, StringRef kind, size_t idx,
+          SmallVectorImpl<bool> *dimsReferenced) -> mlir::LogicalResult {
+    if (!map.isProjectedPermutation(/*allowZeroInResults=*/true)) {
+      return emitOpError() << kind << " " << idx
+                           << " indexing map must be a projected permutation"
+                              " (unique dims or 0 constants)";
+    }
+    for (auto [resIdx, expr] : llvm::enumerate(map.getResults())) {
+      if (auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr)) {
+        if (dimsReferenced) {
+          (*dimsReferenced)[dimExpr.getPosition()] = true;
+        }
+      } else if (auto cstExpr =
+                     mlir::dyn_cast<mlir::AffineConstantExpr>(expr)) {
+        if (tensorTy.getDimSize(resIdx) != 1) {
+          return emitOpError() << kind << " " << idx << " broadcast dim "
+                               << resIdx << " must have size 1";
+        }
+      }
+    }
+    return success();
   };
 
   // Ensure every tensor operand has an attached CB (via ttl.attach_cb).
   auto requireAttachedCB = [&](Value tensor, size_t idx,
-                               StringRef kind) -> LogicalResult {
+                               StringRef kind) -> mlir::LogicalResult {
     Value cb = getAttachedCB(tensor);
     if (!cb) {
       return emitOpError() << kind << " " << idx
@@ -488,6 +526,7 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   };
 
   // Inputs.
+  SmallVector<bool> dimsReferencedByInputs(iteratorCount, false);
   for (size_t i = 0; i < numInputs; ++i) {
     auto tensorTy = mlir::cast<RankedTensorType>(getInputs()[i].getType());
     if (failed(requireAttachedCB(getInputs()[i], i, "input"))) {
@@ -498,7 +537,11 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     }
     auto map = mlir::cast<AffineMapAttr>(maps[i]).getValue();
     if (failed(verifyMapCommon(map, tensorTy.getRank()))) {
-      return mlir::failure();
+      return failure();
+    }
+    if (failed(validateMapStructure(map, tensorTy, "input", i,
+                                    &dimsReferencedByInputs))) {
+      return failure();
     }
   }
 
@@ -515,7 +558,35 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     }
     auto map = mlir::cast<AffineMapAttr>(maps[mapIdx]).getValue();
     if (failed(verifyMapCommon(map, tensorTy.getRank()))) {
-      return mlir::failure();
+      return failure();
+    }
+    if (failed(validateMapStructure(map, tensorTy, "output", i,
+                                    /*dimsReferenced=*/nullptr))) {
+      return failure();
+    }
+
+    // Reduction dims must not appear in output maps. Like linalg.generic,
+    // reduction dimensions are contracted: the body accumulates into the
+    // output along these dims, so they do not index the output tensor.
+    for (AffineExpr expr : map.getResults()) {
+      if (auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr)) {
+        if (isReductionDim[dimExpr.getPosition()]) {
+          return emitOpError() << "output " << i
+                               << " indexing map cannot reference reduction "
+                                  "dimension "
+                               << dimExpr.getPosition();
+        }
+      }
+    }
+  }
+
+  // Every reduction dim must be referenced by at least one input map,
+  // otherwise the reduction iterator has no operand to traverse.
+  for (size_t d = 0; d < iteratorCount; ++d) {
+    if (isReductionDim[d] && !dimsReferencedByInputs[d]) {
+      return emitOpError()
+             << "reduction dimension " << d
+             << " must be referenced by at least one input indexing map";
     }
   }
 
