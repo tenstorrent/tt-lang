@@ -26,23 +26,12 @@ TS = ttnn.TILE_SIZE  # 32
 @pytest.mark.parametrize(
     "M,N,K,n_blocks_per_core,block_m,block_n,block_k,subblock_h,subblock_w",
     [
-        # N dim is written out as # of cores * TS * blocks_per_core * block_n
         (TS, 2 * TS, TS, 1, 1, 1, 1, 1, 1),  # trivial base case
         (TS, 14 * TS, TS, 1, 1, 1, 1, 1, 1),  # just over 1 row for all arch
         (TS, 8 * TS, TS * 2, 1, 1, 1, 1, 1, 1),  # 2 blocks in k dim
         (TS * 2, 8 * TS, TS, 1, 1, 1, 1, 1, 1),  # 2 blocks in m dim
         (TS, 8 * TS * 2, TS, 2, 1, 1, 1, 1, 1),  # 2 blocks per core in n dim
-        (
-            TS * 6,
-            2 * TS,
-            TS * 2,
-            1,
-            2,
-            1,
-            1,
-            2,
-            1,
-        ),
+        (TS * 6, 2 * TS, TS * 2, 1, 2, 1, 1, 2, 1),
         (
             TS,
             8 * TS * 2,
@@ -76,7 +65,6 @@ TS = ttnn.TILE_SIZE  # 32
             1,
             8,
         ),  # bigger blocks in n and k dims, with 2 subblocks per block in n/w dim
-        # stress tests
         (
             TS * 4,
             8 * TS * 4,

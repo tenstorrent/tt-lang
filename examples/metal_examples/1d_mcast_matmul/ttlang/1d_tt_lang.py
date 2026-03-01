@@ -24,9 +24,15 @@ def matmul_1d(
     block_inner_dim: int,
     blocks_per_core_n: int,
 ):
-    assert a_tensor.shape[1] == b_tensor.shape[0], "Incompatible matrix shapes for multiplication."
-    assert a_tensor.shape[0] == out_tensor.shape[0], "Output matrix has incorrect number of rows."
-    assert b_tensor.shape[1] == out_tensor.shape[1], "Output matrix has incorrect number of columns."
+    assert (
+        a_tensor.shape[1] == b_tensor.shape[0]
+    ), "Incompatible matrix shapes for multiplication."
+    assert (
+        a_tensor.shape[0] == out_tensor.shape[0]
+    ), "Output matrix has incorrect number of rows."
+    assert (
+        b_tensor.shape[1] == out_tensor.shape[1]
+    ), "Output matrix has incorrect number of columns."
     M = a_tensor.shape[0]
     N = b_tensor.shape[1]
     K = a_tensor.shape[1]
@@ -51,7 +57,9 @@ def matmul_1d(
         b_tensor, shape=(block_inner_dim, block_w), buffer_factor=buffering_factor
     )
     # non buffered output, matching metal implementation
-    out_dfb = ttl.make_dataflow_buffer_like(out_tensor, shape=(block_h, block_w), buffer_factor=1)
+    out_dfb = ttl.make_dataflow_buffer_like(
+        out_tensor, shape=(block_h, block_w), buffer_factor=1
+    )
 
     mcast_pipe = ttl.Pipe((0,), slice(1, num_working_cores))
     net = ttl.PipeNet(mcast_pipe)
@@ -131,32 +139,19 @@ def matmul_1d(
 
 
 @pytest.mark.parametrize(
-    "M,N,K,block_h,block_w,block_inner_dim,blocks_per_core_n",
+    "M, N, K, n_blocks_per_core, block_m, block_n, block_k, subblock_h, subblock_w",
     [
-        # N dim is written out as # of cores * TS * blocks_per_core * block_n
-        (TS, 2 * TS, TS, 1, 1, 1, 1, 1, 1),  # trivial base case
-        (TS, 14 * TS, TS, 1, 1, 1, 1, 1, 1),  # just over 1 row for all arch
-        (TS, 8 * TS, TS * 2, 1, 1, 1, 1, 1, 1),  # 2 blocks in k dim
-        (TS * 2, 8 * TS, TS, 1, 1, 1, 1, 1, 1),  # 2 blocks in m dim
-        (TS, 8 * TS * 2, TS, 2, 1, 1, 1, 1, 1),  # 2 blocks per core in n dim
-        pytest.param(
-            TS * 6,
-            2 * TS,
-            TS * 2,
-            1,
-            2,
-            1,
-            1,
-            2,
-            1,
-        ),
+        (TS, 2 * TS, TS, 1, 1, 1, 1),  # trivial base case
+        (TS, 14 * TS, TS, 1, 1, 1, 1),  # just over 1 row for all arch
+        (TS, 8 * TS, TS * 2, 1, 1, 1, 1),  # 2 blocks in k dim
+        (TS * 2, 8 * TS, TS, 1, 1, 1, 1),  # 2 blocks in m dim
+        (TS, 8 * TS * 2, TS, 2, 1, 1, 1),  # 2 blocks per core in n dim
+        (TS * 6, 2 * TS, TS * 2, 1, 2, 1, 1),
         (
             TS,
             8 * TS * 2,
             TS * 2,
             2,
-            1,
-            1,
             1,
             1,
             1,
@@ -169,8 +164,6 @@ def matmul_1d(
             16,
             1,
             8,
-            8,
-            1,
         ),  # bigger blocks in m and k dims, with 2 subblocks per block in m/h dim
         (
             TS,
@@ -180,10 +173,7 @@ def matmul_1d(
             1,
             16,
             8,
-            1,
-            8,
         ),  # bigger blocks in n and k dims, with 2 subblocks per block in n/w dim
-        # stress tests
         (
             TS * 4,
             8 * TS * 4,
@@ -191,8 +181,6 @@ def matmul_1d(
             1,
             4,
             4,
-            2,
-            2,
             2,
         ),  # 4 tile blocks, with 2 subblocks in each dim
         (
@@ -203,20 +191,8 @@ def matmul_1d(
             4,
             4,
             2,
-            2,
-            2,
         ),  # above but with 2 blocks per core in n dim
-        (
-            TS * 4,
-            64 * TS * 2 * 4,
-            TS * 4 * 2,
-            2,
-            4,
-            4,
-            2,
-            2,
-            2,
-        ),  # above but all cores wh
+        (TS * 4, 64 * TS * 2 * 4, TS * 4 * 2, 2, 4, 4, 2),  # above but all cores wh
         (
             TS * 8,
             120 * TS * 2 * 8,
@@ -225,10 +201,8 @@ def matmul_1d(
             8,
             8,
             16,
-            4,
-            2,
         ),  # all cores small bh 640/768 L1 tile limit
-        pytest.param(
+        (
             TS * 8 * 2,
             120 * TS * 2 * 8,
             TS * 16,
@@ -236,12 +210,12 @@ def matmul_1d(
             8,
             8,
             16,
-            4,
-            2,
         ),  # above, but with 2 blocks in m dim
     ],
 )
-def test_matmul_1d(M, N, K, block_h, block_w, block_inner_dim, blocks_per_core_n):
+def test_matmul_1d(
+    M, N, K, n_blocks_per_core, block_m, block_n, block_k, subblock_h, subblock_w
+):
     device = ttnn.open_device(device_id=0)
 
     A = ttnn.rand(
@@ -263,7 +237,7 @@ def test_matmul_1d(M, N, K, block_h, block_w, block_inner_dim, blocks_per_core_n
         device=device,
     )
 
-    matmul_1d(A, B, output_t, block_h, block_w, block_inner_dim, blocks_per_core_n)
+    matmul_1d(A, B, output_t, block_m, block_n, block_k, n_blocks_per_core)
 
     golden_output = A.to_torch() @ B.to_torch()
 
