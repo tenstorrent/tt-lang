@@ -4,8 +4,10 @@
 import pytest
 import torch
 import ttnn
+import ttl
+
 from metal_examples.utils import assert_with_ulp
-from ttl import Program, copy, core, make_circular_buffer_like, Pipe, PipeNet
+
 
 """
 will be multicasting a block from input_t to multiple cores, with each core writing to its own block in output_t
@@ -16,18 +18,18 @@ will be multicasting a block from input_t to multiple cores, with each core writ
 def matmul_1d(
     a_tensor: ttnn.Tensor,
     b_tensor: ttnn.Tensor,
-    output_t: ttnn.Tensor,
+    out_tensor: ttnn.Tensor,
     block_h: int,
     block_w: int,
     block_inner_dim: int,
     blocks_per_core_n: int,
 ):
-    assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
-    assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
-    assert b.shape[1] == out.shape[1], "Output matrix has incorrect number of columns."
-    M = a.shape[0]
-    N = b.shape[1]
-    K = a.shape[1]
+    assert a_tensor.shape[1] == b_tensor.shape[0], "Incompatible matrix shapes for multiplication."
+    assert a_tensor.shape[0] == out_tensor.shape[0], "Output matrix has incorrect number of rows."
+    assert b_tensor.shape[1] == out_tensor.shape[1], "Output matrix has incorrect number of columns."
+    M = a_tensor.shape[0]
+    N = b_tensor.shape[1]
+    K = a_tensor.shape[1]
     Mt = M // ttnn.TILE_SIZE
     Kt = K // ttnn.TILE_SIZE
     Nt = N // ttnn.TILE_SIZE
@@ -42,17 +44,17 @@ def matmul_1d(
     num_blocks_k = Kt // block_inner_dim
 
     buffering_factor = 2
-    a_cb = make_circular_buffer_like(
-        a, shape=(block_h, block_inner_dim), buffer_factor=buffering_factor
+    a_dfb = ttl.make_dataflow_buffer_like(
+        a_tensor, shape=(block_h, block_inner_dim), buffer_factor=buffering_factor
     )
-    b_cb = make_circular_buffer_like(
-        b, shape=(block_inner_dim, block_w), buffer_factor=buffering_factor
+    b_dfb = ttl.make_dataflow_buffer_like(
+        b_tensor, shape=(block_inner_dim, block_w), buffer_factor=buffering_factor
     )
     # non buffered output, matching metal implementation
-    out_cb = make_circular_buffer_like(out, shape=(block_h, block_w), buffer_factor=1)
+    out_dfb = ttl.make_dataflow_buffer_like(out_tensor, shape=(block_h, block_w), buffer_factor=1)
 
-    mcast_pipe = ttl.Pipe((0), slice(1, num_working_cores))
-    net = PipeNet(mcast_pipe)
+    mcast_pipe = ttl.Pipe((0,), slice(1, num_working_cores))
+    net = ttl.PipeNet(mcast_pipe)
 
     def block_slice(block_offset, block_size):
         return slice(block_offset * block_size, (block_offset + 1) * block_size)
@@ -64,9 +66,9 @@ def matmul_1d(
             return
         for block_m in range(num_blocks_m):
             for block_n in range(blocks_per_core_n):
-                with out_cb.reserve() as out_blk:
+                with out_dfb.reserve() as out_blk:
                     for block_k in range(num_blocks_k):
-                        with a_cb.wait() as a_blk, b_cb.wait() as b_blk:
+                        with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
                             out_blk.store(a_blk @ b_blk, acc=True)
 
     @ttl.datamovement()
@@ -77,10 +79,10 @@ def matmul_1d(
         for block_m in range(num_blocks_m):
             for _ in range(blocks_per_core_n):
                 for block_k in range(num_blocks_k):
-                    with a_cb.reserve() as a_blk:
+                    with a_dfb.reserve() as a_blk:
 
                         def pipe_src(pipe):
-                            in_rd = copy(
+                            in_rd = ttl.copy(
                                 a_tensor[
                                     block_slice(block_m, block_h),
                                     block_slice(block_k, block_inner_dim),
@@ -88,11 +90,11 @@ def matmul_1d(
                                 a_blk,
                             )
                             in_rd.wait()
-                            mcast_wr = copy(a_blk, pipe)
+                            mcast_wr = ttl.copy(a_blk, pipe)
                             mcast_wr.wait()
 
                         def pipe_dst(pipe):
-                            mcast_rd = copy(pipe, a_blk)
+                            mcast_rd = ttl.copy(pipe, a_blk)
                             mcast_rd.wait()
 
                         net.if_src(pipe_src)
@@ -105,22 +107,22 @@ def matmul_1d(
             return
         for block_m in range(num_blocks_m):
             for block_n in range(blocks_per_core_n):
-                with out_cb.wait() as out_blk:
-                    for block_k in range(num_blocks_k):
-                        with b_cb.reserve() as b_blk:
-                            b_rd = copy(
-                                b_tensor[
-                                    block_slice(block_k, block_inner_dim),
-                                    block_slice(
-                                        block_n + core * blocks_per_core_n, block_w
-                                    ),
-                                ],
-                                b_blk,
-                            )
-                            b_rd.wait()
-                    out_wr = copy(
+                for block_k in range(num_blocks_k):
+                    with b_dfb.reserve() as b_blk:
+                        b_rd = ttl.copy(
+                            b_tensor[
+                                block_slice(block_k, block_inner_dim),
+                                block_slice(
+                                    block_n + core * blocks_per_core_n, block_w
+                                ),
+                            ],
+                            b_blk,
+                        )
+                        b_rd.wait()
+                with out_dfb.wait() as out_blk:
+                    out_wr = ttl.copy(
                         out_blk,
-                        out[
+                        out_tensor[
                             block_slice(block_m, block_h),
                             block_slice(block_n + core * blocks_per_core_n, block_w),
                         ],
@@ -147,9 +149,6 @@ def matmul_1d(
             1,
             2,
             1,
-            marks=pytest.mark.skip(
-                reason="Having M iterate >1 causes problems when also doing k dim accumulation, needs investigation"
-            ),
         ),
         (
             TS,
@@ -232,17 +231,14 @@ def matmul_1d(
         pytest.param(
             TS * 8 * 2,
             120 * TS * 2 * 8,
-            TS * 16 * 2,
+            TS * 16,
             2,
             8,
             8,
             16,
             4,
             2,
-            marks=pytest.mark.skip(
-                reason="Having M iterate >1 causes problems when also doing k dim accumulation, needs investigation"
-            ),
-        ),  # above, but with 2 blocks in m and k dim
+        ),  # above, but with 2 blocks in m dim
     ],
 )
 def test_matmul_1d(M, N, K, block_h, block_w, block_inner_dim, blocks_per_core_n):

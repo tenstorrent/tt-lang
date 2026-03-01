@@ -32,7 +32,7 @@ TS = ttnn.TILE_SIZE  # 32
         (TS, 8 * TS, TS * 2, 1, 1, 1, 1, 1, 1),  # 2 blocks in k dim
         (TS * 2, 8 * TS, TS, 1, 1, 1, 1, 1, 1),  # 2 blocks in m dim
         (TS, 8 * TS * 2, TS, 2, 1, 1, 1, 1, 1),  # 2 blocks per core in n dim
-        pytest.param(
+        (
             TS * 6,
             2 * TS,
             TS * 2,
@@ -42,9 +42,6 @@ TS = ttnn.TILE_SIZE  # 32
             1,
             2,
             1,
-            marks=pytest.mark.skip(
-                reason="Having M iterate >1 causes problems when also doing k dim accumulation, needs investigation"
-            ),
         ),
         (
             TS,
@@ -124,20 +121,17 @@ TS = ttnn.TILE_SIZE  # 32
             4,
             2,
         ),  # all cores small bh 640/768 L1 tile limit
-        pytest.param(
+        (
             TS * 8 * 2,
             120 * TS * 2 * 8,
-            TS * 16 * 2,
+            TS * 16,
             2,
             8,
             8,
             16,
             4,
             2,
-            marks=pytest.mark.skip(
-                reason="Having M iterate >1 causes problems when also doing k dim accumulation, needs investigation"
-            ),
-        ),  # above, but with 2 blocks in m and k dim
+        ),  # above, but with 2 blocks in m dim
     ],
 )
 def test_1d_matmul_metal(
@@ -290,7 +284,7 @@ def test_1d_matmul_metal(
         1,
         Kt,
         block_k,
-        block_k * block_m,
+        block_m * Kt,
         block_k,
         block_m,
         in0_block_num_tiles,
@@ -522,6 +516,17 @@ def test_1d_matmul_metal(
     a_tensor_torch = ttnn.to_torch(a_tensor).to(torch.bfloat16)
     b_tensor_torch = ttnn.to_torch(b_tensor).to(torch.bfloat16)
     torch_output = torch.matmul(a_tensor_torch, b_tensor_torch)
+
+    diff = torch.abs(metal_output - torch_output)
+
+    diff_heatmap = diff.to(torch.float32).cpu().numpy()
+    plt.figure(figsize=(8, 6))
+    plt.imshow(diff_heatmap, cmap="hot", interpolation="nearest")
+    plt.colorbar(label="Absolute Error")
+    plt.title("1D Matmul Diff Heatmap")
+    plt.tight_layout()
+    plt.savefig("diff_heatmap.png", dpi=150)
+    plt.close()
 
     assert_with_ulp(torch_output, metal_output)
     print("test passed.")
