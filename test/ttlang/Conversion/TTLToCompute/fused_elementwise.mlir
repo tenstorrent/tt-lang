@@ -16,12 +16,16 @@ func.func @fused_exp_sqrt_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tens
   %exp = ttl.exp %a_cb : tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %sqrt = ttl.sqrt %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %add = ttl.add %exp, %sqrt : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %reserve = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %reserve_att = ttl.attach_cb %reserve, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  ttl.store %add, %reserve_att : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
 
   // CHECK: ttl.compute
   // CHECK-SAME: ins(%{{.*}}, %{{.*}} :
   // CHECK: ttl.tile_exp
   // CHECK: ttl.tile_sqrt
   // CHECK: ttl.tile_add
+  // CHECK: ttl.tile_store
 
   func.return %add : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
@@ -38,10 +42,14 @@ func.func @fused_exp_add_direct(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: te
 
   %exp = ttl.exp %a_cb : tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %add = ttl.add %exp, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %reserve = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %reserve_att = ttl.attach_cb %reserve, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  ttl.store %add, %reserve_att : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
 
   // CHECK: ttl.compute
   // CHECK: ttl.tile_exp
   // CHECK: ttl.tile_add
+  // CHECK: ttl.tile_store
 
   func.return %add : tensor<2x2x!ttcore.tile<32x32, f32>>
 }

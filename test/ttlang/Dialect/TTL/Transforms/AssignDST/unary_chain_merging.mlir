@@ -29,15 +29,15 @@
 // CHECK-SAME: tile_relu
 
 // Verify merged set interval is computed correctly
-// Block args start at -1, so merged interval is [-1, 3]
-// CHECK: Merged set interval: [-1, 3] for 4 values
+// Block args start at -1, cb_reserve + tile_store add 2 to end → [-1, 5]
+// CHECK: Merged set interval: [-1, 5] for 4 values
 
 // Verify all values in the chain have the same interval
 // CHECK: === Live Intervals ===
-// CHECK-DAG: [-1, 3]
-// CHECK-DAG: [-1, 3]
-// CHECK-DAG: [-1, 3]
-// CHECK-DAG: [-1, 3]
+// CHECK-DAG: [-1, 5]
+// CHECK-DAG: [-1, 5]
+// CHECK-DAG: [-1, 5]
+// CHECK-DAG: [-1, 5]
 
 // Verify all 4 values are allocated together to DST[0] (only one allocation for merged set)
 // CHECK: === Phase 3: Linear Scan Allocation ===
@@ -68,6 +68,8 @@ func.func @unary_chain_shared_dst(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
     %abs = ttl.tile_abs %a_tile : !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %abs : !ttcore.tile<32x32, f32>
     %relu = ttl.tile_relu %exp : !ttcore.tile<32x32, f32>
+    %out_view = ttl.cb_reserve %cb1 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %relu, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %relu : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -98,13 +100,14 @@ func.func @unary_chain_shared_dst(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 // CHECK-SAME: tile_abs
 
 // Verify merged set has correct interval
-// CHECK: Merged set interval: [0, 2] for 2 values
+// cb_reserve + tile_store add 2 to end → [0, 4]
+// CHECK: Merged set interval: [0, 4] for 2 values
 
 // Verify live intervals
 // CHECK: === Live Intervals ===
-// The merged set (tile_mul + tile_abs) should have [0, 2]
-// CHECK-DAG: tile_mul{{.*}}: [0, 2]
-// CHECK-DAG: tile_abs{{.*}}: [0, 2]
+// The merged set (tile_mul + tile_abs) should have [0, 4]
+// CHECK-DAG: tile_mul{{.*}}: [0, 4]
+// CHECK-DAG: tile_abs{{.*}}: [0, 4]
 
 // Verify allocation: FPU binary means block args don't need DST, so only
 // the merged set needs allocation. Gets DST[0] directly.
@@ -140,6 +143,8 @@ func.func @binary_then_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %mul = ttl.tile_mul %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %abs = ttl.tile_abs %mul : !ttcore.tile<32x32, f32>
+    %out_view_0 = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %abs, %out_view_0 : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield %abs : !ttcore.tile<32x32, f32>
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

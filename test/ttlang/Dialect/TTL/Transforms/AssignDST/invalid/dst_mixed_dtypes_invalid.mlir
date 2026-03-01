@@ -36,6 +36,8 @@ func.func @mixed_f32_bf16(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
       %dtok0, %dtile0 = ttl.copy_tile %a_arg, %c0, %c0 : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
       %dtok1, %dtile1 = ttl.copy_tile %a_arg, %c0, %c0 : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
       %add = ttl.tile_add %dtile0, %dtile1 : !ttcore.tile<32x32, f32>
+      %out_view = ttl.cb_reserve %cbout : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.tile_store %add, %out_view : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
       ttl.yield %add : !ttcore.tile<32x32, f32>
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 

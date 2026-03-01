@@ -64,6 +64,9 @@ static Value getReserveViewFromStore(StoreOp storeOp) {
 
 /// Find unused bind_cb ops in the function that can be used for output CBs.
 /// Returns bind_cb ops that are not used by any attach_cb op.
+/// attach_cb ops wrapping cb_reserve results are excluded because they are
+/// store views, not input associations — the CB they reference is still
+/// available as an output CB for the elementwise lowering patterns.
 // TODO: Use AnalysisManager to cache CB usage analysis and avoid re-walking
 // the function for each operation.
 static SmallVector<BindCBOp> findUnusedBindCBs(Operation *op) {
@@ -80,7 +83,11 @@ static SmallVector<BindCBOp> findUnusedBindCBs(Operation *op) {
     if (auto bindOp = dyn_cast<BindCBOp>(walkOp)) {
       allBindCBs.push_back(bindOp);
     } else if (auto attachOp = dyn_cast<AttachCBOp>(walkOp)) {
-      usedCBs.insert(attachOp.getCb());
+      // Skip attach_cb ops on cb_reserve results — these are store view
+      // wrappers and don't represent input CB associations.
+      if (!attachOp.getTensor().getDefiningOp<CBReserveOp>()) {
+        usedCBs.insert(attachOp.getCb());
+      }
     }
   });
 

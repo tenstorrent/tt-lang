@@ -68,6 +68,10 @@ func.func @separate_output_region_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f3
     // CHECK-DAG: ttl.tile_add {{.*}} {dst_idx = 1 : i32}
     %out2 = ttl.tile_add %out0, %out1 : !ttcore.tile<32x32, f32>
 
+    %out_view = ttl.cb_reserve %cb3 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %out0, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    // CHECK: ttl.cb_reserve
+    // CHECK-NEXT: ttl.tile_store
     // CHECK: ttl.yield
     ttl.yield %out0, %out1, %out2 : !ttcore.tile<32x32, f32>,
                                     !ttcore.tile<32x32, f32>,
