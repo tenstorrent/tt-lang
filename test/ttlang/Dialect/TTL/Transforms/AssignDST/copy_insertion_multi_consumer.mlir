@@ -43,7 +43,7 @@
 // SEPARATE: ttl.tile_exp {{.*}} {dst_idx = 0 : i32}
 // IR: ttl.cb_reserve
 // IR-NEXT: ttl.tile_store
-// IR: ttl.yield %[[ABS]], %[[EXP]]
+// IR: ttl.yield
 
 func.func @multi_consumer_two_unary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                     %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -77,7 +77,7 @@ func.func @multi_consumer_two_unary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %exp = ttl.tile_exp %mul : !ttcore.tile<32x32, f32>
     %out_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.tile_store %abs, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.yield %abs, %exp : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> (tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
 
   func.return %result#0, %result#1 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -146,7 +146,7 @@ func.func @multi_consumer_all_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %sub = ttl.tile_sub %mul, %c_tile : !ttcore.tile<32x32, f32>
     %out_view_0 = ttl.cb_reserve %cb3 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.tile_store %add, %out_view_0 : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.yield %add, %sub : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> (tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
 
   func.return %result#0, %result#1 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>

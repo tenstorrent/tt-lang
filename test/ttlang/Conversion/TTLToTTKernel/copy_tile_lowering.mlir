@@ -35,7 +35,7 @@ func.func @copy_tile_in_compute(
         : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
     %out_view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.tile_store %dst_tile, %out_view : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
-    ttl.yield %dst_tile : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<1x1x!ttcore.tile<32x32, f32>>

@@ -23,7 +23,7 @@ func.func @binary_add(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>, %arg1: tensor
   // CHECK:        %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[RHS]]
   // CHECK:        %[[SUM:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32}
   // CHECK:        ttl.tile_store
-  // CHECK:        ttl.yield %[[SUM]]
+  // CHECK:        ttl.yield
   // CHECK:      } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   // CHECK:      return %[[RESULT]]
   %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
@@ -55,7 +55,7 @@ func.func @unary_exp(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x
   // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]], %[[LIN_IDX]], %[[C0]]
   // CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[DTILE]] {dst_idx = 0 : i32}
   // CHECK:        ttl.tile_store
-  // CHECK-NEXT:   ttl.yield %[[EXP]]
+  // CHECK-NEXT:   ttl.yield
   // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: return %[[RESULT]]
   %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
@@ -96,7 +96,7 @@ func.func @chain_binary_unary(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>, %arg1
   // CHECK:        %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[RHS]]
   // CHECK:        %[[SUM:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] {dst_idx = 0 : i32}
   // CHECK:        ttl.tile_store
-  // CHECK:        ttl.yield %[[SUM]]
+  // CHECK:        ttl.yield
   // CHECK:      } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   %0 = ttl.add %a, %b : tensor<4x4x!ttcore.tile<32x32, f32>>, tensor<4x4x!ttcore.tile<32x32, f32>> -> tensor<4x4x!ttcore.tile<32x32, f32>>
   %reserve0 = ttl.cb_reserve %cb2 : <[4, 4], !ttcore.tile<32x32, f32>, 2> -> tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -113,7 +113,7 @@ func.func @chain_binary_unary(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>, %arg1
   // CHECK:        %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]]
   // CHECK:        %[[ACT:.*]] = ttl.tile_relu %[[DTILE]] {dst_idx = 0 : i32}
   // CHECK:        ttl.tile_store
-  // CHECK:        ttl.yield %[[ACT]]
+  // CHECK:        ttl.yield
   // CHECK:      } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   // CHECK:      return %[[RELU_RESULT]]
   %1 = ttl.relu %add_cb : tensor<4x4x!ttcore.tile<32x32, f32>> -> tensor<4x4x!ttcore.tile<32x32, f32>>

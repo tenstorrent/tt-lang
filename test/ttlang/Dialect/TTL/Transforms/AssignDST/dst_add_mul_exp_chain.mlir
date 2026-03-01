@@ -31,7 +31,7 @@
 // CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[MUL]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // CHECK:        ttl.cb_reserve
 // CHECK-NEXT:   ttl.tile_store
-// CHECK-NEXT:   ttl.yield %[[EXP]] : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   ttl.yield
 // CHECK-NEXT: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 // CHECK-NEXT: return %[[RES]]
 // SEPARATE-LABEL: func.func @add_mul_exp_chain
@@ -41,7 +41,7 @@
 // SEPARATE-NEXT: %[[EXPS:.*]] = ttl.tile_exp %[[MULS]] {dst_idx = 2 : i32}
 // SEPARATE:      ttl.cb_reserve
 // SEPARATE-NEXT: ttl.tile_store
-// SEPARATE-NEXT: ttl.yield %[[EXPS]]
+// SEPARATE-NEXT: ttl.yield
 func.func @add_mul_exp_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                              %b: tensor<2x2x!ttcore.tile<32x32, f32>>,
                              %c: tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -74,7 +74,7 @@ func.func @add_mul_exp_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %exp = ttl.tile_exp %mul : !ttcore.tile<32x32, f32>
     %out_view = ttl.cb_reserve %cb3 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.tile_store %exp, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.yield %exp : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
 }

@@ -139,7 +139,7 @@ def TTLLowerToLoops
     %result = ttl.compute ins(%a, %b) outs(%init) {
       ^bb0(%a_tile, %b_tile, %out_tile):
         %sum = ttl.tile_add %a_tile, %b_tile
-        ttl.yield %sum
+        ttl.yield
     } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
     // After:

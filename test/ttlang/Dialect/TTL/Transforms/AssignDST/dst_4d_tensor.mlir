@@ -31,12 +31,12 @@ func.func @add_4d(%a: tensor<3x6x4x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT: %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary}
 // CHECK:      ttl.cb_reserve
 // CHECK-NEXT: ttl.tile_store
-// CHECK-NEXT: ttl.yield %[[ADD]]
+// CHECK-NEXT: ttl.yield
 // SEPARATE-LABEL: func.func @add_4d
 // SEPARATE:      %[[ADDS:.*]] = ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
 // SEPARATE:      ttl.cb_reserve
 // SEPARATE-NEXT: ttl.tile_store
-// SEPARATE-NEXT: ttl.yield %[[ADDS]]
+// SEPARATE-NEXT: ttl.yield
 //
 // SFPU path: verify 4D linearization (d0*48 + d1*8 + d2*2 + d3) and copy_tile
 // Map appears at module scope, so check before the label.
@@ -50,7 +50,7 @@ func.func @add_4d(%a: tensor<3x6x4x2x!ttcore.tile<32x32, f32>>,
 // SFPU-NEXT:      %[[ADDS:.*]] = ttl.tile_add %[[DA]], %[[DB]] {dst_idx = 0 : i32}
 // SFPU:            ttl.cb_reserve
 // SFPU-NEXT:       ttl.tile_store
-// SFPU-NEXT:       ttl.yield %[[ADDS]]
+// SFPU-NEXT:       ttl.yield
   %result = ttl.compute
       ins(%a_cb, %b_cb : tensor<3x6x4x2x!ttcore.tile<32x32, f32>>,
                          tensor<3x6x4x2x!ttcore.tile<32x32, f32>>)
@@ -63,7 +63,7 @@ func.func @add_4d(%a: tensor<3x6x4x2x!ttcore.tile<32x32, f32>>,
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %out_view = ttl.cb_reserve %cb2 : <[3, 6, 4, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<3x6x4x2x!ttcore.tile<32x32, f32>>
     ttl.tile_store %sum, %out_view : !ttcore.tile<32x32, f32>, tensor<3x6x4x2x!ttcore.tile<32x32, f32>>
-    ttl.yield %sum : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<3x6x4x2x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<3x6x4x2x!ttcore.tile<32x32, f32>>

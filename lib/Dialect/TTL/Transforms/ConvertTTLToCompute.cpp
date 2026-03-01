@@ -230,7 +230,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     finalResult = tileResult;
   }
 
-  rewriter.create<YieldOp>(loc, ValueRange{finalResult});
+  rewriter.create<YieldOp>(loc);
   rewriter.replaceOp(sinkOp, computeOp.getResult(0));
 
   // Erase the fused ops in reverse topological order (sink to roots).
@@ -329,9 +329,9 @@ static LogicalResult buildBinaryCompute(Operation *op,
   body->addArgument(tileType, loc); // output tile
 
   rewriter.setInsertionPointToStart(body);
-  Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0),
-                                         body->getArgument(1));
-  rewriter.create<YieldOp>(loc, ValueRange{result});
+  rewriter.create<TileOp>(loc, tileType, body->getArgument(0),
+                          body->getArgument(1));
+  rewriter.create<YieldOp>(loc);
   rewriter.replaceOp(op, computeOp.getResult(0));
   return success();
 }
@@ -411,8 +411,8 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   body->addArgument(tileType, loc); // output tile
 
   rewriter.setInsertionPointToStart(body);
-  Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0));
-  rewriter.create<YieldOp>(loc, ValueRange{result});
+  rewriter.create<TileOp>(loc, tileType, body->getArgument(0));
+  rewriter.create<YieldOp>(loc);
   rewriter.replaceOp(op, computeOp.getResult(0));
   return success();
 }
@@ -570,10 +570,9 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     body->addArgument(tileType, loc);
 
     rewriter.setInsertionPointToStart(body);
-    Value result =
-        rewriter.create<TileBcastOp>(loc, tileType, body->getArgument(0),
-                                     body->getArgument(1), op.getBcastType());
-    rewriter.create<YieldOp>(loc, ValueRange{result});
+    rewriter.create<TileBcastOp>(loc, tileType, body->getArgument(0),
+                                 body->getArgument(1), op.getBcastType());
+    rewriter.create<YieldOp>(loc);
     rewriter.replaceOp(op, computeOp.getResult(0));
     return success();
   }
@@ -614,9 +613,19 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
 
       Block &body = computeOp.getBody().front();
       auto yieldOp = cast<YieldOp>(body.getTerminator());
+
+      // Find the last tile-typed result in the body to store.
+      Value tileToStore;
+      for (Operation &bodyOp : body.without_terminator()) {
+        for (Value result : bodyOp.getResults()) {
+          if (isa<ttcore::TileType>(result.getType())) {
+            tileToStore = result;
+          }
+        }
+      }
+
       rewriter.setInsertionPoint(yieldOp);
-      rewriter.create<TileStoreOp>(op.getLoc(), yieldOp.getValues().front(),
-                                   reserveView);
+      rewriter.create<TileStoreOp>(op.getLoc(), tileToStore, reserveView);
       rewriter.eraseOp(op);
       return success();
     }
@@ -664,7 +673,7 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
 
     rewriter.setInsertionPointToEnd(body);
     rewriter.create<TileStoreOp>(loc, body->getArgument(0), reserveView);
-    rewriter.create<YieldOp>(loc, body->getArgument(0));
+    rewriter.create<YieldOp>(loc);
 
     for (OpOperand &use : llvm::make_early_inc_range(input.getUses())) {
       if (auto attachOp = dyn_cast<AttachCBOp>(use.getOwner())) {

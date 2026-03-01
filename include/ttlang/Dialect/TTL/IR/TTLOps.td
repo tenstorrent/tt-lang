@@ -249,7 +249,7 @@ def TTL_ComputeOp : TTL_Op<"compute", [
            %b_tile: !ttcore.tile<32x32, f32>,
            %out_tile: !ttcore.tile<32x32, f32>):
         %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-        ttl.yield %sum : !ttcore.tile<32x32, f32>
+        ttl.yield
     } -> tensor<4x4x!ttcore.tile<32x32, f32>>
     ```
   }];
@@ -277,13 +277,12 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 
 def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
     ParentOneOf<["ComputeOp"]>]> {
-  let summary = "Yield values from ttl.compute region";
+  let summary = "Terminate ttl.compute region";
   let description = [{
-    `ttl.yield` terminates the body of `ttl.compute` and yields the computed
-    tile values to be written to the output tensors.
+    `ttl.yield` terminates the body of `ttl.compute`. Output is produced by
+    `ttl.tile_store` within the compute body, not by yielding values.
   }];
-  let arguments = (ins Variadic<AnyType>:$values);
-  let assemblyFormat = "attr-dict ($values^ `:` type($values))?";
+  let assemblyFormat = "attr-dict";
   let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
 }
 

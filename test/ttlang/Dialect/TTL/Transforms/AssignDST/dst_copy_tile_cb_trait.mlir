@@ -40,7 +40,7 @@ func.func @copy_tile_with_bcast_and_add(
 // CHECK-NEXT:   %[[ADD:.*]] = ttl.tile_add %[[BCAST]], %[[DTILE]] {dst_idx = 0 : i32}
 // CHECK:        ttl.cb_reserve
 // CHECK-NEXT:   ttl.tile_store
-// CHECK-NEXT:   ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   ttl.yield
   %result = ttl.compute
       ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%init_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -51,7 +51,7 @@ func.func @copy_tile_with_bcast_and_add(
     %add = ttl.tile_add %bcast, %b_tile : !ttcore.tile<32x32, f32>
     %out_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.tile_store %add, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.yield %add : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -85,7 +85,7 @@ func.func @two_inputs_both_need_copy(
 // CHECK-NEXT: %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary}
 // CHECK:      ttl.cb_reserve
 // CHECK-NEXT: ttl.tile_store
-// CHECK-NEXT: ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
+// CHECK-NEXT: ttl.yield
   %result = ttl.compute
       ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%init_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -95,7 +95,7 @@ func.func @two_inputs_both_need_copy(
     %add = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %out_view_0 = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.tile_store %add, %out_view_0 : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.yield %add : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>

@@ -73,9 +73,7 @@ func.func @separate_output_region_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f3
     // CHECK: ttl.cb_reserve
     // CHECK-NEXT: ttl.tile_store
     // CHECK: ttl.yield
-    ttl.yield %out0, %out1, %out2 : !ttcore.tile<32x32, f32>,
-                                    !ttcore.tile<32x32, f32>,
-                                    !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> (tensor<2x2x!ttcore.tile<32x32, f32>>,
         tensor<2x2x!ttcore.tile<32x32, f32>>,
         tensor<2x2x!ttcore.tile<32x32, f32>>)

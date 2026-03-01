@@ -240,7 +240,7 @@ class TestExpAddFused(FusedOpTestBase):
         ^bb0(%a_tile, %b_tile, %out_tile):
           %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<...>
           %exp = ttl.tile_exp %sum : !ttcore.tile<...>
-          ttl.yield %exp : !ttcore.tile<...>
+          ttl.yield
         }}
         '''
 ```

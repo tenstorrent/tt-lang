@@ -37,7 +37,7 @@
 // SEPARATE:        ttl.tile_add {{.*}} {dst_idx = 3 : i32}
 // CHECK:           ttl.cb_reserve
 // CHECK-NEXT:      ttl.tile_store
-// CHECK-NEXT:      ttl.yield %[[COMBO]] : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:      ttl.yield
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -82,7 +82,7 @@ func.func @diamond_intermediate_reuse(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %out_view = ttl.cb_reserve %cb4 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.tile_store %combo, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
 
-    ttl.yield %combo : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -113,7 +113,7 @@ func.func @diamond_intermediate_reuse(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // SEPARATE:        ttl.tile_add {{.*}} {dst_idx = 3 : i32}
 // CHECK:           ttl.cb_reserve
 // CHECK-NEXT:      ttl.tile_store
-// CHECK-NEXT:      ttl.yield %[[FINAL]]
+// CHECK-NEXT:      ttl.yield
 
 func.func @intermediate_result_fan_out(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: tensor<1x1x!ttcore.tile<32x32, f32>>, %i2: tensor<1x1x!ttcore.tile<32x32, f32>>)
     -> tensor<1x1x!ttcore.tile<32x32, f32>> {
@@ -146,7 +146,7 @@ func.func @intermediate_result_fan_out(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>
     %out_view_0 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.tile_store %final, %out_view_0 : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
 
-    ttl.yield %final : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
   func.return %res : tensor<1x1x!ttcore.tile<32x32, f32>>

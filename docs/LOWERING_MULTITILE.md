@@ -73,7 +73,7 @@ Replaces tensor-level `ttl.add` with `ttl.compute` region containing element-wis
        iterator_types = ["parallel", "parallel"]} {
 ^bb0(%arg0: !ttcore.tile<32x32, bf16>, %arg1: !ttcore.tile<32x32, bf16>, %arg2: !ttcore.tile<32x32, bf16>):
   %13 = ttl.tile_add %arg0, %arg1 : !ttcore.tile<32x32, bf16>
-  ttl.yield %13 : !ttcore.tile<32x32, bf16>
+  ttl.yield
 } -> tensor<2x2x!ttcore.tile<32x32, bf16>>
 ```
 
@@ -97,7 +97,7 @@ Inserts `ttl.copy_tile` to load tiles into DST registers. Assigns `dst_idx` attr
                                                             -> !ttl.dst, !ttcore.tile<32x32, bf16>
 
   %15 = ttl.tile_add %dst_tile, %dst_tile_1 {dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>
-  ttl.yield %15 : !ttcore.tile<32x32, bf16>
+  ttl.yield
 } -> tensor<2x2x!ttcore.tile<32x32, bf16>>
 ```
 
@@ -120,7 +120,7 @@ ttl.tile_regs_acquire
   ttl.tile_regs_wait
   ttl.store %15, %7 : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
 
-  ttl.yield %15 : !ttcore.tile<32x32, bf16>
+  ttl.yield
 } -> tensor<2x2x!ttcore.tile<32x32, bf16>>
 
 ttl.tile_regs_release
