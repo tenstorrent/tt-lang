@@ -165,6 +165,19 @@ class Block:
             elif self._acquisition == BlockAcquisition.WAIT:
                 self.pop()
 
+    def __repr__(self) -> str:
+        acq = self._acquisition.name
+        expected = {op.name for op in self._expected_ops}
+        return (
+            f"Block("
+            f"shape={self._shape}, "
+            f"data={repr(self._buf._tensor)}, "
+            f"acq={acq}, "
+            f"thread={self._thread_type.name}, "
+            f"access={self._access_state.name}, "
+            f"expected={expected})"
+        )
+
     def pop(self) -> None:
         if self.dfb is None:
             raise RuntimeError(
@@ -1181,9 +1194,15 @@ class DataflowBuffer:
         return new_dfb
 
     def __repr__(self) -> str:
+        s = self._state
         return (
-            f"DataflowBuffer(shape={self._shape}, "
-            f"capacity_tiles={self.capacity_tiles}, buffer_factor={self._buffer_factor})"
+            f"DataflowBuffer("
+            f"shape={self._shape}, "
+            f"capacity={s.cap}, "
+            f"available_for_wait={s.visible}, "
+            f"reserved={s.reserved}, "
+            f"available_for_reserve={s.free()}, "
+            f"head={s.head})"
         )
 
 

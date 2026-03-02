@@ -411,7 +411,8 @@ class Tensor:
         self._tensor[cast(Any, self._to_element_key(key))] = value._tensor
 
     def __repr__(self) -> str:
-        return f"Tensor(shape={tuple(self._tensor.shape)}, dtype={self._tensor.dtype})"
+        # Delegate to torch for value and dtype formatting (handles truncation for large tensors).
+        return f"Tensor(shape={tuple(self._tensor.shape)}, data={repr(self._tensor)})"
 
     def to_torch(self) -> torch.Tensor:
         """Public accessor for the underlying torch tensor."""
