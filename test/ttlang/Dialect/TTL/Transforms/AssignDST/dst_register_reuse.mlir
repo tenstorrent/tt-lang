@@ -31,14 +31,13 @@ func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:      ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
 // CHECK-NOT:       ttl.copy_tile
 // CHECK-NEXT:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary} : !ttcore.tile<32x32, f32>
-// CHECK:           ttl.cb_reserve
-// CHECK-NEXT:      ttl.tile_store
+// CHECK:           ttl.tile_store
 // CHECK-NEXT:      ttl.yield
 // SEPARATE:        ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
-// SEPARATE:        ttl.cb_reserve
-// SEPARATE-NEXT:   ttl.tile_store
+// SEPARATE:        ttl.tile_store
 // SEPARATE-NEXT:   ttl.yield
 
+  %out_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %result = ttl.compute
       ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>,
                          tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -49,7 +48,6 @@ func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    %out_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.tile_store %sum, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -75,8 +73,7 @@ func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:      %{{.*}} = ttl.tile_add %{{.*}}, %[[COPY]] {dst_idx = 0 : i32}
 // CHECK-NEXT:      %{{.*}} = ttl.tile_add %{{.*}}, %[[COPY]] {dst_idx = 0 : i32}
 // CHECK-NEXT:      %[[X4:.*]] = ttl.tile_add %{{.*}}, %[[COPY]] {dst_idx = 0 : i32}
-// CHECK:           ttl.cb_reserve
-// CHECK-NEXT:      ttl.tile_store
+// CHECK:           ttl.tile_store
 // CHECK-NEXT:      ttl.yield
 // SEPARATE-LABEL: func.func @chain_reuse
 // SEPARATE:      %[[ADD0S:.*]] = ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
@@ -84,8 +81,7 @@ func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // SEPARATE-NEXT: %{{.*}} = ttl.tile_add %[[ADD0S]], %[[COPYS]] {dst_idx = 0 : i32}
 // With separate-output-region, last add (output) gets dst_idx = 2
 // SEPARATE:      %[[X4S:.*]] = ttl.tile_add %{{.*}}, %[[COPYS]] {dst_idx = 2 : i32}
-// SEPARATE:      ttl.cb_reserve
-// SEPARATE-NEXT: ttl.tile_store
+// SEPARATE:      ttl.tile_store
 // SEPARATE-NEXT: ttl.yield
 
 func.func @chain_reuse(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: tensor<1x1x!ttcore.tile<32x32, f32>>,
@@ -101,6 +97,7 @@ func.func @chain_reuse(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: tensor<1x
   %t2 = ttl.attach_cb %i2, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %t_init = ttl.attach_cb %init, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
+  %out_view_0 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %res = ttl.compute
     ins(%t0, %t1, %t2 :
         tensor<1x1x!ttcore.tile<32x32, f32>>, tensor<1x1x!ttcore.tile<32x32, f32>>, tensor<1x1x!ttcore.tile<32x32, f32>>)
@@ -116,7 +113,6 @@ func.func @chain_reuse(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: tensor<1x
     %x2 = ttl.tile_add %x1, %arg2 : !ttcore.tile<32x32, f32>
     %x3 = ttl.tile_add %x2, %arg2 : !ttcore.tile<32x32, f32>
     %x4 = ttl.tile_add %x3, %arg2 : !ttcore.tile<32x32, f32>
-    %out_view_0 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.tile_store %x4, %out_view_0 : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
 
     ttl.yield
@@ -142,8 +138,7 @@ func.func @chain_reuse(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: tensor<1x
 // CHECK:           %{{.*}}, %[[COPY0:.*]] = ttl.copy_tile %[[ARG0]], %{{.*}}, %{{.*}} {dst_idx = 1 : i32}
 // CHECK-NEXT:      %[[ADD1:.*]] = ttl.tile_add %[[COPY0]], %[[ADD0]] {dst_idx = 0 : i32}
 // CHECK-NEXT:      %[[ADD2:.*]] = ttl.tile_add %[[COPY0]], %[[ADD1]] {dst_idx = 0 : i32}
-// CHECK:           ttl.cb_reserve
-// CHECK-NEXT:      ttl.tile_store
+// CHECK:           ttl.tile_store
 // CHECK-NEXT:      ttl.yield
 // SEPARATE-LABEL: func.func @block_arg_multi_use
 // SEPARATE:      %[[ADD0S:.*]] = ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
@@ -151,8 +146,7 @@ func.func @chain_reuse(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: tensor<1x
 // SEPARATE-NEXT: %{{.*}} = ttl.tile_add %[[COPY0S]], %[[ADD0S]] {dst_idx = 0 : i32}
 // With separate-output-region, last add (output) gets dst_idx = 2
 // SEPARATE-NEXT: %[[ADD2S:.*]] = ttl.tile_add %[[COPY0S]], %{{.*}} {dst_idx = 2 : i32}
-// SEPARATE:      ttl.cb_reserve
-// SEPARATE-NEXT: ttl.tile_store
+// SEPARATE:      ttl.tile_store
 // SEPARATE-NEXT: ttl.yield
 
 func.func @block_arg_multi_use(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: tensor<1x1x!ttcore.tile<32x32, f32>>)
@@ -165,6 +159,7 @@ func.func @block_arg_multi_use(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: t
   %t1 = ttl.attach_cb %i1, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %t_init = ttl.attach_cb %init, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
+  %out_view_1 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %res = ttl.compute
     ins(%t0, %t1 : tensor<1x1x!ttcore.tile<32x32, f32>>, tensor<1x1x!ttcore.tile<32x32, f32>>)
     outs(%t_init : tensor<1x1x!ttcore.tile<32x32, f32>>)
@@ -178,7 +173,6 @@ func.func @block_arg_multi_use(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: t
     %x0 = ttl.tile_add %arg0, %arg1 : !ttcore.tile<32x32, f32>
     %x1 = ttl.tile_add %arg0, %x0 : !ttcore.tile<32x32, f32>
     %x2 = ttl.tile_add %arg0, %x1 : !ttcore.tile<32x32, f32>
-    %out_view_1 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.tile_store %x2, %out_view_1 : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
 
     ttl.yield
@@ -203,8 +197,7 @@ func.func @block_arg_multi_use(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: t
 // CHECK-NEXT:      %[[SIG:.*]] = ttl.tile_sigmoid %[[XCOPY_SIG]] {dst_idx = 0 : i32}
 // CHECK:           %{{.*}}, %[[XCOPY_MUL:.*]] = ttl.copy_tile %[[X]], %{{.*}}, %{{.*}} {dst_idx = 1 : i32}
 // CHECK-NEXT:      %[[MUL:.*]] = ttl.tile_mul %[[XCOPY_MUL]], %[[SIG]] {dst_idx = 0 : i32}
-// CHECK:           ttl.cb_reserve
-// CHECK-NEXT:      ttl.tile_store
+// CHECK:           ttl.tile_store
 // CHECK-NEXT:      ttl.yield
 // SEPARATE-LABEL: func.func @silu_pattern
 // SEPARATE:      %{{.*}}, %[[XCOPY_SIGS:.*]] = ttl.copy_tile {{.*}} {dst_idx = 0 : i32}
@@ -212,8 +205,7 @@ func.func @block_arg_multi_use(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: t
 // SEPARATE:      %{{.*}}, %[[XCOPY_MULS:.*]] = ttl.copy_tile {{.*}} {dst_idx = 1 : i32}
 // With separate-output-region, mul (output) gets dst_idx = 2
 // SEPARATE-NEXT: %[[MULS:.*]] = ttl.tile_mul %[[XCOPY_MULS]], %[[SIGS]] {dst_idx = 2 : i32}
-// SEPARATE:      ttl.cb_reserve
-// SEPARATE-NEXT: ttl.tile_store
+// SEPARATE:      ttl.tile_store
 // SEPARATE-NEXT: ttl.yield
 
 func.func @silu_pattern(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>) -> tensor<1x1x!ttcore.tile<32x32, f32>> {
@@ -224,6 +216,7 @@ func.func @silu_pattern(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>) -> tensor<1x1
   %t0 = ttl.attach_cb %i0, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %t_init = ttl.attach_cb %init, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
+  %out_view_2 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %res = ttl.compute
     ins(%t0 : tensor<1x1x!ttcore.tile<32x32, f32>>)
     outs(%t_init : tensor<1x1x!ttcore.tile<32x32, f32>>)
@@ -234,7 +227,6 @@ func.func @silu_pattern(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>) -> tensor<1x1
     // Phase 1 should insert copy_tile so sigmoid doesn't clobber x
     %sig = ttl.tile_sigmoid %x : !ttcore.tile<32x32, f32>
     %prod = ttl.tile_mul %x, %sig : !ttcore.tile<32x32, f32>
-    %out_view_2 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.tile_store %prod, %out_view_2 : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>

@@ -24,7 +24,7 @@
 // CHECK: Phase 2: Merged
 // CHECK-SAME: tile_mul
 // CHECK-SAME: tile_abs
-// CHECK: Merged set interval: [0, 3] for 2 values
+// CHECK: Merged set interval: [0, 2] for 2 values
 
 // Verify Phase 3 has no allocations (FPU binary block args don't need DST)
 // CHECK: === Phase 3: Linear Scan Allocation ===
@@ -46,8 +46,7 @@
 // IR: ttl.compute
 // IR: ttl.tile_mul {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
 // IR: ttl.tile_abs {{.*}} {dst_idx = 0 : i32}
-// IR: ttl.cb_reserve
-// IR-NEXT: ttl.tile_store
+// IR: ttl.tile_store
 
 func.func @binary_unary_merged_output(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                       %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -62,6 +61,7 @@ func.func @binary_unary_merged_output(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   %b_cb = ttl.attach_cb %b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %init_cb = ttl.attach_cb %init, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
+  %out_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %result = ttl.compute
       ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>,
                          tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -75,7 +75,6 @@ func.func @binary_unary_merged_output(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %mul = ttl.tile_mul %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     // Unary operation: merges with %mul, result IS yielded
     %abs = ttl.tile_abs %mul : !ttcore.tile<32x32, f32>
-    %out_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.tile_store %abs, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
