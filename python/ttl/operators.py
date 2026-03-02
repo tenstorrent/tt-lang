@@ -92,15 +92,14 @@ class TensorBlock:
     def store(ast_self: TensorBlock, rhs: TensorBlock) -> None:
         """Store result tensor to the output CB reserve view.
 
-        Emits ttl.store with the reserve view and CB operands directly.
+        Emits ttl.store with the result tensor and reserve view.
         """
         if not _is_block(ast_self):
             raise ValueError(
                 "store() must be called on a block acquired from reserve(), not a regular tensor"
             )
         reserve = _get_reserve_from_block(ast_self)
-        cb = _get_cb_from_block(ast_self)
-        ttl.store(rhs, reserve, cb)
+        ttl.store(rhs, reserve)
 
     def push(ast_self: TensorBlock) -> None:
         """
@@ -205,6 +204,8 @@ def _get_reserve_from_block(block):
     The attach_cb op has signature: (tensor, cb) -> tensor
     So the reserve/wait tensor is operand[0].
     """
+    if block.owner.name != "ttl.attach_cb":
+        raise ValueError(f"expected block from ttl.attach_cb, got {block.owner.name}")
     return block.owner.operands[0]
 
 

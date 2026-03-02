@@ -37,12 +37,14 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
 }
 
 /// Find the output CB for an elementwise op by looking at its store users.
-/// Returns nullptr when no store exists (callers handle this via
-/// notifyMatchFailure — the store may not exist yet or was already erased).
+/// Returns nullptr when no store exists or its view is not from cb_reserve.
+/// Callers handle nullptr via notifyMatchFailure.
 static Value findOutputCB(Operation *op) {
   for (OpOperand &use : op->getResult(0).getUses()) {
     if (auto storeOp = dyn_cast<StoreOp>(use.getOwner())) {
-      return storeOp.getCb();
+      if (auto reserve = storeOp.getView().getDefiningOp<CBReserveOp>()) {
+        return reserve.getCb();
+      }
     }
   }
   return nullptr;
@@ -64,6 +66,14 @@ static StoreOp findLastStore(Operation *op) {
     }
   }
   return last;
+}
+
+/// Position the rewriter before the last store so that the new compute op
+/// is placed after all reserves (which precede their stores).
+static void insertAtLastStore(PatternRewriter &rewriter, Operation *op) {
+  if (StoreOp lastStore = findLastStore(op)) {
+    rewriter.setInsertionPoint(lastStore);
+  }
 }
 
 /// Create tile_store(s) in the compute body for the given tile result and
@@ -126,7 +136,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   Value outCb = findOutputCB(sinkOp);
   if (!outCb) {
     return rewriter.notifyMatchFailure(
-        sinkOp, "sink op has no ttl.store to identify the output CB");
+        sinkOp, "no output CB found (missing ttl.store or view not from "
+                "ttl.cb_reserve)");
   }
 
   Location loc = sinkOp->getLoc();
@@ -148,11 +159,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   }
 
   // Position compute after all reserves by inserting before the last store.
-  // Each store follows its reserve (Python `with` guarantees this), so the
-  // compute inherits dominance from the store ordering.
-  if (StoreOp lastStore = findLastStore(sinkOp)) {
-    rewriter.setInsertionPoint(lastStore);
-  }
+  insertAtLastStore(rewriter, sinkOp);
 
   // Create init tensor and attach to output CB
   Value init = buildInitTensor(rewriter, loc, type, trace.rootInputs[0]);
@@ -272,8 +279,8 @@ static LogicalResult buildBinaryCompute(Operation *op,
   Value outCb = findOutputCB(op);
   if (!outCb) {
     return rewriter.notifyMatchFailure(
-        op, "op has no ttl.store; may be an intermediate value handled by "
-            "fusion");
+        op, "no output CB found (missing ttl.store, view not from "
+            "ttl.cb_reserve, or intermediate value handled by fusion)");
   }
 
   Location loc = op->getLoc();
@@ -296,9 +303,7 @@ static LogicalResult buildBinaryCompute(Operation *op,
   }
 
   // Position compute after all reserves by inserting before the last store.
-  if (StoreOp lastStore = findLastStore(op)) {
-    rewriter.setInsertionPoint(lastStore);
-  }
+  insertAtLastStore(rewriter, op);
 
   // Create init tensor and attach to output CB.
   Value init = buildInitTensor(rewriter, loc, type, lhs);
@@ -358,8 +363,8 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   Value outCb = findOutputCB(op);
   if (!outCb) {
     return rewriter.notifyMatchFailure(
-        op, "op has no ttl.store; may be an intermediate value handled by "
-            "fusion");
+        op, "no output CB found (missing ttl.store, view not from "
+            "ttl.cb_reserve, or intermediate value handled by fusion)");
   }
 
   Location loc = op->getLoc();
@@ -381,9 +386,7 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   }
 
   // Position compute after all reserves by inserting before the last store.
-  if (StoreOp lastStore = findLastStore(op)) {
-    rewriter.setInsertionPoint(lastStore);
-  }
+  insertAtLastStore(rewriter, op);
 
   // Create init tensor and attach to output CB.
   Value init = buildInitTensor(rewriter, loc, type, input);
@@ -549,9 +552,7 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
                                      rewriter.getStringAttr("parallel"));
 
     // Position compute after all reserves by inserting before the last store.
-    if (StoreOp lastStore = findLastStore(op)) {
-      rewriter.setInsertionPoint(lastStore);
-    }
+    insertAtLastStore(rewriter, op);
 
     Value init = buildInitTensor(rewriter, loc, outputType, op.getOutput());
     Value initAttached =
@@ -594,7 +595,11 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
                                 PatternRewriter &rewriter) const override {
     Value input = op.getTensor();
     Value reserveView = op.getView();
-    Value outputCb = op.getCb();
+    auto reserve = reserveView.getDefiningOp<CBReserveOp>();
+    if (!reserve) {
+      return rewriter.notifyMatchFailure(op, "view not from ttl.cb_reserve");
+    }
+    Value outputCb = reserve.getCb();
 
     // Passthrough: input is CB-attached, create a new compute with tile_store.
     if (!getAttachedCB(input)) {

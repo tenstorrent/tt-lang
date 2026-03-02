@@ -719,17 +719,15 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
     ```mlir
     %reserve = ttl.cb_reserve %cb : ... -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     %result = ttl.add %a, %b : ...
-    ttl.store %result, %reserve, %cb : tensor<1x1x!ttcore.tile<32x32, bf16>>,
-                                       tensor<1x1x!ttcore.tile<32x32, bf16>>,
-                                       !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.store %result, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                                  tensor<1x1x!ttcore.tile<32x32, bf16>>
     ```
   }];
   let arguments = (ins
     AnyRankedTensor:$tensor,
-    AnyRankedTensor:$view,
-    TTL_CircularBuffer:$cb
+    AnyRankedTensor:$view
   );
-  let assemblyFormat = "$tensor `,` $view `,` $cb attr-dict `:` type($tensor) `,` type($view) `,` type($cb)";
+  let assemblyFormat = "$tensor `,` $view attr-dict `:` type($tensor) `,` type($view)";
   let hasVerifier = 1;
 }
 

@@ -149,7 +149,7 @@ def build_ttl_module(
                     raise ValueError(f"Unsupported arity: {arity}")
 
                 # Store result to output CB.
-                ttl.store(result, reserve, output_cb, loc=loc)
+                ttl.store(result, reserve, loc=loc)
 
                 func.ReturnOp([result], loc=loc)
 

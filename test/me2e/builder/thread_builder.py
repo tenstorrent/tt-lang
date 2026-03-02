@@ -181,7 +181,7 @@ class ThreadBuilder(ABC):
 
     def _store(self, tensor, reserve, cb):
         """Create ttl.store operation."""
-        ttl.store(tensor, reserve, cb, loc=self.loc)
+        ttl.store(tensor, reserve, loc=self.loc)
 
     # =========================================================================
     # Layer 2: Loop and Function Utilities (Protected)

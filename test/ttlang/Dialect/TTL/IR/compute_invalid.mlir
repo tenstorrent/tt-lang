@@ -114,7 +114,7 @@ func.func @compute_invalid_map_expr(
                         affine_map<(d0, d1) -> (d0, d1)>],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
-    ttl.yield %arg0 : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
@@ -142,7 +142,7 @@ func.func @compute_broadcast_dim_not_one(
                         affine_map<(d0, d1) -> (d0, d1)>],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
-    ttl.yield %arg0 : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
@@ -170,7 +170,7 @@ func.func @compute_reduction_in_output(
                         affine_map<(d0, d1) -> (d0, d1)>],
        iterator_types = ["parallel", "reduction"]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
-    ttl.yield %arg0 : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<2x3x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<2x3x!ttcore.tile<32x32, f32>>
 }
@@ -200,7 +200,7 @@ func.func @compute_unreferenced_reduction(
                         affine_map<(d0, d1) -> (d0, 0)>],
        iterator_types = ["parallel", "reduction"]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
-    ttl.yield %arg0 : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<2x1x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<2x1x!ttcore.tile<32x32, f32>>
 }

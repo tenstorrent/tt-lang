@@ -149,3 +149,71 @@ func.func @intermediate_result_fan_out(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>
 
   func.return %res : tensor<1x1x!ttcore.tile<32x32, f32>>
 }
+
+// -----
+
+// Test: Multi-consumer value where all consumers are binary ops.
+// Binary ops don't clobber their DST inputs, so no copy_dst is needed.
+// Pattern:
+//   mul = mul(a, b)      -- FPU binary
+//   add = add(mul, c)    -- binary consumer #1
+//   sub = sub(mul, c)    -- binary consumer #2
+//   final = add(add, sub)
+
+#map2 = affine_map<(d0, d1) -> (d0, d1)>
+
+// CHECK-LABEL: func.func @multi_consumer_all_binary
+// CHECK:           ttl.compute
+// CHECK-NEXT:      ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[C:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+// FPU binary mul
+// CHECK-NEXT:      %[[MUL:.*]] = ttl.tile_mul %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary}
+// No copy_dst needed - both consumers are binary
+// CHECK-NOT:       ttl.copy_dst
+// C copied once; CSE deduplicates the two copy_tile calls
+// CHECK:           %{{.*}}, %[[TC:.*]] = ttl.copy_tile %[[C]]
+// CHECK-NEXT:      %[[ADD:.*]] = ttl.tile_add %[[MUL]], %[[TC]]
+// CHECK-NEXT:      %[[SUB:.*]] = ttl.tile_sub %[[MUL]], %[[TC]]
+// CHECK-NEXT:      %[[FINAL:.*]] = ttl.tile_add %[[ADD]], %[[SUB]]
+// CHECK:           ttl.tile_store
+// CHECK-NEXT:      ttl.yield
+
+func.func @multi_consumer_all_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
+                                     %b: tensor<2x2x!ttcore.tile<32x32, f32>>,
+                                     %c: tensor<2x2x!ttcore.tile<32x32, f32>>)
+    -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+
+  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+  %cb3 = ttl.bind_cb {cb_index = 16, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+
+  %a_cb = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %b_cb = ttl.attach_cb %b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %c_cb = ttl.attach_cb %c, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init_cb = ttl.attach_cb %init, %cb3 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+
+  %out_view = ttl.cb_reserve %cb3 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %result = ttl.compute
+      ins(%a_cb, %b_cb, %c_cb :
+          tensor<2x2x!ttcore.tile<32x32, f32>>,
+          tensor<2x2x!ttcore.tile<32x32, f32>>,
+          tensor<2x2x!ttcore.tile<32x32, f32>>)
+      outs(%init_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [#map2, #map2, #map2, #map2],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
+       %b_tile: !ttcore.tile<32x32, f32>,
+       %c_tile: !ttcore.tile<32x32, f32>,
+       %out_tile: !ttcore.tile<32x32, f32>):
+    %mul = ttl.tile_mul %a_tile, %b_tile : !ttcore.tile<32x32, f32>
+    // Both consumers are binary - no copy_dst needed
+    %add = ttl.tile_add %mul, %c_tile : !ttcore.tile<32x32, f32>
+    %sub = ttl.tile_sub %mul, %c_tile : !ttcore.tile<32x32, f32>
+    %final = ttl.tile_add %add, %sub : !ttcore.tile<32x32, f32>
+    ttl.tile_store %final, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.yield
+  } -> tensor<2x2x!ttcore.tile<32x32, f32>>
+
+  func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
+}
