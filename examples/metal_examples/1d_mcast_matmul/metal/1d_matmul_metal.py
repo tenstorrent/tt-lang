@@ -15,10 +15,7 @@ Unlike the 2D matmul where both inputs are multicast, here:
 import pytest
 import torch
 import ttnn
-from utils.block_allocation import get_large_matmul_params, num_cores_to_grid_ranges
 from utils.correctness import assert_with_ulp
-import matplotlib.pyplot as plt
-import numpy as np
 
 TS = ttnn.TILE_SIZE  # 32
 
@@ -168,8 +165,8 @@ def test_1d_matmul_metal(
         Nt % (block_n * n_blocks_per_core) == 0
     ), "number of n blocks split across cores must divide Nt"
     assert Kt % block_k == 0, "block_k must divide Kt"
-    assert block_m * ttnn.TILE_SIZE % subblock_h == 0, "subblock_h must divide block_m"
-    assert block_n * ttnn.TILE_SIZE % subblock_w == 0, "subblock_w must divide block_n"
+    assert block_m % subblock_h == 0, "subblock_h must divide block_m"
+    assert block_n % subblock_w == 0, "subblock_w must divide block_n"
 
     # For 1D matmul: Use single core (0,0) as sender for in0 multicast
     # All other cores are receivers and all cores do computation
@@ -504,17 +501,6 @@ def test_1d_matmul_metal(
     a_tensor_torch = ttnn.to_torch(a_tensor).to(torch.bfloat16)
     b_tensor_torch = ttnn.to_torch(b_tensor).to(torch.bfloat16)
     torch_output = torch.matmul(a_tensor_torch, b_tensor_torch)
-
-    diff = torch.abs(metal_output - torch_output)
-
-    diff_heatmap = diff.to(torch.float32).cpu().numpy()
-    plt.figure(figsize=(8, 6))
-    plt.imshow(diff_heatmap, cmap="hot", interpolation="nearest")
-    plt.colorbar(label="Absolute Error")
-    plt.title("1D Matmul Diff Heatmap")
-    plt.tight_layout()
-    plt.savefig("diff_heatmap.png", dpi=150)
-    plt.close()
 
     assert_with_ulp(torch_output, metal_output)
     print("test passed.")

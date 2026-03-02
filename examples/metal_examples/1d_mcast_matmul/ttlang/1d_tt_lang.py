@@ -5,16 +5,12 @@ import pytest
 import torch
 import ttnn
 import ttl
+from utils.correctness import assert_with_ulp
 
-from metal_examples.utils import assert_with_ulp
-
-
-"""
-will be multicasting a block from input_t to multiple cores, with each core writing to its own block in output_t
-"""
+TS = ttnn.TILE_SIZE  # 32
 
 
-@ttl.kernel(grid=auto)
+@ttl.kernel(grid="auto")
 def matmul_1d(
     a_tensor: ttnn.Tensor,
     b_tensor: ttnn.Tensor,
