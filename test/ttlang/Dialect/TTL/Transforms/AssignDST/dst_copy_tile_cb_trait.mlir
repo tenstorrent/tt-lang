@@ -38,7 +38,9 @@ func.func @copy_tile_with_bcast_and_add(
 // B needs copy_tile for tile_add (DST-reading op).
 // CHECK:        %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[B]], %{{.*}}, %{{.*}} {dst_idx = 1 : i32}
 // CHECK-NEXT:   %[[ADD:.*]] = ttl.tile_add %[[BCAST]], %[[DTILE]] {dst_idx = 0 : i32}
-// CHECK-NEXT:   ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   ttl.tile_store
+// CHECK-NEXT:   ttl.yield
+  %out_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %result = ttl.compute
       ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%init_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -47,7 +49,8 @@ func.func @copy_tile_with_bcast_and_add(
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %b_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
     %bcast = ttl.tile_bcast %a_tile, %out_tile 2 : i32 : (!ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32>
     %add = ttl.tile_add %bcast, %b_tile : !ttcore.tile<32x32, f32>
-    ttl.yield %add : !ttcore.tile<32x32, f32>
+    ttl.tile_store %add, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -79,7 +82,9 @@ func.func @two_inputs_both_need_copy(
 // FPU binary: reads from CB, no copy_tile needed.
 // CHECK-NOT:  ttl.copy_tile
 // CHECK-NEXT: %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary}
-// CHECK-NEXT: ttl.yield %[[ADD]] : !ttcore.tile<32x32, f32>
+// CHECK:      ttl.tile_store
+// CHECK-NEXT: ttl.yield
+  %out_view_0 = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %result = ttl.compute
       ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%init_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -87,7 +92,8 @@ func.func @two_inputs_both_need_copy(
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %b_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
     %add = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    ttl.yield %add : !ttcore.tile<32x32, f32>
+    ttl.tile_store %add, %out_view_0 : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>

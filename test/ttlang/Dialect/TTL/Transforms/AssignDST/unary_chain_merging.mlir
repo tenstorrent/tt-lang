@@ -29,7 +29,7 @@
 // CHECK-SAME: tile_relu
 
 // Verify merged set interval is computed correctly
-// Block args start at -1, so merged interval is [-1, 3]
+// Block args start at -1, tile_store extends end → [-1, 3]
 // CHECK: Merged set interval: [-1, 3] for 4 values
 
 // Verify all values in the chain have the same interval
@@ -59,6 +59,7 @@ func.func @unary_chain_shared_dst(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
   %a_cb = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %init_cb = ttl.attach_cb %init, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
+  %out_view = ttl.cb_reserve %cb1 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %result = ttl.compute
       ins(%a_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%init_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -68,7 +69,8 @@ func.func @unary_chain_shared_dst(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
     %abs = ttl.tile_abs %a_tile : !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %abs : !ttcore.tile<32x32, f32>
     %relu = ttl.tile_relu %exp : !ttcore.tile<32x32, f32>
-    ttl.yield %relu : !ttcore.tile<32x32, f32>
+    ttl.tile_store %relu, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -98,6 +100,7 @@ func.func @unary_chain_shared_dst(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 // CHECK-SAME: tile_abs
 
 // Verify merged set has correct interval
+// tile_store extends end → [0, 2]
 // CHECK: Merged set interval: [0, 2] for 2 values
 
 // Verify live intervals
@@ -129,6 +132,7 @@ func.func @binary_then_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   %b_cb = ttl.attach_cb %b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %init_cb = ttl.attach_cb %init, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
+  %out_view_0 = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %result = ttl.compute
       ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>,
                          tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -140,7 +144,8 @@ func.func @binary_then_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %mul = ttl.tile_mul %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %abs = ttl.tile_abs %mul : !ttcore.tile<32x32, f32>
-    ttl.yield %abs : !ttcore.tile<32x32, f32>
+    ttl.tile_store %abs, %out_view_0 : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>

@@ -255,7 +255,7 @@ def TTL_ComputeOp : TTL_Op<"compute", [
            %b_tile: !ttcore.tile<32x32, f32>,
            %out_tile: !ttcore.tile<32x32, f32>):
         %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-        ttl.yield %sum : !ttcore.tile<32x32, f32>
+        ttl.yield
     } -> tensor<4x4x!ttcore.tile<32x32, f32>>
     ```
   }];
@@ -298,13 +298,12 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 
 def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
     ParentOneOf<["ComputeOp"]>]> {
-  let summary = "Yield values from ttl.compute region";
+  let summary = "Terminate ttl.compute region";
   let description = [{
-    `ttl.yield` terminates the body of `ttl.compute` and yields the computed
-    tile values to be written to the output tensors.
+    `ttl.yield` terminates the body of `ttl.compute`. Output is produced by
+    `ttl.tile_store` within the compute body, not by yielding values.
   }];
-  let arguments = (ins Variadic<AnyType>:$values);
-  let assemblyFormat = "attr-dict ($values^ `:` type($values))?";
+  let assemblyFormat = "attr-dict";
   let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
 }
 
@@ -732,21 +731,17 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
   let summary = "Store a tensor to a circular buffer reserve view";
   let description = [{
     `ttl.store` represents the user's intent to store a computed tensor into
-    an output circular buffer. The view operand must be the reserve view
-    (from `ttl.attach_cb` wrapping a `ttl.cb_reserve`).
+    an output circular buffer.
 
-    This is the tensor-level store emitted by Python's `o.store(result)`.
-    During `convert-ttl-to-compute`, this op is transformed into a tile-level
-    `ttl.tile_store` inside the compute body. The store carries its destination
-    as an SSA operand; no pass infers or synthesizes stores.
+    Emitted by Python's `o.store(result)`. During `convert-ttl-to-compute`,
+    this op is transformed into a `ttl.tile_store` inside the compute body.
 
     Example:
     ```mlir
     %reserve = ttl.cb_reserve %cb : ... -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    %view = ttl.attach_cb %reserve, %cb : ...
     %result = ttl.add %a, %b : ...
-    ttl.store %result, %view : tensor<1x1x!ttcore.tile<32x32, bf16>>,
-                               tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %result, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                                  tensor<1x1x!ttcore.tile<32x32, bf16>>
     ```
   }];
   let arguments = (ins

@@ -28,7 +28,8 @@ func.func @f32_capacity_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   %e_cb = ttl.attach_cb %e, %cb4 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %init_cb = ttl.attach_cb %init, %cbout : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
-  // expected-error @+1 {{insufficient DST registers: all 4 registers in use (spilling not yet implemented)}}
+  %out_view = ttl.cb_reserve %cbout : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{insufficient DST registers: all 4 registers in use (spilling not yet implemented)}}
   %result = ttl.compute
       ins(%a_cb, %b_cb, %c_cb, %d_cb, %e_cb :
           tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -57,7 +58,8 @@ func.func @f32_capacity_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %sum1 = ttl.tile_add %abs_c, %abs_d : !ttcore.tile<32x32, f32>
     %sum2 = ttl.tile_add %sum0, %abs_e : !ttcore.tile<32x32, f32>
     %final = ttl.tile_add %sum1, %sum2 : !ttcore.tile<32x32, f32>
-    ttl.yield %final : !ttcore.tile<32x32, f32>
+    ttl.tile_store %final, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>

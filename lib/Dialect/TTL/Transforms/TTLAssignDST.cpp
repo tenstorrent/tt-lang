@@ -365,7 +365,7 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
 
 /// Build live intervals for all tile values in the compute body.
 /// Also performs in-place merging: in-place op input and output share DST.
-static void buildLiveIntervals(Block *body, YieldOp yieldOp,
+static void buildLiveIntervals(Block *body,
                                llvm::MapVector<Value, Interval> &intervals,
                                MergedClasses &merged,
                                DenseMap<Operation *, int64_t> &opIndex) {
@@ -374,7 +374,6 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
   for (Operation &op : *body) {
     opIndex[&op] = idx++;
   }
-  int64_t yieldIdx = opIndex[yieldOp];
 
   // Build initial intervals
   for (Operation &op : *body) {
@@ -406,17 +405,16 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
     }
   }
 
-  // Extend intervals for yielded values to the yield operation
-  for (Value yielded : yieldOp.getValues()) {
-    if (isTileValue(yielded) && intervals.count(yielded)) {
-      intervals[yielded].end = yieldIdx;
+  // Extend intervals for tile_store operands: their tile values must remain
+  // live until the store (pack_tile) executes.
+  for (Operation &op : *body) {
+    if (auto storeOp = dyn_cast<TileStoreOp>(&op)) {
+      Value stored = storeOp.getTile();
+      if (isTileValue(stored) && intervals.count(stored)) {
+        int64_t storeIdx = opIndex[&op];
+        intervals[stored].end = std::max(intervals[stored].end, storeIdx);
+      }
     }
-  }
-
-  // Collect yielded values for quick lookup
-  DenseSet<Value> yieldedValues;
-  for (Value v : yieldOp.getValues()) {
-    yieldedValues.insert(v);
   }
 
   // Merge intervals for in-place ops (input and output share DST slot).
@@ -546,9 +544,14 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
 // Phase 3: Linear Scan Allocation for Inputs/Intermediates
 //===----------------------------------------------------------------------===//
 
-/// Helper to check if a value is yielded by the compute operation.
-static bool isYieldedValue(Value val, YieldOp yieldOp) {
-  return llvm::is_contained(yieldOp.getValues(), val);
+/// Helper to check if a value is stored by a tile_store in the compute body.
+static bool isStoredValue(Value val, Block &body) {
+  for (Operation *user : val.getUsers()) {
+    if (isa<TileStoreOp>(user) && user->getBlock() == &body) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /// Core linear scan allocation logic (shared by Phase 3 and Phase 4).
@@ -653,8 +656,6 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
     funcOp.walk([&](ComputeOp computeOp) {
       Block *body = &computeOp.getRegion().front();
 
-      auto yieldOp = cast<YieldOp>(body->getTerminator());
-
       std::uint32_t capacity = dstCapacity;
       if (capacity == 0) {
         auto computed = computeDSTCapacity(computeOp);
@@ -706,13 +707,13 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       llvm::MapVector<Value, Interval> intervals;
       MergedClasses merged;
       DenseMap<Operation *, int64_t> opIndex;
-      buildLiveIntervals(body, yieldOp, intervals, merged, opIndex);
+      buildLiveIntervals(body, intervals, merged, opIndex);
 
       //=== Phase 3 & 4: Linear Scan Allocation ===
       DenseMap<Value, std::uint32_t> dstAssignment;
 
       if (separateOutputRegion) {
-        // Phase 3: Allocate inputs/intermediates (non-yielded values)
+        // Phase 3: Allocate inputs/intermediates (non-stored values)
         LLVM_DEBUG(llvm::dbgs() << "Using separate output region mode\n");
         LLVM_DEBUG(llvm::dbgs() << "=== Phase 3: Linear Scan Allocation ===\n");
         llvm::SmallBitVector freeRegs(capacity);
@@ -721,10 +722,10 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
             intervals, merged, freeRegs, dstAssignment,
             [&](Value val) {
               // For separate output region mode, check if any member of the
-              // merged set is yielded. If so, defer the entire set to Phase 4.
+              // merged set is stored. If so, defer the entire set to Phase 4.
               auto allMerged = getMergedValues(merged, val);
               return llvm::none_of(allMerged, [&](Value member) {
-                return isYieldedValue(member, yieldOp);
+                return isStoredValue(member, *body);
               });
             },
             computeOp, "Phase 3");
@@ -740,7 +741,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
                        << " registers\n";
         });
 
-        // Phase 4: Allocate outputs (yielded values) starting at
+        // Phase 4: Allocate outputs (stored values) starting at
         // inputsFootprint
         LLVM_DEBUG(llvm::dbgs() << "=== Phase 4: Linear Scan Allocation ===\n");
         llvm::SmallBitVector outputRegs(capacity);
@@ -749,8 +750,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         }
         if (failed(linearScanAllocateFiltered(
                 intervals, merged, outputRegs, dstAssignment,
-                [&](Value val) { return isYieldedValue(val, yieldOp); },
-                computeOp, "Phase 4"))) {
+                [&](Value val) { return isStoredValue(val, *body); }, computeOp,
+                "Phase 4"))) {
           computeOp.emitOpError()
               << "insufficient DST registers for outputs: all " << capacity
               << " registers in use (spilling not yet implemented)";

@@ -53,19 +53,17 @@
 // SFPU:             ttl.tile_log {{.*}} {dst_idx = 0 : i32}
 // SFPU:             ttl.tile_neg {{.*}} {dst_idx = 0 : i32}
 // SFPU:             %[[SQRTS:.*]] = ttl.tile_sqrt {{.*}} {dst_idx = 0 : i32}
-// SFPU:             ttl.cb_reserve %[[CB2S]]
 // SFPU:             ttl.tile_regs_commit
 // SFPU-NEXT:        ttl.tile_regs_wait
 // SFPU:             ttl.tile_store %[[SQRTS]]
 // SFPU-NEXT:        ttl.tile_regs_release
-// SFPU-NEXT:        ttl.yield %[[SQRTS]]
+// SFPU-NEXT:        ttl.yield
 //
-// CHECK-NEXT:        %[[VIEW:.*]] = ttl.cb_reserve %[[CB2]]
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
-// CHECK-NEXT:        ttl.tile_store %[[SQRT]], %[[VIEW]]
+// CHECK-NEXT:        ttl.tile_store %[[SQRT]]
 // CHECK-NEXT:        ttl.tile_regs_release
-// CHECK-NEXT:        ttl.yield %[[SQRT]] : !ttcore.tile<32x32, f32>
+// CHECK-NEXT:        ttl.yield
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 // CHECK-NEXT:      return %[[RES]]
 func.func @seven_op_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -81,6 +79,7 @@ func.func @seven_op_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   %b_ready = ttl.cb_wait %cb1 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %output_cb = ttl.attach_cb %output, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
+  %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %result = ttl.compute
       ins(%a_ready, %b_ready : tensor<2x2x!ttcore.tile<32x32, f32>>,
                                tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -98,9 +97,8 @@ func.func @seven_op_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %log = ttl.tile_log %exp : !ttcore.tile<32x32, f32>
     %neg = ttl.tile_neg %log : !ttcore.tile<32x32, f32>
     %sqrt = ttl.tile_sqrt %neg : !ttcore.tile<32x32, f32>
-    %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.tile_store %sqrt, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.yield %sqrt : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
