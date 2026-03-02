@@ -271,6 +271,13 @@ class TTLGenericCompiler(TTCompilerBase):
         """Override to set location context, catch errors, and inject auto-profiling."""
         with self._loc_for_node(node):
             try:
+                # Intercept print() to handle keyword arguments.
+                if (
+                    not isinstance(node.func, ast.Attribute)
+                    and hasattr(node.func, "id")
+                    and node.func.id == "print"
+                ):
+                    return self.visit_Print(node.args, node.keywords)
                 return self._try_emit_auto_signposts(
                     node, lambda: super(TTLGenericCompiler, self).visit_Call(node)
                 )
@@ -524,6 +531,127 @@ class TTLGenericCompiler(TTCompilerBase):
     def visit_AsyncFunctionDef(self, node):
         with self._loc_for_node(node):
             return self._emit_entry(node)
+
+    def _extract_print_kwargs(self, keywords):
+        kwargs = {}
+        for kw in keywords:
+            if not isinstance(kw.value, ast.Constant):
+                raise ValueError(f"print() keyword '{kw.arg}' must be a constant")
+            kwargs[kw.arg] = kw.value.value
+        return kwargs
+
+    def visit_Print(self, args, keywords=None):
+        keywords = keywords or []
+        kwargs = self._extract_print_kwargs(keywords)
+
+        thread = kwargs.get("thread")
+        if thread is not None and thread not in ("math", "pack", "unpack"):
+            raise ValueError(
+                f"print() thread must be 'math', 'pack', or 'unpack', "
+                f"got '{thread}'"
+            )
+
+        num_pages = kwargs.get("num_pages")
+        if num_pages is not None and not isinstance(num_pages, int):
+            raise ValueError(
+                f"print() num_pages must be an integer, "
+                f"got {type(num_pages).__name__}"
+            )
+
+        # DST mode: print(dst=True, label="after exp")
+        if kwargs.get("dst"):
+            if args:
+                raise ValueError("print(dst=True) takes no positional arguments")
+            label = kwargs.get("label", "")
+            ttl.dprint(
+                fmt=label,
+                mode="dst",
+                argv=[],
+                thread=thread,
+                num_pages=None,
+            )
+            return
+
+        if not args:
+            raise ValueError("print() requires at least one argument (or dst=True)")
+
+        # Visit all args once to determine types.
+        visited = []
+        for arg in args:
+            if isinstance(arg, ast.Constant):
+                visited.append(("const", arg.value, None))
+            elif isinstance(arg, ast.Name):
+                val = self.visit(arg)
+                visited.append(("var", None, val))
+            else:
+                raise ValueError(
+                    f"print() argument type {type(arg).__name__} " f"not supported"
+                )
+
+        # Single non-scalar arg: check for CB, tile, or tensor mode.
+        if len(visited) == 1 and visited[0][0] == "var":
+            val = visited[0][2]
+
+            cb_type = ttl.CircularBufferType.maybe_downcast(val.type)
+            if cb_type is not None:
+                ttl.dprint(
+                    fmt="",
+                    mode="cb",
+                    argv=[val],
+                    thread=thread,
+                    num_pages=None,
+                )
+                return
+
+            if RankedTensorType.isinstance(val.type):
+                if num_pages is not None:
+                    ttl.dprint(
+                        fmt="",
+                        mode="tensor",
+                        argv=[val],
+                        thread=thread,
+                        num_pages=num_pages,
+                    )
+                else:
+                    ttl.dprint(
+                        fmt="",
+                        mode="tile",
+                        argv=[val],
+                        thread=thread,
+                        num_pages=None,
+                    )
+                return
+
+        # Scalar mode: string/int/float constants and integer variables.
+        fmt = ""
+        argv = []
+        for kind, const_val, val in visited:
+            if kind == "const":
+                if not isinstance(const_val, (str, int, float)):
+                    raise ValueError(
+                        f"print() supports string, integer, and float "
+                        f"constants, got {type(const_val).__name__}"
+                    )
+                fmt += str(const_val) + " "
+            else:
+                if not (
+                    IndexType.isinstance(val.type) or IntegerType.isinstance(val.type)
+                ):
+                    raise ValueError(
+                        f"print() scalar mode supports integer variables, "
+                        f"got {val.type}"
+                    )
+                fmt += "{} "
+                argv.append(val)
+
+        fmt = fmt.strip()
+        ttl.dprint(
+            fmt=fmt,
+            mode="scalar",
+            argv=argv,
+            thread=thread,
+            num_pages=None,
+        )
 
     def _get_cb_tensor_type(self, cb_val, node=None):
         """Extract the tensor type from a TTL CB type."""

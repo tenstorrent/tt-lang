@@ -3,6 +3,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLToCompute.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp
+  LowerDPrintToEmitC.cpp
   LowerSignpostToEmitC.cpp
   TTLAnnotateCBAssociations.cpp
   TTLDumpCBFlowGraph.cpp
