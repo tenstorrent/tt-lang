@@ -37,6 +37,8 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
 }
 
 /// Find the output CB for an elementwise op by looking at its store users.
+/// Returns nullptr when no store exists (callers handle this via
+/// notifyMatchFailure — the store may not exist yet or was already erased).
 static Value findOutputCB(Operation *op) {
   for (OpOperand &use : op->getResult(0).getUses()) {
     if (auto storeOp = dyn_cast<StoreOp>(use.getOwner())) {
@@ -69,6 +71,8 @@ static StoreOp findLastStore(Operation *op) {
 /// (e.g., same result stored to two outputs).
 static void emitTileStores(PatternRewriter &rewriter, Location loc,
                            Value tileResult, Operation *elementwiseOp) {
+  /// Collect-then-erase: we cannot erase stores while iterating getUses()
+  /// because erasing invalidates the use-list iterator.
   SmallVector<StoreOp> storesToErase;
   for (OpOperand &use : elementwiseOp->getResult(0).getUses()) {
     auto storeOp = dyn_cast<StoreOp>(use.getOwner());
@@ -239,7 +243,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
 /// Build a ttl.compute op with a single binary tile operation in the body.
 /// Inputs must already be attached to CBs via ttl.attach_cb.
-/// An unused bind_cb must exist for the output.
+/// The output CB is identified via ttl.store on the op's result.
 template <typename TileOp>
 static LogicalResult buildBinaryCompute(Operation *op,
                                         PatternRewriter &rewriter, Value lhs,
@@ -327,7 +331,7 @@ static LogicalResult buildBinaryCompute(Operation *op,
 
 /// Build a ttl.compute op with a single unary tile operation in the body.
 /// Input must already be attached to a CB via ttl.attach_cb.
-/// An unused bind_cb must exist for the output.
+/// The output CB is identified via ttl.store on the op's result.
 template <typename TileOp>
 static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
                                        Value input) {
@@ -632,6 +636,8 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
     rewriter.create<TileStoreOp>(loc, body->getArgument(0), reserveView);
     rewriter.create<YieldOp>(loc);
 
+    // make_early_inc_range: replaceOp erases attachOp, invalidating the
+    // use-list iterator.
     for (OpOperand &use : llvm::make_early_inc_range(input.getUses())) {
       if (auto attachOp = dyn_cast<AttachCBOp>(use.getOwner())) {
         if (attachOp.getCb() == outputCb) {

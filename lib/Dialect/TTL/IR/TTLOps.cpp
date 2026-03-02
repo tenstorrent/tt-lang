@@ -521,8 +521,7 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
 
   // The body must contain at least one tile_store. tile_store is the hardware
   // write (becomes pack_tile) and is the only mechanism for the compute to
-  // produce observable output. Yield provides the tensor-semantic result but
-  // tile_store performs the actual pack to the output circular buffer.
+  // produce observable output via pack to the output circular buffer.
   bool hasTileStore = false;
   for (Operation &op : bodyBlock.without_terminator()) {
     auto store = dyn_cast<TileStoreOp>(&op);

@@ -713,7 +713,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       DenseMap<Value, std::uint32_t> dstAssignment;
 
       if (separateOutputRegion) {
-        // Phase 3: Allocate inputs/intermediates (non-yielded values)
+        // Phase 3: Allocate inputs/intermediates (non-stored values)
         LLVM_DEBUG(llvm::dbgs() << "Using separate output region mode\n");
         LLVM_DEBUG(llvm::dbgs() << "=== Phase 3: Linear Scan Allocation ===\n");
         llvm::SmallBitVector freeRegs(capacity);
@@ -722,11 +722,10 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
             intervals, merged, freeRegs, dstAssignment,
             [&](Value val) {
               // For separate output region mode, check if any member of the
-              // merged set is yielded. If so, defer the entire set to Phase 4.
+              // merged set is stored. If so, defer the entire set to Phase 4.
               auto allMerged = getMergedValues(merged, val);
-              Block &body = computeOp.getBody().front();
               return llvm::none_of(allMerged, [&](Value member) {
-                return isStoredValue(member, body);
+                return isStoredValue(member, *body);
               });
             },
             computeOp, "Phase 3");
@@ -742,7 +741,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
                        << " registers\n";
         });
 
-        // Phase 4: Allocate outputs (yielded values) starting at
+        // Phase 4: Allocate outputs (stored values) starting at
         // inputsFootprint
         LLVM_DEBUG(llvm::dbgs() << "=== Phase 4: Linear Scan Allocation ===\n");
         llvm::SmallBitVector outputRegs(capacity);
@@ -751,11 +750,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         }
         if (failed(linearScanAllocateFiltered(
                 intervals, merged, outputRegs, dstAssignment,
-                [&](Value val) {
-                  Block &body = computeOp.getBody().front();
-                  return isStoredValue(val, body);
-                },
-                computeOp, "Phase 4"))) {
+                [&](Value val) { return isStoredValue(val, *body); }, computeOp,
+                "Phase 4"))) {
           computeOp.emitOpError()
               << "insufficient DST registers for outputs: all " << capacity
               << " registers in use (spilling not yet implemented)";
