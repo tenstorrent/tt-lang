@@ -13,7 +13,9 @@ system similar to ttnnsim.py. Special functions like broadcast and reductions
 are implemented manually.
 """
 
-from typing import Any, Callable, List, Optional
+import math as _math
+from itertools import product as _iter_product
+from typing import Any, Callable, List, Optional, Set
 
 import torch
 
@@ -416,98 +418,148 @@ def hardtanh(expr: Block, min_val: float, max_val: float) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
+def _reduce_impl(
+    block: Block,
+    scaler: Block,
+    dims: List[int],
+    op: str,  # 'sum' or 'max'
+) -> Block:
+    """Shared implementation for reduce_sum and reduce_max over an ND block grid.
+
+    Reduction is performed at two levels:
+
+    Grid level: each grid dimension listed in dims is collapsed to size 1 by
+    combining all tiles along that dimension with the given op.
+
+    Within-tile level: for grid dimensions that correspond to tile element
+    dimensions (the last 1 or 2 grid dims depending on tile rank), the tile
+    itself is reduced along the appropriate torch axis and the result is stored
+    at the conventional position (column 0 for a row-direction reduction,
+    row 0 for a column-direction reduction, element 0 for a 1-D tile).
+
+    Batch grid dimensions (leading dims beyond the spatial tile dims) only
+    trigger grid-level combination; they have no matching intra-tile axis.
+
+    Args:
+        block: Input block.
+        scaler: Scaler block; its first tile is multiplied into every result tile.
+        dims: Grid dimensions to reduce over (0-indexed).
+        op: 'sum' or 'max'.
+
+    Returns:
+        Reduced block with shape derived from block._shape with every dimension
+        in dims collapsed to 1.
+    """
+    block_shape = block._shape  # type: ignore[attr-defined]
+    ndim = len(block_shape)
+    dims_set: Set[int] = set(dims)
+
+    for d in dims_set:
+        if d >= ndim:
+            raise ValueError(
+                f"Cannot reduce along dimension {d}: block grid has only {ndim} dimensions"
+            )
+
+    input_tensors = [t.to_torch() for t in block.to_list()]
+    scaler_tile = scaler.to_list()[0].to_torch()
+
+    is_1d = ndim == 1
+    # For 2D+ grids the last two grid dims map to the two tile element dims.
+    # grid dim (ndim-2) -> tile column direction (torch dim 1)  [the "M" / row-grid dim]
+    # grid dim (ndim-1) -> tile row direction    (torch dim 0)  [the "N" / col-grid dim]
+    spatial_m_dim = None if is_1d else (ndim - 2)
+    spatial_n_dim = 0 if is_1d else (ndim - 1)
+
+    reduce_m = (spatial_m_dim is not None) and (spatial_m_dim in dims_set)
+    reduce_n = spatial_n_dim in dims_set
+
+    # Step 1: within-tile reduction
+    reduced_tiles: List[torch.Tensor] = []
+    for tile in input_tensors:
+        if is_1d:
+            out = torch.zeros_like(tile)
+            if reduce_n:
+                # Collapse the single tile dimension; store result at element 0.
+                out[0] = tile.sum() if op == "sum" else tile.max()
+            else:
+                out = tile.clone()
+        else:
+            out = torch.zeros_like(tile)
+            if reduce_m and reduce_n:
+                # Full tile reduction -> single value at [0, 0].
+                val = tile.sum() if op == "sum" else tile.max()
+                out[0, 0] = val
+            elif reduce_m:
+                # Reduce tile columns (torch dim 1) per row; store at [:, 0].
+                vals = tile.sum(dim=1) if op == "sum" else tile.max(dim=1).values
+                out[:, 0] = vals
+            elif reduce_n:
+                # Reduce tile rows (torch dim 0) per column; store at [0, :].
+                vals = tile.sum(dim=0) if op == "sum" else tile.max(dim=0).values
+                out[0, :] = vals
+            else:
+                out = tile.clone()
+        reduced_tiles.append(out)
+
+    # Step 2: grid-level reduction
+    result_shape = tuple(1 if i in dims_set else block_shape[i] for i in range(ndim))
+
+    result_tensors: List[Tensor] = []
+    for out_idx in _iter_product(*[range(s) for s in result_shape]):
+        # Collect all input-grid positions that contribute to this output cell.
+        in_ranges = [
+            (
+                range(block_shape[i])
+                if i in dims_set
+                else range(out_idx[i], out_idx[i] + 1)
+            )
+            for i in range(ndim)
+        ]
+
+        combined: Optional[torch.Tensor] = None
+        for in_idx in _iter_product(*in_ranges):
+            flat = sum(
+                in_idx[i] * _math.prod(block_shape[i + 1 :]) for i in range(ndim)
+            )
+            tile = reduced_tiles[flat]
+            if combined is None:
+                combined = tile.clone()
+            elif op == "sum":
+                combined = combined + tile
+            else:
+                combined = torch.maximum(combined, tile)
+
+        assert combined is not None
+        result_tensors.append(Tensor(combined * scaler_tile))
+
+    result_block = Block.from_list(result_tensors, shape=result_shape)
+    track_source_blocks(result_block, block, scaler)
+    return result_block
+
+
 def reduce_max(
     block: Block,
     scaler: Block,
     _output_hint: Optional[Block] = None,
     dims: Optional[List[int]] = None,
 ) -> Block:
-    """Scaled maximum reduction.
+    """Scaled maximum reduction over an ND block grid.
 
-    Computes the scaled maximum reduction over specified dimensions.
-    The result is the maximum value along the specified dimensions, scaled by the scaler.
-
-    Reduction operates at two levels:
-    1. Within each tile: reduces along the specified tensor dimensions
-    2. Across tiles: combines tiles in the grid along the specified dimensions
-
-    For dims=[0] (reduce rows):
-    - Within each tile: compute max per row (across columns), store at column 0
-    - Across tiles: combine tiles along grid row dimension
-
-    For dims=[1] (reduce columns):
-    - Within each tile: compute max per column (across rows), store at row 0
-    - Across tiles: combine tiles along grid column dimension
+    See _reduce_impl for full semantics. dims must be non-empty and every
+    element must be a valid grid dimension index.
 
     Args:
-        block: Input block to reduce
-        scaler: Scaler block
-        _output_hint: Optional output block hint (unused in simulator)
-        dims: List of dimension indices to reduce over (0-indexed)
-              Example: [0] for rows, [1] for columns, [0, 1] for all
+        block: Input block.
+        scaler: Scaler block; its first tile is multiplied into every result tile.
+        _output_hint: Unused output block hint (kept for API compatibility).
+        dims: Grid dimensions to reduce over (0-indexed).
 
     Returns:
-        Block with reduced dimensions
+        Block with reduced dimensions.
     """
-
     if dims is None or not dims:
         raise ValueError("dims parameter must contain at least one dimension")
-
-    block_shape = block._shape  # type: ignore[attr-defined]
-    M, N = block_shape
-    input_tensors = [t.to_torch() for t in block.to_list()]
-    scaler_tile = scaler.to_list()[0].to_torch()
-
-    for dim in dims:
-        if dim >= 2:
-            raise ValueError(
-                f"Cannot reduce along dimension {dim}: block grid has only 2 dimensions"
-            )
-
-    # Step 1: Within-tile reduction
-    # dims=[0] means reduce across columns within each row -> one value per row at col 0
-    # dims=[1] means reduce across rows within each column -> one value per col at row 0
-    reduced_tiles: List[torch.Tensor] = []
-    for tile in input_tensors:
-        result_tile = torch.zeros_like(tile)
-        if 0 in dims and 1 in dims:
-            # Full reduction: single max value at position (0, 0)
-            max_val = tile.max()
-            result_tile[0, 0] = max_val
-        elif 0 in dims:
-            # Reduce across columns (dim 1) for each row -> store at column 0
-            row_maxes = tile.max(dim=1).values  # shape: (32,)
-            result_tile[:, 0] = row_maxes
-        elif 1 in dims:
-            # Reduce across rows (dim 0) for each column -> store at row 0
-            col_maxes = tile.max(dim=0).values  # shape: (32,)
-            result_tile[0, :] = col_maxes
-        reduced_tiles.append(result_tile)
-
-    # Step 2: Grid-level reduction (combine tiles across specified grid dimensions)
-    result_M = 1 if 0 in dims else M
-    result_N = 1 if 1 in dims else N
-
-    result_tensors: List[Tensor] = []
-    for res_i in range(result_M):
-        for res_j in range(result_N):
-            tiles_to_max: List[torch.Tensor] = []
-            for i in range(M):
-                for j in range(N):
-                    if (0 in dims or i == res_i) and (1 in dims or j == res_j):
-                        tile_idx = i * N + j
-                        tiles_to_max.append(reduced_tiles[tile_idx])
-
-            result_tile = tiles_to_max[0]
-            for tile in tiles_to_max[1:]:
-                result_tile = torch.maximum(result_tile, tile)
-
-            result_tile = result_tile * scaler_tile
-            result_tensors.append(Tensor(result_tile))
-
-    result_block = Block.from_list(result_tensors, shape=(result_M, result_N))
-    track_source_blocks(result_block, block, scaler)
-    return result_block
+    return _reduce_impl(block, scaler, dims, "max")
 
 
 def reduce_sum(
@@ -516,92 +568,23 @@ def reduce_sum(
     _output_hint: Optional[Block] = None,
     dims: Optional[List[int]] = None,
 ) -> Block:
-    """Scaled sum reduction.
+    """Scaled sum reduction over an ND block grid.
 
-    Computes the scaled sum reduction over specified dimensions.
-    The result is the sum of values along the specified dimensions, scaled by the scaler.
-
-    Reduction operates at two levels:
-    1. Within each tile: reduces along the specified tensor dimensions
-    2. Across tiles: combines tiles in the grid along the specified dimensions
-
-    For dims=[0] (reduce rows):
-    - Within each tile: compute sum per row (across columns), store at column 0
-    - Across tiles: combine tiles along grid row dimension
-
-    For dims=[1] (reduce columns):
-    - Within each tile: compute sum per column (across rows), store at row 0
-    - Across tiles: combine tiles along grid column dimension
+    See _reduce_impl for full semantics. dims must be non-empty and every
+    element must be a valid grid dimension index.
 
     Args:
-        block: Input block to reduce
-        scaler: Scaler block
-        _output_hint: Optional output block hint (unused in simulator)
-        dims: List of dimension indices to reduce over (0-indexed)
-              Example: [0] for rows, [1] for columns, [0, 1] for all
+        block: Input block.
+        scaler: Scaler block; its first tile is multiplied into every result tile.
+        _output_hint: Unused output block hint (kept for API compatibility).
+        dims: Grid dimensions to reduce over (0-indexed).
 
     Returns:
-        Block with reduced dimensions
+        Block with reduced dimensions.
     """
-
     if dims is None or not dims:
         raise ValueError("dims parameter must contain at least one dimension")
-
-    block_shape = block._shape  # type: ignore[attr-defined]
-    M, N = block_shape
-    input_tensors = [t.to_torch() for t in block.to_list()]
-    scaler_tile = scaler.to_list()[0].to_torch()
-
-    for dim in dims:
-        if dim >= 2:
-            raise ValueError(
-                f"Cannot reduce along dimension {dim}: block grid has only 2 dimensions"
-            )
-
-    # Step 1: Within-tile reduction
-    # dims=[0] means reduce across columns within each row -> one value per row at col 0
-    # dims=[1] means reduce across rows within each column -> one value per col at row 0
-    reduced_tiles: List[torch.Tensor] = []
-    for tile in input_tensors:
-        result_tile = torch.zeros_like(tile)
-        if 0 in dims and 1 in dims:
-            # Full reduction: single sum value at position (0, 0)
-            sum_val = tile.sum()
-            result_tile[0, 0] = sum_val
-        elif 0 in dims:
-            # Reduce across columns (dim 1) for each row -> store at column 0
-            row_sums = tile.sum(dim=1)  # shape: (32,)
-            result_tile[:, 0] = row_sums
-        elif 1 in dims:
-            # Reduce across rows (dim 0) for each column -> store at row 0
-            col_sums = tile.sum(dim=0)  # shape: (32,)
-            result_tile[0, :] = col_sums
-        reduced_tiles.append(result_tile)
-
-    # Step 2: Grid-level reduction (combine tiles across specified grid dimensions)
-    result_M = 1 if 0 in dims else M
-    result_N = 1 if 1 in dims else N
-
-    result_tensors: List[Tensor] = []
-    for res_i in range(result_M):
-        for res_j in range(result_N):
-            tiles_to_sum: List[torch.Tensor] = []
-            for i in range(M):
-                for j in range(N):
-                    if (0 in dims or i == res_i) and (1 in dims or j == res_j):
-                        tile_idx = i * N + j
-                        tiles_to_sum.append(reduced_tiles[tile_idx])
-
-            result_tile = tiles_to_sum[0].clone()
-            for tile in tiles_to_sum[1:]:
-                result_tile = result_tile + tile
-
-            result_tile = result_tile * scaler_tile
-            result_tensors.append(Tensor(result_tile))
-
-    result_block = Block.from_list(result_tensors, shape=(result_M, result_N))
-    track_source_blocks(result_block, block, scaler)
-    return result_block
+    return _reduce_impl(block, scaler, dims, "sum")
 
 
 # Clean up temporary variables
@@ -624,6 +607,11 @@ def transpose(block: Block, _output_hint: Optional[Block] = None) -> Block:
     Returns:
         Block with shape (N, M), where each tile is transposed
     """
+    if len(block._shape) != 2:  # type: ignore[attr-defined]
+        raise ValueError(
+            f"transpose requires a 2-D block grid, got shape {block._shape}"  # type: ignore[attr-defined]
+        )
+
     # Transpose each tile (swap rows/columns within tiles)
     transposed_tiles = [Tensor(t.to_torch().T) for t in block.to_list()]
 

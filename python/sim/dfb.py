@@ -72,8 +72,8 @@ class Block:
 
     # TODO: We can't do @validate_call here. There reason is that @validate_call actually
     #       copies the arguments to validate them and returns the copies to the decorated
-    #       function. In our case, we don't want the copy of the list, we want to use the
-    #       original list as is. This is a limitation of pydantic's validate_call, and
+    #       function. In our case, we don't want the copy of the tensor, we want to use the
+    #       original tensor as is. This is a limitation of pydantic's validate_call, and
     #       perhaps a good reason to look for other frameworks that don't do that! (beartype?)
     def __init__(
         self,

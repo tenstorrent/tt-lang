@@ -801,6 +801,114 @@ def test_reduce_sum_empty_dims():
 
 
 # ---------------------------------------------------------------------------
+# ND (1-D grid and batched 3-D grid) reduce tests
+# ---------------------------------------------------------------------------
+
+
+def _tile1d(value: float, size: int = 32) -> Tensor:
+    """Create a 1-D tile filled with a constant value."""
+    return Tensor(torch.full((size,), value))
+
+
+def _scaler1d(value: float = 1.0) -> "Block":
+    """Return a (1,) scaler block with all elements set to value."""
+    return Block.from_list([_tile1d(value, 32)], shape=(1,))
+
+
+def test_reduce_sum_1d_single_tile():
+    """reduce_sum on a 1-D (1,) block collapses to a single value at element 0."""
+    # One 1-D tile of shape (32,) filled with 2.0 -> sum = 64.0
+    block = Block.from_list([_tile1d(2.0)], shape=(1,))
+    result = ttl.math.reduce_sum(block, _scaler1d(1.0), dims=[0])
+    assert result.shape == (1,)
+    out = result.to_list()[0].to_torch()
+    assert out[0].item() == pytest.approx(64.0)
+    assert out[1:].sum().item() == pytest.approx(0.0)
+
+
+def test_reduce_sum_1d_multi_tile():
+    """reduce_sum on a 1-D (4,) block reduces all 4 tiles to one."""
+    # Four 1-D tiles filled with 3.0; each tile sum = 96.0; grid sum = 384.0
+    tiles = [_tile1d(3.0) for _ in range(4)]
+    block = Block.from_list(tiles, shape=(4,))
+    result = ttl.math.reduce_sum(block, _scaler1d(1.0), dims=[0])
+    assert result.shape == (1,)
+    out = result.to_list()[0].to_torch()
+    assert out[0].item() == pytest.approx(4 * 96.0)
+
+
+def test_reduce_sum_1d_scaler():
+    """reduce_sum on a 1-D block applies the scaler correctly."""
+    block = Block.from_list([_tile1d(1.0)], shape=(1,))
+    result = ttl.math.reduce_sum(block, _scaler1d(3.0), dims=[0])
+    out = result.to_list()[0].to_torch()
+    # Each element of the scaler tile is 3.0; element 0 holds the sum (32.0).
+    assert out[0].item() == pytest.approx(32.0 * 3.0)
+
+
+def test_reduce_max_1d_multi_tile():
+    """reduce_max on a 1-D (3,) block takes the element-wise max across tiles."""
+    # Tiles: all-1, all-5, all-2 -> per-element max = 5 at element 0
+    tiles = [_tile1d(v) for v in [1.0, 5.0, 2.0]]
+    block = Block.from_list(tiles, shape=(3,))
+    result = ttl.math.reduce_max(block, _scaler1d(1.0), dims=[0])
+    assert result.shape == (1,)
+    out = result.to_list()[0].to_torch()
+    assert out[0].item() == pytest.approx(5.0)
+
+
+def test_reduce_sum_batched_3d_batch_dim():
+    """reduce_sum on a (2, 1, 1) block reducing only the batch dim (dim 0)."""
+    # Two (1,1) batch entries; tile values 4.0 and 6.0 -> grid sum 10.0 per position
+    t1 = Tensor(torch.full((1, 1), 4.0))
+    t2 = Tensor(torch.full((1, 1), 6.0))
+    block = Block.from_list([t1, t2], shape=(2, 1, 1))
+    scaler = Block.from_list([Tensor(torch.full((1, 1), 1.0))], shape=(1, 1))
+    result = ttl.math.reduce_sum(block, scaler, dims=[0])
+    # Batch dim collapsed; spatial dims unchanged: result shape (1, 1, 1)
+    assert result.shape == (1, 1, 1)
+    out = result.to_list()[0].to_torch()
+    # No within-tile reduction (batch dim has no tile axis); grid sum = 4+6 = 10
+    assert out[0, 0].item() == pytest.approx(10.0)
+
+
+def test_reduce_sum_batched_3d_spatial_dim():
+    """reduce_sum on a (2, 1, 2) block reducing spatial col dim (dim 2)."""
+    # Two batch entries, one row of two column tiles each
+    # All tiles filled with 1.0; reducing dim 2 (N=2 -> 1) with within-tile col reduction
+    tiles = [Tensor(torch.full((2, 2), 1.0)) for _ in range(4)]  # 2 batch * 1 * 2 tiles
+    block = Block.from_list(tiles, shape=(2, 1, 2))
+    scaler = Block.from_list([Tensor(torch.full((2, 2), 1.0))], shape=(1, 1))
+    result = ttl.math.reduce_sum(block, scaler, dims=[2])
+    # Spatial col dim reduced: result shape (2, 1, 1)
+    assert result.shape == (2, 1, 1)
+
+
+def test_reduce_sum_batched_invalid_dim():
+    """reduce_sum on a (2, 1, 1) block rejects dim >= ndim."""
+    t = Tensor(torch.full((1, 1), 1.0))
+    block = Block.from_list([t, t], shape=(2, 1, 1))
+    scaler = Block.from_list([t], shape=(1, 1))
+    with pytest.raises(ValueError, match="Cannot reduce along dimension 3"):
+        ttl.math.reduce_sum(block, scaler, dims=[3])
+
+
+def test_transpose_1d_raises():
+    """transpose on a 1-D block raises ValueError."""
+    block = Block.from_list([_tile1d(1.0)], shape=(1,))
+    with pytest.raises(ValueError, match="2-D block grid"):
+        ttl.math.transpose(block)
+
+
+def test_transpose_3d_raises():
+    """transpose on a 3-D block raises ValueError."""
+    t = Tensor(torch.ones(1, 1))
+    block = Block.from_list([t, t], shape=(2, 1, 1))
+    with pytest.raises(ValueError, match="2-D block grid"):
+        ttl.math.transpose(block)
+
+
+# ---------------------------------------------------------------------------
 # matmul tests
 # ---------------------------------------------------------------------------
 
