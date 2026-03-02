@@ -1,13 +1,13 @@
-// Summary: separate-output-region=1 should fail when outputs exceed available region.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=4 separate-output-region=1}))' --split-input-file --verify-diagnostics
+// Summary: separate-output-region=1 with tile_store-based intervals no longer overflows.
+// With tile_store ending live intervals early, outputs don't need to be live simultaneously.
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=4 separate-output-region=1}))' --split-input-file | FileCheck %s --check-prefix=SEPARATE
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=4}))' --split-input-file | FileCheck %s --check-prefix=CHECK
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: With separate-output-region=1, inputs/intermediates use 2 registers,
-// leaving only 2 registers for outputs. Three outputs that need to be live
-// simultaneously exceed this capacity. Without separate-output-region, outputs
-// can reuse input registers and the allocation succeeds.
+// Purpose: With tile_store-based interval extension, outputs no longer need to be
+// live simultaneously, so separate-output-region=1 with 4 registers now succeeds.
+// Both modes produce valid allocations.
 
 func.func @separate_output_region_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                            %b: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -34,9 +34,7 @@ func.func @separate_output_region_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f3
   %init2_cb = ttl.attach_cb %init2, %cb5 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   // CHECK-LABEL: func.func @separate_output_region_overflow
-  // Note: The expected-error below is only for the first RUN line (with separate-output-region=1).
-  // The second RUN line (without separate-output-region) should succeed.
-  // expected-error @+1 {{insufficient DST registers for outputs: all 4 registers in use (spilling not yet implemented)}}
+  // SEPARATE-LABEL: func.func @separate_output_region_overflow
   %result:3 = ttl.compute
       ins(%a_cb, %b_cb, %c_cb : tensor<2x2x!ttcore.tile<32x32, f32>>,
                                 tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -56,16 +54,17 @@ func.func @separate_output_region_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f3
        %out2_tile: !ttcore.tile<32x32, f32>):
     // tile_add with two block args is FPU binary (no copy_tile needed for inputs).
     // CHECK: ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
+    // SEPARATE: ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
     %intermediate = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
 
     // c_tile needs copy_tile since it's a block arg used by non-FPU-binary ops.
     // CHECK: ttl.copy_tile
-    // Three outputs that need to be live simultaneously.
+    // SEPARATE: ttl.copy_tile
     // CHECK-DAG: ttl.tile_add {{.*}} {dst_idx = 2 : i32}
     %out0 = ttl.tile_add %intermediate, %c_tile : !ttcore.tile<32x32, f32>
     // CHECK-DAG: ttl.tile_mul {{.*}} {dst_idx = 0 : i32}
     %out1 = ttl.tile_mul %intermediate, %c_tile : !ttcore.tile<32x32, f32>
-    // CHECK-DAG: ttl.tile_add {{.*}} {dst_idx = 1 : i32}
+    // CHECK-DAG: ttl.tile_add {{.*}} {dst_idx = 0 : i32}
     %out2 = ttl.tile_add %out0, %out1 : !ttcore.tile<32x32, f32>
 
     %out_view = ttl.cb_reserve %cb3 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -73,6 +72,9 @@ func.func @separate_output_region_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f3
     // CHECK: ttl.cb_reserve
     // CHECK-NEXT: ttl.tile_store
     // CHECK: ttl.yield
+    // SEPARATE: ttl.cb_reserve
+    // SEPARATE-NEXT: ttl.tile_store
+    // SEPARATE: ttl.yield
     ttl.yield
   } -> (tensor<2x2x!ttcore.tile<32x32, f32>>,
         tensor<2x2x!ttcore.tile<32x32, f32>>,

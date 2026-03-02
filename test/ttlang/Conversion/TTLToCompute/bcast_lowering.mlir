@@ -17,10 +17,9 @@ func.func @bcast_row(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x
   // CHECK: tile_bcast{{.*}}2 : i32
   // CHECK: ttl.tile_store
   // CHECK: ttl.yield
-  %result = ttl.bcast %arg0_cb, %init_cb 2 : i32 : (tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %reserve = ttl.cb_reserve %cb1 : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  %reserve_att = ttl.attach_cb %reserve, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  ttl.store %result, %reserve_att : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
+  %result = ttl.bcast %arg0_cb, %init_cb 2 : i32 : (tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  ttl.store %result, %reserve, %cb1 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
 
@@ -39,10 +38,9 @@ func.func @bcast_col(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x
   // CHECK: tile_bcast{{.*}}1 : i32
   // CHECK: ttl.tile_store
   // CHECK: ttl.yield
-  %result = ttl.bcast %arg0_cb, %init_cb 1 : i32 : (tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %reserve = ttl.cb_reserve %cb1 : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  %reserve_att = ttl.attach_cb %reserve, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  ttl.store %result, %reserve_att : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
+  %result = ttl.bcast %arg0_cb, %init_cb 1 : i32 : (tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  ttl.store %result, %reserve, %cb1 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
 
@@ -61,9 +59,8 @@ func.func @bcast_scalar(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2
   // CHECK: tile_bcast{{.*}}3 : i32
   // CHECK: ttl.tile_store
   // CHECK: ttl.yield
-  %result = ttl.bcast %arg0_cb, %init_cb 3 : i32 : (tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %reserve = ttl.cb_reserve %cb1 : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  %reserve_att = ttl.attach_cb %reserve, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  ttl.store %result, %reserve_att : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
+  %result = ttl.bcast %arg0_cb, %init_cb 3 : i32 : (tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  ttl.store %result, %reserve, %cb1 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
 }

@@ -710,28 +710,26 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
   let summary = "Store a tensor to a circular buffer reserve view";
   let description = [{
     `ttl.store` represents the user's intent to store a computed tensor into
-    an output circular buffer. The view operand must be the reserve view
-    (from `ttl.attach_cb` wrapping a `ttl.cb_reserve`).
+    an output circular buffer.
 
-    This is the tensor-level store emitted by Python's `o.store(result)`.
-    During `convert-ttl-to-compute`, this op is transformed into a tile-level
-    `ttl.tile_store` inside the compute body. The store carries its destination
-    as an SSA operand; no pass infers or synthesizes stores.
+    Emitted by Python's `o.store(result)`. During `convert-ttl-to-compute`,
+    this op is transformed into a `ttl.tile_store` inside the compute body.
 
     Example:
     ```mlir
     %reserve = ttl.cb_reserve %cb : ... -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    %view = ttl.attach_cb %reserve, %cb : ...
     %result = ttl.add %a, %b : ...
-    ttl.store %result, %view : tensor<1x1x!ttcore.tile<32x32, bf16>>,
-                               tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %result, %reserve, %cb : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                                       tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                                       !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ```
   }];
   let arguments = (ins
     AnyRankedTensor:$tensor,
-    AnyRankedTensor:$view
+    AnyRankedTensor:$view,
+    TTL_CircularBuffer:$cb
   );
-  let assemblyFormat = "$tensor `,` $view attr-dict `:` type($tensor) `,` type($view)";
+  let assemblyFormat = "$tensor `,` $view `,` $cb attr-dict `:` type($tensor) `,` type($view) `,` type($cb)";
   let hasVerifier = 1;
 }
 

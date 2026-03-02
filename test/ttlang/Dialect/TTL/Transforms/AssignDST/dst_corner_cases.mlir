@@ -28,7 +28,7 @@
 // CHECK-NEXT:      %[[SIG:.*]] = ttl.tile_sigmoid %[[ACOPY1]] {dst_idx = 0 : i32}
 // CHECK:           %{{.*}}, %[[ACOPY2:.*]] = ttl.copy_tile %[[A]], %{{.*}}, %{{.*}} {dst_idx = 1 : i32}
 // CHECK-NEXT:      %[[EXP:.*]] = ttl.tile_exp %[[ACOPY2]] {dst_idx = 1 : i32}
-// CHECK-NEXT:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 2 : i32, ttl.fpu_binary}
+// CHECK-NEXT:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 1 : i32, ttl.fpu_binary}
 // CHECK:           ttl.cb_reserve
 // CHECK-NEXT:      ttl.tile_store
 // CHECK-NEXT:      ttl.yield

@@ -594,6 +594,10 @@ mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
     }
   }
 
+  if (!getView().getDefiningOp<CBReserveOp>()) {
+    return emitOpError() << "view must come from ttl.cb_reserve";
+  }
+
   return success();
 }
 

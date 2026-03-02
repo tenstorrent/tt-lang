@@ -29,15 +29,15 @@
 // CHECK-SAME: tile_relu
 
 // Verify merged set interval is computed correctly
-// Block args start at -1, cb_reserve + tile_store add 2 to end → [-1, 5]
-// CHECK: Merged set interval: [-1, 5] for 4 values
+// Block args start at -1, tile_store extends end → [-1, 4]
+// CHECK: Merged set interval: [-1, 4] for 4 values
 
 // Verify all values in the chain have the same interval
 // CHECK: === Live Intervals ===
-// CHECK-DAG: [-1, 5]
-// CHECK-DAG: [-1, 5]
-// CHECK-DAG: [-1, 5]
-// CHECK-DAG: [-1, 5]
+// CHECK-DAG: [-1, 4]
+// CHECK-DAG: [-1, 4]
+// CHECK-DAG: [-1, 4]
+// CHECK-DAG: [-1, 4]
 
 // Verify all 4 values are allocated together to DST[0] (only one allocation for merged set)
 // CHECK: === Phase 3: Linear Scan Allocation ===
@@ -100,14 +100,14 @@ func.func @unary_chain_shared_dst(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 // CHECK-SAME: tile_abs
 
 // Verify merged set has correct interval
-// cb_reserve + tile_store add 2 to end → [0, 4]
-// CHECK: Merged set interval: [0, 4] for 2 values
+// tile_store extends end → [0, 3]
+// CHECK: Merged set interval: [0, 3] for 2 values
 
 // Verify live intervals
 // CHECK: === Live Intervals ===
-// The merged set (tile_mul + tile_abs) should have [0, 4]
-// CHECK-DAG: tile_mul{{.*}}: [0, 4]
-// CHECK-DAG: tile_abs{{.*}}: [0, 4]
+// The merged set (tile_mul + tile_abs) should have [0, 3]
+// CHECK-DAG: tile_mul{{.*}}: [0, 3]
+// CHECK-DAG: tile_abs{{.*}}: [0, 3]
 
 // Verify allocation: FPU binary means block args don't need DST, so only
 // the merged set needs allocation. Gets DST[0] directly.

@@ -25,7 +25,7 @@ from ttmlir.ir import (
     RankedTensorType,
     Type as MLIRType,
 )
-from ttmlir.dialects import func, tensor
+from ttmlir.dialects import func
 from ttmlir.dialects import ttcore
 
 import ttl.dialects.ttl as ttl
@@ -118,19 +118,14 @@ def build_ttl_module(
                     )
                     attached_inputs.append(attached)
 
-                # Create output CB and init tensor for store.
+                # Create output CB and reserve.
                 output_cb = ttl.bind_cb(
                     cb_type,
                     cb_index=arity,  # Next index after inputs.
                     buffer_factor=config.buffer_factor,
                     loc=loc,
                 )
-                tile_type = _get_tile_type(ctx, config.dtype)
-                rows, cols = config.grid_shape
-                init = tensor.empty([rows, cols], tile_type, loc=loc)
-                init_attached = ttl.attach_cb(
-                    tile_tensor_type, init, output_cb, loc=loc
-                )
+                reserve = ttl.cb_reserve(tile_tensor_type, output_cb, loc=loc)
 
                 # Apply the operation.
                 op_func = getattr(ttl, op_str, None)
@@ -153,8 +148,8 @@ def build_ttl_module(
                 else:
                     raise ValueError(f"Unsupported arity: {arity}")
 
-                # Store result to output CB (required by compute verifier).
-                ttl.store(result, init_attached, loc=loc)
+                # Store result to output CB.
+                ttl.store(result, reserve, output_cb, loc=loc)
 
                 func.ReturnOp([result], loc=loc)
 

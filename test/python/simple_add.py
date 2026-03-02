@@ -87,14 +87,12 @@ def add_kernel(lhs, rhs, out):
 
 # Reserve output DFB
 # CHECK: ttl.cb_reserve %[[CB2]]
-# CHECK: ttl.attach_cb %{{.+}}, %[[CB2]]
 
 # Add operation (from l + r dunder method)
 # CHECK: ttl.add
 
 # Store result to output DFB (explicit from Python)
 # CHECK: ttl.store
-# CHECK: ttl.attach_cb %{{.+}}, %[[CB2]]
 
 # Finalize: pop inputs, push output
 # CHECK: ttl.cb_pop %[[CB0]]
