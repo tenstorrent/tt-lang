@@ -315,6 +315,8 @@ private:
 
     // Replace the original compute op with its output operands.
     // The outer loop(s) are side-effect-only; results flow through tile_store.
+    assert(computeOp.getResults().size() == computeOp.getOutputs().size() &&
+           "result count must match output count for RAUW");
     computeOp.replaceAllUsesWith(computeOp.getOutputs());
     computeOp.erase();
 
