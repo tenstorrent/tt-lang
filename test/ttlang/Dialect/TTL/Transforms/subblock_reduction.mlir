@@ -26,6 +26,7 @@
 // SUBBLOCK-SAME:  ttl.unroll_factor = 6
 // Original body preserved.
 // SUBBLOCK:         ttl.tile_add
+// SUBBLOCK:         ttl.tile_store
 // SUBBLOCK:         ttl.yield
 func.func @reduction_fits_in_dst(
     %a: tensor<2x3x!ttcore.tile<32x32, f32>>)
@@ -38,6 +39,8 @@ func.func @reduction_fits_in_dst(
   %a_cb = ttl.attach_cb %a, %cb0 : (tensor<2x3x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 3], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x3x!ttcore.tile<32x32, f32>>
   %init_cb = ttl.attach_cb %init, %cb1 : (tensor<2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x!ttcore.tile<32x32, f32>>
 
+  %reserve = ttl.cb_reserve %cb1 : <[2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x!ttcore.tile<32x32, f32>>
+
   %result = ttl.compute
       ins(%a_cb : tensor<2x3x!ttcore.tile<32x32, f32>>)
       outs(%init_cb : tensor<2x!ttcore.tile<32x32, f32>>)
@@ -46,7 +49,8 @@ func.func @reduction_fits_in_dst(
        ttl.unroll_factor = 6 : i64} {
   ^bb0(%in: !ttcore.tile<32x32, f32>, %acc: !ttcore.tile<32x32, f32>):
     %add = ttl.tile_add %in, %acc : !ttcore.tile<32x32, f32>
-    ttl.yield %add : !ttcore.tile<32x32, f32>
+    ttl.tile_store %add, %reserve : !ttcore.tile<32x32, f32>, tensor<2x!ttcore.tile<32x32, f32>>
+    ttl.yield
   } -> tensor<2x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<2x!ttcore.tile<32x32, f32>>
@@ -85,6 +89,7 @@ func.func @reduction_fits_in_dst(
 // unroll_factor removed from subblocked compute.
 // SUBBLOCK-NOT:     ttl.unroll_factor
 // SUBBLOCK:           ttl.tile_add
+// SUBBLOCK:           ttl.tile_store
 // SUBBLOCK:           ttl.yield
 // No second loop -- reduction dim is NOT subblocked.
 // SUBBLOCK-NOT:     scf.for
@@ -101,6 +106,8 @@ func.func @reduction_subblock_parallel_only(
   %a_cb = ttl.attach_cb %a, %cb0 : (tensor<8x3x!ttcore.tile<32x32, f32>>, !ttl.cb<[8, 3], !ttcore.tile<32x32, f32>, 2>) -> tensor<8x3x!ttcore.tile<32x32, f32>>
   %init_cb = ttl.attach_cb %init, %cb1 : (tensor<8x!ttcore.tile<32x32, f32>>, !ttl.cb<[8], !ttcore.tile<32x32, f32>, 2>) -> tensor<8x!ttcore.tile<32x32, f32>>
 
+  %reserve2 = ttl.cb_reserve %cb1 : <[8], !ttcore.tile<32x32, f32>, 2> -> tensor<8x!ttcore.tile<32x32, f32>>
+
   %result = ttl.compute
       ins(%a_cb : tensor<8x3x!ttcore.tile<32x32, f32>>)
       outs(%init_cb : tensor<8x!ttcore.tile<32x32, f32>>)
@@ -109,7 +116,8 @@ func.func @reduction_subblock_parallel_only(
        ttl.unroll_factor = 8 : i64} {
   ^bb0(%in: !ttcore.tile<32x32, f32>, %acc: !ttcore.tile<32x32, f32>):
     %add = ttl.tile_add %in, %acc : !ttcore.tile<32x32, f32>
-    ttl.yield %add : !ttcore.tile<32x32, f32>
+    ttl.tile_store %add, %reserve2 : !ttcore.tile<32x32, f32>, tensor<8x!ttcore.tile<32x32, f32>>
+    ttl.yield
   } -> tensor<8x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<8x!ttcore.tile<32x32, f32>>
@@ -136,6 +144,7 @@ func.func @reduction_subblock_parallel_only(
 // SUBBLOCK-SAME:  ttl.unroll_factor = 8
 // SUBBLOCK-NOT:   ttl.full_linearization_strides
 // SUBBLOCK:         ttl.tile_add
+// SUBBLOCK:         ttl.tile_store
 // SUBBLOCK:         ttl.yield
 func.func @reduction_exceeds_dst_budget(
     %a: tensor<2x10x!ttcore.tile<32x32, f32>>)
@@ -148,6 +157,8 @@ func.func @reduction_exceeds_dst_budget(
   %a_cb = ttl.attach_cb %a, %cb0 : (tensor<2x10x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 10], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x10x!ttcore.tile<32x32, f32>>
   %init_cb = ttl.attach_cb %init, %cb1 : (tensor<2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x!ttcore.tile<32x32, f32>>
 
+  %reserve3 = ttl.cb_reserve %cb1 : <[2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x!ttcore.tile<32x32, f32>>
+
   %result = ttl.compute
       ins(%a_cb : tensor<2x10x!ttcore.tile<32x32, f32>>)
       outs(%init_cb : tensor<2x!ttcore.tile<32x32, f32>>)
@@ -156,7 +167,8 @@ func.func @reduction_exceeds_dst_budget(
        ttl.unroll_factor = 8 : i64} {
   ^bb0(%in: !ttcore.tile<32x32, f32>, %acc: !ttcore.tile<32x32, f32>):
     %add = ttl.tile_add %in, %acc : !ttcore.tile<32x32, f32>
-    ttl.yield %add : !ttcore.tile<32x32, f32>
+    ttl.tile_store %add, %reserve3 : !ttcore.tile<32x32, f32>, tensor<2x!ttcore.tile<32x32, f32>>
+    ttl.yield
   } -> tensor<2x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<2x!ttcore.tile<32x32, f32>>

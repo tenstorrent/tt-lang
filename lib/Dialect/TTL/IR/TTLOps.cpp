@@ -575,6 +575,30 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
            << bodyBlock.getNumArguments();
   }
 
+  // Verify result count matches output count (DPS semantics).
+  if (getResults().size() != numOutputs) {
+    return emitOpError("expected ")
+           << numOutputs << " results (one per output) but got "
+           << getResults().size();
+  }
+
+  // Verify block argument types match operand element types.
+  for (size_t i = 0; i < numOperands; ++i) {
+    Value operand =
+        (i < numInputs) ? getInputs()[i] : getOutputs()[i - numInputs];
+    auto tensorTy = mlir::dyn_cast<RankedTensorType>(operand.getType());
+    if (!tensorTy) {
+      continue;
+    }
+    Type expectedElemTy = tensorTy.getElementType();
+    Type actualTy = bodyBlock.getArgument(i).getType();
+    if (actualTy != expectedElemTy) {
+      return emitOpError("block argument ")
+             << i << " type " << actualTy
+             << " does not match operand element type " << expectedElemTy;
+    }
+  }
+
   auto mapsAttr = getIndexingMaps();
   if (!mapsAttr) {
     return emitOpError("requires indexing_maps attribute");

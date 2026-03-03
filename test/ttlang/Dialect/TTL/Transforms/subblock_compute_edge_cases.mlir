@@ -47,7 +47,7 @@ func.func @subblock_2d_6x6(%a: tensor<6x6x!ttcore.tile<32x32, f32>>)
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
     %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
     ttl.tile_store %exp, %reserve : !ttcore.tile<32x32, f32>, tensor<6x6x!ttcore.tile<32x32, f32>>
-    ttl.yield %exp : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<6x6x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<6x6x!ttcore.tile<32x32, f32>>
@@ -110,7 +110,7 @@ func.func @consecutive_computes(
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %o0: !ttcore.tile<32x32, f32>):
     %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
     ttl.tile_store %exp, %r0 : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
-    ttl.yield %exp : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<4x4x!ttcore.tile<32x32, f32>>
 
   // Second compute: 1x2 log -> fits without subblocking (2 tiles <= unroll=2)
@@ -122,7 +122,7 @@ func.func @consecutive_computes(
   ^bb0(%b_tile: !ttcore.tile<32x32, f32>, %o1: !ttcore.tile<32x32, f32>):
     %log = ttl.tile_log %b_tile : !ttcore.tile<32x32, f32>
     ttl.tile_store %log, %r1 : !ttcore.tile<32x32, f32>, tensor<1x2x!ttcore.tile<32x32, f32>>
-    ttl.yield %log : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<1x2x!ttcore.tile<32x32, f32>>
 
   func.return %res0, %res1 : tensor<4x4x!ttcore.tile<32x32, f32>>, tensor<1x2x!ttcore.tile<32x32, f32>>
@@ -182,7 +182,7 @@ func.func @subblock_row_broadcast(
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     ttl.tile_store %sum, %reserve : !ttcore.tile<32x32, f32>, tensor<6x6x!ttcore.tile<32x32, f32>>
-    ttl.yield %sum : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<6x6x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<6x6x!ttcore.tile<32x32, f32>>
@@ -240,7 +240,7 @@ func.func @subblock_scalar_broadcast(
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %c_tile : !ttcore.tile<32x32, f32>
     ttl.tile_store %sum, %reserve : !ttcore.tile<32x32, f32>, tensor<6x6x!ttcore.tile<32x32, f32>>
-    ttl.yield %sum : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<6x6x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<6x6x!ttcore.tile<32x32, f32>>

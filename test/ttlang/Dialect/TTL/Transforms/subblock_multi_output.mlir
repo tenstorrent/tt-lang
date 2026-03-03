@@ -62,7 +62,7 @@ module {
     %22 = ttl.tanh %21 : tensor<4x4x!ttcore.tile<32x32, bf16>> -> tensor<4x4x!ttcore.tile<32x32, bf16>>
     %23 = ttl.abs %22 : tensor<4x4x!ttcore.tile<32x32, bf16>> -> tensor<4x4x!ttcore.tile<32x32, bf16>>
     %24 = ttl.relu %23 : tensor<4x4x!ttcore.tile<32x32, bf16>> -> tensor<4x4x!ttcore.tile<32x32, bf16>>
-    ttl.store %24, %13 : tensor<4x4x!ttcore.tile<32x32, bf16>>, tensor<4x4x!ttcore.tile<32x32, bf16>>
+    ttl.store %24, %12 : tensor<4x4x!ttcore.tile<32x32, bf16>>, tensor<4x4x!ttcore.tile<32x32, bf16>>
     %25 = ttl.attach_cb %24, %3 : (tensor<4x4x!ttcore.tile<32x32, bf16>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, bf16>, 2>) -> tensor<4x4x!ttcore.tile<32x32, bf16>>
     // Chain 2: b -> tanh -> sigmoid -> add(c) -> tanh -> neg -> abs -> sigmoid -> store(out2)
     %26 = ttl.tanh %9 : tensor<4x4x!ttcore.tile<32x32, bf16>> -> tensor<4x4x!ttcore.tile<32x32, bf16>>
@@ -72,7 +72,7 @@ module {
     %30 = ttl.neg %29 : tensor<4x4x!ttcore.tile<32x32, bf16>> -> tensor<4x4x!ttcore.tile<32x32, bf16>>
     %31 = ttl.abs %30 : tensor<4x4x!ttcore.tile<32x32, bf16>> -> tensor<4x4x!ttcore.tile<32x32, bf16>>
     %32 = ttl.sigmoid %31 : tensor<4x4x!ttcore.tile<32x32, bf16>> -> tensor<4x4x!ttcore.tile<32x32, bf16>>
-    ttl.store %32, %15 : tensor<4x4x!ttcore.tile<32x32, bf16>>, tensor<4x4x!ttcore.tile<32x32, bf16>>
+    ttl.store %32, %14 : tensor<4x4x!ttcore.tile<32x32, bf16>>, tensor<4x4x!ttcore.tile<32x32, bf16>>
     %33 = ttl.attach_cb %32, %4 : (tensor<4x4x!ttcore.tile<32x32, bf16>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, bf16>, 2>) -> tensor<4x4x!ttcore.tile<32x32, bf16>>
     // Chain 3: a -> relu -> sigmoid -> add(c) -> tanh -> abs -> sigmoid -> store(out3)
     %34 = ttl.relu %7 : tensor<4x4x!ttcore.tile<32x32, bf16>> -> tensor<4x4x!ttcore.tile<32x32, bf16>>
@@ -81,7 +81,7 @@ module {
     %37 = ttl.tanh %36 : tensor<4x4x!ttcore.tile<32x32, bf16>> -> tensor<4x4x!ttcore.tile<32x32, bf16>>
     %38 = ttl.abs %37 : tensor<4x4x!ttcore.tile<32x32, bf16>> -> tensor<4x4x!ttcore.tile<32x32, bf16>>
     %39 = ttl.sigmoid %38 : tensor<4x4x!ttcore.tile<32x32, bf16>> -> tensor<4x4x!ttcore.tile<32x32, bf16>>
-    ttl.store %39, %17 : tensor<4x4x!ttcore.tile<32x32, bf16>>, tensor<4x4x!ttcore.tile<32x32, bf16>>
+    ttl.store %39, %16 : tensor<4x4x!ttcore.tile<32x32, bf16>>, tensor<4x4x!ttcore.tile<32x32, bf16>>
     %40 = ttl.attach_cb %39, %5 : (tensor<4x4x!ttcore.tile<32x32, bf16>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, bf16>, 2>) -> tensor<4x4x!ttcore.tile<32x32, bf16>>
     ttl.cb_push %5 : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
     ttl.cb_push %4 : <[4, 4], !ttcore.tile<32x32, bf16>, 2>

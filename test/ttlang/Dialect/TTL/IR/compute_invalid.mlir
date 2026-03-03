@@ -448,7 +448,7 @@ func.func @compute_dynamic_input(
                         affine_map<(d0, d1) -> (d0, d1)>],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
-    ttl.yield %arg0 : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
@@ -476,7 +476,7 @@ func.func @compute_dynamic_output(
                         affine_map<(d0, d1) -> (d0, d1)>],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
-    ttl.yield %arg0 : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<?x2x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<?x2x!ttcore.tile<32x32, f32>>
 }
@@ -506,6 +506,67 @@ func.func @compute_iterator_exceeds_tensor_rank(
        iterator_types = ["parallel", "parallel", "parallel"]} {
     ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
       ttl.yield
+  } -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
+// Test: Result count does not match output count
+func.func @compute_result_count_mismatch(
+    %a: tensor<2x2x!ttcore.tile<32x32, f32>>,
+    %cba: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+    %cbout: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+    -> (tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>) {
+  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %a_att = ttl.attach_cb %a, %cba
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init_att = ttl.attach_cb %init, %cbout
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %out_view = ttl.cb_reserve %cbout : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{expected 1 results (one per output) but got 2}}
+  %0, %1 = ttl.compute
+      ins(%a_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
+    %sum = ttl.tile_add %arg0, %arg1 : !ttcore.tile<32x32, f32>
+    ttl.tile_store %sum, %out_view : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.yield
+  } -> (tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
+  func.return %0, %1 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
+// Test: Block argument type does not match operand element type
+func.func @compute_block_arg_type_mismatch(
+    %a: tensor<2x2x!ttcore.tile<32x32, f32>>,
+    %cba: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+    %cbout: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+    -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %a_att = ttl.attach_cb %a, %cba
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init_att = ttl.attach_cb %init, %cbout
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %out_view = ttl.cb_reserve %cbout : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{block argument 0 type '!ttcore.tile<32x32, bf16>' does not match operand element type '!ttcore.tile<32x32, f32>'}}
+  %0 = ttl.compute
+      ins(%a_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%arg0: !ttcore.tile<32x32, bf16>, %arg1: !ttcore.tile<32x32, f32>):
+    ttl.tile_store %arg0, %out_view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
 }

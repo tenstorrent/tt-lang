@@ -24,7 +24,7 @@ module {
     %res = ttl.cb_reserve %cb_out : <[3, 3], !ttcore.tile<32x32, bf16>, 2> -> tensor<3x3x!ttcore.tile<32x32, bf16>>
     %out = ttl.attach_cb %res, %cb_out : (tensor<3x3x!ttcore.tile<32x32, bf16>>, !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 2>) -> tensor<3x3x!ttcore.tile<32x32, bf16>>
     %result = ttl.relu %in : tensor<3x3x!ttcore.tile<32x32, bf16>> -> tensor<3x3x!ttcore.tile<32x32, bf16>>
-    ttl.store %result, %out : tensor<3x3x!ttcore.tile<32x32, bf16>>, tensor<3x3x!ttcore.tile<32x32, bf16>>
+    ttl.store %result, %res : tensor<3x3x!ttcore.tile<32x32, bf16>>, tensor<3x3x!ttcore.tile<32x32, bf16>>
     %out2 = ttl.attach_cb %result, %cb_out : (tensor<3x3x!ttcore.tile<32x32, bf16>>, !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 2>) -> tensor<3x3x!ttcore.tile<32x32, bf16>>
     ttl.cb_push %cb_out : <[3, 3], !ttcore.tile<32x32, bf16>, 2>
     ttl.cb_pop %cb_in : <[3, 3], !ttcore.tile<32x32, bf16>, 2>
