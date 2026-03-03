@@ -136,7 +136,7 @@ def matmul_1d(
 
 
 @pytest.mark.parametrize(
-    "M, N, K, n_blocks_per_core, block_m, block_n, block_k, subblock_h, subblock_w",
+    "M, N, K, n_blocks_per_core, block_m, block_n, block_k",
     [
         (TS, 2 * TS, TS, 1, 1, 1, 1),  # trivial base case
         (TS, 14 * TS, TS, 1, 1, 1, 1),  # just over 1 row for all arch
