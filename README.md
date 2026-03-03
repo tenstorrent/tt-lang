@@ -69,6 +69,42 @@ For users who want to run simulator examples without building the full compiler 
 pytest test/sim/
 ```
 
+## Simulator Debugging
+
+The simulator runs as standard Python code, enabling any Python debugger to work with it. The specific setup depends on your debugger of choice.
+
+### VSCode debugger
+
+Create a VSCode debug configuration in `.vscode/launch.json`:
+
+```json
+{
+  "name": "Debug TTL Simulator",
+  "type": "debugpy",
+  "request": "launch",
+  "module": "sim.ttlang_sim",
+  "args": ["${file}"],
+  "console": "integratedTerminal",
+  "justMyCode": false,
+  "cwd": "${workspaceFolder}",
+  "env": {
+    "PYTHONPATH": "${workspaceFolder}/python"
+  }
+}
+```
+
+This configuration:
+- Launches the simulator as a Python module (`sim.ttlang_sim`)
+- Passes the currently open file as the target kernel
+- Sets `justMyCode: false` to enable debugging into simulator internals
+- Configures `PYTHONPATH` to locate the simulator modules
+
+**Usage:**
+1. Open a kernel file in VSCode (e.g., `examples/eltwise_add.py`)
+2. Set breakpoints in your kernel code
+3. Press F5 or select "Debug TTL Simulator" from the Run menu
+4. The debugger stops at breakpoints, allowing variable inspection and step-through execution
+
 
 ## Example
 
