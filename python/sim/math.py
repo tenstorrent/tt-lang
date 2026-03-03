@@ -35,15 +35,17 @@ def broadcast(
 
     This function replicates values within each tile along the specified dimensions.
     After reduce operations store values at specific positions (e.g., reduce_max with
-    dims=[0] stores max per row at column 0), broadcast replicates those values.
+    dims=[0] stores max at column 0), broadcast replicates those values.
 
-    For a 2-D grid, dims=[1] (broadcast along columns):
-    - Takes values from column 0 of each row
-    - Replicates them across all columns in that row
+    Dimension indexing uses the innermost-first convention: dims=[0] refers to the
+    innermost (last) dimension of the block shape, dims=[1] to the next-to-innermost,
+    and so on. This matches the convention used throughout the ttl.math API.
 
-    For a 2-D grid, dims=[0] (broadcast along rows):
-    - Takes values from row 0 of each column
-    - Replicates them across all rows in that column
+    For a 2-D grid block of shape (N, M):
+    - dims=[0] (innermost/columns): takes values from column 0 and replicates across
+      all columns. Block must have size 1 in M.
+    - dims=[1] (next-to-innermost/rows): takes values from row 0 and replicates across
+      all rows. Block must have size 1 in N.
 
     For ND grids, batch dimensions (all dims before the last tile.ndim grid dims)
     have no within-tile axis to broadcast; they are grid-level-only and the tile
@@ -52,7 +54,7 @@ def broadcast(
     Args:
         block: Input block to broadcast
         _unused_arg: Unused argument for compatibility (typically output block shape hint)
-        dims: List of dimension indices to broadcast along (0-indexed)
+        dims: List of dimension indices to broadcast along (0=innermost)
 
     Returns:
         Block with values replicated along the specified dimensions
@@ -60,18 +62,21 @@ def broadcast(
     if dims is None:
         raise ValueError("dims parameter is required for broadcast()")
 
-    # Validate that the dimensions being broadcast have size 1 at grid level
+    # Validate that the dimensions being broadcast have size 1 at grid level.
+    # User dims use innermost-first convention: translate to internal (outermost-first).
     block_shape = block._shape  # type: ignore[attr-defined]
+    ndim = len(block_shape)
     for dim in dims:
-        if dim >= len(block_shape):
+        if dim >= ndim:
             raise ValueError(
                 f"Cannot broadcast along dimension {dim}: block has shape {block_shape} "
-                f"with only {len(block_shape)} dimensions"
+                f"with only {ndim} dimensions"
             )
-        if block_shape[dim] != 1:
+        internal_dim = ndim - 1 - dim
+        if block_shape[internal_dim] != 1:
             raise ValueError(
                 f"Cannot broadcast along dimension {dim}: dimension must have size 1, "
-                f"but has size {block_shape[dim]}"
+                f"but has size {block_shape[internal_dim]}"
             )
 
     # Map block-grid dimensions to within-tile dimensions.
@@ -79,15 +84,15 @@ def broadcast(
     # Leading (batch) grid dimensions have no tile-internal counterpart.
     input_tensors = [t.to_torch() for t in block.to_list()]
     result_tensors: List[Tensor] = []
-    grid_ndim = len(block_shape)
 
     for tile in input_tensors:
         tile_ndim = tile.ndim
         # Number of leading grid dims that are batch-only (no tile axis).
-        num_batch_grid_dims = grid_ndim - tile_ndim
+        num_batch_grid_dims = ndim - tile_ndim
         slices = [slice(None)] * tile_ndim
         for dim in dims:
-            tile_dim = dim - num_batch_grid_dims
+            internal_dim = ndim - 1 - dim
+            tile_dim = internal_dim - num_batch_grid_dims
             if tile_dim < 0:
                 # Batch grid dimension: no within-tile axis, leave slice unchanged.
                 continue
@@ -465,10 +470,14 @@ def _reduce_impl(
     Batch grid dimensions (leading dims beyond the spatial tile dims) only
     trigger grid-level combination; they have no matching intra-tile axis.
 
+    Dimension indexing uses the innermost-first convention: dims=[0] refers to
+    the innermost (last) dimension of the block shape, dims=[1] to the next-to-
+    innermost, and so on.
+
     Args:
         block: Input block.
         scaler: Scaler block; its first tile is multiplied into every result tile.
-        dims: Grid dimensions to reduce over (0-indexed).
+        dims: Grid dimensions to reduce over (0=innermost).
         op: 'sum' or 'max'.
 
     Returns:
@@ -485,18 +494,21 @@ def _reduce_impl(
                 f"Cannot reduce along dimension {d}: block grid has only {ndim} dimensions"
             )
 
+    # Translate user-facing dims (0=innermost) to internal grid dims (0=outermost).
+    internal_dims_set = {ndim - 1 - d for d in dims_set}
+
     input_tensors = [t.to_torch() for t in block.to_list()]
     scaler_tile = scaler.to_list()[0].to_torch()
 
     is_1d = ndim == 1
-    # For 2D+ grids the last two grid dims map to the two tile element dims.
-    # grid dim (ndim-2) -> tile column direction (torch dim 1)  [the "M" / row-grid dim]
-    # grid dim (ndim-1) -> tile row direction    (torch dim 0)  [the "N" / col-grid dim]
+    # For 2D+ grids the last two internal grid dims map to the two tile element dims.
+    # internal grid dim (ndim-2) -> tile column direction (torch dim 1)
+    # internal grid dim (ndim-1) -> tile row direction    (torch dim 0)
     spatial_m_dim = None if is_1d else (ndim - 2)
     spatial_n_dim = 0 if is_1d else (ndim - 1)
 
-    reduce_m = (spatial_m_dim is not None) and (spatial_m_dim in dims_set)
-    reduce_n = spatial_n_dim in dims_set
+    reduce_m = (spatial_m_dim is not None) and (spatial_m_dim in internal_dims_set)
+    reduce_n = spatial_n_dim in internal_dims_set
 
     # Step 1: within-tile reduction
     reduced_tiles: List[torch.Tensor] = []
@@ -526,8 +538,10 @@ def _reduce_impl(
                 out = tile.clone()
         reduced_tiles.append(out)
 
-    # Step 2: grid-level reduction
-    result_shape = tuple(1 if i in dims_set else block_shape[i] for i in range(ndim))
+    # Step 2: grid-level reduction using internal dimension indices.
+    result_shape = tuple(
+        1 if i in internal_dims_set else block_shape[i] for i in range(ndim)
+    )
 
     result_tensors: List[Tensor] = []
     for out_idx in _iter_product(*[range(s) for s in result_shape]):
@@ -535,7 +549,7 @@ def _reduce_impl(
         in_ranges = [
             (
                 range(block_shape[i])
-                if i in dims_set
+                if i in internal_dims_set
                 else range(out_idx[i], out_idx[i] + 1)
             )
             for i in range(ndim)

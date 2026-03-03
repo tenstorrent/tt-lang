@@ -21,8 +21,8 @@ def test_broadcast_basic():
     t1 = [Tensor(torch.tensor([[5.0, 6.0]]))]
     block1 = Block.from_list(t1, shape=(1, 1))
 
-    # Broadcast along dimension 1 (columns)
-    broadcasted = ttl.math.broadcast(block1, dims=[1])
+    # Broadcast along dimension 0 (innermost/columns)
+    broadcasted = ttl.math.broadcast(block1, dims=[0])
 
     # Check that broadcast returns a Block
     assert isinstance(broadcasted, Block)
@@ -46,8 +46,8 @@ def test_broadcast_with_operation():
     block_b = Block.from_list(t_b, shape=(1, 1))
 
     # Broadcast B and add to A
-    # This simulates: A + broadcast(B, dims=[1])
-    broadcasted_b = ttl.math.broadcast(block_b, dims=[1])
+    # This simulates: A + broadcast(B, dims=[0])
+    broadcasted_b = ttl.math.broadcast(block_b, dims=[0])
 
     # The addition should use broadcasting
     result = block_a + broadcasted_b
@@ -60,7 +60,7 @@ def test_broadcast_with_operation():
 def test_broadcast_example_from_spec():
     """Test the broadcast example from the specification.
 
-    From spec: y = ttl.math.sqrt(a_squared + ttl.math.broadcast(b_squared, dims=[1]))
+    From spec: y = ttl.math.sqrt(a_squared + ttl.math.broadcast(b_squared, dims=[0]))
     Where a_squared has shape (1, N) and b_squared has shape (1, 1)
     """
     # Create a_squared with shape (1, 3)
@@ -75,8 +75,8 @@ def test_broadcast_example_from_spec():
     t_b = [Tensor(torch.tensor([[16.0, 16.0]]))]
     b_squared = Block.from_list(t_b, shape=(1, 1))
 
-    # Broadcast b_squared along dimension 1
-    b_broadcast = ttl.math.broadcast(b_squared, dims=[1])
+    # Broadcast b_squared along dimension 0 (innermost/columns)
+    b_broadcast = ttl.math.broadcast(b_squared, dims=[0])
 
     # Add them together (should broadcast b to match a's shape)
     result = a_squared + b_broadcast
@@ -106,7 +106,7 @@ def test_broadcast_preserves_data():
     block1 = Block.from_list(t1, shape=(1, 1))
 
     # Broadcast it
-    broadcasted = ttl.math.broadcast(block1, dims=[1])
+    broadcasted = ttl.math.broadcast(block1, dims=[0])
 
     # Check that the broadcast returns a Block
     assert isinstance(broadcasted, Block)
@@ -184,19 +184,20 @@ def test_matching_shapes_allowed():
 
 def test_broadcast_on_wrong_dimension_rejected():
     """Test that broadcasting on a dimension with size != 1 is rejected."""
-    # Block with shape (2, 1) - cannot broadcast on dimension 0
+    # Block with shape (2, 1) - cannot broadcast on dimension 1 (next-to-innermost,
+    # which is the outermost grid dim of size 2).
     t_a = [
         Tensor(torch.tensor([[1.0, 2.0]])),
         Tensor(torch.tensor([[3.0, 4.0]])),
     ]
     block_a = Block.from_list(t_a, shape=(2, 1))
 
-    # Try to broadcast on dimension 0, which has size 2
+    # Try to broadcast on dimension 1 (outermost for 2D), which has size 2
     with pytest.raises(
         ValueError,
-        match="Cannot broadcast along dimension 0: dimension must have size 1",
+        match="Cannot broadcast along dimension 1: dimension must have size 1",
     ):
-        ttl.math.broadcast(block_a, dims=[0])
+        ttl.math.broadcast(block_a, dims=[1])
 
 
 def test_broadcast_out_of_range_rejected():
@@ -221,9 +222,9 @@ def test_all_broadcast_forms():
 
     Tests the four forms:
     1) result = a * b - direct implicit broadcast
-    2) result = a * broadcast(b, dims=[1]) - explicit broadcast with dims
-    3) result = a * broadcast(b, y_unused, dims=[1]) - explicit with unused output hint
-    4) w = broadcast(b, dims=[1]); result = a * w - intermediate variable
+    2) result = a * broadcast(b, dims=[0]) - explicit broadcast with dims
+    3) result = a * broadcast(b, y_unused, dims=[0]) - explicit with unused output hint
+    4) w = broadcast(b, dims=[0]); result = a * w - intermediate variable
 
     Note: We can't test with .store() on temporary blocks created via from_list(),
     as those are already in DONE state. The patterns above are what work in real code
@@ -249,14 +250,14 @@ def test_all_broadcast_forms():
     # Form 1: Direct implicit broadcast
     result1 = block_a * block_b
 
-    # Form 2: Explicit broadcast with dims
-    result2 = block_a * ttl.math.broadcast(block_b, dims=[1])
+    # Form 2: Explicit broadcast with dims (dims=[0]=innermost/columns)
+    result2 = block_a * ttl.math.broadcast(block_b, dims=[0])
 
     # Form 3: Explicit broadcast with unused output hint (None since we can't create a DFB here)
-    result3 = block_a * ttl.math.broadcast(block_b, None, dims=[1])
+    result3 = block_a * ttl.math.broadcast(block_b, None, dims=[0])
 
     # Form 4: Store broadcast result first, then use it
-    broadcast_b = ttl.math.broadcast(block_b, dims=[1])
+    broadcast_b = ttl.math.broadcast(block_b, dims=[0])
     result4 = block_a * broadcast_b
 
     # All forms should produce the same shape
@@ -286,7 +287,7 @@ def test_broadcast_form1_direct_implicit():
 
 
 def test_broadcast_form2_explicit_dims():
-    """Test form 2: y.store(a * broadcast(b, dims=[1]))."""
+    """Test form 2: y.store(a * broadcast(b, dims=[0]))."""
     # a is (1, 3), b is (1, 1)
     t_a = [
         Tensor(torch.tensor([[1.0, 2.0]])),
@@ -298,14 +299,14 @@ def test_broadcast_form2_explicit_dims():
     t_b = [Tensor(torch.tensor([[10.0, 10.0]]))]
     block_b = Block.from_list(t_b, shape=(1, 1))
 
-    # Explicit broadcast with dims parameter
-    result = block_a * ttl.math.broadcast(block_b, dims=[1])
+    # Explicit broadcast with dims parameter (dims=[0]=innermost/columns)
+    result = block_a * ttl.math.broadcast(block_b, dims=[0])
 
     assert result.shape == (1, 3)
 
 
 def test_broadcast_form3_with_output_hint():
-    """Test form 3: y.store(a * broadcast(b, y, dims=[1]))."""
+    """Test form 3: y.store(a * broadcast(b, y, dims=[0]))."""
     # a is (1, 3), b is (1, 1)
     t_a = [
         Tensor(torch.tensor([[1.0, 2.0]])),
@@ -321,13 +322,13 @@ def test_broadcast_form3_with_output_hint():
     block_y = Block.from_list(t_y, shape=(1, 3))
 
     # Explicit broadcast with output block hint (unused but accepted)
-    result = block_a * ttl.math.broadcast(block_b, block_y, dims=[1])
+    result = block_a * ttl.math.broadcast(block_b, block_y, dims=[0])
 
     assert result.shape == (1, 3)
 
 
 def test_broadcast_form4_intermediate_store():
-    """Test form 4: w = broadcast(b, dims=[1]); result = a * w."""
+    """Test form 4: w = broadcast(b, dims=[0]); result = a * w."""
     # a is (1, 3), b is (1, 1)
     t_a = [
         Tensor(torch.tensor([[1.0, 2.0]])),
@@ -340,7 +341,7 @@ def test_broadcast_form4_intermediate_store():
     block_b = Block.from_list(t_b, shape=(1, 1))
 
     # Store broadcast result in w first (as an intermediate variable, not .store())
-    broadcast_b = ttl.math.broadcast(block_b, dims=[1])
+    broadcast_b = ttl.math.broadcast(block_b, dims=[0])
 
     # Then use it in the operation
     result = block_a * broadcast_b
@@ -572,7 +573,7 @@ def test_exp_multitile():
 
 
 def test_reduce_max_rows():
-    """Test reduce_max over rows (dimension 0)."""
+    """Test reduce_max over rows (outermost/next-to-innermost dimension 1 for 2D)."""
     # Create a (2, 1) block - two tiles in row dimension
     t_a = [
         Tensor(torch.tensor([[1.0, 5.0]])),
@@ -584,14 +585,14 @@ def test_reduce_max_rows():
     t_s = [Tensor(torch.tensor([[2.0, 2.0]]))]
     scaler = Block.from_list(t_s, shape=(1, 1))
 
-    # Reduce over dimension 0 (rows)
-    result = ttl.math.reduce_max(block_a, scaler, dims=[0])
+    # Reduce over dimension 1 (next-to-innermost = outermost for 2D = row grid dim)
+    result = ttl.math.reduce_max(block_a, scaler, dims=[1])
 
     # Result should have shape (1, 1) - rows reduced
     assert result.shape == (1, 1)
 
     # Two-level reduction:
-    # 1. Within-tile: dims=[0] means max across columns for each row
+    # 1. Within-tile: dims=[1] (row grid dim) means max across tile columns per row
     #    Tile 0: [[1.0, 5.0]] -> max(1,5)=5 at col 0 -> [[5.0, 0.0]]
     #    Tile 1: [[3.0, 2.0]] -> max(3,2)=3 at col 0 -> [[3.0, 0.0]]
     # 2. Grid-level: element-wise max -> [[5.0, 0.0]]
@@ -601,7 +602,7 @@ def test_reduce_max_rows():
 
 
 def test_reduce_max_cols():
-    """Test reduce_max over columns (dimension 1)."""
+    """Test reduce_max over columns (innermost dimension 0 for 2D)."""
     # Create a (1, 2) block - two tiles in column dimension
     t_a = [
         Tensor(torch.tensor([[1.0, 5.0]])),
@@ -613,13 +614,13 @@ def test_reduce_max_cols():
     t_s = [Tensor(torch.tensor([[1.0, 1.0]]))]
     scaler = Block.from_list(t_s, shape=(1, 1))
 
-    # Reduce over dimension 1 (columns)
-    result = ttl.math.reduce_max(block_a, scaler, dims=[1])
+    # Reduce over dimension 0 (innermost = column grid dim for 2D)
+    result = ttl.math.reduce_max(block_a, scaler, dims=[0])
 
     # Result should have shape (1, 1) - columns reduced
     assert result.shape == (1, 1)
 
-    # Max over cols: max([1, 5], [3, 2]) along dim 1 = [3, 5]
+    # Max over cols: max([1, 5], [3, 2]) along innermost dim = [3, 5]
     expected = torch.tensor([[3.0, 5.0]])
     assert torch.allclose(result.to_list()[0].to_torch(), expected)
 
@@ -688,7 +689,7 @@ def test_reduce_max_empty_dims():
 
 
 def test_reduce_sum_rows():
-    """Test reduce_sum over rows (dimension 0)."""
+    """Test reduce_sum over rows (outermost/next-to-innermost dimension 1 for 2D)."""
     # Create a (2, 1) block - two tiles in row dimension
     t_a = [
         Tensor(torch.tensor([[1.0, 2.0]])),
@@ -700,14 +701,14 @@ def test_reduce_sum_rows():
     t_s = [Tensor(torch.tensor([[2.0, 2.0]]))]
     scaler = Block.from_list(t_s, shape=(1, 1))
 
-    # Reduce over dimension 0 (rows)
-    result = ttl.math.reduce_sum(block_a, scaler, dims=[0])
+    # Reduce over dimension 1 (next-to-innermost = outermost for 2D = row grid dim)
+    result = ttl.math.reduce_sum(block_a, scaler, dims=[1])
 
     # Result should have shape (1, 1) - rows reduced
     assert result.shape == (1, 1)
 
     # Two-level reduction:
-    # 1. Within-tile: dims=[0] means sum across columns for each row
+    # 1. Within-tile: dims=[1] (row grid dim) means sum across tile columns per row
     #    Tile 0: [[1.0, 2.0]] -> sum(1,2)=3 at col 0 -> [[3.0, 0.0]]
     #    Tile 1: [[3.0, 4.0]] -> sum(3,4)=7 at col 0 -> [[7.0, 0.0]]
     # 2. Grid-level: element-wise sum -> [[10.0, 0.0]]
@@ -717,7 +718,7 @@ def test_reduce_sum_rows():
 
 
 def test_reduce_sum_cols():
-    """Test reduce_sum over columns (dimension 1)."""
+    """Test reduce_sum over columns (innermost dimension 0 for 2D)."""
     # Create a (1, 2) block - two tiles in column dimension
     t_a = [
         Tensor(torch.tensor([[1.0, 2.0]])),
@@ -729,13 +730,13 @@ def test_reduce_sum_cols():
     t_s = [Tensor(torch.tensor([[1.0, 1.0]]))]
     scaler = Block.from_list(t_s, shape=(1, 1))
 
-    # Reduce over dimension 1 (columns)
-    result = ttl.math.reduce_sum(block_a, scaler, dims=[1])
+    # Reduce over dimension 0 (innermost = column grid dim for 2D)
+    result = ttl.math.reduce_sum(block_a, scaler, dims=[0])
 
     # Result should have shape (1, 1) - columns reduced
     assert result.shape == (1, 1)
 
-    # Sum over cols: sum([1, 2], [3, 4]) along dim 1 = [4, 6]
+    # Sum over cols: sum([1, 2], [3, 4]) along innermost dim = [4, 6]
     expected = torch.tensor([[4.0, 6.0]])
     assert torch.allclose(result.to_list()[0].to_torch(), expected)
 
@@ -858,13 +859,14 @@ def test_reduce_max_1d_multi_tile():
 
 
 def test_reduce_sum_batched_3d_batch_dim():
-    """reduce_sum on a (2, 1, 1) block reducing only the batch dim (dim 0)."""
+    """reduce_sum on a (2, 1, 1) block reducing only the batch dim (outermost = dim 2 for 3D)."""
     # Two (1,1) batch entries; tile values 4.0 and 6.0 -> grid sum 10.0 per position
     t1 = Tensor(torch.full((1, 1), 4.0))
     t2 = Tensor(torch.full((1, 1), 6.0))
     block = Block.from_list([t1, t2], shape=(2, 1, 1))
     scaler = Block.from_list([Tensor(torch.full((1, 1), 1.0))], shape=(1, 1))
-    result = ttl.math.reduce_sum(block, scaler, dims=[0])
+    # dims=[2] = outermost dim for 3D (batch); internal index = 3-1-2 = 0
+    result = ttl.math.reduce_sum(block, scaler, dims=[2])
     # Batch dim collapsed; spatial dims unchanged: result shape (1, 1, 1)
     assert result.shape == (1, 1, 1)
     out = result.to_list()[0].to_torch()
@@ -873,13 +875,14 @@ def test_reduce_sum_batched_3d_batch_dim():
 
 
 def test_reduce_sum_batched_3d_spatial_dim():
-    """reduce_sum on a (2, 1, 2) block reducing spatial col dim (dim 2)."""
+    """reduce_sum on a (2, 1, 2) block reducing spatial col dim (innermost = dim 0 for 3D)."""
     # Two batch entries, one row of two column tiles each
-    # All tiles filled with 1.0; reducing dim 2 (N=2 -> 1) with within-tile col reduction
+    # All tiles filled with 1.0; reducing innermost dim (N=2 -> 1) with within-tile col reduction
     tiles = [Tensor(torch.full((2, 2), 1.0)) for _ in range(4)]  # 2 batch * 1 * 2 tiles
     block = Block.from_list(tiles, shape=(2, 1, 2))
     scaler = Block.from_list([Tensor(torch.full((2, 2), 1.0))], shape=(1, 1))
-    result = ttl.math.reduce_sum(block, scaler, dims=[2])
+    # dims=[0] = innermost dim for 3D (spatial col); internal index = 3-1-0 = 2
+    result = ttl.math.reduce_sum(block, scaler, dims=[0])
     # Spatial col dim reduced: result shape (2, 1, 1)
     assert result.shape == (2, 1, 1)
 
@@ -993,7 +996,7 @@ def test_matmul_mismatched_inner_dims_raises():
 
 
 def test_broadcast_3d_grid_batch_dim():
-    """broadcast on a 3D grid block along the batch dimension (dim 0).
+    """broadcast on a 3D grid block along the batch dimension (outermost = dim 2 for 3D).
 
     The batch grid dim has no within-tile axis; the tile content must be
     left unchanged (the existing single tile is simply replicated at the
@@ -1003,9 +1006,9 @@ def test_broadcast_3d_grid_batch_dim():
     # Each tile is a (32, 32) matrix filled with a distinct value.
     tiles = [Tensor(torch.full((32, 32), float(i))) for i in range(4)]
     block = Block.from_list(tiles, shape=(1, 2, 2))
-    # Broadcast along batch dim (dim 0); the grid dim already has size 1
+    # Broadcast along batch dim (outermost = dim 2 for 3D); the grid dim already has size 1
     # so this is a no-op at the grid level and must not corrupt tile content.
-    result = ttl.math.broadcast(block, dims=[0])
+    result = ttl.math.broadcast(block, dims=[2])
     assert result.shape == (1, 2, 2)
     result_tiles = result.to_list()
     for orig, res in zip(tiles, result_tiles):
@@ -1017,9 +1020,12 @@ def test_broadcast_3d_grid_batch_dim():
 def test_broadcast_3d_grid_spatial_dim():
     """broadcast on a 3D grid block along a spatial dimension.
 
-    With a (2, 1, 1) block grid and 2D tiles, dim 1 is the spatial-row
-    grid dim (maps to tile-internal dim 0). The first row of each tile
-    should be replicated to all rows.
+    With a (2, 1, 1) block grid and 2D tiles, dim 1 (middle for 3D, maps to
+    internal grid dim 1 = spatial-row) maps to tile-internal dim 0. The first
+    row of each tile should be replicated to all rows.
+
+    Note: for ndim=3, dims=[1] is the fixed-point of the innermost-first
+    translation (3-1-1 = 1), so this test is unchanged from the old convention.
     """
     # tile: row 0 = 7.0, all other rows = 0.0
     tile_data = torch.zeros(32, 32)
