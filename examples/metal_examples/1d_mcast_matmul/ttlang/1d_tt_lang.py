@@ -58,7 +58,7 @@ def matmul_1d(
     )
 
     mcast_pipe = ttl.Pipe((0,), slice(1, num_working_cores))
-    net = ttl.PipeNet(mcast_pipe)
+    net = ttl.PipeNet([mcast_pipe])
 
     def block_slice(block_offset, block_size):
         return slice(block_offset * block_size, (block_offset + 1) * block_size)
@@ -218,19 +218,19 @@ def test_matmul_1d(
         (M, K),
         dtype=ttnn.bfloat16,
         layout=ttnn.TILE_LAYOUT,
-        device=device,
+        # device=device,
     )
     B = ttnn.rand(
         (K, N),
         dtype=ttnn.bfloat16,
         layout=ttnn.TILE_LAYOUT,
-        device=device,
+        # device=device,
     )
     output_t = ttnn.empty(
         (M, N),
         dtype=ttnn.bfloat16,
         layout=ttnn.TILE_LAYOUT,
-        device=device,
+        # device=device,
     )
 
     matmul_1d(A, B, output_t, block_m, block_n, block_k, n_blocks_per_core)
