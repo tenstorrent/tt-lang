@@ -28,54 +28,95 @@ import torch
 from sim import ttl, ttnn
 
 
-@ttl.kernel(grid="auto")
+@ttl.kernel(grid=(1, 1))
 def eltwise_1d_broadcast(
     A: ttnn.Tensor,
     B: ttnn.Tensor,
     Y: ttnn.Tensor,
     Z: ttnn.Tensor,
 ) -> None:
-    """Y = sqrt(A^2 + B^2),  Z = sqrt(A^2 - B^2)  for 1-D tensors."""
+    # ---------------------
+    # Element-wise with broadcast with two outputs: Y = sqrt(A^2 + B^2), Z = sqrt(A^2 - B^2)
+    #
+    # Tensor   Torch shape  Shape in tiles
+    # A        N            NT
+    # B        1            1
+    # Y        N            NT
+    # Z        N            NT
+    #
     TILE_SIZE = ttl.TILE_SHAPE[0]
-    NT = A.shape[0] // TILE_SIZE
+    N = A.shape[0]
+    NT = N // TILE_SIZE
 
-    a_dfb = ttl.make_dataflow_buffer_like(A, shape=(1,), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(B, shape=(1,), buffer_factor=2)
-    y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1,), buffer_factor=2)
-    z_dfb = ttl.make_dataflow_buffer_like(Z, shape=(1,), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(A, shape=(1,))
+    b_dfb = ttl.make_dataflow_buffer_like(B, shape=(1,))
+    y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1,))
+    z_dfb = ttl.make_dataflow_buffer_like(Z, shape=(1,))
 
     @ttl.datamovement()
     def elwise_read():
         for nt in range(NT):
-            with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
+
+            # acquire a_blk and b_blk from a_dfb and b_dfb:
+
+            with (
+                a_dfb.reserve() as a_blk,
+                b_dfb.reserve() as b_blk,
+            ):
+                # then copy:
+
                 a_xf = ttl.copy(A[nt], a_blk)
                 b_xf = ttl.copy(B[0], b_blk)
+
                 a_xf.wait()
                 b_xf.wait()
+
+                # release a_blk and b_blk
 
     @ttl.compute()
     def elwise_compute():
         for _ in range(NT):
+
+            # acquire a_blk, b_blk, y_blk and z_blk from a_dfb, b_dfb, y_dfb and z_dfb:
+
             with (
                 a_dfb.wait() as a_blk,
                 b_dfb.wait() as b_blk,
                 y_dfb.reserve() as y_blk,
                 z_dfb.reserve() as z_blk,
             ):
-                a_sq = a_blk**2
-                b_sq = b_blk**2
-                b_sq_bcast = ttl.math.broadcast(b_sq, dims=[0])
-                y_blk.store(ttl.math.sqrt(a_sq + b_sq_bcast))
-                z_blk.store(ttl.math.sqrt(a_sq - b_sq_bcast))
+                # then compute y = sqrt(a^2 + b^2) and z = sqrt(a^2 - b^2):
+
+                a_squared = a_blk**2
+                b_squared = b_blk**2
+
+                y = ttl.math.sqrt(a_squared + ttl.math.broadcast(b_squared, dims=[0]))
+                z = ttl.math.sqrt(a_squared - ttl.math.broadcast(b_squared, dims=[0]))
+
+                y_blk.store(y)
+                z_blk.store(z)
+
+                # release a_blk, b_blk and y_blk
 
     @ttl.datamovement()
     def elwise_write():
         for nt in range(NT):
-            with y_dfb.wait() as y_blk, z_dfb.wait() as z_blk:
+
+            # acquire y_blk and z_blk from y_dfb and z_dfb:
+
+            with (
+                y_dfb.wait() as y_blk,
+                z_dfb.wait() as z_blk,
+            ):
+
+                # then copy:
+
                 y_xf = ttl.copy(y_blk, Y[nt])
                 z_xf = ttl.copy(z_blk, Z[nt])
                 y_xf.wait()
                 z_xf.wait()
+
+                # release y_blk and z_blk
 
 
 def main() -> int:
