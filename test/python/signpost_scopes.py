@@ -62,9 +62,7 @@ def bcast_multitile_kernel(
                             with ttl.signpost("broadcast"):
                                 a_bcast = ttl.math.broadcast(a_blk, y_blk, dims=[1])
                                 b_bcast = ttl.math.broadcast(b_blk, y_blk, dims=[0])
-                                c_bcast = ttl.math.broadcast(
-                                    c_blk, y_blk, dims=[0, 1]
-                                )
+                                c_bcast = ttl.math.broadcast(c_blk, y_blk, dims=[0, 1])
                                 with ttl.signpost("math"):
                                     tmp = a_bcast * b_bcast + c_bcast
                                     with ttl.signpost("store"):
