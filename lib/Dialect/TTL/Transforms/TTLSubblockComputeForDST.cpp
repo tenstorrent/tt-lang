@@ -159,12 +159,10 @@ private:
     // dimensions must be fully included in each subblock in this
     // implementation.
     SmallVector<int64_t> parallelDimSizes;
-    SmallVector<int64_t> parallelDimIndices;
     int64_t reductionProduct = 1;
     for (int64_t d = 0; d < rank; ++d) {
       if (iterTypes[d] == utils::IteratorType::parallel) {
         parallelDimSizes.push_back(dimSizes[d]);
-        parallelDimIndices.push_back(d);
       } else {
         reductionProduct *= dimSizes[d];
       }

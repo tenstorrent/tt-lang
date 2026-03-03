@@ -273,6 +273,8 @@ mlir::tt::ttl::ComputeOp::getIteratorTypesArray() {
     if (strAttr.getValue() == "parallel") {
       result.push_back(mlir::utils::IteratorType::parallel);
     } else {
+      assert(strAttr.getValue() == "reduction" &&
+             "verifier should have rejected non-parallel/reduction iterator");
       result.push_back(mlir::utils::IteratorType::reduction);
     }
   }

@@ -83,8 +83,8 @@ static void insertAtLastStore(PatternRewriter &rewriter, Operation *op) {
 /// (e.g., same result stored to two outputs).
 static void emitTileStores(PatternRewriter &rewriter, Location loc,
                            Value tileResult, Operation *elementwiseOp) {
-  /// Collect-then-erase: we cannot erase stores while iterating getUses()
-  /// because erasing invalidates the use-list iterator.
+  // Collect-then-erase: we cannot erase stores while iterating getUses()
+  // because erasing invalidates the use-list iterator.
   assert(elementwiseOp->getNumResults() > 0 &&
          "emitTileStores requires op with results");
   SmallVector<StoreOp> storesToErase;
@@ -565,7 +565,9 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
                                      rewriter.getStringAttr("parallel"));
 
     // Position compute after all reserves by inserting before the last store.
-    insertAtLastStore(rewriter, op);
+    if (findLastStore(op)) {
+      insertAtLastStore(rewriter, op);
+    }
 
     Value init = buildInitTensor(rewriter, loc, outputType, op.getOutput());
     Value initAttached =
