@@ -69,11 +69,13 @@ func.func @copy_read_wait_tile_layout(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #
 // CHECK: %[[RES:.*]] = ttl.compute
 // CHECK: ^bb0(%[[T:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
 // CHECK:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[T]], %[[SRC_IDX:.*]], %[[DST_IDX:.*]] : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-// CHECK:   ttl.yield %[[DTILE]] : !ttcore.tile<32x32, f32>
+// CHECK:   ttl.tile_store
+// CHECK:   ttl.yield
 // CHECK: }
 func.func @copy_tile_basic(%t_tensor: tensor<1x1x!ttcore.tile<32x32, f32>>, %src_idx: index, %dst_idx: index) -> tensor<1x1x!ttcore.tile<32x32, f32>> {
   %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
   %t_attached = ttl.attach_cb %t_tensor, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %out_view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %result = ttl.compute
       ins(%t_attached : tensor<1x1x!ttcore.tile<32x32, f32>>)
       outs(%t_attached : tensor<1x1x!ttcore.tile<32x32, f32>>)
@@ -82,7 +84,8 @@ func.func @copy_tile_basic(%t_tensor: tensor<1x1x!ttcore.tile<32x32, f32>>, %src
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%t: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
     %dst, %dst_tile = ttl.copy_tile %t, %src_idx, %dst_idx : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-    ttl.yield %dst_tile : !ttcore.tile<32x32, f32>
+    ttl.tile_store %dst_tile, %out_view : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, f32>>
 }

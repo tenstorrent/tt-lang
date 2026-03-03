@@ -118,13 +118,14 @@ def build_ttl_module(
                     )
                     attached_inputs.append(attached)
 
-                # Create output CB (required for convert-ttl-to-compute pass).
+                # Create output CB and reserve.
                 output_cb = ttl.bind_cb(
                     cb_type,
                     cb_index=arity,  # Next index after inputs.
                     buffer_factor=config.buffer_factor,
                     loc=loc,
                 )
+                reserve = ttl.cb_reserve(tile_tensor_type, output_cb, loc=loc)
 
                 # Apply the operation.
                 op_func = getattr(ttl, op_str, None)
@@ -146,6 +147,9 @@ def build_ttl_module(
                     )
                 else:
                     raise ValueError(f"Unsupported arity: {arity}")
+
+                # Store result to output CB.
+                ttl.store(result, reserve, loc=loc)
 
                 func.ReturnOp([result], loc=loc)
 

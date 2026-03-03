@@ -1,6 +1,7 @@
 // Summary: Fused add->mul->exp lowers through loops to TTKernel ops (with sync).
+// Note: enable-fpu-binary-ops=0 keeps SFPU lowering path (not testing FPU detection).
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse)' \
 // RUN:   | FileCheck %s
 
 // Purpose: ensure copy_tile + fused math ops lower to ttkernel with no TTL ops left.
@@ -17,6 +18,7 @@
 // CHECK:       %[[CB2_TTK:.*]] = ttkernel.get_compile_time_arg_val(2)
 // CHECK:       ttkernel.cb_wait_front(%[[CB0_TTK]],
 // CHECK:       ttkernel.cb_wait_front(%[[CB1_TTK]],
+// CHECK:       ttkernel.cb_reserve_back(%[[CB2_TTK]],
 // CHECK:       ttkernel.init_sfpu(%[[CB0_TTK]], %[[CB2_TTK]])
 // CHECK:       scf.for %[[I:.*]] = {{.*}} to {{.*}} step {{.*}} {
 // CHECK:         scf.for %[[J:.*]] = {{.*}} to {{.*}} step {{.*}} {
@@ -33,7 +35,6 @@
 // CHECK:           ttkernel.mul_binary_tile(
 // CHECK:           ttkernel.exp_tile_init()
 // CHECK:           ttkernel.exp_tile(
-// CHECK:           ttkernel.cb_reserve_back(%[[CB2_TTK]],
 // CHECK:           ttkernel.tile_regs_commit
 // CHECK:           ttkernel.tile_regs_wait
 // CHECK:           ttkernel.pack_tile({{.*}}, %[[CB2_TTK]], {{.*}}, true)
@@ -58,6 +59,7 @@ func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   %b_ready = ttl.cb_wait %cb1 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %output_cb = ttl.attach_cb %output, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
+  %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %result = ttl.compute
       ins(%a_ready, %b_ready : tensor<2x2x!ttcore.tile<32x32, f32>>,
                                tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -72,10 +74,9 @@ func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %mul = ttl.tile_mul %sum, %b_tile : !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %mul : !ttcore.tile<32x32, f32>
-    %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.tile_store %exp, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.cb_push %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1>
-    ttl.yield %exp : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>

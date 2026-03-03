@@ -86,14 +86,12 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK: %[[R:.+]] = ttl.cb_wait %[[CB1]]
 # CHECK: ttl.attach_cb %[[R]], %[[CB1]]
 # CHECK: %[[O:.+]] = ttl.cb_reserve %[[CB2]]
-# CHECK: ttl.attach_cb %[[O]], %[[CB2]]
 
 # Add operation
 # CHECK: ttl.add
 
-# store() emits explicit store + DFB association
+# store() emits explicit store
 # CHECK: ttl.store
-# CHECK: ttl.attach_cb %{{.+}}, %[[CB2]]
 
 # 'with' exit: push output, pop inputs (reverse order)
 # CHECK: ttl.cb_push %[[CB2]]

@@ -15,8 +15,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import torch
-from utils.correctness import assert_with_ulp
-
 from .builder.kernels import (
     KernelSpec,
     ThreadType,
@@ -25,7 +23,7 @@ from .builder.kernels import (
 )
 from .builder.pipeline import compile_ttl_to_ttkernel
 from .builder.ttl_builder import build_e2e_module
-from .config import get_maximum_ulp_threshold
+from .config import validate_against_golden
 from .config_specs import TestConfig
 from .op_specs import ComputeOpSpec
 
@@ -155,11 +153,15 @@ def run_compute_test(
             )
 
         # 6. Validate against golden.
+        ulp_threshold = None
         if op.ulp_threshold_overrides and golden.dtype in op.ulp_threshold_overrides:
             ulp_threshold = op.ulp_threshold_overrides[golden.dtype]
-        else:
-            ulp_threshold = get_maximum_ulp_threshold(golden.dtype)
-        assert_with_ulp(golden, result, ulp_threshold=ulp_threshold)
+        pcc_threshold = None
+        if op.pcc_threshold_overrides and golden.dtype in op.pcc_threshold_overrides:
+            pcc_threshold = op.pcc_threshold_overrides[golden.dtype]
+        validate_against_golden(
+            golden, result, ulp_threshold=ulp_threshold, pcc_threshold=pcc_threshold
+        )
 
     finally:
         # Cleanup temporary kernel directory.

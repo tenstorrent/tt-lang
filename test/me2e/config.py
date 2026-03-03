@@ -104,3 +104,28 @@ def get_maximum_ulp_threshold(dtype: torch.dtype) -> int:
         return ME2E_MAXIMUM_ULP_THRESHOLDS[dtype]
     else:
         raise ValueError(f"Unsupported dtype for ULP comparison: {dtype}")
+
+
+def validate_against_golden(
+    golden: torch.Tensor,
+    result: torch.Tensor,
+    ulp_threshold: int | None = None,
+    pcc_threshold: float | None = None,
+) -> None:
+    """Validate result against golden using both ULP and PCC.
+
+    Args:
+        golden: Expected reference tensor.
+        result: Actual tensor to compare.
+        ulp_threshold: Explicit ULP threshold override. None uses the per-dtype default.
+        pcc_threshold: Explicit PCC threshold override. None uses the assert_pcc default (0.9999).
+    """
+    from utils.correctness import assert_pcc, assert_with_ulp
+
+    if ulp_threshold is None:
+        ulp_threshold = get_maximum_ulp_threshold(golden.dtype)
+    if pcc_threshold is not None:
+        assert_pcc(golden.float(), result.float(), threshold=pcc_threshold)
+    else:
+        assert_pcc(golden.float(), result.float())
+    assert_with_ulp(golden, result, ulp_threshold=ulp_threshold)
