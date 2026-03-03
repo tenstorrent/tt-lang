@@ -40,30 +40,6 @@ TILE_SIZE: int = TILE_SHAPE[0]
 TILE_LAYOUT = IndexType.TILE
 
 
-def tensor_shape_in_tiles(
-    tensor: "Tensor", tile_shape: Tuple[int, ...]
-) -> Tuple[int, ...]:
-    """
-    Convert tensor shape from element dimensions to tile dimensions.
-
-    Divides each dimension of the tensor shape by the corresponding tile
-    dimension to compute how many tiles the tensor spans.
-
-    Args:
-        tensor: Input TTNN Tensor
-        tile_shape: Shape of each tile
-
-    Returns:
-        Shape in tiles
-
-    Example:
-        tensor = ttnn.from_torch(torch.randn(64, 32))
-        shape = tensor_shape_in_tiles(tensor, (32, 32))
-        assert shape == (2, 1)  # 64/32=2 rows, 32/32=1 col
-    """
-    return tuple(dim // tile_dim for dim, tile_dim in zip(tensor.shape, tile_shape))
-
-
 def broadcast_tensors(
     left_tensors: List["Tensor"],
     right_tensors: List["Tensor"],
@@ -358,33 +334,30 @@ class Tensor:
         tile-space and element-space are identical for those dimensions).
 
         Args:
-            key: Tuple of 2 to MAX_TENSOR_DIMS elements (int or slice each).
+            key: Tuple whose length must exactly match the tensor's rank.
+                For a 1-D tensor: 1 element.  For an N-D tensor (N >= 2): N
+                elements, where the last two are tile-row and tile-col
+                coordinates and the preceding elements are batch indices.
 
         Returns:
             Tuple suitable for indexing the underlying torch.Tensor directly.
 
         Raises:
-            ValueError: If key length is outside [2, MAX_TENSOR_DIMS], the
-                tensor is not tile-aligned, or a tile slice has missing or
-                stepped bounds.
+            ValueError: If key length does not match tensor rank, the tensor
+                is not tile-aligned, or a tile slice has missing or stepped
+                bounds.
         """
         self._validate_tile_alignment()
         ndim = len(self._tensor.shape)
+        if len(key) != ndim:
+            raise ValueError(
+                f"Key length {len(key)} does not match tensor rank {ndim}: "
+                f"expected exactly {ndim} element(s)"
+            )
         if ndim == 1:
-            # 1-D tensor: key must be a single tile-grid selector.
-            if len(key) != 1:
-                raise ValueError(
-                    f"1-D tensor requires a 1-element key, got {len(key)} elements"
-                )
             col_s = self._normalize_tile_index(key[0])
             self._validate_tile_slice(col_s, "col")
             return (slice(col_s.start * TILE_SHAPE[0], col_s.stop * TILE_SHAPE[0]),)
-        # 2-D+ tensor: key must have 2 to MAX_TENSOR_DIMS elements.
-        if len(key) < 2 or len(key) > MAX_TENSOR_DIMS:
-            raise ValueError(
-                f"Key must have 2 to {MAX_TENSOR_DIMS} elements for a {ndim}-D tensor, "
-                f"got {len(key)}"
-            )
         *batch, row_k, col_k = key
         row_s = self._normalize_tile_index(row_k)
         col_s = self._normalize_tile_index(col_k)

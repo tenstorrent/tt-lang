@@ -10,7 +10,6 @@ New transfer types can be added by creating a new handler and decorating it with
 """
 
 from collections import deque
-from numpy import prod
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -34,7 +33,7 @@ from .stats import (
 )
 from .ttnnsim import Tensor
 from .pipe import AnyDst, AnyPipe, Pipe
-from .typedefs import CoreCoord, Count, Shape
+from .typedefs import CoreCoord, Count
 
 if TYPE_CHECKING:
     from .pipe import SrcPipeIdentity
@@ -65,37 +64,6 @@ CopyEndpointType = Union[
     Type[AnySrcPipeIdentity],
     Type[DstPipeIdentity],
 ]
-
-
-# Tile calculation utilities
-def tile_count(tensor_shape: Shape, tile_shape: Shape) -> Count:
-    """
-    Calculate the total number of tiles in a tensor.
-
-    Args:
-        tensor_shape: Shape of the tensor (height, width, ...)
-        tile_shape: Shape of each tile (height, width, ...)
-
-    Returns:
-        Total number of tiles needed to represent the tensor
-
-    Example:
-        For a (64, 128) tensor with tile_shape=(32, 32):
-        tile_count((64, 128), (32, 32)) = (64//32) * (128//32) = 2 * 4 = 8 tiles
-    """
-
-    if len(tensor_shape) != len(tile_shape):
-        raise ValueError(
-            f"tensor_shape and tile_shape must have same dimensions: {len(tensor_shape)} vs {len(tile_shape)}"
-        )
-    return int(
-        prod(
-            [
-                tensor_dim // tile_dim
-                for tensor_dim, tile_dim in zip(tensor_shape, tile_shape)
-            ]
-        )
-    )
 
 
 # Global pipe state for simulating NoC pipe communication.

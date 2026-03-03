@@ -1081,3 +1081,27 @@ def test_transpose_5d_raises():
     block = Block.from_list(tiles, shape=(2, 2, 2, 2, 1))
     with pytest.raises(ValueError, match="2-D"):
         ttl.math.transpose(block)
+
+
+def test_from_list_to_list_roundtrip_4d():
+    """from_list / to_list round-trip for a 4-D block grid (nb=2 batch dims).
+
+    Grid shape (2, 3, 2, 2): 2 batch-0 slices * 3 batch-1 slices *
+    2 tile-rows * 2 tile-cols = 24 tiles total.  Each tile is filled with a
+    unique value so that any permutation or indexing error in from_list or
+    to_list would produce a detectable mismatch.
+    """
+    shape = (2, 3, 2, 2)
+    num_tiles = 2 * 3 * 2 * 2  # 24
+    tiles_in = [Tensor(torch.full((32, 32), float(i))) for i in range(num_tiles)]
+
+    block = Block.from_list(tiles_in, shape=shape)
+    assert block.shape == shape
+
+    tiles_out = block.to_list()
+    assert len(tiles_out) == num_tiles
+
+    for i, (t_in, t_out) in enumerate(zip(tiles_in, tiles_out)):
+        assert torch.allclose(
+            t_in.to_torch(), t_out.to_torch()
+        ), f"Tile {i} mismatch after from_list / to_list round-trip"

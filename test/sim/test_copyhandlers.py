@@ -222,40 +222,6 @@ class TestPipeMulticast:
         assert tensors_equal(result2, tile)
 
 
-class TestTileCountUtility:
-    """Test tile_count utility function."""
-
-    def test_tile_count_basic(self) -> None:
-        """Test basic tile counting."""
-        from python.sim.copyhandlers import tile_count
-        from python.sim.constants import TILE_SHAPE
-
-        # 64x64 tensor with 32x32 tiles = 4 tiles (2x2 grid)
-        assert tile_count((64, 64), TILE_SHAPE) == 4
-
-        # 32x32 tensor with 32x32 tiles = 1 tile
-        assert tile_count((32, 32), TILE_SHAPE) == 1
-
-        # 96x64 tensor with 32x32 tiles = 6 tiles (3x2 grid)
-        assert tile_count((96, 64), TILE_SHAPE) == 6
-
-    def test_tile_count_dimension_mismatch(self) -> None:
-        """Test that dimension mismatch raises ValueError."""
-        from python.sim.copyhandlers import tile_count
-
-        with pytest.raises(
-            ValueError,
-            match="tensor_shape and tile_shape must have same dimensions",
-        ):
-            tile_count((64, 64), (32,))  # 2D vs 1D
-
-        with pytest.raises(
-            ValueError,
-            match="tensor_shape and tile_shape must have same dimensions",
-        ):
-            tile_count((64,), (32, 32))  # 1D vs 2D
-
-
 class TestContextManagerHandlers:
     """Test context manager wrapper handler delegation."""
 

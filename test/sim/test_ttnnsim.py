@@ -79,8 +79,8 @@ def test_tensor_get_set_item_and_repr():
     assert torch.all(tw.to_torch()[0:32, 32:64] == 7.0)
 
     # bare-integer key (non-tuple) is wrapped as (1,), which is a 1-element key
-    # on a 2-D tensor — rejected with ValueError (wrong key length).
-    with pytest.raises(ValueError, match="Key must have 2 to"):
+    # on a 2-D tensor — rejected with ValueError (key length != tensor rank).
+    with pytest.raises(ValueError, match="does not match tensor rank"):
         _ = tw[1]
 
 
@@ -145,17 +145,23 @@ def test_tensor_0d_raises():
 
 
 def test_tensor_tile_indexing_invalid_shape():
-    """Test that tile indexing fails for out-of-range dimensionality."""
+    """Test that tile indexing fails for key length mismatches."""
     # Passing slice(None, 1) (stop-only, no start) to a 1-D tensor reaches
     # _validate_tile_slice, which requires an explicit start value and raises.
     t1d = ttnn.Tensor(torch.randn(64))
     with pytest.raises(ValueError, match="must have explicit start value"):
         _ = t1d[slice(None, 1)]  # missing start -> our validation catches it
 
-    # 7D tensor exceeds MAX_TENSOR_DIMS
+    # 2-element key on a 4-D tensor: rank mismatch must be caught explicitly
+    # rather than silently treating only the last two dims.
+    t4d = ttnn.Tensor(torch.randn(2, 2, 64, 64))
+    with pytest.raises(ValueError, match="does not match tensor rank"):
+        _ = t4d[0:1, 0:1]
+
+    # 7D tensor exceeds MAX_TENSOR_DIMS; _validate_tile_alignment raises first.
     t7d = ttnn.Tensor(torch.randn(2, 2, 2, 2, 64, 64, 64))
     with pytest.raises(ValueError, match=f"1 to {MAX_TENSOR_DIMS}"):
-        _ = t7d[0:1, 0:1]
+        _ = t7d[0, 0, 0, 0, 0:1, 0:1]
 
 
 def test_tensor_tile_indexing_invalid_tile_alignment():
