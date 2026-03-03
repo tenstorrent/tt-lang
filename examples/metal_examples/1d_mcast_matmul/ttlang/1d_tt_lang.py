@@ -218,19 +218,16 @@ def test_matmul_1d(
         (M, K),
         dtype=ttnn.bfloat16,
         layout=ttnn.TILE_LAYOUT,
-        # device=device,
     )
     B = ttnn.rand(
         (K, N),
         dtype=ttnn.bfloat16,
         layout=ttnn.TILE_LAYOUT,
-        # device=device,
     )
     output_t = ttnn.empty(
         (M, N),
         dtype=ttnn.bfloat16,
         layout=ttnn.TILE_LAYOUT,
-        # device=device,
     )
 
     matmul_1d(A, B, output_t, block_m, block_n, block_k, n_blocks_per_core)
