@@ -15,7 +15,6 @@ visible in the ring buffer.
 
 from typing import List, Optional
 
-from .errors import DFBNotConfigured
 from .ttnnsim import Tensor
 from .typedefs import Index, Shape, Size
 
@@ -27,7 +26,6 @@ class DFBState:
         "head",  # current read slot index (in operations)
         "visible",  # number of complete operations ready to consume
         "reserved",  # number of complete operations reserved for writing
-        "configured",
         "shape",  # tile-grid shape (for Block construction)
     )
 
@@ -37,12 +35,7 @@ class DFBState:
         self.head: Index = 0
         self.visible: Size = 0
         self.reserved: Size = 0
-        self.configured = False
         self.shape: Shape
-
-    def require_configured(self) -> None:
-        if not self.configured:
-            raise DFBNotConfigured("DFB not configured; call host_configure_dfb")
 
     def free(self) -> Size:
         """Number of operation slots available for reservation."""
@@ -57,4 +50,3 @@ class DFBState:
         self.head = 0
         self.visible = 0
         self.reserved = 0
-        self.configured = True

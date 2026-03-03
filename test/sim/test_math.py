@@ -985,3 +985,99 @@ def test_matmul_mismatched_inner_dims_raises():
     b = Block.from_list([_tile(1.0)] * 2, shape=(2, 1))
     with pytest.raises(RuntimeError, match="cannot be multiplied"):
         ttl.math.matmul(a, b)
+
+
+# ---------------------------------------------------------------------------
+# ND-specific tests added to cover gaps identified in the ND support audit
+# ---------------------------------------------------------------------------
+
+
+def test_broadcast_3d_grid_batch_dim():
+    """broadcast on a 3D grid block along the batch dimension (dim 0).
+
+    The batch grid dim has no within-tile axis; the tile content must be
+    left unchanged (the existing single tile is simply replicated at the
+    grid level by Block.from_list with the same shape).
+    """
+    # 3D grid (1, 2, 2): 1 batch slice, 2 tile-rows, 2 tile-cols.
+    # Each tile is a (32, 32) matrix filled with a distinct value.
+    tiles = [Tensor(torch.full((32, 32), float(i))) for i in range(4)]
+    block = Block.from_list(tiles, shape=(1, 2, 2))
+    # Broadcast along batch dim (dim 0); the grid dim already has size 1
+    # so this is a no-op at the grid level and must not corrupt tile content.
+    result = ttl.math.broadcast(block, dims=[0])
+    assert result.shape == (1, 2, 2)
+    result_tiles = result.to_list()
+    for orig, res in zip(tiles, result_tiles):
+        assert torch.allclose(
+            orig.to_torch(), res.to_torch()
+        ), "batch-dim broadcast must not alter tile content"
+
+
+def test_broadcast_3d_grid_spatial_dim():
+    """broadcast on a 3D grid block along a spatial dimension.
+
+    With a (2, 1, 1) block grid and 2D tiles, dim 1 is the spatial-row
+    grid dim (maps to tile-internal dim 0). The first row of each tile
+    should be replicated to all rows.
+    """
+    # tile: row 0 = 7.0, all other rows = 0.0
+    tile_data = torch.zeros(32, 32)
+    tile_data[0, :] = 7.0
+    tiles = [Tensor(tile_data.clone()), Tensor(tile_data.clone())]
+    block = Block.from_list(tiles, shape=(2, 1, 1))
+    result = ttl.math.broadcast(block, dims=[1])
+    for res_tile in result.to_list():
+        assert torch.all(
+            res_tile.to_torch() == 7.0
+        ), "spatial-row broadcast should replicate row-0 values to all rows"
+
+
+def test_max_shape_mismatch_raises():
+    """math.max raises ValueError when the two blocks have different shapes."""
+    a = Block.from_list([_tile(1.0)], shape=(1, 1))
+    b = Block.from_list([_tile(1.0)] * 2, shape=(1, 2))
+    with pytest.raises(ValueError, match="Shape mismatch"):
+        ttl.math.max(a, b)
+
+
+def test_min_shape_mismatch_raises():
+    """math.min raises ValueError when the two blocks have different shapes."""
+    a = Block.from_list([_tile(1.0)] * 2, shape=(2, 1))
+    b = Block.from_list([_tile(1.0)], shape=(1, 1))
+    with pytest.raises(ValueError, match="Shape mismatch"):
+        ttl.math.min(a, b)
+
+
+def test_matmul_batched_3d():
+    """Block matmul works correctly for a batched (3D grid) case.
+
+    Two batch slices, each a (M=1, K=1) x (K=1, N=1) tile matmul.
+    """
+    # Batch size 2; a has shape (2, 1, 1), b has shape (2, 1, 1).
+    a_tiles = [_tile(2.0), _tile(3.0)]  # batch 0 and 1
+    b_tiles = [_tile(4.0), _tile(5.0)]
+    a = Block.from_list(a_tiles, shape=(2, 1, 1))
+    b = Block.from_list(b_tiles, shape=(2, 1, 1))
+    result = ttl.math.matmul(a, b)
+    assert result.shape == (2, 1, 1)
+    res_tiles = result.to_list()
+    # Each tile is full(v_a) @ full(v_b) = v_a * v_b * 32 per element
+    assert torch.allclose(res_tiles[0].to_torch(), torch.full((32, 32), 2.0 * 4.0 * 32))
+    assert torch.allclose(res_tiles[1].to_torch(), torch.full((32, 32), 3.0 * 5.0 * 32))
+
+
+def test_transpose_4d_raises():
+    """transpose raises ValueError for a 4-D block grid."""
+    tiles = [_tile(1.0)] * 16
+    block = Block.from_list(tiles, shape=(2, 2, 2, 2))
+    with pytest.raises(ValueError, match="2-D"):
+        ttl.math.transpose(block)
+
+
+def test_transpose_5d_raises():
+    """transpose raises ValueError for a 5-D block grid."""
+    tiles = [_tile(1.0)] * 16
+    block = Block.from_list(tiles, shape=(2, 2, 2, 2, 1))
+    with pytest.raises(ValueError, match="2-D"):
+        ttl.math.transpose(block)

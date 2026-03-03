@@ -37,13 +37,17 @@ def broadcast(
     After reduce operations store values at specific positions (e.g., reduce_max with
     dims=[0] stores max per row at column 0), broadcast replicates those values.
 
-    For dims=[1] (broadcast along columns):
+    For a 2-D grid, dims=[1] (broadcast along columns):
     - Takes values from column 0 of each row
     - Replicates them across all columns in that row
 
-    For dims=[0] (broadcast along rows):
+    For a 2-D grid, dims=[0] (broadcast along rows):
     - Takes values from row 0 of each column
     - Replicates them across all rows in that column
+
+    For ND grids, batch dimensions (all dims before the last tile.ndim grid dims)
+    have no within-tile axis to broadcast; they are grid-level-only and the tile
+    content is left unchanged.
 
     Args:
         block: Input block to broadcast
@@ -70,15 +74,24 @@ def broadcast(
                 f"but has size {block_shape[dim]}"
             )
 
-    # Perform within-tile broadcasting
+    # Map block-grid dimensions to within-tile dimensions.
+    # The last tile.ndim grid dimensions correspond to tile-internal axes 0, 1, ...
+    # Leading (batch) grid dimensions have no tile-internal counterpart.
     input_tensors = [t.to_torch() for t in block.to_list()]
     result_tensors: List[Tensor] = []
+    grid_ndim = len(block_shape)
 
     for tile in input_tensors:
-        # Create a slice that selects index 0 for each dimension in dims
-        slices = [slice(None)] * tile.ndim
+        tile_ndim = tile.ndim
+        # Number of leading grid dims that are batch-only (no tile axis).
+        num_batch_grid_dims = grid_ndim - tile_ndim
+        slices = [slice(None)] * tile_ndim
         for dim in dims:
-            slices[dim] = slice(0, 1)
+            tile_dim = dim - num_batch_grid_dims
+            if tile_dim < 0:
+                # Batch grid dimension: no within-tile axis, leave slice unchanged.
+                continue
+            slices[tile_dim] = slice(0, 1)
 
         # Extract the slice and expand back to original shape
         result_tile = tile[tuple(slices)].expand(tile.shape).clone()
@@ -188,6 +201,9 @@ def _apply_binary_op(
 ) -> Block:
     """Apply a binary operation element-wise to two blocks.
 
+    Both blocks must have the same shape; broadcasting between blocks of different
+    shapes is not supported by this helper (use Block operator overloads instead).
+
     Args:
         a: First input block
         b: Second input block
@@ -195,7 +211,16 @@ def _apply_binary_op(
 
     Returns:
         Block with operation applied element-wise
+
+    Raises:
+        ValueError: If a and b have different shapes.
     """
+    a_shape = a._shape  # type: ignore[attr-defined]
+    b_shape = b._shape  # type: ignore[attr-defined]
+    if a_shape != b_shape:
+        raise ValueError(
+            f"Shape mismatch in binary op: a has shape {a_shape}, b has shape {b_shape}"
+        )
     a_tensors = [t.to_torch() for t in a.to_list()]
     b_tensors = [t.to_torch() for t in b.to_list()]
     result_torch: List[torch.Tensor] = [
@@ -203,7 +228,7 @@ def _apply_binary_op(
     ]
     result_list: List[Tensor] = [Tensor(t) for t in result_torch]
 
-    result_block = Block.from_list(result_list, shape=a._shape)  # type: ignore[attr-defined]
+    result_block = Block.from_list(result_list, shape=a_shape)  # type: ignore[attr-defined]
     track_source_blocks(result_block, a, b)
     return result_block
 

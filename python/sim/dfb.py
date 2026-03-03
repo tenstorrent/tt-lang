@@ -970,7 +970,6 @@ class DataflowBuffer:
         block_if_needed(self, "wait")
 
         state = self._state
-        state.require_configured()
         assert state.visible >= 1, (
             f"wait: expected >=1 visible operations, got {state.visible}. "
             "block_if_needed() should have been called first."
@@ -1028,7 +1027,6 @@ class DataflowBuffer:
         block_if_needed(self, "reserve")
 
         state = self._state
-        state.require_configured()
         assert state.free() >= 1, (
             f"reserve: expected >=1 free operation slots, got {state.free()}. "
             "block_if_needed() should have been called first."
@@ -1085,7 +1083,6 @@ class DataflowBuffer:
             self._pending_reserved_block = None
 
         state = self._state
-        state.require_configured()
         if state.reserved < 1:
             raise DFBContractError("push_block: no reserved operation slot to push")
         state.reserved -= 1
@@ -1104,7 +1101,6 @@ class DataflowBuffer:
             self._pending_waited_block = None
 
         state = self._state
-        state.require_configured()
         if state.visible < 1:
             raise DFBContractError("pop_block: no visible operation slot to pop")
         state.buf[state.head] = None
@@ -1128,7 +1124,6 @@ class DataflowBuffer:
 
     def stats(self) -> DFBStats:
         """Get current buffer statistics (all counts in operations)."""
-        self._state.require_configured()
         return DFBStats(
             capacity=self._state.cap,
             visible=self._state.visible,
@@ -1140,8 +1135,6 @@ class DataflowBuffer:
 
     def reset(self) -> None:
         """Reset the dataflow buffer to its initial empty state."""
-        if not self._state.configured:
-            raise DFBContractError("DFB not configured; cannot reset")
         self._state.reset()
 
     def validate_no_pending_blocks(self) -> None:
@@ -1216,8 +1209,10 @@ def make_dataflow_buffer_like(
 
     Args:
         element: A tensor used to determine the DataflowBuffer's dtype
-        shape: Tuple of (rows, cols) specifying the tile shape for wait/reserve operations
-        buffer_factor: Multiplier for total buffer capacity (capacity = shape[0] * shape[1] * buffer_factor)
+        shape: Tuple of tile-grid dimensions, e.g. (1,) for 1-D, (1, 1) for 2-D,
+            (1, 1, 1) for 3-D, etc. The total buffer capacity is
+            math.prod(shape) * buffer_factor blocks.
+        buffer_factor: Multiplier for total buffer capacity
 
     Returns:
         A DataflowBuffer with dtype matching the element

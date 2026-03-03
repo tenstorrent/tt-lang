@@ -146,14 +146,11 @@ def test_tensor_0d_raises():
 
 def test_tensor_tile_indexing_invalid_shape():
     """Test that tile indexing fails for out-of-range dimensionality."""
-    # 1D tensor is valid; a 2-element key is wrong for it (key length mismatch
-    # causes IndexError from PyTorch on the resulting slice, not a ValueError here).
+    # Passing slice(None, 1) (stop-only, no start) to a 1-D tensor reaches
+    # _validate_tile_slice, which requires an explicit start value and raises.
     t1d = ttnn.Tensor(torch.randn(64))
     with pytest.raises(ValueError, match="must have explicit start value"):
-        # A bare integer 0 is converted to slice(0, 1) but the dimension
-        # key count (2) mismatches the 1D tensor – caught by PyTorch as
-        # a key error; we verify the 1D path works with a 1-element key.
-        _ = t1d[slice(None, 1)]  # missing start → our validation catches it
+        _ = t1d[slice(None, 1)]  # missing start -> our validation catches it
 
     # 7D tensor exceeds MAX_TENSOR_DIMS
     t7d = ttnn.Tensor(torch.randn(2, 2, 2, 2, 64, 64, 64))

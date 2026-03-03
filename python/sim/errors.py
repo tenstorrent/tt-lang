@@ -15,10 +15,6 @@ class DFBContractError(DFBError):
     pass
 
 
-class DFBNotConfigured(DFBError):
-    pass
-
-
 class DFBOutOfRange(DFBError):
     pass
 
