@@ -1398,6 +1398,84 @@ def test_1d_arithmetic_on_blocks():
     assert torch.allclose(d.to_tensor().to_torch(), torch.ones(64) * 6.0)
 
 
+# ---------------------------------------------------------------------------
+# High-dimensional (4-D, 5-D, 6-D) grid round-trip tests
+#
+# These verify that Block.from_list and to_list are inverses for grids with
+# nb >= 2 batch dimensions (nb = ndim - 2), exercising the general permute
+# formula in from_list.
+# ---------------------------------------------------------------------------
+
+
+def _make_grid(shape):
+    """Return a list of distinct (32x32) tiles for a tile grid of given shape."""
+    n = 1
+    for d in shape:
+        n *= d
+    return [Tensor(torch.full((32, 32), float(i))) for i in range(n)]
+
+
+def _round_trip(shape):
+    """Build a Block from a tile list, split it back, and verify values."""
+    tiles = _make_grid(shape)
+    block = Block.from_list(tiles, shape=shape)
+    assert block.shape == shape
+    recovered = block.to_list()
+    assert len(recovered) == len(tiles)
+    for i, (orig, rec) in enumerate(zip(tiles, recovered)):
+        assert torch.allclose(
+            orig.to_torch(), rec.to_torch()
+        ), f"Tile {i} mismatch for shape {shape}"
+
+
+def test_4d_grid_round_trip():
+    """Block.from_list / to_list round-trip for a 4-D tile grid (2 batch dims)."""
+    # shape (2, 3, 2, 2): nb=2 batch dims, TM=2, TK=2 -> 2*3*2*2 = 24 tiles
+    _round_trip((2, 3, 2, 2))
+
+
+def test_5d_grid_round_trip():
+    """Block.from_list / to_list round-trip for a 5-D tile grid (3 batch dims)."""
+    # shape (2, 2, 2, 2, 2): nb=3, TM=2, TK=2 -> 32 tiles
+    _round_trip((2, 2, 2, 2, 2))
+
+
+def test_6d_grid_round_trip():
+    """Block.from_list / to_list round-trip for a 6-D tile grid (4 batch dims)."""
+    # shape (2, 2, 2, 2, 2, 2): nb=4, TM=2, TK=2 -> 64 tiles
+    _round_trip((2, 2, 2, 2, 2, 2))
+
+
+def test_4d_grid_values_are_distinct():
+    """Each tile in a 4-D block retains its identity value after a round-trip."""
+    shape = (3, 2, 2, 2)  # 24 tiles
+    tiles = _make_grid(shape)
+    block = Block.from_list(tiles, shape=shape)
+    recovered = block.to_list()
+    for i, rec in enumerate(recovered):
+        expected_val = float(i)
+        assert torch.all(
+            rec.to_torch() == expected_val
+        ), f"Tile {i}: expected all {expected_val}, got {rec.to_torch()}"
+
+
+def test_4d_grid_backing_tensor_shape():
+    """The backing tensor of a 4-D block has the correct element-space shape."""
+    shape = (2, 3, 2, 4)  # nb=2, TM=2, TK=4; backing shape = (2,3, 64, 128)
+    tiles = _make_grid(shape)
+    block = Block.from_list(tiles, shape=shape)
+    raw = block.to_tensor().to_torch()
+    assert raw.shape == (2, 3, 64, 128), f"Unexpected shape {raw.shape}"
+
+
+def test_5d_grid_from_tensor_infers_shape():
+    """Block.from_tensor correctly infers a 5-D tile-grid shape."""
+    # 5-D element tensor: (2, 3, 4, 64, 96) -> grid (2, 3, 4, 2, 3)
+    data = torch.zeros(2, 3, 4, 64, 96)
+    block = Block.from_tensor(Tensor(data))
+    assert block.shape == (2, 3, 4, 2, 3)
+
+
 if __name__ == "__main__":
     import sys
 
