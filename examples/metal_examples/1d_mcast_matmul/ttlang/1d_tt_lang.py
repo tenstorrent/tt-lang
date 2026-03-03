@@ -57,8 +57,9 @@ def matmul_1d(
         out_tensor, shape=(block_h, block_w), buffer_factor=1
     )
 
-    mcast_pipe = ttl.Pipe((0,), slice(1, num_working_cores))
+    mcast_pipe = ttl.Pipe((0,), (slice(1, num_working_cores),))
     net = ttl.PipeNet([mcast_pipe])
+    print(f"num_working_cores={num_working_cores}, pipe={mcast_pipe}")
 
     def block_slice(block_offset, block_size):
         return slice(block_offset * block_size, (block_offset + 1) * block_size)
@@ -209,9 +210,7 @@ def matmul_1d(
         ),  # above, but with 2 blocks in m dim
     ],
 )
-def test_matmul_1d(
-    M, N, K, n_blocks_per_core, block_m, block_n, block_k, subblock_h, subblock_w
-):
+def test_matmul_1d(M, N, K, n_blocks_per_core, block_m, block_n, block_k):
     device = ttnn.open_device(device_id=0)
 
     A = ttnn.rand(
@@ -235,3 +234,38 @@ def test_matmul_1d(
     golden_output = A.to_torch() @ B.to_torch()
 
     assert_with_ulp(output_t.to_torch(), golden_output)
+
+
+# sim testing
+if __name__ == "__main__":
+    test_matmul_1d(TS, 2 * TS, TS, 1, 1, 1, 1)  # trivial base case
+    test_matmul_1d(TS, 14 * TS, TS, 1, 1, 1, 1)  # just over 1 row for all arch
+    test_matmul_1d(TS, 8 * TS, TS * 2, 1, 1, 1, 1)  # 2 blocks in k dim
+    test_matmul_1d(TS * 2, 8 * TS, TS, 1, 1, 1, 1)  # 2 blocks in m dim
+    test_matmul_1d(TS, 8 * TS * 2, TS, 2, 1, 1, 1)  # 2 blocks per core in n dim
+    test_matmul_1d(TS * 6, 2 * TS, TS * 2, 1, 2, 1, 1)
+    test_matmul_1d(
+        TS, 8 * TS * 2, TS * 2, 2, 1, 1, 1
+    )  # 2 blocks per core in n dim, with 2 blocks in k dim
+    test_matmul_1d(
+        TS * 16, 8 * TS, TS * 8, 1, 16, 1, 8
+    )  # bigger blocks in m and k dims, with 2 subblocks per block in m/h dim
+    test_matmul_1d(
+        TS, 8 * TS * 16, TS * 8, 1, 1, 16, 8
+    )  # bigger blocks in n and k dims, with 2 subblocks per block in n/w dim
+    test_matmul_1d(
+        TS * 4, 8 * TS * 4, TS * 4 * 2, 1, 4, 4, 2
+    )  # 4 tile blocks, with 2 subblocks in each dim
+    test_matmul_1d(
+        TS * 4, 8 * TS * 2 * 4, TS * 4 * 2, 2, 4, 4, 2
+    )  # above but with 2 blocks per core in n dim
+    test_matmul_1d(
+        TS * 4, 64 * TS * 2 * 4, TS * 4 * 2, 2, 4, 4, 2
+    )  # above but all cores wh
+    # modfied for sim wh setup
+    test_matmul_1d(
+        TS * 8, 64 * TS * 2 * 8, TS * 16, 2, 8, 8, 16
+    )  # all cores small bh 640/768 L1 tile limit
+    test_matmul_1d(
+        TS * 8 * 2, 64 * TS * 2 * 8, TS * 16, 2, 8, 8, 16
+    )  # above, but with 2 blocks in m dim
