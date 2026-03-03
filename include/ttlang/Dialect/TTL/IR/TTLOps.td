@@ -249,7 +249,7 @@ def TTL_ComputeOp : TTL_Op<"compute", [
            %b_tile: !ttcore.tile<32x32, f32>,
            %out_tile: !ttcore.tile<32x32, f32>):
         %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-        ttl.yield %sum : !ttcore.tile<32x32, f32>
+        ttl.yield
     } -> tensor<4x4x!ttcore.tile<32x32, f32>>
     ```
   }];
@@ -277,13 +277,12 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 
 def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
     ParentOneOf<["ComputeOp"]>]> {
-  let summary = "Yield values from ttl.compute region";
+  let summary = "Terminate ttl.compute region";
   let description = [{
-    `ttl.yield` terminates the body of `ttl.compute` and yields the computed
-    tile values to be written to the output tensors.
+    `ttl.yield` terminates the body of `ttl.compute`. Output is produced by
+    `ttl.tile_store` within the compute body, not by yielding values.
   }];
-  let arguments = (ins Variadic<AnyType>:$values);
-  let assemblyFormat = "attr-dict ($values^ `:` type($values))?";
+  let assemblyFormat = "attr-dict";
   let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
 }
 
@@ -448,7 +447,8 @@ def TTL_LinearizedIndexOp : TTL_Op<"linearized_index", [Pure]> {
 }
 
 def TTL_CopyTileOp : TTL_Op<"copy_tile",
-                            [MemoryEffects<[MemRead, MemWrite]>]> {
+                            [MemoryEffects<[MemRead, MemWrite]>,
+                             TTL_CBInputTileOpTrait]> {
   let summary = "Copy a tile from a circular buffer into a DST register";
   let description = [{
     Performs a CB -> DST copy, matching `copy_tile_init` + `copy_tile` in the
@@ -472,7 +472,8 @@ def TTL_CopyTileOp : TTL_Op<"copy_tile",
 
 def TTL_CopyDstOp : TTL_Op<"copy_dst",
                            [SameOperandsAndResultType,
-                            MemoryEffects<[MemRead, MemWrite]>]> {
+                            MemoryEffects<[MemRead, MemWrite]>,
+                            TTL_DSTInputsTrait]> {
   let summary = "Copy a tile from one DST register to another";
   let description = [{
     Performs DST -> DST copy for multi-consumer value preservation. Used when
@@ -497,8 +498,11 @@ def TTL_CopyDstOp : TTL_Op<"copy_dst",
   let assemblyFormat = "$src_tile attr-dict `:` type($result)";
 }
 
+// Note: DSTInputsTrait is the default for binary ops. FPU-marked binaries
+// (ttl.fpu_binary) read from CB instead; use isCBInputOp() to check at runtime.
 class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
-    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType, TTL_TileBinaryOpTrait])> {
+    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType, TTL_TileBinaryOpTrait,
+                                                 TTL_DSTInputsTrait])> {
   let summary = "Binary tile operation";
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);
   let results = (outs AnyType:$result);
@@ -506,7 +510,8 @@ class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
 }
 
 class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
-    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType, TTL_TileUnaryOpTrait])> {
+    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType, TTL_TileUnaryOpTrait,
+                                                 TTL_DSTInputsTrait, TTL_InPlaceOpTrait])> {
   let summary = "Unary tile operation";
   let arguments = (ins AnyType:$input);
   let results = (outs AnyType:$result);
@@ -593,7 +598,8 @@ def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait]> {
   let description = [{
     Broadcasts a row, column, or scalar tile into a full 32x32 tile.
     Maps to ttkernel.unary_bcast_init + ttkernel.unary_bcast.
-    Reads directly from circular buffer (not DST), writes to DST.
+    Reads input from CB, writes result to DST. The output operand carries
+    the output CB for init-time PACK configuration only.
   }];
   let arguments = (ins AnyType:$input, AnyType:$output, TTL_BcastTypeAttr:$bcast_type);
   let results = (outs AnyType:$result);
@@ -704,21 +710,17 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
   let summary = "Store a tensor to a circular buffer reserve view";
   let description = [{
     `ttl.store` represents the user's intent to store a computed tensor into
-    an output circular buffer. The view operand must be the reserve view
-    (from `ttl.attach_cb` wrapping a `ttl.cb_reserve`).
+    an output circular buffer.
 
-    This is the tensor-level store emitted by Python's `o.store(result)`.
-    During `convert-ttl-to-compute`, this op is transformed into a tile-level
-    `ttl.tile_store` inside the compute body. The store carries its destination
-    as an SSA operand; no pass infers or synthesizes stores.
+    Emitted by Python's `o.store(result)`. During `convert-ttl-to-compute`,
+    this op is transformed into a `ttl.tile_store` inside the compute body.
 
     Example:
     ```mlir
     %reserve = ttl.cb_reserve %cb : ... -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    %view = ttl.attach_cb %reserve, %cb : ...
     %result = ttl.add %a, %b : ...
-    ttl.store %result, %view : tensor<1x1x!ttcore.tile<32x32, bf16>>,
-                               tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %result, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                                  tensor<1x1x!ttcore.tile<32x32, bf16>>
     ```
   }];
   let arguments = (ins

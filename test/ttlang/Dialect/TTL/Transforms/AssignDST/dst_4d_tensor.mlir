@@ -1,15 +1,15 @@
-// Summary: verify linearized_index works with 4D tensors
+// Summary: verify DST assignment and copy insertion on 4D tensors
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 separate-output-region=1}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 enable-fpu-binary-ops=0}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SFPU
 
 // Verify no placeholder copies remain in final IR
 // CHECK-NOT: placeholder
 
 #map = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
 
-// Purpose: test N-D linearization (4D case: row-major strides [48, 8, 2, 1])
-// Linearization: d0*6*4*2 + d1*4*2 + d2*2 + d3 = d0*48 + d1*8 + d2*2 + d3
-// CHECK-DAG: [[$MAP:#map[0-9]*]] = affine_map<(d0, d1, d2, d3) -> (d0 * 48 + d1 * 8 + d2 * 2 + d3)>
+// Purpose: test that FPU binary add on 4D tensors works without linearized_index.
+// FPU binary: both operands are block args, so no copy_tile or linearized_index needed.
 // CHECK-LABEL: func.func @add_4d
 func.func @add_4d(%a: tensor<3x6x4x2x!ttcore.tile<32x32, f32>>,
                   %b: tensor<3x6x4x2x!ttcore.tile<32x32, f32>>)
@@ -25,13 +25,30 @@ func.func @add_4d(%a: tensor<3x6x4x2x!ttcore.tile<32x32, f32>>,
   %init_cb = ttl.attach_cb %init, %cb2 : (tensor<3x6x4x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[3, 6, 4, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<3x6x4x2x!ttcore.tile<32x32, f32>>
 
 // CHECK: %[[RES:.*]] = ttl.compute
-// CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-// CHECK: ttl.linearized_index [[$MAP]] : index
-// CHECK: ttl.copy_tile
-// CHECK: ttl.copy_tile
-// CHECK: ttl.tile_add
-// SEPARATE: ttl.tile_add {{.*}} {dst_idx = 2 : i32}
-// CHECK: ttl.yield
+// CHECK-NEXT: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+// FPU binary: no copy_tile needed, no linearized_index needed.
+// CHECK-NOT:  ttl.copy_tile
+// CHECK-NEXT: %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary}
+// CHECK-NEXT: ttl.tile_store
+// CHECK-NEXT: ttl.yield
+// SEPARATE-LABEL: func.func @add_4d
+// SEPARATE:      %[[ADDS:.*]] = ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
+// SEPARATE:      ttl.tile_store
+// SEPARATE-NEXT: ttl.yield
+//
+// SFPU path: verify 4D linearization (d0*48 + d1*8 + d2*2 + d3) and copy_tile
+// Map appears at module scope, so check before the label.
+// SFPU-DAG:     [[$MAP:#map[0-9]*]] = affine_map<(d0, d1, d2, d3) -> (d0 * 48 + d1 * 8 + d2 * 2 + d3)>
+// SFPU-LABEL: func.func @add_4d
+// SFPU:         ttl.compute
+// SFPU:         ^bb0(%[[AS:.*]]: !ttcore.tile<32x32, f32>, %[[BS:.*]]: !ttcore.tile<32x32, f32>, %{{.*}}: !ttcore.tile<32x32, f32>):
+// SFPU-NEXT:      %[[LIN:.*]] = ttl.linearized_index [[$MAP]]
+// SFPU-NEXT:      %{{.*}}, %[[DA:.*]] = ttl.copy_tile %[[AS]], %[[LIN]], %{{.*}} {dst_idx = 0 : i32}
+// SFPU-NEXT:      %{{.*}}, %[[DB:.*]] = ttl.copy_tile %[[BS]], %[[LIN]], %{{.*}} {dst_idx = 1 : i32}
+// SFPU-NEXT:      %[[ADDS:.*]] = ttl.tile_add %[[DA]], %[[DB]] {dst_idx = 0 : i32}
+// SFPU:            ttl.tile_store
+// SFPU-NEXT:       ttl.yield
+  %out_view = ttl.cb_reserve %cb2 : <[3, 6, 4, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<3x6x4x2x!ttcore.tile<32x32, f32>>
   %result = ttl.compute
       ins(%a_cb, %b_cb : tensor<3x6x4x2x!ttcore.tile<32x32, f32>>,
                          tensor<3x6x4x2x!ttcore.tile<32x32, f32>>)
@@ -42,7 +59,8 @@ func.func @add_4d(%a: tensor<3x6x4x2x!ttcore.tile<32x32, f32>>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    ttl.yield %sum : !ttcore.tile<32x32, f32>
+    ttl.tile_store %sum, %out_view : !ttcore.tile<32x32, f32>, tensor<3x6x4x2x!ttcore.tile<32x32, f32>>
+    ttl.yield
   } -> tensor<3x6x4x2x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<3x6x4x2x!ttcore.tile<32x32, f32>>

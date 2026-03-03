@@ -33,7 +33,9 @@ static bool isSkippedOp(Operation *op) {
 }
 
 // Check if an operation or any of its nested ops are profiling-worthy
-// ttkernel ops (i.e. ttkernel dialect and not on the skip list).
+// ttkernel ops (i.e. ttkernel dialect and not on the skip list). Ops that are
+// already covered by a nested signpost scope are not counted; those scopes
+// will emit their own profiling markers.
 static bool containsTTKernelOp(Operation *op) {
   if (op->getDialect() && op->getDialect()->getNamespace() == "ttkernel" &&
       !isSkippedOp(op)) {
@@ -41,8 +43,13 @@ static bool containsTTKernelOp(Operation *op) {
   }
   for (auto &region : op->getRegions()) {
     for (auto &block : region) {
+      bool insideSignpost = false;
       for (auto &nested : block) {
-        if (containsTTKernelOp(&nested)) {
+        if (auto sp = dyn_cast<SignpostOp>(&nested)) {
+          insideSignpost = sp.getName().ends_with("_before");
+          continue;
+        }
+        if (!insideSignpost && containsTTKernelOp(&nested)) {
           return true;
         }
       }

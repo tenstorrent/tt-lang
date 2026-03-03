@@ -14,6 +14,11 @@
 // - Block arg and all unary results should have the same interval [0, 3]
 // - All values get allocated to the same DST register
 
+// Verify Phase 0 finds no FPU binary ops (only unary ops)
+// CHECK: === Phase 0: FPU Binary Detection ===
+// CHECK-NOT: Marked FPU binary
+// CHECK: === Phase 1: Copy Insertion ===
+
 // Verify Phase 2 merging happens
 // CHECK: === Phase 2: Build Live Intervals ===
 // CHECK: Phase 2: Merged
@@ -24,7 +29,7 @@
 // CHECK-SAME: tile_relu
 
 // Verify merged set interval is computed correctly
-// Block args start at -1, so merged interval is [-1, 3]
+// Block args start at -1, tile_store extends end → [-1, 3]
 // CHECK: Merged set interval: [-1, 3] for 4 values
 
 // Verify all values in the chain have the same interval
@@ -54,6 +59,7 @@ func.func @unary_chain_shared_dst(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
   %a_cb = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %init_cb = ttl.attach_cb %init, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
+  %out_view = ttl.cb_reserve %cb1 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %result = ttl.compute
       ins(%a_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%init_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -63,7 +69,8 @@ func.func @unary_chain_shared_dst(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
     %abs = ttl.tile_abs %a_tile : !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %abs : !ttcore.tile<32x32, f32>
     %relu = ttl.tile_relu %exp : !ttcore.tile<32x32, f32>
-    ttl.yield %relu : !ttcore.tile<32x32, f32>
+    ttl.tile_store %relu, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -80,15 +87,20 @@ func.func @unary_chain_shared_dst(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 //   yield %1
 //
 // Expected: tile_mul and tile_abs share the same DST (merged interval [0, 2])
-// Block args have short intervals [0, 0] since they're only used by tile_mul
+// FPU binary: block args don't need DST registers
 
-// Verify binary→unary merging
+// Verify Phase 0 detects FPU binary
+// CHECK: === Phase 0: FPU Binary Detection ===
+// CHECK: Phase 0: Marked FPU binary: ttl.tile_mul
+
+// Verify binary->unary merging
 // CHECK: === Phase 2: Build Live Intervals ===
 // CHECK: Phase 2: Merged
 // CHECK-SAME: tile_mul
 // CHECK-SAME: tile_abs
 
 // Verify merged set has correct interval
+// tile_store extends end → [0, 2]
 // CHECK: Merged set interval: [0, 2] for 2 values
 
 // Verify live intervals
@@ -96,28 +108,16 @@ func.func @unary_chain_shared_dst(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 // The merged set (tile_mul + tile_abs) should have [0, 2]
 // CHECK-DAG: tile_mul{{.*}}: [0, 2]
 // CHECK-DAG: tile_abs{{.*}}: [0, 2]
-// Block args should have [-1, 0] (start at -1)
-// CHECK-DAG: block argument{{.*}}: [-1, 0]
-// CHECK-DAG: block argument{{.*}}: [-1, 0]
 
-// Verify allocation: merged set of 2 values allocated to DST[0]
+// Verify allocation: FPU binary means block args don't need DST, so only
+// the merged set needs allocation. Gets DST[0] directly.
 // CHECK: === Phase 3: Linear Scan Allocation ===
-// CHECK: Allocated DST[0]
-// CHECK-SAME: (merged set size: 1)
-// CHECK: Allocated DST[1]
-// CHECK-SAME: (merged set size: 1)
-// Verify register expiry and reuse - block args expire after first use
-// CHECK: Expired interval for
-// CHECK-SAME: freed DST[0]
-// CHECK: Expired interval for
-// CHECK-SAME: freed DST[1]
-// Now the binary→unary merged set gets allocated to the freed DST[0]
 // CHECK: Allocated DST[0]
 // CHECK-SAME: (merged set size: 2)
 
-// Verify max DST usage output
+// Verify max DST usage output (only 1 register needed now)
 // CHECK: === Final DST Assignment ===
-// CHECK: Max DST usage: 2 / 8 registers
+// CHECK: Max DST usage: 1 / 8 registers
 
 func.func @binary_then_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                    %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -132,6 +132,7 @@ func.func @binary_then_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   %b_cb = ttl.attach_cb %b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %init_cb = ttl.attach_cb %init, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
+  %out_view_0 = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %result = ttl.compute
       ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>,
                          tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -143,7 +144,8 @@ func.func @binary_then_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %mul = ttl.tile_mul %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %abs = ttl.tile_abs %mul : !ttcore.tile<32x32, f32>
-    ttl.yield %abs : !ttcore.tile<32x32, f32>
+    ttl.tile_store %abs, %out_view_0 : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>

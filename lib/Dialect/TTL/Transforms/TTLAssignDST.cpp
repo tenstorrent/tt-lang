@@ -7,18 +7,19 @@
 //===----------------------------------------------------------------------===//
 //
 // This pass performs DST (destination) register assignment for ttl.compute
-// operations using interval-based linear scan allocation with unary operation
-// merging. The algorithm is based on docs/development/DST_Allocation.md:
+// operations using interval-based linear scan allocation with in-place
+// operation merging. The algorithm is based on
+// docs/development/DST_Allocation.md:
 //
 // Phase 1: Copy Insertion
-//   - For values with multiple consumers where any consumer is unary
+//   - For values with multiple consumers where any consumer is in-place
 //   - Insert ttl.copy_dst for all but the last consumer
-//   - Prevents unary ops from clobbering values needed by other consumers
+//   - Prevents in-place ops from clobbering values needed by other consumers
 //
-// Phase 2: Build Live Intervals with Unary Merging
+// Phase 2: Build Live Intervals with In-Place Merging
 //   - Assign operation indices in block order
 //   - Build lifetime intervals [start, end] for each tile value
-//   - Merge intervals for unary ops (input and output share DST)
+//   - Merge intervals for in-place ops (input and output share DST)
 //   - Use union-find to track merged equivalence classes
 //
 // Phase 3: Linear Scan Allocation
@@ -73,12 +74,11 @@ constexpr std::uint32_t kDefaultDSTCapacity = 8;
 constexpr int64_t kPlaceholderIndex = std::numeric_limits<int64_t>::max();
 
 /// Compute DST capacity based on operation types and device config.
-/// TODO(#264): Handle mixed dtypes - if compute block has both f32 and bf16
-/// tile arguments, should we use f32 capacity (4 tiles, safer) or error?
-/// Consider emitting warning for mixed dtypes since f32 config reduces
-/// available DST capacity and may cause unexpected capacity overflow.
-static std::uint32_t computeDSTCapacity(ComputeOp computeOp) {
-  // Capacity by datatype and buffering mode (see )
+/// Returns failure for mixed f32/non-f32 tile arguments.
+/// TODO(#264): Support mixed dtypes instead of erroring (e.g. use f32
+/// capacity).
+static FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
+  // Capacity by datatype and buffering mode:
   //   Double-buffering (default):
   //     - f16/bf16: 8 tiles
   //     - f32: 4 tiles
@@ -87,32 +87,30 @@ static std::uint32_t computeDSTCapacity(ComputeOp computeOp) {
   //     - f32: 8 tiles
   bool fullSyncEn = false;
   if (auto fullSyncAttr =
-          computeOp->getAttrOfType<mlir::BoolAttr>("dst_full_sync_en")) {
+          computeOp->getAttrOfType<mlir::BoolAttr>(kDstFullSyncEnAttrName)) {
     fullSyncEn = fullSyncAttr.getValue();
   }
 
   bool fp32DestAccEn = false;
   if (auto fp32Attr =
-          computeOp->getAttrOfType<mlir::BoolAttr>("fp32_dest_acc_en")) {
+          computeOp->getAttrOfType<mlir::BoolAttr>(kFp32DestAccEnAttrName)) {
     fp32DestAccEn = fp32Attr.getValue();
   }
 
   Type elementType;
   bool sawF32 = false;
   bool sawNonF32 = false;
-  Block *body = &computeOp.getRegion().front();
-  if (body) {
-    for (BlockArgument arg : body->getArguments()) {
-      std::optional<Type> currentType = getTileElementType(arg.getType());
-      if (currentType) {
-        if (!elementType) {
-          elementType = *currentType;
-        }
-        if (currentType->isF32()) {
-          sawF32 = true;
-        } else {
-          sawNonF32 = true;
-        }
+  Block &body = computeOp.getRegion().front();
+  for (BlockArgument arg : body.getArguments()) {
+    std::optional<Type> currentType = getTileElementType(arg.getType());
+    if (currentType) {
+      if (!elementType) {
+        elementType = *currentType;
+      }
+      if (currentType->isF32()) {
+        sawF32 = true;
+      } else {
+        sawNonF32 = true;
       }
     }
   }
@@ -123,9 +121,10 @@ static std::uint32_t computeDSTCapacity(ComputeOp computeOp) {
   }
 
   if (sawF32 && sawNonF32) {
-    computeOp.emitWarning(
-        "Mixed f32 and non-f32 tile arguments detected; "
-        "dst capacity uses f32 limits when fp32_dest_acc_en is enabled.");
+    return computeOp.emitOpError(
+        "mixed f32 and non-f32 tile arguments; "
+        "DST capacity uses f32 limits (4 tiles) which may produce "
+        "incorrect results");
   }
 
   if (!elementType) {
@@ -157,20 +156,13 @@ static bool isTileValue(Value v) { return isa<ttcore::TileType>(v.getType()); }
 
 using MergedClasses = llvm::EquivalenceClasses<Value>;
 
-static Value getLeaderOrInsert(MergedClasses &merged, Value v) {
-  return merged.getOrInsertLeaderValue(v);
-}
-
-static SmallVector<Value> getAllMerged(MergedClasses &merged, Value v) {
-  SmallVector<Value> result;
+/// Return all values in the merged equivalence class of `v`.
+/// If `v` is not in any class, returns just `v` itself.
+static SmallVector<Value> getMergedValues(MergedClasses &merged, Value v) {
   if (!merged.contains(v)) {
-    result.push_back(v);
-    return result;
+    return {v};
   }
-  for (Value member : merged.members(v)) {
-    result.push_back(member);
-  }
-  return result;
+  return SmallVector<Value>(merged.members(v));
 }
 
 //===----------------------------------------------------------------------===//
@@ -213,14 +205,18 @@ static FailureOr<AffineMapAttr> computeIndexMapAttr(BlockArgument arg,
 
 /// Allocate a DST register and create a CopyTileOp for a block argument.
 /// Looks up assignment first; falls back to allocating a free register.
-static FailureOr<CopyTileOp>
-createCopyTileForArg(BlockArgument arg, ComputeOp computeOp, OpBuilder &builder,
-                     const DenseMap<Value, std::uint32_t> &dstAssignment,
-                     llvm::SmallBitVector &inUse,
-                     DenseMap<Value, std::uint32_t> &dstIndexForValue) {
+/// If dstIndexOverride is provided, it takes precedence over the assignment
+/// map.
+static FailureOr<CopyTileOp> createCopyTileForArg(
+    BlockArgument arg, ComputeOp computeOp, OpBuilder &builder,
+    const DenseMap<Value, std::uint32_t> &dstAssignment,
+    llvm::SmallBitVector &inUse,
+    DenseMap<Value, std::uint32_t> &dstIndexForValue,
+    std::optional<std::uint32_t> dstIndexOverride = std::nullopt) {
   std::uint32_t assignedDstIndex = 0;
-  auto it = dstAssignment.find(arg);
-  if (it != dstAssignment.end()) {
+  if (dstIndexOverride) {
+    assignedDstIndex = *dstIndexOverride;
+  } else if (auto it = dstAssignment.find(arg); it != dstAssignment.end()) {
     assignedDstIndex = it->second;
   } else {
     int freeReg = inUse.find_first_unset();
@@ -256,8 +252,8 @@ createCopyTileForArg(BlockArgument arg, ComputeOp computeOp, OpBuilder &builder,
 static SmallVector<Operation *> getSortedConsumers(Value v) {
   SmallVector<Operation *> consumers;
   for (Operation *user : v.getUsers()) {
-    // Skip CB-input ops (bcast, reduce, transpose, etc.)
-    if (user->hasTrait<TTLCBInputTileOpTrait>()) {
+    // Skip CB-input ops (bcast, reduce, transpose, FPU binary, etc.)
+    if (isCBInputOp(user)) {
       continue;
     }
     consumers.push_back(user);
@@ -268,16 +264,17 @@ static SmallVector<Operation *> getSortedConsumers(Value v) {
   return consumers;
 }
 
-/// Check if any consumer is a tile unary operation.
-static bool hasUnaryConsumer(ArrayRef<Operation *> consumers) {
-  return llvm::any_of(consumers,
-                      [](Operation *op) { return isTileUnaryOp(op); });
+/// Check if any consumer is an in-place operation (overwrites DST input).
+static bool hasInPlaceConsumer(ArrayRef<Operation *> consumers) {
+  return llvm::any_of(consumers, [](Operation *op) {
+    return op->hasTrait<TTLInPlaceOpTrait>();
+  });
 }
 
 /// Phase 1: Insert copy operations for multi-consumer values where any
-/// consumer is unary. Copies are inserted for all but the last consumer.
-/// Unary ops overwrite their input in-place, so if other ops need that
-/// value before the last unary consumer, we must copy it first.
+/// consumer is in-place. Copies are inserted for all but the last consumer.
+/// In-place ops overwrite their input in DST, so if other ops need that
+/// value before the last in-place consumer, we must copy it first.
 ///
 /// For block arguments: Insert copy_tile (CB-to-DST copy).
 /// For operation results: Insert copy_dst (DST-to-DST copy).
@@ -299,9 +296,9 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
       return; // No multi-consumer
     }
 
-    // Check if any consumer is unary - unary ops overwrite their input
-    if (!hasUnaryConsumer(consumers)) {
-      return; // All binary consumers - no copies needed
+    // Check if any consumer is in-place - in-place ops overwrite their input
+    if (!hasInPlaceConsumer(consumers)) {
+      return; // No in-place consumers - no copies needed
     }
 
     valuesToCopy.push_back({v, consumers});
@@ -363,12 +360,12 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
 }
 
 //===----------------------------------------------------------------------===//
-// Phase 2: Build Live Intervals with Unary Merging
+// Phase 2: Build Live Intervals with In-Place Merging
 //===----------------------------------------------------------------------===//
 
 /// Build live intervals for all tile values in the compute body.
-/// Also performs unary merging: unary op input and output share DST.
-static void buildLiveIntervals(Block *body, YieldOp yieldOp,
+/// Also performs in-place merging: in-place op input and output share DST.
+static void buildLiveIntervals(Block *body,
                                llvm::MapVector<Value, Interval> &intervals,
                                MergedClasses &merged,
                                DenseMap<Operation *, int64_t> &opIndex) {
@@ -377,19 +374,18 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
   for (Operation &op : *body) {
     opIndex[&op] = idx++;
   }
-  int64_t yieldIdx = opIndex[yieldOp];
 
   // Build initial intervals
   for (Operation &op : *body) {
     int64_t currentIdx = opIndex[&op];
 
     // Extend input intervals to this use (skipping ops with CB inputs)
-    if (!op.hasTrait<TTLCBInputTileOpTrait>()) {
+    if (!isCBInputOp(&op)) {
       for (Value operand : op.getOperands()) {
         if (!isTileValue(operand)) {
           continue;
         }
-        if (intervals.find(operand) == intervals.end()) {
+        if (!intervals.count(operand)) {
           // Block argument: start at (first_use - 1) to enable register reuse.
           // Args consumed at position N get allocated before outputs produced
           // at N, allowing outputs to reuse the consumed args' registers.
@@ -409,22 +405,26 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
     }
   }
 
-  // Extend intervals for yielded values to the yield operation
-  for (Value yielded : yieldOp.getValues()) {
-    if (isTileValue(yielded) && intervals.count(yielded)) {
-      intervals[yielded].end = yieldIdx;
+  // Extend intervals for tile_store operands: their tile values must remain
+  // live until the store (pack_tile) executes.
+  for (Operation &op : *body) {
+    if (auto storeOp = dyn_cast<TileStoreOp>(&op)) {
+      Value stored = storeOp.getTile();
+      if (isTileValue(stored) && intervals.count(stored)) {
+        int64_t storeIdx = opIndex[&op];
+        intervals[stored].end = std::max(intervals[stored].end, storeIdx);
+      }
     }
   }
 
-  // Collect yielded values for quick lookup
-  DenseSet<Value> yieldedValues;
-  for (Value v : yieldOp.getValues()) {
-    yieldedValues.insert(v);
-  }
-
-  // Merge intervals for unary ops
+  // Merge intervals for in-place ops (input and output share DST slot).
+  // In-place ops (exp_tile, abs_tile, etc.) read from and write to the same
+  // DST register -- this is a hardware constraint. The merge is unconditional:
+  // regardless of what downstream ops consume the result, the input and output
+  // must share the same DST index so the lowered instruction (e.g.,
+  // exp_tile(dst_idx)) operates on the correct register.
   for (Operation &op : *body) {
-    if (!isTileUnaryOp(&op)) {
+    if (!op.hasTrait<TTLInPlaceOpTrait>()) {
       continue;
     }
 
@@ -435,41 +435,29 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
       continue;
     }
 
-    // Check if output is yielded or all uses are unary
-    bool shouldMerge = yieldedValues.contains(output);
-    if (!shouldMerge) {
-      // Check if all uses are unary
-      shouldMerge = llvm::all_of(output.getUsers(), [](Operation *user) {
-        return isTileUnaryOp(user) || isa<YieldOp>(user);
-      });
+    auto itA = merged.findLeader(merged.insert(input));
+    auto itB = merged.findLeader(merged.insert(output));
+    if (itA != itB) {
+      merged.unionSets(itA, itB);
     }
 
-    if (shouldMerge) {
-      auto itA = merged.findLeader(merged.insert(input));
-      auto itB = merged.findLeader(merged.insert(output));
-      if (itA != itB) {
-        merged.unionSets(itA, itB);
-      }
-
-      LLVM_DEBUG({
-        llvm::dbgs() << "Phase 2: Merged " << input << " and " << output
-                     << "\n";
-      });
-    }
+    LLVM_DEBUG({
+      llvm::dbgs() << "Phase 2: Merged " << input << " and " << output << "\n";
+    });
   }
 
   // Propagate merged intervals: all values in a merged set get the same
   // interval (the union of all their individual intervals).
   DenseSet<Value> processed;
   for (auto &[value, interval] : intervals) {
-    Value root = getLeaderOrInsert(merged, value);
+    Value root = merged.getOrInsertLeaderValue(value);
     if (processed.contains(root)) {
       continue;
     }
     processed.insert(root);
 
     // Find all values in this merged set and compute the union interval
-    auto allMerged = getAllMerged(merged, value);
+    auto allMerged = getMergedValues(merged, value);
     if (allMerged.size() <= 1) {
       continue;
     }
@@ -493,6 +481,56 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
     });
   }
 
+  // Prevent DST register reuse between FPU binary ops.
+  // FPU binary ops (add_tiles, mul_tiles, sub_tiles) accumulate into their
+  // output DST register: result = old_DST_value + computed_value. If two FPU
+  // binary ops share the same DST output index, the second reads the first's
+  // residual and produces a corrupted result. tt-mlir's D2M dialect solves
+  // this by never allowing in-place DST reuse for binary tile-tile ops
+  // (getDstRegInPlace() = false). We achieve the same by extending FPU binary
+  // result intervals so the linear scan allocator assigns distinct registers.
+  //
+  // TODO(#343): This wastes DST capacity. The proper fix is to pass
+  // acc_to_dest=false to add_tiles_init/sub_tiles_init/mul_tiles_init in
+  // tt-mlir's TTKernel dialect (currently has a FIXME in TTKernelOps.td).
+  // With explicit overwrite mode, DST reuse between FPU binary ops would be
+  // safe and this interval extension could be removed.
+  {
+    SmallVector<int64_t> fpuBinaryStarts;
+    for (Operation &op : *body) {
+      if (op.hasAttr(kFPUBinaryAttrName)) {
+        fpuBinaryStarts.push_back(opIndex[&op]);
+      }
+    }
+
+    if (fpuBinaryStarts.size() > 1) {
+      int64_t lastFPUStart = *llvm::max_element(fpuBinaryStarts);
+      for (Operation &op : *body) {
+        if (!op.hasAttr(kFPUBinaryAttrName)) {
+          continue;
+        }
+        for (Value result : op.getResults()) {
+          if (!isTileValue(result) || !intervals.count(result)) {
+            continue;
+          }
+          // Use lastFPUStart + 1 because the linear scan expires intervals
+          // with end <= start, so end must be strictly greater than the last
+          // FPU binary op's start index to remain active during allocation.
+          if (intervals[result].end <= lastFPUStart) {
+            LLVM_DEBUG({
+              llvm::dbgs() << "Phase 2: Extended FPU binary interval from ["
+                           << intervals[result].start << ", "
+                           << intervals[result].end << "] to ["
+                           << intervals[result].start << ", "
+                           << (lastFPUStart + 1) << "] to prevent DST reuse\n";
+            });
+            intervals[result].end = lastFPUStart + 1;
+          }
+        }
+      }
+    }
+  }
+
   LLVM_DEBUG({
     llvm::dbgs() << "=== Live Intervals ===\n";
     for (auto &[value, interval] : intervals) {
@@ -506,9 +544,14 @@ static void buildLiveIntervals(Block *body, YieldOp yieldOp,
 // Phase 3: Linear Scan Allocation for Inputs/Intermediates
 //===----------------------------------------------------------------------===//
 
-/// Helper to check if a value is yielded by the compute operation.
-static bool isYieldedValue(Value val, YieldOp yieldOp) {
-  return llvm::is_contained(yieldOp.getValues(), val);
+/// Helper to check if a value is stored by a tile_store in the compute body.
+static bool isStoredValue(Value val, Block &body) {
+  for (Operation *user : val.getUsers()) {
+    if (isa<TileStoreOp>(user) && user->getBlock() == &body) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /// Core linear scan allocation logic (shared by Phase 3 and Phase 4).
@@ -542,7 +585,7 @@ static FailureOr<std::uint32_t> linearScanAllocateFiltered(
     }
 
     // Skip if merged set already processed
-    Value root = getLeaderOrInsert(merged, interval->value);
+    Value root = merged.getOrInsertLeaderValue(interval->value);
     if (processedRoots.contains(root)) {
       continue;
     }
@@ -579,7 +622,7 @@ static FailureOr<std::uint32_t> linearScanAllocateFiltered(
     maxDstUsed = maxDstUsed ? std::max(*maxDstUsed, regIdx) : regIdx;
 
     // Assign to all values in the merged set
-    auto allMerged = getAllMerged(merged, interval->value);
+    auto allMerged = getMergedValues(merged, interval->value);
     for (Value mergedVal : allMerged) {
       if (!assignment.count(mergedVal)) {
         assignment[mergedVal] = regIdx;
@@ -605,7 +648,6 @@ static FailureOr<std::uint32_t> linearScanAllocateFiltered(
 //===----------------------------------------------------------------------===//
 
 struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
-  using Base = impl::TTLAssignDSTBase<TTLAssignDSTPass>;
   using Base::Base;
 
   void runOnOperation() override {
@@ -613,19 +655,48 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
 
     funcOp.walk([&](ComputeOp computeOp) {
       Block *body = &computeOp.getRegion().front();
-      if (!body) {
-        return;
-      }
 
-      auto yieldOp = dyn_cast<YieldOp>(body->getTerminator());
-      if (!yieldOp) {
-        return;
+      std::uint32_t capacity = dstCapacity;
+      if (capacity == 0) {
+        auto computed = computeDSTCapacity(computeOp);
+        if (failed(computed)) {
+          signalPassFailure();
+          return;
+        }
+        capacity = *computed;
       }
-
-      std::uint32_t capacity =
-          dstCapacity == 0 ? computeDSTCapacity(computeOp) : dstCapacity;
 
       OpBuilder builder(body, body->begin());
+
+      //=== Phase 0: FPU Binary Detection ===
+      // Mark add/sub/mul ops as FPU-eligible when both operands are input
+      // block arguments (CB-backed). FPU reads from CB, needing 0 DST input
+      // slots. Output block arguments are excluded because they may represent
+      // accumulation patterns that require DST copy_tile.
+      LLVM_DEBUG(llvm::dbgs() << "=== Phase 0: FPU Binary Detection ===\n");
+      if (enableFPUBinaryOps) {
+        unsigned numInputs = computeOp.getNumInputs();
+        for (Operation &op : *body) {
+          if (!isa<AddTileOp, SubTileOp, MulTileOp>(&op)) {
+            continue;
+          }
+          Value lhs = op.getOperand(0);
+          Value rhs = op.getOperand(1);
+          auto lhsArg = dyn_cast<BlockArgument>(lhs);
+          auto rhsArg = dyn_cast<BlockArgument>(rhs);
+          if (lhsArg && rhsArg && lhsArg.getArgNumber() < numInputs &&
+              rhsArg.getArgNumber() < numInputs) {
+            op.setAttr(kFPUBinaryAttrName, builder.getUnitAttr());
+            LLVM_DEBUG({
+              llvm::dbgs() << "Phase 0: Marked FPU binary: " << op.getName()
+                           << "\n";
+            });
+          }
+        }
+      } else {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "Phase 0: FPU binary ops disabled, skipping\n");
+      }
 
       //=== Phase 1: Copy Insertion ===
       LLVM_DEBUG(llvm::dbgs() << "=== Phase 1: Copy Insertion ===\n");
@@ -636,13 +707,13 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       llvm::MapVector<Value, Interval> intervals;
       MergedClasses merged;
       DenseMap<Operation *, int64_t> opIndex;
-      buildLiveIntervals(body, yieldOp, intervals, merged, opIndex);
+      buildLiveIntervals(body, intervals, merged, opIndex);
 
       //=== Phase 3 & 4: Linear Scan Allocation ===
       DenseMap<Value, std::uint32_t> dstAssignment;
 
       if (separateOutputRegion) {
-        // Phase 3: Allocate inputs/intermediates (non-yielded values)
+        // Phase 3: Allocate inputs/intermediates (non-stored values)
         LLVM_DEBUG(llvm::dbgs() << "Using separate output region mode\n");
         LLVM_DEBUG(llvm::dbgs() << "=== Phase 3: Linear Scan Allocation ===\n");
         llvm::SmallBitVector freeRegs(capacity);
@@ -651,10 +722,10 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
             intervals, merged, freeRegs, dstAssignment,
             [&](Value val) {
               // For separate output region mode, check if any member of the
-              // merged set is yielded. If so, defer the entire set to Phase 4.
-              auto allMerged = getAllMerged(merged, val);
+              // merged set is stored. If so, defer the entire set to Phase 4.
+              auto allMerged = getMergedValues(merged, val);
               return llvm::none_of(allMerged, [&](Value member) {
-                return isYieldedValue(member, yieldOp);
+                return isStoredValue(member, *body);
               });
             },
             computeOp, "Phase 3");
@@ -670,7 +741,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
                        << " registers\n";
         });
 
-        // Phase 4: Allocate outputs (yielded values) starting at
+        // Phase 4: Allocate outputs (stored values) starting at
         // inputsFootprint
         LLVM_DEBUG(llvm::dbgs() << "=== Phase 4: Linear Scan Allocation ===\n");
         llvm::SmallBitVector outputRegs(capacity);
@@ -679,8 +750,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         }
         if (failed(linearScanAllocateFiltered(
                 intervals, merged, outputRegs, dstAssignment,
-                [&](Value val) { return isYieldedValue(val, yieldOp); },
-                computeOp, "Phase 4"))) {
+                [&](Value val) { return isStoredValue(val, *body); }, computeOp,
+                "Phase 4"))) {
           computeOp.emitOpError()
               << "insufficient DST registers for outputs: all " << capacity
               << " registers in use (spilling not yet implemented)";
@@ -758,15 +829,16 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         }
 
         // Use the placeholder's DST assignment if available.
+        std::optional<std::uint32_t> dstOverride;
         auto placeholderIt = dstAssignment.find(placeholder.getDstTile());
-        DenseMap<Value, std::uint32_t> lookupOverride(dstAssignment);
         if (placeholderIt != dstAssignment.end()) {
-          lookupOverride[arg] = placeholderIt->second;
+          dstOverride = placeholderIt->second;
         }
 
         builder.setInsertionPoint(placeholder);
-        auto newCopy = createCopyTileForArg(
-            arg, computeOp, builder, lookupOverride, inUse, dstIndexForValue);
+        auto newCopy =
+            createCopyTileForArg(arg, computeOp, builder, dstAssignment, inUse,
+                                 dstIndexForValue, dstOverride);
         if (failed(newCopy)) {
           signalPassFailure();
           return;
@@ -790,7 +862,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       // Copies must be inserted at first use (not block start) to match the
       // liveness intervals that DST allocation was computed against.
       for (Operation &op : *body) {
-        if (op.hasTrait<TTLCBInputTileOpTrait>() || isa<CopyTileOp>(&op)) {
+        if (isCBInputOp(&op) || isa<CopyTileOp>(&op)) {
           continue;
         }
         for (OpOperand &operand : op.getOpOperands()) {
@@ -810,7 +882,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
           arg.replaceUsesWithIf(copy->getDstTile(), [&](OpOperand &use) {
             return use.getOwner() != copy->getOperation() &&
                    !isa<CopyTileOp>(use.getOwner()) &&
-                   !use.getOwner()->hasTrait<TTLCBInputTileOpTrait>();
+                   !isCBInputOp(use.getOwner());
           });
         }
       }
@@ -860,6 +932,46 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
             return;
           }
         }
+      }
+
+      //=== Compute and attach unroll_factor ===
+      // unroll_factor = how many tiles can be processed per DST sync region.
+      // dstPerIteration = DST registers used per single tile iteration.
+      // unroll_factor = min(floor(capacity / dstPerIteration), totalTiles).
+      if (!dstAssignment.empty()) {
+        std::uint32_t dstPerIteration = maxDstUsed + 1;
+        std::uint32_t unrollFactor = capacity / dstPerIteration;
+
+        // Compute total tiles from the first output tensor shape.
+        // TODO: For reductions, use the iteration domain (input shape) instead,
+        // since the output has fewer dimensions than the loop nest.
+        int64_t totalTiles = 1;
+        Value firstOutput = computeOp.getOutputs().front();
+        auto outputTy = cast<RankedTensorType>(firstOutput.getType());
+        for (int64_t dim : outputTy.getShape()) {
+          if (dim == ShapedType::kDynamic) {
+            totalTiles = 1;
+            break;
+          }
+          totalTiles *= dim;
+        }
+
+        unrollFactor =
+            std::min(unrollFactor, static_cast<std::uint32_t>(totalTiles));
+
+        // Only attach if tiling is beneficial (factor > 1).
+        if (unrollFactor > 1) {
+          computeOp->setAttr(
+              kUnrollFactorAttrName,
+              builder.getI64IntegerAttr(static_cast<int64_t>(unrollFactor)));
+        }
+
+        LLVM_DEBUG({
+          llvm::dbgs() << "DST per iteration: " << dstPerIteration
+                       << ", capacity: " << capacity
+                       << ", total tiles: " << totalTiles
+                       << ", unroll_factor: " << unrollFactor << "\n";
+        });
       }
     });
   }

@@ -6,11 +6,14 @@
 
 // CHECK-LABEL: func.func @copy_tile_in_compute
 // CHECK:       %[[CB_TTK:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, f32>>
+// CHECK:       ttkernel.cb_reserve_back
 // CHECK:       scf.for
 // CHECK:         scf.for
 // CHECK:           ttkernel.copy_tile_init(%[[CB_TTK]]) : (!ttkernel.cb<{{.*}}>) -> ()
 // CHECK:           ttkernel.copy_tile(%[[CB_TTK]], %{{.*}}, %{{.*}}) : (!ttkernel.cb<{{.*}}>, index, index) -> ()
+// CHECK:           ttkernel.pack_tile
 // CHECK-NOT:   ttl.copy_tile
+// CHECK-NOT:   ttl.tile_store
 // CHECK-NOT:   ttl.attach_cb
 func.func @copy_tile_in_compute(
     %t_tensor: tensor<1x1x!ttcore.tile<32x32, f32>>,
@@ -21,6 +24,7 @@ func.func @copy_tile_in_compute(
       : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>)
       -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
+  %out_view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %result = ttl.compute
       ins(%t_attached : tensor<1x1x!ttcore.tile<32x32, f32>>)
       outs(%t_attached : tensor<1x1x!ttcore.tile<32x32, f32>>)
@@ -30,7 +34,8 @@ func.func @copy_tile_in_compute(
   ^bb0(%tile_in: !ttcore.tile<32x32, f32>, %tile_out: !ttcore.tile<32x32, f32>):
     %dst, %dst_tile = ttl.copy_tile %tile_in, %src_idx, %dst_idx
         : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-    ttl.yield %dst_tile : !ttcore.tile<32x32, f32>
+    ttl.tile_store %dst_tile, %out_view : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<1x1x!ttcore.tile<32x32, f32>>

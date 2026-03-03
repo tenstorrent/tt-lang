@@ -39,18 +39,13 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-using mlir::LogicalResult;
-using mlir::PatternRewriter;
-using mlir::RewritePatternSet;
-using mlir::TypeConverter;
-using mlir::UnrealizedConversionCastOp;
-using mlir::ValueRange;
 using mlir::func::FuncOp;
 namespace ttk = mlir::tt::ttkernel;
 
 // Start index in compile-time args for TA static metadata (is_sharded,
 // is_dram). CTA layout is [CBs, TAs], so this is the number of CBs.
 constexpr llvm::StringLiteral kBaseCTAIndexAttr = "ttl.base_cta_index";
+
 // Maps local args to global tensor indices for common runtime args (buffer
 // addresses). CRTA is filtered per-thread, containing only addresses for
 // tensors this thread uses.
@@ -93,8 +88,15 @@ public:
 // Helper utilities.
 //===----------------------------------------------------------------------===//
 
-static std::optional<ttk::ThreadType> getKernelThreadType(Operation *op) {
+/// Convert ttl.kernel_thread -> ttkernel.thread if present, returning the
+/// resolved thread type from whichever attribute exists.
+static std::optional<ttk::ThreadType> convertThreadAttr(Operation *op) {
+  if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>("ttkernel.thread")) {
+    return a.getValue();
+  }
   if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>("ttl.kernel_thread")) {
+    op->removeAttr("ttl.kernel_thread");
+    op->setAttr("ttkernel.thread", a);
     return a.getValue();
   }
   return std::nullopt;
@@ -128,10 +130,6 @@ getBufferAddressFromRuntimeArg(Value tensor, Location loc,
   return rewriter
       .create<ttk::GetCommonArgValOp>(loc, rewriter.getI32Type(), idxConst)
       .getResult();
-}
-
-static bool isNocKernel(Operation *op) {
-  return getKernelThreadType(op) == ttk::ThreadType::Noc;
 }
 
 /// Build a TensorAccessor from CTA/CRTA indices, bank base, and page size.
@@ -175,12 +173,6 @@ static bool eraseUnusedArguments(FuncLike funcLike) {
   return true;
 }
 
-/// Convert TTL CircularBufferType to TTKernel CBType.
-static ttk::CBType convertToKernelCBType(CircularBufferType ttlCb) {
-  return ttk::CBType::get(ttlCb.getContext(), ttlCb.getTotalElements(),
-                          ttlCb.getElementType());
-}
-
 struct BindCBLowering : OpConversionPattern<BindCBOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -195,7 +187,9 @@ struct BindCBLowering : OpConversionPattern<BindCBOp> {
     }
 
     // Convert to TTKernel CB type.
-    auto cbType = convertToKernelCBType(ttlCbType);
+    auto cbType =
+        ttk::CBType::get(ttlCbType.getContext(), ttlCbType.getTotalElements(),
+                         ttlCbType.getElementType());
 
     // Get the CB index from the bind_cb op attribute.
     int64_t cbIndex = op.getCbIndex().getSExtValue();
@@ -239,9 +233,8 @@ static CircularBufferType getTTLCBType(Value cb) {
 }
 
 // num_pages = product of CB shape dimensions (elements per block).
-// Used by CBOpLowering template; [[maybe_unused]] silences linter warning.
-[[maybe_unused]] static Value
-computeNumPages(Value cb, ConversionPatternRewriter &rewriter, Location loc) {
+static Value computeNumPages(Value cb, ConversionPatternRewriter &rewriter,
+                             Location loc) {
   auto ttlCbTy = getTTLCBType(cb);
   int64_t numPages = ttlCbTy ? ttlCbTy.getElementsPerBlock() : 1;
   return rewriter.create<arith::ConstantIntOp>(loc, numPages, 32);
@@ -414,13 +407,8 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
 
 /// Compute CTA index for a tensor function argument.
 /// Reads ttl.base_cta_index and ttl.crta_indices from parent function.
-/// Returns baseCTA + crtaIndices[localArgIdx].
-static FailureOr<int32_t> computeCTAIndex(Value tensor, Operation *op) {
-  auto argIdx = getTensorFuncArgIndex(tensor);
-  if (failed(argIdx)) {
-    return op->emitError("tensor must be a function argument");
-  }
-
+/// Returns baseCTA + crtaIndices[argIdx].
+static FailureOr<int32_t> computeCTAIndex(unsigned argIdx, Operation *op) {
   auto parentFunc = op->getParentOfType<func::FuncOp>();
   if (!parentFunc) {
     return op->emitError("operation must be inside a function");
@@ -438,39 +426,26 @@ static FailureOr<int32_t> computeCTAIndex(Value tensor, Operation *op) {
            << kCRTAIndicesAttr << " attribute";
   }
 
-  if (*argIdx >= crtaIndicesAttr.size()) {
+  if (argIdx >= crtaIndicesAttr.size()) {
     return op->emitError("argument index out of range for ")
            << kCRTAIndicesAttr;
   }
 
   int64_t baseCTA = baseCTAAttr.getInt();
   int64_t globalTensorIdx =
-      mlir::cast<IntegerAttr>(crtaIndicesAttr[*argIdx]).getInt();
+      mlir::cast<IntegerAttr>(crtaIndicesAttr[argIdx]).getInt();
 
   return static_cast<int32_t>(baseCTA + globalTensorIdx);
 }
 
-/// Create a TensorAccessor from a tensor type and bank base address.
-/// The bankBase should come from runtime args via
-/// getBufferAddressFromRuntimeArg.
-///
-/// This function derives page size from TTNNLayoutAttr encoding on the tensor.
-/// Supported layouts:
-///   - L1 interleaved (tiled)
-///   - DRAM interleaved (tiled)
-///
-/// Unsupported layouts will emit errors referencing the appropriate GH issues:
-///   - Sharded layouts: See GH issue #118
-///   - Row-major (non-tiled): See GH issue #173
-static FailureOr<Value>
-materializeTensorAccessor(Value tensor, Value bankBase, Operation *op,
-                          ConversionPatternRewriter &rewriter) {
+/// Validate TTNNLayoutAttr encoding on a tensor and return the page size.
+/// Rejects sharded (#118) and row-major (#173) layouts with diagnostics.
+static FailureOr<int64_t> getValidatedPageSize(Value tensor, Operation *op) {
   auto tensorTy = llvm::dyn_cast<RankedTensorType>(tensor.getType());
   if (!tensorTy) {
     return op->emitError("expected RankedTensorType for tensor accessor");
   }
 
-  // Require TTNNLayoutAttr encoding - no fallback to contiguous layout.
   auto layoutAttr =
       mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
   if (!layoutAttr) {
@@ -480,41 +455,43 @@ materializeTensorAccessor(Value tensor, Value bankBase, Operation *op,
         "layout");
   }
 
-  // Reject sharded layouts - not yet supported (see GH issue #118).
-  // Python error: "TTNN interop requires interleaved tensors"
   if (layoutAttr.hasShardedTensorMemoryLayout()) {
     return op->emitError("sharded memory layout not yet supported for tensor "
                          "accessor; see GH issue #118");
   }
 
-  // Reject row-major (non-tiled) layouts - not yet supported (see GH #173).
-  // Python error: "Only tiled CBs supported"
   if (!layoutAttr.isTiled()) {
     return op->emitError("row-major (non-tiled) layout not yet supported for "
                          "tensor accessor; see GH issue #173");
   }
 
+  return layoutAttr.getElementSizeBytes();
+}
+
+/// Create a TensorAccessor from a tensor type, bank base address, and
+/// pre-validated page size. The bankBase should come from runtime args via
+/// getBufferAddressFromRuntimeArg; pageSizeBytes from getValidatedPageSize.
+static FailureOr<Value>
+materializeTensorAccessor(Value tensor, Value bankBase, int64_t pageSizeBytes,
+                          Operation *op, ConversionPatternRewriter &rewriter) {
+  auto argIdx = getTensorFuncArgIndex(tensor);
+  if (failed(argIdx)) {
+    // Callers (lowerTensorCBCopy) already guard this via
+    // getBufferAddressFromRuntimeArg, so this is unreachable.
+    llvm_unreachable("tensor must be a function argument");
+  }
+
   auto loc = tensor.getLoc();
 
-  // Derive page size from the actual layout encoding.
-  // For tiled interleaved layouts, page size = tile size in bytes.
-  int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
-
-  auto ctaIndex = computeCTAIndex(tensor, op);
+  auto ctaIndex = computeCTAIndex(*argIdx, op);
   if (failed(ctaIndex)) {
     return failure();
   }
 
-  auto argIdx = getTensorFuncArgIndex(tensor);
-  if (failed(argIdx)) {
-    return failure();
-  }
-  int32_t crtaIndex = static_cast<int32_t>(*argIdx);
-
   auto pageSize = rewriter.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
 
-  return buildTensorAccessor(loc, rewriter, *ctaIndex, crtaIndex, bankBase,
-                             pageSize);
+  return buildTensorAccessor(loc, rewriter, *ctaIndex,
+                             static_cast<int32_t>(*argIdx), bankBase, pageSize);
 }
 
 /// Extract tile grid shape from a Value if it's a static tensor.
@@ -562,37 +539,52 @@ static Value linearizeTileIndex(OpBuilder &builder, Location loc, Value row,
   return builder.create<arith::AddIOp>(loc, rowOffset, col);
 }
 
-/// Lower tensor_slice->CB copy: read tiles from tensor into CB.
-/// Loops over CB shape, reading tiles starting at slice offset.
-static LogicalResult lowerSliceToCB(CopyOp op, TensorSliceOp sliceOp,
-                                    Value dstCB,
-                                    ConversionPatternRewriter &rewriter,
-                                    const TypeConverter &typeConverter) {
+/// Direction of a tensor<->CB tile copy for NOC operations.
+enum class NocCopyDirection { Read, Write };
+
+/// Lower a tensor_slice<->CB copy in the given direction.
+/// Read: tensor_slice -> CB (noc_async_read_tile, get_write_ptr)
+/// Write: CB -> tensor_slice (noc_async_write_tile, get_read_ptr)
+static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
+                                       Value cb, NocCopyDirection direction,
+                                       ConversionPatternRewriter &rewriter,
+                                       const TypeConverter &typeConverter) {
   auto loc = op.getLoc();
-  Value srcTensor = sliceOp.getTensor();
+  Value tensor = sliceOp.getTensor();
   Value startRow = sliceOp.getTileRow();
   Value startCol = sliceOp.getTileCol();
 
-  auto bankBase = getBufferAddressFromRuntimeArg(srcTensor, loc, rewriter);
+  // Validate layout and get page size once — used by both accessor and NOC ops.
+  auto pageSizeBytes = getValidatedPageSize(tensor, op);
+  if (failed(pageSizeBytes)) {
+    return failure();
+  }
+
+  auto bankBase = getBufferAddressFromRuntimeArg(tensor, loc, rewriter);
   if (failed(bankBase)) {
     return rewriter.notifyMatchFailure(
         op, "tensor must be a function argument for runtime arg mapping");
   }
 
-  auto srcAccessor =
-      materializeTensorAccessor(srcTensor, *bankBase, op, rewriter);
-  if (failed(srcAccessor)) {
+  auto accessor = materializeTensorAccessor(tensor, *bankBase, *pageSizeBytes,
+                                            op, rewriter);
+  if (failed(accessor)) {
     return failure();
   }
 
-  auto cbConverted = utils::convertTTLCBToTTKernel(dstCB, rewriter, loc);
+  auto cbConverted = utils::convertTTLCBToTTKernel(cb, rewriter, loc);
   if (failed(cbConverted)) {
     return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
   }
-  auto cbWritePtr = rewriter.create<ttk::GetWritePtrOp>(loc, *cbConverted);
+
+  bool isRead = direction == NocCopyDirection::Read;
+  Value cbPtr =
+      isRead
+          ? rewriter.create<ttk::GetWritePtrOp>(loc, *cbConverted).getResult()
+          : rewriter.create<ttk::GetReadPtrOp>(loc, *cbConverted).getResult();
 
   // Get CB shape for loop bounds.
-  auto cbType = getTTLCBType(dstCB);
+  auto cbType = getTTLCBType(cb);
   if (!cbType) {
     return rewriter.notifyMatchFailure(op, "failed to get CB type");
   }
@@ -604,24 +596,13 @@ static LogicalResult lowerSliceToCB(CopyOp op, TensorSliceOp sliceOp,
   int64_t cbCols = cbShape[1];
 
   // Get tensor grid shape for computing tensor tile indices.
-  auto tensorTileGridShape = getTileGridShapeFromValue(srcTensor);
+  auto tensorTileGridShape = getTileGridShapeFromValue(tensor);
   int64_t tensorTilesX = tensorTileGridShape.second;
 
-  // Get page size for CB address arithmetic.
-  auto tensorTy = mlir::cast<RankedTensorType>(srcTensor.getType());
-  auto layoutAttr =
-      mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
-  if (!layoutAttr) {
-    return rewriter.notifyMatchFailure(
-        op, "tensor must have TTNNLayoutAttr encoding");
-  }
-  int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
-
   auto indexTy = rewriter.getIndexType();
-  auto cbWritePtrIdx =
-      rewriter.create<arith::IndexCastOp>(loc, indexTy, cbWritePtr);
+  auto cbPtrIdx = rewriter.create<arith::IndexCastOp>(loc, indexTy, cbPtr);
   auto pageSizeIdx =
-      rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
+      rewriter.create<arith::ConstantIndexOp>(loc, *pageSizeBytes);
   auto i32Ty = rewriter.getI32Type();
 
   emitTileLoop(
@@ -639,115 +620,24 @@ static LogicalResult lowerSliceToCB(CopyOp op, TensorSliceOp sliceOp,
         Value cbTileIdx =
             linearizeTileIndex(b, bodyLoc, loopRow, loopCol, cbCols);
 
-        // Compute CB address: cbWritePtr + cbTileIdx * pageSize
+        // Compute CB address: cbPtr + cbTileIdx * pageSize
         Value byteOffset =
             b.create<arith::MulIOp>(bodyLoc, cbTileIdx, pageSizeIdx);
         Value cbAddrIdx =
-            b.create<arith::AddIOp>(bodyLoc, cbWritePtrIdx, byteOffset);
+            b.create<arith::AddIOp>(bodyLoc, cbPtrIdx, byteOffset);
 
         // Cast to i32 for NOC operation.
         Value tensorTileIdx32 =
             b.create<arith::IndexCastOp>(bodyLoc, i32Ty, tensorTileIdx);
         Value cbAddr = b.create<arith::IndexCastOp>(bodyLoc, i32Ty, cbAddrIdx);
 
-        b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tensorTileIdx32,
-                                          *srcAccessor, cbAddr);
-      });
-
-  rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
-  return success();
-}
-
-/// Lower CB->tensor_slice copy: write tiles from CB to tensor.
-/// Loops over CB shape, writing tiles starting at slice offset.
-static LogicalResult lowerCBToSlice(CopyOp op, Value srcCB,
-                                    TensorSliceOp sliceOp,
-                                    ConversionPatternRewriter &rewriter,
-                                    const TypeConverter &typeConverter) {
-  auto loc = op.getLoc();
-  Value dstTensor = sliceOp.getTensor();
-  Value startRow = sliceOp.getTileRow();
-  Value startCol = sliceOp.getTileCol();
-
-  auto bankBase = getBufferAddressFromRuntimeArg(dstTensor, loc, rewriter);
-  if (failed(bankBase)) {
-    return rewriter.notifyMatchFailure(
-        op, "tensor must be a function argument for runtime arg mapping");
-  }
-
-  auto dstAccessor =
-      materializeTensorAccessor(dstTensor, *bankBase, op, rewriter);
-  if (failed(dstAccessor)) {
-    return failure();
-  }
-
-  auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
-  if (failed(cbConverted)) {
-    return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
-  }
-  auto cbReadPtr = rewriter.create<ttk::GetReadPtrOp>(loc, *cbConverted);
-
-  // Get CB shape for loop bounds.
-  auto cbType = getTTLCBType(srcCB);
-  if (!cbType) {
-    return rewriter.notifyMatchFailure(op, "failed to get CB type");
-  }
-  auto cbShape = cbType.getShape();
-  if (cbShape.size() != 2) {
-    return rewriter.notifyMatchFailure(op, "CB shape must be 2D");
-  }
-  int64_t cbRows = cbShape[0];
-  int64_t cbCols = cbShape[1];
-
-  // Get tensor grid shape for computing tensor tile indices.
-  auto tensorTileGridShape = getTileGridShapeFromValue(dstTensor);
-  int64_t tensorTilesX = tensorTileGridShape.second;
-
-  // Get page size for CB address arithmetic.
-  auto tensorTy = mlir::cast<RankedTensorType>(dstTensor.getType());
-  auto layoutAttr =
-      mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
-  if (!layoutAttr) {
-    return rewriter.notifyMatchFailure(
-        op, "tensor must have TTNNLayoutAttr encoding");
-  }
-  int64_t pageSizeBytes = layoutAttr.getElementSizeBytes();
-
-  auto indexTy = rewriter.getIndexType();
-  auto cbReadPtrIdx =
-      rewriter.create<arith::IndexCastOp>(loc, indexTy, cbReadPtr);
-  auto pageSizeIdx =
-      rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
-  auto i32Ty = rewriter.getI32Type();
-
-  emitTileLoop(
-      rewriter, loc, cbRows, cbCols,
-      [&, tensorTilesX, cbCols](OpBuilder &b, Location bodyLoc, Value loopRow,
-                                Value loopCol) {
-        // Tensor tile index: (startRow + loopRow) * tensorCols + (startCol +
-        // loopCol)
-        Value tensorRow = b.create<arith::AddIOp>(bodyLoc, startRow, loopRow);
-        Value tensorCol = b.create<arith::AddIOp>(bodyLoc, startCol, loopCol);
-        Value tensorTileIdx =
-            linearizeTileIndex(b, bodyLoc, tensorRow, tensorCol, tensorTilesX);
-
-        // CB tile index within the CB buffer.
-        Value cbTileIdx =
-            linearizeTileIndex(b, bodyLoc, loopRow, loopCol, cbCols);
-
-        // Compute CB address: cbReadPtr + cbTileIdx * pageSize
-        Value byteOffset =
-            b.create<arith::MulIOp>(bodyLoc, cbTileIdx, pageSizeIdx);
-        Value cbAddrIdx =
-            b.create<arith::AddIOp>(bodyLoc, cbReadPtrIdx, byteOffset);
-
-        // Cast to i32 for NOC operation.
-        Value tensorTileIdx32 =
-            b.create<arith::IndexCastOp>(bodyLoc, i32Ty, tensorTileIdx);
-        Value cbAddr = b.create<arith::IndexCastOp>(bodyLoc, i32Ty, cbAddrIdx);
-
-        b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tensorTileIdx32,
-                                           *dstAccessor, cbAddr);
+        if (isRead) {
+          b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tensorTileIdx32, *accessor,
+                                            cbAddr);
+        } else {
+          b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tensorTileIdx32,
+                                             *accessor, cbAddr);
+        }
       });
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
@@ -807,8 +697,9 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
         return rewriter.notifyMatchFailure(
             op, "tensor_slice source must come from ttl.tensor_slice op");
       }
-      return lowerSliceToCB(op, sliceOp, adaptor.getDst(), rewriter,
-                            *typeConverter);
+      return lowerTensorCBCopy(op, sliceOp, adaptor.getDst(),
+                               NocCopyDirection::Read, rewriter,
+                               *typeConverter);
     }
 
     // CB -> TensorSlice: write tiles from circular buffer to tensor.
@@ -817,8 +708,8 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
       return rewriter.notifyMatchFailure(
           op, "tensor_slice destination must come from ttl.tensor_slice op");
     }
-    return lowerCBToSlice(op, adaptor.getSrc(), sliceOp, rewriter,
-                          *typeConverter);
+    return lowerTensorCBCopy(op, sliceOp, adaptor.getSrc(),
+                             NocCopyDirection::Write, rewriter, *typeConverter);
   }
 };
 
@@ -902,16 +793,12 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
 
   LogicalResult matchAndRewrite(FuncOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!isNocKernel(op.getOperation())) {
+    auto ttlAttr = op->getAttrOfType<ttk::ThreadTypeAttr>("ttl.kernel_thread");
+    if (!ttlAttr || ttlAttr.getValue() != ttk::ThreadType::Noc) {
       return failure();
     }
-
-    // Change ttl.kernel_thread attribute to ttkernel.thread
-    if (auto threadAttr =
-            op->getAttrOfType<ttk::ThreadTypeAttr>("ttl.kernel_thread")) {
-      op->removeAttr("ttl.kernel_thread");
-      op->setAttr("ttkernel.thread", threadAttr);
-    }
+    op->removeAttr("ttl.kernel_thread");
+    op->setAttr("ttkernel.thread", ttlAttr);
 
     // If function has arguments, we need to transform them
     if (op.getNumArguments() > 0) {
@@ -949,9 +836,6 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
 //===----------------------------------------------------------------------===//
 // TTLConvertTTLToTTKernelPass helper methods
 //===----------------------------------------------------------------------===//
-
-// Forward declarations
-static void removeTensorDataflowOps(func::FuncOp func);
 
 /// Phase 1: Lower TTL ops (bind_cb, copy, wait, cb ops, store) to TTKernel.
 static LogicalResult
@@ -1064,12 +948,7 @@ lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
 
   RewritePatternSet computePatterns(&ctx);
   populateTTLTileOpsToTTKernelPatterns(&typeConverter, computePatterns);
-  if (failed(applyPartialConversion(mod, computeTarget,
-                                    std::move(computePatterns)))) {
-    return failure();
-  }
-
-  return success();
+  return applyPartialConversion(mod, computeTarget, std::move(computePatterns));
 }
 
 /// Phase 3: Remove structural TTL ops (AttachCBOp, ComputeOp, YieldOp).
@@ -1097,11 +976,23 @@ removeStructuralTTLOps(ModuleOp mod, MLIRContext &ctx,
   // Apply FuncKernelFinalize as a greedy rewrite after tile lowering.
   RewritePatternSet finalizePatterns(&ctx);
   finalizePatterns.add<FuncKernelFinalize>(&ctx);
-  if (failed(applyPatternsGreedily(mod, std::move(finalizePatterns)))) {
-    return failure();
-  }
+  return applyPatternsGreedily(mod, std::move(finalizePatterns));
+}
 
-  return success();
+/// Remove dead tensor ops from a compute kernel function.
+/// With side-effect-only loops, tensor.insert no longer exists. Clean up
+/// remaining dead tensor.extract and tensor.empty ops.
+static void removeTensorDataflowOps(func::FuncOp func) {
+  SmallVector<Operation *> deadOps;
+  func.walk([&](Operation *op) {
+    if (isa<tensor::ExtractOp, tensor::EmptyOp>(op) && op->use_empty()) {
+      deadOps.push_back(op);
+    }
+  });
+  // Erase innermost-first to avoid dangling uses.
+  for (auto *op : llvm::reverse(deadOps)) {
+    op->erase();
+  }
 }
 
 /// Phase 4: Clean up tensor dataflow ops in compute kernels.
@@ -1111,25 +1002,8 @@ removeStructuralTTLOps(ModuleOp mod, MLIRContext &ctx,
 /// buffers and DST registers.
 static void cleanupComputeKernels(ModuleOp mod, MLIRContext &ctx) {
   mod.walk([&](func::FuncOp func) {
-    // Check for compute kernel via either ttkernel.thread or
-    // ttl.kernel_thread.
-    auto threadAttr =
-        func->getAttrOfType<ttk::ThreadTypeAttr>("ttkernel.thread");
-    auto ttlThreadAttr =
-        func->getAttrOfType<ttk::ThreadTypeAttr>("ttl.kernel_thread");
-
-    bool isCompute = false;
-    if (threadAttr && threadAttr.getValue() == ttk::ThreadType::Compute) {
-      isCompute = true;
-    } else if (ttlThreadAttr &&
-               ttlThreadAttr.getValue() == ttk::ThreadType::Compute) {
-      isCompute = true;
-      // Convert ttl.kernel_thread to ttkernel.thread for compute kernels.
-      func->removeAttr("ttl.kernel_thread");
-      func->setAttr("ttkernel.thread", ttlThreadAttr);
-    }
-
-    if (!isCompute) {
+    auto threadType = convertThreadAttr(func);
+    if (!threadType || *threadType != ttk::ThreadType::Compute) {
       return;
     }
 
@@ -1164,29 +1038,6 @@ static void cleanupComputeKernels(ModuleOp mod, MLIRContext &ctx) {
       func.setType(newFuncType);
     }
   });
-}
-
-/// Helper: Remove dead tensor ops from a compute kernel function.
-/// With side-effect-only loops, tensor.insert no longer exists. Clean up
-/// remaining dead tensor.extract and tensor.empty ops.
-static void removeTensorDataflowOps(func::FuncOp func) {
-  // Erase dead tensor.extract ops.
-  SmallVector<tensor::ExtractOp> extractOps;
-  func.walk([&](tensor::ExtractOp op) { extractOps.push_back(op); });
-  for (auto op : extractOps) {
-    if (op.getResult().use_empty()) {
-      op.erase();
-    }
-  }
-
-  // Erase dead tensor.empty ops.
-  SmallVector<tensor::EmptyOp> emptyOps;
-  func.walk([&](tensor::EmptyOp op) { emptyOps.push_back(op); });
-  for (auto op : emptyOps) {
-    if (op.getResult().use_empty()) {
-      op.erase();
-    }
-  }
 }
 
 //===----------------------------------------------------------------------===//

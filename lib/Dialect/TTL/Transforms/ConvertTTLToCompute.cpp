@@ -36,77 +36,80 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
                                    dynDims);
 }
 
-/// Find the CB that this operation's result will be attached to.
-/// Looks for an attach_cb op that uses this operation's result.
+/// Find the output CB for an elementwise op by looking at its store users.
+/// Returns nullptr when no store exists or its view is not from cb_reserve.
+/// Callers handle nullptr via notifyMatchFailure.
 static Value findOutputCB(Operation *op) {
-  if (op->getNumResults() == 0) {
-    return nullptr;
-  }
-  Value result = op->getResult(0);
-  for (OpOperand &use : result.getUses()) {
-    if (auto attachOp = dyn_cast<AttachCBOp>(use.getOwner())) {
-      return attachOp.getCb();
+  for (OpOperand &use : op->getResult(0).getUses()) {
+    if (auto storeOp = dyn_cast<StoreOp>(use.getOwner())) {
+      if (auto reserve = storeOp.getView().getDefiningOp<CBReserveOp>()) {
+        return reserve.getCb();
+      }
     }
   }
   return nullptr;
 }
 
-/// Extract the cb_reserve result from a tensor-level store's view operand.
-/// The view is produced by attach_cb(cb_reserve(...), cb). Returns the
-/// cb_reserve result, following the SSA def-use chain (no scanning).
-static Value getReserveViewFromStore(StoreOp storeOp) {
-  Value view = storeOp.getView();
-  if (auto attachOp = view.getDefiningOp<AttachCBOp>()) {
-    return attachOp.getTensor();
+/// Find the last block-level store that uses this op's result.
+/// Used to position the compute op after all reserves (which precede their
+/// stores) so that reserve views dominate the compute body.
+static StoreOp findLastStore(Operation *op) {
+  if (op->getNumResults() == 0) {
+    return {};
   }
-  return Value();
+  StoreOp last;
+  for (OpOperand &use : op->getResult(0).getUses()) {
+    if (auto s = dyn_cast<StoreOp>(use.getOwner())) {
+      if (!last || last->isBeforeInBlock(s)) {
+        last = s;
+      }
+    }
+  }
+  return last;
 }
 
-/// Find unused bind_cb ops in the function that can be used for output CBs.
-/// Returns bind_cb ops that are not used by any attach_cb op.
-// TODO: Use AnalysisManager to cache CB usage analysis and avoid re-walking
-// the function for each operation.
-static SmallVector<BindCBOp> findUnusedBindCBs(Operation *op) {
-  SmallVector<BindCBOp> unused;
-  auto parentFunc = op->getParentOfType<func::FuncOp>();
-  if (!parentFunc) {
-    return unused;
+/// Position the rewriter before the last store so that the new compute op
+/// is placed after all reserves (which precede their stores).
+static void insertAtLastStore(PatternRewriter &rewriter, Operation *op) {
+  if (StoreOp lastStore = findLastStore(op)) {
+    rewriter.setInsertionPoint(lastStore);
   }
+}
 
-  // Collect all bind_cb ops and used CBs in a single walk.
-  SmallVector<BindCBOp> allBindCBs;
-  DenseSet<Value> usedCBs;
-  parentFunc->walk([&](Operation *walkOp) {
-    if (auto bindOp = dyn_cast<BindCBOp>(walkOp)) {
-      allBindCBs.push_back(bindOp);
-    } else if (auto attachOp = dyn_cast<AttachCBOp>(walkOp)) {
-      usedCBs.insert(attachOp.getCb());
+/// Create tile_store(s) in the compute body for the given tile result and
+/// erase the corresponding block-level stores. Handles multiple stores
+/// (e.g., same result stored to two outputs).
+static void emitTileStores(PatternRewriter &rewriter, Location loc,
+                           Value tileResult, Operation *elementwiseOp) {
+  /// Collect-then-erase: we cannot erase stores while iterating getUses()
+  /// because erasing invalidates the use-list iterator.
+  SmallVector<StoreOp> storesToErase;
+  for (OpOperand &use : elementwiseOp->getResult(0).getUses()) {
+    auto storeOp = dyn_cast<StoreOp>(use.getOwner());
+    if (!storeOp) {
+      continue;
     }
-  });
-
-  // Return unused ones
-  for (auto bindOp : allBindCBs) {
-    if (!usedCBs.contains(bindOp.getResult())) {
-      unused.push_back(bindOp);
-    }
+    rewriter.create<TileStoreOp>(loc, tileResult, storeOp.getView());
+    storesToErase.push_back(storeOp);
   }
-
-  return unused;
+  for (StoreOp s : storesToErase) {
+    rewriter.eraseOp(s);
+  }
 }
 
 //===----------------------------------------------------------------------===//
 // Tile op emission for fusion
 //===----------------------------------------------------------------------===//
 
-/// Emit the tile-level op corresponding to a tensor-level elementwise op.
+/// Emit the tile-level op corresponding to a block-level elementwise op.
 /// Returns the result Value, or null on failure.
-static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *tensorOp,
+static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *elementwiseOp,
                            ValueRange tileOperands, Type tileType) {
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
-  if (isa<TTL_OP##Op>(tensorOp))                                               \
+  if (isa<TTL_OP##Op>(elementwiseOp))                                          \
     return b.create<TILE_OP>(loc, tileType, tileOperands[0]);
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
-  if (isa<TTL_OP##Op>(tensorOp))                                               \
+  if (isa<TTL_OP##Op>(elementwiseOp))                                          \
     return b.create<TILE_OP>(loc, tileType, tileOperands[0], tileOperands[1]);
 #define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
@@ -129,14 +132,12 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     return failure();
   }
 
-  // Find output CB
+  // Find output CB via the store on the sink op's result.
   Value outCb = findOutputCB(sinkOp);
   if (!outCb) {
-    auto unusedCBs = findUnusedBindCBs(sinkOp);
-    if (unusedCBs.empty()) {
-      return sinkOp->emitError("no unused bind_cb found for output");
-    }
-    outCb = unusedCBs.front().getResult();
+    return rewriter.notifyMatchFailure(
+        sinkOp, "no output CB found (missing ttl.store or view not from "
+                "ttl.cb_reserve)");
   }
 
   Location loc = sinkOp->getLoc();
@@ -156,6 +157,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   for (int64_t i = 0; i < type.getRank(); ++i) {
     iterTypes.push_back(rewriter.getStringAttr("parallel"));
   }
+
+  // Position compute after all reserves by inserting before the last store.
+  insertAtLastStore(rewriter, sinkOp);
 
   // Create init tensor and attach to output CB
   Value init = buildInitTensor(rewriter, loc, type, trace.rootInputs[0]);
@@ -223,7 +227,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     finalResult = tileResult;
   }
 
-  rewriter.create<YieldOp>(loc, ValueRange{finalResult});
+  emitTileStores(rewriter, loc, finalResult, sinkOp);
+  rewriter.create<YieldOp>(loc);
   rewriter.replaceOp(sinkOp, computeOp.getResult(0));
 
   // Erase the fused ops in reverse topological order (sink to roots).
@@ -245,7 +250,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
 /// Build a ttl.compute op with a single binary tile operation in the body.
 /// Inputs must already be attached to CBs via ttl.attach_cb.
-/// An unused bind_cb must exist for the output.
+/// The output CB is identified via ttl.store on the op's result.
 template <typename TileOp>
 static LogicalResult buildBinaryCompute(Operation *op,
                                         PatternRewriter &rewriter, Value lhs,
@@ -270,16 +275,12 @@ static LogicalResult buildBinaryCompute(Operation *op,
     return failure();
   }
 
-  // Find the output CB. First check if there's an attach_cb that uses this
-  // result, and use that CB. Otherwise, find an unused bind_cb.
+  // Find output CB via the store on this op's result.
   Value outCb = findOutputCB(op);
   if (!outCb) {
-    auto unusedCBs = findUnusedBindCBs(op);
-    if (unusedCBs.empty()) {
-      return op->emitError("no unused bind_cb found for output; ensure a "
-                           "ttl.bind_cb exists for the output tensor");
-    }
-    outCb = unusedCBs.front().getResult();
+    return rewriter.notifyMatchFailure(
+        op, "no output CB found (missing ttl.store, view not from "
+            "ttl.cb_reserve, or intermediate value handled by fusion)");
   }
 
   Location loc = op->getLoc();
@@ -300,6 +301,9 @@ static LogicalResult buildBinaryCompute(Operation *op,
   for (int64_t i = 0; i < type.getRank(); ++i) {
     iterTypes.push_back(rewriter.getStringAttr("parallel"));
   }
+
+  // Position compute after all reserves by inserting before the last store.
+  insertAtLastStore(rewriter, op);
 
   // Create init tensor and attach to output CB.
   Value init = buildInitTensor(rewriter, loc, type, lhs);
@@ -324,14 +328,15 @@ static LogicalResult buildBinaryCompute(Operation *op,
   rewriter.setInsertionPointToStart(body);
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0),
                                          body->getArgument(1));
-  rewriter.create<YieldOp>(loc, ValueRange{result});
+  emitTileStores(rewriter, loc, result, op);
+  rewriter.create<YieldOp>(loc);
   rewriter.replaceOp(op, computeOp.getResult(0));
   return success();
 }
 
 /// Build a ttl.compute op with a single unary tile operation in the body.
 /// Input must already be attached to a CB via ttl.attach_cb.
-/// An unused bind_cb must exist for the output.
+/// The output CB is identified via ttl.store on the op's result.
 template <typename TileOp>
 static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
                                        Value input) {
@@ -354,16 +359,12 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
     return failure();
   }
 
-  // Find the output CB. First check if there's an attach_cb that uses this
-  // result, and use that CB. Otherwise, find an unused bind_cb.
+  // Find output CB via the store on this op's result.
   Value outCb = findOutputCB(op);
   if (!outCb) {
-    auto unusedCBs = findUnusedBindCBs(op);
-    if (unusedCBs.empty()) {
-      return op->emitError("no unused bind_cb found for output; ensure a "
-                           "ttl.bind_cb exists for the output tensor");
-    }
-    outCb = unusedCBs.front().getResult();
+    return rewriter.notifyMatchFailure(
+        op, "no output CB found (missing ttl.store, view not from "
+            "ttl.cb_reserve, or intermediate value handled by fusion)");
   }
 
   Location loc = op->getLoc();
@@ -383,6 +384,9 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   for (int64_t i = 0; i < type.getRank(); ++i) {
     iterTypes.push_back(rewriter.getStringAttr("parallel"));
   }
+
+  // Position compute after all reserves by inserting before the last store.
+  insertAtLastStore(rewriter, op);
 
   // Create init tensor and attach to output CB.
   Value init = buildInitTensor(rewriter, loc, type, input);
@@ -405,7 +409,8 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
 
   rewriter.setInsertionPointToStart(body);
   Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0));
-  rewriter.create<YieldOp>(loc, ValueRange{result});
+  emitTileStores(rewriter, loc, result, op);
+  rewriter.create<YieldOp>(loc);
   rewriter.replaceOp(op, computeOp.getResult(0));
   return success();
 }
@@ -546,6 +551,9 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     SmallVector<Attribute> iterTypes(outputType.getRank(),
                                      rewriter.getStringAttr("parallel"));
 
+    // Position compute after all reserves by inserting before the last store.
+    insertAtLastStore(rewriter, op);
+
     Value init = buildInitTensor(rewriter, loc, outputType, op.getOutput());
     Value initAttached =
         rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
@@ -566,7 +574,8 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     Value result =
         rewriter.create<TileBcastOp>(loc, tileType, body->getArgument(0),
                                      body->getArgument(1), op.getBcastType());
-    rewriter.create<YieldOp>(loc, ValueRange{result});
+    emitTileStores(rewriter, loc, result, op.getOperation());
+    rewriter.create<YieldOp>(loc);
     rewriter.replaceOp(op, computeOp.getResult(0));
     return success();
   }
@@ -576,60 +585,33 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
 // Store Lowering
 //===----------------------------------------------------------------------===//
 
-/// Lowers ttl.store to ttl.tile_store inside a ttl.compute body.
-/// Elementwise patterns create the compute (tile ops + yield, no stores).
-/// This pattern injects tile_store for each store, moving the compute
-/// after reserves when needed to satisfy dominance.
+/// Lowers passthrough ttl.store (CB-attached input) by creating a compute
+/// with tile_store. Stores whose input comes from an elementwise op are
+/// already erased by the elementwise builders (emitTileStores).
 struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
   using OpRewritePattern<StoreOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(StoreOp op,
                                 PatternRewriter &rewriter) const override {
     Value input = op.getTensor();
-    Value view = op.getView();
-
-    Value reserveView = getReserveViewFromStore(op);
-    if (!reserveView) {
-      return rewriter.notifyMatchFailure(
-          op, "store view must come from ttl.attach_cb wrapping cb_reserve");
+    Value reserveView = op.getView();
+    auto reserve = reserveView.getDefiningOp<CBReserveOp>();
+    if (!reserve) {
+      return rewriter.notifyMatchFailure(op, "view not from ttl.cb_reserve");
     }
-
-    // Input from ComputeOp: inject tile_store into its body.
-    if (auto computeOp = input.getDefiningOp<ComputeOp>()) {
-      // Move compute before the store if the reserve doesn't dominate it.
-      // The store is always after its reserve (Python `with` guarantees this),
-      // so moving the compute here ensures all reserve views dominate.
-      if (auto *reserveDef = reserveView.getDefiningOp()) {
-        if (!reserveDef->isBeforeInBlock(computeOp)) {
-          computeOp->moveBefore(op);
-        }
-      }
-
-      Block &body = computeOp.getBody().front();
-      auto yieldOp = cast<YieldOp>(body.getTerminator());
-      rewriter.setInsertionPoint(yieldOp);
-      rewriter.create<TileStoreOp>(op.getLoc(), yieldOp.getValues().front(),
-                                   reserveView);
-      rewriter.eraseOp(op);
-      return success();
-    }
+    Value outputCb = reserve.getCb();
 
     // Passthrough: input is CB-attached, create a new compute with tile_store.
     if (!getAttachedCB(input)) {
       return rewriter.notifyMatchFailure(
-          op, "store input must come from ComputeOp or be CB-attached");
+          op, "store input must be CB-attached (elementwise stores are "
+              "handled by their respective builders)");
     }
 
     auto inputType = getTensorType(input);
     if (!inputType) {
       return failure();
     }
-
-    auto viewAttach = view.getDefiningOp<AttachCBOp>();
-    if (!viewAttach) {
-      return op.emitError("store view must come from ttl.attach_cb");
-    }
-    Value outputCb = viewAttach.getCb();
 
     Location loc = op.getLoc();
     MLIRContext *ctx = rewriter.getContext();
@@ -657,11 +639,13 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
 
     rewriter.setInsertionPointToEnd(body);
     rewriter.create<TileStoreOp>(loc, body->getArgument(0), reserveView);
-    rewriter.create<YieldOp>(loc, body->getArgument(0));
+    rewriter.create<YieldOp>(loc);
 
+    // make_early_inc_range: replaceOp erases attachOp, invalidating the
+    // use-list iterator.
     for (OpOperand &use : llvm::make_early_inc_range(input.getUses())) {
       if (auto attachOp = dyn_cast<AttachCBOp>(use.getOwner())) {
-        if (attachOp.getCb() == outputCb && attachOp != viewAttach) {
+        if (attachOp.getCb() == outputCb) {
           rewriter.replaceOp(attachOp, computeOp.getResult(0));
         }
       }

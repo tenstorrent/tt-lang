@@ -179,9 +179,9 @@ class ThreadBuilder(ABC):
         """Create ttl.attach_cb operation."""
         return ttl.attach_cb(self._tile_tensor_type, tensor, cb, loc=self.loc)
 
-    def _store(self, tensor, view):
+    def _store(self, tensor, reserve, cb):
         """Create ttl.store operation."""
-        ttl.store(tensor, view, loc=self.loc)
+        ttl.store(tensor, reserve, loc=self.loc)
 
     # =========================================================================
     # Layer 2: Loop and Function Utilities (Protected)
@@ -311,24 +311,19 @@ class ThreadBuilder(ABC):
                         attached = self._attach_cb(tensor, cb)
                         inputs.append(attached)
 
-                    # Reserve output CBs and attach.
-                    outputs = []
+                    # Reserve output CBs.
+                    reserves = []
                     for cb in output_cb_vals:
-                        reserved = self._cb_reserve(cb)
-                        attached = self._attach_cb(reserved, cb)
-                        outputs.append(attached)
+                        reserves.append(self._cb_reserve(cb))
 
                     # Execute compute function.
                     results = compute_fn(inputs)
 
-                    # Store results to output reserve views and attach to CBs.
+                    # Store results to output reserve views.
                     if not isinstance(results, list):
                         results = [results]
-                    for result, output_view, cb in zip(
-                        results, outputs, output_cb_vals
-                    ):
-                        self._store(result, output_view)  # emits ttl.store
-                        self._attach_cb(result, cb)  # CB association metadata
+                    for result, reserve, cb in zip(results, reserves, output_cb_vals):
+                        self._store(result, reserve, cb)
 
                     # Push outputs, pop inputs.
                     for cb in output_cb_vals:
