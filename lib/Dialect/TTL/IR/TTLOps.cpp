@@ -70,8 +70,8 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
 
   int64_t idx = getCbIndexAttr().getInt();
   if (idx < 0 || idx >= kMaxCircularBuffers) {
-    return emitOpError() << "cb_index must be in [0," << kMaxCircularBuffers - 1
-                         << "]";
+    return emitOpError() << "cb_index must be in [0, "
+                         << kMaxCircularBuffers - 1 << "]";
   }
 
   // Validate buffer factor against type for consistency.

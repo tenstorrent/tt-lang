@@ -40,6 +40,7 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
 /// Returns nullptr when no store exists or its view is not from cb_reserve.
 /// Callers handle nullptr via notifyMatchFailure.
 static Value findOutputCB(Operation *op) {
+  assert(op->getNumResults() > 0 && "findOutputCB requires op with results");
   for (OpOperand &use : op->getResult(0).getUses()) {
     if (auto storeOp = dyn_cast<StoreOp>(use.getOwner())) {
       if (auto reserve = storeOp.getView().getDefiningOp<CBReserveOp>()) {
@@ -84,6 +85,8 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
                            Value tileResult, Operation *elementwiseOp) {
   /// Collect-then-erase: we cannot erase stores while iterating getUses()
   /// because erasing invalidates the use-list iterator.
+  assert(elementwiseOp->getNumResults() > 0 &&
+         "emitTileStores requires op with results");
   SmallVector<StoreOp> storesToErase;
   for (OpOperand &use : elementwiseOp->getResult(0).getUses()) {
     auto storeOp = dyn_cast<StoreOp>(use.getOwner());
