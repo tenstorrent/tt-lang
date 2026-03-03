@@ -405,18 +405,6 @@ static void buildLiveIntervals(Block *body,
     }
   }
 
-  // Extend intervals for tile_store operands: their tile values must remain
-  // live until the store (pack_tile) executes.
-  for (Operation &op : *body) {
-    if (auto storeOp = dyn_cast<TileStoreOp>(&op)) {
-      Value stored = storeOp.getTile();
-      if (isTileValue(stored) && intervals.count(stored)) {
-        int64_t storeIdx = opIndex[&op];
-        intervals[stored].end = std::max(intervals[stored].end, storeIdx);
-      }
-    }
-  }
-
   // Merge intervals for in-place ops (input and output share DST slot).
   // In-place ops (exp_tile, abs_tile, etc.) read from and write to the same
   // DST register -- this is a hardware constraint. The merge is unconditional:
