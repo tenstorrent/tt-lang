@@ -9,6 +9,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "llvm/ADT/SetVector.h"
 #include <optional>
 
@@ -56,6 +57,17 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
   // Trace through unrealized conversion casts (from dialect conversion).
   tensor = traceUnrealizedCasts(tensor);
 
+  // Trace through tensor.extract_slice (from compute subblocking).
+  if (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+    return getAttachedCB(slice.getSource());
+  }
+
+  // Trace through tensor.extract (scalar element extraction, e.g. bcast
+  // output).
+  if (auto extract = tensor.getDefiningOp<mlir::tensor::ExtractOp>()) {
+    return getAttachedCB(extract.getTensor());
+  }
+
   if (auto attach = tensor.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
     return attach.getCb();
   }
@@ -90,6 +102,13 @@ inline bool isTileUnaryOp(mlir::Operation *op) {
 /// Check if an operation is a tile-level binary op (writes to fresh DST slot).
 inline bool isTileBinaryOp(mlir::Operation *op) {
   return op->hasTrait<TTLTileBinaryOpTrait>();
+}
+
+/// Check if an operation reads inputs from CB at runtime, either by static
+/// trait (bcast, copy_tile) or by runtime FPU binary marking.
+inline bool isCBInputOp(mlir::Operation *op) {
+  return op->hasTrait<TTLCBInputTileOpTrait>() ||
+         op->hasAttr(kFPUBinaryAttrName);
 }
 
 /// Check if an operation is any elementwise tensor op (unary or binary).

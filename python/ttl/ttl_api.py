@@ -1072,7 +1072,7 @@ def _compile_kernel(
         pipeline_passes = [
             "func.func(convert-ttl-to-compute)",
             set_compute_config_pass,
-            "func.func(ttl-assign-dst)",
+            "func.func(ttl-assign-dst{enable-fpu-binary-ops=0})",
             "func.func(ttl-insert-tile-regs-sync)",
             "func.func(ttl-lower-to-loops)",
             "func.func(ttl-annotate-cb-associations)",

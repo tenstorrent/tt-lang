@@ -50,6 +50,12 @@
 #define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #endif
 
+// FPU binary ops: CB[src0], CB[src1] -> DST[dst]
+// E.g., TTL_FPU_BINARY_TILE_OP(Add, AddTileOp, AddTilesInitOp, AddTilesOp)
+#ifndef TTL_FPU_BINARY_TILE_OP
+#define TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
+#endif
+
 // CB -> DST unary ops with an attribute (e.g., bcast).
 // These read from CB (not DST), write to DST, and have an extra attribute.
 #ifndef TTL_CB_UNARY_ATTR_OP
@@ -84,8 +90,14 @@ TTL_UNARY_TILE_OP(Recip, RecipTileOp, RecipTileInitOp, RecipTileOp)
 // CB -> DST ops with attribute
 TTL_CB_UNARY_ATTR_OP(Bcast, TileBcastOp, UnaryBcastInitOp, UnaryBcastTileOp)
 
+// FPU binary: read from CB, write to DST
+TTL_FPU_BINARY_TILE_OP(Add, AddTileOp, AddTilesInitOp, AddTilesOp)
+TTL_FPU_BINARY_TILE_OP(Sub, SubTileOp, SubTilesInitOp, SubTilesOp)
+TTL_FPU_BINARY_TILE_OP(Mul, MulTileOp, MulTilesInitOp, MulTilesOp)
+
 #undef TTL_BINARY_TILE_OP
 #undef TTL_UNARY_TILE_OP
 #undef TTL_BINARY_TILE_OP_SPECIAL
 #undef TTL_CB_UNARY_ATTR_OP
 #undef TTL_BINARY_TILE_OP_MINMAX
+#undef TTL_FPU_BINARY_TILE_OP

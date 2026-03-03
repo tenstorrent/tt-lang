@@ -15,7 +15,7 @@ func.func @view_not_from_reserve(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>, %
       %tok, %tile = ttl.copy_tile %in, %c0, %c0 : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
       // expected-error @below {{'ttl.tile_store' op view must be produced by ttl.cb_reserve}}
       ttl.tile_store %tile, %view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
-      ttl.yield %tile : !ttcore.tile<32x32, bf16>
+      ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>
 }

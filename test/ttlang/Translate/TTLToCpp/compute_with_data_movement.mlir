@@ -1,5 +1,5 @@
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-assign-dst,ttl-insert-tile-regs-sync,ttl-lower-to-loops,ttl-annotate-cb-associations),convert-ttl-to-ttkernel,canonicalize,cse,lower-affine)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-assign-dst{enable-fpu-binary-ops=0},ttl-insert-tile-regs-sync,ttl-lower-to-loops,ttl-annotate-cb-associations),convert-ttl-to-ttkernel,canonicalize,cse,lower-affine)' \
 // RUN:   -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
@@ -8,6 +8,7 @@
 // Purpose: Complete example with reader, compute, and writer threads.
 // Pattern: reader (NOC) → CBs → compute (MATH) → CB → writer (NOC)
 // Operation: f(A + B) where f is exp, matching the C++ example pattern.
+// Note: enable-fpu-binary-ops=0 keeps SFPU lowering path (not testing FPU detection).
 
 #dram = #ttnn.buffer_type<dram>
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<2x2x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
@@ -105,6 +106,9 @@ func.func @reader_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %b: 
 // CHECK:   cb_wait_front(get_compile_time_arg_val(0), [[TILES]]);
 // CHECK-NEXT:   cb_wait_front(get_compile_time_arg_val(1), [[TILES]]);
 
+// Reserve output CB2 for packing (before loops)
+// CHECK-NEXT:   cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+
 // Initialize SFPU for CB data formats
 // CHECK-NEXT:   init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
 
@@ -133,9 +137,6 @@ func.func @reader_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %b: 
 // Compute: exp(A + B)
 // CHECK-NEXT:       exp_tile_init();
 // CHECK-NEXT:       exp_tile([[ZERO]]);
-
-// Reserve output CB2 (before commit)
-// CHECK-NEXT:       cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
 
 // Synchronize DST registers before pack
 // CHECK-NEXT:       tile_regs_commit();
@@ -176,6 +177,7 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   %output_cb = ttl.attach_cb %output, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   // Fused computation: f(A + B) where f is exp
+  %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %result = ttl.compute
       ins(%a_ready, %b_ready : tensor<2x2x!ttcore.tile<32x32, f32>>,
                                tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -187,10 +189,9 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %sum : !ttcore.tile<32x32, f32>
-    %result_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.tile_store %exp, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.cb_push %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1>
-    ttl.yield %exp : !ttcore.tile<32x32, f32>
+    ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
