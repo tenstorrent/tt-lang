@@ -251,14 +251,14 @@ def tile_count_from_tensor(t: "Tensor") -> int:
 
     s = t.shape
     if len(s) == 1:
-        W = s[0]
-        TK = 1 if W == 1 else W // TILE_SHAPE[0]
-        return TK
-    H, W = s[-2], s[-1]
-    TM = 1 if H == 1 else H // TILE_SHAPE[0]
-    TK = 1 if W == 1 else W // TILE_SHAPE[1]
+        w = s[0]
+        tk = 1 if w == 1 else w // TILE_SHAPE[0]
+        return tk
+    h, w = s[-2], s[-1]
+    tm = 1 if h == 1 else h // TILE_SHAPE[0]
+    tk = 1 if w == 1 else w // TILE_SHAPE[1]
     batch = s[:-2]
-    return math.prod((*batch, TM, TK))
+    return math.prod((*batch, tm, tk))
 
 
 class Tensor:
@@ -349,7 +349,7 @@ class Tensor:
                 f"got slice({s.start}, {s.stop}, {s.step}). Only simple slices are supported."
             )
 
-    def _to_element_key(self, key: TensorKey) -> TensorKey:
+    def _to_element_key(self, key: Tuple[Selector, ...]) -> Tuple[Selector, ...]:
         """Translate a tile-coordinate key to an element-space index tuple.
 
         The last two elements of the key are tile-row and tile-col coordinates,
@@ -398,17 +398,15 @@ class Tensor:
 
     def __getitem__(self, key: TensorKey) -> "Tensor":
         # Python passes a bare int/slice (not a tuple) for single-element indexing.
-        if not isinstance(key, tuple):
-            key = (key,)
-        result = Tensor(self._tensor[cast(Any, self._to_element_key(key))])
+        normalized: Tuple[Selector, ...] = key if isinstance(key, tuple) else (key,)
+        result = Tensor(self._tensor[cast(Any, self._to_element_key(normalized))])
         if hasattr(self, "_name"):
             result._name = self._name  # type: ignore
         return result
 
     def __setitem__(self, key: TensorKey, value: "Tensor") -> None:
-        if not isinstance(key, tuple):
-            key = (key,)
-        self._tensor[cast(Any, self._to_element_key(key))] = value._tensor
+        normalized: Tuple[Selector, ...] = key if isinstance(key, tuple) else (key,)
+        self._tensor[cast(Any, self._to_element_key(normalized))] = value._tensor
 
     def __repr__(self) -> str:
         # Delegate to torch for value and dtype formatting (handles truncation for large tensors).

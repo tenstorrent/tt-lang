@@ -171,7 +171,7 @@ class Block:
         return (
             f"Block("
             f"shape={self._shape}, "
-            f"data={repr(self._buf._tensor)}, "
+            f"data={repr(self._buf.to_torch())}, "
             f"acq={acq}, "
             f"thread={self._thread_type.name}, "
             f"access={self._access_state.name}, "
@@ -471,16 +471,16 @@ class Block:
 
         if len(shape) == 1:
             # 1-D: single tile-grid dimension, no batch dims.
-            TK = shape[0]
-            W = buf.shape[-1]
-            tile_w = W // TK if TK > 0 else 1
-            return [Tensor(buf[slice(c * tile_w, (c + 1) * tile_w)]) for c in range(TK)]
+            tk = shape[0]
+            w = buf.shape[-1]
+            tile_w = w // tk if tk > 0 else 1
+            return [Tensor(buf[slice(c * tile_w, (c + 1) * tile_w)]) for c in range(tk)]
 
         nb = len(shape) - 2
-        TM, TK = shape[nb], shape[nb + 1]
-        H, W = buf.shape[-2], buf.shape[-1]
-        tile_h = H // TM if TM > 0 else 1
-        tile_w = W // TK if TK > 0 else 1
+        tm, tk = shape[nb], shape[nb + 1]
+        h, w = buf.shape[-2], buf.shape[-1]
+        tile_h = h // tm if tm > 0 else 1
+        tile_w = w // tk if tk > 0 else 1
 
         tiles: List[Tensor] = []
         for coords in _product(*[range(d) for d in shape]):
@@ -553,27 +553,27 @@ class Block:
         """
         elem_shape = t.shape
         if len(elem_shape) == 1:
-            W = elem_shape[0]
-            if W != 1 and W % TILE_SHAPE[0] != 0:
+            w = elem_shape[0]
+            if w != 1 and w % TILE_SHAPE[0] != 0:
                 raise ValueError(
-                    f"1-D tensor dimension ({W},) must be a multiple of "
+                    f"1-D tensor dimension ({w},) must be a multiple of "
                     f"TILE_SHAPE[0]={TILE_SHAPE[0]}, or exactly 1"
                 )
-            TK = 1 if W == 1 else W // TILE_SHAPE[0]
-            tile_shape: Shape = (TK,)
+            tk = 1 if w == 1 else w // TILE_SHAPE[0]
+            tile_shape: Shape = (tk,)
         else:
-            H, W = elem_shape[-2], elem_shape[-1]
-            if (H != 1 and H % TILE_SHAPE[0] != 0) or (
-                W != 1 and W % TILE_SHAPE[1] != 0
+            h, w = elem_shape[-2], elem_shape[-1]
+            if (h != 1 and h % TILE_SHAPE[0] != 0) or (
+                w != 1 and w % TILE_SHAPE[1] != 0
             ):
                 raise ValueError(
-                    f"Last two tensor dimensions ({H}, {W}) must be multiples of "
+                    f"Last two tensor dimensions ({h}, {w}) must be multiples of "
                     f"TILE_SHAPE {TILE_SHAPE}, or exactly 1"
                 )
             batch_shape = elem_shape[:-2]
-            TM = 1 if H == 1 else H // TILE_SHAPE[0]
-            TK = 1 if W == 1 else W // TILE_SHAPE[1]
-            tile_shape = (*batch_shape, TM, TK)
+            tm = 1 if h == 1 else h // TILE_SHAPE[0]
+            tk = 1 if w == 1 else w // TILE_SHAPE[1]
+            tile_shape = (*batch_shape, tm, tk)
         return cls(
             tensor=t,
             shape=tile_shape,
@@ -1034,13 +1034,13 @@ class DataflowBuffer:
         slot_idx = state.back_slot()
         # Build element-space shape.
         if len(state.shape) == 1:
-            TK = state.shape[0]
-            elem_shape = (TK * TILE_SHAPE[0],)
+            tk = state.shape[0]
+            elem_shape = (tk * TILE_SHAPE[0],)
         else:
             nb = len(state.shape) - 2
             batch = state.shape[:nb]
-            TM, TK = state.shape[nb], state.shape[nb + 1]
-            elem_shape = (*batch, TM * TILE_SHAPE[0], TK * TILE_SHAPE[1])
+            tm, tk = state.shape[nb], state.shape[nb + 1]
+            elem_shape = (*batch, tm * TILE_SHAPE[0], tk * TILE_SHAPE[1])
         slot = Tensor(torch.zeros(elem_shape, dtype=self.element.dtype))
         state.buf[slot_idx] = slot
         state.reserved += 1

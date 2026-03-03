@@ -39,9 +39,9 @@ CoreRange = Tuple[Selector, ...]
 
 Shape = Tuple[Size, ...]
 
-# Valid key type for Tensor.__getitem__ / __setitem__: a tuple of 2 to
-# MAX_TENSOR_DIMS elements, each an int (single tile coordinate) or slice
-# (tile-coordinate range).  The last two elements index the tile row and
+# Valid key type for Tensor.__getitem__ / __setitem__: a single Selector
+# (bare int or slice, for 1-D access) or a tuple of 2 to MAX_TENSOR_DIMS
+# Selectors.  The last two elements of a tuple key index the tile row and
 # tile column; preceding elements are batch indices (implicit tile size 1,
 # so tile-space and element-space are identical for those dimensions).
-TensorKey = Tuple[Selector, ...]
+TensorKey = Union[Selector, Tuple[Selector, ...]]
