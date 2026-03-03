@@ -71,9 +71,10 @@ static StoreOp findLastStore(Operation *op) {
 /// Position the rewriter before the last store so that the new compute op
 /// is placed after all reserves (which precede their stores).
 static void insertAtLastStore(PatternRewriter &rewriter, Operation *op) {
-  if (StoreOp lastStore = findLastStore(op)) {
-    rewriter.setInsertionPoint(lastStore);
-  }
+  StoreOp lastStore = findLastStore(op);
+  assert(lastStore && "insertAtLastStore called but op has no store users; "
+                      "callers must verify via findOutputCB first");
+  rewriter.setInsertionPoint(lastStore);
 }
 
 /// Create tile_store(s) in the compute body for the given tile result and
