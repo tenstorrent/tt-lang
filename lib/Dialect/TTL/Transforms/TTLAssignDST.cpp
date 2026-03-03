@@ -534,12 +534,9 @@ static void buildLiveIntervals(Block *body,
 
 /// Helper to check if a value is stored by a tile_store in the compute body.
 static bool isStoredValue(Value val, Block &body) {
-  for (Operation *user : val.getUsers()) {
-    if (isa<TileStoreOp>(user) && user->getBlock() == &body) {
-      return true;
-    }
-  }
-  return false;
+  return llvm::any_of(val.getUsers(), [&](Operation *user) {
+    return isa<TileStoreOp>(user) && user->getBlock() == &body;
+  });
 }
 
 /// Core linear scan allocation logic (shared by Phase 3 and Phase 4).

@@ -66,17 +66,9 @@ SliceAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
 } // namespace mlir::tt::ttl
 
 mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
-  auto cbTy = mlir::dyn_cast<CircularBufferType>(getResult().getType());
-  if (!cbTy) {
-    return emitOpError() << "result must be !ttl.cb";
-  }
+  auto cbTy = mlir::cast<CircularBufferType>(getResult().getType());
 
-  // Validate cb_index.
-  auto idxAttr = mlir::dyn_cast<IntegerAttr>(getCbIndexAttr());
-  if (!idxAttr || !idxAttr.getType().isIndex()) {
-    return emitOpError() << "cb_index must be an index attribute";
-  }
-  int64_t idx = idxAttr.getInt();
+  int64_t idx = getCbIndexAttr().getInt();
   if (idx < 0 || idx >= kMaxCircularBuffers) {
     return emitOpError() << "cb_index must be in [0," << kMaxCircularBuffers - 1
                          << "]";
@@ -97,15 +89,8 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
 }
 
 mlir::LogicalResult mlir::tt::ttl::AttachCBOp::verify() {
-  auto tensorTy = mlir::dyn_cast<RankedTensorType>(getTensor().getType());
-  if (!tensorTy) {
-    return emitOpError() << "expects ranked tensor operand";
-  }
-
-  auto cbTy = mlir::dyn_cast<CircularBufferType>(getCb().getType());
-  if (!cbTy) {
-    return emitOpError() << "expects circular buffer operand";
-  }
+  auto tensorTy = mlir::cast<RankedTensorType>(getTensor().getType());
+  auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
 
   // Element types must match.
   if (tensorTy.getElementType() != cbTy.getElementType()) {
@@ -214,11 +199,7 @@ mlir::LogicalResult mlir::tt::ttl::LinearizedIndexOp::verify() {
 }
 
 mlir::LogicalResult mlir::tt::ttl::CopyTileOp::verify() {
-  auto srcTy = getSrc().getType();
-
-  if (!mlir::isa<tt::ttcore::TileType>(srcTy)) {
-    return emitOpError() << "expects src to be ttcore.tile";
-  }
+  auto srcTy = mlir::cast<tt::ttcore::TileType>(getSrc().getType());
 
   // Verify that dst_tile type matches src type.
   auto dstTileTy = getDstTile().getType();
@@ -733,9 +714,6 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     if (failed(requireAttachedCB(getInputs()[i], i, "input"))) {
       return failure();
     }
-    if (i >= maps.size()) {
-      return emitOpError("missing indexing map for input ") << i;
-    }
     auto map = mlir::cast<AffineMapAttr>(maps[i]).getValue();
     if (failed(verifyMapCommon(map, tensorTy.getRank()))) {
       return failure();
@@ -757,9 +735,6 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
       return failure();
     }
     size_t mapIdx = outputStart + i;
-    if (mapIdx >= maps.size()) {
-      return emitOpError("missing indexing map for output ") << i;
-    }
     auto map = mlir::cast<AffineMapAttr>(maps[mapIdx]).getValue();
     if (failed(verifyMapCommon(map, tensorTy.getRank()))) {
       return failure();
