@@ -15,6 +15,7 @@
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttmlir/Target/TTKernel/TTKernelToCpp.h"
 
+#include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
@@ -49,15 +50,32 @@ void populatePassesModule(nb::module_ &m) {
 
   m.def(
       "get_ttkernel_names",
-      [](MlirModule module) -> std::vector<std::string> {
+      [](MlirModule module)
+          -> std::vector<std::pair<std::string, std::string>> {
         mlir::ModuleOp mod = llvm::cast<mlir::ModuleOp>(unwrap(module));
-        std::vector<std::string> names;
+        std::vector<std::pair<std::string, std::string>> result;
         mod.walk([&](mlir::func::FuncOp funcOp) {
-          if (funcOp->hasAttr("ttkernel.thread_type")) {
-            names.push_back(funcOp.getName().str());
+          auto threadAttr =
+              funcOp->getAttrOfType<mlir::tt::ttkernel::ThreadTypeAttr>(
+                  "ttkernel.thread");
+          if (threadAttr) {
+            auto threadType = threadAttr.getValue();
+            std::string threadStr;
+            switch (threadType) {
+            case mlir::tt::ttkernel::ThreadType::Noc:
+              threadStr = "noc";
+              break;
+            case mlir::tt::ttkernel::ThreadType::Compute:
+              threadStr = "compute";
+              break;
+            default:
+              threadStr = "unknown";
+              break;
+            }
+            result.emplace_back(funcOp.getName().str(), threadStr);
           }
         });
-        return names;
+        return result;
       },
       nb::arg("module"), "Get names of all TTKernel functions in a module.");
 
