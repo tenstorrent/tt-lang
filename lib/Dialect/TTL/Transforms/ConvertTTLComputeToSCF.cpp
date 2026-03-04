@@ -39,7 +39,8 @@ static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
   SmallVector<Range> domain;
   Location loc = op.getLoc();
 
-  // Find the tensor with the largest iteration domain.
+  // Use the largest operand's shape for loop bounds so that broadcast
+  // dimensions (size 1 in the smaller operand) still get iterated.
   // Prefer higher rank, then larger element count for same rank.
   Value maxRankTensor;
   int64_t maxRank = 0;
@@ -103,7 +104,6 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
                                             ComputeOp op,
                                             ArrayRef<AffineMap> indexingMaps,
                                             ValueRange ivs) {
-  // Extract tiles from inputs at current mapped indices.
   SmallVector<Value> extractedInputs;
   for (auto [idx, input] : llvm::enumerate(op.getInputs())) {
     SmallVector<Value> indices =
@@ -123,7 +123,6 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
     extractedOutputs.push_back(tile);
   }
 
-  // Clone body operations with block args mapped to extracted tiles.
   Block &bodyBlock = op.getBody().front();
   IRMapping mapping;
   for (auto [idx, arg] : llvm::enumerate(op.getInputs())) {
@@ -133,7 +132,8 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
     mapping.map(bodyBlock.getArgument(numInputs + idx), extractedOutputs[idx]);
   }
 
-  // Pre-pass: materialize ttl.linearized_index ops as affine.apply
+  // linearized_index ops reference loop IVs that don't exist yet during
+  // cloning, so resolve them to affine.apply results before cloning the body.
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (auto linIdx = dyn_cast<LinearizedIndexOp>(&bodyOp)) {
       AffineMap indexMap = linIdx.getIndexMap();
@@ -153,7 +153,6 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
     }
   }
 
-  // Clone body operations (skip linearized_index and yield)
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (!isa<LinearizedIndexOp>(&bodyOp)) {
       b.clone(bodyOp, mapping);
@@ -180,7 +179,6 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       return failure();
     }
 
-    // Build loop bounds from iteration domain.
     SmallVector<Value> lowerBounds, upperBounds, steps;
     for (auto [idx, range] : llvm::enumerate(iterDomain)) {
       Value lb = getValueOrCreateConstantIndexOp(rewriter, loc, range.offset);
@@ -242,7 +240,6 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
           op, "copy_tile index computation failed (mismatched rank/IVs)");
     }
 
-    // Replace compute op with its output operands directly.
     rewriter.replaceOp(op, op.getOutputs());
     return success();
   }
@@ -252,9 +249,25 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
 // Post-pattern tile loop unrolling and DST index assignment
 //===----------------------------------------------------------------------===//
 
-/// Fully unroll a tile loop nest, then walk the unrolled ops to assign
-/// incrementing DST indices and tile offsets. Uses loopUnrollByFactor with
-/// annotateFn to tag each unrolled copy with its per-dimension iteration index.
+/// Prefix for temporary per-dimension iteration index attributes. After
+/// loopUnrollByFactor clones ops, each clone gets `ttl._uiter_<dim> = i`
+/// so we can recover the multi-dimensional position once all loops are gone.
+static constexpr llvm::StringLiteral kUnrollIterPrefix("ttl._uiter_");
+
+/// Build the discardable attribute name for dimension `d`.
+static std::string unrollIterAttrName(int64_t d) {
+  return (kUnrollIterPrefix + llvm::Twine(d)).str();
+}
+
+/// Fully unroll a tile loop nest, then assign DST indices and CB tile offsets
+/// to the unrolled ops.
+///
+/// loopUnrollByFactor eliminates loop structure but doesn't know about DST
+/// registers or CB tile grids. We need to recover each clone's position in
+/// the original iteration space so we can assign unique DST indices (to avoid
+/// register collisions) and tile offsets (for CB indexing). Temporary
+/// `ttl._uiter_<dim>` attributes carry this information across the unroll,
+/// then are removed after linearization.
 static LogicalResult
 unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
   if (nest.empty()) {
@@ -285,10 +298,12 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
     return success(); // Single iteration, nothing to unroll.
   }
 
-  // Save the enclosing block before unrolling (loops will be erased).
+  // Loops will be erased by unrolling; save the block for post-unroll walk.
   Block *enclosingBlock = nest.front()->getBlock();
 
-  // Compute dstPerIteration from the innermost loop body.
+  // Find the highest DST index used in a single iteration of the innermost
+  // loop body. Each unrolled copy gets DST indices offset by
+  // tileIdx * dstPerIteration to avoid register collisions.
   int64_t maxDstIdx = 0;
   nest.back().getBody()->walk([&](Operation *op) {
     if (auto attr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
@@ -302,15 +317,12 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
   });
   int64_t dstPerIteration = maxDstIdx + 1;
 
-  // Compute local (subblock-shape) strides for linearizing tile index.
   SmallVector<int64_t> localStrides = computeStrides(dimSizes);
 
-  // Unroll from innermost to outermost. Each loop is fully unrolled
-  // (factor = trip count). The annotateFn tags every cloned op with its
-  // iteration index for that dimension. For trip count 1, loopUnrollByFactor
-  // is a no-op, so we manually fold: replace IV with lb, inline body, erase.
+  // Innermost-first: inner loops must be gone before outer loops can unroll.
+  // loopUnrollByFactor is a no-op for trip count 1, so we fold those manually.
   for (int64_t d = rank - 1; d >= 0; --d) {
-    std::string attrName = ("_uiter_" + llvm::Twine(d)).str();
+    std::string attrName = unrollIterAttrName(d);
     uint64_t tripCount = static_cast<uint64_t>(dimSizes[d]);
 
     if (tripCount <= 1) {
@@ -318,7 +330,6 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
       // replace IV with lower bound, inline body, erase loop.
       scf::ForOp loop = nest[d];
       loop.getInductionVar().replaceAllUsesWith(loop.getLowerBound());
-      // Tag body ops before moving them.
       for (Operation &bodyOp : *loop.getBody()) {
         if (!bodyOp.hasTrait<OpTrait::IsTerminator>()) {
           bodyOp.walk([&attrName](Operation *inner) {
@@ -328,7 +339,6 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
           });
         }
       }
-      // Move body ops to parent block (before the loop).
       Block *parentBlock = loop->getBlock();
       Block *loopBody = loop.getBody();
       loopBody->getTerminator()->erase();
@@ -338,6 +348,8 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
       continue;
     }
 
+    // Full unroll: factor == tripCount, so no remainder loop is generated.
+    // Trip counts are static and exact (guaranteed by the subblock pass).
     auto result =
         loopUnrollByFactor(nest[d], tripCount,
                            [&attrName](unsigned i, Operation *op, OpBuilder b) {
@@ -351,30 +363,29 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
     }
   }
 
-  // Walk the enclosing block to find ops tagged by the unroll annotations.
-  // For each op with all dimension annotations, compute the linearized tile
-  // index, assign dst_idx and tile_offset, then remove temporary annotations.
+  // Recover each unrolled op's position in the original iteration space
+  // and linearize to assign DST indices and CB tile offsets.
   auto walkFn = [&](Operation *op) {
-    // Check if this op has all dimension annotations.
     SmallVector<int64_t> dimIndices(rank);
     for (int64_t d = 0; d < rank; ++d) {
-      std::string attrName = ("_uiter_" + llvm::Twine(d)).str();
-      auto attr = op->getAttrOfType<IntegerAttr>(attrName);
+      auto attr = op->getAttrOfType<IntegerAttr>(unrollIterAttrName(d));
       if (!attr) {
         return;
       }
       dimIndices[d] = attr.getInt();
     }
 
-    // Compute linearized tile index (for DST assignment).
+    // tileIdx: linearized using local (subblock) strides — determines DST
+    // register position within the subblock.
     int64_t tileIdx = linearize(dimIndices, localStrides);
 
-    // Compute tile_offset using full strides (for CB indexing).
+    // tileOffset: linearized using full block strides — determines CB tile
+    // position within the entire block, used by computeCBTileIndexFromLoops.
     int64_t tileOffset = linearize(dimIndices, fullStrides);
 
     int64_t dstBase = tileIdx * dstPerIteration;
 
-    // Patch dst_idx attribute.
+    // Offset dst_idx so each unrolled tile occupies a unique DST register.
     if (auto attr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
       if (dstBase != 0) {
         int64_t newIdx = attr.getInt() + dstBase;
@@ -384,7 +395,8 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
       }
     }
 
-    // Patch CopyTileOp dst_index operand.
+    // dst_idx attribute (above) covers tile compute ops. CopyTileOp's
+    // dst index is an SSA value, so we must emit an op to compute the offset.
     if (auto copyTile = dyn_cast<CopyTileOp>(op)) {
       if (dstBase != 0) {
         OpBuilder b(copyTile);
@@ -396,7 +408,9 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
       }
     }
 
-    // Set tile_offset on TTL dialect ops for CB index computation.
+    // Set tile_offset on TTL ops for CB index computation. The attribute is
+    // consumed by computeCBTileIndexFromLoops during TTL-to-TTKernel
+    // conversion.
     if (auto *dialect = op->getDialect()) {
       if (dialect->getNamespace() == "ttl") {
         op->setAttr(
@@ -405,9 +419,8 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
       }
     }
 
-    // Remove temporary unroll annotations.
     for (int64_t d = 0; d < rank; ++d) {
-      op->removeAttr(("_uiter_" + llvm::Twine(d)).str());
+      op->removeAttr(unrollIterAttrName(d));
     }
   };
 
@@ -418,12 +431,12 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
     op.walk(walkFn);
   }
 
-  // Clean up any remaining temporary annotations (e.g., on arith ops created
-  // by the unroller infrastructure that don't have all dimension tags).
+  // Remove stale annotations from ops that didn't have all dimensions
+  // (e.g., arith constants duplicated by the unroller).
   for (Operation &op : *enclosingBlock) {
     op.walk([rank](Operation *inner) {
       for (int64_t d = 0; d < rank; ++d) {
-        inner->removeAttr(("_uiter_" + llvm::Twine(d)).str());
+        inner->removeAttr(unrollIterAttrName(d));
       }
     });
   }
@@ -491,7 +504,7 @@ struct TTLLowerToLoopsPass
   void runOnOperation() override {
     func::FuncOp func = getOperation();
 
-    // Step 1: Lower compute ops to tile loops (always creates scf.for loops).
+    // Step 1: Lower compute ops to scf.for tile loops.
     RewritePatternSet patterns(func.getContext());
     patterns.add<LowerComputeToLoops>(func.getContext());
     FrozenRewritePatternSet frozen(std::move(patterns));
@@ -499,14 +512,13 @@ struct TTLLowerToLoopsPass
       return signalPassFailure();
     }
 
-    // Step 2: Fully unroll tile loop nests and assign DST indices.
-    // Collect outermost tile loops first to avoid walking invalidated ops.
+    // Step 2: Unroll tile loop nests and assign DST indices + CB tile offsets.
+    // Snapshot outermost tile loops before mutating the IR.
     SmallVector<scf::ForOp> outerTileLoops;
     func.walk([&](scf::ForOp loop) {
       if (!loop->hasAttr(kTileLoopAttrName)) {
         return;
       }
-      // Check if this is the outermost tile loop (parent is not a tile loop).
       auto parent = loop->getParentOfType<scf::ForOp>();
       if (parent && parent->hasAttr(kTileLoopAttrName)) {
         return;
@@ -514,8 +526,7 @@ struct TTLLowerToLoopsPass
       outerTileLoops.push_back(loop);
     });
 
-    // Collect a tile loop nest starting from the outermost tile loop.
-    // Returns loops ordered from outermost to innermost.
+    // Returns loops outermost-to-innermost.
     auto collectTileLoopNest = [](scf::ForOp outerLoop) {
       SmallVector<scf::ForOp> nest;
       scf::ForOp current = outerLoop;
@@ -545,7 +556,6 @@ struct TTLLowerToLoopsPass
 
       SmallVector<scf::ForOp> nest = collectTileLoopNest(outerLoop);
 
-      // Compute total trip count.
       int64_t totalTrip = 1;
       for (scf::ForOp loop : nest) {
         auto ub = getConstantIntValue(loop.getUpperBound());
@@ -557,7 +567,6 @@ struct TTLLowerToLoopsPass
         totalTrip *= (*ub - *lb) / *step;
       }
 
-      // Only unroll nests with more than 1 tile.
       if (totalTrip <= 1) {
         continue;
       }
