@@ -13,6 +13,8 @@ import tempfile
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 from test_utils import make_zeros_tensor
 
 from python.sim import ttl, ttnn
@@ -487,3 +489,81 @@ print(f"Algorithm: {get_scheduler_algorithm()}")
             assert "Algorithm: fair" in result.stdout
         finally:
             script_path.unlink()
+
+
+class TestSignpost:
+    """Test ttl.signpost stub for simulator."""
+
+    def test_signpost_does_nothing(self):
+        """Test that ttl.signpost accepts arguments and does nothing."""
+        # Should not raise any exceptions
+        ttl.signpost("test_message")
+        ttl.signpost("test", "with", "multiple", "args")
+        ttl.signpost(label="test", value=42)
+        ttl.signpost("mixed", args=True, keyword=False)
+
+    def test_signpost_as_context_manager(self):
+        """Test that ttl.signpost works as a context manager."""
+        # Should not raise any exceptions
+        with ttl.signpost("test_context"):
+            pass
+
+        with ttl.signpost("context", "with", "args"):
+            # Do some work inside
+            x = 1 + 1
+            assert x == 2
+
+        with ttl.signpost(label="test", phase="start"):
+            pass
+
+    def test_signpost_context_manager_returns_value(self):
+        """Test that signpost context manager returns itself."""
+        with ttl.signpost("test") as ctx:
+            assert ctx is not None
+
+    def test_signpost_context_manager_with_exception(self):
+        """Test that signpost context manager doesn't suppress exceptions."""
+        try:
+            with ttl.signpost("test"):
+                raise ValueError("test exception")
+        except ValueError as e:
+            assert str(e) == "test exception"
+        else:
+            pytest.fail("Exception should have been raised")
+
+    def test_signpost_in_kernel(self):
+        """Test that ttl.signpost can be called inside kernel code."""
+
+        @ttl.kernel(grid=(1, 1))
+        def test_kernel(a: ttnn.Tensor):
+            assert a is not None
+
+            @ttl.compute()
+            def compute():
+                with ttl.signpost("compute_start"):
+                    # Do nothing
+                    pass
+                ttl.signpost("compute_end")
+
+            @ttl.datamovement()
+            def dm0():
+                with ttl.signpost("dm0_start", phase="datamovement"):
+                    x = 1 + 1
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+        # Create dummy tensor
+        a = make_zeros_tensor(32, 32)
+
+        # Should not raise - signpost is a no-op
+        test_kernel(a)
+
+    def test_signpost_returns_context_manager(self):
+        """Test that ttl.signpost returns a context manager."""
+        result = ttl.signpost("test")
+        assert result is not None
+        # Should have __enter__ and __exit__ methods
+        assert hasattr(result, "__enter__")
+        assert hasattr(result, "__exit__")
