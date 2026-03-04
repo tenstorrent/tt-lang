@@ -300,30 +300,49 @@ def TTKernelInsertInits
     once per sync region, hoisted above any enclosing loops.
 
     Per-op inits (`exp_tile_init`, `add_tiles_init`, etc.) configure the
-    MATH pipeline for a specific operation type. These are placed before
-    each consecutive group of same-type compute ops. When the op type
-    changes, a new init is emitted.
-
-    Init tracking resets at sync boundaries
+    MATH pipeline for a specific operation type. An init is emitted
+    whenever the op type changes from the previous compute op in
+    linear block order. Init tracking resets at sync boundaries
     (`tile_regs_acquire`/`commit`/`wait`/`release`).
 
-    Example:
+    Example (consecutive same-type ops share one init):
     ```mlir
-    // Before (no inits):
+    // Before:
     ttkernel.tile_regs_acquire
     ttkernel.exp_tile(%c0)
     ttkernel.exp_tile(%c1)
     ttkernel.log_tile(%c2)
     ttkernel.tile_regs_commit
 
-    // After (common init hoisted, per-op inits before each group):
+    // After:
     ttkernel.init_sfpu(%cb0, %cb1)
     ttkernel.tile_regs_acquire
     ttkernel.exp_tile_init
     ttkernel.exp_tile(%c0)
     ttkernel.exp_tile(%c1)      // no re-init (same type)
-    ttkernel.log_tile_init       // new init on type switch
+    ttkernel.log_tile_init       // re-init on type switch
     ttkernel.log_tile(%c2)
+    ttkernel.tile_regs_commit
+    ```
+
+    Example (interleaved ops each get their own init):
+    ```mlir
+    // Before:
+    ttkernel.tile_regs_acquire
+    ttkernel.exp_tile(%c0)
+    ttkernel.log_tile(%c1)
+    ttkernel.exp_tile(%c2)
+    ttkernel.tile_regs_commit
+
+    // After:
+    ttkernel.init_sfpu(%cb0, %cb1)
+    ttkernel.tile_regs_acquire
+    ttkernel.exp_tile_init
+    ttkernel.exp_tile(%c0)
+    ttkernel.log_tile_init
+    ttkernel.log_tile(%c1)
+    ttkernel.exp_tile_init       // re-init required (type switched back)
+    ttkernel.exp_tile(%c2)
     ttkernel.tile_regs_commit
     ```
   }];

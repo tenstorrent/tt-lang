@@ -47,6 +47,8 @@ static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
   for (Value operand : llvm::concat<Value>(op.getInputs(), op.getOutputs())) {
     auto type = cast<RankedTensorType>(operand.getType());
     int64_t rank = type.getRank();
+    // ComputeOp verifier guarantees static shapes, so getNumElements is safe to
+    // use here.
     int64_t elements = type.getNumElements();
     if (rank > maxRank || (rank == maxRank && elements > maxElements)) {
       maxRank = rank;
@@ -231,7 +233,7 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     // subblocked (has full linearization strides). Non-subblocked computes
     // keep their tile loops for per-tile sync.
     if (fullStridesAttr && !loopNest.loops.empty()) {
-      loopNest.loops.front()->setAttr("ttl.should_unroll",
+      loopNest.loops.front()->setAttr(kShouldUnrollAttrName,
                                       rewriter.getUnitAttr());
     }
 
@@ -536,10 +538,10 @@ struct TTLLowerToLoopsPass
     for (scf::ForOp outerLoop : outerTileLoops) {
       // Only unroll tile loops from subblocked computes (marked in step 1).
       // Non-subblocked computes keep their tile loops for per-tile sync.
-      if (!outerLoop->hasAttr("ttl.should_unroll")) {
+      if (!outerLoop->hasAttr(kShouldUnrollAttrName)) {
         continue;
       }
-      outerLoop->removeAttr("ttl.should_unroll");
+      outerLoop->removeAttr(kShouldUnrollAttrName);
 
       SmallVector<scf::ForOp> nest = collectTileLoopNest(outerLoop);
 

@@ -447,6 +447,8 @@ getCBTileGridShape(Value operand, func::FuncOp funcOp) {
 static bool hasBcastShapeExpansion(Value input, Value output,
                                    ttl::BcastType bcastType,
                                    func::FuncOp funcOp) {
+  // TTLAnnotateCBAssociations guarantees bcast operands have attached CBs
+  // with 2D tile grid shapes.
   auto inShape = getCBTileGridShape(input, funcOp);
   auto outShape = getCBTileGridShape(output, funcOp);
   assert(inShape && outShape &&

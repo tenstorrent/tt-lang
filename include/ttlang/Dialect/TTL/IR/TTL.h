@@ -58,6 +58,9 @@ constexpr llvm::StringLiteral kTileLoopAttrName("ttl.tile_loop");
 /// in unrolled (loop-free) bodies.
 constexpr llvm::StringLiteral kTileOffsetAttrName("ttl.tile_offset");
 
+/// Marks a tile loop nest for unrolling by unrollTileLoopNestAndAssignDST.
+constexpr llvm::StringLiteral kShouldUnrollAttrName("ttl.should_unroll");
+
 /// Output CB index on tile_bcast ops, avoiding SSA tracing during lowering.
 constexpr llvm::StringLiteral
     kBcastOutputCBIndexAttrName("ttl.bcast_output_cb_index");

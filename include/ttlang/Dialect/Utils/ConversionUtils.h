@@ -31,9 +31,9 @@ namespace mlir::tt::ttl::utils {
 /// ttl.subblock_stride for subblock iteration). Unmarked loops (user loops,
 /// streaming loops) are ignored because they do not affect intra-CB indexing.
 ///
-/// The `strideTransform` callback is applied to each stride at C++ compile
+/// The `strideTransform` callback is applied to each stride at pass execution
 /// time before emitting IR. This lets callers extract per-dimension components
-/// (e.g., stride / numCols for a row index) without runtime division.
+/// (e.g., stride / numCols for a row index) without emitting runtime division.
 ///
 /// When `cbShapeRank > 0`, only the innermost cbShapeRank tile loops
 /// contribute, for CBs with lower rank than the iteration domain.
@@ -54,7 +54,7 @@ inline FailureOr<Value> computeCBTileIndexFromLoops(
     }
   }
 
-  // Classify loops by attribute. Unmarked loops are ignored.
+  // Classify loops by attribute.
   SmallVector<scf::ForOp> tileLoops;
   SmallVector<scf::ForOp> subblockLoops;
   for (scf::ForOp loop : allLoops) {
@@ -141,6 +141,11 @@ inline FailureOr<Value> computeCBTileIndexFromLoops(
   // Add subblock offsets: IV * transform(stride) for each subblock loop.
   for (scf::ForOp loop : subblockLoops) {
     auto strideAttr = loop->getAttrOfType<IntegerAttr>(kSubblockStrideAttrName);
+    if (!strideAttr) {
+      return op->emitOpError()
+             << "enclosing subblock loop missing stride value on "
+             << kSubblockStrideAttrName << " attribute";
+    }
     int64_t stride = strideTransform(strideAttr.getInt());
     if (stride == 0) {
       continue;
