@@ -405,18 +405,6 @@ static void buildLiveIntervals(Block *body,
     }
   }
 
-  // Extend intervals for tile_store operands: their tile values must remain
-  // live until the store (pack_tile) executes.
-  for (Operation &op : *body) {
-    if (auto storeOp = dyn_cast<TileStoreOp>(&op)) {
-      Value stored = storeOp.getTile();
-      if (isTileValue(stored) && intervals.count(stored)) {
-        int64_t storeIdx = opIndex[&op];
-        intervals[stored].end = std::max(intervals[stored].end, storeIdx);
-      }
-    }
-  }
-
   // Merge intervals for in-place ops (input and output share DST slot).
   // In-place ops (exp_tile, abs_tile, etc.) read from and write to the same
   // DST register -- this is a hardware constraint. The merge is unconditional:
@@ -546,12 +534,9 @@ static void buildLiveIntervals(Block *body,
 
 /// Helper to check if a value is stored by a tile_store in the compute body.
 static bool isStoredValue(Value val, Block &body) {
-  for (Operation *user : val.getUsers()) {
-    if (isa<TileStoreOp>(user) && user->getBlock() == &body) {
-      return true;
-    }
-  }
-  return false;
+  return llvm::any_of(val.getUsers(), [&](Operation *user) {
+    return isa<TileStoreOp>(user) && user->getBlock() == &body;
+  });
 }
 
 /// Core linear scan allocation logic (shared by Phase 3 and Phase 4).

@@ -13,5 +13,7 @@ add_mlir_dialect_library(MLIRTTLDialect
     MLIRTTLOpsIncGen
 
     LINK_LIBS PUBLIC
+    MLIRIndexingMapOpInterface
     MLIRTTCoreDialect
+    MLIRTilingInterface
 )

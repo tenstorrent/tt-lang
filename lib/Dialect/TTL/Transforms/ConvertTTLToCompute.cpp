@@ -40,6 +40,7 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
 /// Returns nullptr when no store exists or its view is not from cb_reserve.
 /// Callers handle nullptr via notifyMatchFailure.
 static Value findOutputCB(Operation *op) {
+  assert(op->getNumResults() > 0 && "findOutputCB requires op with results");
   for (OpOperand &use : op->getResult(0).getUses()) {
     if (auto storeOp = dyn_cast<StoreOp>(use.getOwner())) {
       if (auto reserve = storeOp.getView().getDefiningOp<CBReserveOp>()) {
@@ -71,9 +72,10 @@ static StoreOp findLastStore(Operation *op) {
 /// Position the rewriter before the last store so that the new compute op
 /// is placed after all reserves (which precede their stores).
 static void insertAtLastStore(PatternRewriter &rewriter, Operation *op) {
-  if (StoreOp lastStore = findLastStore(op)) {
-    rewriter.setInsertionPoint(lastStore);
-  }
+  StoreOp lastStore = findLastStore(op);
+  assert(lastStore && "insertAtLastStore called but op has no store users; "
+                      "callers must verify via findOutputCB first");
+  rewriter.setInsertionPoint(lastStore);
 }
 
 /// Create tile_store(s) in the compute body for the given tile result and
@@ -81,8 +83,10 @@ static void insertAtLastStore(PatternRewriter &rewriter, Operation *op) {
 /// (e.g., same result stored to two outputs).
 static void emitTileStores(PatternRewriter &rewriter, Location loc,
                            Value tileResult, Operation *elementwiseOp) {
-  /// Collect-then-erase: we cannot erase stores while iterating getUses()
-  /// because erasing invalidates the use-list iterator.
+  // Collect-then-erase: we cannot erase stores while iterating getUses()
+  // because erasing invalidates the use-list iterator.
+  assert(elementwiseOp->getNumResults() > 0 &&
+         "emitTileStores requires op with results");
   SmallVector<StoreOp> storesToErase;
   for (OpOperand &use : elementwiseOp->getResult(0).getUses()) {
     auto storeOp = dyn_cast<StoreOp>(use.getOwner());
@@ -143,20 +147,42 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   Location loc = sinkOp->getLoc();
   MLIRContext *ctx = rewriter.getContext();
 
-  // Build indexing maps: identity for each input and output
+  // Build indexing maps: broadcast-aware for inputs, identity for output.
+  // When an input has size 1 in a dimension but the output doesn't, that
+  // dimension is broadcast and the map should project to constant 0.
+  // This is required for TilingInterface: without correct maps, subblocking
+  // would create out-of-bounds slices on broadcast dimensions.
   SmallVector<Attribute> maps;
   AffineMap identityMap =
       AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
   for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
-    maps.push_back(AffineMapAttr::get(identityMap));
+    auto inputType = getTensorType(trace.rootInputs[i]);
+    if (inputType && inputType.getRank() == type.getRank()) {
+      SmallVector<AffineExpr> exprs;
+      bool hasBroadcast = false;
+      for (int64_t d = 0; d < type.getRank(); ++d) {
+        if (inputType.getDimSize(d) == 1 && type.getDimSize(d) != 1) {
+          exprs.push_back(getAffineConstantExpr(0, ctx));
+          hasBroadcast = true;
+        } else {
+          exprs.push_back(getAffineDimExpr(d, ctx));
+        }
+      }
+      if (hasBroadcast) {
+        maps.push_back(
+            AffineMapAttr::get(AffineMap::get(type.getRank(), 0, exprs, ctx)));
+      } else {
+        maps.push_back(AffineMapAttr::get(identityMap));
+      }
+    } else {
+      maps.push_back(AffineMapAttr::get(identityMap));
+    }
   }
   maps.push_back(AffineMapAttr::get(identityMap)); // output
 
   // Build iterator types: all parallel
-  SmallVector<Attribute> iterTypes;
-  for (int64_t i = 0; i < type.getRank(); ++i) {
-    iterTypes.push_back(rewriter.getStringAttr("parallel"));
-  }
+  SmallVector<Attribute> iterTypes(type.getRank(),
+                                   rewriter.getStringAttr("parallel"));
 
   // Position compute after all reserves by inserting before the last store.
   insertAtLastStore(rewriter, sinkOp);
@@ -287,20 +313,13 @@ static LogicalResult buildBinaryCompute(Operation *op,
   MLIRContext *ctx = rewriter.getContext();
 
   // Build identity indexing maps: (d0, d1, ...) -> (d0, d1, ...)
-  SmallVector<Attribute> maps;
   AffineMap identityMap =
       AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
-  // inputs
-  maps.push_back(AffineMapAttr::get(identityMap));
-  maps.push_back(AffineMapAttr::get(identityMap));
-  // outputs
-  maps.push_back(AffineMapAttr::get(identityMap));
+  SmallVector<Attribute> maps(3, AffineMapAttr::get(identityMap));
 
   // Build iterator types: all parallel
-  SmallVector<Attribute> iterTypes;
-  for (int64_t i = 0; i < type.getRank(); ++i) {
-    iterTypes.push_back(rewriter.getStringAttr("parallel"));
-  }
+  SmallVector<Attribute> iterTypes(type.getRank(),
+                                   rewriter.getStringAttr("parallel"));
 
   // Position compute after all reserves by inserting before the last store.
   insertAtLastStore(rewriter, op);
@@ -371,19 +390,13 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   MLIRContext *ctx = rewriter.getContext();
 
   // Build identity indexing maps: (d0, d1, ...) -> (d0, d1, ...)
-  SmallVector<Attribute> maps;
   AffineMap identityMap =
       AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
-  // input
-  maps.push_back(AffineMapAttr::get(identityMap));
-  // output
-  maps.push_back(AffineMapAttr::get(identityMap));
+  SmallVector<Attribute> maps(2, AffineMapAttr::get(identityMap));
 
-  // Build iterator types: all parallel
-  SmallVector<Attribute> iterTypes;
-  for (int64_t i = 0; i < type.getRank(); ++i) {
-    iterTypes.push_back(rewriter.getStringAttr("parallel"));
-  }
+  // Build iterator types: all parallel for now
+  SmallVector<Attribute> iterTypes(type.getRank(),
+                                   rewriter.getStringAttr("parallel"));
 
   // Position compute after all reserves by inserting before the last store.
   insertAtLastStore(rewriter, op);
@@ -552,7 +565,9 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
                                      rewriter.getStringAttr("parallel"));
 
     // Position compute after all reserves by inserting before the last store.
-    insertAtLastStore(rewriter, op);
+    if (findLastStore(op)) {
+      insertAtLastStore(rewriter, op);
+    }
 
     Value init = buildInitTensor(rewriter, loc, outputType, op.getOutput());
     Value initAttached =

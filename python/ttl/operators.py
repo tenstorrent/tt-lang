@@ -215,6 +215,8 @@ def _get_cb_from_block(block):
     The attach_cb op has signature: (tensor, cb) -> tensor
     So the CB is operand[1].
     """
+    if block.owner.name != "ttl.attach_cb":
+        raise ValueError(f"expected block from ttl.attach_cb, got {block.owner.name}")
     return block.owner.operands[1]
 
 
