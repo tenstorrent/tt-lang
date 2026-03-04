@@ -198,10 +198,12 @@ static bool analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
                               Value &in0CB, Value &in1CB, Value &outputCB) {
   Block *block = acquireOp->getBlock();
   bool hasFPUBinary = false;
+  bool foundRelease = false;
 
   for (auto it = std::next(acquireOp->getIterator()); it != block->end();
        ++it) {
     if (isa<ttk::TileRegsReleaseOp>(&*it)) {
+      foundRelease = true;
       break;
     }
 
@@ -237,6 +239,7 @@ static bool analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
     });
   }
 
+  assert(foundRelease && "tile_regs_acquire without matching tile_regs_release");
   return hasFPUBinary;
 }
 
