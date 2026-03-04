@@ -351,6 +351,9 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
 
     auto cbTileIndex =
         utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
+    if (failed(cbTileIndex)) {
+      return failure();
+    }
 
     // Determine DST index from the source op:
     // - Tile compute ops and copy_dst: have dst_idx attribute
@@ -370,10 +373,10 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
                << defOp->getName();
       }
     } else {
-      dstIndex = cbTileIndex;
+      dstIndex = *cbTileIndex;
     }
 
-    rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, cbTileIndex,
+    rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, *cbTileIndex,
                                      /*out_of_order=*/true);
 
     rewriter.eraseOp(op);
@@ -985,7 +988,8 @@ removeStructuralTTLOps(ModuleOp mod, MLIRContext &ctx,
 static void removeTensorDataflowOps(func::FuncOp func) {
   SmallVector<Operation *> deadOps;
   func.walk([&](Operation *op) {
-    if (isa<tensor::ExtractOp, tensor::EmptyOp>(op) && op->use_empty()) {
+    if (isa<tensor::ExtractOp, tensor::ExtractSliceOp, tensor::EmptyOp>(op) &&
+        op->use_empty()) {
       deadOps.push_back(op);
     }
   });
