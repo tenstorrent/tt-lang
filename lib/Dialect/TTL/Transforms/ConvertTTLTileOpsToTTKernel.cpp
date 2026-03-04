@@ -152,27 +152,6 @@ using TTLTileRegsWaitToTTKernel =
 using TTLTileRegsReleaseToTTKernel =
     TTLSimpleOneToOne<TileRegsReleaseOp, ttk::TileRegsReleaseOp>;
 
-struct TTLInitSFPUToTTKernel : OpConversionPattern<InitSFPUOp> {
-  using OpConversionPattern<InitSFPUOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(InitSFPUOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-
-    auto icb = utils::convertTTLCBToTTKernel(adaptor.getIcb(), rewriter, loc,
-                                             getTypeConverter());
-    auto ocb = utils::convertTTLCBToTTKernel(adaptor.getOcb(), rewriter, loc,
-                                             getTypeConverter());
-    if (failed(icb) || failed(ocb)) {
-      return rewriter.notifyMatchFailure(op, "failed to convert CB types");
-    }
-
-    rewriter.replaceOpWithNewOp<ttk::InitSFPUOp>(op, *icb, *ocb);
-    return success();
-  }
-};
-
 //===----------------------------------------------------------------------===//
 // Helpers
 //===----------------------------------------------------------------------===//
@@ -650,8 +629,7 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
                                           RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
 
-  // Control ops (init_sfpu needs type converter for CB conversion).
-  patterns.add<TTLInitSFPUToTTKernel>(*typeConverter, ctx);
+  // DST lifecycle ops (1:1 conversion, no operands/results).
   patterns.add<TTLTileRegsAcquireToTTKernel, TTLTileRegsCommitToTTKernel,
                TTLTileRegsWaitToTTKernel, TTLTileRegsReleaseToTTKernel>(ctx);
 

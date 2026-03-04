@@ -203,9 +203,9 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
         });
 
     // Annotate tile loops with linearization strides for CB indexing.
-    // If the compute was subblocked, use the full tensor strides (which
-    // differ from the subblock shape bounds). Otherwise, compute strides
-    // from the iteration domain (which IS the full shape).
+    // If the compute was subblocked, use the full block strides (which
+    // differ from the subblock iteration bounds). Otherwise, compute strides
+    // from the iteration domain (which IS the full block shape).
     auto fullStridesAttr =
         op->getAttrOfType<DenseI64ArrayAttr>(kFullLinStridesAttrName);
     SmallVector<int64_t> domainStrides;
