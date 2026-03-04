@@ -7,6 +7,7 @@
 
 #include "TTMLIRMinimalModule.h"
 #include "mlir-c/Pass.h"
+#include "ttmlir/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCore.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/Dialect/TTKernel/Transforms/Passes.h"
@@ -26,8 +27,14 @@ NB_MODULE(_ttmlir, m) {
   llvm::sys::PrintStackTraceOnErrorSignal("");
   llvm::sys::AddSignalHandler(cleanExitSignalHandler, nullptr);
 
-  // Register TTKernel passes (TTCore passes not needed in tt-lang pipelines)
+  // Register TTKernel transform passes
   mlir::tt::ttkernel::registerPasses();
+
+  // Register conversion passes we build (can't use registerConversionPasses()
+  // because it registers all passes, including ones we don't link).
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return mlir::tt::createConvertTTKernelToEmitC();
+  });
 
   m.def(
       "enable_pretty_stack_traces",
