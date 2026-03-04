@@ -15,6 +15,7 @@
     * [6.1. Pipe net](#61-pipe-net)
 * [7. Tensor slice](#7-tensor-slice)
 * [8. Copy](#8-copy)
+    * [8.1. Group transfer](#81-group-transfer)
 * [9. Semaphore](#9-semaphore)
 * [Appendix A. Glossary](#appendix-a-glossary)
 * [Appendix B. Block operators and math functions](#appendix-b-block-operators-and-math-functions)
@@ -678,10 +679,70 @@ def dm():
 
 The `ttl.copy` function expresses a variety of data movements that always have two arguments: source and destination. `ttl.copy` returns a *transfer handle* object. A transfer handle has a `wait` function that serves as a barrier. When the `wait` returns the transfer is complete and data in the destination is safe to use.  The `ttl.copy` can only be used inside of a data movement thread function.
 
+### 8.1. Group transfer
+
+When `ttl.copy` function is called multiple times, instead of waiting on each transfer handle, it is possible to group handles and wait on all handles at once. This is done by instantiating `ttl.GroupTransfer` object and then adding handles with its `add` function. Once all handles are added `wait_all` function is called to wait for all transfers to complete.
+
+#### Example
+
+```py
+# ---------------------
+# Nearest Neighbor Upsample
+#
+# Tensor              Torch shape
+# input_images        N, HI, WI, C
+# output_images       N, HO, WO, C
+# 
+# HO = HI * scale_factor[0]
+# WO = WI * scale_factor[1]
+
+io_dfb = ttl.make_dataflow_buffer_like(
+    input_images, shape=(C,), buffer_factor=2
+)
+
+@ttl.datamovement()
+def reader():
+    for n in range(N):
+        for hi in range(HI):
+            for wi in range(WI):
+                with io_dfb.reserve() as io_blk:
+
+                    # Copy input pixel channels
+
+                    xf = ttl.copy(input_t[n, hi, wi, :], io_blk)
+
+                    xf.wait()
+
+@ttl.datamovement()
+def writer():
+    for n in range(N):
+        for hi in range(HI):
+            for wi in range(WI):
+                with io_dfb.wait() as io_blk:
+                    gxf = ttl.GroupTransfer()
+
+                    for h_sf in range(scale_factor[0]):
+                        for w_sf in range(scale_factor[1]):
+
+                            # Copy output pixel channels
+
+                            xf = ttl.copy(io_blk, output[n, hi * scale_factor[0] + h_sf, wi * scale_factor[1] + w_sf, :])
+
+                            # Add transfer handle to a group
+
+                            gxf.add(xf)
+
+                    # Wait for all transfers to complete
+                    
+                    gxf.wait_all()
+```
+
 | Function | Description |
 | :---- | :---- |
-| `ttl.copy(src: ttl.Block, dst: ttl.TensorSlice) -> ttl.TransferHandle`<br><br>`ttl.copy(src: ttl.TensorSlice, dst: ttl.Block) -> ttl.TransferHandle`<br><br>`ttl.copy(src: ttl.Block, dst: ttl.PipeIdentity) -> ttl.TransferHandle`<br><br>`ttl.copy(src: ttl.PipeIdentity, dst: ttl.Block) -> ttl.TransferHandle` | Copy data between a block, a tensor slice, or a pipe. **This function is non-blocking.** The compiler statically checks if the shape of block and tensor slice are compatible and if the shape of block sent to a pipe is compatible with the shape of block received from the same pipe. When a pipe is used as a destination there must be a corresponding `ttl.copy` where the same pipe is used as source. Furthermore, `ttl.copy` with pipe must be guarded by pipe net’s `if_src` and `is_dst` where this pipe is destination and source correspondingly. |
-| `ttl.TransferHandle.wait()` | Wait for data transfer to complete. **This function is blocking.** |
+| `ttl.copy(src: ttl.Block, dst: ttl.TensorSlice) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.TensorSlice, dst: ttl.Block) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.Block, dst: ttl.PipeIdentity) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.PipeIdentity, dst: ttl.Block) -> ttl.Transfer` | Copy data between a block, a tensor slice, or a pipe. **This function is non-blocking.** The compiler statically checks if the shape of block and tensor slice are compatible and if the shape of block sent to a pipe is compatible with the shape of block received from the same pipe. When a pipe is used as a destination there must be a corresponding `ttl.copy` where the same pipe is used as source. Furthermore, `ttl.copy` with pipe must be guarded by pipe net’s `if_src` and `is_dst` where this pipe is destination and source correspondingly. |
+| `ttl.Transfer.wait()` | Wait for data transfer to complete. Transfer handle cannot be used after this function is called.  **This function is blocking.** |
+| `ttl.GroupTransfer.add(xf: ttl.Transfer)` | Add transfer handle to a group. This function cannot be called after `ttl.GroupTransfer.wait_all` was called. |
+| `ttl.GroupTransfer.wait_all()` | Wait for all data transfers in group to complete. Group transfer cannot be used after this function is called. **This function is blocking.** |
 
 ## 9. Semaphore
 
