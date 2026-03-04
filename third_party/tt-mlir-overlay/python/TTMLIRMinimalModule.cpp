@@ -10,13 +10,13 @@
 #include "mlir/Bindings/Python/Nanobind.h"
 #include "mlir/Bindings/Python/NanobindAdaptors.h"
 #include "mlir/CAPI/IR.h"
-#include "mlir/InitAllPasses.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/InitAllPasses.h"
 
 #include "ttmlir/Dialect/TTCore/IR/TTCore.h"
-#include "ttmlir/Dialect/TTMetal/IR/TTMetal.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/Dialect/TTIR/IR/TTIR.h"
+#include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
+#include "ttmlir/Dialect/TTMetal/IR/TTMetal.h"
 
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Signals.h"
@@ -34,9 +34,7 @@ void populateUtilModule(nb::module_ &m);
 } // namespace mlir::ttmlir::python
 
 // Custom signal handler that exits cleanly after stack trace is printed
-static void cleanExitSignalHandler(void *cookie) {
-  _exit(1);
-}
+static void cleanExitSignalHandler(void *cookie) { _exit(1); }
 
 // Minimal dialect registration - only registers what tt-lang needs
 static void registerMinimalDialects(mlir::DialectRegistry &registry) {
@@ -91,7 +89,8 @@ NB_MODULE(_ttmlir, m) {
   auto ttkernel_ir = m.def_submodule("ttkernel_ir", "TTKernel IR Bindings");
   mlir::ttmlir::python::populateTTKernelModule(ttkernel_ir);
 
-  auto passes = m.def_submodule("passes", "Python-Bound Passes & Transformations");
+  auto passes =
+      m.def_submodule("passes", "Python-Bound Passes & Transformations");
   mlir::ttmlir::python::populatePassesModuleMinimal(passes);
 
   auto util = m.def_submodule("util", "Python-Bound Utilities & Helpers");

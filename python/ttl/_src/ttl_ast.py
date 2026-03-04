@@ -15,7 +15,7 @@ from ..constants import DEFAULT_TILE_SIZE
 from ..diagnostics import TTLangCompileError
 from ..dialects import ttl
 from ..dtype_utils import is_ttnn_tensor, tensor_dtype_to_ttcore_datatype
-from ..layouts import TTNNLayoutConfig, create_ttnn_layout
+from ..layouts import LayoutConfig, create_layout
 from ..ttl_utils import get_thread_type_string
 from .auto_profile import (
     get_line_mapper,
@@ -57,9 +57,9 @@ def _raise_tensor_error(tensor, message: str):
 
 
 def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
-    """Build MLIR tensor type for a ttnn tensor with TTNNLayoutAttr."""
+    """Build MLIR tensor type with TTLLayoutAttr encoding."""
     if not tiled:
-        raise ValueError("Only tiled tensors supported for TTNN interop")
+        raise ValueError("Only tiled tensors supported")
     if memory_space not in ("L1", "DRAM"):
         raise ValueError(f"Only L1 or DRAM memory space supported, got {memory_space}")
     if len(grid) != 2:
@@ -71,9 +71,9 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
 
     tensor_rows, tensor_cols = tensor.shape
 
-    layout = create_ttnn_layout(
+    layout = create_layout(
         ctx,
-        TTNNLayoutConfig(
+        LayoutConfig(
             logical_shape=tensor.shape,
             grid=grid,
             dtype=tensor.dtype,

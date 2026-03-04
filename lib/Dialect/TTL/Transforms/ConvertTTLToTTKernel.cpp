@@ -20,15 +20,15 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
+#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
-#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h"      // IWYU pragma: keep
-#include "ttmlir/Dialect/TTNN/IR/TTNNOpsAttrs.h" // IWYU pragma: keep
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
@@ -60,10 +60,9 @@ public:
       return ttk::CBType::get(t.getContext(), t.getTotalElements(),
                               t.getElementType());
     });
-    // Tensor -> TensorAccessor for TTKernel when TTNN layout is present.
+    // Tensor -> TensorAccessor for TTKernel when TTL layout is present.
     addConversion([](RankedTensorType t) -> Type {
-      if (t.getEncoding() &&
-          mlir::isa<tt::ttnn::TTNNLayoutAttr>(t.getEncoding())) {
+      if (t.getEncoding() && mlir::isa<tt::ttl::LayoutAttr>(t.getEncoding())) {
         return ttk::TensorAccessorType::get(t.getContext());
       }
       return t;
@@ -438,8 +437,8 @@ static FailureOr<int32_t> computeCTAIndex(unsigned argIdx, Operation *op) {
   return static_cast<int32_t>(baseCTA + globalTensorIdx);
 }
 
-/// Validate TTNNLayoutAttr encoding on a tensor and return the page size.
-/// Rejects sharded (#118) and row-major (#173) layouts with diagnostics.
+/// Validate TTLLayoutAttr encoding on a tensor and return the page size.
+/// Rejects sharded (#118) layouts with diagnostics.
 static FailureOr<int64_t> getValidatedPageSize(Value tensor, Operation *op) {
   auto tensorTy = llvm::dyn_cast<RankedTensorType>(tensor.getType());
   if (!tensorTy) {
@@ -447,25 +446,28 @@ static FailureOr<int64_t> getValidatedPageSize(Value tensor, Operation *op) {
   }
 
   auto layoutAttr =
-      mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
+      mlir::dyn_cast_or_null<tt::ttl::LayoutAttr>(tensorTy.getEncoding());
   if (!layoutAttr) {
     return op->emitError(
-        "tensor must have TTNNLayoutAttr encoding for accessor "
-        "materialization; Python layer should reject tensors without TTNN "
-        "layout");
+        "tensor must have ttl.layout encoding for accessor "
+        "materialization; Python layer should reject tensors without layout");
   }
 
-  if (layoutAttr.hasShardedTensorMemoryLayout()) {
+  auto memLayout = layoutAttr.getMemoryLayout();
+  if (memLayout != tt::ttl::TensorMemoryLayout::Interleaved &&
+      memLayout != tt::ttl::TensorMemoryLayout::SingleBank) {
     return op->emitError("sharded memory layout not yet supported for tensor "
                          "accessor; see GH issue #118");
   }
 
-  if (!layoutAttr.isTiled()) {
-    return op->emitError("row-major (non-tiled) layout not yet supported for "
-                         "tensor accessor; see GH issue #173");
+  // TTL layouts are always tiled. Compute page size from tile element type.
+  auto tileType =
+      mlir::dyn_cast<tt::ttcore::TileType>(layoutAttr.getElementType());
+  if (!tileType) {
+    return op->emitError("layout element type must be a TileType");
   }
 
-  return layoutAttr.getElementSizeBytes();
+  return tileType.getSizeBytes();
 }
 
 /// Create a TensorAccessor from a tensor type, bank base address, and

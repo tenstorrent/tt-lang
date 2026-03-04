@@ -86,11 +86,6 @@ if llvm_config is not None:
 tool_dirs = [
     os.path.join(config.ttlang_obj_root, "bin"),
 ]
-# Add tt-mlir tools directory if available
-if hasattr(config, "ttmlir_path") and config.ttmlir_path:
-    ttmlir_bin = os.path.join(config.ttmlir_path, "bin")
-    if os.path.exists(ttmlir_bin):
-        tool_dirs.append(ttmlir_bin)
 if hasattr(config, "llvm_tools_dir"):
     tool_dirs.append(config.llvm_tools_dir)
 if hasattr(config, "lit_tools_dir"):
@@ -123,12 +118,6 @@ python_paths = [
     os.path.join(config.ttlang_source_dir, "python"),
     config.test_source_root,  # For ttlang_test_utils and other test utilities
 ]
-
-# Add tt-mlir Python packages if available
-if hasattr(config, "ttmlir_path") and config.ttmlir_path:
-    ttmlir_python = os.path.join(config.ttmlir_path, "python_packages")
-    if os.path.exists(ttmlir_python):
-        python_paths.append(ttmlir_python)
 
 # Include existing PYTHONPATH last
 python_paths.append(os.environ.get("PYTHONPATH", ""))

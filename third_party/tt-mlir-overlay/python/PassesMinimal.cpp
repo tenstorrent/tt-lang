@@ -10,11 +10,11 @@
 // - pykernel_compile_pipeline
 // - translate_to_cpp
 
-#include "mlir/Target/Cpp/CppEmitter.h"
 #include "mlir/Bindings/Python/Nanobind.h"
 #include "mlir/CAPI/IR.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "mlir/Target/Cpp/CppEmitter.h"
 
 #include "ttmlir/Conversion/Passes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"

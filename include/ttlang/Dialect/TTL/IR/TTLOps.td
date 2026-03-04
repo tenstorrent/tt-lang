@@ -78,7 +78,7 @@ def TTL_AttachCBOp : TTL_Op<"attach_cb", []> {
 def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
   let summary = "Create a view into a tensor at specific tile indices";
   let description = [{
-    `ttl.tensor_slice` creates a view into a TTNN tensor at a specific tile
+    `ttl.tensor_slice` creates a view into a tensor at a specific tile
     position. The resulting tensor can be passed to `ttl.copy` to transfer
     tiles starting at the specified position.
 
@@ -100,7 +100,7 @@ def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
     ```
   }];
   let arguments = (ins
-    TTNNTensor:$tensor,
+    TTLLayoutTensor:$tensor,
     Index:$tile_row,
     Index:$tile_col
   );
@@ -118,7 +118,7 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     corresponding `ttl.wait` has completed.
 
     Exactly one operand must be a circular buffer (`!ttl.cb`). The other operand
-    must be a ranked tensor (the result of a tensor slice) with TTNN layout
+    must be a ranked tensor (the result of a tensor slice) with TTL layout
     encoding (transfers all tiles via loop).
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
@@ -127,8 +127,8 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     Example:
 
     ```mlir
-    #dram = #ttnn.buffer_type<dram>
-    #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+    #layout = #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, f32>,
+                          buffer = L1, grid = [1, 1], memory = Interleaved>
 
     func.func @dma_single(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
       %cb = ttl.bind_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>

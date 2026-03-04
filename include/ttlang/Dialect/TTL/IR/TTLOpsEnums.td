@@ -34,4 +34,33 @@ def TTL_BcastType : I32EnumAttr<"BcastType", "TTL broadcast type",
   let cppNamespace = "::mlir::tt::ttl";
 }
 
+// Buffer type for tensor memory placement.
+// Values match TTNN BufferType enum for compatibility.
+def TTL_BufferType_DRAM       : I32EnumAttrCase<"DRAM",       0, "dram">;
+def TTL_BufferType_L1         : I32EnumAttrCase<"L1",         1, "l1">;
+def TTL_BufferType_SystemMemory : I32EnumAttrCase<"SystemMemory", 2, "system_memory">;
+def TTL_BufferType_L1Small    : I32EnumAttrCase<"L1Small",    3, "l1_small">;
+
+def TTL_BufferType : I32EnumAttr<"BufferType", "TTL buffer type",
+    [TTL_BufferType_DRAM, TTL_BufferType_L1,
+     TTL_BufferType_SystemMemory, TTL_BufferType_L1Small]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
+// Memory layout for how tensors are distributed across cores.
+// Values match TTNN TensorMemoryLayout enum for compatibility.
+def TTL_TensorMemoryLayout_Interleaved  : I32EnumAttrCase<"Interleaved",  0, "interleaved">;
+def TTL_TensorMemoryLayout_SingleBank   : I32EnumAttrCase<"SingleBank",   1, "single_bank">;
+def TTL_TensorMemoryLayout_HeightSharded : I32EnumAttrCase<"HeightSharded", 2, "height_sharded">;
+def TTL_TensorMemoryLayout_WidthSharded  : I32EnumAttrCase<"WidthSharded",  3, "width_sharded">;
+def TTL_TensorMemoryLayout_BlockSharded  : I32EnumAttrCase<"BlockSharded",  4, "block_sharded">;
+
+def TTL_TensorMemoryLayout : I32EnumAttr<
+    "TensorMemoryLayout", "TTL tensor memory layout",
+    [TTL_TensorMemoryLayout_Interleaved, TTL_TensorMemoryLayout_SingleBank,
+     TTL_TensorMemoryLayout_HeightSharded, TTL_TensorMemoryLayout_WidthSharded,
+     TTL_TensorMemoryLayout_BlockSharded]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSENUMS_TD

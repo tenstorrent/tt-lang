@@ -37,10 +37,35 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 include(TTLangCompilerSetup)
-include(ExternTTMLIR)
 
-# Find Python3 after ExternTTMLIR to use the toolchain Python.
-find_package(Python3 COMPONENTS Interpreter REQUIRED)
+# ---------------------------------------------------------------------------
+# LLVM/MLIR dependency (pre-built or from submodule)
+# ---------------------------------------------------------------------------
+include(BuildLLVM)
+
+# LLVM/MLIR include dirs must be set before any subdirectory that uses TableGen.
+include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
+include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
+
+# ---------------------------------------------------------------------------
+# Minimal tt-mlir build (from submodule)
+# ---------------------------------------------------------------------------
+include(BuildTTMLIRMinimal)
+
+# ---------------------------------------------------------------------------
+# tt-metal runtime (optional, from submodule or pre-built)
+# ---------------------------------------------------------------------------
+include(BuildTTMetal)
+
+# Detect Python dev packages (Python3, pybind11, nanobind) using MLIR's
+# helpers.  This must run after BuildLLVM (which sets Python3_EXECUTABLE to the
+# venv when building from submodule) and before add_subdirectory(python).
+if(TTLANG_ENABLE_BINDINGS_PYTHON)
+  include(MLIRDetectPythonEnv)
+  mlir_configure_python_dev_packages()
+else()
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+endif()
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
   message(FATAL_ERROR "In-source builds are not allowed. Please make a new directory (called a build directory) and run CMake from there.")
@@ -48,9 +73,8 @@ endif()
 
 set(TTLANG_SOURCE_DIR ${PROJECT_SOURCE_DIR})
 set(TTLANG_BINARY_DIR ${PROJECT_BINARY_DIR})
-set(LLVM_TOOLS_DIR "${TTMLIR_TOOLCHAIN_DIR}/bin")
-
 set(TT_LANG_HOME "${CMAKE_CURRENT_LIST_DIR}")
+set(LLVM_TOOLS_DIR "${LLVM_INSTALL_DIR}/bin")
 
 ttlang_check_device_available(TTLANG_HAS_DEVICE)
 if(TTLANG_HAS_DEVICE)
@@ -71,38 +95,19 @@ configure_file(
   @ONLY
 )
 
-include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
-include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
-include_directories(SYSTEM ${TTMLIR_INCLUDE_DIRS})
 include_directories(${TTLANG_SOURCE_DIR}/include)
 include_directories(${TTLANG_BINARY_DIR}/include)
-include_directories(${TTMLIR_TOOLCHAIN_DIR}/include)
-
-link_directories(${LLVM_BUILD_LIBRARY_DIR})
-link_directories(${TTMLIR_LIBRARY_DIRS})
 
 add_definitions(${LLVM_DEFINITIONS})
 
-add_subdirectory(third-party)
 add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(tools)
 
-if(MLIR_ENABLE_BINDINGS_PYTHON AND TTLANG_ENABLE_BINDINGS_PYTHON)
+if(TTLANG_ENABLE_BINDINGS_PYTHON)
   message(STATUS "Enabling Python API")
   set(TTLANG_PYTHON_PACKAGES_DIR "${CMAKE_CURRENT_BINARY_DIR}/python_packages")
   add_subdirectory(python)
-  include(CopyTTNNPythonPackage)
-
-  # Install dev-requirements.txt into toolchain venv if it exists.
-  if(EXISTS "${TTMLIR_TOOLCHAIN_DIR}/venv/bin/python3" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/dev-requirements.txt")
-    add_custom_target(install-dev-deps
-      COMMAND ${Python3_EXECUTABLE} -m pip install -q -r "${CMAKE_CURRENT_SOURCE_DIR}/dev-requirements.txt"
-      COMMENT "Installing development dependencies into toolchain venv"
-      VERBATIM
-    )
-    message(STATUS "Target 'install-dev-deps' available to install dev-requirements.txt")
-  endif()
 endif()
 
 add_subdirectory(test)
