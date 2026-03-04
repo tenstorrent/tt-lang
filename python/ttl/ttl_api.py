@@ -39,6 +39,7 @@ from ._src.auto_profile import (
     parse_device_profile_csv,
     print_profile_report,
 )
+from ._src.perf_trace_server import serve_trace
 from ._src.signpost_profile import is_signpost_profile_enabled
 from ._src.tensor_registry import (
     get_tensor_global_index,
@@ -1357,6 +1358,23 @@ def pykernel_gen(
 
                 if is_signpost_profile_enabled():
                     _run_signpost_profile(args)
+
+                # Serve profiler data as Perfetto trace (runs last,
+                # after other profilers have dumped their data)
+                if os.environ.get("TTLANG_PERF_SERV") == "1":
+                    tt_metal_home = os.environ.get("TT_METAL_HOME", "")
+                    if not tt_metal_home:
+                        raise ValueError("TTLANG_PERF_SERV=1 requires TT_METAL_HOME")
+                    csv_path = (
+                        Path(tt_metal_home)
+                        / "generated"
+                        / "profiler"
+                        / ".logs"
+                        / "profile_log_device.csv"
+                    )
+                    if csv_path.exists():
+                        serve_trace(csv_path)
+                    del os.environ["TTLANG_PERF_SERV"]
 
                 return result
 
