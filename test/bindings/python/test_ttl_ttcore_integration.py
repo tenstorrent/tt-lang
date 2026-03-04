@@ -5,8 +5,8 @@
 # Pytest for the ttlang python bindings — TTL and TTCore dialects together.
 
 from ttl.dialects import ttl
-from ttlang import ir as ttlang_ir
-from ttlang.dialects import ttcore
+from ttl import ir as ttlang_ir
+from ttl.dialects import ttcore
 
 
 def test_ttl_and_ttcore_same_context():

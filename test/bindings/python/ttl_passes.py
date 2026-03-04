@@ -6,8 +6,8 @@
 
 """Test that TTL compiler passes are registered and accessible from Python."""
 
-from ttlang.ir import Context
-from ttlang.passmanager import PassManager
+from ttl.ir import Context
+from ttl.passmanager import PassManager
 from ttl.dialects import ttl
 
 

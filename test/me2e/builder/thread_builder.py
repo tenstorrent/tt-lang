@@ -21,7 +21,7 @@ from enum import Enum
 from typing import Any, Callable, List, Optional, Tuple
 
 import torch
-from ttlang.ir import (
+from ttl.ir import (
     Attribute,
     ArrayAttr,
     Context,
@@ -34,8 +34,8 @@ from ttlang.ir import (
     Module,
     RankedTensorType,
 )
-from ttlang.dialects import arith, func, scf
-from ttlang.dialects import ttcore
+from ttl.dialects import arith, func, scf
+from ttl.dialects import ttcore
 
 import ttl.dialects.ttl as ttl
 

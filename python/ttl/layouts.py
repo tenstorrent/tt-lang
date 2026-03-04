@@ -7,7 +7,7 @@
 from dataclasses import dataclass
 from typing import List
 
-from ttlang.dialects import ttcore
+from ttl.dialects import ttcore
 
 from .constants import DEFAULT_TILE_SIZE
 from .dtype_utils import tensor_dtype_to_ttcore_datatype
@@ -62,7 +62,7 @@ def create_layout(ctx, config: LayoutConfig):
     )
 
     # Import ttl.ir from our _ttlang extension module
-    from ttlang._mlir_libs._ttlang import ttl_ir
+    from ttl._mlir_libs._ttlang import ttl_ir
 
     return ttl_ir.LayoutAttr.get(
         ctx,

@@ -11,8 +11,8 @@ Provides compilation from TTL dialect to TTKernel dialect.
 import os
 from typing import Any, Optional
 
-from ttlang.ir import Module
-from ttlang.passmanager import PassManager
+from ttl.ir import Module
+from ttl.passmanager import PassManager
 
 
 def compile_ttl_to_ttkernel(module: Module, device: Optional[Any] = None) -> Module:

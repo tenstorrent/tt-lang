@@ -7,8 +7,8 @@
 # Tests for TTL dialect Python bindings
 
 from ttl.dialects import ttl
-from ttlang.dialects import ttcore
-from ttlang.ir import *
+from ttl.dialects import ttcore
+from ttl.ir import *
 
 with Context() as ctx, Location.unknown():
     ttl.ensure_dialects_registered(ctx)

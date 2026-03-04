@@ -8,8 +8,8 @@
 import ast
 import inspect
 
-from ttlang.dialects import arith, emitc, func, memref, scf
-from ttlang.ir import *
+from ttl.dialects import arith, emitc, func, memref, scf
+from ttl.ir import *
 
 from .base_ast import PyKernelAstBase
 from .kernel_types import ClassRegistry
@@ -86,7 +86,7 @@ class TTCompilerBase(PyKernelAstBase):
 
         self.name = name
         try:
-            from ttlang.dialects._ods_common import get_default_loc_context
+            from ttl.dialects._ods_common import get_default_loc_context
 
             default_context = get_default_loc_context()
         except ValueError:
@@ -414,7 +414,7 @@ class TTCompilerBase(PyKernelAstBase):
 
     def visit_Print(self, node):
         # Import ttkernel here to avoid circular import at module level
-        from ttlang.dialects import ttkernel
+        from ttl.dialects import ttkernel
 
         fmt = ""
         argv = []

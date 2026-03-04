@@ -7,7 +7,7 @@
 # calling ensure_dialects_registered explicitly.
 
 from ttl.dialects import ttl
-from ttlang import ir as ttlang_ir
+from ttl import ir as ttlang_ir
 
 with ttlang_ir.Context() as ctx, ttlang_ir.Location.unknown():
     ttl.ensure_dialects_registered(ctx)

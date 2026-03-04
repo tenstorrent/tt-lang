@@ -10,8 +10,8 @@ import re
 import textwrap
 from typing import Callable
 
-from ttlang.dialects import arith
-from ttlang.ir import *
+from ttl.dialects import arith
+from ttl.ir import *
 
 
 def _format_tensor_type(ty_str: str) -> str:

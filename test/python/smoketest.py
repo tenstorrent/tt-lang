@@ -4,8 +4,8 @@
 
 # RUN: %python %s | FileCheck %s
 
-from ttlang.dialects import ttl, ttkernel, ttcore
-from ttlang.ir import *
+from ttl.dialects import ttl, ttkernel, ttcore
+from ttl.ir import *
 
 with Context() as ctx:
 
