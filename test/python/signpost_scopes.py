@@ -7,8 +7,9 @@
 # RUN: FileCheck %s < %t.output
 
 """
-Broadcast multitile blocks kernel - verifies nested loop structure and
-broadcast/math ops in generated C++ compute kernel.
+Broadcast multitile blocks kernel - verifies user-defined signpost scopes
+and nested loop structure with broadcast/math ops in generated C++ compute
+kernel.
 """
 
 import os

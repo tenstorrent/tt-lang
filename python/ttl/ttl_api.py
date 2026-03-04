@@ -1352,15 +1352,11 @@ def pykernel_gen(
                         compiled_kernel.kernel_line_offsets,
                     )
 
-                # Run perf dump once, then disable to avoid noise
                 if os.environ.get("TTLANG_PERF_DUMP") == "1":
                     _run_perf_dump(args, f.__name__)
-                    del os.environ["TTLANG_PERF_DUMP"]
 
-                # Run signpost profiler once, then disable
                 if is_signpost_profile_enabled():
                     _run_signpost_profile(args)
-                    del os.environ["TTLANG_SIGNPOST_PROFILE"]
 
                 return result
 

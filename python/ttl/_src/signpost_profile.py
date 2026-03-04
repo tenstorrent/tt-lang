@@ -38,7 +38,9 @@ def parse_signpost_zones(
 
     with open(csv_path) as f:
         reader = csv.reader(f)
-        next(reader)  # Skip header
+        header = next(reader, None)  # Skip header
+        if header is None:
+            return results
         for row in reader:
             if len(row) < 13:
                 continue

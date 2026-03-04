@@ -131,7 +131,7 @@ static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *elementwiseOp,
 /// signposts, between fused ops for interleaved ones, and forward from the
 /// last fused op for trailing ones (stopping at cb_push/cb_pop).
 static SmallVector<std::pair<Operation *, Operation *>>
-collectInterleavedsignposts(const ElementwiseTraceResult &trace,
+collectInterleavedSignposts(const ElementwiseTraceResult &trace,
                             Operation *sinkOp) {
   DenseSet<Operation *> fusedSet(trace.opsInOrder.begin(),
                                  trace.opsInOrder.end());
@@ -216,7 +216,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   }
 
   // Collect signpost ops before they get orphaned by fusion.
-  auto signpostPairs = collectInterleavedsignposts(trace, sinkOp);
+  auto signpostPairs = collectInterleavedSignposts(trace, sinkOp);
 
   Location loc = sinkOp->getLoc();
   MLIRContext *ctx = rewriter.getContext();
@@ -296,6 +296,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   // Build a map from fused op -> index in signpostPairs for quick lookup
   // of which signposts precede each fused op.
+  assert(!trace.opsInOrder.empty() &&
+         "buildFusedCompute requires non-empty opsInOrder");
   DenseMap<Operation *, SmallVector<SignpostOp>> signpostsBefore;
   SmallVector<SignpostOp> leadingSignposts;
   SmallVector<SignpostOp> trailingSignposts;
@@ -326,7 +328,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   // Emit leading signposts
   for (auto sp : leadingSignposts) {
-    rewriter.create<SignpostOp>(sp.getLoc(), sp.getNameAttr());
+    rewriter.create<SignpostOp>(sp.getLoc(), sp.getNameAttr(), sp.getIsEndAttr());
   }
 
   // Emit tile ops in topological order, with interleaved signposts
@@ -336,7 +338,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     auto it = signpostsBefore.find(op);
     if (it != signpostsBefore.end()) {
       for (auto sp : it->second) {
-        rewriter.create<SignpostOp>(sp.getLoc(), sp.getNameAttr());
+        rewriter.create<SignpostOp>(sp.getLoc(), sp.getNameAttr(),
+                                    sp.getIsEndAttr());
       }
     }
 
@@ -370,19 +373,21 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     finalResult = tileResult;
   }
 
-  // Emit trailing _before signposts, then tile stores, then _after signposts.
+  // Emit trailing begin signposts, then tile stores, then end signposts.
   // This places tile_store inside the innermost signpost scope.
-  auto firstAfterIt = llvm::find_if(trailingSignposts, [](SignpostOp sp) {
-    return sp.getName().ends_with("_after");
+  auto firstEndIt = llvm::find_if(trailingSignposts, [](SignpostOp sp) {
+    return sp.getIsEnd();
   });
-  for (auto it = trailingSignposts.begin(); it != firstAfterIt; ++it) {
-    rewriter.create<SignpostOp>(it->getLoc(), it->getNameAttr());
+  for (auto it = trailingSignposts.begin(); it != firstEndIt; ++it) {
+    rewriter.create<SignpostOp>(it->getLoc(), it->getNameAttr(),
+                                it->getIsEndAttr());
   }
 
   emitTileStores(rewriter, loc, finalResult, sinkOp);
 
-  for (auto it = firstAfterIt; it != trailingSignposts.end(); ++it) {
-    rewriter.create<SignpostOp>(it->getLoc(), it->getNameAttr());
+  for (auto it = firstEndIt; it != trailingSignposts.end(); ++it) {
+    rewriter.create<SignpostOp>(it->getLoc(), it->getNameAttr(),
+                                it->getIsEndAttr());
   }
 
   rewriter.create<YieldOp>(loc);

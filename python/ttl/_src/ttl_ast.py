@@ -184,9 +184,9 @@ class TTLGenericCompiler(TTCompilerBase):
 
     # Auto-profiling helpers for line-based signposting
 
-    def _emit_signpost(self, name: str):
+    def _emit_signpost(self, name: str, is_end: bool = False):
         """Emit a signpost operation into the MLIR."""
-        ttl.signpost(name)
+        ttl.signpost(name, is_end=is_end)
 
     def _emit_line_signpost_if_needed(self, node):
         """Emit signposts at line boundaries for auto-profiling."""
@@ -198,7 +198,9 @@ class TTLGenericCompiler(TTCompilerBase):
             return
 
         if self._current_signpost_line is not None:
-            self._emit_signpost(f"{self.name}_L{self._current_signpost_line}_after")
+            self._emit_signpost(
+                f"{self.name}_L{self._current_signpost_line}", is_end=True
+            )
 
         if self.source_lines and 0 < node.lineno <= len(self.source_lines):
             source_line = self.source_lines[node.lineno - 1].strip()
@@ -206,19 +208,19 @@ class TTLGenericCompiler(TTCompilerBase):
             source_line = f"<line {file_lineno}>"
 
         base_name = f"{self.name}_L{file_lineno}"
-        before_name = f"{base_name}_before"
-        after_name = f"{base_name}_after"
 
         if self.line_mapper:
             self.line_mapper.register_signpost(base_name, file_lineno, source_line)
 
-        self._emit_signpost(before_name)
+        self._emit_signpost(base_name)
         self._current_signpost_line = file_lineno
 
     def _close_final_signpost(self):
         """Close the final signpost at the end of function body."""
         if self.auto_profile_enabled and self._current_signpost_line is not None:
-            self._emit_signpost(f"{self.name}_L{self._current_signpost_line}_after")
+            self._emit_signpost(
+                f"{self.name}_L{self._current_signpost_line}", is_end=True
+            )
             self._current_signpost_line = None
 
     def _on_scope_exit(self):
@@ -238,8 +240,6 @@ class TTLGenericCompiler(TTCompilerBase):
         file_lineno = node.lineno + self.line_offset
         prefix = "implicit_" if implicit else ""
         base_name = f"{self.name}_L{file_lineno}_{prefix}{op_name}"
-        before_name = f"{base_name}_before"
-        after_name = f"{base_name}_after"
 
         if self.source_lines and 0 < node.lineno <= len(self.source_lines):
             source_line = self.source_lines[node.lineno - 1].strip()
@@ -250,9 +250,9 @@ class TTLGenericCompiler(TTCompilerBase):
             self.line_mapper.register_signpost(base_name, file_lineno, source_line)
 
         with self._loc_for_node(node):
-            self._emit_signpost(before_name)
+            self._emit_signpost(base_name)
             result = op_fn()
-            self._emit_signpost(after_name)
+            self._emit_signpost(base_name, is_end=True)
         return result
 
     def visit_Call(self, node):
@@ -532,7 +532,12 @@ class TTLGenericCompiler(TTCompilerBase):
         if isinstance(func, ast.Name) and func.id == "signpost":
             return True
         # with ttl.signpost("name"):
-        if isinstance(func, ast.Attribute) and func.attr == "signpost":
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "signpost"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "ttl"
+        ):
             return True
         return False
 
@@ -549,7 +554,14 @@ class TTLGenericCompiler(TTCompilerBase):
             self._raise_error(
                 context_expr, "signpost() argument must be a string literal"
             )
-        return name_arg.value
+        name = name_arg.value
+        if not name.replace("_", "").replace("-", "").isalnum():
+            self._raise_error(
+                context_expr,
+                f"signpost name must contain only alphanumeric characters, "
+                f"underscores, or hyphens, got: '{name}'",
+            )
+        return name
 
     def visit_With(self, node):
         """
@@ -591,11 +603,11 @@ class TTLGenericCompiler(TTCompilerBase):
                         self.visit(stmt)
                     return
                 self._on_scope_exit()
-                self._emit_signpost(f"ttl_{name}_before")
+                self._emit_signpost(f"ttl_{name}")
                 for stmt in node.body:
                     self.visit(stmt)
                 self._on_scope_exit()
-                self._emit_signpost(f"ttl_{name}_after")
+                self._emit_signpost(f"ttl_{name}", is_end=True)
                 return
 
             # Process each with-item: acquire resources and track for release
