@@ -692,7 +692,7 @@ When `ttl.copy` function is called multiple times, instead of waiting on each tr
 # Tensor              Torch shape
 # input_images        N, HI, WI, C
 # output_images       N, HO, WO, C
-# 
+#
 # HO = HI * scale_factor[0]
 # WO = WI * scale_factor[1]
 
@@ -733,7 +733,7 @@ def writer():
                             gxf.add(xf)
 
                     # Wait for all transfers to complete
-                    
+
                     gxf.wait_all()
 ```
 
