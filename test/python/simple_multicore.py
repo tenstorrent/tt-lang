@@ -60,8 +60,6 @@ def multicore_add(lhs, rhs, out):
 # Initial IR Checks - TTL dialect ops with core_x/core_y
 # =============================================================================
 
-# CHECK: #ttnn_layout = #ttnn.ttnn_layout<{{.*}}memref<{{.*}}!ttcore.tile<32x32, bf16>{{.*}}>
-
 # CHECK-LABEL: func.func @dm_read
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0 : i32, 1 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 

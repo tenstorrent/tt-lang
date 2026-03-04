@@ -58,19 +58,16 @@ def add_kernel_f32(lhs, rhs, out):
 # Initial IR Checks - Verify float32 layout attributes
 # =============================================================================
 
-# CHECK: #ttnn.buffer_type<l1>
-# CHECK: #ttnn_layout = #ttnn.ttnn_layout<{{.*}}memref<1x1x!ttcore.tile<32x32, f32>{{.*}}>
-
 # CHECK-LABEL: func.func @add_compute
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}
 
 # CHECK-LABEL: func.func @dm_read
-# CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, f32>, #ttnn_layout>
-# CHECK-SAME: %arg1: tensor<{{[^>]+}}!ttcore.tile<32x32, f32>, #ttnn_layout>
+# CHECK-SAME: %arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, f32>, buffer = l1, grid = [1, 1], memory = interleaved>>
+# CHECK-SAME: %arg1: tensor<1x1x!ttcore.tile<32x32, f32>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, f32>, buffer = l1, grid = [1, 1], memory = interleaved>>
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0 : i32, 1 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
 # CHECK-LABEL: func.func @dm_write
-# CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, f32>, #ttnn_layout>
+# CHECK-SAME: %arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, f32>, buffer = l1, grid = [1, 1], memory = interleaved>>
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
 
