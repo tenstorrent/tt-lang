@@ -16,7 +16,9 @@ add_mlir_public_c_api_library(TTMLIRMinimalCAPI
 
   LINK_LIBS PUBLIC
   MLIRTTCoreDialect
+  MLIRTTTransforms
   MLIRTTKernelDialect
+  MLIRTTKernelTransforms
   MLIRTTMetalDialect
   MLIRIR
   MLIRCAPITransforms

@@ -13,7 +13,6 @@
 #include "ttlang/Dialect/TTL/Pipelines/TTLPipelines.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCore.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOps.h"
-#include "ttmlir/Dialect/TTCore/Transforms/Passes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/Dialect/TTKernel/Transforms/Passes.h"
 #include "ttmlir/Dialect/TTMetal/IR/TTMetal.h"
@@ -22,8 +21,7 @@ int main(int argc, char **argv) {
   // Register upstream MLIR passes
   mlir::registerAllPasses();
 
-  // Register minimal tt-mlir passes
-  mlir::tt::ttcore::registerPasses();
+  // Register minimal tt-mlir passes (TTKernel only — TTCore passes not needed)
   mlir::tt::ttkernel::registerPasses();
 
   // Register tt-lang passes and pipelines

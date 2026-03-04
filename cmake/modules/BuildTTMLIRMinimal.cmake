@@ -80,12 +80,6 @@ add_subdirectory(
   "${TT_MLIR_INCLUDE_DIR}/ttmlir/Dialect/TTKernel/Transforms"
   "${CMAKE_BINARY_DIR}/include/ttmlir/Dialect/TTKernel/Transforms")
 
-# TTIR (tablegen only — generates headers needed by TTCore's Mesh.h include chain)
-# We do NOT build a TTIR C++ library; these headers are only needed for compilation.
-add_subdirectory(
-  "${TT_MLIR_INCLUDE_DIR}/ttmlir/Dialect/TTIR/IR"
-  "${CMAKE_BINARY_DIR}/include/ttmlir/Dialect/TTIR/IR")
-
 # Conversion passes (TTMLIR_ENABLE_STABLEHLO is unset so stablehlo branch is skipped)
 add_subdirectory(
   "${TT_MLIR_INCLUDE_DIR}/ttmlir/Conversion"

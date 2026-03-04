@@ -13,7 +13,7 @@ from ttmlir.ir import *
 
 from ..constants import DEFAULT_TILE_SIZE
 from ..diagnostics import TTLangCompileError
-from ..dialects import ttl
+from ttmlir.dialects import ttl
 from ..dtype_utils import is_ttnn_tensor, tensor_dtype_to_ttcore_datatype
 from ..layouts import LayoutConfig, create_layout
 from ..ttl_utils import get_thread_type_string

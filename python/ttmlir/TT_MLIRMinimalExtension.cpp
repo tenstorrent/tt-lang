@@ -11,7 +11,6 @@
 #include "mlir-c/Pass.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCore.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOps.h"
-#include "ttmlir/Dialect/TTCore/Transforms/Passes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/Dialect/TTKernel/Transforms/Passes.h"
 #include "ttmlir/Dialect/TTMetal/IR/TTMetal.h"
@@ -30,8 +29,7 @@ NB_MODULE(_ttmlir, m) {
   llvm::sys::PrintStackTraceOnErrorSignal("");
   llvm::sys::AddSignalHandler(cleanExitSignalHandler, nullptr);
 
-  // Register minimal set of passes
-  mlir::tt::ttcore::registerPasses();
+  // Register TTKernel passes (TTCore passes not needed in tt-lang pipelines)
   mlir::tt::ttkernel::registerPasses();
 
   m.def(

@@ -19,7 +19,7 @@ try:
 except (ModuleNotFoundError, ImportError):
     ttnn = None
 
-import ttl._mlir_libs._ttlang  # Register tt-lang passes
+import ttmlir._mlir_libs._ttlang  # Register tt-lang passes
 from pykernel._src.utils import _cleanup_source_code
 from ttmlir.dialects import ttkernel
 from ttmlir.ir import *
@@ -65,7 +65,6 @@ from .kernel_runner import (
 )
 from .operators import CopyTransferHandler, TensorBlock, copy
 from .ttl_utils import get_thread_type_string
-from .config import HAS_TT_DEVICE
 
 # Thread registry for automatic collection of @compute and @datamovement threads
 _thread_registry: List[Callable] = []
@@ -1109,9 +1108,6 @@ def _compile_kernel(
             "convert-ttkernel-to-emitc",
             "symbol-dce",
         ]
-
-        if HAS_TT_DEVICE:
-            pipeline_passes.insert(0, "ttcore-register-device")
 
         pipeline = ",".join(pipeline_passes)
 

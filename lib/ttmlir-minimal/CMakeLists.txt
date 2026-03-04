@@ -38,7 +38,6 @@ add_mlir_dialect_library(MLIRTTTransforms
   "${TT_MLIR_SRC}/lib/Dialect/TTCore/Transforms/OptimizationBarrierFold.cpp"
   "${TT_MLIR_SRC}/lib/Dialect/TTCore/Transforms/TTCoreModuleWrap.cpp"
   "${TT_MLIR_SRC}/lib/Dialect/TTCore/Transforms/TTCoreOneShotBufferize.cpp"
-  "${TT_MLIR_SRC}/lib/Dialect/TTCore/Transforms/TTCoreRegisterDevice.cpp"
 
   DEPENDS
   MLIRTTCoreOpsIncGen

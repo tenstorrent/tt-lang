@@ -16,6 +16,11 @@ if [ -n "${TTLANG_ENV_ACTIVATED}" ]; then
   unset TTLANG_ENV_ACTIVATED
 fi
 
+# Activate the Python venv (provides correct Python version + packages).
+if [ -f "@TTLANG_PYTHON_VENV@/bin/activate" ]; then
+  source "@TTLANG_PYTHON_VENV@/bin/activate"
+fi
+
 # Set tt-lang home directory.
 export TT_LANG_HOME="@TT_LANG_HOME@"
 export TTLANG_HAS_DEVICE="@TTLANG_HAS_DEVICE_INT@"

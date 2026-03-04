@@ -14,8 +14,6 @@ from typing import Any, Optional
 from ttmlir.ir import Module
 from ttmlir.passmanager import PassManager
 
-from .device_arch import get_mock_arch_from_device
-
 
 def compile_ttl_to_ttkernel(module: Module, device: Optional[Any] = None) -> Module:
     """
@@ -30,13 +28,8 @@ def compile_ttl_to_ttkernel(module: Module, device: Optional[Any] = None) -> Mod
     Returns:
         Compiled module with TTKernel/EmitC ops.
     """
-    # Always use mock architecture detected from device.
-    mock_arch = get_mock_arch_from_device(device)
-    device_pass = f"ttcore-register-device{{mock-system-desc-arch={mock_arch}}}"
-
     pipeline_str = (
         f"builtin.module("
-        f"{device_pass},"
         # TTL to compute conversion (runs on each function).
         f"func.func(convert-ttl-to-compute,"
         f"ttl-assign-dst{{enable-fpu-binary-ops=0}},"

@@ -46,11 +46,12 @@ declare_mlir_dialect_python_bindings(
   DIALECT_NAME ttkernel
 )
 
-# Site initialization for ttmlir dialects (suffix _0, loaded before ttlang's _1)
-declare_mlir_python_sources(TTMLIRMinPythonSources.SiteInit
+# passes.py re-export and site initialization
+declare_mlir_python_sources(TTMLIRMinPythonSources.TopLevel
   ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttmlir"
   ADD_TO_PARENT TTMLIRMinPythonSources
   SOURCES
+    passes.py
     _site_initialize_0.py
 )
 
@@ -74,6 +75,8 @@ declare_mlir_python_extension(TTMLIRMinPythonExtensions.Main
   PRIVATE_LINK_LIBS
     LLVMSupport
     TTKernelTargetCpp
+    MLIRTTKernelTransforms
+    TTMLIRTTKernelToEmitC
   PYTHON_BINDINGS_LIBRARY nanobind
 )
 

@@ -16,20 +16,27 @@
 set(LLVM_SUBMODULE_DIR "${CMAKE_SOURCE_DIR}/third-party/llvm-project")
 
 # ---------------------------------------------------------------------------
-# Option A: Pre-built LLVM/MLIR
+# Determine build mode: pre-built or submodule.
 # ---------------------------------------------------------------------------
-# Accept MLIR_PREFIX (friendly) or raw MLIR_DIR.
+# Accept MLIR_PREFIX (friendly) or raw MLIR_DIR from user.
+# Cache TTLANG_LLVM_FROM_SUBMODULE to remember the decision across reconfigures.
 if(DEFINED MLIR_PREFIX)
   set(MLIR_DIR "${MLIR_PREFIX}/lib/cmake/mlir" CACHE PATH "MLIR CMake dir" FORCE)
+  set(TTLANG_LLVM_FROM_SUBMODULE OFF CACHE BOOL "Whether LLVM is built from submodule" FORCE)
   message(STATUS "Using pre-built MLIR from prefix: ${MLIR_PREFIX}")
 endif()
 
-if(DEFINED MLIR_DIR)
+# Use cached TTLANG_LLVM_FROM_SUBMODULE to decide path on reconfigures.
+# On first configure, if neither MLIR_PREFIX nor MLIR_DIR is user-provided,
+# TTLANG_LLVM_FROM_SUBMODULE won't exist yet, so we fall through to else().
+if(DEFINED TTLANG_LLVM_FROM_SUBMODULE AND NOT TTLANG_LLVM_FROM_SUBMODULE)
+  # ---------------------------------------------------------------------------
+  # Option A: Pre-built LLVM/MLIR
+  # ---------------------------------------------------------------------------
   find_package(MLIR REQUIRED CONFIG)
 
   # Derive the install prefix from MLIR_DIR (strip lib/cmake/mlir).
   get_filename_component(LLVM_INSTALL_DIR "${MLIR_DIR}/../../.." ABSOLUTE)
-  set(TTLANG_LLVM_FROM_SUBMODULE OFF)
 
 # ---------------------------------------------------------------------------
 # Option B: Build from submodule (configure-time)
@@ -42,7 +49,7 @@ else()
       "Or provide a pre-built MLIR install via -DMLIR_PREFIX=/path/to/install")
   endif()
 
-  set(TTLANG_LLVM_FROM_SUBMODULE ON)
+  set(TTLANG_LLVM_FROM_SUBMODULE ON CACHE BOOL "Whether LLVM is built from submodule" FORCE)
   set(LLVM_INSTALL_DIR "${CMAKE_BINARY_DIR}/llvm-install")
   set(LLVM_BUILD_DIR "${CMAKE_BINARY_DIR}/llvm-build")
 
@@ -68,7 +75,7 @@ else()
   # MLIR Python bindings need pybind11, nanobind, numpy, etc.
   # Create a venv (or reuse existing) with these dependencies.
   if(NOT DEFINED TTLANG_PYTHON_VENV)
-    set(TTLANG_PYTHON_VENV "${CMAKE_BINARY_DIR}/venv")
+    set(TTLANG_PYTHON_VENV "${CMAKE_BINARY_DIR}/venv" CACHE PATH "Python venv for MLIR" FORCE)
   endif()
   set(_VENV_PYTHON "${TTLANG_PYTHON_VENV}/bin/python3")
 
@@ -91,6 +98,19 @@ else()
     )
     if(NOT _PIP_RESULT EQUAL 0)
       message(FATAL_ERROR "Failed to install MLIR Python requirements")
+    endif()
+
+    # Install tt-lang's own Python requirements (torch, pydantic, etc.)
+    set(_TTLANG_REQUIREMENTS "${CMAKE_SOURCE_DIR}/requirements.txt")
+    if(EXISTS "${_TTLANG_REQUIREMENTS}")
+      message(STATUS "Installing tt-lang Python requirements...")
+      execute_process(
+        COMMAND "${_VENV_PYTHON}" -m pip install --quiet -r "${_TTLANG_REQUIREMENTS}"
+        RESULT_VARIABLE _PIP_RESULT
+      )
+      if(NOT _PIP_RESULT EQUAL 0)
+        message(FATAL_ERROR "Failed to install tt-lang Python requirements")
+      endif()
     endif()
 
   else()

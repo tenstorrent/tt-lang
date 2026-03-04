@@ -15,7 +15,7 @@ from ttmlir.ir import RankedTensorType, Type
 from ._generated_elementwise import *  # noqa: F401,F403
 from ._generated_elementwise import __all__ as _generated_all
 from ._src.ttl_ast import syntax
-from .dialects import ttl
+from ttmlir.dialects import ttl
 
 
 def _get_constant_int(val):
