@@ -11,7 +11,7 @@ try:
 except (ModuleNotFoundError, ImportError):
     ttnn = None
 
-from ttmlir.dialects import ttcore
+from ttlang.dialects import ttcore
 
 
 def is_ttnn_tensor(tensor) -> bool:

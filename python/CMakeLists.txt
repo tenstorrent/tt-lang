@@ -3,12 +3,14 @@ include(AddMLIRPython)
 # Disables generation of "version soname" (i.e. libFoo.so.<version>)
 set(CMAKE_PLATFORM_NO_VERSIONED_SONAME ON)
 
-# Align package prefix with ttmlir so bound types match upstream core.
-add_compile_definitions("MLIR_PYTHON_PACKAGE_PREFIX=ttmlir.")
+# Package prefix: all MLIR Python modules (upstream + tt-mlir + ttlang) are
+# installed under the single `ttlang` top-level package, following the
+# industry convention (IREE uses iree.compiler., torch-mlir uses torch_mlir.).
+add_compile_definitions("MLIR_PYTHON_PACKAGE_PREFIX=ttlang.")
 
-# Use the same nanobind domain as tt-mlir so we can share extension types
-# across the _ttmlir and _ttlang modules.
-set(MLIR_BINDINGS_PYTHON_NB_DOMAIN "ttmlir")
+# Nanobind domain shared by _ttmlir and _ttlang extensions so bound C types
+# are compatible across modules.
+set(MLIR_BINDINGS_PYTHON_NB_DOMAIN "ttlang")
 
 # Root directories for Python source declarations
 set(TTLANG_PYTHON_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttl")
@@ -237,8 +239,8 @@ declare_mlir_python_sources(PykernelPythonSources
 # Build a single common CAPI shared library that includes upstream MLIR,
 # our minimal tt-mlir dialects, and ttlang dialects.
 add_mlir_python_common_capi_library(TTLangPythonCAPI
-  INSTALL_DESTINATION python_packages/ttmlir/_mlir_libs
-  OUTPUT_DIRECTORY "${TTLANG_PYTHON_PACKAGES_DIR}/ttmlir/_mlir_libs"
+  INSTALL_DESTINATION python_packages/ttlang/_mlir_libs
+  OUTPUT_DIRECTORY "${TTLANG_PYTHON_PACKAGES_DIR}/ttlang/_mlir_libs"
   DECLARED_SOURCES
     # Upstream MLIR (MLIRPythonSources includes .Core and all sub-packages)
     MLIRPythonSources
@@ -258,17 +260,17 @@ add_mlir_python_modules(PykernelPythonModules
     PykernelPythonSources
 )
 
-# Main ttmlir Python package — includes upstream MLIR, tt-mlir subset, and ttlang
+# Main ttlang Python package — includes upstream MLIR, tt-mlir subset, and ttlang
 add_mlir_python_modules(TTLangPythonModules
-  ROOT_PREFIX "${TTLANG_PYTHON_PACKAGES_DIR}/ttmlir"
-  INSTALL_PREFIX "python_packages/ttmlir"
+  ROOT_PREFIX "${TTLANG_PYTHON_PACKAGES_DIR}/ttlang"
+  INSTALL_PREFIX "python_packages/ttlang"
   DECLARED_SOURCES
     # Upstream MLIR (MLIRPythonSources includes .Core and all sub-packages)
     MLIRPythonSources
     # Minimal tt-mlir
     TTMLIRMinPythonSources
     TTMLIRMinPythonExtensions
-    # ttlang dialect bindings (installed into ttmlir/)
+    # ttlang dialect bindings (installed into ttlang/)
     TTLangPythonSources
     TTLangPythonExtensions
   COMMON_CAPI_LINK_LIBS

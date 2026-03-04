@@ -6,10 +6,10 @@
 
 from typing import Any, Tuple
 
-from ttmlir.ir import *
+from ttlang.ir import *
 
 from ._src.ttl_ast import syntax
-from ttmlir.dialects import ttl
+from ttlang.dialects import ttl
 
 # Module-level counter for CB index assignment in creation order
 _cb_index_counter = 0

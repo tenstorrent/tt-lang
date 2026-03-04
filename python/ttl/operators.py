@@ -8,14 +8,14 @@ from __future__ import annotations
 
 from typing import List, Tuple, Union
 
-from ttmlir.dialects import arith
-from ttmlir.ir import RankedTensorType, Type
+from ttlang.dialects import arith
+from ttlang.ir import RankedTensorType, Type
 
 # Re-export generated elementwise operations
 from ._generated_elementwise import *  # noqa: F401,F403
 from ._generated_elementwise import __all__ as _generated_all
 from ._src.ttl_ast import syntax
-from ttmlir.dialects import ttl
+from ttlang.dialects import ttl
 
 
 def _get_constant_int(val):
@@ -406,7 +406,7 @@ def broadcast(input: TensorBlock, output: TensorBlock, dims: List[int]) -> Tenso
     Returns:
         Result tensor with broadcast values
     """
-    from ttmlir.ir import IntegerAttr, IntegerType
+    from ttlang.ir import IntegerAttr, IntegerType
 
     dims_set = set(dims)
     if dims_set == {0}:

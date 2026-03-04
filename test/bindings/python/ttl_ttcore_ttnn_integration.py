@@ -3,13 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # RUN: %python %s | FileCheck %s
 #
-# Ensure ttl, ttcore, and ttnn dialects all work in the shared tt-mlir context.
+# Ensure ttl, ttcore, and ttnn dialects all work in the shared context.
 
 from ttl.dialects import ttl
-from ttmlir import ir as tmlir_ir
-from ttmlir.dialects import ttcore, ttnn
+from ttlang import ir as ttlang_ir
+from ttlang.dialects import ttcore, ttnn
 
-with tmlir_ir.Context() as ctx, tmlir_ir.Location.unknown():
+with ttlang_ir.Context() as ctx, ttlang_ir.Location.unknown():
     ttl.ensure_dialects_registered(ctx)
 
     tile = ttcore.ir.TileType.get(ctx, 32, 32, 2)

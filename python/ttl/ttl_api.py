@@ -19,16 +19,16 @@ try:
 except (ModuleNotFoundError, ImportError):
     ttnn = None
 
-import ttmlir._mlir_libs._ttlang  # Register tt-lang passes
+import ttlang._mlir_libs._ttlang  # Register tt-lang passes
 from pykernel._src.utils import _cleanup_source_code
-from ttmlir.dialects import ttkernel
-from ttmlir.ir import *
-from ttmlir.passes import (
+from ttlang.dialects import ttkernel
+from ttlang.ir import *
+from ttlang.passes import (
     get_ttkernel_arg_spec,
     get_ttkernel_names,
     ttkernel_to_cpp_by_name,
 )
-from ttmlir.passmanager import PassManager
+from ttlang.passmanager import PassManager
 
 from ._src.auto_profile import (
     build_cb_wait_to_dma_map,
@@ -1117,7 +1117,7 @@ def _compile_kernel(
         pm.enable_verifier(verify)
 
         try:
-            from ttmlir._mlir_libs._ttmlir import enable_pretty_stack_traces
+            from ttlang._mlir_libs._ttmlir import enable_pretty_stack_traces
 
             enable_pretty_stack_traces(pm._CAPIPtr)
         except Exception:

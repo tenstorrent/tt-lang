@@ -2,6 +2,5 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Thin shim to reuse the upstream ttmlir.ir module so dialect bindings can
-# import `ttlang.ir` just like ttmlir.
-from ttmlir.ir import *  # noqa: F401,F403
+# Thin shim so ttl dialect bindings can import from ttl.ir.
+from ttlang.ir import *  # noqa: F401,F403

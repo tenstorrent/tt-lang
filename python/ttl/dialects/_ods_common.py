@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Reuse upstream MLIR utilities; keep a namespaced shim for generated bindings.
-from ttmlir.dialects import _ods_common as _upstream
+from ttlang.dialects import _ods_common as _upstream
 
 # Re-export the upstream cext and all public helpers so generated stubs work.
 _cext = _upstream._cext
