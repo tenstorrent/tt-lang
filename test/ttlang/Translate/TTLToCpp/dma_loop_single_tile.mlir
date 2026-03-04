@@ -6,8 +6,8 @@
 // Test: DMA operations inside loop
 // Validates scf.for → C++ for loop with DMA operations
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // CHECK: // dma_pipelined_loop
 // CHECK: void kernel_main() {

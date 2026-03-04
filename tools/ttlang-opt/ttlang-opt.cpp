@@ -16,6 +16,7 @@
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/Dialect/TTKernel/Transforms/Passes.h"
 #include "ttmlir/Dialect/TTMetal/IR/TTMetal.h"
+#include "ttmlir/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
 
 int main(int argc, char **argv) {
   // Register upstream MLIR passes
@@ -23,6 +24,10 @@ int main(int argc, char **argv) {
 
   // Register minimal tt-mlir passes (TTKernel only — TTCore passes not needed)
   mlir::tt::ttkernel::registerPasses();
+
+  // Register TTKernel-to-EmitC conversion pass
+  mlir::registerPass(
+      []() { return mlir::tt::createConvertTTKernelToEmitC(); });
 
   // Register tt-lang passes and pipelines
   mlir::tt::ttl::registerTTLPasses();

@@ -1,10 +1,9 @@
-// RUN: ttlang-opt --convert-ttl-to-ttkernel --canonicalize --cse --split-input-file %s | FileCheck %s --check-prefix=TTKERNEL
+// RUN: ttlang-opt --allow-unregistered-dialect --convert-ttl-to-ttkernel --canonicalize --cse --split-input-file %s | FileCheck %s --check-prefix=TTKERNEL
 // Summary: Lower a loopback DRAM copy (read → wait → write → wait in a loop)
 // to TTKernel using global NOC barriers (TRID ops not yet available).
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>,
-           memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // TTKERNEL-LABEL: func.func @loopback_dram_copy
 // Verify runtime args and CB pointers are used for both read and write operations.

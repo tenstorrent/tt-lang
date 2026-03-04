@@ -5,12 +5,9 @@
 // This replaces tt-mlir's _ttmlir module with one that only includes
 // TTCore, TTKernel, and TTMetal.
 
-// TTCore headers must come before TTMLIRMinimalModule.h because Utils.h uses
-// ttmlir::utils which is ambiguous after mlir::ttmlir namespace is declared.
 #include "TTMLIRMinimalModule.h"
 #include "mlir-c/Pass.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCore.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCoreOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/Dialect/TTKernel/Transforms/Passes.h"
 #include "ttmlir/Dialect/TTMetal/IR/TTMetal.h"

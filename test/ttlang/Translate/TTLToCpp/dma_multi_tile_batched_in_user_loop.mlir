@@ -26,8 +26,8 @@
 // only works for affine dialect loops, and --scf-parallel-loop-fusion only works for
 // scf.parallel loops. We must implement custom fusion for this.
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<2x2x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [2, 2], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // CHECK-LABEL: // batched_multi_tile_user_loop
 // CHECK: void kernel_main() {

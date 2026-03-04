@@ -1,9 +1,10 @@
-// RUN: ttlang-opt --convert-ttl-to-ttkernel --canonicalize -cse --split-input-file %s | FileCheck %s --check-prefix=TTKERNEL
+// RUN: ttlang-opt --allow-unregistered-dialect --convert-ttl-to-ttkernel --canonicalize -cse --split-input-file %s | FileCheck %s --check-prefix=TTKERNEL
 // Summary: MVP DMA lowering tests for tensor<->CB copies (no pipes).
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
-#layout_tile = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
+#layout_tile = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                           buffer = dram, grid = [1, 1], memory = interleaved>
 
 // TTKERNEL-LABEL: func.func @dma_single_tile_single_copy
 // TTKERNEL-DAG: %[[C0_IDX:.*]] = arith.constant 0 : index
@@ -28,8 +29,8 @@ module {
 
 // -----
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // TTKERNEL-LABEL: func.func @cb_to_tensor
 // TTKERNEL-DAG: %[[C0_IDX:.*]] = arith.constant 0 : index
@@ -54,8 +55,8 @@ module {
 
 // -----
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // Batched transfer pattern: issue multiple transfers, then wait on all of them.
 // Mirrors TT-Metal kernels that batch NOC async operations for throughput.
@@ -92,8 +93,8 @@ module {
 
 // -----
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // Pipelined loop pattern: wait on the previous transfer while issuing the next.
 // This approximates "copies in one loop, waits in another" by separating the wait
@@ -128,8 +129,8 @@ module {
 
 // -----
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // Two-phase pattern: issue all copies in one loop, then wait on all handles in
 // a second loop. This mirrors TT-Metal kernels that batch NOC async ops and then
@@ -173,8 +174,8 @@ module {
 
 // -----
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // Corner case: waiting twice on the same transfer handle is allowed, but
 // consecutive barriers are deduplicated to a single barrier.
@@ -197,8 +198,8 @@ module {
 
 // -----
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // Corner case: one-element handle batching via tensor.insert, then waiting
 // outside of a loop.
@@ -230,9 +231,10 @@ module {
 
 // -----
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
-#layout_tile = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
+#layout_tile = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                           buffer = dram, grid = [1, 1], memory = interleaved>
 
 // Multi-tile read should emit nested scf.for over tile grid with correct offset computation.
 // Tensor: 64x64xf32 (2x2 tiles), CB: [1,1] (single tile)
@@ -275,9 +277,10 @@ module {
 
 // -----
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
-#layout_tile = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
+#layout_tile = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                           buffer = dram, grid = [1, 1], memory = interleaved>
 
 // Multi-tile write should emit nested scf.for over tile grid with correct offset computation.
 // Tensor: 64x64xf32 (2x2 tiles), CB: [1,1] (single tile)
@@ -320,8 +323,8 @@ module {
 
 // -----
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // Multi-tile read with larger CB shape still loops over tile grid with correct offset computation.
 // Tensor: 64x64xf32 (2x2 tiles), CB: [2,1] (2x1 tiles)
@@ -365,8 +368,8 @@ module {
 
 // -----
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // Rectangular multi-tile write to exercise non-square tile grids (96x64 = 3x2 tiles) with correct offset computation.
 // Tensor: 96x64xf32 (3x2 tiles - 3 rows, 2 columns), CB: [1,1] (single tile)
