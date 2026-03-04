@@ -1152,6 +1152,8 @@ def _compile_kernel(
             "lower-affine",
             "ttl-lower-signpost-to-emitc",
             "convert-ttkernel-to-emitc",
+            "canonicalize",
+            "form-expressions",
             "symbol-dce",
         ]
 

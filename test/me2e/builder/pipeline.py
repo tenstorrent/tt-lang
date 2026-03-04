@@ -51,7 +51,8 @@ def compile_ttl_to_ttkernel(module: Module, device: Optional[Any] = None) -> Mod
         # Lower to EmitC.
         f"lower-affine,"
         f"convert-ttkernel-to-emitc,"
-        f"canonicalize"
+        f"canonicalize,"
+        f"form-expressions"
         f")"
     )
 

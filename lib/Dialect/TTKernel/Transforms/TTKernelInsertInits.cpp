@@ -13,16 +13,16 @@
 //      Scans each tile_regs_acquire -> tile_regs_release region to determine
 //      the compute category (FPU binary vs SFPU/copy/bcast) and derives
 //      input/output CBs from compute and pack ops.
-//   2. Per-op inits: one per consecutive group of same-type compute ops.
-//      The init key is (init op TypeID, operand values). An init is inserted
-//      only when the key changes. Tracking resets at sync boundaries.
+//   2. Per-op inits: one per consecutive group of same-type compute ops
+//      (unary SFPU, binary SFPU, minmax, FPU binary). The init key is
+//      (init op TypeID, operand values). An init is inserted only when the
+//      key changes. Tracking resets at sync boundaries.
 //
 // TODO(#329): Emit init_short variants for cheaper re-inits on type switches.
 //
 //===----------------------------------------------------------------------===//
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
-#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
