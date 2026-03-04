@@ -239,7 +239,8 @@ static bool analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
     });
   }
 
-  assert(foundRelease && "tile_regs_acquire without matching tile_regs_release");
+  assert(foundRelease &&
+         "tile_regs_acquire without matching tile_regs_release");
   return hasFPUBinary;
 }
 
