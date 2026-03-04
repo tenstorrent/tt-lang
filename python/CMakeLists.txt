@@ -48,13 +48,21 @@ declare_mlir_dialect_python_bindings(
   DIALECT_NAME ttkernel
 )
 
-# passes.py re-export and site initialization
+# passes.py re-export
 declare_mlir_python_sources(TTMLIRMinPythonSources.TopLevel
   ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ttmlir"
   ADD_TO_PARENT TTMLIRMinPythonSources
   SOURCES
     passes.py
-    _site_initialize_0.py
+)
+
+# Site initialization for tt-mlir dialects (suffix _0, loaded before TTL's _1).
+# Must be under _mlir_libs/ so the MLIR site-init chain finds it.
+declare_mlir_python_sources(TTMLIRMinPythonSources.SiteInit
+  ROOT_DIR "${TTLANG_PYTHON_ROOT_DIR}"
+  ADD_TO_PARENT TTMLIRMinPythonSources
+  SOURCES
+    _mlir_libs/_site_initialize_0.py
 )
 
 # ###############################################################################
@@ -244,6 +252,7 @@ add_mlir_python_common_capi_library(TTLangPythonCAPI
   DECLARED_SOURCES
     # Upstream MLIR (MLIRPythonSources includes .Core and all sub-packages)
     MLIRPythonSources
+    MLIRPythonExtension.RegisterEverything
     # Minimal tt-mlir
     TTMLIRMinPythonSources
     TTMLIRMinPythonExtensions
@@ -267,6 +276,7 @@ add_mlir_python_modules(TTLangPythonModules
   DECLARED_SOURCES
     # Upstream MLIR (MLIRPythonSources includes .Core and all sub-packages)
     MLIRPythonSources
+    MLIRPythonExtension.RegisterEverything
     # Minimal tt-mlir
     TTMLIRMinPythonSources
     TTMLIRMinPythonExtensions

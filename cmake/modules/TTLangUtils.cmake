@@ -43,6 +43,29 @@ function(ttlang_check_device_available OUTPUT_VAR)
   endif()
 endfunction()
 
+# ttlang_pip_install_requirements(PYTHON_EXE REQUIREMENTS_FILE [FATAL])
+# Installs Python packages from a requirements file using pip.
+# If FATAL is specified, a failure is a fatal error; otherwise it is a warning.
+function(ttlang_pip_install_requirements PYTHON_EXE REQUIREMENTS_FILE)
+  if(NOT EXISTS "${REQUIREMENTS_FILE}")
+    message(WARNING "Requirements file not found: ${REQUIREMENTS_FILE}")
+    return()
+  endif()
+  cmake_path(RELATIVE_PATH REQUIREMENTS_FILE BASE_DIRECTORY "${CMAKE_SOURCE_DIR}" OUTPUT_VARIABLE _req_rel)
+  message(STATUS "Installing Python requirements from ${_req_rel}...")
+  execute_process(
+    COMMAND "${PYTHON_EXE}" -m pip install --quiet -r "${REQUIREMENTS_FILE}"
+    RESULT_VARIABLE _pip_result
+  )
+  if(NOT _pip_result EQUAL 0)
+    if("FATAL" IN_LIST ARGN)
+      message(FATAL_ERROR "Failed to install Python requirements from ${REQUIREMENTS_FILE}")
+    else()
+      message(WARNING "Failed to install Python requirements from ${REQUIREMENTS_FILE}")
+    endif()
+  endif()
+endfunction()
+
 # ttlang_debug_message(MESSAGE)
 # Prints a STATUS message only if TTLANG_CMAKE_DEBUG environment variable is defined.
 # Useful for verbose debug output during CMake configuration.

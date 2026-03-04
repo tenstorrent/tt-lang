@@ -37,6 +37,10 @@ endforeach()
 
 message(STATUS "tt-metal runtime: building from submodule at ${TT_METAL_SOURCE_DIR}")
 
+# Install minimal Python dependencies required to import ttnn at runtime
+ttlang_pip_install_requirements("${Python3_EXECUTABLE}"
+  "${CMAKE_SOURCE_DIR}/third-party/requirements-metal.txt")
+
 # Build configuration
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
   set(TTMETAL_BUILD_TYPE "Release")
@@ -136,5 +140,5 @@ endforeach()
 
 # Set variables for activate.in
 set(TT_METAL_HOME "${TT_METAL_SOURCE_DIR}")
-set(TT_METAL_PYTHON_PATH "${TT_METAL_SOURCE_DIR}")
+set(TT_METAL_PYTHON_PATH "${TT_METAL_SOURCE_DIR}/ttnn")
 set(TT_METAL_LIB_PATH "${TTMETAL_BUILD_DIR}/lib:${TTMETAL_BUILD_DIR}/tt_metal:${TTMETAL_BUILD_DIR}/ttnn")

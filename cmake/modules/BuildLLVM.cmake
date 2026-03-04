@@ -90,32 +90,16 @@ else()
       message(FATAL_ERROR "Failed to create Python venv")
     endif()
 
-    message(STATUS "Installing MLIR Python requirements...")
-    set(_MLIR_REQUIREMENTS "${LLVM_SUBMODULE_DIR}/mlir/python/requirements.txt")
-    execute_process(
-      COMMAND "${_VENV_PYTHON}" -m pip install --quiet -r "${_MLIR_REQUIREMENTS}"
-      RESULT_VARIABLE _PIP_RESULT
-    )
-    if(NOT _PIP_RESULT EQUAL 0)
-      message(FATAL_ERROR "Failed to install MLIR Python requirements")
-    endif()
-
-    # Install tt-lang's own Python requirements (torch, pydantic, etc.)
-    set(_TTLANG_REQUIREMENTS "${CMAKE_SOURCE_DIR}/requirements.txt")
-    if(EXISTS "${_TTLANG_REQUIREMENTS}")
-      message(STATUS "Installing tt-lang Python requirements...")
-      execute_process(
-        COMMAND "${_VENV_PYTHON}" -m pip install --quiet -r "${_TTLANG_REQUIREMENTS}"
-        RESULT_VARIABLE _PIP_RESULT
-      )
-      if(NOT _PIP_RESULT EQUAL 0)
-        message(FATAL_ERROR "Failed to install tt-lang Python requirements")
-      endif()
-    endif()
-
   else()
     message(STATUS "Reusing existing Python venv at ${TTLANG_PYTHON_VENV}")
   endif()
+
+  # Install/update Python requirements on every configure (pip is a no-op when
+  # packages are already satisfied, so this is cheap on subsequent runs).
+  ttlang_pip_install_requirements("${_VENV_PYTHON}"
+    "${LLVM_SUBMODULE_DIR}/mlir/python/requirements.txt" FATAL)
+  ttlang_pip_install_requirements("${_VENV_PYTHON}"
+    "${CMAKE_SOURCE_DIR}/requirements.txt" FATAL)
 
   set(Python3_EXECUTABLE "${_VENV_PYTHON}")
   message(STATUS "  Python:        ${Python3_EXECUTABLE}")
