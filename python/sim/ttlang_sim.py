@@ -8,9 +8,8 @@ Runs tt-lang kernels written for the compiler on the simulator backend
 without requiring any code changes to the kernel files.
 
 Usage:
-    python ttlang-sim examples/metal_examples/singlecore_matmul/ttlang/singlecore_matmul.py
-    python ttlang-sim test/sim/my_test.py --verbose
-    python ttlang-sim -m test.sim.my_kernel
+    ttlang-sim examples/eltwise_add.py
+    ttlang-sim examples/singlecore_matmul.py --show-stats --grid 4,4
 """
 
 import sys
@@ -125,51 +124,21 @@ def _print_filtered_traceback(exc: Exception, user_file: Path) -> None:
     print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
 
 
-def run_module(module_name: str, argv: list[str]) -> None:
-    """
-    Import and run a kernel module with simulator backend.
-
-    Args:
-        module_name: Dotted module name (e.g., 'test.sim.my_kernel')
-        argv: Command-line arguments to pass to the module
-    """
-    sys.argv = [module_name] + argv
-
-    import importlib
-
-    try:
-        mod = importlib.import_module(module_name)
-    except ImportError as e:
-        print(f"Error: Could not import module '{module_name}': {e}", file=sys.stderr)
-        sys.exit(1)
-
-    # Run main if it exists, otherwise just importing executes the module
-    if hasattr(mod, "main"):
-        mod.main()
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="ttlang-sim",
         description="Run tt-lang kernels on the simulator backend",
         epilog="Examples:\n"
-        "  python ttlang-sim examples/metal_examples/singlecore_matmul/ttlang/singlecore_matmul.py\n"
-        "  python ttlang-sim test/sim/test_add.py -v\n"
-        "  python ttlang-sim -m test.sim.my_kernel",
+        "  ttlang-sim examples/eltwise_add.py\n"
+        "  ttlang-sim examples/singlecore_matmul.py --show-stats\n"
+        "  ttlang-sim examples/tutorial/multicore.py --grid 4,4",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
     parser.add_argument(
         "target",
         nargs="?",
-        help="Python file (.py) or module name to run",
-    )
-
-    parser.add_argument(
-        "-m",
-        "--module",
-        action="store_true",
-        help="Treat target as a module name instead of a file path",
+        help="Python file (.py) to run",
     )
 
     parser.add_argument(
@@ -237,16 +206,10 @@ def main() -> None:
 
     # Run the target
     try:
-        if args.module:
-            run_module(args.target, args.script_args)
-        elif args.target.endswith(".py"):
-            run_file(args.target, args.script_args)
-        else:
-            print(f"Error: Invalid target: {args.target}", file=sys.stderr)
-            print(
-                "Target must be a .py file or use -m for module name", file=sys.stderr
-            )
+        if not args.target.endswith(".py"):
+            print(f"Error: Target must be a .py file: {args.target}", file=sys.stderr)
             sys.exit(1)
+        run_file(args.target, args.script_args)
     finally:
         # Print tensor statistics if enabled
         if args.show_stats:

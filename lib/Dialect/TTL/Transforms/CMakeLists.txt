@@ -9,6 +9,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLInsertTileRegsSync.cpp
   TTLAssignDST.cpp
   TTLSetComputeKernelConfig.cpp
+  TTLSubblockComputeForDST.cpp
 
   DEPENDS
   TTLangTTLTransformsIncGen
@@ -23,6 +24,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   MLIRSCFDialect
   MLIRPass
   MLIRTensorDialect
+  MLIRTilingInterface
   MLIRTTKernelDialect
   MLIRTTLDialect
   TTLangTTKernelTransforms
