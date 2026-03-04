@@ -126,6 +126,77 @@ static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *elementwiseOp,
 // Fused compute building
 //===----------------------------------------------------------------------===//
 
+/// Collect signpost ops interleaved with fused ops so they can be moved into
+/// the compute body. Walks backwards from the first fused op for leading
+/// signposts, between fused ops for interleaved ones, and forward from the
+/// last fused op for trailing ones (stopping at cb_push/cb_pop).
+static SmallVector<std::pair<Operation *, Operation *>>
+collectInterleavedSignposts(const ElementwiseTraceResult &trace,
+                            Operation *sinkOp) {
+  DenseSet<Operation *> fusedSet(trace.opsInOrder.begin(),
+                                 trace.opsInOrder.end());
+
+  // Find first and last fused ops in block order.
+  Operation *firstFused = nullptr;
+  Operation *lastFused = nullptr;
+  for (auto &op : *sinkOp->getBlock()) {
+    if (fusedSet.contains(&op)) {
+      if (!firstFused) {
+        firstFused = &op;
+      }
+      lastFused = &op;
+    }
+  }
+  if (!firstFused) {
+    return {};
+  }
+
+  // Result: pairs of (signpost, insertAfterThisFusedOp). nullptr means
+  // the signpost is leading (before all fused ops).
+  SmallVector<std::pair<Operation *, Operation *>> result;
+
+  auto isUserSignpost = [](Operation *op) {
+    auto sp = dyn_cast<SignpostOp>(op);
+    return sp && sp.getName().starts_with("ttl_");
+  };
+
+  // Leading signposts: walk backwards from first fused op.
+  SmallVector<Operation *> leading;
+  for (auto *op = firstFused->getPrevNode(); op; op = op->getPrevNode()) {
+    if (isUserSignpost(op)) {
+      leading.push_back(op);
+    } else {
+      break;
+    }
+  }
+  for (auto it = leading.rbegin(); it != leading.rend(); ++it) {
+    result.push_back({*it, nullptr});
+  }
+
+  // Interleaved signposts: walk from first to last fused op.
+  Operation *prevFused = nullptr;
+  for (auto *op = firstFused; op && op != lastFused->getNextNode();
+       op = op->getNextNode()) {
+    if (fusedSet.contains(op)) {
+      prevFused = op;
+    } else if (isUserSignpost(op)) {
+      result.push_back({op, prevFused});
+    }
+  }
+
+  // Trailing signposts: walk forward from last fused op, skipping
+  // non-signpost ops (store, attach_cb) until cb_push/cb_pop.
+  for (auto *op = lastFused->getNextNode(); op; op = op->getNextNode()) {
+    if (isUserSignpost(op)) {
+      result.push_back({op, lastFused});
+    } else if (isa<CBPushOp>(op) || isa<CBPopOp>(op)) {
+      break;
+    }
+  }
+
+  return result;
+}
+
 /// Build a fused ttl.compute from traced elementwise chain.
 /// The trace result contains CB-attached root inputs and ops to fuse.
 static LogicalResult buildFusedCompute(Operation *sinkOp,
@@ -143,6 +214,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
         sinkOp, "no output CB found (missing ttl.store or view not from "
                 "ttl.cb_reserve)");
   }
+
+  // Collect signpost ops before they get orphaned by fusion.
+  auto signpostPairs = collectInterleavedSignposts(trace, sinkOp);
 
   Location loc = sinkOp->getLoc();
   MLIRContext *ctx = rewriter.getContext();
@@ -220,9 +294,56 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     tensorToTile[trace.rootInputs[i]] = body->getArgument(i);
   }
 
-  // Emit tile ops in topological order
+  // Build a map from fused op -> index in signpostPairs for quick lookup
+  // of which signposts precede each fused op.
+  assert(!trace.opsInOrder.empty() &&
+         "buildFusedCompute requires non-empty opsInOrder");
+  DenseMap<Operation *, SmallVector<SignpostOp>> signpostsBefore;
+  SmallVector<SignpostOp> leadingSignposts;
+  SmallVector<SignpostOp> trailingSignposts;
+
+  Operation *lastFusedOp = trace.opsInOrder.back();
+  for (auto &[signpostOp, afterFused] : signpostPairs) {
+    auto sp = cast<SignpostOp>(signpostOp);
+    if (!afterFused) {
+      leadingSignposts.push_back(sp);
+    } else if (afterFused == lastFusedOp) {
+      trailingSignposts.push_back(sp);
+    } else {
+      // Find the next fused op after afterFused to attach this signpost to.
+      bool found = false;
+      for (size_t i = 0; i < trace.opsInOrder.size(); ++i) {
+        if (trace.opsInOrder[i] == afterFused &&
+            i + 1 < trace.opsInOrder.size()) {
+          signpostsBefore[trace.opsInOrder[i + 1]].push_back(sp);
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        trailingSignposts.push_back(sp);
+      }
+    }
+  }
+
+  // Emit leading signposts
+  for (auto sp : leadingSignposts) {
+    rewriter.create<SignpostOp>(sp.getLoc(), sp.getNameAttr(),
+                                sp.getIsEndAttr());
+  }
+
+  // Emit tile ops in topological order, with interleaved signposts
   Value finalResult;
   for (Operation *op : trace.opsInOrder) {
+    // Emit signposts that precede this fused op
+    auto it = signpostsBefore.find(op);
+    if (it != signpostsBefore.end()) {
+      for (auto sp : it->second) {
+        rewriter.create<SignpostOp>(sp.getLoc(), sp.getNameAttr(),
+                                    sp.getIsEndAttr());
+      }
+    }
+
     Value tileResult;
 
     // Special case: BcastOp reads from CB, needs TileBcastOp
@@ -235,12 +356,12 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       // Elementwise ops
       SmallVector<Value, 2> tileOperands;
       for (Value operand : getElementwiseOperands(op)) {
-        auto it = tensorToTile.find(operand);
-        if (it == tensorToTile.end()) {
+        auto it2 = tensorToTile.find(operand);
+        if (it2 == tensorToTile.end()) {
           return op->emitError(
               "fusion failed: operand not mapped to tile value");
         }
-        tileOperands.push_back(it->second);
+        tileOperands.push_back(it2->second);
       }
 
       tileResult = emitTileOpFor(rewriter, loc, op, tileOperands, tileType);
@@ -253,7 +374,22 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     finalResult = tileResult;
   }
 
+  // Emit trailing begin signposts, then tile stores, then end signposts.
+  // This places tile_store inside the innermost signpost scope.
+  auto firstEndIt = llvm::find_if(trailingSignposts,
+                                  [](SignpostOp sp) { return sp.getIsEnd(); });
+  for (auto it = trailingSignposts.begin(); it != firstEndIt; ++it) {
+    rewriter.create<SignpostOp>(it->getLoc(), it->getNameAttr(),
+                                it->getIsEndAttr());
+  }
+
   emitTileStores(rewriter, loc, finalResult, sinkOp);
+
+  for (auto it = firstEndIt; it != trailingSignposts.end(); ++it) {
+    rewriter.create<SignpostOp>(it->getLoc(), it->getNameAttr(),
+                                it->getIsEndAttr());
+  }
+
   rewriter.create<YieldOp>(loc);
   rewriter.replaceOp(sinkOp, computeOp.getResult(0));
 
@@ -265,6 +401,11 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     if (op != sinkOp && op->use_empty()) {
       rewriter.eraseOp(op);
     }
+  }
+
+  // Erase the original signpost ops (now cloned into compute body).
+  for (auto &[signpostOp, _] : signpostPairs) {
+    rewriter.eraseOp(signpostOp);
   }
 
   return success();

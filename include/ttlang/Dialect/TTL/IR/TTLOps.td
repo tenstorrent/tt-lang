@@ -428,7 +428,7 @@ def TTL_SignpostOp : TTL_Op<"signpost", []> {
     ```
   }];
 
-  let arguments = (ins StrAttr:$name);
+  let arguments = (ins StrAttr:$name, UnitAttr:$is_end);
   let assemblyFormat = "$name attr-dict";
 }
 
