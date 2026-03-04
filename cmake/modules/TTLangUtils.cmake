@@ -28,6 +28,11 @@ endmacro()
 # /dev/tenstorrent* files. This is faster than calling ttnn.GetNumAvailableDevices().
 # Sets the variable named by OUTPUT_VAR to TRUE if available, FALSE otherwise.
 function(ttlang_check_device_available OUTPUT_VAR)
+  if(DEFINED ENV{TT_METAL_SIMULATOR})
+    set(${OUTPUT_VAR} TRUE PARENT_SCOPE)
+    message(STATUS "Tenstorrent device: simulator mode (TT_METAL_SIMULATOR=$ENV{TT_METAL_SIMULATOR})")
+    return()
+  endif()
   file(GLOB _tt_device_files "/dev/tenstorrent*")
   if(_tt_device_files)
     set(${OUTPUT_VAR} TRUE PARENT_SCOPE)

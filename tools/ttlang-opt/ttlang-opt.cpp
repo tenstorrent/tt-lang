@@ -11,12 +11,12 @@
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Pipelines/TTLPipelines.h"
+#include "ttmlir/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCore.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/Dialect/TTKernel/Transforms/Passes.h"
 #include "ttmlir/Dialect/TTMetal/IR/TTMetal.h"
-#include "ttmlir/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
 
 int main(int argc, char **argv) {
   // Register upstream MLIR passes
@@ -26,8 +26,7 @@ int main(int argc, char **argv) {
   mlir::tt::ttkernel::registerPasses();
 
   // Register TTKernel-to-EmitC conversion pass
-  mlir::registerPass(
-      []() { return mlir::tt::createConvertTTKernelToEmitC(); });
+  mlir::registerPass([]() { return mlir::tt::createConvertTTKernelToEmitC(); });
 
   // Register tt-lang passes and pipelines
   mlir::tt::ttl::registerTTLPasses();

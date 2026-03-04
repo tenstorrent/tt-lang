@@ -41,12 +41,10 @@ $PYTHONPATH"
 # Library path for built shared libraries.
 export LD_LIBRARY_PATH="@CMAKE_BINARY_DIR@/lib:${LLVM_INSTALL_DIR}/lib:${LD_LIBRARY_PATH}"
 
-# tt-metal runtime (set when TTLANG_ENABLE_RUNTIME=ON).
-if [ -n "@TT_METAL_HOME@" ]; then
-  export TT_METAL_HOME="@TT_METAL_HOME@"
-  export PYTHONPATH="@TT_METAL_PYTHON_PATH@:${PYTHONPATH}"
-  export LD_LIBRARY_PATH="@TT_METAL_LIB_PATH@:${LD_LIBRARY_PATH}"
-fi
+# tt-metal runtime
+export TT_METAL_HOME="@TT_METAL_HOME@"
+export PYTHONPATH="@TT_METAL_PYTHON_PATH@:${PYTHONPATH}"
+export LD_LIBRARY_PATH="@TT_METAL_LIB_PATH@:${LD_LIBRARY_PATH}"
 
 # Mark environment as activated.
 export TTLANG_ENV_ACTIVATED=1
@@ -56,7 +54,5 @@ if [ "${_TTLANG_VERBOSE}" -ne 0 ]; then
   echo "  TT_LANG_HOME:     ${TT_LANG_HOME}"
   echo "  LLVM_INSTALL_DIR: ${LLVM_INSTALL_DIR}"
   echo "  Build dir:        @CMAKE_BINARY_DIR@"
-  if [ -n "@TT_METAL_HOME@" ]; then
-    echo "  TT_METAL_HOME:   ${TT_METAL_HOME}"
-  fi
+  echo "  TT_METAL_HOME:   ${TT_METAL_HOME}"
 fi

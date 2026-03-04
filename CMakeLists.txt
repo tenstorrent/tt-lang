@@ -18,9 +18,7 @@ include(GetVersionFromGit)
 ttlang_set_version("${TTLANG_VERSION}")
 
 option(TTLANG_ENABLE_BINDINGS_PYTHON "Enable Python bindings" ON)
-option(TTLANG_ENABLE_RUNTIME "Enable runtime support" OFF)
 option(CODE_COVERAGE "Enable coverage reporting" OFF)
-option(TTLANG_ENABLE_PERF_TRACE "Enable performance trace" OFF)
 option(TTLANG_ENABLE_DOCS "Enable Sphinx documentation build" OFF)
 
 if(CODE_COVERAGE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -53,7 +51,7 @@ include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
 include(BuildTTMLIRMinimal)
 
 # ---------------------------------------------------------------------------
-# tt-metal runtime (optional, from submodule or pre-built)
+# tt-metal runtime (from submodule)
 # ---------------------------------------------------------------------------
 include(BuildTTMetal)
 
