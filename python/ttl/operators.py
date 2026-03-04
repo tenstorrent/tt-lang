@@ -382,10 +382,15 @@ def grid_size(*, dims):
 @syntax("signpost")
 def signpost(name: str):
     """
-    Emit a profiling marker visible in Tracy.
+    Mark a profiling scope visible in Tracy.
 
-    The marker creates a DeviceZoneScopedN in the generated C++ code,
-    which will appear in Tracy profiler traces when TT_METAL_DEVICE_PROFILER=1.
+    Use as a context manager to wrap a region of interest:
+
+        with ttl.signpost("my_region"):
+            ...
+
+    Generates a DeviceZoneScopedN in the emitted C++ code. Enable
+    TTLANG_SIGNPOST_PROFILE=1 to collect per-region cycle counts.
 
     Args:
         name: Name for the profiling region (must be a string literal)

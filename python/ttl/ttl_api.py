@@ -39,6 +39,7 @@ from ._src.auto_profile import (
     parse_device_profile_csv,
     print_profile_report,
 )
+from ._src.signpost_profile import is_signpost_profile_enabled
 from ._src.tensor_registry import (
     get_tensor_global_index,
     get_tensor_source,
@@ -261,6 +262,49 @@ def _run_perf_dump(tensors: tuple, kernel_name: str):
     else:
         print("=== PIPE GRAPH ===")
         print(pipe_graph_path.read_text())
+
+
+def _run_signpost_profile(tensors: tuple):
+    """
+    Run user-defined signpost profiler after execution.
+
+    Called after kernel execution when TTLANG_SIGNPOST_PROFILE=1 is set.
+    """
+    from ._src.signpost_profile import run as signpost_profile_run
+
+    # Flush profiler data from device (requires mid-run dump)
+    if os.environ.get("TT_METAL_PROFILER_MID_RUN_DUMP") != "1":
+        print(
+            "[signpost_profile] WARNING: TT_METAL_PROFILER_MID_RUN_DUMP=1 not set, "
+            "profiler data may be stale"
+        )
+    device = None
+    for tensor in tensors:
+        if is_ttnn_tensor(tensor) and hasattr(tensor, "device"):
+            device = tensor.device()
+            break
+    if device is not None:
+        try:
+            ttnn.ReadDeviceProfiler(device)
+        except Exception as e:
+            print(f"[signpost_profile] WARNING: Failed to read device profiler: {e}")
+
+    tt_metal_home = os.environ.get("TT_METAL_HOME", "")
+    if not tt_metal_home:
+        raise ValueError("TTLANG_SIGNPOST_PROFILE=1 requires TT_METAL_HOME to be set")
+
+    logs_path = Path(tt_metal_home) / "generated" / "profiler" / ".logs"
+    if not logs_path.exists():
+        raise ValueError(
+            f"Profiler logs directory not found: {logs_path}\n"
+            "Ensure TT_METAL_DEVICE_PROFILER=1 is set"
+        )
+
+    result = signpost_profile_run(logs_path)
+    if result:
+        print(result)
+    else:
+        print("[signpost_profile] No user-defined signpost zones found")
 
 
 def _detect_memory_space_from_tensor(tensor, default: str) -> str:
@@ -1309,10 +1353,11 @@ def pykernel_gen(
                         compiled_kernel.kernel_line_offsets,
                     )
 
-                # Run perf dump once, then disable to avoid noise
                 if os.environ.get("TTLANG_PERF_DUMP") == "1":
                     _run_perf_dump(args, f.__name__)
-                    del os.environ["TTLANG_PERF_DUMP"]
+
+                if is_signpost_profile_enabled():
+                    _run_signpost_profile(args)
 
                 return result
 
