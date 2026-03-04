@@ -6,8 +6,12 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 
 #include "TTLOpsVerifyUtils.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/StructuredOpsUtils.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectImplementation.h" // IWYU pragma: keep
+#include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h" // IWYU pragma: keep
@@ -62,20 +66,12 @@ SliceAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
 } // namespace mlir::tt::ttl
 
 mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
-  auto cbTy = mlir::dyn_cast<CircularBufferType>(getResult().getType());
-  if (!cbTy) {
-    return emitOpError() << "result must be !ttl.cb";
-  }
+  auto cbTy = mlir::cast<CircularBufferType>(getResult().getType());
 
-  // Validate cb_index.
-  auto idxAttr = mlir::dyn_cast<IntegerAttr>(getCbIndexAttr());
-  if (!idxAttr || !idxAttr.getType().isIndex()) {
-    return emitOpError() << "cb_index must be an index attribute";
-  }
-  int64_t idx = idxAttr.getInt();
+  int64_t idx = getCbIndexAttr().getInt();
   if (idx < 0 || idx >= kMaxCircularBuffers) {
-    return emitOpError() << "cb_index must be in [0," << kMaxCircularBuffers - 1
-                         << "]";
+    return emitOpError() << "cb_index must be in [0, "
+                         << kMaxCircularBuffers - 1 << "]";
   }
 
   // Validate buffer factor against type for consistency.
@@ -93,15 +89,8 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
 }
 
 mlir::LogicalResult mlir::tt::ttl::AttachCBOp::verify() {
-  auto tensorTy = mlir::dyn_cast<RankedTensorType>(getTensor().getType());
-  if (!tensorTy) {
-    return emitOpError() << "expects ranked tensor operand";
-  }
-
-  auto cbTy = mlir::dyn_cast<CircularBufferType>(getCb().getType());
-  if (!cbTy) {
-    return emitOpError() << "expects circular buffer operand";
-  }
+  auto tensorTy = mlir::cast<RankedTensorType>(getTensor().getType());
+  auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
 
   // Element types must match.
   if (tensorTy.getElementType() != cbTy.getElementType()) {
@@ -210,11 +199,7 @@ mlir::LogicalResult mlir::tt::ttl::LinearizedIndexOp::verify() {
 }
 
 mlir::LogicalResult mlir::tt::ttl::CopyTileOp::verify() {
-  auto srcTy = getSrc().getType();
-
-  if (!mlir::isa<tt::ttcore::TileType>(srcTy)) {
-    return emitOpError() << "expects src to be ttcore.tile";
-  }
+  auto srcTy = mlir::cast<tt::ttcore::TileType>(getSrc().getType());
 
   // Verify that dst_tile type matches src type.
   auto dstTileTy = getDstTile().getType();
@@ -272,6 +257,178 @@ void mlir::tt::ttl::ComputeOp::print(mlir::OpAsmPrinter &p) {
 
 mlir::MutableOperandRange mlir::tt::ttl::ComputeOp::getDpsInitsMutable() {
   return getOutputsMutable();
+}
+
+//===----------------------------------------------------------------------===//
+// ComputeOp - Helper methods (supplements IndexingMapOpInterface defaults)
+//===----------------------------------------------------------------------===//
+
+/// Convert the iterator_types attribute from string attrs ("parallel",
+/// "reduction") to the utils::IteratorType enum.
+mlir::SmallVector<mlir::utils::IteratorType>
+mlir::tt::ttl::ComputeOp::getIteratorTypesArray() {
+  mlir::SmallVector<mlir::utils::IteratorType> result;
+  for (mlir::Attribute attr : getIteratorTypes()) {
+    auto strAttr = mlir::cast<mlir::StringAttr>(attr);
+    if (strAttr.getValue() == "parallel") {
+      result.push_back(mlir::utils::IteratorType::parallel);
+    } else {
+      assert(strAttr.getValue() == "reduction" &&
+             "verifier should have rejected non-parallel/reduction iterator");
+      result.push_back(mlir::utils::IteratorType::reduction);
+    }
+  }
+  return result;
+}
+
+/// Collect every dimension of every operand (inputs then outputs) into a flat
+/// list of IndexAttrs. All dimensions are static (enforced by the verifier).
+mlir::SmallVector<mlir::OpFoldResult>
+mlir::tt::ttl::ComputeOp::createFlatListOfOperandDims(mlir::OpBuilder &b,
+                                                      mlir::Location loc) {
+  mlir::SmallVector<mlir::OpFoldResult> allDims;
+  for (mlir::Value operand :
+       llvm::concat<mlir::Value>(getInputs(), getOutputs())) {
+    auto shape =
+        mlir::cast<mlir::RankedTensorType>(operand.getType()).getShape();
+    auto dims = getAsIndexOpFoldResult(b.getContext(), shape);
+    allDims.append(dims.begin(), dims.end());
+  }
+  return allDims;
+}
+
+//===----------------------------------------------------------------------===//
+// ComputeOp - TilingInterface implementations (used for subblocking)
+//===----------------------------------------------------------------------===//
+
+/// Map iteration-domain offsets/sizes to operand-space offsets/sizes/strides
+/// via the indexing map. Simplified version of linalg's computeSliceParameters
+/// (mlir/lib/Dialect/Linalg/Utils/Utils.cpp) for projected-permutation maps.
+static void
+mapOffsetsAndSizes(mlir::OpBuilder &b, mlir::Location loc, mlir::AffineMap map,
+                   mlir::Value operand,
+                   llvm::ArrayRef<mlir::OpFoldResult> offsets,
+                   llvm::ArrayRef<mlir::OpFoldResult> sizes,
+                   mlir::SmallVectorImpl<mlir::OpFoldResult> &operandOffsets,
+                   mlir::SmallVectorImpl<mlir::OpFoldResult> &operandSizes,
+                   mlir::SmallVectorImpl<mlir::OpFoldResult> &operandStrides) {
+  auto operandTy = mlir::cast<mlir::RankedTensorType>(operand.getType());
+  int64_t rank = operandTy.getRank();
+  operandOffsets.resize(rank, b.getIndexAttr(0));
+  // Default: full operand dim (used for broadcast dims not in the map).
+  // All dimensions are static (enforced by the ComputeOp verifier).
+  operandSizes = getAsIndexOpFoldResult(b.getContext(), operandTy.getShape());
+  operandStrides.resize(rank, b.getIndexAttr(1));
+
+  // Override with iteration-domain offsets/sizes for mapped dims.
+  for (unsigned resIdx = 0; resIdx < map.getNumResults(); ++resIdx) {
+    mlir::AffineExpr expr = map.getResult(resIdx);
+    if (auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr)) {
+      unsigned dimPos = dimExpr.getPosition();
+      operandOffsets[resIdx] = offsets[dimPos];
+      operandSizes[resIdx] = sizes[dimPos];
+    }
+  }
+}
+
+mlir::SmallVector<mlir::utils::IteratorType>
+mlir::tt::ttl::ComputeOp::getLoopIteratorTypes() {
+  return getIteratorTypesArray();
+}
+
+/// Use getShapesToLoopsMap() to look up which operand dimension provides
+/// the bound for each loop.
+mlir::SmallVector<mlir::Range>
+mlir::tt::ttl::ComputeOp::getIterationDomain(mlir::OpBuilder &b) {
+  mlir::SmallVector<mlir::Range> domain;
+  mlir::Location loc = getLoc();
+
+  mlir::SmallVector<mlir::OpFoldResult> allDims =
+      createFlatListOfOperandDims(b, loc);
+  mlir::AffineMap shapesToLoops = getShapesToLoopsMap();
+
+  for (mlir::AffineExpr loopExpr : shapesToLoops.getResults()) {
+    auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(loopExpr);
+    assert(dimExpr &&
+           "expected AffineDimExpr from inversePermutation of projected "
+           "permutation indexing maps");
+    mlir::OpFoldResult size = allDims[dimExpr.getPosition()];
+    domain.push_back(mlir::Range{b.getIndexAttr(0), size, b.getIndexAttr(1)});
+  }
+  return domain;
+}
+
+llvm::FailureOr<mlir::TilingResult>
+mlir::tt::ttl::ComputeOp::getTiledImplementation(
+    mlir::OpBuilder &b, llvm::ArrayRef<mlir::OpFoldResult> offsets,
+    llvm::ArrayRef<mlir::OpFoldResult> sizes) {
+  mlir::Location loc = getLoc();
+  mlir::SmallVector<mlir::AffineMap> indexingMaps = getIndexingMapsArray();
+
+  // Create extract_slice for each input operand.
+  mlir::SmallVector<mlir::Value> tiledInputs;
+  mlir::SmallVector<mlir::Operation *> generatedSlices;
+  for (auto [idx, input] : llvm::enumerate(getInputs())) {
+    mlir::SmallVector<mlir::OpFoldResult> operandOffsets, operandSizes,
+        operandStrides;
+    mapOffsetsAndSizes(b, loc, indexingMaps[idx], input, offsets, sizes,
+                       operandOffsets, operandSizes, operandStrides);
+
+    auto slice = b.create<mlir::tensor::ExtractSliceOp>(
+        loc, input, operandOffsets, operandSizes, operandStrides);
+    tiledInputs.push_back(slice);
+    generatedSlices.push_back(slice);
+  }
+
+  // Create extract_slice for each output operand.
+  size_t numInputs = getInputs().size();
+  mlir::SmallVector<mlir::Value> tiledOutputs;
+  for (auto [idx, output] : llvm::enumerate(getOutputs())) {
+    mlir::SmallVector<mlir::OpFoldResult> operandOffsets, operandSizes,
+        operandStrides;
+    mapOffsetsAndSizes(b, loc, indexingMaps[numInputs + idx], output, offsets,
+                       sizes, operandOffsets, operandSizes, operandStrides);
+
+    auto slice = b.create<mlir::tensor::ExtractSliceOp>(
+        loc, output, operandOffsets, operandSizes, operandStrides);
+    tiledOutputs.push_back(slice);
+    generatedSlices.push_back(slice);
+  }
+
+  // Build the tiled compute op with subblock operands.
+  auto tiledOp = b.create<ComputeOp>(
+      loc, mlir::TypeRange(tiledOutputs), tiledInputs, tiledOutputs,
+      getIndexingMapsAttr(), getIteratorTypesAttr());
+
+  // Clone the body region into the new compute op.
+  mlir::IRMapping mapping;
+  getBody().cloneInto(&tiledOp.getBody(), mapping);
+
+  mlir::TilingResult result;
+  result.tiledOps.push_back(tiledOp);
+  result.tiledValues = tiledOp.getResults();
+  result.generatedSlices = std::move(generatedSlices);
+  return result;
+}
+
+/// Map iteration-domain offsets/sizes to the result tensor's offsets/sizes
+/// via the output's indexing map.
+mlir::LogicalResult mlir::tt::ttl::ComputeOp::getResultTilePosition(
+    mlir::OpBuilder &b, unsigned resultNumber,
+    llvm::ArrayRef<mlir::OpFoldResult> offsets,
+    llvm::ArrayRef<mlir::OpFoldResult> sizes,
+    mlir::SmallVector<mlir::OpFoldResult> &resultOffsets,
+    mlir::SmallVector<mlir::OpFoldResult> &resultSizes) {
+  mlir::Location loc = getLoc();
+  mlir::SmallVector<mlir::AffineMap> indexingMaps = getIndexingMapsArray();
+  mlir::AffineMap map = indexingMaps[getNumInputs() + resultNumber];
+  mlir::Value output = getOutputs()[resultNumber];
+
+  mlir::SmallVector<mlir::OpFoldResult> strides;
+  mapOffsetsAndSizes(b, loc, map, output, offsets, sizes, resultOffsets,
+                     resultSizes, strides);
+
+  return mlir::success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -399,6 +556,30 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     return emitOpError("body block must have ")
            << numOperands << " arguments (matching inputs + outputs), but got "
            << bodyBlock.getNumArguments();
+  }
+
+  // Verify result count matches output count (DPS semantics).
+  if (getResults().size() != numOutputs) {
+    return emitOpError("expected ")
+           << numOutputs << " results (one per output) but got "
+           << getResults().size();
+  }
+
+  // Verify block argument types match operand element types.
+  for (size_t i = 0; i < numOperands; ++i) {
+    Value operand =
+        (i < numInputs) ? getInputs()[i] : getOutputs()[i - numInputs];
+    auto tensorTy = mlir::dyn_cast<RankedTensorType>(operand.getType());
+    if (!tensorTy) {
+      continue;
+    }
+    Type expectedElemTy = tensorTy.getElementType();
+    Type actualTy = bodyBlock.getArgument(i).getType();
+    if (actualTy != expectedElemTy) {
+      return emitOpError("block argument ")
+             << i << " type " << actualTy
+             << " does not match operand element type " << expectedElemTy;
+    }
   }
 
   auto mapsAttr = getIndexingMaps();
@@ -529,11 +710,11 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   SmallVector<bool> dimsReferencedByInputs(iteratorCount, false);
   for (size_t i = 0; i < numInputs; ++i) {
     auto tensorTy = mlir::cast<RankedTensorType>(getInputs()[i].getType());
+    if (!tensorTy.hasStaticShape()) {
+      return emitOpError("input ") << i << " must have a static shape";
+    }
     if (failed(requireAttachedCB(getInputs()[i], i, "input"))) {
       return failure();
-    }
-    if (i >= maps.size()) {
-      return emitOpError("missing indexing map for input ") << i;
     }
     auto map = mlir::cast<AffineMapAttr>(maps[i]).getValue();
     if (failed(verifyMapCommon(map, tensorTy.getRank()))) {
@@ -549,13 +730,13 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   size_t outputStart = numInputs;
   for (size_t i = 0; i < numOutputs; ++i) {
     auto tensorTy = mlir::cast<RankedTensorType>(getOutputs()[i].getType());
+    if (!tensorTy.hasStaticShape()) {
+      return emitOpError("output ") << i << " must have a static shape";
+    }
     if (failed(requireAttachedCB(getOutputs()[i], i, "output"))) {
       return failure();
     }
     size_t mapIdx = outputStart + i;
-    if (mapIdx >= maps.size()) {
-      return emitOpError("missing indexing map for output ") << i;
-    }
     auto map = mlir::cast<AffineMapAttr>(maps[mapIdx]).getValue();
     if (failed(verifyMapCommon(map, tensorTy.getRank()))) {
       return failure();
