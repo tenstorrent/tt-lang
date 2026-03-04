@@ -328,7 +328,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   // Emit leading signposts
   for (auto sp : leadingSignposts) {
-    rewriter.create<SignpostOp>(sp.getLoc(), sp.getNameAttr(), sp.getIsEndAttr());
+    rewriter.create<SignpostOp>(sp.getLoc(), sp.getNameAttr(),
+                                sp.getIsEndAttr());
   }
 
   // Emit tile ops in topological order, with interleaved signposts
@@ -375,9 +376,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   // Emit trailing begin signposts, then tile stores, then end signposts.
   // This places tile_store inside the innermost signpost scope.
-  auto firstEndIt = llvm::find_if(trailingSignposts, [](SignpostOp sp) {
-    return sp.getIsEnd();
-  });
+  auto firstEndIt = llvm::find_if(trailingSignposts,
+                                  [](SignpostOp sp) { return sp.getIsEnd(); });
   for (auto it = trailingSignposts.begin(); it != firstEndIt; ++it) {
     rewriter.create<SignpostOp>(it->getLoc(), it->getNameAttr(),
                                 it->getIsEndAttr());

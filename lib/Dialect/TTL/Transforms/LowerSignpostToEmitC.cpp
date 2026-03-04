@@ -79,8 +79,7 @@ static bool hasEscapingValues(SignpostOp beforeOp, SignpostOp afterOp) {
 // same block. Returns the end op if found, nullptr otherwise. Sets
 // `hasInterestingOps` if any ttkernel dialect op is found between the pair,
 // including inside nested regions (e.g. scf.for bodies).
-static SignpostOp findMatchingEnd(SignpostOp beginOp,
-                                  bool &hasInterestingOps) {
+static SignpostOp findMatchingEnd(SignpostOp beginOp, bool &hasInterestingOps) {
   hasInterestingOps = false;
   StringRef beginName = beginOp.getName();
 
@@ -123,8 +122,8 @@ struct SignpostLowering : OpConversionPattern<SignpostOp> {
                  "PLEASE FILE A BUG.";
         } else {
           createEmitCVerbatim(loc, "{", rewriter);
-          createEmitCVerbatim(
-              loc, "DeviceZoneScopedN(\"" + name.str() + "\");", rewriter);
+          createEmitCVerbatim(loc, "DeviceZoneScopedN(\"" + name.str() + "\");",
+                              rewriter);
           keptEndNames.insert(name.str());
         }
       }
