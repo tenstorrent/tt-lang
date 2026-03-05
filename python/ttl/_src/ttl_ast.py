@@ -56,6 +56,10 @@ def _raise_tensor_error(tensor, message: str):
     raise ValueError(message)
 
 
+def _ceil_div(a, b):
+    return (a + b - 1) // b
+
+
 def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
     """Build MLIR tensor type for a ttnn tensor with TTNNLayoutAttr."""
     if not tiled:
@@ -64,17 +68,23 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
         raise ValueError(f"Only L1 or DRAM memory space supported, got {memory_space}")
     if len(grid) != 2:
         raise ValueError(f"Only 2D grids supported, got grid {tuple(grid)}")
-    if len(tensor.shape) != 2:
-        _raise_tensor_error(
-            tensor, f"Only 2D tensors supported, got shape {tensor.shape}"
-        )
 
-    tensor_rows, tensor_cols = tensor.shape
+    shape = list(tensor.shape)
+    if len(shape) < 2:
+        _raise_tensor_error(
+            tensor,
+            f"Tensors must have at least 2 dimensions, got shape {tensor.shape}",
+        )
+    if any(d <= 0 for d in shape):
+        _raise_tensor_error(
+            tensor,
+            f"All shape dimensions must be positive, got shape {tensor.shape}",
+        )
 
     layout = create_ttnn_layout(
         ctx,
         TTNNLayoutConfig(
-            logical_shape=tensor.shape,
+            logical_shape=shape,
             grid=grid,
             dtype=tensor.dtype,
         ),
@@ -85,10 +95,12 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
         ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
     )
 
-    # Device shape: 2D tile counts [tiles_y, tiles_x] based on logical shape
-    total_row_tiles = (tensor_rows + DEFAULT_TILE_SIZE - 1) // DEFAULT_TILE_SIZE
-    total_col_tiles = (tensor_cols + DEFAULT_TILE_SIZE - 1) // DEFAULT_TILE_SIZE
-    device_shape = [total_row_tiles, total_col_tiles]
+    # Device shape: batch dims preserved, last 2 dims converted to tile counts
+    batch_dims = shape[:-2]
+    tensor_rows, tensor_cols = shape[-2], shape[-1]
+    total_row_tiles = _ceil_div(tensor_rows, DEFAULT_TILE_SIZE)
+    total_col_tiles = _ceil_div(tensor_cols, DEFAULT_TILE_SIZE)
+    device_shape = batch_dims + [total_row_tiles, total_col_tiles]
 
     return RankedTensorType.get(device_shape, element_type, layout)
 

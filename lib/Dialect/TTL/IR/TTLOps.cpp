@@ -112,6 +112,30 @@ mlir::LogicalResult mlir::tt::ttl::AttachCBOp::verify() {
   return mlir::success();
 }
 
+mlir::LogicalResult mlir::tt::ttl::TensorSliceOp::verify() {
+  auto tensorTy = mlir::cast<RankedTensorType>(getTensor().getType());
+  auto resultTy = mlir::cast<RankedTensorType>(getResult().getType());
+  int64_t tensorRank = tensorTy.getRank();
+
+  if (static_cast<int64_t>(getIndices().size()) != tensorRank) {
+    return emitOpError() << "index count (" << getIndices().size()
+                         << ") must match tensor rank (" << tensorRank << ")";
+  }
+
+  if (resultTy.getRank() != tensorRank) {
+    return emitOpError() << "result rank (" << resultTy.getRank()
+                         << ") must match tensor rank (" << tensorRank << ")";
+  }
+
+  if (resultTy.getElementType() != tensorTy.getElementType()) {
+    return emitOpError() << "result element type (" << resultTy.getElementType()
+                         << ") must match tensor element type ("
+                         << tensorTy.getElementType() << ")";
+  }
+
+  return mlir::success();
+}
+
 mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   auto srcTy = getSrc().getType();
   auto dstTy = getDst().getType();

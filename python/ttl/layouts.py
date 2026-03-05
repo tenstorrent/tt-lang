@@ -45,8 +45,10 @@ def create_ttnn_layout(ctx, config: TTNNLayoutConfig):
     Raises:
         ValueError: If configuration is unsupported
     """
-    if len(config.logical_shape) != 2:
-        raise ValueError(f"Only 2D tensors supported, got shape {config.logical_shape}")
+    if len(config.logical_shape) < 2:
+        raise ValueError(
+            f"Tensors must have at least 2 dimensions, got shape {config.logical_shape}"
+        )
 
     if len(config.grid) != 2:
         raise ValueError(f"Only 2D grids supported, got grid {config.grid}")
@@ -54,8 +56,6 @@ def create_ttnn_layout(ctx, config: TTNNLayoutConfig):
     # config.grid is (cols, rows) from tt-lang API, but MLIR expects (rows, cols)
     grid_cols, grid_rows = config.grid
     mlir_grid = [grid_rows, grid_cols]
-
-    # logical_shape is (rows, cols), mlir_grid is (rows, cols)
 
     ttcore_dtype = tensor_dtype_to_ttcore_datatype(config.dtype)
     element_type = ttcore.ir.TileType.get(

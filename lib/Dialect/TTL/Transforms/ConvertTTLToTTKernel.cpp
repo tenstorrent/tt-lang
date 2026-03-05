@@ -349,8 +349,11 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
           op, "view must come from ttl.cb_reserve (unrealized cast from CB)");
     }
 
+    // CB shape rank is the rank of the view tensor (from cb_reserve).
+    auto viewTy = mlir::cast<RankedTensorType>(op.getView().getType());
+    size_t cbShapeRank = viewTy.getRank();
     auto cbTileIndex =
-        utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
+        utils::computeCBTileIndexFromLoops(op, rewriter, cbShapeRank);
 
     // Determine DST index from the source op:
     // - Tile compute ops and copy_dst: have dst_idx attribute
@@ -494,49 +497,64 @@ materializeTensorAccessor(Value tensor, Value bankBase, int64_t pageSizeBytes,
                              static_cast<int32_t>(*argIdx), bankBase, pageSize);
 }
 
-/// Extract tile grid shape from a Value if it's a static tensor.
-/// Tensor shape must be [tiles_y, tiles_x] with TileType elements.
-/// Returns the tile grid shape for linearization.
-static std::pair<int64_t, int64_t> getTileGridShapeFromValue(Value v) {
+/// Extract tile grid shape from a Value with a static ranked tensor type.
+/// Returns all dimensions of the tile grid for linearization.
+static SmallVector<int64_t> getTileGridShapeFromValue(Value v) {
   auto tensorTy = llvm::dyn_cast<RankedTensorType>(v.getType());
   assert(tensorTy && "expected RankedTensorType");
   assert(tensorTy.hasStaticShape() && "expected static shape");
-
-  auto dims = tensorTy.getShape();
-  assert(dims.size() == 2 && "expected rank-2 tensor [tiles_y, tiles_x]");
   assert(llvm::isa<ttcore::TileType>(tensorTy.getElementType()) &&
          "expected TileType element type");
 
-  return {dims[0], dims[1]};
+  return SmallVector<int64_t>(tensorTy.getShape());
 }
 
-// Emit a tile loop (or single tile body). The callback receives (row, col)
-// indices as index-typed Values.
+/// Emit a loop nest over the given dimension bounds (or invoke the body
+/// directly when all bounds are 1). The callback receives the induction
+/// variables as index-typed Values matching the rank of `tileBounds`.
 static void emitTileLoop(
-    OpBuilder &builder, Location loc, int64_t tilesY, int64_t tilesX,
-    llvm::function_ref<void(OpBuilder &, Location, Value, Value)> emitBody) {
+    OpBuilder &builder, Location loc, ArrayRef<int64_t> tileBounds,
+    llvm::function_ref<void(OpBuilder &, Location, ValueRange)> emitBody) {
   auto zero = builder.create<arith::ConstantIndexOp>(loc, 0);
-  if (tilesY > 1 || tilesX > 1) {
-    auto yBound = builder.create<arith::ConstantIndexOp>(loc, tilesY);
-    auto xBound = builder.create<arith::ConstantIndexOp>(loc, tilesX);
-    auto one = builder.create<arith::ConstantIndexOp>(loc, 1);
 
-    scf::buildLoopNest(builder, loc, ValueRange{zero, zero},
-                       ValueRange{yBound, xBound}, ValueRange{one, one},
-                       [&](OpBuilder &b, Location bodyLoc, ValueRange ivs) {
-                         emitBody(b, bodyLoc, ivs[0], ivs[1]);
-                       });
-  } else {
-    emitBody(builder, loc, zero, zero);
+  bool allOne = llvm::all_of(tileBounds, [](int64_t d) { return d == 1; });
+  if (allOne) {
+    SmallVector<Value> zeros(tileBounds.size(), zero);
+    emitBody(builder, loc, zeros);
+    return;
   }
+
+  auto one = builder.create<arith::ConstantIndexOp>(loc, 1);
+  SmallVector<Value> lbs(tileBounds.size(), zero);
+  SmallVector<Value> ubs;
+  SmallVector<Value> steps(tileBounds.size(), one);
+  for (int64_t bound : tileBounds) {
+    ubs.push_back(builder.create<arith::ConstantIndexOp>(loc, bound));
+  }
+
+  scf::buildLoopNest(builder, loc, lbs, ubs, steps,
+                     [&](OpBuilder &b, Location bodyLoc, ValueRange ivs) {
+                       emitBody(b, bodyLoc, ivs);
+                     });
 }
 
-// Compute linear tile index from row/col: row * numCols + col.
-static Value linearizeTileIndex(OpBuilder &builder, Location loc, Value row,
-                                Value col, int64_t numCols) {
-  auto numColsVal = builder.create<arith::ConstantIndexOp>(loc, numCols);
-  Value rowOffset = builder.create<arith::MulIOp>(loc, row, numColsVal);
-  return builder.create<arith::AddIOp>(loc, rowOffset, col);
+/// Compute a linearized (row-major) index from ND coordinates and shape.
+/// index = coords[0] * (shape[1]*...*shape[N-1]) + ... + coords[N-1]
+static Value linearizeNDIndex(OpBuilder &builder, Location loc,
+                              ValueRange coords, ArrayRef<int64_t> shape) {
+  assert(coords.size() == shape.size() && "coords and shape rank mismatch");
+  Value result = builder.create<arith::ConstantIndexOp>(loc, 0);
+  for (size_t i = 0; i < coords.size(); ++i) {
+    // stride = product of shape[i+1..N-1]
+    int64_t stride = 1;
+    for (size_t j = i + 1; j < shape.size(); ++j) {
+      stride *= shape[j];
+    }
+    Value strideVal = builder.create<arith::ConstantIndexOp>(loc, stride);
+    Value term = builder.create<arith::MulIOp>(loc, coords[i], strideVal);
+    result = builder.create<arith::AddIOp>(loc, result, term);
+  }
+  return result;
 }
 
 /// Direction of a tensor<->CB tile copy for NOC operations.
@@ -551,10 +569,9 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
                                        const TypeConverter &typeConverter) {
   auto loc = op.getLoc();
   Value tensor = sliceOp.getTensor();
-  Value startRow = sliceOp.getTileRow();
-  Value startCol = sliceOp.getTileCol();
+  auto startIndices = sliceOp.getIndices();
 
-  // Validate layout and get page size once — used by both accessor and NOC ops.
+  // Validate layout and get page size once.
   auto pageSizeBytes = getValidatedPageSize(tensor, op);
   if (failed(pageSizeBytes)) {
     return failure();
@@ -589,15 +606,24 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
     return rewriter.notifyMatchFailure(op, "failed to get CB type");
   }
   auto cbShape = cbType.getShape();
-  if (cbShape.size() != 2) {
-    return rewriter.notifyMatchFailure(op, "CB shape must be 2D");
-  }
-  int64_t cbRows = cbShape[0];
-  int64_t cbCols = cbShape[1];
 
-  // Get tensor grid shape for computing tensor tile indices.
-  auto tensorTileGridShape = getTileGridShapeFromValue(tensor);
-  int64_t tensorTilesX = tensorTileGridShape.second;
+  // Tensor grid shape for linearization.
+  auto tensorGridShape = getTileGridShapeFromValue(tensor);
+  unsigned tensorRank = tensorGridShape.size();
+
+  if (startIndices.size() != tensorRank) {
+    return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+      diag << "tensor_slice index count (" << startIndices.size()
+           << ") does not match tensor rank (" << tensorRank << ")";
+    });
+  }
+
+  if (cbShape.size() != tensorRank) {
+    return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+      diag << "CB shape rank (" << cbShape.size()
+           << ") does not match tensor rank (" << tensorRank << ")";
+    });
+  }
 
   auto indexTy = rewriter.getIndexType();
   auto cbPtrIdx = rewriter.create<arith::IndexCastOp>(loc, indexTy, cbPtr);
@@ -605,20 +631,23 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
       rewriter.create<arith::ConstantIndexOp>(loc, *pageSizeBytes);
   auto i32Ty = rewriter.getI32Type();
 
-  emitTileLoop(
-      rewriter, loc, cbRows, cbCols,
-      [&, tensorTilesX, cbCols](OpBuilder &b, Location bodyLoc, Value loopRow,
-                                Value loopCol) {
-        // Tensor tile index: (startRow + loopRow) * tensorCols + (startCol +
-        // loopCol)
-        Value tensorRow = b.create<arith::AddIOp>(bodyLoc, startRow, loopRow);
-        Value tensorCol = b.create<arith::AddIOp>(bodyLoc, startCol, loopCol);
-        Value tensorTileIdx =
-            linearizeTileIndex(b, bodyLoc, tensorRow, tensorCol, tensorTilesX);
+  SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
 
-        // CB tile index within the CB buffer.
-        Value cbTileIdx =
-            linearizeTileIndex(b, bodyLoc, loopRow, loopCol, cbCols);
+  emitTileLoop(
+      rewriter, loc, cbBounds,
+      [&](OpBuilder &b, Location bodyLoc, ValueRange cbIVs) {
+        // Tensor coordinates: start index + CB loop IV for each dimension.
+        SmallVector<Value> tensorCoords;
+        for (unsigned d = 0; d < tensorRank; ++d) {
+          Value coord =
+              b.create<arith::AddIOp>(bodyLoc, startIndices[d], cbIVs[d]);
+          tensorCoords.push_back(coord);
+        }
+
+        Value tensorTileIdx =
+            linearizeNDIndex(b, bodyLoc, tensorCoords, tensorGridShape);
+
+        Value cbTileIdx = linearizeNDIndex(b, bodyLoc, cbIVs, cbBounds);
 
         // Compute CB address: cbPtr + cbTileIdx * pageSize
         Value byteOffset =

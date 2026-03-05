@@ -6,10 +6,10 @@
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: multi-tile DFB requires range syntax for tensor slices.
+Validation test: broadcast only supports 2D tensors.
 
-When a DFB has shape > 1x1, tensor indexing must use range syntax
-(e.g., tensor[0:2, 0:2]) rather than index syntax (e.g., tensor[0, 0]).
+Broadcast is a hardware-level 2D operation. ND tensors must use
+elementwise ops instead.
 """
 
 import os
@@ -20,33 +20,30 @@ import ttnn
 import ttl
 
 
-# CHECK: error: CB shape [2, 2] requires range syntax (e.g., tensor[0:2, 0:2]), but got index syntax
+# CHECK: broadcast only supports 2D tensors, got rank 3
 @ttl.kernel(grid=(1, 1))
-def invalid_multitile_index_kernel(inp, out):
-    """This kernel should fail: 2x2 DFB but using index syntax."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+def invalid_nd_bcast_kernel(inp, out):
+    """This kernel should fail: bcast on 3D tensor."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
-        x = inp_dfb.wait()
-        o = out_dfb.reserve()
-        o.store(x)
-        x.pop()
-        o.push()
+        with inp_dfb.wait() as x, out_dfb.reserve() as o:
+            result = ttl.math.broadcast(x, o, dims=[0])
+            o.store(result)
 
     @ttl.datamovement()
     def dm_read():
         inp_blk = inp_dfb.reserve()
-        # INVALID: using index syntax with 2x2 DFB
-        tx = ttl.copy(inp[0, 0], inp_blk)
+        tx = ttl.copy(inp[0, 0, 0], inp_blk)
         tx.wait()
         inp_blk.push()
 
     @ttl.datamovement()
     def dm_write():
         out_blk = out_dfb.wait()
-        tx = ttl.copy(out_blk, out[0:2, 0:2])
+        tx = ttl.copy(out_blk, out[0, 0, 0])
         tx.wait()
         out_blk.pop()
 
@@ -54,13 +51,11 @@ def invalid_multitile_index_kernel(inp, out):
 if __name__ == "__main__":
     import torch
 
-    print("=== Multi-tile DFB Index Syntax Validation Test ===")
-
     device = ttnn.open_device(device_id=0)
 
     try:
-        inp_torch = torch.full((64, 64), 1.0, dtype=torch.bfloat16)
-        out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
+        inp_torch = torch.full((1, 32, 32), 1.0, dtype=torch.bfloat16)
+        out_torch = torch.zeros((1, 32, 32), dtype=torch.bfloat16)
 
         inp = ttnn.from_torch(
             inp_torch,
@@ -77,7 +72,7 @@ if __name__ == "__main__":
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
 
-        invalid_multitile_index_kernel(inp, out)
+        invalid_nd_bcast_kernel(inp, out)
 
         print("ERROR: Expected ValueError was not raised!")
         exit(1)
