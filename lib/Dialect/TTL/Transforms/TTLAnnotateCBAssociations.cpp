@@ -11,10 +11,11 @@
 // tracing across multi-phase lowering.
 //
 // Annotations:
-// - ttl.compute: each input block argument gets a ttl.cb_index.<N> attribute
-// - ttl.tile_bcast: gets a ttl.bcast_output_cb_index attribute (the output
-//   operand may trace to iter_args after loop lowering, making SSA-based
-//   lookup fail)
+// - ttl.compute: each input gets a ttl.cb_index.<N> attribute on the compute
+//   op, keyed by the input's positional index
+// - ttl.tile_bcast: gets a ttl.bcast_output_cb_index attribute so that
+//   downstream passes (after loop lowering) can look up the output CB
+//   without SSA tracing.
 //
 //===----------------------------------------------------------------------===//
 

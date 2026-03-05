@@ -165,6 +165,13 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
 struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
   using OpRewritePattern<ComputeOp>::OpRewritePattern;
 
+  /// Outermost tile loops from subblocked computes that need unrolling.
+  /// Populated during pattern application, consumed by runOnOperation.
+  SmallVector<scf::ForOp> &loopsToUnroll;
+
+  LowerComputeToLoops(MLIRContext *ctx, SmallVector<scf::ForOp> &loopsToUnroll)
+      : OpRewritePattern<ComputeOp>(ctx), loopsToUnroll(loopsToUnroll) {}
+
   LogicalResult matchAndRewrite(ComputeOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
@@ -227,12 +234,11 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       loop->setAttr(kTileLoopAttrName, rewriter.getIndexAttr(stride));
     }
 
-    // Mark the outermost tile loop for unrolling if the compute was
+    // Record the outermost tile loop for unrolling if the compute was
     // subblocked (has full linearization strides). Non-subblocked computes
     // keep their tile loops for per-tile sync.
     if (fullStridesAttr && !loopNest.loops.empty()) {
-      loopNest.loops.front()->setAttr(kShouldUnrollAttrName,
-                                      rewriter.getUnitAttr());
+      loopsToUnroll.push_back(loopNest.loops.front());
     }
 
     if (processingFailed) {
@@ -249,9 +255,13 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
 // Post-pattern tile loop unrolling and DST index assignment
 //===----------------------------------------------------------------------===//
 
-/// Prefix for temporary per-dimension iteration index attributes. After
-/// loopUnrollByFactor clones ops, each clone gets `ttl._uiter_<dim> = i`
-/// so we can recover the multi-dimensional position once all loops are gone.
+/// Prefix for temporary per-dimension iteration index attributes. These
+/// must be encoded as op attributes because loopUnrollByFactor clones
+/// ops via its annotation callback -- there is no side-table mechanism
+/// to carry per-clone metadata through the unroller. Each clone gets
+/// `ttl._uiter_<dim> = i` so we can recover the multi-dimensional
+/// position once all loops are gone. The attributes are removed after
+/// linearization within this pass.
 static constexpr llvm::StringLiteral kUnrollIterPrefix("ttl._uiter_");
 
 /// Build the discardable attribute name for dimension `d`.
@@ -505,26 +515,15 @@ struct TTLLowerToLoopsPass
     func::FuncOp func = getOperation();
 
     // Step 1: Lower compute ops to scf.for tile loops.
+    // The pattern collects outermost tile loops from subblocked computes
+    // into loopsToUnroll for step 2.
+    SmallVector<scf::ForOp> loopsToUnroll;
     RewritePatternSet patterns(func.getContext());
-    patterns.add<LowerComputeToLoops>(func.getContext());
+    patterns.add<LowerComputeToLoops>(func.getContext(), loopsToUnroll);
     FrozenRewritePatternSet frozen(std::move(patterns));
     if (failed(applyPatternsGreedily(func, frozen))) {
       return signalPassFailure();
     }
-
-    // Step 2: Unroll tile loop nests and assign DST indices + CB tile offsets.
-    // Snapshot outermost tile loops before mutating the IR.
-    SmallVector<scf::ForOp> outerTileLoops;
-    func.walk([&](scf::ForOp loop) {
-      if (!loop->hasAttr(kTileLoopAttrName)) {
-        return;
-      }
-      auto parent = loop->getParentOfType<scf::ForOp>();
-      if (parent && parent->hasAttr(kTileLoopAttrName)) {
-        return;
-      }
-      outerTileLoops.push_back(loop);
-    });
 
     // Returns loops outermost-to-innermost.
     auto collectTileLoopNest = [](scf::ForOp outerLoop) {
@@ -546,14 +545,7 @@ struct TTLLowerToLoopsPass
       return nest;
     };
 
-    for (scf::ForOp outerLoop : outerTileLoops) {
-      // Only unroll tile loops from subblocked computes (marked in step 1).
-      // Non-subblocked computes keep their tile loops for per-tile sync.
-      if (!outerLoop->hasAttr(kShouldUnrollAttrName)) {
-        continue;
-      }
-      outerLoop->removeAttr(kShouldUnrollAttrName);
-
+    for (scf::ForOp outerLoop : loopsToUnroll) {
       SmallVector<scf::ForOp> nest = collectTileLoopNest(outerLoop);
 
       int64_t totalTrip = 1;

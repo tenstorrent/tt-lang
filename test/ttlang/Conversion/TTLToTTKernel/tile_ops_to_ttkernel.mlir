@@ -4,8 +4,7 @@
 // This tests the tile op patterns followed by init consolidation. The
 // convert-ttl-to-ttkernel pass emits compute ops without inits, then
 // ttkernel-insert-inits inserts the minimal set of init ops.
-//
-// TODO(#124): Add DST lifecycle wrapper tests once full pipeline is integrated.
+
 
 // CHECK-LABEL: func.func @tile_exp
 // CHECK: ttkernel.exp_tile_init

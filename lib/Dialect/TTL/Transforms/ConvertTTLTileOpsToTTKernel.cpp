@@ -8,8 +8,8 @@
 //
 // Lowers TTL tile-level operations to TTKernel using DialectConversion.
 // This file covers compute ops (unary SFPU, binary SFPU, broadcast), data
-// movement ops (copy_tile, copy_dst, pack_tile), and DST register lifecycle
-// ops (tile_regs_acquire/commit/wait/release).
+// movement ops (copy_tile, copy_dst), and DST register lifecycle ops
+// (tile_regs_acquire/commit/wait/release).
 //
 // Unary and binary compute ops are lowered via generic template patterns
 // instantiated from TTLElementwiseOps.def.
@@ -658,8 +658,6 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   // CB -> DST ops with attribute need the type converter.
   patterns.add<TTLTileBcastToTTKernel>(*typeConverter, ctx);
 
-  // TODO(#124): Add DST lifecycle wrapper pattern for loop iterations
-  // (acquire/commit/wait/release + copy_tile/pack_tile)
 }
 
 } // namespace mlir::tt::ttl

@@ -193,12 +193,19 @@ static bool isSyncBoundary(Operation *op) {
 
 /// Scan a sync region (acquire -> release) including nested regions to find
 /// input CBs, output CBs, and determine the compute category.
-/// Returns true if FPU binary ops are present in the region.
-static bool analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
-                              Value &in0CB, Value &in1CB, Value &outputCB) {
+/// Returns true if FPU binary ops are present, false if not, failure on
+/// error (missing tile_regs_release or mismatched output CB data formats).
+///
+/// Multiple output CBs are allowed when they share the same element type
+/// (PACK data format routing is identical). The first output CB encountered
+/// is returned for the common init.
+static FailureOr<bool>
+analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
+                  Value &in0CB, Value &in1CB, Value &outputCB) {
   Block *block = acquireOp->getBlock();
   bool hasFPUBinary = false;
   bool foundRelease = false;
+  bool hadError = false;
 
   for (auto it = std::next(acquireOp->getIterator()); it != block->end();
        ++it) {
@@ -210,7 +217,7 @@ static bool analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
     // Walk this op and all nested regions (e.g., scf.for bodies).
     (&*it)->walk([&](Operation *inner) {
       if (auto copy = dyn_cast<ttk::CopyTileOp>(inner)) {
-        // copy_tile always precedes SFPU ops — data must enter DST from a
+        // copy_tile always precedes SFPU ops -- data must enter DST from a
         // CB before any SFPU/bcast compute can operate on it.
         if (!inputCB) {
           inputCB = copy.getCb0();
@@ -230,17 +237,25 @@ static bool analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
       if (auto pack = dyn_cast<ttk::PackTileOp>(inner)) {
         if (!outputCB) {
           outputCB = pack.getOutCb();
-        } else if (outputCB != pack.getOutCb()) {
-          // TODO: Extend to emit one common init per distinct output CB.
-          pack->emitWarning("sync region packs to multiple output CBs; "
-                            "common init only configured for the first");
+        } else if (outputCB != pack.getOutCb() &&
+                   outputCB.getType() != pack.getOutCb().getType()) {
+          pack->emitOpError(
+              "sync region packs to output CBs with different data formats; "
+              "common init cannot configure multiple PACK formats");
+          hadError = true;
         }
       }
     });
   }
 
-  assert(foundRelease &&
-         "tile_regs_acquire without matching tile_regs_release");
+  if (!foundRelease) {
+    acquireOp->emitOpError(
+        "tile_regs_acquire without matching tile_regs_release");
+    return failure();
+  }
+  if (hadError) {
+    return failure();
+  }
   return hasFPUBinary;
 }
 
@@ -267,13 +282,19 @@ static Operation *hoistAboveCompilerLoops(Operation *op) {
 
 /// Insert common init ops (init_sfpu or binary_op_init_common) before each
 /// sync region. These configure UNPACK + PACK data format routing.
-static void insertCommonInits(ModuleOp moduleOp) {
+static LogicalResult insertCommonInits(ModuleOp moduleOp) {
+  bool hadError = false;
   moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
     Value inputCB, in0CB, in1CB, outputCB;
-    bool hasFPUBinary =
+    auto result =
         analyzeSyncRegion(acquireOp, inputCB, in0CB, in1CB, outputCB);
+    if (failed(result)) {
+      hadError = true;
+      return;
+    }
+    bool hasFPUBinary = *result;
 
-    // No output CB means the sync region has no pack ops — nothing to
+    // No output CB means the sync region has no pack ops -- nothing to
     // configure for UNPACK + PACK routing.
     if (!outputCB) {
       return;
@@ -293,6 +314,7 @@ static void insertCommonInits(ModuleOp moduleOp) {
       builder.create<ttk::InitSFPUOp>(loc, inputCB, outputCB);
     }
   });
+  return hadError ? failure() : success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -306,7 +328,10 @@ struct TTKernelInsertInitsPass
     auto moduleOp = getOperation();
 
     // Phase 1: Insert common inits (init_sfpu / binary_op_init_common).
-    insertCommonInits(moduleOp);
+    if (failed(insertCommonInits(moduleOp))) {
+      signalPassFailure();
+      return;
+    }
 
     // Validate preconditions: all unary_bcast ops must carry the output CB
     // index attribute (set during TTL -> TTKernel lowering).
