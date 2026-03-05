@@ -50,6 +50,18 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
 - **Debugging**: use `--debug-only=dialect-conversion` with `ttlang-opt`
 - Use enums instead of integer literals for encoding items in a category.
 
+### Op Creation API
+- Use the static `OpTy::create(builder, loc, ...)` form, **not** the deprecated
+  `builder.create<OpTy>(loc, ...)`. The latter is deprecated in current LLVM and
+  will be removed.
+  ```cpp
+  // Good
+  auto op = MyOp::create(rewriter, loc, resultType, operands);
+
+  // Deprecated -- do not use
+  auto op = rewriter.create<MyOp>(loc, resultType, operands);
+  ```
+
 ### Pattern Rewriter Error Handling
 - **NEVER call `emitOpError()` inside a pattern rewriter** - causes pass to
   succeed while emitting diagnostics

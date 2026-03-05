@@ -69,7 +69,7 @@ struct TTLInsertTileRegsSyncPass
         Operation *insertBefore =
             existingAcquire ? existingAcquire : computeOperation;
         builder.setInsertionPoint(insertBefore);
-        builder.create<InitSFPUOp>(loc, icb, ocb);
+        InitSFPUOp::create(builder, loc, icb, ocb);
       }
 
       Block &body = computeOp.getRegion().front();
@@ -77,7 +77,7 @@ struct TTLInsertTileRegsSyncPass
       // Insert acquire at start of compute body.
       if (!existingAcquire) {
         builder.setInsertionPointToStart(&body);
-        builder.create<TileRegsAcquireOp>(loc);
+        TileRegsAcquireOp::create(builder, loc);
       }
       auto *terminator = body.getTerminator();
 
@@ -99,10 +99,10 @@ struct TTLInsertTileRegsSyncPass
       }
 
       if (!commitOp) {
-        commitOp = builder.create<TileRegsCommitOp>(loc);
+        commitOp = TileRegsCommitOp::create(builder, loc);
       }
       if (!waitOp) {
-        waitOp = builder.create<TileRegsWaitOp>(loc);
+        waitOp = TileRegsWaitOp::create(builder, loc);
       }
       if (!commitOp->isBeforeInBlock(waitOp)) {
         commitOp->moveBefore(waitOp);
@@ -110,7 +110,7 @@ struct TTLInsertTileRegsSyncPass
 
       // Release: at end of compute body (before yield).
       builder.setInsertionPoint(terminator);
-      builder.create<TileRegsReleaseOp>(loc);
+      TileRegsReleaseOp::create(builder, loc);
 
       return WalkResult::advance();
     });

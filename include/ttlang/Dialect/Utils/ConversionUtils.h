@@ -34,21 +34,21 @@ inline SmallVector<scf::ForOp> collectEnclosingLoops(Operation *op) {
 inline Value linearizeLoopIndices(OpBuilder &builder, Location loc,
                                   SmallVectorImpl<scf::ForOp> &loops) {
   if (loops.empty()) {
-    return builder.create<arith::ConstantIndexOp>(loc, 0);
+    return arith::ConstantIndexOp::create(builder, loc, 0);
   }
 
-  Value result = builder.create<arith::ConstantIndexOp>(loc, 0);
+  Value result = arith::ConstantIndexOp::create(builder, loc, 0);
   for (size_t i = 0; i < loops.size(); ++i) {
     scf::ForOp loop = loops[loops.size() - 1 - i];
-    Value stride = builder.create<arith::ConstantIndexOp>(loc, 1);
+    Value stride = arith::ConstantIndexOp::create(builder, loc, 1);
     for (size_t j = i + 1; j < loops.size(); ++j) {
       scf::ForOp innerLoop = loops[loops.size() - 1 - j];
       stride =
-          builder.create<arith::MulIOp>(loc, stride, innerLoop.getUpperBound());
+          arith::MulIOp::create(builder, loc, stride, innerLoop.getUpperBound());
     }
     Value term =
-        builder.create<arith::MulIOp>(loc, loop.getInductionVar(), stride);
-    result = builder.create<arith::AddIOp>(loc, result, term);
+        arith::MulIOp::create(builder, loc, loop.getInductionVar(), stride);
+    result = arith::AddIOp::create(builder, loc, result, term);
   }
   return result;
 }
@@ -113,7 +113,7 @@ convertTTLCBToTTKernel(Value cb, ConversionPatternRewriter &rewriter,
     return result;
   }
 
-  auto cast = rewriter.create<UnrealizedConversionCastOp>(loc, ttkCbTy, cb);
+  auto cast = UnrealizedConversionCastOp::create(rewriter, loc, ttkCbTy, cb);
   return cast.getResult(0);
 }
 

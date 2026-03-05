@@ -211,11 +211,11 @@ private:
     SmallVector<int64_t> subblockedDims;
     for (int64_t d = 0; d < rank; ++d) {
       if (subblockSizes[d] < dimSizes[d]) {
-        lowerBounds.push_back(b.create<arith::ConstantIndexOp>(loc, 0));
+        lowerBounds.push_back(arith::ConstantIndexOp::create(b, loc, 0));
         upperBounds.push_back(
-            b.create<arith::ConstantIndexOp>(loc, dimSizes[d]));
+            arith::ConstantIndexOp::create(b, loc, dimSizes[d]));
         steps.push_back(
-            b.create<arith::ConstantIndexOp>(loc, subblockSizes[d]));
+            arith::ConstantIndexOp::create(b, loc, subblockSizes[d]));
         subblockedDims.push_back(d);
       }
     }
@@ -274,19 +274,19 @@ private:
                     contribution = ivs[i];
                   } else {
                     Value strideVal =
-                        nestedBuilder.create<arith::ConstantIndexOp>(nestedLoc,
+                        arith::ConstantIndexOp::create(nestedBuilder, nestedLoc,
                                                                      stride);
-                    contribution = nestedBuilder.create<arith::MulIOp>(
+                    contribution = arith::MulIOp::create(nestedBuilder, 
                         nestedLoc, ivs[i], strideVal);
                   }
 
-                  offset = offset ? nestedBuilder.create<arith::AddIOp>(
+                  offset = offset ? arith::AddIOp::create(nestedBuilder, 
                                         nestedLoc, offset, contribution)
                                   : contribution;
                 }
 
                 if (offset) {
-                  Value adjusted = nestedBuilder.create<arith::AddIOp>(
+                  Value adjusted = arith::AddIOp::create(nestedBuilder, 
                       nestedLoc, linIdx.getResult(), offset);
                   linIdx.getResult().replaceAllUsesExcept(
                       adjusted, adjusted.getDefiningOp());

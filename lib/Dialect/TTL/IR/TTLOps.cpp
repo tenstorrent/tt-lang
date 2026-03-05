@@ -400,8 +400,8 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
     mapOffsetsAndSizes(b, loc, indexingMaps[idx], input, offsets, sizes,
                        operandOffsets, operandSizes, operandStrides);
 
-    auto slice = b.create<mlir::tensor::ExtractSliceOp>(
-        loc, input, operandOffsets, operandSizes, operandStrides);
+    auto slice = mlir::tensor::ExtractSliceOp::create(
+        b, loc, input, operandOffsets, operandSizes, operandStrides);
     tiledInputs.push_back(slice);
     generatedSlices.push_back(slice);
   }
@@ -415,15 +415,15 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
     mapOffsetsAndSizes(b, loc, indexingMaps[numInputs + idx], output, offsets,
                        sizes, operandOffsets, operandSizes, operandStrides);
 
-    auto slice = b.create<mlir::tensor::ExtractSliceOp>(
-        loc, output, operandOffsets, operandSizes, operandStrides);
+    auto slice = mlir::tensor::ExtractSliceOp::create(
+        b, loc, output, operandOffsets, operandSizes, operandStrides);
     tiledOutputs.push_back(slice);
     generatedSlices.push_back(slice);
   }
 
   // Build the tiled compute op with subblock operands.
-  auto tiledOp = b.create<ComputeOp>(
-      loc, mlir::TypeRange(tiledOutputs), tiledInputs, tiledOutputs,
+  auto tiledOp = ComputeOp::create(
+      b, loc, mlir::TypeRange(tiledOutputs), tiledInputs, tiledOutputs,
       getIndexingMapsAttr(), getIteratorTypesAttr());
 
   // Clone the body region into the new compute op.

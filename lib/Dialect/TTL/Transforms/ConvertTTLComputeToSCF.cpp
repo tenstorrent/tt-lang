@@ -71,7 +71,7 @@ static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
     OpFoldResult stride = b.getIndexAttr(1);
     OpFoldResult size;
     if (refTy.isDynamicDim(i)) {
-      size = b.create<tensor::DimOp>(loc, maxRankTensor, i).getResult();
+      size = tensor::DimOp::create(b, loc, maxRankTensor, i).getResult();
     } else {
       size = b.getIndexAttr(refTy.getDimSize(i));
     }
@@ -112,7 +112,7 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
   for (auto [idx, input] : llvm::enumerate(op.getInputs())) {
     SmallVector<Value> indices =
         applyIndexingMap(b, loc, indexingMaps[idx], ivs);
-    Value tile = b.create<tensor::ExtractOp>(loc, input, indices);
+    Value tile = tensor::ExtractOp::create(b, loc, input, indices);
     extractedInputs.push_back(tile);
   }
 
@@ -123,7 +123,7 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
   for (auto [idx, output] : llvm::enumerate(op.getOutputs())) {
     SmallVector<Value> indices =
         applyIndexingMap(b, loc, indexingMaps[numInputs + idx], ivs);
-    Value tile = b.create<tensor::ExtractOp>(loc, output, indices);
+    Value tile = tensor::ExtractOp::create(b, loc, output, indices);
     extractedOutputs.push_back(tile);
   }
 
@@ -189,7 +189,7 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     for (auto [idx, range] : llvm::enumerate(iterDomain)) {
       Value lb = getValueOrCreateConstantIndexOp(rewriter, loc, range.offset);
       Value ub = getValueOrCreateConstantIndexOp(rewriter, loc, range.size);
-      Value step = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
       lowerBounds.push_back(lb);
       upperBounds.push_back(ub);
       steps.push_back(step);

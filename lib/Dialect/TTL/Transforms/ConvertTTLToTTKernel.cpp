@@ -75,7 +75,7 @@ public:
 
     auto castMaterialization = [](OpBuilder &builder, Type resultType,
                                   ValueRange inputs, Location loc) -> Value {
-      return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
+      return UnrealizedConversionCastOp::create(builder, loc, resultType, inputs)
           .getResult(0);
     };
     addSourceMaterialization(castMaterialization);
@@ -125,9 +125,8 @@ getBufferAddressFromRuntimeArg(Value tensor, Location loc,
   if (failed(argIdx)) {
     return failure();
   }
-  auto idxConst = rewriter.create<arith::ConstantIndexOp>(loc, *argIdx);
-  return rewriter
-      .create<ttk::GetCommonArgValOp>(loc, rewriter.getI32Type(), idxConst)
+  auto idxConst = arith::ConstantIndexOp::create(rewriter, loc, *argIdx);
+  return ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(), idxConst)
       .getResult();
 }
 
@@ -138,12 +137,12 @@ static Value buildTensorAccessor(Location loc,
                                  ConversionPatternRewriter &rewriter,
                                  int32_t ctaIndex, int32_t crtaIndex,
                                  Value bankBase, Value pageSize) {
-  auto ctaConst = rewriter.create<arith::ConstantIntOp>(loc, ctaIndex, 32);
-  auto crtaConst = rewriter.create<arith::ConstantIntOp>(loc, crtaIndex, 32);
-  auto args = rewriter.create<ttk::TensorAccessorArgsOp>(
+  auto ctaConst = arith::ConstantIntOp::create(rewriter, loc, ctaIndex, 32);
+  auto crtaConst = arith::ConstantIntOp::create(rewriter, loc, crtaIndex, 32);
+  auto args = ttk::TensorAccessorArgsOp::create(rewriter, 
       loc, ctaConst.getResult(), crtaConst.getResult(),
       /*prev_args=*/Value(), /*cta_expr=*/nullptr, /*crta_expr=*/nullptr);
-  auto accessor = rewriter.create<ttk::TensorAccessorOp>(loc, args.getResult(),
+  auto accessor = ttk::TensorAccessorOp::create(rewriter, loc, args.getResult(),
                                                          bankBase, pageSize);
   return accessor.getResult();
 }
@@ -200,11 +199,11 @@ struct BindCBLowering : OpConversionPattern<BindCBOp> {
     }
 
     // Create ttkernel.get_compile_time_arg_val to get the CB handle.
-    auto getArgVal = rewriter.create<ttk::GetCompileArgValOp>(
+    auto getArgVal = ttk::GetCompileArgValOp::create(rewriter, 
         op.getLoc(), cbType, static_cast<int32_t>(cbIndex));
 
     // Cast back to TTL CB type for downstream ops that still expect it.
-    auto cast = rewriter.create<UnrealizedConversionCastOp>(
+    auto cast = UnrealizedConversionCastOp::create(rewriter, 
         op.getLoc(), op.getResult().getType(), ValueRange{getArgVal});
     rewriter.replaceOp(op, cast.getResult(0));
     return success();
@@ -236,7 +235,7 @@ static Value computeNumPages(Value cb, ConversionPatternRewriter &rewriter,
                              Location loc) {
   auto ttlCbTy = getTTLCBType(cb);
   int64_t numPages = ttlCbTy ? ttlCbTy.getElementsPerBlock() : 1;
-  return rewriter.create<arith::ConstantIntOp>(loc, numPages, 32);
+  return arith::ConstantIntOp::create(rewriter, loc, numPages, 32);
 }
 
 template <typename SourceOp, typename TargetOp, bool HasResult>
@@ -260,10 +259,10 @@ struct CBOpLowering : OpConversionPattern<SourceOp> {
     }
 
     Value numPages = computeNumPages(originalCb, rewriter, loc);
-    rewriter.create<TargetOp>(loc, *convertedCb, numPages);
+    TargetOp::create(rewriter, loc, *convertedCb, numPages);
 
     if constexpr (HasResult) {
-      auto viewCast = rewriter.create<UnrealizedConversionCastOp>(
+      auto viewCast = UnrealizedConversionCastOp::create(rewriter, 
           loc, op.getResult().getType(), *convertedCb);
       rewriter.replaceOp(op, viewCast.getResult(0));
     } else {
@@ -361,7 +360,7 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
       if (auto dstIdxAttr =
               defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
         dstIndex =
-            rewriter.create<arith::ConstantIndexOp>(loc, dstIdxAttr.getInt());
+            arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
       } else if (auto copyTile = dyn_cast<CopyTileOp>(defOp)) {
         dstIndex = copyTile.getDstIndex();
       } else {
@@ -372,7 +371,7 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
       dstIndex = cbTileIndex;
     }
 
-    rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, cbTileIndex,
+    ttk::PackTileOp::create(rewriter, loc, dstIndex, *cb, cbTileIndex,
                                      /*out_of_order=*/true);
 
     rewriter.eraseOp(op);
@@ -393,7 +392,7 @@ static CopyOperandKind classifyOperand(Value v) {
 }
 
 static Value makeZeroI32(Location loc, ConversionPatternRewriter &rewriter) {
-  return rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
+  return arith::ConstantIntOp::create(rewriter, loc, 0, 32);
 }
 
 static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
@@ -490,7 +489,7 @@ materializeTensorAccessor(Value tensor, Value bankBase, int64_t pageSizeBytes,
     return failure();
   }
 
-  auto pageSize = rewriter.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
+  auto pageSize = arith::ConstantIntOp::create(rewriter, loc, pageSizeBytes, 32);
 
   return buildTensorAccessor(loc, rewriter, *ctaIndex,
                              static_cast<int32_t>(*argIdx), bankBase, pageSize);
@@ -517,11 +516,11 @@ static std::pair<int64_t, int64_t> getTileGridShapeFromValue(Value v) {
 static void emitTileLoop(
     OpBuilder &builder, Location loc, int64_t tilesY, int64_t tilesX,
     llvm::function_ref<void(OpBuilder &, Location, Value, Value)> emitBody) {
-  auto zero = builder.create<arith::ConstantIndexOp>(loc, 0);
+  auto zero = arith::ConstantIndexOp::create(builder, loc, 0);
   if (tilesY > 1 || tilesX > 1) {
-    auto yBound = builder.create<arith::ConstantIndexOp>(loc, tilesY);
-    auto xBound = builder.create<arith::ConstantIndexOp>(loc, tilesX);
-    auto one = builder.create<arith::ConstantIndexOp>(loc, 1);
+    auto yBound = arith::ConstantIndexOp::create(builder, loc, tilesY);
+    auto xBound = arith::ConstantIndexOp::create(builder, loc, tilesX);
+    auto one = arith::ConstantIndexOp::create(builder, loc, 1);
 
     scf::buildLoopNest(builder, loc, ValueRange{zero, zero},
                        ValueRange{yBound, xBound}, ValueRange{one, one},
@@ -536,9 +535,9 @@ static void emitTileLoop(
 // Compute linear tile index from row/col: row * numCols + col.
 static Value linearizeTileIndex(OpBuilder &builder, Location loc, Value row,
                                 Value col, int64_t numCols) {
-  auto numColsVal = builder.create<arith::ConstantIndexOp>(loc, numCols);
-  Value rowOffset = builder.create<arith::MulIOp>(loc, row, numColsVal);
-  return builder.create<arith::AddIOp>(loc, rowOffset, col);
+  auto numColsVal = arith::ConstantIndexOp::create(builder, loc, numCols);
+  Value rowOffset = arith::MulIOp::create(builder, loc, row, numColsVal);
+  return arith::AddIOp::create(builder, loc, rowOffset, col);
 }
 
 /// Direction of a tensor<->CB tile copy for NOC operations.
@@ -582,8 +581,8 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
   bool isRead = direction == NocCopyDirection::Read;
   Value cbPtr =
       isRead
-          ? rewriter.create<ttk::GetWritePtrOp>(loc, *cbConverted).getResult()
-          : rewriter.create<ttk::GetReadPtrOp>(loc, *cbConverted).getResult();
+          ? ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted).getResult()
+          : ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted).getResult();
 
   // Get CB shape for loop bounds.
   auto cbType = getTTLCBType(cb);
@@ -602,9 +601,9 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
   int64_t tensorTilesX = tensorTileGridShape.second;
 
   auto indexTy = rewriter.getIndexType();
-  auto cbPtrIdx = rewriter.create<arith::IndexCastOp>(loc, indexTy, cbPtr);
+  auto cbPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, cbPtr);
   auto pageSizeIdx =
-      rewriter.create<arith::ConstantIndexOp>(loc, *pageSizeBytes);
+      arith::ConstantIndexOp::create(rewriter, loc, *pageSizeBytes);
   auto i32Ty = rewriter.getI32Type();
 
   emitTileLoop(
@@ -613,8 +612,8 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
                                 Value loopCol) {
         // Tensor tile index: (startRow + loopRow) * tensorCols + (startCol +
         // loopCol)
-        Value tensorRow = b.create<arith::AddIOp>(bodyLoc, startRow, loopRow);
-        Value tensorCol = b.create<arith::AddIOp>(bodyLoc, startCol, loopCol);
+        Value tensorRow = arith::AddIOp::create(b, bodyLoc, startRow, loopRow);
+        Value tensorCol = arith::AddIOp::create(b, bodyLoc, startCol, loopCol);
         Value tensorTileIdx =
             linearizeTileIndex(b, bodyLoc, tensorRow, tensorCol, tensorTilesX);
 
@@ -624,20 +623,20 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
 
         // Compute CB address: cbPtr + cbTileIdx * pageSize
         Value byteOffset =
-            b.create<arith::MulIOp>(bodyLoc, cbTileIdx, pageSizeIdx);
+            arith::MulIOp::create(b, bodyLoc, cbTileIdx, pageSizeIdx);
         Value cbAddrIdx =
-            b.create<arith::AddIOp>(bodyLoc, cbPtrIdx, byteOffset);
+            arith::AddIOp::create(b, bodyLoc, cbPtrIdx, byteOffset);
 
         // Cast to i32 for NOC operation.
         Value tensorTileIdx32 =
-            b.create<arith::IndexCastOp>(bodyLoc, i32Ty, tensorTileIdx);
-        Value cbAddr = b.create<arith::IndexCastOp>(bodyLoc, i32Ty, cbAddrIdx);
+            arith::IndexCastOp::create(b, bodyLoc, i32Ty, tensorTileIdx);
+        Value cbAddr = arith::IndexCastOp::create(b, bodyLoc, i32Ty, cbAddrIdx);
 
         if (isRead) {
-          b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tensorTileIdx32, *accessor,
+          ttk::NocAsyncReadTileOp::create(b, bodyLoc, tensorTileIdx32, *accessor,
                                             cbAddr);
         } else {
-          b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tensorTileIdx32,
+          ttk::NocAsyncWriteTileOp::create(b, bodyLoc, tensorTileIdx32,
                                              *accessor, cbAddr);
         }
       });
@@ -733,9 +732,9 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
           op, "requires direction-typed !ttl.transfer_handle<read|write>");
     }
     if (*kind == TransferKind::read) {
-      rewriter.create<ttk::NocAsyncReadBarrierOp>(op.getLoc());
+      ttk::NocAsyncReadBarrierOp::create(rewriter, op.getLoc());
     } else if (*kind == TransferKind::write) {
-      rewriter.create<ttk::NocAsyncWriteBarrierOp>(op.getLoc());
+      ttk::NocAsyncWriteBarrierOp::create(rewriter, op.getLoc());
     } else {
       // Future-proofing: TransferKind is currently {read, write}, but fail
       // explicitly if it ever expands without updating the lowering.
@@ -1030,7 +1029,7 @@ static void cleanupComputeKernels(ModuleOp mod, MLIRContext &ctx) {
       func.walk([](func::ReturnOp returnOp) {
         if (returnOp.getNumOperands() > 0) {
           OpBuilder builder(returnOp);
-          builder.create<func::ReturnOp>(returnOp.getLoc());
+          func::ReturnOp::create(builder, returnOp.getLoc());
           returnOp.erase();
         }
       });

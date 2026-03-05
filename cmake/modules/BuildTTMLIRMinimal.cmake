@@ -254,10 +254,16 @@ file(MAKE_DIRECTORY "${LLK_GEN_DIR}")
 set(LLK_HEADERS
   "${LLK_SOURCE_DIR}/experimental_tilize_llks.h"
   "${LLK_SOURCE_DIR}/experimental_untilize_llks.h"
+  "${LLK_SOURCE_DIR}/experimental_pack_untilize_llks.h"
   "${LLK_SOURCE_DIR}/experimental_invoke_sfpi_llks.h"
   "${LLK_SOURCE_DIR}/experimental_dataflow_api.h"
   "${LLK_SOURCE_DIR}/experimental_matmul_llks.h"
+  "${LLK_SOURCE_DIR}/experimental_padding_llks.h"
   "${LLK_SOURCE_DIR}/experimental_coord_translation.h"
+  "${LLK_SOURCE_DIR}/experimental_fabric_topology_info.h"
+  "${LLK_SOURCE_DIR}/experimental_fabric_1d_routing.h"
+  "${LLK_SOURCE_DIR}/experimental_fabric_2d_routing.h"
+  "${LLK_SOURCE_DIR}/experimental_fabric_api.h"
 )
 
 set(GENERATED_LLK_HEADERS)
@@ -284,3 +290,19 @@ add_custom_target(TTKernelGeneratedLLKHeaders DEPENDS ${GENERATED_LLK_HEADERS})
 # C++ libraries
 # ---------------------------------------------------------------------------
 add_subdirectory(lib/ttmlir-minimal)
+
+# Suppress warnings in tt-mlir code that we cannot fix (submodule).
+# add_mlir_dialect_library creates obj.* OBJECT library targets that hold
+# the actual compile rules, so we must set options on those.
+set(_TTMLIR_TARGETS
+  obj.MLIRTTCoreDialect obj.MLIRTTTransforms obj.MLIRTTMetalDialect
+  obj.MLIRTTKernelDialect obj.MLIRTTKernelTransforms
+  obj.TTMLIRTTKernelToEmitC obj.TTKernelTargetCpp)
+foreach(_target ${_TTMLIR_TARGETS})
+  if(TARGET ${_target})
+    target_compile_options(${_target} PRIVATE
+      -Wno-deprecated-declarations
+      -Wno-error=switch
+      -Wno-error=covered-switch-default)
+  endif()
+endforeach()
