@@ -19,6 +19,16 @@ from .ttnnsim import TTNN_AVAILABLE
 from .typedefs import CoreCoord, CoreRange, Shape
 
 
+class _SignpostContextManager:
+    """No-op context manager for ttl.signpost stub."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return None
+
+
 # Create ttl.math namespace object
 class _TTLMathNamespace:
     """TT-Lang math namespace for block math functions.
@@ -80,6 +90,11 @@ class _TTLNamespace:
         self.TILE_SHAPE = TILE_SHAPE
         self.Program = Program
         self.math = _TTLMathNamespace()
+
+    @staticmethod
+    def signpost(*args, **kwargs):
+        """Signpost stub for simulator. Returns a no-op context manager."""
+        return _SignpostContextManager()
 
 
 ttl = _TTLNamespace()
