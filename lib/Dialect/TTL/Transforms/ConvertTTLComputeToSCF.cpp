@@ -255,13 +255,13 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
 // Post-pattern tile loop unrolling and DST index assignment
 //===----------------------------------------------------------------------===//
 
-/// Prefix for temporary per-dimension iteration index attributes. These
-/// must be encoded as op attributes because loopUnrollByFactor clones
-/// ops via its annotation callback -- there is no side-table mechanism
-/// to carry per-clone metadata through the unroller. Each clone gets
-/// `ttl._uiter_<dim> = i` so we can recover the multi-dimensional
-/// position once all loops are gone. The attributes are removed after
-/// linearization within this pass.
+/// Prefix for temporary per-dimension iteration index attributes. Op
+/// attributes are the only viable mechanism here: loopUnrollByFactor's
+/// annotateFn callback is the sole per-clone hook, and the IRMapping in
+/// generateUnrolledLoop is not exposed through loopUnrollByFactor (nor
+/// would it span sequential multi-dim unrolling). Each clone gets
+/// `ttl._uiter_<dim> = i`; after all loops are unrolled the indices are
+/// linearized into DST/CB offsets and the attributes are removed.
 static constexpr llvm::StringLiteral kUnrollIterPrefix("ttl._uiter_");
 
 /// Build the discardable attribute name for dimension `d`.
@@ -567,6 +567,14 @@ struct TTLLowerToLoopsPass
         return signalPassFailure();
       }
     }
+
+    // Verify no temporary unroll iteration attributes leaked past this pass.
+    LLVM_DEBUG(func.walk([](Operation *op) {
+      for (auto attr : op->getAttrs()) {
+        assert(!attr.getName().getValue().starts_with(kUnrollIterPrefix) &&
+               "temporary _uiter_ attribute not cleaned up after unrolling");
+      }
+    }));
 
     // Step 3: Reorder tile_store ops to be after DST wait barriers.
     func.walk([](Block *block) { reorderStoresAfterSync(block); });

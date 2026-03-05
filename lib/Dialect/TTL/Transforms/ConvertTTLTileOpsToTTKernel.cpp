@@ -657,7 +657,6 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // CB -> DST ops with attribute need the type converter.
   patterns.add<TTLTileBcastToTTKernel>(*typeConverter, ctx);
-
 }
 
 } // namespace mlir::tt::ttl

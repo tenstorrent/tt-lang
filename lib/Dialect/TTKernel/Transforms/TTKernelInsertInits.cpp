@@ -199,9 +199,9 @@ static bool isSyncBoundary(Operation *op) {
 /// Multiple output CBs are allowed when they share the same element type
 /// (PACK data format routing is identical). The first output CB encountered
 /// is returned for the common init.
-static FailureOr<bool>
-analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
-                  Value &in0CB, Value &in1CB, Value &outputCB) {
+static FailureOr<bool> analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp,
+                                         Value &inputCB, Value &in0CB,
+                                         Value &in1CB, Value &outputCB) {
   Block *block = acquireOp->getBlock();
   bool hasFPUBinary = false;
   bool foundRelease = false;
@@ -286,8 +286,7 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
   bool hadError = false;
   moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
     Value inputCB, in0CB, in1CB, outputCB;
-    auto result =
-        analyzeSyncRegion(acquireOp, inputCB, in0CB, in1CB, outputCB);
+    auto result = analyzeSyncRegion(acquireOp, inputCB, in0CB, in1CB, outputCB);
     if (failed(result)) {
       hadError = true;
       return;
