@@ -302,7 +302,7 @@ foreach(_target ${_TTMLIR_TARGETS})
   if(TARGET ${_target})
     target_compile_options(${_target} PRIVATE
       -Wno-deprecated-declarations
-      -Wno-error=switch
-      -Wno-error=covered-switch-default)
+      -Wno-switch
+      -Wno-covered-switch-default)
   endif()
 endforeach()

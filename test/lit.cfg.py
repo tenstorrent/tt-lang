@@ -146,17 +146,19 @@ for env_var in [
 if platform.system() == "Darwin":
     config.available_features.add("system-darwin")
 
-# Add TTNN feature if available (attempt actual import to detect broken binaries on macOS)
-try:
-    import ttnn
-
-    sys.path.insert(0, os.path.join(config.test_source_root))
-    from ttlang_test_utils import is_ttnn_available
-
-    if is_ttnn_available():
-        config.available_features.add("ttnn")
-except (ImportError, ModuleNotFoundError):
-    pass
+# Add TTNN feature if available.  Use a subprocess to test the import because a
+# broken or partially-built _ttnn.so can segfault, which is not catchable.
+import subprocess as _sp
+_ttnn_check = _sp.run(
+    [config.python_executable, "-c",
+     "import ttnn; from ttlang_test_utils import is_ttnn_available; "
+     "raise SystemExit(0 if is_ttnn_available() else 1)"],
+    capture_output=True,
+    env={**os.environ, "PYTHONPATH": config.test_source_root +
+         os.pathsep + os.environ.get("PYTHONPATH", "")},
+)
+if _ttnn_check.returncode == 0:
+    config.available_features.add("ttnn")
 
 # Add tt-device feature if hardware is available (detected by CMake at configure time)
 # Also enable if TT_METAL_SIMULATOR is set (allows running tests in simulation mode)

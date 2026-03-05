@@ -87,7 +87,7 @@ declare_mlir_python_extension(TTMLIRMinPythonExtensions.Main
     TTKernelTargetCpp
     MLIRTTKernelTransforms
     TTMLIRTTKernelToEmitC
-  PYTHON_BINDINGS_LIBRARY nanobind
+
 )
 
 
@@ -139,7 +139,7 @@ declare_mlir_python_extension(TTLangPythonExtensions.Main
   PRIVATE_LINK_LIBS
     TTLangCAPI
     TTLangTTLTransforms
-  PYTHON_BINDINGS_LIBRARY nanobind
+
 )
 
 # ###############################################################################
