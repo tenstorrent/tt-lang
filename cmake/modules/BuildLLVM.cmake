@@ -16,6 +16,60 @@
 set(LLVM_SUBMODULE_DIR "${CMAKE_SOURCE_DIR}/third-party/llvm-project")
 
 # ---------------------------------------------------------------------------
+# Parse the expected LLVM commit SHA from tt-mlir's toolchain definition.
+# Used to verify pre-built LLVM installations match the expected version.
+# ---------------------------------------------------------------------------
+set(_TTMLIR_ENV_CMAKELISTS "${CMAKE_SOURCE_DIR}/third-party/tt-mlir/env/CMakeLists.txt")
+if(EXISTS "${_TTMLIR_ENV_CMAKELISTS}")
+  file(STRINGS "${_TTMLIR_ENV_CMAKELISTS}" _llvm_version_line
+       REGEX "set\\(LLVM_PROJECT_VERSION")
+  if(_llvm_version_line)
+    string(REGEX MATCH "\"([a-f0-9]+)\"" _match "${_llvm_version_line}")
+    if(_match)
+      set(_TTLANG_EXPECTED_LLVM_SHA "${CMAKE_MATCH_1}")
+      ttlang_debug_message("Expected LLVM SHA (from tt-mlir): ${_TTLANG_EXPECTED_LLVM_SHA}")
+    endif()
+  endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# TTLANG_USE_TTMLIR_TOOLCHAIN: convenience option to use pre-built LLVM from
+# the ttmlir toolchain directory ($TTMLIR_TOOLCHAIN_DIR or /opt/ttmlir-toolchain).
+# ---------------------------------------------------------------------------
+option(TTLANG_USE_TTMLIR_TOOLCHAIN "Use pre-built LLVM from ttmlir toolchain" OFF)
+
+if(TTLANG_USE_TTMLIR_TOOLCHAIN AND NOT DEFINED MLIR_PREFIX)
+  if(DEFINED ENV{TTMLIR_TOOLCHAIN_DIR})
+    set(_toolchain_dir "$ENV{TTMLIR_TOOLCHAIN_DIR}")
+  else()
+    set(_toolchain_dir "/opt/ttmlir-toolchain")
+  endif()
+
+  if(NOT EXISTS "${_toolchain_dir}")
+    message(FATAL_ERROR
+      "TTLANG_USE_TTMLIR_TOOLCHAIN is ON but toolchain directory not found: ${_toolchain_dir}\n"
+      "Set TTMLIR_TOOLCHAIN_DIR to the correct path, or disable this option.")
+  endif()
+
+  set(MLIR_PREFIX "${_toolchain_dir}")
+  message(STATUS "Using ttmlir toolchain at: ${_toolchain_dir}")
+
+  # Use the Python from the toolchain's venv so that MLIR Python bindings
+  # (nanobind stubs, etc.) resolve against the same interpreter they were
+  # built with.
+  set(_toolchain_python "${_toolchain_dir}/venv/bin/python")
+  if(EXISTS "${_toolchain_python}")
+    set(Python3_EXECUTABLE "${_toolchain_python}" CACHE FILEPATH
+      "Python interpreter from ttmlir toolchain" FORCE)
+    message(STATUS "Using toolchain Python: ${_toolchain_python}")
+  else()
+    message(WARNING
+      "Toolchain Python not found at ${_toolchain_python}.\n"
+      "Falling back to system Python. Python binding compatibility is not guaranteed.")
+  endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # Determine build mode: pre-built or submodule.
 # ---------------------------------------------------------------------------
 # Accept MLIR_PREFIX (friendly) or raw MLIR_DIR from user.
@@ -37,6 +91,11 @@ if(DEFINED TTLANG_LLVM_FROM_SUBMODULE AND NOT TTLANG_LLVM_FROM_SUBMODULE)
 
   # Derive the install prefix from MLIR_DIR (strip lib/cmake/mlir).
   get_filename_component(LLVM_INSTALL_DIR "${MLIR_DIR}/../../.." ABSOLUTE)
+
+  # Verify the pre-built LLVM matches tt-mlir's expected commit.
+  if(DEFINED _TTLANG_EXPECTED_LLVM_SHA)
+    ttlang_verify_llvm_sha("${LLVM_INSTALL_DIR}" "${_TTLANG_EXPECTED_LLVM_SHA}")
+  endif()
 
 # ---------------------------------------------------------------------------
 # Option B: Build from submodule (configure-time)

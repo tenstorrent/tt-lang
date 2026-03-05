@@ -74,3 +74,60 @@ macro(ttlang_debug_message MESSAGE)
     message(STATUS "${MESSAGE}")
   endif()
 endmacro()
+
+# ttlang_verify_llvm_sha(INSTALL_PREFIX EXPECTED_SHA)
+# Verifies that the LLVM installation at INSTALL_PREFIX was built from the
+# expected commit. Reads the SHA from VCSRevision.h and compares against
+# EXPECTED_SHA. On mismatch, emits FATAL_ERROR unless the user passes
+# -DTTLANG_ACCEPT_LLVM_MISMATCH=ON to explicitly accept the risk.
+function(ttlang_verify_llvm_sha INSTALL_PREFIX EXPECTED_SHA)
+  set(_vcs_header "${INSTALL_PREFIX}/include/llvm/Support/VCSRevision.h")
+
+  if(NOT EXISTS "${_vcs_header}")
+    message(WARNING
+      "Cannot verify LLVM commit: ${_vcs_header} not found.\n"
+      "SHA verification skipped.")
+    return()
+  endif()
+
+  file(STRINGS "${_vcs_header}" _vcs_lines
+       REGEX "#define LLVM_REVISION")
+
+  if(NOT _vcs_lines)
+    message(WARNING
+      "Cannot verify LLVM commit: LLVM_REVISION not found in ${_vcs_header}.\n"
+      "SHA verification skipped.")
+    return()
+  endif()
+
+  # Extract the SHA from: #define LLVM_REVISION "abc123..."
+  string(REGEX MATCH "\"([a-f0-9]+)\"" _match "${_vcs_lines}")
+  if(NOT _match)
+    message(WARNING
+      "Cannot parse LLVM_REVISION from ${_vcs_header}.\n"
+      "SHA verification skipped.")
+    return()
+  endif()
+  set(_actual_sha "${CMAKE_MATCH_1}")
+
+  if(_actual_sha STREQUAL EXPECTED_SHA)
+    message(STATUS "LLVM SHA verified: ${_actual_sha}")
+    return()
+  endif()
+
+  option(TTLANG_ACCEPT_LLVM_MISMATCH
+    "Accept LLVM SHA mismatch (use at your own risk)" OFF)
+
+  message(AUTHOR_WARNING
+    "LLVM SHA mismatch!\n"
+    "  Expected (tt-mlir): ${EXPECTED_SHA}\n"
+    "  Actual (installed): ${_actual_sha}\n"
+    "  Install prefix:     ${INSTALL_PREFIX}\n"
+    "Using a mismatched LLVM may cause build failures or runtime errors.")
+
+  if(NOT TTLANG_ACCEPT_LLVM_MISMATCH)
+    message(FATAL_ERROR
+      "LLVM SHA mismatch. To proceed despite this, re-run with:\n"
+      "  -DTTLANG_ACCEPT_LLVM_MISMATCH=ON")
+  endif()
+endfunction()
