@@ -106,6 +106,8 @@ if(TTLANG_ENABLE_BINDINGS_PYTHON)
   message(STATUS "Enabling Python API")
   set(TTLANG_PYTHON_PACKAGES_DIR "${CMAKE_CURRENT_BINARY_DIR}/python_packages")
   add_subdirectory(python)
+
+  ttlang_pip_install_requirements("${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/dev-requirements.txt")
 endif()
 
 add_subdirectory(test)
