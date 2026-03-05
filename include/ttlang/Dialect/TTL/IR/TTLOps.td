@@ -107,6 +107,7 @@ def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
   );
   let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = "$tensor `[` $indices `]` attr-dict `:` type($tensor) `->` type($result)";
+  let hasVerifier = 1;
 }
 
 def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {

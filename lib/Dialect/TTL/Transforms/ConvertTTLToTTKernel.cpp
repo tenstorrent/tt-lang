@@ -350,8 +350,8 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
     }
 
     // CB shape rank is the rank of the view tensor (from cb_reserve).
-    auto viewTy = mlir::dyn_cast<RankedTensorType>(op.getView().getType());
-    size_t cbShapeRank = viewTy ? viewTy.getRank() : 2;
+    auto viewTy = mlir::cast<RankedTensorType>(op.getView().getType());
+    size_t cbShapeRank = viewTy.getRank();
     auto cbTileIndex =
         utils::computeCBTileIndexFromLoops(op, rewriter, cbShapeRank);
 

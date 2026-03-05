@@ -75,6 +75,11 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
             tensor,
             f"Tensors must have at least 2 dimensions, got shape {tensor.shape}",
         )
+    if any(d <= 0 for d in shape):
+        _raise_tensor_error(
+            tensor,
+            f"All shape dimensions must be positive, got shape {tensor.shape}",
+        )
 
     layout = create_ttnn_layout(
         ctx,
