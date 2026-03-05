@@ -591,14 +591,11 @@ def test_reduce_max_rows():
     # Result should have shape (1, 1) - rows reduced
     assert result.shape == (1, 1)
 
-    # Two-level reduction:
-    # 1. Within-tile: dims=[1] (row grid dim) means max across tile columns per row
-    #    Tile 0: [[1.0, 5.0]] -> max(1,5)=5 at col 0 -> [[5.0, 0.0]]
-    #    Tile 1: [[3.0, 2.0]] -> max(3,2)=3 at col 0 -> [[3.0, 0.0]]
-    # 2. Grid-level: element-wise max -> [[5.0, 0.0]]
-    # 3. Scale by [[2.0, 2.0]] -> [[10.0, 0.0]]
+    # Element-wise max across tiles: max([[1,5], [3,2]]) = [3, 5]
+    # Scale by [[2, 2]]: [3, 5] * [2, 2] = [6, 10]
     result_tensor = result.to_list()[0].to_torch()
-    assert result_tensor[0, 0] == 10.0
+    expected = torch.tensor([[6.0, 10.0]])
+    assert torch.allclose(result_tensor, expected)
 
 
 def test_reduce_max_cols():
@@ -646,13 +643,12 @@ def test_reduce_max_all():
     # Result should have shape (1, 1)
     assert result.shape == (1, 1)
 
-    # Two-level reduction:
-    # 1. Within-tile: dims=[0,1] means max of entire tile stored at [0,0]
-    #    Tiles: [[1,2]], [[3,4]], [[5,6]], [[7,8]] -> maxes: 2, 4, 6, 8
-    # 2. Grid-level: element-wise max of all -> 8 at [0,0]
-    # 3. Scale by 0.5 -> 4.0 at [0,0], rest zeros
+    # Element-wise max across all tiles:
+    # max([[1,2], [3,4], [5,6], [7,8]]) = [7, 8]
+    # Scale by [[0.5, 0.5]]: [7, 8] * [0.5, 0.5] = [3.5, 4.0]
     result_tensor = result.to_list()[0].to_torch()
-    assert result_tensor[0, 0] == 4.0
+    expected = torch.tensor([[3.5, 4.0]])
+    assert torch.allclose(result_tensor, expected)
 
 
 def test_reduce_max_invalid_dims():
@@ -707,14 +703,11 @@ def test_reduce_sum_rows():
     # Result should have shape (1, 1) - rows reduced
     assert result.shape == (1, 1)
 
-    # Two-level reduction:
-    # 1. Within-tile: dims=[1] (row grid dim) means sum across tile columns per row
-    #    Tile 0: [[1.0, 2.0]] -> sum(1,2)=3 at col 0 -> [[3.0, 0.0]]
-    #    Tile 1: [[3.0, 4.0]] -> sum(3,4)=7 at col 0 -> [[7.0, 0.0]]
-    # 2. Grid-level: element-wise sum -> [[10.0, 0.0]]
-    # 3. Scale by [[2.0, 2.0]] -> [[20.0, 0.0]]
+    # Element-wise sum across tiles: sum([[1,2], [3,4]]) = [4, 6]
+    # Scale by [[2, 2]]: [4, 6] * [2, 2] = [8, 12]
     result_tensor = result.to_list()[0].to_torch()
-    assert result_tensor[0, 0] == 20.0
+    expected = torch.tensor([[8.0, 12.0]])
+    assert torch.allclose(result_tensor, expected)
 
 
 def test_reduce_sum_cols():
@@ -762,13 +755,12 @@ def test_reduce_sum_all():
     # Result should have shape (1, 1)
     assert result.shape == (1, 1)
 
-    # Two-level reduction:
-    # 1. Within-tile: dims=[0,1] means sum of entire tile stored at [0,0]
-    #    Tiles: [[1,1]], [[2,2]], [[3,3]], [[4,4]] -> sums: 2, 4, 6, 8
-    # 2. Grid-level: element-wise sum of all -> 20 at [0,0]
-    # 3. Scale by 0.1 -> 2.0 at [0,0], rest zeros
+    # Element-wise sum across all tiles:
+    # sum([[1,1], [2,2], [3,3], [4,4]]) = [10, 10]
+    # Scale by [[0.1, 0.1]]: [10, 10] * [0.1, 0.1] = [1.0, 1.0]
     result_tensor = result.to_list()[0].to_torch()
-    assert result_tensor[0, 0] == 2.0
+    expected = torch.tensor([[1.0, 1.0]])
+    assert torch.allclose(result_tensor, expected)
 
 
 def test_reduce_sum_invalid_dims():
@@ -817,25 +809,28 @@ def _scaler1d(value: float = 1.0) -> "Block":
 
 
 def test_reduce_sum_1d_single_tile():
-    """reduce_sum on a 1-D (1,) block collapses to a single value at element 0."""
-    # One 1-D tile of shape (32,) filled with 2.0 -> sum = 64.0
+    """reduce_sum on a 1-D (1,) block with a single tile."""
+    # One 1-D tile of shape (32,) filled with 2.0
+    # Reducing the only grid dimension with 1 tile means no reduction occurs
     block = Block.from_list([_tile1d(2.0)], shape=(1,))
     result = ttl.math.reduce_sum(block, _scaler1d(1.0), dims=[0])
     assert result.shape == (1,)
     out = result.to_list()[0].to_torch()
-    assert out[0].item() == pytest.approx(64.0)
-    assert out[1:].sum().item() == pytest.approx(0.0)
+    # No grid-level reduction (only 1 tile), result is the tile scaled: 2.0 * 1.0
+    assert torch.allclose(out, torch.full((32,), 2.0))
 
 
 def test_reduce_sum_1d_multi_tile():
     """reduce_sum on a 1-D (4,) block reduces all 4 tiles to one."""
-    # Four 1-D tiles filled with 3.0; each tile sum = 96.0; grid sum = 384.0
+    # Four 1-D tiles filled with 3.0
+    # Element-wise sum across tiles: 3 + 3 + 3 + 3 = 12 per element
     tiles = [_tile1d(3.0) for _ in range(4)]
     block = Block.from_list(tiles, shape=(4,))
     result = ttl.math.reduce_sum(block, _scaler1d(1.0), dims=[0])
     assert result.shape == (1,)
     out = result.to_list()[0].to_torch()
-    assert out[0].item() == pytest.approx(4 * 96.0)
+    # Element-wise sum: 4 tiles * 3.0 = 12.0 per element
+    assert torch.allclose(out, torch.full((32,), 12.0))
 
 
 def test_reduce_sum_1d_scaler():
@@ -843,19 +838,20 @@ def test_reduce_sum_1d_scaler():
     block = Block.from_list([_tile1d(1.0)], shape=(1,))
     result = ttl.math.reduce_sum(block, _scaler1d(3.0), dims=[0])
     out = result.to_list()[0].to_torch()
-    # Each element of the scaler tile is 3.0; element 0 holds the sum (32.0).
-    assert out[0].item() == pytest.approx(32.0 * 3.0)
+    # Single tile, scaler multiplies each element: 1.0 * 3.0 = 3.0
+    assert torch.allclose(out, torch.full((32,), 3.0))
 
 
 def test_reduce_max_1d_multi_tile():
     """reduce_max on a 1-D (3,) block takes the element-wise max across tiles."""
-    # Tiles: all-1, all-5, all-2 -> per-element max = 5 at element 0
+    # Tiles: all-1, all-5, all-2 -> element-wise max = 5.0 per element
     tiles = [_tile1d(v) for v in [1.0, 5.0, 2.0]]
     block = Block.from_list(tiles, shape=(3,))
     result = ttl.math.reduce_max(block, _scaler1d(1.0), dims=[0])
     assert result.shape == (1,)
     out = result.to_list()[0].to_torch()
-    assert out[0].item() == pytest.approx(5.0)
+    # Element-wise max across 3 tiles: max(1, 5, 2) = 5.0 per element
+    assert torch.allclose(out, torch.full((32,), 5.0))
 
 
 def test_reduce_sum_batched_3d_batch_dim():

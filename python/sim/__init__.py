@@ -5,7 +5,8 @@
 """
 sim package: simulation components for TT-Lang including dataflow buffers, tensors, and copy operations.
 """
-
+from typing import Any
+import types
 from . import ttnnsim as ttnn
 from .dfb import DFBStats
 from .constants import MAX_DFBS, TILE_SHAPE
@@ -22,10 +23,15 @@ from .typedefs import CoreCoord, CoreRange, Shape
 class _SignpostContextManager:
     """No-op context manager for ttl.signpost stub."""
 
-    def __enter__(self):
+    def __enter__(self) -> "_SignpostContextManager":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: types.TracebackType | None,
+    ) -> None:
         return None
 
 
@@ -92,7 +98,7 @@ class _TTLNamespace:
         self.math = _TTLMathNamespace()
 
     @staticmethod
-    def signpost(*args, **kwargs):
+    def signpost(*args: Any, **kwargs: Any) -> _SignpostContextManager:
         """Signpost stub for simulator. Returns a no-op context manager."""
         return _SignpostContextManager()
 
