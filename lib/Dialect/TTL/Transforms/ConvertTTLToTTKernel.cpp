@@ -75,7 +75,8 @@ public:
 
     auto castMaterialization = [](OpBuilder &builder, Type resultType,
                                   ValueRange inputs, Location loc) -> Value {
-      return UnrealizedConversionCastOp::create(builder, loc, resultType, inputs)
+      return UnrealizedConversionCastOp::create(builder, loc, resultType,
+                                                inputs)
           .getResult(0);
     };
     addSourceMaterialization(castMaterialization);
@@ -126,7 +127,8 @@ getBufferAddressFromRuntimeArg(Value tensor, Location loc,
     return failure();
   }
   auto idxConst = arith::ConstantIndexOp::create(rewriter, loc, *argIdx);
-  return ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(), idxConst)
+  return ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(),
+                                        idxConst)
       .getResult();
 }
 
@@ -139,11 +141,11 @@ static Value buildTensorAccessor(Location loc,
                                  Value bankBase, Value pageSize) {
   auto ctaConst = arith::ConstantIntOp::create(rewriter, loc, ctaIndex, 32);
   auto crtaConst = arith::ConstantIntOp::create(rewriter, loc, crtaIndex, 32);
-  auto args = ttk::TensorAccessorArgsOp::create(rewriter, 
-      loc, ctaConst.getResult(), crtaConst.getResult(),
+  auto args = ttk::TensorAccessorArgsOp::create(
+      rewriter, loc, ctaConst.getResult(), crtaConst.getResult(),
       /*prev_args=*/Value(), /*cta_expr=*/nullptr, /*crta_expr=*/nullptr);
   auto accessor = ttk::TensorAccessorOp::create(rewriter, loc, args.getResult(),
-                                                         bankBase, pageSize);
+                                                bankBase, pageSize);
   return accessor.getResult();
 }
 
@@ -199,12 +201,12 @@ struct BindCBLowering : OpConversionPattern<BindCBOp> {
     }
 
     // Create ttkernel.get_compile_time_arg_val to get the CB handle.
-    auto getArgVal = ttk::GetCompileArgValOp::create(rewriter, 
-        op.getLoc(), cbType, static_cast<int32_t>(cbIndex));
+    auto getArgVal = ttk::GetCompileArgValOp::create(
+        rewriter, op.getLoc(), cbType, static_cast<int32_t>(cbIndex));
 
     // Cast back to TTL CB type for downstream ops that still expect it.
-    auto cast = UnrealizedConversionCastOp::create(rewriter, 
-        op.getLoc(), op.getResult().getType(), ValueRange{getArgVal});
+    auto cast = UnrealizedConversionCastOp::create(
+        rewriter, op.getLoc(), op.getResult().getType(), ValueRange{getArgVal});
     rewriter.replaceOp(op, cast.getResult(0));
     return success();
   }
@@ -262,8 +264,8 @@ struct CBOpLowering : OpConversionPattern<SourceOp> {
     TargetOp::create(rewriter, loc, *convertedCb, numPages);
 
     if constexpr (HasResult) {
-      auto viewCast = UnrealizedConversionCastOp::create(rewriter, 
-          loc, op.getResult().getType(), *convertedCb);
+      auto viewCast = UnrealizedConversionCastOp::create(
+          rewriter, loc, op.getResult().getType(), *convertedCb);
       rewriter.replaceOp(op, viewCast.getResult(0));
     } else {
       rewriter.eraseOp(op);
@@ -372,7 +374,7 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
     }
 
     ttk::PackTileOp::create(rewriter, loc, dstIndex, *cb, cbTileIndex,
-                                     /*out_of_order=*/true);
+                            /*out_of_order=*/true);
 
     rewriter.eraseOp(op);
     return success();
@@ -489,7 +491,8 @@ materializeTensorAccessor(Value tensor, Value bankBase, int64_t pageSizeBytes,
     return failure();
   }
 
-  auto pageSize = arith::ConstantIntOp::create(rewriter, loc, pageSizeBytes, 32);
+  auto pageSize =
+      arith::ConstantIntOp::create(rewriter, loc, pageSizeBytes, 32);
 
   return buildTensorAccessor(loc, rewriter, *ctaIndex,
                              static_cast<int32_t>(*argIdx), bankBase, pageSize);
@@ -633,11 +636,11 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
         Value cbAddr = arith::IndexCastOp::create(b, bodyLoc, i32Ty, cbAddrIdx);
 
         if (isRead) {
-          ttk::NocAsyncReadTileOp::create(b, bodyLoc, tensorTileIdx32, *accessor,
-                                            cbAddr);
+          ttk::NocAsyncReadTileOp::create(b, bodyLoc, tensorTileIdx32,
+                                          *accessor, cbAddr);
         } else {
           ttk::NocAsyncWriteTileOp::create(b, bodyLoc, tensorTileIdx32,
-                                             *accessor, cbAddr);
+                                           *accessor, cbAddr);
         }
       });
 

@@ -43,8 +43,8 @@ inline Value linearizeLoopIndices(OpBuilder &builder, Location loc,
     Value stride = arith::ConstantIndexOp::create(builder, loc, 1);
     for (size_t j = i + 1; j < loops.size(); ++j) {
       scf::ForOp innerLoop = loops[loops.size() - 1 - j];
-      stride =
-          arith::MulIOp::create(builder, loc, stride, innerLoop.getUpperBound());
+      stride = arith::MulIOp::create(builder, loc, stride,
+                                     innerLoop.getUpperBound());
     }
     Value term =
         arith::MulIOp::create(builder, loc, loop.getInductionVar(), stride);

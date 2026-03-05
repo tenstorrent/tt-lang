@@ -273,21 +273,21 @@ private:
                   if (stride == 1) {
                     contribution = ivs[i];
                   } else {
-                    Value strideVal =
-                        arith::ConstantIndexOp::create(nestedBuilder, nestedLoc,
-                                                                     stride);
-                    contribution = arith::MulIOp::create(nestedBuilder, 
-                        nestedLoc, ivs[i], strideVal);
+                    Value strideVal = arith::ConstantIndexOp::create(
+                        nestedBuilder, nestedLoc, stride);
+                    contribution = arith::MulIOp::create(
+                        nestedBuilder, nestedLoc, ivs[i], strideVal);
                   }
 
-                  offset = offset ? arith::AddIOp::create(nestedBuilder, 
-                                        nestedLoc, offset, contribution)
-                                  : contribution;
+                  offset = offset
+                               ? arith::AddIOp::create(nestedBuilder, nestedLoc,
+                                                       offset, contribution)
+                               : contribution;
                 }
 
                 if (offset) {
-                  Value adjusted = arith::AddIOp::create(nestedBuilder, 
-                      nestedLoc, linIdx.getResult(), offset);
+                  Value adjusted = arith::AddIOp::create(
+                      nestedBuilder, nestedLoc, linIdx.getResult(), offset);
                   linIdx.getResult().replaceAllUsesExcept(
                       adjusted, adjusted.getDefiningOp());
                 }

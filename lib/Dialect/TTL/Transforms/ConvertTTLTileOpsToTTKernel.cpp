@@ -397,16 +397,18 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
     ttk::CopyTileInitOp::create(rewriter, loc, cb);
     // Emit the copy from CB[src_index] to DST[dst_index].
     ttk::CopyTileOp::create(rewriter, loc, cb, adaptor.getSrcIndex(),
-                                     adaptor.getDstIndex());
+                            adaptor.getDstIndex());
 
     // Materialize results: dst token from dst_index, and a tile value
     // passthrough (the tile remains the same logical value for downstream tile
     // ops).
-    auto token = mlir::UnrealizedConversionCastOp::create(rewriter, loc, TypeRange{op.getResult(0).getType()},
-                         ValueRange{adaptor.getDstIndex()})
+    auto token = mlir::UnrealizedConversionCastOp::create(
+                     rewriter, loc, TypeRange{op.getResult(0).getType()},
+                     ValueRange{adaptor.getDstIndex()})
                      .getResult(0);
-    auto tile = mlir::UnrealizedConversionCastOp::create(rewriter, loc, TypeRange{op.getResult(1).getType()},
-                        ValueRange{adaptor.getSrc()})
+    auto tile = mlir::UnrealizedConversionCastOp::create(
+                    rewriter, loc, TypeRange{op.getResult(1).getType()},
+                    ValueRange{adaptor.getSrc()})
                     .getResult(0);
     rewriter.replaceOp(op, ValueRange{token, tile});
     return success();
@@ -448,8 +450,9 @@ struct TTLCopyDstToTTKernel : OpConversionPattern<CopyDstOp> {
 
     // Replace with an unrealized conversion cast to preserve the tile value.
     // The tile is now in DST[dstIdx].
-    auto tile = mlir::UnrealizedConversionCastOp::create(rewriter, loc, TypeRange{op.getResult().getType()},
-                        ValueRange{adaptor.getSrcTile()})
+    auto tile = mlir::UnrealizedConversionCastOp::create(
+                    rewriter, loc, TypeRange{op.getResult().getType()},
+                    ValueRange{adaptor.getSrcTile()})
                     .getResult(0);
     rewriter.replaceOp(op, tile);
     return success();
@@ -635,7 +638,7 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
 
     ttk::UnaryBcastInitOp::create(rewriter, loc, *inCB, *outCB, ttkAttr);
     ttk::UnaryBcastTileOp::create(rewriter, loc, *inCB, inCBIdx, dstIdx,
-                                           ttkAttr);
+                                  ttkAttr);
 
     rewriter.replaceOp(op, adaptor.getInput());
     return success();

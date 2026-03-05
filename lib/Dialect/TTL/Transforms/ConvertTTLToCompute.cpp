@@ -33,7 +33,7 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
     }
   }
   return tensor::EmptyOp::create(b, loc, type.getShape(), type.getElementType(),
-                                   dynDims);
+                                 dynDims);
 }
 
 /// Find the output CB for an elementwise op by looking at its store users.
@@ -193,8 +193,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
 
   // Create ttl.compute op
-  auto computeOp = ComputeOp::create(rewriter, 
-      loc, TypeRange{type}, trace.rootInputs.getArrayRef(),
+  auto computeOp = ComputeOp::create(
+      rewriter, loc, TypeRange{type}, trace.rootInputs.getArrayRef(),
       ValueRange{initAttached}, rewriter.getArrayAttr(maps),
       rewriter.getArrayAttr(iterTypes));
 
@@ -229,8 +229,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     if (auto bcastOp = dyn_cast<BcastOp>(op)) {
       Value inputTile = tensorToTile[bcastOp.getInput()];
       Value outputTile = body->getArguments().back(); // output block arg
-      tileResult = TileBcastOp::create(rewriter, 
-          loc, tileType, inputTile, outputTile, bcastOp.getBcastTypeAttr());
+      tileResult = TileBcastOp::create(rewriter, loc, tileType, inputTile,
+                                       outputTile, bcastOp.getBcastTypeAttr());
     } else {
       // Elementwise ops
       SmallVector<Value, 2> tileOperands;
@@ -331,9 +331,10 @@ static LogicalResult buildBinaryCompute(Operation *op,
 
   // Inputs are already attached, use them directly.
   // Create ttl.compute op
-  auto computeOp = ComputeOp::create(rewriter, 
-      loc, TypeRange{type}, ValueRange{lhs, rhs}, ValueRange{initAttached},
-      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+  auto computeOp =
+      ComputeOp::create(rewriter, loc, TypeRange{type}, ValueRange{lhs, rhs},
+                        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+                        rewriter.getArrayAttr(iterTypes));
 
   // Build the body region with tile type block arguments
   Block *body = rewriter.createBlock(&computeOp.getBody());
@@ -346,7 +347,7 @@ static LogicalResult buildBinaryCompute(Operation *op,
 
   rewriter.setInsertionPointToStart(body);
   Value result = TileOp::create(rewriter, loc, tileType, body->getArgument(0),
-                                         body->getArgument(1));
+                                body->getArgument(1));
   emitTileStores(rewriter, loc, result, op);
   YieldOp::create(rewriter, loc);
   rewriter.replaceOp(op, computeOp.getResult(0));
@@ -408,9 +409,10 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
 
   // Input is already attached, use it directly.
   // Create ttl.compute op
-  auto computeOp = ComputeOp::create(rewriter, 
-      loc, TypeRange{type}, ValueRange{input}, ValueRange{initAttached},
-      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+  auto computeOp =
+      ComputeOp::create(rewriter, loc, TypeRange{type}, ValueRange{input},
+                        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+                        rewriter.getArrayAttr(iterTypes));
 
   // Build the body region with tile type block arguments
   Block *body = rewriter.createBlock(&computeOp.getBody());
@@ -573,10 +575,10 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     Value initAttached =
         AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
 
-    auto computeOp = ComputeOp::create(rewriter, 
-        loc, TypeRange{outputType}, ValueRange{op.getInput(), op.getOutput()},
-        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
-        rewriter.getArrayAttr(iterTypes));
+    auto computeOp = ComputeOp::create(
+        rewriter, loc, TypeRange{outputType},
+        ValueRange{op.getInput(), op.getOutput()}, ValueRange{initAttached},
+        rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
     Type scalarType = outputType.getElementType();
@@ -588,7 +590,7 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     rewriter.setInsertionPointToStart(body);
     Value result =
         TileBcastOp::create(rewriter, loc, tileType, body->getArgument(0),
-                                     body->getArgument(1), op.getBcastType());
+                            body->getArgument(1), op.getBcastType());
     emitTileStores(rewriter, loc, result, op.getOperation());
     YieldOp::create(rewriter, loc);
     rewriter.replaceOp(op, computeOp.getResult(0));
@@ -642,9 +644,10 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
     Value initAttached =
         AttachCBOp::create(rewriter, loc, init.getType(), init, outputCb);
 
-    auto computeOp = ComputeOp::create(rewriter, 
-        loc, TypeRange{inputType}, ValueRange{input}, ValueRange{initAttached},
-        rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+    auto computeOp = ComputeOp::create(
+        rewriter, loc, TypeRange{inputType}, ValueRange{input},
+        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+        rewriter.getArrayAttr(iterTypes));
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
     Type scalarType = inputType.getElementType();

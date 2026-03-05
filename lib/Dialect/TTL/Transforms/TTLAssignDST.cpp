@@ -226,8 +226,9 @@ static FailureOr<CopyTileOp> createCopyTileForArg(
   Value srcIndex = LinearizedIndexOp::create(builder, loc, *indexMapAttr);
   Value dstIndex =
       arith::ConstantIndexOp::create(builder, loc, assignedDstIndex);
-  auto copy = CopyTileOp::create(builder, 
-      loc, TypeRange{DSTRegisterType::get(arg.getContext()), arg.getType()},
+  auto copy = CopyTileOp::create(
+      builder, loc,
+      TypeRange{DSTRegisterType::get(arg.getContext()), arg.getType()},
       ValueRange{arg, srcIndex, dstIndex});
   dstIndexForValue[copy.getDstTile()] = assignedDstIndex;
   return copy;
@@ -322,8 +323,8 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
             arith::ConstantIndexOp::create(builder, loc, kPlaceholderIndex);
         Value dstIndex =
             arith::ConstantIndexOp::create(builder, loc, kPlaceholderIndex);
-        auto copyOp = CopyTileOp::create(builder, 
-            loc,
+        auto copyOp = CopyTileOp::create(
+            builder, loc,
             TypeRange{DSTRegisterType::get(value.getContext()),
                       value.getType()},
             ValueRange{value, srcIndex, dstIndex});
