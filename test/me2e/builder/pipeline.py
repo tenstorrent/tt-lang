@@ -45,6 +45,7 @@ def compile_ttl_to_ttkernel(module: Module, device: Optional[Any] = None) -> Mod
         f"ttl-annotate-cb-associations),"
         # TTL to TTKernel conversion (module-level pass).
         f"convert-ttl-to-ttkernel,"
+        f"ttkernel-insert-inits,"
         f"canonicalize,"
         f"cse,"
         # Lower to EmitC.

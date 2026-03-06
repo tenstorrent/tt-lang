@@ -56,6 +56,10 @@ def _raise_tensor_error(tensor, message: str):
     raise ValueError(message)
 
 
+def _ceil_div(a, b):
+    return (a + b - 1) // b
+
+
 def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
     """Build MLIR tensor type for a ttnn tensor with TTNNLayoutAttr."""
     if not tiled:
@@ -64,17 +68,23 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
         raise ValueError(f"Only L1 or DRAM memory space supported, got {memory_space}")
     if len(grid) != 2:
         raise ValueError(f"Only 2D grids supported, got grid {tuple(grid)}")
-    if len(tensor.shape) != 2:
-        _raise_tensor_error(
-            tensor, f"Only 2D tensors supported, got shape {tensor.shape}"
-        )
 
-    tensor_rows, tensor_cols = tensor.shape
+    shape = list(tensor.shape)
+    if len(shape) < 2:
+        _raise_tensor_error(
+            tensor,
+            f"Tensors must have at least 2 dimensions, got shape {tensor.shape}",
+        )
+    if any(d <= 0 for d in shape):
+        _raise_tensor_error(
+            tensor,
+            f"All shape dimensions must be positive, got shape {tensor.shape}",
+        )
 
     layout = create_ttnn_layout(
         ctx,
         TTNNLayoutConfig(
-            logical_shape=tensor.shape,
+            logical_shape=shape,
             grid=grid,
             dtype=tensor.dtype,
         ),
@@ -85,10 +95,12 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
         ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
     )
 
-    # Device shape: 2D tile counts [tiles_y, tiles_x] based on logical shape
-    total_row_tiles = (tensor_rows + DEFAULT_TILE_SIZE - 1) // DEFAULT_TILE_SIZE
-    total_col_tiles = (tensor_cols + DEFAULT_TILE_SIZE - 1) // DEFAULT_TILE_SIZE
-    device_shape = [total_row_tiles, total_col_tiles]
+    # Device shape: batch dims preserved, last 2 dims converted to tile counts
+    batch_dims = shape[:-2]
+    tensor_rows, tensor_cols = shape[-2], shape[-1]
+    total_row_tiles = _ceil_div(tensor_rows, DEFAULT_TILE_SIZE)
+    total_col_tiles = _ceil_div(tensor_cols, DEFAULT_TILE_SIZE)
+    device_shape = batch_dims + [total_row_tiles, total_col_tiles]
 
     return RankedTensorType.get(device_shape, element_type, layout)
 
@@ -184,9 +196,9 @@ class TTLGenericCompiler(TTCompilerBase):
 
     # Auto-profiling helpers for line-based signposting
 
-    def _emit_signpost(self, name: str):
+    def _emit_signpost(self, name: str, is_end: bool = False):
         """Emit a signpost operation into the MLIR."""
-        ttl.signpost(name)
+        ttl.signpost(name, is_end=is_end)
 
     def _emit_line_signpost_if_needed(self, node):
         """Emit signposts at line boundaries for auto-profiling."""
@@ -198,7 +210,9 @@ class TTLGenericCompiler(TTCompilerBase):
             return
 
         if self._current_signpost_line is not None:
-            self._emit_signpost(f"{self.name}_L{self._current_signpost_line}_after")
+            self._emit_signpost(
+                f"{self.name}_L{self._current_signpost_line}", is_end=True
+            )
 
         if self.source_lines and 0 < node.lineno <= len(self.source_lines):
             source_line = self.source_lines[node.lineno - 1].strip()
@@ -206,19 +220,19 @@ class TTLGenericCompiler(TTCompilerBase):
             source_line = f"<line {file_lineno}>"
 
         base_name = f"{self.name}_L{file_lineno}"
-        before_name = f"{base_name}_before"
-        after_name = f"{base_name}_after"
 
         if self.line_mapper:
             self.line_mapper.register_signpost(base_name, file_lineno, source_line)
 
-        self._emit_signpost(before_name)
+        self._emit_signpost(base_name)
         self._current_signpost_line = file_lineno
 
     def _close_final_signpost(self):
         """Close the final signpost at the end of function body."""
         if self.auto_profile_enabled and self._current_signpost_line is not None:
-            self._emit_signpost(f"{self.name}_L{self._current_signpost_line}_after")
+            self._emit_signpost(
+                f"{self.name}_L{self._current_signpost_line}", is_end=True
+            )
             self._current_signpost_line = None
 
     def _on_scope_exit(self):
@@ -238,8 +252,6 @@ class TTLGenericCompiler(TTCompilerBase):
         file_lineno = node.lineno + self.line_offset
         prefix = "implicit_" if implicit else ""
         base_name = f"{self.name}_L{file_lineno}_{prefix}{op_name}"
-        before_name = f"{base_name}_before"
-        after_name = f"{base_name}_after"
 
         if self.source_lines and 0 < node.lineno <= len(self.source_lines):
             source_line = self.source_lines[node.lineno - 1].strip()
@@ -250,9 +262,9 @@ class TTLGenericCompiler(TTCompilerBase):
             self.line_mapper.register_signpost(base_name, file_lineno, source_line)
 
         with self._loc_for_node(node):
-            self._emit_signpost(before_name)
+            self._emit_signpost(base_name)
             result = op_fn()
-            self._emit_signpost(after_name)
+            self._emit_signpost(base_name, is_end=True)
         return result
 
     def visit_Call(self, node):
@@ -523,19 +535,93 @@ class TTLGenericCompiler(TTCompilerBase):
             raise ValueError(msg)
         return RankedTensorType.get(cb_type.shape, cb_type.element_type)
 
+    def _is_signpost_call(self, context_expr):
+        """Check if a with-item context expression is a signpost call."""
+        if not isinstance(context_expr, ast.Call):
+            return False
+        func = context_expr.func
+        # with signpost("name"):
+        if isinstance(func, ast.Name) and func.id == "signpost":
+            return True
+        # with ttl.signpost("name"):
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "signpost"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "ttl"
+        ):
+            return True
+        return False
+
+    def _extract_signpost_name(self, context_expr):
+        """Extract and validate the string name from a signpost call."""
+        if len(context_expr.args) != 1 or context_expr.keywords:
+            self._raise_error(
+                context_expr, "signpost() requires exactly one string argument"
+            )
+        name_arg = context_expr.args[0]
+        if not isinstance(name_arg, ast.Constant) or not isinstance(
+            name_arg.value, str
+        ):
+            self._raise_error(
+                context_expr, "signpost() argument must be a string literal"
+            )
+        name = name_arg.value
+        if not name.replace("_", "").replace("-", "").isalnum():
+            self._raise_error(
+                context_expr,
+                f"signpost name must contain only alphanumeric characters, "
+                f"underscores, or hyphens, got: '{name}'",
+            )
+        return name
+
     def visit_With(self, node):
         """
-        Handle 'with' for CircularBuffer acquire/release.
+        Handle 'with' for CircularBuffer acquire/release or signpost scopes.
 
-        Acquire ops (wait/reserve) are generated left-to-right.
-        Release ops (pop/push) are generated in reverse order at scope end.
+        Signpost scopes:
+            with ttl.signpost("my_region"):
+                ...  # emits _before/_after signpost pair
 
-        Example:
+        CB acquire/release:
             with lhs_cb.wait() as l, rhs_cb.wait() as r, out_cb.reserve() as o:
                 ...
                 # releases in reverse order: push(out), pop(rhs), pop(lhs)
         """
         with self._loc_for_node(node):
+            # Check for signpost scope
+            first_item = node.items[0]
+            if self._is_signpost_call(first_item.context_expr):
+                if len(node.items) > 1:
+                    self._raise_error(
+                        node,
+                        "signpost() cannot be combined with other with-items",
+                    )
+                if first_item.optional_vars is not None:
+                    self._raise_error(
+                        node, "signpost() does not produce a value ('as' not supported)"
+                    )
+                name = self._extract_signpost_name(first_item.context_expr)
+                if self.auto_profile_enabled:
+                    import warnings
+
+                    warnings.warn(
+                        f"signpost('{name}') ignored: user-defined signposts "
+                        "are disabled when TTLANG_AUTO_PROFILE=1. "
+                        "Run one profiling mode at a time.",
+                        stacklevel=2,
+                    )
+                    for stmt in node.body:
+                        self.visit(stmt)
+                    return
+                self._on_scope_exit()
+                self._emit_signpost(f"ttl_{name}")
+                for stmt in node.body:
+                    self.visit(stmt)
+                self._on_scope_exit()
+                self._emit_signpost(f"ttl_{name}", is_end=True)
+                return
+
             # Process each with-item: acquire resources and track for release
             releases = []  # [(release_op, cb_val), ...] in acquisition order
 

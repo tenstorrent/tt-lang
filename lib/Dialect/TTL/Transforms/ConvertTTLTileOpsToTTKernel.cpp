@@ -6,23 +6,20 @@
 // TTL Tile Ops to TTKernel Lowering
 //===----------------------------------------------------------------------===//
 //
-// This file lowers TTL tile operations (ttl.tile_* and ttl.copy_tile) to
-// TTKernel operations using DialectConversion.
-// Future work (TODO #124):
-// - DST lifecycle wrapper (acquire/commit/wait/release) around loop iterations
-// - copy_tile (CB → DST) before compute, pack_tile (DST → CB) after
+// Lowers TTL tile-level operations to TTKernel using DialectConversion.
+// This file covers compute ops (unary SFPU, binary SFPU, broadcast), data
+// movement ops (copy_tile, copy_dst), and DST register lifecycle ops
+// (tile_regs_acquire/commit/wait/release).
 //
-// Following LLVM/MLIR best practices:
-// - Generic template patterns for tile op categories
-// - Type aliases for op-to-op mappings
-// - Batch pattern registration via patterns.add<...>
-// - Explicit state passing for copy_tile (CB → DST) to avoid multipleIR walks
+// Unary and binary compute ops are lowered via generic template patterns
+// instantiated from TTLElementwiseOps.def.
 //
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -131,70 +128,29 @@ static FailureOr<Value> lookupAndConvertCB(Value operand, func::FuncOp funcOp,
 // DST lifecycle ops
 //===----------------------------------------------------------------------===//
 
-struct TTLInitSFPUToTTKernel : OpConversionPattern<InitSFPUOp> {
-  using OpConversionPattern<InitSFPUOp>::OpConversionPattern;
+/// Trivial 1:1 op conversion: replaces SourceOp with TargetOp (no operands,
+/// no results, no type conversion). Modeled after upstream
+/// OneToOneConvertToLLVMPattern.
+template <typename SourceOp, typename TargetOp>
+struct TTLSimpleOneToOne : OpConversionPattern<SourceOp> {
+  using OpConversionPattern<SourceOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(InitSFPUOp op, OpAdaptor adaptor,
+  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor /*adaptor*/,
                   ConversionPatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-
-    auto icb = utils::convertTTLCBToTTKernel(adaptor.getIcb(), rewriter, loc,
-                                             getTypeConverter());
-    auto ocb = utils::convertTTLCBToTTKernel(adaptor.getOcb(), rewriter, loc,
-                                             getTypeConverter());
-    if (failed(icb) || failed(ocb)) {
-      return rewriter.notifyMatchFailure(op, "failed to convert CB types");
-    }
-
-    rewriter.replaceOpWithNewOp<ttk::InitSFPUOp>(op, *icb, *ocb);
+    rewriter.replaceOpWithNewOp<TargetOp>(op);
     return success();
   }
 };
 
-struct TTLTileRegsAcquireToTTKernel : OpConversionPattern<TileRegsAcquireOp> {
-  using OpConversionPattern<TileRegsAcquireOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(TileRegsAcquireOp op, OpAdaptor /*adaptor*/,
-                  ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<ttk::TileRegsAcquireOp>(op);
-    return success();
-  }
-};
-
-struct TTLTileRegsCommitToTTKernel : OpConversionPattern<TileRegsCommitOp> {
-  using OpConversionPattern<TileRegsCommitOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(TileRegsCommitOp op, OpAdaptor /*adaptor*/,
-                  ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<ttk::TileRegsCommitOp>(op);
-    return success();
-  }
-};
-
-struct TTLTileRegsWaitToTTKernel : OpConversionPattern<TileRegsWaitOp> {
-  using OpConversionPattern<TileRegsWaitOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(TileRegsWaitOp op, OpAdaptor /*adaptor*/,
-                  ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<ttk::TileRegsWaitOp>(op);
-    return success();
-  }
-};
-
-struct TTLTileRegsReleaseToTTKernel : OpConversionPattern<TileRegsReleaseOp> {
-  using OpConversionPattern<TileRegsReleaseOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(TileRegsReleaseOp op, OpAdaptor /*adaptor*/,
-                  ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<ttk::TileRegsReleaseOp>(op);
-    return success();
-  }
-};
+using TTLTileRegsAcquireToTTKernel =
+    TTLSimpleOneToOne<TileRegsAcquireOp, ttk::TileRegsAcquireOp>;
+using TTLTileRegsCommitToTTKernel =
+    TTLSimpleOneToOne<TileRegsCommitOp, ttk::TileRegsCommitOp>;
+using TTLTileRegsWaitToTTKernel =
+    TTLSimpleOneToOne<TileRegsWaitOp, ttk::TileRegsWaitOp>;
+using TTLTileRegsReleaseToTTKernel =
+    TTLSimpleOneToOne<TileRegsReleaseOp, ttk::TileRegsReleaseOp>;
 
 //===----------------------------------------------------------------------===//
 // Helpers
@@ -218,10 +174,7 @@ static std::optional<int64_t> getDstIndexFromValue(Value v) {
   }
   Operation *owner = opRes.getOwner();
   if (auto copy = dyn_cast<CopyTileOp>(owner)) {
-    if (auto constIdx = dyn_cast_or_null<arith::ConstantIndexOp>(
-            copy.getDstIndex().getDefiningOp())) {
-      return constIdx.value();
-    }
+    return getConstantIntValue(copy.getDstIndex());
   }
   if (auto attr = owner->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
     return attr.getInt();
@@ -251,8 +204,6 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
     int64_t dstIdx = dstIdxAttr.getInt();
     Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
 
-    // Emit init + compute ops
-    rewriter.create<InitOp>(loc);
     rewriter.create<TTKernelComputeOp>(loc, dstIdxVal);
 
     // Replace all uses with a placeholder (the value is now in DST register)
@@ -301,7 +252,6 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
     Value src1 = rewriter.create<arith::ConstantIndexOp>(loc, src1Idx);
     Value odst = rewriter.create<arith::ConstantIndexOp>(loc, odstIdx);
 
-    rewriter.create<InitOp>(loc);
     rewriter.create<TTKernelComputeOp>(loc, src0, src1, odst);
 
     rewriter.replaceOp(op, adaptor.getLhs());
@@ -342,7 +292,6 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
     Value dst0 = rewriter.create<arith::ConstantIndexOp>(loc, dst0Idx);
     Value dst1 = rewriter.create<arith::ConstantIndexOp>(loc, dst1Idx);
 
-    rewriter.create<InitOp>(loc);
     rewriter.create<TTKernelComputeOp>(loc, dst0, dst1, dst0);
 
     rewriter.replaceOp(op, adaptor.getLhs());
@@ -365,37 +314,16 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
       return rewriter.notifyMatchFailure(op, "copy_tile not in function");
     }
 
-    Value cb = lookupCBByIndex(op.getSrc(), funcOp);
-    if (!cb) {
-      return rewriter.notifyMatchFailure(op, "cannot find attached cb for src");
+    auto cbResult = lookupAndConvertCB(op.getSrc(), funcOp,
+                                       this->getTypeConverter(), rewriter, loc);
+    if (failed(cbResult)) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot find/convert attached cb for src");
     }
+    Value cb = *cbResult;
 
-    // Convert !ttl.cb to !ttkernel.cb.
-    auto *typeConverter = this->getTypeConverter();
-    Type targetCbTy;
-    if (auto ttkCb = mlir::dyn_cast<ttk::CBType>(cb.getType())) {
-      targetCbTy = ttkCb;
-    } else if (auto ttlCb = mlir::dyn_cast<CircularBufferType>(cb.getType())) {
-      targetCbTy = ttk::CBType::get(cb.getContext(), ttlCb.getTotalElements(),
-                                    ttlCb.getElementType());
-    }
-    if (!targetCbTy) {
-      return rewriter.notifyMatchFailure(op,
-                                         "failed to determine cb target type");
-    }
-    if (!typeConverter) {
-      return rewriter.notifyMatchFailure(op, "no type converter available");
-    }
-    cb = typeConverter->materializeTargetConversion(rewriter, loc, targetCbTy,
-                                                    cb);
-    if (!cb || cb.getType() != targetCbTy) {
-      return rewriter.notifyMatchFailure(op,
-                                         "failed to materialize ttkernel.cb");
-    }
-
-    // Initialize the copy for the given CB (matches TTKernel contract).
-    rewriter.create<ttk::CopyTileInitOp>(loc, cb);
-    // Emit the copy from CB[src_index] to DST[dst_index].
+    // Emit the copy from CB[src_index] to DST[dst_index]
+    // (init inserted by ttkernel-insert-inits pass).
     rewriter.create<ttk::CopyTileOp>(loc, cb, adaptor.getSrcIndex(),
                                      adaptor.getDstIndex());
 
@@ -445,9 +373,7 @@ struct TTLCopyDstToTTKernel : OpConversionPattern<CopyDstOp> {
     Value srcIdx = rewriter.create<arith::ConstantIndexOp>(loc, *srcDstIdx);
     Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstDstIdx);
 
-    // Emit copy_dest_values_init + copy_dest_values.
-    // copy_dest_values(dst0, dst1) copies DST[dst1] → DST[dst0].
-    rewriter.create<ttk::CopyDestValuesInitOp>(loc);
+    // Emit copy_dest_values(dst0, dst1): copies DST[dst1] → DST[dst0].
     rewriter.create<ttk::CopyDestValuesOp>(loc, dstIdx, srcIdx);
 
     // Replace with an unrealized conversion cast to preserve the tile value.
@@ -521,11 +447,12 @@ getCBTileGridShape(Value operand, func::FuncOp funcOp) {
 static bool hasBcastShapeExpansion(Value input, Value output,
                                    ttl::BcastType bcastType,
                                    func::FuncOp funcOp) {
+  // TTLAnnotateCBAssociations guarantees bcast operands have attached CBs
+  // with 2D tile grid shapes.
   auto inShape = getCBTileGridShape(input, funcOp);
   auto outShape = getCBTileGridShape(output, funcOp);
-  if (!inShape || !outShape) {
-    return false;
-  }
+  assert(inShape && outShape &&
+         "expected 2D tile grid shapes for broadcast operands");
 
   int64_t inRows = inShape->first;
   int64_t inCols = inShape->second;
@@ -547,37 +474,36 @@ static bool hasBcastShapeExpansion(Value input, Value output,
 }
 
 /// Compute input CB tile index for broadcast with shape expansion.
-/// For broadcast ops where input CB is smaller than output CB:
-///   - Col broadcast (dims=[1]): input has 1 col, index = row_idx
-///   - Row broadcast (dims=[0]): input has 1 row, index = col_idx
-///   - Scalar broadcast (dims=[0,1]): input is (1,1), index = 0
-static Value computeBcastShapeExpansionIndex(ttl::TileBcastOp op,
-                                             OpBuilder &builder, Location loc) {
-  SmallVector<scf::ForOp> loops = utils::collectEnclosingLoops(op);
-
-  // Expect at least 2 loops for 2D tile iteration.
-  // Loops are collected innermost-first: loops[0]=col, loops[1]=row.
-  if (loops.size() < 2) {
-    return builder.create<arith::ConstantIndexOp>(loc, 0);
-  }
-
-  Value colIdx = loops[0].getInductionVar();
-  Value rowIdx = loops[1].getInductionVar();
-
-  // Determine index based on broadcast type.
+/// Uses computeCBTileIndexFromLoops with a stride transform that extracts
+/// the row or col component at compile time (no runtime divui/remui):
+///   - Col broadcast (Nx1): need row index = stride / numCols per loop
+///   - Row broadcast (1xM): need col index = stride % numCols per loop
+///   - Scalar broadcast: input_idx = 0
+static FailureOr<Value> computeBcastShapeExpansionIndex(ttl::TileBcastOp op,
+                                                        func::FuncOp funcOp,
+                                                        OpBuilder &builder,
+                                                        Location loc) {
   auto bcastType = op.getBcastType();
-  switch (bcastType) {
-  case ttl::BcastType::Col:
-    // Input has shape (N, 1): index = row_idx.
-    return rowIdx;
-  case ttl::BcastType::Row:
-    // Input has shape (1, M): index = col_idx.
-    return colIdx;
-  case ttl::BcastType::Scalar:
-    // Input has shape (1, 1): index = 0.
-    return builder.create<arith::ConstantIndexOp>(loc, 0);
+  if (bcastType == ttl::BcastType::Scalar) {
+    return builder.create<arith::ConstantIndexOp>(loc, 0).getResult();
   }
-  llvm_unreachable("unknown BcastType");
+
+  // Get output CB shape to determine numCols for index decomposition.
+  auto outShape = getCBTileGridShape(op.getOutput(), funcOp);
+  assert(outShape && "expected 2D tile grid shape for broadcast output");
+
+  int64_t numCols = outShape->second;
+
+  // Extract row or col component from each stride at compile time.
+  auto extractComponent = [&](int64_t stride) -> int64_t {
+    if (bcastType == ttl::BcastType::Col) {
+      return stride / numCols; // row contribution
+    }
+    return stride % numCols; // col contribution
+  };
+
+  return utils::computeCBTileIndexFromLoops(op, builder, /*cbShapeRank=*/2,
+                                            extractComponent);
 }
 
 /// Lower ttl.tile_bcast to TTKernel unary_bcast_init + unary_bcast.
@@ -605,13 +531,22 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
     auto outCB = lookupAndConvertCB(op.getOutput(), funcOp, typeConverter,
                                     rewriter, loc);
     if (failed(outCB)) {
-      // After loop lowering in fused blocks, the output operand traces to
-      // iter_args. Find the output CB from the init_sfpu op in the function.
-      funcOp->walk([&](InitSFPUOp initOp) {
-        outCB = utils::convertTTLCBToTTKernel(initOp.getOcb(), rewriter, loc,
-                                              typeConverter);
-        return WalkResult::interrupt();
-      });
+      // Use the output CB index annotation from ttl-annotate-cb-associations.
+      if (auto cbIdx =
+              op->getAttrOfType<IntegerAttr>(kBcastOutputCBIndexAttrName)) {
+        Value cb;
+        funcOp->walk([&](BindCBOp bindOp) {
+          if (bindOp.getCbIndexAttr().getInt() == cbIdx.getInt()) {
+            cb = bindOp.getResult();
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        });
+        if (cb) {
+          outCB =
+              utils::convertTTLCBToTTKernel(cb, rewriter, loc, typeConverter);
+        }
+      }
       if (failed(outCB)) {
         return rewriter.notifyMatchFailure(op, "cannot find/convert output CB");
       }
@@ -631,17 +566,33 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
     Value inCBIdx;
     if (hasBcastShapeExpansion(op.getInput(), op.getOutput(), op.getBcastType(),
                                funcOp)) {
-      inCBIdx = computeBcastShapeExpansionIndex(op, rewriter, loc);
+      auto bcastIdx =
+          computeBcastShapeExpansionIndex(op, funcOp, rewriter, loc);
+      if (failed(bcastIdx)) {
+        return failure();
+      }
+      inCBIdx = *bcastIdx;
     } else {
-      inCBIdx =
+      auto cbIdx =
           utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
+      if (failed(cbIdx)) {
+        return failure();
+      }
+      inCBIdx = *cbIdx;
     }
 
     auto ttkAttr = convertBcastType(op.getBcastType());
 
-    rewriter.create<ttk::UnaryBcastInitOp>(loc, *inCB, *outCB, ttkAttr);
-    rewriter.create<ttk::UnaryBcastTileOp>(loc, *inCB, inCBIdx, dstIdx,
-                                           ttkAttr);
+    // Emit compute op (init inserted by ttkernel-insert-inits pass).
+    auto bcastOp = rewriter.create<ttk::UnaryBcastTileOp>(loc, *inCB, inCBIdx,
+                                                          dstIdx, ttkAttr);
+
+    // Propagate output CB index so ttkernel-insert-inits can derive the
+    // output CB for unary_bcast_init without walking the function.
+    if (auto cbIdx =
+            op->getAttrOfType<IntegerAttr>(kBcastOutputCBIndexAttrName)) {
+      bcastOp->setAttr(kBcastOutputCBIndexAttrName, cbIdx);
+    }
 
     rewriter.replaceOp(op, adaptor.getInput());
     return success();
@@ -680,8 +631,7 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
                                           RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
 
-  // Control ops (init_sfpu needs type converter for CB conversion).
-  patterns.add<TTLInitSFPUToTTKernel>(*typeConverter, ctx);
+  // DST lifecycle ops (1:1 conversion, no operands/results).
   patterns.add<TTLTileRegsAcquireToTTKernel, TTLTileRegsCommitToTTKernel,
                TTLTileRegsWaitToTTKernel, TTLTileRegsReleaseToTTKernel>(ctx);
 
@@ -707,9 +657,6 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // CB -> DST ops with attribute need the type converter.
   patterns.add<TTLTileBcastToTTKernel>(*typeConverter, ctx);
-
-  // TODO(#124): Add DST lifecycle wrapper pattern for loop iterations
-  // (acquire/commit/wait/release + copy_tile/pack_tile)
 }
 
 } // namespace mlir::tt::ttl

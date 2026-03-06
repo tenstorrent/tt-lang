@@ -12,6 +12,8 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
+include "mlir/Interfaces/IndexingMapOpInterface.td"
+include "mlir/Interfaces/TilingInterface.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
 include "mlir/IR/OpBase.td"
 
@@ -80,9 +82,11 @@ def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
     position. The resulting tensor can be passed to `ttl.copy` to transfer
     tiles starting at the specified position.
 
-    The indices are tile coordinates (not element coordinates). For a tensor
-    with shape [64, 64] and tile size 32x32, valid indices are [0,0], [0,1],
-    [1,0], and [1,1].
+    The indices are tile coordinates (not element coordinates). The number
+    of indices must match the rank of the tensor's tile grid. For a 2D
+    tensor with shape [64, 64] and tile size 32x32, valid indices are
+    [0,0], [0,1], [1,0], and [1,1]. For an ND tensor, indices cover all
+    dimensions of the tile grid.
 
     The result tensor has a reduced shape matching the CB dimensions but
     retains the original tensor's layout encoding. The lowering traces back
@@ -93,17 +97,17 @@ def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %slice = ttl.tensor_slice %tensor[%c0, %c1]
-             : tensor<1x1x2x2x!ttcore.tile<32x32, bf16>, #layout>
-               -> tensor<1x1x1x1x!ttcore.tile<32x32, bf16>, #layout>
+             : tensor<2x2x!ttcore.tile<32x32, bf16>, #layout>
+               -> tensor<1x1x!ttcore.tile<32x32, bf16>, #layout>
     ```
   }];
   let arguments = (ins
     TTNNTensor:$tensor,
-    Index:$tile_row,
-    Index:$tile_col
+    Variadic<Index>:$indices
   );
   let results = (outs AnyRankedTensor:$result);
-  let assemblyFormat = "$tensor `[` $tile_row `,` $tile_col `]` attr-dict `:` type($tensor) `->` type($result)";
+  let assemblyFormat = "$tensor `[` $indices `]` attr-dict `:` type($tensor) `->` type($result)";
+  let hasVerifier = 1;
 }
 
 def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
@@ -221,7 +225,11 @@ class TTL_ElementWiseUnary<string mnemonic, list<Trait> traits = []>
 def TTL_ComputeOp : TTL_Op<"compute", [
     AttrSizedOperandSegments,
     SingleBlockImplicitTerminator<"YieldOp">,
-    DeclareOpInterfaceMethods<DestinationStyleOpInterface>
+    DeclareOpInterfaceMethods<DestinationStyleOpInterface>,
+    IndexingMapOpInterface,
+    DeclareOpInterfaceMethods<TilingInterface,
+      ["getLoopIteratorTypes", "getIterationDomain",
+       "getTiledImplementation", "getResultTilePosition"]>
   ]> {
   let summary = "Structured tile-level compute operation";
   let description = [{
@@ -272,6 +280,21 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 
     // Return the number of outputs.
     unsigned getNumOutputs() { return getOutputs().size(); }
+
+    // Return the static shape of the operand's tensor type.
+    // Required by IndexingMapOpInterface default implementations
+    // (getStaticOperandShape, getStaticLoopRanges).
+    ArrayRef<int64_t> getShape(OpOperand *opOperand) {
+      auto shape = cast<RankedTensorType>(opOperand->get().getType()).getShape();
+      return shape;
+    }
+
+    // Return iterator types as a vector of utils::IteratorType.
+    SmallVector<utils::IteratorType> getIteratorTypesArray();
+
+    // Return a flat list of all operand dimensions as OpFoldResults.
+    SmallVector<OpFoldResult> createFlatListOfOperandDims(OpBuilder &b,
+                                                          Location loc);
   }];
 }
 
@@ -406,7 +429,7 @@ def TTL_SignpostOp : TTL_Op<"signpost", []> {
     ```
   }];
 
-  let arguments = (ins StrAttr:$name);
+  let arguments = (ins StrAttr:$name, UnitAttr:$is_end);
   let assemblyFormat = "$name attr-dict";
 }
 

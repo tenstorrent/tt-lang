@@ -40,6 +40,28 @@ constexpr llvm::StringLiteral kFPUBinaryAttrName("ttl.fpu_binary");
 /// Number of tiles to process per DST sync region (set by TTLAssignDST).
 constexpr llvm::StringLiteral kUnrollFactorAttrName("ttl.unroll_factor");
 
+/// Linearized stride for a subblock loop dimension. Distinguishes subblock
+/// loops from tile iteration loops for CB index computation.
+constexpr llvm::StringLiteral kSubblockStrideAttrName("ttl.subblock_stride");
+
+/// Row-major strides of the CB block iteration domain (before subblocking),
+/// carried on subblocked ComputeOps so tile loops get correct CB linearization
+/// strides.
+constexpr llvm::StringLiteral
+    kFullLinStridesAttrName("ttl.full_linearization_strides");
+
+/// Linearization stride on a tile iteration loop. May differ from the loop
+/// bound when the compute has been subblocked.
+constexpr llvm::StringLiteral kTileLoopAttrName("ttl.tile_loop");
+
+/// Linearized tile offset within a subblock, used for CB index computation
+/// in unrolled (loop-free) bodies.
+constexpr llvm::StringLiteral kTileOffsetAttrName("ttl.tile_offset");
+
+/// Output CB index on tile_bcast ops, avoiding SSA tracing during lowering.
+constexpr llvm::StringLiteral
+    kBcastOutputCBIndexAttrName("ttl.bcast_output_cb_index");
+
 /// Trait for tile compute operations (add, mul, exp, etc.).
 template <typename ConcreteType>
 class TTLTileComputeOpTrait
