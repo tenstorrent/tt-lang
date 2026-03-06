@@ -1379,7 +1379,7 @@ def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
                 result_source.extend(actual_source)
 
 
-def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
+def matmul(a: Block, b: Block) -> Block:
     """Matrix multiplication of two blocks.
 
     Converts each block to a ttnnsim.Tensor, delegates to torch.matmul via the
@@ -1388,9 +1388,8 @@ def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
     element-space tensors, with the last two dimensions divided by TILE_SHAPE.
 
     Args:
-        a: First input block.
-        b: Second input block.
-        _output_hint: Optional output block hint (unused in simulator).
+        a: First input block with shape (M, K)
+        b: Second input block with shape (K, N)
 
     Returns:
         Block whose tile shape corresponds to the matmul output shape.

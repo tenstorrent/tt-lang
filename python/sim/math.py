@@ -47,6 +47,7 @@ def _warn_1d_broadcast_unsupported() -> None:
 def broadcast(
     block: Block,
     output_hint: Optional[Block] = None,
+    *,
     dims: Optional[List[int]] = None,
 ) -> Block:
     """Broadcast a block along specified dimensions.
@@ -745,7 +746,6 @@ def _reduce_impl(
 def reduce_max(
     block: Block,
     scaler: Block,
-    _output_hint: Optional[Block] = None,
     dims: Optional[List[int]] = None,
 ) -> Block:
     """Scaled maximum reduction over an ND block grid.
@@ -754,10 +754,10 @@ def reduce_max(
     element must be a valid grid dimension index.
 
     Args:
-        block: Input block.
-        scaler: Scaler block; its first tile is multiplied into every result tile.
-        _output_hint: Unused output block hint (kept for API compatibility).
-        dims: Grid dimensions to reduce over (0-indexed).
+        block: Input block to reduce
+        scaler: Scaler block
+        dims: List of dimension indices to reduce over (0-indexed)
+              Example: [0] for rows, [1] for columns, [0, 1] for all
 
     Returns:
         Block with reduced dimensions.
@@ -770,7 +770,6 @@ def reduce_max(
 def reduce_sum(
     block: Block,
     scaler: Block,
-    _output_hint: Optional[Block] = None,
     dims: Optional[List[int]] = None,
 ) -> Block:
     """Scaled sum reduction over an ND block grid.
@@ -779,10 +778,10 @@ def reduce_sum(
     element must be a valid grid dimension index.
 
     Args:
-        block: Input block.
-        scaler: Scaler block; its first tile is multiplied into every result tile.
-        _output_hint: Unused output block hint (kept for API compatibility).
-        dims: Grid dimensions to reduce over (0-indexed).
+        block: Input block to reduce
+        scaler: Scaler block
+        dims: List of dimension indices to reduce over (0-indexed)
+              Example: [0] for rows, [1] for columns, [0, 1] for all
 
     Returns:
         Block with reduced dimensions.
@@ -797,7 +796,7 @@ for _name in ["_op_name", "_torch_fn"]:
     globals().pop(_name, None)
 
 
-def transpose(block: Block, _output_hint: Optional[Block] = None) -> Block:
+def transpose(block: Block) -> Block:
     """Transpose a 2D tile tensor (swap width and height).
 
     Performs width-height transpose on input tiles. Each 32x32 tile has its
@@ -807,7 +806,6 @@ def transpose(block: Block, _output_hint: Optional[Block] = None) -> Block:
 
     Args:
         block: Input block with shape (M, N)
-        _output_hint: Optional output block hint (unused in simulator)
 
     Returns:
         Block with shape (N, M), where each tile is transposed
