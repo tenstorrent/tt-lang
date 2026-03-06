@@ -46,9 +46,6 @@ apt-get install -y -qq \
     ca-certificates \
     gnupg
 
-# Install git >= 2.37 (Ubuntu 22.04 ships 2.34; need --filter support for submodules)
-add-apt-repository ppa:git-core/ppa -y
-
 # Install Python 3.12 (matches tt-mlir)
 add-apt-repository ppa:deadsnakes/ppa -y
 apt-get update -qq

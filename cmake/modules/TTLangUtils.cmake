@@ -25,11 +25,10 @@ endmacro()
 
 # ttlang_ensure_submodules(SUBMODULES...)
 # Initializes git submodules if not already present.
-# Uses --filter=blob:none (partial clone) to download commit history without
-# file content, then fetches only the blobs needed for the pinned commit.
-# This works for arbitrary pinned SHAs (not just branch tips) while keeping
-# the initial clone small (~100MB for LLVM vs ~2GB full).
-# Requires git >= 2.37. Skipped when there is no .git directory (Docker).
+# Uses --depth 1 for a shallow clone of just the pinned commit.
+# GitHub supports allowReachableSHA1InWant, so --depth 1 works even for
+# commits that are not at a branch tip.
+# Skipped when there is no .git directory (e.g. Docker build context).
 function(ttlang_ensure_submodules)
   if(NOT EXISTS "${CMAKE_SOURCE_DIR}/.git")
     return()
