@@ -23,6 +23,27 @@ macro(ttlang_set_version VERSION)
   message(STATUS "tt-lang version: ${TTLANG_VERSION}")
 endmacro()
 
+# ttlang_ensure_submodules(SUBMODULES...)
+# Initializes git submodules if not already present.
+# Uses --recommend-shallow to respect .gitmodules shallow = true settings.
+function(ttlang_ensure_submodules)
+  foreach(_sub IN LISTS ARGN)
+    if(NOT EXISTS "${CMAKE_SOURCE_DIR}/${_sub}/.git")
+      message(STATUS "Initializing submodule ${_sub}...")
+      execute_process(
+        COMMAND git submodule update --init --recommend-shallow "${_sub}"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        RESULT_VARIABLE _sub_result
+      )
+      if(NOT _sub_result EQUAL 0)
+        message(FATAL_ERROR
+          "Failed to initialize submodule ${_sub}. Run manually:\n"
+          "  git submodule update --init --recommend-shallow ${_sub}")
+      endif()
+    endif()
+  endforeach()
+endfunction()
+
 # ttlang_check_device_available(OUTPUT_VAR)
 # Checks if a Tenstorrent device is available at configure time by looking for
 # /dev/tenstorrent* files. This is faster than calling ttnn.GetNumAvailableDevices().
