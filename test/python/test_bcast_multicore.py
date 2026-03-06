@@ -277,7 +277,7 @@ def make_bcast_granularity_kernel(granularity: int):
             for _ in range(rows_per_core):
                 for _ in range(cols_per_core):
                     with inp_dfb.wait() as i, out_dfb.reserve() as o:
-                        result = ttl.math.broadcast(i, o, dims=[0])
+                        result = ttl.math.broadcast(i, dims=[0])
                         o.store(result)
 
         @ttl.datamovement()

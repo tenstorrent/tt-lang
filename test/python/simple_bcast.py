@@ -8,7 +8,7 @@
 
 # CHECK: PASS
 
-"""Fused bcast test: bcast(c) + (a * b) in single compute block."""
+"""Bcast test: bcast(c) + (a * b) with intermediate DFB."""
 
 import torch
 import ttnn
@@ -18,26 +18,27 @@ from ttlang_test_utils import to_l1
 
 @ttl.kernel(grid=(1, 1))
 def fused_bcast_kernel(a, b, c, out):
-    """Compute bcast(c) + (a * b) in a single fused compute block.
-
-    Bcast must be first operation - it reads from DFB and writes to DST.
-    Subsequent elementwise ops read from DST.
-    """
+    """Compute bcast(c) + (a * b) using an intermediate DFB for broadcast."""
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
     c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
+    c_bcast_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
-        # Single fused block: bcast first, then elementwise
+        # Stage 1: broadcast c to intermediate DFB
+        with c_dfb.wait() as c_tile, c_bcast_dfb.reserve() as c_out:
+            result = ttl.math.broadcast(c_tile, dims=[0])
+            c_out.store(result)
+
+        # Stage 2: compute (a * b) + c_bcast
         with (
             a_dfb.wait() as a_tile,
             b_dfb.wait() as b_tile,
-            c_dfb.wait() as c_tile,
+            c_bcast_dfb.wait() as c_bcast,
             out_dfb.reserve() as o,
         ):
-            c_bcast = ttl.math.broadcast(c_tile, o, dims=[0])
             ab = a_tile * b_tile
             result = c_bcast + ab
             o.store(result)

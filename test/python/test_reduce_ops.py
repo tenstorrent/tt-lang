@@ -1150,7 +1150,7 @@ def bcast_then_reduce_kernel(inp, bcast_in, scaler, out):
     def compute_fn():
         # Stage 1: Broadcast
         with bcast_cb.wait() as b, bcast_out_cb.reserve() as b_out:
-            result = ttl.math.broadcast(b, b_out, dims=[0, 1])
+            result = ttl.math.broadcast(b, dims=[0, 1])
             b_out.store(result)
 
         # Stage 2: Add broadcasted value to input
@@ -1375,7 +1375,7 @@ def reduce_bcast_matmul_kernel(reduce_in, bcast_out_ref, matmul_b, scaler, out):
 
         # Stage 2: Broadcast scalar to 8x8 tiles
         with reduce_out_cb.wait() as r_val, bcast_out_cb.reserve() as b_out:
-            broadcasted = ttl.math.broadcast(r_val, b_out, dims=[0, 1])
+            broadcasted = ttl.math.broadcast(r_val, dims=[0, 1])
             b_out.store(broadcasted)
 
         # Stage 3: Matmul broadcasted with B
