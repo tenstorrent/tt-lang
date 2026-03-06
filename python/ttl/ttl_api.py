@@ -1120,6 +1120,7 @@ def _compile_kernel(
             "func.func(ttl-assign-dst{enable-fpu-binary-ops=0})",
             "func.func(ttl-insert-tile-regs-sync)",
             "func.func(ttl-lower-to-loops)",
+            "func.func(ttl-schedule-operations)",
             "func.func(ttl-annotate-cb-associations)",
         ]
 
