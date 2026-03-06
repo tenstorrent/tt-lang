@@ -582,7 +582,7 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
 
     // Emit compute op (init inserted by ttkernel-insert-inits pass).
     auto bcastOp = ttk::UnaryBcastTileOp::create(rewriter, loc, *inCB, inCBIdx,
-                                                  dstIdx, ttkAttr);
+                                                 dstIdx, ttkAttr);
 
     // Propagate output CB index so ttkernel-insert-inits can derive the
     // output CB for unary_bcast_init without walking the function.

@@ -13,19 +13,18 @@ fi
 # Guard against re-activation.
 if [ -n "${TTLANG_ENV_ACTIVATED}" ]; then
   deactivate 2>/dev/null || :
-  unset TTLANG_ENV_ACTIVATED
 fi
 
 # Activate the Python venv (provides correct Python version + packages).
-# Suppress venv's PS1 modification (cpython double-wraps --prompt in parens)
-# and set our own clean prompt prefix.
+# Let the venv activate normally, then fix the double-wrapped PS1 by
+# overwriting PS1 and _OLD_VIRTUAL_PS1 (which deactivate restores).
 if [ -f "@TTLANG_PYTHON_VENV@/bin/activate" ]; then
-  _TTLANG_SAVED_PS1="${PS1:-}"
-  export VIRTUAL_ENV_DISABLE_PROMPT=1
+  _TTLANG_PRE_PS1="${PS1:-}"
   source "@TTLANG_PYTHON_VENV@/bin/activate"
-  PS1="(ᴛᴛʟᴀɴɢ) ${_TTLANG_SAVED_PS1}"
+  PS1="(ᴛᴛʟᴀɴɢ) ${_TTLANG_PRE_PS1}"
   export PS1
-  unset _TTLANG_SAVED_PS1
+  _OLD_VIRTUAL_PS1="${_TTLANG_PRE_PS1}"
+  unset _TTLANG_PRE_PS1
 fi
 
 # Set tt-lang home directory.
