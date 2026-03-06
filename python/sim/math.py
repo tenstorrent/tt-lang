@@ -13,15 +13,104 @@ system similar to ttnnsim.py. Special functions like broadcast and reductions
 are implemented manually.
 """
 
-from typing import Any, Callable, List, Optional
+import math as _math
+from itertools import product as _iter_product
+from typing import Any, Callable, List, Optional, Set
 
 import torch
 
 from .blockstate import BlockAcquisition, ThreadType
+from .diagnostics import (
+    lazy_import_diagnostics,
+    find_user_code_location,
+    format_core_ranges,
+)
 from .dfb import Block, track_source_blocks, matmul
 from .ttnnsim import Tensor
 
 _ = matmul
+
+# Track 1D broadcast warnings by (filename, line) -> set of core_ids
+# This allows us to deduplicate warnings and show which cores hit each location
+_broadcast_1d_warnings: dict[tuple[str, int], set[str]] = {}
+
+
+def _warn_1d_broadcast_unsupported() -> None:
+    """Issue a warning that 1D broadcast is not supported on current hardware.
+
+    Tracks which cores hit each source location and only prints once per location,
+    showing the list of cores that encountered the issue.
+    """
+    # Find user code location (skip this function and caller)
+    source_file, source_line = find_user_code_location(skip_frames=2)
+
+    # Should always find user code in the call stack
+    assert (
+        source_file is not None and source_line is not None
+    ), "Could not determine source location for 1D broadcast warning"
+
+    # Get the current core ID
+    from .greenlet_scheduler import get_current_core_id
+
+    core_id = get_current_core_id()
+
+    # Track this core hitting this location
+    location_key = (source_file, source_line)
+    if location_key not in _broadcast_1d_warnings:
+        _broadcast_1d_warnings[location_key] = set()
+        first_occurrence = True
+    else:
+        first_occurrence = False
+
+    _broadcast_1d_warnings[location_key].add(core_id)
+
+    # Only print on first occurrence for this location
+    if first_occurrence:
+        # Format the core list
+        cores = _broadcast_1d_warnings[location_key]
+        unique_cores = sorted(cores, key=lambda x: (len(x), x))
+
+        if len(unique_cores) == 1 and unique_cores[0] != "unknown":
+            cores_label = unique_cores[0]
+        else:
+            # Extract numeric core IDs (from "core0", "core1", etc.)
+            try:
+                core_numbers = [
+                    int(core[4:])
+                    for core in unique_cores
+                    if core.startswith("core") and core[4:].isdigit()
+                ]
+                if core_numbers:
+                    cores_label = f"cores: {format_core_ranges(core_numbers)}"
+                else:
+                    cores_label = f"cores: {', '.join(unique_cores)}"
+            except (ValueError, IndexError):
+                cores_label = f"cores: {', '.join(unique_cores)}"
+
+        # Try to use diagnostics module for nice formatting
+        try:
+            diagnostics = lazy_import_diagnostics()
+            SourceDiagnostic = diagnostics.SourceDiagnostic
+
+            # Read source lines
+            with open(source_file, "r") as f:
+                source_lines = f.read().splitlines()
+
+            # Format warning using diagnostics module
+            diag = SourceDiagnostic(source_lines, source_file)
+            warning_msg = diag.format_error(
+                line=source_line,
+                col=1,
+                message=f"1D broadcast is not supported on current hardware ({cores_label})",
+                label="warning",
+            )
+            print(warning_msg, flush=True)
+        except (ImportError, IOError, OSError):
+            # Fall back to simple warning if diagnostics unavailable or file unreadable
+            print(
+                f"warning: 1D broadcast is not supported on current hardware ({cores_label})",
+                flush=True,
+            )
 
 
 def broadcast(
@@ -33,20 +122,26 @@ def broadcast(
 
     This function replicates values within each tile along the specified dimensions.
     After reduce operations store values at specific positions (e.g., reduce_max with
-    dims=[0] stores max per row at column 0), broadcast replicates those values.
+    dims=[0] stores max at column 0), broadcast replicates those values.
 
-    For dims=[1] (broadcast along columns):
-    - Takes values from column 0 of each row
-    - Replicates them across all columns in that row
+    Dimension indexing uses the innermost-first convention: dims=[0] refers to the
+    innermost (last) dimension of the block shape, dims=[1] to the next-to-innermost,
+    and so on. This matches the convention used throughout the ttl.math API.
 
-    For dims=[0] (broadcast along rows):
-    - Takes values from row 0 of each column
-    - Replicates them across all rows in that column
+    For a 2-D grid block of shape (N, M):
+    - dims=[0] (innermost/columns): takes values from column 0 and replicates across
+      all columns. Block must have size 1 in M.
+    - dims=[1] (next-to-innermost/rows): takes values from row 0 and replicates across
+      all rows. Block must have size 1 in N.
+
+    For ND grids, batch dimensions (all dims before the last tile.ndim grid dims)
+    have no within-tile axis to broadcast; they are grid-level-only and the tile
+    content is left unchanged.
 
     Args:
         block: Input block to broadcast
         _unused_arg: Unused argument for compatibility (typically output block shape hint)
-        dims: List of dimension indices to broadcast along (0-indexed)
+        dims: List of dimension indices to broadcast along (0=innermost)
 
     Returns:
         Block with values replicated along the specified dimensions
@@ -54,29 +149,46 @@ def broadcast(
     if dims is None:
         raise ValueError("dims parameter is required for broadcast()")
 
-    # Validate that the dimensions being broadcast have size 1 at grid level
+    # Validate that the dimensions being broadcast have size 1 at grid level.
+    # User dims use innermost-first convention: translate to internal (outermost-first).
     block_shape = block._shape  # type: ignore[attr-defined]
+    ndim = len(block_shape)
+
+    # Check if this is a 1D broadcast and issue a warning
+    if ndim == 1:
+        _warn_1d_broadcast_unsupported()
+
     for dim in dims:
-        if dim >= len(block_shape):
+        if dim >= ndim:
             raise ValueError(
                 f"Cannot broadcast along dimension {dim}: block has shape {block_shape} "
-                f"with only {len(block_shape)} dimensions"
+                f"with only {ndim} dimensions"
             )
-        if block_shape[dim] != 1:
+        internal_dim = ndim - 1 - dim
+        if block_shape[internal_dim] != 1:
             raise ValueError(
                 f"Cannot broadcast along dimension {dim}: dimension must have size 1, "
-                f"but has size {block_shape[dim]}"
+                f"but has size {block_shape[internal_dim]}"
             )
 
-    # Perform within-tile broadcasting
+    # Map block-grid dimensions to within-tile dimensions.
+    # The last tile.ndim grid dimensions correspond to tile-internal axes 0, 1, ...
+    # Leading (batch) grid dimensions have no tile-internal counterpart.
     input_tensors = [t.to_torch() for t in block.to_list()]
     result_tensors: List[Tensor] = []
 
     for tile in input_tensors:
-        # Create a slice that selects index 0 for each dimension in dims
-        slices = [slice(None)] * tile.ndim
+        tile_ndim = tile.ndim
+        # Number of leading grid dims that are batch-only (no tile axis).
+        num_batch_grid_dims = ndim - tile_ndim
+        slices = [slice(None)] * tile_ndim
         for dim in dims:
-            slices[dim] = slice(0, 1)
+            internal_dim = ndim - 1 - dim
+            tile_dim = internal_dim - num_batch_grid_dims
+            if tile_dim < 0:
+                # Batch grid dimension: no within-tile axis, leave slice unchanged.
+                continue
+            slices[tile_dim] = slice(0, 1)
 
         # Extract the slice and expand back to original shape
         result_tile = tile[tuple(slices)].expand(tile.shape).clone()
@@ -186,6 +298,9 @@ def _apply_binary_op(
 ) -> Block:
     """Apply a binary operation element-wise to two blocks.
 
+    Both blocks must have the same shape; broadcasting between blocks of different
+    shapes is not supported by this helper (use Block operator overloads instead).
+
     Args:
         a: First input block
         b: Second input block
@@ -193,7 +308,16 @@ def _apply_binary_op(
 
     Returns:
         Block with operation applied element-wise
+
+    Raises:
+        ValueError: If a and b have different shapes.
     """
+    a_shape = a._shape  # type: ignore[attr-defined]
+    b_shape = b._shape  # type: ignore[attr-defined]
+    if a_shape != b_shape:
+        raise ValueError(
+            f"Shape mismatch in binary op: a has shape {a_shape}, b has shape {b_shape}"
+        )
     a_tensors = [t.to_torch() for t in a.to_list()]
     b_tensors = [t.to_torch() for t in b.to_list()]
     result_torch: List[torch.Tensor] = [
@@ -201,7 +325,7 @@ def _apply_binary_op(
     ]
     result_list: List[Tensor] = [Tensor(t) for t in result_torch]
 
-    result_block = Block.from_list(result_list, shape=a._shape)  # type: ignore[attr-defined]
+    result_block = Block.from_list(result_list, shape=a_shape)  # type: ignore[attr-defined]
     track_source_blocks(result_block, a, b)
     return result_block
 
@@ -416,98 +540,117 @@ def hardtanh(expr: Block, min_val: float, max_val: float) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
+def _reduce_impl(
+    block: Block,
+    scaler: Block,
+    dims: List[int],
+    op: str,  # 'sum' or 'max'
+) -> Block:
+    """Shared implementation for reduce_sum and reduce_max over an ND block grid.
+
+    Reduces the block along specified grid dimensions using torch operations.
+    Each reduced dimension collapses to size 1 in the resulting grid.
+
+    Dimension indexing uses the innermost-first convention: dims=[0] refers to
+    the innermost (last) dimension of the block shape, dims=[1] to the next-to-
+    innermost, and so on.
+
+    Args:
+        block: Input block.
+        scaler: Scaler block; its first tile is multiplied into every result tile.
+        dims: Grid dimensions to reduce over (0=innermost).
+        op: 'sum' or 'max'.
+
+    Returns:
+        Reduced block with grid shape having each dimension in dims collapsed to 1.
+    """
+    block_shape = block._shape  # type: ignore[attr-defined]
+    ndim = len(block_shape)
+    dims_set: Set[int] = set(dims)
+
+    for d in dims_set:
+        if d >= ndim:
+            raise ValueError(
+                f"Cannot reduce along dimension {d}: block grid has only {ndim} dimensions"
+            )
+
+    # Translate user-facing dims (0=innermost) to internal grid dims (0=outermost).
+    internal_dims_set = {ndim - 1 - d for d in dims_set}
+
+    # Get the scaler
+    scaler_tile = scaler.to_list()[0].to_torch()
+
+    # Compute result grid shape
+    result_shape = tuple(
+        1 if i in internal_dims_set else block_shape[i] for i in range(ndim)
+    )
+
+    # Stack input tiles to reshape for reduction
+    # Each output grid position gets contributions from multiple input positions
+    input_tensors = [t.to_torch() for t in block.to_list()]
+    result_tensors: List[Tensor] = []
+
+    for out_idx in _iter_product(*[range(s) for s in result_shape]):
+        # Collect all input tiles that contribute to this output position
+        in_ranges = [
+            (
+                range(block_shape[i])
+                if i in internal_dims_set
+                else range(out_idx[i], out_idx[i] + 1)
+            )
+            for i in range(ndim)
+        ]
+
+        # Gather contributing tiles
+        contributing_tiles: List[torch.Tensor] = []
+        for in_idx in _iter_product(*in_ranges):
+            flat = sum(
+                in_idx[i] * _math.prod(block_shape[i + 1 :]) for i in range(ndim)
+            )
+            contributing_tiles.append(input_tensors[flat])
+
+        # Reduce across contributing tiles using torch operations
+        if len(contributing_tiles) == 1:
+            result_tile = contributing_tiles[0]
+        else:
+            # Stack and reduce
+            stacked = torch.stack(contributing_tiles, dim=0)
+            if op == "sum":
+                result_tile = stacked.sum(dim=0)
+            else:  # max
+                result_tile = stacked.max(dim=0).values
+
+        # Apply scaler
+        result_tensors.append(Tensor(result_tile * scaler_tile))
+
+    result_block = Block.from_list(result_tensors, shape=result_shape)
+    track_source_blocks(result_block, block, scaler)
+    return result_block
+
+
 def reduce_max(
     block: Block,
     scaler: Block,
     _output_hint: Optional[Block] = None,
     dims: Optional[List[int]] = None,
 ) -> Block:
-    """Scaled maximum reduction.
+    """Scaled maximum reduction over an ND block grid.
 
-    Computes the scaled maximum reduction over specified dimensions.
-    The result is the maximum value along the specified dimensions, scaled by the scaler.
-
-    Reduction operates at two levels:
-    1. Within each tile: reduces along the specified tensor dimensions
-    2. Across tiles: combines tiles in the grid along the specified dimensions
-
-    For dims=[0] (reduce rows):
-    - Within each tile: compute max per row (across columns), store at column 0
-    - Across tiles: combine tiles along grid row dimension
-
-    For dims=[1] (reduce columns):
-    - Within each tile: compute max per column (across rows), store at row 0
-    - Across tiles: combine tiles along grid column dimension
+    See _reduce_impl for full semantics. dims must be non-empty and every
+    element must be a valid grid dimension index.
 
     Args:
-        block: Input block to reduce
-        scaler: Scaler block
-        _output_hint: Optional output block hint (unused in simulator)
-        dims: List of dimension indices to reduce over (0-indexed)
-              Example: [0] for rows, [1] for columns, [0, 1] for all
+        block: Input block.
+        scaler: Scaler block; its first tile is multiplied into every result tile.
+        _output_hint: Unused output block hint (kept for API compatibility).
+        dims: Grid dimensions to reduce over (0-indexed).
 
     Returns:
-        Block with reduced dimensions
+        Block with reduced dimensions.
     """
-
     if dims is None or not dims:
         raise ValueError("dims parameter must contain at least one dimension")
-
-    block_shape = block._shape  # type: ignore[attr-defined]
-    M, N = block_shape
-    input_tensors = [t.to_torch() for t in block.to_list()]
-    scaler_tile = scaler.to_list()[0].to_torch()
-
-    for dim in dims:
-        if dim >= 2:
-            raise ValueError(
-                f"Cannot reduce along dimension {dim}: block grid has only 2 dimensions"
-            )
-
-    # Step 1: Within-tile reduction
-    # dims=[0] means reduce across columns within each row -> one value per row at col 0
-    # dims=[1] means reduce across rows within each column -> one value per col at row 0
-    reduced_tiles: List[torch.Tensor] = []
-    for tile in input_tensors:
-        result_tile = torch.zeros_like(tile)
-        if 0 in dims and 1 in dims:
-            # Full reduction: single max value at position (0, 0)
-            max_val = tile.max()
-            result_tile[0, 0] = max_val
-        elif 0 in dims:
-            # Reduce across columns (dim 1) for each row -> store at column 0
-            row_maxes = tile.max(dim=1).values  # shape: (32,)
-            result_tile[:, 0] = row_maxes
-        elif 1 in dims:
-            # Reduce across rows (dim 0) for each column -> store at row 0
-            col_maxes = tile.max(dim=0).values  # shape: (32,)
-            result_tile[0, :] = col_maxes
-        reduced_tiles.append(result_tile)
-
-    # Step 2: Grid-level reduction (combine tiles across specified grid dimensions)
-    result_M = 1 if 0 in dims else M
-    result_N = 1 if 1 in dims else N
-
-    result_tensors: List[Tensor] = []
-    for res_i in range(result_M):
-        for res_j in range(result_N):
-            tiles_to_max: List[torch.Tensor] = []
-            for i in range(M):
-                for j in range(N):
-                    if (0 in dims or i == res_i) and (1 in dims or j == res_j):
-                        tile_idx = i * N + j
-                        tiles_to_max.append(reduced_tiles[tile_idx])
-
-            result_tile = tiles_to_max[0]
-            for tile in tiles_to_max[1:]:
-                result_tile = torch.maximum(result_tile, tile)
-
-            result_tile = result_tile * scaler_tile
-            result_tensors.append(Tensor(result_tile))
-
-    result_block = Block.from_list(result_tensors, shape=(result_M, result_N))
-    track_source_blocks(result_block, block, scaler)
-    return result_block
+    return _reduce_impl(block, scaler, dims, "max")
 
 
 def reduce_sum(
@@ -516,92 +659,23 @@ def reduce_sum(
     _output_hint: Optional[Block] = None,
     dims: Optional[List[int]] = None,
 ) -> Block:
-    """Scaled sum reduction.
+    """Scaled sum reduction over an ND block grid.
 
-    Computes the scaled sum reduction over specified dimensions.
-    The result is the sum of values along the specified dimensions, scaled by the scaler.
-
-    Reduction operates at two levels:
-    1. Within each tile: reduces along the specified tensor dimensions
-    2. Across tiles: combines tiles in the grid along the specified dimensions
-
-    For dims=[0] (reduce rows):
-    - Within each tile: compute sum per row (across columns), store at column 0
-    - Across tiles: combine tiles along grid row dimension
-
-    For dims=[1] (reduce columns):
-    - Within each tile: compute sum per column (across rows), store at row 0
-    - Across tiles: combine tiles along grid column dimension
+    See _reduce_impl for full semantics. dims must be non-empty and every
+    element must be a valid grid dimension index.
 
     Args:
-        block: Input block to reduce
-        scaler: Scaler block
-        _output_hint: Optional output block hint (unused in simulator)
-        dims: List of dimension indices to reduce over (0-indexed)
-              Example: [0] for rows, [1] for columns, [0, 1] for all
+        block: Input block.
+        scaler: Scaler block; its first tile is multiplied into every result tile.
+        _output_hint: Unused output block hint (kept for API compatibility).
+        dims: Grid dimensions to reduce over (0-indexed).
 
     Returns:
-        Block with reduced dimensions
+        Block with reduced dimensions.
     """
-
     if dims is None or not dims:
         raise ValueError("dims parameter must contain at least one dimension")
-
-    block_shape = block._shape  # type: ignore[attr-defined]
-    M, N = block_shape
-    input_tensors = [t.to_torch() for t in block.to_list()]
-    scaler_tile = scaler.to_list()[0].to_torch()
-
-    for dim in dims:
-        if dim >= 2:
-            raise ValueError(
-                f"Cannot reduce along dimension {dim}: block grid has only 2 dimensions"
-            )
-
-    # Step 1: Within-tile reduction
-    # dims=[0] means reduce across columns within each row -> one value per row at col 0
-    # dims=[1] means reduce across rows within each column -> one value per col at row 0
-    reduced_tiles: List[torch.Tensor] = []
-    for tile in input_tensors:
-        result_tile = torch.zeros_like(tile)
-        if 0 in dims and 1 in dims:
-            # Full reduction: single sum value at position (0, 0)
-            sum_val = tile.sum()
-            result_tile[0, 0] = sum_val
-        elif 0 in dims:
-            # Reduce across columns (dim 1) for each row -> store at column 0
-            row_sums = tile.sum(dim=1)  # shape: (32,)
-            result_tile[:, 0] = row_sums
-        elif 1 in dims:
-            # Reduce across rows (dim 0) for each column -> store at row 0
-            col_sums = tile.sum(dim=0)  # shape: (32,)
-            result_tile[0, :] = col_sums
-        reduced_tiles.append(result_tile)
-
-    # Step 2: Grid-level reduction (combine tiles across specified grid dimensions)
-    result_M = 1 if 0 in dims else M
-    result_N = 1 if 1 in dims else N
-
-    result_tensors: List[Tensor] = []
-    for res_i in range(result_M):
-        for res_j in range(result_N):
-            tiles_to_sum: List[torch.Tensor] = []
-            for i in range(M):
-                for j in range(N):
-                    if (0 in dims or i == res_i) and (1 in dims or j == res_j):
-                        tile_idx = i * N + j
-                        tiles_to_sum.append(reduced_tiles[tile_idx])
-
-            result_tile = tiles_to_sum[0].clone()
-            for tile in tiles_to_sum[1:]:
-                result_tile = result_tile + tile
-
-            result_tile = result_tile * scaler_tile
-            result_tensors.append(Tensor(result_tile))
-
-    result_block = Block.from_list(result_tensors, shape=(result_M, result_N))
-    track_source_blocks(result_block, block, scaler)
-    return result_block
+    return _reduce_impl(block, scaler, dims, "sum")
 
 
 # Clean up temporary variables
@@ -624,6 +698,11 @@ def transpose(block: Block, _output_hint: Optional[Block] = None) -> Block:
     Returns:
         Block with shape (N, M), where each tile is transposed
     """
+    if len(block._shape) != 2:  # type: ignore[attr-defined]
+        raise ValueError(
+            f"transpose requires a 2-D block grid, got shape {block._shape}"  # type: ignore[attr-defined]
+        )
+
     # Transpose each tile (swap rows/columns within tiles)
     transposed_tiles = [Tensor(t.to_torch().T) for t in block.to_list()]
 

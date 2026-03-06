@@ -21,7 +21,7 @@ from test_utils import (
 
 from python.sim import ttnn
 from python.sim.blockstate import set_current_thread_type, ThreadType
-from python.sim.dfb import Block, DFBAPI, DataflowBuffer
+from python.sim.dfb import Block, DataflowBuffer
 from python.sim.copyhandlers import (
     BlockToPipeHandler,
     BlockToTensorHandler,
@@ -33,12 +33,6 @@ from python.sim.pipe import Pipe
 
 if TYPE_CHECKING:
     pass
-
-
-@pytest.fixture
-def api():
-    """Provide a fresh DFBAPI instance for each test."""
-    return DFBAPI()
 
 
 @pytest.fixture(autouse=True)
@@ -72,26 +66,24 @@ class TestHandlerRegistry:
 class TestCopyValidationErrors:
     """Test validation and error handling in copy handlers."""
 
-    def test_non_2d_tensor_to_block_fails(self, api: "DFBAPI") -> None:
-        """Test that copying a non-2D tensor to Block raises ValueError."""
+    def test_nd_tensor_tile_count_mismatch_to_block_fails(self) -> None:
+        """Test that an N-D tensor with mismatched total tile count raises ValueError."""
         import torch
         from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
-        # Create a 3D torch tensor
-        torch_3d = torch.ones(32, 32, 32)
+        # 3D tensor (2, 32, 32) has 2 total tiles; block (1, 1) has 1 total tile.
+        torch_3d = torch.ones(2, 32, 32)
         tensor_3d = ttnn.Tensor(torch_3d)
 
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
 
-        with pytest.raises(ValueError, match="Tensor must be 2-dimensional"):
+        with pytest.raises(ValueError, match="does not match"):
             with dfb.reserve() as block:
                 copy(tensor_3d, block)
 
-    def test_tile_count_mismatch_tensor_to_block(self, api: "DFBAPI") -> None:
+    def test_tile_count_mismatch_tensor_to_block(self) -> None:
         """Test that tile count mismatch raises ValueError (Tensor -> Block)."""
         from python.sim.copy import copy
 
@@ -99,9 +91,7 @@ class TestCopyValidationErrors:
 
         # 3 tiles in tensor but DFB expects 2 tiles
         source = make_rand_tensor(96, 32)  # 3x1 tiles
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(2, 1), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(2, 1), buffer_factor=2)
 
         with pytest.raises(
             ValueError, match="Tensor shape .* does not match.*Block shape"
@@ -113,7 +103,7 @@ class TestCopyValidationErrors:
 class TestPipeErrorHandling:
     """Test error handling for pipe operations."""
 
-    def test_pipe_receive_timeout_no_sender(self, api: "DFBAPI") -> None:
+    def test_pipe_receive_timeout_no_sender(self) -> None:
         """Test that receiving from pipe with no sender is detected as deadlock."""
         from python.sim.copy import copy
         from python.sim.greenlet_scheduler import GreenletScheduler, set_scheduler
@@ -130,7 +120,7 @@ class TestPipeErrorHandling:
                 # Use a unique pipe address to avoid interference
                 pipe = Pipe(9999, 10000)
                 dfb = DataflowBuffer(
-                    element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+                    element=make_ones_tile(), shape=(1, 1), buffer_factor=2
                 )
 
                 with dfb.reserve() as block:
@@ -145,7 +135,7 @@ class TestPipeErrorHandling:
         finally:
             set_scheduler(None)
 
-    def test_pipe_length_mismatch(self, api: "DFBAPI") -> None:
+    def test_pipe_length_mismatch(self) -> None:
         """Test that pipe receive fails when Block length doesn't match sent data."""
         from python.sim.copy import copy
 
@@ -153,10 +143,10 @@ class TestPipeErrorHandling:
 
         pipe = Pipe(5000, 5001)
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(2, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(2, 1), buffer_factor=2
         )
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
 
         # Send 2 tiles
@@ -171,7 +161,7 @@ class TestPipeErrorHandling:
         # Try to receive into 1-tile block
         with pytest.raises(
             ValueError,
-            match="Destination Block length .* does not match pipe data length",
+            match="Destination Block shape .* does not match pipe data shape",
         ):
             with dst_dfb.reserve() as dst_block:
                 tx_recv = copy(pipe, dst_block)
@@ -181,7 +171,7 @@ class TestPipeErrorHandling:
 class TestPipeMulticast:
     """Test pipe multicast to multiple receivers."""
 
-    def test_pipe_multiple_receivers(self, api: "DFBAPI") -> None:
+    def test_pipe_multiple_receivers(self) -> None:
         """Test that pipe correctly handles multiple receivers."""
         from python.sim.copy import copy
 
@@ -193,13 +183,13 @@ class TestPipeMulticast:
 
         tile = make_full_tile(42.0)
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         dst_dfb1 = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         dst_dfb2 = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
 
         # Send data
@@ -232,53 +222,17 @@ class TestPipeMulticast:
         assert tensors_equal(result2, tile)
 
 
-class TestTileCountUtility:
-    """Test tile_count utility function."""
-
-    def test_tile_count_basic(self) -> None:
-        """Test basic tile counting."""
-        from python.sim.copyhandlers import tile_count
-        from python.sim.constants import TILE_SHAPE
-
-        # 64x64 tensor with 32x32 tiles = 4 tiles (2x2 grid)
-        assert tile_count((64, 64), TILE_SHAPE) == 4
-
-        # 32x32 tensor with 32x32 tiles = 1 tile
-        assert tile_count((32, 32), TILE_SHAPE) == 1
-
-        # 96x64 tensor with 32x32 tiles = 6 tiles (3x2 grid)
-        assert tile_count((96, 64), TILE_SHAPE) == 6
-
-    def test_tile_count_dimension_mismatch(self) -> None:
-        """Test that dimension mismatch raises ValueError."""
-        from python.sim.copyhandlers import tile_count
-
-        with pytest.raises(
-            ValueError,
-            match="tensor_shape and tile_shape must have same dimensions",
-        ):
-            tile_count((64, 64), (32,))  # 2D vs 1D
-
-        with pytest.raises(
-            ValueError,
-            match="tensor_shape and tile_shape must have same dimensions",
-        ):
-            tile_count((64,), (32, 32))  # 1D vs 2D
-
-
 class TestContextManagerHandlers:
     """Test context manager wrapper handler delegation."""
 
-    def test_tensor_to_reserve_context(self, api: "DFBAPI") -> None:
+    def test_tensor_to_reserve_context(self) -> None:
         """Test Tensor → ReserveContext handler delegation."""
         from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
         source = make_full_tile(5.0)
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -292,16 +246,14 @@ class TestContextManagerHandlers:
 
         assert tensors_equal(result, source)
 
-    def test_wait_context_to_tensor(self, api: "DFBAPI") -> None:
+    def test_wait_context_to_tensor(self) -> None:
         """Test WaitContext → Tensor handler delegation."""
         from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
         source = make_full_tile(7.0)
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
 
         # Write to DFB
         with dfb.reserve() as block:
@@ -316,7 +268,7 @@ class TestContextManagerHandlers:
 
         assert tensors_equal(result, source)
 
-    def test_pipe_to_reserve_context(self, api: "DFBAPI") -> None:
+    def test_pipe_to_reserve_context(self) -> None:
         """Test Pipe → ReserveContext handler delegation."""
         from python.sim.copy import copy
 
@@ -327,7 +279,7 @@ class TestContextManagerHandlers:
 
         # Send data
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         with src_dfb.reserve() as src_block:
             tx = copy(tile, src_block)
@@ -339,7 +291,7 @@ class TestContextManagerHandlers:
 
         # Receive using ReserveContext
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         result = make_zeros_tile()
         with dst_dfb.reserve() as dst_block:
@@ -352,7 +304,7 @@ class TestContextManagerHandlers:
 
         assert tensors_equal(result, tile)
 
-    def test_wait_context_to_pipe(self, api: "DFBAPI") -> None:
+    def test_wait_context_to_pipe(self) -> None:
         """Test WaitContext → Pipe handler delegation."""
         from python.sim.copy import copy
 
@@ -363,7 +315,7 @@ class TestContextManagerHandlers:
 
         # Send using WaitContext
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         with src_dfb.reserve() as src_block:
             tx = copy(tile, src_block)
@@ -375,7 +327,7 @@ class TestContextManagerHandlers:
 
         # Receive
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         result = make_zeros_tile()
         with dst_dfb.reserve() as dst_block:
@@ -388,7 +340,7 @@ class TestContextManagerHandlers:
 
         assert tensors_equal(result, tile)
 
-    def test_reserve_context_to_pipe(self, api: "DFBAPI") -> None:
+    def test_reserve_context_to_pipe(self) -> None:
         """Test ReserveContext → Pipe handler delegation."""
         from python.sim.copy import copy
 
@@ -399,7 +351,7 @@ class TestContextManagerHandlers:
 
         # Send using ReserveContext
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         with src_dfb.reserve() as src_block:
             tx1 = copy(tile, src_block)
@@ -413,7 +365,7 @@ class TestContextManagerHandlers:
 
         # Receive
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         result = make_zeros_tile()
         with dst_dfb.reserve() as dst_block:
@@ -430,7 +382,7 @@ class TestContextManagerHandlers:
 class TestPipeCoreRangeTypes:
     """Test pipe multicast with different dst_core_range types."""
 
-    def test_pipe_single_core_int(self, api: "DFBAPI") -> None:
+    def test_pipe_single_core_int(self) -> None:
         """Test pipe with single 1D core (int)."""
         from python.sim.copy import copy
 
@@ -441,10 +393,10 @@ class TestPipeCoreRangeTypes:
 
         tile = make_full_tile(15.0)
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
 
         # Send
@@ -468,7 +420,7 @@ class TestPipeCoreRangeTypes:
 
         assert tensors_equal(result, tile)
 
-    def test_pipe_single_core_tuple(self, api: "DFBAPI") -> None:
+    def test_pipe_single_core_tuple(self) -> None:
         """Test pipe with single multi-dimensional core (tuple)."""
         from python.sim.copy import copy
 
@@ -481,10 +433,10 @@ class TestPipeCoreRangeTypes:
 
         tile = make_full_tile(17.0)
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
 
         # Send
@@ -508,7 +460,7 @@ class TestPipeCoreRangeTypes:
 
         assert tensors_equal(result, tile)
 
-    def test_pipe_core_range(self, api: "DFBAPI") -> None:
+    def test_pipe_core_range(self) -> None:
         """Test pipe with core range (2x2 = 4 receivers)."""
         from python.sim.copy import copy
 
@@ -520,7 +472,7 @@ class TestPipeCoreRangeTypes:
 
         tile = make_full_tile(19.0)
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
 
         # Send data
@@ -535,7 +487,7 @@ class TestPipeCoreRangeTypes:
         # Receive from all 4 receivers
         for i in range(4):
             dst_dfb = DataflowBuffer(
-                element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+                element=make_ones_tile(), shape=(1, 1), buffer_factor=2
             )
             result = make_zeros_tile()
 
@@ -553,16 +505,14 @@ class TestPipeCoreRangeTypes:
 class TestCanWaitBehavior:
     """Test can_wait() behavior for different handlers."""
 
-    def test_tensor_to_block_can_wait_immediate(self, api: "DFBAPI") -> None:
+    def test_tensor_to_block_can_wait_immediate(self) -> None:
         """Test that Tensor → Block copy can_wait returns True immediately."""
         from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
         source = make_ones_tile()
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -570,16 +520,14 @@ class TestCanWaitBehavior:
             assert tx.can_wait() is True
             tx.wait()
 
-    def test_block_to_tensor_can_wait_immediate(self, api: "DFBAPI") -> None:
+    def test_block_to_tensor_can_wait_immediate(self) -> None:
         """Test that Block → Tensor copy can_wait returns True immediately."""
         from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
         source = make_full_tile(21.0)
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
 
         # Store data
         with dfb.reserve() as block:
@@ -594,7 +542,7 @@ class TestCanWaitBehavior:
             assert tx.can_wait() is True
             tx.wait()
 
-    def test_block_to_pipe_can_wait_immediate(self, api: "DFBAPI") -> None:
+    def test_block_to_pipe_can_wait_immediate(self) -> None:
         """Test that Block → Pipe copy can_wait returns True immediately."""
         from python.sim.copy import copy
 
@@ -602,9 +550,7 @@ class TestCanWaitBehavior:
 
         pipe = Pipe(11000, 11001)
         tile = make_full_tile(23.0)
-        dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
-        )
+        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
 
         # Store data
         with dfb.reserve() as block:
@@ -618,7 +564,7 @@ class TestCanWaitBehavior:
             assert tx_send.can_wait() is True
             tx_send.wait()
 
-    def test_pipe_to_block_can_wait_blocks_until_data(self, api: "DFBAPI") -> None:
+    def test_pipe_to_block_can_wait_blocks_until_data(self) -> None:
         """Test that Pipe → Block copy can_wait blocks until data is available."""
         from python.sim.copy import copy
 
@@ -626,7 +572,7 @@ class TestCanWaitBehavior:
 
         pipe = Pipe(12000, 12001)
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
 
         with dst_dfb.reserve() as dst_block:
@@ -636,7 +582,7 @@ class TestCanWaitBehavior:
 
             # Now send data in a separate "thread" (simulated by just doing it)
             src_dfb = DataflowBuffer(
-                element=make_ones_tile(), shape=(1, 1), buffer_factor=2, api=api
+                element=make_ones_tile(), shape=(1, 1), buffer_factor=2
             )
             tile = make_full_tile(25.0)
 

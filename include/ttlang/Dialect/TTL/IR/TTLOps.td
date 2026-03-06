@@ -546,13 +546,14 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
 //===----------------------------------------------------------------------===//
 
 // Multiclass for defining paired tensor + tile binary ops
-multiclass TTL_BinaryElementwisePair<string mnemonic, string kernelOp> {
+multiclass TTL_BinaryElementwisePair<string mnemonic, string kernelOp,
+                                     list<Trait> extraTraits = []> {
   // Tensor-level op (operates on full tensors)
   def Op : TTL_ElementWiseBinary<mnemonic> {
     let description = "Elementwise "#mnemonic#" on tensors. Lowered to ttl.compute with ttl.tile_"#mnemonic#".";
   }
   // Tile-level op (operates inside ttl.compute body)
-  def TileOp : TTL_TileBinaryOp<"tile_"#mnemonic> {
+  def TileOp : TTL_TileBinaryOp<"tile_"#mnemonic, extraTraits> {
     let description = "Tile-level "#mnemonic#". Maps to ttkernel."#kernelOp#".";
   }
 }
@@ -562,8 +563,10 @@ defm TTL_Add : TTL_BinaryElementwisePair<"add", "add_tiles">;
 defm TTL_Sub : TTL_BinaryElementwisePair<"sub", "sub_tiles">;
 defm TTL_Mul : TTL_BinaryElementwisePair<"mul", "mul_tiles">;
 defm TTL_Div : TTL_BinaryElementwisePair<"div", "div_binary_tile">;
-defm TTL_Max : TTL_BinaryElementwisePair<"max", "max_tiles">;
-defm TTL_Min : TTL_BinaryElementwisePair<"min", "binary_min_tile">;
+defm TTL_Max : TTL_BinaryElementwisePair<"max", "max_tiles",
+                                         [TTL_InPlaceOpTrait]>;
+defm TTL_Min : TTL_BinaryElementwisePair<"min", "binary_min_tile",
+                                         [TTL_InPlaceOpTrait]>;
 
 
 //===----------------------------------------------------------------------===//

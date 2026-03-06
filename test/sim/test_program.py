@@ -19,6 +19,7 @@ import torch.testing as tt_testing
 from test_utils import make_ones_tensor, make_zeros_tensor
 
 from python.sim import TILE_SHAPE, copy, ttl, ttnn
+from python.sim.dfb import Block
 from python.sim.decorators import _make_cell, rebind_func_with_ctx  # type: ignore[reportPrivateUsage]
 from python.sim.program import Program
 
@@ -31,7 +32,7 @@ class TestBasicExecution:
 
         @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
-            # Create accessors and circular buffers
+            # Create accessors and dataflow buffers
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
 
@@ -84,7 +85,7 @@ class TestBasicExecution:
             b: ttnn.Tensor,
             out: ttnn.Tensor,
         ):
-            # Create accessors and circular buffers
+            # Create accessors and dataflow buffers
             # a already is ttnn.Tensor
             # b already is ttnn.Tensor
             # out already is ttnn.Tensor
@@ -206,7 +207,9 @@ class TestMultiCore:
                 core_y, core_x = cast(tuple[int, int], ttl.core(dims=2))
                 out_block = out_dfb.reserve()
                 # Each core writes its coordinates
-                out_block.store([make_ones_tensor(32, 32) * (core_y * 10 + core_x)])
+                out_block.store(
+                    Block.from_tensor(make_ones_tensor(32, 32) * (core_y * 10 + core_x))
+                )
                 out_block.push()
 
             @ttl.datamovement()
@@ -242,8 +245,8 @@ class TestMultiCore:
 class TestContextIsolation:
     """Test that per-core contexts are properly isolated."""
 
-    def test_circular_buffers_isolated(self) -> None:
-        """Test that circular buffers are independent per core."""
+    def test_dataflow_buffers_isolated(self) -> None:
+        """Test that dataflow buffers are independent per core."""
 
         @ttl.kernel(grid=(2, 1))
         def test_kernel(out: ttnn.Tensor):
@@ -256,7 +259,9 @@ class TestContextIsolation:
                 core_id = cast(int, ttl.core(dims=1))
                 # Each core reserves/pushes independently
                 block = dfb.reserve()
-                block.store([make_ones_tensor(32, 32) * (core_id + 100)])
+                block.store(
+                    Block.from_tensor(make_ones_tensor(32, 32) * (core_id + 100))
+                )
                 block.push()
 
             @ttl.datamovement()
@@ -302,7 +307,7 @@ class TestContextIsolation:
                 # Read from shared tensor and store (not copy)
                 # Add core_id to distinguish which core wrote
                 data = shared[0:1, 0:1] + core_id
-                block.store([data])
+                block.store(Block.from_tensor(data))
                 block.push()
 
             @ttl.datamovement()
@@ -439,7 +444,7 @@ class TestBlockCompletion:
 
         @ttl.kernel(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor):
-            # Create circular buffers
+            # Create dataflow buffers
             element = make_ones_tensor(32, 32)
             in_dfb = ttl.make_dataflow_buffer_like(
                 element, shape=(1, 1), buffer_factor=2
@@ -476,7 +481,7 @@ class TestBlockCompletion:
 
         @ttl.kernel(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor):
-            # Create circular buffers
+            # Create dataflow buffers
             element = make_ones_tensor(32, 32)
             in_dfb = ttl.make_dataflow_buffer_like(
                 element, shape=(1, 1), buffer_factor=2
@@ -517,7 +522,7 @@ class TestBlockCompletion:
 
         @ttl.kernel(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor, output_data: ttnn.Tensor):
-            # Create circular buffers
+            # Create dataflow buffers
             element = make_ones_tensor(32, 32)
             in_dfb = ttl.make_dataflow_buffer_like(
                 element, shape=(1, 1), buffer_factor=2
@@ -563,7 +568,7 @@ class TestBlockCompletion:
         def test_kernel(input_data: ttnn.Tensor):
             from python.sim.dfb import DataflowBuffer
 
-            # Create multiple circular buffers
+            # Create multiple dataflow buffers
             element = make_ones_tensor(32, 32)
             dfb1 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
             dfb2 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
@@ -1017,7 +1022,7 @@ if __name__ == "__main__":
     test_multi.test_four_core_2d_grid()
 
     test_ctx = TestContextIsolation()
-    test_ctx.test_circular_buffers_isolated()
+    test_ctx.test_dataflow_buffers_isolated()
     test_ctx.test_tensors_shared_across_cores()
 
     test_err = TestErrorHandling()

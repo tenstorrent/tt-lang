@@ -161,8 +161,8 @@ def copy(
     The actual transfer occurs when wait() is called on the returned transaction.
 
     Supported transfer patterns:
-    - torch.Tensor → Block: Load tensor data into circular buffer
-    - Block → torch.Tensor: Extract tensor data from circular buffer
+    - torch.Tensor → Block: Load tensor data into dataflow buffer
+    - Block → torch.Tensor: Extract tensor data from dataflow buffer
     - Block → Pipe: Broadcast data to multiple cores (pipe send)
     - Pipe → Block: Receive broadcasted data from pipe (pipe receive)
 
@@ -177,11 +177,11 @@ def copy(
         ValueError: Immediately if unsupported type combinations are provided
 
     Example:
-        # Transfer from tensor to circular buffer
+        # Transfer from tensor to dataflow buffer
         tx = copy(tensor_slice, dfb_block)
         tx.wait()
 
-        # Transfer from circular buffer to tensor
+        # Transfer from dataflow buffer to tensor
         tx = copy(dfb_block, tensor_slice)
         tx.wait()
     """
