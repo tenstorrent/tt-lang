@@ -16,6 +16,8 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
+#include "llvm/Support/Debug.h"
+
 #define DEBUG_TYPE "ttl-schedule-operations"
 
 namespace mlir::tt::ttl {
@@ -51,6 +53,9 @@ static int64_t getInitAffinity(Operation *op) {
         return bindCb.getCbIndex().getSExtValue();
       }
     }
+    LLVM_DEBUG(llvm::dbgs() << "copy_tile CB trace failed, using default "
+                               "init affinity for: "
+                            << *op << "\n");
   }
   return 0;
 }
@@ -59,7 +64,7 @@ static int64_t getInitAffinity(Operation *op) {
 struct TileOpSortKey {
   unsigned depthLevel;
   TileOpCategory category;
-  mlir::TypeID typeId;
+  llvm::StringRef opName;
   int64_t initAffinity;
   int64_t dstIdx;
   unsigned originalPosition;
@@ -75,9 +80,10 @@ struct TileOpSortKey {
       return static_cast<uint8_t>(category) <
              static_cast<uint8_t>(other.category);
     }
-    // Tertiary: TypeID (groups identical op types for init sharing).
-    if (typeId != other.typeId) {
-      return typeId.getAsOpaquePointer() < other.typeId.getAsOpaquePointer();
+    // Tertiary: op name (groups identical op types for init sharing).
+    // Uses string comparison for deterministic ordering across runs.
+    if (opName != other.opName) {
+      return opName < other.opName;
     }
     // Quaternary: init affinity (groups ops sharing one init call,
     // e.g., COL bcasts vs ROW bcasts, or copies from different CBs).
@@ -119,8 +125,11 @@ getReadDstIndices(Operation *op, const llvm::DenseSet<Operation *> &tileOpSet) {
   return indices;
 }
 
-/// Compute the dependency depth of each tile op. The depth is the length of
-/// the longest path through predecessors, considering:
+/// Compute the dependency depth of each tile op. Assumes tileOps are in
+/// original block order (used for WAW/WAR "most recent" tracking).
+///
+/// The depth is the length of the longest path through predecessors,
+/// considering:
 ///   - RAW (Read-After-Write): via SSA def-use chains
 ///   - WAW (Write-After-Write): ops writing the same DST index
 ///   - WAR (Write-After-Read): a write must come after prior reads of that DST
@@ -198,9 +207,9 @@ static void scheduleOpsInRegion(ArrayRef<Operation *> tileOps) {
   llvm::SmallVector<TileOpSortKey, 16> keys;
   keys.reserve(tileOps.size());
   for (auto [i, op] : llvm::enumerate(tileOps)) {
-    keys.push_back({levels[op], classifyTileOp(op), op->getName().getTypeID(),
-                    getInitAffinity(op), getDstIdx(op),
-                    static_cast<unsigned>(i), op});
+    keys.push_back({levels[op], classifyTileOp(op),
+                    op->getName().getStringRef(), getInitAffinity(op),
+                    getDstIdx(op), static_cast<unsigned>(i), op});
   }
 
   // Skip sort and IR mutation if already in order.
@@ -210,9 +219,19 @@ static void scheduleOpsInRegion(ArrayRef<Operation *> tileOps) {
 
   llvm::sort(keys);
 
+  LLVM_DEBUG({
+    llvm::dbgs() << "Scheduled " << keys.size() << " ops in sync region:\n";
+    for (auto &key : keys) {
+      llvm::dbgs() << "  depth=" << key.depthLevel
+                   << " cat=" << static_cast<unsigned>(key.category)
+                   << " dst=" << key.dstIdx << " " << *key.op << "\n";
+    }
+  });
+
   // Reposition ops using moveBefore. Place each op before the first
   // non-tile-op after the region, maintaining sorted order.
   Operation *insertionPoint = tileOps.back()->getNextNode();
+  assert(insertionPoint && "expected commit op after tile ops in sync region");
 
   for (auto &key : keys) {
     key.op->moveBefore(insertionPoint);

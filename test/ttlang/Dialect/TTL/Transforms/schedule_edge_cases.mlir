@@ -76,18 +76,18 @@ func.func @single_type_already_sorted(
 // CHECK-LABEL: func.func @copy_before_sfpu_reorder
 // CHECK:       ttkernel.tile_regs_acquire
 //
-// Copies first (category 0) -- all copy_tiles grouped:
+// copy_tile ops grouped by input CB (copy_tile), then add, then exp (in later sync region):
 // CHECK:       ttkernel.copy_tile_init(
 // CHECK:       ttkernel.copy_tile(
 // CHECK:       ttkernel.copy_tile(
 //
-// SFPU binary second (category 5) -- add ops grouped:
+// SFPU binary add grouped (one init):
 // CHECK:       ttkernel.add_binary_tile_init
 // CHECK:       ttkernel.add_binary_tile(
 // CHECK-NOT:   ttkernel.add_binary_tile_init
 // CHECK:       ttkernel.add_binary_tile(
 //
-// SFPU unary third (category 4) -- exp_tiles grouped:
+// SFPU unary exp grouped (one init):
 // CHECK:       ttkernel.exp_tile_init
 // CHECK:       ttkernel.exp_tile(
 // CHECK-NOT:   ttkernel.exp_tile_init
