@@ -2,6 +2,12 @@
 // Uses a 4x4 unary-only compute (dstPerIteration=1, totalTiles=16).
 // unroll_factor = min(capacity, 16).
 //
+// The pass derives capacity from the IR, not from pass options:
+//   - isFloat32: true when tile element type is f32 or fp32_dest_acc_en is set.
+//   - fullSyncEn: true when dst_full_sync_en attribute is set on the compute op.
+// Each test case below uses different tile types and compute attributes to
+// exercise a different combination.
+//
 // | isFloat32 | fullSyncEn | capacity | unroll_factor |
 // |-----------|------------|----------|---------------|
 // | false     | false      | 8        | 8             |
