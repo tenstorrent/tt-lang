@@ -39,7 +39,7 @@
 // CHECK: === Final DST Assignment ===
 // CHECK-DAG: tile_mul{{.*}} -> DST[0]
 // CHECK-DAG: tile_abs{{.*}} -> DST[0]
-// CHECK: Max DST usage: 1 / 8 registers
+// CHECK: Max DST usage: 1 / 4 registers
 
 // Verify IR has correct dst_idx attributes
 // IR-LABEL: func.func @binary_unary_merged_output
