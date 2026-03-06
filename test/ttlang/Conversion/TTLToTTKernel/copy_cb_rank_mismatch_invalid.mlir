@@ -1,8 +1,7 @@
 // RUN: ttlang-opt %s --convert-ttl-to-ttkernel -split-input-file -verify-diagnostics
 
-#dram = #ttnn.buffer_type<dram>
-#layout3d = #ttnn.ttnn_layout<(d0, d1, d2) -> (d0 * 2 + d1, d2), <1x1>,
-             memref<4x2x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout3d = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                        buffer = dram, grid = [1, 1], memory = interleaved>
 
 // CB shape rank (2) does not match 3D tensor rank.
 // expected-error @+1 {{failed to legalize operation 'ttl.copy' that was explicitly marked illegal}}
