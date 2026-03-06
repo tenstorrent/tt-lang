@@ -50,22 +50,19 @@ def matmul_single_tile_kernel(a, b, c):
 
     @ttl.datamovement()
     def dm_read():
-        a_blk = a_cb.reserve()
-        tx_a = ttl.copy(a[0, 0], a_blk)
-        tx_a.wait()
-        a_cb.push()
+        with a_cb.reserve() as a_blk:
+            tx_a = ttl.copy(a[0, 0], a_blk)
+            tx_a.wait()
 
-        b_blk = b_cb.reserve()
-        tx_b = ttl.copy(b[0, 0], b_blk)
-        tx_b.wait()
-        b_cb.push()
+        with b_cb.reserve() as b_blk:
+            tx_b = ttl.copy(b[0, 0], b_blk)
+            tx_b.wait()
 
     @ttl.datamovement()
     def dm_write():
-        c_blk = c_cb.wait()
-        tx = ttl.copy(c_blk, c[0, 0])
-        tx.wait()
-        c_cb.pop()
+        with c_cb.wait() as c_blk:
+            tx = ttl.copy(c_blk, c[0, 0])
+            tx.wait()
 
 
 # =============================================================================
@@ -95,23 +92,20 @@ def matmul_k_accum_kernel(a, b, c):
     @ttl.datamovement()
     def dm_read():
         # Load all A tiles: [0,0] and [0,1]
-        a_blk = a_cb.reserve()
-        tx_a = ttl.copy(a[0:1, 0:2], a_blk)
-        tx_a.wait()
-        a_cb.push()
+        with a_cb.reserve() as a_blk:
+            tx_a = ttl.copy(a[0:1, 0:2], a_blk)
+            tx_a.wait()
 
         # Load all B tiles: [0,0] and [1,0]
-        b_blk = b_cb.reserve()
-        tx_b = ttl.copy(b[0:2, 0:1], b_blk)
-        tx_b.wait()
-        b_cb.push()
+        with b_cb.reserve() as b_blk:
+            tx_b = ttl.copy(b[0:2, 0:1], b_blk)
+            tx_b.wait()
 
     @ttl.datamovement()
     def dm_write():
-        c_blk = c_cb.wait()
-        tx = ttl.copy(c_blk, c[0, 0])
-        tx.wait()
-        c_cb.pop()
+        with c_cb.wait() as c_blk:
+            tx = ttl.copy(c_blk, c[0, 0])
+            tx.wait()
 
 
 # =============================================================================

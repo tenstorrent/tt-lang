@@ -58,10 +58,10 @@ def where_kernel(cond, true_val, false_val, out):
 # CHECK-LABEL: func.func @where_compute
 # CHECK-SAME: attributes {{{.*}}ttl.kernel_thread = #ttkernel.thread<compute>}
 
-# CHECK: ttl.bind_cb{cb_index = 0
-# CHECK: ttl.bind_cb{cb_index = 1
-# CHECK: ttl.bind_cb{cb_index = 2
-# CHECK: ttl.bind_cb{cb_index = 3
+# CHECK-DAG: ttl.bind_cb{cb_index = 0
+# CHECK-DAG: ttl.bind_cb{cb_index = 1
+# CHECK-DAG: ttl.bind_cb{cb_index = 2
+# CHECK-DAG: ttl.bind_cb{cb_index = 3
 
 # CHECK: ttl.cb_wait
 # CHECK: ttl.cb_wait

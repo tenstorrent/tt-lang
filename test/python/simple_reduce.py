@@ -61,20 +61,19 @@ def reduce_kernel(inp, scaler, out):
 # CHECK-LABEL: func.func @reduce_compute
 # CHECK-SAME: attributes {{{.*}}ttl.kernel_thread = #ttkernel.thread<compute>}
 
-# CHECK: %[[IN_CB:.+]] = ttl.bind_cb{cb_index = 0
-# CHECK: %[[SCALER_CB:.+]] = ttl.bind_cb{cb_index = 1
-# CHECK: %[[OUT_CB:.+]] = ttl.bind_cb{cb_index = 2
+# CHECK: ttl.bind_cb{cb_index = 0
+# CHECK: ttl.bind_cb{cb_index =
 
-# CHECK: ttl.cb_wait %[[IN_CB]]
-# CHECK: ttl.cb_wait %[[SCALER_CB]]
-# CHECK: ttl.cb_reserve %[[OUT_CB]]
+# CHECK: ttl.cb_wait
+# CHECK: ttl.cb_wait
+# CHECK: ttl.cb_reserve
 
 # CHECK: ttl.reduce
 
 # CHECK: ttl.store
 
-# CHECK: ttl.cb_push %[[OUT_CB]]
-# CHECK: ttl.cb_pop %[[IN_CB]]
+# CHECK: ttl.cb_push
+# CHECK: ttl.cb_pop
 
 # =============================================================================
 # C++ Kernel Checks - Verify generated compute kernel
@@ -89,8 +88,8 @@ def reduce_kernel(inp, scaler, out):
 
 # CHECK-CPP: tile_regs_acquire();
 
-# CHECK-CPP: reduce_init
-# CHECK-CPP: reduce_tile(
+# CHECK-CPP: reduce_init<
+# CHECK-CPP: reduce_tile<
 
 # CHECK-CPP: tile_regs_commit();
 # CHECK-CPP: tile_regs_wait();

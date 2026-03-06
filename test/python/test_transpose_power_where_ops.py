@@ -36,25 +36,20 @@ def transpose_1x1_kernel(inp, out):
 
     @ttl.compute()
     def compute_fn():
-        x = inp_cb.wait()
-        o = out_cb.reserve()
-        o.store(ttl.math.transpose(x))
-        inp_cb.pop()
-        out_cb.push()
+        with inp_cb.wait() as x, out_cb.reserve() as o:
+            o.store(ttl.math.transpose(x))
 
     @ttl.datamovement()
     def dm_read():
-        inp_blk = inp_cb.reserve()
-        tx = ttl.copy(inp[0, 0], inp_blk)
-        tx.wait()
-        inp_cb.push()
+        with inp_cb.reserve() as inp_blk:
+            tx = ttl.copy(inp[0, 0], inp_blk)
+            tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
-        tx = ttl.copy(out_blk, out[0, 0])
-        tx.wait()
-        out_cb.pop()
+        with out_cb.wait() as out_blk:
+            tx = ttl.copy(out_blk, out[0, 0])
+            tx.wait()
 
 
 @ttl.kernel(grid=(1, 1))
@@ -69,25 +64,20 @@ def transpose_2x2_kernel(inp, out):
 
     @ttl.compute()
     def compute_fn():
-        x = inp_cb.wait()
-        o = out_cb.reserve()
-        o.store(ttl.math.transpose(x))
-        inp_cb.pop()
-        out_cb.push()
+        with inp_cb.wait() as x, out_cb.reserve() as o:
+            o.store(ttl.math.transpose(x))
 
     @ttl.datamovement()
     def dm_read():
-        inp_blk = inp_cb.reserve()
-        tx = ttl.copy(inp[0:2, 0:2], inp_blk)
-        tx.wait()
-        inp_cb.push()
+        with inp_cb.reserve() as inp_blk:
+            tx = ttl.copy(inp[0:2, 0:2], inp_blk)
+            tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
-        tx = ttl.copy(out_blk, out[0:2, 0:2])
-        tx.wait()
-        out_cb.pop()
+        with out_cb.wait() as out_blk:
+            tx = ttl.copy(out_blk, out[0:2, 0:2])
+            tx.wait()
 
 
 @ttl.kernel(grid=(1, 1))
@@ -102,25 +92,20 @@ def transpose_4x2_kernel(inp, out):
 
     @ttl.compute()
     def compute_fn():
-        x = inp_cb.wait()
-        o = out_cb.reserve()
-        o.store(ttl.math.transpose(x))
-        inp_cb.pop()
-        out_cb.push()
+        with inp_cb.wait() as x, out_cb.reserve() as o:
+            o.store(ttl.math.transpose(x))
 
     @ttl.datamovement()
     def dm_read():
-        inp_blk = inp_cb.reserve()
-        tx = ttl.copy(inp[0:4, 0:2], inp_blk)
-        tx.wait()
-        inp_cb.push()
+        with inp_cb.reserve() as inp_blk:
+            tx = ttl.copy(inp[0:4, 0:2], inp_blk)
+            tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
-        tx = ttl.copy(out_blk, out[0:2, 0:4])
-        tx.wait()
-        out_cb.pop()
+        with out_cb.wait() as out_blk:
+            tx = ttl.copy(out_blk, out[0:2, 0:4])
+            tx.wait()
 
 
 # =============================================================================
@@ -136,26 +121,20 @@ def power_square_kernel(inp, out):
 
     @ttl.compute()
     def compute_fn():
-        x = inp_cb.wait()
-        o = out_cb.reserve()
-        result = ttl.math.power(x, 2)
-        o.store(result)
-        inp_cb.pop()
-        out_cb.push()
+        with inp_cb.wait() as x, out_cb.reserve() as o:
+            o.store(ttl.math.power(x, 2))
 
     @ttl.datamovement()
     def dm_read():
-        inp_blk = inp_cb.reserve()
-        tx = ttl.copy(inp[0, 0], inp_blk)
-        tx.wait()
-        inp_cb.push()
+        with inp_cb.reserve() as inp_blk:
+            tx = ttl.copy(inp[0, 0], inp_blk)
+            tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
-        tx = ttl.copy(out_blk, out[0, 0])
-        tx.wait()
-        out_cb.pop()
+        with out_cb.wait() as out_blk:
+            tx = ttl.copy(out_blk, out[0, 0])
+            tx.wait()
 
 
 @ttl.kernel(grid=(1, 1))
@@ -166,26 +145,20 @@ def power_cube_kernel(inp, out):
 
     @ttl.compute()
     def compute_fn():
-        x = inp_cb.wait()
-        o = out_cb.reserve()
-        result = ttl.math.power(x, 3)
-        o.store(result)
-        inp_cb.pop()
-        out_cb.push()
+        with inp_cb.wait() as x, out_cb.reserve() as o:
+            o.store(ttl.math.power(x, 3))
 
     @ttl.datamovement()
     def dm_read():
-        inp_blk = inp_cb.reserve()
-        tx = ttl.copy(inp[0, 0], inp_blk)
-        tx.wait()
-        inp_cb.push()
+        with inp_cb.reserve() as inp_blk:
+            tx = ttl.copy(inp[0, 0], inp_blk)
+            tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
-        tx = ttl.copy(out_blk, out[0, 0])
-        tx.wait()
-        out_cb.pop()
+        with out_cb.wait() as out_blk:
+            tx = ttl.copy(out_blk, out[0, 0])
+            tx.wait()
 
 
 # =============================================================================
@@ -203,40 +176,28 @@ def where_kernel(cond, true_val, false_val, out):
 
     @ttl.compute()
     def compute_fn():
-        c = cond_cb.wait()
-        t = true_cb.wait()
-        f = false_cb.wait()
-        o = out_cb.reserve()
-        result = ttl.math.where(c, t, f)
-        o.store(result)
-        cond_cb.pop()
-        true_cb.pop()
-        false_cb.pop()
-        out_cb.push()
+        with cond_cb.wait() as c, true_cb.wait() as t, false_cb.wait() as f, out_cb.reserve() as o:
+            o.store(ttl.math.where(c, t, f))
 
     @ttl.datamovement()
     def dm_read():
-        cond_blk = cond_cb.reserve()
-        tx_cond = ttl.copy(cond[0, 0], cond_blk)
-        tx_cond.wait()
-        cond_cb.push()
+        with cond_cb.reserve() as cond_blk:
+            tx_cond = ttl.copy(cond[0, 0], cond_blk)
+            tx_cond.wait()
 
-        true_blk = true_cb.reserve()
-        tx_true = ttl.copy(true_val[0, 0], true_blk)
-        tx_true.wait()
-        true_cb.push()
+        with true_cb.reserve() as true_blk:
+            tx_true = ttl.copy(true_val[0, 0], true_blk)
+            tx_true.wait()
 
-        false_blk = false_cb.reserve()
-        tx_false = ttl.copy(false_val[0, 0], false_blk)
-        tx_false.wait()
-        false_cb.push()
+        with false_cb.reserve() as false_blk:
+            tx_false = ttl.copy(false_val[0, 0], false_blk)
+            tx_false.wait()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
-        tx = ttl.copy(out_blk, out[0, 0])
-        tx.wait()
-        out_cb.pop()
+        with out_cb.wait() as out_blk:
+            tx = ttl.copy(out_blk, out[0, 0])
+            tx.wait()
 
 
 # =============================================================================
@@ -348,6 +309,10 @@ def test_power_cube(device):
 # =============================================================================
 
 
+@pytest.mark.xfail(
+    reason="where_tile uses SFPU macro not implemented in simulator",
+    strict=False,
+)
 def test_where_basic(device):
     """Test where operation with basic condition."""
     cond_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
