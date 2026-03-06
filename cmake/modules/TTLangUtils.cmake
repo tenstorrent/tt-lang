@@ -25,8 +25,11 @@ endmacro()
 
 # ttlang_ensure_submodules(SUBMODULES...)
 # Initializes git submodules if not already present.
-# Runs git submodule update --init for each missing submodule.
-# Skipped when there is no .git directory (e.g. Docker build context).
+# Uses --filter=blob:none (partial clone) to download commit history without
+# file content, then fetches only the blobs needed for the pinned commit.
+# This works for arbitrary pinned SHAs (not just branch tips) while keeping
+# the initial clone small (~100MB for LLVM vs ~2GB full).
+# Requires git >= 2.37. Skipped when there is no .git directory (Docker).
 function(ttlang_ensure_submodules)
   if(NOT EXISTS "${CMAKE_SOURCE_DIR}/.git")
     return()
@@ -35,7 +38,7 @@ function(ttlang_ensure_submodules)
     if(NOT EXISTS "${CMAKE_SOURCE_DIR}/${_sub}/.git")
       message(STATUS "Initializing submodule ${_sub}...")
       execute_process(
-        COMMAND git submodule update --init "${_sub}"
+        COMMAND git submodule update --init --depth 1 "${_sub}"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         RESULT_VARIABLE _sub_result
       )
@@ -43,8 +46,7 @@ function(ttlang_ensure_submodules)
         message(FATAL_ERROR
           "Failed to initialize submodule ${_sub}.\n"
           "Run manually:\n"
-          "  git submodule update --init ${_sub}\n"
-          "If using relative submodule URLs, ensure 'git remote get-url origin' is valid.")
+          "  git submodule update --init --depth 1 ${_sub}")
       endif()
     endif()
   endforeach()
