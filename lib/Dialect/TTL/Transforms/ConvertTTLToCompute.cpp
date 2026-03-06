@@ -346,28 +346,20 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
     Value tileResult;
 
-    // Special case: BcastOp reads from CB, needs TileBcastOp
-    if (auto bcastOp = dyn_cast<BcastOp>(op)) {
-      Value inputTile = tensorToTile[bcastOp.getInput()];
-      Value outputTile = body->getArguments().back(); // output block arg
-      tileResult = rewriter.create<TileBcastOp>(
-          loc, tileType, inputTile, outputTile, bcastOp.getBcastTypeAttr());
-    } else {
-      // Elementwise ops
-      SmallVector<Value, 2> tileOperands;
-      for (Value operand : getElementwiseOperands(op)) {
-        auto it2 = tensorToTile.find(operand);
-        if (it2 == tensorToTile.end()) {
-          return op->emitError(
-              "fusion failed: operand not mapped to tile value");
-        }
-        tileOperands.push_back(it2->second);
+    // Elementwise ops
+    SmallVector<Value, 2> tileOperands;
+    for (Value operand : getElementwiseOperands(op)) {
+      auto it2 = tensorToTile.find(operand);
+      if (it2 == tensorToTile.end()) {
+        return op->emitError(
+            "fusion failed: operand not mapped to tile value");
       }
+      tileOperands.push_back(it2->second);
+    }
 
-      tileResult = emitTileOpFor(rewriter, loc, op, tileOperands, tileType);
-      if (!tileResult) {
-        return op->emitError("fusion failed: unsupported op type");
-      }
+    tileResult = emitTileOpFor(rewriter, loc, op, tileOperands, tileType);
+    if (!tileResult) {
+      return op->emitError("fusion failed: unsupported op type");
     }
 
     tensorToTile[op->getResult(0)] = tileResult;
@@ -647,29 +639,47 @@ static LogicalResult validateBcastExpansion(BcastOp op, bool expandRows,
   return success();
 }
 
+/// Find the output tensor type from the store on an op's result.
+static RankedTensorType findOutputTypeFromStore(Operation *op) {
+  assert(op->getNumResults() > 0 && "expected op with results");
+  for (OpOperand &use : op->getResult(0).getUses()) {
+    if (auto storeOp = dyn_cast<StoreOp>(use.getOwner())) {
+      return getTensorType(storeOp.getView());
+    }
+  }
+  return {};
+}
+
 /// Pattern for bcast op: TTL tensor op -> ttl.compute with tile_bcast.
 /// Supports shape expansion where input CB can be smaller than output CB.
+/// Output CB is found via the store chain (like matmul/reduce).
 struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
   using OpRewritePattern<BcastOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(BcastOp op,
                                 PatternRewriter &rewriter) const override {
-    auto outputType = getTensorType(op.getResult());
     auto inputType = getTensorType(op.getInput());
-    if (!outputType || !inputType) {
+    if (!inputType) {
       return failure();
     }
 
     Value inputCb = getAttachedCB(op.getInput());
-    Value outCb = getAttachedCB(op.getOutput());
     if (!inputCb) {
       return op.emitError(
-          "broadcast input must come directly from a circular buffer, not from "
-          "an elementwise result; move the broadcast to its own compute block "
-          "or make it the first operation in a fused sequence");
+          "broadcast input must come directly from a circular buffer");
     }
+
+    Value outCb = findOutputCB(op);
     if (!outCb) {
-      return op.emitError("bcast output must be attached to a circular buffer");
+      return rewriter.notifyMatchFailure(
+          op, "broadcast requires a store to determine output CB");
+    }
+
+    // Get output type from the store view (handles shape expansion).
+    auto outputType = findOutputTypeFromStore(op);
+    if (!outputType) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot determine output type from store");
     }
 
     if (inputType.getRank() != 2 || outputType.getRank() != 2) {
@@ -699,32 +709,27 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     AffineMap inputMap = buildBcastInputMap(ctx, expandRows, expandCols);
 
     SmallVector<Attribute> maps = {AffineMapAttr::get(inputMap),
-                                   AffineMapAttr::get(outputMap),
                                    AffineMapAttr::get(outputMap)};
 
     SmallVector<Attribute> iterTypes(outputType.getRank(),
                                      rewriter.getStringAttr("parallel"));
 
-    // Position compute after all reserves by inserting before the last store.
-    if (findLastStore(op)) {
-      insertAtLastStore(rewriter, op);
-    }
+    insertAtLastStore(rewriter, op);
 
-    Value init = buildInitTensor(rewriter, loc, outputType, op.getOutput());
+    Value init = buildInitTensor(rewriter, loc, outputType, op.getInput());
     Value initAttached =
         rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
 
     auto computeOp = rewriter.create<ComputeOp>(
-        loc, TypeRange{outputType}, ValueRange{op.getInput(), op.getOutput()},
+        loc, TypeRange{outputType}, ValueRange{op.getInput()},
         ValueRange{initAttached}, rewriter.getArrayAttr(maps),
         rewriter.getArrayAttr(iterTypes));
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
     Type scalarType = outputType.getElementType();
     Type tileType = ttcore::TileType::get(scalarType);
-    body->addArgument(tileType, loc);
-    body->addArgument(tileType, loc);
-    body->addArgument(tileType, loc);
+    body->addArgument(tileType, loc); // input tile
+    body->addArgument(tileType, loc); // output tile
 
     rewriter.setInsertionPointToStart(body);
     Value result =

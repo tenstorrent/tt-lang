@@ -604,16 +604,16 @@ def TTL_BcastOp : TTL_Op<"bcast", []> {
   let description = [{
     Broadcasts the input tensor to full tiles based on bcast_type.
     Reads from CB, writes result to DST then packs to output CB.
-    Both input and output must be CB-attached tensors.
+    The output CB is found via the ttl.store on this op's result.
 
     bcast_type specifies the broadcast dimension:
     - Row: broadcast first row to all rows
     - Col: broadcast first column to all columns
     - Scalar: broadcast single value to all elements
   }];
-  let arguments = (ins AnyType:$input, AnyType:$output, TTL_BcastTypeAttr:$bcast_type);
+  let arguments = (ins AnyType:$input, TTL_BcastTypeAttr:$bcast_type);
   let results = (outs AnyType:$result);
-  let assemblyFormat = "$input `,` $output $bcast_type attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
+  let assemblyFormat = "$input $bcast_type attr-dict `:` type($input) `->` type($result)";
 }
 
 def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait]> {

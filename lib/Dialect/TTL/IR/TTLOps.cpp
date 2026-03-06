@@ -865,12 +865,17 @@ mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
                          << ")";
   }
 
-  for (int64_t i = 0; i < tensorTy.getRank(); ++i) {
-    if (tensorTy.getDimSize(i) != viewTy.getDimSize(i)) {
-      return emitOpError() << "tensor shape dimension " << i << " ("
-                           << tensorTy.getDimSize(i)
-                           << ") must match view shape dimension ("
-                           << viewTy.getDimSize(i) << ")";
+  // Allow shape mismatch when the stored value is from a bcast op
+  // (broadcast shape expansion: input CB smaller than output CB).
+  bool isBcast = getTensor().getDefiningOp<BcastOp>() != nullptr;
+  if (!isBcast) {
+    for (int64_t i = 0; i < tensorTy.getRank(); ++i) {
+      if (tensorTy.getDimSize(i) != viewTy.getDimSize(i)) {
+        return emitOpError() << "tensor shape dimension " << i << " ("
+                             << tensorTy.getDimSize(i)
+                             << ") must match view shape dimension ("
+                             << viewTy.getDimSize(i) << ")";
+      }
     }
   }
 

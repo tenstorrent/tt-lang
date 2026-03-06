@@ -43,7 +43,7 @@ def bcast_col_expand_kernel(inp, out):
     def compute_fn():
         with inp_dfb.wait() as i, out_dfb.reserve() as o:
             # bcast handles the (2,1) -> (2,2) expansion internally
-            result = ttl.math.broadcast(i, o, dims=[1])
+            result = ttl.math.broadcast(i, dims=[1])
             o.store(result)
 
     @ttl.datamovement()
@@ -72,7 +72,7 @@ def bcast_row_expand_kernel(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_dfb.wait() as i, out_dfb.reserve() as o:
-            result = ttl.math.broadcast(i, o, dims=[0])
+            result = ttl.math.broadcast(i, dims=[0])
             o.store(result)
 
     @ttl.datamovement()
@@ -100,7 +100,7 @@ def bcast_scalar_expand_kernel(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_dfb.wait() as i, out_dfb.reserve() as o:
-            result = ttl.math.broadcast(i, o, dims=[0, 1])
+            result = ttl.math.broadcast(i, dims=[0, 1])
             o.store(result)
 
     @ttl.datamovement()
@@ -136,7 +136,7 @@ def mul_add_bcast_expand_kernel(a, b, c, out):
     def compute_fn():
         # Stage 1: Bcast c from (2,1) to (2,2)
         with c_dfb.wait() as c_tile, c_bcast_dfb.reserve() as c_out:
-            c_bcast = ttl.math.broadcast(c_tile, c_out, dims=[1])
+            c_bcast = ttl.math.broadcast(c_tile, dims=[1])
             c_out.store(c_bcast)
 
         # Stage 2: Compute (a * b) + c_bcast
@@ -345,20 +345,24 @@ def bcast_col_expand_with_outer_loops_kernel(a, b, c, y):
     y_dfb = ttl.make_dataflow_buffer_like(
         y, shape=(block_rows, block_cols), buffer_factor=2
     )
+    a_bcast_dfb = ttl.make_dataflow_buffer_like(
+        y, shape=(block_rows, block_cols), buffer_factor=2
+    )
 
     @ttl.compute()
     def compute_fn():
         for _ in range(rows):
             for _ in range(cols):
+                with a_dfb.wait() as a_blk, a_bcast_dfb.reserve() as a_out:
+                    a_out.store(ttl.math.broadcast(a_blk, dims=[1]))
+
                 with (
-                    a_dfb.wait() as a_blk,
+                    a_bcast_dfb.wait() as a_bcast,
                     b_dfb.wait() as b_blk,
                     c_dfb.wait() as c_blk,
                     y_dfb.reserve() as y_blk,
                 ):
-                    y_blk.store(
-                        ttl.math.broadcast(a_blk, y_blk, dims=[1]) * b_blk + c_blk
-                    )
+                    y_blk.store(a_bcast * b_blk + c_blk)
 
     @ttl.datamovement()
     def dm_read():

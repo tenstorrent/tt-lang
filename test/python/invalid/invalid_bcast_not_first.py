@@ -23,7 +23,7 @@ import ttl
 # CHECK: broadcast input must come directly from a circular buffer
 # CHECK:   --> {{.*}}invalid_bcast_not_first.py:[[LINE:[0-9]+]]:{{[0-9]+}}
 # CHECK:    |
-# CHECK: [[LINE]] |             result = ttl.math.broadcast(ab, o, dims=[0])
+# CHECK: [[LINE]] |             result = ttl.math.broadcast(ab, dims=[0])
 # CHECK:    |                      ^
 @ttl.kernel(grid=(1, 1))
 def invalid_bcast_kernel(a, b, out):
@@ -36,7 +36,7 @@ def invalid_bcast_kernel(a, b, out):
     def compute_fn():
         with a_dfb.wait() as a_tile, b_dfb.wait() as b_tile, out_dfb.reserve() as o:
             ab = a_tile * b_tile
-            result = ttl.math.broadcast(ab, o, dims=[0])
+            result = ttl.math.broadcast(ab, dims=[0])
             o.store(result)
 
     @ttl.datamovement()

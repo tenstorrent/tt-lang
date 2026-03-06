@@ -86,13 +86,8 @@ class TensorBlock:
         return ttl.div(ast_self.type, ast_self, rhs)
 
     def __matmul__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        """Matrix multiplication is not yet supported via @ operator.
-
-        Use ttl.math.matmul(a, b) instead.
-        """
-        raise NotImplementedError(
-            "Use ttl.math.matmul(a, b) instead of a @ b"
-        )
+        """Matrix multiplication via @ operator. Equivalent to ttl.math.matmul."""
+        return matmul(ast_self, rhs)
 
     def store(ast_self: TensorBlock, rhs: TensorBlock) -> None:
         """Store result tensor to the output CB reserve view.
@@ -418,15 +413,17 @@ def signpost(name: str):
 
 
 @syntax("broadcast")
-def broadcast(input: TensorBlock, output: TensorBlock, dims: List[int]) -> TensorBlock:
+def broadcast(input: TensorBlock, *, dims: List[int]) -> TensorBlock:
     """
     Broadcast over specified dimensions.
 
     Only 2D tensors are supported for broadcast (hardware constraint).
+    The output CB is determined by the ttl.store on this op's result.
+    For shape expansion (output DFB larger than input DFB), the compiler
+    derives the output shape from the store target.
 
     Args:
         input: Input tensor (CB-attached)
-        output: Output tensor (CB-attached, used for output CB tracking)
         dims: Dimensions to broadcast over
 
     Returns:
@@ -453,7 +450,7 @@ def broadcast(input: TensorBlock, output: TensorBlock, dims: List[int]) -> Tenso
     ctx = input.type.context
     i32_type = IntegerType.get_signless(32, ctx)
     bcast_attr = IntegerAttr.get(i32_type, bcast_val)
-    return ttl.bcast(output.type, input, output, bcast_attr)
+    return ttl.bcast(input.type, input, bcast_attr)
 
 
 @syntax("matmul")

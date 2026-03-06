@@ -30,7 +30,7 @@ def invalid_nd_bcast_kernel(inp, out):
     @ttl.compute()
     def compute_fn():
         with inp_dfb.wait() as x, out_dfb.reserve() as o:
-            result = ttl.math.broadcast(x, o, dims=[0])
+            result = ttl.math.broadcast(x, dims=[0])
             o.store(result)
 
     @ttl.datamovement()
