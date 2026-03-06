@@ -860,7 +860,7 @@ def matmul_read():
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.signpost(String: name)` | Declare as signpost. Can be used only with the `with` statement. |
+| `ttl.signpost(str: name)` | Declare as signpost. Can be used only with the `with` statement. |
 
 ## Appendix A. Glossary
 
