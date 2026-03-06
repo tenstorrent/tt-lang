@@ -41,9 +41,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCoreOps.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
-#include "ttmlir/Dialect/TTCore/IR/Utils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -65,26 +63,40 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Default DST capacity (16-bit, double-buffered).
-constexpr std::uint32_t kDefaultDSTCapacity = 8;
+/// Physical DST register size in tiles (constant across all architectures).
+constexpr std::uint32_t kDstPhysicalSizeTiles = 16;
 
 /// Sentinel value for placeholder copy_tile indices. Using max value since
 /// valid indices are small non-negative integers. This is replaced with proper
 /// indices during the copy_tile insertion phase.
 constexpr int64_t kPlaceholderIndex = std::numeric_limits<int64_t>::max();
 
-/// Compute DST capacity based on operation types and device config.
+/// Compute the logical DST capacity based on element types and sync mode.
+///
+/// The DST register file has 16 physical tiles. Logical capacity is derived:
+///   - Default (double-buffered): physical / 2 = 8 tiles
+///   - Full sync (dst_full_sync_en): no halving = 16 tiles
+///   - f32 accumulation: halved again (tiles are 2x wider)
+///
+/// This is a standalone computation that does not require tt-mlir's device
+/// infrastructure (SystemDescAttr, DeviceOp, ChipDescAttr). The formula is
+/// architecture-independent across Grayskull, Wormhole, and Blackhole.
+static std::uint32_t getDstCapacity(bool isFloat32, bool fullSyncEn) {
+  std::uint32_t capacity = kDstPhysicalSizeTiles;
+  if (!fullSyncEn) {
+    capacity /= 2; // Double-buffering halves available tiles.
+  }
+  if (isFloat32) {
+    capacity /= 2; // f32 tiles occupy 2x the space.
+  }
+  return capacity;
+}
+
+/// Compute DST capacity for a compute op.
 /// Returns failure for mixed f32/non-f32 tile arguments.
 /// TODO(#264): Support mixed dtypes instead of erroring (e.g. use f32
 /// capacity).
 static FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
-  // Capacity by datatype and buffering mode:
-  //   Double-buffering (default):
-  //     - f16/bf16: 8 tiles
-  //     - f32: 4 tiles
-  //   Single-buffering (dst_full_sync_en=true):
-  //     - f16/bf16: 16 tiles
-  //     - f32: 8 tiles
   bool fullSyncEn = false;
   if (auto fullSyncAttr =
           computeOp->getAttrOfType<mlir::BoolAttr>(kDstFullSyncEnAttrName)) {
@@ -97,16 +109,12 @@ static FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
     fp32DestAccEn = fp32Attr.getValue();
   }
 
-  Type elementType;
   bool sawF32 = false;
   bool sawNonF32 = false;
   Block &body = computeOp.getRegion().front();
   for (BlockArgument arg : body.getArguments()) {
     std::optional<Type> currentType = getTileElementType(arg.getType());
     if (currentType) {
-      if (!elementType) {
-        elementType = *currentType;
-      }
       if (currentType->isF32()) {
         sawF32 = true;
       } else {
@@ -117,7 +125,6 @@ static FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
 
   if (sawF32) {
     fp32DestAccEn = true;
-    elementType = mlir::Float32Type::get(computeOp.getContext());
   }
 
   if (sawF32 && sawNonF32) {
@@ -127,25 +134,8 @@ static FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
         "incorrect results");
   }
 
-  if (!elementType) {
-    return kDefaultDSTCapacity;
-  }
-
-  if (fp32DestAccEn && !elementType.isF32()) {
-    elementType = mlir::Float32Type::get(computeOp.getContext());
-  }
-
-  if (auto moduleOp = computeOp->getParentOfType<mlir::ModuleOp>()) {
-    bool hasSystemDesc = moduleOp->hasAttr(ttcore::SystemDescAttr::name);
-    bool hasDevice = static_cast<bool>(moduleOp.lookupSymbol<ttcore::DeviceOp>(
-        ttcore::getDefaultDeviceName()));
-    if (hasSystemDesc && hasDevice) {
-      auto chipDesc = ttcore::getOpChipDescAttr(computeOp);
-      return chipDesc.getDstLogicalSizeTiles(elementType, fullSyncEn);
-    }
-  }
-
-  return kDefaultDSTCapacity;
+  bool isFloat32 = sawF32 || fp32DestAccEn;
+  return getDstCapacity(isFloat32, fullSyncEn);
 }
 
 static bool isTileValue(Value v) { return isa<ttcore::TileType>(v.getType()); }

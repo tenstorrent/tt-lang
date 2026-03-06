@@ -47,7 +47,7 @@
 
 // Verify max DST usage output
 // CHECK: === Final DST Assignment ===
-// CHECK: Max DST usage: 1 / 8 registers
+// CHECK: Max DST usage: 1 / 4 registers
 
 func.func @unary_chain_shared_dst(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
@@ -117,7 +117,7 @@ func.func @unary_chain_shared_dst(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 
 // Verify max DST usage output (only 1 register needed now)
 // CHECK: === Final DST Assignment ===
-// CHECK: Max DST usage: 1 / 8 registers
+// CHECK: Max DST usage: 1 / 4 registers
 
 func.func @binary_then_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                    %b: tensor<2x2x!ttcore.tile<32x32, f32>>)

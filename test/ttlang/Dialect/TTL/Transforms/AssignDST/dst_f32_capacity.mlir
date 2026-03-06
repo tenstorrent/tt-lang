@@ -1,6 +1,6 @@
 // Summary: Verify f32 compute ops use reduced DST capacity.
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst),canonicalize,cse)' --split-input-file | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SINGLE-BUFFER
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=OVERRIDE
 
 #idx_map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -49,10 +49,10 @@ func.func @f32_add(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
 
 #idx_map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: Single-buffer override allows dst_idx in [0-7].
-// SINGLE-BUFFER-LABEL: func.func @f32_single_buffer
-// SINGLE-BUFFER: ttl.tile_add {{.*}} {dst_idx = [[SBIDX0:[0-7]]] : i32}
-func.func @f32_single_buffer(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
+// Purpose: Manual dst-capacity=8 override widens the index range to [0-7].
+// OVERRIDE-LABEL: func.func @f32_capacity_override
+// OVERRIDE: ttl.tile_add {{.*}} {dst_idx = [[OVRIDX0:[0-7]]] : i32}
+func.func @f32_capacity_override(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
                              %b: tensor<1x1x!ttcore.tile<32x32, f32>>)
     -> tensor<1x1x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, f32>>
