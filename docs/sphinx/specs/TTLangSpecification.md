@@ -825,21 +825,21 @@ def matmul_read():
 
                 # Measure the entire iteration
 
-                with ttl.signpost("i_m_n iteration")
+                with ttl.signpost("i_m_n iteration"):
 
                     # Measure from reserve to push
 
-                    with ttl.signpost("push c")
+                    with ttl.signpost("push c"):
                         with c_dfb.reserve() as c_blk:
 
                             # Measure only copy
 
-                            with ttl.signpost("read c")
+                            with ttl.signpost("read c"):
                                 c_xf = ttl.copy(C[mt, nt], c_blk)
                                 c_xf.wait()
 
                     for kt in range(KT):
-                        with ttl.signpost("push a and b")
+                        with ttl.signpost("push a and b"):
 
                             # Measure from reserve to push
 
@@ -850,7 +850,7 @@ def matmul_read():
 
                                 # Measure only copy
 
-                                with ttl.signpost("read a and b")
+                                with ttl.signpost("read a and b"):
                                     a_xf = ttl.copy(A[it, mt, kt], a_blk)
                                     b_xf = ttl.copy(B[kt, nt], b_blk)
 
