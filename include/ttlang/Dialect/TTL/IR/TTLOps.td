@@ -667,20 +667,19 @@ def TTL_ReduceOp : TTL_Op<"reduce", []> {
   let description = [{
     Reduces the input tensor along the specified dimension using the specified
     reduce type (sum or max). The scaler tensor provides scaling factors.
-    Reads from CB, writes result to DST then packs to output CB.
-    Both input, scaler, and output must be CB-attached tensors.
+    Reads from CB, writes result to DST. The output CB is determined by the
+    ttl.store on this op's result.
   }];
   let arguments = (ins
     AnyType:$input,
     AnyType:$scaler,
-    AnyType:$output,
     TTL_ReduceTypeAttr:$reduce_type,
     TTL_ReduceDimAttr:$reduce_dim
   );
   let results = (outs AnyType:$result);
   let assemblyFormat = [{
-    $input `,` $scaler `,` $output $reduce_type $reduce_dim attr-dict `:`
-    `(` type($input) `,` type($scaler) `,` type($output) `)` `->` type($result)
+    $input `,` $scaler $reduce_type $reduce_dim attr-dict `:`
+    `(` type($input) `,` type($scaler) `)` `->` type($result)
   }];
 }
 
@@ -713,13 +712,12 @@ def TTL_TransposeOp : TTL_Op<"transpose", []> {
   let summary = "Transpose a 2D tile tensor (swap width and height)";
   let description = [{
     Transposes the input tensor by swapping its two dimensions.
-    Both input and output must be CB-attached tensors.
-    Transpose operates directly on CBs (not through DST), so it takes
-    an explicit output operand rather than using store semantics.
+    Input must be a CB-attached tensor. The output CB is determined by the
+    ttl.store on this op's result.
   }];
-  let arguments = (ins AnyType:$input, AnyType:$output);
+  let arguments = (ins AnyType:$input);
   let results = (outs AnyType:$result);
-  let assemblyFormat = "$input `,` $output attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
+  let assemblyFormat = "$input attr-dict `:` type($input) `->` type($result)";
 }
 
 def TTL_TileTransposeOp : TTL_TileOp<"tile_transpose", [TTL_CBInputTileOpTrait]> {
