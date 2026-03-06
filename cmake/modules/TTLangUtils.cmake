@@ -26,7 +26,11 @@ endmacro()
 # ttlang_ensure_submodules(SUBMODULES...)
 # Initializes git submodules if not already present.
 # Uses --recommend-shallow to respect .gitmodules shallow = true settings.
+# Skipped when there is no .git directory (e.g. Docker build context).
 function(ttlang_ensure_submodules)
+  if(NOT EXISTS "${CMAKE_SOURCE_DIR}/.git")
+    return()
+  endif()
   foreach(_sub IN LISTS ARGN)
     if(NOT EXISTS "${CMAKE_SOURCE_DIR}/${_sub}/.git")
       message(STATUS "Initializing submodule ${_sub}...")
@@ -37,8 +41,10 @@ function(ttlang_ensure_submodules)
       )
       if(NOT _sub_result EQUAL 0)
         message(FATAL_ERROR
-          "Failed to initialize submodule ${_sub}. Run manually:\n"
-          "  git submodule update --init --recommend-shallow ${_sub}")
+          "Failed to initialize submodule ${_sub}.\n"
+          "Run manually:\n"
+          "  git submodule update --init --recommend-shallow ${_sub}\n"
+          "If using relative submodule URLs, ensure 'git remote get-url origin' is valid.")
       endif()
     endif()
   endforeach()
