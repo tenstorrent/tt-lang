@@ -10,72 +10,175 @@
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "llvm/ADT/Twine.h"
 
 namespace mlir::tt::ttl::utils {
 
-/// Collect enclosing scf.for loops from innermost to outermost.
-inline SmallVector<scf::ForOp> collectEnclosingLoops(Operation *op) {
-  SmallVector<scf::ForOp> loops;
+/// Compute a linearized CB tile index from enclosing loop induction variables.
+///
+/// CB tiles are addressed by a flat index into the CB's tile buffer. The
+/// lower-to-loops and subblock passes create nested scf.for loops whose IVs
+/// correspond to positions in the iteration domain. Each loop carries a
+/// constant stride attribute (row-major stride of that dimension in the full
+/// tensor). The linearized index is:
+///
+///   index = sum(IV[d] * stride[d]) + tile_offset
+///
+/// over all compiler-annotated loops (ttl.tile_loop for tile iteration,
+/// ttl.subblock_stride for subblock iteration). Unmarked loops (user loops,
+/// streaming loops) are ignored because they do not affect intra-CB indexing.
+///
+/// The `strideTransform` callback is applied to each stride at pass execution
+/// time before emitting IR. This lets callers extract per-dimension components
+/// (e.g., stride / numCols for a row index) without emitting runtime division.
+///
+/// When `cbShapeRank > 0`, only the innermost cbShapeRank tile loops
+/// contribute, for CBs with lower rank than the iteration domain.
+///
+/// Note: this assumes DMA kernels write tiles into CBs in row-major order,
+/// which is the case for all current tt-metal reader kernels. If a future
+/// layout changes the CB tile ordering, the stride computation here would
+/// need to account for it.
+inline FailureOr<Value> computeCBTileIndexFromLoops(
+    Operation *op, OpBuilder &builder, size_t cbShapeRank,
+    llvm::function_ref<int64_t(int64_t)> strideTransform) {
+  // Collect enclosing scf.for loops from innermost to outermost.
+  SmallVector<scf::ForOp> allLoops;
   for (Operation *parent = op->getParentOp(); parent;
        parent = parent->getParentOp()) {
     if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-      loops.push_back(forOp);
+      allLoops.push_back(forOp);
     }
   }
-  return loops;
-}
 
-/// Compute linearized index from loop induction variables.
-/// For loops with IVs [iv0, iv1, ...] and bounds [ub0, ub1, ...],
-/// computes: iv0 * (ub1 * ub2 * ...) + iv1 * (ub2 * ...) + ...
-inline Value linearizeLoopIndices(OpBuilder &builder, Location loc,
-                                  SmallVectorImpl<scf::ForOp> &loops) {
-  if (loops.empty()) {
-    return builder.create<arith::ConstantIndexOp>(loc, 0);
+  // Classify loops by attribute.
+  SmallVector<scf::ForOp> tileLoops;
+  SmallVector<scf::ForOp> subblockLoops;
+  for (scf::ForOp loop : allLoops) {
+    if (loop->hasAttr(kTileLoopAttrName)) {
+      tileLoops.push_back(loop);
+    } else if (loop->hasAttr(kSubblockStrideAttrName)) {
+      subblockLoops.push_back(loop);
+    }
+    // Unmarked loops are ignored (user loops, external loops).
   }
 
+  // Apply cbShapeRank clipping to tile loops only.
+  if (cbShapeRank > 0 && tileLoops.size() > cbShapeRank) {
+    tileLoops.resize(cbShapeRank);
+  }
+
+  // Validate tile loops.
+  for (scf::ForOp loop : tileLoops) {
+    auto lb = getConstantIntValue(loop.getLowerBound());
+    if (!lb) {
+      return op->emitOpError()
+             << "enclosing tile loop has dynamic lower bound; "
+             << "expected constant bounds from tile loops";
+    }
+    if (*lb != 0) {
+      return op->emitOpError()
+             << "enclosing tile loop has non-zero lower bound (" << *lb
+             << "); expected lb=0 from tile loops";
+    }
+    auto ub = getConstantIntValue(loop.getUpperBound());
+    if (!ub) {
+      return op->emitOpError()
+             << "enclosing tile loop has dynamic upper bound; "
+             << "expected constant bounds from tile loops";
+    }
+  }
+
+  // Validate subblock loops.
+  for (scf::ForOp loop : subblockLoops) {
+    auto lb = getConstantIntValue(loop.getLowerBound());
+    if (!lb) {
+      return op->emitOpError()
+             << "enclosing subblock loop has dynamic lower bound; "
+             << "expected constant bounds from subblock loops";
+    }
+    if (*lb != 0) {
+      return op->emitOpError()
+             << "enclosing subblock loop has non-zero lower bound (" << *lb
+             << "); expected lb=0 from subblock loops";
+    }
+    auto step = getConstantIntValue(loop.getStep());
+    if (!step) {
+      return op->emitOpError() << "enclosing subblock loop has dynamic step; "
+                               << "expected constant step from subblock loops";
+    }
+  }
+
+  Location loc = op->getLoc();
+
+  // Compute index: sum(IV * transform(stride)) + transform(tile_offset).
+  // Tile loops processed outermost first for row-major ordering.
   Value result = builder.create<arith::ConstantIndexOp>(loc, 0);
-  for (size_t i = 0; i < loops.size(); ++i) {
-    scf::ForOp loop = loops[loops.size() - 1 - i];
-    Value stride = builder.create<arith::ConstantIndexOp>(loc, 1);
-    for (size_t j = i + 1; j < loops.size(); ++j) {
-      scf::ForOp innerLoop = loops[loops.size() - 1 - j];
-      stride =
-          builder.create<arith::MulIOp>(loc, stride, innerLoop.getUpperBound());
+  for (scf::ForOp loop : llvm::reverse(tileLoops)) {
+    auto strideAttr = loop->getAttrOfType<IntegerAttr>(kTileLoopAttrName);
+    if (!strideAttr) {
+      return op->emitOpError() << "enclosing tile loop missing stride value on "
+                               << kTileLoopAttrName << " attribute";
     }
-    Value term =
-        builder.create<arith::MulIOp>(loc, loop.getInductionVar(), stride);
+    int64_t stride = strideTransform(strideAttr.getInt());
+    if (stride == 0) {
+      continue;
+    }
+    Value term;
+    if (stride == 1) {
+      term = loop.getInductionVar();
+    } else {
+      Value strideVal = builder.create<arith::ConstantIndexOp>(loc, stride);
+      term =
+          builder.create<arith::MulIOp>(loc, loop.getInductionVar(), strideVal);
+    }
     result = builder.create<arith::AddIOp>(loc, result, term);
   }
+
+  // Add subblock offsets: IV * transform(stride) for each subblock loop.
+  for (scf::ForOp loop : subblockLoops) {
+    auto strideAttr = loop->getAttrOfType<IntegerAttr>(kSubblockStrideAttrName);
+    if (!strideAttr) {
+      return op->emitOpError()
+             << "enclosing subblock loop missing stride value on "
+             << kSubblockStrideAttrName << " attribute";
+    }
+    int64_t stride = strideTransform(strideAttr.getInt());
+    if (stride == 0) {
+      continue;
+    }
+    Value offset;
+    if (stride == 1) {
+      offset = loop.getInductionVar();
+    } else {
+      Value strideVal = builder.create<arith::ConstantIndexOp>(loc, stride);
+      offset =
+          builder.create<arith::MulIOp>(loc, loop.getInductionVar(), strideVal);
+    }
+    result = builder.create<arith::AddIOp>(loc, result, offset);
+  }
+
+  // Add per-tile offset from unrolled emission.
+  if (auto tileOffset = op->getAttrOfType<IntegerAttr>(kTileOffsetAttrName)) {
+    int64_t offset = strideTransform(tileOffset.getInt());
+    if (offset != 0) {
+      Value offsetVal = builder.create<arith::ConstantIndexOp>(loc, offset);
+      result = builder.create<arith::AddIOp>(loc, result, offsetVal);
+    }
+  }
+
   return result;
 }
 
-/// Compute linearized CB tile index from enclosing scf.for loops.
-/// When cbShapeRank > 0, only the innermost cbShapeRank loops are used.
-/// Returns constant 0 if not inside any loops.
-inline Value computeCBTileIndexFromLoops(Operation *op, OpBuilder &builder,
-                                         size_t cbShapeRank = 0) {
-  SmallVector<scf::ForOp> loops = collectEnclosingLoops(op);
-
-  if (cbShapeRank > 0 && loops.size() > cbShapeRank) {
-    loops.resize(cbShapeRank);
-  }
-
-  for (scf::ForOp loop : loops) {
-    auto lb = getConstantIntValue(loop.getLowerBound());
-    assert(lb && *lb == 0 &&
-           "computeCBTileIndexFromLoops: expected lower bound of 0");
-    auto ub = getConstantIntValue(loop.getUpperBound());
-    assert(ub && "computeCBTileIndexFromLoops: expected constant upper bound");
-    auto step = getConstantIntValue(loop.getStep());
-    assert(step && *step == 1 &&
-           "computeCBTileIndexFromLoops: expected step of 1");
-  }
-
-  return linearizeLoopIndices(builder, op->getLoc(), loops);
+/// Convenience overload: identity transform (linearized index).
+inline FailureOr<Value> computeCBTileIndexFromLoops(Operation *op,
+                                                    OpBuilder &builder,
+                                                    size_t cbShapeRank = 0) {
+  return computeCBTileIndexFromLoops(op, builder, cbShapeRank,
+                                     [](int64_t s) { return s; });
 }
 
 /// Convert a TTL CircularBufferType value to a TTKernel CBType value.

@@ -354,6 +354,9 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
     size_t cbShapeRank = viewTy.getRank();
     auto cbTileIndex =
         utils::computeCBTileIndexFromLoops(op, rewriter, cbShapeRank);
+    if (failed(cbTileIndex)) {
+      return failure();
+    }
 
     // Determine DST index from the source op:
     // - Tile compute ops and copy_dst: have dst_idx attribute
@@ -373,10 +376,10 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
                << defOp->getName();
       }
     } else {
-      dstIndex = cbTileIndex;
+      dstIndex = *cbTileIndex;
     }
 
-    rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, cbTileIndex,
+    rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, *cbTileIndex,
                                      /*out_of_order=*/true);
 
     rewriter.eraseOp(op);
@@ -882,8 +885,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
 
   // DST lifecycle ops are not tile compute ops; keep them legal until the
   // tile ops lowering phase.
-  target.addLegalOp<InitSFPUOp, TileRegsAcquireOp, TileRegsCommitOp,
-                    TileRegsWaitOp, TileRegsReleaseOp>();
+  target.addLegalOp<TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
+                    TileRegsReleaseOp>();
 
   // SignpostOp is lowered in a separate pass (ttl-lower-signpost-to-emitc).
   target.addLegalOp<SignpostOp>();
@@ -967,7 +970,7 @@ lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
           return false;
         }
         // DST lifecycle ops are illegal.
-        if (isa<InitSFPUOp, TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
+        if (isa<TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
                 TileRegsReleaseOp>(op)) {
           return false;
         }
@@ -1014,7 +1017,8 @@ removeStructuralTTLOps(ModuleOp mod, MLIRContext &ctx,
 static void removeTensorDataflowOps(func::FuncOp func) {
   SmallVector<Operation *> deadOps;
   func.walk([&](Operation *op) {
-    if (isa<tensor::ExtractOp, tensor::EmptyOp>(op) && op->use_empty()) {
+    if (isa<tensor::ExtractOp, tensor::ExtractSliceOp, tensor::EmptyOp>(op) &&
+        op->use_empty()) {
       deadOps.push_back(op);
     }
   });

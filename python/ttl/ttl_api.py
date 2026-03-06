@@ -1147,6 +1147,7 @@ def _compile_kernel(
 
         pipeline_passes += [
             "convert-ttl-to-ttkernel",
+            "ttkernel-insert-inits",
             "canonicalize",
             "cse",
             "lower-affine",
