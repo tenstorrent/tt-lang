@@ -309,10 +309,6 @@ def test_power_cube(device):
 # =============================================================================
 
 
-@pytest.mark.xfail(
-    reason="where_tile uses SFPU macro not implemented in simulator",
-    strict=False,
-)
 def test_where_basic(device):
     """Test where operation with basic condition."""
     cond_torch = torch.zeros((32, 32), dtype=torch.bfloat16)

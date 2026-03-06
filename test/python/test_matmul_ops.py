@@ -31,6 +31,7 @@ from ttlang_test_utils import assert_allclose, to_l1
 import ttl
 
 
+
 # =============================================================================
 # Single-tile matmul kernel: [1x1] @ [1x1] = [1x1] tiles
 # =============================================================================
@@ -130,22 +131,19 @@ def matmul_m_tiling_kernel(a, b, c):
 
     @ttl.datamovement()
     def dm_read():
-        a_blk = a_cb.reserve()
-        tx_a = ttl.copy(a[0:2, 0:1], a_blk)
-        tx_a.wait()
-        a_cb.push()
+        with a_cb.reserve() as a_blk:
+            tx_a = ttl.copy(a[0:2, 0:1], a_blk)
+            tx_a.wait()
 
-        b_blk = b_cb.reserve()
-        tx_b = ttl.copy(b[0, 0], b_blk)
-        tx_b.wait()
-        b_cb.push()
+        with b_cb.reserve() as b_blk:
+            tx_b = ttl.copy(b[0, 0], b_blk)
+            tx_b.wait()
 
     @ttl.datamovement()
     def dm_write():
-        c_blk = c_cb.wait()
-        tx = ttl.copy(c_blk, c[0:2, 0:1])
-        tx.wait()
-        c_cb.pop()
+        with c_cb.wait() as c_blk:
+            tx = ttl.copy(c_blk, c[0:2, 0:1])
+            tx.wait()
 
 
 # =============================================================================
@@ -170,22 +168,19 @@ def matmul_n_tiling_kernel(a, b, c):
 
     @ttl.datamovement()
     def dm_read():
-        a_blk = a_cb.reserve()
-        tx_a = ttl.copy(a[0, 0], a_blk)
-        tx_a.wait()
-        a_cb.push()
+        with a_cb.reserve() as a_blk:
+            tx_a = ttl.copy(a[0, 0], a_blk)
+            tx_a.wait()
 
-        b_blk = b_cb.reserve()
-        tx_b = ttl.copy(b[0:1, 0:2], b_blk)
-        tx_b.wait()
-        b_cb.push()
+        with b_cb.reserve() as b_blk:
+            tx_b = ttl.copy(b[0:1, 0:2], b_blk)
+            tx_b.wait()
 
     @ttl.datamovement()
     def dm_write():
-        c_blk = c_cb.wait()
-        tx = ttl.copy(c_blk, c[0:1, 0:2])
-        tx.wait()
-        c_cb.pop()
+        with c_cb.wait() as c_blk:
+            tx = ttl.copy(c_blk, c[0:1, 0:2])
+            tx.wait()
 
 
 # =============================================================================
@@ -211,22 +206,19 @@ def matmul_full_multitile_kernel(a, b, c):
 
     @ttl.datamovement()
     def dm_read():
-        a_blk = a_cb.reserve()
-        tx_a = ttl.copy(a[0:2, 0:2], a_blk)
-        tx_a.wait()
-        a_cb.push()
+        with a_cb.reserve() as a_blk:
+            tx_a = ttl.copy(a[0:2, 0:2], a_blk)
+            tx_a.wait()
 
-        b_blk = b_cb.reserve()
-        tx_b = ttl.copy(b[0:2, 0:2], b_blk)
-        tx_b.wait()
-        b_cb.push()
+        with b_cb.reserve() as b_blk:
+            tx_b = ttl.copy(b[0:2, 0:2], b_blk)
+            tx_b.wait()
 
     @ttl.datamovement()
     def dm_write():
-        c_blk = c_cb.wait()
-        tx = ttl.copy(c_blk, c[0:2, 0:2])
-        tx.wait()
-        c_cb.pop()
+        with c_cb.wait() as c_blk:
+            tx = ttl.copy(c_blk, c[0:2, 0:2])
+            tx.wait()
 
 
 # =============================================================================
@@ -571,22 +563,19 @@ def matmul_large_multitile_kernel(a, b, c):
 
     @ttl.datamovement()
     def dm_read():
-        a_blk = a_cb.reserve()
-        tx_a = ttl.copy(a[0:4, 0:4], a_blk)
-        tx_a.wait()
-        a_cb.push()
+        with a_cb.reserve() as a_blk:
+            tx_a = ttl.copy(a[0:4, 0:4], a_blk)
+            tx_a.wait()
 
-        b_blk = b_cb.reserve()
-        tx_b = ttl.copy(b[0:4, 0:4], b_blk)
-        tx_b.wait()
-        b_cb.push()
+        with b_cb.reserve() as b_blk:
+            tx_b = ttl.copy(b[0:4, 0:4], b_blk)
+            tx_b.wait()
 
     @ttl.datamovement()
     def dm_write():
-        c_blk = c_cb.wait()
-        tx = ttl.copy(c_blk, c[0:4, 0:4])
-        tx.wait()
-        c_cb.pop()
+        with c_cb.wait() as c_blk:
+            tx = ttl.copy(c_blk, c[0:4, 0:4])
+            tx.wait()
 
 
 class TestMatmulRandomInputs:

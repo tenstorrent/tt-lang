@@ -30,6 +30,7 @@ from ttlang_test_utils import assert_allclose, to_l1, to_dram
 import ttl
 
 
+
 # =============================================================================
 # Single-tile Reduce Kernels
 # =============================================================================
