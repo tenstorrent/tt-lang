@@ -111,10 +111,6 @@ def build_kernel_descriptors(
     cb_indices = list(range(num_cbs))
 
     for spec in kernel_specs:
-        # runtime_args structure: [x][y][args_per_core].
-        # Each core gets an empty arg list (we use my_x/my_y for indexing).
-        runtime_args = [[[] for _ in range(grid_rows)] for _ in range(grid_cols)]
-
         # Build common_runtime_args using tensor_indices.
         # C++ indexes by function-local position, we provide addresses in that order.
         common_runtime_args = [
@@ -132,7 +128,6 @@ def build_kernel_descriptors(
             kernel_source=spec.path,
             core_ranges=core_ranges,
             compile_time_args=kernel_compile_time_args,
-            runtime_args=runtime_args,
             common_runtime_args=common_runtime_args,
             config=spec.config,
         )

@@ -32,9 +32,28 @@ foreach(_sub tt_metal/third_party/tracy/CMakeLists.txt
   endif()
 endforeach()
 
+# ---------------------------------------------------------------------------
+# Verify tt-metal submodule matches the version expected by tt-mlir.
+# ---------------------------------------------------------------------------
+set(_TTMLIR_THIRD_PARTY_CMAKELISTS "${CMAKE_SOURCE_DIR}/third-party/tt-mlir/third_party/CMakeLists.txt")
+if(EXISTS "${_TTMLIR_THIRD_PARTY_CMAKELISTS}")
+  file(STRINGS "${_TTMLIR_THIRD_PARTY_CMAKELISTS}" _ttmetal_version_line
+       REGEX "set\\(TT_METAL_VERSION")
+  if(_ttmetal_version_line)
+    string(REGEX MATCH "\"([a-f0-9]+)\"" _match "${_ttmetal_version_line}")
+    if(_match)
+      ttlang_verify_ttmetal_sha("${TT_METAL_SOURCE_DIR}" "${CMAKE_MATCH_1}")
+    endif()
+  endif()
+endif()
+
 option(TTLANG_ENABLE_PERF_TRACE "Enable performance tracing (Tracy) in tt-metal" ON)
 
 message(STATUS "tt-metal runtime: building from submodule at ${TT_METAL_SOURCE_DIR}")
+
+# Apply patches to tt-metal source tree.
+ttlang_apply_patches("${TT_METAL_SOURCE_DIR}"
+  "${CMAKE_SOURCE_DIR}/third-party/patches/ttmetal-*.patch")
 
 # Install minimal Python dependencies required to import ttnn at runtime
 ttlang_pip_install_requirements("${Python3_EXECUTABLE}"
@@ -67,6 +86,13 @@ set(_TTNN_SO "${TTMETAL_BUILD_DIR}/ttnn/_ttnn.so")
 if(EXISTS "${_TTNN_SO}")
   message(STATUS "tt-metal already built at ${TTMETAL_BUILD_DIR}, skipping rebuild")
 else()
+  # Remove any stale build dir (e.g. from a previous failed configure) to
+  # avoid CMakeCache.txt conflicts with the new configuration.
+  if(EXISTS "${TTMETAL_BUILD_DIR}")
+    message(STATUS "Removing stale tt-metal build directory at ${TTMETAL_BUILD_DIR}")
+    file(REMOVE_RECURSE "${TTMETAL_BUILD_DIR}")
+  endif()
+
   # --- Configure ---
   set(_TTMETAL_CMAKE_ARGS
     -G Ninja
@@ -75,7 +101,8 @@ else()
     -DCMAKE_BUILD_TYPE=Release
     -DCMAKE_INSTALL_PREFIX=${TTMETAL_BUILD_DIR}
     -DCMAKE_INSTALL_MESSAGE=NEVER
-    -DCMAKE_TOOLCHAIN_FILE=${TT_METAL_SOURCE_DIR}/cmake/x86_64-linux-clang-17-libstdcpp-toolchain.cmake
+    -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+    -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
     -DCMAKE_CXX_COMPILER_LAUNCHER=${CMAKE_CXX_COMPILER_LAUNCHER}
     -DCPM_SOURCE_CACHE=${CPM_SOURCE_CACHE}
     # Python bindings -- use the same interpreter as the tt-lang venv
@@ -143,3 +170,15 @@ file(COPY_FILE
 set(TT_METAL_HOME "${TT_METAL_SOURCE_DIR}")
 set(TT_METAL_PYTHON_PATH "${TT_METAL_SOURCE_DIR}/ttnn:${TT_METAL_SOURCE_DIR}/tools")
 set(TT_METAL_LIB_PATH "${TTMETAL_BUILD_DIR}/lib:${TTMETAL_BUILD_DIR}/tt_metal:${TTMETAL_BUILD_DIR}/ttnn")
+
+# ---------------------------------------------------------------------------
+# clean-ttmetal target: removes tt-metal build dir and copied extensions so
+# the next cmake configure rebuilds from scratch.
+# ---------------------------------------------------------------------------
+add_custom_target(clean-ttmetal
+  COMMAND ${CMAKE_COMMAND} -E rm -rf "${TTMETAL_BUILD_DIR}"
+  COMMAND ${CMAKE_COMMAND} -E rm -f
+    "${TT_METAL_SOURCE_DIR}/ttnn/ttnn/_ttnn.so"
+    "${TT_METAL_SOURCE_DIR}/ttnn/ttnn/_ttnncpp.so"
+  COMMENT "Removing tt-metal build directory. Re-run cmake configure to rebuild."
+)

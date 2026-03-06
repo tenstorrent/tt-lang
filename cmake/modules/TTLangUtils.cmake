@@ -131,3 +131,73 @@ function(ttlang_verify_llvm_sha INSTALL_PREFIX EXPECTED_SHA)
       "  -DTTLANG_ACCEPT_LLVM_MISMATCH=ON")
   endif()
 endfunction()
+
+# ttlang_verify_ttmetal_sha(SUBMODULE_DIR EXPECTED_SHA)
+# Verifies that the tt-metal submodule at SUBMODULE_DIR is checked out at the
+# expected commit SHA. The expected SHA is read from tt-mlir's third_party
+# CMakeLists.txt (TT_METAL_VERSION). On mismatch, emits FATAL_ERROR unless the
+# user passes -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON.
+function(ttlang_verify_ttmetal_sha SUBMODULE_DIR EXPECTED_SHA)
+  execute_process(
+    COMMAND git -C "${SUBMODULE_DIR}" rev-parse HEAD
+    OUTPUT_VARIABLE _actual_sha
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE _git_result
+  )
+
+  if(NOT _git_result EQUAL 0)
+    message(WARNING
+      "Cannot verify tt-metal commit: git rev-parse failed in ${SUBMODULE_DIR}.\n"
+      "SHA verification skipped.")
+    return()
+  endif()
+
+  if(_actual_sha STREQUAL EXPECTED_SHA)
+    ttlang_debug_message("tt-metal SHA verified: ${_actual_sha}")
+    return()
+  endif()
+
+  option(TTLANG_ACCEPT_TTMETAL_MISMATCH
+    "Accept tt-metal SHA mismatch (use at your own risk)" OFF)
+
+  message(AUTHOR_WARNING
+    "tt-metal SHA mismatch!\n"
+    "  Expected (tt-mlir): ${EXPECTED_SHA}\n"
+    "  Actual (submodule): ${_actual_sha}\n"
+    "  Submodule path:     ${SUBMODULE_DIR}\n"
+    "Using a mismatched tt-metal may cause JIT compile failures or runtime errors.\n"
+    "To update: cd ${SUBMODULE_DIR} && git fetch origin ${EXPECTED_SHA} && git checkout ${EXPECTED_SHA}")
+
+  if(NOT TTLANG_ACCEPT_TTMETAL_MISMATCH)
+    message(FATAL_ERROR
+      "tt-metal SHA mismatch. To proceed despite this, re-run with:\n"
+      "  -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON")
+  endif()
+endfunction()
+
+# ttlang_apply_patches(SOURCE_DIR PATCHES_GLOB)
+# Applies git patches matching PATCHES_GLOB to SOURCE_DIR.
+# Skips patches that are already applied (checked via git apply --reverse --check).
+function(ttlang_apply_patches SOURCE_DIR PATCHES_GLOB)
+  file(GLOB _patches "${PATCHES_GLOB}")
+  foreach(_patch ${_patches})
+    # Skip if already applied.
+    execute_process(
+      COMMAND git -C "${SOURCE_DIR}" apply --check --reverse "${_patch}"
+      RESULT_VARIABLE _already_applied
+      OUTPUT_QUIET ERROR_QUIET
+    )
+    if(_already_applied EQUAL 0)
+      continue()
+    endif()
+    get_filename_component(_name "${_patch}" NAME)
+    message(STATUS "Applying patch: ${_name}")
+    execute_process(
+      COMMAND git -C "${SOURCE_DIR}" apply "${_patch}"
+      RESULT_VARIABLE _result
+    )
+    if(NOT _result EQUAL 0)
+      message(WARNING "Failed to apply patch: ${_name}")
+    endif()
+  endforeach()
+endfunction()

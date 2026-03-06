@@ -2,3 +2,6 @@
 # These are the packages ttnn.__init__ imports unconditionally at startup.
 loguru>=0.6.0
 graphviz
+# tracy (tt-metal profiling) is loaded by _ttnn.so when built with ENABLE_TRACY.
+# Its import chain pulls in seaborn via process_device_log.py.
+seaborn>=0.13.2
