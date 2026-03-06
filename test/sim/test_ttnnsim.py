@@ -7,7 +7,6 @@ import pytest
 import torch
 
 from sim import ttnn, TTNN_AVAILABLE
-from sim.constants import MAX_TENSOR_DIMS
 
 # Marker for tests that require ttnn golden functions
 requires_ttnn = pytest.mark.skipif(
@@ -157,11 +156,6 @@ def test_tensor_tile_indexing_invalid_shape():
     t4d = ttnn.Tensor(torch.randn(2, 2, 64, 64))
     with pytest.raises(ValueError, match="does not match tensor rank"):
         _ = t4d[0:1, 0:1]
-
-    # 7D tensor exceeds MAX_TENSOR_DIMS; _validate_tile_alignment raises first.
-    t7d = ttnn.Tensor(torch.randn(2, 2, 2, 2, 64, 64, 64))
-    with pytest.raises(ValueError, match=f"1 to {MAX_TENSOR_DIMS}"):
-        _ = t7d[0, 0, 0, 0, 0:1, 0:1]
 
 
 def test_tensor_tile_indexing_invalid_tile_alignment():

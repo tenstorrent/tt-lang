@@ -15,6 +15,3 @@ from .typedefs import Shape
 _TILE_SIZE = 32  # Standard tile dimensions (32x32)
 # TODO: Should this be a user defined option?
 TILE_SHAPE: Shape = (_TILE_SIZE, _TILE_SIZE)  # Standard tile shape (32x32)
-
-# Maximum number of tensor dimensions supported by the simulator (batch dims + 2 tile dims)
-MAX_TENSOR_DIMS = 6

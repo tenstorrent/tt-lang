@@ -36,7 +36,7 @@ from .blockstate import (
     get_current_thread_type,
 )
 from .dfbstate import DFBState
-from .constants import MAX_TENSOR_DIMS, TILE_SHAPE
+from .constants import TILE_SHAPE
 from .errors import DFBContractError
 from .stats import record_dfb_reserve, record_dfb_wait
 from .ttnnsim import Tensor, tile_count_from_tensor
@@ -908,16 +908,14 @@ class DataflowBuffer:
 
         Args:
             element: Tensor used to determine dtype for zero-initialized reserved blocks
-            shape: Tile-grid shape for each wait/reserve operation (2 to MAX_TENSOR_DIMS dims)
+            shape: Tile-grid shape for each wait/reserve operation (at least 1 dimension)
             buffer_factor: Capacity multiplier (capacity = prod(shape) * buffer_factor)
 
         Raises:
             ValueError: If shape or buffer_factor are invalid
         """
-        if not (1 <= len(shape) <= MAX_TENSOR_DIMS):
-            raise ValueError(
-                f"Shape must have between 1 and {MAX_TENSOR_DIMS} dimensions, got {shape}"
-            )
+        if len(shape) < 1:
+            raise ValueError(f"Shape must have at least 1 dimension, got {shape}")
         if any(s <= 0 for s in shape):
             raise ValueError(f"Shape elements must be positive, got {shape}")
         if buffer_factor <= 0:

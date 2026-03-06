@@ -24,7 +24,6 @@ from test_utils import (
 
 from python.sim import TILE_SHAPE, copy, ttnn
 from python.sim.ttnnsim import Tensor
-from python.sim.constants import MAX_TENSOR_DIMS
 from python.sim.dfb import (
     Block,
     DataflowBuffer,
@@ -193,11 +192,6 @@ def test_error_handling() -> None:
     element = make_ones_tile()
     with pytest.raises(ValueError):
         DataflowBuffer(element=element, shape=(0, 1))  # Invalid shape element
-
-    with pytest.raises(ValueError):
-        DataflowBuffer(
-            element=element, shape=(1,) * (MAX_TENSOR_DIMS + 1)
-        )  # Too many dims
 
     with pytest.raises(ValueError):
         DataflowBuffer(element=element, shape=(1, 1), buffer_factor=0)

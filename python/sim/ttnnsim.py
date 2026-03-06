@@ -32,7 +32,7 @@ except ImportError:
     ttnn = None  # type: ignore[assignment]
     TTNN_AVAILABLE = False  # type: ignore[reportConstantRedefinition]
 
-from .constants import MAX_TENSOR_DIMS, TILE_SHAPE
+from .constants import TILE_SHAPE
 from .typedefs import Count, IndexType, Selector, Shape, TensorKey
 
 # Public constants (mirror TTL constants)
@@ -265,13 +265,13 @@ class Tensor:
         (or exactly 1).
 
         Raises:
-            ValueError: If the tensor has fewer than 1 or more than MAX_TENSOR_DIMS
-                dimensions, or if the tile dimensions are not aligned.
+            ValueError: If the tensor has fewer than 1 dimension,
+                or if the tile dimensions are not aligned.
         """
         ndim = len(self._tensor.shape)
-        if ndim < 1 or ndim > MAX_TENSOR_DIMS:
+        if ndim < 1:
             raise ValueError(
-                f"Tile-style indexing requires 1 to {MAX_TENSOR_DIMS} dimensions, "
+                f"Tile-style indexing requires at least 1 dimension, "
                 f"got {ndim}D tensor"
             )
         if ndim == 1:
