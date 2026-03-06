@@ -1444,7 +1444,7 @@ def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
                 result_source.extend(actual_source)
 
 
-def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
+def matmul(a: Block, b: Block) -> Block:
     """Matrix multiplication of two blocks.
 
     Performs matrix multiplication across the tile grid. If block a has shape (M, K)
@@ -1456,7 +1456,6 @@ def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
     Args:
         a: First input block with shape (M, K)
         b: Second input block with shape (K, N)
-        _output_hint: Optional output block hint (unused in simulator)
 
     Returns:
         Block with shape (M, N) containing the matrix multiplication result

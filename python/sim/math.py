@@ -13,7 +13,7 @@ system similar to ttnnsim.py. Special functions like broadcast and reductions
 are implemented manually.
 """
 
-from typing import Any, Callable, List, Optional
+from typing import Callable, List, Optional
 
 import torch
 
@@ -26,7 +26,7 @@ _ = matmul
 
 def broadcast(
     block: Block,
-    _unused_arg: Optional[Any] = None,
+    *,
     dims: Optional[List[int]] = None,
 ) -> Block:
     """Broadcast a block along specified dimensions.
@@ -45,7 +45,6 @@ def broadcast(
 
     Args:
         block: Input block to broadcast
-        _unused_arg: Unused argument for compatibility (typically output block shape hint)
         dims: List of dimension indices to broadcast along (0-indexed)
 
     Returns:
@@ -419,7 +418,6 @@ def hardtanh(expr: Block, min_val: float, max_val: float) -> Block:
 def reduce_max(
     block: Block,
     scaler: Block,
-    _output_hint: Optional[Block] = None,
     dims: Optional[List[int]] = None,
 ) -> Block:
     """Scaled maximum reduction.
@@ -442,7 +440,6 @@ def reduce_max(
     Args:
         block: Input block to reduce
         scaler: Scaler block
-        _output_hint: Optional output block hint (unused in simulator)
         dims: List of dimension indices to reduce over (0-indexed)
               Example: [0] for rows, [1] for columns, [0, 1] for all
 
@@ -513,7 +510,6 @@ def reduce_max(
 def reduce_sum(
     block: Block,
     scaler: Block,
-    _output_hint: Optional[Block] = None,
     dims: Optional[List[int]] = None,
 ) -> Block:
     """Scaled sum reduction.
@@ -536,7 +532,6 @@ def reduce_sum(
     Args:
         block: Input block to reduce
         scaler: Scaler block
-        _output_hint: Optional output block hint (unused in simulator)
         dims: List of dimension indices to reduce over (0-indexed)
               Example: [0] for rows, [1] for columns, [0, 1] for all
 
@@ -609,7 +604,7 @@ for _name in ["_op_name", "_torch_fn"]:
     globals().pop(_name, None)
 
 
-def transpose(block: Block, _output_hint: Optional[Block] = None) -> Block:
+def transpose(block: Block) -> Block:
     """Transpose a 2D tile tensor (swap width and height).
 
     Performs width-height transpose on input tiles. Each 32x32 tile has its
@@ -619,7 +614,6 @@ def transpose(block: Block, _output_hint: Optional[Block] = None) -> Block:
 
     Args:
         block: Input block with shape (M, N)
-        _output_hint: Optional output block hint (unused in simulator)
 
     Returns:
         Block with shape (N, M), where each tile is transposed
