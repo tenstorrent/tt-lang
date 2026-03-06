@@ -29,10 +29,12 @@ def _ensure_ttnn():
         return ttnn
     try:
         import ttnn as _ttnn
+
         ttnn = _ttnn
     except (ModuleNotFoundError, ImportError):
         pass
     return ttnn
+
 
 import ttl._mlir_libs._ttlang  # Register tt-lang passes
 from pykernel._src.utils import _cleanup_source_code

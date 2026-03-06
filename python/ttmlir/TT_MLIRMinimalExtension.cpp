@@ -5,8 +5,8 @@
 // This replaces tt-mlir's _ttmlir module with one that only includes
 // TTCore, TTKernel, and TTMetal.
 
-#include "TTMLIRMinimalModule.h"
 #include "Dialects.h"
+#include "TTMLIRMinimalModule.h"
 #include "mlir-c/Pass.h"
 
 NB_MODULE(_ttmlir, m) {

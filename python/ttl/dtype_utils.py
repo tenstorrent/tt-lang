@@ -16,10 +16,12 @@ def _ensure_ttnn():
         return ttnn
     try:
         import ttnn as _ttnn
+
         ttnn = _ttnn
     except (ModuleNotFoundError, ImportError):
         pass
     return ttnn
+
 
 from ttl.dialects import ttcore
 

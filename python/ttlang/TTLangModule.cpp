@@ -31,9 +31,7 @@ NB_MODULE(_ttlang, m) {
   // Register dialects into a dialect registry (for site initialization)
   m.def(
       "register_dialects",
-      [](MlirDialectRegistry registry) {
-        ttlangRegisterTTLDialect(registry);
-      },
+      [](MlirDialectRegistry registry) { ttlangRegisterTTLDialect(registry); },
       nb::arg("dialectRegistry"),
       "Register all tt-lang dialects into the given dialect registry");
 

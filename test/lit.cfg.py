@@ -149,13 +149,21 @@ if platform.system() == "Darwin":
 # Add TTNN feature if available.  Use a subprocess to test the import because a
 # broken or partially-built _ttnn.so can segfault, which is not catchable.
 import subprocess as _sp
+
 _ttnn_check = _sp.run(
-    [config.python_executable, "-c",
-     "import ttnn; from ttlang_test_utils import is_ttnn_available; "
-     "raise SystemExit(0 if is_ttnn_available() else 1)"],
+    [
+        config.python_executable,
+        "-c",
+        "import ttnn; from ttlang_test_utils import is_ttnn_available; "
+        "raise SystemExit(0 if is_ttnn_available() else 1)",
+    ],
     capture_output=True,
-    env={**os.environ, "PYTHONPATH": config.test_source_root +
-         os.pathsep + os.environ.get("PYTHONPATH", "")},
+    env={
+        **os.environ,
+        "PYTHONPATH": config.test_source_root
+        + os.pathsep
+        + os.environ.get("PYTHONPATH", ""),
+    },
 )
 if _ttnn_check.returncode == 0:
     config.available_features.add("ttnn")

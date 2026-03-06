@@ -109,7 +109,8 @@ else()
   endif()
 
   set(TTLANG_LLVM_FROM_SUBMODULE ON CACHE BOOL "Whether LLVM is built from submodule" FORCE)
-  set(LLVM_INSTALL_DIR "${CMAKE_BINARY_DIR}/llvm-install")
+  set(LLVM_INSTALL_DIR "${CMAKE_BINARY_DIR}/llvm-install" CACHE PATH
+    "Install prefix for the submodule LLVM/MLIR build")
   set(LLVM_BUILD_DIR "${CMAKE_BINARY_DIR}/llvm-build")
 
   # LLVM build type — independent of the parent project's CMAKE_BUILD_TYPE.
@@ -142,7 +143,7 @@ else()
     message(STATUS "Creating Python venv at ${TTLANG_PYTHON_VENV}...")
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     execute_process(
-      COMMAND ${Python3_EXECUTABLE} -m venv "${TTLANG_PYTHON_VENV}"
+      COMMAND ${Python3_EXECUTABLE} -m venv --prompt ttlang "${TTLANG_PYTHON_VENV}"
       RESULT_VARIABLE _VENV_RESULT
     )
     if(NOT _VENV_RESULT EQUAL 0)
@@ -268,3 +269,12 @@ message(STATUS "LLVM install prefix: ${LLVM_INSTALL_DIR}")
 set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/bin)
 set(LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/lib)
 set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
+
+# ---------------------------------------------------------------------------
+# clean-llvm target: removes LLVM build and install dirs so the next cmake
+# configure rebuilds from scratch.
+# ---------------------------------------------------------------------------
+add_custom_target(clean-llvm
+  COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_BINARY_DIR}/llvm-build"
+  COMMENT "Removing LLVM build directory. Re-run cmake configure to rebuild."
+)

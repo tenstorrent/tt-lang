@@ -26,10 +26,12 @@ def _ensure_ttnn():
         return ttnn
     try:
         import ttnn as _ttnn
+
         ttnn = _ttnn
     except (ModuleNotFoundError, ImportError):
         pass
     return ttnn
+
 
 from .dtype_utils import tile_bytes_from_dtype, torch_dtype_to_ttnn_datatype
 

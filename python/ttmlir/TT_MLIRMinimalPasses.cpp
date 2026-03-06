@@ -4,8 +4,8 @@
 // Minimal pass functions for tt-lang Python API.
 // Provides ttkernel_to_cpp_by_name and related helpers.
 
-#include "TTMLIRMinimalModule.h"
 #include "Dialects.h"
+#include "TTMLIRMinimalModule.h"
 
 #include "mlir/CAPI/IR.h"
 #include "mlir/IR/BuiltinOps.h"
