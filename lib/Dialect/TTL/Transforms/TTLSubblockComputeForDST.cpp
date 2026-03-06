@@ -201,7 +201,11 @@ private:
     // TODO: consider supporting peeling/remainder loops for dimensions whose
     // only divisor <= unrollFactor is 1 (e.g. primes larger than unrollFactor).
     // Currently these fall back to processing one tile at a time, wasting DST
-    // capacity.
+    // capacity. Examples: a 7x1 block with unrollFactor=4 could process 4
+    // tiles then 3 via a remainder loop, but currently processes 1 at a time;
+    // a 5x3 block with unrollFactor=8 has no exact 2D subblock and also
+    // falls back to single-tile. In practice, users can avoid this by choosing
+    // block sizes with non-prime dimensions (e.g. 8x1 instead of 7x1).
     if (subblockProduct <= 1) {
       return success();
     }

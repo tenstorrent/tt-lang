@@ -46,8 +46,10 @@ def create_layout(ctx, config: LayoutConfig):
     Raises:
         ValueError: If configuration is unsupported
     """
-    if len(config.logical_shape) != 2:
-        raise ValueError(f"Only 2D tensors supported, got shape {config.logical_shape}")
+    if len(config.logical_shape) < 2:
+        raise ValueError(
+            f"Tensors must have at least 2 dimensions, got shape {config.logical_shape}"
+        )
 
     if len(config.grid) != 2:
         raise ValueError(f"Only 2D grids supported, got grid {config.grid}")

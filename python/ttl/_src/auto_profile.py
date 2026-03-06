@@ -113,15 +113,14 @@ class ProfileResult:
         self.op_name, self.implicit = parse_signpost_name(signpost)
 
 
-def generate_signpost_name(operation: str, lineno: int, col: int) -> Tuple[str, str]:
+def generate_signpost_name(operation: str, lineno: int, col: int) -> str:
     """
-    Generate before/after signpost names for an operation.
+    Generate signpost name for an operation.
 
     Returns:
-        Tuple of (before_name, after_name)
+        The signpost name (use is_end attribute to distinguish begin/end).
     """
-    base = f"{operation}_L{lineno}_C{col}"
-    return (f"{base}_before", f"{base}_after")
+    return f"{operation}_L{lineno}_C{col}"
 
 
 def parse_device_profile_csv(

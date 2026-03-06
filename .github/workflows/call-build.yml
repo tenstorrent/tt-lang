@@ -193,7 +193,7 @@ jobs:
                   source build/env/activate
                   cmake --build build --target check-ttlang-mlir
 
-            - name: Run ttlang Python binprdings tests
+            - name: Run ttlang Python bindings tests
               run: |
                   source build/env/activate
                   cmake --build build --target check-ttlang-python-bindings
