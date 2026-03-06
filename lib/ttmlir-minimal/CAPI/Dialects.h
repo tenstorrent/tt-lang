@@ -20,6 +20,19 @@ MLIR_DECLARE_CAPI_DIALECT_REGISTRATION(TTMetal, ttmetal);
 MLIR_CAPI_EXPORTED void
 ttmlirMinimalRegisterAllDialects(MlirDialectRegistry registry);
 
+/// Register tt-mlir passes (TTKernel transforms + TTKernelToEmitC).
+MLIR_CAPI_EXPORTED void ttmlirMinimalRegisterPasses(void);
+
+/// Run TTKernelToEmitC conversion pass on a module.
+/// Returns true on success, false on failure.
+MLIR_CAPI_EXPORTED bool ttmlirMinimalRunTTKernelToEmitC(MlirModule module);
+
+/// Translate a named TTKernel function to C++.
+/// Caller must free the returned string with free().
+/// Returns NULL on failure.
+MLIR_CAPI_EXPORTED char *
+ttmlirMinimalTranslateKernelToCpp(MlirModule module, const char *kernelName);
+
 #ifdef __cplusplus
 }
 #endif

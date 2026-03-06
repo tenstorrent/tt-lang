@@ -20,6 +20,8 @@ add_mlir_public_c_api_library(TTMLIRMinimalCAPI
   MLIRTTKernelDialect
   MLIRTTKernelTransforms
   MLIRTTMetalDialect
+  TTMLIRTTKernelToEmitC
+  TTKernelTargetCpp
   MLIRIR
   MLIRCAPITransforms
   MLIRSupport

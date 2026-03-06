@@ -14,10 +14,25 @@ import random
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
 
-try:
-    import ttnn
-except (ModuleNotFoundError, ImportError):
-    ttnn = None
+ttnn = None  # Lazy-loaded on first access via _ensure_ttnn()
+
+
+def _ensure_ttnn():
+    """Lazy import of ttnn to avoid triggering heavy dependencies at module load.
+
+    Returns the ttnn module or None if unavailable. Caches the result in the
+    module-level ``ttnn`` variable so existing ``ttnn.Foo`` call sites work
+    unchanged after a single ``ttnn = _ensure_ttnn()`` call.
+    """
+    global ttnn
+    if ttnn is not None:
+        return ttnn
+    try:
+        import ttnn as _ttnn
+        ttnn = _ttnn
+    except (ModuleNotFoundError, ImportError):
+        pass
+    return ttnn
 
 import ttl._mlir_libs._ttlang  # Register tt-lang passes
 from pykernel._src.utils import _cleanup_source_code
@@ -135,6 +150,7 @@ def _run_profiling_pipeline(
     if not is_auto_profile_enabled():
         return
 
+    _ensure_ttnn()
     if ttnn is None:
         print("[Auto-profile] ttnn not available, skipping profiling")
         return
@@ -212,6 +228,7 @@ def _run_perf_dump(tensors: tuple, kernel_name: str):
     ttl-dump-cb-flow-graph pass), and pipe graph from
     /tmp/ttlang_pipe_graph.json (copied from compiler temp file).
     """
+    _ensure_ttnn()
     from ._src.perf_summary import run as perf_summary_run
 
     # Flush profiler data from device (requires mid-run dump)
@@ -586,6 +603,7 @@ def _compile_ttnn_kernel(
         for name, thread_type in kernel_info:
             print(f"  - {name} ({thread_type})")
 
+    _ensure_ttnn()
     if ttnn is None:
         print("\nttnn not available - cannot compile for ttnn.generic_op")
         return None

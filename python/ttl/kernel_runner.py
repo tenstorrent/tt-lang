@@ -16,10 +16,20 @@ building and execution.
 from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple
 
-try:
-    import ttnn
-except (ModuleNotFoundError, ImportError):
-    ttnn = None
+ttnn = None  # Lazy-loaded via _ensure_ttnn()
+
+
+def _ensure_ttnn():
+    """Lazy import of ttnn."""
+    global ttnn
+    if ttnn is not None:
+        return ttnn
+    try:
+        import ttnn as _ttnn
+        ttnn = _ttnn
+    except (ModuleNotFoundError, ImportError):
+        pass
+    return ttnn
 
 from .dtype_utils import tile_bytes_from_dtype, torch_dtype_to_ttnn_datatype
 
@@ -54,6 +64,7 @@ def build_tensor_accessor_args(tensors: List[Any]) -> List[int]:
     Returns:
         List of compile-time args (flattened TensorAccessorArgs for all tensors).
     """
+    _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 
@@ -90,6 +101,7 @@ def build_kernel_descriptors(
     Returns:
         List of ttnn.KernelDescriptor objects.
     """
+    _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 
@@ -148,6 +160,7 @@ def build_cb_descriptors(
     Returns:
         List of ttnn.CBDescriptor objects.
     """
+    _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 
@@ -212,6 +225,7 @@ def run_kernel_on_device(
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
     """
+    _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 

@@ -6,35 +6,14 @@
 // TTCore, TTKernel, and TTMetal.
 
 #include "TTMLIRMinimalModule.h"
+#include "Dialects.h"
 #include "mlir-c/Pass.h"
-#include "ttmlir/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCore.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
-#include "ttmlir/Dialect/TTKernel/Transforms/Passes.h"
-#include "ttmlir/Dialect/TTMetal/IR/TTMetal.h"
-#include "llvm/Support/PrettyStackTrace.h"
-#include "llvm/Support/Signals.h"
-#include <cstdlib>
-
-// Custom signal handler for clean exit after stack trace
-static void cleanExitSignalHandler(void *cookie) { _exit(1); }
 
 NB_MODULE(_ttmlir, m) {
   m.doc() = "Minimal tt-mlir Python bindings (TTCore + TTKernel + TTMetal)";
 
-  // Enable PrettyStackTrace infrastructure
-  static llvm::PrettyStackTraceProgram prettyStackTraceProgram(0, nullptr);
-  llvm::sys::PrintStackTraceOnErrorSignal("");
-  llvm::sys::AddSignalHandler(cleanExitSignalHandler, nullptr);
-
-  // Register TTKernel transform passes
-  mlir::tt::ttkernel::registerPasses();
-
-  // Register conversion passes we build (can't use registerConversionPasses()
-  // because it registers all passes, including ones we don't link).
-  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
-    return mlir::tt::createConvertTTKernelToEmitC();
-  });
+  // Register TTKernel transform passes and TTKernelToEmitC via CAPI
+  ttmlirMinimalRegisterPasses();
 
   m.def(
       "enable_pretty_stack_traces",
@@ -52,11 +31,8 @@ NB_MODULE(_ttmlir, m) {
   // Register dialects into a dialect registry (for site initialization)
   m.def(
       "register_dialects",
-      [](MlirDialectRegistry _registry) {
-        mlir::DialectRegistry *registry = unwrap(_registry);
-        registry->insert<mlir::tt::ttcore::TTCoreDialect>();
-        registry->insert<mlir::tt::ttkernel::TTKernelDialect>();
-        registry->insert<mlir::tt::ttmetal::TTMetalDialect>();
+      [](MlirDialectRegistry registry) {
+        ttmlirMinimalRegisterAllDialects(registry);
       },
       nb::arg("dialectRegistry"),
       "Register minimal tt-mlir dialects into a registry.");
@@ -64,15 +40,12 @@ NB_MODULE(_ttmlir, m) {
   m.def(
       "register_dialect",
       [](MlirContext context, bool load) {
-        mlir::DialectRegistry registry;
-        registry.insert<mlir::tt::ttcore::TTCoreDialect>();
-        registry.insert<mlir::tt::ttkernel::TTKernelDialect>();
-        registry.insert<mlir::tt::ttmetal::TTMetalDialect>();
-
-        mlir::MLIRContext *mlirContext = unwrap(context);
-        mlirContext->appendDialectRegistry(registry);
+        MlirDialectRegistry registry = mlirDialectRegistryCreate();
+        ttmlirMinimalRegisterAllDialects(registry);
+        mlirContextAppendDialectRegistry(context, registry);
+        mlirDialectRegistryDestroy(registry);
         if (load) {
-          mlirContext->loadAllAvailableDialects();
+          mlirContextLoadAllAvailableDialects(context);
         }
       },
       nb::arg("context"), nb::arg("load") = true,

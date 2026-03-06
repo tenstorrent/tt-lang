@@ -5,15 +5,12 @@
 // Provides ttkernel_to_cpp_by_name and related helpers.
 
 #include "TTMLIRMinimalModule.h"
+#include "Dialects.h"
 
 #include "mlir/CAPI/IR.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/MLIRContext.h"
-#include "mlir/Pass/PassManager.h"
-#include "ttmlir/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
-#include "ttmlir/Target/TTKernel/TTKernelToCpp.h"
 
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
@@ -26,23 +23,20 @@ void populatePassesModule(nb::module_ &m) {
   m.def(
       "ttkernel_to_cpp_by_name",
       [](MlirModule module, const std::string &kernelName) -> std::string {
-        mlir::Operation *moduleOp = unwrap(mlirModuleGetOperation(module));
-
-        // Convert to EmitC first (matching upstream behavior)
-        mlir::PassManager pm(moduleOp->getName());
-        pm.addPass(mlir::tt::createConvertTTKernelToEmitC());
-        if (mlir::failed(pm.run(moduleOp))) {
+        // Convert to EmitC first
+        if (!ttmlirMinimalRunTTKernelToEmitC(module)) {
           throw std::runtime_error("Failed to run TTKernelToEmitC pass");
         }
 
         // Translate single kernel to C++
-        std::string output;
-        llvm::raw_string_ostream os(output);
-        if (mlir::failed(mlir::tt::ttkernel::translateTopLevelKernelToCpp(
-                mlir::cast<mlir::ModuleOp>(moduleOp), os, kernelName))) {
+        char *result =
+            ttmlirMinimalTranslateKernelToCpp(module, kernelName.c_str());
+        if (!result) {
           throw std::runtime_error("Failed to translate kernel '" + kernelName +
                                    "' to C++");
         }
+        std::string output(result);
+        free(result);
         return output;
       },
       nb::arg("module"), nb::arg("kernel_name"),

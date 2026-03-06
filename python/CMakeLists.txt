@@ -82,11 +82,6 @@ declare_mlir_python_extension(TTMLIRMinPythonExtensions.Main
     MLIRCAPIIR
     MLIRCAPITransforms
     TTMLIRMinimalCAPI
-  PRIVATE_LINK_LIBS
-    LLVMSupport
-    TTKernelTargetCpp
-    MLIRTTKernelTransforms
-    TTMLIRTTKernelToEmitC
 
 )
 
@@ -136,9 +131,6 @@ declare_mlir_python_extension(TTLangPythonExtensions.Main
     ttlang/TTLModule.cpp
   EMBED_CAPI_LINK_LIBS
     TTLangCAPI
-  PRIVATE_LINK_LIBS
-    TTLangCAPI
-    TTLangTTLTransforms
 
 )
 
@@ -298,6 +290,7 @@ add_dependencies(TTLangPythonModules TTLangGeneratedElementwise)
 target_include_directories(TTLangPythonModules.extension._ttmlir.dso PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/ttmlir"
   "${CMAKE_SOURCE_DIR}/third-party/tt-mlir/python"
+  "${CMAKE_SOURCE_DIR}/lib/ttmlir-minimal/CAPI"
 )
 
 # ###############################################################################
