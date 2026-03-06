@@ -27,7 +27,7 @@ from ttlang_test_utils import assert_allclose, to_dram
 TILE_SIZE = 32
 GRANULARITY = 2
 
-KERNEL_TEMPLATE = '''
+KERNEL_TEMPLATE = """
 import ttl
 import ttnn
 
@@ -79,7 +79,7 @@ def max_plus_min_kernel(
                 with out_dfb.wait() as out_blk:
                     tx = ttl.copy(out_blk, out[r0:r1, col : col + 1])
                     tx.wait()
-'''
+"""
 
 _kernel_cache = {}
 
