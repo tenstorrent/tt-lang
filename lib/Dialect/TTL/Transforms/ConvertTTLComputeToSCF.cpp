@@ -51,7 +51,7 @@ static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
     // ComputeOp verifier guarantees static shapes, so getNumElements is safe to
     // use here.
     int64_t elements = type.getNumElements();
-    if (rank > maxRank || (rank == maxRank && elements > maxElements)) {
+    if (rank > maxRank || (rank == maxRank && elements >= maxElements)) {
       maxRank = rank;
       maxElements = elements;
       maxRankTensor = operand;
