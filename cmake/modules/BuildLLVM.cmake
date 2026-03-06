@@ -150,6 +150,10 @@ else()
       message(FATAL_ERROR "Failed to create Python venv")
     endif()
 
+    execute_process(
+      COMMAND "${_VENV_PYTHON}" -m pip install --upgrade pip --quiet
+    )
+
   else()
     message(STATUS "Reusing existing Python venv at ${TTLANG_PYTHON_VENV}")
   endif()
