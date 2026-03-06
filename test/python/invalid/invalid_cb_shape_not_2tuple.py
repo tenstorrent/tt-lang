@@ -5,12 +5,12 @@
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: DFB shape must be a 2-tuple.
+Validation test: DFB shape must have at least 2 dimensions.
 """
 
 
-# CHECK: shape must be a 2-tuple
+# CHECK: CB shape must have at least 2 dimensions
 # Validation happens in CircularBuffer.__init__, no ttnn needed
 import ttl
 
-ttl.make_dataflow_buffer_like(None, shape=(1, 1, 1), buffer_factor=2)
+ttl.make_dataflow_buffer_like(None, shape=(1,), buffer_factor=2)
