@@ -9,25 +9,27 @@
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // CHECK-LABEL: func.func @add_exp_scheduled
-// CHECK-DAG:   %[[C0:.*]] = arith.constant 0 : index
+// CHECK:       scf.for
 // CHECK:       ttkernel.tile_regs_acquire
+//
+// Copy tiles grouped by source CB (one init per CB):
+// CHECK:       ttkernel.copy_tile_init(
+// CHECK:       ttkernel.copy_tile(
+// CHECK-NOT:   ttkernel.copy_tile_init
+// CHECK:       ttkernel.copy_tile(
+// CHECK:       ttkernel.copy_tile_init(
+// CHECK:       ttkernel.copy_tile(
+// CHECK-NOT:   ttkernel.copy_tile_init
+// CHECK:       ttkernel.copy_tile(
 //
 // All add ops grouped together (one init):
 // CHECK:       ttkernel.add_binary_tile_init
 // CHECK:       ttkernel.add_binary_tile(
 // CHECK-NOT:   ttkernel.add_binary_tile_init
 // CHECK:       ttkernel.add_binary_tile(
-// CHECK-NOT:   ttkernel.add_binary_tile_init
-// CHECK:       ttkernel.add_binary_tile(
-// CHECK-NOT:   ttkernel.add_binary_tile_init
-// CHECK:       ttkernel.add_binary_tile(
 //
 // All exp_tiles grouped together (one init):
 // CHECK:       ttkernel.exp_tile_init
-// CHECK:       ttkernel.exp_tile(
-// CHECK-NOT:   ttkernel.exp_tile_init
-// CHECK:       ttkernel.exp_tile(
-// CHECK-NOT:   ttkernel.exp_tile_init
 // CHECK:       ttkernel.exp_tile(
 // CHECK-NOT:   ttkernel.exp_tile_init
 // CHECK:       ttkernel.exp_tile(
