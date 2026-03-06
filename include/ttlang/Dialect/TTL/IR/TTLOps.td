@@ -82,9 +82,11 @@ def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
     position. The resulting tensor can be passed to `ttl.copy` to transfer
     tiles starting at the specified position.
 
-    The indices are tile coordinates (not element coordinates). For a tensor
-    with shape [64, 64] and tile size 32x32, valid indices are [0,0], [0,1],
-    [1,0], and [1,1].
+    The indices are tile coordinates (not element coordinates). The number
+    of indices must match the rank of the tensor's tile grid. For a 2D
+    tensor with shape [64, 64] and tile size 32x32, valid indices are
+    [0,0], [0,1], [1,0], and [1,1]. For an ND tensor, indices cover all
+    dimensions of the tile grid.
 
     The result tensor has a reduced shape matching the CB dimensions but
     retains the original tensor's layout encoding. The lowering traces back
@@ -95,17 +97,17 @@ def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %slice = ttl.tensor_slice %tensor[%c0, %c1]
-             : tensor<1x1x2x2x!ttcore.tile<32x32, bf16>, #layout>
-               -> tensor<1x1x1x1x!ttcore.tile<32x32, bf16>, #layout>
+             : tensor<2x2x!ttcore.tile<32x32, bf16>, #layout>
+               -> tensor<1x1x!ttcore.tile<32x32, bf16>, #layout>
     ```
   }];
   let arguments = (ins
     TTNNTensor:$tensor,
-    Index:$tile_row,
-    Index:$tile_col
+    Variadic<Index>:$indices
   );
   let results = (outs AnyRankedTensor:$result);
-  let assemblyFormat = "$tensor `[` $tile_row `,` $tile_col `]` attr-dict `:` type($tensor) `->` type($result)";
+  let assemblyFormat = "$tensor `[` $indices `]` attr-dict `:` type($tensor) `->` type($result)";
+  let hasVerifier = 1;
 }
 
 def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {

@@ -157,10 +157,21 @@ def TTLInsertTileRegsSync
     : Pass<"ttl-insert-tile-regs-sync", "::mlir::func::FuncOp"> {
   let summary = "Insert tile_regs_* synchronization ops around ttl.compute";
   let description = [{
-    Inserts DST register synchronization ops mirroring the TTKernel reg API:
-    - Inside ttl.compute: tile_regs_acquire at entry, tile_regs_commit before yield.
-    - Around ttl.compute: tile_regs_wait and tile_regs_release immediately after
-      the compute op in the parent block.
+    Inserts DST register synchronization ops around `ttl.compute` to enforce
+    the MATH/PACK thread synchronization protocol required by the hardware.
+
+    Two placement modes based on whether the compute was subblocked:
+
+    Subblocked (has `ttl.full_linearization_strides`): the subblock is
+    guaranteed to fit in DST by construction (`ttl-subblock-compute-for-dst`
+    tiles to DST capacity), so sync ops wrap the compute from outside. One
+    acquire/commit/wait/release cycle covers all tiles in the subblock:
+      acquire -> [compute over N tiles] -> commit -> wait -> [N stores] -> release
+
+    Non-subblocked: sync ops are placed inside the compute body for per-tile
+    synchronization. `tile_regs_commit` and `tile_regs_wait` are inserted
+    before the first `ttl.tile_store`, and `tile_regs_release` before yield:
+      acquire -> [compute 1 tile] -> commit -> wait -> [1 store] -> release
   }];
 
   let dependentDialects = [
@@ -274,6 +285,70 @@ def TTLDumpCBFlowGraph
   let options = [
     Option<"outputPath", "output", "std::string", "\"\"",
            "Path to write JSON output (empty for stderr debug only)">
+  ];
+}
+
+def TTKernelInsertInits
+    : Pass<"ttkernel-insert-inits", "::mlir::ModuleOp"> {
+  let summary = "Insert minimal init ops before TTKernel compute ops";
+  let description = [{
+    Inserts hardware initialization ops required before TTKernel compute
+    operations. Two categories of inits are inserted:
+
+    Common inits (`init_sfpu`, `binary_op_init_common`) configure the
+    UNPACK and PACK data format routing for a sync region. These are placed
+    once per sync region, hoisted above any enclosing loops.
+
+    Per-op inits (`exp_tile_init`, `add_tiles_init`, etc.) configure the
+    MATH pipeline for a specific operation type. An init is emitted
+    whenever the op type changes from the previous compute op in
+    linear block order. Init tracking resets at sync boundaries
+    (`tile_regs_acquire`/`commit`/`wait`/`release`).
+
+    Example (consecutive same-type ops share one init):
+    ```mlir
+    // Before:
+    ttkernel.tile_regs_acquire
+    ttkernel.exp_tile(%c0)
+    ttkernel.exp_tile(%c1)
+    ttkernel.log_tile(%c2)
+    ttkernel.tile_regs_commit
+
+    // After:
+    ttkernel.init_sfpu(%cb0, %cb1)
+    ttkernel.tile_regs_acquire
+    ttkernel.exp_tile_init
+    ttkernel.exp_tile(%c0)
+    ttkernel.exp_tile(%c1)      // no re-init (same type)
+    ttkernel.log_tile_init       // re-init on type switch
+    ttkernel.log_tile(%c2)
+    ttkernel.tile_regs_commit
+    ```
+
+    Example (interleaved ops each get their own init):
+    ```mlir
+    // Before:
+    ttkernel.tile_regs_acquire
+    ttkernel.exp_tile(%c0)
+    ttkernel.log_tile(%c1)
+    ttkernel.exp_tile(%c2)
+    ttkernel.tile_regs_commit
+
+    // After:
+    ttkernel.init_sfpu(%cb0, %cb1)
+    ttkernel.tile_regs_acquire
+    ttkernel.exp_tile_init
+    ttkernel.exp_tile(%c0)
+    ttkernel.log_tile_init
+    ttkernel.log_tile(%c1)
+    ttkernel.exp_tile_init       // re-init required (type switched back)
+    ttkernel.exp_tile(%c2)
+    ttkernel.tile_regs_commit
+    ```
+  }];
+
+  let dependentDialects = [
+    "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
 

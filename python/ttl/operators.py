@@ -163,28 +163,34 @@ def _make_tensor_slice(tensor, indices, slice_shape):
 
     Args:
         tensor: The source tensor to slice from
-        indices: (row, col) tile indices for the slice start position
-        slice_shape: (rows, cols) shape for the slice in tiles
+        indices: Tile indices for the slice start position (one per tensor dim)
+        slice_shape: CB shape in tiles (same rank as tensor)
     """
     tensor_type = tensor.type
     if not isinstance(tensor_type, RankedTensorType):
         raise ValueError(f"Expected RankedTensorType, got {tensor_type}")
 
-    # TTL tensors are 2D: [tiles_y, tiles_x]
-    # User provides 2D tile coordinates
-    if tensor_type.rank != 2:
-        raise ValueError(f"Expected rank-2 TTL tensor, got rank {tensor_type.rank}")
+    if tensor_type.rank < 2:
+        raise ValueError(
+            f"TTL tensors must have at least 2 dimensions, got rank {tensor_type.rank}"
+        )
 
-    if len(indices) != 2:
-        raise ValueError(f"Expected 2 tile indices (row, col), got {len(indices)}")
+    if len(indices) != tensor_type.rank:
+        raise ValueError(
+            f"Expected {tensor_type.rank} tile indices for rank-{tensor_type.rank} "
+            f"tensor, got {len(indices)}"
+        )
 
-    row_idx, col_idx = indices
+    if len(slice_shape) != tensor_type.rank:
+        raise ValueError(
+            f"CB shape rank ({len(slice_shape)}) must match tensor rank "
+            f"({tensor_type.rank})"
+        )
 
-    # Build result type: [slice_rows, slice_cols]
     result_type = RankedTensorType.get(
         list(slice_shape), tensor_type.element_type, tensor_type.encoding
     )
-    return ttl.tensor_slice(result_type, tensor, row_idx, col_idx)
+    return ttl.tensor_slice(result_type, tensor, indices)
 
 
 def _is_block(value) -> bool:
@@ -233,23 +239,31 @@ def _process_tensor_subscript(subscript_tuple, cb_shape):
 
     Args:
         subscript_tuple: (tensor, indices) where indices are [(value, is_range), ...]
-        cb_shape: [rows, cols] shape from the CB
+        cb_shape: Shape from the CB (matches tensor rank)
 
     Returns:
         Tensor slice with shape matching cb_shape
     """
     tensor, indices = subscript_tuple
 
-    if len(indices) != 2:
-        raise ValueError(f"Expected 2 indices (row, col), got {len(indices)}")
+    tensor_type = tensor.type
+    if not isinstance(tensor_type, RankedTensorType):
+        raise ValueError(f"Expected RankedTensorType, got {tensor_type}")
 
-    cb_is_multi_tile = cb_shape[0] > 1 or cb_shape[1] > 1
+    expected_indices = tensor_type.rank
+    if len(indices) != expected_indices:
+        raise ValueError(
+            f"Expected {expected_indices} indices for rank-{tensor_type.rank} "
+            f"tensor, got {len(indices)}"
+        )
+
+    cb_is_multi_tile = any(d > 1 for d in cb_shape)
     uses_ranges = any(is_range for _, is_range in indices)
 
     if cb_is_multi_tile and not uses_ranges:
         raise ValueError(
-            f"CB shape {cb_shape} requires range syntax (e.g., tensor[0:2, 0:2]), "
-            f"but got index syntax (e.g., tensor[0, 0])"
+            f"CB shape {cb_shape} requires range syntax "
+            f"(e.g., tensor[0:2, 0:2]), but got index syntax"
         )
 
     # TODO: Validate that range size matches CB shape (requires runtime or
@@ -403,6 +417,8 @@ def broadcast(input: TensorBlock, output: TensorBlock, dims: List[int]) -> Tenso
     """
     Broadcast over specified dimensions.
 
+    Only 2D tensors are supported for broadcast (hardware constraint).
+
     Args:
         input: Input tensor (CB-attached)
         output: Output tensor (CB-attached, used for output CB tracking)
@@ -412,6 +428,12 @@ def broadcast(input: TensorBlock, output: TensorBlock, dims: List[int]) -> Tenso
         Result tensor with broadcast values
     """
     from ttmlir.ir import IntegerAttr, IntegerType
+
+    if isinstance(input.type, RankedTensorType) and input.type.rank != 2:
+        raise ValueError(
+            f"broadcast only supports 2D tensors, got rank {input.type.rank}. "
+            "Use 2D tensors for broadcast operations."
+        )
 
     dims_set = set(dims)
     if dims_set == {0}:

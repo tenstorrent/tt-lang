@@ -15,6 +15,7 @@
     * [6.1. Pipe net](#61-pipe-net)
 * [7. Tensor slice](#7-tensor-slice)
 * [8. Copy](#8-copy)
+    * [8.1. Group transfer](#81-group-transfer)
 * [9. Semaphore](#9-semaphore)
 * [Appendix A. Glossary](#appendix-a-glossary)
 * [Appendix B. Block operators and math functions](#appendix-b-block-operators-and-math-functions)
@@ -32,6 +33,7 @@
 | 0.6 | 02/06/2026 | Add rounding, mask, `ttl.math.transpose`, `ttl.math.fill` and `ttl.math.where` functions |
 | 0.7 | 02/09/2026 | Move `push` and `pop` from `ttl.DataflowBuffer` to `ttl.Block` |
 | 0.8 | 02/09/2026 | Formal block states |
+| 0.9 | 03/04/2026 | Add `ttl.GroupTransfer` |
 
 ## 1. Introduction
 
@@ -127,7 +129,7 @@ x, y, z = ttl.core(dims = 3)
 
 A *dataflow buffer* is a communication primitive for synchronizing the passing of data between thread functions within one Tensix core. A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing TT-NN tensor, *shape* and *buffer factor*.
 
-The shape is expressed as a tuple with outermost dimension first and innermost dimension last. For `ttl.math` functions that take dimension indexes the innermost dimension is indexed as 0, next to innermost as 1, and so on. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. The shape unit affects two innermost dimensions and is a whole tile (32 by 32 scalars) if the tensor has a tiled layout. For example, if a TT-NN tensor is of tiled layout and has shape of `(2, 128, 32)`, the corresponding block that fits this entire tensor will have shape of `(2, 4, 1)`. If tensor has a row-major layout the shape unit is an scalar. For the TT-NN tensor in the above example the corresponding block that fits this entire tensor will have shape of `(2, 128, 32)`.
+The shape is expressed as a tuple with outermost dimension first and innermost dimension last. For `ttl.math` functions that take dimension indexes the innermost dimension is indexed as 0, next to innermost as 1, ttl.Transfer. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. The shape unit affects two innermost dimensions and is a whole tile (32 by 32 scalars) if the tensor has a tiled layout. For example, if a TT-NN tensor is of tiled layout and has shape of `(2, 128, 32)`, the corresponding block that fits this entire tensor will have shape of `(2, 4, 1)`. If tensor has a row-major layout the shape unit is an scalar. For the TT-NN tensor in the above example the corresponding block that fits this entire tensor will have shape of `(2, 128, 32)`.
 
 Shape determines the shape of a *block* returned by one of the *acquisition functions*. The size of a block in L1 memory is determined by shape, shape unit and data type. For example, for a block with shape `(2, 4, 1)`, shape unit of a tile and BF16 data type, its size in L1 will be `2 * 4 * 32 * 1 * 32 * 2 = 16384` bytes. The buffer factor determines the total size of L1 memory allocated for a dataflow buffer. This size as a product of a block size and buffer factor. For the most common case buffer factor defaults to 2 to support double buffering. With double buffered dataflow buffer one Tensix thread can write to a block while another is reading from a block thus enabling enabling the pipelining. For the example above, this means there will be a total of 32768 bytes of L1 memory allocated for the dataflow buffer.
 
@@ -389,7 +391,7 @@ Blocks have a life cycle that starts with acquisition by using dataflow buffer's
 | **MR** | **Must be Read**: the block was waited on or written to and never read and therefore must be read from or pushed. |
 | **RW** | **Read-Write**: the block was waited on or written to (MR) and then read from and therefore can be either read from more times or overwritten. |
 | **A** | **Accumulate**: the block has been accumulated to and can be either continued to be accumulated to or must be read or pushed. |
-| **NAR** | **No Access while Reading**: the block is being asynchronously read from. |
+| **ROR(N)** | **Read Only while Reading**: the block is being asynchronously read from by **N** `ttl.copy`s. |
 | **NAW** | **No Access while Writing**: the block is being asynchronously written to. |
 | **OS** | **Out of Scope**: the block was pushed or popped. |
 
@@ -678,10 +680,70 @@ def dm():
 
 The `ttl.copy` function expresses a variety of data movements that always have two arguments: source and destination. `ttl.copy` returns a *transfer handle* object. A transfer handle has a `wait` function that serves as a barrier. When the `wait` returns the transfer is complete and data in the destination is safe to use.  The `ttl.copy` can only be used inside of a data movement thread function.
 
+### 8.1. Group transfer
+
+When `ttl.copy` function is called multiple times, instead of waiting on each transfer handle, it is possible to group handles and wait on all handles at once. This is done by instantiating `ttl.GroupTransfer` object and then adding handles with its `add` function. Once all handles are added `wait_all` function is called to wait for all transfers to complete.
+
+#### Example
+
+```py
+# ---------------------
+# Nearest Neighbor Upsample
+#
+# Tensor              Torch shape
+# input_images        N, HI, WI, C
+# output_images       N, HO, WO, C
+#
+# HO = HI * scale_factor[0]
+# WO = WI * scale_factor[1]
+
+io_dfb = ttl.make_dataflow_buffer_like(
+    input_images, shape=(C,), buffer_factor=2
+)
+
+@ttl.datamovement()
+def reader():
+    for n in range(N):
+        for hi in range(HI):
+            for wi in range(WI):
+                with io_dfb.reserve() as io_blk:
+
+                    # Copy input pixel channels
+
+                    xf = ttl.copy(input_t[n, hi, wi, :], io_blk)
+
+                    xf.wait()
+
+@ttl.datamovement()
+def writer():
+    for n in range(N):
+        for hi in range(HI):
+            for wi in range(WI):
+                with io_dfb.wait() as io_blk:
+                    gxf = ttl.GroupTransfer()
+
+                    for h_sf in range(scale_factor[0]):
+                        for w_sf in range(scale_factor[1]):
+
+                            # Copy output pixel channels
+
+                            xf = ttl.copy(io_blk, output[n, hi * scale_factor[0] + h_sf, wi * scale_factor[1] + w_sf, :])
+
+                            # Add transfer handle to a group
+
+                            gxf.add(xf)
+
+                    # Wait for all transfers to complete
+
+                    gxf.wait_all()
+```
+
 | Function | Description |
 | :---- | :---- |
-| `ttl.copy(src: ttl.Block, dst: ttl.TensorSlice) -> ttl.TransferHandle`<br><br>`ttl.copy(src: ttl.TensorSlice, dst: ttl.Block) -> ttl.TransferHandle`<br><br>`ttl.copy(src: ttl.Block, dst: ttl.PipeIdentity) -> ttl.TransferHandle`<br><br>`ttl.copy(src: ttl.PipeIdentity, dst: ttl.Block) -> ttl.TransferHandle` | Copy data between a block, a tensor slice, or a pipe. **This function is non-blocking.** The compiler statically checks if the shape of block and tensor slice are compatible and if the shape of block sent to a pipe is compatible with the shape of block received from the same pipe. When a pipe is used as a destination there must be a corresponding `ttl.copy` where the same pipe is used as source. Furthermore, `ttl.copy` with pipe must be guarded by pipe net’s `if_src` and `is_dst` where this pipe is destination and source correspondingly. |
-| `ttl.TransferHandle.wait()` | Wait for data transfer to complete. **This function is blocking.** |
+| `ttl.copy(src: ttl.Block, dst: ttl.TensorSlice) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.TensorSlice, dst: ttl.Block) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.Block, dst: ttl.PipeIdentity) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.PipeIdentity, dst: ttl.Block) -> ttl.Transfer` | Copy data between a block, a tensor slice, or a pipe. **This function is non-blocking.** The compiler statically checks if the shape of block and tensor slice are compatible and if the shape of block sent to a pipe is compatible with the shape of block received from the same pipe. When a pipe is used as a destination there must be a corresponding `ttl.copy` where the same pipe is used as source. Furthermore, `ttl.copy` with pipe must be guarded by pipe net’s `if_src` and `is_dst` where this pipe is destination and source correspondingly. |
+| `ttl.Transfer.wait()` | Wait for data transfer to complete. Transfer handle cannot be used after this function is called.  **This function is blocking.** |
+| `ttl.GroupTransfer.add(xf: ttl.Transfer)` | Add transfer handle to a group. This function cannot be called after `ttl.GroupTransfer.wait_all` was called. |
+| `ttl.GroupTransfer.wait_all()` | Wait for all data transfers in group to complete. Group transfer cannot be used after this function is called. **This function is blocking.** |
 
 ## 9. Semaphore
 
