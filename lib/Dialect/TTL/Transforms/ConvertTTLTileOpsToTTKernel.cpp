@@ -77,6 +77,11 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
     tensor = extract.getTensor();
   }
 
+  // Trace through tensor.extract_slice (from compute subblocking).
+  while (auto slice = tensor.getDefiningOp<tensor::ExtractSliceOp>()) {
+    tensor = slice.getSource();
+  }
+
   // Trace through unrealized conversion casts.
   // After cb_wait lowering, the tensor is an unrealized_cast(ttkernel.cb).
   tensor = traceUnrealizedCasts(tensor);
