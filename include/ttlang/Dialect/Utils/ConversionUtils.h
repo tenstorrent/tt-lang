@@ -17,6 +17,21 @@
 
 namespace mlir::tt::ttl::utils {
 
+/// Collect enclosing tile loops (innermost first) for an operation.
+/// Returns only loops annotated with `kTileLoopAttrName`.
+inline SmallVector<scf::ForOp> collectEnclosingLoops(Operation *op) {
+  SmallVector<scf::ForOp> loops;
+  for (Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+      if (forOp->hasAttr(kTileLoopAttrName)) {
+        loops.push_back(forOp);
+      }
+    }
+  }
+  return loops;
+}
+
 /// Compute a linearized CB tile index from enclosing loop induction variables.
 ///
 /// CB tiles are addressed by a flat index into the CB's tile buffer. The
