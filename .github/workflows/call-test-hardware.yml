@@ -13,11 +13,6 @@ on:
         required: false
         type: string
         default: 'ubuntu'
-      artifact-prefix:
-        description: 'Prefix for artifact names (ttlang or ttlang-fetchcontent)'
-        required: false
-        type: string
-        default: 'ttlang'
       timeout:
         description: 'Job timeout in minutes'
         required: false
@@ -35,11 +30,6 @@ on:
         required: false
         type: string
         default: 'ubuntu'
-      artifact-prefix:
-        description: 'Prefix for artifact names (ttlang or ttlang-fetchcontent)'
-        required: false
-        type: string
-        default: 'ttlang'
       timeout:
         description: 'Job timeout in minutes'
         required: false
@@ -51,23 +41,13 @@ permissions:
   contents: read
 
 jobs:
-  get-mlir-tag:
-    runs-on: ubuntu-latest
-    outputs:
-      mlir-tag: ${{ steps.read.outputs.tag }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: read
-        run: echo "tag=$(cat third-party/tt-mlir-docker-tag | tr -d '[:space:]')" >> $GITHUB_OUTPUT
-
   test-n150:
-    needs: [get-mlir-tag]
     name: "Hardware Tests (${{ inputs.runs-on }})"
     runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.runs-on) }}
     timeout-minutes: ${{ inputs.timeout }}
 
     container:
-      image: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:${{ needs.get-mlir-tag.outputs.mlir-tag }}
+      image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest
       options: --device /dev/tenstorrent
       volumes:
         - /dev/hugepages:/dev/hugepages
@@ -88,6 +68,7 @@ jobs:
       - name: Checkout tt-lang
         uses: actions/checkout@v4
         with:
+          submodules: recursive
           fetch-depth: 0
 
       - name: Git safe directory
@@ -96,7 +77,7 @@ jobs:
       - name: Download build artifacts archive
         uses: actions/download-artifact@v4
         with:
-          name: ${{ format('{0}-ttmlir-install-{1}', inputs.artifact-prefix, inputs.build-os) }}
+          name: ${{ format('ttlang-build-{0}', inputs.build-os) }}
           path: .
 
       - name: Extract build artifacts
@@ -105,10 +86,6 @@ jobs:
           ARTIFACT_FILE=$(.github/scripts/get-artifact-archive-name.sh "${{ github.sha }}")
           tar -I 'zstd --long=31' -xf "${ARTIFACT_FILE}"
           rm -f "${ARTIFACT_FILE}"
-          echo "Checking tt-mlir-install structure..."
-          ls -la tt-mlir-install/ tt-mlir-install/python_packages/ || echo "Did not unpack tt-mlir-install"
-          ls -la /opt/ttmlir-toolchain/venv/bin || echo "No valid ttmlir-toolchain found"
-          find tt-mlir-install/python_packages -name "*ttcore*" 2>/dev/null || echo "No ttcore in tt-mlir-install"
 
       - name: Install test dependencies
         run: |
@@ -138,7 +115,6 @@ jobs:
       - name: Pytests (Python DSL end-to-end tests)
         run: |
           source build/env/activate
-          # Run pytest directly instead of through ninja
           python3 -m pytest test/python -v --tb=long --junitxml=build/test/pytest-report.xml
 
       - name: Simulator tests

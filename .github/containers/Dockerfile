@@ -8,21 +8,18 @@
 #   dist - Pre-built tt-lang for end users (ready to import ttl)
 #
 # Build stages:
-#   build-toolchain - Configure-only (builds tt-mlir via FetchContent, skips tt-lang). Used by ird.
+#   build-toolchain - Configure-only (builds LLVM + tt-metal + tt-mlir, skips tt-lang). Used by ird.
 #   build           - Full tt-lang build (configure + build + install). Used by dist.
 #
 # Docker only runs stages in the dependency chain of the requested target,
 # so `--target ird` never builds tt-lang and `--target dist` never runs build-toolchain.
 
-ARG FROM_TAG=latest
-ARG MLIR_TAG=latest
-
 # =============================================================================
 # Build toolchain only (for ird)
-# CMake configure triggers FetchContent which builds and installs tt-mlir,
+# CMake configure triggers LLVM, tt-metal, and tt-mlir builds from submodules,
 # but tt-lang itself is not built or installed.
 # =============================================================================
-FROM ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:${MLIR_TAG} AS build-toolchain
+FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:latest AS build-toolchain
 SHELL ["/bin/bash", "-c"]
 
 ENV TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
@@ -40,7 +37,7 @@ RUN chmod +x /tmp/build-and-install.sh && /tmp/build-and-install.sh --toolchain-
 # =============================================================================
 # Build tt-lang (for dist)
 # =============================================================================
-FROM ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:${MLIR_TAG} AS build
+FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:latest AS build
 SHELL ["/bin/bash", "-c"]
 
 ENV TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
@@ -62,13 +59,13 @@ RUN chmod +x /tmp/build-and-install.sh && /tmp/build-and-install.sh && rm /tmp/b
 # =============================================================================
 # IRD (for developers who will clone and build their own tt-lang)
 # =============================================================================
-FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:${FROM_TAG} AS ird
+FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:latest AS ird
 SHELL ["/bin/bash", "-c"]
 
 ENV TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Copy toolchain (tt-mlir only; tt-lang was never built)
+# Copy toolchain (LLVM + tt-metal + tt-mlir only; tt-lang was never built)
 COPY --from=build-toolchain $TTMLIR_TOOLCHAIN_DIR $TTMLIR_TOOLCHAIN_DIR
 
 # Set write permissions
@@ -79,7 +76,6 @@ COPY requirements.txt /tmp/requirements.txt
 COPY dev-requirements.txt /tmp/dev-requirements.txt
 RUN $TTMLIR_TOOLCHAIN_DIR/venv/bin/python -m pip install -r /tmp/dev-requirements.txt tt-smi --no-cache-dir && \
     rm /tmp/requirements.txt /tmp/dev-requirements.txt && \
-    (rm -f /etc/apt/sources.list.d/kitware*.list 2>/dev/null || true) && \
     apt-get update && apt-get install -y \
     ssh \
     sudo \
@@ -103,20 +99,19 @@ CMD ["/bin/bash"]
 # =============================================================================
 # Dist (pre-built tt-lang for users)
 # =============================================================================
-FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:${FROM_TAG} AS dist
+FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:latest AS dist
 SHELL ["/bin/bash", "-c"]
 
 ENV TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
 
-# Copy full toolchain with tt-mlir AND tt-lang installed
+# Copy full toolchain with LLVM + tt-metal + tt-mlir AND tt-lang installed
 COPY --from=build $TTMLIR_TOOLCHAIN_DIR $TTMLIR_TOOLCHAIN_DIR
 
 # Set write permissions
 RUN chmod -R 777 $TTMLIR_TOOLCHAIN_DIR
 
 # Install text editors, SSH, and tt-smi
-RUN rm -f /etc/apt/sources.list.d/kitware*.list 2>/dev/null || true && \
-    apt-get update && apt-get install -y vim nano openssh-server && rm -rf /var/lib/apt/lists/* && \
+RUN apt-get update && apt-get install -y vim nano openssh-server && rm -rf /var/lib/apt/lists/* && \
     mkdir -p /run/sshd && \
     $TTMLIR_TOOLCHAIN_DIR/venv/bin/python -m pip install tt-smi --no-cache-dir
 

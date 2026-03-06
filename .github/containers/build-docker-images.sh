@@ -5,10 +5,9 @@
 # Build and optionally push tt-lang Docker images
 #
 # Usage:
-#   ./build-docker-images.sh [MLIR_SHA] [--check-only] [--no-push] [--no-cache] [--image-type <base|dist|ird>]
+#   ./build-docker-images.sh [--check-only] [--no-push] [--no-cache] [--image-type <base|dist|ird>]
 #
 # Arguments:
-#   MLIR_SHA          - tt-mlir commit SHA (defaults to third-party/tt-mlir.commit)
 #   --check-only      - Only check if images exist, don't build
 #   --no-push         - Build locally but don't push to registry
 #   --no-cache        - Build from scratch without using Docker cache
@@ -20,7 +19,6 @@
 set -e
 
 # Parse arguments
-MLIR_SHA=""
 CHECK_ONLY=false
 NO_PUSH=false
 NO_CACHE=false
@@ -45,9 +43,6 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         *)
-            if [ -z "$MLIR_SHA" ]; then
-                MLIR_SHA="$1"
-            fi
             shift
             ;;
     esac
@@ -58,14 +53,6 @@ if [ -n "$IMAGE_TYPE" ] && [ "$IMAGE_TYPE" != "base" ] && [ "$IMAGE_TYPE" != "di
     echo "ERROR: Invalid --image-type '$IMAGE_TYPE'. Must be one of: base, dist, ird"
     exit 1
 fi
-
-# Default to pinned tt-mlir commit if not specified
-if [ -z "$MLIR_SHA" ]; then
-    MLIR_SHA=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
-fi
-
-# Pinned tt-mlir CI Docker image tag (used as base image in Dockerfile)
-MLIR_TAG=$(cat third-party/tt-mlir-docker-tag | tr -d '[:space:]')
 
 REPO=tenstorrent/tt-lang
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -79,7 +66,6 @@ if ! git diff-index --quiet HEAD --; then
 fi
 
 echo "=== tt-lang Docker Image Builder ==="
-echo "tt-mlir SHA: $MLIR_SHA"
 echo "Check only: $CHECK_ONLY"
 echo "No push: $NO_PUSH"
 echo "No cache: $NO_CACHE"
@@ -89,16 +75,13 @@ echo ""
 # Get version from git tags (e.g., v0.1.0 or v0.1.0-5-gabc1234 for dev builds)
 TTLANG_VERSION=$(git describe --tags --match "v[0-9]*" --always --dirty 2>/dev/null || echo "v0.0.0-unknown")
 echo "tt-lang version: $TTLANG_VERSION"
-echo "tt-mlir SHA: ${MLIR_SHA:0:12}"
 
 # Docker tag is the git version (sanitized for Docker - replace / and : with -)
 DOCKER_TAG=$(echo "$TTLANG_VERSION" | sed 's/[\/:]/-/g')
 echo "Docker tag: $DOCKER_TAG"
 echo ""
 
-# Note: tt-lang builds tt-mlir via FetchContent, so we don't require
-# a pre-existing tt-mlir Docker image (unlike tt-xla which layers on top)
-echo "Note: tt-lang uses FetchContent to build tt-mlir from source"
+echo "Note: tt-lang builds LLVM, tt-metal, and tt-mlir from submodules"
 echo ""
 
 # Build function
@@ -108,7 +91,6 @@ build_image() {
     local target=$3
 
     # Always use registry path for image references (Dockerfile expects this)
-    # Simplified names are just aliases for user convenience
     local local_image="$name:$DOCKER_TAG"
     local registry_image="ghcr.io/$REPO/$name:$DOCKER_TAG"
 
@@ -117,7 +99,7 @@ build_image() {
     # Check if image already exists in registry (only when not using --no-push)
     if [ "$NO_PUSH" = false ]; then
         if docker manifest inspect "$registry_image" > /dev/null 2>&1; then
-            echo "✓ Image already exists: $registry_image"
+            echo "Image already exists: $registry_image"
             if [ "$CHECK_ONLY" = true ]; then
                 return 0
             fi
@@ -126,7 +108,7 @@ build_image() {
         fi
 
         if [ "$CHECK_ONLY" = true ]; then
-            echo "✗ Image does not exist: $registry_image"
+            echo "Image does not exist: $registry_image"
             return 2
         fi
     fi
@@ -142,11 +124,6 @@ build_image() {
         target_arg="--target $target"
     fi
 
-    local build_args="--build-arg FROM_TAG=$DOCKER_TAG"
-    if [ -n "$MLIR_TAG" ]; then
-        build_args="$build_args --build-arg MLIR_TAG=$MLIR_TAG"
-    fi
-
     # Build options
     local cache_arg=""
     if [ "$NO_CACHE" = true ]; then
@@ -154,12 +131,10 @@ build_image() {
     fi
 
     # Always tag with registry path (required for Dockerfile FROM references)
-    # Also add simplified name and latest tags
     docker build \
         --progress=plain \
         $cache_arg \
         $target_arg \
-        $build_args \
         -t "$registry_image" \
         -t "$local_image" \
         -t "$name:latest" \
@@ -177,14 +152,13 @@ build_image() {
     echo "Disk space after $name:"
     df -h | head -2
 
-    echo "✓ Done: $name"
+    echo "Done: $name"
     echo ""
 }
 
-# Always use the same Dockerfile (builds tt-mlir via FetchContent against pre-built toolchain)
 DOCKERFILE=".github/containers/Dockerfile"
 
-# Build images — filtered by --image-type if specified, otherwise build all three
+# Build images -- filtered by --image-type if specified, otherwise build all three
 if [[ -z "$IMAGE_TYPE" || "$IMAGE_TYPE" == "base" ]]; then
     build_image "tt-lang-base-ubuntu-22-04" .github/containers/Dockerfile.base ""
 fi
@@ -204,7 +178,7 @@ echo "Final disk space:"
 df -h | head -2
 echo ""
 
-# Compute image names once — NO_PUSH only affects the registry prefix
+# Compute image names -- NO_PUSH only affects the registry prefix
 if [ "$NO_PUSH" = false ]; then
     BASE_IMAGE="ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
     DIST_IMAGE="ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"

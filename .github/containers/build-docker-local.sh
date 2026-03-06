@@ -10,56 +10,38 @@ set -e
 echo "=== tt-lang Docker Build Test ==="
 echo ""
 
-# Use the CI image tag (pinned in third-party/tt-mlir-docker-tag)
-MLIR_TAG=$(cat third-party/tt-mlir-docker-tag | tr -d '[:space:]')
-echo "Using tt-mlir CI image tag: $MLIR_TAG"
-echo ""
-
-# Pull the base tt-mlir images
-echo "--- Pulling tt-mlir images ---"
-sudo docker pull ghcr.io/tenstorrent/tt-mlir/tt-mlir-base-ubuntu-22-04:${MLIR_TAG}
-sudo docker pull ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:${MLIR_TAG}
-echo ""
-
-# Build base image
+# Build base image and tag with registry path so dist/ird Dockerfile FROM resolves locally
 echo "--- Building tt-lang-base ---"
 sudo docker build \
-    --build-arg MLIR_TAG=${MLIR_TAG} \
-    -t tt-lang-base:local \
+    -t tt-lang-base-ubuntu-22-04:latest \
+    -t ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:latest \
     -f .github/containers/Dockerfile.base .
 
-# Tag with full registry path so dist/dev builds can find it locally
-sudo docker tag tt-lang-base:local ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:local
-
-echo "✓ Base image built"
+echo "Base image built"
 echo ""
 
 # Build Dist image (pre-built tt-lang for users)
 echo "--- Building tt-lang Dist image ---"
 sudo docker build \
-    --build-arg FROM_TAG=local \
-    --build-arg MLIR_TAG=${MLIR_TAG} \
     --target dist \
     -t tt-lang-dist-ubuntu-22-04:latest \
     -f .github/containers/Dockerfile .
-echo "✓ Dist image built"
+echo "Dist image built"
 echo ""
 
 # Build IRD image (development tools)
 echo "--- Building tt-lang IRD image ---"
 sudo docker build \
-    --build-arg FROM_TAG=local \
-    --build-arg MLIR_TAG=${MLIR_TAG} \
     --target ird \
     -t tt-lang-ird-ubuntu-22-04:latest \
     -f .github/containers/Dockerfile .
-echo "✓ IRD image built"
+echo "IRD image built"
 echo ""
 
 echo "=== Build Complete ==="
 echo ""
 echo "Images created:"
-echo "  - tt-lang-base:local"
+echo "  - tt-lang-base-ubuntu-22-04:latest"
 echo "  - tt-lang-dist-ubuntu-22-04:latest"
 echo "  - tt-lang-ird-ubuntu-22-04:latest"
 echo ""

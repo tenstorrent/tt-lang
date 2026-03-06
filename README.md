@@ -32,7 +32,7 @@ tt-lang depends on [tt-mlir](https://github.com/tenstorrent/tt-mlir), the MLIR-b
 
 The build system supports three different integration scenarios for tt-mlir -- build-based, installation-based, or automatically fetched and installed (for more details on these, please refer to the [build system document](docs/BUILD_SYSTEM.md)).
 
-Here we describe the most common scenario for tt-lang users who do not have a pre-built or pre-installed tt-mlir. Note that this will fetch, configure, build and install the tt-mlir version whose commit SHA is in `third-party/tt-mlir.commit`.
+Here we describe the most common scenario for tt-lang users. The build system automatically builds LLVM, tt-metal, and tt-mlir from git submodules during cmake configure.
 
 ```bash
 cd /path/to/tt-lang
@@ -41,24 +41,33 @@ source build/env/activate
 cmake --build build
 ```
 
-The tt-mlir will be built and installed to `build/tt-mlir-install/` by default (or to the location specified by `TTMLIR_INSTALL_PREFIX`). The generated `env/activate` script in tt-lang's build directory will automatically use this local installation. This process requires:
-- An existing LLVM/MLIR toolchain at `TTMLIR_TOOLCHAIN_DIR` (default: `/opt/ttmlir-toolchain`)
+LLVM is built and installed to `build/llvm-install/` by default. tt-metal builds to `third-party/tt-metal/build/`. tt-mlir dialects compile inline. The generated `env/activate` script in tt-lang's build directory sets up all paths automatically.
 
 **Build options:**
 ```bash
 # Debug build with Python bindings
 cmake -GNinja -Bbuild . -DCMAKE_BUILD_TYPE=Debug -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
 
-# Custom install prefix for automatically built tt-mlir
-cmake -GNinja -Bbuild . -DTTMLIR_INSTALL_PREFIX=/tmp/my-ttmlir-install
+# Use pre-built LLVM/MLIR from the ttmlir toolchain ($TTMLIR_TOOLCHAIN_DIR or /opt/ttmlir-toolchain)
+cmake -GNinja -Bbuild . -DTTLANG_USE_TTMLIR_TOOLCHAIN=ON
 
-# Enable code coverage
-cmake -GNinja -Bbuild . -DCODE_COVERAGE=ON
+# Use a pre-built LLVM/MLIR installation at a custom path
+cmake -GNinja -Bbuild . -DMLIR_PREFIX=/path/to/llvm-install
+
+# Custom LLVM install location (when building from submodule)
+cmake -GNinja -Bbuild . -DLLVM_INSTALL_DIR=/tmp/my-llvm-install
 ```
 
 To generate the Sphinx documentation, configure with `-DTTLANG_ENABLE_DOCS`.
 
-**Note:** The `third-party/tt-mlir.commit` file contains the reference tt-mlir version. The build system ensures version compatibility automatically.
+**Version compatibility:** Dependencies are pinned as git submodules under `third-party/`. The build system verifies that submodule SHAs match the versions expected by tt-mlir. If a mismatch is detected (e.g., after updating a submodule independently), the configure step will fail with a diagnostic. To proceed despite a mismatch:
+```bash
+# Override LLVM SHA check
+cmake -GNinja -Bbuild . -DTTLANG_ACCEPT_LLVM_MISMATCH=ON
+
+# Override tt-metal SHA check
+cmake -GNinja -Bbuild . -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON
+```
 
 ## Simulator-Only Setup
 
@@ -287,9 +296,40 @@ For more information on testing, including how to write new tests and interpret 
 
 ## Developer Guidelines
 
-### Updating tt-mlir version
+### Updating submodule versions
 
-Update the `third-party/tt-mlir.commit` file to the desired commit SHA if using the automated tt-mlir install. Refer to the [BuildSystem.md](docs/BUILD_SYSTEM.md) document for details on building with a pre-built tt-mlir or pre-installed one.
+tt-mlir defines the compatible versions of LLVM and tt-metal. When updating tt-mlir, the other submodules should be updated to match.
+
+**Update tt-mlir** (and read the versions it expects):
+```bash
+cd third-party/tt-mlir && git fetch && git checkout <commit> && cd ../..
+
+# Read the LLVM and tt-metal commits that this tt-mlir version expects:
+grep LLVM_PROJECT_VERSION third-party/tt-mlir/env/CMakeLists.txt
+grep TT_METAL_VERSION third-party/tt-mlir/third_party/CMakeLists.txt
+```
+
+**Update LLVM to the compatible version:**
+```bash
+cd third-party/llvm-project && git fetch && git checkout <llvm-sha> && cd ../..
+```
+
+**Update tt-metal to the compatible version:**
+```bash
+cd third-party/tt-metal && git fetch && git checkout <tt-metal-sha> && cd ../..
+```
+
+**Commit all submodule updates together:**
+```bash
+git add third-party/tt-mlir third-party/llvm-project third-party/tt-metal
+git commit -m "Update submodules to tt-mlir <commit>"
+```
+
+The build system verifies SHA compatibility during configure. If submodule versions
+are intentionally mismatched, pass `-DTTLANG_ACCEPT_LLVM_MISMATCH=ON` or
+`-DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON` to suppress the check.
+
+Refer to the [BuildSystem.md](docs/BUILD_SYSTEM.md) document for details on building with a pre-built MLIR installation.
 
 ### Code Formatting with Pre-commit
 

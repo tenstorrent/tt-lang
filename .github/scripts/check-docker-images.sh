@@ -5,7 +5,7 @@
 # Check if Docker images exist and set GitHub Actions outputs.
 #
 # Usage:
-#   ./check-docker-images.sh <mlir-sha>
+#   ./check-docker-images.sh
 #
 # Outputs (via GITHUB_OUTPUT):
 #   docker-image: Full image name if exists, empty if not
@@ -13,20 +13,12 @@
 #
 # Exit codes:
 #   0: Always (uses outputs to signal state, not exit codes)
-#   2: Missing required argument
 
 set -e
 
-MLIR_SHA="${1:-}"
-
-if [ -z "$MLIR_SHA" ]; then
-    echo "Error: MLIR_SHA argument required"
-    exit 2
-fi
-
 # Run the check-only script and capture its exit code
 set +e
-.github/containers/build-docker-images.sh "$MLIR_SHA" --check-only | tee /tmp/docker-check.log
+.github/containers/build-docker-images.sh --check-only | tee /tmp/docker-check.log
 EXIT_CODE=${PIPESTATUS[0]}
 set -e
 
@@ -39,13 +31,13 @@ if [ $EXIT_CODE -eq 0 ]; then
     DOCKER_IMAGE_BASE="${DOCKER_IMAGE/tt-lang-dist-ubuntu/tt-lang-base-ubuntu}"
     echo "docker-image-base=$DOCKER_IMAGE_BASE" >> "$GITHUB_OUTPUT"
 
-    echo "✓ Docker images already exist"
+    echo "Docker images already exist"
     exit 0
 else
     # Images don't exist - set empty outputs so build job runs
     echo "docker-image=" >> "$GITHUB_OUTPUT"
     echo "docker-image-base=" >> "$GITHUB_OUTPUT"
-    echo "ℹ Docker images need to be built (not cached)"
+    echo "Docker images need to be built (not cached)"
     # Exit 0 - this is not an error condition, just indicates build is needed
     exit 0
 fi
