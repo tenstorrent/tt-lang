@@ -103,8 +103,8 @@ if(DEFINED TTLANG_LLVM_FROM_SUBMODULE AND NOT TTLANG_LLVM_FROM_SUBMODULE)
 else()
   if(NOT EXISTS "${LLVM_SUBMODULE_DIR}/llvm/CMakeLists.txt")
     message(FATAL_ERROR
-      "LLVM submodule not initialized. Run:\n"
-      "  git submodule update --init --depth 1 third-party/llvm-project\n"
+      "LLVM submodule source not found at ${LLVM_SUBMODULE_DIR}/llvm.\n"
+      "Run: git submodule update --init --depth 1 third-party/llvm-project\n"
       "Or provide a pre-built MLIR install via -DMLIR_PREFIX=/path/to/install")
   endif()
 

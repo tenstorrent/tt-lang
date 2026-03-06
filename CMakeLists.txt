@@ -37,6 +37,29 @@ endif()
 include(TTLangCompilerSetup)
 
 # ---------------------------------------------------------------------------
+# Auto-initialize submodules if not already present.
+# ---------------------------------------------------------------------------
+set(_TTLANG_SUBMODULES
+  "third-party/llvm-project"
+  "third-party/tt-mlir"
+  "third-party/tt-metal"
+)
+foreach(_sub IN LISTS _TTLANG_SUBMODULES)
+  if(NOT EXISTS "${CMAKE_SOURCE_DIR}/${_sub}/.git")
+    message(STATUS "Initializing submodule ${_sub}...")
+    execute_process(
+      COMMAND git submodule update --init --depth 1 "${_sub}"
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+      RESULT_VARIABLE _sub_result
+    )
+    if(NOT _sub_result EQUAL 0)
+      message(FATAL_ERROR "Failed to initialize submodule ${_sub}. Run manually:\n"
+        "  git submodule update --init --depth 1 ${_sub}")
+    endif()
+  endif()
+endforeach()
+
+# ---------------------------------------------------------------------------
 # LLVM/MLIR dependency (pre-built or from submodule)
 # ---------------------------------------------------------------------------
 include(BuildLLVM)
