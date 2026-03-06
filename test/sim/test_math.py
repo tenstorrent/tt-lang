@@ -1107,3 +1107,33 @@ def test_from_list_to_list_roundtrip_4d():
         assert torch.allclose(
             t_in.to_torch(), t_out.to_torch()
         ), f"Tile {i} mismatch after from_list / to_list round-trip"
+
+
+def test_1d_broadcast_warning(capsys):
+    """Test that broadcasting a 1D block generates a hardware warning.
+
+    1D broadcasts are not supported by current hardware, so the simulator
+    emits a warning when ttl.math.broadcast() is called on a 1D block.
+    This test verifies the warning message is properly displayed.
+    """
+    # Create a 1D block with shape (1,) - single tile in 1D
+    tiles_1d = [Tensor(torch.tensor([[1.0, 2.0]]))]
+    block_1d = Block.from_list(tiles_1d, shape=(1,))
+
+    assert len(block_1d.shape) == 1, "Test setup: block should be 1D"
+    assert block_1d.shape == (1,), "Test setup: block should have shape (1,)"
+
+    # Broadcast the 1D block - this should generate a warning
+    result = ttl.math.broadcast(block_1d, dims=[0])
+
+    # Capture stdout output
+    captured = capsys.readouterr()
+
+    # Verify the warning message appears
+    assert (
+        "warning: 1D broadcast is not supported on current hardware" in captured.out
+    ), f"Expected 1D broadcast warning not found in output:\n{captured.out}"
+
+    # Verify the broadcast operation still returns a valid Block
+    assert isinstance(result, Block)
+    assert result.shape == (1,)

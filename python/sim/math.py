@@ -20,10 +20,97 @@ from typing import Any, Callable, List, Optional, Set
 import torch
 
 from .blockstate import BlockAcquisition, ThreadType
+from .diagnostics import (
+    lazy_import_diagnostics,
+    find_user_code_location,
+    format_core_ranges,
+)
 from .dfb import Block, track_source_blocks, matmul
 from .ttnnsim import Tensor
 
 _ = matmul
+
+# Track 1D broadcast warnings by (filename, line) -> set of core_ids
+# This allows us to deduplicate warnings and show which cores hit each location
+_broadcast_1d_warnings: dict[tuple[str, int], set[str]] = {}
+
+
+def _warn_1d_broadcast_unsupported() -> None:
+    """Issue a warning that 1D broadcast is not supported on current hardware.
+
+    Tracks which cores hit each source location and only prints once per location,
+    showing the list of cores that encountered the issue.
+    """
+    # Find user code location (skip this function and caller)
+    source_file, source_line = find_user_code_location(skip_frames=2)
+
+    # Should always find user code in the call stack
+    assert (
+        source_file is not None and source_line is not None
+    ), "Could not determine source location for 1D broadcast warning"
+
+    # Get the current core ID
+    from .greenlet_scheduler import get_current_core_id
+
+    core_id = get_current_core_id()
+
+    # Track this core hitting this location
+    location_key = (source_file, source_line)
+    if location_key not in _broadcast_1d_warnings:
+        _broadcast_1d_warnings[location_key] = set()
+        first_occurrence = True
+    else:
+        first_occurrence = False
+
+    _broadcast_1d_warnings[location_key].add(core_id)
+
+    # Only print on first occurrence for this location
+    if first_occurrence:
+        # Format the core list
+        cores = _broadcast_1d_warnings[location_key]
+        unique_cores = sorted(cores, key=lambda x: (len(x), x))
+
+        if len(unique_cores) == 1 and unique_cores[0] != "unknown":
+            cores_label = unique_cores[0]
+        else:
+            # Extract numeric core IDs (from "core0", "core1", etc.)
+            try:
+                core_numbers = [
+                    int(core[4:])
+                    for core in unique_cores
+                    if core.startswith("core") and core[4:].isdigit()
+                ]
+                if core_numbers:
+                    cores_label = f"cores: {format_core_ranges(core_numbers)}"
+                else:
+                    cores_label = f"cores: {', '.join(unique_cores)}"
+            except (ValueError, IndexError):
+                cores_label = f"cores: {', '.join(unique_cores)}"
+
+        # Try to use diagnostics module for nice formatting
+        try:
+            diagnostics = lazy_import_diagnostics()
+            SourceDiagnostic = diagnostics.SourceDiagnostic
+
+            # Read source lines
+            with open(source_file, "r") as f:
+                source_lines = f.read().splitlines()
+
+            # Format warning using diagnostics module
+            diag = SourceDiagnostic(source_lines, source_file)
+            warning_msg = diag.format_error(
+                line=source_line,
+                col=1,
+                message=f"1D broadcast is not supported on current hardware ({cores_label})",
+                label="warning",
+            )
+            print(warning_msg, flush=True)
+        except (ImportError, IOError, OSError):
+            # Fall back to simple warning if diagnostics unavailable or file unreadable
+            print(
+                f"warning: 1D broadcast is not supported on current hardware ({cores_label})",
+                flush=True,
+            )
 
 
 def broadcast(
@@ -66,6 +153,11 @@ def broadcast(
     # User dims use innermost-first convention: translate to internal (outermost-first).
     block_shape = block._shape  # type: ignore[attr-defined]
     ndim = len(block_shape)
+
+    # Check if this is a 1D broadcast and issue a warning
+    if ndim == 1:
+        _warn_1d_broadcast_unsupported()
+
     for dim in dims:
         if dim >= ndim:
             raise ValueError(
