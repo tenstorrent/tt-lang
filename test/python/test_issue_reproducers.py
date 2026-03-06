@@ -63,10 +63,6 @@ def issue365_matmul_nonsquare_kernel(a, b, c):
             tx.wait()
 
 
-@pytest.mark.xfail(
-    reason="Issue #365: non-square matmul loop bounds use input dims instead of output dims, causing hangs",
-    strict=False,
-)
 def test_issue365_nonsquare_matmul(device):
     """Reproducer for issue 365: non-square matmul output shape.
 
@@ -127,10 +123,6 @@ def issue363_k5_matmul_kernel(a, b, c):
             tx.wait()
 
 
-@pytest.mark.xfail(
-    reason="Issue #363: fused matmul miscompile when K >= 5 (also triggers issue #365 loop bounds bug)",
-    strict=False,
-)
 def test_issue363_k5_matmul(device):
     """Reproducer for issue 363: matmul with K=5 tiles.
 
@@ -194,10 +186,6 @@ def issue364_reduce_basic_kernel(inp, scaler, out):
             tx.wait()
 
 
-@pytest.mark.xfail(
-    reason="Issue #364: reduce ops have known simulator issues",
-    strict=False,
-)
 def test_issue364_basic_reduce(device):
     """Reproducer for issue 364: basic single reduce.
 

@@ -1384,7 +1384,7 @@ def reduce_bcast_matmul_kernel(reduce_in, bcast_out_ref, matmul_b, scaler, out):
             matmul_b_cb.wait() as b,
             out_cb.reserve() as c,
         ):
-            c.store(a @ b)
+            c.store(ttl.math.matmul(a, b))
 
     @ttl.datamovement()
     def dm_read():
