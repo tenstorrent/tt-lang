@@ -86,8 +86,13 @@ class TensorBlock:
         return ttl.div(ast_self.type, ast_self, rhs)
 
     def __matmul__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        """Matrix multiplication using ttl.matmul."""
-        return ttl.matmul(ast_self.type, ast_self, rhs)
+        """Matrix multiplication is not yet supported via @ operator.
+
+        Use ttl.math.matmul(a, b) instead.
+        """
+        raise NotImplementedError(
+            "Use ttl.math.matmul(a, b) instead of a @ b"
+        )
 
     def store(ast_self: TensorBlock, rhs: TensorBlock) -> None:
         """Store result tensor to the output CB reserve view.
@@ -454,31 +459,51 @@ def broadcast(input: TensorBlock, output: TensorBlock, dims: List[int]) -> Tenso
 @syntax("matmul")
 def matmul(a: TensorBlock, b: TensorBlock) -> TensorBlock:
     """Matrix multiplication A * B. Both operands must be CB-attached."""
-    return ttl.matmul(a.type, a, b)
+    a_type = a.type
+    b_type = b.type
+    if isinstance(a_type, RankedTensorType) and isinstance(
+        b_type, RankedTensorType
+    ):
+        out_shape = list(a_type.shape)
+        out_shape[-1] = b_type.shape[-1]
+        result_type = RankedTensorType.get(
+            out_shape, a_type.element_type, a_type.encoding
+        )
+    else:
+        result_type = a_type
+    return ttl.matmul(result_type, a, b)
 
 
 @syntax("transpose")
-def transpose(input: TensorBlock, output: TensorBlock) -> TensorBlock:
+def transpose(input: TensorBlock) -> TensorBlock:
     """Transpose a 2D tensor (swap rows and columns).
 
-    Transpose operates directly on CBs, so it takes an explicit output operand.
+    Reads from the input CB, writes result to DST.
+    The output CB is determined by the ttl.store on this op's result.
     """
-    return ttl.transpose(output.type, input, output)
+    from ttmlir.ir import RankedTensorType
+
+    input_type = input.type
+    shape = list(input_type.shape)
+    shape[0], shape[1] = shape[1], shape[0]
+    result_type = RankedTensorType.get(
+        shape, input_type.element_type, input_type.encoding
+    )
+    return ttl.transpose(result_type, input)
 
 
 @syntax("reduce_sum")
 def reduce_sum(
-    input: TensorBlock, scaler: TensorBlock, output: TensorBlock, dims: List[int]
+    input: TensorBlock, scaler: TensorBlock, dims: List[int]
 ) -> TensorBlock:
     """Reduce tensor by summing along specified dimensions.
 
     Args:
         input: Input tensor (CB-attached)
         scaler: Scaler tensor for reduction (CB-attached)
-        output: Output tensor (CB-attached)
         dims: Dimensions to reduce over - [0] for row, [1] for col, [0, 1] for scalar
     """
-    from ttmlir.ir import IntegerAttr, IntegerType
+    from ttmlir.ir import IntegerAttr, IntegerType, RankedTensorType
 
     dims_set = set(dims)
     if dims_set == {0}:
@@ -489,29 +514,40 @@ def reduce_sum(
         reduce_dim_val = 2  # Scalar
     else:
         raise ValueError(f"Invalid dims: {dims}. Must be [0], [1], or [0, 1]")
+
+    input_type = input.type
+    in_shape = list(input_type.shape)
+    if reduce_dim_val == 0:  # Row
+        out_shape = [in_shape[0], 1]
+    elif reduce_dim_val == 1:  # Col
+        out_shape = [1, in_shape[1]]
+    else:  # Scalar
+        out_shape = [1, 1]
+    result_type = RankedTensorType.get(
+        out_shape, input_type.element_type, input_type.encoding
+    )
 
     ctx = input.type.context
     i32_type = IntegerType.get_signless(32, ctx)
     reduce_type_attr = IntegerAttr.get(i32_type, 0)  # Sum = 0
     reduce_dim_attr = IntegerAttr.get(i32_type, reduce_dim_val)
     return ttl.reduce(
-        output.type, input, scaler, output, reduce_type_attr, reduce_dim_attr
+        result_type, input, scaler, reduce_type_attr, reduce_dim_attr
     )
 
 
 @syntax("reduce_max")
 def reduce_max(
-    input: TensorBlock, scaler: TensorBlock, output: TensorBlock, dims: List[int]
+    input: TensorBlock, scaler: TensorBlock, dims: List[int]
 ) -> TensorBlock:
     """Reduce tensor by taking max along specified dimensions.
 
     Args:
         input: Input tensor (CB-attached)
         scaler: Scaler tensor for reduction (CB-attached)
-        output: Output tensor (CB-attached)
         dims: Dimensions to reduce over - [0] for row, [1] for col, [0, 1] for scalar
     """
-    from ttmlir.ir import IntegerAttr, IntegerType
+    from ttmlir.ir import IntegerAttr, IntegerType, RankedTensorType
 
     dims_set = set(dims)
     if dims_set == {0}:
@@ -523,23 +559,36 @@ def reduce_max(
     else:
         raise ValueError(f"Invalid dims: {dims}. Must be [0], [1], or [0, 1]")
 
+    input_type = input.type
+    in_shape = list(input_type.shape)
+    if reduce_dim_val == 0:  # Row
+        out_shape = [in_shape[0], 1]
+    elif reduce_dim_val == 1:  # Col
+        out_shape = [1, in_shape[1]]
+    else:  # Scalar
+        out_shape = [1, 1]
+    result_type = RankedTensorType.get(
+        out_shape, input_type.element_type, input_type.encoding
+    )
+
     ctx = input.type.context
     i32_type = IntegerType.get_signless(32, ctx)
     reduce_type_attr = IntegerAttr.get(i32_type, 1)  # Max = 1
     reduce_dim_attr = IntegerAttr.get(i32_type, reduce_dim_val)
     return ttl.reduce(
-        output.type, input, scaler, output, reduce_type_attr, reduce_dim_attr
+        result_type, input, scaler, reduce_type_attr, reduce_dim_attr
     )
 
 
 @syntax("power")
-def power(input: TensorBlock, exponent: int) -> TensorBlock:
+def power(input: TensorBlock, exponent) -> TensorBlock:
     """Raise tensor elements to an integer power."""
     from ttmlir.ir import IntegerAttr, IntegerType
 
+    exp_val = _get_constant_int(exponent)
     ctx = input.type.context
     i32_type = IntegerType.get_signless(32, ctx)
-    exp_attr = IntegerAttr.get(i32_type, exponent)
+    exp_attr = IntegerAttr.get(i32_type, exp_val)
     return ttl.power(input.type, input, exp_attr)
 
 

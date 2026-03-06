@@ -121,7 +121,7 @@ func.func @compute_invalid_map_expr(
 
 // -----
 
-// Test: Broadcast constant on non-1 dimension
+// Test: Broadcast constant on non-1 output dimension
 func.func @compute_broadcast_dim_not_one(
     %a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %cba: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
@@ -134,12 +134,12 @@ func.func @compute_broadcast_dim_not_one(
   %init_att = ttl.attach_cb %init, %cbout
       : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
         -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{input 0 broadcast dim 0 must have size 1}}
+  // expected-error @below {{output 0 broadcast dim 0 must have size 1}}
   %0 = ttl.compute
       ins(%a_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
-      {indexing_maps = [affine_map<(d0, d1) -> (0, d1)>,
-                        affine_map<(d0, d1) -> (d0, d1)>],
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (0, d1)>],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
     ttl.yield

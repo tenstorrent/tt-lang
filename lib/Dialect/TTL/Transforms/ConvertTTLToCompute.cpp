@@ -905,7 +905,6 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
 
     Value inputCb = getAttachedCB(op.getInput());
     Value scalerCb = getAttachedCB(op.getScaler());
-    Value outCb = getAttachedCB(op.getOutput());
     if (!inputCb) {
       return op.emitError("reduce input must be attached to a circular buffer");
     }
@@ -913,9 +912,11 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
       return op.emitError(
           "reduce scaler must be attached to a circular buffer");
     }
+
+    Value outCb = findOutputCB(op);
     if (!outCb) {
-      return op.emitError(
-          "reduce output must be attached to a circular buffer");
+      return rewriter.notifyMatchFailure(
+          op, "reduce requires a store to determine output CB");
     }
 
     if (inputType.getRank() != 2 || outputType.getRank() != 2) {
@@ -936,18 +937,20 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
 
     SmallVector<Attribute> maps = {AffineMapAttr::get(inputMap),
                                    AffineMapAttr::get(identityMap),
-                                   AffineMapAttr::get(identityMap),
                                    AffineMapAttr::get(identityMap)};
 
     SmallVector<Attribute> iterTypes(2, rewriter.getStringAttr("parallel"));
 
-    Value init = buildInitTensor(rewriter, loc, iterOutputType, op.getOutput());
+    insertAtLastStore(rewriter, op);
+
+    Value init =
+        buildInitTensor(rewriter, loc, iterOutputType, op.getInput());
     Value initAttached =
         rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
 
     auto computeOp = rewriter.create<ComputeOp>(
         loc, TypeRange{iterOutputType},
-        ValueRange{op.getInput(), op.getScaler(), op.getOutput()},
+        ValueRange{op.getInput(), op.getScaler()},
         ValueRange{initAttached}, rewriter.getArrayAttr(maps),
         rewriter.getArrayAttr(iterTypes));
 
@@ -956,13 +959,15 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
     Type tileType = ttcore::TileType::get(scalarType);
     body->addArgument(tileType, loc); // input tile
     body->addArgument(tileType, loc); // scaler tile
-    body->addArgument(tileType, loc); // output tile (input for CB tracking)
-    body->addArgument(tileType, loc); // output tile (result)
+    body->addArgument(tileType, loc); // output tile
 
     rewriter.setInsertionPointToStart(body);
-    rewriter.create<TileReduceOp>(loc, tileType, body->getArgument(0),
-                                  body->getArgument(1), body->getArgument(2),
-                                  op.getReduceType(), op.getReduceDim());
+    Value reduceResult =
+        rewriter.create<TileReduceOp>(loc, tileType, body->getArgument(0),
+                                      body->getArgument(1),
+                                      body->getArgument(2),
+                                      op.getReduceType(), op.getReduceDim());
+    emitTileStores(rewriter, loc, reduceResult, op);
     rewriter.create<YieldOp>(loc);
 
     rewriter.replaceOp(op, computeOp.getResult(0));
@@ -986,14 +991,15 @@ struct LowerTransposeToCompute : OpRewritePattern<TransposeOp> {
     }
 
     Value inputCb = getAttachedCB(op.getInput());
-    Value outCb = getAttachedCB(op.getOutput());
     if (!inputCb) {
       return op.emitError(
           "transpose input must be attached to a circular buffer");
     }
+
+    Value outCb = findOutputCB(op);
     if (!outCb) {
-      return op.emitError(
-          "transpose output must be attached to a circular buffer");
+      return rewriter.notifyMatchFailure(
+          op, "transpose requires a store to determine output CB");
     }
 
     if (inputType.getRank() != 2 || outputType.getRank() != 2) {
@@ -1012,18 +1018,19 @@ struct LowerTransposeToCompute : OpRewritePattern<TransposeOp> {
     AffineMap identityMap = AffineMap::getMultiDimIdentityMap(2, ctx);
 
     SmallVector<Attribute> maps = {AffineMapAttr::get(inputMap),
-                                   AffineMapAttr::get(identityMap),
                                    AffineMapAttr::get(identityMap)};
 
     SmallVector<Attribute> iterTypes(outputType.getRank(),
                                      rewriter.getStringAttr("parallel"));
 
-    Value init = buildInitTensor(rewriter, loc, outputType, op.getOutput());
+    insertAtLastStore(rewriter, op);
+
+    Value init = buildInitTensor(rewriter, loc, outputType, op.getInput());
     Value initAttached =
         rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
 
     auto computeOp = rewriter.create<ComputeOp>(
-        loc, TypeRange{outputType}, ValueRange{op.getInput(), op.getOutput()},
+        loc, TypeRange{outputType}, ValueRange{op.getInput()},
         ValueRange{initAttached}, rewriter.getArrayAttr(maps),
         rewriter.getArrayAttr(iterTypes));
 
@@ -1031,12 +1038,12 @@ struct LowerTransposeToCompute : OpRewritePattern<TransposeOp> {
     Type scalarType = outputType.getElementType();
     Type tileType = ttcore::TileType::get(scalarType);
     body->addArgument(tileType, loc); // input tile
-    body->addArgument(tileType, loc); // output tile (for CB tracking)
-    body->addArgument(tileType, loc); // output tile (result)
+    body->addArgument(tileType, loc); // output tile
 
     rewriter.setInsertionPointToStart(body);
-    rewriter.create<TileTransposeOp>(loc, tileType, body->getArgument(0),
-                                     body->getArgument(1));
+    Value result = rewriter.create<TileTransposeOp>(
+        loc, tileType, body->getArgument(0), body->getArgument(1));
+    emitTileStores(rewriter, loc, result, op);
     rewriter.create<YieldOp>(loc);
 
     rewriter.replaceOp(op, computeOp.getResult(0));
