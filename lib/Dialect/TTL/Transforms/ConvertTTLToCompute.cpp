@@ -841,7 +841,8 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
 
     rewriter.setInsertionPointToStart(body);
     Value result = rewriter.create<TileMatmulOp>(
-        loc, tileType, body->getArgument(0), body->getArgument(1));
+        loc, tileType, body->getArgument(0), body->getArgument(1),
+        body->getArgument(2));
     emitTileStores(rewriter, loc, result, op);
     rewriter.create<YieldOp>(loc);
     rewriter.replaceOp(op, computeOp.getResult(0));

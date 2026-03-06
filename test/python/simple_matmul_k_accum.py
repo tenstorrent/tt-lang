@@ -27,7 +27,7 @@ import ttl
 # K-loop should generate matmul_tiles inside an scf.for
 # CHECK-CPP: // compute_fn
 # CHECK-CPP: void kernel_main()
-# CHECK-CPP: mm_init_short(
+# CHECK-CPP: mm_init(
 # CHECK-CPP: matmul_tiles(
 # CHECK-CPP: pack_tile
 
