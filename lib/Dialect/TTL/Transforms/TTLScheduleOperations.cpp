@@ -16,6 +16,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "ttl-schedule-operations"
@@ -44,18 +45,21 @@ static int64_t getInitAffinity(Operation *op) {
   if (auto bcast = dyn_cast<TileBcastOp>(op)) {
     return static_cast<int64_t>(bcast.getBcastType());
   }
-  // CopyTileOp: input CB determines init. Use cb_index attribute from the
-  // source CB for grouping (copies from the same CB share one init).
+  // CopyTileOp: group by input CB so copies from the same CB stay adjacent
+  // (avoiding redundant copy_tile_init re-inits). After loop lowering, the
+  // source is a scalar tile from tensor.extract — trace through it to reach
+  // the underlying tensor, then find the attached CB.
   if (auto copy = dyn_cast<CopyTileOp>(op)) {
     Value src = copy.getSrc();
+    // Trace through tensor.extract to get the source tensor.
+    if (auto extract = src.getDefiningOp<mlir::tensor::ExtractOp>()) {
+      src = extract.getTensor();
+    }
     if (auto cb = getAttachedCB(src)) {
       if (auto bindCb = cb.getDefiningOp<BindCBOp>()) {
         return bindCb.getCbIndex().getSExtValue();
       }
     }
-    LLVM_DEBUG(llvm::dbgs() << "copy_tile CB trace failed, using default "
-                               "init affinity for: "
-                            << *op << "\n");
   }
   return 0;
 }
