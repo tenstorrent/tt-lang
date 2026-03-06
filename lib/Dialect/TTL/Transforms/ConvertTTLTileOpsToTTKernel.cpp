@@ -604,7 +604,7 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
 // Matmul Tile Op Lowering
 //===----------------------------------------------------------------------===//
 
-/// Lower ttl.tile_matmul to TTKernel mm_init_short + matmul_tiles.
+/// Lower ttl.tile_matmul to TTKernel mm_init + matmul_tiles.
 /// Reads A and B from CBs, accumulates into DST.
 /// Handles K-dimension accumulation by emitting a loop over K tiles.
 struct TTLTileMatmulToTTKernel : OpConversionPattern<TileMatmulOp> {
@@ -631,6 +631,12 @@ struct TTLTileMatmulToTTKernel : OpConversionPattern<TileMatmulOp> {
         lookupAndConvertCB(op.getB(), funcOp, typeConverter, rewriter, loc);
     if (failed(bCB)) {
       return rewriter.notifyMatchFailure(op, "cannot find/convert B CB");
+    }
+
+    auto outCB = lookupAndConvertCB(op.getOutput(), funcOp, typeConverter,
+                                    rewriter, loc);
+    if (failed(outCB)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert output CB");
     }
 
     auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
@@ -673,7 +679,7 @@ struct TTLTileMatmulToTTKernel : OpConversionPattern<TileMatmulOp> {
 
     Value transpose =
         rewriter.create<arith::ConstantOp>(loc, rewriter.getI32IntegerAttr(0));
-    rewriter.create<ttk::MatmulInitShortOp>(loc, *aCB, *bCB, transpose);
+    rewriter.create<ttk::MatmulInitOp>(loc, *aCB, *bCB, *outCB, transpose);
 
     if (kDim > 1) {
       Value kEnd = rewriter.create<arith::ConstantIndexOp>(loc, kDim);
@@ -791,6 +797,8 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
     auto ttkReduceType = convertReduceType(op.getReduceType());
     auto ttkReduceDim = convertReduceDim(op.getReduceDim());
 
+    rewriter.create<ttk::ComputeKernelHWStartupOp>(loc, *inCB, *scalerCB,
+                                                    *outCB);
     rewriter.create<ttk::ReduceInitOp>(loc, *inCB, *scalerCB, *outCB,
                                        ttkReduceType, ttkReduceDim);
 

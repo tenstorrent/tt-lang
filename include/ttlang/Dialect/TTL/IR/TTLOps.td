@@ -651,11 +651,12 @@ def TTL_TileMatmulOp : TTL_TileOp<"tile_matmul", [TTL_CBInputTileOpTrait]> {
   let description = [{
     Performs tile-sized matrix multiplication. A and B are read directly from
     circular buffers (not DST), result accumulates into DST.
-    Maps to ttkernel.mm_init_short + ttkernel.matmul_tiles.
+    Maps to ttkernel.mm_init + ttkernel.matmul_tiles. The output operand
+    carries the output CB for init-time PACK configuration.
   }];
-  let arguments = (ins AnyType:$a, AnyType:$b);
+  let arguments = (ins AnyType:$a, AnyType:$b, AnyType:$output);
   let results = (outs AnyType:$result);
-  let assemblyFormat = "$a `,` $b attr-dict `:` `(` type($a) `,` type($b) `)` `->` type($result)";
+  let assemblyFormat = "$a `,` $b `,` $output attr-dict `:` `(` type($a) `,` type($b) `,` type($output) `)` `->` type($result)";
 }
 
 //===----------------------------------------------------------------------===//

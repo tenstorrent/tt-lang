@@ -88,6 +88,7 @@ def reduce_kernel(inp, scaler, out):
 
 # CHECK-CPP: tile_regs_acquire();
 
+# CHECK-CPP: compute_kernel_hw_startup(
 # CHECK-CPP: reduce_init<
 # CHECK-CPP: reduce_tile<
 

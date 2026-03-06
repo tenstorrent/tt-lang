@@ -35,7 +35,7 @@ import ttl
 
 # CHECK-CPP: // matmul_compute
 # CHECK-CPP: void kernel_main()
-# CHECK-CPP: mm_init_short(
+# CHECK-CPP: mm_init(
 # CHECK-CPP: matmul_tiles(
 # CHECK-CPP: pack_tile
 
