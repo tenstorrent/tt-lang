@@ -17,6 +17,7 @@
 * [8. Copy](#8-copy)
     * [8.1. Group transfer](#81-group-transfer)
 * [9. Semaphore](#9-semaphore)
+* [10. Performance and debugging](#10-performance-and-debugging)
 * [Appendix A. Glossary](#appendix-a-glossary)
 * [Appendix B. Block operators and math functions](#appendix-b-block-operators-and-math-functions)
 * [Appendix C. Naming guidelines](#appendix-c-naming-guidelines)
@@ -34,6 +35,7 @@
 | 0.7 | 02/09/2026 | Move `push` and `pop` from `ttl.DataflowBuffer` to `ttl.Block` |
 | 0.8 | 02/09/2026 | Formal block states |
 | 0.9 | 03/04/2026 | Add `ttl.GroupTransfer` |
+| 0.9 | 03/06/2026 | Add `ttl.signpost` |
 
 ## 1. Introduction
 
@@ -803,6 +805,62 @@ def dm():
 | `ttl.UnicastRemoteSemaphore.set(self, value: ttl.Count)` | Set remote unicast semaphore value to specified value. **This function is non-blocking.** Can be used only in the scope of a data movement thread function. |
 | `ttl.UnicastRemoteSemaphore.inc(self, value: ttl.Count)` | Increment remote unicast semaphore value by specified value. **This function is non-blocking.** Can be used only in the scope of a data movement thread function. |
 | `ttl.MulticastRemoteSemaphore.set(self, value: ttl.Count)` | Set remote multicast semaphore value to specified value. **This function is non-blocking.** Can be used only in the scope of a data movement thread function. |
+
+## 10. Performance and debugging
+
+TT-Lang provides a range for facilities to aid performance analisys and debugging. Generally, the description of these tools is outside of the scope of this specification with the exception of language extensions that are needed to support them.
+
+## 10.1 Profiling signpost
+
+Profiling signpost is a language construct that allows the user to specify a block of code that will be measured for performance during the program execution. This is achieved by using Python `with` statement in conjunction with `ttl.signpost` function. This function takes a string argument for a signpost name. This way the signpost will be identified in the profiling tool's user interface.
+
+#### Example
+
+```py
+@ttl.datamovement()
+def matmul_read():
+    for it in range(IT):
+        for mt in range(MT):
+            for nt in range(NT):
+
+                # Measure the entire iteration
+
+                with ttl.signpost("i_m_n iteration"):
+
+                    # Measure from reserve to push
+
+                    with ttl.signpost("push c"):
+                        with c_dfb.reserve() as c_blk:
+
+                            # Measure only copy
+
+                            with ttl.signpost("read c"):
+                                c_xf = ttl.copy(C[mt, nt], c_blk)
+                                c_xf.wait()
+
+                    for kt in range(KT):
+                        with ttl.signpost("push a and b"):
+
+                            # Measure from reserve to push
+
+                            with (
+                                a_dfb.reserve() as a_blk,
+                                b_dfb.reserve() as b_blk,
+                            ):
+
+                                # Measure only copy
+
+                                with ttl.signpost("read a and b"):
+                                    a_xf = ttl.copy(A[it, mt, kt], a_blk)
+                                    b_xf = ttl.copy(B[kt, nt], b_blk)
+
+                                    a_xf.wait()
+                                    b_xf.wait()
+```
+
+| Function | Description |
+| :---- | :---- |
+| `ttl.signpost(str: name)` | Declare as signpost. Can be used only with the `with` statement. |
 
 ## Appendix A. Glossary
 
