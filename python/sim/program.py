@@ -13,7 +13,8 @@ import inspect
 import types
 from typing import Any, Dict, List
 
-from .dfb import DFBAPI, DataflowBuffer
+from .dfb import DataflowBuffer
+from .constants import MAX_DFBS
 from .decorators import BindableTemplate
 from .blockstate import ThreadType
 from .greenlet_scheduler import GreenletScheduler, set_scheduler
@@ -75,17 +76,29 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             self._run_cooperative(total_cores, compute_func_tmpl, dm0_tmpl, dm1_tmpl)
 
         def _build_core_context(self, core: int) -> Dict[str, Any]:
-            """Build per-core context with copied circular buffers and other state.
+            """Build per-core context with fresh DataflowBuffers and deep-copied state.
 
             Args:
                 core: Core number to build context for
 
             Returns:
                 Dictionary containing per-core context with fresh DataflowBuffers
+
+            Raises:
+                RuntimeError: If the number of DataflowBuffers exceeds MAX_DFBS
             """
+            # Enforce per-core DataflowBuffer limit before allocating.
+            dfb_count = sum(
+                1 for v in self.context.values() if isinstance(v, DataflowBuffer)
+            )
+            if dfb_count > MAX_DFBS:
+                raise RuntimeError(
+                    f"Number of DataflowBuffers per core ({dfb_count}) exceeds "
+                    f"the hardware limit of {MAX_DFBS}."
+                )
+
             memo: Dict[int, Any] = {}
             core_context: Dict[str, Any] = {}
-            api = DFBAPI()  # new DFBAPI per core
 
             for key, value in self.context.items():
                 # Skip module objects (e.g., local imports like `from python.sim import ttnn`)
@@ -101,22 +114,18 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                         core_context[key] = value
                         memo[id(value)] = value
                     case DataflowBuffer():
-                        # create a fresh DFB for this core
+                        # Create a fresh DFB for this core.
                         new_dfb = DataflowBuffer(
                             element=value.element,
                             shape=value.shape,
                             buffer_factor=value.buffer_factor,
-                            api=api,
                         )
-                        # Store the variable name for debugging
                         setattr(new_dfb, "_name", key)
                         core_context[key] = new_dfb
                     case _:
                         core_context[key] = copy.deepcopy(value, memo)
 
-            # also make the core number visible
             core_context["_core"] = core
-            # Also inject grid into core context for grid_size() function
             core_context["grid"] = self.context.get("grid", (1, 1))
 
             return core_context
@@ -171,12 +180,12 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                 scheduler.run()
 
                 # Validate all DataflowBuffers have no pending blocks
-                self._validate_circular_buffers(all_core_contexts)
+                self._validate_dataflow_buffers(all_core_contexts)
             finally:
                 # Clear scheduler
                 set_scheduler(None)
 
-        def _validate_circular_buffers(
+        def _validate_dataflow_buffers(
             self, all_core_contexts: List[Dict[str, Any]]
         ) -> None:
             """Validate that all DataflowBuffers have no pending blocks at end of execution.
