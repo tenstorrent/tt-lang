@@ -61,24 +61,26 @@ def test_tensor_rand_and_empty_and_to_torch():
 
 
 def test_tensor_get_set_item_and_repr():
+    # __repr__ contains shape (any tensor)
     a = torch.arange(12, dtype=torch.float32).reshape(3, 4)
-    tw = ttnn.Tensor(a)
-    # __repr__ contains shape
-    assert "shape=(3, 4)" in repr(tw)
+    assert "shape=(3, 4)" in repr(ttnn.Tensor(a))
 
-    # get item returns Tensor wrapper
-    sub = tw[1]
-    assert isinstance(sub, ttnn.Tensor)
-    assert sub.shape == (4,)
+    # Tile-coordinate get/set require a tile-aligned tensor.
+    raw = torch.zeros(64, 64, dtype=torch.float32)
+    tw = ttnn.Tensor(raw)
 
-    # set with torch.Tensor
-    tw[0, 0] = torch.tensor(9.0, dtype=torch.float32)
-    assert float(tw.to_torch()[0, 0]) == 9.0
+    # set with ttnn.Tensor: tile (0, 0) → element rows 0:32, cols 0:32
+    tw[0, 0] = ttnn.Tensor(torch.full((32, 32), 9.0, dtype=torch.float32))
+    assert torch.all(tw.to_torch()[0:32, 0:32] == 9.0)
 
-    # set with ttnn.Tensor
-    val = ttnn.Tensor(torch.tensor(7.0))
-    tw[0, 1] = val
-    assert float(tw.to_torch()[0, 1]) == 7.0
+    # set with ttnn.Tensor: tile (0, 1) → element rows 0:32, cols 32:64
+    tw[0, 1] = ttnn.Tensor(torch.full((32, 32), 7.0, dtype=torch.float32))
+    assert torch.all(tw.to_torch()[0:32, 32:64] == 7.0)
+
+    # bare-integer key (non-tuple) is wrapped as (1,), which is a 1-element key
+    # on a 2-D tensor — rejected with ValueError (key length != tensor rank).
+    with pytest.raises(ValueError, match="does not match tensor rank"):
+        _ = tw[1]
 
 
 def test_to_torch_type_errors():
@@ -129,23 +131,31 @@ def test_tensor_tile_based_setitem():
     retrieved = t[0:1, 0:1]
     assert torch.allclose(retrieved.to_torch(), torch.ones(32, 32))
 
-    # Set a tile with torch.Tensor
-    t[1:2, 1:2] = torch.ones(32, 32) * 2.0
+    # Set a tile with ttnn.Tensor
+    t[1:2, 1:2] = ttnn.Tensor(torch.ones(32, 32) * 2.0)
     retrieved2 = t[1:2, 1:2]
     assert torch.allclose(retrieved2.to_torch(), torch.ones(32, 32) * 2.0)
 
 
-def test_tensor_tile_indexing_invalid_shape():
-    """Test that tile indexing fails for non-2D tensors."""
-    # 1D tensor should fail
-    t1d = ttnn.Tensor(torch.randn(64))
-    with pytest.raises(ValueError, match="requires a 2D tensor"):
-        _ = t1d[0:1, 0:1]
+def test_tensor_0d_raises():
+    """Test that constructing a 0-d (scalar) Tensor raises ValueError."""
+    with pytest.raises(ValueError, match="at least 1 dimension"):
+        ttnn.Tensor(torch.tensor(5.0))
 
-    # 3D tensor should fail
-    t3d = ttnn.Tensor(torch.randn(2, 64, 64))
-    with pytest.raises(ValueError, match="requires a 2D tensor"):
-        _ = t3d[0:1, 0:1]
+
+def test_tensor_tile_indexing_invalid_shape():
+    """Test that tile indexing fails for key length mismatches."""
+    # Passing slice(None, 1) (stop-only, no start) to a 1-D tensor reaches
+    # _validate_tile_slice, which requires an explicit start value and raises.
+    t1d = ttnn.Tensor(torch.randn(64))
+    with pytest.raises(ValueError, match="must have explicit start value"):
+        _ = t1d[slice(None, 1)]  # missing start -> our validation catches it
+
+    # 2-element key on a 4-D tensor: rank mismatch must be caught explicitly
+    # rather than silently treating only the last two dims.
+    t4d = ttnn.Tensor(torch.randn(2, 2, 64, 64))
+    with pytest.raises(ValueError, match="does not match tensor rank"):
+        _ = t4d[0:1, 0:1]
 
 
 def test_tensor_tile_indexing_invalid_tile_alignment():
@@ -924,3 +934,128 @@ def test_golden_function_wrappers_logical():
     result = ttnn.logical_or(a, b)
     expected = torch.tensor([[True, True], [True, False]])
     assert torch.equal(result.to_torch(), expected)
+
+
+class TestTensorTileIndexing:
+    """Tests for Tensor tile-coordinate __getitem__ and __setitem__."""
+
+    # --- alignment validation ---
+
+    def test_invalid_size_raises(self) -> None:
+        """Tensors not aligned to tile dimensions raise ValueError on any tile access."""
+        t = ttnn.Tensor(torch.zeros(30, 30))
+        with pytest.raises(ValueError, match="not a multiple of tile dimension"):
+            _ = t[slice(0, 1), slice(0, 1)]
+        with pytest.raises(ValueError, match="not a multiple of tile dimension"):
+            _ = t[0, 0]
+
+    def test_1d_valid(self) -> None:
+        """1-D tile-aligned tensors support 1-element tile-coordinate access."""
+        t = ttnn.Tensor(torch.arange(64, dtype=torch.float32))
+        # Single-element key selects first 32-element tile
+        tile0 = t[slice(0, 1)]
+        assert tile0.shape == (32,)
+        assert torch.allclose(tile0.to_torch(), torch.arange(32, dtype=torch.float32))
+        # Second tile
+        tile1 = t[slice(1, 2)]
+        assert tile1.shape == (32,)
+        assert torch.allclose(
+            tile1.to_torch(), torch.arange(32, 64, dtype=torch.float32)
+        )
+
+    # --- slice format validation ---
+
+    def test_slice_none_start_raises(self) -> None:
+        t = ttnn.Tensor(torch.zeros(64, 64))
+        with pytest.raises(ValueError, match="must have explicit start value"):
+            _ = t[slice(None, 1), slice(0, 1)]
+
+    def test_slice_none_stop_raises(self) -> None:
+        t = ttnn.Tensor(torch.zeros(64, 64))
+        with pytest.raises(ValueError, match="must have explicit stop value"):
+            _ = t[slice(0, None), slice(0, 1)]
+
+    def test_slice_with_step_raises(self) -> None:
+        t = ttnn.Tensor(torch.zeros(64, 64))
+        with pytest.raises(ValueError, match="must not have a step value"):
+            _ = t[slice(0, 1, 1), slice(0, 1)]
+
+    # --- single-tile integer indexing ---
+
+    def test_integer_pair_reads_single_tile(self) -> None:
+        raw = torch.zeros(64, 64)
+        raw[0:32, 32:64] = 1.0  # tile (0, 1)
+        t = ttnn.Tensor(raw)
+        tile = t[0, 1]
+        assert tile.shape == (32, 32)
+        assert torch.all(tile.to_torch() == 1.0)
+
+    def test_integer_pair_writes_single_tile(self) -> None:
+        raw = torch.zeros(64, 64)
+        t = ttnn.Tensor(raw)
+        t[1, 0] = ttnn.Tensor(torch.full((32, 32), 7.0))
+        assert torch.all(raw[32:64, 0:32] == 7.0)
+        assert torch.all(raw[0:32, :] == 0.0)  # other tiles unchanged
+
+    # --- slice indexing ---
+
+    def test_slice_reads_tile_region(self) -> None:
+        raw = torch.zeros(128, 128)
+        raw[0:32, :] = 1.0  # first tile row
+        t = ttnn.Tensor(raw)
+        row = t[slice(0, 1), slice(0, 4)]
+        assert row.shape == (32, 128)
+        assert torch.all(row.to_torch() == 1.0)
+
+    def test_slice_writes_tile_region(self) -> None:
+        raw = torch.zeros(64, 64)
+        t = ttnn.Tensor(raw)
+        t[slice(0, 1), slice(0, 2)] = ttnn.Tensor(torch.full((32, 64), 3.0))
+        assert torch.all(raw[0:32, 0:64] == 3.0)
+        assert torch.all(raw[32:64, :] == 0.0)
+
+    # --- integer index preserves 2D shape ---
+
+    def test_int_row_with_slice_col_preserves_2d(self) -> None:
+        raw = torch.randn(128, 64)
+        t = ttnn.Tensor(raw)
+        result = t[0, slice(0, 2)]
+        assert result.shape == (32, 64)
+        assert torch.allclose(result.to_torch(), raw[0:32, 0:64])
+
+    def test_int_col_with_slice_row_preserves_2d(self) -> None:
+        raw = torch.randn(128, 64)
+        t = ttnn.Tensor(raw)
+        result = t[slice(0, 2), 0]
+        assert result.shape == (64, 32)
+        assert torch.allclose(result.to_torch(), raw[0:64, 0:32])
+
+    # --- N-D keys with mixed int/slice on last two dims ---
+
+    def test_nd_mixed_key_reads_tile_region(self) -> None:
+        """Batch dim (int) + slice tile-row + int tile-col is valid tile indexing."""
+        raw = torch.zeros(2, 128, 64)
+        raw[1, 0:32, 32:64] = 5.0  # batch=1, tile-row=0, tile-col=1
+        t = ttnn.Tensor(raw)
+        # (batch=1, tile-row slice 0:1, tile-col 1) → element [1, 0:32, 32:64]
+        result = t[1, slice(0, 1), 1]
+        assert result.shape == (32, 32)
+        assert torch.all(result.to_torch() == 5.0)
+
+    def test_nd_mixed_key_writes_tile_region(self) -> None:
+        """Batch dim (int) + int tile-row + slice tile-col writes correctly."""
+        raw = torch.zeros(3, 64, 128)
+        t = ttnn.Tensor(raw)
+        # (batch=2, tile-row 1, tile-col slice 0:2) → element [2, 32:64, 0:64]
+        t[2, 1, slice(0, 2)] = ttnn.Tensor(torch.full((32, 64), 9.0))
+        assert torch.all(raw[2, 32:64, 0:64] == 9.0)
+        assert torch.all(raw[0] == 0.0)  # other batches unchanged
+
+    # --- degenerate (size-1) dimensions ---
+
+    def test_degenerate_dim_allowed(self) -> None:
+        raw = torch.randn(32, 1)
+        t = ttnn.Tensor(raw)
+        tile = t[0, 0]
+        assert tile.shape == (32, 1)
+        assert torch.allclose(tile.to_torch(), raw)

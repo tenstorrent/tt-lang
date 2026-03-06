@@ -14,6 +14,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from greenlet import greenlet
 
 from .blockstate import ThreadType
+from .diagnostics import (
+    lazy_import_diagnostics,
+    find_user_code_location,
+    format_core_ranges,
+    extract_core_id_from_thread_name,
+)
 
 
 # Global scheduler algorithm selection
@@ -35,24 +41,6 @@ def set_scheduler_algorithm(algorithm: str) -> None:
 def get_scheduler_algorithm() -> str:
     """Get the current scheduling algorithm."""
     return _scheduler_algorithm
-
-
-def _get_ttlang_compile_error() -> Any:
-    """Lazy import of TTLangCompileError to avoid circular dependency."""
-    import importlib.util
-    import sys
-    from pathlib import Path
-
-    # Direct import of diagnostics module without going through ttl package
-    # This avoids importing the full compiler infrastructure
-    diagnostics_path = Path(__file__).parent.parent / "ttl" / "diagnostics.py"
-    spec = importlib.util.spec_from_file_location("ttl.diagnostics", diagnostics_path)
-    if spec and spec.loader:
-        diagnostics = importlib.util.module_from_spec(spec)
-        sys.modules["ttl.diagnostics"] = diagnostics
-        spec.loader.exec_module(diagnostics)
-        return diagnostics.TTLangCompileError
-    raise ImportError("Could not load ttl.diagnostics")
 
 
 class GreenletScheduler:
@@ -128,23 +116,14 @@ class GreenletScheduler:
             )
 
         # Capture location where blocking occurred
-        import inspect
-
-        frame = inspect.currentframe()
         location_str = ""
         raw_loc: Optional[Tuple[str, int]] = None
-        if frame and frame.f_back:
-            # Walk up the call stack to find user code
-            caller_frame = frame.f_back
-            while caller_frame:
-                filename = caller_frame.f_code.co_filename
-                # Skip simulator internals
-                if "/python/sim/" not in filename and "greenlet" not in filename:
-                    lineno = caller_frame.f_lineno
-                    location_str = f" at {filename}:{lineno}"
-                    raw_loc = (filename, lineno)
-                    break
-                caller_frame = caller_frame.f_back
+
+        # Find user code location (skip this method)
+        filename, lineno = find_user_code_location(skip_frames=1)
+        if filename and lineno:
+            location_str = f" at {filename}:{lineno}"
+            raw_loc = (filename, lineno)
 
         # Update active entry with blocking info and location
         g, _, _, thread_type, _, _ = self._active[self._current_name]
@@ -196,6 +175,14 @@ class GreenletScheduler:
             )
         self._has_made_progress[self._current_name] = True
 
+    def get_current_thread_name(self) -> Optional[str]:
+        """Get the name of the currently executing thread.
+
+        Returns:
+            Current thread name, or None if no thread is executing
+        """
+        return self._current_name
+
     def _extract_source_location(
         self, exception: Exception
     ) -> Tuple[Optional[str], Optional[int], Optional[int]]:
@@ -246,7 +233,8 @@ class GreenletScheduler:
             True if pretty printing succeeded, False if TTLangCompileError not available
         """
         try:
-            TTLangCompileError = _get_ttlang_compile_error()
+            diagnostics = lazy_import_diagnostics()
+            TTLangCompileError = diagnostics.TTLangCompileError
             compile_error = TTLangCompileError(
                 f"{type(exception).__name__}: {exception}",
                 source_file=source_file,
@@ -519,9 +507,8 @@ class GreenletScheduler:
                 ) in self._active.items():
                     obj_desc = self._get_obj_description(blocking_obj)
                     key = (op, obj_desc, location)
-                    # Extract core identifier by removing thread type suffix
-                    # e.g., "core0-compute" -> "core0", "core0-dm0" -> "core0"
-                    core_id = name.rsplit("-", 1)[0] if "-" in name else name
+                    # Extract core identifier from thread name
+                    core_id = extract_core_id_from_thread_name(name)
                     blocked_groups[key].append(core_id)
                     if key not in blocked_raw_locs:
                         blocked_raw_locs[key] = raw_loc
@@ -538,12 +525,13 @@ class GreenletScheduler:
                         core_numbers: list[int] = [
                             int(core_id[4:]) for core_id in unique_cores
                         ]
-                        cores_label = f"cores: {self._format_core_ranges(core_numbers)}"
+                        cores_label = f"cores: {format_core_ranges(core_numbers)}"
 
                     raw_loc = blocked_raw_locs.get((op, obj_desc, location))
                     if raw_loc:
                         filename, lineno = raw_loc
-                        TTLangCompileError = _get_ttlang_compile_error()
+                        diagnostics = lazy_import_diagnostics()
+                        TTLangCompileError = diagnostics.TTLangCompileError
                         compile_error = TTLangCompileError(
                             f"deadlock: blocked on {op}(){obj_desc} ({cores_label})",
                             source_file=filename,
@@ -559,45 +547,6 @@ class GreenletScheduler:
                 raise RuntimeError(
                     "Deadlock detected: all generators blocked"
                 ) from RuntimeError("deadlock")
-
-    def _format_core_ranges(self, core_numbers: list[int]) -> str:
-        """Format a list of core numbers as ranges.
-
-        Args:
-            core_numbers: Sorted list of core numbers (e.g., [0, 1, 2, 3, 8, 9, 10, 11])
-
-        Returns:
-            Formatted string with ranges (e.g., "0-3, 8-11")
-        """
-        if not core_numbers:
-            return ""
-
-        # Sort to ensure consecutive numbers are adjacent
-        sorted_cores = sorted(core_numbers)
-        ranges: list[str] = []
-        start = sorted_cores[0]
-        end = sorted_cores[0]
-
-        for i in range(1, len(sorted_cores)):
-            if sorted_cores[i] == end + 1:
-                # Consecutive, extend the range
-                end = sorted_cores[i]
-            else:
-                # Gap found, save the current range and start a new one
-                if start == end:
-                    ranges.append(str(start))
-                else:
-                    ranges.append(f"{start}-{end}")
-                start = sorted_cores[i]
-                end = sorted_cores[i]
-
-        # Add the final range
-        if start == end:
-            ranges.append(str(start))
-        else:
-            ranges.append(f"{start}-{end}")
-
-        return ", ".join(ranges)
 
     def _get_obj_description(self, obj: Any) -> str:
         """Get a brief description of an object for debugging output."""
@@ -645,6 +594,22 @@ def set_scheduler(scheduler: Optional[GreenletScheduler]) -> None:
     """Set the current scheduler instance."""
     global _current_scheduler
     _current_scheduler = scheduler
+
+
+def get_current_core_id() -> str:
+    """Get the current core ID from the active thread.
+
+    Returns:
+        Core ID like "core0", or "unknown" if no scheduler is active
+        (e.g., in unit tests)
+    """
+    try:
+        scheduler = get_scheduler()
+        thread_name = scheduler.get_current_thread_name()
+        return extract_core_id_from_thread_name(thread_name)
+    except RuntimeError:
+        # No active scheduler (e.g., in unit tests)
+        return "unknown"
 
 
 def block_if_needed(obj: Any, operation: str) -> None:
