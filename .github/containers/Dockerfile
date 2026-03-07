@@ -13,6 +13,15 @@
 #
 # Docker only runs stages in the dependency chain of the requested target,
 # so `--target ird` never builds tt-lang and `--target dist` never runs build-toolchain.
+#
+# Cache injection (optional):
+#   Pass --build-context llvm-cache=./path and/or --build-context ttmetal-cache=./path
+#   to inject pre-built LLVM and tt-metal artifacts. cmake's existing skip-if-exists
+#   logic avoids rebuilding when caches are present.
+
+# Cache stages: empty by default, overridden by --build-context when caches are available.
+FROM scratch AS llvm-cache
+FROM scratch AS ttmetal-cache
 
 # =============================================================================
 # Build toolchain only (for ird)
@@ -32,7 +41,13 @@ RUN git log -1 || echo "Git info not available"
 COPY .github/scripts/normalize-ttmlir-install.sh /tmp/normalize-ttmlir-install.sh
 COPY .github/containers/cleanup-toolchain.sh /tmp/cleanup-toolchain.sh
 COPY .github/containers/build-and-install.sh /tmp/build-and-install.sh
-RUN chmod +x /tmp/build-and-install.sh && /tmp/build-and-install.sh --toolchain-only && rm /tmp/build-and-install.sh
+RUN --mount=from=llvm-cache,target=/tmp/llvm-cache \
+    --mount=from=ttmetal-cache,target=/tmp/ttmetal-cache \
+    chmod +x /tmp/build-and-install.sh && \
+    /tmp/build-and-install.sh --toolchain-only \
+        --llvm-cache /tmp/llvm-cache \
+        --ttmetal-cache /tmp/ttmetal-cache && \
+    rm /tmp/build-and-install.sh
 
 # =============================================================================
 # Build tt-lang (for dist)
@@ -48,13 +63,20 @@ WORKDIR /home/build/tt-lang
 # Show commit info for traceability
 RUN git log -1 || echo "Git info not available"
 
-# Configure, build, install, and cleanup in ONE RUN command to avoid Docker layer bloat
+# Configure, build, install, and cleanup in ONE RUN command to avoid Docker layer bloat.
 # Docker keeps all layers during build - by combining these, the huge build
-# directory (50-80GB) never gets committed to a layer
+# directory (50-80GB) never gets committed to a layer.
+# The --mount=from= mounts are temporary and do not create extra layers.
 COPY .github/scripts/normalize-ttmlir-install.sh /tmp/normalize-ttmlir-install.sh
 COPY .github/containers/cleanup-toolchain.sh /tmp/cleanup-toolchain.sh
 COPY .github/containers/build-and-install.sh /tmp/build-and-install.sh
-RUN chmod +x /tmp/build-and-install.sh && /tmp/build-and-install.sh && rm /tmp/build-and-install.sh
+RUN --mount=from=llvm-cache,target=/tmp/llvm-cache \
+    --mount=from=ttmetal-cache,target=/tmp/ttmetal-cache \
+    chmod +x /tmp/build-and-install.sh && \
+    /tmp/build-and-install.sh \
+        --llvm-cache /tmp/llvm-cache \
+        --ttmetal-cache /tmp/ttmetal-cache && \
+    rm /tmp/build-and-install.sh
 
 # =============================================================================
 # IRD (for developers who will clone and build their own tt-lang)

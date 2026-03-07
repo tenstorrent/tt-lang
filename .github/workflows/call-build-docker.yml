@@ -110,6 +110,43 @@ jobs:
         run: |
           .github/scripts/cleanup-ci-space.sh
 
+      - name: Extract submodule SHAs for cache keys
+        id: submodule-shas
+        run: |
+          echo "llvm-sha=$(git -C third-party/llvm-project rev-parse HEAD)" >> $GITHUB_OUTPUT
+          echo "ttmetal-sha=$(git -C third-party/tt-metal rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Restore LLVM cache
+        id: cache-llvm
+        uses: actions/cache/restore@v4
+        with:
+          path: build/llvm-install/
+          key: ${{ runner.os }}-llvm-install-${{ steps.submodule-shas.outputs.llvm-sha }}
+
+      - name: Restore tt-metal cache
+        id: cache-ttmetal
+        uses: actions/cache/restore@v4
+        with:
+          path: third-party/tt-metal/build/
+          key: ${{ runner.os }}-ttmetal-build-${{ steps.submodule-shas.outputs.ttmetal-sha }}-${{ hashFiles('third-party/patches/ttmetal-*.patch') }}
+
+      - name: Set up cache build contexts
+        run: |
+          EXTRA_ARGS=""
+          if [ "${{ steps.cache-llvm.outputs.cache-hit }}" = "true" ]; then
+            echo "LLVM cache hit — will inject into Docker build"
+            EXTRA_ARGS="$EXTRA_ARGS --build-context llvm-cache=./build/llvm-install"
+          else
+            echo "LLVM cache miss — Docker will build from source"
+          fi
+          if [ "${{ steps.cache-ttmetal.outputs.cache-hit }}" = "true" ]; then
+            echo "tt-metal cache hit — will inject into Docker build"
+            EXTRA_ARGS="$EXTRA_ARGS --build-context ttmetal-cache=./third-party/tt-metal/build"
+          else
+            echo "tt-metal cache miss — Docker will build from source"
+          fi
+          echo "DOCKER_BUILD_EXTRA_ARGS=$EXTRA_ARGS" >> $GITHUB_ENV
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -188,6 +225,43 @@ jobs:
       - name: Free up some more space
         run: |
           .github/scripts/cleanup-ci-space.sh
+
+      - name: Extract submodule SHAs for cache keys
+        id: submodule-shas
+        run: |
+          echo "llvm-sha=$(git -C third-party/llvm-project rev-parse HEAD)" >> $GITHUB_OUTPUT
+          echo "ttmetal-sha=$(git -C third-party/tt-metal rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Restore LLVM cache
+        id: cache-llvm
+        uses: actions/cache/restore@v4
+        with:
+          path: build/llvm-install/
+          key: ${{ runner.os }}-llvm-install-${{ steps.submodule-shas.outputs.llvm-sha }}
+
+      - name: Restore tt-metal cache
+        id: cache-ttmetal
+        uses: actions/cache/restore@v4
+        with:
+          path: third-party/tt-metal/build/
+          key: ${{ runner.os }}-ttmetal-build-${{ steps.submodule-shas.outputs.ttmetal-sha }}-${{ hashFiles('third-party/patches/ttmetal-*.patch') }}
+
+      - name: Set up cache build contexts
+        run: |
+          EXTRA_ARGS=""
+          if [ "${{ steps.cache-llvm.outputs.cache-hit }}" = "true" ]; then
+            echo "LLVM cache hit — will inject into Docker build"
+            EXTRA_ARGS="$EXTRA_ARGS --build-context llvm-cache=./build/llvm-install"
+          else
+            echo "LLVM cache miss — Docker will build from source"
+          fi
+          if [ "${{ steps.cache-ttmetal.outputs.cache-hit }}" = "true" ]; then
+            echo "tt-metal cache hit — will inject into Docker build"
+            EXTRA_ARGS="$EXTRA_ARGS --build-context ttmetal-cache=./third-party/tt-metal/build"
+          else
+            echo "tt-metal cache miss — Docker will build from source"
+          fi
+          echo "DOCKER_BUILD_EXTRA_ARGS=$EXTRA_ARGS" >> $GITHUB_ENV
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3

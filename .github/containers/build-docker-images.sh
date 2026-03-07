@@ -131,10 +131,13 @@ build_image() {
     fi
 
     # Always tag with registry path (required for Dockerfile FROM references)
+    # DOCKER_BUILD_EXTRA_ARGS allows callers to inject additional args
+    # (e.g. --build-context for cache injection)
     docker build \
         --progress=plain \
         $cache_arg \
         $target_arg \
+        ${DOCKER_BUILD_EXTRA_ARGS:-} \
         -t "$registry_image" \
         -t "$local_image" \
         -t "$name:latest" \

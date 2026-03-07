@@ -7,21 +7,60 @@
 # avoiding Docker layer bloat from the large build directory.
 #
 # Usage:
-#   build-and-install.sh [--toolchain-only]
+#   build-and-install.sh [--toolchain-only] [--llvm-cache DIR] [--ttmetal-cache DIR]
 #
 # Options:
-#   --toolchain-only  Only configure (which builds LLVM and tt-metal from
-#                     submodules) without building or installing tt-lang.
-#                     Used by the IRD container target.
+#   --toolchain-only   Only configure (which builds LLVM and tt-metal from
+#                      submodules) without building or installing tt-lang.
+#                      Used by the IRD container target.
+#   --llvm-cache DIR   Pre-built LLVM install to copy into LLVM_INSTALL_DIR.
+#                      cmake skips the LLVM build if MLIRConfig.cmake exists.
+#   --ttmetal-cache DIR  Pre-built tt-metal build to copy into tt-metal/build/.
+#                        cmake skips the tt-metal build if _ttnn.so exists.
 
 set -e
 
 TOOLCHAIN_ONLY=false
-if [ "$1" = "--toolchain-only" ]; then
-    TOOLCHAIN_ONLY=true
-fi
+LLVM_CACHE=""
+TTMETAL_CACHE=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --toolchain-only)
+            TOOLCHAIN_ONLY=true
+            shift
+            ;;
+        --llvm-cache)
+            LLVM_CACHE="$2"
+            shift 2
+            ;;
+        --ttmetal-cache)
+            TTMETAL_CACHE="$2"
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
 
 TTMLIR_TOOLCHAIN_DIR="${TTMLIR_TOOLCHAIN_DIR:-/opt/ttmlir-toolchain}"
+
+# Restore LLVM cache if provided and non-empty
+if [ -n "$LLVM_CACHE" ] && [ -d "$LLVM_CACHE/lib/cmake/mlir" ]; then
+    echo "=== Restoring LLVM cache from $LLVM_CACHE ==="
+    mkdir -p "$TTMLIR_TOOLCHAIN_DIR"
+    cp -a "$LLVM_CACHE"/. "$TTMLIR_TOOLCHAIN_DIR"/
+    echo "LLVM cache restored to $TTMLIR_TOOLCHAIN_DIR"
+fi
+
+# Restore tt-metal cache if provided and non-empty
+if [ -n "$TTMETAL_CACHE" ] && [ -d "$TTMETAL_CACHE/ttnn" ]; then
+    echo "=== Restoring tt-metal cache from $TTMETAL_CACHE ==="
+    mkdir -p third-party/tt-metal/build
+    cp -a "$TTMETAL_CACHE"/. third-party/tt-metal/build/
+    echo "tt-metal cache restored to third-party/tt-metal/build/"
+fi
 
 echo "=== Configuring tt-lang ==="
 if [ "$TOOLCHAIN_ONLY" = true ]; then
