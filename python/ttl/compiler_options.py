@@ -20,17 +20,21 @@ from typing import Optional
 
 
 def _make_parser() -> argparse.ArgumentParser:
-    """Build the compiler options parser."""
+    """Build the compiler options parser.
+
+    Defaults are ``None`` so callers can distinguish "not specified" from
+    "explicitly set to the dataclass default".
+    """
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument(
         "--maximize-dst",
-        default=True,
+        default=None,
         action=argparse.BooleanOptionalAction,
         help="Enable DST maximization via subblock compute and scheduling.",
     )
     p.add_argument(
         "--fpu-binary-ops",
-        default=True,
+        default=None,
         dest="enable_fpu_binary_ops",
         action=argparse.BooleanOptionalAction,
         help="Use FPU for binary add/sub/mul.",
@@ -39,6 +43,17 @@ def _make_parser() -> argparse.ArgumentParser:
 
 
 _PARSER = _make_parser()
+
+
+def _parse_explicit(tokens: list, *, reject_unknown: bool = False) -> dict:
+    """Parse *tokens* and return only the fields that were explicitly set."""
+    if reject_unknown:
+        ns, unknown = _PARSER.parse_known_args(tokens)
+        if unknown:
+            raise ValueError(f"Unknown kernel option(s): {unknown}")
+    else:
+        ns, _ = _PARSER.parse_known_args(tokens)
+    return {k: v for k, v in vars(ns).items() if v is not None}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -52,31 +67,31 @@ class CompilerOptions:
     maximize_dst: bool = True
     enable_fpu_binary_ops: bool = True
 
+    # Fields that were explicitly provided (not defaulted). Excluded from
+    # equality and hashing so two instances with the same bool values are
+    # interchangeable for caching regardless of how they were constructed.
+    _explicit: frozenset = dataclasses.field(
+        default=frozenset(), compare=False, hash=False, repr=False
+    )
+
     @staticmethod
     def from_string(options: Optional[str] = None) -> CompilerOptions:
         """Parse an option string (e.g., "--no-maximize-dst").
 
         Later tokens override earlier ones. Returns defaults when
-        *options* is `None` or empty.
+        *options* is `None` or empty.  Raises ``ValueError`` on
+        unrecognised tokens.
         """
         tokens = options.split() if options else []
-        ns, unknown = _PARSER.parse_known_args(tokens)
-        if unknown:
-            raise ValueError(f"Unknown kernel option(s): {unknown}")
-        return CompilerOptions(
-            maximize_dst=ns.maximize_dst,
-            enable_fpu_binary_ops=ns.enable_fpu_binary_ops,
-        )
+        explicit = _parse_explicit(tokens, reject_unknown=True)
+        return CompilerOptions(**explicit, _explicit=frozenset(explicit))
 
     @staticmethod
     def from_argv() -> CompilerOptions:
         """Extract compiler options from `sys.argv`, ignoring
         unrecognised arguments (test runner flags, file paths, etc.)."""
-        ns, _ = _PARSER.parse_known_args(sys.argv[1:])
-        return CompilerOptions(
-            maximize_dst=ns.maximize_dst,
-            enable_fpu_binary_ops=ns.enable_fpu_binary_ops,
-        )
+        explicit = _parse_explicit(sys.argv[1:])
+        return CompilerOptions(**explicit, _explicit=frozenset(explicit))
 
     @staticmethod
     def usage() -> str:
@@ -84,13 +99,16 @@ class CompilerOptions:
         return _PARSER.format_help()
 
     def merge(self, overrides: CompilerOptions) -> CompilerOptions:
-        """Return a new CompilerOptions where `overrides` takes priority
-        for any field that differs from its default."""
-        defaults = CompilerOptions()
+        """Return a new CompilerOptions where explicitly-set fields in
+        *overrides* take priority over *self*."""
         kwargs = {}
+        explicit = set(self._explicit)
         for f in dataclasses.fields(self):
-            base = getattr(self, f.name)
-            over = getattr(overrides, f.name)
-            # If the override is non-default, use it; otherwise keep base.
-            kwargs[f.name] = over if over != f.default else base
-        return CompilerOptions(**kwargs)
+            if f.name.startswith("_"):
+                continue
+            if f.name in overrides._explicit:
+                kwargs[f.name] = getattr(overrides, f.name)
+                explicit.add(f.name)
+            else:
+                kwargs[f.name] = getattr(self, f.name)
+        return CompilerOptions(**kwargs, _explicit=frozenset(explicit))
