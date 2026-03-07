@@ -85,7 +85,7 @@ def eltwise_add(
                 tx = ttl.copy(a_in[row_slice, col_slice], a_block)
 
                 # INTENTIONAL ERROR: Attempting to write to a_block before tx.wait()
-                a_block.store([None, None])  # This should trigger a copy lock error
+                a_block.store(a_block)  # copy-lock error fires before items is accessed
                 tx.wait()
                 a_block.push()
                 b_block = b_in_dfb.reserve()

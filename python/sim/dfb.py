@@ -2,33 +2,30 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """
-Block, circular buffer API, and high-level DataflowBuffer interface.
+Block, ring-buffer primitives, and high-level DataflowBuffer interface.
 
 This module provides:
 - Block: a logically contiguous window into a ring buffer with state machine enforcement
-- DFBStats: statistics snapshot for a circular buffer
-- DFBAPI: low-level circular buffer simulator API
-- DataflowBuffer: high-level tensor-aware circular buffer wrapper
+- DFBStats: statistics snapshot for a dataflow buffer
+- DataflowBuffer: high-level tensor-aware dataflow buffer wrapper
 """
 
+import math
 import operator as _op
-import threading
+from itertools import product as _product
 from typing import (
-    Annotated,
     Any,
     Callable,
+    Dict,
     List,
     NamedTuple,
     Optional,
-    Sequence,
-    Tuple,
     Union,
-    cast,
 )
 
 import torch
 
-from pydantic import Field, validate_call
+from pydantic import validate_call
 
 from .blockstate import (
     AccessState,
@@ -38,21 +35,14 @@ from .blockstate import (
     STATE_TRANSITIONS,
     get_current_thread_type,
 )
-from .dfbstate import DFBSlot, DFBState
-from .constants import DFB_DEFAULT_TIMEOUT, MAX_DFBS, TILE_SHAPE
-from .errors import DFBContractError, DFBTimeoutError
+from .dfbstate import DFBState
+from .constants import TILE_SHAPE
+from .errors import DFBContractError
 from .stats import record_dfb_reserve, record_dfb_wait
-from .ttnnsim import Tensor
-from .typedefs import DFBID, Index, Shape, Size, Span
+from .ttnnsim import Tensor, tile_count_from_tensor
+from .typedefs import Index, Shape, Size
 
 
-# Notice that get_read_ptr and get_write_ptr return a C++ pointer which does not
-# necessarily make sense in a python context. So we need something that can
-# access the elements of the dfb (as a pointer would) from the position the
-# pointer points. To hide needless index arithmetic, we also add the ability to
-# wrap around. Notice also that it handles a list and a capacity, instead of a
-# _DFBState, a deliberate choice to make it closer in spirit to a pointer and
-# minimizing the state that is exposed.
 class Block:
     """A logically contiguous window into the ring, possibly wrapping.
     Provides list-like access to elements while respecting wrap-around.
@@ -68,8 +58,6 @@ class Block:
 
     __slots__ = (
         "_buf",
-        "_capacity",
-        "_span",
         "_shape",
         "_acquisition",
         "_thread_type",
@@ -78,32 +66,31 @@ class Block:
         "_is_temporary",
         "_source_blocks",  # Track wait() blocks that contributed to this temporary block
         "dfb",  # Reference to DataflowBuffer for context manager cleanup
+        "dfb_state",  # DFBState reference for updating ring-buffer slot on copy_as_dest
+        "dfb_slot_idx",  # Index of this block's slot in the ring buffer
     )
 
     # TODO: We can't do @validate_call here. There reason is that @validate_call actually
     #       copies the arguments to validate them and returns the copies to the decorated
-    #       function. In our case, we don't want the copy of the list, we want to use the
-    #       original list as is. This is a limitation of pydantic's validate_call, and
+    #       function. In our case, we don't want the copy of the tensor, we want to use the
+    #       original tensor as is. This is a limitation of pydantic's validate_call, and
     #       perhaps a good reason to look for other frameworks that don't do that! (beartype?)
-    # @validate_call
     def __init__(
         self,
-        buf: List[DFBSlot],
-        capacity: Size,
-        span: Span,
+        tensor: Tensor,
         shape: Shape,
         acquisition: BlockAcquisition,
         thread_type: ThreadType,
         is_temporary: bool = False,
         dfb: Optional["DataflowBuffer"] = None,
     ):
-        self._buf = buf
-        self._capacity = capacity
-        self._span = span
+        self._buf = tensor
         self._shape = shape
         self._is_temporary = is_temporary
         self._source_blocks: List["Block"] = []  # Track source wait() blocks
-        self.dfb = dfb  # Reference to DataflowBuffer for context manager cleanup
+        self.dfb = dfb  # Reference to DataflowBuffer for context manager support
+        self.dfb_state: Optional[DFBState] = None
+        self.dfb_slot_idx: int = -1
 
         # State machine variables
         self._acquisition: BlockAcquisition = acquisition
@@ -178,6 +165,19 @@ class Block:
             elif self._acquisition == BlockAcquisition.WAIT:
                 self.pop()
 
+    def __repr__(self) -> str:
+        acq = self._acquisition.name
+        expected = {op.name for op in self._expected_ops}
+        return (
+            f"Block("
+            f"shape={self._shape}, "
+            f"data={repr(self._buf.to_torch())}, "
+            f"acq={acq}, "
+            f"thread={self._thread_type.name}, "
+            f"access={self._access_state.name}, "
+            f"expected={expected})"
+        )
+
     def pop(self) -> None:
         if self.dfb is None:
             raise RuntimeError(
@@ -191,26 +191,6 @@ class Block:
                 "Block.push() is only valid for blocks acquired from a DataflowBuffer."
             )
         self.dfb.push_block()
-
-    @classmethod
-    def from_list(
-        cls,
-        tensors: List[Tensor],
-        shape: Shape,
-    ) -> "Block":
-        """Create a temporary Block from a list of tensors (computation result).
-
-        Temporary blocks are not backed by DFB storage and don't support wrap-around.
-        """
-        return cls(
-            buf=cast(List[DFBSlot], tensors),
-            capacity=len(tensors),
-            span=Span(0, len(tensors)),
-            shape=shape,
-            acquisition=BlockAcquisition.RESERVE,  # Temporary blocks use RESERVE semantics
-            thread_type=ThreadType.COMPUTE,  # Temporary blocks are from compute operations
-            is_temporary=True,
-        )
 
     def _validate_state(self, operation: str, expected_op: ExpectedOp) -> None:
         """Validate that the current operation is allowed in the current state.
@@ -375,7 +355,7 @@ class Block:
         self._expected_ops = set()  # Empty = DONE
 
     def __len__(self) -> Size:
-        return self._span.length
+        return math.prod(self._shape)
 
     @property
     def is_temporary(self) -> bool:
@@ -451,24 +431,15 @@ class Block:
         # Note: We allow writing in MR/RW/A states as appropriate for the operation
 
     def get_item(self, idx: Index) -> Tensor:
-        """Internal method to get item with lock checking.
+        """Return a single tile by flat index (row-major order across self._shape).
 
-        This is used internally by copy handlers and other internal operations.
-        External code should not index blocks.
+        Delegates to to_list() which does not require tile-aligned dimensions.
         """
         self._check_can_read()
-        if not (0 <= idx < self._span.length):
+        n = math.prod(self._shape)
+        if not (0 <= idx < n):
             raise IndexError(idx)
-
-        # Temporary blocks don't wrap around
-        if self._is_temporary:
-            value = self._buf[idx]
-        else:
-            value = self._buf[(self._span.start + idx) % self._capacity]
-
-        if value is None:
-            raise ValueError(f"Reading uninitialized or consumed slot at index {idx}")
-        return value
+        return self.to_list()[idx]
 
     @validate_call
     def __getitem__(self, idx: Index) -> Tensor:
@@ -488,52 +459,164 @@ class Block:
             "Direct assignment to Block is not allowed. Use block.store() or copy() instead."
         )
 
-    def write_slot(self, idx: Index, value: Tensor) -> None:
-        """Internal method to write to a slot. Only used by store() and copy handlers."""
-        self._check_can_write()
-        if not (0 <= idx < self._span.length):
-            raise IndexError(idx)
-
-        # Temporary blocks don't wrap around
-        if self._is_temporary:
-            self._buf[idx] = value
-        else:
-            self._buf[(self._span.start + idx) % self._capacity] = value
-
-    @validate_call
-    def pop_idx(self, idx: Index) -> None:
-        if not (0 <= idx < self._span.length):
-            raise IndexError(idx)
-        value = self._buf[(self._span.start + idx) % self._capacity]
-        if value is None:
-            raise ValueError(f"Popping uninitialized or consumed slot at index {idx}")
-        self._buf[(self._span.start + idx) % self._capacity] = None
-
     def to_list(self) -> List[Tensor]:
-        """Convert block contents to a list.
+        """Split the backing Tensor into individual tiles.
 
-        This is a convenience method for tests and debugging.
-        Returns the actual tensor values from the buffer.
+        Returns tiles in row-major order across self._shape.  Each tile is a
+        slice of the backing tensor — no tile-alignment constraints are imposed
+        so non-standard tile sizes (e.g. in tests) are supported.
         """
-        return [self.get_item(i) for i in range(len(self))]
+        buf = self._buf.to_torch()
+        shape = self._shape
 
-    def copy_as_dest(self, items: Sequence[Tensor]) -> None:
-        """Store items into the block as part of a copy operation.
+        if len(shape) == 1:
+            # 1-D: single tile-grid dimension, no batch dims.
+            tk = shape[0]
+            w = buf.shape[-1]
+            tile_w = w // tk if tk > 0 else 1
+            return [Tensor(buf[slice(c * tile_w, (c + 1) * tile_w)]) for c in range(tk)]
 
-        This method is used by copy handlers and does NOT update the state machine.
-        State transitions for copy operations are handled by mark_copy_as_dest()
-        (called when CopyTransaction is created) and mark_tx_wait_complete().
+        nb = len(shape) - 2
+        tm, tk = shape[nb], shape[nb + 1]
+        h, w = buf.shape[-2], buf.shape[-1]
+        tile_h = h // tm if tm > 0 else 1
+        tile_w = w // tk if tk > 0 else 1
+
+        tiles: List[Tensor] = []
+        for coords in _product(*[range(d) for d in shape]):
+            batch_idx = coords[:nb]
+            r, c = coords[nb], coords[nb + 1]
+            slices = (
+                *batch_idx,
+                slice(r * tile_h, (r + 1) * tile_h),
+                slice(c * tile_w, (c + 1) * tile_w),
+            )
+            tiles.append(Tensor(buf[slices]))
+        return tiles
+
+    def to_tensor(self) -> Tensor:
+        """Return the backing multi-tile Tensor directly."""
+        return self._buf
+
+    @classmethod
+    def from_list(
+        cls,
+        tensors: List[Tensor],
+        shape: Shape,
+    ) -> "Block":
+        """Create a temporary Block by assembling a list of tiles into a Tensor.
+
+        Tiles must be in row-major order across shape.  The resulting Block
+        owns a freshly assembled multi-tile Tensor with element shape derived
+        from the individual tile sizes.
+        """
+        if len(shape) == 1:
+            # 1-D: tiles are contiguous vectors; just concatenate along dim 0.
+            elem_tensor = torch.cat([t.to_torch() for t in tensors], dim=0)
+        else:
+            nb = len(shape) - 2
+            batch = shape[:nb]
+            TM, TK = shape[nb], shape[nb + 1]
+            first_raw = tensors[0].to_torch()
+            tile_h, tile_w = first_raw.shape[-2], first_raw.shape[-1]
+            stacked = torch.stack([t.to_torch() for t in tensors])
+            tile_grid = stacked.reshape(*shape, tile_h, tile_w)
+            # (*batch, TM, TK, r, c) -> (*batch, TM, r, TK, c) -> (*batch, TM*r, TK*c)
+            perm = list(range(nb)) + [nb, nb + 2, nb + 1, nb + 3]
+            elem_tensor = tile_grid.permute(*perm).reshape(
+                *batch, TM * tile_h, TK * tile_w
+            )
+        return cls(
+            tensor=Tensor(elem_tensor),
+            shape=shape,
+            acquisition=BlockAcquisition.RESERVE,
+            thread_type=ThreadType.COMPUTE,
+            is_temporary=True,
+        )
+
+    @classmethod
+    def from_tensor(cls, t: Tensor) -> "Block":
+        """Create a temporary Block wrapping a ttnnsim.Tensor.
+
+        Infers the tile-grid shape from the tensor's element dimensions.
+        The last two element dimensions must be multiples of TILE_SHAPE (or
+        exactly 1 for degenerate tiles).
 
         Args:
-            items: Sequence of tensors to store
-        """
-        if len(items) != self._span.length:
-            raise ValueError("Length mismatch in copy_as_dest()")
+            t: Source tensor.
 
-        # Store data without state checks - block is in NA state during copy
-        # which is correct for the state machine, but we need to write the data
-        for i, v in enumerate(items):
-            self._buf[(self._span.start + i) % self._capacity] = v
+        Returns:
+            A temporary Block backed directly by t (no copy).
+
+        Raises:
+            ValueError: If the tensor dimensions are not tile-aligned.
+        """
+        elem_shape = t.shape
+        if len(elem_shape) == 1:
+            w = elem_shape[0]
+            if w != 1 and w % TILE_SHAPE[0] != 0:
+                raise ValueError(
+                    f"1-D tensor dimension ({w},) must be a multiple of "
+                    f"TILE_SHAPE[0]={TILE_SHAPE[0]}, or exactly 1"
+                )
+            tk = 1 if w == 1 else w // TILE_SHAPE[0]
+            tile_shape: Shape = (tk,)
+        else:
+            h, w = elem_shape[-2], elem_shape[-1]
+            if (h != 1 and h % TILE_SHAPE[0] != 0) or (
+                w != 1 and w % TILE_SHAPE[1] != 0
+            ):
+                raise ValueError(
+                    f"Last two tensor dimensions ({h}, {w}) must be multiples of "
+                    f"TILE_SHAPE {TILE_SHAPE}, or exactly 1"
+                )
+            batch_shape = elem_shape[:-2]
+            tm = 1 if h == 1 else h // TILE_SHAPE[0]
+            tk = 1 if w == 1 else w // TILE_SHAPE[1]
+            tile_shape = (*batch_shape, tm, tk)
+        return cls(
+            tensor=t,
+            shape=tile_shape,
+            acquisition=BlockAcquisition.RESERVE,
+            thread_type=ThreadType.COMPUTE,
+            is_temporary=True,
+        )
+
+    def copy_as_dest(self, tensor: Tensor) -> None:
+        """Store tensor into this block as part of a copy operation.
+
+        Used by copy handlers; does NOT update the state machine.  Validates
+        that the source and destination represent the same number of tiles.
+
+        If element shapes differ (e.g. degenerate vs. standard tiles), the
+        backing tensor is replaced and the ring-buffer slot is updated so that
+        wait() consumers see the correct tensor.
+
+        Args:
+            tensor: Tensor to store in this block.
+
+        Raises:
+            ValueError: If tensor tile count does not match this block's shape.
+        """
+        # Validate tile count compatibility: same number of tiles, same ndim
+        src_tile_count = tile_count_from_tensor(tensor)
+        dst_tile_count = math.prod(self._shape)
+        if src_tile_count != dst_tile_count:
+            raise ValueError(
+                f"Shape mismatch in copy_as_dest(): "
+                f"source tensor {tensor.shape} has {src_tile_count} tiles, "
+                f"but block {self._shape} expects {dst_tile_count} tiles"
+            )
+
+        if tensor.shape == self._buf.shape:
+            # Fast path: same element shape — copy data in-place
+            self._buf.to_torch().copy_(tensor.to_torch())
+        else:
+            # Shape differs (e.g. degenerate tile): replace the tensor reference
+            # and update the ring-buffer slot so consumers see the new tensor.
+            self._buf = tensor
+            if self.dfb_state is not None:
+                self.dfb_state.buf[self.dfb_slot_idx] = tensor
 
     @staticmethod
     def _infer_broadcast_shape(left_shape: Shape, right_shape: Shape) -> Shape:
@@ -565,121 +648,68 @@ class Block:
 
         return result_shape
 
-    # @validate_call
-    def store(self, items: Union["Block", Sequence[Tensor]], acc: bool = False) -> None:
-        """Store items into the block.
+    def store(self, items: "Block", acc: bool = False) -> None:
+        """Store data into this block.
 
         Args:
-            items: Block or sequence of tensors to store
-            acc: If True, accumulate with existing values (+=), otherwise assign (=)
-                 Note: First store(acc=True) does assignment (y=x), subsequent ones accumulate (y+=x)
+            items: A Block whose tile count matches this block.
+            acc: If True, accumulate with existing values (+=), otherwise
+                 assign (=).  The first store(acc=True) always assigns.
+
+        Raises:
+            ValueError: If the source tile count does not match this block's.
         """
-        # Convert Block to sequence if needed, and track source blocks
-        source_blocks_to_mark: List["Block"] = []
-
-        # Convert items to sequence
-        items_seq: Sequence[Tensor]
-        match items:
-            case Block():
-                items_seq = items.to_list()
-                # Check if this is a wait() Compute block being stored directly
-                if (
-                    items._acquisition == BlockAcquisition.WAIT
-                    and items._thread_type == ThreadType.COMPUTE
-                    and ExpectedOp.STORE_SRC in items._expected_ops
-                ):
-                    source_blocks_to_mark.append(items)
-                # Check if this is a temporary block with tracked source wait() blocks
-                elif items._is_temporary and items._source_blocks:
-                    source_blocks_to_mark.extend(
-                        blk
-                        for blk in items._source_blocks
-                        if ExpectedOp.STORE_SRC in blk._expected_ops
-                    )
-            case _:
-                items_seq = items
-
-        if len(items_seq) != self._span.length:
-            raise ValueError("Length mismatch in store()")
-
-        # Check write access first (provides better error message for NA state)
+        # Check write access before touching items so state-machine errors are
+        # always surfaced first.
         self._check_can_write()
 
-        # Mark all wait() Compute source blocks as used
+        src_tensor = items._buf
+        source_blocks_to_mark: List["Block"] = []
+        # Track wait() Compute source blocks for state machine
+        if (
+            items._acquisition == BlockAcquisition.WAIT
+            and items._thread_type == ThreadType.COMPUTE
+            and ExpectedOp.STORE_SRC in items._expected_ops
+        ):
+            source_blocks_to_mark.append(items)
+        elif items._is_temporary and items._source_blocks:
+            source_blocks_to_mark.extend(
+                blk
+                for blk in items._source_blocks
+                if ExpectedOp.STORE_SRC in blk._expected_ops
+            )
+
+        # Validate tile counts match
+        src_tiles = tile_count_from_tensor(src_tensor)
+        dst_tiles = math.prod(self._shape)
+        if src_tiles != dst_tiles:
+            raise ValueError(
+                f"Shape mismatch in store(): "
+                f"source {src_tensor.shape} ({src_tiles} tiles) vs "
+                f"block {self._shape} ({dst_tiles} tiles)"
+            )
+
+        # Mark source wait() blocks as consumed
         for source_block in source_blocks_to_mark:
             source_block.mark_store_read_complete()
 
-        # Determine if this is the first store(acc=True) by checking if we're in MW state
         is_first_acc_store = acc and self._access_state == AccessState.MW
-
-        # Mark state machine transition BEFORE actual store (needed for acc=True to read)
         self.mark_store_complete(acc=acc)
 
-        if acc:
-            if is_first_acc_store:
-                # First store(acc=True): Just assign (y = x), don't accumulate
-                for i, v in enumerate(items_seq):
-                    self.write_slot(i, v)
-            else:
-                # Subsequent store(acc=True): Accumulate (y += x)
-                for i, v in enumerate(items_seq):
-                    self.write_slot(i, self.get_item(i) + v)
-        else:
-            # Regular assignment
-            for i, v in enumerate(items_seq):
-                self.write_slot(i, v)
-
-    def _apply_binary_op(
-        self,
-        left: "Block",
-        right: "Block",
-        op: Callable[[Any, Any], Any],
-    ) -> List[Tensor]:
-        """Element-wise binary op: left (op) right.
-
-        Supports NumPy-style implicit broadcasting when shapes are compatible.
-        """
-        len_left = len(left)
-        len_right = len(right)
-        left_shape = left._shape
-        right_shape = right._shape
-
-        # Check if shapes match exactly - fast path
-        if left_shape == right_shape and len_left == len_right:
-            return [op(left.get_item(i), right.get_item(i)) for i in range(len_left)]
-
-        # Check if broadcasting is valid using standard broadcasting rules
-        # For now, require same number of dimensions
-        if len(left_shape) != len(right_shape):
-            raise ValueError(
-                f"Cannot broadcast: dimension mismatch between shapes {left_shape} and {right_shape}. "
-                f"Shapes must have the same number of dimensions."
+        if acc and not is_first_acc_store:
+            # Subsequent accumulate: y += x (requires matching shapes)
+            self._buf.to_torch().add_(
+                src_tensor.to_torch().reshape(self._buf.to_torch().shape)
             )
-
-        # Check each dimension is compatible for broadcasting
-        # Compatible means: equal, or one of them is 1
-        for i, (l_dim, r_dim) in enumerate(zip(left_shape, right_shape)):
-            if l_dim != r_dim and l_dim != 1 and r_dim != 1:
-                raise ValueError(
-                    f"Cannot broadcast: incompatible shapes {left_shape} and {right_shape}. "
-                    f"Dimension {i} has sizes {l_dim} and {r_dim} which are incompatible "
-                    f"(must be equal or one must be 1)."
-                )
-
-        # Shapes are compatible - perform the operation with broadcasting
-        from .ttnnsim import broadcast_tensors
-
-        # Convert to list and ensure all slots are Tensors (not None)
-        left_list = left.to_list()
-        right_list = right.to_list()
-
-        # Type cast to assert these are Tensors (they should be, as blocks with data should have no None slots)
-        left_tensors: List[Tensor] = left_list  # type: ignore[assignment]
-        right_tensors: List[Tensor] = right_list  # type: ignore[assignment]
-
-        return broadcast_tensors(
-            left_tensors, right_tensors, left_shape, right_shape, op
-        )
+        elif src_tensor.shape == self._buf.shape:
+            # Fast path: same element shape — copy in-place
+            self._buf.to_torch().copy_(src_tensor.to_torch())
+        else:
+            # Degenerate tile: element shapes differ but tile counts match.
+            # Replace the backing tensor and update the ring-buffer slot if needed.
+            self._buf = src_tensor
+            if self.dfb_state is not None:
+                self.dfb_state.buf[self.dfb_slot_idx] = src_tensor
 
     def _binary_op(
         self,
@@ -688,14 +718,48 @@ class Block:
     ) -> "Block":
         """Element-wise binary op: self (op) other.
 
+        Applies op on the underlying Tensors (PyTorch broadcasting applies).
+        Validates that tile-grid shapes are broadcast-compatible.
+
         Tracks wait() Compute blocks that contribute to the result.
         """
-        result_list = self._apply_binary_op(self, other, op)
+        left_shape = self._shape
+        right_shape = other._shape
 
-        # Infer result shape using broadcasting rules
-        result_shape = self._infer_broadcast_shape(self._shape, other._shape)
+        # Validate broadcast compatibility at the tile-grid level
+        if len(left_shape) != len(right_shape):
+            raise ValueError(
+                f"Cannot broadcast: dimension mismatch between shapes "
+                f"{left_shape} and {right_shape}."
+            )
+        for i, (l_dim, r_dim) in enumerate(zip(left_shape, right_shape)):
+            if l_dim != r_dim and l_dim != 1 and r_dim != 1:
+                raise ValueError(
+                    f"Cannot broadcast: incompatible shapes {left_shape} and "
+                    f"{right_shape}. Dimension {i} has sizes {l_dim} and {r_dim}."
+                )
 
-        result_block = Block.from_list(result_list, result_shape)
+        result_shape = self._infer_broadcast_shape(left_shape, right_shape)
+
+        if left_shape == right_shape:
+            # Fast path: shapes match, operate on packed tensors directly.
+            result_block = Block(
+                tensor=op(self._buf, other._buf),
+                shape=result_shape,
+                acquisition=BlockAcquisition.RESERVE,
+                thread_type=ThreadType.COMPUTE,
+                is_temporary=True,
+            )
+        else:
+            # Tile-grid broadcasting: tile-grid dims are entangled with element
+            # dims in the packed tensor, so PyTorch cannot broadcast them
+            # automatically.  Fall back to tile-by-tile ops.
+            from .ttnnsim import broadcast_tensors
+
+            result_tiles = broadcast_tensors(
+                self.to_list(), other.to_list(), left_shape, right_shape, op
+            )
+            result_block = Block.from_list(result_tiles, result_shape)
 
         # Track source wait() blocks that contributed to this result
         for block in [self, other]:
@@ -706,7 +770,6 @@ class Block:
             ):
                 result_block._source_blocks.append(block)
             elif block._is_temporary:
-                # Temporary blocks may have their own source blocks to propagate
                 result_block._source_blocks.extend(block._source_blocks)
 
         return result_block
@@ -738,12 +801,13 @@ class Block:
         """
         match other:
             case int():
-                # Scalar power - apply to each tensor in the block
-                block_list = self.to_list()
-                result_tensors: List[Tensor] = [t**other for t in block_list]
-                result_block = Block.from_list(result_tensors, shape=self._shape)
-
-                # Track source wait() blocks
+                result_block = Block(
+                    tensor=self._buf**other,
+                    shape=self._shape,
+                    acquisition=BlockAcquisition.RESERVE,
+                    thread_type=ThreadType.COMPUTE,
+                    is_temporary=True,
+                )
                 if (
                     not self._is_temporary
                     and self._acquisition == BlockAcquisition.WAIT
@@ -752,10 +816,8 @@ class Block:
                     result_block._source_blocks.append(self)
                 elif self._is_temporary:
                     result_block._source_blocks.extend(self._source_blocks)
-
                 return result_block
             case _:
-                # Block power
                 return self._binary_op(other, _op.pow)
 
     def __matmul__(self, other: "Block") -> "Block":
@@ -780,6 +842,11 @@ class Block:
         return self._access_state
 
     @property
+    def raw_tensor(self) -> Tensor:
+        """Return the backing multi-tile Tensor (for copy handlers and stats)."""
+        return self._buf
+
+    @property
     def expected_ops(self) -> set[ExpectedOp]:
         """Get the set of expected operations for this block."""
         return self._expected_ops
@@ -791,271 +858,33 @@ class Block:
 
 
 class DFBStats(NamedTuple):
-    """Statistics for a circular buffer."""
+    """Statistics for a dataflow buffer.
 
-    capacity: int
-    visible: int
-    reserved: int
-    free: int
-    step: Optional[int]
-    head: int
-    list: List[Optional[object]]
-
-
-class DFBAPI:
-    """Dataflow buffer simulator API interface with its own state pool.
-    The simulator is based on the following API:
-    https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/tt_metal/apis/kernel_apis/circular_buffers/circular_buffers.html
-
-    DFBAPI is not generic to allow heterogeneous DFBState instances with different element types.
-    Each DFBState in the pool can have a different DFBElemTypeVar parameter.
+    All counts (capacity, visible, reserved, free) are in operations, where
+    one operation equals tiles_per_op tiles (= math.prod(shape)).
     """
 
-    def __init__(self, timeout: Optional[float] = DFB_DEFAULT_TIMEOUT):
-        """Initialize simulator with optional per-instance timeout (seconds)."""
-
-        self._pool: List[object] = [None] * MAX_DFBS
-        self._timeout: Optional[float] = timeout
-        self._next_dfb_id: DFBID = 0
-        self._dfb_allocator_lock = threading.Lock()
-
-    def allocate_dfb_id(self) -> DFBID:
-        """Allocate a unique DFB ID from this API instance. Thread-safe."""
-        with self._dfb_allocator_lock:
-            dfb_id = self._next_dfb_id
-            self._next_dfb_id += 1
-            if self._next_dfb_id > MAX_DFBS:
-                raise RuntimeError(
-                    f"Maximum number of circular buffers exceeded: {MAX_DFBS}"
-                )
-            return dfb_id
-
-    @validate_call
-    def host_configure_dfb(
-        self, dfb_id: DFBID, capacity_tiles: Size, shape: Shape
-    ) -> None:
-        # Lazily create DFBState if not already created
-        if self._pool[int(dfb_id)] is None:
-            self._pool[int(dfb_id)] = DFBState()
-        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
-        with dfb_state.lock:
-            dfb_state.cap = capacity_tiles
-            dfb_state.shape = shape
-            dfb_state.reset()
-
-    @validate_call
-    def host_reset_dfb(self, dfb_id: DFBID) -> None:
-        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
-        with dfb_state.lock:
-            if not dfb_state.configured:
-                raise DFBContractError("DFB not configured; cannot reset")
-            dfb_state.reset()
-
-    @validate_call
-    def dfb_stats(self, dfb_id: DFBID) -> DFBStats:
-        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
-        with dfb_state.lock:
-            dfb_state.require_configured()
-            return DFBStats(
-                capacity=dfb_state.cap,
-                visible=dfb_state.visible,
-                reserved=dfb_state.reserved,
-                free=dfb_state.free(),
-                step=dfb_state.step,
-                head=dfb_state.head,
-                list=list(dfb_state.buf),
-            )
-
-    @validate_call
-    def dfb_pages_available_at_front(self, dfb_id: DFBID, num_tiles: Size) -> bool:
-        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
-        with dfb_state.lock:
-            dfb_state.require_configured()
-            dfb_state.check_num_tiles(num_tiles)
-            return dfb_state.visible >= num_tiles
-
-    @validate_call
-    def dfb_pages_reservable_at_back(self, dfb_id: DFBID, num_tiles: Size) -> bool:
-        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
-        with dfb_state.lock:
-            dfb_state.require_configured()
-            dfb_state.check_num_tiles(num_tiles)
-            return dfb_state.free() >= num_tiles
-
-    @validate_call
-    def dfb_wait_front(self, dfb_id: DFBID, num_tiles: Size) -> None:
-        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
-        with dfb_state.can_consume:
-            dfb_state.require_configured()
-            dfb_state.check_num_tiles(num_tiles)
-            thread = threading.current_thread()
-            if (dfb_state.consumer_waiting is not None) and (
-                dfb_state.consumer_waiting != thread
-            ):
-                raise DFBContractError(
-                    "Only one consumer thread may wait on a DFB at a time"
-                )
-            dfb_state.consumer_waiting = thread
-            if dfb_state.step is None:
-                dfb_state.step = num_tiles
-            else:
-                if num_tiles != dfb_state.last_wait_target + dfb_state.step:
-                    raise DFBContractError(
-                        "dfb_wait_front must be cumulative with an increment of the initial number of tiles"
-                        " requested until a pop occurs"
-                    )
-            ok = dfb_state.can_consume.wait_for(
-                lambda: dfb_state.visible >= num_tiles, timeout=self._timeout
-            )
-            if not ok:
-                raise DFBTimeoutError(
-                    f"dfb_wait_front timed out after {self._timeout}s"
-                )
-            dfb_state.last_wait_target = num_tiles
-
-    @validate_call
-    def dfb_reserve_back(self, dfb_id: DFBID, num_tiles: Size) -> None:
-        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
-        with dfb_state.can_produce:
-            dfb_state.require_configured()
-            dfb_state.check_num_tiles(num_tiles)
-            thread = threading.current_thread()
-            if (dfb_state.producer_reserving is not None) and (
-                dfb_state.producer_reserving != thread
-            ):
-                raise DFBContractError(
-                    "Only one producer thread may reserve on a DFB at a time"
-                )
-            dfb_state.producer_reserving = thread
-            if num_tiles < dfb_state.reserved:
-                raise DFBContractError("reserve target cannot regress within epoch")
-            ok = dfb_state.can_produce.wait_for(
-                lambda: dfb_state.free() >= num_tiles, timeout=self._timeout
-            )
-            if not ok:
-                raise DFBTimeoutError(
-                    f"dfb_reserve_back timed out after {self._timeout}s"
-                )
-            dfb_state.reserved = num_tiles
-            dfb_state.last_reserve_target = num_tiles
-
-    @validate_call
-    def dfb_push_back(self, dfb_id: DFBID, num_tiles: Size) -> None:
-        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
-        with dfb_state.lock:
-            dfb_state.require_configured()
-            dfb_state.check_num_tiles(num_tiles)
-            if num_tiles > dfb_state.reserved:
-                raise DFBContractError(
-                    f"dfb_push_back({num_tiles}) exceeds reserved={dfb_state.reserved}"
-                )
-            dfb_state.reserved -= num_tiles
-            dfb_state.visible += num_tiles
-            if dfb_state.reserved == 0:
-                dfb_state.producer_reserving = None
-            with dfb_state.can_consume:
-                dfb_state.can_consume.notify_all()
-
-    @validate_call
-    def dfb_pop_front(self, dfb_id: DFBID, num_tiles: Size) -> None:
-        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
-        with dfb_state.lock:
-            dfb_state.require_configured()
-            dfb_state.check_num_tiles(num_tiles)
-            if num_tiles > dfb_state.visible:
-                raise DFBContractError(
-                    f"dfb_pop_front({num_tiles}) exceeds visible={dfb_state.visible}"
-                )
-            span = dfb_state.front_span(num_tiles)
-            thread_type = get_current_thread_type()
-            view = Block(
-                dfb_state.buf,
-                dfb_state.cap,
-                span,
-                dfb_state.shape,
-                BlockAcquisition.WAIT,
-                thread_type,
-            )
-            for i in range(len(view)):
-                view.pop_idx(i)
-            dfb_state.head = (dfb_state.head + num_tiles) % dfb_state.cap
-            dfb_state.visible -= num_tiles
-            dfb_state.last_wait_target = 0
-            if dfb_state.visible == 0:
-                dfb_state.consumer_waiting = None
-            with dfb_state.can_produce:
-                dfb_state.can_produce.notify_all()
-
-    @validate_call
-    def get_read_ptr(self, dfb_id: DFBID) -> Block:
-        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
-        with dfb_state.lock:
-            dfb_state.require_configured()
-            if dfb_state.last_wait_target <= 0:
-                raise DFBContractError("get_read_ptr requires prior dfb_wait_front")
-            if dfb_state.visible < dfb_state.last_wait_target:
-                raise DFBContractError(
-                    "read window invalidated; call dfb_wait_front again"
-                )
-            span = dfb_state.front_span(dfb_state.last_wait_target)
-            thread_type = get_current_thread_type()
-            block = Block(
-                dfb_state.buf,
-                dfb_state.cap,
-                span,
-                dfb_state.shape,
-                BlockAcquisition.WAIT,
-                thread_type,
-            )
-            return block
-
-    @validate_call
-    def get_write_ptr(self, dfb_id: DFBID) -> Block:
-        dfb_state: DFBState = self._pool[int(dfb_id)]  # type: ignore[assignment]
-        with dfb_state.lock:
-            dfb_state.require_configured()
-            if dfb_state.last_reserve_target <= 0:
-                raise DFBContractError("get_write_ptr requires prior dfb_reserve_back")
-            if dfb_state.reserved < dfb_state.last_reserve_target:
-                raise DFBContractError(
-                    "write window invalidated; call dfb_reserve_back again"
-                )
-            span = dfb_state.back_span(dfb_state.last_reserve_target)
-            thread_type = get_current_thread_type()
-            block = Block(
-                dfb_state.buf,
-                dfb_state.cap,
-                span,
-                dfb_state.shape,
-                BlockAcquisition.RESERVE,
-                thread_type,
-            )
-            return block
-
-    @validate_call
-    def set_timeout(self, seconds: Optional[Annotated[float, Field(gt=0)]]) -> None:
-        """Set this simulator instance's timeout."""
-        self._timeout = seconds
-
-    def get_timeout(self) -> Optional[float]:
-        """Return this simulator instance's timeout."""
-        return self._timeout
+    capacity: int  # total slots (= buffer_factor)
+    visible: int  # slots ready to consume
+    reserved: int  # slots reserved for writing
+    free: int  # slots available for reservation
+    head: int  # current read slot index
+    slots: List[
+        Optional[Tensor]
+    ]  # slot list: None=empty or a multi-tile Tensor (for debugging)
 
 
-# TODO: Should this class now be private?
 class DataflowBuffer:
     """
-    High-level circular buffer interface for tensor operations.
+    Dataflow buffer for tensor-based producer/consumer data movement.
 
-    This class provides a convenient wrapper around the low-level DFBAPI,
-    handling DFB allocation and providing tensor-aware operations.
-
-    The DataflowBuffer manages a fixed-size circular buffer with space for
-    a configurable number of tiles. Operations like wait() and reserve()
-    work with a fixed number of tiles determined by the shape parameter.
+    Each DataflowBuffer owns its ring buffer state directly and manages a
+    fixed-size ring buffer with space for a configurable number of tiles.
+    Operations like wait() and reserve() work with a fixed number of tiles
+    determined by the shape parameter.
 
     Example:
-        dfb = DataflowBuffer(shape=(2, 3), buffer_factor=2)
+        dfb = DataflowBuffer(element=t, shape=(2, 3), buffer_factor=2)
 
         # Producer workflow
         write_view = dfb.reserve()  # Reserve space for 6 tiles
@@ -1073,77 +902,48 @@ class DataflowBuffer:
         element: Tensor,
         shape: Shape,
         buffer_factor: Size = 2,
-        api: Optional[DFBAPI] = None,
     ):
         """
         Initialize a DataflowBuffer.
 
         Args:
-            element: A tensor used to determine the dtype for zero-initialized tensors in reserved blocks
-            shape: Tuple of (rows, cols) specifying the tile shape for wait/reserve operations
-            buffer_factor: Multiplier for total buffer capacity (capacity = shape[0] * shape[1] * buffer_factor)
-            api: Optional DFBAPI instance to use. If None, uses the shared default instance.
+            element: Tensor used to determine dtype for zero-initialized reserved blocks
+            shape: Tile-grid shape for each wait/reserve operation (at least 1 dimension)
+            buffer_factor: Capacity multiplier (capacity = prod(shape) * buffer_factor)
 
         Raises:
             ValueError: If shape or buffer_factor are invalid
-            RuntimeError: If DFB allocation fails
         """
-        if len(shape) != 2:
-            raise ValueError(f"Shape must be a 2-tuple, got {shape}")
+        if len(shape) < 1:
+            raise ValueError(f"Shape must have at least 1 dimension, got {shape}")
+        if any(s <= 0 for s in shape):
+            raise ValueError(f"Shape elements must be positive, got {shape}")
+        if buffer_factor <= 0:
+            raise ValueError(f"buffer_factor must be positive, got {buffer_factor}")
 
         self.element = element
         self._shape = shape
         self._buffer_factor = buffer_factor
 
-        # Store API instance (may be None)
-        self._api: Optional[DFBAPI] = api
-
-        # Track pending blocks for state machine completion
-        # At most one pending reserved block and one pending waited block at a time
         self._pending_reserved_block: Optional[Block] = None
         self._pending_waited_block: Optional[Block] = None
 
-        # Calculate total capacity in tiles
-        self._tiles_per_operation = shape[0] * shape[1]
-        self._capacity_tiles = self._tiles_per_operation * buffer_factor
+        # Create and configure the ring-buffer state immediately.
+        self._state = DFBState()
+        self._state.cap = buffer_factor
+        self._state.shape = shape
+        self._state.buf = [None] * buffer_factor
+        self._state.reset()
 
-        # Only allocate and configure if API is provided
-        # If None, this will be done when the DFB is copied by Program
-        if self._api is not None:
-            self._dfb_id: Optional[DFBID] = self._api.allocate_dfb_id()
-            self._api.host_configure_dfb(
-                self._dfb_id, self._capacity_tiles, self._shape
-            )
-            # Reset the buffer to initialize with zero entries
-            self._api.host_reset_dfb(self._dfb_id)
-        else:
-            self._dfb_id: Optional[DFBID] = (
-                None  # Placeholder until properly initialized
-            )
-
-    def _ensure_initialized(self) -> Tuple[DFBAPI, DFBID]:
-        """Verify that the DataflowBuffer has been properly initialized with an API.
-
-        Returns:
-            Tuple of (api, dfb_id) for use in operations
-
-        Raises:
-            RuntimeError: If the DFB was not initialized with an API instance
-        """
-        if self._api is None or self._dfb_id is None:
-            raise RuntimeError(
-                "DataflowBuffer was not properly initialized with a DFBAPI instance. "
-                "This likely means it was created outside of a kernel context. "
-                "DataflowBuffers must be created within @ttl.kernel decorated functions."
-            )
-        return self._api, self._dfb_id
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
 
     def wait(self) -> Block:
         """Wait for data to be available and return a read view.
 
-        This method blocks until the required number of tiles (as specified by
-        the shape parameter) are available for reading. It returns a Block
-        that provides access to the available data.
+        Blocks until one operation slot is visible, then returns a Block
+        providing access to that slot's tiles.
 
         Usage:
             blk = dfb.wait()
@@ -1154,13 +954,8 @@ class DataflowBuffer:
             Block providing read access to the available tiles
 
         Raises:
-            DFBTimeoutError: If the wait times out
-            DFBContractError: If called incorrectly (e.g., multiple concurrent waits)
-            RuntimeError: If DataflowBuffer was not properly initialized with an API
+            RuntimeError: If called again before pop()
         """
-        api, dfb_id = self._ensure_initialized()
-
-        # Enforce: at most one pending wait() operation at a time
         if self._pending_waited_block is not None:
             raise RuntimeError(
                 "Cannot call wait() again before pop(): "
@@ -1168,45 +963,44 @@ class DataflowBuffer:
                 "You must call pop() before calling wait() again."
             )
 
-        # Block if data not available
         from .greenlet_scheduler import block_if_needed
 
         block_if_needed(self, "wait")
 
-        api.dfb_wait_front(dfb_id, self._tiles_per_operation)
-        block = api.get_read_ptr(dfb_id)
-        block.dfb = self  # Set DFB reference for context manager support
+        state = self._state
+        assert state.visible >= 1, (
+            f"wait: expected >=1 visible operations, got {state.visible}. "
+            "block_if_needed() should have been called first."
+        )
+        slot = state.buf[state.head]
+        assert slot is not None, "Visible slot has no data — internal inconsistency."
+        thread_type = get_current_thread_type()
+        block = Block(
+            tensor=slot,
+            shape=state.shape,
+            acquisition=BlockAcquisition.WAIT,
+            thread_type=thread_type,
+        )
+        block.dfb = self
         self._pending_waited_block = block
 
-        # Record wait statistics
-        record_dfb_wait(self, self._tiles_per_operation)
+        record_dfb_wait(self, math.prod(state.shape))
 
         return block
 
     def can_wait(self) -> bool:
-        """
-        Check if wait() can proceed without blocking.
+        """Check if wait() can proceed without blocking.
 
         Returns:
-            True if sufficient data is available for wait(), False otherwise
-
-        Raises:
-            RuntimeError: If DataflowBuffer was not properly initialized with an API
+            True if at least one complete operation slot is ready to consume.
         """
-        api, dfb_id = self._ensure_initialized()
-        stats = api.dfb_stats(dfb_id)
-        return stats.visible >= self._tiles_per_operation
+        return self._state.visible >= 1
 
     def reserve(self) -> Block:
-        """
-        Reserve space for writing and return a write view.
+        """Reserve one operation slot for writing and return a write view.
 
-        This method blocks until there is sufficient space to write the required
-        number of tiles (as specified by the shape parameter). It returns a Block
-        that provides access to the reserved space.
-
-        The reserved block is automatically initialized with zero tensors using
-        TILE_SHAPE dimensions and the element's dtype before being returned.
+        Blocks until a free slot is available. The slot is zero-initialized
+        before being returned.
 
         Usage:
             blk = dfb.reserve()
@@ -1214,16 +1008,11 @@ class DataflowBuffer:
             blk.push()  # manual push required
 
         Returns:
-            Block providing write access to the reserved space
+            Block providing write access to the reserved slot
 
         Raises:
-            DFBTimeoutError: If the reservation times out
-            DFBContractError: If called incorrectly (e.g., multiple concurrent reserves)
-            RuntimeError: If DataflowBuffer was not properly initialized with an API
+            RuntimeError: If called again before push()
         """
-        api, dfb_id = self._ensure_initialized()
-
-        # Enforce: at most one pending reserve() operation at a time
         if self._pending_reserved_block is not None:
             raise RuntimeError(
                 "Cannot call reserve() again before push(): "
@@ -1231,123 +1020,120 @@ class DataflowBuffer:
                 "You must call push() before calling reserve() again."
             )
 
-        # Block if space not available
         from .greenlet_scheduler import block_if_needed
 
         block_if_needed(self, "reserve")
 
-        api.dfb_reserve_back(dfb_id, self._tiles_per_operation)
-        block = api.get_write_ptr(dfb_id)
-        block.dfb = self  # Set DFB reference for context manager support
+        state = self._state
+        assert state.free() >= 1, (
+            f"reserve: expected >=1 free operation slots, got {state.free()}. "
+            "block_if_needed() should have been called first."
+        )
+        slot_idx = state.back_slot()
+        # Build element-space shape.
+        if len(state.shape) == 1:
+            tk = state.shape[0]
+            elem_shape = (tk * TILE_SHAPE[0],)
+        else:
+            nb = len(state.shape) - 2
+            batch = state.shape[:nb]
+            tm, tk = state.shape[nb], state.shape[nb + 1]
+            elem_shape = (*batch, tm * TILE_SHAPE[0], tk * TILE_SHAPE[1])
+        slot = Tensor(torch.zeros(elem_shape, dtype=self.element.dtype))
+        state.buf[slot_idx] = slot
+        state.reserved += 1
 
-        # Initialize the reserved block with zero tensors
-        zero_tensor = Tensor(torch.zeros(TILE_SHAPE, dtype=self.element.dtype))
-        for i in range(len(block)):
-            block.write_slot(i, zero_tensor)
+        thread_type = get_current_thread_type()
+        block = Block(
+            tensor=slot,
+            shape=state.shape,
+            acquisition=BlockAcquisition.RESERVE,
+            thread_type=thread_type,
+        )
+        block.dfb = self
+        block.dfb_state = state
+        block.dfb_slot_idx = slot_idx
 
         self._pending_reserved_block = block
 
-        # Record reserve statistics
-        record_dfb_reserve(self, self._tiles_per_operation)
+        record_dfb_reserve(self, math.prod(state.shape))
 
         return block
 
     def can_reserve(self) -> bool:
-        """
-        Check if reserve() can proceed without blocking.
+        """Check if reserve() can proceed without blocking.
 
         Returns:
-            True if sufficient space is available for reserve(), False otherwise
-
-        Raises:
-            RuntimeError: If DataflowBuffer was not properly initialized with an API
+            True if at least one operation slot is free.
         """
-        api, dfb_id = self._ensure_initialized()
-        stats = api.dfb_stats(dfb_id)
-        return stats.free >= self._tiles_per_operation
+        return self._state.free() >= 1
 
     def push_block(self) -> None:
-        """
-        Finalize a write operation, making reserved data visible to consumers.
+        """Make the reserved slot visible to consumers.
 
-        This method must be called after reserve() and writing data to the
-        returned Block. It advances the DFB pointers and makes the written
-        data available for consumers to read via wait().
+        Must be called after reserve() and writing data to the returned Block.
 
         Raises:
-            DFBContractError: If called without a prior reserve() or if the
-                           push amount exceeds what was reserved
-            RuntimeError: If DataflowBuffer was not properly initialized with an API
+            DFBContractError: If no slot was reserved.
         """
-        # Update state machine for the pending reserved block
         if self._pending_reserved_block is not None:
             self._pending_reserved_block.mark_push_complete()
             self._pending_reserved_block = None
 
-        api, dfb_id = self._ensure_initialized()
-        api.dfb_push_back(dfb_id, self._tiles_per_operation)
+        state = self._state
+        if state.reserved < 1:
+            raise DFBContractError("push_block: no reserved operation slot to push")
+        state.reserved -= 1
+        state.visible += 1
 
     def pop_block(self) -> None:
-        """
-        Finalize a read operation, freeing consumed data.
+        """Free the consumed slot, advancing the read pointer.
 
-        This method must be called after wait() and reading data from the
-        returned Block. It advances the DFB pointers and frees the consumed
-        tiles, making space available for producers.
-
-        After calling pop(), the Block returned by the corresponding wait()
-        points to stale data and should not be accessed.
+        Must be called after wait() and reading data from the returned Block.
 
         Raises:
-            DFBContractError: If called without a prior wait() or if the
-                           pop amount exceeds what is visible
-            RuntimeError: If DataflowBuffer was not properly initialized with an API
+            DFBContractError: If no slot was waited on.
         """
-        # Update state machine for the pending waited block
         if self._pending_waited_block is not None:
             self._pending_waited_block.mark_pop_complete()
             self._pending_waited_block = None
 
-        api, dfb_id = self._ensure_initialized()
-        api.dfb_pop_front(dfb_id, self._tiles_per_operation)
+        state = self._state
+        if state.visible < 1:
+            raise DFBContractError("pop_block: no visible operation slot to pop")
+        state.buf[state.head] = None
+        state.head = (state.head + 1) % state.cap
+        state.visible -= 1
 
     @property
-    def shape(self) -> Tuple[Size, Size]:
+    def shape(self) -> Shape:
         """Get the shape (in tiles) for wait/reserve operations."""
         return self._shape
 
     @property
     def capacity_tiles(self) -> Size:
         """Get the total capacity of the buffer in tiles."""
-        return self._capacity_tiles
+        return self._state.cap * math.prod(self._state.shape)
 
     @property
     def buffer_factor(self) -> Size:
         """Get the buffer factor (capacity multiplier)."""
         return self._buffer_factor
 
-    @property
-    def dfb_id(self) -> Optional[DFBID]:
-        """Get the internal DFB ID (for debugging/advanced use)."""
-        return self._dfb_id
-
-    def stats(self):
-        """Get current buffer statistics.
-
-        Raises:
-            RuntimeError: If DataflowBuffer was not properly initialized with an API
-        """
-        api, dfb_id = self._ensure_initialized()
-        return api.dfb_stats(dfb_id)
+    def stats(self) -> DFBStats:
+        """Get current buffer statistics (all counts in operations)."""
+        return DFBStats(
+            capacity=self._state.cap,
+            visible=self._state.visible,
+            reserved=self._state.reserved,
+            free=self._state.free(),
+            head=self._state.head,
+            slots=list(self._state.buf),
+        )
 
     def reset(self) -> None:
-        """Reset the circular buffer to initial state.
-
-        Raises:
-            RuntimeError: If DataflowBuffer was not properly initialized with an API
-        """
-        api, dfb_id = self._ensure_initialized()
-        api.host_reset_dfb(dfb_id)
+        """Reset the dataflow buffer to its initial empty state."""
+        self._state.reset()
 
     def validate_no_pending_blocks(self) -> None:
         """Validate that there are no pending blocks.
@@ -1384,10 +1170,30 @@ class DataflowBuffer:
                 + "\n".join(f"  - {err}" for err in errors)
             )
 
+    def __deepcopy__(self, memo: Dict[int, Any]) -> "DataflowBuffer":
+        """Return a fresh DataflowBuffer with the same configuration.
+
+        Deep-copying a DataflowBuffer yields an independent buffer with the same
+        shape/capacity settings and a clean ring-buffer state.
+        """
+        new_dfb = DataflowBuffer(
+            element=self.element,
+            shape=self._shape,
+            buffer_factor=self._buffer_factor,
+        )
+        memo[id(self)] = new_dfb
+        return new_dfb
+
     def __repr__(self) -> str:
+        s = self._state
         return (
-            f"DataflowBuffer(dfb_id={self._dfb_id}, shape={self._shape}, "
-            f"capacity_tiles={self._capacity_tiles}, buffer_factor={self._buffer_factor})"
+            f"DataflowBuffer("
+            f"shape={self._shape}, "
+            f"capacity={s.cap}, "
+            f"available_for_wait={s.visible}, "
+            f"reserved={s.reserved}, "
+            f"available_for_reserve={s.free()}, "
+            f"head={s.head})"
         )
 
 
@@ -1401,8 +1207,10 @@ def make_dataflow_buffer_like(
 
     Args:
         element: A tensor used to determine the DataflowBuffer's dtype
-        shape: Tuple of (rows, cols) specifying the tile shape for wait/reserve operations
-        buffer_factor: Multiplier for total buffer capacity (capacity = shape[0] * shape[1] * buffer_factor)
+        shape: Tuple of tile-grid dimensions, e.g. (1,) for 1-D, (1, 1) for 2-D,
+            (1, 1, 1) for 3-D, etc. The total buffer capacity is
+            math.prod(shape) * buffer_factor blocks.
+        buffer_factor: Multiplier for total buffer capacity
 
     Returns:
         A DataflowBuffer with dtype matching the element
@@ -1447,57 +1255,19 @@ def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
 def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
     """Matrix multiplication of two blocks.
 
-    Performs matrix multiplication across the tile grid. If block a has shape (M, K)
-    and block b has shape (K, N), the result will have shape (M, N).
-
-    Each output tile [i, j] is computed as the sum of torch.matmul(a[i, k], b[k, j])
-    for all k from 0 to K-1.
+    Converts each block to a ttnnsim.Tensor, delegates to torch.matmul via the
+    @ operator, then converts the result back to a Block.  The output tile
+    shape follows PyTorch's matmul broadcasting rules applied to the
+    element-space tensors, with the last two dimensions divided by TILE_SHAPE.
 
     Args:
-        a: First input block with shape (M, K)
-        b: Second input block with shape (K, N)
-        _output_hint: Optional output block hint (unused in simulator)
+        a: First input block.
+        b: Second input block.
+        _output_hint: Optional output block hint (unused in simulator).
 
     Returns:
-        Block with shape (M, N) containing the matrix multiplication result
-
-    Note:
-        This is equivalent to the @ operator. In the spec, matmul is BlockExpr.__matmul__,
-        but this function is provided for convenience in the simulator.
+        Block whose tile shape corresponds to the matmul output shape.
     """
-    a_shape = a._shape  # type: ignore[attr-defined]
-    b_shape = b._shape  # type: ignore[attr-defined]
-
-    if len(a_shape) != 2 or len(b_shape) != 2:
-        raise ValueError(
-            f"matmul requires 2D blocks, got shapes {a_shape} and {b_shape}"
-        )
-
-    M, K = a_shape
-    K_b, N = b_shape
-
-    if K != K_b:
-        raise ValueError(
-            f"Inner dimensions must match for matmul: {a_shape} @ {b_shape}"
-        )
-
-    a_tensors = a.to_list()
-    b_tensors = b.to_list()
-
-    # Output tile [i, j] = sum over k of (a[i, k] @ b[k, j])
-    result_tensors: List[Tensor] = []
-    for i in range(M):
-        for j in range(N):
-            acc: Optional[torch.Tensor] = None
-            for k in range(K):
-                a_tile = a_tensors[i * K + k].to_torch()
-                b_tile = b_tensors[k * N + j].to_torch()
-                partial = torch.matmul(a_tile, b_tile)
-                acc = partial if acc is None else acc + partial
-
-            assert acc is not None, "K must be > 0 for matmul"
-            result_tensors.append(Tensor(acc))
-
-    result_block = Block.from_list(result_tensors, shape=(M, N))
+    result_block = Block.from_tensor(a.to_tensor() @ b.to_tensor())
     track_source_blocks(result_block, a, b)
     return result_block

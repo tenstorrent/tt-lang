@@ -6,7 +6,6 @@
 Type aliases with Pydantic constraints for runtime validation.
 """
 
-from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Annotated, Tuple, Union
 
@@ -31,21 +30,18 @@ Size = PositiveInt
 Index = NaturalInt
 Count = NaturalInt
 CoreCoord = Union[Index, Tuple[Index, ...]]
-CoreRange = Tuple[Union[Index, slice], ...]
+
+# A single dimension selector: either a non-negative integer coordinate or a
+# slice range.  Used for core ranges and tensor tile-coordinate keys.
+Selector = Union[Index, slice]
+
+CoreRange = Tuple[Selector, ...]
 
 Shape = Tuple[Size, ...]
-_MAX_DFBS: Size = 32  # Fixed pool of circular buffers
-DFBID = Annotated[NaturalInt, Field(ge=0, lt=_MAX_DFBS)]
 
-
-@dataclass(frozen=True)
-class Span:
-    """A span representing a contiguous range in a ring buffer.
-
-    Attributes:
-        start: Inclusive index in underlying ring
-        length: Number of tiles
-    """
-
-    start: Index  # inclusive index in underlying ring
-    length: Size  # number of tiles
+# Valid key type for Tensor.__getitem__ / __setitem__: a single Selector
+# (bare int or slice, for 1-D access) or a tuple of Selectors.
+# The last two elements of a tuple key index the tile row and tile column;
+# preceding elements are batch indices (implicit tile size 1, so tile-space
+# and element-space are identical for those dimensions).
+TensorKey = Union[Selector, Tuple[Selector, ...]]
