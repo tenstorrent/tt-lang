@@ -11,11 +11,11 @@ The build system supports:
 - Building LLVM/MLIR from submodule (default) or using a pre-built install
 - TableGen and C++ code for MLIR dialects and passes
 - Python bindings using nanobind
-- tt-metal runtime (ExternalProject)
+- tt-metal runtime (configure-time build)
 
 ## Prerequisites
 
-- CMake 3.20+
+- CMake 3.28+
 - Ninja
 - Clang/Clang++ (or GCC)
 - Python 3.11+
@@ -45,7 +45,7 @@ source build/env/activate
 |---|---|
 | `third-party/llvm-project` | LLVM/MLIR source (built at configure time) |
 | `third-party/tt-mlir` | tt-mlir source (only select directories compiled) |
-| `third-party/tt-metal` | Runtime (built via ExternalProject) |
+| `third-party/tt-metal` | Runtime (built at configure time) |
 
 ## LLVM/MLIR
 
@@ -121,8 +121,8 @@ to satisfy compile-time references without requiring a flatc build.
 
 ## tt-metal runtime
 
-`cmake/modules/BuildTTMetal.cmake` builds tt-metal via `ExternalProject_Add`
-with minimal build flags (~880MB, 5-6 min). Post-build, `_ttnn.so` and
+`cmake/modules/BuildTTMetal.cmake` builds tt-metal at configure time via
+`execute_process`. Post-build, `_ttnn.so` and
 `_ttnncpp.so` are copied so `import ttnn` works after activating the environment.
 
 ## Python bindings
@@ -156,9 +156,8 @@ Sourcing it:
 tt-lang/
 ├── cmake/modules/
 │   ├── BuildLLVM.cmake              # LLVM build (submodule or pre-built)
-│   ├── BuildTTMetal.cmake           # tt-metal ExternalProject_Add
+│   ├── BuildTTMetal.cmake           # tt-metal configure-time build
 │   ├── BuildTTMLIRMinimal.cmake     # Minimal tt-mlir subset (7 targets)
-│   ├── CopyTTNNPythonPackage.cmake  # Copy ttnn Python packages into build
 │   ├── GetVersionFromGit.cmake      # Version extraction from git tags
 │   ├── TTLangCompilerSetup.cmake    # Compiler flags and settings
 │   └── TTLangUtils.cmake            # Utility functions (SHA verification, etc.)
@@ -229,7 +228,7 @@ build/
 ├── llvm-install/                    # LLVM install prefix (submodule mode only)
 ├── python_packages/ttl/             # Assembled Python package
 ├── test/                            # Lit test output directory
-├── tt-metal-build/                  # tt-metal build tree
+├── tt-metal-build/                  # tt-metal build tree (note: tt-metal also builds in-source at third-party/tt-metal/build/)
 └── venv/                            # Python venv (submodule mode only)
 ```
 

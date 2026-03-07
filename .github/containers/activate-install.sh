@@ -26,7 +26,7 @@ fi
 # Set paths for installed tt-lang
 export TT_LANG_HOME="$INSTALL_PREFIX"
 export PATH="${INSTALL_PREFIX}/bin:${TTMLIR_TOOLCHAIN_DIR}/bin:$PATH"
-export PYTHONPATH="${INSTALL_PREFIX}/python_packages:${TTMLIR_TOOLCHAIN_DIR}/python_packages:${TTMLIR_TOOLCHAIN_DIR}/python_packages/ttrt/runtime/ttnn:$PYTHONPATH"
+export PYTHONPATH="${INSTALL_PREFIX}/python_packages:${TTMLIR_TOOLCHAIN_DIR}/python_packages:${TTMLIR_TOOLCHAIN_DIR}/tt-metal/ttnn/ttnn:$PYTHONPATH"
 export LD_LIBRARY_PATH="${TTMLIR_TOOLCHAIN_DIR}/lib:$LD_LIBRARY_PATH"
 
 # Set TT_METAL_RUNTIME_ROOT

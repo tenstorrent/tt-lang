@@ -2,9 +2,9 @@
 
 ## Build/Lint/Test Commands
 - **Environment**: `source build/env/activate` (activate virtual environment first, use actual build dir)
-- **Configure**: with internal tt-mlir build `cmake -G Ninja -B build`;
-with pre-build tt-mlir `cmake -G Ninja -B build -DTTMLIR_BUILD_DIR=/path/to/tt-mlir/build`;
-with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mlir/build/lib/cmake/ttmlir`
+- **Configure**: `cmake -G Ninja -B build`;
+  with pre-built LLVM: `cmake -G Ninja -B build -DMLIR_PREFIX=/path/to/llvm-install`;
+  with ttmlir toolchain: `cmake -G Ninja -B build -DTTLANG_USE_TTMLIR_TOOLCHAIN=ON`
 - **Build**: `cmake --build build`
 - **Lint**: `pre-commit run --all-files` (includes clang-format, black,
   copyright checks)

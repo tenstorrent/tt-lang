@@ -8,7 +8,7 @@ tt-lang is **not** pre-built -- clone and build it yourself.
 ```bash
 git clone https://github.com/tenstorrent/tt-lang.git
 cd tt-lang
-cmake -G Ninja -B build -DTTMLIR_DIR=$TTMLIR_TOOLCHAIN_DIR/lib/cmake/ttmlir
+cmake -G Ninja -B build -DTTLANG_USE_TTMLIR_TOOLCHAIN=ON
 source build/env/activate
 cmake --build build
 ```

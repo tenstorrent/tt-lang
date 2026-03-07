@@ -8,7 +8,7 @@
 ## Configure
 ```bash
 cmake -G Ninja -B build \
-  -DTTMLIR_BUILD_DIR=/path/to/tt-mlir/build \
+  -DTTLANG_USE_TTMLIR_TOOLCHAIN=ON \
   -DTTLANG_ENABLE_DOCS=ON
 ```
 
