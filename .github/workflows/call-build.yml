@@ -23,7 +23,7 @@ jobs:
     configure-deps:
         name: "Configure dependencies"
         runs-on: ubuntu-22.04
-        timeout-minutes: 120
+        timeout-minutes: 360
 
         defaults:
             run:
