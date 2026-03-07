@@ -53,6 +53,11 @@ jobs:
                       python3-venv python3-dev \
                       wget zstd
 
+            - name: Setup Python 3.12
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.12"
+
             - name: Install Clang 17
               run: |
                   wget https://apt.llvm.org/llvm.sh
@@ -122,6 +127,11 @@ jobs:
               with:
                   submodules: recursive
                   fetch-depth: 0
+
+            - name: Setup Python 3.12
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.12"
 
             - name: Install system dependencies
               run: |
