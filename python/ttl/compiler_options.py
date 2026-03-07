@@ -30,14 +30,14 @@ def _make_parser() -> argparse.ArgumentParser:
         "--maximize-dst",
         default=None,
         action=argparse.BooleanOptionalAction,
-        help="Enable DST maximization via subblock compute and scheduling.",
+        help="Enable DST maximization via subblock compute and scheduling (default: enabled).",
     )
     p.add_argument(
         "--fpu-binary-ops",
         default=None,
         dest="enable_fpu_binary_ops",
         action=argparse.BooleanOptionalAction,
-        help="Use FPU for binary add/sub/mul.",
+        help="Use FPU for binary add/sub/mul (default: enabled).",
     )
     return p
 
@@ -62,6 +62,15 @@ class CompilerOptions:
 
     Frozen so it's hashable and usable directly as a cache key component.
     Does NOT include TTNN compute config (fp32_dest_acc_en, dst_full_sync_en).
+
+    Priority ordering (highest wins)::
+
+        sys.argv  >  TTLANG_COMPILER_OPTIONS env var  >  decorator ``options=``
+
+    The call site in ``ttl_api.py`` builds a base from the decorator string
+    and env var, then merges ``from_argv()`` on top.  ``merge()`` only
+    applies fields that were explicitly set in the override, so unmentioned
+    flags fall through from the base.
     """
 
     maximize_dst: bool = True
@@ -89,7 +98,14 @@ class CompilerOptions:
     @staticmethod
     def from_argv() -> CompilerOptions:
         """Extract compiler options from `sys.argv`, ignoring
-        unrecognised arguments (test runner flags, file paths, etc.)."""
+        unrecognised arguments (test runner flags, file paths, etc.).
+
+        If ``--help`` is present, prints available compiler options and exits.
+        """
+        if "--help" in sys.argv[1:]:
+            print("TTL compiler options:\n")
+            print(CompilerOptions.usage())
+            sys.exit(0)
         explicit = _parse_explicit(sys.argv[1:])
         return CompilerOptions(**explicit, _explicit=frozenset(explicit))
 
