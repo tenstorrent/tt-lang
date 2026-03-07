@@ -1,6 +1,13 @@
+// FPU path (default): add uses add_tiles (0 DST input slots), dstPerIteration=1 (exp only).
+// All 4 tiles fit in one subblock (no outer loop). add_tiles grouped, then exp grouped.
+// RUN: ttlang-opt %s \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-subblock-compute-for-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
+// RUN:   | FileCheck %s --check-prefix=FPU
+
+// SFPU path: add uses copy_tile + add_binary_tile (dstPerIteration=2).
 // RUN: ttlang-opt %s \
 // RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-subblock-compute-for-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
-// RUN:   | FileCheck %s
+// RUN:   | FileCheck %s --check-prefix=SFPU
 
 // Purpose: Integration test for ttl-schedule-operations with init consolidation.
 // Verifies: add + exp fused compute on 2x2 grid produces grouped ops with
@@ -8,33 +15,58 @@
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// CHECK-LABEL: func.func @add_exp_scheduled
-// CHECK:       scf.for
-// CHECK:       ttkernel.tile_regs_acquire
-//
+// =============================================================================
+// FPU path: no copy_tile, all 4 tiles in one subblock, no loop.
+// =============================================================================
+// FPU-LABEL: func.func @add_exp_scheduled
+// FPU: ttkernel.binary_op_init_common
+// FPU: ttkernel.tile_regs_acquire
+// All add_tiles grouped (one init):
+// FPU: ttkernel.add_tiles_init
+// FPU: ttkernel.add_tiles(
+// FPU-NOT: ttkernel.add_tiles_init
+// FPU: ttkernel.add_tiles(
+// FPU: ttkernel.add_tiles(
+// FPU: ttkernel.add_tiles(
+// All exp_tiles grouped (one init):
+// FPU: ttkernel.exp_tile_init
+// FPU: ttkernel.exp_tile(
+// FPU-NOT: ttkernel.exp_tile_init
+// FPU: ttkernel.exp_tile(
+// FPU: ttkernel.exp_tile(
+// FPU: ttkernel.exp_tile(
+// FPU: ttkernel.tile_regs_commit
+// FPU-NOT: ttkernel.copy_tile
+// FPU-NOT: ttkernel.add_binary_tile
+
+// =============================================================================
+// SFPU path: copy_tile + add_binary_tile, subblocked with loop.
+// =============================================================================
+// SFPU-LABEL: func.func @add_exp_scheduled
+// SFPU:       scf.for
+// SFPU:       ttkernel.tile_regs_acquire
 // Copy tiles grouped by source CB (one init per CB):
-// CHECK:       ttkernel.copy_tile_init(
-// CHECK:       ttkernel.copy_tile(
-// CHECK-NOT:   ttkernel.copy_tile_init
-// CHECK:       ttkernel.copy_tile(
-// CHECK:       ttkernel.copy_tile_init(
-// CHECK:       ttkernel.copy_tile(
-// CHECK-NOT:   ttkernel.copy_tile_init
-// CHECK:       ttkernel.copy_tile(
-//
+// SFPU:       ttkernel.copy_tile_init(
+// SFPU:       ttkernel.copy_tile(
+// SFPU-NOT:   ttkernel.copy_tile_init
+// SFPU:       ttkernel.copy_tile(
+// SFPU:       ttkernel.copy_tile_init(
+// SFPU:       ttkernel.copy_tile(
+// SFPU-NOT:   ttkernel.copy_tile_init
+// SFPU:       ttkernel.copy_tile(
 // All add ops grouped together (one init):
-// CHECK:       ttkernel.add_binary_tile_init
-// CHECK:       ttkernel.add_binary_tile(
-// CHECK-NOT:   ttkernel.add_binary_tile_init
-// CHECK:       ttkernel.add_binary_tile(
-//
+// SFPU:       ttkernel.add_binary_tile_init
+// SFPU:       ttkernel.add_binary_tile(
+// SFPU-NOT:   ttkernel.add_binary_tile_init
+// SFPU:       ttkernel.add_binary_tile(
 // All exp_tiles grouped together (one init):
-// CHECK:       ttkernel.exp_tile_init
-// CHECK:       ttkernel.exp_tile(
-// CHECK-NOT:   ttkernel.exp_tile_init
-// CHECK:       ttkernel.exp_tile(
-//
-// CHECK:       ttkernel.tile_regs_commit
+// SFPU:       ttkernel.exp_tile_init
+// SFPU:       ttkernel.exp_tile(
+// SFPU-NOT:   ttkernel.exp_tile_init
+// SFPU:       ttkernel.exp_tile(
+// SFPU:       ttkernel.tile_regs_commit
+// SFPU-NOT:   ttkernel.add_tiles
+
 func.func @add_exp_scheduled(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                               %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>>

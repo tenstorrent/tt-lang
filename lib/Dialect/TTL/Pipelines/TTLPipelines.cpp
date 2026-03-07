@@ -20,13 +20,19 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   pm.addPass(createTTLConvertTTLToCompute());
   pm.addPass(createTTLSetComputeKernelConfig());
-  // FPU binary lowering patterns are not yet available, so disable FPU binary
-  // detection to keep binary ops on the SFPU path.
-  TTLAssignDSTOptions assignDSTOpts;
-  assignDSTOpts.enableFPUBinaryOps = false;
-  pm.addPass(createTTLAssignDST(assignDSTOpts));
+  {
+    TTLAssignDSTOptions assignDstOpts;
+    assignDstOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
+    pm.addPass(createTTLAssignDST(assignDstOpts));
+  }
+  if (options.maximizeDST) {
+    pm.addPass(createTTLSubblockComputeForDST());
+  }
   pm.addPass(createTTLInsertTileRegsSync());
   pm.addPass(createTTLLowerToLoops());
+  if (options.maximizeDST) {
+    pm.addPass(createTTLScheduleOperations());
+  }
   pm.addPass(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLConvertTTLToTTKernel());
   pm.addPass(createTTKernelInsertInits());

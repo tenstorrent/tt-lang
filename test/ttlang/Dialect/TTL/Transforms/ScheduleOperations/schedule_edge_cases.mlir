@@ -1,29 +1,43 @@
 // Tests for scheduling edge cases: single-type (already sorted), single-tile,
 // and multi-type chains that exercise different scheduler code paths.
-//
+
+// FPU path (default): binary add uses add_tiles (reads from CB).
+// RUN: ttlang-opt %s --split-input-file \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-subblock-compute-for-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
+// RUN:   | FileCheck %s --check-prefix=FPU
+
+// SFPU path: binary add uses copy_tile + add_binary_tile.
 // RUN: ttlang-opt %s --split-input-file \
 // RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-subblock-compute-for-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
-// RUN:   | FileCheck %s --check-prefix=CHECK
+// RUN:   | FileCheck %s --check-prefix=SFPU
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // =============================================================================
-// Test 1: Single-type SFPU binary (already sorted path)
+// Test 1: Single-type binary (already sorted path)
 // =============================================================================
-// Purpose: With only one compute op type (add_binary_tile), all tile ops in
-// the sync region are at the same depth/category/type. The scheduler's
-// is_sorted check returns true and no reordering occurs.
+// Purpose: With only one compute op type, the scheduler's is_sorted check
+// returns true and no reordering occurs.
 
-// CHECK-LABEL: func.func @single_type_already_sorted
-// CHECK:       ttkernel.tile_regs_acquire
-//
-// All add_binary_tile grouped (one init):
-// CHECK:       ttkernel.add_binary_tile_init
-// CHECK:       ttkernel.add_binary_tile(
-// CHECK-NOT:   ttkernel.add_binary_tile_init
-// CHECK:       ttkernel.add_binary_tile(
-//
-// CHECK:       ttkernel.tile_regs_commit
+// FPU-LABEL: func.func @single_type_already_sorted
+// FPU:       ttkernel.tile_regs_acquire
+// FPU:       ttkernel.add_tiles_init
+// FPU:       ttkernel.add_tiles(
+// FPU-NOT:   ttkernel.add_tiles_init
+// FPU:       ttkernel.add_tiles(
+// FPU:       ttkernel.tile_regs_commit
+// FPU-NOT:   ttkernel.copy_tile
+// FPU-NOT:   ttkernel.add_binary_tile
+
+// SFPU-LABEL: func.func @single_type_already_sorted
+// SFPU:       ttkernel.tile_regs_acquire
+// SFPU:       ttkernel.add_binary_tile_init
+// SFPU:       ttkernel.add_binary_tile(
+// SFPU-NOT:   ttkernel.add_binary_tile_init
+// SFPU:       ttkernel.add_binary_tile(
+// SFPU:       ttkernel.tile_regs_commit
+// SFPU-NOT:   ttkernel.add_tiles
+
 func.func @single_type_already_sorted(
     %a: tensor<2x1x!ttcore.tile<32x32, bf16>>,
     %b: tensor<2x1x!ttcore.tile<32x32, bf16>>)
@@ -65,35 +79,42 @@ func.func @single_type_already_sorted(
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // =============================================================================
-// Test 2: Three-type chain: copy + SFPU binary + SFPU unary
+// Test 2: Three-type chain: copy + binary + unary
 // =============================================================================
-// Purpose: Exercises reordering across three scheduling categories in a single
-// sync region. Two independent depth-0 operations: SFPU binary add(a,b) and
-// copy_tile(c) for subsequent exp. Without scheduling, add_binary_tile appears
-// before copy_tile; after scheduling, copy_tile (category 0) is grouped before
-// add_binary_tile (category 5).
+// Purpose: Exercises reordering across scheduling categories in a single
+// sync region. The add(a,b) and exp(c) are independent.
+// FPU-LABEL: func.func @copy_before_sfpu_reorder
+// FPU:       ttkernel.tile_regs_acquire
+// FPU:       ttkernel.copy_tile_init(
+// FPU:       ttkernel.copy_tile(
+// FPU:       ttkernel.copy_tile(
+// FPU:       ttkernel.add_tiles_init
+// FPU:       ttkernel.add_tiles(
+// FPU-NOT:   ttkernel.add_tiles_init
+// FPU:       ttkernel.add_tiles(
+// FPU:       ttkernel.exp_tile_init
+// FPU:       ttkernel.exp_tile(
+// FPU-NOT:   ttkernel.exp_tile_init
+// FPU:       ttkernel.exp_tile(
+// FPU:       ttkernel.tile_regs_commit
+// FPU-NOT:   ttkernel.add_binary_tile
 
-// CHECK-LABEL: func.func @copy_before_sfpu_reorder
-// CHECK:       ttkernel.tile_regs_acquire
-//
-// copy_tile ops grouped by input CB (copy_tile), then add, then exp (in later sync region):
-// CHECK:       ttkernel.copy_tile_init(
-// CHECK:       ttkernel.copy_tile(
-// CHECK:       ttkernel.copy_tile(
-//
-// SFPU binary add grouped (one init):
-// CHECK:       ttkernel.add_binary_tile_init
-// CHECK:       ttkernel.add_binary_tile(
-// CHECK-NOT:   ttkernel.add_binary_tile_init
-// CHECK:       ttkernel.add_binary_tile(
-//
-// SFPU unary exp grouped (one init):
-// CHECK:       ttkernel.exp_tile_init
-// CHECK:       ttkernel.exp_tile(
-// CHECK-NOT:   ttkernel.exp_tile_init
-// CHECK:       ttkernel.exp_tile(
-//
-// CHECK:       ttkernel.tile_regs_commit
+// SFPU-LABEL: func.func @copy_before_sfpu_reorder
+// SFPU:       ttkernel.tile_regs_acquire
+// SFPU:       ttkernel.copy_tile_init(
+// SFPU:       ttkernel.copy_tile(
+// SFPU:       ttkernel.copy_tile(
+// SFPU:       ttkernel.add_binary_tile_init
+// SFPU:       ttkernel.add_binary_tile(
+// SFPU-NOT:   ttkernel.add_binary_tile_init
+// SFPU:       ttkernel.add_binary_tile(
+// SFPU:       ttkernel.exp_tile_init
+// SFPU:       ttkernel.exp_tile(
+// SFPU-NOT:   ttkernel.exp_tile_init
+// SFPU:       ttkernel.exp_tile(
+// SFPU:       ttkernel.tile_regs_commit
+// SFPU-NOT:   ttkernel.add_tiles
+
 func.func @copy_before_sfpu_reorder(
     %a: tensor<2x1x!ttcore.tile<32x32, bf16>>,
     %b: tensor<2x1x!ttcore.tile<32x32, bf16>>,
@@ -131,9 +152,9 @@ func.func @copy_before_sfpu_reorder(
        %c_tile: !ttcore.tile<32x32, bf16>,
        %o0: !ttcore.tile<32x32, bf16>,
        %o1: !ttcore.tile<32x32, bf16>):
-    // SFPU binary at depth 0: reads from CB, no copy needed
+    // Binary at depth 0: reads from CB
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, bf16>
-    // SFPU unary: exp of c (needs copy_tile, independent of add)
+    // Unary: exp of c (needs copy_tile, independent of add)
     %exp = ttl.tile_exp %c_tile : !ttcore.tile<32x32, bf16>
     ttl.tile_store %sum, %rv0 : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
     ttl.tile_store %exp, %rv1 : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>

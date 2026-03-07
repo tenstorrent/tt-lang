@@ -23,7 +23,7 @@ from .runner import run_compute_test
 @pytest.mark.parametrize(
     "config",
     CONFIGS,
-    ids=lambda c: f"{c.block_h}x{c.block_w}_buf{c.buffer_factor}_{c.memory_layout.value}",
+    ids=lambda c: str(c),
 )
 @pytest.mark.parametrize("dtype", get_test_dtypes(), ids=get_dtype_ids())
 @pytest.mark.requires_device

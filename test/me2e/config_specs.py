@@ -94,6 +94,10 @@ class TestConfig:
     buffer_factor: int = 2
     memory_layout: MemoryLayout = MemoryLayout.INTERLEAVED
 
+    # Pipeline options.
+    maximize_dst: bool = True
+    enable_fpu_binary_ops: bool = True
+
     def __str__(self) -> str:
         """
         Compact string representation for test output.
@@ -113,7 +117,14 @@ class TestConfig:
         # Layout indicator (always explicit, using enum value)
         layout_str = f"_{self.memory_layout.value}"
 
-        return f"{self.block_h}x{self.block_w}_{dtype_str}{buffer_str}{layout_str}"
+        # Pipeline mode suffix.
+        pipeline_str = ""
+        if not self.maximize_dst:
+            pipeline_str += "_nodst"
+        if not self.enable_fpu_binary_ops:
+            pipeline_str += "_sfpu"
+
+        return f"{self.block_h}x{self.block_w}_{dtype_str}{buffer_str}{layout_str}{pipeline_str}"
 
     def to_e2e_config(self) -> E2EConfig:
         """
@@ -140,6 +151,10 @@ CONFIGS = [
     TestConfig(num_tiles=1, block_h=1, block_w=1),  # 1x1 grid (single tile)
     # Multi-tile configs with loop generation.
     TestConfig(num_tiles=4, block_h=2, block_w=2),  # 2x2 grid (4 tiles)
+    # Maximize-DST disabled: no subblocking or scheduling (basic loop lowering).
+    TestConfig(num_tiles=4, block_h=2, block_w=2, maximize_dst=False),
+    # SFPU path: FPU binary detection disabled (all binary ops use copy_tile + SFPU).
+    TestConfig(num_tiles=4, block_h=2, block_w=2, enable_fpu_binary_ops=False),
     # TODO(#123): Enable 8x8 config once tile index lowering is fixed.
     # Currently fails with high ULP errors - tensor_slice indices don't correctly
     # map to tile offsets in the C++ lowering for grids larger than 2x2.
