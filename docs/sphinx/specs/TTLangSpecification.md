@@ -892,7 +892,7 @@ def matmul_read():
 
                     print("c_dfb after reserve: ", c_dfb)
 
-                    # Print iteration state and the content of c_blk block 
+                    # Print iteration state and the content of c_blk block
 
                     print("it=", it, " mt=", mt, "nt=", nt, " c_blk: ", c_blk)
 
@@ -912,12 +912,12 @@ def matmul_read():
 
                         print("kt=", it)
 
-                        # Print the content of a_blk block 
+                        # Print the content of a_blk block
 
                         print("a_blk:")
                         print(a_blk)
 
-                        # Print the content of a_blk block 
+                        # Print the content of a_blk block
 
                         print("b_blk:")
                         print(b_blk)
