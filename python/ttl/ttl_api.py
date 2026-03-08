@@ -1320,8 +1320,9 @@ def pykernel_gen(
             dst_sync_override = dst_full_sync_en
 
             # Extract runtime options (allow per-call override via kwarg).
-            # Merge: explicit options (decorator or kwarg) as base,
-            # then sys.argv / env var options as higher-priority override.
+            # Priority: sys.argv > env var > decorator options=
+            # Env var is appended to decorator string (later tokens win),
+            # then sys.argv is merged on top as the highest-priority override.
             opts_str = kwargs.pop("options", options)
             env_opts = os.environ.get("TTLANG_COMPILER_OPTIONS")
             if env_opts:

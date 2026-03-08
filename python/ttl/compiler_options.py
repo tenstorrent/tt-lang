@@ -102,7 +102,11 @@ class CompilerOptions:
 
         If ``--help`` is present, prints available compiler options and exits.
         """
-        if "--help" in sys.argv[1:]:
+        # Only intercept --help when the script is run directly
+        # (not under pytest, lit, or other test runners).
+        if "--help" in sys.argv[1:] and not any(
+            runner in sys.argv[0] for runner in ("pytest", "py.test", "lit")
+        ):
             print("TTL compiler options:\n")
             print(CompilerOptions.usage())
             sys.exit(0)
