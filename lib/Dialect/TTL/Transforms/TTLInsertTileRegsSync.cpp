@@ -144,9 +144,19 @@ struct TTLInsertTileRegsSyncPass
           builder.create<TileRegsAcquireOp>(loc);
         }
 
-        // Insert commit + wait before the first tile_store.
-        if (!storeOps.empty()) {
-          builder.setInsertionPoint(storeOps.front());
+        // Insert commit + wait before the first non-accumulating tile_store.
+        // Accumulating stores (identified by acc_dst_idx from DST assignment)
+        // are compute ops (add_binary_tile), not pack ops, so they stay in
+        // the compute phase.
+        auto firstNonAccStore = llvm::find_if(storeOps, [](TileStoreOp store) {
+          return !isAccumulatingStore(store);
+        });
+        if (firstNonAccStore != storeOps.end()) {
+          builder.setInsertionPoint(*firstNonAccStore);
+        } else if (!storeOps.empty()) {
+          // All stores are accumulating: commit+wait goes after the last
+          // acc store (before terminator or release).
+          builder.setInsertionPointAfter(storeOps.back());
         } else {
           builder.setInsertionPoint(terminator);
         }

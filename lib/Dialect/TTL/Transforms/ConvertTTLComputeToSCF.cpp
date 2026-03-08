@@ -156,9 +156,10 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (!isa<LinearizedIndexOp>(&bodyOp)) {
       Operation *cloned = b.clone(bodyOp, mapping);
-      // Consume the acc attribute on tile_store: it was used by DST
-      // assignment to force separate output region. Strip it so the
-      // downstream pack lowering treats this as a normal store.
+      // Strip the acc attribute: it was consumed by DST assignment (to force
+      // separate output region) and sync insertion (to place commit/wait after
+      // the store). The acc_dst_idx attribute survives and drives
+      // add_binary_tile emission in ConvertTTLToTTKernel.
       if (auto tileStore = dyn_cast<TileStoreOp>(cloned)) {
         if (tileStore.getAcc()) {
           tileStore.setAcc(false);
@@ -412,6 +413,15 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
                                      static_cast<int32_t>(newIdx)));
       }
     }
+    // Offset acc_dst_idx for accumulator registers in unrolled subblocks.
+    if (auto attr = op->getAttrOfType<IntegerAttr>(kAccDstIdxAttrName)) {
+      if (dstBase != 0) {
+        int64_t newIdx = attr.getInt() + dstBase;
+        op->setAttr(kAccDstIdxAttrName,
+                    IntegerAttr::get(IntegerType::get(op->getContext(), 32),
+                                     static_cast<int32_t>(newIdx)));
+      }
+    }
 
     // dst_idx attribute (above) covers tile compute ops. CopyTileOp's
     // dst index is an SSA value, so we must emit an op to compute the offset.
@@ -504,7 +514,12 @@ static void reorderStoresAfterSync(Block *block) {
       }
       storesToHoist.clear();
     } else if (inComputeRegion && isa<TileStoreOp>(op)) {
-      storesToHoist.push_back(cast<TileStoreOp>(op));
+      // Accumulating stores (identified by acc_dst_idx) stay in the compute
+      // phase. They become add_binary_tile during TTKernel lowering; the
+      // deferred pack is also emitted there.
+      if (!isAccumulatingStore(op)) {
+        storesToHoist.push_back(cast<TileStoreOp>(op));
+      }
     }
   }
 }

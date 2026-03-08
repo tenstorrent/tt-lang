@@ -522,10 +522,16 @@ static void buildLiveIntervals(Block *body,
 // Phase 3: Linear Scan Allocation for Inputs/Intermediates
 //===----------------------------------------------------------------------===//
 
-/// Helper to check if a value is stored by a tile_store in the compute body.
+/// Check if a value is stored by a non-accumulating tile_store in the compute
+/// body. Accumulating stores (acc=true) use a separate accumulator register,
+/// so their source values are intermediates, not outputs.
 static bool isStoredValue(Value val, Block &body) {
   return llvm::any_of(val.getUsers(), [&](Operation *user) {
-    return isa<TileStoreOp>(user) && user->getBlock() == &body;
+    if (!isa<TileStoreOp>(user) || user->getBlock() != &body) {
+      return false;
+    }
+    auto tileStore = cast<TileStoreOp>(user);
+    return !tileStore.getAcc();
   });
 }
 
@@ -749,6 +755,55 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
               << " registers in use (spilling not yet implemented)";
           signalPassFailure();
           return;
+        }
+
+        //=== Phase 5: Allocate accumulator registers for acc tile_stores ===
+        // Accumulators persist across iterations within a sync region. They
+        // occupy the output region but are distinct from normal stored values
+        // (which can pack immediately). Acc stores to the same output CB share
+        // one accumulator; stores to different CBs get separate accumulators.
+        SmallVector<TileStoreOp> accStores;
+        for (Operation &op : *body) {
+          if (auto tileStore = dyn_cast<TileStoreOp>(&op)) {
+            if (tileStore.getAcc()) {
+              accStores.push_back(tileStore);
+            }
+          }
+        }
+
+        if (!accStores.empty()) {
+          // Find the first free register in the output region.
+          std::uint32_t nextFree = *inputsFootprint;
+          for (auto &[val, reg] : dstAssignment) {
+            if (reg >= *inputsFootprint) {
+              nextFree = std::max(nextFree, reg + 1);
+            }
+          }
+
+          // Group acc stores by target view (CB). Stores to the same view
+          // share one accumulator register.
+          DenseMap<Value, std::uint32_t> viewToAccReg;
+          for (TileStoreOp store : accStores) {
+            Value view = store.getView();
+            auto it = viewToAccReg.find(view);
+            if (it == viewToAccReg.end()) {
+              if (nextFree >= capacity) {
+                computeOp.emitOpError()
+                    << "insufficient DST registers for accumulator: all "
+                    << capacity << " registers in use";
+                signalPassFailure();
+                return;
+              }
+              viewToAccReg[view] = nextFree;
+              LLVM_DEBUG(llvm::dbgs()
+                         << "Phase 5: Allocated accumulator DST[" << nextFree
+                         << "] for view " << view << "\n");
+              ++nextFree;
+            }
+            store->setAttr(kAccDstIdxAttrName,
+                           builder.getI32IntegerAttr(
+                               static_cast<int32_t>(viewToAccReg[view])));
+          }
         }
       } else {
         // Single-pass allocation: Outputs can reuse input registers (default)

@@ -1,7 +1,5 @@
-// Summary: tile_store {acc = true} passes through the full TTL pipeline.
-// The acc attribute is consumed by DST assignment (forces separate output
-// region) and stripped during lower-to-loops. The resulting pack_tile is
-// identical to a non-accumulating store.
+// Summary: tile_store {acc = true} lowers to zero-init + add_binary_tile
+// (compute phase) + deferred pack_tile (pack phase) through the full pipeline.
 //
 // RUN: ttlang-opt %s \
 // RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
@@ -10,12 +8,24 @@
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // CHECK-LABEL: func.func @acc_store_pipeline
-// CHECK: ttkernel.tile_regs_acquire
-// CHECK: ttkernel.add_tiles
-// CHECK: ttkernel.tile_regs_commit
-// CHECK: ttkernel.tile_regs_wait
-// CHECK: ttkernel.pack_tile
-// CHECK: ttkernel.tile_regs_release
+// CHECK-DAG:   %[[C0:.*]] = arith.constant 0 : index
+// CHECK-DAG:   %[[C1:.*]] = arith.constant 1 : index
+// CHECK-DAG:   %[[ZERO:.*]] = arith.constant 0.000000e+00 : f32
+// CHECK:       ttkernel.tile_regs_acquire
+// Zero-init the accumulator in DST[1].
+// CHECK-NEXT:  ttkernel.fill_tile_init
+// CHECK-NEXT:  ttkernel.fill_tile(%[[C1]], %[[ZERO]])
+// Compute a + b into DST[0] (FPU binary path).
+// CHECK:       ttkernel.add_tiles_init
+// CHECK:       ttkernel.add_tiles
+// Accumulate: DST[1] += DST[0].
+// CHECK:       ttkernel.add_binary_tile_init
+// CHECK-NEXT:  ttkernel.add_binary_tile(%[[C0]], %[[C1]], %[[C1]])
+// CHECK:       ttkernel.tile_regs_commit
+// Deferred pack from accumulator DST[1] to output CB.
+// CHECK:       ttkernel.tile_regs_wait
+// CHECK-NEXT:  ttkernel.pack_tile(%[[C1]],
+// CHECK:       ttkernel.tile_regs_release
 
 func.func @acc_store_pipeline(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                %b: tensor<2x2x!ttcore.tile<32x32, f32>>)

@@ -28,6 +28,14 @@ class TTLTileOpTrait
 
 /// Attribute names.
 constexpr llvm::StringLiteral kDstIdxAttrName("dst_idx");
+constexpr llvm::StringLiteral kAccDstIdxAttrName("acc_dst_idx");
+
+/// Check if a tile_store has been marked for accumulation by DST assignment.
+/// Returns true when acc_dst_idx is present, meaning the store should lower
+/// to add_binary_tile rather than pack_tile.
+inline bool isAccumulatingStore(mlir::Operation *op) {
+  return op->hasAttr(kAccDstIdxAttrName);
+}
 constexpr llvm::StringLiteral kCBIndexAttrPrefix("ttl.cb_index.");
 
 /// Runtime configuration attributes.

@@ -335,8 +335,177 @@ struct AttachCBLowering : OpConversionPattern<AttachCBOp> {
   }
 };
 
+/// Attribute name used to mark a TileRegsAcquireOp whose accumulator
+/// zero-init has already been emitted, preventing duplicate emission.
+static constexpr llvm::StringLiteral
+    kAccInitEmittedAttrName("ttl.acc_init_emitted");
+
 struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
   using OpConversionPattern::OpConversionPattern;
+
+  /// Resolve the source tile's DST register index.
+  static FailureOr<Value> getSrcDstIndex(TileStoreOp op, OpAdaptor &adaptor,
+                                         ConversionPatternRewriter &rewriter) {
+    auto loc = op.getLoc();
+    auto tileValue = adaptor.getTile();
+    if (auto defOp = tileValue.getDefiningOp()) {
+      if (auto dstIdxAttr =
+              defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
+        return rewriter.create<arith::ConstantIndexOp>(loc, dstIdxAttr.getInt())
+            .getResult();
+      }
+      if (auto copyTile = dyn_cast<CopyTileOp>(defOp)) {
+        return copyTile.getDstIndex();
+      }
+      return rewriter.notifyMatchFailure(
+          op, "tile_store source op lacks dst_idx attribute");
+    }
+    // Block argument: use CB tile index (handled by caller).
+    return failure();
+  }
+
+  /// Find the first op of type T scanning forward from `start` in `block`.
+  template <typename T>
+  static T findOpAfter(Block *block, Operation *start) {
+    for (auto it = start->getIterator(), end = block->end(); it != end; ++it) {
+      if (auto found = dyn_cast<T>(&*it)) {
+        return found;
+      }
+    }
+    return nullptr;
+  }
+
+  /// Find the first op of type T scanning backward from `start` in `block`.
+  template <typename T>
+  static T findOpBefore(Block *block, Operation *start) {
+    for (auto it = std::prev(start->getIterator());; --it) {
+      if (auto found = dyn_cast<T>(&*it)) {
+        return found;
+      }
+      if (it == block->begin()) {
+        break;
+      }
+    }
+    return nullptr;
+  }
+
+  /// Emit accumulation ops: zero-init after acquire, add_binary_tile in place,
+  /// and deferred pack after wait. Returns success if accumulation was handled.
+  LogicalResult lowerAccumulatingStore(TileStoreOp op, OpAdaptor &adaptor,
+                                       ConversionPatternRewriter &rewriter,
+                                       Value cb, Value cbTileIndex) const {
+    auto loc = op.getLoc();
+    auto accDstIdxAttr = op->getAttrOfType<IntegerAttr>(kAccDstIdxAttrName);
+    if (!accDstIdxAttr) {
+      return rewriter.notifyMatchFailure(
+          op, "acc tile_store missing acc_dst_idx attribute");
+    }
+
+    // Source DST index: where the computed expression lives (temporary).
+    auto srcDstIdx = getSrcDstIndex(op, adaptor, rewriter);
+    if (failed(srcDstIdx)) {
+      // Fallback: use CB tile index for block-argument passthrough.
+      srcDstIdx = cbTileIndex;
+    }
+
+    Value accDstIdx =
+        rewriter.create<arith::ConstantIndexOp>(loc, accDstIdxAttr.getInt());
+
+    // Emit add_binary_tile: DST[acc] += DST[src].
+    rewriter.create<ttk::AddBinaryTilesOp>(loc, *srcDstIdx, accDstIdx,
+                                           accDstIdx);
+
+    // Find the containing flat block (walk up past scf.for if needed).
+    Block *syncBlock = op->getBlock();
+    Operation *syncContext = op;
+    while (syncBlock) {
+      if (llvm::any_of(*syncBlock, [](Operation &o) {
+            return isa<TileRegsAcquireOp>(o);
+          })) {
+        break;
+      }
+      // Walk up: the scf.for's parent block contains sync ops.
+      if (auto *parentOp = syncBlock->getParentOp()) {
+        syncContext = parentOp;
+        syncBlock = parentOp->getBlock();
+      } else {
+        syncBlock = nullptr;
+      }
+    }
+
+    if (!syncBlock) {
+      return rewriter.notifyMatchFailure(
+          op, "acc tile_store: could not find sync region");
+    }
+
+    // Zero-init: emit fill_tile after acquire (once per accumulator).
+    auto acquireOp = findOpBefore<TileRegsAcquireOp>(syncBlock, syncContext);
+    if (acquireOp) {
+      // Use a marker attribute to avoid emitting duplicate fill_tile ops
+      // when multiple acc tile_stores share the same accumulator.
+      auto markerAttr =
+          acquireOp->getAttrOfType<DenseI32ArrayAttr>(kAccInitEmittedAttrName);
+      SmallVector<int32_t> emitted;
+      if (markerAttr) {
+        emitted.assign(markerAttr.asArrayRef().begin(),
+                       markerAttr.asArrayRef().end());
+      }
+
+      int32_t accIdx = accDstIdxAttr.getInt();
+      if (!llvm::is_contained(emitted, accIdx)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointAfter(acquireOp);
+        rewriter.create<ttk::FillTileInitOp>(loc);
+        Value zero = rewriter.create<arith::ConstantFloatOp>(
+            loc, rewriter.getF32Type(), APFloat(0.0f));
+        rewriter.create<ttk::FillTileOp>(loc, accDstIdx, zero);
+
+        emitted.push_back(accIdx);
+        acquireOp->setAttr(kAccInitEmittedAttrName,
+                           rewriter.getDenseI32ArrayAttr(emitted));
+      }
+    }
+
+    // Deferred pack: emit pack_tile after wait (once per accumulator).
+    auto waitOp = findOpAfter<TileRegsWaitOp>(syncBlock, syncContext);
+    if (waitOp) {
+      auto markerAttr =
+          waitOp->getAttrOfType<DenseI32ArrayAttr>(kAccInitEmittedAttrName);
+      SmallVector<int32_t> packed;
+      if (markerAttr) {
+        packed.assign(markerAttr.asArrayRef().begin(),
+                      markerAttr.asArrayRef().end());
+      }
+
+      int32_t accIdx = accDstIdxAttr.getInt();
+      if (!llvm::is_contained(packed, accIdx)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointAfter(waitOp);
+
+        // Insert after any previously emitted deferred packs.
+        Operation *insertPt = waitOp;
+        for (auto it = std::next(waitOp->getIterator()), end = syncBlock->end();
+             it != end; ++it) {
+          if (isa<ttk::PackTileOp>(&*it)) {
+            insertPt = &*it;
+          } else {
+            break;
+          }
+        }
+        rewriter.setInsertionPointAfter(insertPt);
+
+        rewriter.create<ttk::PackTileOp>(loc, accDstIdx, cb, cbTileIndex,
+                                         /*out_of_order=*/true);
+
+        packed.push_back(accIdx);
+        waitOp->setAttr(kAccInitEmittedAttrName,
+                        rewriter.getDenseI32ArrayAttr(packed));
+      }
+    }
+
+    rewriter.eraseOp(op);
+    return success();
+  }
 
   LogicalResult
   matchAndRewrite(TileStoreOp op, OpAdaptor adaptor,
@@ -349,7 +518,6 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
           op, "view must come from ttl.cb_reserve (unrealized cast from CB)");
     }
 
-    // CB shape rank is the rank of the view tensor (from cb_reserve).
     auto viewTy = mlir::cast<RankedTensorType>(op.getView().getType());
     size_t cbShapeRank = viewTy.getRank();
     auto cbTileIndex =
@@ -358,10 +526,13 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
       return failure();
     }
 
-    // Determine DST index from the source op:
-    // - Tile compute ops and copy_dst: have dst_idx attribute
-    // - copy_tile (passthrough): read dst_index operand
-    // - CB-reading ops (bcast, reduce): no dst_idx, use CB tile index
+    // Accumulating store (identified by acc_dst_idx from DST assignment):
+    // emit add_binary_tile + zero-init + deferred pack.
+    if (isAccumulatingStore(op)) {
+      return lowerAccumulatingStore(op, adaptor, rewriter, *cb, *cbTileIndex);
+    }
+
+    // Normal store: emit pack_tile.
     Value dstIndex;
     auto tileValue = adaptor.getTile();
     if (auto defOp = tileValue.getDefiningOp()) {
@@ -372,8 +543,8 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
       } else if (auto copyTile = dyn_cast<CopyTileOp>(defOp)) {
         dstIndex = copyTile.getDstIndex();
       } else {
-        return op.emitError("tile_store source op lacks dst_idx attribute: ")
-               << defOp->getName();
+        return rewriter.notifyMatchFailure(
+            op, "tile_store source op lacks dst_idx attribute");
       }
     } else {
       dstIndex = *cbTileIndex;
