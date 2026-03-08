@@ -2,13 +2,13 @@
 
 ## Prerequisites
 - CMake 3.28+, Ninja, and Clang 18+ or GCC 11+.
-- tt-mlir toolchain at `TTMLIR_TOOLCHAIN_DIR` (default `/opt/ttmlir-toolchain`).
+- tt-mlir toolchain at `TTLANG_TOOLCHAIN_DIR` (default `/opt/ttlang-toolchain`).
 - Python 3.11+ (toolchain venv).
 
 ## Configure
 ```bash
 cmake -G Ninja -B build \
-  -DTTLANG_USE_TTMLIR_TOOLCHAIN=ON \
+  -DTTLANG_USE_TOOLCHAIN=ON \
   -DTTLANG_ENABLE_DOCS=ON
 ```
 

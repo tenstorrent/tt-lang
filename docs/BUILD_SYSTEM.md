@@ -50,7 +50,7 @@ source build/env/activate
 ## LLVM/MLIR
 
 `cmake/modules/BuildLLVM.cmake` supports two modes, controlled by whether
-`MLIR_PREFIX` or `TTLANG_USE_TTMLIR_TOOLCHAIN` is set.
+`MLIR_PREFIX` or `TTLANG_USE_TOOLCHAIN` is set.
 
 ### Option A: Build from submodule (default)
 
@@ -74,15 +74,15 @@ cmake -G Ninja -B build -DMLIR_PREFIX=/path/to/llvm-install .
 
 **Via ttmlir toolchain:**
 ```bash
-# Uses $TTMLIR_TOOLCHAIN_DIR, or /opt/ttmlir-toolchain by default
-cmake -G Ninja -B build -DTTLANG_USE_TTMLIR_TOOLCHAIN=ON .
+# Uses $TTLANG_TOOLCHAIN_DIR, or /opt/ttlang-toolchain by default
+cmake -G Ninja -B build -DTTLANG_USE_TOOLCHAIN=ON .
 
 # With explicit path:
-TTMLIR_TOOLCHAIN_DIR=/custom/path cmake -G Ninja -B build -DTTLANG_USE_TTMLIR_TOOLCHAIN=ON .
+TTLANG_TOOLCHAIN_DIR=/custom/path cmake -G Ninja -B build -DTTLANG_USE_TOOLCHAIN=ON .
 ```
 
-When `TTLANG_USE_TTMLIR_TOOLCHAIN=ON`, the build also sets `Python3_EXECUTABLE`
-to the toolchain's venv (`${TTMLIR_TOOLCHAIN_DIR}/venv/bin/python`) so that MLIR
+When `TTLANG_USE_TOOLCHAIN=ON`, the build also sets `Python3_EXECUTABLE`
+to the toolchain's venv (`${TTLANG_TOOLCHAIN_DIR}/venv/bin/python`) so that MLIR
 Python bindings resolve against the same interpreter they were built with.
 
 WARNING: tt-lang may not build successfully if the pre-build LLVM is a significantly different version than what tt-mlir and tt-lang expect.
@@ -90,7 +90,7 @@ WARNING: tt-lang may not build successfully if the pre-build LLVM is a significa
 ### LLVM SHA verification
 
 When using a pre-built LLVM (either via `MLIR_PREFIX` or
-`TTLANG_USE_TTMLIR_TOOLCHAIN`), the build verifies the installed LLVM was built
+`TTLANG_USE_TOOLCHAIN`), the build verifies the installed LLVM was built
 from the expected commit. The expected SHA is read from
 `third-party/tt-mlir/env/CMakeLists.txt` (`LLVM_PROJECT_VERSION`), and the
 actual SHA is read from `<prefix>/include/llvm/Support/VCSRevision.h`.
@@ -241,7 +241,7 @@ build/
 | `CMAKE_BUILD_TYPE` | `Release` | Build type (Debug, Release, RelWithDebInfo) |
 | `LLVM_BUILD_TYPE` | `Release` | LLVM build type (independent of project build type) |
 | `MLIR_PREFIX` | — | Path to pre-built LLVM/MLIR install (skips submodule build) |
-| `TTLANG_USE_TTMLIR_TOOLCHAIN` | `OFF` | Use pre-built LLVM from ttmlir toolchain |
+| `TTLANG_USE_TOOLCHAIN` | `OFF` | Use pre-built LLVM from ttmlir toolchain |
 | `TTLANG_ACCEPT_LLVM_MISMATCH` | `OFF` | Allow LLVM SHA mismatch with pre-built installs |
 | `TTLANG_ENABLE_BINDINGS_PYTHON` | `ON` | Enable Python bindings |
 | `CODE_COVERAGE` | `OFF` | Enable code coverage reporting |
@@ -253,7 +253,7 @@ build/
 The first submodule build compiles LLVM from source, which can take 30-60 minutes.
 To speed up:
 - Ensure ccache is installed (automatically detected and used)
-- Use a pre-built LLVM via `-DMLIR_PREFIX` or `-DTTLANG_USE_TTMLIR_TOOLCHAIN=ON`
+- Use a pre-built LLVM via `-DMLIR_PREFIX` or `-DTTLANG_USE_TOOLCHAIN=ON`
 - Subsequent configures skip the build if `llvm-install/` already exists
 
 ### LLVM SHA mismatch

@@ -19,11 +19,11 @@ cmake --build build
 
 ## Using the ttmlir toolchain
 ```bash
-cmake -GNinja -B build . -DTTLANG_USE_TTMLIR_TOOLCHAIN=ON
+cmake -GNinja -B build . -DTTLANG_USE_TOOLCHAIN=ON
 source build/env/activate
 cmake --build build
 ```
-This uses a pre-built LLVM from `$TTMLIR_TOOLCHAIN_DIR` (default: `/opt/ttmlir-toolchain`).
+This uses a pre-built LLVM from `$TTLANG_TOOLCHAIN_DIR` (default: `/opt/ttlang-toolchain`).
 
 ## Common options
 - `-DCMAKE_BUILD_TYPE=Debug` for developer iteration.

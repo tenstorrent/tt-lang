@@ -22,7 +22,7 @@ TT-Lang bridges this gap through progressive disclosure: simple kernels require 
 
 * [CMake](https://cmake.org/) 3.28+
 * [Clang](https://clang.llvm.org/) 18+ or [GCC](https://gcc.gnu.org/) 11+
-* An existing LLVM/MLIR toolchain at `TTMLIR_TOOLCHAIN_DIR` (default: `/opt/ttmlir-toolchain`)
+* An existing LLVM/MLIR toolchain at `TTLANG_TOOLCHAIN_DIR` (default: `/opt/ttlang-toolchain`)
 * [Python](https://www.python.org/) 3.11+ in the toolchain's virtual environment
 * Optional (recommended): [Ninja](https://ninja-build.org/) build system
 
@@ -48,8 +48,8 @@ LLVM is built and installed to `build/llvm-install/` by default. tt-metal builds
 # Debug build with Python bindings
 cmake -GNinja -Bbuild . -DCMAKE_BUILD_TYPE=Debug -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
 
-# Use pre-built LLVM/MLIR from the ttmlir toolchain ($TTMLIR_TOOLCHAIN_DIR or /opt/ttmlir-toolchain)
-cmake -GNinja -Bbuild . -DTTLANG_USE_TTMLIR_TOOLCHAIN=ON
+# Use pre-built LLVM/MLIR from the ttmlir toolchain ($TTLANG_TOOLCHAIN_DIR or /opt/ttlang-toolchain)
+cmake -GNinja -Bbuild . -DTTLANG_USE_TOOLCHAIN=ON
 
 # Use a pre-built LLVM/MLIR installation at a custom path
 cmake -GNinja -Bbuild . -DMLIR_PREFIX=/path/to/llvm-install

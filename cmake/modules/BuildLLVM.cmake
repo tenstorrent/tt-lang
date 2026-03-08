@@ -33,26 +33,26 @@ if(EXISTS "${_TTMLIR_ENV_CMAKELISTS}")
 endif()
 
 # ---------------------------------------------------------------------------
-# TTLANG_USE_TTMLIR_TOOLCHAIN: convenience option to use pre-built LLVM from
-# the ttmlir toolchain directory ($TTMLIR_TOOLCHAIN_DIR or /opt/ttmlir-toolchain).
+# TTLANG_USE_TOOLCHAIN: convenience option to use pre-built LLVM from
+# the ttlang toolchain directory ($TTLANG_TOOLCHAIN_DIR or /opt/ttlang-toolchain).
 # ---------------------------------------------------------------------------
-option(TTLANG_USE_TTMLIR_TOOLCHAIN "Use pre-built LLVM from ttmlir toolchain" OFF)
+option(TTLANG_USE_TOOLCHAIN "Use pre-built LLVM from ttlang toolchain" OFF)
 
-if(TTLANG_USE_TTMLIR_TOOLCHAIN AND NOT DEFINED MLIR_PREFIX)
-  if(DEFINED ENV{TTMLIR_TOOLCHAIN_DIR})
-    set(_toolchain_dir "$ENV{TTMLIR_TOOLCHAIN_DIR}")
+if(TTLANG_USE_TOOLCHAIN AND NOT DEFINED MLIR_PREFIX)
+  if(DEFINED ENV{TTLANG_TOOLCHAIN_DIR})
+    set(_toolchain_dir "$ENV{TTLANG_TOOLCHAIN_DIR}")
   else()
-    set(_toolchain_dir "/opt/ttmlir-toolchain")
+    set(_toolchain_dir "/opt/ttlang-toolchain")
   endif()
 
   if(NOT EXISTS "${_toolchain_dir}")
     message(FATAL_ERROR
-      "TTLANG_USE_TTMLIR_TOOLCHAIN is ON but toolchain directory not found: ${_toolchain_dir}\n"
-      "Set TTMLIR_TOOLCHAIN_DIR to the correct path, or disable this option.")
+      "TTLANG_USE_TOOLCHAIN is ON but toolchain directory not found: ${_toolchain_dir}\n"
+      "Set TTLANG_TOOLCHAIN_DIR to the correct path, or disable this option.")
   endif()
 
   set(MLIR_PREFIX "${_toolchain_dir}")
-  message(STATUS "Using ttmlir toolchain at: ${_toolchain_dir}")
+  message(STATUS "Using ttlang toolchain at: ${_toolchain_dir}")
 
   # Use the Python from the toolchain's venv so that MLIR Python bindings
   # (nanobind stubs, etc.) resolve against the same interpreter they were
@@ -60,7 +60,7 @@ if(TTLANG_USE_TTMLIR_TOOLCHAIN AND NOT DEFINED MLIR_PREFIX)
   set(_toolchain_python "${_toolchain_dir}/venv/bin/python")
   if(EXISTS "${_toolchain_python}")
     set(Python3_EXECUTABLE "${_toolchain_python}" CACHE FILEPATH
-      "Python interpreter from ttmlir toolchain" FORCE)
+      "Python interpreter from ttlang toolchain" FORCE)
     message(STATUS "Using toolchain Python: ${_toolchain_python}")
   else()
     message(WARNING

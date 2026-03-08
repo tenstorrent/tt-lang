@@ -41,7 +41,7 @@ jobs:
         id: check
         run: .github/scripts/check-docker-images.sh
 
-  # Builds the base image on a standard runner; dist and ird depend on this
+  # Builds the base image (system deps, Python, Clang)
   build-image-base:
     needs: [check-if-images-already-exist]
     if: needs.check-if-images-already-exist.outputs.docker-image == ''
@@ -85,9 +85,8 @@ jobs:
           echo "docker-image-base=$DOCKER_IMAGE_BASE" >> $GITHUB_OUTPUT
           echo "Base image built successfully"
 
-  # Builds both dist and ird images in a single job.
-  # The Dockerfile's multi-stage structure ensures LLVM + tt-metal are built
-  # once in the shared "configure" stage, then reused for both targets.
+  # Builds LLVM + tt-metal on the host (via docker run with base image),
+  # then packages dist and ird Docker images.
   build-images:
     needs: [check-if-images-already-exist, build-image-base]
     if: needs.check-if-images-already-exist.outputs.docker-image == ''
@@ -109,45 +108,7 @@ jobs:
           fetch-tags: true
 
       - name: Free up some more space
-        run: |
-          .github/scripts/cleanup-ci-space.sh
-
-      - name: Extract submodule SHAs for cache keys
-        id: submodule-shas
-        run: |
-          echo "llvm-sha=$(git -C third-party/llvm-project rev-parse HEAD)" >> $GITHUB_OUTPUT
-          echo "ttmetal-sha=$(git -C third-party/tt-metal rev-parse HEAD)" >> $GITHUB_OUTPUT
-
-      - name: Restore LLVM cache
-        id: cache-llvm
-        uses: actions/cache/restore@v4
-        with:
-          path: build/llvm-install/
-          key: ${{ runner.os }}-llvm-install-${{ steps.submodule-shas.outputs.llvm-sha }}
-
-      - name: Restore tt-metal cache
-        id: cache-ttmetal
-        uses: actions/cache/restore@v4
-        with:
-          path: third-party/tt-metal/build/
-          key: ${{ runner.os }}-ttmetal-build-${{ steps.submodule-shas.outputs.ttmetal-sha }}-${{ hashFiles('third-party/patches/ttmetal-*.patch') }}
-
-      - name: Set up cache build contexts
-        run: |
-          EXTRA_ARGS=""
-          if [ "${{ steps.cache-llvm.outputs.cache-hit }}" = "true" ]; then
-            echo "LLVM cache hit — will inject into Docker build"
-            EXTRA_ARGS="$EXTRA_ARGS --build-context llvm-cache=./build/llvm-install"
-          else
-            echo "LLVM cache miss — Docker will build from source"
-          fi
-          if [ "${{ steps.cache-ttmetal.outputs.cache-hit }}" = "true" ]; then
-            echo "tt-metal cache hit — will inject into Docker build"
-            EXTRA_ARGS="$EXTRA_ARGS --build-context ttmetal-cache=./third-party/tt-metal/build"
-          else
-            echo "tt-metal cache miss — Docker will build from source"
-          fi
-          echo "DOCKER_BUILD_EXTRA_ARGS=$EXTRA_ARGS" >> $GITHUB_ENV
+        run: .github/scripts/cleanup-ci-space.sh
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -156,12 +117,93 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ github.token }}
 
-      - name: Clean up Docker before build
+      - name: Pull base image
         run: |
-          echo "Cleaning up Docker system before build..."
+          # Use the base image that was just built (or latest)
+          BASE_IMAGE="ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:latest"
+          docker pull "$BASE_IMAGE"
+          echo "BASE_IMAGE=$BASE_IMAGE" >> $GITHUB_ENV
+
+      - name: Build LLVM + tt-metal (configure)
+        run: |
+          echo "=== Building LLVM + tt-metal on host ==="
+          df -h
+          mkdir -p toolchain
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -v ${{ github.workspace }}/toolchain:/opt/ttlang-toolchain \
+            -w /workspace \
+            -e TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
+            "$BASE_IMAGE" \
+            bash .github/containers/build-and-install.sh --configure-only
+          echo "=== Configure complete ==="
+          df -h
+
+      - name: Copy runtime libs into toolchain
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -v ${{ github.workspace }}/toolchain:/opt/ttlang-toolchain \
+            -w /workspace \
+            -e TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
+            "$BASE_IMAGE" \
+            bash .github/containers/build-and-install.sh --copy-runtime-libs
+
+      - name: Normalize toolchain
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -v ${{ github.workspace }}/toolchain:/opt/ttlang-toolchain \
+            -w /workspace \
+            "$BASE_IMAGE" \
+            bash -c "
+              bash .github/scripts/normalize-ttmlir-install.sh /opt/ttlang-toolchain
+              bash .github/containers/cleanup-toolchain.sh /opt/ttlang-toolchain
+              find /opt/ttlang-toolchain -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+              find /opt/ttlang-toolchain -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete 2>/dev/null || true
+            "
+
+      - name: Save ird toolchain
+        run: |
+          echo "=== Saving ird toolchain ==="
+          sudo cp -a toolchain ird-toolchain
+          echo "ird toolchain size:"
+          du -sh ird-toolchain
+
+      - name: Build + install tt-lang
+        run: |
+          echo "=== Building tt-lang ==="
+          df -h
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -v ${{ github.workspace }}/toolchain:/opt/ttlang-toolchain \
+            -w /workspace \
+            -e TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
+            "$BASE_IMAGE" \
+            bash .github/containers/build-and-install.sh --build-and-install
+          echo "=== tt-lang build complete ==="
+          df -h
+
+      - name: Normalize dist toolchain
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}/toolchain:/opt/ttlang-toolchain \
+            "$BASE_IMAGE" \
+            bash -c "
+              find /opt/ttlang-toolchain -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+              find /opt/ttlang-toolchain -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete 2>/dev/null || true
+            "
+
+      - name: Clean up build dirs to free space before Docker build
+        run: |
+          echo "Removing build directories..."
+          sudo rm -rf build third-party/tt-metal/build
+          df -h
+
+      - name: Clean up Docker before packaging
+        run: |
           docker system prune -af --volumes || true
           docker builder prune -af || true
-          echo "Docker cleanup complete"
           df -h
 
       - name: Build dist Docker image
@@ -169,10 +211,10 @@ jobs:
         env:
           DOCKER_BUILDKIT: 1
           BUILDKIT_STEP_LOG_MAX_SIZE: -1
+          DOCKER_BUILD_EXTRA_ARGS: "--build-context dist-toolchain=./toolchain --build-context ird-toolchain=./ird-toolchain"
         run: |
           set -o pipefail
           set -x
-          echo "Space usage: " && df -h
           .github/containers/build-docker-images.sh --image-type dist | tee docker.log
 
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
@@ -182,19 +224,23 @@ jobs:
 
           DOCKER_IMAGE=$(tail -n 1 docker.log)
           echo "docker-image=$DOCKER_IMAGE" >> $GITHUB_OUTPUT
-
-          echo "Space usage after dist build: " && df -h
           echo "Dist image built successfully"
+          df -h
 
+      - name: Remove dist toolchain to free space
+        run: sudo rm -rf toolchain
+
+      # dist-toolchain points to ird-toolchain here because dist toolchain was
+      # already deleted to save space. BuildKit doesn't read dist-toolchain when
+      # targeting ird, but it must be a valid path to avoid build errors.
       - name: Build ird Docker image
-        id: build-ird
         env:
           DOCKER_BUILDKIT: 1
           BUILDKIT_STEP_LOG_MAX_SIZE: -1
+          DOCKER_BUILD_EXTRA_ARGS: "--build-context dist-toolchain=./ird-toolchain --build-context ird-toolchain=./ird-toolchain"
         run: |
           set -o pipefail
           set -x
-          echo "Space usage: " && df -h
           .github/containers/build-docker-images.sh --image-type ird | tee docker-ird.log
 
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
@@ -202,15 +248,13 @@ jobs:
             exit 1
           fi
 
-          echo "Space usage after ird build: " && df -h
           echo "IRD image built successfully"
+          df -h
 
       - name: Clean up Docker after build
         if: always()
         run: |
-          echo "Cleaning up Docker build cache after build..."
           docker builder prune -af || true
-          echo "Docker cleanup complete"
           df -h
 
       - name: Show disk usage on failure

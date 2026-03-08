@@ -5,7 +5,7 @@
 
 set -e
 
-TOOLCHAIN_DIR="${1:-/opt/ttmlir-toolchain}"
+TOOLCHAIN_DIR="${1:-/opt/ttlang-toolchain}"
 
 echo "Cleaning up toolchain at: ${TOOLCHAIN_DIR}"
 echo "Size before cleanup:"
