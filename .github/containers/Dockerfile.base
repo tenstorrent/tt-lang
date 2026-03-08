@@ -73,7 +73,7 @@ COPY requirements.txt /tmp/requirements.txt
 # conflicts with 3.12's removal of distutils), then install dependencies.
 RUN python3.12 -m ensurepip --upgrade && \
     python3.12 -m pip install --upgrade pip --no-cache-dir && \
-    python3.12 -m pip install cmake==3.28.6 --no-cache-dir && \
+    python3.12 -m pip install cmake==3.28.4 --no-cache-dir && \
     python3.12 -m pip install --index-url https://download.pytorch.org/whl/cpu \
         torch --no-cache-dir && \
     python3.12 -m pip install -r /tmp/requirements.txt --no-cache-dir && \
