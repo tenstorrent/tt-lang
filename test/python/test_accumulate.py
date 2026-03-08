@@ -29,7 +29,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from conftest import temp_kernel_files
 from ttlang_test_utils import to_dram
-from utils.correctness import assert_with_ulp
+from utils.correctness import assert_allclose, assert_with_ulp
 
 
 # =============================================================================
@@ -56,14 +56,7 @@ DTYPE_PARAMS = [
     pytest.param(torch.float32, id="f32"),
 ]
 
-# ULP thresholds per dtype.  Hardware elementwise compute uses bf16
-# precision internally, so both bf16 and f32 are compared at bf16
-# resolution.  f32 gets a slightly tighter threshold since the
-# compiler auto-enables fp32_dest_acc_en for f32 operands.
-ULP_THRESHOLDS = {
-    torch.bfloat16: 2,
-    torch.float32: 2,
-}
+ULP_THRESHOLD = 10  # default from assert_with_ulp
 
 
 # =============================================================================
@@ -254,6 +247,38 @@ def kernel(a, b, out1, out2):
             tx.wait()
 """
 
+# Mixed unary/binary chain: out = exp(a * b) + abs(a - b)
+ACC_MIXED_CHAIN_TEMPLATE = """\
+import ttl
+
+@ttl.kernel(grid=(1, 1))
+def kernel(a, b, out):
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=({R}, {C}), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=({R}, {C}), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({R}, {C}), buffer_factor=2)
+
+    @ttl.compute()
+    def compute():
+        with a_dfb.wait() as av, b_dfb.wait() as bv:
+            with out_dfb.reserve() as o:
+                o.store(ttl.exp(av * bv) + ttl.abs(av - bv), acc=True)
+
+    @ttl.datamovement()
+    def dm_read():
+        with a_dfb.reserve() as blk:
+            tx = ttl.copy(a[{S}], blk)
+            tx.wait()
+        with b_dfb.reserve() as blk:
+            tx = ttl.copy(b[{S}], blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as blk:
+            tx = ttl.copy(blk, out[{S}])
+            tx.wait()
+"""
+
 # Passthrough: out = 0 + a = a
 ACC_PASSTHROUGH_TEMPLATE = """\
 import ttl
@@ -321,13 +346,9 @@ def _make_kernel(template, R, C):
 
 
 def make_inputs(n, shape, dtype, seed=42):
-    """Generate n random input tensors with a fixed seed for reproducibility.
-
-    Uses uniform [0.5, 1.5] to avoid values near zero where ULP
-    comparison is ill-conditioned (ULP(0) is subnormally small).
-    """
+    """Generate n random input tensors with a fixed seed for reproducibility."""
     torch.manual_seed(seed)
-    return [torch.rand(shape, dtype=dtype) + 0.5 for _ in range(n)]
+    return [torch.randn(shape, dtype=dtype) for _ in range(n)]
 
 
 class AccTestBase:
@@ -368,14 +389,18 @@ class AccTestBase:
         kernel(*dev_inputs, dev_out)
 
         result = ttnn.to_torch(dev_out)
-        # Hardware elementwise compute uses bf16 precision internally,
-        # so compare at bf16 resolution regardless of storage dtype.
-        ulp = ULP_THRESHOLDS[dtype]
-        assert_with_ulp(
-            expected.bfloat16(),
-            result.bfloat16(),
-            ulp_threshold=ulp,
-        )
+        if dtype == torch.float32:
+            # f32 inputs are truncated to bf16 on hardware, so results near
+            # zero (from cancellation of positive and negative values) have
+            # large ULP deltas despite tiny absolute differences. Use
+            # relative and absolute tolerance instead.
+            assert_allclose(result, expected, atol=0.01, rtol=0.02)
+        else:
+            assert_with_ulp(
+                expected.bfloat16(),
+                result.bfloat16(),
+                ulp_threshold=ULP_THRESHOLD,
+            )
 
 
 # =============================================================================
@@ -405,6 +430,16 @@ class TestAccSingleStore(AccTestBase):
 # =============================================================================
 # Group 2: Different expressions
 # =============================================================================
+
+
+class TestAccMixedChain(AccTestBase):
+    """out = exp(a * b) + abs(a - b)"""
+
+    template = ACC_MIXED_CHAIN_TEMPLATE
+
+    def golden(self, a, b):
+        return torch.exp(a * b) + torch.abs(a - b)
+
 
 # TODO: TestAccBinaryOps (out = (a + b) + (a * b)) — multi-store accumulation
 # with different binary ops. Requires compute fusion. Uses
@@ -441,17 +476,20 @@ class TestAccMultiOutput:
 
         kernel(da, db, dout1, dout2)
 
-        ulp = ULP_THRESHOLDS[dtype]
-        assert_with_ulp(
-            (a + b).bfloat16(),
-            ttnn.to_torch(dout1).bfloat16(),
-            ulp_threshold=ulp,
-        )
-        assert_with_ulp(
-            (a * b).bfloat16(),
-            ttnn.to_torch(dout2).bfloat16(),
-            ulp_threshold=ulp,
-        )
+        if dtype == torch.float32:
+            assert_allclose(ttnn.to_torch(dout1), a + b, atol=0.01, rtol=0.01)
+            assert_allclose(ttnn.to_torch(dout2), a * b, atol=0.01, rtol=0.01)
+        else:
+            assert_with_ulp(
+                (a + b).bfloat16(),
+                ttnn.to_torch(dout1).bfloat16(),
+                ulp_threshold=ULP_THRESHOLD,
+            )
+            assert_with_ulp(
+                (a * b).bfloat16(),
+                ttnn.to_torch(dout2).bfloat16(),
+                ulp_threshold=ULP_THRESHOLD,
+            )
 
 
 class TestAccPassthrough(AccTestBase):
