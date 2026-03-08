@@ -91,7 +91,9 @@ def ttnn_device():
     import ttnn
 
     device = ttnn.open_device(device_id=0)
+    ttnn.synchronize_device(device)
     yield device
+    ttnn.synchronize_device(device)
     ttnn.close_device(device)
 
 

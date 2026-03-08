@@ -101,6 +101,10 @@ class TensorBlock:
             raise ValueError(
                 "store() must be called on a block acquired from reserve(), not a regular tensor"
             )
+        # The tracing framework converts bool literals to arith.ConstantOp.
+        # Extract the Python bool for the MLIR BoolAttr constructor.
+        if isinstance(acc, arith.ConstantOp):
+            acc = bool(acc.literal_value)
         reserve = _get_reserve_from_block(ast_self)
         ttl.store(rhs, reserve, acc=acc)
 

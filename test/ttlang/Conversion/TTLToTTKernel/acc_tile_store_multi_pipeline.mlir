@@ -1,6 +1,7 @@
-// Summary: Single tile_store {acc = true} lowers to a normal pack_tile
-// (no accumulation overhead) because there is only one store per view.
-// Multi-store accumulation is tested in acc_tile_store_multi_pipeline.mlir.
+// Summary: Multiple tile_store {acc = true} to the same view lower to
+// zero-init + add_binary_tile (compute phase) + deferred pack_tile (pack
+// phase). This pattern is only emitted when two or more stores share the
+// same output view, requiring a DST accumulator register.
 //
 // RUN: ttlang-opt %s \
 // RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
@@ -8,26 +9,30 @@
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// CHECK-LABEL: func.func @acc_store_pipeline
+// CHECK-LABEL: func.func @acc_multi_store_pipeline
 // CHECK-DAG:   %[[C0:.*]] = arith.constant 0 : index
-// Single acc store: no fill_tile, no add_binary_tile — just normal pack.
+// CHECK-DAG:   %[[C1:.*]] = arith.constant 1 : index
+// CHECK-DAG:   %[[ZERO:.*]] = arith.constant 0.000000e+00 : f32
 // CHECK:       ttkernel.tile_regs_acquire
-// CHECK-NOT:   ttkernel.fill_tile_init
-// CHECK-NOT:   ttkernel.fill_tile
-// Compute a + b into DST[0] (FPU binary path).
-// CHECK:       ttkernel.add_tiles_init
-// CHECK:       ttkernel.add_tiles
-// No accumulation ops.
-// CHECK-NOT:   ttkernel.add_binary_tile_init
-// CHECK-NOT:   ttkernel.add_binary_tile
+// Zero-init the accumulator in DST[1].
+// CHECK-NEXT:  ttkernel.fill_tile_init
+// CHECK-NEXT:  ttkernel.fill_tile(%[[C1]], %[[ZERO]])
+// First store: copy a -> DST[0], accumulate DST[1] += DST[0].
+// CHECK:       ttkernel.copy_tile
+// CHECK:       ttkernel.add_binary_tile_init
+// CHECK-NEXT:  ttkernel.add_binary_tile(%[[C0]], %[[C1]], %[[C1]])
+// Second store: copy b -> DST[0], accumulate DST[1] += DST[0].
+// CHECK:       ttkernel.copy_tile
+// CHECK:       ttkernel.add_binary_tile_init
+// CHECK-NEXT:  ttkernel.add_binary_tile(%[[C0]], %[[C1]], %[[C1]])
 // CHECK:       ttkernel.tile_regs_commit
-// Normal pack from DST[0].
+// Deferred pack from accumulator DST[1] to output CB.
 // CHECK:       ttkernel.tile_regs_wait
-// CHECK-NEXT:  ttkernel.pack_tile(%[[C0]],
+// CHECK-NEXT:  ttkernel.pack_tile(%[[C1]],
 // CHECK:       ttkernel.tile_regs_release
 
-func.func @acc_store_pipeline(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
-                               %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
+func.func @acc_multi_store_pipeline(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
+                                     %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -49,8 +54,9 @@ func.func @acc_store_pipeline(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
-    %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %out_view {acc = true} : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    // Two acc stores to the same view — triggers multi-store accumulation.
+    ttl.tile_store %a_tile, %out_view {acc = true} : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %b_tile, %out_view {acc = true} : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

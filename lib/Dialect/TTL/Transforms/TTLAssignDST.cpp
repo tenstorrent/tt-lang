@@ -772,37 +772,63 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         }
 
         if (!accStores.empty()) {
-          // Find the first free register in the output region.
-          std::uint32_t nextFree = *inputsFootprint;
-          for (auto &[val, reg] : dstAssignment) {
-            if (reg >= *inputsFootprint) {
-              nextFree = std::max(nextFree, reg + 1);
+          // Count acc stores per target view to distinguish single-store
+          // from multi-store accumulation.
+          DenseMap<Value, unsigned> viewStoreCount;
+          for (TileStoreOp store : accStores) {
+            viewStoreCount[store.getView()]++;
+          }
+
+          // Filter to only views with multiple stores. A single acc store
+          // is semantically identical to a normal store (the zero-init +
+          // add pattern is unnecessary and can cause first-run
+          // unreliability with fill_tile on SFPU). Single acc stores fall
+          // through to the normal pack_tile path in ConvertTTLToTTKernel.
+          SmallVector<TileStoreOp> multiAccStores;
+          for (TileStoreOp store : accStores) {
+            if (viewStoreCount[store.getView()] > 1) {
+              multiAccStores.push_back(store);
+            } else {
+              LLVM_DEBUG(llvm::dbgs()
+                         << "Phase 5: Skipping single acc store for view "
+                         << store.getView()
+                         << " (equivalent to normal store)\n");
             }
           }
 
-          // Group acc stores by target view (CB). Stores to the same view
-          // share one accumulator register.
-          DenseMap<Value, std::uint32_t> viewToAccReg;
-          for (TileStoreOp store : accStores) {
-            Value view = store.getView();
-            auto it = viewToAccReg.find(view);
-            if (it == viewToAccReg.end()) {
-              if (nextFree >= capacity) {
-                computeOp.emitOpError()
-                    << "insufficient DST registers for accumulator: all "
-                    << capacity << " registers in use";
-                signalPassFailure();
-                return;
+          if (!multiAccStores.empty()) {
+            // Find the first free register in the output region.
+            std::uint32_t nextFree = *inputsFootprint;
+            for (auto &[val, reg] : dstAssignment) {
+              if (reg >= *inputsFootprint) {
+                nextFree = std::max(nextFree, reg + 1);
               }
-              viewToAccReg[view] = nextFree;
-              LLVM_DEBUG(llvm::dbgs()
-                         << "Phase 5: Allocated accumulator DST[" << nextFree
-                         << "] for view " << view << "\n");
-              ++nextFree;
             }
-            store->setAttr(kAccDstIdxAttrName,
-                           builder.getI32IntegerAttr(
-                               static_cast<int32_t>(viewToAccReg[view])));
+
+            // Group acc stores by target view (CB). Stores to the same view
+            // share one accumulator register.
+            DenseMap<Value, std::uint32_t> viewToAccReg;
+            for (TileStoreOp store : multiAccStores) {
+              Value view = store.getView();
+              auto it = viewToAccReg.find(view);
+              if (it == viewToAccReg.end()) {
+                if (nextFree >= capacity) {
+                  computeOp.emitOpError()
+                      << "insufficient DST registers for accumulator: all "
+                      << capacity << " registers in use";
+                  signalPassFailure();
+                  return;
+                }
+                viewToAccReg[view] = nextFree;
+                LLVM_DEBUG(llvm::dbgs()
+                           << "Phase 5: Allocated accumulator DST[" << nextFree
+                           << "] for view " << view << "\n");
+                ++nextFree;
+              }
+              store->setAttr(kAccDstIdxAttrName,
+                             builder.getI32IntegerAttr(
+                                 static_cast<int32_t>(viewToAccReg[view])));
+            }
           }
         }
       } else {
