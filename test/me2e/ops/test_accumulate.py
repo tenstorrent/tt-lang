@@ -299,3 +299,80 @@ module {{
 {writer_mlir}
 }}
 """
+
+
+class TestAccMultiStore(AccumulateTestBase):
+    """
+    Multi-store accumulation: two passthrough acc stores to the same view.
+
+    Pattern: y.store(a, acc=True); y.store(b, acc=True)
+    Expected: 0 + a + b = a + b
+
+    MLIR uses a pre-formed ttl.compute, bypassing ConvertTTLToCompute
+    which cannot yet fuse multiple stores into one compute body.
+    """
+
+    OP_NAME = "acc_multi_store"
+    ARITY = 2
+    INPUT_RANGE = (0.5, 1.5)
+
+    def torch_reference(self, a: Tensor, b: Tensor) -> Tensor:
+        return a + b
+
+    def get_mlir_template(self, config: E2EConfig) -> str:
+        rows, cols = config.grid_shape
+        dtype = torch_dtype_to_mlir_str(config.dtype)
+        bf = config.buffer_factor
+        tt = _tt(rows, cols, dtype)
+        cb = _cb(rows, cols, dtype, bf)
+        tile = f"!ttcore.tile<32x32, {dtype}>"
+
+        layout_attrs = generate_layout_attrs(config)
+        dm_builder = DMThreadBuilder(config)
+        reader_mlir = dm_builder.build_reader(num_inputs=2)
+        writer_mlir = dm_builder.build_writer(output_cbs=[2])
+
+        compute_mlir = f"""
+// Compute thread: multi-store accumulation (a + b via two acc stores).
+func.func @compute_acc_multi_store() attributes {{ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}} {{
+  %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {bf}}} : {cb}
+  %cb1 = ttl.bind_cb {{cb_index = 1, buffer_factor = {bf}}} : {cb}
+  %cb_out = ttl.bind_cb {{cb_index = 2, buffer_factor = {bf}}} : {cb}
+
+  %a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> {tt}
+  %a_attached = ttl.attach_cb %a, %cb0 : ({tt}, {cb}) -> {tt}
+  %b = ttl.cb_wait %cb1 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> {tt}
+  %b_attached = ttl.attach_cb %b, %cb1 : ({tt}, {cb}) -> {tt}
+
+  %init = tensor.empty() : {tt}
+  %init_attached = ttl.attach_cb %init, %cb_out : ({tt}, {cb}) -> {tt}
+  %out_view = ttl.cb_reserve %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> {tt}
+
+  %result = ttl.compute
+      ins(%a_attached, %b_attached : {tt}, {tt})
+      outs(%init_attached : {tt})
+      {{indexing_maps = [#map, #map, #map],
+       iterator_types = ["parallel", "parallel"]}} {{
+  ^bb0(%a_tile: {tile}, %b_tile: {tile}, %out_tile: {tile}):
+    ttl.tile_store %a_tile, %out_view {{acc = true}} : {tile}, {tt}
+    ttl.tile_store %b_tile, %out_view {{acc = true}} : {tile}, {tt}
+    ttl.yield
+  }} -> {tt}
+
+  ttl.cb_push %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  ttl.cb_pop %cb1 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  ttl.cb_pop %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  return
+}}
+"""
+
+        return f"""{layout_attrs}
+
+module {{
+{reader_mlir}
+
+{compute_mlir}
+
+{writer_mlir}
+}}
+"""

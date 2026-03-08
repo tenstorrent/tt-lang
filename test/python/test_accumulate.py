@@ -217,6 +217,43 @@ def kernel(a, b, out):
             tx.wait()
 """
 
+# Two outputs, different views: out1 = a + b, out2 = a * b
+ACC_MULTI_OUTPUT_TEMPLATE = """\
+import ttl
+
+@ttl.kernel(grid=(1, 1))
+def kernel(a, b, out1, out2):
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=({R}, {C}), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=({R}, {C}), buffer_factor=2)
+    out1_dfb = ttl.make_dataflow_buffer_like(out1, shape=({R}, {C}), buffer_factor=2)
+    out2_dfb = ttl.make_dataflow_buffer_like(out2, shape=({R}, {C}), buffer_factor=2)
+
+    @ttl.compute()
+    def compute():
+        with a_dfb.wait() as av, b_dfb.wait() as bv:
+            with out1_dfb.reserve() as o1, out2_dfb.reserve() as o2:
+                o1.store(av + bv, acc=True)
+                o2.store(av * bv, acc=True)
+
+    @ttl.datamovement()
+    def dm_read():
+        with a_dfb.reserve() as blk:
+            tx = ttl.copy(a[{S}], blk)
+            tx.wait()
+        with b_dfb.reserve() as blk:
+            tx = ttl.copy(b[{S}], blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out1_dfb.wait() as blk:
+            tx = ttl.copy(blk, out1[{S}])
+            tx.wait()
+        with out2_dfb.wait() as blk:
+            tx = ttl.copy(blk, out2[{S}])
+            tx.wait()
+"""
+
 # Passthrough: out = 0 + a = a
 ACC_PASSTHROUGH_TEMPLATE = """\
 import ttl
@@ -356,9 +393,10 @@ class TestAccSingleStore(AccTestBase):
 
 
 # TODO: TestAccTwoStores (out = 0 + a + b) — multi-store accumulation requires
-# compute fusion so that multiple ttl.store calls share one compute body and
-# accumulator. Re-enable once compute fusion is implemented.
-# Uses ACC_TWO_STORES_TEMPLATE.
+# ConvertTTLToCompute fusion so that multiple ttl.store {acc=true} ops to the
+# same view are merged into a single ttl.compute body. Currently each store
+# gets its own compute op, so the second pack_tile overwrites the first.
+# See plans/multi-store-acc-fusion.md. Uses ACC_TWO_STORES_TEMPLATE.
 
 # TODO: TestAccThreeStores (out = 0 + a + b + c) — same prerequisite as above.
 # Uses ACC_THREE_STORES_TEMPLATE.
@@ -376,6 +414,44 @@ class TestAccSingleStore(AccTestBase):
 # =============================================================================
 # Group 3: Edge cases
 # =============================================================================
+
+
+class TestAccMultiOutput:
+    """out1 = a + b, out2 = a * b — acc stores to different output views."""
+
+    @pytest.fixture(params=TILE_SHAPE_PARAMS)
+    def tile_shape(self, request):
+        return request.param
+
+    @pytest.fixture(params=DTYPE_PARAMS)
+    def dtype(self, request):
+        return request.param
+
+    def test_execute(self, device, tile_shape, dtype):
+        R, C = tile_shape
+        kernel = _make_kernel(ACC_MULTI_OUTPUT_TEMPLATE, R, C)
+        shape = _tensor_shape(R, C)
+
+        a, b = make_inputs(2, shape, dtype)
+
+        da = to_dram(a, device)
+        db = to_dram(b, device)
+        dout1 = to_dram(torch.zeros(shape, dtype=dtype), device)
+        dout2 = to_dram(torch.zeros(shape, dtype=dtype), device)
+
+        kernel(da, db, dout1, dout2)
+
+        ulp = ULP_THRESHOLDS[dtype]
+        assert_with_ulp(
+            (a + b).bfloat16(),
+            ttnn.to_torch(dout1).bfloat16(),
+            ulp_threshold=ulp,
+        )
+        assert_with_ulp(
+            (a * b).bfloat16(),
+            ttnn.to_torch(dout2).bfloat16(),
+            ulp_threshold=ulp,
+        )
 
 
 class TestAccPassthrough(AccTestBase):
