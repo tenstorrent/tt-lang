@@ -652,9 +652,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
           if (auto tileStore = dyn_cast<TileStoreOp>(&op)) {
             if (tileStore.getAcc()) {
               useSeparateOutputRegion = true;
-              LLVM_DEBUG(llvm::dbgs()
-                         << "Forcing separate output region: "
-                            "tile_store with acc=true detected\n");
+              LLVM_DEBUG(llvm::dbgs() << "Forcing separate output region: "
+                                         "tile_store with acc=true detected\n");
               break;
             }
           }

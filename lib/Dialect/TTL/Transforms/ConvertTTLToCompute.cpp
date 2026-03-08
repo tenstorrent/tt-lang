@@ -94,7 +94,7 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
       continue;
     }
     rewriter.create<TileStoreOp>(loc, tileResult, storeOp.getView(),
-                                    storeOp.getAcc());
+                                 storeOp.getAcc());
     storesToErase.push_back(storeOp);
   }
   for (StoreOp s : storesToErase) {

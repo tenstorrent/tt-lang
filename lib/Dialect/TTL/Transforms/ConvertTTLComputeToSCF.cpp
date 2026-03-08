@@ -155,7 +155,15 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
 
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (!isa<LinearizedIndexOp>(&bodyOp)) {
-      b.clone(bodyOp, mapping);
+      Operation *cloned = b.clone(bodyOp, mapping);
+      // Consume the acc attribute on tile_store: it was used by DST
+      // assignment to force separate output region. Strip it so the
+      // downstream pack lowering treats this as a normal store.
+      if (auto tileStore = dyn_cast<TileStoreOp>(cloned)) {
+        if (tileStore.getAcc()) {
+          tileStore.setAcc(false);
+        }
+      }
     }
   }
 
