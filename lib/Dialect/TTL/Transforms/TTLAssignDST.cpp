@@ -643,6 +643,24 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
 
       OpBuilder builder(body, body->begin());
 
+      //=== Configuration: Force separate output region for accumulation ===
+      // When any tile_store has acc=true, the accumulator DST register must
+      // not overlap with temporaries. Force separate output region mode.
+      bool useSeparateOutputRegion = separateOutputRegion;
+      if (!useSeparateOutputRegion) {
+        for (Operation &op : *body) {
+          if (auto tileStore = dyn_cast<TileStoreOp>(&op)) {
+            if (tileStore.getAcc()) {
+              useSeparateOutputRegion = true;
+              LLVM_DEBUG(llvm::dbgs()
+                         << "Forcing separate output region: "
+                            "tile_store with acc=true detected\n");
+              break;
+            }
+          }
+        }
+      }
+
       //=== Phase 0: FPU Binary Detection ===
       // Mark add/sub/mul ops as FPU-eligible when both operands are input
       // block arguments (CB-backed). FPU reads from CB, needing 0 DST input
@@ -687,7 +705,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       //=== Phase 3 & 4: Linear Scan Allocation ===
       DenseMap<Value, std::uint32_t> dstAssignment;
 
-      if (separateOutputRegion) {
+      if (useSeparateOutputRegion) {
         // Phase 3: Allocate inputs/intermediates (non-stored values)
         LLVM_DEBUG(llvm::dbgs() << "Using separate output region mode\n");
         LLVM_DEBUG(llvm::dbgs() << "=== Phase 3: Linear Scan Allocation ===\n");

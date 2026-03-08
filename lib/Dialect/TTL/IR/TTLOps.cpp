@@ -890,5 +890,14 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
                          << ") must match tile type (" << tileType << ")";
   }
 
+  if (getAcc()) {
+    auto *parentOp = (*this)->getParentOp();
+    if (!parentOp || !mlir::isa<ComputeOp>(parentOp)) {
+      return emitOpError()
+             << "accumulating tile_store (acc = true) must be inside a "
+                "ttl.compute body";
+    }
+  }
+
   return success();
 }

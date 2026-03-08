@@ -24,3 +24,15 @@ func.func @tile_store_element_type_mismatch(
   ttl.tile_store %tile, %view : !ttcore.tile<32x32, f32>, tensor<2x!ttcore.tile<32x32, bf16>>
   func.return
 }
+
+// -----
+
+// Accumulating tile_store must be inside a ttl.compute body.
+func.func @tile_store_acc_outside_compute(
+    %tile: !ttcore.tile<32x32, f32>) {
+  %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2], !ttcore.tile<32x32, f32>, 2>
+  %view = ttl.cb_reserve %cb : <[2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{'ttl.tile_store' op accumulating tile_store (acc = true) must be inside a ttl.compute body}}
+  ttl.tile_store %tile, %view {acc = true} : !ttcore.tile<32x32, f32>, tensor<2x!ttcore.tile<32x32, f32>>
+  func.return
+}

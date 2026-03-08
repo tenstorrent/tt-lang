@@ -93,7 +93,8 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
     if (!storeOp) {
       continue;
     }
-    rewriter.create<TileStoreOp>(loc, tileResult, storeOp.getView());
+    rewriter.create<TileStoreOp>(loc, tileResult, storeOp.getView(),
+                                    storeOp.getAcc());
     storesToErase.push_back(storeOp);
   }
   for (StoreOp s : storesToErase) {
@@ -794,7 +795,8 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
     body->addArgument(tileType, loc);
 
     rewriter.setInsertionPointToEnd(body);
-    rewriter.create<TileStoreOp>(loc, body->getArgument(0), reserveView);
+    rewriter.create<TileStoreOp>(loc, body->getArgument(0), reserveView,
+                                 op.getAcc());
     rewriter.create<YieldOp>(loc);
 
     // make_early_inc_range: replaceOp erases attachOp, invalidating the

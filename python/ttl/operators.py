@@ -89,17 +89,20 @@ class TensorBlock:
         """Matrix multiplication is not yet supported in TTL mode."""
         raise NotImplementedError("Matrix multiplication not yet supported in TTL mode")
 
-    def store(ast_self: TensorBlock, rhs: TensorBlock) -> None:
+    def store(ast_self: TensorBlock, rhs: TensorBlock, acc: bool = False) -> None:
         """Store result tensor to the output CB reserve view.
 
         Emits ttl.store with the result tensor and reserve view.
+        When acc=True, uses accumulation semantics: the first store
+        overwrites (initialization) and subsequent stores add to the
+        existing value.
         """
         if not _is_block(ast_self):
             raise ValueError(
                 "store() must be called on a block acquired from reserve(), not a regular tensor"
             )
         reserve = _get_reserve_from_block(ast_self)
-        ttl.store(rhs, reserve)
+        ttl.store(rhs, reserve, acc=acc)
 
     def push(ast_self: TensorBlock) -> None:
         """

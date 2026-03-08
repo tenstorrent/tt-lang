@@ -738,20 +738,28 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
     `ttl.store` represents the user's intent to store a computed tensor into
     an output circular buffer.
 
-    Emitted by Python's `o.store(result)`. During `convert-ttl-to-compute`,
-    this op is transformed into a `ttl.tile_store` inside the compute body.
+    Emitted by Python's `o.store(result)` or `o.store(result, acc=True)`.
+    During `convert-ttl-to-compute`, this op is transformed into a
+    `ttl.tile_store` inside the compute body, propagating the `acc`
+    attribute.
+
+    When `acc` is true, the store uses accumulation semantics. Per the spec,
+    the first `store(expr, acc=True)` to a block overwrites (initialization),
+    and subsequent calls accumulate (add to existing value).
 
     Example:
     ```mlir
     %reserve = ttl.cb_reserve %cb : ... -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     %result = ttl.add %a, %b : ...
-    ttl.store %result, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>,
-                                  tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %result, %reserve {acc = true}
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+          tensor<1x1x!ttcore.tile<32x32, bf16>>
     ```
   }];
   let arguments = (ins
     AnyRankedTensor:$tensor,
-    AnyRankedTensor:$view
+    AnyRankedTensor:$view,
+    DefaultValuedAttr<BoolAttr, "false">:$acc
   );
   let assemblyFormat = "$tensor `,` $view attr-dict `:` type($tensor) `,` type($view)";
   let hasVerifier = 1;
@@ -768,17 +776,29 @@ def TTL_TileStoreOp : TTL_Op<"tile_store", [MemoryEffects<[MemWrite]>]> {
     tile_mul). The view must be from a prior `ttl.cb_reserve` call on the
     same CB.
 
+    When `acc` is true, the tile is accumulated into a DST register rather
+    than being packed to the circular buffer. The DST accumulator is
+    zero-initialized once at the start of the accumulation sequence. Each
+    `tile_store {acc = true}` ADDs its result to the accumulator. Pack
+    happens once at the end of the sequence. This attribute is propagated
+    from `ttl.store {acc = true}` during `convert-ttl-to-compute`.
+
     Example:
     ```mlir
     %view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
                                  -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.tile_store %tile, %view : !ttcore.tile<32x32, bf16>,
                                   tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+    // Accumulating store:
+    ttl.tile_store %tile, %view {acc = true} : !ttcore.tile<32x32, bf16>,
+                                               tensor<1x1x!ttcore.tile<32x32, bf16>>
     ```
   }];
   let arguments = (ins
     AnyType:$tile,
-    AnyRankedTensor:$view
+    AnyRankedTensor:$view,
+    DefaultValuedAttr<BoolAttr, "false">:$acc
   );
   let assemblyFormat = "$tile `,` $view attr-dict `:` type($tile) `,` type($view)";
   let hasVerifier = 1;

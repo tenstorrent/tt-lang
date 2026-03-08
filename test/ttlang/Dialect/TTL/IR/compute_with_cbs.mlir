@@ -106,3 +106,53 @@ func.func @compute_with_cbs_reuse(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
+
+// -----
+
+// Accumulating tile_store inside compute.
+// CHECK-LABEL: func.func @compute_acc_tile_store
+// CHECK-SAME: (%[[A:.*arg0]]: tensor<2x2x!ttcore.tile<32x32, f32>>,
+// CHECK-SAME:  %[[B:.*arg1]]: tensor<2x2x!ttcore.tile<32x32, f32>>,
+// CHECK-SAME: %[[CBA:.*arg2]]: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+// CHECK-SAME: %[[CBB:.*arg3]]: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+// CHECK-SAME: %[[CBOUT:.*arg4]]: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+func.func @compute_acc_tile_store(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<2x2x!ttcore.tile<32x32, f32>>,
+                                  %cba: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+                                  %cbb: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+                                  %cbout: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+    -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+  // CHECK:      %[[INIT:.*]] = tensor.empty
+  // CHECK:      ttl.cb_reserve
+  // CHECK:      %[[RESULT:.*]] = ttl.compute ins({{.*}}) outs({{.*}})
+  // CHECK-NEXT: ^bb0(%[[AT:.*]]: !ttcore.tile<32x32, f32>, %[[BT:.*]]: !ttcore.tile<32x32, f32>, %[[CT:.*]]: !ttcore.tile<32x32, f32>):
+  // CHECK-NEXT:   %[[SUM:.*]] = ttl.tile_add %[[AT]], %[[BT]]
+  // CHECK:        ttl.tile_store %[[SUM]], {{.*}} {acc = true}
+  // CHECK-NEXT:   ttl.yield
+  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %a_att = ttl.attach_cb %a, %cba
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %b_att = ttl.attach_cb %b, %cbb
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init_att = ttl.attach_cb %init, %cbout
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %out_view = ttl.cb_reserve %cbout : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %0 = ttl.compute
+      ins(%a_att, %b_att : tensor<2x2x!ttcore.tile<32x32, f32>>,
+                           tensor<2x2x!ttcore.tile<32x32, f32>>)
+      outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%at: !ttcore.tile<32x32, f32>,
+       %bt: !ttcore.tile<32x32, f32>,
+       %ct: !ttcore.tile<32x32, f32>):
+    %sum = ttl.tile_add %at, %bt : !ttcore.tile<32x32, f32>
+    ttl.tile_store %sum, %out_view {acc = true} : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.yield
+  } -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
+}
