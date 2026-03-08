@@ -1,0 +1,112 @@
+name: Configure Toolchain
+
+on:
+  workflow_call:
+    outputs:
+      llvm-sha:
+        description: "Short SHA of LLVM submodule"
+        value: ${{ jobs.configure-deps.outputs.llvm-sha }}
+      ttmetal-sha:
+        description: "Short SHA of tt-metal submodule"
+        value: ${{ jobs.configure-deps.outputs.ttmetal-sha }}
+      cache-key:
+        description: "Toolchain cache key"
+        value: ${{ jobs.configure-deps.outputs.cache-key }}
+
+permissions:
+  contents: read
+
+jobs:
+  configure-deps:
+    name: "Configure dependencies"
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    outputs:
+      llvm-sha: ${{ steps.submodule-shas.outputs.llvm-sha }}
+      ttmetal-sha: ${{ steps.submodule-shas.outputs.ttmetal-sha }}
+      cache-key: ${{ steps.submodule-shas.outputs.cache-key }}
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 2
+
+    steps:
+      - name: Maximize space
+        uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
+
+      - name: Checkout tt-lang
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+              build-essential \
+              libhwloc-dev libyaml-cpp-dev libboost-all-dev \
+              libtbb-dev libcapstone-dev \
+              cmake ninja-build ccache pkg-config \
+              python3-venv python3-dev \
+              wget zstd
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Clang 17
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod u+x llvm.sh
+          sudo ./llvm.sh 17
+          sudo apt-get install -y libc++-17-dev libc++abi-17-dev
+          sudo ln -sf /usr/bin/clang-17 /usr/bin/clang
+          sudo ln -sf /usr/bin/clang++-17 /usr/bin/clang++
+          rm -f llvm.sh
+
+      - name: Fix git safe directory for submodules
+        run: git config --global --add safe.directory '*'
+
+      - name: Prepare toolchain directory
+        run: sudo install -d -o $(id -u) -g $(id -g) /opt/ttlang-toolchain
+
+      - name: Extract submodule SHAs for cache keys
+        id: submodule-shas
+        run: |
+          LLVM_SHA=$(git -C third-party/llvm-project rev-parse --short=7 HEAD)
+          TTMETAL_SHA=$(git -C third-party/tt-metal rev-parse --short=7 HEAD)
+          CACHE_KEY="Linux-toolchain_llvm-${LLVM_SHA}_ttmetal-${TTMETAL_SHA}"
+          echo "llvm-sha=$LLVM_SHA" >> $GITHUB_OUTPUT
+          echo "ttmetal-sha=$TTMETAL_SHA" >> $GITHUB_OUTPUT
+          echo "cache-key=$CACHE_KEY" >> $GITHUB_OUTPUT
+          echo "LLVM submodule SHA: $LLVM_SHA"
+          echo "tt-metal submodule SHA: $TTMETAL_SHA"
+          echo "Cache key: $CACHE_KEY"
+
+      - name: Restore toolchain cache
+        id: cache-toolchain
+        uses: actions/cache/restore@v4
+        with:
+          path: /opt/ttlang-toolchain
+          key: ${{ steps.submodule-shas.outputs.cache-key }}
+
+      - name: Configure (builds LLVM + tt-metal on cache miss)
+        run: |
+          cmake -G Ninja -B build \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DLLVM_INSTALL_DIR=/opt/ttlang-toolchain \
+              -DTTMETAL_BUILD_DIR=/opt/ttlang-toolchain/tt-metal \
+              -DTTLANG_ENABLE_PERF_TRACE=ON
+
+      - name: Save toolchain cache
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /opt/ttlang-toolchain
+          key: ${{ steps.submodule-shas.outputs.cache-key }}

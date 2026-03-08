@@ -20,10 +20,14 @@ on:
         value: ${{ jobs.check-if-images-already-exist.outputs.docker-image-base || jobs.build-image-base.outputs.docker-image-base }}
 
 permissions:
+  contents: read
   packages: write
   checks: write
 
 jobs:
+  configure-deps:
+    uses: ./.github/workflows/call-build-toolchain.yml
+
   check-if-images-already-exist:
     runs-on: ubuntu-22.04
     outputs:
@@ -88,7 +92,7 @@ jobs:
   # Builds LLVM + tt-metal on the host (via docker run with base image),
   # then packages dist and ird Docker images.
   build-images:
-    needs: [check-if-images-already-exist, build-image-base]
+    needs: [check-if-images-already-exist, build-image-base, configure-deps]
     if: needs.check-if-images-already-exist.outputs.docker-image == ''
     runs-on: ubuntu-22.04
     timeout-minutes: 360
@@ -120,52 +124,15 @@ jobs:
       - name: Fix git safe directory for submodules
         run: git config --global --add safe.directory '*'
 
-      - name: Extract submodule SHAs for cache keys
-        id: submodule-shas
-        run: |
-          LLVM_SHA=$(git -C third-party/llvm-project rev-parse --short=7 HEAD)
-          TTMETAL_SHA=$(git -C third-party/tt-metal rev-parse --short=7 HEAD)
-          echo "llvm-sha=$LLVM_SHA" >> $GITHUB_OUTPUT
-          echo "ttmetal-sha=$TTMETAL_SHA" >> $GITHUB_OUTPUT
-          echo "LLVM submodule SHA: $LLVM_SHA"
-          echo "tt-metal submodule SHA: $TTMETAL_SHA"
-
       - name: Prepare toolchain directory
         run: sudo install -d -o $(id -u) -g $(id -g) /opt/ttlang-toolchain
 
       - name: Restore toolchain cache
-        id: cache-toolchain
         uses: actions/cache/restore@v4
         with:
           path: /opt/ttlang-toolchain
-          key: Linux-toolchain_llvm-${{ steps.submodule-shas.outputs.llvm-sha }}_ttmetal-${{ steps.submodule-shas.outputs.ttmetal-sha }}
-
-      - name: Debug cache restore results
-        run: |
-          echo "=== Cache restore results ==="
-          echo "Toolchain cache hit: ${{ steps.cache-toolchain.outputs.cache-hit }}"
-          echo "Cache key: Linux-toolchain_llvm-${{ steps.submodule-shas.outputs.llvm-sha }}_ttmetal-${{ steps.submodule-shas.outputs.ttmetal-sha }}"
-          echo ""
-          echo "=== Toolchain contents ==="
-          if [ -d /opt/ttlang-toolchain ]; then
-            echo "/opt/ttlang-toolchain/ exists"
-            ls /opt/ttlang-toolchain/ 2>/dev/null || echo "(empty)"
-            test -f /opt/ttlang-toolchain/lib/cmake/mlir/MLIRConfig.cmake && echo "MLIRConfig.cmake: FOUND" || echo "MLIRConfig.cmake: MISSING"
-            test -f /opt/ttlang-toolchain/tt-metal/ttnn/_ttnn.so && echo "_ttnn.so: FOUND" || echo "_ttnn.so: MISSING"
-          else
-            echo "/opt/ttlang-toolchain/ does not exist"
-          fi
-
-      # TODO: Remove this step once caches are confirmed working
-      - name: Abort if cache not restored
-        if: steps.cache-toolchain.outputs.cache-hit != 'true'
-        run: |
-          echo "ERROR: Toolchain cache was not restored. Aborting to avoid a multi-hour build."
-          echo ""
-          echo "To populate the cache, run the call-build.yml workflow first,"
-          echo "or manually create a cache with this key:"
-          echo "  Linux-toolchain_llvm-${{ steps.submodule-shas.outputs.llvm-sha }}_ttmetal-${{ steps.submodule-shas.outputs.ttmetal-sha }}"
-          exit 1
+          key: ${{ needs.configure-deps.outputs.cache-key }}
+          fail-on-cache-miss: true
 
       - name: Pull base image
         run: |
