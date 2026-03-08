@@ -7,12 +7,13 @@
 #   ird  - Development image with toolchain only (no tt-lang; developers build their own)
 #   dist - Pre-built tt-lang for end users (ready to import ttl)
 #
-# Build stages:
-#   build-toolchain - Configure-only (builds LLVM + tt-metal + tt-mlir, skips tt-lang). Used by ird.
-#   build           - Full tt-lang build (configure + build + install). Used by dist.
+# Build stages (LLVM + tt-metal are built exactly once):
+#   configure       - cmake configure (builds LLVM + tt-metal from submodules)
+#   build-toolchain - Finalize toolchain without tt-lang (copy libs, cleanup). Used by ird.
+#   build           - Build tt-lang, install, finalize. Used by dist.
 #
-# Docker only runs stages in the dependency chain of the requested target,
-# so `--target ird` never builds tt-lang and `--target dist` never runs build-toolchain.
+# Both build-toolchain and build extend the configure stage, so LLVM + tt-metal
+# are never built twice regardless of which target is requested.
 #
 # Cache injection (optional):
 #   Pass --build-context llvm-cache=./path and/or --build-context ttmetal-cache=./path
@@ -24,11 +25,9 @@ FROM scratch AS llvm-cache
 FROM scratch AS ttmetal-cache
 
 # =============================================================================
-# Build toolchain only (for ird)
-# CMake configure triggers LLVM, tt-metal, and tt-mlir builds from submodules,
-# but tt-lang itself is not built or installed.
+# Configure: cmake configure (builds LLVM + tt-metal, keeps build dirs)
 # =============================================================================
-FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:latest AS build-toolchain
+FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:latest AS configure
 SHELL ["/bin/bash", "-c"]
 
 ENV TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
@@ -44,39 +43,23 @@ COPY .github/containers/build-and-install.sh /tmp/build-and-install.sh
 RUN --mount=from=llvm-cache,target=/tmp/llvm-cache \
     --mount=from=ttmetal-cache,target=/tmp/ttmetal-cache \
     chmod +x /tmp/build-and-install.sh && \
-    /tmp/build-and-install.sh --toolchain-only \
+    /tmp/build-and-install.sh --configure-only \
         --llvm-cache /tmp/llvm-cache \
-        --ttmetal-cache /tmp/ttmetal-cache && \
-    rm /tmp/build-and-install.sh
+        --ttmetal-cache /tmp/ttmetal-cache
 
 # =============================================================================
-# Build tt-lang (for dist)
+# Build toolchain only (for ird): finalize without building tt-lang
 # =============================================================================
-FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:latest AS build
-SHELL ["/bin/bash", "-c"]
+FROM configure AS build-toolchain
+RUN chmod +x /tmp/build-and-install.sh && \
+    /tmp/build-and-install.sh --finalize-only
 
-ENV TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
-
-ADD . /home/build/tt-lang
-WORKDIR /home/build/tt-lang
-
-# Show commit info for traceability
-RUN git log -1 || echo "Git info not available"
-
-# Configure, build, install, and cleanup in ONE RUN command to avoid Docker layer bloat.
-# Docker keeps all layers during build - by combining these, the huge build
-# directory (50-80GB) never gets committed to a layer.
-# The --mount=from= mounts are temporary and do not create extra layers.
-COPY .github/scripts/normalize-ttmlir-install.sh /tmp/normalize-ttmlir-install.sh
-COPY .github/containers/cleanup-toolchain.sh /tmp/cleanup-toolchain.sh
-COPY .github/containers/build-and-install.sh /tmp/build-and-install.sh
-RUN --mount=from=llvm-cache,target=/tmp/llvm-cache \
-    --mount=from=ttmetal-cache,target=/tmp/ttmetal-cache \
-    chmod +x /tmp/build-and-install.sh && \
-    /tmp/build-and-install.sh \
-        --llvm-cache /tmp/llvm-cache \
-        --ttmetal-cache /tmp/ttmetal-cache && \
-    rm /tmp/build-and-install.sh
+# =============================================================================
+# Build tt-lang (for dist): build + install + finalize
+# =============================================================================
+FROM configure AS build
+RUN chmod +x /tmp/build-and-install.sh && \
+    /tmp/build-and-install.sh --build-and-finalize
 
 # =============================================================================
 # IRD (for developers who will clone and build their own tt-lang)

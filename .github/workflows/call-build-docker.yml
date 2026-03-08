@@ -14,7 +14,7 @@ on:
     outputs:
       docker-image:
         description: "Built Docker image name with tag"
-        value: ${{ jobs.check-if-images-already-exist.outputs.docker-image || jobs.build-image-dist.outputs.docker-image }}
+        value: ${{ jobs.check-if-images-already-exist.outputs.docker-image || jobs.build-images.outputs.docker-image }}
       docker-image-base:
         description: "Base Docker image name with tag"
         value: ${{ jobs.check-if-images-already-exist.outputs.docker-image-base || jobs.build-image-base.outputs.docker-image-base }}
@@ -41,7 +41,7 @@ jobs:
         id: check
         run: .github/scripts/check-docker-images.sh
 
-  # Builds the base image on a lightweight runner; dist and ird depend on this
+  # Builds the base image on a standard runner; dist and ird depend on this
   build-image-base:
     needs: [check-if-images-already-exist]
     if: needs.check-if-images-already-exist.outputs.docker-image == ''
@@ -85,15 +85,17 @@ jobs:
           echo "docker-image-base=$DOCKER_IMAGE_BASE" >> $GITHUB_OUTPUT
           echo "Base image built successfully"
 
-  # Runs on a separate large runner after base image is ready
-  build-image-dist:
+  # Builds both dist and ird images in a single job.
+  # The Dockerfile's multi-stage structure ensures LLVM + tt-metal are built
+  # once in the shared "configure" stage, then reused for both targets.
+  build-images:
     needs: [check-if-images-already-exist, build-image-base]
     if: needs.check-if-images-already-exist.outputs.docker-image == ''
-    runs-on: mlir-large-runner-lang
+    runs-on: ubuntu-22.04
     timeout-minutes: 360
 
     outputs:
-      docker-image: ${{ steps.build.outputs.docker-image }}
+      docker-image: ${{ steps.build-dist.outputs.docker-image }}
 
     steps:
       - name: Maximize space
@@ -163,7 +165,7 @@ jobs:
           df -h
 
       - name: Build dist Docker image
-        id: build
+        id: build-dist
         env:
           DOCKER_BUILDKIT: 1
           BUILDKIT_STEP_LOG_MAX_SIZE: -1
@@ -181,105 +183,11 @@ jobs:
           DOCKER_IMAGE=$(tail -n 1 docker.log)
           echo "docker-image=$DOCKER_IMAGE" >> $GITHUB_OUTPUT
 
-          echo "Space usage after build: " && df -h
+          echo "Space usage after dist build: " && df -h
           echo "Dist image built successfully"
 
-      - name: Clean up Docker after build
-        if: always()
-        run: |
-          echo "Cleaning up Docker build cache after build..."
-          docker builder prune -af || true
-          echo "Docker cleanup complete"
-          df -h
-
-      - name: Show disk usage on failure
-        if: failure()
-        run: |
-          echo "=== Disk Usage ==="
-          df -h
-          echo ""
-          echo "=== Disk Usage by Directory ==="
-          du -h --max-depth=2 ${{ github.workspace }} 2>/dev/null | sort -hr | head -20 || true
-          echo ""
-          echo "=== Docker Disk Usage ==="
-          docker system df || true
-
-  # Runs on a separate large runner in parallel with build-image-dist
-  build-image-ird:
-    needs: [check-if-images-already-exist, build-image-base]
-    if: needs.check-if-images-already-exist.outputs.docker-image == ''
-    runs-on: mlir-large-runner-lang
-    timeout-minutes: 360
-
-    steps:
-      - name: Maximize space
-        uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
-
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ttlang_sha_override || github.sha }}
-          submodules: recursive
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Free up some more space
-        run: |
-          .github/scripts/cleanup-ci-space.sh
-
-      - name: Extract submodule SHAs for cache keys
-        id: submodule-shas
-        run: |
-          echo "llvm-sha=$(git -C third-party/llvm-project rev-parse HEAD)" >> $GITHUB_OUTPUT
-          echo "ttmetal-sha=$(git -C third-party/tt-metal rev-parse HEAD)" >> $GITHUB_OUTPUT
-
-      - name: Restore LLVM cache
-        id: cache-llvm
-        uses: actions/cache/restore@v4
-        with:
-          path: build/llvm-install/
-          key: ${{ runner.os }}-llvm-install-${{ steps.submodule-shas.outputs.llvm-sha }}
-
-      - name: Restore tt-metal cache
-        id: cache-ttmetal
-        uses: actions/cache/restore@v4
-        with:
-          path: third-party/tt-metal/build/
-          key: ${{ runner.os }}-ttmetal-build-${{ steps.submodule-shas.outputs.ttmetal-sha }}-${{ hashFiles('third-party/patches/ttmetal-*.patch') }}
-
-      - name: Set up cache build contexts
-        run: |
-          EXTRA_ARGS=""
-          if [ "${{ steps.cache-llvm.outputs.cache-hit }}" = "true" ]; then
-            echo "LLVM cache hit — will inject into Docker build"
-            EXTRA_ARGS="$EXTRA_ARGS --build-context llvm-cache=./build/llvm-install"
-          else
-            echo "LLVM cache miss — Docker will build from source"
-          fi
-          if [ "${{ steps.cache-ttmetal.outputs.cache-hit }}" = "true" ]; then
-            echo "tt-metal cache hit — will inject into Docker build"
-            EXTRA_ARGS="$EXTRA_ARGS --build-context ttmetal-cache=./third-party/tt-metal/build"
-          else
-            echo "tt-metal cache miss — Docker will build from source"
-          fi
-          echo "DOCKER_BUILD_EXTRA_ARGS=$EXTRA_ARGS" >> $GITHUB_ENV
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ github.token }}
-
-      - name: Clean up Docker before build
-        run: |
-          echo "Cleaning up Docker system before build..."
-          docker system prune -af --volumes || true
-          docker builder prune -af || true
-          echo "Docker cleanup complete"
-          df -h
-
       - name: Build ird Docker image
-        id: build
+        id: build-ird
         env:
           DOCKER_BUILDKIT: 1
           BUILDKIT_STEP_LOG_MAX_SIZE: -1
@@ -287,14 +195,14 @@ jobs:
           set -o pipefail
           set -x
           echo "Space usage: " && df -h
-          .github/containers/build-docker-images.sh --image-type ird | tee docker.log
+          .github/containers/build-docker-images.sh --image-type ird | tee docker-ird.log
 
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
             echo "ERROR: Docker build failed"
             exit 1
           fi
 
-          echo "Space usage after build: " && df -h
+          echo "Space usage after ird build: " && df -h
           echo "IRD image built successfully"
 
       - name: Clean up Docker after build
