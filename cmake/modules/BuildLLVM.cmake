@@ -125,7 +125,11 @@ else()
     set(_LLVM_CCACHE_BUILD OFF)
   endif()
 
+  ttlang_get_submodule_sha("${LLVM_SUBMODULE_DIR}" _LLVM_SUBMODULE_SHA)
+  string(SUBSTRING "${_LLVM_SUBMODULE_SHA}" 0 7 _LLVM_SHORT_SHA)
+
   message(STATUS "Building LLVM/MLIR from submodule: ${LLVM_SUBMODULE_DIR}")
+  message(STATUS "  Commit SHA:    ${_LLVM_SHORT_SHA}")
   message(STATUS "  Build type:    ${LLVM_BUILD_TYPE}")
   message(STATUS "  Build dir:     ${LLVM_BUILD_DIR}")
   message(STATUS "  Install dir:   ${LLVM_INSTALL_DIR}")

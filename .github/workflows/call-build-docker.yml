@@ -117,6 +117,56 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ github.token }}
 
+      - name: Fix git safe directory for submodules
+        run: git config --global --add safe.directory '*'
+
+      - name: Extract submodule SHAs for cache keys
+        id: submodule-shas
+        run: |
+          LLVM_SHA=$(git -C third-party/llvm-project rev-parse --short=7 HEAD)
+          TTMETAL_SHA=$(git -C third-party/tt-metal rev-parse --short=7 HEAD)
+          echo "llvm-sha=$LLVM_SHA" >> $GITHUB_OUTPUT
+          echo "ttmetal-sha=$TTMETAL_SHA" >> $GITHUB_OUTPUT
+          echo "LLVM submodule SHA: $LLVM_SHA"
+          echo "tt-metal submodule SHA: $TTMETAL_SHA"
+
+      - name: Prepare toolchain directory
+        run: sudo install -d -o $(id -u) -g $(id -g) /opt/ttlang-toolchain
+
+      - name: Restore toolchain cache
+        id: cache-toolchain
+        uses: actions/cache/restore@v4
+        with:
+          path: /opt/ttlang-toolchain
+          key: Linux-toolchain_llvm-${{ steps.submodule-shas.outputs.llvm-sha }}_ttmetal-${{ steps.submodule-shas.outputs.ttmetal-sha }}
+
+      - name: Debug cache restore results
+        run: |
+          echo "=== Cache restore results ==="
+          echo "Toolchain cache hit: ${{ steps.cache-toolchain.outputs.cache-hit }}"
+          echo "Cache key: Linux-toolchain_llvm-${{ steps.submodule-shas.outputs.llvm-sha }}_ttmetal-${{ steps.submodule-shas.outputs.ttmetal-sha }}"
+          echo ""
+          echo "=== Toolchain contents ==="
+          if [ -d /opt/ttlang-toolchain ]; then
+            echo "/opt/ttlang-toolchain/ exists"
+            ls /opt/ttlang-toolchain/ 2>/dev/null || echo "(empty)"
+            test -f /opt/ttlang-toolchain/lib/cmake/mlir/MLIRConfig.cmake && echo "MLIRConfig.cmake: FOUND" || echo "MLIRConfig.cmake: MISSING"
+            test -f /opt/ttlang-toolchain/tt-metal/ttnn/_ttnn.so && echo "_ttnn.so: FOUND" || echo "_ttnn.so: MISSING"
+          else
+            echo "/opt/ttlang-toolchain/ does not exist"
+          fi
+
+      # TODO: Remove this step once caches are confirmed working
+      - name: Abort if cache not restored
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          echo "ERROR: Toolchain cache was not restored. Aborting to avoid a multi-hour build."
+          echo ""
+          echo "To populate the cache, run the call-build.yml workflow first,"
+          echo "or manually create a cache with this key:"
+          echo "  Linux-toolchain_llvm-${{ steps.submodule-shas.outputs.llvm-sha }}_ttmetal-${{ steps.submodule-shas.outputs.ttmetal-sha }}"
+          exit 1
+
       - name: Pull base image
         run: |
           # Use the base image that was just built (or latest)
@@ -126,12 +176,11 @@ jobs:
 
       - name: Build LLVM + tt-metal (configure)
         run: |
-          echo "=== Building LLVM + tt-metal on host ==="
+          echo "=== Configuring with cached LLVM + tt-metal ==="
           df -h
-          mkdir -p toolchain
           docker run --rm \
             -v ${{ github.workspace }}:/workspace \
-            -v ${{ github.workspace }}/toolchain:/opt/ttlang-toolchain \
+            -v /opt/ttlang-toolchain:/opt/ttlang-toolchain \
             -w /workspace \
             -e TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
             "$BASE_IMAGE" \
@@ -143,7 +192,7 @@ jobs:
         run: |
           docker run --rm \
             -v ${{ github.workspace }}:/workspace \
-            -v ${{ github.workspace }}/toolchain:/opt/ttlang-toolchain \
+            -v /opt/ttlang-toolchain:/opt/ttlang-toolchain \
             -w /workspace \
             -e TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
             "$BASE_IMAGE" \
@@ -153,7 +202,7 @@ jobs:
         run: |
           docker run --rm \
             -v ${{ github.workspace }}:/workspace \
-            -v ${{ github.workspace }}/toolchain:/opt/ttlang-toolchain \
+            -v /opt/ttlang-toolchain:/opt/ttlang-toolchain \
             -w /workspace \
             "$BASE_IMAGE" \
             bash -c "
@@ -166,7 +215,7 @@ jobs:
       - name: Save ird toolchain
         run: |
           echo "=== Saving ird toolchain ==="
-          sudo cp -a toolchain ird-toolchain
+          sudo cp -a /opt/ttlang-toolchain ird-toolchain
           echo "ird toolchain size:"
           du -sh ird-toolchain
 
@@ -176,7 +225,7 @@ jobs:
           df -h
           docker run --rm \
             -v ${{ github.workspace }}:/workspace \
-            -v ${{ github.workspace }}/toolchain:/opt/ttlang-toolchain \
+            -v /opt/ttlang-toolchain:/opt/ttlang-toolchain \
             -w /workspace \
             -e TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
             "$BASE_IMAGE" \
@@ -187,7 +236,7 @@ jobs:
       - name: Normalize dist toolchain
         run: |
           docker run --rm \
-            -v ${{ github.workspace }}/toolchain:/opt/ttlang-toolchain \
+            -v /opt/ttlang-toolchain:/opt/ttlang-toolchain \
             "$BASE_IMAGE" \
             bash -c "
               find /opt/ttlang-toolchain -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
@@ -197,7 +246,7 @@ jobs:
       - name: Clean up build dirs to free space before Docker build
         run: |
           echo "Removing build directories..."
-          sudo rm -rf build third-party/tt-metal/build
+          sudo rm -rf build
           df -h
 
       - name: Clean up Docker before packaging
@@ -211,7 +260,7 @@ jobs:
         env:
           DOCKER_BUILDKIT: 1
           BUILDKIT_STEP_LOG_MAX_SIZE: -1
-          DOCKER_BUILD_EXTRA_ARGS: "--build-context dist-toolchain=./toolchain --build-context ird-toolchain=./ird-toolchain"
+          DOCKER_BUILD_EXTRA_ARGS: "--build-context dist-toolchain=/opt/ttlang-toolchain --build-context ird-toolchain=./ird-toolchain"
         run: |
           set -o pipefail
           set -x
@@ -228,7 +277,7 @@ jobs:
           df -h
 
       - name: Remove dist toolchain to free space
-        run: sudo rm -rf toolchain
+        run: sudo rm -rf /opt/ttlang-toolchain
 
       # dist-toolchain points to ird-toolchain here because dist toolchain was
       # already deleted to save space. BuildKit doesn't read dist-toolchain when

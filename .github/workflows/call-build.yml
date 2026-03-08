@@ -68,45 +68,39 @@ jobs:
                   sudo ln -sf /usr/bin/clang++-17 /usr/bin/clang++
                   rm -f llvm.sh
 
+            - name: Fix git safe directory for submodules
+              run: git config --global --add safe.directory '*'
+
+            - name: Prepare toolchain directory
+              run: sudo install -d -o $(id -u) -g $(id -g) /opt/ttlang-toolchain
+
             - name: Extract submodule SHAs for cache keys
               id: submodule-shas
               run: |
-                  echo "llvm-sha=$(git -C third-party/llvm-project rev-parse HEAD)" >> $GITHUB_OUTPUT
-                  echo "ttmetal-sha=$(git -C third-party/tt-metal rev-parse HEAD)" >> $GITHUB_OUTPUT
+                  echo "llvm-sha=$(git -C third-party/llvm-project rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
+                  echo "ttmetal-sha=$(git -C third-party/tt-metal rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
 
-            - name: Restore LLVM cache
-              id: cache-llvm
+            - name: Restore toolchain cache
+              id: cache-toolchain
               uses: actions/cache/restore@v4
               with:
-                  path: build/llvm-install/
-                  key: ${{ runner.os }}-llvm-install-${{ steps.submodule-shas.outputs.llvm-sha }}
-
-            - name: Restore tt-metal cache
-              id: cache-ttmetal
-              uses: actions/cache/restore@v4
-              with:
-                  path: third-party/tt-metal/build/
-                  key: ${{ runner.os }}-ttmetal-build-${{ steps.submodule-shas.outputs.ttmetal-sha }}-${{ hashFiles('third-party/patches/ttmetal-*.patch') }}
+                  path: /opt/ttlang-toolchain
+                  key: Linux-toolchain_llvm-${{ steps.submodule-shas.outputs.llvm-sha }}_ttmetal-${{ steps.submodule-shas.outputs.ttmetal-sha }}
 
             - name: Configure (builds LLVM + tt-metal on cache miss)
               run: |
                   cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
+                      -DLLVM_INSTALL_DIR=/opt/ttlang-toolchain \
+                      -DTTMETAL_BUILD_DIR=/opt/ttlang-toolchain/tt-metal \
                       -DTTLANG_ENABLE_PERF_TRACE=ON
 
-            - name: Save LLVM cache
-              if: steps.cache-llvm.outputs.cache-hit != 'true'
+            - name: Save toolchain cache
+              if: steps.cache-toolchain.outputs.cache-hit != 'true'
               uses: actions/cache/save@v4
               with:
-                  path: build/llvm-install/
-                  key: ${{ runner.os }}-llvm-install-${{ steps.submodule-shas.outputs.llvm-sha }}
-
-            - name: Save tt-metal cache
-              if: steps.cache-ttmetal.outputs.cache-hit != 'true'
-              uses: actions/cache/save@v4
-              with:
-                  path: third-party/tt-metal/build/
-                  key: ${{ runner.os }}-ttmetal-build-${{ steps.submodule-shas.outputs.ttmetal-sha }}-${{ hashFiles('third-party/patches/ttmetal-*.patch') }}
+                  path: /opt/ttlang-toolchain
+                  key: Linux-toolchain_llvm-${{ steps.submodule-shas.outputs.llvm-sha }}_ttmetal-${{ steps.submodule-shas.outputs.ttmetal-sha }}
 
     build-tt-lang:
         name: "Build and test tt-lang"
@@ -154,38 +148,38 @@ jobs:
                   sudo ln -sf /usr/bin/clang++-17 /usr/bin/clang++
                   rm -f llvm.sh
 
+            - name: Fix git safe directory for submodules
+              run: git config --global --add safe.directory '*'
+
+            - name: Prepare toolchain directory
+              run: sudo install -d -o $(id -u) -g $(id -g) /opt/ttlang-toolchain
+
             - name: Extract submodule SHAs for cache keys
               id: submodule-shas
               run: |
-                  echo "llvm-sha=$(git -C third-party/llvm-project rev-parse HEAD)" >> $GITHUB_OUTPUT
-                  echo "ttmetal-sha=$(git -C third-party/tt-metal rev-parse HEAD)" >> $GITHUB_OUTPUT
+                  echo "llvm-sha=$(git -C third-party/llvm-project rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
+                  echo "ttmetal-sha=$(git -C third-party/tt-metal rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
 
-            - name: Restore LLVM cache
-              id: cache-llvm
+            - name: Restore toolchain cache
+              id: cache-toolchain
               uses: actions/cache/restore@v4
               with:
-                  path: build/llvm-install/
-                  key: ${{ runner.os }}-llvm-install-${{ steps.submodule-shas.outputs.llvm-sha }}
-                  fail-on-cache-miss: true
-
-            - name: Restore tt-metal cache
-              id: cache-ttmetal
-              uses: actions/cache/restore@v4
-              with:
-                  path: third-party/tt-metal/build/
-                  key: ${{ runner.os }}-ttmetal-build-${{ steps.submodule-shas.outputs.ttmetal-sha }}-${{ hashFiles('third-party/patches/ttmetal-*.patch') }}
+                  path: /opt/ttlang-toolchain
+                  key: Linux-toolchain_llvm-${{ steps.submodule-shas.outputs.llvm-sha }}_ttmetal-${{ steps.submodule-shas.outputs.ttmetal-sha }}
                   fail-on-cache-miss: true
 
             - name: Configure tt-lang
               run: |
                   cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
+                      -DLLVM_INSTALL_DIR=/opt/ttlang-toolchain \
+                      -DTTMETAL_BUILD_DIR=/opt/ttlang-toolchain/tt-metal \
                       -DTTLANG_ENABLE_PERF_TRACE=ON
 
             - name: Setup ccache
               uses: hendrikmuhs/ccache-action@v1.2
               with:
-                  key: ${{ runner.os }}-ttlang-build
+                  key: Linux-ttlang-build
                   max-size: 200M
 
             - name: Build tt-lang
@@ -233,7 +227,7 @@ jobs:
 
                   tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf "${ARTIFACT_NAME}" \
                       --exclude='build/llvm-build' \
-                      build/ third-party/tt-metal/build/
+                      build/
 
             - name: Upload build artifacts for hardware tests
               uses: actions/upload-artifact@v4

@@ -49,7 +49,11 @@ endif()
 
 option(TTLANG_ENABLE_PERF_TRACE "Enable performance tracing (Tracy) in tt-metal" ON)
 
+ttlang_get_submodule_sha("${TT_METAL_SOURCE_DIR}" _TTMETAL_SUBMODULE_SHA)
+string(SUBSTRING "${_TTMETAL_SUBMODULE_SHA}" 0 7 _TTMETAL_SHORT_SHA)
+
 message(STATUS "tt-metal runtime: building from submodule at ${TT_METAL_SOURCE_DIR}")
+message(STATUS "  Commit SHA: ${_TTMETAL_SHORT_SHA}")
 
 # Apply patches to tt-metal source tree.
 ttlang_apply_patches("${TT_METAL_SOURCE_DIR}"
@@ -62,7 +66,8 @@ ttlang_pip_install_requirements("${Python3_EXECUTABLE}"
 # ---------------------------------------------------------------------------
 # Build configuration
 # ---------------------------------------------------------------------------
-set(TTMETAL_BUILD_DIR "${TT_METAL_SOURCE_DIR}/build")
+set(TTMETAL_BUILD_DIR "${TT_METAL_SOURCE_DIR}/build" CACHE PATH
+  "tt-metal build directory")
 set(TTMETAL_LIBRARY_DIR "${TTMETAL_BUILD_DIR}/lib")
 
 # CPM cache location (tt-metal uses CPM for its dependencies)

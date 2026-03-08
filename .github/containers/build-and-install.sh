@@ -15,12 +15,6 @@
 #   --build-and-install    Build tt-lang + install (assumes configure already ran)
 #   --finalize             Normalize toolchain + cleanup build dirs
 #
-# Options:
-#   --llvm-cache DIR       Pre-built LLVM install to copy into LLVM_INSTALL_DIR.
-#                          cmake skips the LLVM build if MLIRConfig.cmake exists.
-#   --ttmetal-cache DIR    Pre-built tt-metal build to copy into tt-metal/build/.
-#                          cmake skips the tt-metal build if _ttnn.so exists.
-#
 # Typical multi-stage usage (build outside Docker, copy results in):
 #   1. build-and-install.sh --configure-only        # Build LLVM + tt-metal
 #   2. build-and-install.sh --copy-runtime-libs      # Copy libs into toolchain
@@ -30,9 +24,13 @@
 
 set -e
 
+# When running inside a Docker container with volume-mounted repos, git
+# will refuse to operate due to ownership mismatch ("dubious ownership").
+# Mark all directories as safe so that cmake's git operations (patch
+# application, SHA verification) work correctly.
+git config --global --add safe.directory '*'
+
 MODE="full"
-LLVM_CACHE=""
-TTMETAL_CACHE=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -56,14 +54,6 @@ while [[ $# -gt 0 ]]; do
             MODE="finalize"
             shift
             ;;
-        --llvm-cache)
-            LLVM_CACHE="$2"
-            shift 2
-            ;;
-        --ttmetal-cache)
-            TTMETAL_CACHE="$2"
-            shift 2
-            ;;
         *)
             shift
             ;;
@@ -71,29 +61,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 TTLANG_TOOLCHAIN_DIR="${TTLANG_TOOLCHAIN_DIR:-/opt/ttlang-toolchain}"
+TTMETAL_BUILD_DIR="$TTLANG_TOOLCHAIN_DIR/tt-metal"
 
-# ---- Phase: Configure (restore caches + cmake configure + pip install) ----
+# ---- Phase: Configure (cmake configure + pip install) ----
 do_configure() {
-    # Restore LLVM cache if provided and non-empty
-    if [ -n "$LLVM_CACHE" ] && [ -d "$LLVM_CACHE/lib/cmake/mlir" ]; then
-        echo "=== Restoring LLVM cache from $LLVM_CACHE ==="
-        mkdir -p "$TTLANG_TOOLCHAIN_DIR"
-        cp -a "$LLVM_CACHE"/. "$TTLANG_TOOLCHAIN_DIR"/
-        echo "LLVM cache restored to $TTLANG_TOOLCHAIN_DIR"
-    fi
-
-    # Restore tt-metal cache if provided and non-empty
-    if [ -n "$TTMETAL_CACHE" ] && [ -d "$TTMETAL_CACHE/ttnn" ]; then
-        echo "=== Restoring tt-metal cache from $TTMETAL_CACHE ==="
-        mkdir -p third-party/tt-metal/build
-        cp -a "$TTMETAL_CACHE"/. third-party/tt-metal/build/
-        echo "tt-metal cache restored to third-party/tt-metal/build/"
-    fi
-
     echo "=== Configuring tt-lang ==="
     cmake -G Ninja -B build \
         -DCMAKE_BUILD_TYPE=Release \
         -DLLVM_INSTALL_DIR=$TTLANG_TOOLCHAIN_DIR \
+        -DTTMETAL_BUILD_DIR=$TTMETAL_BUILD_DIR \
         -DTTLANG_PYTHON_VENV=$TTLANG_TOOLCHAIN_DIR/venv \
         -DTTLANG_ENABLE_PERF_TRACE=ON \
         -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
@@ -111,14 +87,14 @@ do_configure() {
 do_copy_runtime_libs() {
     echo "=== Copying tt-metal runtime libraries ==="
     # Copy tt-metal runtime shared libraries
-    if [ -d "third-party/tt-metal/build/lib" ]; then
+    if [ -d "$TTMETAL_BUILD_DIR/lib" ]; then
         mkdir -p "$TTLANG_TOOLCHAIN_DIR/lib"
-        cp -prL third-party/tt-metal/build/lib/*.so* "$TTLANG_TOOLCHAIN_DIR/lib/" 2>/dev/null || true
+        cp -prL "$TTMETAL_BUILD_DIR"/lib/*.so* "$TTLANG_TOOLCHAIN_DIR/lib/" 2>/dev/null || true
         echo "Copied tt-metal runtime libraries"
     fi
 
     # Copy ttnn shared libraries
-    for so_dir in third-party/tt-metal/build/ttnn third-party/tt-metal/build/tt_metal; do
+    for so_dir in "$TTMETAL_BUILD_DIR/ttnn" "$TTMETAL_BUILD_DIR/tt_metal"; do
         if [ -d "$so_dir" ]; then
             mkdir -p "$TTLANG_TOOLCHAIN_DIR/lib"
             find "$so_dir" -name "*.so" -exec cp -pL {} "$TTLANG_TOOLCHAIN_DIR/lib/" \; 2>/dev/null || true
@@ -133,7 +109,7 @@ do_copy_runtime_libs() {
     fi
 
     # Copy Tracy profiler tools
-    TRACY_BIN="third-party/tt-metal/build/tools/profiler/bin"
+    TRACY_BIN="$TTMETAL_BUILD_DIR/tools/profiler/bin"
     if [ -d "$TRACY_BIN" ]; then
         mkdir -p "$TTLANG_TOOLCHAIN_DIR/bin"
         cp -p "$TRACY_BIN/capture-release" "$TTLANG_TOOLCHAIN_DIR/bin/" 2>/dev/null || true
@@ -186,7 +162,7 @@ do_finalize() {
     rm -f /tmp/normalize-ttmlir-install.sh /tmp/cleanup-toolchain.sh
 
     echo "=== Removing build directories ==="
-    rm -rf build third-party/tt-metal/build
+    rm -rf build
 
     echo "=== Disk space after cleanup ==="
     df -BM

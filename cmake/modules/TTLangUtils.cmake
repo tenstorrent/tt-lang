@@ -94,6 +94,23 @@ function(ttlang_pip_install_requirements PYTHON_EXE REQUIREMENTS_FILE)
   endif()
 endfunction()
 
+# ttlang_get_submodule_sha(SUBMODULE_DIR OUTPUT_VAR)
+# Retrieves the HEAD commit SHA of a git submodule. Sets OUTPUT_VAR to
+# "unknown" if git fails (e.g. missing .git, dubious ownership).
+function(ttlang_get_submodule_sha SUBMODULE_DIR OUTPUT_VAR)
+  execute_process(
+    COMMAND git -C "${SUBMODULE_DIR}" rev-parse HEAD
+    OUTPUT_VARIABLE _sha
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE _result
+  )
+  if(NOT _result EQUAL 0)
+    set(_sha "unknown")
+  endif()
+  set(${OUTPUT_VAR} "${_sha}" PARENT_SCOPE)
+endfunction()
+
 # ttlang_debug_message(MESSAGE)
 # Prints a STATUS message only if TTLANG_CMAKE_DEBUG environment variable is defined.
 # Useful for verbose debug output during CMake configuration.
@@ -166,14 +183,9 @@ endfunction()
 # CMakeLists.txt (TT_METAL_VERSION). On mismatch, emits FATAL_ERROR unless the
 # user passes -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON.
 function(ttlang_verify_ttmetal_sha SUBMODULE_DIR EXPECTED_SHA)
-  execute_process(
-    COMMAND git -C "${SUBMODULE_DIR}" rev-parse HEAD
-    OUTPUT_VARIABLE _actual_sha
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    RESULT_VARIABLE _git_result
-  )
+  ttlang_get_submodule_sha("${SUBMODULE_DIR}" _actual_sha)
 
-  if(NOT _git_result EQUAL 0)
+  if(_actual_sha STREQUAL "unknown")
     message(WARNING
       "Cannot verify tt-metal commit: git rev-parse failed in ${SUBMODULE_DIR}.\n"
       "SHA verification skipped.")
