@@ -22,9 +22,10 @@ TT-Lang bridges this gap through progressive disclosure: simple kernels require 
 
 * [CMake](https://cmake.org/) 3.28+
 * [Clang](https://clang.llvm.org/) 18+ or [GCC](https://gcc.gnu.org/) 11+
-* An existing LLVM/MLIR toolchain at `TTLANG_TOOLCHAIN_DIR` (default: `/opt/ttlang-toolchain`)
-* [Python](https://www.python.org/) 3.11+ in the toolchain's virtual environment
+* [Python](https://www.python.org/) 3.11+
+* [Git](https://git-scm.com/) (for submodule checkout)
 * Optional (recommended): [Ninja](https://ninja-build.org/) build system
+* Optional: Pre-built LLVM/MLIR toolchain at `TTLANG_TOOLCHAIN_DIR` (use with `-DTTLANG_USE_TOOLCHAIN=ON`)
 
 ## Quick Start
 

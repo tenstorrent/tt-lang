@@ -243,7 +243,9 @@ build/
 | `MLIR_PREFIX` | — | Path to pre-built LLVM/MLIR install (skips submodule build) |
 | `TTLANG_USE_TOOLCHAIN` | `OFF` | Use pre-built LLVM from ttmlir toolchain |
 | `TTLANG_ACCEPT_LLVM_MISMATCH` | `OFF` | Allow LLVM SHA mismatch with pre-built installs |
+| `TTLANG_ACCEPT_TTMETAL_MISMATCH` | `OFF` | Allow tt-metal SHA mismatch with pre-built installs |
 | `TTLANG_ENABLE_BINDINGS_PYTHON` | `ON` | Enable Python bindings |
+| `TTLANG_ENABLE_PERF_TRACE` | `ON` | Enable tt-metal performance tracing support |
 | `CODE_COVERAGE` | `OFF` | Enable code coverage reporting |
 
 ## Troubleshooting
