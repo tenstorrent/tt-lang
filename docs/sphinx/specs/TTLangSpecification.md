@@ -933,7 +933,7 @@ def matmul_read():
 | :---- | :---- |
 | `ttnn.Tensor` | Print `num_pages` pages of a tensor. The `num_pages` attribute defaults to 1. For example, `print(bias, num_pages=4)`. |
 | `ttl.Block` | Print the content of a block. For example, `print(bias_blk)`. |
-| `ttl.DataflowBuffer` | Print the state of a dataflow buffer. For example, `print(bias_dfb)`. |
+| `ttl.DataflowBuffer` | Print the state of a dataflow buffer, which includes metadata such as `size`, `page_size` etc, as well as current value of its pointers: `rd_ptr`, `wr_ptr` and `wr_tile_ptr`. For example, `print(bias_dfb)`. |
 
 ## Appendix A. Glossary
 
