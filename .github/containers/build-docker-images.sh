@@ -57,8 +57,8 @@ fi
 REPO=tenstorrent/tt-lang
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Check for uncommitted changes
-if ! git diff-index --quiet HEAD --; then
+# Check for uncommitted changes (skip in CI where patches are applied during configure)
+if [ -z "$CI" ] && ! git diff-index --quiet HEAD --; then
     echo "ERROR: There are uncommitted changes in the repository."
     echo "Please commit or stash your changes before building Docker images."
     git status --short
