@@ -917,7 +917,7 @@ def matmul_read():
                         print("a_blk:")
                         print(a_blk)
 
-                        # Print the content of a_blk block
+                        # Print the content of b_blk block
 
                         print("b_blk:")
                         print(b_blk)
