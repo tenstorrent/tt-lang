@@ -62,8 +62,7 @@ struct TTLSetComputeKernelConfigPass
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
 
-    for (ComputeOp computeOp : funcOp.getOps<ComputeOp>()) {
-
+    funcOp.walk([&](ComputeOp computeOp) {
       // Set fp32_dest_acc_en if any tile arg is f32 or if the compute is in
       // an accumulation group.  Accumulation groups use DST registers across
       // multiple computes (fill_tile + add_binary_tile + pack_tile), so DST
@@ -79,17 +78,18 @@ struct TTLSetComputeKernelConfigPass
       setBoolAttrIf(computeOp, kDstFullSyncEnAttrName, dstFullSyncEn);
 
       // Add other runtime configuration attributes as needed below
-    }
+    });
 
     // Propagate fp32_dest_acc_en to the function level so the runtime can
     // query it after the pipeline has lowered compute ops away.
-    for (ComputeOp computeOp : funcOp.getOps<ComputeOp>()) {
+    funcOp.walk([&](ComputeOp computeOp) {
       if (computeOp->hasAttr(kFp32DestAccEnAttrName)) {
         funcOp->setAttr(kFp32DestAccEnAttrName,
                         BoolAttr::get(funcOp.getContext(), true));
-        break;
+        return WalkResult::interrupt();
       }
-    }
+      return WalkResult::advance();
+    });
   }
 };
 

@@ -257,13 +257,15 @@ static FailureOr<bool> analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp,
     });
   }
 
-  // For accumulation group sync regions with 2+ distinct copy_tile source
-  // CBs, promote to binary_op_init_common.  This configures both UNPACK
-  // channels, preventing stale data format routing from a prior kernel.
-  if (isAccGroupSync && !hasFPUBinary && copyTileCBs.size() >= 2) {
+  // For accumulation group sync regions, always promote to
+  // binary_op_init_common.  This configures both UNPACK channels and PACK,
+  // preventing stale data format routing from a prior kernel.  When only
+  // one input CB exists (e.g., loop-only accumulation), use it for both
+  // UNPACK channels.
+  if (isAccGroupSync && !hasFPUBinary && !copyTileCBs.empty()) {
     hasFPUBinary = true;
     in0CB = copyTileCBs[0];
-    in1CB = copyTileCBs[1];
+    in1CB = copyTileCBs.size() >= 2 ? copyTileCBs[1] : copyTileCBs[0];
   }
 
   if (!foundRelease) {
