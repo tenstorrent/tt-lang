@@ -171,8 +171,6 @@ jobs:
             bash -c "
               bash .github/scripts/normalize-ttmlir-install.sh /opt/ttlang-toolchain
               bash .github/containers/cleanup-toolchain.sh /opt/ttlang-toolchain
-              find /opt/ttlang-toolchain -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-              find /opt/ttlang-toolchain -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete 2>/dev/null || true
             "
 
       - name: Save ird toolchain

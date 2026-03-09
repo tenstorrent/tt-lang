@@ -2,20 +2,91 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Post-install fixups for the tt-mlir toolchain directory
-# (e.g. deduplicating venv lib64)
+# Cleanup the toolchain directory to reduce Docker image size.
+# Run BEFORE packaging into Docker images (not inside the Dockerfile).
+#
+# Usage:
+#   cleanup-toolchain.sh <toolchain-dir>            # conservative (ird-safe)
+#   cleanup-toolchain.sh <toolchain-dir> --dist     # aggressive (dist only)
 
 set -e
 
-TOOLCHAIN_DIR="${1:?Usage: $0 <toolchain-dir>}"
+TOOLCHAIN_DIR="${1:?Usage: $0 <toolchain-dir> [--dist]}"
+DIST_MODE=false
+[ "${2:-}" = "--dist" ] && DIST_MODE=true
 
-echo "Cleaning up toolchain at: $TOOLCHAIN_DIR"
+echo "Cleaning up toolchain at: $TOOLCHAIN_DIR (dist=$DIST_MODE)"
+du -sh "$TOOLCHAIN_DIR" 2>/dev/null || true
 
-# Remove duplicate lib64 directory in venv (replace with symlink to lib)
-if [ -d "$TOOLCHAIN_DIR/venv/lib64" ] && [ -d "$TOOLCHAIN_DIR/venv/lib" ]; then
+# ---- venv/lib64 dedup ----
+if [ -d "$TOOLCHAIN_DIR/venv/lib64" ] && [ ! -L "$TOOLCHAIN_DIR/venv/lib64" ]; then
     echo "Removing duplicate venv/lib64 directory"
     rm -rf "$TOOLCHAIN_DIR/venv/lib64"
     ln -s lib "$TOOLCHAIN_DIR/venv/lib64"
 fi
 
+# ---- Strip unnecessary LLVM binaries ----
+# tt-lang needs: FileCheck, not, count, llvm-lit (testing), mlir-opt,
+# mlir-translate (debugging). Everything else (lld, llc, opt, mlir-reduce,
+# mlir-rewrite, mlir-query, mlir-lsp-server, etc.) is not needed.
+KEEP_BINS=(
+    FileCheck
+    not
+    count
+    llvm-lit
+    mlir-opt
+    mlir-translate
+)
+
+if [ -d "$TOOLCHAIN_DIR/bin" ]; then
+    echo "Stripping unnecessary LLVM binaries from bin/..."
+    _before=$(du -sm "$TOOLCHAIN_DIR/bin" | cut -f1)
+
+    for f in "$TOOLCHAIN_DIR/bin"/*; do
+        [ -f "$f" ] || continue
+        _name=$(basename "$f")
+        _keep=false
+        for _k in "${KEEP_BINS[@]}"; do
+            if [ "$_name" = "$_k" ]; then
+                _keep=true
+                break
+            fi
+        done
+        if [ "$_keep" = false ]; then
+            rm -f "$f"
+        fi
+    done
+
+    _after=$(du -sm "$TOOLCHAIN_DIR/bin" | cut -f1)
+    echo "  bin/: ${_before}M -> ${_after}M (saved $((_before - _after))M)"
+fi
+
+# ---- Dist-only: remove headers, static libs, source ----
+if [ "$DIST_MODE" = true ]; then
+    if [ -d "$TOOLCHAIN_DIR/include" ]; then
+        echo "Removing include/ (not needed at runtime)"
+        rm -rf "$TOOLCHAIN_DIR/include"
+    fi
+
+    if [ -d "$TOOLCHAIN_DIR/src" ]; then
+        echo "Removing src/ (not needed at runtime)"
+        rm -rf "$TOOLCHAIN_DIR/src"
+    fi
+
+    if [ -d "$TOOLCHAIN_DIR/lib" ]; then
+        echo "Removing static libraries (.a) from lib/..."
+        _before=$(du -sm "$TOOLCHAIN_DIR/lib" | cut -f1)
+        find "$TOOLCHAIN_DIR/lib" -name '*.a' -delete
+        _after=$(du -sm "$TOOLCHAIN_DIR/lib" | cut -f1)
+        echo "  lib/: ${_before}M -> ${_after}M (saved $((_before - _after))M)"
+    fi
+fi
+
+# ---- Python cache cleanup ----
+echo "Removing Python cache files..."
+find "$TOOLCHAIN_DIR" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+find "$TOOLCHAIN_DIR" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete 2>/dev/null || true
+
+echo ""
+du -sh "$TOOLCHAIN_DIR" 2>/dev/null || true
 echo "Toolchain cleanup complete"

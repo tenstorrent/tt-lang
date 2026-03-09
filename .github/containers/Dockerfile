@@ -27,9 +27,9 @@ SHELL ["/bin/bash", "-c"]
 ENV TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
 ENV DEBIAN_FRONTEND=noninteractive
 
-COPY --from=ird-toolchain / $TTLANG_TOOLCHAIN_DIR/
-
-RUN chmod -R 777 $TTLANG_TOOLCHAIN_DIR
+# Use --chmod to avoid a separate chmod layer that would duplicate the entire
+# toolchain in the image.
+COPY --from=ird-toolchain --chmod=777 / $TTLANG_TOOLCHAIN_DIR/
 
 # Install Python dev dependencies (black, sphinx, etc.) into the toolchain venv
 COPY requirements.txt /tmp/requirements.txt
@@ -64,9 +64,7 @@ SHELL ["/bin/bash", "-c"]
 
 ENV TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
 
-COPY --from=dist-toolchain / $TTLANG_TOOLCHAIN_DIR/
-
-RUN chmod -R 777 $TTLANG_TOOLCHAIN_DIR
+COPY --from=dist-toolchain --chmod=777 / $TTLANG_TOOLCHAIN_DIR/
 
 # Install text editors, SSH, and tt-smi
 RUN apt-get update && apt-get install -y vim nano openssh-server && rm -rf /var/lib/apt/lists/* && \

@@ -73,6 +73,7 @@ declare_mlir_python_sources(TTMLIRMinPythonExtensions)
 declare_mlir_python_extension(TTMLIRMinPythonExtensions.Main
   MODULE_NAME _ttmlir
   ADD_TO_PARENT TTMLIRMinPythonExtensions
+  PYTHON_BINDINGS_LIBRARY nanobind
   SOURCES
     ttmlir/TT_MLIRMinimalExtension.cpp
     ttmlir/TT_MLIRMinimalPasses.cpp
@@ -82,7 +83,6 @@ declare_mlir_python_extension(TTMLIRMinPythonExtensions.Main
     MLIRCAPIIR
     MLIRCAPITransforms
     TTMLIRMinimalCAPI
-
 )
 
 
@@ -126,12 +126,12 @@ declare_mlir_python_sources(TTLangPythonExtensions)
 declare_mlir_python_extension(TTLangPythonExtensions.Main
   MODULE_NAME _ttlang
   ADD_TO_PARENT TTLangPythonExtensions
+  PYTHON_BINDINGS_LIBRARY nanobind
   SOURCES
     ttlang/TTLangModule.cpp
     ttlang/TTLModule.cpp
   EMBED_CAPI_LINK_LIBS
     TTLangCAPI
-
 )
 
 # ###############################################################################

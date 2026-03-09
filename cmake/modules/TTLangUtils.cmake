@@ -94,6 +94,27 @@ function(ttlang_pip_install_requirements PYTHON_EXE REQUIREMENTS_FILE)
   endif()
 endfunction()
 
+# ttlang_pip_install_package(PYTHON_EXE PACKAGE_PATH [FATAL])
+# Installs a Python package from a local path using pip.
+# If FATAL is specified, a failure is a fatal error; otherwise it is a warning.
+function(ttlang_pip_install_package PYTHON_EXE PACKAGE_PATH)
+  if(NOT EXISTS "${PACKAGE_PATH}")
+    message(WARNING "Package path not found: ${PACKAGE_PATH}")
+    return()
+  endif()
+  execute_process(
+    COMMAND "${PYTHON_EXE}" -m pip install "${PACKAGE_PATH}" --no-build-isolation --quiet
+    RESULT_VARIABLE _pip_result
+  )
+  if(NOT _pip_result EQUAL 0)
+    if("FATAL" IN_LIST ARGN)
+      message(FATAL_ERROR "Failed to pip-install package from ${PACKAGE_PATH}")
+    else()
+      message(WARNING "Failed to pip-install package from ${PACKAGE_PATH}")
+    endif()
+  endif()
+endfunction()
+
 # ttlang_get_submodule_sha(SUBMODULE_DIR OUTPUT_VAR)
 # Retrieves the HEAD commit SHA of a git submodule. Sets OUTPUT_VAR to
 # "unknown" if git fails (e.g. missing .git, dubious ownership).
