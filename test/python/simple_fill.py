@@ -27,7 +27,7 @@ def fill_kernel(inp, out):
 
     @ttl.compute()
     def fill_compute():
-        with out_dfb.reserve() as out:
+        with inp_dfb.wait() as x, out_dfb.reserve() as out:
             out.store(ttl.math.fill(out, 1.0))
 
     @ttl.datamovement()
@@ -50,7 +50,6 @@ def fill_kernel(inp, out):
 # CHECK-LABEL: func.func @fill_compute
 # CHECK-SAME: attributes {{{.*}}ttl.kernel_thread = #ttkernel.thread<compute>}
 
-# CHECK: ttl.bind_cb{cb_index = 0
 # CHECK: %[[OUT_CB:.+]] = ttl.bind_cb{cb_index = 1
 
 # CHECK: ttl.cb_reserve %[[OUT_CB]]

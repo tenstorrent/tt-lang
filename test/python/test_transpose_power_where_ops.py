@@ -174,7 +174,7 @@ def fill_ones_kernel(inp, out):
 
     @ttl.compute()
     def compute_fn():
-        with out_cb.reserve() as o:
+        with inp_cb.wait() as x, out_cb.reserve() as o:
             o.store(ttl.math.fill(o, 1.0))
 
     @ttl.datamovement()
@@ -198,7 +198,7 @@ def fill_pi_kernel(inp, out):
 
     @ttl.compute()
     def compute_fn():
-        with out_cb.reserve() as o:
+        with inp_cb.wait() as x, out_cb.reserve() as o:
             o.store(ttl.math.fill(o, 3.14))
 
     @ttl.datamovement()
