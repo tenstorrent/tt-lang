@@ -24,30 +24,27 @@ import ttl
 def pipe_test(x, y, out):
     pipe = ttl.Pipe(src=(0, 0), dst=(1, 0))
 
-    x_cb = ttl.make_circular_buffer_like(x, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    x_cb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
-        l = x_cb.wait()
-        o = out_cb.reserve()
-        o.store(l)
-        x_cb.pop()
-        out_cb.push()
+        with x_cb.wait() as l:
+            with out_cb.reserve() as o:
+                o.store(l)
 
     @ttl.datamovement()
     def dm_read():
-        blk = x_cb.reserve()
-        with pipe.if_src():
-            pass
-        with pipe.if_dst():
-            pass
-        x_cb.push()
+        with x_cb.reserve() as blk:
+            with pipe.if_src():
+                pass
+            with pipe.if_dst():
+                pass
 
     @ttl.datamovement()
     def dm_write():
-        blk = out_cb.wait()
-        out_cb.pop()
+        with out_cb.wait() as blk:
+            pass
 
 
 # =============================================================================

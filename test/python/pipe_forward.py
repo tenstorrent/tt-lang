@@ -26,70 +26,62 @@ def pipe_forward(inp, out):
     """Forward data from core 0 to core 1 via pipe."""
     pipe = ttl.Pipe(src=(0, 0), dst=(1, 0))
 
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
-        inp_tile = inp_cb.wait()
-        out_tile = out_cb.reserve()
-        out_tile.store(ttl.math.abs(inp_tile))
-        inp_cb.pop()
-        out_cb.push()
+        with inp_cb.wait() as inp_tile:
+            with out_cb.reserve() as out_tile:
+                out_tile.store(ttl.math.abs(inp_tile))
 
     @ttl.datamovement()
     def dm_read():
-        inp_blk = inp_cb.reserve()
-        with pipe.if_src():
-            tx_read = ttl.copy(inp[0, 0], inp_blk)
-            tx_read.wait()
-            tx_send = ttl.copy(inp_blk, pipe)
-            tx_send.wait()
+        with inp_cb.reserve() as inp_blk:
+            with pipe.if_src():
+                tx_read = ttl.copy(inp[0, 0], inp_blk)
+                tx_read.wait()
+                tx_send = ttl.copy(inp_blk, pipe)
+                tx_send.wait()
 
-        with pipe.if_dst():
-            tx_recv = ttl.copy(pipe, inp_blk)
-            tx_recv.wait()
-        inp_cb.push()
+            with pipe.if_dst():
+                tx_recv = ttl.copy(pipe, inp_blk)
+                tx_recv.wait()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
-        x, y = ttl.core(dims=2)
-        tx_write = ttl.copy(out_blk, out[y, x])
-        tx_write.wait()
-        out_cb.pop()
+        with out_cb.wait() as out_blk:
+            x, y = ttl.core(dims=2)
+            tx_write = ttl.copy(out_blk, out[y, x])
+            tx_write.wait()
 
 
 # Runtime test kernel - simpler version without pipe multicast
 @ttl.kernel(grid=(2, 1))
 def pipe_forward_simple(inp, out):
     """Each core reads its own tile (no pipe). Tests multi-core execution."""
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
-        inp_tile = inp_cb.wait()
-        out_tile = out_cb.reserve()
-        out_tile.store(ttl.math.abs(inp_tile))
-        inp_cb.pop()
-        out_cb.push()
+        with inp_cb.wait() as inp_tile:
+            with out_cb.reserve() as out_tile:
+                out_tile.store(ttl.math.abs(inp_tile))
 
     @ttl.datamovement()
     def dm_read():
-        inp_blk = inp_cb.reserve()
-        x, y = ttl.core(dims=2)
-        tx_read = ttl.copy(inp[y, x], inp_blk)
-        tx_read.wait()
-        inp_cb.push()
+        with inp_cb.reserve() as inp_blk:
+            x, y = ttl.core(dims=2)
+            tx_read = ttl.copy(inp[y, x], inp_blk)
+            tx_read.wait()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_cb.wait()
-        x, y = ttl.core(dims=2)
-        tx_write = ttl.copy(out_blk, out[y, x])
-        tx_write.wait()
-        out_cb.pop()
+        with out_cb.wait() as out_blk:
+            x, y = ttl.core(dims=2)
+            tx_write = ttl.copy(out_blk, out[y, x])
+            tx_write.wait()
 
 
 # =============================================================================

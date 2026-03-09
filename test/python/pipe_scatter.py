@@ -33,8 +33,8 @@ def pipe_scatter(inp, out):
     # Multicast pipe: src=(0,0) to dst=(0,1) through (0,3)
     pipe = ttl.Pipe(src=(0, 0), dst=(0, slice(1, 4)))
 
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():

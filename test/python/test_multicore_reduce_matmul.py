@@ -34,9 +34,9 @@ def gather_2core(inp, out):
     """Core 1 sends its tile to Core 0."""
     pipe = ttl.Pipe(src=(1, 0), dst=(0, 0))
 
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
-    gather_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    gather_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
@@ -101,11 +101,11 @@ def gather_3core(inp, out):
     pipe1 = ttl.Pipe(src=(1, 0), dst=(0, 0))
     pipe2 = ttl.Pipe(src=(2, 0), dst=(0, 0))
 
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
-    gather_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=4)
+    inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    gather_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=4)
     # Intermediate CB for partial accumulation (compute-only, not used by dm)
-    acc_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    acc_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
@@ -198,10 +198,10 @@ def gather_4core(inp, out):
     pipe2 = ttl.Pipe(src=(2, 0), dst=(0, 0))
     pipe3 = ttl.Pipe(src=(3, 0), dst=(0, 0))
 
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(4, 4), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(4, 4), buffer_factor=2)
-    gather_cb = ttl.make_circular_buffer_like(inp, shape=(4, 4), buffer_factor=6)
-    acc_cb = ttl.make_circular_buffer_like(inp, shape=(4, 4), buffer_factor=2)
+    inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(4, 4), buffer_factor=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(4, 4), buffer_factor=2)
+    gather_cb = ttl.make_dataflow_buffer_like(inp, shape=(4, 4), buffer_factor=6)
+    acc_cb = ttl.make_dataflow_buffer_like(inp, shape=(4, 4), buffer_factor=2)
 
     @ttl.compute()
     def compute():
