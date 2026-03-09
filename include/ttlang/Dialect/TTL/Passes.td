@@ -84,6 +84,31 @@ def TTLAssignDST
   ];
 }
 
+def TTLFormAccumulationGroups
+    : Pass<"ttl-form-accumulation-groups", "::mlir::func::FuncOp"> {
+  let summary = "Detect and mark cross-compute accumulation groups";
+  let description = [{
+    Detects computes that store to the same output view with acc=true and
+    marks them with a shared `ttl.acc_group` ID attribute. This enables
+    downstream passes (AssignDST, InsertTileRegsSync) to allocate a shared
+    accumulator register and place sync ops spanning the entire group.
+
+    Group detection rules:
+    - Multi-compute: two or more computes store to the same view, at least
+      one with acc=true.
+    - Single-compute in loop: one compute with acc=true nested inside a
+      user scf.for (not a tile loop or subblock loop).
+
+    For the initializer store (first store in program order, acc=false), the
+    pass converts it to acc=true so that it accumulates into the shared
+    DST register (zero-init + add) instead of packing directly.
+  }];
+
+  let dependentDialects = [
+    "::mlir::scf::SCFDialect"
+  ];
+}
+
 def TTLSetComputeKernelConfig
     : Pass<"ttl-set-compute-kernel-config", "::mlir::func::FuncOp"> {
   let summary = "Set ttl.compute kernel configuration attributes";

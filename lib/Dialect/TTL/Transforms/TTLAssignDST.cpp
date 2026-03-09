@@ -631,6 +631,64 @@ static FailureOr<std::uint32_t> linearScanAllocateFiltered(
 struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
   using Base::Base;
 
+  /// Phase 5b: Allocate shared accumulator registers across computes in
+  /// the same accumulation group. Runs after the per-compute walk.
+  void assignCrossComputeAccumulators(func::FuncOp funcOp) {
+    // Collect computes with acc_group_id, grouped by group ID.
+    DenseMap<int64_t, SmallVector<ComputeOp>> groups;
+    funcOp.walk([&](ComputeOp computeOp) {
+      if (auto groupAttr =
+              computeOp->getAttrOfType<IntegerAttr>(kAccGroupIdAttrName)) {
+        groups[groupAttr.getInt()].push_back(computeOp);
+      }
+    });
+
+    if (groups.empty()) {
+      return;
+    }
+
+    for (auto &[groupId, computes] : groups) {
+      // Find max DST footprint across all computes in the group.
+      // This is the highest dst_idx used by any tile op + 1.
+      std::uint32_t maxFootprint = 0;
+      for (ComputeOp compute : computes) {
+        Block &body = compute.getRegion().front();
+        for (Operation &op : body) {
+          if (auto dstAttr = op.getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
+            std::uint32_t idx =
+                static_cast<std::uint32_t>(dstAttr.getInt()) + 1;
+            maxFootprint = std::max(maxFootprint, idx);
+          }
+        }
+      }
+
+      // The accumulator register is the first free slot above all
+      // temporaries.
+      std::uint32_t accReg = maxFootprint;
+      LLVM_DEBUG(llvm::dbgs() << "Phase 5b: Group " << groupId
+                              << " maxFootprint=" << maxFootprint
+                              << " accReg=DST[" << accReg << "]\n");
+
+      // Set acc_dst_idx on all acc tile_stores in all computes of the group.
+      OpBuilder builder(funcOp.getContext());
+      for (ComputeOp compute : computes) {
+        Block &body = compute.getRegion().front();
+        for (Operation &op : body) {
+          if (auto tileStore = dyn_cast<TileStoreOp>(&op)) {
+            if (tileStore.getAcc()) {
+              tileStore->setAttr(
+                  kAccDstIdxAttrName,
+                  builder.getI32IntegerAttr(static_cast<int32_t>(accReg)));
+              LLVM_DEBUG(llvm::dbgs()
+                         << "Phase 5b: Set acc_dst_idx=" << accReg
+                         << " on tile_store in group " << groupId << "\n");
+            }
+          }
+        }
+      }
+    }
+  }
+
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
 
@@ -1047,6 +1105,9 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         });
       }
     });
+
+    //=== Phase 5b: Cross-compute accumulator allocation ===
+    assignCrossComputeAccumulators(funcOp);
   }
 };
 

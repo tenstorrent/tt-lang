@@ -148,8 +148,21 @@ struct TTLSimpleOneToOne : OpConversionPattern<SourceOp> {
   }
 };
 
-using TTLTileRegsAcquireToTTKernel =
-    TTLSimpleOneToOne<TileRegsAcquireOp, ttk::TileRegsAcquireOp>;
+/// TileRegsAcquire conversion preserves the acc_group_sync marker attribute
+/// so TTKernelInsertInits can distinguish accumulation group sync regions.
+struct TTLTileRegsAcquireToTTKernel : OpConversionPattern<TileRegsAcquireOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileRegsAcquireOp op, OpAdaptor /*adaptor*/,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto newOp = rewriter.replaceOpWithNewOp<ttk::TileRegsAcquireOp>(op);
+    if (op->hasAttr(kAccGroupSyncAttrName)) {
+      newOp->setAttr(kAccGroupSyncAttrName, rewriter.getUnitAttr());
+    }
+    return success();
+  }
+};
 using TTLTileRegsCommitToTTKernel =
     TTLSimpleOneToOne<TileRegsCommitOp, ttk::TileRegsCommitOp>;
 using TTLTileRegsWaitToTTKernel =

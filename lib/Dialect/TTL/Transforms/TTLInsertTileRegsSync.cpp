@@ -54,10 +54,93 @@ struct TTLInsertTileRegsSyncPass
     : public impl::TTLInsertTileRegsSyncBase<TTLInsertTileRegsSyncPass> {
   using Base::Base;
 
+  /// Insert group-level sync for accumulation groups. One sync region
+  /// wraps all computes in the group (acquire before first, release after
+  /// last).
+  void insertGroupSync(func::FuncOp funcOp) {
+    // Collect computes by group ID.
+    DenseMap<int64_t, SmallVector<ComputeOp>> groups;
+    funcOp.walk([&](ComputeOp computeOp) {
+      if (auto groupAttr =
+              computeOp->getAttrOfType<IntegerAttr>(kAccGroupIdAttrName)) {
+        groups[groupAttr.getInt()].push_back(computeOp);
+      }
+    });
+
+    for (auto &[groupId, computes] : groups) {
+      if (computes.empty()) {
+        continue;
+      }
+
+      // Find the common parent block for all computes in the group.
+      // Walk up from each compute to find its top-level ancestor in the
+      // common block.
+      Block *commonBlock = nullptr;
+      SmallVector<Operation *> ancestors;
+
+      for (ComputeOp compute : computes) {
+        // Find the top-level ancestor in the function body first.
+        Operation *ancestor = compute;
+        while (ancestor->getParentOp() &&
+               !isa<func::FuncOp>(ancestor->getParentOp())) {
+          ancestor = ancestor->getParentOp();
+        }
+
+        if (!commonBlock) {
+          commonBlock = ancestor->getBlock();
+        }
+        ancestors.push_back(ancestor);
+      }
+
+      if (!commonBlock || ancestors.empty()) {
+        continue;
+      }
+
+      // Find first and last ancestors in block order.
+      Operation *firstOp = ancestors[0];
+      Operation *lastOp = ancestors[0];
+      for (Operation *anc : ancestors) {
+        if (anc->isBeforeInBlock(firstOp)) {
+          firstOp = anc;
+        }
+        if (lastOp->isBeforeInBlock(anc)) {
+          lastOp = anc;
+        }
+      }
+
+      Location loc = firstOp->getLoc();
+      OpBuilder builder(firstOp);
+
+      // Place acquire before the first op. Mark it as an accumulation group
+      // sync so TTKernelInsertInits uses binary_op_init_common.
+      builder.setInsertionPoint(firstOp);
+      auto acquireOp = builder.create<TileRegsAcquireOp>(loc);
+      acquireOp->setAttr(kAccGroupSyncAttrName, builder.getUnitAttr());
+
+      // Place commit, wait, release after the last op.
+      builder.setInsertionPointAfter(lastOp);
+      builder.create<TileRegsCommitOp>(loc);
+      builder.create<TileRegsWaitOp>(loc);
+      builder.create<TileRegsReleaseOp>(loc);
+    }
+  }
+
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
 
+    // Build set of grouped computes so we can skip them in per-compute walk.
+    DenseSet<Operation *> groupedComputes;
     funcOp.walk([&](ComputeOp computeOp) {
+      if (computeOp->hasAttr(kAccGroupIdAttrName)) {
+        groupedComputes.insert(computeOp);
+      }
+    });
+
+    funcOp.walk([&](ComputeOp computeOp) {
+      // Skip grouped computes; they get group-level sync below.
+      if (groupedComputes.contains(computeOp)) {
+        return;
+      }
       Location loc = computeOp.getLoc();
 
       // Find existing acquire preceding this compute. Stop at another compute
@@ -178,6 +261,9 @@ struct TTLInsertTileRegsSyncPass
         }
       }
     });
+
+    // Insert group-level sync for accumulation groups.
+    insertGroupSync(funcOp);
   }
 };
 

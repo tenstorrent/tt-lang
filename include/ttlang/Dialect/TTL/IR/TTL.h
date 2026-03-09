@@ -70,6 +70,16 @@ constexpr llvm::StringLiteral kTileOffsetAttrName("ttl.tile_offset");
 constexpr llvm::StringLiteral
     kBcastOutputCBIndexAttrName("ttl.bcast_output_cb_index");
 
+/// Accumulation group ID. Computes in the same group share a DST accumulator
+/// register and are wrapped by a single sync region. Set by
+/// TTLFormAccumulationGroups.
+constexpr llvm::StringLiteral kAccGroupIdAttrName("ttl.acc_group");
+
+/// Marks tile_regs_acquire ops created for accumulation group sync regions.
+/// Used by TTKernelInsertInits to select binary_op_init_common (which
+/// configures both UNPACK channels) instead of init_sfpu.
+constexpr llvm::StringLiteral kAccGroupSyncAttrName("ttl.acc_group_sync");
+
 /// Trait for tile compute operations (add, mul, exp, etc.).
 template <typename ConcreteType>
 class TTLTileComputeOpTrait

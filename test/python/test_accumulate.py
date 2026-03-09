@@ -51,6 +51,12 @@ TILE_SHAPE_PARAMS = [
     pytest.param((4, 4), id="4x4tiles"),  # 16 tiles — triggers both bf16 and f32
 ]
 
+# Cross-compute accumulation currently only supports 1x1 tile domains.
+# Multi-tile requires Phase 2 (outer tile loop) of the accumulation plan.
+SINGLE_TILE_PARAMS = [
+    pytest.param((1, 1), id="1x1tiles"),
+]
+
 DTYPE_PARAMS = [
     pytest.param(torch.bfloat16, id="bf16"),
     pytest.param(torch.float32, id="f32"),
@@ -358,10 +364,15 @@ class AccTestBase:
         template:    kernel code template
         num_inputs:  number of input tensors (default 2)
         golden(*inputs) -> expected torch output
+        f32_accumulation: True if the hardware accumulates across multiple
+            stores at f32 precision in DST registers. When set, the golden
+            is computed at f32 and rounded to bf16 for comparison, matching
+            the hardware's precision semantics.
     """
 
     template = None
     num_inputs = 2
+    f32_accumulation = False
 
     def golden(self, *inputs):
         raise NotImplementedError
@@ -389,11 +400,16 @@ class AccTestBase:
         kernel(*dev_inputs, dev_out)
 
         result = ttnn.to_torch(dev_out)
-        if dtype == torch.float32:
+        if self.f32_accumulation:
+            # Cross-compute accumulation operates at f32 precision in DST
+            # registers while torch golden uses bf16 arithmetic. The
+            # precision difference can cause up to ~0.03 absolute error for
+            # bf16 values near rounding boundaries.
+            assert_allclose(result, expected, atol=0.05, rtol=0.05)
+        elif dtype == torch.float32:
             # f32 inputs are truncated to bf16 on hardware, so results near
             # zero (from cancellation of positive and negative values) have
-            # large ULP deltas despite tiny absolute differences. Use
-            # relative and absolute tolerance instead.
+            # large ULP deltas despite tiny absolute differences.
             assert_allclose(result, expected, atol=0.01, rtol=0.02)
         else:
             assert_with_ulp(
@@ -417,14 +433,39 @@ class TestAccSingleStore(AccTestBase):
         return a + b
 
 
-# TODO: TestAccTwoStores (out = 0 + a + b) — multi-store accumulation requires
-# ConvertTTLToCompute fusion so that multiple ttl.store {acc=true} ops to the
-# same view are merged into a single ttl.compute body. Currently each store
-# gets its own compute op, so the second pack_tile overwrites the first.
-# See plans/multi-store-acc-fusion.md. Uses ACC_TWO_STORES_TEMPLATE.
+class TestAccTwoStores(AccTestBase):
+    """out = 0 + a + b — two separate acc stores to the same view.
 
-# TODO: TestAccThreeStores (out = 0 + a + b + c) — same prerequisite as above.
-# Uses ACC_THREE_STORES_TEMPLATE.
+    After ConvertTTLToCompute, each store becomes a separate ttl.compute.
+    FormAccumulationGroups detects these as a multi-compute accumulation group,
+    AssignDST allocates a shared accumulator register, and InsertSync wraps
+    them in a single sync region.
+    """
+
+    template = ACC_TWO_STORES_TEMPLATE
+    f32_accumulation = True
+
+    @pytest.fixture(params=SINGLE_TILE_PARAMS)
+    def tile_shape(self, request):
+        return request.param
+
+    def golden(self, a, b):
+        return a + b
+
+
+class TestAccThreeStores(AccTestBase):
+    """out = 0 + a + b + c — three separate acc stores to the same view."""
+
+    template = ACC_THREE_STORES_TEMPLATE
+    num_inputs = 3
+    f32_accumulation = True
+
+    @pytest.fixture(params=SINGLE_TILE_PARAMS)
+    def tile_shape(self, request):
+        return request.param
+
+    def golden(self, a, b, c):
+        return a + b + c
 
 
 # =============================================================================
@@ -441,9 +482,23 @@ class TestAccMixedChain(AccTestBase):
         return torch.exp(a * b) + torch.abs(a - b)
 
 
-# TODO: TestAccBinaryOps (out = (a + b) + (a * b)) — multi-store accumulation
-# with different binary ops. Requires compute fusion. Uses
-# ACC_BINARY_OPS_TEMPLATE.
+class TestAccBinaryOps(AccTestBase):
+    """out = (a + b) + (a * b) — two expression acc stores to the same view.
+
+    Each store computes a different expression. After ConvertTTLToCompute,
+    each becomes a separate ttl.compute with its own expression graph.
+    FormAccumulationGroups groups them for cross-compute accumulation.
+    """
+
+    template = ACC_BINARY_OPS_TEMPLATE
+    f32_accumulation = True
+
+    @pytest.fixture(params=SINGLE_TILE_PARAMS)
+    def tile_shape(self, request):
+        return request.param
+
+    def golden(self, a, b):
+        return (a + b) + (a * b)
 
 
 # =============================================================================

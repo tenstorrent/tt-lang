@@ -207,6 +207,14 @@ static FailureOr<bool> analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp,
   bool foundRelease = false;
   bool hadError = false;
 
+  // Accumulation group sync regions (marked by InsertTileRegsSync) have
+  // copy_tile ops from multiple different CBs.  init_sfpu only configures
+  // one UNPACK channel, which can leave stale data format routing from a
+  // prior kernel.  Collect distinct copy_tile CBs so we can promote to
+  // binary_op_init_common when this marker is present.
+  bool isAccGroupSync = acquireOp->hasAttr(kAccGroupSyncAttrName);
+  llvm::SmallSetVector<Value, 4> copyTileCBs;
+
   for (auto it = std::next(acquireOp->getIterator()); it != block->end();
        ++it) {
     if (isa<ttk::TileRegsReleaseOp>(&*it)) {
@@ -217,8 +225,9 @@ static FailureOr<bool> analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp,
     // Walk this op and all nested regions (e.g., scf.for bodies).
     (&*it)->walk([&](Operation *inner) {
       if (auto copy = dyn_cast<ttk::CopyTileOp>(inner)) {
-        // copy_tile always precedes SFPU ops -- data must enter DST from a
-        // CB before any SFPU/bcast compute can operate on it.
+        if (isAccGroupSync) {
+          copyTileCBs.insert(copy.getCb0());
+        }
         if (!inputCB) {
           inputCB = copy.getCb0();
         }
@@ -246,6 +255,15 @@ static FailureOr<bool> analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp,
         }
       }
     });
+  }
+
+  // For accumulation group sync regions with 2+ distinct copy_tile source
+  // CBs, promote to binary_op_init_common.  This configures both UNPACK
+  // channels, preventing stale data format routing from a prior kernel.
+  if (isAccGroupSync && !hasFPUBinary && copyTileCBs.size() >= 2) {
+    hasFPUBinary = true;
+    in0CB = copyTileCBs[0];
+    in1CB = copyTileCBs[1];
   }
 
   if (!foundRelease) {
@@ -299,9 +317,10 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
       return;
     }
 
-    // By construction, each sync region comes from a single ttl.compute
-    // body with a fixed set of input CBs. Multiple input CBs in a single
-    // region are not expected; if they occur, we use the first one found.
+    // Single-compute sync regions have a fixed set of input CBs.
+    // Cross-compute accumulation groups may span multiple computes with
+    // different input CBs; analyzeSyncRegion promotes these to
+    // binary_op_init_common.
 
     Operation *insertBefore = hoistAboveCompilerLoops(acquireOp);
     OpBuilder builder(insertBefore);

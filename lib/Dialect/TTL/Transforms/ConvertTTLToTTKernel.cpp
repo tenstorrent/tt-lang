@@ -411,6 +411,22 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
     Value accDstIdx =
         rewriter.create<arith::ConstantIndexOp>(loc, accDstIdxAttr.getInt());
 
+    // Zero the expression DST register before FPU binary ops. FPU ops like
+    // mul_tiles accumulate onto DST (DST[idx] += result) rather than
+    // overwriting. Without zeroing, stale values from a prior computation
+    // in the same sync region corrupt the result.
+    auto tileValue = adaptor.getTile();
+    if (auto defOp = tileValue.getDefiningOp()) {
+      if (defOp->hasAttr(kFPUBinaryAttrName)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(defOp);
+        rewriter.create<ttk::FillTileInitOp>(loc);
+        Value zero = rewriter.create<arith::ConstantFloatOp>(
+            loc, rewriter.getF32Type(), APFloat(0.0f));
+        rewriter.create<ttk::FillTileOp>(loc, *srcDstIdx, zero);
+      }
+    }
+
     // Emit add_binary_tile: DST[acc] += DST[src].
     rewriter.create<ttk::AddBinaryTilesOp>(loc, *srcDstIdx, accDstIdx,
                                            accDstIdx);
@@ -494,7 +510,25 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
         }
         rewriter.setInsertionPointAfter(insertPt);
 
-        rewriter.create<ttk::PackTileOp>(loc, accDstIdx, cb, cbTileIndex,
+        // The CB tile index was computed at the tile_store location (inside
+        // tile loops). If the pack is placed outside those loops (cross-
+        // compute accumulation), the loop IVs don't dominate. Recompute the
+        // index at the pack insertion point. For 1x1 computes the tile loops
+        // have trip count 1, so the index is always 0.
+        Value packCbTileIndex = cbTileIndex;
+        if (!cbTileIndex.getParentBlock()->findAncestorOpInBlock(
+                *rewriter.getInsertionPoint())) {
+          auto viewTy = mlir::cast<RankedTensorType>(op.getView().getType());
+          auto recomputedIdx = utils::computeCBTileIndexFromLoops(
+              insertPt, rewriter, viewTy.getRank());
+          if (succeeded(recomputedIdx)) {
+            packCbTileIndex = *recomputedIdx;
+          } else {
+            packCbTileIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+          }
+        }
+
+        rewriter.create<ttk::PackTileOp>(loc, accDstIdx, cb, packCbTileIndex,
                                          /*out_of_order=*/true);
 
         packed.push_back(accIdx);

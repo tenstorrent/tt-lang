@@ -655,6 +655,14 @@ def _compile_ttnn_kernel(
     # Check if input args use f32 to auto-configure compute kernels
     has_f32 = _has_float32_args(args)
 
+    # Check if any compute function has fp32_dest_acc_en set by the MLIR
+    # pipeline (e.g., for accumulation groups that need f32 DST precision).
+    mlir_fp32_dest_acc = False
+    for op in module.body.operations:
+        if hasattr(op, "attributes") and "fp32_dest_acc_en" in op.attributes:
+            mlir_fp32_dest_acc = True
+            break
+
     # Build thread-to-kernel mapping for profiling
     # Maps RISC thread names to kernel names
     thread_to_kernel = {}
@@ -670,12 +678,11 @@ def _compile_ttnn_kernel(
                 config.fp32_dest_acc_en = fp32_dest_acc_en
             if dst_full_sync_en is not None:
                 config.dst_full_sync_en = dst_full_sync_en
-            if fp32_dest_acc_en is None and has_f32:
+            if fp32_dest_acc_en is None and (has_f32 or mlir_fp32_dest_acc):
                 config.fp32_dest_acc_en = True
                 if verbose:
-                    print(
-                        "  [fp32 detected] Enabling fp32_dest_acc_en for compute kernel"
-                    )
+                    reason = "f32 tensors" if has_f32 else "accumulation group"
+                    print(f"  [{reason}] Enabling fp32_dest_acc_en for compute kernel")
             # Compute kernels run on TRISC threads
             thread_to_kernel["TRISC_0"] = name
             thread_to_kernel["TRISC_1"] = name
@@ -1123,6 +1130,7 @@ def _compile_kernel(
 
         pipeline_passes = [
             "func.func(convert-ttl-to-compute)",
+            "func.func(ttl-form-accumulation-groups)",
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",
         ]

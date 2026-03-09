@@ -64,15 +64,31 @@ struct TTLSetComputeKernelConfigPass
 
     for (ComputeOp computeOp : funcOp.getOps<ComputeOp>()) {
 
-      // Set fp32_dest_acc_en if any tile arg is f32
+      // Set fp32_dest_acc_en if any tile arg is f32 or if the compute is in
+      // an accumulation group.  Accumulation groups use DST registers across
+      // multiple computes (fill_tile + add_binary_tile + pack_tile), so DST
+      // must be explicitly configured to avoid inheriting stale data format
+      // routing from a prior kernel.  Using f32 precision also avoids bf16
+      // rounding per accumulation step.
       setBoolAttrIf(computeOp, kFp32DestAccEnAttrName, true, [&](ComputeOp op) {
-        return fp32DestAccEn || hasF32TileArgs(op);
+        return fp32DestAccEn || hasF32TileArgs(op) ||
+               op->hasAttr(kAccGroupIdAttrName);
       });
 
       // Set dst_full_sync_en if not already set
       setBoolAttrIf(computeOp, kDstFullSyncEnAttrName, dstFullSyncEn);
 
       // Add other runtime configuration attributes as needed below
+    }
+
+    // Propagate fp32_dest_acc_en to the function level so the runtime can
+    // query it after the pipeline has lowered compute ops away.
+    for (ComputeOp computeOp : funcOp.getOps<ComputeOp>()) {
+      if (computeOp->hasAttr(kFp32DestAccEnAttrName)) {
+        funcOp->setAttr(kFp32DestAccEnAttrName,
+                        BoolAttr::get(funcOp.getContext(), true));
+        break;
+      }
     }
   }
 };
