@@ -141,9 +141,8 @@ jobs:
           docker pull "$BASE_IMAGE"
           echo "BASE_IMAGE=$BASE_IMAGE" >> $GITHUB_ENV
 
-      - name: Build LLVM + tt-metal (configure)
+      - name: Configure tt-lang
         run: |
-          echo "=== Configuring with cached LLVM + tt-metal ==="
           df -h
           docker run --rm \
             -v ${{ github.workspace }}:/workspace \

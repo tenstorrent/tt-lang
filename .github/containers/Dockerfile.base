@@ -40,7 +40,7 @@ apt-get install -y -qq \
     jq \
     sudo \
     lcov \
-    zstd \
+    zstd libzstd-dev \
     unzip \
     ca-certificates \
     gnupg
