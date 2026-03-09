@@ -34,14 +34,11 @@ jobs:
                 shell: bash
 
         steps:
-            - name: Maximize space
-              uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
-
             - name: Checkout tt-lang
               uses: actions/checkout@v4
               with:
                   submodules: recursive
-                  fetch-depth: 0
+                  fetch-depth: 1
 
             - name: Setup Python 3.12
               uses: actions/setup-python@v5

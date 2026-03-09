@@ -38,7 +38,7 @@ jobs:
         with:
           ref: ${{ inputs.ttlang_sha_override || github.sha }}
           submodules: recursive
-          fetch-depth: 0
+          fetch-depth: 1
           fetch-tags: true
 
       - name: Check if Docker image exists
@@ -60,7 +60,7 @@ jobs:
         with:
           ref: ${{ inputs.ttlang_sha_override || github.sha }}
           submodules: recursive
-          fetch-depth: 0
+          fetch-depth: 1
           fetch-tags: true
 
       - name: Log in to GitHub Container Registry
@@ -101,14 +101,11 @@ jobs:
       docker-image: ${{ steps.build-dist.outputs.docker-image }}
 
     steps:
-      - name: Maximize space
-        uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
-
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ttlang_sha_override || github.sha }}
           submodules: recursive
-          fetch-depth: 0
+          fetch-depth: 1
           fetch-tags: true
 
       - name: Free up some more space

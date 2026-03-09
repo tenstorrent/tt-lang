@@ -35,52 +35,14 @@ jobs:
       CMAKE_BUILD_PARALLEL_LEVEL: 2
 
     steps:
-      - name: Maximize space
-        uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
-
-      - name: Checkout tt-lang
+      - name: Checkout tt-lang (without submodules)
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-              build-essential \
-              libhwloc-dev libyaml-cpp-dev libboost-all-dev \
-              libtbb-dev libcapstone-dev \
-              cmake ninja-build ccache pkg-config \
-              python3-venv python3-dev \
-              wget zstd
-
-      - name: Setup Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install Clang 17
-        run: |
-          wget https://apt.llvm.org/llvm.sh
-          chmod u+x llvm.sh
-          sudo ./llvm.sh 17
-          sudo apt-get install -y libc++-17-dev libc++abi-17-dev
-          sudo ln -sf /usr/bin/clang-17 /usr/bin/clang
-          sudo ln -sf /usr/bin/clang++-17 /usr/bin/clang++
-          rm -f llvm.sh
-
-      - name: Fix git safe directory for submodules
-        run: git config --global --add safe.directory '*'
-
-      - name: Prepare toolchain directory
-        run: sudo install -d -o $(id -u) -g $(id -g) /opt/ttlang-toolchain
 
       - name: Extract submodule SHAs for cache keys
         id: submodule-shas
         run: |
-          LLVM_SHA=$(git -C third-party/llvm-project rev-parse --short=7 HEAD)
-          TTMETAL_SHA=$(git -C third-party/tt-metal rev-parse --short=7 HEAD)
+          LLVM_SHA=$(git ls-tree HEAD third-party/llvm-project | awk '{print substr($3,1,7)}')
+          TTMETAL_SHA=$(git ls-tree HEAD third-party/tt-metal | awk '{print substr($3,1,7)}')
           CACHE_KEY="Linux-toolchain_llvm-${LLVM_SHA}_ttmetal-${TTMETAL_SHA}"
           echo "llvm-sha=$LLVM_SHA" >> $GITHUB_OUTPUT
           echo "ttmetal-sha=$TTMETAL_SHA" >> $GITHUB_OUTPUT
@@ -96,7 +58,50 @@ jobs:
           path: /opt/ttlang-toolchain
           key: ${{ steps.submodule-shas.outputs.cache-key }}
 
-      - name: Configure (builds LLVM + tt-metal on cache miss)
+      # Everything below only runs on cache miss
+      - name: Checkout submodules
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: git submodule update --init --recursive --depth 1
+
+      - name: Install system dependencies
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+              build-essential \
+              libhwloc-dev libyaml-cpp-dev libboost-all-dev \
+              libtbb-dev libcapstone-dev \
+              cmake ninja-build ccache pkg-config \
+              python3-venv python3-dev \
+              wget zstd
+
+      - name: Setup Python 3.12
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Clang 17
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod u+x llvm.sh
+          sudo ./llvm.sh 17
+          sudo apt-get install -y libc++-17-dev libc++abi-17-dev
+          sudo ln -sf /usr/bin/clang-17 /usr/bin/clang
+          sudo ln -sf /usr/bin/clang++-17 /usr/bin/clang++
+          rm -f llvm.sh
+
+      - name: Fix git safe directory for submodules
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: git config --global --add safe.directory '*'
+
+      - name: Prepare toolchain directory
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: sudo install -d -o $(id -u) -g $(id -g) /opt/ttlang-toolchain
+
+      - name: Configure (builds LLVM + tt-metal)
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
           cmake -G Ninja -B build \
               -DCMAKE_BUILD_TYPE=Release \

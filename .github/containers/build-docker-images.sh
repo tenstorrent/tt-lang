@@ -73,7 +73,12 @@ echo "No cache: $NO_CACHE"
 echo ""
 
 # Get version from git tags (e.g., v0.1.0 or v0.1.0-5-gabc1234 for dev builds)
-TTLANG_VERSION=$(git describe --tags --match "v[0-9]*" --always --dirty 2>/dev/null || echo "v0.0.0-unknown")
+TTLANG_VERSION=$(git describe --tags --match "v[0-9]*" --always --dirty 2>/dev/null || true)
+if [ -z "$TTLANG_VERSION" ]; then
+    echo "ERROR: Could not determine version from git tags."
+    echo "Ensure the checkout includes tags (fetch-tags: true) and sufficient history."
+    exit 1
+fi
 echo "tt-lang version: $TTLANG_VERSION"
 
 # Docker tag is the git version (sanitized for Docker - replace / and : with -)

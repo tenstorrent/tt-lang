@@ -252,6 +252,19 @@ else()
          FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
                           GROUP_READ GROUP_EXECUTE
                           WORLD_READ WORLD_EXECUTE)
+
+    # Install the lit Python package into the venv. The generated llvm-lit
+    # script locates lit via a relative path into the LLVM source tree, which
+    # won't exist when running from a cached toolchain install on a different
+    # runner. Installing lit as a proper package makes it importable anywhere.
+    execute_process(
+      COMMAND "${_VENV_PYTHON}" -m pip install
+        "${LLVM_SUBMODULE_DIR}/llvm/utils/lit" --quiet
+      RESULT_VARIABLE _LIT_INSTALL_RESULT
+    )
+    if(NOT _LIT_INSTALL_RESULT EQUAL 0)
+      message(WARNING "Failed to pip-install lit from LLVM source tree")
+    endif()
   endif()
 
   # Now find the freshly installed MLIR.
