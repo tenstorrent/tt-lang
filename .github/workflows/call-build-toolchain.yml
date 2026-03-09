@@ -3,12 +3,6 @@ name: Configure Toolchain
 on:
   workflow_call:
     outputs:
-      llvm-sha:
-        description: "Short SHA of LLVM submodule"
-        value: ${{ jobs.configure-deps.outputs.llvm-sha }}
-      ttmetal-sha:
-        description: "Short SHA of tt-metal submodule"
-        value: ${{ jobs.configure-deps.outputs.ttmetal-sha }}
       cache-key:
         description: "Toolchain cache key"
         value: ${{ jobs.configure-deps.outputs.cache-key }}
@@ -23,8 +17,6 @@ jobs:
     timeout-minutes: 360
 
     outputs:
-      llvm-sha: ${{ steps.submodule-shas.outputs.llvm-sha }}
-      ttmetal-sha: ${{ steps.submodule-shas.outputs.ttmetal-sha }}
       cache-key: ${{ steps.submodule-shas.outputs.cache-key }}
 
     defaults:
