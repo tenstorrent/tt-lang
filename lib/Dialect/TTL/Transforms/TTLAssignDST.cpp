@@ -463,10 +463,9 @@ static void buildLiveIntervals(Block *body,
   // FPU binary ops (add_tiles, mul_tiles, sub_tiles) accumulate into their
   // output DST register: result = old_DST_value + computed_value. If two FPU
   // binary ops share the same DST output index, the second reads the first's
-  // residual and produces a corrupted result. tt-mlir's D2M dialect solves
-  // this by never allowing in-place DST reuse for binary tile-tile ops
-  // (getDstRegInPlace() = false). We achieve the same by extending FPU binary
-  // result intervals so the linear scan allocator assigns distinct registers.
+  // residual and produces a corrupted result. We prevent this by extending
+  // FPU binary result intervals so the linear scan allocator assigns distinct
+  // registers.
   //
   // TODO(#343): This wastes DST capacity. The proper fix is to pass
   // acc_to_dest=false to add_tiles_init/sub_tiles_init/mul_tiles_init in
