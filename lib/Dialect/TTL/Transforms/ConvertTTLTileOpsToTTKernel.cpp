@@ -354,8 +354,8 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
         rewriter.create<arith::ConstantIndexOp>(loc, dstIdxAttr.getInt());
 
     // CB tile index from enclosing loops.  The same index is used for
-    // lhs and rhs because FPU-marked ops only appear under parallel
-    // (lockstep) iteration with identity indexing maps.
+    // lhs and rhs because TTLAssignDST only marks ops as FPU-eligible
+    // when both operands have identical indexing maps.
     auto cbIdx =
         utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
     if (failed(cbIdx)) {
