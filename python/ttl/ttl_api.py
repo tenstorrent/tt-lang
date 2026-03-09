@@ -773,6 +773,8 @@ def _collect_captures(
             return val
         elif isinstance(val, PipeNet):
             return val
+        elif callable(val):
+            return val
         else:
             raise TypeError(f"Unhandled capture for vars of type({type(val)})")
 

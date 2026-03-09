@@ -7,7 +7,7 @@
 # RUN: FileCheck %s < %t.initial.mlir
 
 """
-PipeNet scatter test: verifies the callback API pattern.
+PipeNet scatter test: verifies the spec's callback API pattern.
 
 Core (0,0) multicasts input to cores (1,0)-(3,0) via PipeNet.
 Workers compute abs(x), then write to DRAM.
@@ -16,8 +16,8 @@ Grid layout (4x1):
   Core 0: Scatter source
   Cores 1-3: Workers (receive, compute, write)
 
-This test uses PipeNet.if_src/if_dst lambda callbacks instead of
-the 'with pipe.if_src():' block pattern.
+This test exercises both named function defs and lambda callbacks
+for PipeNet.if_src/if_dst, matching the spec examples.
 """
 
 import ttnn
@@ -45,9 +45,19 @@ def pipenet_scatter(inp, out):
     @ttl.datamovement()
     def dm_read():
         with inp_cb.reserve() as inp_blk:
-            scatter_net.if_src(lambda pipe: ttl.copy(inp[0, 0], inp_blk).wait())
-            scatter_net.if_src(lambda pipe: ttl.copy(inp_blk, pipe).wait())
-            scatter_net.if_dst(lambda pipe: ttl.copy(pipe, inp_blk).wait())
+            # Named function callbacks per the spec
+            def pipe_src(pipe):
+                tx = ttl.copy(inp[0, 0], inp_blk)
+                tx.wait()
+                tx2 = ttl.copy(inp_blk, pipe)
+                tx2.wait()
+
+            def pipe_dst(pipe):
+                tx = ttl.copy(pipe, inp_blk)
+                tx.wait()
+
+            scatter_net.if_src(pipe_src)
+            scatter_net.if_dst(pipe_dst)
 
     @ttl.datamovement()
     def dm_write():
@@ -67,14 +77,16 @@ def pipenet_scatter(inp, out):
 # PipeNet emits create_pipe + if_src for each pipe in the net
 # CHECK: ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0)
 # CHECK: ttl.if_src
+# CHECK: ttl.copy
+# CHECK: ttl.wait
+# CHECK: ttl.copy
+# CHECK: ttl.wait
 
-# Second if_src call
-# CHECK: ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0)
-# CHECK: ttl.if_src
-
-# if_dst call
+# if_dst callback
 # CHECK: ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0)
 # CHECK: ttl.if_dst
+# CHECK: ttl.copy
+# CHECK: ttl.wait
 
 
 if __name__ == "__main__":
