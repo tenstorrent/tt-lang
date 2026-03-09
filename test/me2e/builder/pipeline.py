@@ -42,9 +42,10 @@ def compile_ttl_to_ttkernel(
     device_pass = f"ttcore-register-device{{mock-system-desc-arch={mock_arch}}}"
 
     # Build assign-dst pass with options.
-    assign_dst_pass = "ttl-assign-dst"
-    if not enable_fpu_binary_ops:
-        assign_dst_pass = "ttl-assign-dst{enable-fpu-binary-ops=0}"
+    # NOTE: Pipeline pass ordering mirrors python/ttl/ttl_api.py and
+    # lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
+    fpu_flag = int(enable_fpu_binary_ops)
+    assign_dst_pass = f"ttl-assign-dst{{enable-fpu-binary-ops={fpu_flag}}}"
 
     # Build per-function passes.
     func_passes = [

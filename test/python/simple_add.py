@@ -236,6 +236,9 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP-SFPU: cb_reserve_back(get_compile_time_arg_val(2),
 # CHECK-CPP-SFPU: init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
 # CHECK-CPP-SFPU: tile_regs_acquire();
+# SFPU path loads tiles into DST via copy_tile before computing.
+# CHECK-CPP-SFPU: copy_tile_init(get_compile_time_arg_val(0));
+# CHECK-CPP-SFPU: copy_tile(get_compile_time_arg_val(0),
 # CHECK-CPP-SFPU: add_binary_tile_init();
 # CHECK-CPP-SFPU: add_binary_tile(
 # CHECK-CPP-SFPU: tile_regs_commit();

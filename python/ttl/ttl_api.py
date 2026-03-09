@@ -1117,9 +1117,10 @@ def _compile_kernel(
                 + "})"
             )
 
-        assign_dst_pass = "ttl-assign-dst"
-        if not compiler_options.enable_fpu_binary_ops:
-            assign_dst_pass = "ttl-assign-dst{enable-fpu-binary-ops=0}"
+        # NOTE: Pipeline pass ordering is mirrored in
+        # test/me2e/builder/pipeline.py and lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
+        fpu_flag = int(compiler_options.enable_fpu_binary_ops)
+        assign_dst_pass = f"ttl-assign-dst{{enable-fpu-binary-ops={fpu_flag}}}"
 
         pipeline_passes = [
             "func.func(convert-ttl-to-compute)",

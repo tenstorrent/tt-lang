@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import os
 import sys
-from typing import Optional
+from typing import Optional, Sequence
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -45,7 +46,7 @@ def _make_parser() -> argparse.ArgumentParser:
 _PARSER = _make_parser()
 
 
-def _parse_explicit(tokens: list, *, reject_unknown: bool = False) -> dict:
+def _parse_explicit(tokens: Sequence[str], *, reject_unknown: bool = False) -> dict:
     """Parse *tokens* and return only the fields that were explicitly set."""
     if reject_unknown:
         ns, unknown = _PARSER.parse_known_args(tokens)
@@ -104,8 +105,9 @@ class CompilerOptions:
         """
         # Only intercept --help when the script is run directly
         # (not under pytest, lit, or other test runners).
+        prog = os.path.basename(sys.argv[0])
         if "--help" in sys.argv[1:] and not any(
-            runner in sys.argv[0] for runner in ("pytest", "py.test", "lit")
+            runner in prog for runner in ("pytest", "py.test", "lit")
         ):
             print("TTL compiler options:\n")
             print(CompilerOptions.usage())

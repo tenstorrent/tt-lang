@@ -7,12 +7,12 @@
 //===----------------------------------------------------------------------===//
 //
 // Lowers TTL tile-level operations to TTKernel using DialectConversion.
-// This file covers compute ops (unary SFPU, binary SFPU, broadcast), data
-// movement ops (copy_tile, copy_dst), and DST register lifecycle ops
-// (tile_regs_acquire/commit/wait/release).
+// This file covers compute ops (unary SFPU, binary SFPU, FPU binary,
+// broadcast), data movement ops (copy_tile, copy_dst), and DST register
+// lifecycle ops (tile_regs_acquire/commit/wait/release).
 //
-// Unary and binary compute ops are lowered via generic template patterns
-// instantiated from TTLElementwiseOps.def.
+// Unary, binary SFPU, and FPU binary compute ops are lowered via generic
+// template patterns instantiated from TTLElementwiseOps.def.
 //
 //===----------------------------------------------------------------------===//
 

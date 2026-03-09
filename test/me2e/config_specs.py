@@ -155,6 +155,14 @@ CONFIGS = [
     TestConfig(num_tiles=4, block_h=2, block_w=2, maximize_dst=False),
     # SFPU path: FPU binary detection disabled (all binary ops use copy_tile + SFPU).
     TestConfig(num_tiles=4, block_h=2, block_w=2, enable_fpu_binary_ops=False),
+    # Both disabled: basic loop lowering with SFPU binary path.
+    TestConfig(
+        num_tiles=4,
+        block_h=2,
+        block_w=2,
+        maximize_dst=False,
+        enable_fpu_binary_ops=False,
+    ),
     # TODO(#123): Enable 8x8 config once tile index lowering is fixed.
     # Currently fails with high ULP errors - tensor_slice indices don't correctly
     # map to tile offsets in the C++ lowering for grids larger than 2x2.

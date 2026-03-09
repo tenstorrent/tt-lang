@@ -648,6 +648,11 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       // block arguments (CB-backed). FPU reads from CB, needing 0 DST input
       // slots. Output block arguments are excluded because they may represent
       // accumulation patterns that require DST copy_tile.
+      //
+      // TODO: Support mixed operands (one CB, one DST) via
+      // ttkernel.binary_dest_reuse_tiles with DEST_TO_SRCA/DEST_TO_SRCB.
+      // This would allow FPU lowering for patterns like
+      // tile_add %arg0, %computed where one operand is already in DST.
       LLVM_DEBUG(llvm::dbgs() << "=== Phase 0: FPU Binary Detection ===\n");
       if (enableFPUBinaryOps) {
         unsigned numInputs = computeOp.getNumInputs();

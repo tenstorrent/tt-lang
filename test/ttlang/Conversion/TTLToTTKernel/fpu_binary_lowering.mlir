@@ -87,21 +87,135 @@ func.func @fpu_add_2x2()
 // -----
 
 // =============================================================================
-// Test 2: FPU binary add + unary tanh chain (2x3 f32)
+// Test 2: FPU binary sub (1x1 bf16)
 // =============================================================================
-// FPU path: dstPerIteration=1 (FPU add uses 0 DST inputs, tanh in-place),
-// f32 capacity=4, unroll_factor=min(4,6)=4.
-// Subblock [2,2] (product=4), outer loop on d1.
+// Verifies tile_sub maps to sub_tiles (not sub_binary_tile) on the FPU path.
+
+// FPU-LABEL: func.func @fpu_sub_1x1
+// FPU: ttkernel.binary_op_init_common
+// FPU: ttkernel.tile_regs_acquire
+// FPU-NOT: ttkernel.copy_tile
+// FPU: ttkernel.sub_tiles_init
+// FPU: ttkernel.sub_tiles
+// FPU: ttkernel.tile_regs_commit
+
+// SFPU-LABEL: func.func @fpu_sub_1x1
+// SFPU: ttkernel.init_sfpu
+// SFPU: ttkernel.tile_regs_acquire
+// SFPU: ttkernel.copy_tile
+// SFPU: ttkernel.sub_binary_tile_init
+// SFPU: ttkernel.sub_binary_tile
+
+#map_sub = affine_map<(d0, d1) -> (d0, d1)>
+func.func @fpu_sub_1x1()
+    attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [],
+                ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %lhs_ready = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %lhs = ttl.attach_cb %lhs_ready, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %rhs_ready = ttl.cb_wait %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %rhs = ttl.attach_cb %rhs_ready, %cb2 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out_view = ttl.cb_reserve %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out = ttl.attach_cb %out_view, %cb1 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %empty = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out_cb = ttl.attach_cb %empty, %cb1 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %result = ttl.compute
+      ins(%lhs, %rhs : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                        tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      outs(%out_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      {indexing_maps = [#map_sub, #map_sub, #map_sub],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%lhs_tile: !ttcore.tile<32x32, bf16>,
+       %rhs_tile: !ttcore.tile<32x32, bf16>,
+       %out_tile: !ttcore.tile<32x32, bf16>):
+    %diff = ttl.tile_sub %lhs_tile, %rhs_tile : !ttcore.tile<32x32, bf16>
+    ttl.tile_store %diff, %out_view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.yield
+  } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// -----
+
+// =============================================================================
+// Test 3: FPU binary mul (1x1 bf16)
+// =============================================================================
+// Verifies tile_mul maps to mul_tiles (not mul_binary_tile) on the FPU path.
+
+// FPU-LABEL: func.func @fpu_mul_1x1
+// FPU: ttkernel.binary_op_init_common
+// FPU: ttkernel.tile_regs_acquire
+// FPU-NOT: ttkernel.copy_tile
+// FPU: ttkernel.mul_tiles_init
+// FPU: ttkernel.mul_tiles
+// FPU: ttkernel.tile_regs_commit
+
+// SFPU-LABEL: func.func @fpu_mul_1x1
+// SFPU: ttkernel.init_sfpu
+// SFPU: ttkernel.tile_regs_acquire
+// SFPU: ttkernel.copy_tile
+// SFPU: ttkernel.mul_binary_tile_init
+// SFPU: ttkernel.mul_binary_tile
+
+#map_mul = affine_map<(d0, d1) -> (d0, d1)>
+func.func @fpu_mul_1x1()
+    attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [],
+                ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %lhs_ready = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %lhs = ttl.attach_cb %lhs_ready, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %rhs_ready = ttl.cb_wait %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %rhs = ttl.attach_cb %rhs_ready, %cb2 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out_view = ttl.cb_reserve %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out = ttl.attach_cb %out_view, %cb1 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %empty = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out_cb = ttl.attach_cb %empty, %cb1 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %result = ttl.compute
+      ins(%lhs, %rhs : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                        tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      outs(%out_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      {indexing_maps = [#map_mul, #map_mul, #map_mul],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%lhs_tile: !ttcore.tile<32x32, bf16>,
+       %rhs_tile: !ttcore.tile<32x32, bf16>,
+       %out_tile: !ttcore.tile<32x32, bf16>):
+    %prod = ttl.tile_mul %lhs_tile, %rhs_tile : !ttcore.tile<32x32, bf16>
+    ttl.tile_store %prod, %out_view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.yield
+  } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// -----
+
+// =============================================================================
+// Test 4: FPU binary add + unary tanh chain (2x3 f32)
+// =============================================================================
+// FPU path: dstPerIteration=1 (FPU add uses 0 DST inputs, tanh in-place).
+// f32 capacity=4, 2x3=6 tiles total. Subblock processes 3 tiles per
+// iteration with an outer loop of 2 iterations over rows.
 //
-// SFPU path: dstPerIteration=2 (copy lhs + copy rhs + SFPU add),
+// SFPU path: dstPerIteration=2 (copy lhs + copy rhs for SFPU add).
 // f32 capacity=4, unroll_factor=min(2,6)=2.
-// Subblock [2,1], outer loop on d1.
 
 // FPU-LABEL: func.func @fpu_add_tanh_f32
+// FPU-DAG: %[[C0:.*]] = arith.constant 0 : index
+// FPU-DAG: %[[C1:.*]] = arith.constant 1 : index
+// FPU-DAG: %[[C2:.*]] = arith.constant 2 : index
 // FPU: ttkernel.binary_op_init_common
-// FPU: scf.for
+// Outer loop: 2 iterations (one per row of the 2x3 grid).
+// FPU: scf.for %{{.*}} = %[[C0]] to %[[C2]] step %[[C1]]
 // FPU:   ttkernel.tile_regs_acquire
 // FPU:   ttkernel.add_tiles_init
+// 3 add_tiles per iteration (one per column).
+// FPU:   ttkernel.add_tiles
+// FPU:   ttkernel.add_tiles
 // FPU:   ttkernel.add_tiles
 // FPU:   ttkernel.tanh_tile_init
 // FPU:   ttkernel.tanh_tile
