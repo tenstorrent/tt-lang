@@ -27,6 +27,15 @@ def _get_constant_int(val):
     raise ValueError(f"Expected int or arith.ConstantOp, got {type(val)}")
 
 
+def _get_constant_float(val):
+    """Extract Python float from MLIR arith.ConstantOp or return as-is if already float."""
+    if isinstance(val, (float, int)):
+        return float(val)
+    if isinstance(val, arith.ConstantOp):
+        return float(val.literal_value)
+    raise ValueError(f"Expected float or arith.ConstantOp, got {type(val)}")
+
+
 # Type aliases for common patterns
 CoreCoordinate = Tuple[int, int]
 IndexedTensor = Union["TensorBlock", Tuple["TensorBlock", Tuple[int, ...]]]
@@ -651,6 +660,17 @@ def power(input: TensorBlock, exponent) -> TensorBlock:
     return ttl.power(input.type, input, exp_attr)
 
 
+@syntax("fill")
+def fill(output: TensorBlock, value) -> TensorBlock:
+    """Fill a tensor with a constant f32 value."""
+    from ttmlir.ir import FloatAttr, F32Type
+
+    fill_val = _get_constant_float(value)
+    ctx = output.type.context
+    value_attr = FloatAttr.get(F32Type.get(ctx), fill_val)
+    return ttl.fill(output.type, value_attr)
+
+
 @syntax("where")
 def where(
     condition: TensorBlock, true_value: TensorBlock, false_value: TensorBlock
@@ -671,6 +691,7 @@ __all__ = [
     "reduce_sum",
     "reduce_max",
     "power",
+    "fill",
     "where",
     *_generated_all,
 ]

@@ -987,6 +987,40 @@ struct TTLTilePowerToTTKernel : OpConversionPattern<TilePowerOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Fill Tile Op Lowering
+//===----------------------------------------------------------------------===//
+
+struct TTLTileFillToTTKernel : OpConversionPattern<TileFillOp> {
+  using OpConversionPattern<TileFillOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileFillOp op, TileFillOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    int64_t dstIdx = dstIdxAttr.getInt();
+    Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
+
+    Value fillValue = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getF32FloatAttr(op.getValue().convertToFloat()));
+
+    rewriter.create<ttk::FillTileInitOp>(loc);
+    rewriter.create<ttk::FillTileOp>(loc, dstIdxVal, fillValue);
+
+    // Replace with an unrealized cast carrying dst_idx for tile_store.
+    auto cast = rewriter.create<mlir::UnrealizedConversionCastOp>(
+        loc, TypeRange{op.getResult().getType()}, ValueRange{dstIdxVal});
+    cast->setAttr(kDstIdxAttrName, dstIdxAttr);
+    rewriter.replaceOp(op, cast.getResult(0));
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Where Tile Op Lowering
 //===----------------------------------------------------------------------===//
 
@@ -1099,6 +1133,7 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // DST-based ops (no type converter needed).
   patterns.add<TTLTilePowerToTTKernel>(ctx);
+  patterns.add<TTLTileFillToTTKernel>(ctx);
   patterns.add<TTLTileWhereToTTKernel>(ctx);
 }
 
