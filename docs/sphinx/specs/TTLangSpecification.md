@@ -910,7 +910,7 @@ def matmul_read():
                     ):
                         # Print iteration state
 
-                        print("kt=", it)
+                        print("kt=", kt)
 
                         # Print the content of a_blk block
 
