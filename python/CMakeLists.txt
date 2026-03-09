@@ -152,16 +152,8 @@ add_custom_command(
 
 add_custom_target(TTLangGeneratedElementwise DEPENDS ${GENERATED_ELEMENTWISE_PY})
 
-# Check for Tenstorrent device at configure time
-ttlang_check_device_available(TTLANG_HAS_DEVICE)
-
-if(TTLANG_HAS_DEVICE)
-  set(TTLANG_HAS_DEVICE_INT 1)
-else()
-  set(TTLANG_HAS_DEVICE_INT 0)
-endif()
-
 # Python config file for various CMake-computed settings, e.g., device availability
+# (TTLANG_HAS_DEVICE and TTLANG_HAS_DEVICE_INT are set by top-level CMakeLists.txt)
 configure_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/ttl/config.py.in
   ${CMAKE_CURRENT_BINARY_DIR}/ttl/config.py

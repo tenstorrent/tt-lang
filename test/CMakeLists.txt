@@ -1,13 +1,5 @@
 # Lit Test configuration
-
-# Check for Tenstorrent device at configure time (must be before configure_lit_site_cfg)
-ttlang_check_device_available(TTLANG_HAS_DEVICE)
-
-if(TTLANG_HAS_DEVICE)
-  set(TTLANG_HAS_DEVICE_INT 1)
-else()
-  set(TTLANG_HAS_DEVICE_INT 0)
-endif()
+# (TTLANG_HAS_DEVICE and TTLANG_HAS_DEVICE_INT are set by top-level CMakeLists.txt)
 
 # Generate pytest.ini with correct build directory paths.
 configure_file(
