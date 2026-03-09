@@ -650,6 +650,10 @@ class TTLGenericCompiler(TTCompilerBase):
                     self.symbol_tables[-1][name] = arith.ConstantOp(
                         IndexType.get(self.ctx), val
                     )
+                elif isinstance(val, float):
+                    self.symbol_tables[-1][name] = arith.ConstantOp(
+                        F32Type.get(self.ctx), val
+                    )
                 elif isinstance(val, CircularBuffer):
                     cb_val = self._emit_cb_from_capture(val)
                     self.symbol_tables[-1][name] = cb_val

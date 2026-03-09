@@ -119,6 +119,10 @@ static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *elementwiseOp,
   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
+  // FillOp: no tile operands, just a value attribute.
+  if (auto fillOp = dyn_cast<FillOp>(elementwiseOp))
+    return b.create<TileFillOp>(loc, tileType, fillOp.getValueAttr());
+
   return nullptr;
 }
 
@@ -261,8 +265,16 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // Position compute after all reserves by inserting before the last store.
   insertAtLastStore(rewriter, sinkOp);
 
-  // Create init tensor and attach to output CB
-  Value init = buildInitTensor(rewriter, loc, type, trace.rootInputs[0]);
+  // Create init tensor and attach to output CB.
+  // Use the first root input as exemplar for dynamic dims. For fill-only
+  // chains with no root inputs, use tensor.empty directly (static shapes).
+  Value init =
+      trace.rootInputs.empty()
+          ? rewriter
+                .create<tensor::EmptyOp>(loc, type.getShape(),
+                                          type.getElementType())
+                .getResult()
+          : buildInitTensor(rewriter, loc, type, trace.rootInputs[0]);
   Value initAttached =
       rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
 
