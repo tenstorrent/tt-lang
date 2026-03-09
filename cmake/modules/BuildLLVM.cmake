@@ -290,5 +290,6 @@ set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 # ---------------------------------------------------------------------------
 add_custom_target(clean-llvm
   COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_BINARY_DIR}/llvm-build"
-  COMMENT "Removing LLVM build directory. Re-run cmake configure to rebuild."
+  COMMAND ${CMAKE_COMMAND} -E rm -rf "${LLVM_INSTALL_DIR}"
+  COMMENT "Removing LLVM build and install directories. Re-run cmake configure to rebuild."
 )

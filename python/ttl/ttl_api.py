@@ -548,7 +548,6 @@ class CompiledTTNNKernel:
 def _write_kernel_to_tmp(name: str, source: str) -> str:
     """Write kernel source to /tmp and return the file path."""
     import hashlib
-    import re
     import os
 
     content_hash = hashlib.md5(source.encode()).hexdigest()[:8]
@@ -584,7 +583,7 @@ def _compile_ttnn_kernel(
     Builds kernel paths, configs, and CB descriptors from compiled MLIR module.
 
     Args:
-        module: MLIR module after D2M pipeline (with EmitC kernels)
+        module: MLIR module after TTL pipeline (with EmitC kernels)
         args: Input/output tensors (used for shape/dtype info)
         grid: Grid dimensions tuple
         num_outs: Number of output tensors

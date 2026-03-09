@@ -142,10 +142,10 @@ do_build_and_install() {
 # ---- Phase: Finalize (normalize toolchain + cleanup) ----
 do_finalize() {
     echo "=== Normalizing and cleaning up toolchain ==="
-    if [ -f /tmp/normalize-ttmlir-install.sh ]; then
-        bash /tmp/normalize-ttmlir-install.sh "$TTLANG_TOOLCHAIN_DIR"
-    elif [ -f .github/scripts/normalize-ttmlir-install.sh ]; then
-        bash .github/scripts/normalize-ttmlir-install.sh "$TTLANG_TOOLCHAIN_DIR"
+    if [ -f /tmp/normalize-ttlang-install.sh ]; then
+        bash /tmp/normalize-ttlang-install.sh "$TTLANG_TOOLCHAIN_DIR"
+    elif [ -f .github/scripts/normalize-ttlang-install.sh ]; then
+        bash .github/scripts/normalize-ttlang-install.sh "$TTLANG_TOOLCHAIN_DIR"
     fi
 
     if [ -f /tmp/cleanup-toolchain.sh ]; then
@@ -154,12 +154,8 @@ do_finalize() {
         bash .github/containers/cleanup-toolchain.sh "$TTLANG_TOOLCHAIN_DIR"
     fi
 
-    # Clean up Python cache files
-    find "$TTLANG_TOOLCHAIN_DIR" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-    find "$TTLANG_TOOLCHAIN_DIR" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete 2>/dev/null || true
-
     # Clean up temp scripts
-    rm -f /tmp/normalize-ttmlir-install.sh /tmp/cleanup-toolchain.sh
+    rm -f /tmp/normalize-ttlang-install.sh /tmp/cleanup-toolchain.sh
 
     echo "=== Removing build directories ==="
     rm -rf build

@@ -395,7 +395,7 @@ class TTLGenericCompiler(TTCompilerBase):
             return (self._to_index_value(node), False)
 
     # Override to use i64 for all integer constants (attributes or not)
-    # D2M ops require i64, and this reduces casts throughout the pipeline
+    # TTL/TTKernel ops require i64, and this reduces casts throughout the pipeline
     def visit_Constant(self, node):
         as_attr = getattr(node, "_ttkernel_as_attr", False)
         op_constructor = IntegerAttr.get if as_attr else arith.ConstantOp
