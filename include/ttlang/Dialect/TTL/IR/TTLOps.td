@@ -916,6 +916,32 @@ def TTL_TilePowerOp : TTL_TileOp<"tile_power", [SameOperandsAndResultType,
 }
 
 //===----------------------------------------------------------------------===//
+// Fill Operation
+//===----------------------------------------------------------------------===//
+
+def TTL_FillOp : TTL_Op<"fill", [Pure]> {
+  let summary = "Fill a tensor with a constant value";
+  let description = [{
+    Fills all elements of a tensor with the given f32 value.
+    The output CB is determined by the ttl.store on this op's result.
+  }];
+  let arguments = (ins F32Attr:$value);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$value attr-dict `:` type($result)";
+}
+
+def TTL_TileFillOp : TTL_TileOp<"tile_fill", []> {
+  let summary = "Tile-level fill operation";
+  let description = [{
+    Fills a DST register tile with a constant f32 value.
+    Maps to ttkernel.fill_tile_init + ttkernel.fill_tile.
+  }];
+  let arguments = (ins F32Attr:$value);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$value attr-dict `:` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
 // Where Operation
 //===----------------------------------------------------------------------===//
 

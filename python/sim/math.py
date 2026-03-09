@@ -190,7 +190,7 @@ def _create_unary_op_wrapper(
 
 # Mapping of ttl.math unary operations to PyTorch functions
 # Only includes simple unary functions from TTLangSpecification.md
-# Note: abs and neg are operators (__abs__, __neg__), not ttl.math functions
+# Note: abs is an operator (__abs__), not a ttl.math function
 _TORCH_UNARY_OPS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     # Basic unary math functions (from spec)
     "exp": torch.exp,
@@ -203,6 +203,7 @@ _TORCH_UNARY_OPS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     "rsqrt": torch.rsqrt,
     "recip": torch.reciprocal,
     "floor": torch.floor,
+    "neg": torch.neg,
     # Trigonometric unary math functions (from spec)
     "tan": torch.tan,
     "tanh": torch.tanh,
@@ -831,3 +832,22 @@ def transpose(block: Block) -> Block:
     result_block = Block.from_list(reordered_tiles, shape=(N, M))
     track_source_blocks(result_block, block)
     return result_block
+
+
+def fill(block: Block, value: float) -> Block:
+    """Fill a block with a constant value.
+
+    Creates a new block with the same shape where every element is set to value.
+
+    Args:
+        block: Block whose shape and tile dimensions to match
+        value: Constant f32 value to fill with
+
+    Returns:
+        Block filled with the constant value
+    """
+    tiles = block.to_list()
+    result_tensors: List[Tensor] = [
+        Tensor(torch.full_like(t.to_torch(), value)) for t in tiles
+    ]
+    return Block.from_list(result_tensors, shape=block._shape)  # type: ignore[attr-defined]

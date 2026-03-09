@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Tests for transpose, power, and where operations.
+Tests for transpose, power, where, and fill operations.
 
 Tests these ops against NumPy/PyTorch equivalents with L1 memory configuration.
 """
@@ -162,6 +162,59 @@ def power_cube_kernel(inp, out):
 
 
 # =============================================================================
+# Fill Kernels
+# =============================================================================
+
+
+@ttl.kernel(grid=(1, 1))
+def fill_ones_kernel(inp, out):
+    """Fill output with 1.0 (inp is unused, required by runtime)."""
+    inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
+    @ttl.compute()
+    def compute_fn():
+        with out_cb.reserve() as o:
+            o.store(ttl.math.fill(o, 1.0))
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_cb.reserve() as inp_blk:
+            tx = ttl.copy(inp[0, 0], inp_blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_cb.wait() as out_blk:
+            tx = ttl.copy(out_blk, out[0, 0])
+            tx.wait()
+
+
+@ttl.kernel(grid=(1, 1))
+def fill_pi_kernel(inp, out):
+    """Fill output with 3.14 (inp is unused, required by runtime)."""
+    inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
+    @ttl.compute()
+    def compute_fn():
+        with out_cb.reserve() as o:
+            o.store(ttl.math.fill(o, 3.14))
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_cb.reserve() as inp_blk:
+            tx = ttl.copy(inp[0, 0], inp_blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_cb.wait() as out_blk:
+            tx = ttl.copy(out_blk, out[0, 0])
+            tx.wait()
+
+
+# =============================================================================
 # Where Kernels
 # =============================================================================
 
@@ -299,6 +352,41 @@ def test_power_cube(device):
     out = to_l1(out_torch, device)
 
     power_cube_kernel(inp, out)
+    result = ttnn.to_torch(out)
+
+    assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+
+
+# =============================================================================
+# Fill Tests
+# =============================================================================
+
+
+def test_fill_ones(device):
+    """Test fill operation with value=1.0."""
+    inp_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
+    out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
+    expected = torch.full((32, 32), 1.0, dtype=torch.bfloat16)
+
+    inp = to_l1(inp_torch, device)
+    out = to_l1(out_torch, device)
+
+    fill_ones_kernel(inp, out)
+    result = ttnn.to_torch(out)
+
+    assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+
+
+def test_fill_pi(device):
+    """Test fill operation with value=3.14."""
+    inp_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
+    out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
+    expected = torch.full((32, 32), 3.14, dtype=torch.bfloat16)
+
+    inp = to_l1(inp_torch, device)
+    out = to_l1(out_torch, device)
+
+    fill_pi_kernel(inp, out)
     result = ttnn.to_torch(out)
 
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)

@@ -1122,6 +1122,63 @@ struct LowerPowerToCompute : OpRewritePattern<PowerOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Fill Lowering Pattern
+//===----------------------------------------------------------------------===//
+
+struct LowerFillToCompute : OpRewritePattern<FillOp> {
+  using OpRewritePattern<FillOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(FillOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = getTensorType(op.getResult());
+    if (!type) {
+      return failure();
+    }
+
+    Value outCb = findOutputCB(op);
+    if (!outCb) {
+      return rewriter.notifyMatchFailure(
+          op, "fill requires a store to determine output CB");
+    }
+
+    Location loc = op.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    AffineMap identityMap =
+        AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
+    SmallVector<Attribute> maps = {AffineMapAttr::get(identityMap)};
+
+    SmallVector<Attribute> iterTypes(type.getRank(),
+                                     rewriter.getStringAttr("parallel"));
+
+    insertAtLastStore(rewriter, op);
+
+    // Static shapes only for fill (no exemplar needed for dynamic dims).
+    Value init = rewriter.create<tensor::EmptyOp>(loc, type.getShape(),
+                                                   type.getElementType());
+    Value initAttached =
+        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+
+    auto computeOp = rewriter.create<ComputeOp>(
+        loc, TypeRange{type}, ValueRange{}, ValueRange{initAttached},
+        rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+
+    Block *body = rewriter.createBlock(&computeOp.getBody());
+    Type scalarType = type.getElementType();
+    Type tileType = ttcore::TileType::get(scalarType);
+    body->addArgument(tileType, loc); // output tile (required by contract)
+
+    rewriter.setInsertionPointToStart(body);
+    Value result =
+        rewriter.create<TileFillOp>(loc, tileType, op.getValueAttr());
+    emitTileStores(rewriter, loc, result, op);
+    rewriter.create<YieldOp>(loc);
+    rewriter.replaceOp(op, computeOp.getResult(0));
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Where Lowering Pattern
 //===----------------------------------------------------------------------===//
 
@@ -1336,6 +1393,7 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
   patterns.add<LowerReduceToCompute>(ctx);
   patterns.add<LowerTransposeToCompute>(ctx);
   patterns.add<LowerPowerToCompute>(ctx);
+  patterns.add<LowerFillToCompute>(ctx);
   patterns.add<LowerWhereToCompute>(ctx);
   patterns.add<LowerStoreToCompute>(ctx);
 }
