@@ -65,6 +65,8 @@ add_mlir_dialect_library(MLIRTTMetalDialect
 
   LINK_LIBS PUBLIC
   MLIRTTCoreDialect
+  MLIRSCFDialect
+  MLIRTensorDialect
   MLIRSupport
 )
 
@@ -85,6 +87,7 @@ add_mlir_dialect_library(MLIRTTKernelDialect
   LINK_LIBS PUBLIC
   MLIRTTMetalDialect
   MLIRTTCoreDialect
+  MLIRSCFDialect
 )
 
 # ============================================================================
