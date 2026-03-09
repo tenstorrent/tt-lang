@@ -5,7 +5,7 @@ This directory contains Dockerfiles for building tt-lang container images.
 ## Images
 
 ### `tt-lang-base-ubuntu-22-04`
-Standalone base image built from `ubuntu:22.04` with Python 3.11, LLVM
+Standalone base image built from `ubuntu:22.04` with Python 3.12, LLVM
 toolchain, system libraries, and tt-lang Python dependencies (pydantic, torch,
 numpy, pytest). Small and fast to build; serves as the filesystem base for
 `dist` and `ird`.
@@ -51,35 +51,21 @@ ubuntu:22.04
      |
      v
 tt-lang-base-ubuntu-22-04
-  (Python 3.11, clang, system libs, Python deps)
+  (Python 3.12, clang, system libs, Python deps)
      |
-     +----------+-----------------------------+
-     |          |                             |
-     |     build-toolchain                  build
-     |    (configure only;            (full tt-lang
-     |     builds LLVM + tt-metal      build+install)
-     |     + tt-mlir from submodules)       |
-     |          |                             |
-    ird        ...                            |
- (toolchain only,                             |
-  + dev tools)                                |
-     +----------------------------------------+
-     |
-    dist
- (full tt-lang)
+     +---------------------+
+     |                     |
+    ird                   dist
+ (toolchain only,      (full tt-lang
+  + dev tools)          build+install)
 ```
 
-`dist` and `ird` use separate build stages. `build-toolchain` only runs cmake
-configure (which builds LLVM, tt-metal, and tt-mlir from submodules) without
-building tt-lang. `build` does the full configure + build + install. Docker only
-executes stages in the dependency chain of the requested target, so `--target
-ird` never builds tt-lang and `--target dist` never runs `build-toolchain`.
+Toolchain building (LLVM + tt-metal) happens outside Docker on CI runners.
+The pre-built toolchains are injected into the Dockerfile via `--build-context`
+arguments. The Dockerfile itself is purely a packaging step — it COPYs the
+pre-built toolchains into `ird` and `dist` images.
 
 ## CI Job Flow
-
-Each large-runner job builds a single Dockerfile target on a fresh runner with
-its own Docker daemon. This prevents layer cache accumulation across targets,
-which was the cause of disk exhaustion when all targets built on one runner.
 
 ```
 check-if-images-already-exist (ubuntu-latest)
@@ -87,21 +73,14 @@ check-if-images-already-exist (ubuntu-latest)
   |-- if any missing: sets docker-image='' to trigger builds
 
                         |
-                build-image-base (ubuntu-latest)
-                  docker build Dockerfile.base
-                  push tt-lang-base-ubuntu-22-04:$TAG
+                build-images (ubuntu-22.04)
+                  1. Build base image (Dockerfile.base)
+                  2. Build toolchains (LLVM + tt-metal) on host
+                  3. docker build --target ird (with --build-context)
+                  4. docker build --target dist (with --build-context)
+                  5. Push all images
                         |
-         +--------------+-----------------------+
-         |                                      |
-build-image-ird                        build-image-dist
-(mlir-large-runner-lang)               (mlir-large-runner-lang)
-  FRESH runner + Docker daemon           SEPARATE fresh runner + Docker daemon
-  docker build --target ird              docker build --target dist
-    build-toolchain + ird stages           build + dist stages
-  push tt-lang-ird-ubuntu-22-04:$TAG    push tt-lang-dist-ubuntu-22-04:$TAG
-         +--------------+---------------------+
-                        | (on push to main only)
-                  set-latest-tag
+                  set-latest-tag (on push to main only)
                     skopeo copy :$TAG -> :latest for base, dist, ird
 ```
 
@@ -131,8 +110,7 @@ docker run -it \
 - `entrypoint.sh` -- activates tt-lang environment on container start
 - `activate-install.sh` -- environment activation for installed tt-lang (used in containers)
 - `build-docker-images.sh` -- build/push script with `--image-type` filter
-- `build-docker-local.sh` -- build all images locally for testing
-- `cleanup-toolchain.sh` -- normalizes toolchain venv (e.g. lib64 symlink fix)
+- `cleanup-toolchain.sh` -- normalizes toolchain venv (lib64 symlink fix), strips LLVM binaries, and optionally removes headers/static libs for dist
 - `get-docker-tag.sh` -- generates deterministic Docker tags from submodule SHAs and file hashes
 - `test-docker-smoke.sh` -- quick smoke test for container functionality
 - `CONTAINER_README.md` -- welcome message shown inside the container

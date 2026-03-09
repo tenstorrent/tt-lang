@@ -19,7 +19,7 @@ To test your build, you can run all tests with `ninja -C build check-ttlang-all`
 
 ```bash
 source build/env/activate
-ninja -C build check-ttlang-lit      # MLIR lit tests
+ninja -C build check-ttlang-mlir     # MLIR lit tests
 ninja -C build check-ttlang-pytest   # Python pytest tests
 ```
 

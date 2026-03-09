@@ -18,7 +18,7 @@ python $TTLANG_TOOLCHAIN_DIR/examples/tutorial/multicore_grid_auto.py
 
 ## Available Tools
 
-`vim`, `nano`, `python` (3.11), `pytest`, `tt-smi`, `capture-release`, `csvexport-release` (Tracy profiler)
+`vim`, `nano`, `python` (3.12), `pytest`, `tt-smi`, `capture-release`, `csvexport-release` (Tracy profiler)
 
 ## Documentation
 
