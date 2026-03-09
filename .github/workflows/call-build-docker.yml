@@ -194,15 +194,14 @@ jobs:
           echo "=== tt-lang build complete ==="
           df -h
 
-      - name: Normalize dist toolchain
+      - name: Cleanup dist toolchain
         run: |
           docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
             -v /opt/ttlang-toolchain:/opt/ttlang-toolchain \
+            -w /workspace \
             "$BASE_IMAGE" \
-            bash -c "
-              find /opt/ttlang-toolchain -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-              find /opt/ttlang-toolchain -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete 2>/dev/null || true
-            "
+            bash .github/containers/cleanup-toolchain.sh /opt/ttlang-toolchain --dist
 
       - name: Clean up build dirs to free space before Docker build
         run: |

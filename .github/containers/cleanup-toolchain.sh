@@ -26,20 +26,26 @@ if [ -d "$TOOLCHAIN_DIR/venv/lib64" ] && [ ! -L "$TOOLCHAIN_DIR/venv/lib64" ]; t
 fi
 
 # ---- Strip unnecessary LLVM binaries ----
-# tt-lang needs: FileCheck, not, count, llvm-lit (testing), mlir-opt,
-# mlir-translate (debugging). Everything else (lld, llc, opt, mlir-reduce,
-# mlir-rewrite, mlir-query, mlir-lsp-server, etc.) is not needed.
+# tt-lang needs these binaries to actually function:
+#   FileCheck, not, count (lit testing), llvm-lit, mlir-opt, mlir-translate
+#   (debugging), llvm-tblgen, mlir-tblgen, mlir-linalg-ods-yaml-gen (cmake
+#   configure / tablegen).
+# Everything else is replaced with empty executable stubs so that cmake's
+# imported-target existence checks still pass.
 KEEP_BINS=(
     FileCheck
     not
     count
     llvm-lit
+    llvm-tblgen
+    mlir-linalg-ods-yaml-gen
     mlir-opt
+    mlir-tblgen
     mlir-translate
 )
 
 if [ -d "$TOOLCHAIN_DIR/bin" ]; then
-    echo "Stripping unnecessary LLVM binaries from bin/..."
+    echo "Replacing unnecessary LLVM binaries with stubs..."
     _before=$(du -sm "$TOOLCHAIN_DIR/bin" | cut -f1)
 
     for f in "$TOOLCHAIN_DIR/bin"/*; do
@@ -54,7 +60,14 @@ if [ -d "$TOOLCHAIN_DIR/bin" ]; then
         done
         if [ "$_keep" = false ]; then
             rm -f "$f"
+            touch "$f"
+            chmod +x "$f"
         fi
+    done
+
+    # Strip debug symbols from kept binaries
+    for _k in "${KEEP_BINS[@]}"; do
+        [ -f "$TOOLCHAIN_DIR/bin/$_k" ] && strip --strip-unneeded "$TOOLCHAIN_DIR/bin/$_k" 2>/dev/null || true
     done
 
     _after=$(du -sm "$TOOLCHAIN_DIR/bin" | cut -f1)

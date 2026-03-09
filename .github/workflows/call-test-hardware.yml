@@ -87,14 +87,32 @@ jobs:
           tar -I 'zstd --long=31' -xf "${ARTIFACT_FILE}"
           rm -f "${ARTIFACT_FILE}"
 
+      - name: Fix activate paths for container
+        run: |
+          echo "=== Before fix ==="
+          echo "Container workspace: $(pwd)"
+          grep -E 'PYTHONPATH|CMAKE_BINARY|TT_LANG_HOME' build/env/activate | head -10
+          echo ""
+          .github/scripts/fix-activate-paths.sh
+          echo ""
+          echo "=== After fix ==="
+          grep -E 'PYTHONPATH|CMAKE_BINARY|TT_LANG_HOME' build/env/activate | head -10
+
       - name: Install test dependencies
         run: |
           source build/env/activate
+          echo "PYTHONPATH=$PYTHONPATH"
+          echo "PATH=$PATH"
+          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+          which python3
+          python3 -c "import sys; print('sys.path:', sys.path[:5])"
           pip install -r dev-requirements.txt
 
       - name: Smoketest
         run: |
           source build/env/activate
+          echo "Verifying ttl import..."
+          python3 -c "import ttl; print('ttl location:', ttl.__file__)"
           python3 test/python/smoketest.py
 
       - name: Single test (just python)
