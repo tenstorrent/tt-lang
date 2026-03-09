@@ -133,6 +133,8 @@ Concretely:
 
 ### Step 5: P2 Beautification (Safe Transformations Only)
 
+**Naming note:** TT-Lang calls them "dataflow buffers" (DFBs) at the Python level, but the generated TT-Metal C++ code uses the name "circular buffer" (CB). They are the same thing, just different names at different abstraction levels.
+
 IMPORTANT: only apply one transformation at a time. Running the kernel is cheap. You can iterate as much as you need to. Make targeted changes, test, and rollback if they break something.
 
 Apply ONLY these safe, mechanical transformations:
