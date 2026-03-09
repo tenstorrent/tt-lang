@@ -88,9 +88,7 @@ class TestMerge:
         base = CompilerOptions.from_string("--no-maximize-dst")
         override = CompilerOptions.from_string("--no-fpu-binary-ops")
         result = base.merge(override)
-        assert result._explicit == frozenset(
-            {"maximize_dst", "enable_fpu_binary_ops"}
-        )
+        assert result._explicit == frozenset({"maximize_dst", "enable_fpu_binary_ops"})
 
     def test_merge_defaults_onto_defaults(self):
         result = CompilerOptions().merge(CompilerOptions())
