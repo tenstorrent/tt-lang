@@ -8,16 +8,60 @@ This module provides Python classes for the Pipe and PipeNet abstractions
 as defined in the TT-Lang specification. The MLIR ops (ttl.create_pipe,
 ttl.if_src, ttl.if_dst) are implemented and lower to TTKernel.
 
-NOTE: Full DSL integration with PipeNet.if_src/if_dst callback API
-requires additional compiler support. The Python classes and MLIR ops
-are ready for use.
+PipeNet supports the spec's callback API:
+    net.if_src(lambda pipe: ttl.copy(blk, pipe))
+    net.if_dst(lambda pipe: ttl.copy(pipe, blk))
 """
 
-from typing import List, Tuple, Union
+from typing import Callable, List, Tuple, Union
 
 # Type aliases matching the spec
 CoreCoord = Tuple[int, int]
 CoreRange = Tuple[Union[int, slice], Union[int, slice]]
+
+
+class SrcPipeIdentity:
+    """
+    Pipe identity for source-side callbacks.
+
+    Passed to if_src callbacks to provide access to destination info.
+    Used with ttl.copy(block, pipe) to send data.
+    """
+
+    def __init__(self, pipe: "Pipe"):
+        self._pipe = pipe
+
+    @property
+    def dst(self) -> Union[CoreCoord, Tuple[CoreCoord, CoreCoord]]:
+        """Get destination: single coord for unicast, (start, end) for multicast."""
+        if self._pipe.is_unicast:
+            return self._pipe.dst_start
+        return (self._pipe.dst_start, self._pipe.dst_end)
+
+    @property
+    def dst_start(self) -> CoreCoord:
+        return self._pipe.dst_start
+
+    @property
+    def dst_end(self) -> CoreCoord:
+        return self._pipe.dst_end
+
+
+class DstPipeIdentity:
+    """
+    Pipe identity for destination-side callbacks.
+
+    Passed to if_dst callbacks to provide access to source info.
+    Used with ttl.copy(pipe, block) to receive data.
+    """
+
+    def __init__(self, pipe: "Pipe"):
+        self._pipe = pipe
+
+    @property
+    def src(self) -> CoreCoord:
+        """Get source core coordinate."""
+        return self._pipe.src
 
 
 class Pipe:
@@ -92,8 +136,8 @@ class PipeNet:
     """
     A network of pipes for multi-core communication patterns.
 
-    PipeNet groups multiple pipes and provides iteration methods
-    to access pipes for conditional execution.
+    PipeNet groups multiple pipes and provides if_src/if_dst methods
+    for conditional execution based on core coordinates.
 
     Args:
         pipes: List of Pipe objects defining the network
@@ -105,6 +149,10 @@ class PipeNet:
             for x in range(1, grid_x)
             for y in range(grid_y)
         ])
+
+        # In datamovement thread:
+        net.if_src(lambda pipe: ttl.copy(blk, pipe).wait())
+        net.if_dst(lambda pipe: ttl.copy(pipe, blk).wait())
     """
 
     def __init__(self, pipes: List[Pipe]):
@@ -115,3 +163,47 @@ class PipeNet:
     def __iter__(self):
         """Iterate over all pipes in the network."""
         return iter(self.pipes)
+
+    def if_src(self, callback: Callable[["SrcPipeIdentity"], None]) -> None:
+        """
+        Execute callback for each pipe where current core is source.
+
+        This method is compiled specially by the TTL compiler. At compile time,
+        it iterates over all pipes and emits conditional blocks for each pipe
+        where the current core matches the source coordinates.
+
+        Args:
+            callback: Function taking SrcPipeIdentity, called for matching pipes
+
+        Note:
+            This method should only be called inside a @ttl.datamovement thread.
+            The callback is invoked at compile time, not runtime.
+        """
+        # This is a marker method. The actual implementation is in ttl_ast.py
+        # which detects calls to this method and handles them specially.
+        raise RuntimeError(
+            "PipeNet.if_src() should only be called inside a TTL kernel. "
+            "The compiler handles this method specially."
+        )
+
+    def if_dst(self, callback: Callable[["DstPipeIdentity"], None]) -> None:
+        """
+        Execute callback for each pipe where current core is destination.
+
+        This method is compiled specially by the TTL compiler. At compile time,
+        it iterates over all pipes and emits conditional blocks for each pipe
+        where the current core falls within the destination range.
+
+        Args:
+            callback: Function taking DstPipeIdentity, called for matching pipes
+
+        Note:
+            This method should only be called inside a @ttl.datamovement thread.
+            The callback is invoked at compile time, not runtime.
+        """
+        # This is a marker method. The actual implementation is in ttl_ast.py
+        # which detects calls to this method and handles them specially.
+        raise RuntimeError(
+            "PipeNet.if_dst() should only be called inside a TTL kernel. "
+            "The compiler handles this method specially."
+        )

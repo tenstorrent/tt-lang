@@ -68,7 +68,7 @@ from ._src.tensor_registry import (
 )
 from ._src.ttl_ast import TTLGenericCompiler
 from .circular_buffer import CircularBuffer, get_cb_count
-from .pipe import Pipe
+from .pipe import Pipe, PipeNet
 from .constants import SUPPORTED_MEMORY_SPACES
 from .diagnostics import (
     TTLangCompileError,
@@ -770,6 +770,8 @@ def _collect_captures(
         elif isinstance(val, CircularBuffer):
             return val
         elif isinstance(val, Pipe):
+            return val
+        elif isinstance(val, PipeNet):
             return val
         else:
             raise TypeError(f"Unhandled capture for vars of type({type(val)})")
