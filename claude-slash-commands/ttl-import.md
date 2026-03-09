@@ -86,10 +86,10 @@ def fused_kernel(input, bias, out):
 
 Every TT-Lang kernel has exactly three threads that run concurrently:
 1. **Compute thread** (`@ttl.compute()`): Math operations on tiles in L1
-2. **Reader thread** (`@ttl.datamovement()`): Loads data from DRAM to circular buffers
-3. **Writer thread** (`@ttl.datamovement()`): Writes data from circular buffers to DRAM
+2. **Reader thread** (`@ttl.datamovement()`): Loads data from DRAM to dataflow buffers
+3. **Writer thread** (`@ttl.datamovement()`): Writes data from dataflow buffers to DRAM
 
-These threads synchronize via **circular buffers** (CBs).
+These threads synchronize via **dataflow buffers** (DFBs).
 
 ### Basic Kernel Template
 
@@ -147,10 +147,10 @@ def dm_read():
     # push happens automatically
 ```
 
-### Circular Buffer API Reference
+### Dataflow Buffer API Reference
 
 ```python
-# Create a circular buffer
+# Create a dataflow buffer
 dfb = ttl.make_dataflow_buffer_like(
     tensor,           # TTNN tensor to inherit dtype/layout from
     shape=(R, C),     # Block size in tiles (e.g., (2, 2) = 4 tiles per block)
@@ -758,7 +758,7 @@ if __name__ == "__main__":
 | GPU Concept | TT-Lang Equivalent |
 |------------|-------------------|
 | Thread block / workgroup | Grid of Tensix cores (`grid=(rows, cols)`) |
-| Shared memory | L1 via circular buffers |
+| Shared memory | L1 via dataflow buffers |
 | Global memory | DRAM with DMA transfers |
 | Warp/wave operations | Tile-level operations (32x32) |
 | `__syncthreads()` | DFB `wait()`/`push()` synchronization |
@@ -940,7 +940,7 @@ NOTE: it is possible that the sim and hw diverge which may require you to either
 **This is NOT PyTorch.** TT-Lang is a low-level DSL where you directly control memory management and synchronization. Operations may have unexpected semantics:
 
 - Ops might write in place
-- Ops might take circular buffers as arguments
+- Ops might take dataflow buffers as arguments
 - Ops might have different numerical behavior than PyTorch equivalents
 - Memory layouts matter (tilized, interleaved, etc.)
 
