@@ -66,9 +66,9 @@ __all__ = [
 def parse_def_file(def_path: Path) -> tuple[list[str], list[str]]:
     """Parse TTLElementwiseOps.def and extract operation names.
 
-    Handles both standard and special binary ops:
+    Handles standard, minmax, and unary ops:
     - TTL_BINARY_TILE_OP(Name, TileOp, TTKInit, TTKCompute)
-    - TTL_BINARY_TILE_OP_SPECIAL(Name, TileOp, TTKInit, TTKCompute)
+    - TTL_BINARY_TILE_OP_MINMAX(Name, TileOp, TTKInit, TTKCompute)
     - TTL_UNARY_TILE_OP(Name, TileOp, TTKInit, TTKCompute)
     """
     content = def_path.read_text()
@@ -76,10 +76,10 @@ def parse_def_file(def_path: Path) -> tuple[list[str], list[str]]:
     binary_ops = []
     unary_ops = []
 
-    # Match TTL_BINARY_TILE_OP(Name, ...), TTL_BINARY_TILE_OP_SPECIAL(Name, ...),
-    # and TTL_BINARY_TILE_OP_MINMAX(Name, ...) but skip #define lines
+    # Match TTL_BINARY_TILE_OP(Name, ...) and TTL_BINARY_TILE_OP_MINMAX(Name, ...)
+    # but skip #define lines
     for match in re.finditer(
-        r"^TTL_BINARY_TILE_OP(?:_SPECIAL|_MINMAX)?\((\w+),", content, re.MULTILINE
+        r"^TTL_BINARY_TILE_OP(?:_MINMAX)?\((\w+),", content, re.MULTILINE
     ):
         name = match.group(1).lower()
         # Skip macro parameter names (lowercase indicates it's a parameter)
