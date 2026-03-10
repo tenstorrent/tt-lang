@@ -86,6 +86,7 @@ struct PipeKeyHash {
 struct ReceiverCBInfo {
   int64_t cbIndex;       // CB index (0-31) used by receiver
   int64_t runtimeArgIdx; // Index in runtime args for receiver's CB address
+  int64_t gatherSlotIdx; // Slot index for gather patterns (0 if not gather)
 };
 
 /// Graph tracking pipe connections and receiver CB assignments.
@@ -119,7 +120,7 @@ public:
                      int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
                      int64_t cbIndex) {
     PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY};
-    receiverCBs[key] = {cbIndex, -1};
+    receiverCBs[key] = {cbIndex, -1, 0};
   }
 
   /// Assign runtime arg indices for all receiver CB addresses.
@@ -129,6 +130,44 @@ public:
       info.runtimeArgIdx = nextArgIdx++;
     }
     numPipeRuntimeArgs = nextArgIdx;
+  }
+
+  /// Assign gather slot indices for pipes sharing a destination.
+  /// When multiple sources send to the same unicast destination, each source
+  /// needs a different slot to avoid overwrites. Slot indices are assigned
+  /// sequentially (0-based) per destination group.
+  void assignGatherSlotIndices() {
+    // Group pipe keys by destination coordinates.
+    struct DstKey {
+      int64_t dstStartX, dstStartY, dstEndX, dstEndY;
+      bool operator==(const DstKey &o) const {
+        return dstStartX == o.dstStartX && dstStartY == o.dstStartY &&
+               dstEndX == o.dstEndX && dstEndY == o.dstEndY;
+      }
+    };
+    struct DstKeyHash {
+      std::size_t operator()(const DstKey &k) const {
+        return llvm::hash_combine(k.dstStartX, k.dstStartY, k.dstEndX,
+                                  k.dstEndY);
+      }
+    };
+    std::unordered_map<DstKey, SmallVector<PipeKey *>, DstKeyHash> groups;
+    for (auto &[key, info] : receiverCBs) {
+      DstKey dk{key.dstStartX, key.dstStartY, key.dstEndX, key.dstEndY};
+      groups[dk].push_back(const_cast<PipeKey *>(&key));
+    }
+    for (auto &[dk, keys] : groups) {
+      if (keys.size() <= 1) {
+        continue;
+      }
+      // Sort by source coordinates for deterministic slot assignment.
+      llvm::sort(keys, [](const PipeKey *a, const PipeKey *b) {
+        return std::tie(a->srcX, a->srcY) < std::tie(b->srcX, b->srcY);
+      });
+      for (int64_t i = 0; i < static_cast<int64_t>(keys.size()); ++i) {
+        receiverCBs[*keys[i]].gatherSlotIdx = i;
+      }
+    }
   }
 
   /// Emit pipe graph as JSON for Python to read and populate runtime args.
@@ -544,6 +583,7 @@ PipeGraph PipeGraph::build(ModuleOp mod) {
                         cbIndex);
   });
 
+  graph.assignGatherSlotIndices();
   graph.assignRuntimeArgIndices();
   return graph;
 }
@@ -901,10 +941,37 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   auto indexTy = rewriter.getIndexType();
   auto i32Ty = rewriter.getI32Type();
 
-  (void)receiverInfo;
   auto cbReadPtr = rewriter.create<ttk::GetReadPtrOp>(loc, *cbConverted);
   auto cbReadPtrIdx =
       rewriter.create<arith::IndexCastOp>(loc, indexTy, cbReadPtr);
+
+  // Resolve the destination L1 base address. When the receiver uses a
+  // different CB than the sender, we look up the receiver's CB read pointer
+  // so that multicast data lands at the correct L1 address on the destination.
+  // CB layout is uniform across cores, so the address is the same everywhere.
+  Value dstBaseIdx = cbReadPtrIdx;
+  if (receiverInfo) {
+    // Determine sender CB index to check if it differs from receiver.
+    // The source CB may be pre- or post-conversion, so check both BindCBOp
+    // (pre-conversion) and GetCompileArgValOp (post-conversion).
+    int64_t senderCBIndex = -1;
+    Value tracedSrc = traceUnrealizedCasts(srcCB);
+    if (auto bindOp = tracedSrc.getDefiningOp<BindCBOp>()) {
+      senderCBIndex = bindOp.getCbIndex().getSExtValue();
+    } else if (auto argOp =
+                   tracedSrc.getDefiningOp<ttk::GetCompileArgValOp>()) {
+      senderCBIndex = argOp.getArgIndex();
+    }
+    if (senderCBIndex >= 0 && senderCBIndex != receiverInfo->cbIndex) {
+      auto srcCBType = llvm::dyn_cast<ttk::CBType>(cbConverted->getType());
+      auto recvCB = rewriter.create<ttk::GetCompileArgValOp>(
+          loc, srcCBType, static_cast<int32_t>(receiverInfo->cbIndex));
+      auto recvReadPtr = rewriter.create<ttk::GetReadPtrOp>(loc, recvCB);
+      dstBaseIdx =
+          rewriter.create<arith::IndexCastOp>(loc, indexTy, recvReadPtr);
+    }
+  }
+
   auto pageSizeIdx =
       rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
 
@@ -933,18 +1000,10 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 
   SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
 
-  // For unicast gather pipes (srcX > dstX), each source writes to a different
-  // slot in the destination CB to avoid overwrites when multiple sources send
-  // to the same destination. Slot index = srcX - dstX - 1 (0-based).
-  // For forward pipes (srcX < dstX), slot offset is 0 since there's one source.
-  int64_t slotIdx = 0;
-  if (pipeType.isUnicast()) {
-    int64_t srcX = pipeType.getSrcX();
-    int64_t dstX = pipeType.getDstStartX();
-    if (srcX > dstX) {
-      slotIdx = srcX - dstX - 1;
-    }
-  }
+  // For gather patterns (multiple sources to one destination), each source
+  // writes to a different slot in the destination CB to avoid overwrites.
+  // Slot indices are assigned by PipeGraph based on actual destination sharing.
+  int64_t slotIdx = receiverInfo ? receiverInfo->gatherSlotIdx : 0;
   int64_t cbNumTiles = 1;
   for (int64_t d : cbBounds)
     cbNumTiles *= d;
@@ -961,10 +1020,10 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
         Value srcAddr =
             b.create<arith::IndexCastOp>(bodyLoc, i32Ty, srcAddrIdx);
 
-        // Compute destination address (same base as source, uniform CB layout).
+        // Compute destination address using the receiver's CB base address.
         // Add slot offset for gather patterns (multiple sources to one dest).
         Value dstAddrIdx =
-            b.create<arith::AddIOp>(bodyLoc, cbReadPtrIdx, byteOffset);
+            b.create<arith::AddIOp>(bodyLoc, dstBaseIdx, byteOffset);
         if (slotByteOffset > 0) {
           auto slotOffsetIdx =
               b.create<arith::ConstantIndexOp>(bodyLoc, slotByteOffset);
