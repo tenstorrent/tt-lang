@@ -128,6 +128,17 @@ do_copy_runtime_libs() {
     # toolchain so JIT device compilation works without nested submodules.
     bash scripts/copy-ttmetal-runtime-artifacts.sh \
         third-party/tt-metal "$TTMETAL_BUILD_DIR"
+
+    # Copy tt-metal source tree needed for JIT firmware compilation.
+    # The JIT build system resolves headers and firmware .cc files
+    # relative to TT_METAL_HOME, so the toolchain must contain the
+    # full tt_metal/ and ttnn/cpp/ subtrees (~89 MB).
+    echo "Copying tt-metal JIT source tree..."
+    TT_METAL_SRC="third-party/tt-metal"
+    cp -a "$TT_METAL_SRC/tt_metal" "$TTMETAL_BUILD_DIR/"
+    mkdir -p "$TTMETAL_BUILD_DIR/ttnn"
+    cp -a "$TT_METAL_SRC/ttnn/cpp" "$TTMETAL_BUILD_DIR/ttnn/"
+    echo "Copied tt-metal JIT source tree"
 }
 
 # ---- Phase: Build + Install tt-lang ----
