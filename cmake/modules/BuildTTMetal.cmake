@@ -170,6 +170,18 @@ file(COPY_FILE
   ONLY_IF_DIFFERENT)
 
 # ---------------------------------------------------------------------------
+# Copy runtime hw artifacts (linker scripts + object files) into the source
+# tree. The tt-metal build generates these in PROJECT_SOURCE_DIR/runtime/hw/,
+# and the JIT build system expects them under TT_METAL_HOME/runtime/hw/ at
+# device runtime. When using a pre-built toolchain, the source tree is a
+# clean checkout without these files, so we copy them from the toolchain.
+# ---------------------------------------------------------------------------
+if(EXISTS "${TTMETAL_BUILD_DIR}/runtime/hw" AND NOT EXISTS "${TT_METAL_SOURCE_DIR}/runtime/hw/toolchain")
+  message(STATUS "Copying tt-metal runtime hw artifacts from toolchain")
+  file(COPY "${TTMETAL_BUILD_DIR}/runtime/hw" DESTINATION "${TT_METAL_SOURCE_DIR}/runtime")
+endif()
+
+# ---------------------------------------------------------------------------
 # Set variables for activate.in
 # ---------------------------------------------------------------------------
 set(TT_METAL_HOME "${TT_METAL_SOURCE_DIR}")
