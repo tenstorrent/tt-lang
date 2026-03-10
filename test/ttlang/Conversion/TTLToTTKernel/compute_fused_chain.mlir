@@ -17,49 +17,95 @@
 // FPU binary add reads from CBs (no copy_tile for add operands).
 // mul is SFPU because lhs is intermediate result in DST, needs copy_tile for rhs.
 // FPU-LABEL: func.func @fused_chain_lowering
-// FPU:       ttkernel.binary_op_init_common
-// FPU:       scf.for
-// FPU:         scf.for
+// FPU-SAME: (%[[AARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[BARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>)
+// FPU-DAG:   %[[C4:.*]] = arith.constant 4 : i32
+// FPU-DAG:   %[[C2:.*]] = arith.constant 2 : index
+// FPU-DAG:   %[[C1:.*]] = arith.constant 1 : index
+// FPU-DAG:   %[[C0:.*]] = arith.constant 0 : index
+// FPU:       %[[OUTPUT:.*]] = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+// FPU:       %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// FPU:       %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// FPU:       %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// FPU:       ttkernel.cb_wait_front(%[[CB0]], %[[C4]])
+// FPU:       ttkernel.cb_wait_front(%[[CB1]], %[[C4]])
+// FPU:       ttkernel.cb_reserve_back(%[[CB2]], %[[C4]])
+// FPU:       ttkernel.binary_op_init_common(%[[CB0]], %[[CB1]], %[[CB2]])
+// FPU:       scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
+// FPU:         scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
+// FPU:           %[[AFFINEIDX:.*]] = affine.apply #{{.*}}(%[[I]], %[[J]])
 // FPU:           ttkernel.tile_regs_acquire
-// FPU:           ttkernel.add_tiles_init
-// FPU:           ttkernel.add_tiles(
+// Linearized CB index: i * 2 + j
+// FPU:           %[[MULI:.*]] = arith.muli %[[I]], %[[C2]]
+// FPU:           %[[LINIDX:.*]] = arith.addi %[[MULI]], %[[J]]
+// FPU:           ttkernel.add_tiles_init(%[[CB0]], %[[CB1]])
+// add_tiles reads lhs and rhs from CB at linearized index, writes DST[0]
+// FPU:           ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[LINIDX]], %[[LINIDX]], %[[C0]])
 // FPU-NOT:       ttkernel.add_binary_tile
-// mul's rhs needs copy_tile (from CB to DST)
-// FPU:           ttkernel.copy_tile_init
-// FPU:           ttkernel.copy_tile(
+// mul's rhs needs copy_tile (from CB1 to DST[1])
+// FPU:           ttkernel.copy_tile_init(%[[CB1]])
+// FPU:           ttkernel.copy_tile(%[[CB1]], %[[AFFINEIDX]], %[[C1]])
 // FPU:           ttkernel.mul_binary_tile_init
-// FPU:           ttkernel.mul_binary_tile(
+// FPU:           ttkernel.mul_binary_tile(%[[C0]], %[[C1]], %[[C0]])
 // FPU:           ttkernel.exp_tile_init
-// FPU:           ttkernel.exp_tile(
+// FPU:           ttkernel.exp_tile(%[[C0]])
 // FPU:           ttkernel.tile_regs_commit
 // FPU:           ttkernel.tile_regs_wait
-// FPU:           ttkernel.pack_tile(
+// FPU:           ttkernel.pack_tile(%[[C0]], %[[CB2]], %[[LINIDX]], true)
+// FPU:           ttkernel.cb_push_back(%[[CB2]], %[[C4]])
 // FPU:           ttkernel.tile_regs_release
+// FPU:         }
+// FPU:       }
+// FPU:       return
+// FPU-NOT:   ttl.attach_cb
+// FPU-NOT:   ttl.copy_tile
 
 // =============================================================================
 // SFPU path checks
 // =============================================================================
 // All binary ops use copy_tile + SFPU binary.
 // SFPU-LABEL: func.func @fused_chain_lowering
-// SFPU:       ttkernel.init_sfpu
-// SFPU:       scf.for
-// SFPU:         scf.for
+// SFPU-SAME: (%[[AARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>, %[[BARG:.*]]: tensor<2x2x!ttcore.tile<32x32, f32>>)
+// SFPU-DAG:   %[[C4:.*]] = arith.constant 4 : i32
+// SFPU-DAG:   %[[C2:.*]] = arith.constant 2 : index
+// SFPU-DAG:   %[[C1:.*]] = arith.constant 1 : index
+// SFPU-DAG:   %[[C0:.*]] = arith.constant 0 : index
+// SFPU:       %[[OUTPUT:.*]] = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+// SFPU:       %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// SFPU:       %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// SFPU:       %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// SFPU:       ttkernel.cb_wait_front(%[[CB0]], %[[C4]])
+// SFPU:       ttkernel.cb_wait_front(%[[CB1]], %[[C4]])
+// SFPU:       ttkernel.cb_reserve_back(%[[CB2]], %[[C4]])
+// SFPU:       ttkernel.init_sfpu(%[[CB0]], %[[CB2]])
+// SFPU:       scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
+// SFPU:         scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
+// SFPU:           %[[LINIDX:.*]] = affine.apply #{{.*}}(%[[I]], %[[J]])
 // SFPU:           ttkernel.tile_regs_acquire
-// SFPU:           ttkernel.copy_tile_init
-// SFPU:           ttkernel.copy_tile(
-// SFPU:           ttkernel.copy_tile_init
-// SFPU:           ttkernel.copy_tile(
-// SFPU:           ttkernel.add_binary_tile_init
-// SFPU:           ttkernel.add_binary_tile(
-// SFPU:           ttkernel.mul_binary_tile_init
-// SFPU:           ttkernel.mul_binary_tile(
-// SFPU:           ttkernel.exp_tile_init
-// SFPU:           ttkernel.exp_tile(
+// Copies at first use (add): CB0 first, then CB1
+// SFPU:           ttkernel.copy_tile_init(%[[CB0]])
+// SFPU:           ttkernel.copy_tile(%[[CB0]], %[[LINIDX]], %[[C0]])
+// SFPU:           ttkernel.copy_tile_init(%[[CB1]])
+// SFPU:           ttkernel.copy_tile(%[[CB1]], %[[LINIDX]], %[[C1]])
+// SFPU:           ttkernel.add_binary_tile_init()
+// SFPU:           ttkernel.add_binary_tile(%[[C0]], %[[C1]], %[[C0]])
+// SFPU:           ttkernel.mul_binary_tile_init()
+// SFPU:           ttkernel.mul_binary_tile(%[[C0]], %[[C1]], %[[C0]])
+// SFPU:           ttkernel.exp_tile_init()
+// SFPU:           ttkernel.exp_tile(%[[C0]])
 // SFPU:           ttkernel.tile_regs_commit
 // SFPU:           ttkernel.tile_regs_wait
-// SFPU:           ttkernel.pack_tile(
+// Linearized CB index for pack: i * 2 + j
+// SFPU:           %[[SMULI:.*]] = arith.muli %[[I]], %[[C2]]
+// SFPU:           %[[SLINIDX:.*]] = arith.addi %[[SMULI]], %[[J]]
+// SFPU:           ttkernel.pack_tile(%[[C0]], %[[CB2]], %[[SLINIDX]], true)
+// SFPU:           ttkernel.cb_push_back(%[[CB2]], %[[C4]])
 // SFPU:           ttkernel.tile_regs_release
-// SFPU-NOT:       ttkernel.add_tiles
+// SFPU:         }
+// SFPU:       }
+// SFPU:       return
+// SFPU-NOT:   ttl.attach_cb
+// SFPU-NOT:   ttl.copy_tile
+// SFPU-NOT:   ttkernel.add_tiles
 
 func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                 %b: tensor<2x2x!ttcore.tile<32x32, f32>>)

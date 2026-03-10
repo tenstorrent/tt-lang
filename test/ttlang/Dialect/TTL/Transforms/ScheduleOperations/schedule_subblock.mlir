@@ -15,23 +15,39 @@
 // After scheduling: add_tiles grouped, then tanhs grouped.
 // =============================================================================
 // FPU-LABEL: func.func @f32_subblock_scheduling
-// FPU: ttkernel.binary_op_init_common
-// FPU: scf.for
-// FPU:   ttkernel.tile_regs_acquire
-// FPU:   ttkernel.add_tiles_init
-// FPU:   ttkernel.add_tiles(
-// FPU:   ttkernel.add_tiles(
-// FPU:   ttkernel.add_tiles(
-// FPU:   ttkernel.tanh_tile_init
-// FPU:   ttkernel.tanh_tile(
-// FPU:   ttkernel.tanh_tile(
-// FPU:   ttkernel.tanh_tile(
-// FPU:   ttkernel.tile_regs_commit
-// FPU:   ttkernel.tile_regs_wait
-// FPU:   ttkernel.pack_tile(
-// FPU:   ttkernel.pack_tile(
-// FPU:   ttkernel.pack_tile(
-// FPU:   ttkernel.tile_regs_release
+// FPU-DAG:       %[[C6_I32:.*]] = arith.constant 6 : i32
+// FPU-DAG:       %[[C3:.*]] = arith.constant 3 : index
+// FPU-DAG:       %[[C1:.*]] = arith.constant 1 : index
+// FPU-DAG:       %[[C2:.*]] = arith.constant 2 : index
+// FPU-DAG:       %[[C0:.*]] = arith.constant 0 : index
+// FPU-DAG:       %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// FPU-DAG:       %[[CB_OUT:.*]] = ttkernel.get_compile_time_arg_val(2)
+// FPU-DAG:       %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// FPU:           ttkernel.cb_wait_front(%[[CB0]], %[[C6_I32]])
+// FPU-NEXT:      ttkernel.cb_wait_front(%[[CB1]], %[[C6_I32]])
+// FPU-NEXT:      ttkernel.cb_reserve_back(%[[CB_OUT]], %[[C6_I32]])
+// FPU-NEXT:      ttkernel.binary_op_init_common(%[[CB0]], %[[CB1]], %[[CB_OUT]])
+// FPU-NEXT:      scf.for %[[IV:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
+// FPU-NEXT:        ttkernel.tile_regs_acquire()
+// FPU-NEXT:        %[[BASE:.*]] = arith.muli %[[IV]], %[[C3]]
+// FPU-NEXT:        ttkernel.add_tiles_init(%[[CB0]], %[[CB1]])
+// FPU-NEXT:        ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[BASE]], %[[BASE]], %[[C0]])
+// FPU-NEXT:        %[[IDX1:.*]] = arith.addi %[[BASE]], %[[C1]]
+// FPU-NEXT:        ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[IDX1]], %[[IDX1]], %[[C1]])
+// FPU-NEXT:        %[[IDX2:.*]] = arith.addi %[[BASE]], %[[C2]]
+// FPU-NEXT:        ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[IDX2]], %[[IDX2]], %[[C2]])
+// FPU-NEXT:        ttkernel.tanh_tile_init()
+// FPU-NEXT:        ttkernel.tanh_tile(%[[C0]])
+// FPU-NEXT:        ttkernel.tanh_tile(%[[C1]])
+// FPU-NEXT:        ttkernel.tanh_tile(%[[C2]])
+// FPU-NEXT:        ttkernel.tile_regs_commit()
+// FPU-NEXT:        ttkernel.tile_regs_wait()
+// FPU-NEXT:        ttkernel.pack_tile(%[[C0]], %[[CB_OUT]], %[[BASE]], true)
+// FPU-NEXT:        ttkernel.pack_tile(%[[C1]], %[[CB_OUT]], %[[IDX1]], true)
+// FPU-NEXT:        ttkernel.pack_tile(%[[C2]], %[[CB_OUT]], %[[IDX2]], true)
+// FPU-NEXT:        ttkernel.tile_regs_release()
+// FPU-NEXT:      }
+// FPU-NEXT:      ttkernel.cb_push_back(%[[CB_OUT]], %[[C6_I32]])
 // FPU-NOT: ttkernel.copy_tile
 // FPU-NOT: ttkernel.add_binary_tile
 
