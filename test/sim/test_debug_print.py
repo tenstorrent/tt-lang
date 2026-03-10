@@ -508,3 +508,214 @@ def test_print_multiple_ttlang_objects_fails():
             test_kernel(a, b)
     finally:
         ttnn.close_device(device)
+
+
+def test_print_dm_reserve_block_mw_state_fails():
+    """Test that printing a DM reserve block in MW state raises an error."""
+
+    @ttl.kernel(grid=(1, 1))
+    def test_kernel(a: torch.Tensor, out: torch.Tensor):
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+
+        @ttl.datamovement()
+        def dm_write():
+            with a_dfb.reserve() as a_blk:
+                # Block is in MW state (must-write) immediately after reserve
+                # Printing should fail
+                print("Block in MW state: ", a_blk)
+                tx = ttl.copy(a[0, 0], a_blk)
+                tx.wait()
+
+        @ttl.compute()
+        def compute():
+            pass
+
+        @ttl.datamovement()
+        def dm_read():
+            pass
+
+    device = ttnn.open_device(device_id=0)
+    try:
+        a = make_tensor_with_value(32, 32, 1.0, device)
+        out = make_tensor_with_value(32, 32, 0.0, device)
+
+        with pytest.raises(
+            RuntimeError, match="Cannot print Block.*MW state cannot be printed"
+        ):
+            test_kernel(a, out)
+    finally:
+        ttnn.close_device(device)
+
+
+def test_print_dm_reserve_block_naw_state_fails():
+    """Test that printing a DM reserve block in NAW state raises an error."""
+
+    @ttl.kernel(grid=(1, 1))
+    def test_kernel(a: torch.Tensor, out: torch.Tensor):
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+
+        @ttl.datamovement()
+        def dm_write():
+            with a_dfb.reserve() as a_blk:
+                # Start copy to put block in NAW state
+                tx = ttl.copy(a[0, 0], a_blk)
+                # Block is now in NAW state (no-access-while-writing)
+                # Printing should fail
+                print("Block in NAW state: ", a_blk)
+                tx.wait()
+
+        @ttl.compute()
+        def compute():
+            pass
+
+        @ttl.datamovement()
+        def dm_read():
+            pass
+
+    device = ttnn.open_device(device_id=0)
+    try:
+        a = make_tensor_with_value(32, 32, 1.0, device)
+        out = make_tensor_with_value(32, 32, 0.0, device)
+
+        with pytest.raises(
+            RuntimeError, match="Cannot print Block.*NAW state cannot be printed"
+        ):
+            test_kernel(a, out)
+    finally:
+        ttnn.close_device(device)
+
+
+def test_print_dm_wait_block_naw_state_fails():
+    """Test that printing a DM wait block in NAW state raises an error."""
+
+    @ttl.kernel(grid=(1, 1))
+    def test_kernel(a: torch.Tensor, b: torch.Tensor, out: torch.Tensor):
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
+        @ttl.compute()
+        def compute():
+            with a_dfb.wait() as a_blk, out_dfb.reserve() as out_blk:
+                out_blk.store(a_blk)
+
+        @ttl.datamovement()
+        def dm_read():
+            with a_dfb.reserve() as a_blk:
+                tx = ttl.copy(a[0, 0], a_blk)
+                tx.wait()
+
+        @ttl.datamovement()
+        def dm_write():
+            # First: copy out to make wait block transition MR -> NAR -> RW
+            with out_dfb.wait() as out_blk:
+                tx1 = ttl.copy(out_blk, out[0, 0])
+                tx1.wait()
+                # Now block is in RW state (can be read or written)
+                # Copy TO the block to put it in NAW state
+                tx2 = ttl.copy(b[0, 0], out_blk)
+                # Block is now in NAW state (no-access-while-writing)
+                # Printing should fail
+                print("Wait block in NAW state: ", out_blk)
+                tx2.wait()
+
+    device = ttnn.open_device(device_id=0)
+    try:
+        a = make_tensor_with_value(32, 32, 1.0, device)
+        b = make_tensor_with_value(32, 32, 2.0, device)
+        out = make_tensor_with_value(32, 32, 0.0, device)
+
+        with pytest.raises(
+            RuntimeError, match="Cannot print Block.*NAW state cannot be printed"
+        ):
+            test_kernel(a, b, out)
+    finally:
+        ttnn.close_device(device)
+
+
+def test_print_compute_thread_blocks_succeeds():
+    """Test that compute thread blocks can be printed in various states."""
+
+    @ttl.kernel(grid=(1, 1))
+    def test_kernel(a: torch.Tensor, out: torch.Tensor):
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
+        @ttl.compute()
+        def compute():
+            # Compute thread: wait blocks start in MR state
+            with a_dfb.wait() as a_blk:
+                print("Compute wait block: ", a_blk)
+
+                # After using as source, transitions to RW
+                with out_dfb.reserve() as out_blk:
+                    out_blk.store(a_blk)
+                    # Reserve block after store is in MR state
+                    print("Compute reserve block after store: ", out_blk)
+
+        @ttl.datamovement()
+        def dm_read():
+            with a_dfb.reserve() as a_blk:
+                tx = ttl.copy(a[0, 0], a_blk)
+                tx.wait()
+
+        @ttl.datamovement()
+        def dm_write():
+            with out_dfb.wait() as out_blk:
+                tx = ttl.copy(out_blk, out[0, 0])
+                tx.wait()
+
+    device = ttnn.open_device(device_id=0)
+    try:
+        a = make_tensor_with_value(32, 32, 2.0, device)
+        out = make_tensor_with_value(32, 32, 0.0, device)
+        test_kernel(a, out)
+        # Should succeed - compute thread blocks can be printed
+    finally:
+        ttnn.close_device(device)
+
+
+def test_print_dm_block_legal_states_succeeds(capsys):
+    """Test that DM blocks can be printed in legal states (MR after tx.wait)."""
+
+    @ttl.kernel(grid=(1, 1))
+    def test_kernel(a: torch.Tensor, out: torch.Tensor):
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
+        @ttl.compute()
+        def compute():
+            with a_dfb.wait() as a_blk, out_dfb.reserve() as out_blk:
+                out_blk.store(a_blk)
+
+        @ttl.datamovement()
+        def dm_read():
+            with a_dfb.reserve() as a_blk:
+                tx = ttl.copy(a[0, 0], a_blk)
+                tx.wait()
+                # After tx.wait(), block transitions to MR state
+                # Printing should succeed
+                print("DM reserve block after tx.wait (MR state): ", a_blk)
+
+        @ttl.datamovement()
+        def dm_write():
+            # DM wait blocks start in MR state
+            with out_dfb.wait() as out_blk:
+                print("DM wait block (MR state): ", out_blk)
+                tx = ttl.copy(out_blk, out[0, 0])
+                tx.wait()
+
+    device = ttnn.open_device(device_id=0)
+    try:
+        a = make_tensor_with_value(32, 32, 3.0, device)
+        out = make_tensor_with_value(32, 32, 0.0, device)
+        test_kernel(a, out)
+
+        captured = capsys.readouterr()
+        # Verify both blocks were printed
+        assert "DM reserve block after tx.wait (MR state):" in captured.out
+        assert "DM wait block (MR state):" in captured.out
+        assert "<Block shape=(1, 1)>" in captured.out
+        # Verify value (3.0) appears in output
+        assert "3." in captured.out
+    finally:
+        ttnn.close_device(device)

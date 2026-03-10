@@ -13,6 +13,7 @@ import builtins
 
 from .ttnnsim import Tensor
 from .dfb import Block, DataflowBuffer
+from .blockstate import AccessState, BlockAcquisition, ThreadType
 
 
 def _format_tensor(tensor: Tensor, num_pages: int = 1) -> str:
@@ -46,7 +47,31 @@ def _format_block(block: Block) -> str:
 
     Returns:
         Formatted string representation
+
+    Raises:
+        RuntimeError: If the block is in an illegal state for printing
     """
+    # Check if block is in an illegal state for printing
+    # Illegal states:
+    # 1. DM thread + reserve + (MW or NAW)
+    # 2. DM thread + wait + NAW
+    if not block.is_temporary:
+        if block.thread_type == ThreadType.DM:
+            if block.acquisition == BlockAcquisition.RESERVE:
+                if block.access_state in (AccessState.MW, AccessState.NAW):
+                    raise RuntimeError(
+                        f"Cannot print Block: Block is in illegal state for printing. "
+                        f"DM thread reserved blocks in {block.access_state.name} state cannot be printed. "
+                        f"Current state: Acquisition=RESERVE, Thread=DM, Access={block.access_state.name}"
+                    )
+            elif block.acquisition == BlockAcquisition.WAIT:
+                if block.access_state == AccessState.NAW:
+                    raise RuntimeError(
+                        f"Cannot print Block: Block is in illegal state for printing. "
+                        f"DM thread wait blocks in NAW state cannot be printed. "
+                        f"Current state: Acquisition=WAIT, Thread=DM, Access={block.access_state.name}"
+                    )
+
     lines = [f"<Block shape={block.shape}>"]
 
     # Print block content - use to_tensor() method to get backing tensor
