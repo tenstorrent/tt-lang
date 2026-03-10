@@ -165,10 +165,12 @@ void emitFusionFailureDiagnostics(mlir::Operation *op,
 
 /// Operation categories for scheduling and init consolidation.
 /// Sort order matters: lower values are scheduled first within sync regions.
+/// CB-input ops that configure MATH (bcast, transpose) must precede copy_tile
+/// because their pipeline configuration can be disrupted by intervening ops.
 enum class TileOpCategory : uint8_t {
-  CopyTile = 0,   // CB -> DST copy (must precede all DST compute)
-  Bcast = 1,      // CB -> DST with PACK config (full init)
-  Transpose = 2,  // CB -> DST transpose (full init, requires uninit)
+  Bcast = 0,      // CB -> DST with PACK config (full init, must be first)
+  Transpose = 1,  // CB -> DST transpose (full init, requires uninit)
+  CopyTile = 2,   // CB -> DST copy (simple passthrough)
   FPUBinary = 3,  // CB -> DST FPU (UNPACK+MATH init)
   SFPUUnary = 4,  // DST -> DST in-place (MATH-only init)
   SFPUBinary = 5, // DST -> DST binary (MATH-only init)
