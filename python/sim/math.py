@@ -283,6 +283,13 @@ _TORCH_UNARY_OPS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     "softsign": torch.nn.functional.softsign,  # type: ignore[dict-item]
     "hardsigmoid": torch.nn.functional.hardsigmoid,
     "selu": torch.nn.functional.selu,
+    # Rounding functions (from spec) - simple unary
+    "floor": torch.floor,
+    "ceil": torch.ceil,
+    "frac": torch.frac,
+    "trunc": torch.trunc,
+    "sign": torch.sign,
+    "signbit": torch.signbit,
 }
 
 # Auto-generate all simple unary operation functions
@@ -327,6 +334,49 @@ def _apply_binary_op(
 
     result_block = Block.from_list(result_list, shape=a_shape)  # type: ignore[attr-defined]
     track_source_blocks(result_block, a, b)
+    return result_block
+
+
+def _apply_ternary_op(
+    a: Block,
+    b: Block,
+    c: Block,
+    op: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor],
+) -> Block:
+    """Apply a ternary operation element-wise to three blocks.
+
+    All blocks must have the same shape.
+
+    Args:
+        a: First input block
+        b: Second input block
+        c: Third input block
+        op: Ternary operation to apply (takes three torch tensors)
+
+    Returns:
+        Block with operation applied element-wise
+
+    Raises:
+        ValueError: If blocks have different shapes.
+    """
+    a_shape = a._shape  # type: ignore[attr-defined]
+    b_shape = b._shape  # type: ignore[attr-defined]
+    c_shape = c._shape  # type: ignore[attr-defined]
+    if not (a_shape == b_shape == c_shape):
+        raise ValueError(
+            f"Shape mismatch in ternary op: a has shape {a_shape}, "
+            f"b has shape {b_shape}, c has shape {c_shape}"
+        )
+    a_tensors = [t.to_torch() for t in a.to_list()]
+    b_tensors = [t.to_torch() for t in b.to_list()]
+    c_tensors = [t.to_torch() for t in c.to_list()]
+    result_torch: List[torch.Tensor] = [
+        op(a_t, b_t, c_t) for a_t, b_t, c_t in zip(a_tensors, b_tensors, c_tensors)
+    ]
+    result_list: List[Tensor] = [Tensor(t) for t in result_torch]
+
+    result_block = Block.from_list(result_list, shape=a_shape)  # type: ignore[attr-defined]
+    track_source_blocks(result_block, a, b, c)
     return result_block
 
 
@@ -538,6 +588,132 @@ def hardtanh(expr: Block, min_val: float, max_val: float) -> Block:
         return torch.nn.functional.hardtanh(t, min_val=min_val, max_val=max_val)
 
     return _apply_unary_with_params(expr, _op)
+
+
+# Rounding functions with parameters
+def round(expr: Block, decimals: int = 0) -> Block:
+    """Round to specified number of decimal places.
+
+    Args:
+        expr: Input block
+        decimals: Number of decimal places to round to
+
+    Returns:
+        Block with values rounded to specified decimal places
+    """
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        return torch.round(t, decimals=decimals)
+
+    return _apply_unary_with_params(expr, _op)
+
+
+def clamp(expr: Block, min: int, max: int) -> Block:
+    """Clamp values to specified min and max.
+
+    Args:
+        expr: Input block
+        min: Minimum value
+        max: Maximum value
+
+    Returns:
+        Block with values clamped to [min, max]
+    """
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        return torch.clamp(t, min=min, max=max)
+
+    return _apply_unary_with_params(expr, _op)
+
+
+def threshold(expr: Block, threshold: int, value: int) -> Block:
+    """Replace values greater than threshold with specified value.
+
+    Args:
+        expr: Input block
+        threshold: Threshold value
+        value: Replacement value for elements > threshold
+
+    Returns:
+        Block with thresholding applied
+    """
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        return torch.threshold(t, threshold=threshold, value=value)
+
+    return _apply_unary_with_params(expr, _op)
+
+
+# Fill, mask and where functions
+def fill(expr: Block, value: float) -> Block:
+    """Fill a block with specified value.
+
+    Args:
+        expr: Input block (shape is preserved)
+        value: Value to fill with
+
+    Returns:
+        Block filled with specified value
+    """
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        return torch.full_like(t, value)
+
+    return _apply_unary_with_params(expr, _op)
+
+
+def mask(expr: Block, mask: Block) -> Block:
+    """Mask a block by replacing masked elements with 0.
+
+    Args:
+        expr: Input block
+        mask: Mask block (elements equal to 1 are masked)
+
+    Returns:
+        Block with masked elements replaced by 0
+    """
+
+    def _op(t1: torch.Tensor, t2: torch.Tensor) -> torch.Tensor:
+        # Mask: where mask == 1, replace with 0, else keep original
+        return torch.where(t2 == 1, torch.tensor(0.0, dtype=t1.dtype), t1)
+
+    return _apply_binary_op(expr, mask, _op)
+
+
+def mask_posinf(expr: Block, mask: Block) -> Block:
+    """Mask a block by replacing masked elements with positive infinity.
+
+    Args:
+        expr: Input block
+        mask: Mask block (elements equal to 1 are masked)
+
+    Returns:
+        Block with masked elements replaced by positive infinity
+    """
+
+    def _op(t1: torch.Tensor, t2: torch.Tensor) -> torch.Tensor:
+        # Mask: where mask == 1, replace with +inf, else keep original
+        return torch.where(t2 == 1, torch.tensor(float("inf"), dtype=t1.dtype), t1)
+
+    return _apply_binary_op(expr, mask, _op)
+
+
+def where(condition: Block, true_value: Block, false_value: Block) -> Block:
+    """Conditional element selection.
+
+    Args:
+        condition: Condition block (elements equal to 1 are true, 0 are false)
+        true_value: Block to select from when condition is true
+        false_value: Block to select from when condition is false
+
+    Returns:
+        Block with elements selected based on condition
+    """
+
+    def _op(cond: torch.Tensor, tv: torch.Tensor, fv: torch.Tensor) -> torch.Tensor:
+        return torch.where(cond == 1, tv, fv)
+
+    return _apply_ternary_op(condition, true_value, false_value, _op)
 
 
 def _reduce_impl(

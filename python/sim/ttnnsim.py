@@ -469,6 +469,14 @@ class Tensor:
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
+    def __neg__(self) -> "Tensor":
+        """Unary negation."""
+        return Tensor(-self._tensor)
+
+    def __abs__(self) -> "Tensor":
+        """Absolute value."""
+        return Tensor(torch.abs(self._tensor))
+
     # ---- Reverse binary operations ----
 
     def __radd__(self, other: Scalar) -> "Tensor":

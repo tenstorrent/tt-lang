@@ -711,6 +711,51 @@ class Block:
             if self.dfb_state is not None:
                 self.dfb_state.buf[self.dfb_slot_idx] = src_tensor
 
+    @staticmethod
+    def _track_sources_for_result(result_block: "Block", *sources: "Block") -> None:
+        """Track source blocks that contribute to a result block.
+
+        For each source block, if it's a wait() Compute block, add it to the result's
+        source list. If it's already a temporary block, extend with its sources.
+
+        Args:
+            result_block: The result block to track sources for
+            sources: Source blocks that contribute to the result
+        """
+        for source in sources:
+            if (
+                not source._is_temporary
+                and source._acquisition == BlockAcquisition.WAIT
+                and source._thread_type == ThreadType.COMPUTE
+            ):
+                result_block._source_blocks.append(source)
+            elif source._is_temporary:
+                result_block._source_blocks.extend(source._source_blocks)
+
+    def _create_temporary_result(
+        self, result_tensor: Tensor, shape: Shape, *additional_sources: "Block"
+    ) -> "Block":
+        """Create a temporary result block with proper source tracking.
+
+        Args:
+            result_tensor: The computed result tensor
+            shape: The shape of the result block
+            additional_sources: Additional source blocks (for binary/ternary ops)
+
+        Returns:
+            A temporary Block with source blocks tracked
+        """
+        result_block = Block(
+            tensor=result_tensor,
+            shape=shape,
+            acquisition=BlockAcquisition.RESERVE,
+            thread_type=ThreadType.COMPUTE,
+            is_temporary=True,
+        )
+        # Track all source blocks (self + any additional)
+        self._track_sources_for_result(result_block, self, *additional_sources)
+        return result_block
+
     def _binary_op(
         self,
         other: "Block",
@@ -743,12 +788,8 @@ class Block:
 
         if left_shape == right_shape:
             # Fast path: shapes match, operate on packed tensors directly.
-            result_block = Block(
-                tensor=op(self._buf, other._buf),
-                shape=result_shape,
-                acquisition=BlockAcquisition.RESERVE,
-                thread_type=ThreadType.COMPUTE,
-                is_temporary=True,
+            return self._create_temporary_result(
+                op(self._buf, other._buf), result_shape, other
             )
         else:
             # Tile-grid broadcasting: tile-grid dims are entangled with element
@@ -760,19 +801,9 @@ class Block:
                 self.to_list(), other.to_list(), left_shape, right_shape, op
             )
             result_block = Block.from_list(result_tiles, result_shape)
-
-        # Track source wait() blocks that contributed to this result
-        for block in [self, other]:
-            if (
-                not block._is_temporary
-                and block._acquisition == BlockAcquisition.WAIT
-                and block._thread_type == ThreadType.COMPUTE
-            ):
-                result_block._source_blocks.append(block)
-            elif block._is_temporary:
-                result_block._source_blocks.extend(block._source_blocks)
-
-        return result_block
+            # Track source blocks for tile-by-tile broadcast path
+            self._track_sources_for_result(result_block, self, other)
+            return result_block
 
     # ---- forward operators ----
 
@@ -801,24 +832,17 @@ class Block:
         """
         match other:
             case int():
-                result_block = Block(
-                    tensor=self._buf**other,
-                    shape=self._shape,
-                    acquisition=BlockAcquisition.RESERVE,
-                    thread_type=ThreadType.COMPUTE,
-                    is_temporary=True,
-                )
-                if (
-                    not self._is_temporary
-                    and self._acquisition == BlockAcquisition.WAIT
-                    and self._thread_type == ThreadType.COMPUTE
-                ):
-                    result_block._source_blocks.append(self)
-                elif self._is_temporary:
-                    result_block._source_blocks.extend(self._source_blocks)
-                return result_block
+                return self._create_temporary_result(self._buf**other, self._shape)
             case _:
                 return self._binary_op(other, _op.pow)
+
+    def __neg__(self) -> "Block":
+        """Unary negation (-block)."""
+        return self._create_temporary_result(-self._buf, self._shape)
+
+    def __abs__(self) -> "Block":
+        """Absolute value (abs(block))."""
+        return self._create_temporary_result(abs(self._buf), self._shape)
 
     def __matmul__(self, other: "Block") -> "Block":
         # Matrix multiplication is not a broadcasting operation.
