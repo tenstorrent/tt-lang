@@ -23,7 +23,6 @@ class LayoutConfig:
 
 
 # BufferType enum values (match TTLOpsEnums.td)
-BUFFER_TYPE_DRAM = 0
 BUFFER_TYPE_L1 = 1
 
 # TensorMemoryLayout enum values (match TTLOpsEnums.td)
@@ -74,8 +73,3 @@ def create_layout(ctx, config: LayoutConfig):
         mlir_grid,
         TENSOR_MEMORY_LAYOUT_INTERLEAVED,
     )
-
-
-# Backward-compatible aliases
-TTNNLayoutConfig = LayoutConfig
-create_ttnn_layout = create_layout
