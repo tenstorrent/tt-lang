@@ -14,6 +14,8 @@ from typing import Any, Optional
 from ttl.ir import Module
 from ttl.passmanager import PassManager
 
+from .device_arch import get_mock_arch_from_device
+
 
 def compile_ttl_to_ttkernel(
     module: Module,
