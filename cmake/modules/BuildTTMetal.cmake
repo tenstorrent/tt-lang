@@ -165,6 +165,16 @@ else()
     message(STATUS "Copying tt-metal runtime/hw into ${TTMETAL_BUILD_DIR}")
     file(COPY "${TT_METAL_SOURCE_DIR}/runtime/hw" DESTINATION "${TTMETAL_BUILD_DIR}/runtime")
   endif()
+
+  # Copy tt_llk headers into the toolchain. The JIT compiler includes headers
+  # from tt_metal/third_party/tt_llk/ (e.g. ckernel_structs.h) at device
+  # runtime. When using a pre-built toolchain without nested submodules, these
+  # must be restored from the cached copy.
+  if(EXISTS "${TT_METAL_SOURCE_DIR}/tt_metal/third_party/tt_llk")
+    message(STATUS "Copying tt_llk headers into ${TTMETAL_BUILD_DIR}")
+    file(COPY "${TT_METAL_SOURCE_DIR}/tt_metal/third_party/tt_llk"
+         DESTINATION "${TTMETAL_BUILD_DIR}/tt_metal/third_party")
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -195,6 +205,23 @@ if(NOT EXISTS "${TT_METAL_SOURCE_DIR}/runtime/hw/toolchain")
       "tt-metal runtime/hw artifacts not found in toolchain or source tree.\n"
       "Device runtime (JIT firmware builds) will fail.\n"
       "Rebuild the toolchain or run: cmake --build <build-dir> --target build-ttmetal-hw")
+  endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Restore tt_llk headers into the source tree. The JIT compiler resolves
+# ckernel_structs.h and other LLK headers via TT_METAL_HOME include paths.
+# ---------------------------------------------------------------------------
+if(NOT EXISTS "${TT_METAL_SOURCE_DIR}/tt_metal/third_party/tt_llk/README.md")
+  if(EXISTS "${TTMETAL_BUILD_DIR}/tt_metal/third_party/tt_llk")
+    message(STATUS "Restoring tt_llk headers from toolchain into source tree")
+    file(COPY "${TTMETAL_BUILD_DIR}/tt_metal/third_party/tt_llk"
+         DESTINATION "${TT_METAL_SOURCE_DIR}/tt_metal/third_party")
+  else()
+    message(WARNING
+      "tt_llk headers not found in toolchain or source tree.\n"
+      "Device runtime (JIT firmware builds) will fail.\n"
+      "Initialize the nested submodule or rebuild the toolchain.")
   endif()
 endif()
 

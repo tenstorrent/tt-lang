@@ -132,6 +132,15 @@ do_copy_runtime_libs() {
         cp -pr third-party/tt-metal/runtime/hw "$TTMETAL_BUILD_DIR/runtime/"
         echo "Copied tt-metal runtime/hw artifacts"
     fi
+
+    # Copy tt_llk headers. The JIT compiler includes ckernel_structs.h and
+    # other LLK headers at device runtime via TT_METAL_HOME include paths.
+    if [ -d "third-party/tt-metal/tt_metal/third_party/tt_llk" ]; then
+        mkdir -p "$TTMETAL_BUILD_DIR/tt_metal/third_party"
+        cp -pr third-party/tt-metal/tt_metal/third_party/tt_llk \
+               "$TTMETAL_BUILD_DIR/tt_metal/third_party/"
+        echo "Copied tt_llk headers"
+    fi
 }
 
 # ---- Phase: Build + Install tt-lang ----
