@@ -43,8 +43,8 @@ def dprint_test_kernel(inp, out):
             print(inp_dfb)
             print(i)
             result = ttl.exp(i)
-            print(dst=True, label="after exp")
-            print(result, thread="pack")
+            print(_dump_dst_registers=True, label="after exp")
+            print(i, thread="pack")
             print("math only", thread="math")
             o.store(result)
 
@@ -71,21 +71,38 @@ def dprint_test_kernel(inp, out):
 # CHECK: // compute
 # CHECK: #include "api/debug/dprint.h"
 # CHECK: void kernel_main()
+
+# Scalar prints in compute auto-default to math thread
+# CHECK: DPRINT_MATH(
 # CHECK: DPRINT << "compute start" << ENDL();
+# CHECK: );
+# CHECK: DPRINT_MATH(
 # CHECK: DPRINT << "magic: 42" << ENDL();
+# CHECK: );
+
+# CB print in compute auto-defaults to pack thread
+# CHECK: DPRINT_PACK(
 # CHECK: DPRINT << ttmlir::CBPrinter(get_compile_time_arg_val(
-# CHECK: TileSlice(get_compile_time_arg_val(
+# CHECK: );
 
-# DST dump after exp (no live slots because the dprint is outside
-# the fused compute body; the store clears all slots before it)
-# CHECK: DPRINT << "=== after exp ===" << ENDL();
-
-# Thread conditioning: pack-only tile print
+# Tile print in compute auto-defaults to pack thread
 # CHECK: DPRINT_PACK(
 # CHECK: TileSlice(get_compile_time_arg_val(
 # CHECK: );
 
-# Thread conditioning: math-only scalar print
+# DST dump after exp auto-defaults to math thread
+# (no live slots because the dprint is outside the fused compute
+# body; the store clears all slots before it)
+# CHECK: DPRINT_MATH(
+# CHECK: DPRINT << "=== after exp ===" << ENDL();
+# CHECK: );
+
+# Thread conditioning: explicit pack-only tile print
+# CHECK: DPRINT_PACK(
+# CHECK: TileSlice(get_compile_time_arg_val(
+# CHECK: );
+
+# Thread conditioning: explicit math-only scalar print
 # CHECK: DPRINT_MATH(
 # CHECK: DPRINT << "math only" << ENDL();
 # CHECK: );

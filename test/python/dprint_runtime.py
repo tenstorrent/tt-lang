@@ -55,11 +55,11 @@ def dprint_bf16_kernel(inp, inp2, out):
             # DST labels after exp and add
             exp_lhs = ttl.exp(lhs)
             # dst printing does not work on hw sim
-            # print(dst=True, label="after first exp")
+            # print(_dump_dst_registers=True, label="after first exp")
             exp_rhs = ttl.exp(rhs)
-            # print(dst=True, label="after second exp")
+            # print(_dump_dst_registers=True, label="after second exp")
             add_result = exp_lhs + exp_rhs
-            # print(dst=True, label="after add")
+            # print(_dump_dst_registers=True, label="after add")
 
             # Thread conditioning: all three
             print("pack thread", thread="pack")
@@ -129,8 +129,8 @@ def dprint_f32_kernel(inp_f32, out_f32):
 # FileCheck patterns -- bf16 kernel
 #
 # DPRINT output is interleaved across threads (TR0=unpack, TR1=math,
-# TR2=pack, NC=NCRISC). Unconditioned prints appear on ALL three TRISC
-# threads. DM prints (NC) run concurrently and may appear anywhere.
+# TR2=pack, NC=NCRISC). Compute prints default to math thread.
+# DM prints (NC) run concurrently and may appear anywhere.
 # Use CHECK-DAG where ordering is non-deterministic.
 # =============================================================================
 

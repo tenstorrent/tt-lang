@@ -532,6 +532,29 @@ class TTLGenericCompiler(TTCompilerBase):
         with self._loc_for_node(node):
             return self._emit_entry(node)
 
+    # Thread required by each dprint mode in compute context.
+    # TileSlice errors on math; dst register reads require math.
+    # Tensor mode is not available in compute (uses get_read_ptr).
+    _COMPUTE_THREAD_FOR_MODE = {
+        "scalar": "math",
+        "cb": "pack",
+        "tile": "pack",
+        "dst": "math",
+    }
+
+    def _resolve_print_thread(self, mode, thread):
+        """Pick the correct thread for a dprint in compute context.
+
+        Returns the thread unchanged for datamovement kernels or when
+        the user provided an explicit thread kwarg.
+        """
+        if thread is not None or self.kernel_type != "compute":
+            return thread
+        resolved = self._COMPUTE_THREAD_FOR_MODE.get(mode)
+        if resolved is None:
+            raise ValueError(f"unknown dprint mode '{mode}' for thread resolution")
+        return resolved
+
     def _extract_print_kwargs(self, keywords):
         kwargs = {}
         for kw in keywords:
@@ -558,22 +581,27 @@ class TTLGenericCompiler(TTCompilerBase):
                 f"got {type(num_pages).__name__}"
             )
 
-        # DST mode: print(dst=True, label="after exp")
-        if kwargs.get("dst"):
+        # DST mode: print(_dump_dst_registers=True, label="after exp")
+        if kwargs.get("_dump_dst_registers"):
             if args:
-                raise ValueError("print(dst=True) takes no positional arguments")
+                raise ValueError(
+                    "print(_dump_dst_registers=True) takes no positional arguments"
+                )
             label = kwargs.get("label", "")
             ttl.dprint(
                 fmt=label,
                 mode="dst",
                 argv=[],
-                thread=thread,
+                thread=self._resolve_print_thread("dst", thread),
                 num_pages=None,
             )
             return
 
         if not args:
-            raise ValueError("print() requires at least one argument (or dst=True)")
+            raise ValueError(
+                "print() requires at least one argument "
+                "(or _dump_dst_registers=True)"
+            )
 
         # Visit all args once to determine types.
         visited = []
@@ -598,28 +626,28 @@ class TTLGenericCompiler(TTCompilerBase):
                     fmt="",
                     mode="cb",
                     argv=[val],
-                    thread=thread,
+                    thread=self._resolve_print_thread("cb", thread),
                     num_pages=None,
                 )
                 return
 
             if RankedTensorType.isinstance(val.type):
                 if num_pages is not None:
-                    ttl.dprint(
-                        fmt="",
-                        mode="tensor",
-                        argv=[val],
-                        thread=thread,
-                        num_pages=num_pages,
-                    )
+                    if self.kernel_type == "compute":
+                        raise ValueError(
+                            "print(tensor, num_pages=N) is only supported in "
+                            "datamovement kernels (uses get_read_ptr)"
+                        )
+                    mode = "tensor"
                 else:
-                    ttl.dprint(
-                        fmt="",
-                        mode="tile",
-                        argv=[val],
-                        thread=thread,
-                        num_pages=None,
-                    )
+                    mode = "tile"
+                ttl.dprint(
+                    fmt="",
+                    mode=mode,
+                    argv=[val],
+                    thread=self._resolve_print_thread(mode, thread),
+                    num_pages=num_pages,
+                )
                 return
 
         # Scalar mode: string/int/float constants and integer variables.
@@ -649,7 +677,7 @@ class TTLGenericCompiler(TTCompilerBase):
             fmt=fmt,
             mode="scalar",
             argv=argv,
-            thread=thread,
+            thread=self._resolve_print_thread("scalar", thread),
             num_pages=None,
         )
 

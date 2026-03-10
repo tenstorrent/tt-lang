@@ -135,10 +135,10 @@ python my_kernel.py 2>&1 > output.txt
 @ttl.compute()
 def compute():
     with inp_dfb.wait() as tile, out_dfb.reserve() as o:
-        print("hello", thread="pack")
-        print(tile, thread="pack")               # tile contents
+        print("hello")                             # auto: math thread
+        print(tile)                                # auto: pack thread
         result = ttl.exp(tile)
-        print(dst=True, label="after exp", thread="math") # live DST registers
+        print(_dump_dst_registers=True, label="after exp") # auto: math thread
         o.store(result)
 
 @ttl.datamovement()

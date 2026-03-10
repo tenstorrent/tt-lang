@@ -68,7 +68,7 @@ Prints raw memory pages from a tensor's backing buffer. Data format (bf16, f32) 
 
 ```python
 result = ttl.exp(i)
-print(dst=True, label="after exp")
+print(_dump_dst_registers=True, label="after exp")
 ```
 
 Dumps all DST register slots that are live at this program point. The pass resolves assigned DST indices and includes the label and producing op name for each slot.
@@ -87,7 +87,7 @@ print(tile, thread="pack")
 print(inp_dfb, thread="unpack")
 ```
 
-When `thread` is specified, the print is wrapped in the corresponding `DPRINT_MATH(...)`, `DPRINT_PACK(...)`, or `DPRINT_UNPACK(...)` macro. Without `thread`, the print executes unconditionally on whatever thread the kernel runs on.
+When `thread` is specified, the print is wrapped in the corresponding `DPRINT_MATH(...)`, `DPRINT_PACK(...)`, or `DPRINT_UNPACK(...)` macro. In compute kernels, the thread is automatically selected based on the print mode when no explicit `thread` is given: scalar and DST prints use `math`, CB and tile prints use `pack`. Tensor page prints (`num_pages=`) are only supported in datamovement kernels. In datamovement kernels, no wrapping is applied when `thread` is omitted.
 
 ## In depth + code gen
 
@@ -143,7 +143,7 @@ Should only be used in datamovement threads.
 
 ```python
 result = ttl.exp(i)
-print(dst=True, label="after exp")
+print(_dump_dst_registers=True, label="after exp")
 ```
 ```cpp
 {
@@ -166,7 +166,7 @@ DPRINT_MATH(
 );
 ```
 
-Wraps the entire emitted block in the specified thread macro. Without `thread`, no wrapping.
+Wraps the entire emitted block in the specified thread macro. In compute kernels, the thread is auto-selected per mode when not specified (scalar/DST -> math, CB/tile -> pack).
 
 ## Example: instrumented compute kernel
 
@@ -177,7 +177,7 @@ def compute():
         print("compute start")
         print(inp_dfb)
         result = ttl.exp(i)
-        print(dst=True, label="after exp")
+        print(_dump_dst_registers=True, label="after exp")
         o.store(result)
 ```
 
