@@ -77,17 +77,16 @@ endif()
 # Determine build mode: pre-built or submodule.
 # ---------------------------------------------------------------------------
 # Accept MLIR_PREFIX (friendly) or raw MLIR_DIR from user.
-# Cache TTLANG_LLVM_FROM_SUBMODULE to remember the decision across reconfigures.
 if(DEFINED MLIR_PREFIX)
   set(MLIR_DIR "${MLIR_PREFIX}/lib/cmake/mlir" CACHE PATH "MLIR CMake dir" FORCE)
-  set(TTLANG_LLVM_FROM_SUBMODULE OFF CACHE BOOL "Whether LLVM is built from submodule" FORCE)
   message(STATUS "Using pre-built MLIR from prefix: ${MLIR_PREFIX}")
 endif()
 
-# Use cached TTLANG_LLVM_FROM_SUBMODULE to decide path on reconfigures.
-# On first configure, if neither MLIR_PREFIX nor MLIR_DIR is user-provided,
-# TTLANG_LLVM_FROM_SUBMODULE won't exist yet, so we fall through to else().
-if(DEFINED TTLANG_LLVM_FROM_SUBMODULE AND NOT TTLANG_LLVM_FROM_SUBMODULE)
+# ---------------------------------------------------------------------------
+# Choose between pre-built LLVM (Option A) or submodule build (Option B).
+# MLIR_PREFIX is set either explicitly by the user or by TTLANG_USE_TOOLCHAIN.
+# ---------------------------------------------------------------------------
+if(DEFINED MLIR_PREFIX OR DEFINED MLIR_DIR)
   # ---------------------------------------------------------------------------
   # Option A: Pre-built LLVM/MLIR
   # ---------------------------------------------------------------------------
@@ -107,7 +106,6 @@ if(DEFINED TTLANG_LLVM_FROM_SUBMODULE AND NOT TTLANG_LLVM_FROM_SUBMODULE)
 else()
   ttlang_ensure_submodules(third-party/llvm-project)
 
-  set(TTLANG_LLVM_FROM_SUBMODULE ON CACHE BOOL "Whether LLVM is built from submodule" FORCE)
   set(LLVM_INSTALL_DIR "${CMAKE_BINARY_DIR}/llvm-install" CACHE PATH
     "Install prefix for the submodule LLVM/MLIR build")
   set(LLVM_BUILD_DIR "${CMAKE_BINARY_DIR}/llvm-build")
