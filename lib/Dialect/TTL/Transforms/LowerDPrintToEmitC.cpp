@@ -71,31 +71,6 @@ static std::optional<unsigned> getTensorFuncArgIndex(Value tensor) {
   return blockArg.getArgNumber();
 }
 
-/// Build a C++ expression that resolves the L1 base address for a tensor.
-/// CB-backed tensors use get_read_ptr(cb_idx); function arg tensors
-/// (tensor accessors) use get_common_arg_val<uint32_t>(arg_idx).
-static FailureOr<std::string> resolveTensorL1Addr(Value tensorVal,
-                                                  Operation *dprintOp) {
-  Value cb = getAttachedCB(tensorVal);
-  if (cb) {
-    auto cbIdx = resolveCBIndex(cb, dprintOp);
-    if (failed(cbIdx)) {
-      return failure();
-    }
-    return std::string("get_read_ptr(get_compile_time_arg_val(") +
-           std::to_string(*cbIdx) + "))";
-  }
-
-  auto argIdx = getTensorFuncArgIndex(tensorVal);
-  if (!argIdx) {
-    return dprintOp->emitError(
-        "cannot resolve L1 address for tensor: value must trace to "
-        "attach_cb or be a function argument (tensor accessor)");
-  }
-  return std::string("get_common_arg_val<uint32_t>(") +
-         std::to_string(*argIdx) + ")";
-}
-
 /// Resolve a scalar variable to its C++ expression string.
 static FailureOr<std::string> resolveScalarExpr(Value val, Operation *op) {
   if (auto constOp = val.getDefiningOp<arith::ConstantOp>()) {
@@ -170,11 +145,12 @@ static FailureOr<std::string> buildScalarDPrintStmt(DPrintOp op) {
 }
 
 /// Resolve tensor element type info for page printing.
-/// Returns {dprint_formatter, c_ptr_type, elements_per_page}.
+/// Returns {dprint_formatter, c_ptr_type, elements_per_page, page_size_bytes}.
 struct TensorPrintInfo {
   std::string formatter; // e.g. "BF16" or "F32"
   std::string cPtrType;  // e.g. "uint16_t" or "uint32_t"
   int64_t eltsPerPage;
+  int64_t pageSizeBytes;
 };
 
 static FailureOr<TensorPrintInfo> getTensorPrintInfo(Type elementType,
@@ -189,10 +165,10 @@ static FailureOr<TensorPrintInfo> getTensorPrintInfo(Type elementType,
   Type dataType = tileType.getElementType();
 
   if (dataType.isBF16()) {
-    return TensorPrintInfo{"BF16", "uint16_t", tileH * tileW};
+    return TensorPrintInfo{"BF16", "uint16_t", tileH * tileW, tileH * tileW * 2};
   }
   if (dataType.isF32()) {
-    return TensorPrintInfo{"F32", "uint32_t", tileH * tileW};
+    return TensorPrintInfo{"F32", "uint32_t", tileH * tileW, tileH * tileW * 4};
   }
   return op->emitError("unsupported data type for tensor print: only bf16 "
                        "and f32 are supported");
@@ -305,7 +281,7 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
       }
       emitVerbatim(loc,
                    "DPRINT << ttmlir::CBPrinter(get_compile_time_arg_val(" +
-                       std::to_string(*cbIdx) + "));",
+                       std::to_string(*cbIdx) + ")) << ENDL();",
                    rewriter);
 
     } else if (mode == "tile") {
@@ -354,35 +330,125 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
         return failure();
       }
 
-      auto l1Addr = resolveTensorL1Addr(tensorVal, op);
-      if (failed(l1Addr)) {
-        return failure();
-      }
-
       int64_t numPages = op.getNumPages().value_or(1);
 
-      // Inline page print using BF16/F32 formatters from dprint.h.
-      emitVerbatim(loc, "{", rewriter);
-      emitVerbatim(loc,
-                   "volatile tt_l1_ptr " + info->cPtrType +
-                       "* ptr = reinterpret_cast<volatile tt_l1_ptr " +
-                       info->cPtrType + "*>(" + *l1Addr + ");",
-                   rewriter);
-      emitVerbatim(loc,
-                   "for (uint32_t page = 0; page < " +
-                       std::to_string(numPages) + "; ++page) {",
-                   rewriter);
-      emitVerbatim(loc, "DPRINT << page << \": \";", rewriter);
-      emitVerbatim(loc,
-                   "for (uint32_t j = 0; j < " +
-                       std::to_string(info->eltsPerPage) + "; ++j, ++ptr) {",
-                   rewriter);
-      emitVerbatim(loc, "DPRINT << " + info->formatter + "(*ptr) << \" \";",
-                   rewriter);
-      emitVerbatim(loc, "}", rewriter);
-      emitVerbatim(loc, "DPRINT << ENDL();", rewriter);
-      emitVerbatim(loc, "}", rewriter);
-      emitVerbatim(loc, "}", rewriter);
+      Value cb = getAttachedCB(tensorVal);
+      if (cb) {
+        // CB-backed tensor: data is already in L1 at the CB read pointer.
+        auto cbIdx = resolveCBIndex(cb, op);
+        if (failed(cbIdx)) {
+          return failure();
+        }
+        std::string l1Addr = "get_read_ptr(get_compile_time_arg_val(" +
+                             std::to_string(*cbIdx) + "))";
+        emitVerbatim(loc, "{", rewriter);
+        emitVerbatim(loc,
+                     "volatile tt_l1_ptr " + info->cPtrType +
+                         "* ptr = reinterpret_cast<volatile tt_l1_ptr " +
+                         info->cPtrType + "*>(" + l1Addr + ");",
+                     rewriter);
+        emitVerbatim(loc,
+                     "for (uint32_t page = 0; page < " +
+                         std::to_string(numPages) + "; ++page) {",
+                     rewriter);
+        emitVerbatim(loc, "DPRINT << page << \": \";", rewriter);
+        emitVerbatim(loc,
+                     "for (uint32_t j = 0; j < " +
+                         std::to_string(info->eltsPerPage) +
+                         "; ++j, ++ptr) {",
+                     rewriter);
+        emitVerbatim(loc,
+                     "DPRINT << " + info->formatter + "(*ptr) << \" \";",
+                     rewriter);
+        emitVerbatim(loc, "}", rewriter);
+        emitVerbatim(loc, "DPRINT << ENDL();", rewriter);
+        emitVerbatim(loc, "}", rewriter);
+        emitVerbatim(loc, "}", rewriter);
+      } else {
+        // Tensor accessor: buffer_address() is a bank-relative address,
+        // not a directly dereferenceable L1 pointer. Use TensorAccessor
+        // + noc_async_read_tile to fetch each page into a scratch CB
+        // buffer before printing.
+        auto argIdx = getTensorFuncArgIndex(tensorVal);
+        if (!argIdx) {
+          return op.emitError(
+              "cannot resolve tensor for page print: value must trace to "
+              "attach_cb or be a function argument (tensor accessor)");
+        }
+
+        auto parentFunc = op->getParentOfType<func::FuncOp>();
+        auto baseCTAAttr =
+            parentFunc->getAttrOfType<IntegerAttr>("ttl.base_cta_index");
+        auto crtaIndicesAttr =
+            parentFunc->getAttrOfType<ArrayAttr>("ttl.crta_indices");
+        if (!baseCTAAttr || !crtaIndicesAttr) {
+          return op.emitError(
+              "tensor accessor print requires ttl.base_cta_index and "
+              "ttl.crta_indices attributes on parent function");
+        }
+        if (*argIdx >= crtaIndicesAttr.size()) {
+          return op.emitError("tensor argument index out of range");
+        }
+
+        int64_t baseCTA = baseCTAAttr.getInt();
+        if (baseCTA == 0) {
+          return op.emitError(
+              "tensor accessor page print requires at least one circular "
+              "buffer for scratch space");
+        }
+
+        int64_t globalIdx =
+            mlir::cast<IntegerAttr>(crtaIndicesAttr[*argIdx]).getInt();
+        int32_t ctaIdx = static_cast<int32_t>(baseCTA + globalIdx);
+        int32_t crtaIdx = static_cast<int32_t>(globalIdx);
+
+        std::string ctaStr = std::to_string(ctaIdx);
+        std::string crtaStr = std::to_string(crtaIdx);
+        std::string pageSizeStr = std::to_string(info->pageSizeBytes);
+
+        emitVerbatim(loc, "{", rewriter);
+        emitVerbatim(loc,
+                     "auto dprint_ta_args = TensorAccessorArgs<" + ctaStr +
+                         ", " + crtaStr + ">();",
+                     rewriter);
+        emitVerbatim(loc,
+                     "TensorAccessor dprint_ta(dprint_ta_args, "
+                     "get_common_arg_val<uint32_t>(" +
+                         crtaStr + "), " + pageSizeStr + ");",
+                     rewriter);
+        emitVerbatim(
+            loc, "cb_reserve_back(get_compile_time_arg_val(0), 1);", rewriter);
+        emitVerbatim(
+            loc,
+            "uint32_t dprint_scratch = "
+            "get_write_ptr(get_compile_time_arg_val(0));",
+            rewriter);
+        emitVerbatim(loc,
+                     "for (uint32_t page = 0; page < " +
+                         std::to_string(numPages) + "; ++page) {",
+                     rewriter);
+        emitVerbatim(
+            loc, "noc_async_read_tile(page, dprint_ta, dprint_scratch);",
+            rewriter);
+        emitVerbatim(loc, "noc_async_read_barrier();", rewriter);
+        emitVerbatim(loc,
+                     "volatile tt_l1_ptr " + info->cPtrType +
+                         "* ptr = reinterpret_cast<volatile tt_l1_ptr " +
+                         info->cPtrType + "*>(dprint_scratch);",
+                     rewriter);
+        emitVerbatim(loc, "DPRINT << page << \": \";", rewriter);
+        emitVerbatim(loc,
+                     "for (uint32_t j = 0; j < " +
+                         std::to_string(info->eltsPerPage) + "; ++j) {",
+                     rewriter);
+        emitVerbatim(loc,
+                     "DPRINT << " + info->formatter + "(ptr[j]) << \" \";",
+                     rewriter);
+        emitVerbatim(loc, "}", rewriter);
+        emitVerbatim(loc, "DPRINT << ENDL();", rewriter);
+        emitVerbatim(loc, "}", rewriter);
+        emitVerbatim(loc, "}", rewriter);
+      }
 
     } else if (mode == "dst") {
       auto liveSlots = findLiveDSTSlots(op);

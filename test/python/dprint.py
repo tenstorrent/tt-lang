@@ -139,11 +139,13 @@ def dprint_test_kernel(inp, out):
 
 # Mixed-arg: scalar label + tensor accessor pages in datamovement
 # CHECK: DPRINT << "inp:" << ENDL();
-# CHECK: get_common_arg_val<uint32_t>(
+# CHECK: TensorAccessorArgs<
+# CHECK: noc_async_read_tile(
 
 # Tensor accessor without num_pages defaults to num_pages=1
 # CHECK: DPRINT << "A:" << ENDL();
-# CHECK: get_common_arg_val<uint32_t>(
+# CHECK: TensorAccessorArgs<
+# CHECK: noc_async_read_tile(
 
 # =============================================================================
 # C++ Kernel Checks - Verify no dprint in dm_write kernel (no print calls)
