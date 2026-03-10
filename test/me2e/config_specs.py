@@ -15,6 +15,21 @@ import torch
 
 from .config import E2EConfig, MemoryLayout
 
+# Expected failures keyed by partial parameter match (config/dtype/op level).
+# For per-op xfails, see ops/XFAILS.py (uses fully-qualified test IDs).
+#
+# Each key is a tuple of (config_str, dtype_str, op_name). A None element
+# matches all values for that position. Trailing None elements can be omitted.
+# Examples:
+#   ("8x8_bfloat16_buf2_interleaved", "float32"):  all ops, one config+dtype
+#   ("8x8_bfloat16_buf2_interleaved", "float32", "add"):  single combination
+#   ("8x8_bfloat16_buf2_interleaved",):  all dtypes and ops for that config
+XFAILS = {
+    ("8x8_bfloat16_buf2_interleaved", "float32"): (
+        "f32 8x8 produces ~19M ULP delta; tile index lowering inaccurate for large grids"
+    ),
+}
+
 
 @dataclass(frozen=True)
 class TestConfig:
@@ -64,6 +79,12 @@ class TestConfig:
             enum value. Default is INTERLEAVED. Other options include HEIGHT_SHARDED,
             WIDTH_SHARDED, and BLOCK_SHARDED for distributed memory configurations.
 
+        maximize_dst: Enable DST subblocking and operation scheduling passes.
+            When False, uses basic loop lowering without subblocking. Default is True.
+
+        enable_fpu_binary_ops: Enable FPU binary op detection for add/sub/mul.
+            When False, all binary ops use the copy_tile + SFPU path. Default is True.
+
     Examples:
         Basic configuration (8x8 grid, single buffering):
         >>> config = TestConfig()
@@ -94,15 +115,20 @@ class TestConfig:
     buffer_factor: int = 2
     memory_layout: MemoryLayout = MemoryLayout.INTERLEAVED
 
+    # Pipeline options.
+    maximize_dst: bool = True
+    enable_fpu_binary_ops: bool = True
+
     def __str__(self) -> str:
         """
         Compact string representation for test output.
 
-        Format: block_h x block_w_dtype_buf{buffer_factor}_layout
+        Format: block_h x block_w_dtype_buf{buffer_factor}_layout[_nodst][_sfpu]
         Examples:
-            - 2x2_bf16_buf1_interleaved (2x2 grid, bfloat16, single buffer, interleaved)
+            - 2x2_bf16_buf2_interleaved (2x2 grid, bfloat16, double buffer, interleaved)
             - 8x8_f32_buf2_interleaved (8x8 grid, float32, double buffer, interleaved)
-            - 2x2_bf16_buf1_height_sharded (2x2 grid, bfloat16, single buffer, height_sharded)
+            - 2x2_bf16_buf2_interleaved_nodst (maximize_dst disabled)
+            - 2x2_bf16_buf2_interleaved_sfpu (FPU binary ops disabled)
         """
         # Short dtype name (bf16, f32, etc.)
         dtype_str = str(self.dtype).split(".")[-1]
@@ -113,7 +139,14 @@ class TestConfig:
         # Layout indicator (always explicit, using enum value)
         layout_str = f"_{self.memory_layout.value}"
 
-        return f"{self.block_h}x{self.block_w}_{dtype_str}{buffer_str}{layout_str}"
+        # Pipeline mode suffix.
+        pipeline_str = ""
+        if not self.maximize_dst:
+            pipeline_str += "_nodst"
+        if not self.enable_fpu_binary_ops:
+            pipeline_str += "_sfpu"
+
+        return f"{self.block_h}x{self.block_w}_{dtype_str}{buffer_str}{layout_str}{pipeline_str}"
 
     def to_e2e_config(self) -> E2EConfig:
         """
@@ -140,11 +173,20 @@ CONFIGS = [
     TestConfig(num_tiles=1, block_h=1, block_w=1),  # 1x1 grid (single tile)
     # Multi-tile configs with loop generation.
     TestConfig(num_tiles=4, block_h=2, block_w=2),  # 2x2 grid (4 tiles)
-    # TODO(#123): Enable 8x8 config once tile index lowering is fixed.
-    # Currently fails with high ULP errors - tensor_slice indices don't correctly
-    # map to tile offsets in the C++ lowering for grids larger than 2x2.
-    # TestConfig(num_tiles=64, block_h=8, block_w=8),  # 8x8 grid (64 tiles)
-    # TODO: Double buffering and sharded memory require additional work.
-    # TestConfig(num_tiles=64, buffer_factor=2),  # Double buffering
+    # Maximize-DST disabled: no subblocking or scheduling (basic loop lowering).
+    TestConfig(num_tiles=4, block_h=2, block_w=2, maximize_dst=False),
+    # SFPU path: FPU binary detection disabled (all binary ops use copy_tile + SFPU).
+    TestConfig(num_tiles=4, block_h=2, block_w=2, enable_fpu_binary_ops=False),
+    # Both disabled: basic loop lowering with SFPU binary path.
+    TestConfig(
+        num_tiles=4,
+        block_h=2,
+        block_w=2,
+        maximize_dst=False,
+        enable_fpu_binary_ops=False,
+    ),
+    # 8x8 grid (f32 xfailed via XFAILS below).
+    TestConfig(num_tiles=64, block_h=8, block_w=8),
+    # TODO: Sharded memory layout requires additional work.
     # TestConfig(num_tiles=64, memory_layout=MemoryLayout.HEIGHT_SHARDED),
 ]

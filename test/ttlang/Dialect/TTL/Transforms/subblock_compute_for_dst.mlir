@@ -5,6 +5,9 @@
 
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}))' --split-input-file | FileCheck %s --check-prefix=ASSIGN
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8},ttl-subblock-compute-for-dst))' --split-input-file | FileCheck %s --check-prefix=TILED
+// Actual DST capacity (no override) for broadcast tests where FPU detection matters:
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst))' --split-input-file | FileCheck %s --check-prefix=BCAST-ASSIGN
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst,ttl-subblock-compute-for-dst))' --split-input-file | FileCheck %s --check-prefix=BCAST-TILED
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -363,33 +366,38 @@ func.func @tile_multidim_remainder_3x3(%a: tensor<3x3x!ttcore.tile<32x32, f32>>)
 // expression for the column dimension. Verifies that the broadcast dim
 // retains its original size (1) in extract_slice rather than being
 // incorrectly set to the iteration-domain size (4).
-// DST capacity=8, dstPerIteration=1, totalTiles=16.
-// unroll_factor = min(8/1, 16) = 8.
-// Multi-dim tiling: tileSizes=[2,4], product=8. Loop on dim 0 (0 to 4 step 2).
-// ASSIGN-LABEL: func.func @subblock_broadcast_col
-// ASSIGN:         ttl.compute
-// ASSIGN-SAME:    ttl.unroll_factor = 8 : i64
-// TILED-LABEL:  func.func @subblock_broadcast_col
-// TILED:        %[[C0:.*]] = arith.constant 0 : index
-// TILED-NEXT:   %[[C4:.*]] = arith.constant 4 : index
-// TILED-NEXT:   %[[C2:.*]] = arith.constant 2 : index
-// TILED-NEXT:   scf.for %[[IV:.*]] = %[[C0]] to %[[C4]] step %[[C2]] {
-// A: identity map, full 2x4 subblock slice.
-// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [2, 4] [1, 1] : tensor<4x4x!ttcore.tile<32x32, f32>> to tensor<2x4x!ttcore.tile<32x32, f32>>
+// The two inputs have different indexing maps (identity vs broadcast), so
+// FPU binary detection is skipped and the op uses the SFPU path with
+// dstPerIteration=2 (copy_tile for both operands).
+// DST capacity=4 (f32, actual), dstPerIteration=2, totalTiles=16.
+// unroll_factor = min(4/2, 16) = 2.
+// Multi-dim tiling: tileSizes=[1,2], product=2.
+// Two nested loops: dim 0 (0 to 4 step 1), dim 1 (0 to 4 step 2).
+//
+// Uses BCAST-ASSIGN/BCAST-TILED prefixes.
+// BCAST-ASSIGN-LABEL: func.func @subblock_broadcast_col
+// BCAST-ASSIGN:         ttl.compute
+// BCAST-ASSIGN-SAME:    ttl.unroll_factor = 2 : i64
+// BCAST-TILED-LABEL:  func.func @subblock_broadcast_col
+// BCAST-TILED:        scf.for %[[IV0:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
+// BCAST-TILED-NEXT:     scf.for %[[IV1:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
+// A: identity map, 1x2 subblock slice.
+// BCAST-TILED-NEXT:       {{.*}} = tensor.extract_slice {{.*}}[%[[IV0]], %[[IV1]]] [1, 2] [1, 1] : tensor<4x4x!ttcore.tile<32x32, f32>> to tensor<1x2x!ttcore.tile<32x32, f32>>
 // B: col broadcast map -- broadcast dim (col) keeps original size 1.
-// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [2, 1] [1, 1] : tensor<4x1x!ttcore.tile<32x32, f32>> to tensor<2x1x!ttcore.tile<32x32, f32>>
-// Output: identity map, full 2x4 subblock slice.
-// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [2, 4] [1, 1] : tensor<4x4x!ttcore.tile<32x32, f32>> to tensor<2x4x!ttcore.tile<32x32, f32>>
+// BCAST-TILED-NEXT:       {{.*}} = tensor.extract_slice {{.*}}[%[[IV0]], 0] [1, 1] [1, 1] : tensor<4x1x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
+// Output: identity map, 1x2 subblock slice.
+// BCAST-TILED-NEXT:       {{.*}} = tensor.extract_slice {{.*}}[%[[IV0]], %[[IV1]]] [1, 2] [1, 1] : tensor<4x4x!ttcore.tile<32x32, f32>> to tensor<1x2x!ttcore.tile<32x32, f32>>
 // Tiled compute has broadcast-aware operand shapes.
-// TILED-NEXT:     {{.*}} = ttl.compute
-// TILED-SAME:     tensor<2x4x!ttcore.tile<32x32, f32>>
-// TILED-SAME:     tensor<2x1x!ttcore.tile<32x32, f32>>
-// TILED-SAME:     ttl.full_linearization_strides
-// TILED:            ttl.tile_add
-// TILED-NEXT:       ttl.tile_store
-// TILED-NEXT:       ttl.yield
-// TILED-NEXT:     } -> tensor<2x4x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:   }
+// BCAST-TILED-NEXT:       {{.*}} = ttl.compute
+// BCAST-TILED-SAME:       tensor<1x2x!ttcore.tile<32x32, f32>>
+// BCAST-TILED-SAME:       tensor<1x1x!ttcore.tile<32x32, f32>>
+// BCAST-TILED-SAME:       ttl.full_linearization_strides
+// BCAST-TILED:              ttl.tile_add
+// BCAST-TILED-NEXT:         ttl.tile_store
+// BCAST-TILED-NEXT:         ttl.yield
+// BCAST-TILED-NEXT:       } -> tensor<1x2x!ttcore.tile<32x32, f32>>
+// BCAST-TILED:          } {ttl.subblock_stride
+// BCAST-TILED:        } {ttl.subblock_stride
 func.func @subblock_broadcast_col(
     %a: tensor<4x4x!ttcore.tile<32x32, f32>>,
     %b: tensor<4x1x!ttcore.tile<32x32, f32>>)

@@ -3,9 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn, tt-device
-# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s > %t.fpu.output 2>&1
+# RUN: FileCheck %s --check-prefix=CHECK-CPP-FPU < %t.fpu.output
 
 """
 Add kernel with explicit loop in compute - verifies for loops work inside kernels.
@@ -118,6 +120,40 @@ def add_loop_kernel(lhs, rhs, out):
 # Finalize: pop inputs (reverse order from with-statement LIFO)
 # CHECK-CPP: cb_pop_front(get_compile_time_arg_val(1),
 # CHECK-CPP: cb_pop_front(get_compile_time_arg_val(0),
+
+# =============================================================================
+# FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
+# Initial store uses copy_tile (SFPU), loop add uses FPU add_tiles
+# =============================================================================
+
+# CHECK-CPP-FPU: // add_compute
+# CHECK-CPP-FPU: void kernel_main()
+# CHECK-CPP-FPU: cb_wait_front(get_compile_time_arg_val(0),
+# CHECK-CPP-FPU: cb_wait_front(get_compile_time_arg_val(1),
+# CHECK-CPP-FPU: cb_reserve_back(get_compile_time_arg_val(2),
+
+# Initial store: copy lhs to output (SFPU path)
+# CHECK-CPP-FPU: init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
+# CHECK-CPP-FPU: tile_regs_acquire();
+# CHECK-CPP-FPU: copy_tile_init(get_compile_time_arg_val(0));
+# CHECK-CPP-FPU: copy_tile(get_compile_time_arg_val(0),
+# CHECK-CPP-FPU: tile_regs_commit();
+# CHECK-CPP-FPU: tile_regs_wait();
+# CHECK-CPP-FPU: pack_tile<true>(
+# CHECK-CPP-FPU: tile_regs_release();
+# CHECK-CPP-FPU: cb_push_back(get_compile_time_arg_val(2),
+
+# Loop: accumulate with FPU add_tiles (both inputs from CBs)
+# CHECK-CPP-FPU: for (size_t {{.*}} < {{.*}};
+# CHECK-CPP-FPU: cb_wait_front(get_compile_time_arg_val(2),
+# CHECK-CPP-FPU: cb_reserve_back(get_compile_time_arg_val(2),
+# CHECK-CPP-FPU: binary_op_init_common(get_compile_time_arg_val(2), get_compile_time_arg_val(1), get_compile_time_arg_val(2));
+# CHECK-CPP-FPU: add_tiles_init(get_compile_time_arg_val(2), get_compile_time_arg_val(1));
+# CHECK-CPP-FPU: add_tiles(get_compile_time_arg_val(2), get_compile_time_arg_val(1),
+
+# Finalize
+# CHECK-CPP-FPU: cb_pop_front(get_compile_time_arg_val(1),
+# CHECK-CPP-FPU: cb_pop_front(get_compile_time_arg_val(0),
 
 
 if __name__ == "__main__":

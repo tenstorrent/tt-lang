@@ -3,9 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: tt-device
-# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
+# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
+# RUN: env %python %s > %t.fpu.output 2>&1
+# RUN: FileCheck %s --check-prefix=CHECK-CPP-FPU < %t.fpu.output
 
 """
 Add kernel using 'with' pattern for DFB lifecycle management.
@@ -142,6 +144,7 @@ def add_with_kernel(lhs, rhs, out):
 
 # Reserve output
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
+# CHECK-CPP: init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
 
 # Add operation
 # CHECK-CPP: tile_regs_acquire();
@@ -170,6 +173,27 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK-CPP: noc_async_write_tile(
 # CHECK-CPP: noc_async_write_barrier();
 # CHECK-CPP: cb_pop_front(
+
+# =============================================================================
+# FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
+# =============================================================================
+
+# CHECK-CPP-FPU: // add_compute
+# CHECK-CPP-FPU: void kernel_main()
+# CHECK-CPP-FPU: cb_wait_front(get_compile_time_arg_val(0),
+# CHECK-CPP-FPU: cb_wait_front(get_compile_time_arg_val(1),
+# CHECK-CPP-FPU: cb_reserve_back(get_compile_time_arg_val(2),
+# CHECK-CPP-FPU: binary_op_init_common(get_compile_time_arg_val(0), get_compile_time_arg_val(1), get_compile_time_arg_val(2));
+# CHECK-CPP-FPU: tile_regs_acquire();
+# CHECK-CPP-FPU: add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+# CHECK-CPP-FPU: add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
+# CHECK-CPP-FPU: tile_regs_commit();
+# CHECK-CPP-FPU: tile_regs_wait();
+# CHECK-CPP-FPU: pack_tile<true>(
+# CHECK-CPP-FPU: tile_regs_release();
+# CHECK-CPP-FPU: cb_push_back(get_compile_time_arg_val(2),
+# CHECK-CPP-FPU: cb_pop_front(get_compile_time_arg_val(1),
+# CHECK-CPP-FPU: cb_pop_front(get_compile_time_arg_val(0),
 
 
 if __name__ == "__main__":

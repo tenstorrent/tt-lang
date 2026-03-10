@@ -463,10 +463,9 @@ static void buildLiveIntervals(Block *body,
   // FPU binary ops (add_tiles, mul_tiles, sub_tiles) accumulate into their
   // output DST register: result = old_DST_value + computed_value. If two FPU
   // binary ops share the same DST output index, the second reads the first's
-  // residual and produces a corrupted result. tt-mlir's D2M dialect solves
-  // this by never allowing in-place DST reuse for binary tile-tile ops
-  // (getDstRegInPlace() = false). We achieve the same by extending FPU binary
-  // result intervals so the linear scan allocator assigns distinct registers.
+  // residual and produces a corrupted result. We prevent this by extending
+  // FPU binary result intervals so the linear scan allocator assigns distinct
+  // registers.
   //
   // TODO(#343): This wastes DST capacity. The proper fix is to pass
   // acc_to_dest=false to add_tiles_init/sub_tiles_init/mul_tiles_init in
@@ -648,9 +647,15 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       // block arguments (CB-backed). FPU reads from CB, needing 0 DST input
       // slots. Output block arguments are excluded because they may represent
       // accumulation patterns that require DST copy_tile.
+      //
+      // TODO: Support mixed operands (one CB, one DST) via
+      // ttkernel.binary_dest_reuse_tiles with DEST_TO_SRCA/DEST_TO_SRCB.
+      // This would allow FPU lowering for patterns like
+      // tile_add %arg0, %computed where one operand is already in DST.
       LLVM_DEBUG(llvm::dbgs() << "=== Phase 0: FPU Binary Detection ===\n");
       if (enableFPUBinaryOps) {
         unsigned numInputs = computeOp.getNumInputs();
+        auto indexingMaps = computeOp.getIndexingMapsArray();
         for (Operation &op : *body) {
           if (!isa<AddTileOp, SubTileOp, MulTileOp>(&op)) {
             continue;
@@ -661,6 +666,21 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
           auto rhsArg = dyn_cast<BlockArgument>(rhs);
           if (lhsArg && rhsArg && lhsArg.getArgNumber() < numInputs &&
               rhsArg.getArgNumber() < numInputs) {
+            // FPU binary ops use a single shared CB tile index for both
+            // operands, so the indexing maps must be identical. This is not
+            // an error — the op is still valid, it just falls back to the
+            // copy_tile + SFPU path which handles each operand independently.
+            AffineMap lhsMap = indexingMaps[lhsArg.getArgNumber()];
+            AffineMap rhsMap = indexingMaps[rhsArg.getArgNumber()];
+            if (lhsMap != rhsMap) {
+              LLVM_DEBUG({
+                llvm::dbgs()
+                    << "Phase 0: Skipping FPU binary (incompatible indexing "
+                       "maps): "
+                    << op.getName() << "\n";
+              });
+              continue;
+            }
             op.setAttr(kFPUBinaryAttrName, builder.getUnitAttr());
             LLVM_DEBUG({
               llvm::dbgs() << "Phase 0: Marked FPU binary: " << op.getName()

@@ -3,8 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn, tt-device
-# RUN: %python %s > %t.output 2>&1
+# RUN: %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
 # RUN: FileCheck %s < %t.output
+# RUN: %python %s > %t.fpu.output 2>&1
+# RUN: FileCheck %s --check-prefix=CHECK-FPU < %t.fpu.output
 
 """
 Auto profiler on broadcast multitile blocks kernel - verifies that auto
@@ -146,6 +148,107 @@ def bcast_multitile_kernel(
 # CHECK-NEXT:     return;
 # CHECK-NEXT:   }
 # CHECK-NOT:    DeviceZoneScopedN(
+
+# =============================================================================
+# FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
+# Subblocked: 4 tiles per subblock, grouped ops, auto-profiler scopes on DFBs
+# =============================================================================
+
+# CHECK-FPU:          // demo_compute
+# CHECK-FPU:          void kernel_main()
+
+# CHECK-FPU-NOT:      DeviceZoneScopedN(
+# CHECK-FPU:          DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_cb_wait");
+# CHECK-FPU-NEXT:     cb_wait_front(get_compile_time_arg_val(2), {{.*}});
+# CHECK-FPU:          }
+# CHECK-FPU-NEXT:     for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
+# CHECK-FPU-NEXT:       for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
+# CHECK-FPU-NEXT:         {
+# CHECK-FPU-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_cb_wait");
+# CHECK-FPU-NEXT:         cb_wait_front(get_compile_time_arg_val(0), {{.*}});
+# CHECK-FPU-NEXT:         }
+# CHECK-FPU-NEXT:         {
+# CHECK-FPU-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_cb_wait");
+# CHECK-FPU-NEXT:         cb_wait_front(get_compile_time_arg_val(1), {{.*}});
+# CHECK-FPU-NEXT:         }
+# CHECK-FPU-NEXT:         {
+# CHECK-FPU-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_cb_reserve");
+# CHECK-FPU-NEXT:         cb_reserve_back(get_compile_time_arg_val(3), {{.*}});
+# CHECK-FPU-NEXT:         }
+# CHECK-FPU-NEXT:         {
+# CHECK-FPU-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}");
+# CHECK-FPU-NEXT:         init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(3));
+
+# Single subblock loop (4 tiles per subblock)
+# CHECK-FPU-NEXT:         for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
+# CHECK-FPU-NEXT:           tile_regs_acquire();
+
+# Grouped COL broadcasts (4 tiles)
+# CHECK-FPU-NEXT:           unary_bcast_init<BroadcastType::COL>(
+# CHECK-FPU-NEXT:           unary_bcast<BroadcastType::COL>(
+# CHECK-FPU-NEXT:           unary_bcast<BroadcastType::COL>(
+# CHECK-FPU-NEXT:           unary_bcast<BroadcastType::COL>(
+# CHECK-FPU-NEXT:           unary_bcast<BroadcastType::COL>(
+
+# Grouped ROW broadcasts (4 tiles)
+# CHECK-FPU-NEXT:           unary_bcast_init<BroadcastType::ROW>(
+# CHECK-FPU-NEXT:           unary_bcast<BroadcastType::ROW>(
+# CHECK-FPU-NEXT:           unary_bcast<BroadcastType::ROW>(
+# CHECK-FPU-NEXT:           unary_bcast<BroadcastType::ROW>(
+# CHECK-FPU-NEXT:           unary_bcast<BroadcastType::ROW>(
+
+# Grouped mul (4 tiles)
+# CHECK-FPU-NEXT:           mul_binary_tile_init();
+# CHECK-FPU-NEXT:           mul_binary_tile(
+# CHECK-FPU-NEXT:           mul_binary_tile(
+# CHECK-FPU-NEXT:           mul_binary_tile(
+# CHECK-FPU-NEXT:           mul_binary_tile(
+
+# Grouped SCALAR broadcasts (4 tiles)
+# CHECK-FPU-NEXT:           unary_bcast_init<BroadcastType::SCALAR>(
+# CHECK-FPU-NEXT:           unary_bcast<BroadcastType::SCALAR>(
+# CHECK-FPU-NEXT:           unary_bcast<BroadcastType::SCALAR>(
+# CHECK-FPU-NEXT:           unary_bcast<BroadcastType::SCALAR>(
+# CHECK-FPU-NEXT:           unary_bcast<BroadcastType::SCALAR>(
+
+# Grouped add (4 tiles, SFPU: inputs from DST)
+# CHECK-FPU-NEXT:           add_binary_tile_init();
+# CHECK-FPU-NEXT:           add_binary_tile(
+# CHECK-FPU-NEXT:           add_binary_tile(
+# CHECK-FPU-NEXT:           add_binary_tile(
+# CHECK-FPU-NEXT:           add_binary_tile(
+
+# Sync and pack (4 tiles)
+# CHECK-FPU-NEXT:           tile_regs_commit();
+# CHECK-FPU-NEXT:           tile_regs_wait();
+# CHECK-FPU:                pack_tile<true>(
+# CHECK-FPU:                pack_tile<true>(
+# CHECK-FPU:                pack_tile<true>(
+# CHECK-FPU:                pack_tile<true>(
+# CHECK-FPU-NEXT:           tile_regs_release();
+# CHECK-FPU-NEXT:         }
+# CHECK-FPU-NEXT:         }
+# CHECK-FPU-NEXT:         {
+# CHECK-FPU-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_implicit_cb_push");
+# CHECK-FPU-NEXT:         cb_push_back(get_compile_time_arg_val(3), {{.*}});
+# CHECK-FPU-NEXT:         }
+# CHECK-FPU-NEXT:         {
+# CHECK-FPU-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_implicit_cb_pop");
+# CHECK-FPU-NEXT:         cb_pop_front(get_compile_time_arg_val(1), {{.*}});
+# CHECK-FPU-NEXT:         }
+# CHECK-FPU-NEXT:         {
+# CHECK-FPU-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_implicit_cb_pop");
+# CHECK-FPU-NEXT:         cb_pop_front(get_compile_time_arg_val(0), {{.*}});
+# CHECK-FPU-NEXT:         }
+# CHECK-FPU-NEXT:       }
+# CHECK-FPU-NEXT:     }
+# CHECK-FPU-NEXT:     {
+# CHECK-FPU-NEXT:     DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_implicit_cb_pop");
+# CHECK-FPU-NEXT:     cb_pop_front(get_compile_time_arg_val(2), {{.*}});
+# CHECK-FPU-NEXT:     }
+# CHECK-FPU-NEXT:     return;
+# CHECK-FPU-NEXT:   }
+# CHECK-FPU-NOT:    DeviceZoneScopedN(
 
 
 if __name__ == "__main__":

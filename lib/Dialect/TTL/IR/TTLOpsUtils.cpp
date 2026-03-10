@@ -6,6 +6,37 @@
 
 namespace mlir::tt::ttl {
 
+//===----------------------------------------------------------------------===//
+// Tile operation classification
+//===----------------------------------------------------------------------===//
+
+TileOpCategory classifyTileOp(Operation *op) {
+  if (isa<CopyTileOp>(op)) {
+    return TileOpCategory::CopyTile;
+  }
+  if (isa<CopyDstOp>(op)) {
+    return TileOpCategory::CopyDst;
+  }
+  if (isa<TileBcastOp>(op)) {
+    return TileOpCategory::Bcast;
+  }
+  // TODO: add TileOpCategory::Transpose case when TTL transpose op is added.
+
+  // FPU binary: marked by kFPUBinaryAttrName attribute.
+  if (op->hasAttr(kFPUBinaryAttrName)) {
+    return TileOpCategory::FPUBinary;
+  }
+  // SFPU unary: tile unary ops that operate in-place on DST.
+  if (op->hasTrait<TTLTileUnaryOpTrait>()) {
+    return TileOpCategory::SFPUUnary;
+  }
+  // SFPU binary: tile binary ops that read both operands from DST.
+  if (op->hasTrait<TTLTileBinaryOpTrait>()) {
+    return TileOpCategory::SFPUBinary;
+  }
+  return TileOpCategory::Unknown;
+}
+
 ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value) {
   ElementwiseTraceResult result;
 
