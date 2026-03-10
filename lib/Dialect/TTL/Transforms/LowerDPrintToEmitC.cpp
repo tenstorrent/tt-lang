@@ -165,7 +165,8 @@ static FailureOr<TensorPrintInfo> getTensorPrintInfo(Type elementType,
   Type dataType = tileType.getElementType();
 
   if (dataType.isBF16()) {
-    return TensorPrintInfo{"BF16", "uint16_t", tileH * tileW, tileH * tileW * 2};
+    return TensorPrintInfo{"BF16", "uint16_t", tileH * tileW,
+                           tileH * tileW * 2};
   }
   if (dataType.isF32()) {
     return TensorPrintInfo{"F32", "uint32_t", tileH * tileW, tileH * tileW * 4};
@@ -354,11 +355,9 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
         emitVerbatim(loc, "DPRINT << page << \": \";", rewriter);
         emitVerbatim(loc,
                      "for (uint32_t j = 0; j < " +
-                         std::to_string(info->eltsPerPage) +
-                         "; ++j, ++ptr) {",
+                         std::to_string(info->eltsPerPage) + "; ++j, ++ptr) {",
                      rewriter);
-        emitVerbatim(loc,
-                     "DPRINT << " + info->formatter + "(*ptr) << \" \";",
+        emitVerbatim(loc, "DPRINT << " + info->formatter + "(*ptr) << \" \";",
                      rewriter);
         emitVerbatim(loc, "}", rewriter);
         emitVerbatim(loc, "DPRINT << ENDL();", rewriter);
@@ -416,20 +415,19 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
                      "get_common_arg_val<uint32_t>(" +
                          crtaStr + "), " + pageSizeStr + ");",
                      rewriter);
-        emitVerbatim(
-            loc, "cb_reserve_back(get_compile_time_arg_val(0), 1);", rewriter);
-        emitVerbatim(
-            loc,
-            "uint32_t dprint_scratch = "
-            "get_write_ptr(get_compile_time_arg_val(0));",
-            rewriter);
+        emitVerbatim(loc, "cb_reserve_back(get_compile_time_arg_val(0), 1);",
+                     rewriter);
+        emitVerbatim(loc,
+                     "uint32_t dprint_scratch = "
+                     "get_write_ptr(get_compile_time_arg_val(0));",
+                     rewriter);
         emitVerbatim(loc,
                      "for (uint32_t page = 0; page < " +
                          std::to_string(numPages) + "; ++page) {",
                      rewriter);
-        emitVerbatim(
-            loc, "noc_async_read_tile(page, dprint_ta, dprint_scratch);",
-            rewriter);
+        emitVerbatim(loc,
+                     "noc_async_read_tile(page, dprint_ta, dprint_scratch);",
+                     rewriter);
         emitVerbatim(loc, "noc_async_read_barrier();", rewriter);
         emitVerbatim(loc,
                      "volatile tt_l1_ptr " + info->cPtrType +
@@ -441,8 +439,7 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
                      "for (uint32_t j = 0; j < " +
                          std::to_string(info->eltsPerPage) + "; ++j) {",
                      rewriter);
-        emitVerbatim(loc,
-                     "DPRINT << " + info->formatter + "(ptr[j]) << \" \";",
+        emitVerbatim(loc, "DPRINT << " + info->formatter + "(ptr[j]) << \" \";",
                      rewriter);
         emitVerbatim(loc, "}", rewriter);
         emitVerbatim(loc, "DPRINT << ENDL();", rewriter);
