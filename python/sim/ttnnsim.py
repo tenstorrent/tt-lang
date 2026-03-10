@@ -590,6 +590,16 @@ def from_torch(
     return Tensor(tensor)
 
 
+def multiply(
+    a: Union[Tensor, torch.Tensor],
+    b: Union[Tensor, torch.Tensor],
+) -> Tensor:
+    """Element-wise multiply (simulator shim for ttnn.multiply)."""
+    a_t = to_torch(a) if isinstance(a, Tensor) else a
+    b_t = to_torch(b) if isinstance(b, Tensor) else b
+    return Tensor(a_t * b_t)
+
+
 def split_work_to_cores(
     core_grid: Union[CoreCoord, CoreRangeSet],
     units_to_divide: int,
