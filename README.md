@@ -269,14 +269,14 @@ For more information on testing, including how to write new tests and interpret 
 
 ## Compiler Options
 
-Kernels accept compiler options that control code generation (e.g., `--no-maximize-dst`, `--no-fpu-binary-ops`). These can be passed as command-line arguments, via the `@ttl.kernel` decorator's `options=` parameter, or the `TTLANG_COMPILER_OPTIONS` environment variable. Command-line arguments take highest priority.
+Kernels accept compiler options that control code generation (e.g., `--no-ttl-maximize-dst`, `--no-ttl-fpu-binary-ops`). These can be passed as command-line arguments, via the `@ttl.kernel` decorator's `options=` parameter, or the `TTLANG_COMPILER_OPTIONS` environment variable. Command-line arguments take highest priority.
 
 ```bash
 # List available options
-python examples/tutorial/multicore_grid_auto.py --help
+python examples/tutorial/multicore_grid_auto.py --ttl-help
 
 # Run a kernel with options
-python examples/tutorial/multicore_grid_auto.py --no-maximize-dst
+python examples/tutorial/multicore_grid_auto.py --no-ttl-maximize-dst
 ```
 
 See `python/ttl/compiler_options.py` for details on priority ordering and the merge protocol.

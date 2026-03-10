@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn, tt-device
-# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-maximize-dst --no-fpu-binary-ops > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s > %t.fpu.output 2>&1
@@ -149,7 +149,7 @@ def add_3d_kernel(lhs, rhs, out):
 # CHECK-CPP:       noc_async_write_tile(
 
 # =============================================================================
-# FPU path checks (default: --maximize-dst --fpu-binary-ops)
+# FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
 # 2x2x2 = 8 tiles fits in DST (bf16), fully unrolled with FPU binary add
 # =============================================================================
 

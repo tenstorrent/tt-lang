@@ -6,7 +6,7 @@
 # RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
-# RUN: env TTLANG_COMPILE_ONLY=1 %python %s --no-maximize-dst --no-fpu-binary-ops > %t.sfpu.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.sfpu.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-CPP-SFPU < %t.sfpu.output
 
 """
@@ -226,7 +226,7 @@ def add_kernel(lhs, rhs, out):
 
 
 # =============================================================================
-# SFPU path checks (--no-maximize-dst --no-fpu-binary-ops)
+# SFPU path checks (--no-ttl-maximize-dst --no-ttl-fpu-binary-ops)
 # =============================================================================
 
 # CHECK-CPP-SFPU: // add_compute

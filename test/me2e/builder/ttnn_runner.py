@@ -43,8 +43,6 @@ def run_binary_op(
     input_b: torch.Tensor,
     kernel_dir: Path,
     enable_fp32_accumulation: bool = False,
-    cb_shape: Tuple[int, int] = (1, 1),
-    cb_buffer_factor: int = 2,
 ) -> torch.Tensor:
     """
     Run a binary operation on device.
@@ -57,8 +55,6 @@ def run_binary_op(
         input_b: Second input tensor.
         kernel_dir: Directory containing kernel C++ files.
         enable_fp32_accumulation: If True, enable fp32 dest accumulation on compute.
-        cb_shape: CB tile shape for all circular buffers.
-        cb_buffer_factor: Buffer factor for all circular buffers (default: 2).
 
     Returns:
         Output tensor as torch tensor.
@@ -70,8 +66,6 @@ def run_binary_op(
         inputs=[input_a, input_b],
         kernel_dir=kernel_dir,
         enable_fp32_accumulation=enable_fp32_accumulation,
-        cb_shape=cb_shape,
-        cb_buffer_factor=cb_buffer_factor,
     )
 
 
@@ -82,8 +76,6 @@ def run_unary_op(
     input_a: torch.Tensor,
     kernel_dir: Path,
     enable_fp32_accumulation: bool = False,
-    cb_shape: Tuple[int, int] = (1, 1),
-    cb_buffer_factor: int = 2,
 ) -> torch.Tensor:
     """
     Run a unary operation on device.
@@ -95,8 +87,6 @@ def run_unary_op(
         input_a: Input tensor.
         kernel_dir: Directory containing kernel C++ files.
         enable_fp32_accumulation: If True, enable fp32 dest accumulation on compute.
-        cb_shape: CB tile shape for all circular buffers.
-        cb_buffer_factor: Buffer factor for all circular buffers (default: 2).
 
     Returns:
         Output tensor as torch tensor.
@@ -108,8 +98,6 @@ def run_unary_op(
         inputs=[input_a],
         kernel_dir=kernel_dir,
         enable_fp32_accumulation=enable_fp32_accumulation,
-        cb_shape=cb_shape,
-        cb_buffer_factor=cb_buffer_factor,
     )
 
 
@@ -120,8 +108,6 @@ def _run_op(
     inputs: List[torch.Tensor],
     kernel_dir: Path,
     enable_fp32_accumulation: bool = False,
-    cb_shape: Tuple[int, int] = (1, 1),
-    cb_buffer_factor: int = 2,
 ) -> torch.Tensor:
     """
     Run an operation on device using shared kernel_runner infrastructure.
@@ -199,8 +185,9 @@ def _run_op(
     ]
 
     # Build CB configs: CircularBuffer objects for each tensor.
+    # Shape is (1, 1) for single tile, buffer_factor is 1 for single buffering.
     cb_configs: List[CircularBuffer] = [
-        CircularBuffer(tensor=tensor, shape=cb_shape, buffer_factor=cb_buffer_factor)
+        CircularBuffer(tensor=tensor, shape=(1, 1), buffer_factor=1)
         for tensor in io_tensors
     ]
 
