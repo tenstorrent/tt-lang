@@ -351,7 +351,7 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
       return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
     Value dstIdx =
-        rewriter.create<arith::ConstantIndexOp>(loc, dstIdxAttr.getInt());
+        arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
 
     // Verify both CBs have the same number of tiles, which is required
     // for using the same linearized tile index for both operands.
@@ -375,8 +375,8 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
     }
 
     // Emit compute op (init inserted by ttkernel-insert-inits pass).
-    rewriter.create<TTKernelComputeOp>(loc, *lhsCB, *rhsCB, *cbIdx, *cbIdx,
-                                       dstIdx);
+    TTKernelComputeOp::create(rewriter, loc, *lhsCB, *rhsCB, *cbIdx, *cbIdx,
+                              dstIdx);
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
