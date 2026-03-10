@@ -10,6 +10,9 @@ primitives (reserve/wait/push/pop, error contracts, per-core limits).
 """
 
 import pytest
+import subprocess
+import tempfile
+from pathlib import Path
 import torch
 from test_utils import (
     make_full_tensor,
@@ -1046,12 +1049,12 @@ def test_dfb_pages_nonblocking(configured_dfb8: DataflowBuffer) -> None:
 
 
 def test_per_core_dfb_limit_exceeds_max() -> None:
-    """Test that Program raises when a kernel's DataflowBuffer count exceeds MAX_DFBS."""
-    from python.sim.constants import MAX_DFBS
-    from python.sim.program import Program
+    """Test that Program raises when a kernel's DataflowBuffer count exceeds the configured limit."""
+    from python.sim.program import get_max_dfbs, Program
     from python.sim import ttl
 
-    assert MAX_DFBS == 32
+    max_dfbs = get_max_dfbs()
+    assert max_dfbs == 32
 
     element = make_ones_tile()
 
@@ -1065,8 +1068,8 @@ def test_per_core_dfb_limit_exceeds_max() -> None:
 
     prog = Program(noop_compute, noop_dm, noop_dm, grid=(1,))
 
-    # Inject MAX_DFBS + 1 DataflowBuffers into the context.
-    for i in range(MAX_DFBS + 1):
+    # Inject max_dfbs + 1 DataflowBuffers into the context.
+    for i in range(max_dfbs + 1):
         prog.context[f"dfb_{i}"] = DataflowBuffer(element=element, shape=(1, 1))
 
     with pytest.raises(RuntimeError, match="exceeds the hardware limit"):

@@ -14,12 +14,41 @@ import types
 from typing import Any, Dict, List
 
 from .dfb import DataflowBuffer
-from .constants import MAX_DFBS
 from .decorators import BindableTemplate
 from .blockstate import ThreadType
 from .greenlet_scheduler import GreenletScheduler, set_scheduler
 from .ttnnsim import Tensor
 from .typedefs import Shape
+
+# Maximum number of DataflowBuffers per core (hardware limit).
+_max_dfbs: int = 32
+
+
+def set_max_dfbs(limit: int) -> None:
+    """Set the maximum number of DataflowBuffers per core.
+
+    Args:
+        limit: Maximum number of CBs per core (must be non-negative)
+
+    Raises:
+        ValueError: If limit is negative
+
+    Example:
+        set_max_dfbs(64)  # Allow up to 64 CBs per core
+    """
+    if limit < 0:
+        raise ValueError(f"max_dfbs must be non-negative, got {limit}")
+    global _max_dfbs
+    _max_dfbs = limit
+
+
+def get_max_dfbs() -> int:
+    """Get the current maximum number of DataflowBuffers per core.
+
+    Returns:
+        Current CB limit per core
+    """
+    return _max_dfbs
 
 
 def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
@@ -85,16 +114,17 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                 Dictionary containing per-core context with fresh DataflowBuffers
 
             Raises:
-                RuntimeError: If the number of DataflowBuffers exceeds MAX_DFBS
+                RuntimeError: If the number of DataflowBuffers exceeds the configured limit
             """
             # Enforce per-core DataflowBuffer limit before allocating.
             dfb_count = sum(
                 1 for v in self.context.values() if isinstance(v, DataflowBuffer)
             )
-            if dfb_count > MAX_DFBS:
+            max_dfbs = get_max_dfbs()
+            if dfb_count > max_dfbs:
                 raise RuntimeError(
                     f"Number of DataflowBuffers per core ({dfb_count}) exceeds "
-                    f"the hardware limit of {MAX_DFBS}."
+                    f"the hardware limit of {max_dfbs}."
                 )
 
             memo: Dict[int, Any] = {}
