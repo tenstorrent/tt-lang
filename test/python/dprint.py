@@ -41,7 +41,9 @@ def dprint_test_kernel(inp, out):
             print("compute start")
             print("magic:", 42)
             print(inp_dfb)
+            print("cb state:", inp_dfb)
             print(i)
+            print("tile:", i)
             result = ttl.exp(i)
             print(_dump_dst_registers=True, label="after exp")
             print(i, thread="pack")
@@ -52,6 +54,8 @@ def dprint_test_kernel(inp, out):
     def dm_read():
         x, y = ttl.core(dims=2)
         print("dm_read core:", x, y)
+        print("inp:", inp, num_pages=1)
+        print("A:", inp)
         with inp_dfb.reserve() as blk:
             tx = ttl.copy(inp[0, 0], blk)
             tx.wait()
@@ -85,7 +89,23 @@ def dprint_test_kernel(inp, out):
 # CHECK: DPRINT << ttmlir::CBPrinter(get_compile_time_arg_val(
 # CHECK: );
 
+# Mixed-arg: scalar label + CB object (label on math, CB on pack)
+# CHECK: DPRINT_MATH(
+# CHECK: DPRINT << "cb state:" << ENDL();
+# CHECK: );
+# CHECK: DPRINT_PACK(
+# CHECK: DPRINT << ttmlir::CBPrinter(get_compile_time_arg_val(
+# CHECK: );
+
 # Tile print in compute auto-defaults to pack thread
+# CHECK: DPRINT_PACK(
+# CHECK: TileSlice(get_compile_time_arg_val(
+# CHECK: );
+
+# Mixed-arg: scalar label + tile object
+# CHECK: DPRINT_MATH(
+# CHECK: DPRINT << "tile:" << ENDL();
+# CHECK: );
 # CHECK: DPRINT_PACK(
 # CHECK: TileSlice(get_compile_time_arg_val(
 # CHECK: );
@@ -116,6 +136,14 @@ def dprint_test_kernel(inp, out):
 # CHECK: #include "api/debug/dprint.h"
 # CHECK: void kernel_main()
 # CHECK: DPRINT << "dm_read core: " << get_absolute_logical_x() << " " << get_absolute_logical_y() << ENDL();
+
+# Mixed-arg: scalar label + tensor accessor pages in datamovement
+# CHECK: DPRINT << "inp:" << ENDL();
+# CHECK: get_common_arg_val<uint32_t>(
+
+# Tensor accessor without num_pages defaults to num_pages=1
+# CHECK: DPRINT << "A:" << ENDL();
+# CHECK: get_common_arg_val<uint32_t>(
 
 # =============================================================================
 # C++ Kernel Checks - Verify no dprint in dm_write kernel (no print calls)

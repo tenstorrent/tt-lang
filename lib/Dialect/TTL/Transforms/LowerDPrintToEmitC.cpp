@@ -59,6 +59,43 @@ static FailureOr<int64_t> resolveCBIndex(Value cbValue, Operation *dprintOp) {
       "or be a compute block argument with CB annotation");
 }
 
+/// Get the function arg index for a tensor value, if it is a direct
+/// function argument (tensor accessor).
+static std::optional<unsigned> getTensorFuncArgIndex(Value tensor) {
+  tensor = traceUnrealizedCasts(tensor);
+  auto blockArg = dyn_cast<BlockArgument>(tensor);
+  if (!blockArg || !blockArg.getParentBlock() ||
+      !blockArg.getParentBlock()->isEntryBlock()) {
+    return std::nullopt;
+  }
+  return blockArg.getArgNumber();
+}
+
+/// Build a C++ expression that resolves the L1 base address for a tensor.
+/// CB-backed tensors use get_read_ptr(cb_idx); function arg tensors
+/// (tensor accessors) use get_common_arg_val<uint32_t>(arg_idx).
+static FailureOr<std::string> resolveTensorL1Addr(Value tensorVal,
+                                                   Operation *dprintOp) {
+  Value cb = getAttachedCB(tensorVal);
+  if (cb) {
+    auto cbIdx = resolveCBIndex(cb, dprintOp);
+    if (failed(cbIdx)) {
+      return failure();
+    }
+    return std::string("get_read_ptr(get_compile_time_arg_val(") +
+           std::to_string(*cbIdx) + "))";
+  }
+
+  auto argIdx = getTensorFuncArgIndex(tensorVal);
+  if (!argIdx) {
+    return dprintOp->emitError(
+        "cannot resolve L1 address for tensor: value must trace to "
+        "attach_cb or be a function argument (tensor accessor)");
+  }
+  return std::string("get_common_arg_val<uint32_t>(") +
+         std::to_string(*argIdx) + ")";
+}
+
 /// Resolve a scalar variable to its C++ expression string.
 static FailureOr<std::string> resolveScalarExpr(Value val, Operation *op) {
   if (auto constOp = val.getDefiningOp<arith::ConstantOp>()) {
@@ -317,27 +354,19 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
         return failure();
       }
 
-      // Resolve CB index by finding the CB associated with this tensor.
-      Value cb = getAttachedCB(tensorVal);
-      if (!cb) {
-        return op.emitError("cannot find CB associated with tensor; "
-                            "tensor must have an attach_cb");
-      }
-      auto cbIdx = resolveCBIndex(cb, op);
-      if (failed(cbIdx)) {
+      auto l1Addr = resolveTensorL1Addr(tensorVal, op);
+      if (failed(l1Addr)) {
         return failure();
       }
 
       int64_t numPages = op.getNumPages().value_or(1);
-      std::string cbArg =
-          "get_compile_time_arg_val(" + std::to_string(*cbIdx) + ")";
 
       // Inline page print using BF16/F32 formatters from dprint.h.
       emitVerbatim(loc, "{", rewriter);
       emitVerbatim(loc,
                    "volatile tt_l1_ptr " + info->cPtrType +
                        "* ptr = reinterpret_cast<volatile tt_l1_ptr " +
-                       info->cPtrType + "*>(get_read_ptr(" + cbArg + "));",
+                       info->cPtrType + "*>(" + *l1Addr + ");",
                    rewriter);
       emitVerbatim(loc,
                    "for (uint32_t page = 0; page < " +

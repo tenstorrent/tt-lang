@@ -604,56 +604,111 @@ class TTLGenericCompiler(TTCompilerBase):
             )
 
         # Visit all args once to determine types.
+        # Each entry is (kind, const_val, mlir_val, name).
         visited = []
         for arg in args:
             if isinstance(arg, ast.Constant):
-                visited.append(("const", arg.value, None))
+                visited.append(("const", arg.value, None, None))
             elif isinstance(arg, ast.Name):
                 val = self.visit(arg)
-                visited.append(("var", None, val))
+                visited.append(("var", None, val, arg.id))
             else:
                 raise ValueError(
                     f"print() argument type {type(arg).__name__} " f"not supported"
                 )
 
-        # Single non-scalar arg: check for CB, tile, or tensor mode.
-        if len(visited) == 1 and visited[0][0] == "var":
-            val = visited[0][2]
+        # Check if the last variable arg is a TT-Lang object (CB, block,
+        # or tensor). If so, emit a scalar label for any preceding args
+        # then the appropriate object print. This supports patterns like
+        # print("C: ", C, num_pages=2) from the spec.
+        last_var_idx = None
+        for i in range(len(visited) - 1, -1, -1):
+            if visited[i][0] == "var":
+                last_var_idx = i
+                break
 
-            cb_type = ttl.CircularBufferType.maybe_downcast(val.type)
-            if cb_type is not None:
-                ttl.dprint(
-                    fmt="",
-                    mode="cb",
-                    argv=[val],
-                    thread=self._resolve_print_thread("cb", thread),
-                    num_pages=None,
-                )
-                return
-
-            if RankedTensorType.isinstance(val.type):
-                if num_pages is not None:
-                    if self.kernel_type == "compute":
-                        raise ValueError(
-                            "print(tensor, num_pages=N) is only supported in "
-                            "datamovement kernels (uses get_read_ptr)"
-                        )
-                    mode = "tensor"
-                else:
-                    mode = "tile"
-                ttl.dprint(
-                    fmt="",
-                    mode=mode,
-                    argv=[val],
-                    thread=self._resolve_print_thread(mode, thread),
-                    num_pages=num_pages,
+        if last_var_idx is not None:
+            _, _, last_var, last_name = visited[last_var_idx]
+            is_tensor_accessor = last_name is not None and last_name in self.streams
+            if self._is_object_printable(last_var, num_pages):
+                prefix = visited[:last_var_idx]
+                if prefix:
+                    self._emit_scalar_print(prefix, thread)
+                self._emit_object_print(
+                    last_var, thread, num_pages, is_tensor_accessor
                 )
                 return
 
         # Scalar mode: string/int/float constants and integer variables.
+        self._emit_scalar_print(visited, thread)
+
+    def _is_object_printable(self, val, num_pages):
+        """Check if val is a CB, block/tile, or tensor suitable for
+        object-mode dprint."""
+        if ttl.CircularBufferType.maybe_downcast(val.type) is not None:
+            return True
+        if RankedTensorType.isinstance(val.type):
+            return True
+        return False
+
+    def _emit_object_print(self, val, thread, num_pages, is_tensor_accessor=False):
+        """Emit the appropriate object-mode dprint for val."""
+        cb_type = ttl.CircularBufferType.maybe_downcast(val.type)
+        if cb_type is not None:
+            ttl.dprint(
+                fmt="",
+                mode="cb",
+                argv=[val],
+                thread=self._resolve_print_thread("cb", thread),
+                num_pages=None,
+            )
+            return
+
+        if RankedTensorType.isinstance(val.type):
+            if is_tensor_accessor:
+                # Tensor accessors use page-based printing (spec: num_pages
+                # defaults to 1). TileSlice is not available for raw tensors.
+                if self.kernel_type == "compute":
+                    raise ValueError(
+                        "print(tensor) is only supported in "
+                        "datamovement kernels"
+                    )
+                ttl.dprint(
+                    fmt="",
+                    mode="tensor",
+                    argv=[val],
+                    thread=self._resolve_print_thread("tensor", thread),
+                    num_pages=num_pages if num_pages is not None else 1,
+                )
+            elif num_pages is not None:
+                # CB-backed block with explicit num_pages: page-based printing.
+                if self.kernel_type == "compute":
+                    raise ValueError(
+                        "print(block, num_pages=N) is only supported in "
+                        "datamovement kernels"
+                    )
+                ttl.dprint(
+                    fmt="",
+                    mode="tensor",
+                    argv=[val],
+                    thread=self._resolve_print_thread("tensor", thread),
+                    num_pages=num_pages,
+                )
+            else:
+                # CB-backed block without num_pages: tile-based printing.
+                ttl.dprint(
+                    fmt="",
+                    mode="tile",
+                    argv=[val],
+                    thread=self._resolve_print_thread("tile", thread),
+                    num_pages=None,
+                )
+
+    def _emit_scalar_print(self, visited, thread):
+        """Emit a scalar-mode dprint from a list of visited args."""
         fmt = ""
         argv = []
-        for kind, const_val, val in visited:
+        for kind, const_val, val, _name in visited:
             if kind == "const":
                 if not isinstance(const_val, (str, int, float)):
                     raise ValueError(
@@ -663,7 +718,8 @@ class TTLGenericCompiler(TTCompilerBase):
                 fmt += str(const_val) + " "
             else:
                 if not (
-                    IndexType.isinstance(val.type) or IntegerType.isinstance(val.type)
+                    IndexType.isinstance(val.type)
+                    or IntegerType.isinstance(val.type)
                 ):
                     raise ValueError(
                         f"print() scalar mode supports integer variables, "
