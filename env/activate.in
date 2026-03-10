@@ -6,7 +6,7 @@
 
 # Check for verbose flag
 _TTLANG_VERBOSE=0
-if [ "$1" = "-v" ] || [ "$1" = "--verbose" ]; then
+if [ "${1:-}" = "-v" ] || [ "${1:-}" = "--verbose" ]; then
   _TTLANG_VERBOSE=1
 fi
 
@@ -42,16 +42,16 @@ export PYTHONPATH="\
 @CMAKE_BINARY_DIR@/python_packages:\
 ${TT_LANG_HOME}/python:\
 ${TT_LANG_HOME}/test:\
-$PYTHONPATH"
+${PYTHONPATH:-}"
 
 # Library path for built shared libraries.
-export LD_LIBRARY_PATH="@CMAKE_BINARY_DIR@/lib:${LLVM_INSTALL_DIR}/lib:${LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="@CMAKE_BINARY_DIR@/lib:${LLVM_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
 
 # tt-metal runtime
 export TT_METAL_HOME="@TT_METAL_HOME@"
 export TT_METAL_RUNTIME_ROOT="${TT_METAL_HOME}"
-export PYTHONPATH="@TT_METAL_PYTHON_PATH@:${PYTHONPATH}"
-export LD_LIBRARY_PATH="@TT_METAL_LIB_PATH@:${LD_LIBRARY_PATH}"
+export PYTHONPATH="@TT_METAL_PYTHON_PATH@:${PYTHONPATH:-}"
+export LD_LIBRARY_PATH="@TT_METAL_LIB_PATH@:${LD_LIBRARY_PATH:-}"
 
 # Mark environment as activated.
 export TTLANG_ENV_ACTIVATED=1
