@@ -8,33 +8,18 @@ from utils.correctness import assert_with_ulp
 import ttnn
 
 
-@pytest.mark.parametrize(
-    "M,K,N", [(128, 128, 128), (256, 256, 256), (512, 512, 512), (640, 640, 640)]
-)
-def test_singlecore_matmul_metal(M, K, N):
-    device = ttnn.open_device(device_id=0)
-    # allocate a, b and output tensors for matmul on device dram
-    dram_memory_config = ttnn.DRAM_MEMORY_CONFIG
-    a_tensor = ttnn.rand(
-        (M, K),
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=dram_memory_config,
+def run_singlecore_matmul(device, a_tensor, b_tensor, output_tensor):
+    M = a_tensor.shape[0]
+    K = a_tensor.shape[1]
+    N = b_tensor.shape[1]
+    assert a_tensor.shape[1] == b_tensor.shape[0], (
+        "Incompatible matrix shapes for multiplication."
     )
-    b_tensor = ttnn.rand(
-        (K, N),
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=dram_memory_config,
+    assert a_tensor.shape[0] == output_tensor.shape[0], (
+        "Output matrix has incorrect number of rows."
     )
-    output_tensor = ttnn.empty(
-        (M, N),
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=dram_memory_config,
+    assert b_tensor.shape[1] == output_tensor.shape[1], (
+        "Output matrix has incorrect number of columns."
     )
     Mt = M // ttnn.TILE_SIZE
     Kt = K // ttnn.TILE_SIZE
@@ -61,7 +46,6 @@ def test_singlecore_matmul_metal(M, K, N):
         page_size=cb_page_size,
     )
 
-    # single core grid
     core = ttnn.CoreCoord(0, 0)
     core_grid = ttnn.CoreRangeSet([ttnn.CoreRange(core, core)])
     buffering_factor = 2
@@ -93,7 +77,6 @@ def test_singlecore_matmul_metal(M, K, N):
     reader_rt_args = [a_tensor.buffer_address(), b_tensor.buffer_address(), Mt, Kt, Nt]
     writer_rt_args = [output_tensor.buffer_address(), Mt, Nt]
 
-    # Compute config init can't handle options, set here
     computeConfig = ttnn.ComputeConfigDescriptor()
     computeConfig.math_fidelity = ttnn.MathFidelity.HiFi4
     computeConfig.fp32_dest_acc_en = True
@@ -134,7 +117,38 @@ def test_singlecore_matmul_metal(M, K, N):
         cbs=[a_cb_descriptor, b_cb_descriptor, out_cb_descriptor],
     )
 
-    output = ttnn.generic_op([a_tensor, b_tensor, output_tensor], program_descriptor)
+    return ttnn.generic_op([a_tensor, b_tensor, output_tensor], program_descriptor)
+
+
+@pytest.mark.parametrize(
+    "M,K,N", [(128, 128, 128), (256, 256, 256), (512, 512, 512), (640, 640, 640)]
+)
+def test_singlecore_matmul_metal(M, K, N):
+    device = ttnn.open_device(device_id=0)
+    dram_memory_config = ttnn.DRAM_MEMORY_CONFIG
+    a_tensor = ttnn.rand(
+        (M, K),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=dram_memory_config,
+    )
+    b_tensor = ttnn.rand(
+        (K, N),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=dram_memory_config,
+    )
+    output_tensor = ttnn.empty(
+        (M, N),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=dram_memory_config,
+    )
+
+    output = run_singlecore_matmul(device, a_tensor, b_tensor, output_tensor)
     metal_output = ttnn.to_torch(output).to(torch.bfloat16)
 
     a_tensor_torch = ttnn.to_torch(a_tensor).to(torch.bfloat16)
