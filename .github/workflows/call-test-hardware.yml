@@ -8,16 +8,11 @@ on:
         required: false
         type: string
         default: 'n150'
-      build-os:
-        description: 'Which build artifacts to use (ubuntu or macos)'
-        required: false
-        type: string
-        default: 'ubuntu'
       timeout:
         description: 'Job timeout in minutes'
         required: false
         type: number
-        default: 30
+        default: 60
   workflow_call:
     inputs:
       runs-on:
@@ -25,16 +20,11 @@ on:
         required: false
         type: string
         default: 'n150'
-      build-os:
-        description: 'Which build artifacts to use (ubuntu or macos)'
-        required: false
-        type: string
-        default: 'ubuntu'
       timeout:
         description: 'Job timeout in minutes'
         required: false
         type: number
-        default: 30
+        default: 60
 
 permissions:
   checks: write
@@ -74,45 +64,32 @@ jobs:
       - name: Git safe directory
         run: git config --global --add safe.directory "$(pwd)"
 
-      - name: Download build artifacts archive
-        uses: actions/download-artifact@v4
+      - name: Configure tt-lang
+        run: |
+          cmake -G Ninja -B build \
+              -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+              -DTTLANG_USE_TOOLCHAIN=ON \
+              -DTTLANG_ENABLE_PERF_TRACE=ON
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
         with:
-          name: ${{ format('ttlang-build-{0}', inputs.build-os) }}
-          path: .
+          key: Linux-ttlang-hw-${{ inputs.runs-on }}
+          max-size: 200M
 
-      - name: Extract build artifacts
+      - name: Build tt-lang
         run: |
-          set -x
-          ARTIFACT_FILE=$(.github/scripts/get-artifact-archive-name.sh "${{ github.sha }}")
-          tar -I 'zstd --long=31' -xf "${ARTIFACT_FILE}"
-          rm -f "${ARTIFACT_FILE}"
-
-      - name: Fix activate paths for container
-        run: |
-          echo "=== Before fix ==="
-          echo "Container workspace: $(pwd)"
-          grep -E 'PYTHONPATH|CMAKE_BINARY|TT_LANG_HOME' build/env/activate | head -10
-          echo ""
-          .github/scripts/fix-activate-paths.sh
-          echo ""
-          echo "=== After fix ==="
-          grep -E 'PYTHONPATH|CMAKE_BINARY|TT_LANG_HOME' build/env/activate | head -10
+          source build/env/activate
+          cmake --build build
 
       - name: Install test dependencies
         run: |
           source build/env/activate
-          echo "PYTHONPATH=$PYTHONPATH"
-          echo "PATH=$PATH"
-          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
-          which python3
-          python3 -c "import sys; print('sys.path:', sys.path[:5])"
           pip install -r dev-requirements.txt
 
       - name: Smoketest
         run: |
           source build/env/activate
-          echo "Verifying ttl import..."
-          python3 -c "import ttl; print('ttl location:', ttl.__file__)"
           python3 test/python/smoketest.py
 
       - name: Single test (just python)

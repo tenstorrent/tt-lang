@@ -130,24 +130,6 @@ jobs:
               with:
                   path: ./build/docs/sphinx/_build/html
 
-            - name: Archive build artifacts
-              run: |
-                  set -x
-                  ARTIFACT_NAME=$(.github/scripts/get-artifact-archive-name.sh "${{ github.sha }}")
-                  echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
-
-                  tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf "${ARTIFACT_NAME}" \
-                      --exclude='build/llvm-build' \
-                      build/
-
-            - name: Upload build artifacts for hardware tests
-              uses: actions/upload-artifact@v4
-              with:
-                  name: ttlang-build-ubuntu
-                  path: ${{ env.ARTIFACT_NAME }}
-                  if-no-files-found: error
-                  retention-days: 1
-
     test-hardware:
         needs: build-tt-lang
         if: always() && needs.build-tt-lang.result == 'success'
@@ -155,5 +137,4 @@ jobs:
         secrets: inherit
         with:
             runs-on: n150
-            build-os: ubuntu
             timeout: 60

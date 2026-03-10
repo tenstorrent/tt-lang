@@ -52,6 +52,10 @@ if(TTLANG_USE_TOOLCHAIN AND NOT DEFINED MLIR_PREFIX)
   endif()
 
   set(MLIR_PREFIX "${_toolchain_dir}")
+  set(TTMETAL_BUILD_DIR "${_toolchain_dir}/tt-metal" CACHE PATH
+    "tt-metal build directory (from toolchain)" FORCE)
+  set(TTLANG_PYTHON_VENV "${_toolchain_dir}/venv" CACHE PATH
+    "Python venv (from toolchain)" FORCE)
   message(STATUS "Using ttlang toolchain at: ${_toolchain_dir}")
 
   # Use the Python from the toolchain's venv so that MLIR Python bindings
