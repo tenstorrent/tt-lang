@@ -20,17 +20,22 @@ if(NOT EXISTS "${TT_METAL_SOURCE_DIR}/CMakeLists.txt")
     "  git submodule update --init third-party/tt-metal")
 endif()
 
-# Check that nested submodules are initialized (tt_llk uses pyproject.toml, not CMakeLists.txt)
-foreach(_sub tt_metal/third_party/tracy/CMakeLists.txt
-             tt_metal/third_party/tt_llk/README.md
-             tt_metal/third_party/umd/CMakeLists.txt)
-  if(NOT EXISTS "${TT_METAL_SOURCE_DIR}/${_sub}")
-    get_filename_component(_sub_dir "${_sub}" DIRECTORY)
-    message(FATAL_ERROR
-      "tt-metal nested submodule ${_sub_dir} not initialized. Run:\n"
-      "  cd ${TT_METAL_SOURCE_DIR} && git submodule update --init --recursive")
-  endif()
-endforeach()
+# Check that nested submodules are initialized when tt-metal needs to be
+# built from source. When using a pre-built toolchain the nested submodules
+# (tracy, tt_llk, umd) are not required — only the top-level source tree
+# is needed for JIT headers at device runtime.
+if(NOT TTLANG_USE_TOOLCHAIN)
+  foreach(_sub tt_metal/third_party/tracy/CMakeLists.txt
+               tt_metal/third_party/tt_llk/README.md
+               tt_metal/third_party/umd/CMakeLists.txt)
+    if(NOT EXISTS "${TT_METAL_SOURCE_DIR}/${_sub}")
+      get_filename_component(_sub_dir "${_sub}" DIRECTORY)
+      message(FATAL_ERROR
+        "tt-metal nested submodule ${_sub_dir} not initialized. Run:\n"
+        "  cd ${TT_METAL_SOURCE_DIR} && git submodule update --init --recursive")
+    endif()
+  endforeach()
+endif()
 
 # ---------------------------------------------------------------------------
 # Verify tt-metal submodule matches the version expected by tt-mlir.

@@ -18,8 +18,10 @@ ARG TT_METAL_DEPENDENCIES_COMMIT=beccdb232ed7532b0748f8f97aba958ba43ddae1
 RUN <<EOT
 set -e
 apt-get update -qq
+apt-get install -y -qq software-properties-common
+add-apt-repository ppa:git-core/ppa -y
+apt-get update -qq
 apt-get install -y -qq \
-    software-properties-common \
     build-essential \
     git \
     libhwloc-dev \
@@ -39,6 +41,7 @@ apt-get install -y -qq \
     curl \
     jq \
     sudo \
+    time \
     lcov \
     zstd libzstd-dev \
     unzip \
