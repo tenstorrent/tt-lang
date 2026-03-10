@@ -145,7 +145,7 @@ class TTCompilerBase(PyKernelAstBase):
             if_cond = arith.cmpi(
                 arith.CmpIPredicate.ne, if_cond, arith.ConstantOp(cond_type, 0)
             )
-        if_exp = scf.IfOp(cond=if_cond, hasElse=bool(node.orelse))
+        if_exp = scf.IfOp(cond=if_cond, has_else=bool(node.orelse))
 
         self._on_scope_exit()
         with InsertionPoint(if_exp.then_block), Location.unknown():
