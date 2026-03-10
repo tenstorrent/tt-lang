@@ -7,12 +7,12 @@
 //===----------------------------------------------------------------------===//
 //
 // Lowers TTL tile-level operations to TTKernel using DialectConversion.
-// This file covers compute ops (unary SFPU, binary SFPU, broadcast), data
-// movement ops (copy_tile, copy_dst), and DST register lifecycle ops
-// (tile_regs_acquire/commit/wait/release).
+// This file covers compute ops (unary SFPU, binary SFPU, FPU binary,
+// broadcast), data movement ops (copy_tile, copy_dst), and DST register
+// lifecycle ops (tile_regs_acquire/commit/wait/release).
 //
-// Unary and binary compute ops are lowered via generic template patterns
-// instantiated from TTLElementwiseOps.def.
+// Unary, binary SFPU, and FPU binary compute ops are lowered via generic
+// template patterns instantiated from TTLElementwiseOps.def.
 //
 //===----------------------------------------------------------------------===//
 
@@ -223,6 +223,7 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
 ///
 /// DST indices are extracted from operand-defining ops (copy_tile or tile ops
 /// with dst_idx attributes). The output index comes from this op's dst_idx.
+/// Ops marked with kFPUBinaryAttrName are skipped (handled by FPU pattern).
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
 struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
   using OpConversionPattern<SourceOp>::OpConversionPattern;
@@ -230,6 +231,11 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    // FPU-marked ops are handled by TTLTileBinaryFPUToTTKernel.
+    if (op->hasAttr(kFPUBinaryAttrName)) {
+      return failure();
+    }
+
     Location loc = op.getLoc();
 
     auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>(kDstIdxAttrName);
@@ -298,6 +304,79 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
     Value dst1 = rewriter.create<arith::ConstantIndexOp>(loc, dst1Idx);
 
     rewriter.create<TTKernelComputeOp>(loc, dst0, dst1, dst0);
+
+    rewriter.replaceOp(op, adaptor.getLhs());
+    return success();
+  }
+};
+
+/// Generic pattern for lowering TTL binary tile ops to TTKernel FPU ops.
+/// FPU binary ops: read both operands from CBs, write result to DST.
+/// add_tiles(in0_cb, in1_cb, in0_tile_index, in1_tile_index, dst_index)
+///
+/// Only matches ops marked with kFPUBinaryAttrName (set by TTLAssignDST).
+template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
+struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
+  using OpConversionPattern<SourceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // Only match FPU-marked ops.
+    if (!op->hasAttr(kFPUBinaryAttrName)) {
+      return failure();
+    }
+
+    Location loc = op.getLoc();
+    auto funcOp = op->template getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "op not in function");
+    }
+    auto *typeConverter = this->getTypeConverter();
+
+    // Look up CBs for lhs and rhs.
+    auto lhsCB =
+        lookupAndConvertCB(op.getLhs(), funcOp, typeConverter, rewriter, loc);
+    auto rhsCB =
+        lookupAndConvertCB(op.getRhs(), funcOp, typeConverter, rewriter, loc);
+    if (failed(lhsCB) || failed(rhsCB)) {
+      return rewriter.notifyMatchFailure(op,
+                                         "cannot find/convert input CBs for "
+                                         "FPU binary");
+    }
+
+    // DST output index from attribute (assigned by TTLAssignDST).
+    auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    Value dstIdx =
+        rewriter.create<arith::ConstantIndexOp>(loc, dstIdxAttr.getInt());
+
+    // Verify both CBs have the same number of tiles, which is required
+    // for using the same linearized tile index for both operands.
+    auto lhsCBTy = mlir::cast<ttk::CBType>(lhsCB->getType());
+    auto rhsCBTy = mlir::cast<ttk::CBType>(rhsCB->getType());
+    if (lhsCBTy.getNumTiles() != rhsCBTy.getNumTiles()) {
+      return rewriter.notifyMatchFailure(
+          op, llvm::Twine("FPU binary requires CBs with matching tile counts; "
+                          "lhs has ") +
+                  llvm::Twine(lhsCBTy.getNumTiles()) + " tiles, rhs has " +
+                  llvm::Twine(rhsCBTy.getNumTiles()));
+    }
+
+    // CB tile index from enclosing loops.  The same index is used for
+    // lhs and rhs because TTLAssignDST only marks ops as FPU-eligible
+    // when both operands have identical indexing maps.
+    auto cbIdx =
+        utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
+    if (failed(cbIdx)) {
+      return failure();
+    }
+
+    // Emit compute op (init inserted by ttkernel-insert-inits pass).
+    rewriter.create<TTKernelComputeOp>(loc, *lhsCB, *rhsCB, *cbIdx, *cbIdx,
+                                       dstIdx);
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
@@ -626,6 +705,12 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
       TTLTileMaxToTTKernel<TILE_OP, ttk::TTK_INIT, ttk::TTK_COMPUTE>;
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
+// Generate type aliases for FPU binary tile op lowerings
+#define TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)         \
+  using TTL_OP##FPUTileLowering =                                              \
+      TTLTileBinaryFPUToTTKernel<TILE_OP, ttk::TTK_INIT, ttk::TTK_COMPUTE>;
+#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -656,11 +741,16 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   patterns.add<TTL_OP##TileLowering>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
+  // FPU binary ops (CB -> DST, needs type converter for CB lookup)
+#define TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)         \
+  patterns.add<TTL_OP##FPUTileLowering>(*typeConverter, ctx);
+#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
   // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);
   patterns.add<TTLCopyDstToTTKernel>(ctx);
 
-  // CB -> DST ops with attribute need the type converter.
+  // Bcast ops need the type converter for CB lookup.
   patterns.add<TTLTileBcastToTTKernel>(*typeConverter, ctx);
 }
 

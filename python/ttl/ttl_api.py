@@ -66,6 +66,7 @@ from .kernel_runner import (
     run_kernel_on_device,
 )
 from .operators import CopyTransferHandler, TensorBlock, copy
+from .compiler_options import CompilerOptions
 from .ttl_utils import get_thread_type_string
 
 # Thread registry for automatic collection of @compute and @datamovement threads
@@ -105,12 +106,13 @@ def _make_cache_key(
     args: tuple,
     fp32_dest_acc_en: Optional[bool],
     dst_full_sync_en: Optional[bool],
+    compiler_options: CompilerOptions = CompilerOptions(),
 ) -> tuple:
     """Create cache key from tensor properties and runtime compute config parameters."""
     tensor_key = tuple(
         _get_tensor_cache_info(arg) for arg in args if is_ttnn_tensor(arg)
     )
-    return (tensor_key, fp32_dest_acc_en, dst_full_sync_en)
+    return (tensor_key, fp32_dest_acc_en, dst_full_sync_en, compiler_options)
 
 
 def _should_execute() -> bool:
@@ -932,6 +934,7 @@ def _compile_kernel(
     program_hash: int,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    compiler_options: CompilerOptions = CompilerOptions(),
 ) -> Optional[CompiledTTNNKernel]:
     """
     Compile kernel function to MLIR and return CompiledTTNNKernel.
@@ -949,6 +952,7 @@ def _compile_kernel(
         program_hash: Hash for tt-metal program cache
         fp32_dest_acc_en: Optional override for fp32_dest_acc_en
         dst_full_sync_en: Optional override for dst_full_sync_en
+        compiler_options: Compiler pipeline options
 
     Returns:
         CompiledTTNNKernel ready for execution
@@ -1113,14 +1117,25 @@ def _compile_kernel(
                 + "})"
             )
 
+        # NOTE: Pipeline pass ordering is mirrored in
+        # test/me2e/builder/pipeline.py and lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
+        fpu_flag = int(compiler_options.enable_fpu_binary_ops)
+        assign_dst_pass = f"ttl-assign-dst{{enable-fpu-binary-ops={fpu_flag}}}"
+
         pipeline_passes = [
             "func.func(convert-ttl-to-compute)",
             set_compute_config_pass,
-            "func.func(ttl-assign-dst{enable-fpu-binary-ops=0})",
+            f"func.func({assign_dst_pass})",
+        ]
+        if compiler_options.maximize_dst:
+            pipeline_passes.append("func.func(ttl-subblock-compute-for-dst)")
+        pipeline_passes += [
             "func.func(ttl-insert-tile-regs-sync)",
             "func.func(ttl-lower-to-loops)",
-            "func.func(ttl-annotate-cb-associations)",
         ]
+        if compiler_options.maximize_dst:
+            pipeline_passes.append("func.func(ttl-schedule-operations)")
+        pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
 
         # Add CB flow graph dump if auto-profiling or perf dump is enabled
         perf_dump = os.environ.get("TTLANG_PERF_DUMP") == "1"
@@ -1239,6 +1254,7 @@ def pykernel_gen(
     tiled: bool = True,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    options: Optional[str] = None,
 ) -> Callable:
     """
     Decorator for generating TTL kernels from Python functions.
@@ -1256,6 +1272,7 @@ def pykernel_gen(
         tiled: Whether to use tiled layout
         fp32_dest_acc_en: Optional override for fp32_dest_acc_en
         dst_full_sync_en: Optional override for dst_full_sync_en
+        options: Compiler option string (e.g., "--no-ttl-maximize-dst")
 
     Returns:
         Decorated function that compiles and executes the kernel
@@ -1303,12 +1320,26 @@ def pykernel_gen(
             fp32_override = fp32_dest_acc_en
             dst_sync_override = dst_full_sync_en
 
+            # Extract runtime options (allow per-call override via kwarg).
+            # Priority: sys.argv > env var > decorator options=
+            # Env var is appended to decorator string (later tokens win),
+            # then sys.argv is merged on top as the highest-priority override.
+            opts_str = kwargs.pop("options", options)
+            env_opts = os.environ.get("TTLANG_COMPILER_OPTIONS")
+            if env_opts:
+                # Env var tokens appended after explicit options.
+                opts_str = f"{opts_str or ''} {env_opts}".strip() or None
+            base = CompilerOptions.from_string(opts_str)
+            argv_overrides = CompilerOptions.from_argv()
+            compiler_options = base.merge(argv_overrides)
+
             # Build cache key from tensor properties
             cache_key = _make_cache_key(
                 args,
                 # Runtime options:
                 fp32_dest_acc_en=fp32_override,
                 dst_full_sync_en=dst_sync_override,
+                compiler_options=compiler_options,
             )
 
             # Check cache for previously compiled kernel
@@ -1332,6 +1363,7 @@ def pykernel_gen(
                     program_hash,
                     fp32_dest_acc_en=fp32_override,
                     dst_full_sync_en=dst_sync_override,
+                    compiler_options=compiler_options,
                 )
 
                 if compiled_kernel is not None:

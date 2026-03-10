@@ -18,6 +18,13 @@ struct TTLToTTKernelPipelineOptions
   Option<bool> lowerToEmitC{*this, "lower-to-emitc",
                             llvm::cl::desc("Lower TTKernel to EmitC."),
                             llvm::cl::init(false)};
+  Option<bool> maximizeDST{
+      *this, "maximize-dst",
+      llvm::cl::desc("Enable DST maximization via subblock compute."),
+      llvm::cl::init(true)};
+  Option<bool> enableFPUBinaryOps{
+      *this, "enable-fpu-binary-ops",
+      llvm::cl::desc("Use FPU for binary add/sub/mul."), llvm::cl::init(true)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,

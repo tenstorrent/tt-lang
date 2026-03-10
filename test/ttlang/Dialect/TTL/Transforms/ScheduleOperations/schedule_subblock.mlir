@@ -1,38 +1,79 @@
+// FPU path (default): add uses add_tiles (0 DST input slots), dstPerIteration=1 (tanh only).
+// unrollFactor = min(4, 6) = 4. Subblock [1, 3] = 3 tiles fits in f32 capacity.
+// RUN: ttlang-opt %s \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-subblock-compute-for-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
+// RUN:   | FileCheck %s --check-prefix=FPU
+
+// SFPU path: add uses copy_tile + add_binary_tile (2 DST input slots), dstPerIteration=2.
+// unrollFactor = min(2, 6) = 2. Subblock [2, 1] = 2 tiles.
 // RUN: ttlang-opt %s \
 // RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-subblock-compute-for-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
-// RUN:   | FileCheck %s
-// Purpose: Verify f32 2x3 subblocking picks a DST-safe subblock size.
-//
-// With f32 tiles (fp32_dest_acc_en=true), DST capacity is 4 half-tiles.
-// The add+tanh compute uses 2 DST slots per tile (copy lhs + copy rhs).
-// TTLAssignDST computes unrollFactor = capacity / dstPerIteration = 4 / 2 = 2.
-// TTLSubblockComputeForDST picks a [2, 1] subblock (2 tiles), which fits
-// within the 4-slot f32 capacity (2 tiles * 2 copies = 4 DST slots).
-//
-// After scheduling, copy_tile ops from cb0 are grouped, then copy_tile ops
-// from cb1, then adds, then tanhs. With a 2-tile subblock this uses 4 DST
-// slots (exactly at capacity).
-//
-// The scheduling pass cannot cause DST overflow when subblocking is correct:
-// peak_after_scheduling = N * dstPerIteration <= capacity, because
-// N = floor(capacity / dstPerIteration) by construction.
-// CHECK-LABEL: func.func @f32_subblock_scheduling
-// CHECK: ttkernel.tile_regs_acquire
+// RUN:   | FileCheck %s --check-prefix=SFPU
+
+// =============================================================================
+// FPU path: 3 tiles per subblock, outer loop over 2 rows.
+// After scheduling: add_tiles grouped, then tanhs grouped.
+// =============================================================================
+// FPU-LABEL: func.func @f32_subblock_scheduling
+// FPU-DAG:       %[[C6_I32:.*]] = arith.constant 6 : i32
+// FPU-DAG:       %[[C3:.*]] = arith.constant 3 : index
+// FPU-DAG:       %[[C1:.*]] = arith.constant 1 : index
+// FPU-DAG:       %[[C2:.*]] = arith.constant 2 : index
+// FPU-DAG:       %[[C0:.*]] = arith.constant 0 : index
+// FPU-DAG:       %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// FPU-DAG:       %[[CB_OUT:.*]] = ttkernel.get_compile_time_arg_val(2)
+// FPU-DAG:       %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// FPU:           ttkernel.cb_wait_front(%[[CB0]], %[[C6_I32]])
+// FPU-NEXT:      ttkernel.cb_wait_front(%[[CB1]], %[[C6_I32]])
+// FPU-NEXT:      ttkernel.cb_reserve_back(%[[CB_OUT]], %[[C6_I32]])
+// FPU-NEXT:      ttkernel.binary_op_init_common(%[[CB0]], %[[CB1]], %[[CB_OUT]])
+// FPU-NEXT:      scf.for %[[IV:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
+// FPU-NEXT:        ttkernel.tile_regs_acquire()
+// FPU-NEXT:        %[[BASE:.*]] = arith.muli %[[IV]], %[[C3]]
+// FPU-NEXT:        ttkernel.add_tiles_init(%[[CB0]], %[[CB1]])
+// FPU-NEXT:        ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[BASE]], %[[BASE]], %[[C0]])
+// FPU-NEXT:        %[[IDX1:.*]] = arith.addi %[[BASE]], %[[C1]]
+// FPU-NEXT:        ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[IDX1]], %[[IDX1]], %[[C1]])
+// FPU-NEXT:        %[[IDX2:.*]] = arith.addi %[[BASE]], %[[C2]]
+// FPU-NEXT:        ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[IDX2]], %[[IDX2]], %[[C2]])
+// FPU-NEXT:        ttkernel.tanh_tile_init()
+// FPU-NEXT:        ttkernel.tanh_tile(%[[C0]])
+// FPU-NEXT:        ttkernel.tanh_tile(%[[C1]])
+// FPU-NEXT:        ttkernel.tanh_tile(%[[C2]])
+// FPU-NEXT:        ttkernel.tile_regs_commit()
+// FPU-NEXT:        ttkernel.tile_regs_wait()
+// FPU-NEXT:        ttkernel.pack_tile(%[[C0]], %[[CB_OUT]], %[[BASE]], true)
+// FPU-NEXT:        ttkernel.pack_tile(%[[C1]], %[[CB_OUT]], %[[IDX1]], true)
+// FPU-NEXT:        ttkernel.pack_tile(%[[C2]], %[[CB_OUT]], %[[IDX2]], true)
+// FPU-NEXT:        ttkernel.tile_regs_release()
+// FPU-NEXT:      }
+// FPU-NEXT:      ttkernel.cb_push_back(%[[CB_OUT]], %[[C6_I32]])
+// FPU-NOT: ttkernel.copy_tile
+// FPU-NOT: ttkernel.add_binary_tile
+
+// =============================================================================
+// SFPU path: 2 tiles per subblock, outer loop covers 3 iterations.
 // After scheduling: copies grouped by CB, then adds, then tanhs.
 // 2 tiles * 2 copies = 4 copy_tile ops per sync region (within f32 capacity).
-// CHECK:       ttkernel.copy_tile_init(
-// CHECK-NEXT:  ttkernel.copy_tile(
-// CHECK-NEXT:  ttkernel.copy_tile(
-// CHECK-NEXT:  ttkernel.copy_tile_init(
-// CHECK-NEXT:  ttkernel.copy_tile(
-// CHECK-NEXT:  ttkernel.copy_tile(
-// CHECK-NEXT:  ttkernel.add_binary_tile_init
-// CHECK-NEXT:  ttkernel.add_binary_tile(
-// CHECK-NEXT:  ttkernel.add_binary_tile(
-// CHECK-NEXT:  ttkernel.tanh_tile_init
-// CHECK-NEXT:  ttkernel.tanh_tile(
-// CHECK-NEXT:  ttkernel.tanh_tile(
-// CHECK-NEXT:  ttkernel.tile_regs_commit
+// =============================================================================
+// SFPU-LABEL: func.func @f32_subblock_scheduling
+// SFPU: ttkernel.init_sfpu
+// SFPU: ttkernel.tile_regs_acquire
+// SFPU:       ttkernel.copy_tile_init(
+// SFPU-NEXT:  ttkernel.copy_tile(
+// SFPU-NEXT:  ttkernel.copy_tile(
+// SFPU-NEXT:  ttkernel.copy_tile_init(
+// SFPU-NEXT:  ttkernel.copy_tile(
+// SFPU-NEXT:  ttkernel.copy_tile(
+// SFPU-NEXT:  ttkernel.add_binary_tile_init
+// SFPU-NEXT:  ttkernel.add_binary_tile(
+// SFPU-NEXT:  ttkernel.add_binary_tile(
+// SFPU-NEXT:  ttkernel.tanh_tile_init
+// SFPU-NEXT:  ttkernel.tanh_tile(
+// SFPU-NEXT:  ttkernel.tanh_tile(
+// SFPU-NEXT:  ttkernel.tile_regs_commit
+// SFPU-NOT:   ttkernel.add_tiles
+
 #map = affine_map<(d0, d1) -> (d0, d1)>
 func.func @f32_subblock_scheduling()
     attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [],

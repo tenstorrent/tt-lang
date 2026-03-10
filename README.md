@@ -108,14 +108,15 @@ This configuration:
 
 ## Example
 
-See the `examples/` and `tests/` directory for complete working examples, including:
-- `test/python/test_runtime_add.py`
-- `test/python/test_dram_interleaved_flash_attention_large.py`
+See the `examples/` and `test/` directories for complete working examples, including:
+- `test/python/simple_add.py`
+- `test/python/simple_fused.py`
 
 Note: this project is currently in early prototype phase, examples are not final and may change significantly as we finalize the initial language spec and implement features.
 
 ## Documentation
 
+- [Tutorial](examples/tutorial/) - Step-by-step examples from single-tile to multicore kernels
 - [Build System](docs/BUILD_SYSTEM.md) - Detailed build configuration options and integration scenarios
 - [Performance Tools](docs/performance-tools.md) - Profiling, signposts, and Perfetto trace visualization
 - [Testing Guide](test/TESTING.md) - How to write and run tests using LLVM lit
@@ -265,6 +266,20 @@ llvm-lit -sv test/python/     # Python runtime tests
 ```
 
 For more information on testing, including how to write new tests and interpret results, see [test/TESTING.md](test/TESTING.md).
+
+## Compiler Options
+
+Kernels accept compiler options that control code generation (e.g., `--no-ttl-maximize-dst`, `--no-ttl-fpu-binary-ops`). These can be passed as command-line arguments, via the `@ttl.kernel` decorator's `options=` parameter, or the `TTLANG_COMPILER_OPTIONS` environment variable. Command-line arguments take highest priority.
+
+```bash
+# List available options
+python examples/tutorial/multicore_grid_auto.py --ttl-help
+
+# Run a kernel with options
+python examples/tutorial/multicore_grid_auto.py --no-ttl-maximize-dst
+```
+
+See `python/ttl/compiler_options.py` for details on priority ordering and the merge protocol.
 
 ## Developer Guidelines
 

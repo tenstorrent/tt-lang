@@ -17,7 +17,12 @@ from ttmlir.passmanager import PassManager
 from .device_arch import get_mock_arch_from_device
 
 
-def compile_ttl_to_ttkernel(module: Module, device: Optional[Any] = None) -> Module:
+def compile_ttl_to_ttkernel(
+    module: Module,
+    device: Optional[Any] = None,
+    maximize_dst: bool = True,
+    enable_fpu_binary_ops: bool = True,
+) -> Module:
     """
     Run the TTL-to-TTKernel pass pipeline on the module.
 
@@ -26,6 +31,8 @@ def compile_ttl_to_ttkernel(module: Module, device: Optional[Any] = None) -> Mod
     Args:
         module: TTL MLIR module to compile.
         device: Optional TTNN device for architecture detection.
+        maximize_dst: Enable DST maximization (subblocking + scheduling).
+        enable_fpu_binary_ops: Enable FPU binary op detection (add_tiles, etc).
 
     Returns:
         Compiled module with TTKernel/EmitC ops.
@@ -34,15 +41,31 @@ def compile_ttl_to_ttkernel(module: Module, device: Optional[Any] = None) -> Mod
     mock_arch = get_mock_arch_from_device(device)
     device_pass = f"ttcore-register-device{{mock-system-desc-arch={mock_arch}}}"
 
+    # Build assign-dst pass with options.
+    # NOTE: Pipeline pass ordering mirrors python/ttl/ttl_api.py and
+    # lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
+    fpu_flag = int(enable_fpu_binary_ops)
+    assign_dst_pass = f"ttl-assign-dst{{enable-fpu-binary-ops={fpu_flag}}}"
+
+    # Build per-function passes.
+    func_passes = [
+        "convert-ttl-to-compute",
+        assign_dst_pass,
+    ]
+    if maximize_dst:
+        func_passes.append("ttl-subblock-compute-for-dst")
+    func_passes.append("ttl-insert-tile-regs-sync")
+    func_passes.append("ttl-lower-to-loops")
+    if maximize_dst:
+        func_passes.append("ttl-schedule-operations")
+    func_passes.append("ttl-annotate-cb-associations")
+
+    func_pipeline = ",".join(func_passes)
+
     pipeline_str = (
         f"builtin.module("
         f"{device_pass},"
-        # TTL to compute conversion (runs on each function).
-        f"func.func(convert-ttl-to-compute,"
-        f"ttl-assign-dst{{enable-fpu-binary-ops=0}},"
-        f"ttl-insert-tile-regs-sync,"
-        f"ttl-lower-to-loops,"
-        f"ttl-annotate-cb-associations),"
+        f"func.func({func_pipeline}),"
         # TTL to TTKernel conversion (module-level pass).
         f"convert-ttl-to-ttkernel,"
         f"ttkernel-insert-inits,"

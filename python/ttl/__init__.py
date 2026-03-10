@@ -25,6 +25,7 @@ from ttl._generated_elementwise import __all__ as _elementwise_all
 
 # Export additional TTL DSL API classes
 from ttl.operators import signpost
+from ttl.compiler_options import CompilerOptions
 from ttl.ttl_api import (
     CircularBuffer,
     CopyTransferHandler,
@@ -37,6 +38,7 @@ __all__ = [
     "datamovement",
     "Program",
     "CircularBuffer",
+    "CompilerOptions",
     "TensorBlock",
     "CopyTransferHandler",
     "make_dataflow_buffer_like",

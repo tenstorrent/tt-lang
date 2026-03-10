@@ -3,8 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn, tt-device
-# RUN: %python %s > %t.output 2>&1
+# RUN: %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
 # RUN: FileCheck %s < %t.output
+# RUN: %python %s > %t.fpu.output 2>&1
+# RUN: FileCheck %s --check-prefix=CHECK-FPU < %t.fpu.output
 
 """
 Broadcast multitile blocks kernel - verifies user-defined signpost scopes
@@ -122,6 +124,77 @@ def bcast_multitile_kernel(
 # CHECK-NEXT:   }
 # CHECK-NEXT: }
 # CHECK-NOT:  DeviceZoneScopedN(
+
+# =============================================================================
+# FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
+# Subblocked: 4 tiles per subblock, 3 nested loops, grouped ops
+# =============================================================================
+
+# CHECK-FPU: // demo_compute
+# CHECK-FPU: void kernel_main()
+
+# No signpost scopes outside the inner subblock loop
+# CHECK-FPU-NOT:  DeviceZoneScopedN(
+# CHECK-FPU:      init_sfpu(
+# CHECK-FPU:      for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
+# CHECK-FPU-NEXT:   tile_regs_acquire();
+# CHECK-FPU-NEXT:   {
+# CHECK-FPU-NEXT:   DeviceZoneScopedN("ttl_compute");
+# CHECK-FPU-NEXT:   {
+# CHECK-FPU-NEXT:   DeviceZoneScopedN("ttl_broadcast");
+# CHECK-FPU-NEXT:   {
+# CHECK-FPU-NEXT:   DeviceZoneScopedN("ttl_math");
+
+# Grouped COL broadcasts (4 tiles)
+# CHECK-FPU-NEXT:   unary_bcast_init<BroadcastType::COL>(
+# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::COL>(
+# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::COL>(
+# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::COL>(
+# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::COL>(
+
+# Grouped ROW broadcasts (4 tiles)
+# CHECK-FPU-NEXT:   unary_bcast_init<BroadcastType::ROW>(
+# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::ROW>(
+# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::ROW>(
+# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::ROW>(
+# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::ROW>(
+
+# Grouped mul (4 tiles)
+# CHECK-FPU-NEXT:   mul_binary_tile_init();
+# CHECK-FPU-NEXT:   mul_binary_tile(
+# CHECK-FPU-NEXT:   mul_binary_tile(
+# CHECK-FPU-NEXT:   mul_binary_tile(
+# CHECK-FPU-NEXT:   mul_binary_tile(
+
+# Grouped SCALAR broadcasts (4 tiles)
+# CHECK-FPU-NEXT:   unary_bcast_init<BroadcastType::SCALAR>(
+# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::SCALAR>(
+# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::SCALAR>(
+# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::SCALAR>(
+# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::SCALAR>(
+
+# Grouped add (4 tiles, SFPU: inputs from DST)
+# CHECK-FPU-NEXT:   add_binary_tile_init();
+# CHECK-FPU-NEXT:   add_binary_tile(
+# CHECK-FPU-NEXT:   add_binary_tile(
+# CHECK-FPU-NEXT:   add_binary_tile(
+# CHECK-FPU-NEXT:   add_binary_tile(
+
+# Close signpost scopes
+# CHECK-FPU-NEXT:   }
+# CHECK-FPU-NEXT:   }
+# CHECK-FPU-NEXT:   }
+
+# Sync and pack (4 tiles)
+# CHECK-FPU-NEXT:   tile_regs_commit();
+# CHECK-FPU-NEXT:   tile_regs_wait();
+# CHECK-FPU:        pack_tile<true>(
+# CHECK-FPU:        pack_tile<true>(
+# CHECK-FPU:        pack_tile<true>(
+# CHECK-FPU:        pack_tile<true>(
+# CHECK-FPU-NEXT:   tile_regs_release();
+# CHECK-FPU-NEXT: }
+# CHECK-FPU-NOT:  DeviceZoneScopedN(
 
 
 if __name__ == "__main__":
