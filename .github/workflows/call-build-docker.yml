@@ -169,7 +169,7 @@ jobs:
             -w /workspace \
             "$BASE_IMAGE" \
             bash -c "
-              bash .github/scripts/normalize-ttlang-install.sh /opt/ttlang-toolchain
+              bash .github/scripts/normalize-toolchain-install.sh /opt/ttlang-toolchain
               bash .github/containers/cleanup-toolchain.sh /opt/ttlang-toolchain
             "
 

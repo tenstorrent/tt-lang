@@ -157,24 +157,12 @@ else()
       "tt-metal build completed but ${_TTNN_SO} was not produced")
   endif()
 
-  # Copy runtime hw artifacts (linker scripts, object files) into the build
-  # directory so they are included in the toolchain cache. The tt-metal build
-  # generates these in PROJECT_SOURCE_DIR/runtime/hw/, but when a toolchain
-  # is restored on a different machine the source tree is a clean checkout.
-  if(EXISTS "${TT_METAL_SOURCE_DIR}/runtime/hw")
-    message(STATUS "Copying tt-metal runtime/hw into ${TTMETAL_BUILD_DIR}")
-    file(COPY "${TT_METAL_SOURCE_DIR}/runtime/hw" DESTINATION "${TTMETAL_BUILD_DIR}/runtime")
-  endif()
-
-  # Copy tt_llk headers into the toolchain. The JIT compiler includes headers
-  # from tt_metal/third_party/tt_llk/ (e.g. ckernel_structs.h) at device
-  # runtime. When using a pre-built toolchain without nested submodules, these
-  # must be restored from the cached copy.
-  if(EXISTS "${TT_METAL_SOURCE_DIR}/tt_metal/third_party/tt_llk")
-    message(STATUS "Copying tt_llk headers into ${TTMETAL_BUILD_DIR}")
-    file(COPY "${TT_METAL_SOURCE_DIR}/tt_metal/third_party/tt_llk"
-         DESTINATION "${TTMETAL_BUILD_DIR}/tt_metal/third_party")
-  endif()
+  # Save runtime artifacts into the toolchain build dir so they survive
+  # across machines/caches.
+  execute_process(
+    COMMAND bash "${CMAKE_SOURCE_DIR}/scripts/copy-ttmetal-runtime-artifacts.sh"
+      "${TT_METAL_SOURCE_DIR}" "${TTMETAL_BUILD_DIR}"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -190,40 +178,13 @@ file(COPY_FILE
   ONLY_IF_DIFFERENT)
 
 # ---------------------------------------------------------------------------
-# Restore runtime hw artifacts (linker scripts, object files) into the source
-# tree. The tt-metal JIT build system expects these under TT_METAL_HOME/runtime/hw/
-# at device runtime. When tt-metal is built from source, they are generated
-# directly in the source tree. When using a pre-built toolchain, the source
-# tree is a clean checkout; restore them from the toolchain's cached copy.
+# Restore runtime artifacts from toolchain into the source tree.
+# The JIT build system resolves these via TT_METAL_HOME at device runtime.
 # ---------------------------------------------------------------------------
-if(NOT EXISTS "${TT_METAL_SOURCE_DIR}/runtime/hw/toolchain")
-  if(EXISTS "${TTMETAL_BUILD_DIR}/runtime/hw")
-    message(STATUS "Restoring tt-metal runtime/hw from toolchain into source tree")
-    file(COPY "${TTMETAL_BUILD_DIR}/runtime/hw" DESTINATION "${TT_METAL_SOURCE_DIR}/runtime")
-  else()
-    message(WARNING
-      "tt-metal runtime/hw artifacts not found in toolchain or source tree.\n"
-      "Device runtime (JIT firmware builds) will fail.\n"
-      "Rebuild the toolchain or run: cmake --build <build-dir> --target build-ttmetal-hw")
-  endif()
-endif()
-
-# ---------------------------------------------------------------------------
-# Restore tt_llk headers into the source tree. The JIT compiler resolves
-# ckernel_structs.h and other LLK headers via TT_METAL_HOME include paths.
-# ---------------------------------------------------------------------------
-if(NOT EXISTS "${TT_METAL_SOURCE_DIR}/tt_metal/third_party/tt_llk/README.md")
-  if(EXISTS "${TTMETAL_BUILD_DIR}/tt_metal/third_party/tt_llk")
-    message(STATUS "Restoring tt_llk headers from toolchain into source tree")
-    file(COPY "${TTMETAL_BUILD_DIR}/tt_metal/third_party/tt_llk"
-         DESTINATION "${TT_METAL_SOURCE_DIR}/tt_metal/third_party")
-  else()
-    message(WARNING
-      "tt_llk headers not found in toolchain or source tree.\n"
-      "Device runtime (JIT firmware builds) will fail.\n"
-      "Initialize the nested submodule or rebuild the toolchain.")
-  endif()
-endif()
+execute_process(
+  COMMAND bash "${CMAKE_SOURCE_DIR}/scripts/copy-ttmetal-runtime-artifacts.sh"
+    --restore "${TTMETAL_BUILD_DIR}" "${TT_METAL_SOURCE_DIR}"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 
 # ---------------------------------------------------------------------------
 # Set variables for activate.in

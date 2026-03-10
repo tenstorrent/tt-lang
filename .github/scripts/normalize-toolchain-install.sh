@@ -5,7 +5,7 @@
 # Normalize toolchain installation by replacing symlinks with actual files.
 # This makes the installation self-contained for caching and artifact archiving.
 #
-# Usage: normalize-ttlang-install.sh <install-dir>
+# Usage: normalize-toolchain-install.sh <install-dir>
 
 set -euo pipefail
 

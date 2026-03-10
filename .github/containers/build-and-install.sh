@@ -124,23 +124,10 @@ do_copy_runtime_libs() {
         echo "Copied Tracy Python module"
     fi
 
-    # Copy runtime hw artifacts (linker scripts, object files). tt-metal
-    # generates these in PROJECT_SOURCE_DIR/runtime/hw/ during build. The
-    # JIT build system needs them under TT_METAL_HOME at device runtime.
-    if [ -d "third-party/tt-metal/runtime/hw" ]; then
-        mkdir -p "$TTMETAL_BUILD_DIR/runtime"
-        cp -pr third-party/tt-metal/runtime/hw "$TTMETAL_BUILD_DIR/runtime/"
-        echo "Copied tt-metal runtime/hw artifacts"
-    fi
-
-    # Copy tt_llk headers. The JIT compiler includes ckernel_structs.h and
-    # other LLK headers at device runtime via TT_METAL_HOME include paths.
-    if [ -d "third-party/tt-metal/tt_metal/third_party/tt_llk" ]; then
-        mkdir -p "$TTMETAL_BUILD_DIR/tt_metal/third_party"
-        cp -pr third-party/tt-metal/tt_metal/third_party/tt_llk \
-               "$TTMETAL_BUILD_DIR/tt_metal/third_party/"
-        echo "Copied tt_llk headers"
-    fi
+    # Copy runtime artifacts (linker scripts, LLK headers, etc.) into the
+    # toolchain so JIT device compilation works without nested submodules.
+    bash scripts/copy-ttmetal-runtime-artifacts.sh \
+        third-party/tt-metal "$TTMETAL_BUILD_DIR"
 }
 
 # ---- Phase: Build + Install tt-lang ----
@@ -160,10 +147,10 @@ do_build_and_install() {
 # ---- Phase: Finalize (normalize toolchain + cleanup) ----
 do_finalize() {
     echo "=== Normalizing and cleaning up toolchain ==="
-    if [ -f /tmp/normalize-ttlang-install.sh ]; then
-        bash /tmp/normalize-ttlang-install.sh "$TTLANG_TOOLCHAIN_DIR"
-    elif [ -f .github/scripts/normalize-ttlang-install.sh ]; then
-        bash .github/scripts/normalize-ttlang-install.sh "$TTLANG_TOOLCHAIN_DIR"
+    if [ -f /tmp/normalize-toolchain-install.sh ]; then
+        bash /tmp/normalize-toolchain-install.sh "$TTLANG_TOOLCHAIN_DIR"
+    elif [ -f .github/scripts/normalize-toolchain-install.sh ]; then
+        bash .github/scripts/normalize-toolchain-install.sh "$TTLANG_TOOLCHAIN_DIR"
     fi
 
     if [ -f /tmp/cleanup-toolchain.sh ]; then
@@ -173,7 +160,7 @@ do_finalize() {
     fi
 
     # Clean up temp scripts
-    rm -f /tmp/normalize-ttlang-install.sh /tmp/cleanup-toolchain.sh
+    rm -f /tmp/normalize-toolchain-install.sh /tmp/cleanup-toolchain.sh
 
     echo "=== Removing build directories ==="
     rm -rf build
