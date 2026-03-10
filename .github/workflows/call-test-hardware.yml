@@ -67,7 +67,7 @@ jobs:
       - name: Configure tt-lang
         run: |
           cmake -G Ninja -B build \
-              -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+              -DCMAKE_BUILD_TYPE=Release \
               -DTTLANG_USE_TOOLCHAIN=ON \
               -DTTLANG_ENABLE_PERF_TRACE=ON
 

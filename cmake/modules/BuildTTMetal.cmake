@@ -155,6 +155,15 @@ else()
     message(FATAL_ERROR
       "tt-metal build completed but ${_TTNN_SO} was not produced")
   endif()
+
+  # Copy runtime hw artifacts (linker scripts, object files) into the build
+  # directory so they are included in the toolchain cache. The tt-metal build
+  # generates these in PROJECT_SOURCE_DIR/runtime/hw/, but when a toolchain
+  # is restored on a different machine the source tree is a clean checkout.
+  if(EXISTS "${TT_METAL_SOURCE_DIR}/runtime/hw")
+    message(STATUS "Copying tt-metal runtime/hw into ${TTMETAL_BUILD_DIR}")
+    file(COPY "${TT_METAL_SOURCE_DIR}/runtime/hw" DESTINATION "${TTMETAL_BUILD_DIR}/runtime")
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -170,14 +179,14 @@ file(COPY_FILE
   ONLY_IF_DIFFERENT)
 
 # ---------------------------------------------------------------------------
-# Copy runtime hw artifacts (linker scripts + object files) into the source
-# tree. The tt-metal build generates these in PROJECT_SOURCE_DIR/runtime/hw/,
-# and the JIT build system expects them under TT_METAL_HOME/runtime/hw/ at
-# device runtime. When using a pre-built toolchain, the source tree is a
-# clean checkout without these files, so we copy them from the toolchain.
+# Restore runtime hw artifacts (linker scripts, object files) into the source
+# tree. The tt-metal JIT build system expects these under TT_METAL_HOME/runtime/hw/
+# at device runtime. When tt-metal is built from source, they are generated
+# directly in the source tree. When using a pre-built toolchain, the source
+# tree is a clean checkout; restore them from the toolchain's cached copy.
 # ---------------------------------------------------------------------------
 if(EXISTS "${TTMETAL_BUILD_DIR}/runtime/hw" AND NOT EXISTS "${TT_METAL_SOURCE_DIR}/runtime/hw/toolchain")
-  message(STATUS "Copying tt-metal runtime hw artifacts from toolchain")
+  message(STATUS "Restoring tt-metal runtime/hw from toolchain into source tree")
   file(COPY "${TTMETAL_BUILD_DIR}/runtime/hw" DESTINATION "${TT_METAL_SOURCE_DIR}/runtime")
 endif()
 
