@@ -14,6 +14,8 @@ Usage:
     python -m ttl._src.perf_summary --path /tmp/ --json  # machine-readable output
 """
 
+from __future__ import annotations
+
 import argparse
 import glob
 import json
@@ -533,6 +535,59 @@ def run(
         lines.append("")
 
     return "\n".join(lines)
+
+
+def get_profiler_logs_path() -> Path:
+    """Return the default profiler logs directory from TT_METAL_HOME."""
+    tt_metal_home = os.environ.get("TT_METAL_HOME", "")
+    if not tt_metal_home:
+        raise ValueError("TT_METAL_HOME is not set")
+    return Path(tt_metal_home) / "generated" / "profiler" / ".logs"
+
+
+def clear_profiler_logs(logs_path: Path) -> None:
+    """Remove stale profiler data so the next kernel run starts clean."""
+    if not logs_path.exists():
+        return
+    for pattern in ("noc_trace_*.json", "profile_log_device.csv"):
+        for f in glob.glob(str(logs_path / pattern)):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+
+def flush_profiler(device) -> None:
+    """Flush device profiler data so it can be read from disk.
+
+    Args:
+        device: An open ttnn device handle.
+    """
+    try:
+        import ttnn
+
+        ttnn.ReadDeviceProfiler(device)
+    except Exception as e:
+        print(f"WARNING: Failed to read device profiler: {e}", file=sys.stderr)
+
+
+def collect_summaries(logs_path: Path) -> tuple[str, int, list[ProgramSummary]]:
+    """Parse profiler logs and return (arch, freq_mhz, summaries).
+
+    Convenience wrapper that combines parse_chip_info and parse_noc_trace
+    for all trace files in a logs directory.
+
+    Returns:
+        Tuple of (arch_name, freq_mhz, list_of_ProgramSummary). If the
+        directory does not exist or contains no traces the summary list
+        is empty.
+    """
+    if not logs_path.exists():
+        return "unknown", 1000, []
+    arch, freq_mhz, _ = parse_chip_info(logs_path)
+    trace_files = sorted(glob.glob(str(logs_path / "noc_trace_*.json")))
+    summaries = [parse_noc_trace(Path(tf)) for tf in trace_files]
+    return arch, freq_mhz, summaries
 
 
 def main():

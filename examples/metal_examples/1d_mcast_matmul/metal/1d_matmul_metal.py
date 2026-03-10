@@ -53,6 +53,7 @@ def run_1d_matmul(
     num_cores_x = device_core_size.x
     num_cores_y = device_core_size.y
     num_worker_cores = Nt // (block_n * n_blocks_per_core)
+    print(f'num_worker_cores={num_worker_cores}, Nt={Nt}, block_n={block_n}, n_blocks_per_core={n_blocks_per_core}')
     assert num_cores_x * num_cores_y >= num_worker_cores, (
         "Not enough cores to run the test with the given number of blocks per core"
     )
@@ -64,6 +65,7 @@ def run_1d_matmul(
     assert Kt % block_k == 0, "block_k must divide Kt"
     assert block_m % subblock_h == 0, "subblock_h must divide block_m"
     assert block_n % subblock_w == 0, "subblock_w must divide block_n"
+    print(f"num_worker_cores={num_worker_cores}")
     assert num_worker_cores > 1, (
         "1D matmul requires multiple blocks to use all 4 kernels"
     )
