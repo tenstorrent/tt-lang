@@ -9,6 +9,7 @@ from unittest import mock
 
 import pytest
 
+import ttl.compiler_options as _co
 from ttl.compiler_options import CompilerOptions
 
 
@@ -99,6 +100,11 @@ class TestMerge:
 
 
 class TestFromArgv:
+    @pytest.fixture(autouse=True)
+    def _reset_argv_cache(self):
+        """Clear the from_argv() cache so each test parses fresh."""
+        _co._argv_result = None
+
     def test_extracts_known_flags(self):
         with mock.patch.object(
             sys, "argv", ["script.py", "--no-ttl-maximize-dst", "some_file.py"]

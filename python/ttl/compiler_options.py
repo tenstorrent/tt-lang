@@ -46,6 +46,10 @@ def _make_parser() -> argparse.ArgumentParser:
 
 _PARSER = _make_parser()
 
+# Cached result from the first from_argv() call.  We assume sys.argv does
+# not change after process startup, so a single parse is sufficient.
+_argv_result: Optional[CompilerOptions] = None
+
 
 def _parse_explicit(tokens: Sequence[str], *, reject_unknown: bool = False) -> dict:
     """Parse *tokens* and return only the fields that were explicitly set."""
@@ -102,15 +106,23 @@ class CompilerOptions:
         """Extract compiler options from `sys.argv`, ignoring
         unrecognised arguments (test runner flags, file paths, etc.).
 
+        The result is cached on first call and reused for subsequent calls
+        (argv is assumed stable for the lifetime of the process).
+
         If ``--ttl-help`` is present, prints available compiler options and
         exits.
         """
+        global _argv_result
+        if _argv_result is not None:
+            return _argv_result
+
         if "--ttl-help" in sys.argv[1:]:
             print("TTL compiler options:\n")
             print(CompilerOptions.usage())
             sys.exit(0)
         explicit = _parse_explicit(sys.argv[1:])
-        return CompilerOptions(**explicit, _explicit=frozenset(explicit))
+        _argv_result = CompilerOptions(**explicit, _explicit=frozenset(explicit))
+        return _argv_result
 
     @staticmethod
     def usage() -> str:
