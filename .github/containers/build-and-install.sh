@@ -123,6 +123,15 @@ do_copy_runtime_libs() {
         cp -pr third-party/tt-metal/tools/tracy/*.py "$TTLANG_TOOLCHAIN_DIR/python_packages/tracy/" 2>/dev/null || true
         echo "Copied Tracy Python module"
     fi
+
+    # Copy runtime hw artifacts (linker scripts, object files). tt-metal
+    # generates these in PROJECT_SOURCE_DIR/runtime/hw/ during build. The
+    # JIT build system needs them under TT_METAL_HOME at device runtime.
+    if [ -d "third-party/tt-metal/runtime/hw" ]; then
+        mkdir -p "$TTMETAL_BUILD_DIR/runtime"
+        cp -pr third-party/tt-metal/runtime/hw "$TTMETAL_BUILD_DIR/runtime/"
+        echo "Copied tt-metal runtime/hw artifacts"
+    fi
 }
 
 # ---- Phase: Build + Install tt-lang ----

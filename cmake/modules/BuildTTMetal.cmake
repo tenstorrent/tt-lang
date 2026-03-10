@@ -185,9 +185,16 @@ file(COPY_FILE
 # directly in the source tree. When using a pre-built toolchain, the source
 # tree is a clean checkout; restore them from the toolchain's cached copy.
 # ---------------------------------------------------------------------------
-if(EXISTS "${TTMETAL_BUILD_DIR}/runtime/hw" AND NOT EXISTS "${TT_METAL_SOURCE_DIR}/runtime/hw/toolchain")
-  message(STATUS "Restoring tt-metal runtime/hw from toolchain into source tree")
-  file(COPY "${TTMETAL_BUILD_DIR}/runtime/hw" DESTINATION "${TT_METAL_SOURCE_DIR}/runtime")
+if(NOT EXISTS "${TT_METAL_SOURCE_DIR}/runtime/hw/toolchain")
+  if(EXISTS "${TTMETAL_BUILD_DIR}/runtime/hw")
+    message(STATUS "Restoring tt-metal runtime/hw from toolchain into source tree")
+    file(COPY "${TTMETAL_BUILD_DIR}/runtime/hw" DESTINATION "${TT_METAL_SOURCE_DIR}/runtime")
+  else()
+    message(WARNING
+      "tt-metal runtime/hw artifacts not found in toolchain or source tree.\n"
+      "Device runtime (JIT firmware builds) will fail.\n"
+      "Rebuild the toolchain or run: cmake --build <build-dir> --target build-ttmetal-hw")
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------
