@@ -7,18 +7,18 @@ import ttnn
 
 TILE_SIZE = 32
 GRANULARITY = 2
+BATCH_GRANULARITY = 2  # Number of batch elements per block
 
 
 @ttl.kernel(grid="auto")
 def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
     """Element-wise addition kernel for 3D tensors (batch, rows, cols).
 
-    Processes tensors with shape (batch_size, height, width) where batch_size
-    represents the number of independent 2D matrices to process. The batch
-    dimension is iterated sequentially, while rows and cols are distributed
-    across cores using a 2D grid.
+    Processes tensors with shape (batch_size, height, width) using 3D blocks.
+    The batch, row, and column dimensions are all processed in blocks, with
+    rows and cols distributed across cores using a 2D grid.
     """
-    batch_size = a_in.shape[0]  # Number of batch elements
+    batch_tiles = a_in.shape[0] // BATCH_GRANULARITY
     row_tiles = a_in.shape[1] // TILE_SIZE // GRANULARITY
     col_tiles = a_in.shape[2] // TILE_SIZE
 
@@ -26,16 +26,20 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
     rows_per_core = -(-row_tiles // grid_rows)
     cols_per_core = -(-col_tiles // grid_cols)
 
-    a_dfb = ttl.make_dataflow_buffer_like(a_in, shape=(GRANULARITY, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b_in, shape=(GRANULARITY, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(
+        a_in, shape=(BATCH_GRANULARITY, GRANULARITY, 1), buffer_factor=2
+    )
+    b_dfb = ttl.make_dataflow_buffer_like(
+        b_in, shape=(BATCH_GRANULARITY, GRANULARITY, 1), buffer_factor=2
+    )
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(GRANULARITY, 1), buffer_factor=2
+        out, shape=(BATCH_GRANULARITY, GRANULARITY, 1), buffer_factor=2
     )
 
     @ttl.compute()
     def compute():
         core_col, core_row = ttl.core(dims=2)
-        for batch_idx in range(batch_size):  # Iterate over each batch tile
+        for batch in range(batch_tiles):
             for local_row in range(rows_per_core):
                 row = core_row * rows_per_core + local_row
                 if row < row_tiles:
@@ -52,7 +56,8 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
     @ttl.datamovement()
     def read():
         core_col, core_row = ttl.core(dims=2)
-        for batch_idx in range(batch_size):  # Iterate over each batch tile
+        for batch in range(batch_tiles):
+            b0, b1 = batch * BATCH_GRANULARITY, (batch + 1) * BATCH_GRANULARITY
             for local_row in range(rows_per_core):
                 row = core_row * rows_per_core + local_row
                 if row < row_tiles:
@@ -62,10 +67,10 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
                         if col < col_tiles:
                             with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
                                 tx_a = ttl.copy(
-                                    a_in[batch_idx, r0:r1, col : col + 1], a_blk
+                                    a_in[b0:b1, r0:r1, col : col + 1], a_blk
                                 )
                                 tx_b = ttl.copy(
-                                    b_in[batch_idx, r0:r1, col : col + 1], b_blk
+                                    b_in[b0:b1, r0:r1, col : col + 1], b_blk
                                 )
                                 tx_a.wait()
                                 tx_b.wait()
@@ -73,7 +78,8 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
     @ttl.datamovement()
     def write():
         core_col, core_row = ttl.core(dims=2)
-        for batch_idx in range(batch_size):  # Iterate over each batch tile
+        for batch in range(batch_tiles):
+            b0, b1 = batch * BATCH_GRANULARITY, (batch + 1) * BATCH_GRANULARITY
             for local_row in range(rows_per_core):
                 row = core_row * rows_per_core + local_row
                 if row < row_tiles:
@@ -82,16 +88,14 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
                         col = core_col * cols_per_core + local_col
                         if col < col_tiles:
                             with out_dfb.wait() as out_blk:
-                                tx = ttl.copy(
-                                    out_blk, out[batch_idx, r0:r1, col : col + 1]
-                                )
+                                tx = ttl.copy(out_blk, out[b0:b1, r0:r1, col : col + 1])
                                 tx.wait()
 
 
 def main() -> None:
     device = ttnn.open_device(device_id=0)
     try:
-        batch = 8  # Batch dimension does NOT need to be tile-aligned
+        batch = 8  # Must be a multiple of BATCH_GRANULARITY (2)
         dim = 256  # Height and width must be tile-aligned (multiples of 32)
         a_torch = torch.rand((batch, dim, dim), dtype=torch.bfloat16)
         b_torch = torch.rand((batch, dim, dim), dtype=torch.bfloat16)
