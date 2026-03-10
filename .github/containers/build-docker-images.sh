@@ -73,7 +73,7 @@ echo "No cache: $NO_CACHE"
 echo ""
 
 # Get version from git tags (e.g., v0.1.0 or v0.1.0-5-gabc1234 for dev builds)
-TTLANG_VERSION=$(git describe --tags --match "v[0-9]*" --always --dirty 2>/dev/null || true)
+TTLANG_VERSION=$(git describe --tags --match "v[0-9]*" --always 2>/dev/null || true)
 if [ -z "$TTLANG_VERSION" ]; then
     echo "ERROR: Could not determine version from git tags."
     echo "Ensure the checkout includes tags (fetch-tags: true) and sufficient history."
