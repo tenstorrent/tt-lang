@@ -353,6 +353,18 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
     Value dstIdx =
         rewriter.create<arith::ConstantIndexOp>(loc, dstIdxAttr.getInt());
 
+    // Verify both CBs have the same number of tiles, which is required
+    // for using the same linearized tile index for both operands.
+    auto lhsCBTy = mlir::cast<ttk::CBType>(lhsCB->getType());
+    auto rhsCBTy = mlir::cast<ttk::CBType>(rhsCB->getType());
+    if (lhsCBTy.getNumTiles() != rhsCBTy.getNumTiles()) {
+      return rewriter.notifyMatchFailure(
+          op, llvm::Twine("FPU binary requires CBs with matching tile counts; "
+                          "lhs has ") +
+                  llvm::Twine(lhsCBTy.getNumTiles()) + " tiles, rhs has " +
+                  llvm::Twine(rhsCBTy.getNumTiles()));
+    }
+
     // CB tile index from enclosing loops.  The same index is used for
     // lhs and rhs because TTLAssignDST only marks ops as FPU-eligible
     // when both operands have identical indexing maps.
