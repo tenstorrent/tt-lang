@@ -75,7 +75,7 @@ static std::optional<unsigned> getTensorFuncArgIndex(Value tensor) {
 /// CB-backed tensors use get_read_ptr(cb_idx); function arg tensors
 /// (tensor accessors) use get_common_arg_val<uint32_t>(arg_idx).
 static FailureOr<std::string> resolveTensorL1Addr(Value tensorVal,
-                                                   Operation *dprintOp) {
+                                                  Operation *dprintOp) {
   Value cb = getAttachedCB(tensorVal);
   if (cb) {
     auto cbIdx = resolveCBIndex(cb, dprintOp);

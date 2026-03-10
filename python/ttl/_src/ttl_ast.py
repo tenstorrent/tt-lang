@@ -634,9 +634,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 prefix = visited[:last_var_idx]
                 if prefix:
                     self._emit_scalar_print(prefix, thread)
-                self._emit_object_print(
-                    last_var, thread, num_pages, is_tensor_accessor
-                )
+                self._emit_object_print(last_var, thread, num_pages, is_tensor_accessor)
                 return
 
         # Scalar mode: string/int/float constants and integer variables.
@@ -670,8 +668,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 # defaults to 1). TileSlice is not available for raw tensors.
                 if self.kernel_type == "compute":
                     raise ValueError(
-                        "print(tensor) is only supported in "
-                        "datamovement kernels"
+                        "print(tensor) is only supported in " "datamovement kernels"
                     )
                 ttl.dprint(
                     fmt="",
@@ -718,8 +715,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 fmt += str(const_val) + " "
             else:
                 if not (
-                    IndexType.isinstance(val.type)
-                    or IntegerType.isinstance(val.type)
+                    IndexType.isinstance(val.type) or IntegerType.isinstance(val.type)
                 ):
                     raise ValueError(
                         f"print() scalar mode supports integer variables, "

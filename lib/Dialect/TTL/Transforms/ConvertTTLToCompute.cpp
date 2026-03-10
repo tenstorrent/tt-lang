@@ -395,8 +395,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     auto sp = dyn_cast<SignpostOp>(op);
     return sp && sp.getIsEnd();
   };
-  auto firstEndIt =
-      llvm::find_if(trailingOps, isEndSignpost);
+  auto firstEndIt = llvm::find_if(trailingOps, isEndSignpost);
   for (auto it = trailingOps.begin(); it != firstEndIt; ++it) {
     emitSideEffectOp(*it);
   }
