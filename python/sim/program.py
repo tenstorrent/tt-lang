@@ -19,6 +19,7 @@ from .blockstate import ThreadType
 from .greenlet_scheduler import GreenletScheduler, set_scheduler
 from .ttnnsim import Tensor
 from .typedefs import Shape
+from .debug_print import ttlang_print
 
 # Maximum number of DataflowBuffers per core (hardware limit).
 _max_dfbs: int = 32
@@ -157,6 +158,9 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
 
             core_context["_core"] = core
             core_context["grid"] = self.context.get("grid", (1, 1))
+
+            # Inject custom print function for debug printing
+            core_context["print"] = ttlang_print
 
             return core_context
 
