@@ -32,6 +32,11 @@ class ME2ETestBase:
 
     OUTPUT_DIR: Path
 
+    # CB configuration for device execution. Subclasses can override for
+    # tests that need larger CBs (e.g., bulk cb_wait for multi-tile domains).
+    CB_SHAPE = (1, 1)
+    CB_BUFFER_FACTOR = 2
+
     @pytest.fixture(scope="class", autouse=True)
     def setup(self, request):
         """Initialize test class with output directory."""
@@ -179,6 +184,7 @@ class ME2ETestBase:
 
         # Run based on arity.
         fp32_accum = inputs[0].dtype == torch.float32
+        cb_kwargs = dict(cb_shape=self.CB_SHAPE, cb_buffer_factor=self.CB_BUFFER_FACTOR)
         if len(inputs) == 2:
             result = run_binary_op(
                 device=device,
@@ -188,6 +194,7 @@ class ME2ETestBase:
                 input_b=inputs[1],
                 kernel_dir=kernel_dir,
                 enable_fp32_accumulation=fp32_accum,
+                **cb_kwargs,
             )
         else:
             result = run_unary_op(
@@ -197,6 +204,7 @@ class ME2ETestBase:
                 input_a=inputs[0],
                 kernel_dir=kernel_dir,
                 enable_fp32_accumulation=fp32_accum,
+                **cb_kwargs,
             )
 
         # Save result for validation.

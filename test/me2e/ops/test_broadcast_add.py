@@ -28,7 +28,7 @@ import ttl.dialects.ttl as ttl
 ROWS, COLS = 4, 4
 DTYPE = torch.bfloat16
 DTYPE_STR = "bf16"
-BF = ROWS * COLS  # buffer factor: must hold all tiles for bulk cb_wait
+BF = 2  # buffer factor
 
 
 def _build_broadcast_add_mlir() -> str:
@@ -235,6 +235,11 @@ class TestBroadcastAdd(ME2ETestBase):
     def test_translate_to_cpp(self) -> None:
         """Translate broadcast add to C++ kernels."""
         super().test_translate_to_cpp()
+
+    # CB shape for runtime configuration: must hold all tiles for bulk
+    # cb_wait in the compute kernel (ROWS*COLS tiles per CB).
+    CB_SHAPE = (ROWS, COLS)
+    CB_BUFFER_FACTOR = BF
 
     @pytest.mark.order(4)
     @pytest.mark.requires_device
