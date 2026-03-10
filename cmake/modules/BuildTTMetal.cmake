@@ -14,11 +14,7 @@
 
 set(TT_METAL_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third-party/tt-metal")
 
-if(NOT EXISTS "${TT_METAL_SOURCE_DIR}/CMakeLists.txt")
-  message(FATAL_ERROR
-    "tt-metal submodule not found at ${TT_METAL_SOURCE_DIR}. Run:\n"
-    "  git submodule update --init third-party/tt-metal")
-endif()
+ttlang_ensure_submodules(third-party/tt-metal)
 
 # Check that nested submodules are initialized when tt-metal needs to be
 # built from source. When using a pre-built toolchain the nested submodules

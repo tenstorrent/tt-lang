@@ -88,22 +88,12 @@ $TIME git clone --depth 1 --filter=blob:none --branch "$BRANCH" \
     https://github.com/tenstorrent/tt-lang.git
 cd tt-lang
 
-# Init submodules individually (no llvm-project — it's in the toolchain)
-echo ""
-echo "=== Initializing tt-mlir submodule ==="
-$TIME git submodule update --init --depth 1 --filter=blob:none third-party/tt-mlir
-
-echo ""
-echo "=== Initializing tt-metal submodule ==="
-$TIME git submodule update --init --depth 1 --filter=blob:none third-party/tt-metal
-
-# Configure
+# Configure (submodules are auto-initialized by CMake during configure)
 echo ""
 echo "=== Configuring tt-lang ==="
 $TIME cmake -G Ninja -B build \
     -DCMAKE_BUILD_TYPE=Release \
-    -DTTLANG_USE_TOOLCHAIN=ON \
-    -DTTLANG_ENABLE_PERF_TRACE=ON
+    -DTTLANG_USE_TOOLCHAIN=ON
 
 # Build
 echo ""

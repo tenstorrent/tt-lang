@@ -20,6 +20,8 @@
 #   - CAPI layer for Python bindings
 
 set(TT_MLIR_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third-party/tt-mlir")
+ttlang_ensure_submodules(third-party/tt-mlir)
+
 set(TT_MLIR_INCLUDE_DIR "${TT_MLIR_SOURCE_DIR}/include")
 
 # Include paths: tt-mlir source headers + generated headers.

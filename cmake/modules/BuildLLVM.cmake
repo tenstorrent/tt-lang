@@ -105,12 +105,7 @@ if(DEFINED TTLANG_LLVM_FROM_SUBMODULE AND NOT TTLANG_LLVM_FROM_SUBMODULE)
 # Option B: Build from submodule (configure-time)
 # ---------------------------------------------------------------------------
 else()
-  if(NOT EXISTS "${LLVM_SUBMODULE_DIR}/llvm/CMakeLists.txt")
-    message(FATAL_ERROR
-      "LLVM submodule source not found at ${LLVM_SUBMODULE_DIR}/llvm.\n"
-      "Run: git submodule update --init --depth 1 third-party/llvm-project\n"
-      "Or provide a pre-built MLIR install via -DMLIR_PREFIX=/path/to/install")
-  endif()
+  ttlang_ensure_submodules(third-party/llvm-project)
 
   set(TTLANG_LLVM_FROM_SUBMODULE ON CACHE BOOL "Whether LLVM is built from submodule" FORCE)
   set(LLVM_INSTALL_DIR "${CMAKE_BINARY_DIR}/llvm-install" CACHE PATH
