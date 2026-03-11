@@ -74,13 +74,8 @@ if [ -d "$TOOLCHAIN_DIR/bin" ]; then
     echo "  bin/: ${_before}M -> ${_after}M (saved $((_before - _after))M)"
 fi
 
-# ---- Dist-only: remove headers, static libs, source ----
+# ---- Dist-only: remove static libs, LLVM source ----
 if [ "$DIST_MODE" = true ]; then
-    if [ -d "$TOOLCHAIN_DIR/include" ]; then
-        echo "Removing include/ (not needed at runtime)"
-        rm -rf "$TOOLCHAIN_DIR/include"
-    fi
-
     if [ -d "$TOOLCHAIN_DIR/src" ]; then
         echo "Removing src/ (not needed at runtime)"
         rm -rf "$TOOLCHAIN_DIR/src"

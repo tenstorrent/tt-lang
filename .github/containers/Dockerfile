@@ -83,7 +83,6 @@ COPY --from=dist-toolchain --chmod=777 /tt-metal $TTLANG_TOOLCHAIN_DIR/tt-metal/
 COPY --from=dist-toolchain --chmod=777 /python_packages $TTLANG_TOOLCHAIN_DIR/python_packages/
 COPY --from=dist-toolchain --chmod=777 /include $TTLANG_TOOLCHAIN_DIR/include/
 COPY --from=dist-toolchain --chmod=777 /share $TTLANG_TOOLCHAIN_DIR/share/
-COPY --from=dist-toolchain --chmod=777 /src $TTLANG_TOOLCHAIN_DIR/src/
 # Dist-only: installed tt-lang (examples, tests, env).
 COPY --from=dist-toolchain --chmod=777 /examples $TTLANG_TOOLCHAIN_DIR/examples/
 COPY --from=dist-toolchain --chmod=777 /test $TTLANG_TOOLCHAIN_DIR/test/
