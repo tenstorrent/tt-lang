@@ -61,4 +61,10 @@ for link in "${symlinks[@]}"; do
     fi
 done
 
+# Ensure venv has a 'python' symlink (some venvs only create python3).
+if [ -d "$INSTALL_DIR/venv/bin" ] && [ ! -e "$INSTALL_DIR/venv/bin/python" ]; then
+    ln -s python3 "$INSTALL_DIR/venv/bin/python"
+    echo "  Created python -> python3 symlink in venv"
+fi
+
 echo "Normalization complete."

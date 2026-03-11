@@ -196,6 +196,11 @@ else()
       message(FATAL_ERROR "Failed to create Python venv")
     endif()
 
+    # Ensure 'python' symlink exists (some venvs only create python3).
+    if(NOT EXISTS "${TTLANG_PYTHON_VENV}/bin/python")
+      file(CREATE_LINK "python3" "${TTLANG_PYTHON_VENV}/bin/python" SYMBOLIC)
+    endif()
+
     execute_process(
       COMMAND "${_VENV_PYTHON}" -m pip install --upgrade pip --quiet
     )
