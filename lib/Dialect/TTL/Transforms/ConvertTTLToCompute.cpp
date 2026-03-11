@@ -972,6 +972,12 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
         ValueRange{initAttached}, rewriter.getArrayAttr(maps),
         rewriter.getArrayAttr(iterTypes));
 
+    // The iteration domain must match the output shape, not the input shape.
+    // TileReduceOp handles the inner accumulation loop over the reduced
+    // dimension using the CB's tile grid shape directly.
+    computeOp->setAttr("ttl.static_iter_domain",
+                        rewriter.getDenseI64ArrayAttr(outIterShape));
+
     Block *body = rewriter.createBlock(&computeOp.getBody());
     Type scalarType = outputType.getElementType();
     Type tileType = ttcore::TileType::get(scalarType);
