@@ -192,13 +192,6 @@ if [[ -z "$IMAGE_TYPE" || "$IMAGE_TYPE" == "ird" ]]; then
 fi
 
 
-# Final cleanup of all unused Docker resources
-echo "Performing final Docker cleanup..."
-docker builder prune -af 2>/dev/null || true
-docker system prune -af --volumes 2>/dev/null || true
-echo "Final disk space:"
-df -h | head -2
-echo ""
 
 # Compute image names -- NO_PUSH only affects the registry prefix
 if [ "$NO_PUSH" = false ]; then

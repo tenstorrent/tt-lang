@@ -30,9 +30,17 @@ SHELL ["/bin/bash", "-c"]
 ENV TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Use --chmod to avoid a separate chmod layer that would duplicate the entire
-# toolchain in the image.
-COPY --from=ird-toolchain --chmod=777 / $TTLANG_TOOLCHAIN_DIR/
+# Split toolchain into multiple layers for parallel pulls.
+# Largest directories get their own layer; the rest go in one layer.
+COPY --from=ird-toolchain --chmod=777 /bin $TTLANG_TOOLCHAIN_DIR/bin/
+COPY --from=ird-toolchain --chmod=777 /venv $TTLANG_TOOLCHAIN_DIR/venv/
+COPY --from=ird-toolchain --chmod=777 /lib $TTLANG_TOOLCHAIN_DIR/lib/
+COPY --from=ird-toolchain --chmod=777 /tt-metal $TTLANG_TOOLCHAIN_DIR/tt-metal/
+# Remaining small directories (~445MB combined).
+COPY --from=ird-toolchain --chmod=777 /python_packages $TTLANG_TOOLCHAIN_DIR/python_packages/
+COPY --from=ird-toolchain --chmod=777 /include $TTLANG_TOOLCHAIN_DIR/include/
+COPY --from=ird-toolchain --chmod=777 /share $TTLANG_TOOLCHAIN_DIR/share/
+COPY --from=ird-toolchain --chmod=777 /src $TTLANG_TOOLCHAIN_DIR/src/
 
 # Install Python dev dependencies (black, sphinx, etc.) into the toolchain venv
 COPY requirements.txt /tmp/requirements.txt
@@ -67,7 +75,19 @@ SHELL ["/bin/bash", "-c"]
 
 ENV TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
 
-COPY --from=dist-toolchain --chmod=777 / $TTLANG_TOOLCHAIN_DIR/
+# Split toolchain into multiple layers for parallel pulls.
+COPY --from=dist-toolchain --chmod=777 /bin $TTLANG_TOOLCHAIN_DIR/bin/
+COPY --from=dist-toolchain --chmod=777 /venv $TTLANG_TOOLCHAIN_DIR/venv/
+COPY --from=dist-toolchain --chmod=777 /lib $TTLANG_TOOLCHAIN_DIR/lib/
+COPY --from=dist-toolchain --chmod=777 /tt-metal $TTLANG_TOOLCHAIN_DIR/tt-metal/
+COPY --from=dist-toolchain --chmod=777 /python_packages $TTLANG_TOOLCHAIN_DIR/python_packages/
+COPY --from=dist-toolchain --chmod=777 /include $TTLANG_TOOLCHAIN_DIR/include/
+COPY --from=dist-toolchain --chmod=777 /share $TTLANG_TOOLCHAIN_DIR/share/
+COPY --from=dist-toolchain --chmod=777 /src $TTLANG_TOOLCHAIN_DIR/src/
+# Dist-only: installed tt-lang (examples, tests, env).
+COPY --from=dist-toolchain --chmod=777 /examples $TTLANG_TOOLCHAIN_DIR/examples/
+COPY --from=dist-toolchain --chmod=777 /test $TTLANG_TOOLCHAIN_DIR/test/
+COPY --from=dist-toolchain --chmod=777 /env $TTLANG_TOOLCHAIN_DIR/env/
 
 # Install text editors, SSH, and tt-smi
 RUN apt-get update && apt-get install -y vim nano openssh-server && rm -rf /var/lib/apt/lists/* && \
