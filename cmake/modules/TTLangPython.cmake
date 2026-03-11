@@ -53,6 +53,10 @@ macro(_ttlang_activate_venv venv_dir)
   set(ENV{VIRTUAL_ENV} "${venv_dir}")
   set(Python3_FIND_VIRTUALENV ONLY)
   set(Python_FIND_VIRTUALENV ONLY)
+  # Unset Python3_ROOT_DIR from the environment so it does not override
+  # the venv.  GitHub Actions' setup-python sets this to the runner's
+  # system Python, which causes find_package(Python3) to ignore the venv.
+  unset(ENV{Python3_ROOT_DIR})
 endmacro()
 
 # TTLANG_USE_TOOLCHAIN and TTLANG_TOOLCHAIN_DIR are declared in CMakeLists.txt.
@@ -108,8 +112,15 @@ elseif(EXISTS "${CMAKE_BINARY_DIR}/venv")
   endif()
 
 # 4. No venv yet — will be created during submodule LLVM build if needed.
+#    When building a toolchain, place the venv inside the toolchain directory
+#    so it gets cached/shipped with the toolchain.
 else()
-  set(TTLANG_PYTHON_VENV "${CMAKE_BINARY_DIR}/venv" CACHE PATH
-    "Python venv (will be created during LLVM build)" FORCE)
+  if(DEFINED TTLANG_TOOLCHAIN_DIR)
+    set(TTLANG_PYTHON_VENV "${TTLANG_TOOLCHAIN_DIR}/venv" CACHE PATH
+      "Python venv (will be created in toolchain dir)" FORCE)
+  else()
+    set(TTLANG_PYTHON_VENV "${CMAKE_BINARY_DIR}/venv" CACHE PATH
+      "Python venv (will be created during LLVM build)" FORCE)
+  endif()
   message(STATUS "Python venv will be created at: ${TTLANG_PYTHON_VENV}")
 endif()
