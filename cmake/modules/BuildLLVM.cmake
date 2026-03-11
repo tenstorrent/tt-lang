@@ -86,11 +86,16 @@ if(TTLANG_USE_TOOLCHAIN AND NOT DEFINED MLIR_PREFIX)
 
   # Use the Python from the toolchain's venv so that MLIR Python bindings
   # (nanobind stubs, etc.) resolve against the same interpreter they were
-  # built with.
-  set(_toolchain_python "${TTLANG_TOOLCHAIN_DIR}/venv/bin/python")
+  # built with.  Set VIRTUAL_ENV so that find_package(Python3) with
+  # Python3_FIND_VIRTUALENV=ONLY stays within the toolchain venv (this
+  # overrides Python3_ROOT_DIR that actions/setup-python may inject).
+  set(_toolchain_venv "${TTLANG_TOOLCHAIN_DIR}/venv")
+  set(_toolchain_python "${_toolchain_venv}/bin/python3.12")
+
   if(EXISTS "${_toolchain_python}")
-    set(Python3_EXECUTABLE "${_toolchain_python}" CACHE FILEPATH
-      "Python interpreter from ttlang toolchain" FORCE)
+    set(ENV{VIRTUAL_ENV} "${_toolchain_venv}")
+    set(Python3_FIND_VIRTUALENV ONLY)
+    set(Python_FIND_VIRTUALENV ONLY)
     message(STATUS "Using toolchain Python: ${_toolchain_python}")
   else()
     message(WARNING
@@ -121,7 +126,7 @@ endif()
 # ---------------------------------------------------------------------------
 # Determine build mode: pre-built or submodule.
 # ---------------------------------------------------------------------------
-# Accept MLIR_PREFIX (friendly) or raw MLIR_DIR from user.
+# Accept MLIR_PREFIX or raw MLIR_DIR from user.
 if(DEFINED MLIR_PREFIX)
   set(MLIR_DIR "${MLIR_PREFIX}/lib/cmake/mlir" CACHE PATH "MLIR CMake dir" FORCE)
   message(STATUS "Using pre-built MLIR from prefix: ${MLIR_PREFIX}")
