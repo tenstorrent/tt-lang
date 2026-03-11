@@ -565,6 +565,43 @@ class Block:
 
         return result_shape
 
+    @staticmethod
+    def _expand_broadcast_tiles(
+        items_seq: "Sequence[Tensor]",
+        src: "Union[Block, Sequence[Tensor]]",
+        dst: "Block",
+    ) -> "Sequence[Tensor]":
+        """Expand tiles from a smaller source block to fill a larger target.
+
+        Replicates tiles along dimensions where the source has size 1 and
+        the target has size > 1 (standard broadcast expansion).
+        """
+        src_shape = getattr(src, "_shape", None)
+        dst_shape = dst._shape
+        if src_shape is None or len(src_shape) != len(dst_shape):
+            raise ValueError(
+                f"Length mismatch in store(): source has {len(items_seq)} tiles, "
+                f"target expects {dst._span.length}"
+            )
+        # Verify broadcast compatibility
+        for s, d in zip(src_shape, dst_shape):
+            if s != d and s != 1:
+                raise ValueError(
+                    f"Cannot broadcast shape {src_shape} to {dst_shape}: "
+                    f"source dimension {s} is not 1"
+                )
+        # Replicate tiles: for each target position, find the source tile
+        expanded: List[Tensor] = []
+        src_cols = src_shape[1] if len(src_shape) > 1 else 1
+        dst_cols = dst_shape[1] if len(dst_shape) > 1 else 1
+        for i in range(dst_shape[0]):
+            for j in range(dst_cols):
+                si = i if src_shape[0] > 1 else 0
+                sj = j if src_cols > 1 else 0
+                src_idx = si * src_cols + sj
+                expanded.append(items_seq[src_idx])
+        return expanded
+
     # @validate_call
     def store(self, items: Union["Block", Sequence[Tensor]], acc: bool = False) -> None:
         """Store items into the block.
@@ -600,7 +637,7 @@ class Block:
                 items_seq = items
 
         if len(items_seq) != self._span.length:
-            raise ValueError("Length mismatch in store()")
+            items_seq = Block._expand_broadcast_tiles(items_seq, items, self)
 
         # Check write access first (provides better error message for NA state)
         self._check_can_write()

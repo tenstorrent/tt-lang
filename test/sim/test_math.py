@@ -252,8 +252,8 @@ def test_all_broadcast_forms():
     # Form 2: Explicit broadcast with dims
     result2 = block_a * ttl.math.broadcast(block_b, dims=[1])
 
-    # Form 3: Explicit broadcast with unused output hint (None since we can't create a DFB here)
-    result3 = block_a * ttl.math.broadcast(block_b, None, dims=[1])
+    # Form 3: Same as form 2
+    result3 = block_a * ttl.math.broadcast(block_b, dims=[1])
 
     # Form 4: Store broadcast result first, then use it
     broadcast_b = ttl.math.broadcast(block_b, dims=[1])
@@ -305,7 +305,7 @@ def test_broadcast_form2_explicit_dims():
 
 
 def test_broadcast_form3_with_output_hint():
-    """Test form 3: y.store(a * broadcast(b, y, dims=[1]))."""
+    """Test form 3: y.store(a * broadcast(b, dims=[1]))."""
     # a is (1, 3), b is (1, 1)
     t_a = [
         Tensor(torch.tensor([[1.0, 2.0]])),
@@ -317,11 +317,8 @@ def test_broadcast_form3_with_output_hint():
     t_b = [Tensor(torch.tensor([[10.0, 10.0]]))]
     block_b = Block.from_list(t_b, shape=(1, 1))
 
-    t_y = [Tensor(torch.zeros(1, 2)) for _ in range(3)]
-    block_y = Block.from_list(t_y, shape=(1, 3))
-
-    # Explicit broadcast with output block hint (unused but accepted)
-    result = block_a * ttl.math.broadcast(block_b, block_y, dims=[1])
+    # Explicit broadcast (dims-only form)
+    result = block_a * ttl.math.broadcast(block_b, dims=[1])
 
     assert result.shape == (1, 3)
 
