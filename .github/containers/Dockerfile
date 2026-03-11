@@ -14,6 +14,9 @@
 #   --build-context ird-toolchain=./path/to/ird-toolchain
 #   --build-context dist-toolchain=./path/to/dist-toolchain
 
+# Base image: parameterized so local builds don't shadow registry tags.
+ARG BASE_IMAGE=ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:latest
+
 # Toolchain build contexts: overridden by --build-context at build time.
 FROM scratch AS ird-toolchain
 FROM scratch AS dist-toolchain
@@ -21,7 +24,7 @@ FROM scratch AS dist-toolchain
 # =============================================================================
 # IRD (for developers who will clone and build their own tt-lang)
 # =============================================================================
-FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:latest AS ird
+FROM ${BASE_IMAGE} AS ird
 SHELL ["/bin/bash", "-c"]
 
 ENV TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
@@ -59,7 +62,7 @@ CMD ["/bin/bash"]
 # =============================================================================
 # Dist (pre-built tt-lang for users)
 # =============================================================================
-FROM ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:latest AS dist
+FROM ${BASE_IMAGE} AS dist
 SHELL ["/bin/bash", "-c"]
 
 ENV TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain

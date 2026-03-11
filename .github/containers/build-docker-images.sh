@@ -121,7 +121,7 @@ build_image() {
     if [ "$NO_PUSH" = false ]; then
         echo "Building: $registry_image"
     else
-        echo "Building: $local_image (also tagged as $registry_image for Dockerfile references)"
+        echo "Building: $local_image (local only)"
     fi
 
     local target_arg=""
@@ -135,18 +135,32 @@ build_image() {
         cache_arg="--no-cache"
     fi
 
-    # Always tag with registry path (required for Dockerfile FROM references)
+    # When building locally (--no-push), only use local tags to avoid
+    # shadowing registry images in the local Docker cache.
     # DOCKER_BUILD_EXTRA_ARGS allows callers to inject additional args
     # (e.g. --build-context for cache injection)
+    local tag_args=()
+    if [ "$NO_PUSH" = false ]; then
+        tag_args+=(-t "$registry_image" -t "ghcr.io/$REPO/$name:latest")
+    fi
+    tag_args+=(-t "$local_image" -t "$name:latest")
+
+    # Pass BASE_IMAGE so Dockerfile FROM references resolve to the correct
+    # tag (local-only when --no-push, registry otherwise).
+    local base_image_arg=""
+    if [ "$NO_PUSH" = false ]; then
+        base_image_arg="--build-arg BASE_IMAGE=ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:latest"
+    else
+        base_image_arg="--build-arg BASE_IMAGE=tt-lang-base-ubuntu-22-04:latest"
+    fi
+
     docker build \
         --progress=plain \
         $cache_arg \
         $target_arg \
+        $base_image_arg \
         ${DOCKER_BUILD_EXTRA_ARGS:-} \
-        -t "$registry_image" \
-        -t "$local_image" \
-        -t "$name:latest" \
-        -t "ghcr.io/$REPO/$name:latest" \
+        "${tag_args[@]}" \
         -f "$dockerfile" .
 
     if [ "$NO_PUSH" = false ]; then
