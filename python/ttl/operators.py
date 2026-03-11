@@ -564,20 +564,21 @@ def transpose(input: TensorBlock) -> TensorBlock:
 def reduce_sum(
     input: TensorBlock, scaler: TensorBlock, dims: List[int]
 ) -> TensorBlock:
-    """Reduce tensor by summing along specified dimensions.
+    """Reduce tensor by summing along specified dimensions (PyTorch semantics).
 
     Args:
         input: Input tensor (CB-attached)
         scaler: Scaler tensor for reduction (CB-attached)
-        dims: Dimensions to reduce over - [0] for row, [1] for col, [0, 1] for scalar
+        dims: Dimensions to collapse (PyTorch convention) -
+              [0] collapses rows, [1] collapses columns, [0, 1] for scalar
     """
     from ttmlir.ir import IntegerAttr, IntegerType, RankedTensorType
 
     dims_set = set(dims)
     if dims_set == {0}:
-        reduce_dim_val = 0  # Row
+        reduce_dim_val = 1  # Col reduce: collapse rows -> (1, M)
     elif dims_set == {1}:
-        reduce_dim_val = 1  # Col
+        reduce_dim_val = 0  # Row reduce: collapse columns -> (N, 1)
     elif dims_set == {0, 1}:
         reduce_dim_val = 2  # Scalar
     else:
@@ -585,10 +586,10 @@ def reduce_sum(
 
     input_type = input.type
     in_shape = list(input_type.shape)
-    if reduce_dim_val == 0:  # Row
-        out_shape = [in_shape[0], 1]
-    elif reduce_dim_val == 1:  # Col
+    if dims_set == {0}:
         out_shape = [1, in_shape[1]]
+    elif dims_set == {1}:
+        out_shape = [in_shape[0], 1]
     else:  # Scalar
         out_shape = [1, 1]
     result_type = RankedTensorType.get(
@@ -608,20 +609,21 @@ def reduce_sum(
 def reduce_max(
     input: TensorBlock, scaler: TensorBlock, dims: List[int]
 ) -> TensorBlock:
-    """Reduce tensor by taking max along specified dimensions.
+    """Reduce tensor by taking max along specified dimensions (PyTorch semantics).
 
     Args:
         input: Input tensor (CB-attached)
         scaler: Scaler tensor for reduction (CB-attached)
-        dims: Dimensions to reduce over - [0] for row, [1] for col, [0, 1] for scalar
+        dims: Dimensions to collapse (PyTorch convention) -
+              [0] collapses rows, [1] collapses columns, [0, 1] for scalar
     """
     from ttmlir.ir import IntegerAttr, IntegerType, RankedTensorType
 
     dims_set = set(dims)
     if dims_set == {0}:
-        reduce_dim_val = 0  # Row
+        reduce_dim_val = 1  # Col reduce: collapse rows -> (1, M)
     elif dims_set == {1}:
-        reduce_dim_val = 1  # Col
+        reduce_dim_val = 0  # Row reduce: collapse columns -> (N, 1)
     elif dims_set == {0, 1}:
         reduce_dim_val = 2  # Scalar
     else:
@@ -629,10 +631,10 @@ def reduce_max(
 
     input_type = input.type
     in_shape = list(input_type.shape)
-    if reduce_dim_val == 0:  # Row
-        out_shape = [in_shape[0], 1]
-    elif reduce_dim_val == 1:  # Col
+    if dims_set == {0}:
         out_shape = [1, in_shape[1]]
+    elif dims_set == {1}:
+        out_shape = [in_shape[0], 1]
     else:  # Scalar
         out_shape = [1, 1]
     result_type = RankedTensorType.get(
