@@ -31,6 +31,13 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 namespace {
 
+/// Attribute name for an explicit iteration domain override on ComputeOp.
+/// When present, this takes priority over the largest-operand heuristic.
+/// Used by reduce lowering where the input is larger than the output but the
+/// tile-level reduce op handles the inner accumulation loop itself.
+static constexpr llvm::StringLiteral kIterDomainAttrName =
+    "ttl.static_iter_domain";
+
 /// Get the iteration domain for a ComputeOp. The verifier ensures that the
 /// maximum tensor rank equals iterator_types.size(). Use the tensor with the
 /// largest shape for loop bounds (handles broadcasts where output is larger
@@ -38,6 +45,15 @@ namespace {
 static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
   SmallVector<Range> domain;
   Location loc = op.getLoc();
+
+  // If the producer set an explicit iteration domain, use it.
+  if (auto iterDomain = op->getAttrOfType<DenseI64ArrayAttr>(kIterDomainAttrName)) {
+    for (int64_t dim : iterDomain.asArrayRef()) {
+      domain.push_back(Range{b.getIndexAttr(0), b.getIndexAttr(dim),
+                             b.getIndexAttr(1)});
+    }
+    return domain;
+  }
 
   // Use the largest operand's shape for loop bounds so that broadcast
   // dimensions (size 1 in the smaller operand) still get iterated.

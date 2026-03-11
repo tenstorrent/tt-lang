@@ -859,6 +859,33 @@ class TestReduceMultitile2x2:
         assert_allclose(result[0, 0].float(), expected_row_sum, rtol=0.1, atol=2.0)
         assert_allclose(result[15, 0].float(), expected_row_sum, rtol=0.1, atol=2.0)
 
+    def test_reduce_sum_row_2x2_distinct(self, device):
+        """Row reduction with distinct values per tile quadrant (#381).
+
+        Reproducer for the bug where tile-row 1 duplicated tile-row 0's result.
+        Input: tile[0,0]=1, tile[0,1]=2, tile[1,0]=3, tile[1,1]=4
+        dims=[1] collapses columns:
+          row 0: 1*32 + 2*32 = 96
+          row 1: 3*32 + 4*32 = 224
+        """
+        inp_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
+        inp_torch[:32, :32] = 1.0   # tile [0,0]
+        inp_torch[:32, 32:] = 2.0   # tile [0,1]
+        inp_torch[32:, :32] = 3.0   # tile [1,0]
+        inp_torch[32:, 32:] = 4.0   # tile [1,1]
+        scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
+        out_torch = torch.zeros((64, 32), dtype=torch.bfloat16)
+
+        inp = to_l1(inp_torch, device)
+        scaler = to_l1(scaler_torch, device)
+        out = to_l1(out_torch, device)
+
+        reduce_sum_row_2x2_kernel(inp, scaler, out)
+        result = ttnn.to_torch(out)
+
+        assert_allclose(result[0, 0].float(), torch.tensor(96.0), rtol=0.1, atol=2.0)
+        assert_allclose(result[32, 0].float(), torch.tensor(224.0), rtol=0.1, atol=2.0)
+
     def test_reduce_sum_col_2x2(self, device):
         """Col reduction over 2x2 tiles: each col sums across 64 rows."""
         inp_torch = torch.ones((64, 64), dtype=torch.bfloat16)
@@ -876,6 +903,32 @@ class TestReduceMultitile2x2:
         expected_col_sum = torch.tensor(64.0, dtype=torch.float32)
         assert_allclose(result[0, 0].float(), expected_col_sum, rtol=0.1, atol=2.0)
         assert_allclose(result[0, 15].float(), expected_col_sum, rtol=0.1, atol=2.0)
+
+    def test_reduce_sum_col_2x2_distinct(self, device):
+        """Col reduction with distinct values per tile quadrant.
+
+        Input: tile[0,0]=1, tile[0,1]=2, tile[1,0]=3, tile[1,1]=4
+        dims=[0] collapses rows:
+          col 0: 1*32 + 3*32 = 128
+          col 1: 2*32 + 4*32 = 192
+        """
+        inp_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
+        inp_torch[:32, :32] = 1.0
+        inp_torch[:32, 32:] = 2.0
+        inp_torch[32:, :32] = 3.0
+        inp_torch[32:, 32:] = 4.0
+        scaler_torch = torch.ones((32, 32), dtype=torch.bfloat16)
+        out_torch = torch.zeros((32, 64), dtype=torch.bfloat16)
+
+        inp = to_l1(inp_torch, device)
+        scaler = to_l1(scaler_torch, device)
+        out = to_l1(out_torch, device)
+
+        reduce_sum_col_2x2_kernel(inp, scaler, out)
+        result = ttnn.to_torch(out)
+
+        assert_allclose(result[0, 0].float(), torch.tensor(128.0), rtol=0.1, atol=2.0)
+        assert_allclose(result[0, 32].float(), torch.tensor(192.0), rtol=0.1, atol=2.0)
 
 
 # =============================================================================
