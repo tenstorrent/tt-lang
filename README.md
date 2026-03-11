@@ -49,14 +49,14 @@ LLVM is built and installed to `build/llvm-install/` by default. tt-metal builds
 # Debug build with Python bindings
 cmake -GNinja -Bbuild . -DCMAKE_BUILD_TYPE=Debug -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
 
-# Use pre-built LLVM/MLIR from the ttmlir toolchain ($TTLANG_TOOLCHAIN_DIR or /opt/ttlang-toolchain)
-cmake -GNinja -Bbuild . -DTTLANG_USE_TOOLCHAIN=ON
+# Build toolchain (LLVM + tt-metal) into a reusable prefix
+cmake -GNinja -Bbuild . -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
+
+# Use a previously built toolchain (skips LLVM + tt-metal build)
+cmake -GNinja -Bbuild . -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain -DTTLANG_USE_TOOLCHAIN=ON
 
 # Use a pre-built LLVM/MLIR installation at a custom path
 cmake -GNinja -Bbuild . -DMLIR_PREFIX=/path/to/llvm-install
-
-# Custom LLVM install location (when building from submodule)
-cmake -GNinja -Bbuild . -DLLVM_INSTALL_DIR=/tmp/my-llvm-install
 ```
 
 To generate the Sphinx documentation, configure with `-DTTLANG_ENABLE_DOCS`.

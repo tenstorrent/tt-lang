@@ -63,29 +63,43 @@ The result is cached — subsequent configures skip the LLVM build if
 cmake -G Ninja -B build .
 ```
 
-### Option B: Use a pre-built LLVM/MLIR install
+To install the toolchain (LLVM, tt-metal, Python venv) into a reusable prefix,
+set `TTLANG_TOOLCHAIN_DIR`:
 
-Skip the LLVM build by pointing at an existing LLVM/MLIR install tree. Two ways:
+```bash
+cmake -G Ninja -B build -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain .
+```
 
-**Via `MLIR_PREFIX`:**
+This redirects the LLVM install, tt-metal build, and Python venv into
+`/opt/ttlang-toolchain` so it can be reused by other builds via Option B.
+
+### Option B: Use a pre-built toolchain or LLVM/MLIR install
+
+Skip the LLVM and tt-metal builds by pointing at an existing toolchain:
+
+```bash
+# Use a toolchain previously built with TTLANG_TOOLCHAIN_DIR
+cmake -G Ninja -B build \
+  -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
+  -DTTLANG_USE_TOOLCHAIN=ON .
+```
+
+`TTLANG_TOOLCHAIN_DIR` can also be set via the environment variable of the
+same name. When not specified with `TTLANG_USE_TOOLCHAIN=ON`, it defaults to
+`/opt/ttlang-toolchain`.
+
+When `TTLANG_USE_TOOLCHAIN=ON`, the build sets `Python3_EXECUTABLE` to the
+toolchain's venv (`${TTLANG_TOOLCHAIN_DIR}/venv/bin/python`) so that MLIR
+Python bindings resolve against the same interpreter they were built with.
+
+Alternatively, point directly at an LLVM/MLIR install prefix:
+
 ```bash
 cmake -G Ninja -B build -DMLIR_PREFIX=/path/to/llvm-install .
 ```
 
-**Via ttmlir toolchain:**
-```bash
-# Uses $TTLANG_TOOLCHAIN_DIR, or /opt/ttlang-toolchain by default
-cmake -G Ninja -B build -DTTLANG_USE_TOOLCHAIN=ON .
-
-# With explicit path:
-TTLANG_TOOLCHAIN_DIR=/custom/path cmake -G Ninja -B build -DTTLANG_USE_TOOLCHAIN=ON .
-```
-
-When `TTLANG_USE_TOOLCHAIN=ON`, the build also sets `Python3_EXECUTABLE`
-to the toolchain's venv (`${TTLANG_TOOLCHAIN_DIR}/venv/bin/python`) so that MLIR
-Python bindings resolve against the same interpreter they were built with.
-
-WARNING: tt-lang may not build successfully if the pre-build LLVM is a significantly different version than what tt-mlir and tt-lang expect.
+WARNING: tt-lang may not build successfully if the pre-built LLVM is a
+significantly different version than what tt-mlir and tt-lang expect.
 
 ### LLVM SHA verification
 
@@ -240,8 +254,9 @@ build/
 |---|---|---|
 | `CMAKE_BUILD_TYPE` | `Release` | Build type (Debug, Release, RelWithDebInfo) |
 | `LLVM_BUILD_TYPE` | `Release` | LLVM build type (independent of project build type) |
+| `TTLANG_TOOLCHAIN_DIR` | — | Toolchain prefix for LLVM, tt-metal, and venv (build or use mode) |
+| `TTLANG_USE_TOOLCHAIN` | `OFF` | Use pre-built toolchain at `TTLANG_TOOLCHAIN_DIR` |
 | `MLIR_PREFIX` | — | Path to pre-built LLVM/MLIR install (skips submodule build) |
-| `TTLANG_USE_TOOLCHAIN` | `OFF` | Use pre-built LLVM from ttmlir toolchain |
 | `TTLANG_ACCEPT_LLVM_MISMATCH` | `OFF` | Allow LLVM SHA mismatch with pre-built installs |
 | `TTLANG_ACCEPT_TTMETAL_MISMATCH` | `OFF` | Allow tt-metal SHA mismatch with pre-built installs |
 | `TTLANG_ENABLE_BINDINGS_PYTHON` | `ON` | Enable Python bindings |

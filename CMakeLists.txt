@@ -153,3 +153,30 @@ install(DIRECTORY python/sim python/pykernel DESTINATION python_packages
 
 # Install ttlang-sim script to bin directory
 install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/ttlang-sim" DESTINATION bin)
+
+# ---------------------------------------------------------------------------
+# Configuration summary
+# ---------------------------------------------------------------------------
+message(STATUS "")
+message(STATUS "=== tt-lang configuration summary ===")
+message(STATUS "  Version:          ${TTLANG_VERSION}")
+message(STATUS "  Build type:       ${CMAKE_BUILD_TYPE}")
+message(STATUS "  Build dir:        ${CMAKE_BINARY_DIR}")
+if(DEFINED TTLANG_TOOLCHAIN_DIR)
+  message(STATUS "  Toolchain dir:    ${TTLANG_TOOLCHAIN_DIR}")
+  if(TTLANG_USE_TOOLCHAIN)
+    message(STATUS "  Toolchain mode:   use (pre-built)")
+  else()
+    message(STATUS "  Toolchain mode:   build (from submodule)")
+  endif()
+endif()
+message(STATUS "  LLVM install:     ${LLVM_INSTALL_DIR}")
+message(STATUS "  tt-metal:         ${TT_METAL_HOME}")
+message(STATUS "  Python:           ${Python3_EXECUTABLE}")
+message(STATUS "  Python venv:      ${TTLANG_PYTHON_VENV}")
+message(STATUS "  Python bindings:  ${TTLANG_ENABLE_BINDINGS_PYTHON}")
+message(STATUS "  Perf tracing:     ${TTLANG_ENABLE_PERF_TRACE}")
+message(STATUS "  Device detected:  ${TTLANG_HAS_DEVICE}")
+message(STATUS "")
+message(STATUS "  Activate env:     source ${CMAKE_BINARY_DIR}/env/activate")
+message(STATUS "===")

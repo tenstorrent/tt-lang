@@ -33,35 +33,51 @@ if(EXISTS "${_TTMLIR_ENV_CMAKELISTS}")
 endif()
 
 # ---------------------------------------------------------------------------
-# TTLANG_USE_TOOLCHAIN: convenience option to use pre-built LLVM from
-# the ttlang toolchain directory ($TTLANG_TOOLCHAIN_DIR or /opt/ttlang-toolchain).
+# TTLANG_TOOLCHAIN_DIR: directory for the tt-lang toolchain (LLVM, tt-metal,
+# Python venv).  Works in two modes:
+#
+#   Build mode (default): LLVM and tt-metal are built from submodules and
+#     installed into TTLANG_TOOLCHAIN_DIR.  Use this to create a reusable
+#     toolchain from a from-source build.
+#
+#   Use mode (TTLANG_USE_TOOLCHAIN=ON): a pre-built toolchain at
+#     TTLANG_TOOLCHAIN_DIR is consumed directly (no LLVM/tt-metal build).
+#
+# Can be set via -DTTLANG_TOOLCHAIN_DIR=... or the environment variable.
+# Defaults to /opt/ttlang-toolchain when TTLANG_USE_TOOLCHAIN is ON.
 # ---------------------------------------------------------------------------
+if(NOT DEFINED TTLANG_TOOLCHAIN_DIR)
+  if(DEFINED ENV{TTLANG_TOOLCHAIN_DIR})
+    set(TTLANG_TOOLCHAIN_DIR "$ENV{TTLANG_TOOLCHAIN_DIR}" CACHE PATH
+      "tt-lang toolchain directory")
+  endif()
+endif()
+
 option(TTLANG_USE_TOOLCHAIN "Use pre-built LLVM from ttlang toolchain" OFF)
 
 if(TTLANG_USE_TOOLCHAIN AND NOT DEFINED MLIR_PREFIX)
-  if(DEFINED ENV{TTLANG_TOOLCHAIN_DIR})
-    set(_toolchain_dir "$ENV{TTLANG_TOOLCHAIN_DIR}")
-  else()
-    set(_toolchain_dir "/opt/ttlang-toolchain")
+  if(NOT DEFINED TTLANG_TOOLCHAIN_DIR)
+    set(TTLANG_TOOLCHAIN_DIR "/opt/ttlang-toolchain" CACHE PATH
+      "tt-lang toolchain directory" FORCE)
   endif()
 
-  if(NOT EXISTS "${_toolchain_dir}")
+  if(NOT EXISTS "${TTLANG_TOOLCHAIN_DIR}")
     message(FATAL_ERROR
-      "TTLANG_USE_TOOLCHAIN is ON but toolchain directory not found: ${_toolchain_dir}\n"
+      "TTLANG_USE_TOOLCHAIN is ON but toolchain directory not found: ${TTLANG_TOOLCHAIN_DIR}\n"
       "Set TTLANG_TOOLCHAIN_DIR to the correct path, or disable this option.")
   endif()
 
-  set(MLIR_PREFIX "${_toolchain_dir}")
-  set(TTMETAL_BUILD_DIR "${_toolchain_dir}/tt-metal" CACHE PATH
+  set(MLIR_PREFIX "${TTLANG_TOOLCHAIN_DIR}")
+  set(TTMETAL_BUILD_DIR "${TTLANG_TOOLCHAIN_DIR}/tt-metal" CACHE PATH
     "tt-metal build directory (from toolchain)" FORCE)
-  set(TTLANG_PYTHON_VENV "${_toolchain_dir}/venv" CACHE PATH
+  set(TTLANG_PYTHON_VENV "${TTLANG_TOOLCHAIN_DIR}/venv" CACHE PATH
     "Python venv (from toolchain)" FORCE)
-  message(STATUS "Using ttlang toolchain at: ${_toolchain_dir}")
+  message(STATUS "Using ttlang toolchain at: ${TTLANG_TOOLCHAIN_DIR}")
 
   # Use the Python from the toolchain's venv so that MLIR Python bindings
   # (nanobind stubs, etc.) resolve against the same interpreter they were
   # built with.
-  set(_toolchain_python "${_toolchain_dir}/venv/bin/python")
+  set(_toolchain_python "${TTLANG_TOOLCHAIN_DIR}/venv/bin/python")
   if(EXISTS "${_toolchain_python}")
     set(Python3_EXECUTABLE "${_toolchain_python}" CACHE FILEPATH
       "Python interpreter from ttlang toolchain" FORCE)
@@ -70,6 +86,28 @@ if(TTLANG_USE_TOOLCHAIN AND NOT DEFINED MLIR_PREFIX)
     message(WARNING
       "Toolchain Python not found at ${_toolchain_python}.\n"
       "Falling back to system Python. Python binding compatibility is not guaranteed.")
+  endif()
+
+elseif(DEFINED TTLANG_TOOLCHAIN_DIR AND NOT DEFINED MLIR_PREFIX)
+  # Build mode: install toolchain components into TTLANG_TOOLCHAIN_DIR.
+  set(LLVM_INSTALL_DIR "${TTLANG_TOOLCHAIN_DIR}" CACHE PATH
+    "Install prefix for the submodule LLVM/MLIR build" FORCE)
+  set(TTMETAL_BUILD_DIR "${TTLANG_TOOLCHAIN_DIR}/tt-metal" CACHE PATH
+    "tt-metal build directory" FORCE)
+  set(TTLANG_PYTHON_VENV "${TTLANG_TOOLCHAIN_DIR}/venv" CACHE PATH
+    "Python venv" FORCE)
+
+  # TTLANG_FORCE_TOOLCHAIN_REBUILD: remove existing sentinel files so LLVM
+  # and tt-metal are rebuilt even if a previous installation exists at the
+  # same prefix.
+  option(TTLANG_FORCE_TOOLCHAIN_REBUILD
+    "Force rebuild of LLVM and tt-metal into TTLANG_TOOLCHAIN_DIR" OFF)
+  if(TTLANG_FORCE_TOOLCHAIN_REBUILD)
+    file(REMOVE "${TTLANG_TOOLCHAIN_DIR}/lib/cmake/mlir/MLIRConfig.cmake")
+    file(REMOVE "${TTLANG_TOOLCHAIN_DIR}/tt-metal/ttnn/_ttnn.so")
+    message(STATUS "Forcing toolchain rebuild into: ${TTLANG_TOOLCHAIN_DIR}")
+  else()
+    message(STATUS "Building toolchain into: ${TTLANG_TOOLCHAIN_DIR}")
   endif()
 endif()
 
