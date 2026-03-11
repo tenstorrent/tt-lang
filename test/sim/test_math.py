@@ -572,7 +572,7 @@ def test_exp_multitile():
 
 
 def test_reduce_max_rows():
-    """Test reduce_max over rows (dimension 0)."""
+    """Test reduce_max collapsing dim 0 (rows, PyTorch semantics)."""
     # Create a (2, 1) block - two tiles in row dimension
     t_a = [
         Tensor(torch.tensor([[1.0, 5.0]])),
@@ -584,24 +584,23 @@ def test_reduce_max_rows():
     t_s = [Tensor(torch.tensor([[2.0, 2.0]]))]
     scaler = Block.from_list(t_s, shape=(1, 1))
 
-    # Reduce over dimension 0 (rows)
+    # dims=[0]: collapse rows (PyTorch semantics)
     result = ttl.math.reduce_max(block_a, scaler, dims=[0])
 
-    # Result should have shape (1, 1) - rows reduced
+    # Result should have shape (1, 1) - dim 0 collapsed
     assert result.shape == (1, 1)
 
-    # Two-level reduction:
-    # 1. Within-tile: dims=[0] means max across columns for each row
-    #    Tile 0: [[1.0, 5.0]] -> max(1,5)=5 at col 0 -> [[5.0, 0.0]]
-    #    Tile 1: [[3.0, 2.0]] -> max(3,2)=3 at col 0 -> [[3.0, 0.0]]
-    # 2. Grid-level: element-wise max -> [[5.0, 0.0]]
-    # 3. Scale by [[2.0, 2.0]] -> [[10.0, 0.0]]
+    # 1. Within-tile: max(dim=0) across rows (trivial for 1-row tiles)
+    #    Tile 0: [[1.0, 5.0]] -> [1.0, 5.0] at row 0
+    #    Tile 1: [[3.0, 2.0]] -> [3.0, 2.0] at row 0
+    # 2. Grid-level: element-wise max -> [[3.0, 5.0]]
+    # 3. Scale by [[2.0, 2.0]] -> [[6.0, 10.0]]
     result_tensor = result.to_list()[0].to_torch()
-    assert result_tensor[0, 0] == 10.0
+    assert result_tensor[0, 0] == 6.0
 
 
 def test_reduce_max_cols():
-    """Test reduce_max over columns (dimension 1)."""
+    """Test reduce_max collapsing dim 1 (columns, PyTorch semantics)."""
     # Create a (1, 2) block - two tiles in column dimension
     t_a = [
         Tensor(torch.tensor([[1.0, 5.0]])),
@@ -613,14 +612,18 @@ def test_reduce_max_cols():
     t_s = [Tensor(torch.tensor([[1.0, 1.0]]))]
     scaler = Block.from_list(t_s, shape=(1, 1))
 
-    # Reduce over dimension 1 (columns)
+    # dims=[1]: collapse columns (PyTorch semantics)
     result = ttl.math.reduce_max(block_a, scaler, dims=[1])
 
-    # Result should have shape (1, 1) - columns reduced
+    # Result should have shape (1, 1) - dim 1 collapsed
     assert result.shape == (1, 1)
 
-    # Max over cols: max([1, 5], [3, 2]) along dim 1 = [3, 5]
-    expected = torch.tensor([[3.0, 5.0]])
+    # 1. Within-tile: max(dim=1) across columns
+    #    Tile 0: [[1.0, 5.0]] -> max=5.0 at col 0 -> [[5.0, 0.0]]
+    #    Tile 1: [[3.0, 2.0]] -> max=3.0 at col 0 -> [[3.0, 0.0]]
+    # 2. Grid-level: element-wise max -> [[5.0, 0.0]]
+    # 3. Scale by [[1.0, 1.0]] -> [[5.0, 0.0]]
+    expected = torch.tensor([[5.0, 0.0]])
     assert torch.allclose(result.to_list()[0].to_torch(), expected)
 
 
@@ -688,7 +691,7 @@ def test_reduce_max_empty_dims():
 
 
 def test_reduce_sum_rows():
-    """Test reduce_sum over rows (dimension 0)."""
+    """Test reduce_sum collapsing dim 0 (rows, PyTorch semantics)."""
     # Create a (2, 1) block - two tiles in row dimension
     t_a = [
         Tensor(torch.tensor([[1.0, 2.0]])),
@@ -700,24 +703,23 @@ def test_reduce_sum_rows():
     t_s = [Tensor(torch.tensor([[2.0, 2.0]]))]
     scaler = Block.from_list(t_s, shape=(1, 1))
 
-    # Reduce over dimension 0 (rows)
+    # dims=[0]: collapse rows (PyTorch semantics)
     result = ttl.math.reduce_sum(block_a, scaler, dims=[0])
 
-    # Result should have shape (1, 1) - rows reduced
+    # Result should have shape (1, 1) - dim 0 collapsed
     assert result.shape == (1, 1)
 
-    # Two-level reduction:
-    # 1. Within-tile: dims=[0] means sum across columns for each row
-    #    Tile 0: [[1.0, 2.0]] -> sum(1,2)=3 at col 0 -> [[3.0, 0.0]]
-    #    Tile 1: [[3.0, 4.0]] -> sum(3,4)=7 at col 0 -> [[7.0, 0.0]]
-    # 2. Grid-level: element-wise sum -> [[10.0, 0.0]]
-    # 3. Scale by [[2.0, 2.0]] -> [[20.0, 0.0]]
+    # 1. Within-tile: sum(dim=0) across rows (trivial for 1-row tiles)
+    #    Tile 0: [[1.0, 2.0]] -> [1.0, 2.0] at row 0
+    #    Tile 1: [[3.0, 4.0]] -> [3.0, 4.0] at row 0
+    # 2. Grid-level: element-wise sum -> [[4.0, 6.0]]
+    # 3. Scale by [[2.0, 2.0]] -> [[8.0, 12.0]]
     result_tensor = result.to_list()[0].to_torch()
-    assert result_tensor[0, 0] == 20.0
+    assert result_tensor[0, 0] == 8.0
 
 
 def test_reduce_sum_cols():
-    """Test reduce_sum over columns (dimension 1)."""
+    """Test reduce_sum collapsing dim 1 (columns, PyTorch semantics)."""
     # Create a (1, 2) block - two tiles in column dimension
     t_a = [
         Tensor(torch.tensor([[1.0, 2.0]])),
@@ -729,14 +731,18 @@ def test_reduce_sum_cols():
     t_s = [Tensor(torch.tensor([[1.0, 1.0]]))]
     scaler = Block.from_list(t_s, shape=(1, 1))
 
-    # Reduce over dimension 1 (columns)
+    # dims=[1]: collapse columns (PyTorch semantics)
     result = ttl.math.reduce_sum(block_a, scaler, dims=[1])
 
-    # Result should have shape (1, 1) - columns reduced
+    # Result should have shape (1, 1) - dim 1 collapsed
     assert result.shape == (1, 1)
 
-    # Sum over cols: sum([1, 2], [3, 4]) along dim 1 = [4, 6]
-    expected = torch.tensor([[4.0, 6.0]])
+    # 1. Within-tile: sum(dim=1) across columns
+    #    Tile 0: [[1.0, 2.0]] -> sum=3.0 at col 0 -> [[3.0, 0.0]]
+    #    Tile 1: [[3.0, 4.0]] -> sum=7.0 at col 0 -> [[7.0, 0.0]]
+    # 2. Grid-level: element-wise sum -> [[10.0, 0.0]]
+    # 3. Scale by [[1.0, 1.0]] -> [[10.0, 0.0]]
+    expected = torch.tensor([[10.0, 0.0]])
     assert torch.allclose(result.to_list()[0].to_torch(), expected)
 
 

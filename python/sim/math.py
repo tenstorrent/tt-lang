@@ -432,12 +432,12 @@ def reduce_max(
     1. Within each tile: reduces along the specified tensor dimensions
     2. Across tiles: combines tiles in the grid along the specified dimensions
 
-    For dims=[0] (reduce rows):
-    - Within each tile: compute max per row (across columns), store at column 0
+    For dims=[0] (collapse rows, PyTorch semantics):
+    - Within each tile: max across rows for each column, store at row 0
     - Across tiles: combine tiles along grid row dimension
 
-    For dims=[1] (reduce columns):
-    - Within each tile: compute max per column (across rows), store at row 0
+    For dims=[1] (collapse columns, PyTorch semantics):
+    - Within each tile: max across columns for each row, store at column 0
     - Across tiles: combine tiles along grid column dimension
 
     Args:
@@ -464,9 +464,7 @@ def reduce_max(
                 f"Cannot reduce along dimension {dim}: block grid has only 2 dimensions"
             )
 
-    # Step 1: Within-tile reduction
-    # dims=[0] means reduce across columns within each row -> one value per row at col 0
-    # dims=[1] means reduce across rows within each column -> one value per col at row 0
+    # Step 1: Within-tile reduction (PyTorch semantics: dims = dimensions to collapse)
     reduced_tiles: List[torch.Tensor] = []
     for tile in input_tensors:
         result_tile = torch.zeros_like(tile)
@@ -475,13 +473,13 @@ def reduce_max(
             max_val = tile.max()
             result_tile[0, 0] = max_val
         elif 0 in dims:
-            # Reduce across columns (dim 1) for each row -> store at column 0
-            row_maxes = tile.max(dim=1).values  # shape: (32,)
-            result_tile[:, 0] = row_maxes
-        elif 1 in dims:
-            # Reduce across rows (dim 0) for each column -> store at row 0
+            # Collapse dim 0 (rows): max across rows for each column -> store at row 0
             col_maxes = tile.max(dim=0).values  # shape: (32,)
             result_tile[0, :] = col_maxes
+        elif 1 in dims:
+            # Collapse dim 1 (columns): max across columns for each row -> store at col 0
+            row_maxes = tile.max(dim=1).values  # shape: (32,)
+            result_tile[:, 0] = row_maxes
         reduced_tiles.append(result_tile)
 
     # Step 2: Grid-level reduction (combine tiles across specified grid dimensions)
@@ -524,12 +522,12 @@ def reduce_sum(
     1. Within each tile: reduces along the specified tensor dimensions
     2. Across tiles: combines tiles in the grid along the specified dimensions
 
-    For dims=[0] (reduce rows):
-    - Within each tile: compute sum per row (across columns), store at column 0
+    For dims=[0] (collapse rows, PyTorch semantics):
+    - Within each tile: sum across rows for each column, store at row 0
     - Across tiles: combine tiles along grid row dimension
 
-    For dims=[1] (reduce columns):
-    - Within each tile: compute sum per column (across rows), store at row 0
+    For dims=[1] (collapse columns, PyTorch semantics):
+    - Within each tile: sum across columns for each row, store at column 0
     - Across tiles: combine tiles along grid column dimension
 
     Args:
@@ -556,9 +554,7 @@ def reduce_sum(
                 f"Cannot reduce along dimension {dim}: block grid has only 2 dimensions"
             )
 
-    # Step 1: Within-tile reduction
-    # dims=[0] means reduce across columns within each row -> one value per row at col 0
-    # dims=[1] means reduce across rows within each column -> one value per col at row 0
+    # Step 1: Within-tile reduction (PyTorch semantics: dims = dimensions to collapse)
     reduced_tiles: List[torch.Tensor] = []
     for tile in input_tensors:
         result_tile = torch.zeros_like(tile)
@@ -567,13 +563,13 @@ def reduce_sum(
             sum_val = tile.sum()
             result_tile[0, 0] = sum_val
         elif 0 in dims:
-            # Reduce across columns (dim 1) for each row -> store at column 0
-            row_sums = tile.sum(dim=1)  # shape: (32,)
-            result_tile[:, 0] = row_sums
-        elif 1 in dims:
-            # Reduce across rows (dim 0) for each column -> store at row 0
+            # Collapse dim 0 (rows): sum across rows for each column -> store at row 0
             col_sums = tile.sum(dim=0)  # shape: (32,)
             result_tile[0, :] = col_sums
+        elif 1 in dims:
+            # Collapse dim 1 (columns): sum across columns for each row -> store at col 0
+            row_sums = tile.sum(dim=1)  # shape: (32,)
+            result_tile[:, 0] = row_sums
         reduced_tiles.append(result_tile)
 
     # Step 2: Grid-level reduction (combine tiles across specified grid dimensions)
