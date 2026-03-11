@@ -97,13 +97,13 @@ def reduce_max_scalar_kernel(inp, scaler, out):
 
 
 # =============================================================================
-# Row Reduction Kernels (dims=[0])
+# Row Reduction Kernels (dims=[1], collapse columns)
 # =============================================================================
 
 
 @ttl.kernel(grid=(1, 1))
 def reduce_sum_row_kernel(inp, scaler, out):
-    """Reduce sum across columns for each row (dims=[0]).
+    """Reduce sum across columns for each row (dims=[1]).
 
     Result: each row's sum appears in column 0 of that row.
     """
@@ -114,7 +114,7 @@ def reduce_sum_row_kernel(inp, scaler, out):
     @ttl.compute()
     def compute_fn():
         with inp_cb.wait() as i, scaler_cb.wait() as s, out_cb.reserve() as o:
-            result = ttl.math.reduce_sum(i, s, dims=[0])
+            result = ttl.math.reduce_sum(i, s, dims=[1])
             o.store(result)
 
     @ttl.datamovement()
@@ -135,13 +135,13 @@ def reduce_sum_row_kernel(inp, scaler, out):
 
 
 # =============================================================================
-# Col Reduction Kernels (dims=[1])
+# Col Reduction Kernels (dims=[0], collapse rows)
 # =============================================================================
 
 
 @ttl.kernel(grid=(1, 1))
 def reduce_sum_col_kernel(inp, scaler, out):
-    """Reduce sum across rows for each column (dims=[1]).
+    """Reduce sum across rows for each column (dims=[0]).
 
     Result: each column's sum appears in row 0 of that column.
     """
@@ -152,7 +152,7 @@ def reduce_sum_col_kernel(inp, scaler, out):
     @ttl.compute()
     def compute_fn():
         with inp_cb.wait() as i, scaler_cb.wait() as s, out_cb.reserve() as o:
-            result = ttl.math.reduce_sum(i, s, dims=[1])
+            result = ttl.math.reduce_sum(i, s, dims=[0])
             o.store(result)
 
     @ttl.datamovement()
@@ -179,7 +179,7 @@ def reduce_sum_col_kernel(inp, scaler, out):
 
 @ttl.kernel(grid=(1, 1))
 def reduce_sum_row_2x2_kernel(inp, scaler, out):
-    """Reduce sum rows over 2x2 tile grid (dims=[0]) -> (2,1) output."""
+    """Reduce sum across columns over 2x2 tile grid (dims=[1]) -> (2,1) output."""
     inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
     scaler_cb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
     out_cb = ttl.make_dataflow_buffer_like(out, shape=(2, 1), buffer_factor=2)
@@ -187,7 +187,7 @@ def reduce_sum_row_2x2_kernel(inp, scaler, out):
     @ttl.compute()
     def compute_fn():
         with inp_cb.wait() as i, scaler_cb.wait() as s, out_cb.reserve() as o:
-            result = ttl.math.reduce_sum(i, s, dims=[0])
+            result = ttl.math.reduce_sum(i, s, dims=[1])
             o.store(result)
 
     @ttl.datamovement()
@@ -209,7 +209,7 @@ def reduce_sum_row_2x2_kernel(inp, scaler, out):
 
 @ttl.kernel(grid=(1, 1))
 def reduce_sum_col_2x2_kernel(inp, scaler, out):
-    """Reduce sum cols over 2x2 tile grid (dims=[1]) -> (1,2) output."""
+    """Reduce sum cols over 2x2 tile grid (dims=[0]) -> (1,2) output."""
     inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
     scaler_cb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
     out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 2), buffer_factor=2)
@@ -217,7 +217,7 @@ def reduce_sum_col_2x2_kernel(inp, scaler, out):
     @ttl.compute()
     def compute_fn():
         with inp_cb.wait() as i, scaler_cb.wait() as s, out_cb.reserve() as o:
-            result = ttl.math.reduce_sum(i, s, dims=[1])
+            result = ttl.math.reduce_sum(i, s, dims=[0])
             o.store(result)
 
     @ttl.datamovement()
@@ -374,7 +374,7 @@ def reduce_max_4x4_kernel(inp, scaler, out):
 
 @ttl.kernel(grid=(2, 2))
 def reduce_sum_row_multicore_kernel(inp, scaler, out):
-    """Reduce sum rows with 2x2 multicore grid (dims=[0])."""
+    """Reduce sum across columns with 2x2 multicore grid (dims=[1])."""
     inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
     scaler_cb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
     out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -382,7 +382,7 @@ def reduce_sum_row_multicore_kernel(inp, scaler, out):
     @ttl.compute()
     def compute_fn():
         with inp_cb.wait() as i, scaler_cb.wait() as s, out_cb.reserve() as o:
-            result = ttl.math.reduce_sum(i, s, dims=[0])
+            result = ttl.math.reduce_sum(i, s, dims=[1])
             o.store(result)
 
     @ttl.datamovement()
@@ -406,7 +406,7 @@ def reduce_sum_row_multicore_kernel(inp, scaler, out):
 
 @ttl.kernel(grid=(2, 2))
 def reduce_sum_col_multicore_kernel(inp, scaler, out):
-    """Reduce sum cols with 2x2 multicore grid (dims=[1])."""
+    """Reduce sum cols with 2x2 multicore grid (dims=[0])."""
     inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
     scaler_cb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
     out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -414,7 +414,7 @@ def reduce_sum_col_multicore_kernel(inp, scaler, out):
     @ttl.compute()
     def compute_fn():
         with inp_cb.wait() as i, scaler_cb.wait() as s, out_cb.reserve() as o:
-            result = ttl.math.reduce_sum(i, s, dims=[1])
+            result = ttl.math.reduce_sum(i, s, dims=[0])
             o.store(result)
 
     @ttl.datamovement()
@@ -640,7 +640,7 @@ class TestReduceMaxScalar:
 
 
 class TestReduceRow:
-    """Tests for reduce_sum with dims=[0] (row reduction - sum across columns)."""
+    """Tests for reduce_sum with dims=[1] (sum across columns for each row)."""
 
     def test_reduce_sum_row_ones(self, device):
         """Row reduction of all ones: each row sums to 32."""
@@ -691,7 +691,7 @@ class TestReduceRow:
 
 
 class TestReduceCol:
-    """Tests for reduce_sum with dims=[1] (col reduction - sum across rows)."""
+    """Tests for reduce_sum with dims=[0] (sum across rows for each column)."""
 
     def test_reduce_sum_col_ones(self, device):
         """Col reduction of all ones: each column sums to 32."""
