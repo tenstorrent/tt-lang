@@ -57,11 +57,12 @@ fi
 REPO=tenstorrent/tt-lang
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Check for uncommitted changes (skip in CI where patches are applied during configure)
-if [ -z "$CI" ] && ! git diff-index --quiet HEAD --; then
-    echo "ERROR: There are uncommitted changes in the repository."
-    echo "Please commit or stash your changes before building Docker images."
-    git status --short
+# Check for uncommitted changes (skip in CI). Exclude third-party/ since
+# submodule patching during cmake configure makes it dirty.
+DIRTY_FILES=$(git diff --name-only HEAD -- . ':!third-party')
+if [ -z "$CI" ] && [ -n "$DIRTY_FILES" ]; then
+    echo "ERROR: Uncommitted changes:"
+    echo "$DIRTY_FILES"
     exit 1
 fi
 
@@ -145,13 +146,16 @@ build_image() {
     fi
     tag_args+=(-t "$local_image" -t "$name:latest")
 
-    # Pass BASE_IMAGE so Dockerfile FROM references resolve to the correct
-    # tag (local-only when --no-push, registry otherwise).
+    # Pass BASE_IMAGE so Dockerfile FROM references resolve correctly.
+    # For local builds, prefer the local base image but fall back to the
+    # registry image if no local build exists.
     local base_image_arg=""
     if [ "$NO_PUSH" = false ]; then
         base_image_arg="--build-arg BASE_IMAGE=ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:latest"
-    else
+    elif docker image inspect tt-lang-base-ubuntu-22-04:latest > /dev/null 2>&1; then
         base_image_arg="--build-arg BASE_IMAGE=tt-lang-base-ubuntu-22-04:latest"
+    else
+        base_image_arg="--build-arg BASE_IMAGE=ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:latest"
     fi
 
     docker build \

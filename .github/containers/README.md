@@ -32,8 +32,6 @@ commands below assume you are in the repo root.
 ### Prerequisites
 
 - Docker installed
-- Committed working tree (the script checks `git diff-index`; stash or
-  commit changes first)
 - For ird/dist: a built toolchain directory (see [Build Integration](../../docs/sphinx/build.md)).
   Build one with `cmake -G Ninja -B build -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain .`
   followed by `cmake --build build`.
@@ -49,14 +47,9 @@ local-only (no `ghcr.io/` tags) so they don't shadow registry images.
 
 ### Build a single image
 
-The base image has no external dependencies:
-```bash
-sudo .github/containers/build-docker-images.sh --image-type base --no-push
-```
-
-The `ird` and `dist` images require a pre-built toolchain directory injected
-via `DOCKER_BUILD_EXTRA_ARGS`. The Dockerfile uses `--build-context` to COPY
-the toolchain into the image:
+The `ird` and `dist` images require a pre-built toolchain directory passed
+via `DOCKER_BUILD_EXTRA_ARGS`. Replace `/opt/ttlang-toolchain` with your
+toolchain path (produced by `cmake -DTTLANG_TOOLCHAIN_DIR=...`):
 
 ```bash
 # IRD: toolchain only (for developers)
@@ -66,11 +59,11 @@ sudo DOCKER_BUILD_EXTRA_ARGS="--build-context ird-toolchain=/opt/ttlang-toolchai
 sudo DOCKER_BUILD_EXTRA_ARGS="--build-context dist-toolchain=/opt/ttlang-toolchain" .github/containers/build-docker-images.sh --no-push --image-type dist
 ```
 
-Replace `/opt/ttlang-toolchain` with your actual toolchain path (the
-directory produced by `cmake -DTTLANG_TOOLCHAIN_DIR=...`).
-
-The `ird` and `dist` images also depend on `base`. If you haven't built
-`base` yet, build it first or build all three at once.
+The base image is used automatically from the registry if not built locally.
+To build it locally instead:
+```bash
+sudo .github/containers/build-docker-images.sh --image-type base --no-push
+```
 
 ### How it works
 
