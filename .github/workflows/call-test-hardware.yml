@@ -118,7 +118,7 @@ jobs:
           python3 -m pytest test/sim -v --tb=short --junitxml=build/test/sim-report.xml
 
       - name: Upload test reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         if: always()
         with:
           name: hardware-test-reports-${{ inputs.runs-on }}

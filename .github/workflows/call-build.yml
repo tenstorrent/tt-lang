@@ -126,7 +126,7 @@ jobs:
 
             - name: Upload documentation artifact
               if: inputs.build_docs
-              uses: actions/upload-pages-artifact@v3
+              uses: actions/upload-pages-artifact@v4
               with:
                   path: ./build/docs/sphinx/_build/html
 
