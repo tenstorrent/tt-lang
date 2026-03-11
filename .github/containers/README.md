@@ -5,37 +5,37 @@ This directory contains Dockerfiles for building tt-lang container images.
 ## Images
 
 ### `tt-lang-base-ubuntu-22-04`
-Standalone base image built from `ubuntu:22.04` with Python 3.12, LLVM
-toolchain, system libraries, and tt-lang Python dependencies (pydantic, torch,
-numpy, pytest). Small and fast to build; serves as the filesystem base for
-`dist` and `ird`.
+Standalone base image built from `ubuntu:22.04` with Python 3.12, Clang 17,
+system libraries, and tt-lang Python dependencies (pydantic, torch, numpy,
+pytest). Small and fast to build; serves as the filesystem base for `dist`
+and `ird`.
 
 ### `tt-lang-dist-ubuntu-22-04`
 Distribution image for end users with pre-built tt-lang, ready to `import ttl`.
 
-**Contents:** LLVM + tt-metal + tt-mlir toolchain + installed tt-lang + examples
-+ SSH + text editors
+**Contents:** LLVM + tt-metal toolchain + installed tt-lang + examples + SSH +
+text editors
 
 ### `tt-lang-ird-ubuntu-22-04`
 Interactive Research & Development image. Contains the toolchain but *not*
 tt-lang -- developers clone and build tt-lang themselves.
 
-**Contents:** LLVM + tt-metal + tt-mlir toolchain + dev tools (ssh, sudo, tmux,
-vim, black, sphinx)
+**Contents:** LLVM + tt-metal toolchain + dev tools (ssh, sudo, tmux, vim,
+black, sphinx)
 
 ## Build Scripts
 
 ### `build-docker-images.sh`
 Orchestrates building images with proper tagging and optional registry push.
+When building locally (`--no-push`), only local tags are created to avoid
+shadowing registry images in the Docker cache.
 
 ```bash
 # Build all images locally (no push)
-.github/containers/build-docker-images.sh --no-push
+sudo .github/containers/build-docker-images.sh --no-push
 
 # Build a single image type
-.github/containers/build-docker-images.sh --image-type base --no-push
-.github/containers/build-docker-images.sh --image-type dist --no-push
-.github/containers/build-docker-images.sh --image-type ird  --no-push
+sudo .github/containers/build-docker-images.sh --image-type ird --no-push
 
 # Build and push to registry
 .github/containers/build-docker-images.sh
@@ -62,8 +62,9 @@ tt-lang-base-ubuntu-22-04
 
 Toolchain building (LLVM + tt-metal) happens outside Docker on CI runners.
 The pre-built toolchains are injected into the Dockerfile via `--build-context`
-arguments. The Dockerfile itself is purely a packaging step — it COPYs the
-pre-built toolchains into `ird` and `dist` images.
+arguments. The Dockerfile itself is purely a packaging step -- it COPYs the
+pre-built toolchains into `ird` and `dist` images. The base image is
+parameterized via `ARG BASE_IMAGE` so local builds resolve against local tags.
 
 ## CI Job Flow
 
@@ -79,16 +80,19 @@ check-if-images-already-exist (ubuntu-latest)
                   3. docker build --target ird (with --build-context)
                   4. docker build --target dist (with --build-context)
                   5. Push all images
-                        |
-                  set-latest-tag (on push to main only)
-                    skopeo copy :$TAG -> :latest for base, dist, ird
 ```
 
-## Image Sizes (Approximate)
+## Docker Testing (Local)
 
-- `tt-lang-base`: ~1.7 GB
-- `tt-lang-dist`: ~6-7 GB (LLVM + tt-metal + tt-mlir + tt-lang)
-- `tt-lang-ird`: ~5-6 GB (LLVM + tt-metal + tt-mlir + dev tools)
+Run tests inside a Docker container using a host build without rebuilding:
+
+```bash
+scripts/docker-test.sh all                       # all test suites
+scripts/docker-test.sh mlir                      # MLIR lit tests only
+scripts/docker-test.sh -- pytest test/me2e/ -k test_name  # arbitrary command
+```
+
+See `scripts/docker-test.sh --help` for options (`--build-dir`, `--image`).
 
 ## Hardware Access
 
@@ -101,6 +105,12 @@ docker run -it \
     -v /dev/hugepages-1G:/dev/hugepages-1G \
     <image> <command>
 ```
+
+## Image Sizes (Approximate)
+
+- `tt-lang-base`: ~1.7 GB
+- `tt-lang-dist`: ~6-7 GB (LLVM + tt-metal + tt-lang)
+- `tt-lang-ird`: ~5-6 GB (LLVM + tt-metal + dev tools)
 
 ## Files
 
