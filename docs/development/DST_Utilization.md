@@ -607,7 +607,9 @@ Not yet implemented (component 14):
 DST spilling is needed only when per-iteration pressure exceeds
 capacity. Most elementwise operations have low pressure (1-2 DST
 registers per iteration). Spilling becomes relevant for long fused
-chains or reduction trees with many live intermediates.
+chains, reduction trees with many live intermediates, and compute
+bodies containing matmul (which has high DST pressure due to
+accumulation across the K dimension).
 
 ## DST Capacity Safety
 
