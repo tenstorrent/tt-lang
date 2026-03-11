@@ -153,6 +153,7 @@ _TORCH_UNARY_OPS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     "recip": torch.reciprocal,
     "floor": torch.floor,
     "neg": torch.neg,
+    "abs": torch.abs,
     # Trigonometric unary math functions (from spec)
     "tan": torch.tan,
     "tanh": torch.tanh,
