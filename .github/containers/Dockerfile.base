@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# tt-lang base image: Ubuntu 22.04 with Python 3.12, Clang 17, and system
+# tt-lang base image: Ubuntu 22.04 with Python 3.12, Clang 18, and system
 # libraries required by tt-lang and tt-metal.
 #
 # Aligned with tt-mlir's Dockerfile.base to maintain compatibility.
@@ -59,14 +59,14 @@ chmod u+x sfpi-info.sh
 bash install_dependencies.sh --docker
 EOT
 
-# Install Clang 17 (matches tt-mlir)
+# Install Clang 18
 RUN wget https://apt.llvm.org/llvm.sh && \
     chmod u+x llvm.sh && \
-    ./llvm.sh 17 && \
-    apt-get install -y libc++-17-dev libc++abi-17-dev && \
-    ln -sf /usr/bin/clang-17 /usr/bin/clang && \
-    ln -sf /usr/bin/clang++-17 /usr/bin/clang++ && \
-    ln -sf /usr/bin/clangd-17 /usr/bin/clangd && \
+    ./llvm.sh 18 && \
+    apt-get install -y libc++-18-dev libc++abi-18-dev && \
+    ln -sf /usr/bin/clang-18 /usr/bin/clang && \
+    ln -sf /usr/bin/clang++-18 /usr/bin/clang++ && \
+    ln -sf /usr/bin/clangd-18 /usr/bin/clangd && \
     rm -f llvm.sh
 
 # Copy Python requirements

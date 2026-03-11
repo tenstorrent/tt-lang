@@ -5,7 +5,7 @@ This directory contains Dockerfiles for building tt-lang container images.
 ## Images
 
 ### `tt-lang-base-ubuntu-22-04`
-Standalone base image built from `ubuntu:22.04` with Python 3.12, Clang 17,
+Standalone base image built from `ubuntu:22.04` with Python 3.12, Clang 18,
 system libraries, and tt-lang Python dependencies (pydantic, torch, numpy,
 pytest). Small and fast to build; serves as the filesystem base for `dist`
 and `ird`.

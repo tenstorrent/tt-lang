@@ -73,15 +73,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Clang 17
+      - name: Install Clang 18
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
           wget https://apt.llvm.org/llvm.sh
           chmod u+x llvm.sh
-          sudo ./llvm.sh 17
-          sudo apt-get install -y libc++-17-dev libc++abi-17-dev
-          sudo ln -sf /usr/bin/clang-17 /usr/bin/clang
-          sudo ln -sf /usr/bin/clang++-17 /usr/bin/clang++
+          sudo ./llvm.sh 18
+          sudo apt-get install -y libc++-18-dev libc++abi-18-dev
+          sudo ln -sf /usr/bin/clang-18 /usr/bin/clang
+          sudo ln -sf /usr/bin/clang++-18 /usr/bin/clang++
           rm -f llvm.sh
 
       - name: Fix git safe directory for submodules

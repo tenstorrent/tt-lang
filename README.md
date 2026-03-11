@@ -45,6 +45,12 @@ cmake --build build
 LLVM is built and installed to `build/llvm-install/` by default. tt-metal builds to `third-party/tt-metal/build/`. tt-mlir dialects compile inline. The generated `env/activate` script in tt-lang's build directory sets up all paths automatically.
 
 **Build options:**
+
+To use a custom toolchain directory (e.g. `/opt/ttlang-toolchain`), create it first with your user's permissions:
+```bash
+sudo install -d -o $(id -u) -g $(id -g) /opt/ttlang-toolchain
+```
+
 ```bash
 # Debug build with Python bindings
 cmake -GNinja -Bbuild . -DCMAKE_BUILD_TYPE=Debug -DTTLANG_ENABLE_BINDINGS_PYTHON=ON

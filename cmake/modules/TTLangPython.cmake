@@ -65,22 +65,20 @@ endmacro()
 # Main logic
 # ---------------------------------------------------------------------------
 
-# 1. Explicit user override.
-if(DEFINED TTLANG_PYTHON_VENV)
-  if(NOT EXISTS "${TTLANG_PYTHON_VENV}")
-    message(FATAL_ERROR
-      "TTLANG_PYTHON_VENV is set to '${TTLANG_PYTHON_VENV}' but the directory does not exist.")
-  endif()
+# 1. Explicit user override — only if the directory actually exists and has
+#    a Python interpreter.  TTLANG_PYTHON_VENV may also be set from the CMake
+#    cache by a previous configure (cases 2-4 below), so we cannot fatal-error
+#    solely on DEFINED; we must verify the directory is present.
+if(DEFINED TTLANG_PYTHON_VENV AND EXISTS "${TTLANG_PYTHON_VENV}")
   _ttlang_find_venv_python("${TTLANG_PYTHON_VENV}" _TTLANG_VENV_PYTHON)
-  if(NOT _TTLANG_VENV_PYTHON)
-    message(FATAL_ERROR
-      "TTLANG_PYTHON_VENV is set to '${TTLANG_PYTHON_VENV}' but no Python interpreter found in it.")
+  if(_TTLANG_VENV_PYTHON)
+    _ttlang_activate_venv("${TTLANG_PYTHON_VENV}")
+    set(Python3_EXECUTABLE "${_TTLANG_VENV_PYTHON}" CACHE FILEPATH
+      "Python interpreter (from user-specified venv)" FORCE)
+    message(STATUS "Using user-specified Python venv: ${TTLANG_PYTHON_VENV}")
+    message(STATUS "  Python: ${Python3_EXECUTABLE}")
   endif()
-  _ttlang_activate_venv("${TTLANG_PYTHON_VENV}")
-  set(Python3_EXECUTABLE "${_TTLANG_VENV_PYTHON}" CACHE FILEPATH
-    "Python interpreter (from user-specified venv)" FORCE)
-  message(STATUS "Using user-specified Python venv: ${TTLANG_PYTHON_VENV}")
-  message(STATUS "  Python: ${Python3_EXECUTABLE}")
+  # If the dir exists but has no interpreter, fall through to re-evaluate.
 
 # 2. Toolchain venv (when TTLANG_USE_TOOLCHAIN is ON or toolchain dir has a venv).
 elseif(DEFINED TTLANG_TOOLCHAIN_DIR AND EXISTS "${TTLANG_TOOLCHAIN_DIR}/venv")
