@@ -55,6 +55,9 @@ cmake -GNinja -Bbuild . -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
 # Use a previously built toolchain (skips LLVM + tt-metal build)
 cmake -GNinja -Bbuild . -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain -DTTLANG_USE_TOOLCHAIN=ON
 
+# Force rebuild of LLVM + tt-metal into toolchain dir (ignores cached state)
+cmake -GNinja -Bbuild . -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain -DTTLANG_FORCE_TOOLCHAIN_REBUILD=ON
+
 # Use a pre-built LLVM/MLIR installation at a custom path
 cmake -GNinja -Bbuild . -DMLIR_PREFIX=/path/to/llvm-install
 ```
