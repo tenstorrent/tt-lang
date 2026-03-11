@@ -17,9 +17,6 @@
 * [8. Copy](#8-copy)
     * [8.1. Group transfer](#81-group-transfer)
 * [9. Semaphore](#9-semaphore)
-* [10. Performance and debugging](#10-performance-and-debugging)
-    * [10.1. Profiling signpost](#101-profiling-signpost)
-    * [10.2. Debug printing](#102-debug-printing)
 * [Appendix A. Glossary](#appendix-a-glossary)
 * [Appendix B. Block operators and math functions](#appendix-b-block-operators-and-math-functions)
 * [Appendix C. Naming guidelines](#appendix-c-naming-guidelines)
@@ -37,8 +34,7 @@
 | 0.7 | 02/09/2026 | Move `push` and `pop` from `ttl.DataflowBuffer` to `ttl.Block` |
 | 0.8 | 02/09/2026 | Formal block states |
 | 0.9 | 03/04/2026 | Add `ttl.GroupTransfer` |
-| 0.9 | 03/06/2026 | Add `ttl.signpost` |
-| 0.10 | 03/06/2026 | Add debug printing |
+| 0.10 | 03/11/2026 | Align reduce/broadcast dims to PyTorch semantics |
 
 ## 1. Introduction
 
@@ -178,7 +174,7 @@ def some_compute():
 
 ## 5. Block
 
-A *block* represents memory acquired from a dataflow buffer. Block size is determined by the shape of a dataflow buffer and its memory is allocated when a dataflow buffer is created. Inside of a compute thread a block can participate in a *block expression* with built-in Python operators and TT-Lang math functions as an operand. A block can also be a storage for the result of block expression by using store function. When the store function is invoked multiple times for the same block with the `acc = True` parameter, TT-Lang will generate accumulation through summation for all calls after the first one. When `acc = False`, all stores simply store (no accumulation). Inside of data movement threads a block can participate in `ttl.copy` as a source or a destination.
+A *block* represents memory acquired from a dataflow buffer. Block size is determined by the shape of a dataflow buffer and its memory is allocated when a dataflow buffer is created. Inside of a compute thread a block can participate in a *block expression* with built-in Python operators and TT-Lang math functions as an operand. A block can also be a storage for the result of block expression by using store function. When the store function is invoked multiple times for the same block with the `acc = True` parameter, TT-Lang will generate accumulation for all calls after the first one. When `acc = False`, all stores simply store (no accumulation). Inside of data movement threads a block can participate in `ttl.copy` as a source or a destination.
 
 #### Element-wise with broadcast example
 
@@ -809,132 +805,6 @@ def dm():
 | `ttl.UnicastRemoteSemaphore.inc(self, value: ttl.Count)` | Increment remote unicast semaphore value by specified value. **This function is non-blocking.** Can be used only in the scope of a data movement thread function. |
 | `ttl.MulticastRemoteSemaphore.set(self, value: ttl.Count)` | Set remote multicast semaphore value to specified value. **This function is non-blocking.** Can be used only in the scope of a data movement thread function. |
 
-## 10. Performance and debugging
-
-TT-Lang provides a range for facilities to aid performance analisys and debugging. Generally, the description of these tools is outside of the scope of this specification with the exception of language extensions that are needed to support them.
-
-### 10.1. Profiling signpost
-
-Profiling signpost is a language construct that allows the user to specify a block of code that will be measured for performance during the program execution. This is achieved by using Python `with` statement in conjunction with `ttl.signpost` function. This function takes a string argument for a signpost name. This way the signpost will be identified in the profiling tool's user interface.
-
-#### Example
-
-```py
-@ttl.datamovement()
-def matmul_read():
-    for it in range(IT):
-        for mt in range(MT):
-            for nt in range(NT):
-
-                # Measure the entire iteration
-
-                with ttl.signpost("i_m_n iteration"):
-
-                    # Measure from reserve to push
-
-                    with ttl.signpost("push c"):
-                        with c_dfb.reserve() as c_blk:
-
-                            # Measure only copy
-
-                            with ttl.signpost("read c"):
-                                c_xf = ttl.copy(C[mt, nt], c_blk)
-                                c_xf.wait()
-
-                    for kt in range(KT):
-                        with ttl.signpost("push a and b"):
-
-                            # Measure from reserve to push
-
-                            with (
-                                a_dfb.reserve() as a_blk,
-                                b_dfb.reserve() as b_blk,
-                            ):
-
-                                # Measure only copy
-
-                                with ttl.signpost("read a and b"):
-                                    a_xf = ttl.copy(A[it, mt, kt], a_blk)
-                                    b_xf = ttl.copy(B[kt, nt], b_blk)
-
-                                    a_xf.wait()
-                                    b_xf.wait()
-```
-
-| Function | Description |
-| :---- | :---- |
-| `ttl.signpost(str: name)` | Declare as signpost. Can be used only with the `with` statement. |
-
-### 10.2. Debug printing
-
-TT-Lang includes ability to print information to the standard output for debugging purpose. This is achieved by using the standard Python `print` function. In TT-Lang this function can be used with string constants, scalar variables, such as loop indexes or calculated slice bounds, as well as with TT-Lang specific objects, such as tensors and blocks. When `print` is used with TT-Lang objects there are additional attribute arguments, which enabling better control of the output content. Beacause of this, `print` is limited to only one TT-Lang object to be printed in conjunction any number of string and scalar variables.
-
-#### Example
-
-```py
-@ttl.datamovement()
-def matmul_read():
-    # Print first two pages of C
-
-    print("C: ", C, num_pages=2)
-
-    # Print first page of A and B
-
-    print("A: ", A)
-    print("B: ", B)
-
-    for it in range(IT):
-        for mt in range(MT):
-            for nt in range(NT):
-                with c_dfb.reserve() as c_blk:
-
-                    # Print state of c_dfb dataflow buffer after reserve
-
-                    print("c_dfb after reserve: ", c_dfb)
-
-                    # Print iteration state and the content of c_blk block
-
-                    print("it=", it, " mt=", mt, "nt=", nt, " c_blk: ", c_blk)
-
-                    c_xf = ttl.copy(C[mt, nt], c_blk)
-                    c_xf.wait()
-
-                # Print state of c_dfb dataflow buffer after push
-
-                print("c_dfb after push: ", c_dfb)
-
-                for kt in range(KT):
-                    with (
-                        a_dfb.reserve() as a_blk,
-                        b_dfb.reserve() as b_blk,
-                    ):
-                        # Print iteration state
-
-                        print("kt=", kt)
-
-                        # Print the content of a_blk block
-
-                        print("a_blk:")
-                        print(a_blk)
-
-                        # Print the content of b_blk block
-
-                        print("b_blk:")
-                        print(b_blk)
-
-                        a_xf = ttl.copy(A[it, mt, kt], a_blk)
-                        b_xf = ttl.copy(B[kt, nt], b_blk)
-
-                        a_xf.wait()
-                        b_xf.wait()
-```
-
-| Type | `print` function behavior |
-| :---- | :---- |
-| `ttnn.Tensor` | Print `num_pages` pages of a tensor. The `num_pages` attribute defaults to 1. For example, `print(bias, num_pages=4)`. |
-| `ttl.Block` | Print the content of a block. For example, `print(bias_blk)`. |
-| `ttl.DataflowBuffer` | Print the state of a dataflow buffer, which includes metadata such as `size`, `page_size` etc, as well as current value of its pointers: `rd_ptr`, `wr_ptr` and `wr_tile_ptr`. For example, `print(bias_dfb)`. |
-
 ## Appendix A. Glossary
 
 | Term | Description |
@@ -1034,9 +904,9 @@ def matmul_read():
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.math.reduce_sum(expr: ttl.BlockExpr, scaler: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Scaled sum reduction over specified dimensions.<br><br>Example for reduction over dimension 0: `y.store(ttl.math.reduce_sum(a, s, dims=[0]))`. Here if `a` has shape of `(N, M)` then `y` must have shape of `(N, 1)`, and if `a` has shape of `(I, N, M)` then `y` must have shape of `(I, N, 1)`, and so on.<br><br>Example for reduction over dimension 1: `y.store(ttl.math.reduce_max(a, s, dims=[1]))`. Here if `a` has shape of `(N, M)` then `y` must have shape of `(1, M)`, and if `a` has shape of `(I, N, M)` then `y` must have shape of `(I, 1, M)`, and so on.<br><br>Example for reduction over two innermost dimensions: `y.store(ttl.math.reduce_sum(a, s, dims=[0, 1]))`. Here if `a` has shape of `(N, M)` then `y` must have shape of `(1, 1)`, and if `a` has shape of `(I, N, M)` then `y` must have shape of `(I, 1, 1)`, and so on. |
+| `ttl.math.reduce_sum(expr: ttl.BlockExpr, scaler: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Scaled sum reduction over specified dimensions. Dims follow PyTorch semantics: `dims=[k]` collapses dimension `k`.<br><br>Example for reduction over dimension 0: `y.store(ttl.math.reduce_sum(a, s, dims=[0]))`. Here if `a` has shape of `(N, M)` then `y` must have shape of `(1, M)`, and if `a` has shape of `(I, N, M)` then `y` must have shape of `(1, N, M)`, and so on.<br><br>Example for reduction over dimension 1: `y.store(ttl.math.reduce_sum(a, s, dims=[1]))`. Here if `a` has shape of `(N, M)` then `y` must have shape of `(N, 1)`, and if `a` has shape of `(I, N, M)` then `y` must have shape of `(I, 1, M)`, and so on.<br><br>Example for reduction over two innermost dimensions: `y.store(ttl.math.reduce_sum(a, s, dims=[0, 1]))`. Here if `a` has shape of `(N, M)` then `y` must have shape of `(1, 1)`, and if `a` has shape of `(I, N, M)` then `y` must have shape of `(I, 1, 1)`, and so on. |
 | `ttl.math.reduce_max(expr: ttl.BlockExpr, scaler: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Scaled maximum reduction over specified dimensions.  See examples for `ttl.math.reduce_sum`. |
-| `ttl.math.broadcast(expr: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Broadcast a block over specified dimensions. Produces block with shape expanded to be compatible with the outer part of the expression.<br><br>Example for broadcast over dimension 0: `y.store(ttl.math.broadcast(a, dims=[0]))`. Here the `store` is the outer expression and therefore if `y` has shape of `(N, M)` then `a` must have shape of `(N, 1)`, and if `y` has shape of `(I, N, M)` then `a` must have shape of `(I, N, 1)`, and so on.<br><br>Example for broadcast over dimension 1: `y.store(b * ttl.math.broadcast(a, dims=[1]))`. Here the `*` is the outer expression and therefore if `b` has shape of `(N, M)` then `a` must have shape of `(1, M)`, and if `b` has shape of `(I, N, M)` then `a` must have shape of `(I, 1, M)`, and so on.<br><br>Example for broadcast over two innermost dimensions: `y.store(b + ttl.math.broadcast(a, dims=[0, 1]))`. Here the `+` is the outer expression, but because the broadcast is on `dims=[0, 1]` if `b` has shape of `(N, M)` then `a` must have shape of `(1, 1)`, and if `b` has shape of `(I, N, M)` then `a` must have shape of `(I, 1, 1)`, and so on. |
+| `ttl.math.broadcast(expr: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Broadcast a block over specified dimensions. Dims follow PyTorch semantics: `dims=[k]` indicates dimension `k` has size 1 and should be expanded.<br><br>Example for broadcast over dimension 0: `y.store(ttl.math.broadcast(a, dims=[0]))`. Here if `y` has shape of `(N, M)` then `a` must have shape of `(1, M)`, and if `y` has shape of `(I, N, M)` then `a` must have shape of `(1, N, M)`, and so on.<br><br>Example for broadcast over dimension 1: `y.store(b * ttl.math.broadcast(a, dims=[1]))`. Here if `b` has shape of `(N, M)` then `a` must have shape of `(N, 1)`, and if `b` has shape of `(I, N, M)` then `a` must have shape of `(I, 1, M)`, and so on.<br><br>Example for broadcast over two innermost dimensions: `y.store(b + ttl.math.broadcast(a, dims=[0, 1]))`. Here if `b` has shape of `(N, M)` then `a` must have shape of `(1, 1)`, and if `b` has shape of `(I, N, M)` then `a` must have shape of `(I, 1, 1)`, and so on. |
 | `ttl.math.transpose(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Transpose a block. For argument block of shape `(M, N)` produces resulting block with shape `(N, M)`. Supported only for 2-dimensional blocks. |
 
 ### Rounding functions

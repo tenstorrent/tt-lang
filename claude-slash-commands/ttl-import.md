@@ -274,7 +274,7 @@ out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 4), buffer_factor=2)  # S
 
 ```python
 # Reductions are in ttl.math and need a "scaler" tensor (1x1 DFB of all 1.0s)
-# dims=[0] = row reduction, dims=[1] = col reduction, dims=[0, 1] = scalar
+# dims=[0] = collapse rows, dims=[1] = collapse columns, dims=[0, 1] = scalar
 
 # Scaler: 32x32 tile of 1.0s in a 1x1 DFB
 scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
@@ -284,18 +284,16 @@ with inp_dfb.wait() as i, scaler_dfb.wait() as s, out_dfb.reserve() as o:
     o.store(ttl.math.reduce_sum(i, s, dims=[0, 1]))
     o.store(ttl.math.reduce_max(i, s, dims=[0, 1]))
 
-    # Row reduction (reduce across rows)
+    # Collapse rows (reduce along dim 0): (N, M) -> (1, M)
     o.store(ttl.math.reduce_sum(i, s, dims=[0]))
 
-    # Column reduction (reduce across columns)
+    # Collapse columns (reduce along dim 1): (N, M) -> (N, 1)
     o.store(ttl.math.reduce_sum(i, s, dims=[1]))
 ```
 
-**IMPORTANT - Dimension semantics differ from PyTorch:**
-- `dims=[0]` for reduce gives **per-row results** (stored in column 0) - output shape [M, 1]
-- `dims=[1]` for reduce gives **per-column results** (stored in row 0) - output shape [1, N]
-
-In PyTorch, `dim=0` means "reduce along dimension 0" (collapse rows). In TT-Lang, `dims=[0]` means "keep dimension 0" (keep rows, collapse columns). The semantics are inverted.
+**Dimension semantics match PyTorch:**
+- `dims=[0]` for reduce **collapses rows** (dim 0) - output shape [1, M]
+- `dims=[1]` for reduce **collapses columns** (dim 1) - output shape [N, 1]
 
 **Multi-tile reduce:** Reduces across ALL tiles in the input DFB. For example, a 4x1 tile input DFB reduced with `dims=[0, 1]` produces a single scalar value (in a 1x1 output DFB). The reduction sums all elements across all 4 tiles into position [0,0].
 
@@ -303,26 +301,26 @@ In PyTorch, `dim=0` means "reduce along dimension 0" (collapse rows). In TT-Lang
 
 ```python
 # Broadcast expands a smaller block to match a larger output shape
-# dims=[0] = broadcast rows, dims=[1] = broadcast cols, dims=[0, 1] = broadcast scalar
+# dims=[0] = expand dim 0 (rows), dims=[1] = expand dim 1 (cols), dims=[0, 1] = broadcast scalar
 
 with scalar_dfb.wait() as s, out_dfb.reserve() as o:
     # Broadcast 1x1 scalar to fill entire output block
     o.store(ttl.math.broadcast(s, dims=[0, 1]))
 
 with row_dfb.wait() as r, out_dfb.reserve() as o:
-    # Broadcast 1xN row across M rows
+    # Broadcast (1,M) row across N rows: dims=[0] expands dim 0
     o.store(ttl.math.broadcast(r, dims=[0]))
 
 with col_dfb.wait() as c, out_dfb.reserve() as o:
-    # Broadcast Mx1 column across N columns
+    # Broadcast (N,1) column across M columns: dims=[1] expands dim 1
     o.store(ttl.math.broadcast(c, dims=[1]))
 ```
 
-**IMPORTANT - Broadcast dimension semantics:**
-- `dims=[1]` for broadcast **copies column 0 to all columns** - input (N, 1) -> output (N, M)
-- `dims=[0]` for broadcast **copies row 0 to all rows** - input (1, M) -> output (N, M)
+**Broadcast dimension semantics (match PyTorch):**
+- `dims=[0]` for broadcast **expands dim 0** (copies row to all rows) - input (1, M) -> output (N, M)
+- `dims=[1]` for broadcast **expands dim 1** (copies column to all columns) - input (N, 1) -> output (N, M)
 
-Note: Reduce and broadcast dims have complementary semantics. `dims=[0]` reduce produces a single column (per-row results), `dims=[1]` broadcast replicates that column across all columns.
+Note: Reduce and broadcast use matching dims. `dims=[1]` reduce collapses columns to produce (N, 1), `dims=[1]` broadcast expands that column back to (N, M).
 
 ### Conditional Select (DO NOT USE - has simulator issues)
 
@@ -1679,8 +1677,8 @@ Stream weight chunks, accumulate partial matmul results, then apply row-wise sof
 
 **Key ideas:**
 - First matmul initializes accumulator, subsequent iterations add partials
-- `dims=[0]` reduce gives per-row results (column vector output)
-- `dims=[1]` broadcast replicates column across all columns
+- `dims=[1]` reduce collapses columns, giving per-row results (column vector output)
+- `dims=[1]` broadcast expands dim 1, replicating column across all columns
 - Keep values in scope with nested `with` blocks for reuse (lgv used twice)
 
 ```python
@@ -1742,10 +1740,10 @@ def layer2_kernel(hidden, w2, bias2, scaler, out):
         # === Stage 3: Row-wise softmax ===
         # Keep logits (lgv) and scaler (sc) in scope - lgv is used twice
         with logits_dfb.wait() as lgv, scaler_dfb.wait() as sc:
-            # Row-wise max: dims=[0] reduces across columns, keeps rows
+            # Row-wise max: dims=[1] collapses columns, keeps rows
             # Output shape: (BATCH_TILES, 1) stored in (1, 1) DFB
             with max_dfb.reserve() as mx:
-                mx.store(ttl.math.reduce_max(lgv, sc, dims=[0]))
+                mx.store(ttl.math.reduce_max(lgv, sc, dims=[1]))
 
             # Broadcast max back: dims=[1] replicates column across all columns
             with max_dfb.wait() as mxv, max_bcast_dfb.reserve() as mxb:
@@ -1759,7 +1757,7 @@ def layer2_kernel(hidden, w2, bias2, scaler, out):
 
                 # Row-wise sum of exp values
                 with exp_dfb.wait() as exv, sum_dfb.reserve() as sm:
-                    sm.store(ttl.math.reduce_sum(exv, sc, dims=[0]))
+                    sm.store(ttl.math.reduce_sum(exv, sc, dims=[1]))
 
                 # Broadcast sum back
                 with sum_dfb.wait() as smv, sum_bcast_dfb.reserve() as smb:
@@ -1803,4 +1801,4 @@ def layer2_kernel(hidden, w2, bias2, scaler, out):
 
 **Row-wise vs Scalar Softmax:**
 - **Scalar** (Pattern 5): `dims=[0, 1]` for both reduce and broadcast - entire tensor becomes one value
-- **Row-wise** (this pattern): `dims=[0]` reduce (per-row results), `dims=[1]` broadcast (replicate across columns)
+- **Row-wise** (this pattern): `dims=[1]` reduce (collapse columns, per-row results), `dims=[1]` broadcast (replicate across columns)
