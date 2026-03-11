@@ -12,7 +12,7 @@ third_party/ttnn-python
 *.egg-info
 cluster_descriptor.yaml
 .*.swp
-.docker-image-name
+.docker-image-*
 **/generated
 
 # ttnn-dylib and ttnn-standalone artifacts

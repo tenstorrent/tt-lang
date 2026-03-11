@@ -228,10 +228,10 @@ else
     echo "  - $IRD_IMAGE (dev tools)"
 fi
 
-# Write dist image name to file for workflow consumption
-if [[ -z "$IMAGE_TYPE" || "$IMAGE_TYPE" == "dist" ]]; then
-    echo "$DIST_IMAGE" > .docker-image-name
-fi
+# Write image names to files for workflow consumption (avoids fragile log parsing).
+echo "$BASE_IMAGE" > .docker-image-base
+echo "$DIST_IMAGE" > .docker-image-name
+echo "$IRD_IMAGE"  > .docker-image-ird
 
 echo ""
 echo "$OUTPUT_IMAGE"

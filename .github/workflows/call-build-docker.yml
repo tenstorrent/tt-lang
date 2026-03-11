@@ -85,9 +85,9 @@ jobs:
             exit 1
           fi
 
-          DOCKER_IMAGE_BASE=$(tail -n 1 docker.log)
+          DOCKER_IMAGE_BASE=$(cat .docker-image-base)
           echo "docker-image-base=$DOCKER_IMAGE_BASE" >> $GITHUB_OUTPUT
-          echo "Base image built successfully"
+          echo "Base image built successfully: $DOCKER_IMAGE_BASE"
 
   # Builds LLVM + tt-metal on the host (via docker run with base image),
   # then packages dist and ird Docker images.
@@ -230,9 +230,9 @@ jobs:
             exit 1
           fi
 
-          DOCKER_IMAGE=$(tail -n 1 docker.log)
+          DOCKER_IMAGE=$(cat .docker-image-name)
           echo "docker-image=$DOCKER_IMAGE" >> $GITHUB_OUTPUT
-          echo "Dist image built successfully"
+          echo "Dist image built successfully: $DOCKER_IMAGE"
           df -h
 
       - name: Remove dist toolchain to free space
