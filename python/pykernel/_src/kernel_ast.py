@@ -519,9 +519,11 @@ class TTCompilerBase(PyKernelAstBase):
                 rhs, arith.ConstantOp(IndexType.get(self.ctx), 0)
             ).result
 
-        if lhs.type != rhs.type:
-            rhs = _cast(rhs, lhs.type)
-        assert lhs.type == rhs.type, f"{lhs.type} != {rhs.type}"
+        # Matmul operands can have different shapes (A[M,K] @ B[K,N])
+        if not isinstance(node.op, ast.MatMult):
+            if lhs.type != rhs.type:
+                rhs = _cast(rhs, lhs.type)
+            assert lhs.type == rhs.type, f"{lhs.type} != {rhs.type}"
         mlir_type = _get_type_str(lhs.type)
 
         def qualified_or(attr, otherwise, *args, **kwargs):
