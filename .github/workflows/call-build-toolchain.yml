@@ -28,7 +28,7 @@ jobs:
 
     steps:
       - name: Checkout tt-lang (without submodules)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Extract submodule SHAs for cache keys
         id: submodule-shas
@@ -45,7 +45,7 @@ jobs:
 
       - name: Restore toolchain cache
         id: cache-toolchain
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: /opt/ttlang-toolchain
           key: ${{ steps.submodule-shas.outputs.cache-key }}
@@ -103,7 +103,7 @@ jobs:
 
       - name: Save toolchain cache
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: /opt/ttlang-toolchain
           key: ${{ steps.submodule-shas.outputs.cache-key }}

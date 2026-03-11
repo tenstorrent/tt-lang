@@ -34,7 +34,7 @@ jobs:
       docker-image: ${{ steps.check.outputs.docker-image }}
       docker-image-base: ${{ steps.check.outputs.docker-image-base }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ttlang_sha_override || github.sha }}
           submodules: recursive
@@ -56,7 +56,7 @@ jobs:
       docker-image-base: ${{ steps.build.outputs.docker-image-base }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ttlang_sha_override || github.sha }}
           submodules: recursive
@@ -64,7 +64,7 @@ jobs:
           fetch-tags: true
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -101,7 +101,7 @@ jobs:
       docker-image: ${{ steps.build-dist.outputs.docker-image }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ttlang_sha_override || github.sha }}
           submodules: recursive
@@ -112,7 +112,7 @@ jobs:
         run: .github/scripts/cleanup-ci-space.sh
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -125,7 +125,7 @@ jobs:
         run: sudo install -d -o $(id -u) -g $(id -g) /opt/ttlang-toolchain
 
       - name: Restore toolchain cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: /opt/ttlang-toolchain
           key: ${{ needs.configure-deps.outputs.cache-key }}

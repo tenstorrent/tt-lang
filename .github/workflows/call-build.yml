@@ -35,7 +35,7 @@ jobs:
 
         steps:
             - name: Checkout tt-lang
-              uses: actions/checkout@v4
+              uses: actions/checkout@v5
               with:
                   submodules: recursive
                   fetch-depth: 1
@@ -73,7 +73,7 @@ jobs:
               run: sudo install -d -o $(id -u) -g $(id -g) /opt/ttlang-toolchain
 
             - name: Restore toolchain cache
-              uses: actions/cache/restore@v4
+              uses: actions/cache/restore@v5
               with:
                   path: /opt/ttlang-toolchain
                   key: ${{ needs.configure-deps.outputs.cache-key }}
