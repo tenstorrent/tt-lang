@@ -6,6 +6,7 @@
 // SystemDescAttr::getDefault() which doesn't touch flatbuffers.
 #pragma once
 #include "ttmlir/Target/Common/types_generated.h"
+#include <cassert>
 #include <cstdint>
 #include <string_view>
 namespace tt::target {
@@ -152,6 +153,8 @@ struct SystemDescRoot {
 };
 
 inline const SystemDescRoot *GetSizePrefixedSystemDescRoot(const void *) {
+  assert(false && "flatbuffers stub: GetSizePrefixedSystemDescRoot not "
+                  "implemented — use SystemDescAttr::getDefault() instead");
   return nullptr;
 }
 } // namespace tt::target

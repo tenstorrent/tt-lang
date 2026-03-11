@@ -168,14 +168,15 @@ endif()
 # ---------------------------------------------------------------------------
 # Copy ttnn Python extensions into the source tree so that `import ttnn` works
 # ---------------------------------------------------------------------------
-file(COPY_FILE
-  "${TTMETAL_BUILD_DIR}/ttnn/_ttnn.so"
-  "${TT_METAL_SOURCE_DIR}/ttnn/ttnn/_ttnn.so"
-  ONLY_IF_DIFFERENT)
-file(COPY_FILE
-  "${TTMETAL_BUILD_DIR}/ttnn/_ttnncpp.so"
-  "${TT_METAL_SOURCE_DIR}/ttnn/ttnn/_ttnncpp.so"
-  ONLY_IF_DIFFERENT)
+foreach(_so _ttnn.so _ttnncpp.so)
+  set(_src "${TTMETAL_BUILD_DIR}/ttnn/${_so}")
+  set(_dst "${TT_METAL_SOURCE_DIR}/ttnn/ttnn/${_so}")
+  if(EXISTS "${_src}")
+    file(COPY_FILE "${_src}" "${_dst}" ONLY_IF_DIFFERENT)
+  else()
+    message(WARNING "tt-metal artifact not found: ${_src}")
+  endif()
+endforeach()
 
 # ---------------------------------------------------------------------------
 # Restore runtime artifacts from toolchain into the source tree.

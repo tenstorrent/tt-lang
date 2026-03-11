@@ -133,8 +133,7 @@ jobs:
 
       - name: Pull base image
         run: |
-          # Use the base image that was just built (or latest)
-          BASE_IMAGE="ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:latest"
+          BASE_IMAGE="${{ needs.build-image-base.outputs.docker-image-base }}"
           docker pull "$BASE_IMAGE"
           echo "BASE_IMAGE=$BASE_IMAGE" >> $GITHUB_ENV
 

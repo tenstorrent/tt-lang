@@ -182,6 +182,10 @@ else()
   # Check if LLVM is already built (skip rebuild if install exists).
   if(EXISTS "${LLVM_INSTALL_DIR}/lib/cmake/mlir/MLIRConfig.cmake")
     message(STATUS "LLVM/MLIR already built at ${LLVM_INSTALL_DIR}, skipping rebuild")
+    # Warn if the submodule moved to a different commit than what was built.
+    if(DEFINED _TTLANG_EXPECTED_LLVM_SHA)
+      ttlang_verify_llvm_sha("${LLVM_INSTALL_DIR}" "${_TTLANG_EXPECTED_LLVM_SHA}")
+    endif()
   else()
     set(_LLVM_CMAKE_ARGS
       -G Ninja
@@ -289,9 +293,15 @@ set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 # ---------------------------------------------------------------------------
 # clean-llvm target: removes LLVM build and install dirs so the next cmake
 # configure rebuilds from scratch.
+#
+# When consuming a pre-built toolchain (TTLANG_USE_TOOLCHAIN), LLVM_INSTALL_DIR
+# points to the shared toolchain root — deleting it would destroy the entire
+# toolchain. Only register the target in build-from-source mode.
 # ---------------------------------------------------------------------------
-add_custom_target(clean-llvm
-  COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_BINARY_DIR}/llvm-build"
-  COMMAND ${CMAKE_COMMAND} -E rm -rf "${LLVM_INSTALL_DIR}"
-  COMMENT "Removing LLVM build and install directories. Re-run cmake configure to rebuild."
-)
+if(NOT TTLANG_USE_TOOLCHAIN)
+  add_custom_target(clean-llvm
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_BINARY_DIR}/llvm-build"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${LLVM_INSTALL_DIR}"
+    COMMENT "Removing LLVM build and install directories. Re-run cmake configure to rebuild."
+  )
+endif()
