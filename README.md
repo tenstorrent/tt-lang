@@ -29,11 +29,9 @@ TT-Lang bridges this gap through progressive disclosure: simple kernels require 
 
 ## Quick Start
 
-tt-lang depends on [tt-mlir](https://github.com/tenstorrent/tt-mlir), the MLIR-based compiler infrastructure for Tenstorrent hardware. tt-mlir provides the core MLIR dialects, compilation passes, and runtime support that tt-lang builds upon to deliver a Python-based DSL for authoring custom kernels.
+tt-lang uses LLVM/MLIR and a small subset of [tt-mlir](https://github.com/tenstorrent/tt-mlir) dialects (TTCore, TTKernel, TTMetal) plus [tt-metal](https://github.com/tenstorrent/tt-metal) for runtime support. All dependencies are built from git submodules during cmake configure.
 
-The build system supports three different integration scenarios for tt-mlir -- build-based, installation-based, or automatically fetched and installed (for more details on these, please refer to the [build system document](docs/BUILD_SYSTEM.md)).
-
-Here we describe the most common scenario for tt-lang users. The build system automatically builds LLVM, tt-metal, and tt-mlir from git submodules during cmake configure.
+The build system supports three modes: build from submodules (default), pre-built toolchain (`TTLANG_USE_TOOLCHAIN`), or pre-built LLVM/MLIR prefix (`MLIR_PREFIX`). See the [build system document](docs/BUILD_SYSTEM.md) for details.
 
 ```bash
 cd /path/to/tt-lang
