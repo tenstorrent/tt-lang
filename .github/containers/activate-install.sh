@@ -18,14 +18,14 @@ INSTALL_PREFIX="$(dirname "$SCRIPT_DIR")"
 : ${TTLANG_TOOLCHAIN_DIR:=$INSTALL_PREFIX}
 export TTLANG_TOOLCHAIN_DIR
 
-# Activate tt-mlir toolchain venv
-if [ -f "${TTLANG_TOOLCHAIN_DIR}/venv/bin/activate" ]; then
-  . "${TTLANG_TOOLCHAIN_DIR}/venv/bin/activate"
-fi
+# Activate toolchain venv directly (do not source the venv's own activate
+# script — it hardcodes the path where the venv was originally created,
+# which breaks when the venv is relocated into the toolchain directory).
+export VIRTUAL_ENV="${TTLANG_TOOLCHAIN_DIR}/venv"
 
 # Set paths for installed tt-lang
 export TT_LANG_HOME="$INSTALL_PREFIX"
-export PATH="${INSTALL_PREFIX}/bin:${TTLANG_TOOLCHAIN_DIR}/bin:$PATH"
+export PATH="${INSTALL_PREFIX}/bin:${TTLANG_TOOLCHAIN_DIR}/bin:${VIRTUAL_ENV}/bin:$PATH"
 export PYTHONPATH="${INSTALL_PREFIX}/python_packages:${TTLANG_TOOLCHAIN_DIR}/python_packages:${TTLANG_TOOLCHAIN_DIR}/tt-metal/ttnn/ttnn:$PYTHONPATH"
 export LD_LIBRARY_PATH="${TTLANG_TOOLCHAIN_DIR}/lib:$LD_LIBRARY_PATH"
 

@@ -34,8 +34,10 @@ export TTLANG_HAS_DEVICE="@TTLANG_HAS_DEVICE_INT@"
 # LLVM/MLIR install prefix (built from submodule or pre-provided).
 export LLVM_INSTALL_DIR="@LLVM_INSTALL_DIR@"
 
-# Add build and LLVM tools to PATH.
-export PATH="@CMAKE_BINARY_DIR@/bin:${LLVM_INSTALL_DIR}/bin:$PATH"
+# Add build tools, LLVM tools, and venv to PATH.
+# The venv bin is added explicitly because the venv's own activate script
+# hardcodes the original creation path, which may be stale after relocation.
+export PATH="@CMAKE_BINARY_DIR@/bin:${LLVM_INSTALL_DIR}/bin:@TTLANG_PYTHON_VENV@/bin:$PATH"
 
 # Python packages: built MLIR + tt-mlir + ttlang bindings, plus source trees.
 export PYTHONPATH="\
