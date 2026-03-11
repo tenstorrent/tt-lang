@@ -14,6 +14,11 @@ import builtins
 from .ttnnsim import Tensor
 from .dfb import Block, DataflowBuffer
 from .blockstate import AccessState, BlockAcquisition, ThreadType
+from .diagnostics import warn_once_per_location
+
+
+# Track block print warnings by (filename, line) -> set of core_ids
+_block_print_warnings: dict[tuple[str, int], set[str]] = {}
 
 
 def _format_tensor(tensor: Tensor, num_pages: int = 1) -> str:
@@ -39,6 +44,21 @@ def _format_tensor(tensor: Tensor, num_pages: int = 1) -> str:
     return "\n".join(lines)
 
 
+def _warn_block_in_illegal_state(block: Block, message: str) -> None:
+    """Issue a warning that a block is in an illegal state for printing.
+
+    Tracks which cores hit each source location and only prints once per location.
+
+    Args:
+        block: The block being printed
+        message: The warning message to display
+    """
+    warn_once_per_location(
+        _block_print_warnings,
+        message,
+    )
+
+
 def _format_block(block: Block) -> str:
     """Format a Block for printing.
 
@@ -46,10 +66,7 @@ def _format_block(block: Block) -> str:
         block: The block to format
 
     Returns:
-        Formatted string representation
-
-    Raises:
-        RuntimeError: If the block is in an illegal state for printing
+        Formatted string representation, or a warning message if block is in illegal state
     """
     # Check if block is in an illegal state for printing
     # Illegal states:
@@ -59,18 +76,22 @@ def _format_block(block: Block) -> str:
         if block.thread_type == ThreadType.DM:
             if block.acquisition == BlockAcquisition.RESERVE:
                 if block.access_state in (AccessState.MW, AccessState.NAW):
-                    raise RuntimeError(
-                        f"Cannot print Block: Block is in illegal state for printing. "
-                        f"DM thread reserved blocks in {block.access_state.name} state cannot be printed. "
-                        f"Current state: Acquisition=RESERVE, Thread=DM, Access={block.access_state.name}"
+                    warning_msg = (
+                        f"Block in {block.access_state.name} state cannot be read. "
+                        f"Block is in illegal state for printing "
+                        f"(Acquisition=RESERVE, Thread=DM, Access={block.access_state.name})"
                     )
+                    _warn_block_in_illegal_state(block, warning_msg)
+                    return f"<Block shape={block.shape} [WARNING: Cannot read - in {block.access_state.name} state]>"
             elif block.acquisition == BlockAcquisition.WAIT:
                 if block.access_state == AccessState.NAW:
-                    raise RuntimeError(
-                        f"Cannot print Block: Block is in illegal state for printing. "
-                        f"DM thread wait blocks in NAW state cannot be printed. "
-                        f"Current state: Acquisition=WAIT, Thread=DM, Access={block.access_state.name}"
+                    warning_msg = (
+                        f"Block in {block.access_state.name} state cannot be read. "
+                        f"Block is in illegal state for printing "
+                        f"(Acquisition=WAIT, Thread=DM, Access={block.access_state.name})"
                     )
+                    _warn_block_in_illegal_state(block, warning_msg)
+                    return f"<Block shape={block.shape} [WARNING: Cannot read - in {block.access_state.name} state]>"
 
     lines = [f"<Block shape={block.shape}>"]
 

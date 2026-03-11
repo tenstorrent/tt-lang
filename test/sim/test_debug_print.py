@@ -510,8 +510,8 @@ def test_print_multiple_ttlang_objects_fails():
         ttnn.close_device(device)
 
 
-def test_print_dm_reserve_block_mw_state_fails():
-    """Test that printing a DM reserve block in MW state raises an error."""
+def test_print_dm_reserve_block_mw_state_warns(capsys):
+    """Test that printing a DM reserve block in MW state issues a warning."""
 
     @ttl.kernel(grid=(1, 1))
     def test_kernel(a: torch.Tensor, out: torch.Tensor):
@@ -521,7 +521,7 @@ def test_print_dm_reserve_block_mw_state_fails():
         def dm_write():
             with a_dfb.reserve() as a_blk:
                 # Block is in MW state (must-write) immediately after reserve
-                # Printing should fail
+                # Printing should warn
                 print("Block in MW state: ", a_blk)
                 tx = ttl.copy(a[0, 0], a_blk)
                 tx.wait()
@@ -539,16 +539,21 @@ def test_print_dm_reserve_block_mw_state_fails():
         a = make_tensor_with_value(32, 32, 1.0, device)
         out = make_tensor_with_value(32, 32, 0.0, device)
 
-        with pytest.raises(
-            RuntimeError, match="Cannot print Block.*MW state cannot be printed"
-        ):
-            test_kernel(a, out)
+        test_kernel(a, out)
+
+        captured = capsys.readouterr()
+        # Verify warning was issued
+        assert "warning" in captured.out.lower()
+        assert "MW state cannot be read" in captured.out
+        # Verify the warning message appears in output
+        assert "Block in MW state:" in captured.out
+        assert "[WARNING: Cannot read - in MW state]" in captured.out
     finally:
         ttnn.close_device(device)
 
 
-def test_print_dm_reserve_block_naw_state_fails():
-    """Test that printing a DM reserve block in NAW state raises an error."""
+def test_print_dm_reserve_block_naw_state_warns(capsys):
+    """Test that printing a DM reserve block in NAW state issues a warning."""
 
     @ttl.kernel(grid=(1, 1))
     def test_kernel(a: torch.Tensor, out: torch.Tensor):
@@ -560,7 +565,7 @@ def test_print_dm_reserve_block_naw_state_fails():
                 # Start copy to put block in NAW state
                 tx = ttl.copy(a[0, 0], a_blk)
                 # Block is now in NAW state (no-access-while-writing)
-                # Printing should fail
+                # Printing should warn
                 print("Block in NAW state: ", a_blk)
                 tx.wait()
 
@@ -577,16 +582,21 @@ def test_print_dm_reserve_block_naw_state_fails():
         a = make_tensor_with_value(32, 32, 1.0, device)
         out = make_tensor_with_value(32, 32, 0.0, device)
 
-        with pytest.raises(
-            RuntimeError, match="Cannot print Block.*NAW state cannot be printed"
-        ):
-            test_kernel(a, out)
+        test_kernel(a, out)
+
+        captured = capsys.readouterr()
+        # Verify warning was issued
+        assert "warning" in captured.out.lower()
+        assert "NAW state cannot be read" in captured.out
+        # Verify the warning message appears in output
+        assert "Block in NAW state:" in captured.out
+        assert "[WARNING: Cannot read - in NAW state]" in captured.out
     finally:
         ttnn.close_device(device)
 
 
-def test_print_dm_wait_block_naw_state_fails():
-    """Test that printing a DM wait block in NAW state raises an error."""
+def test_print_dm_wait_block_naw_state_warns(capsys):
+    """Test that printing a DM wait block in NAW state issues a warning."""
 
     @ttl.kernel(grid=(1, 1))
     def test_kernel(a: torch.Tensor, b: torch.Tensor, out: torch.Tensor):
@@ -614,9 +624,12 @@ def test_print_dm_wait_block_naw_state_fails():
                 # Copy TO the block to put it in NAW state
                 tx2 = ttl.copy(b[0, 0], out_blk)
                 # Block is now in NAW state (no-access-while-writing)
-                # Printing should fail
+                # Printing should warn
                 print("Wait block in NAW state: ", out_blk)
                 tx2.wait()
+                # Use block as source to satisfy state machine
+                tx3 = ttl.copy(out_blk, out[0, 0])
+                tx3.wait()
 
     device = ttnn.open_device(device_id=0)
     try:
@@ -624,10 +637,15 @@ def test_print_dm_wait_block_naw_state_fails():
         b = make_tensor_with_value(32, 32, 2.0, device)
         out = make_tensor_with_value(32, 32, 0.0, device)
 
-        with pytest.raises(
-            RuntimeError, match="Cannot print Block.*NAW state cannot be printed"
-        ):
-            test_kernel(a, b, out)
+        test_kernel(a, b, out)
+
+        captured = capsys.readouterr()
+        # Verify warning was issued
+        assert "warning" in captured.out.lower()
+        assert "NAW state cannot be read" in captured.out
+        # Verify the warning message appears in output
+        assert "Wait block in NAW state:" in captured.out
+        assert "[WARNING: Cannot read - in NAW state]" in captured.out
     finally:
         ttnn.close_device(device)
 
