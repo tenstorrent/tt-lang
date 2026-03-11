@@ -167,7 +167,9 @@ function(ttlang_verify_llvm_sha INSTALL_PREFIX EXPECTED_SHA)
   endif()
 
   # Extract the SHA from: #define LLVM_REVISION "abc123..."
-  string(REGEX MATCH "\"([a-f0-9]+)\"" _match "${_vcs_lines}")
+  # Also handles C++ raw string literals: R"(abc123...)"
+  # CMake regex has no {n,m} quantifier, so spell out 7+ hex chars.
+  string(REGEX MATCH "([a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9]+)" _match "${_vcs_lines}")
   if(NOT _match)
     message(WARNING
       "Cannot parse LLVM_REVISION from ${_vcs_header}.\n"

@@ -46,6 +46,26 @@ ttlang_ensure_submodules(
 )
 
 # ---------------------------------------------------------------------------
+# Toolchain options (declared early because TTLangPython needs them).
+# ---------------------------------------------------------------------------
+option(TTLANG_USE_TOOLCHAIN "Use pre-built LLVM from ttlang toolchain" OFF)
+if(NOT DEFINED TTLANG_TOOLCHAIN_DIR)
+  if(DEFINED ENV{TTLANG_TOOLCHAIN_DIR})
+    set(TTLANG_TOOLCHAIN_DIR "$ENV{TTLANG_TOOLCHAIN_DIR}" CACHE PATH
+      "tt-lang toolchain directory")
+  elseif(TTLANG_USE_TOOLCHAIN)
+    set(TTLANG_TOOLCHAIN_DIR "/opt/ttlang-toolchain" CACHE PATH
+      "tt-lang toolchain directory" FORCE)
+  endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Python venv setup (must run before BuildLLVM so that find_package(Python3)
+# resolves against the venv, not a system Python).
+# ---------------------------------------------------------------------------
+include(TTLangPython)
+
+# ---------------------------------------------------------------------------
 # LLVM/MLIR dependency (pre-built or from submodule)
 # ---------------------------------------------------------------------------
 include(BuildLLVM)

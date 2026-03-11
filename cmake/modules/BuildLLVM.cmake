@@ -16,20 +16,12 @@
 set(LLVM_SUBMODULE_DIR "${CMAKE_SOURCE_DIR}/third-party/llvm-project")
 
 # ---------------------------------------------------------------------------
-# Parse the expected LLVM commit SHA from tt-mlir's toolchain definition.
+# Parse the expected LLVM commit SHA from tt-lang's own LLVM submodule.
 # Used to verify pre-built LLVM installations match the expected version.
 # ---------------------------------------------------------------------------
-set(_TTMLIR_ENV_CMAKELISTS "${CMAKE_SOURCE_DIR}/third-party/tt-mlir/env/CMakeLists.txt")
-if(EXISTS "${_TTMLIR_ENV_CMAKELISTS}")
-  file(STRINGS "${_TTMLIR_ENV_CMAKELISTS}" _llvm_version_line
-       REGEX "set\\(LLVM_PROJECT_VERSION")
-  if(_llvm_version_line)
-    string(REGEX MATCH "\"([a-f0-9]+)\"" _match "${_llvm_version_line}")
-    if(_match)
-      set(_TTLANG_EXPECTED_LLVM_SHA "${CMAKE_MATCH_1}")
-      ttlang_debug_message("Expected LLVM SHA (from tt-mlir): ${_TTLANG_EXPECTED_LLVM_SHA}")
-    endif()
-  endif()
+if(EXISTS "${LLVM_SUBMODULE_DIR}/.git")
+  ttlang_get_submodule_sha("${LLVM_SUBMODULE_DIR}" _TTLANG_EXPECTED_LLVM_SHA)
+  ttlang_debug_message("Expected LLVM SHA (from submodule): ${_TTLANG_EXPECTED_LLVM_SHA}")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -46,14 +38,7 @@ endif()
 # Can be set via -DTTLANG_TOOLCHAIN_DIR=... or the environment variable.
 # Defaults to /opt/ttlang-toolchain when TTLANG_USE_TOOLCHAIN is ON.
 # ---------------------------------------------------------------------------
-if(NOT DEFINED TTLANG_TOOLCHAIN_DIR)
-  if(DEFINED ENV{TTLANG_TOOLCHAIN_DIR})
-    set(TTLANG_TOOLCHAIN_DIR "$ENV{TTLANG_TOOLCHAIN_DIR}" CACHE PATH
-      "tt-lang toolchain directory")
-  endif()
-endif()
-
-option(TTLANG_USE_TOOLCHAIN "Use pre-built LLVM from ttlang toolchain" OFF)
+# TTLANG_USE_TOOLCHAIN and TTLANG_TOOLCHAIN_DIR are declared in CMakeLists.txt.
 option(TTLANG_FORCE_TOOLCHAIN_REBUILD
   "Force rebuild of LLVM and tt-metal into TTLANG_TOOLCHAIN_DIR" OFF)
 
@@ -66,11 +51,6 @@ if(TTLANG_FORCE_TOOLCHAIN_REBUILD)
 endif()
 
 if(TTLANG_USE_TOOLCHAIN AND NOT DEFINED MLIR_PREFIX)
-  if(NOT DEFINED TTLANG_TOOLCHAIN_DIR)
-    set(TTLANG_TOOLCHAIN_DIR "/opt/ttlang-toolchain" CACHE PATH
-      "tt-lang toolchain directory" FORCE)
-  endif()
-
   if(NOT EXISTS "${TTLANG_TOOLCHAIN_DIR}")
     message(FATAL_ERROR
       "TTLANG_USE_TOOLCHAIN is ON but toolchain directory not found: ${TTLANG_TOOLCHAIN_DIR}\n"
@@ -80,28 +60,7 @@ if(TTLANG_USE_TOOLCHAIN AND NOT DEFINED MLIR_PREFIX)
   set(MLIR_PREFIX "${TTLANG_TOOLCHAIN_DIR}")
   set(TTMETAL_BUILD_DIR "${TTLANG_TOOLCHAIN_DIR}/tt-metal" CACHE PATH
     "tt-metal build directory (from toolchain)" FORCE)
-  set(TTLANG_PYTHON_VENV "${TTLANG_TOOLCHAIN_DIR}/venv" CACHE PATH
-    "Python venv (from toolchain)" FORCE)
   message(STATUS "Using ttlang toolchain at: ${TTLANG_TOOLCHAIN_DIR}")
-
-  # Use the Python from the toolchain's venv so that MLIR Python bindings
-  # (nanobind stubs, etc.) resolve against the same interpreter they were
-  # built with.  Set VIRTUAL_ENV so that find_package(Python3) with
-  # Python3_FIND_VIRTUALENV=ONLY stays within the toolchain venv (this
-  # overrides Python3_ROOT_DIR that actions/setup-python may inject).
-  set(_toolchain_venv "${TTLANG_TOOLCHAIN_DIR}/venv")
-  set(_toolchain_python "${_toolchain_venv}/bin/python3.12")
-
-  if(EXISTS "${_toolchain_python}")
-    set(ENV{VIRTUAL_ENV} "${_toolchain_venv}")
-    set(Python3_FIND_VIRTUALENV ONLY)
-    set(Python_FIND_VIRTUALENV ONLY)
-    message(STATUS "Using toolchain Python: ${_toolchain_python}")
-  else()
-    message(WARNING
-      "Toolchain Python not found at ${_toolchain_python}.\n"
-      "Falling back to system Python. Python binding compatibility is not guaranteed.")
-  endif()
 
 elseif(DEFINED TTLANG_TOOLCHAIN_DIR AND NOT DEFINED MLIR_PREFIX)
   # Build mode: install toolchain components into TTLANG_TOOLCHAIN_DIR.
@@ -109,8 +68,6 @@ elseif(DEFINED TTLANG_TOOLCHAIN_DIR AND NOT DEFINED MLIR_PREFIX)
     "Install prefix for the submodule LLVM/MLIR build" FORCE)
   set(TTMETAL_BUILD_DIR "${TTLANG_TOOLCHAIN_DIR}/tt-metal" CACHE PATH
     "tt-metal build directory" FORCE)
-  set(TTLANG_PYTHON_VENV "${TTLANG_TOOLCHAIN_DIR}/venv" CACHE PATH
-    "Python venv" FORCE)
 
   if(TTLANG_FORCE_TOOLCHAIN_REBUILD)
     file(REMOVE "${TTLANG_TOOLCHAIN_DIR}/lib/cmake/mlir/MLIRConfig.cmake")
@@ -184,13 +141,11 @@ else()
 
   # --- Python venv setup ---
   # MLIR Python bindings need pybind11, nanobind, numpy, etc.
-  # Create a venv (or reuse existing) with these dependencies.
-  if(NOT DEFINED TTLANG_PYTHON_VENV)
-    set(TTLANG_PYTHON_VENV "${CMAKE_BINARY_DIR}/venv" CACHE PATH "Python venv for MLIR" FORCE)
-  endif()
-  set(_VENV_PYTHON "${TTLANG_PYTHON_VENV}/bin/python3")
+  # TTLANG_PYTHON_VENV is set by TTLangPython.cmake; create the venv if
+  # it does not exist yet (first-time submodule build).
+  _ttlang_find_venv_python("${TTLANG_PYTHON_VENV}" _VENV_PYTHON)
 
-  if(NOT EXISTS "${_VENV_PYTHON}")
+  if(NOT _VENV_PYTHON)
     message(STATUS "Creating Python venv at ${TTLANG_PYTHON_VENV}...")
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     execute_process(
@@ -201,17 +156,12 @@ else()
       message(FATAL_ERROR "Failed to create Python venv")
     endif()
 
-    # Ensure 'python' symlink exists (some venvs only create python3).
-    if(NOT EXISTS "${TTLANG_PYTHON_VENV}/bin/python")
-      file(CREATE_LINK "python3" "${TTLANG_PYTHON_VENV}/bin/python" SYMBOLIC)
-    endif()
+    _ttlang_find_venv_python("${TTLANG_PYTHON_VENV}" _VENV_PYTHON)
+    _ttlang_activate_venv("${TTLANG_PYTHON_VENV}")
 
     execute_process(
       COMMAND "${_VENV_PYTHON}" -m pip install --upgrade pip --quiet
     )
-
-  else()
-    message(STATUS "Reusing existing Python venv at ${TTLANG_PYTHON_VENV}")
   endif()
 
   # Install/update Python requirements on every configure (pip is a no-op when
