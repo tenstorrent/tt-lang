@@ -178,16 +178,24 @@ except Exception as e:
 print()
 print("=" * 70)
 print("BROADCAST (PyTorch semantics: dims = dimensions with size 1 to expand)")
+print("  Shape expansion tested via store() (as in real kernels)")
 print("=" * 70)
+
+def test_bcast_expand(src_block, dims, target_shape):
+    """Broadcast src_block and manually expand tiles to target_shape."""
+    b = sim_broadcast(src_block, dims=dims)
+    # Simulate what store() does: expand tiles from broadcast result to target
+    expanded = Block._expand_broadcast_tiles(b.to_list(), b, type('FakeBlock', (), {'_shape': target_shape, '_span': type('S', (), {'length': target_shape[0] * target_shape[1]})()})())
+    return Block.from_list(list(expanded), shape=target_shape)
 
 print()
 print("  --- dims=[0]: input (1,2) -> (2,2), expand rows ---")
 row_inp = make_block([torch.full((1, 1), 5.0), torch.full((1, 1), 7.0)], shape=(1, 2))
 pt = torch.tensor([[5.0, 7.0]])
 try:
-    b = sim_broadcast(row_inp, dims=[0])
+    out = test_bcast_expand(row_inp, dims=[0], target_shape=(2, 2))
     print(f"  torch expand:     shape={tuple(pt.expand(2,2).shape)}  vals={pt.expand(2,2).flatten().tolist()}")
-    print(f"  sim:              shape={b._shape}  vals={vals(b)}")
+    print(f"  sim:              shape={out._shape}  vals={vals(out)}")
 except Exception as e:
     print(f"  torch expand:     shape={tuple(pt.expand(2,2).shape)}  vals={pt.expand(2,2).flatten().tolist()}")
     print(f"  sim:              ERROR: {e}")
@@ -204,9 +212,9 @@ print("  --- dims=[1]: input (2,1) -> (2,2), expand cols ---")
 col_inp = make_block([torch.full((1, 1), 5.0), torch.full((1, 1), 7.0)], shape=(2, 1))
 pt = torch.tensor([[5.0], [7.0]])
 try:
-    b = sim_broadcast(col_inp, dims=[1])
+    out = test_bcast_expand(col_inp, dims=[1], target_shape=(2, 2))
     print(f"  torch expand:     shape={tuple(pt.expand(2,2).shape)}  vals={pt.expand(2,2).flatten().tolist()}")
-    print(f"  sim:              shape={b._shape}  vals={vals(b)}")
+    print(f"  sim:              shape={out._shape}  vals={vals(out)}")
 except Exception as e:
     print(f"  torch expand:     shape={tuple(pt.expand(2,2).shape)}  vals={pt.expand(2,2).flatten().tolist()}")
     print(f"  sim:              ERROR: {e}")
