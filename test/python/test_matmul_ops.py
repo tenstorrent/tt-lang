@@ -184,6 +184,40 @@ def matmul_n_tiling_kernel(a, b, c):
 
 
 # =============================================================================
+# Non-square matmul kernel: [1x2] @ [2x2] = [1x2] tiles
+# Reproducer for #383: operands have different shapes
+# =============================================================================
+
+
+@ttl.kernel(grid=(1, 1))
+def matmul_nonsquare_kernel(a, b, c):
+    """Non-square matmul: C[1,2] = A[1,2] @ B[2,2]."""
+    a_cb = ttl.make_dataflow_buffer_like(a, shape=(1, 2), buffer_factor=2)
+    b_cb = ttl.make_dataflow_buffer_like(b, shape=(2, 2), buffer_factor=1)
+    c_cb = ttl.make_dataflow_buffer_like(c, shape=(1, 2), buffer_factor=2)
+
+    @ttl.compute()
+    def compute_fn():
+        with a_cb.wait() as a_tile, b_cb.wait() as b_tile, c_cb.reserve() as c_out:
+            c_out.store(a_tile @ b_tile)
+
+    @ttl.datamovement()
+    def dm_read():
+        with a_cb.reserve() as a_blk:
+            tx_a = ttl.copy(a[0:1, 0:2], a_blk)
+            tx_a.wait()
+        with b_cb.reserve() as b_blk:
+            tx_b = ttl.copy(b[0:2, 0:2], b_blk)
+            tx_b.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with c_cb.wait() as c_blk:
+            tx = ttl.copy(c_blk, c[0:1, 0:2])
+            tx.wait()
+
+
+# =============================================================================
 # Full multi-tile kernel: [2x2] @ [2x2] = [2x2] tiles
 # Tests all dimensions: M, N, K all have multiple tiles
 # =============================================================================
@@ -463,6 +497,52 @@ class TestMatmulNTiling:
         print(f"Got C[0,0]={result[0, 0].item()}, C[0,32]={result[0, 32].item()}")
 
         assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-1)
+
+
+class TestMatmulNonSquare:
+    """Test non-square matmul where operands have different shapes (#383)."""
+
+    def test_nonsquare_ones(self, device):
+        """A[1,2] @ B[2,2] = C[1,2] with all ones.
+
+        C[i,j] = sum_k(A[i,k] * B[k,j]) = 64 * 1 = 64
+        """
+        a_torch = torch.ones((32, 64), dtype=torch.bfloat16)
+        b_torch = torch.ones((64, 64), dtype=torch.bfloat16)
+        c_torch = torch.zeros((32, 64), dtype=torch.bfloat16)
+
+        expected = torch.full((32, 64), 64.0, dtype=torch.bfloat16)
+
+        a = to_l1(a_torch, device)
+        b = to_l1(b_torch, device)
+        c = to_l1(c_torch, device)
+
+        matmul_nonsquare_kernel(a, b, c)
+        result = ttnn.to_torch(c)
+
+        assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-1)
+
+    def test_nonsquare_pytorch_reference(self, device):
+        """A[1,2] @ B[2,2] = C[1,2] against PyTorch reference."""
+        torch.manual_seed(383)
+        a_torch = torch.randn((32, 64), dtype=torch.bfloat16) * 0.1
+        b_torch = torch.randn((64, 64), dtype=torch.bfloat16) * 0.1
+        c_torch = torch.zeros((32, 64), dtype=torch.bfloat16)
+
+        expected = torch.matmul(a_torch.float(), b_torch.float()).to(torch.bfloat16)
+
+        a = to_l1(a_torch, device)
+        b = to_l1(b_torch, device)
+        c = to_l1(c_torch, device)
+
+        matmul_nonsquare_kernel(a, b, c)
+        result = ttnn.to_torch(c)
+
+        from ttlang_test_utils import assert_pcc
+
+        pcc = assert_pcc(expected.float(), result.float(), threshold=0.99)
+        print(f"\n=== Non-square Matmul PCC Test ===")
+        print(f"PCC: {pcc:.6f}")
 
 
 class TestMatmulFullMultitile:
