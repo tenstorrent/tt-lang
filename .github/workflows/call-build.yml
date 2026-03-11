@@ -83,8 +83,7 @@ jobs:
               run: |
                   cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
-                      -DLLVM_INSTALL_DIR=/opt/ttlang-toolchain \
-                      -DTTMETAL_BUILD_DIR=/opt/ttlang-toolchain/tt-metal \
+                      -DTTLANG_USE_TOOLCHAIN=ON \
                       -DTTLANG_ENABLE_PERF_TRACE=ON
 
             - name: Setup ccache
