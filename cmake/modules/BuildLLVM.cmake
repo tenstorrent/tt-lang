@@ -54,6 +54,16 @@ if(NOT DEFINED TTLANG_TOOLCHAIN_DIR)
 endif()
 
 option(TTLANG_USE_TOOLCHAIN "Use pre-built LLVM from ttlang toolchain" OFF)
+option(TTLANG_FORCE_TOOLCHAIN_REBUILD
+  "Force rebuild of LLVM and tt-metal into TTLANG_TOOLCHAIN_DIR" OFF)
+
+# Force rebuild implies build mode — override any cached state from a
+# previous TTLANG_USE_TOOLCHAIN configure.
+if(TTLANG_FORCE_TOOLCHAIN_REBUILD)
+  set(TTLANG_USE_TOOLCHAIN OFF CACHE BOOL
+    "Use pre-built LLVM from ttlang toolchain" FORCE)
+  unset(MLIR_DIR CACHE)
+endif()
 
 if(TTLANG_USE_TOOLCHAIN AND NOT DEFINED MLIR_PREFIX)
   if(NOT DEFINED TTLANG_TOOLCHAIN_DIR)
@@ -97,14 +107,11 @@ elseif(DEFINED TTLANG_TOOLCHAIN_DIR AND NOT DEFINED MLIR_PREFIX)
   set(TTLANG_PYTHON_VENV "${TTLANG_TOOLCHAIN_DIR}/venv" CACHE PATH
     "Python venv" FORCE)
 
-  # TTLANG_FORCE_TOOLCHAIN_REBUILD: remove existing sentinel files so LLVM
-  # and tt-metal are rebuilt even if a previous installation exists at the
-  # same prefix.
-  option(TTLANG_FORCE_TOOLCHAIN_REBUILD
-    "Force rebuild of LLVM and tt-metal into TTLANG_TOOLCHAIN_DIR" OFF)
   if(TTLANG_FORCE_TOOLCHAIN_REBUILD)
     file(REMOVE "${TTLANG_TOOLCHAIN_DIR}/lib/cmake/mlir/MLIRConfig.cmake")
     file(REMOVE "${TTLANG_TOOLCHAIN_DIR}/tt-metal/ttnn/_ttnn.so")
+    # Remove LLVM build dir so it reconfigures with the correct install prefix.
+    file(REMOVE_RECURSE "${CMAKE_BINARY_DIR}/llvm-build")
     message(STATUS "Forcing toolchain rebuild into: ${TTLANG_TOOLCHAIN_DIR}")
   else()
     message(STATUS "Building toolchain into: ${TTLANG_TOOLCHAIN_DIR}")
