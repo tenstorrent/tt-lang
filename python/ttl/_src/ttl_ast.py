@@ -271,6 +271,13 @@ class TTLGenericCompiler(TTCompilerBase):
         """Override to set location context, catch errors, and inject auto-profiling."""
         with self._loc_for_node(node):
             try:
+                # Intercept print() to handle keyword arguments.
+                if (
+                    not isinstance(node.func, ast.Attribute)
+                    and hasattr(node.func, "id")
+                    and node.func.id == "print"
+                ):
+                    return self.visit_Print(node.args, node.keywords)
                 return self._try_emit_auto_signposts(
                     node, lambda: super(TTLGenericCompiler, self).visit_Call(node)
                 )
@@ -524,6 +531,207 @@ class TTLGenericCompiler(TTCompilerBase):
     def visit_AsyncFunctionDef(self, node):
         with self._loc_for_node(node):
             return self._emit_entry(node)
+
+    # Thread required by each dprint mode in compute context.
+    # TileSlice errors on math; dst register reads require math.
+    # Tensor mode is not available in compute (uses get_read_ptr).
+    _COMPUTE_THREAD_FOR_MODE = {
+        "scalar": "math",
+        "cb": "pack",
+        "tile": "pack",
+        "dst": "math",
+    }
+
+    def _resolve_print_thread(self, mode, thread):
+        """Pick the correct thread for a dprint in compute context.
+
+        Returns the thread unchanged for datamovement kernels or when
+        the user provided an explicit thread kwarg.
+        """
+        if thread is not None or self.kernel_type != "compute":
+            return thread
+        resolved = self._COMPUTE_THREAD_FOR_MODE.get(mode)
+        if resolved is None:
+            raise ValueError(f"unknown dprint mode '{mode}' for thread resolution")
+        return resolved
+
+    def _extract_print_kwargs(self, keywords):
+        kwargs = {}
+        for kw in keywords:
+            if not isinstance(kw.value, ast.Constant):
+                raise ValueError(f"print() keyword '{kw.arg}' must be a constant")
+            kwargs[kw.arg] = kw.value.value
+        return kwargs
+
+    def visit_Print(self, args, keywords=None):
+        keywords = keywords or []
+        kwargs = self._extract_print_kwargs(keywords)
+
+        thread = kwargs.get("thread")
+        if thread is not None and thread not in ("math", "pack", "unpack"):
+            raise ValueError(
+                f"print() thread must be 'math', 'pack', or 'unpack', "
+                f"got '{thread}'"
+            )
+
+        num_pages = kwargs.get("num_pages")
+        if num_pages is not None and not isinstance(num_pages, int):
+            raise ValueError(
+                f"print() num_pages must be an integer, "
+                f"got {type(num_pages).__name__}"
+            )
+
+        # DST mode: print(_dump_dst_registers=True, label="after exp")
+        if kwargs.get("_dump_dst_registers"):
+            if args:
+                raise ValueError(
+                    "print(_dump_dst_registers=True) takes no positional arguments"
+                )
+            label = kwargs.get("label", "")
+            ttl.dprint(
+                fmt=label,
+                mode="dst",
+                argv=[],
+                thread=self._resolve_print_thread("dst", thread),
+                num_pages=None,
+            )
+            return
+
+        if not args:
+            raise ValueError(
+                "print() requires at least one argument "
+                "(or _dump_dst_registers=True)"
+            )
+
+        # Visit all args once to determine types.
+        # Each entry is (kind, const_val, mlir_val, name).
+        visited = []
+        for arg in args:
+            if isinstance(arg, ast.Constant):
+                visited.append(("const", arg.value, None, None))
+            elif isinstance(arg, ast.Name):
+                val = self.visit(arg)
+                visited.append(("var", None, val, arg.id))
+            else:
+                raise ValueError(
+                    f"print() argument type {type(arg).__name__} " f"not supported"
+                )
+
+        # Check if the last variable arg is a TT-Lang object (CB, block,
+        # or tensor). If so, emit a scalar label for any preceding args
+        # then the appropriate object print. This supports patterns like
+        # print("C: ", C, num_pages=2) from the spec.
+        last_var_idx = None
+        for i in range(len(visited) - 1, -1, -1):
+            if visited[i][0] == "var":
+                last_var_idx = i
+                break
+
+        if last_var_idx is not None:
+            _, _, last_var, last_name = visited[last_var_idx]
+            is_tensor_accessor = last_name is not None and last_name in self.streams
+            if self._is_object_printable(last_var, num_pages):
+                prefix = visited[:last_var_idx]
+                if prefix:
+                    self._emit_scalar_print(prefix, thread)
+                self._emit_object_print(last_var, thread, num_pages, is_tensor_accessor)
+                return
+
+        # Scalar mode: string/int/float constants and integer variables.
+        self._emit_scalar_print(visited, thread)
+
+    def _is_object_printable(self, val, num_pages):
+        """Check if val is a CB, block/tile, or tensor suitable for
+        object-mode dprint."""
+        if ttl.CircularBufferType.maybe_downcast(val.type) is not None:
+            return True
+        if RankedTensorType.isinstance(val.type):
+            return True
+        return False
+
+    def _emit_object_print(self, val, thread, num_pages, is_tensor_accessor=False):
+        """Emit the appropriate object-mode dprint for val."""
+        cb_type = ttl.CircularBufferType.maybe_downcast(val.type)
+        if cb_type is not None:
+            ttl.dprint(
+                fmt="",
+                mode="cb",
+                argv=[val],
+                thread=self._resolve_print_thread("cb", thread),
+                num_pages=None,
+            )
+            return
+
+        if RankedTensorType.isinstance(val.type):
+            if is_tensor_accessor:
+                # Tensor accessors use page-based printing (spec: num_pages
+                # defaults to 1). TileSlice is not available for raw tensors.
+                if self.kernel_type == "compute":
+                    raise ValueError(
+                        "print(tensor) is only supported in " "datamovement kernels"
+                    )
+                ttl.dprint(
+                    fmt="",
+                    mode="tensor",
+                    argv=[val],
+                    thread=self._resolve_print_thread("tensor", thread),
+                    num_pages=num_pages if num_pages is not None else 1,
+                )
+            elif num_pages is not None:
+                # CB-backed block with explicit num_pages: page-based printing.
+                if self.kernel_type == "compute":
+                    raise ValueError(
+                        "print(block, num_pages=N) is only supported in "
+                        "datamovement kernels"
+                    )
+                ttl.dprint(
+                    fmt="",
+                    mode="tensor",
+                    argv=[val],
+                    thread=self._resolve_print_thread("tensor", thread),
+                    num_pages=num_pages,
+                )
+            else:
+                # CB-backed block without num_pages: tile-based printing.
+                ttl.dprint(
+                    fmt="",
+                    mode="tile",
+                    argv=[val],
+                    thread=self._resolve_print_thread("tile", thread),
+                    num_pages=None,
+                )
+
+    def _emit_scalar_print(self, visited, thread):
+        """Emit a scalar-mode dprint from a list of visited args."""
+        fmt = ""
+        argv = []
+        for kind, const_val, val, _name in visited:
+            if kind == "const":
+                if not isinstance(const_val, (str, int, float)):
+                    raise ValueError(
+                        f"print() supports string, integer, and float "
+                        f"constants, got {type(const_val).__name__}"
+                    )
+                fmt += str(const_val) + " "
+            else:
+                if not (
+                    IndexType.isinstance(val.type) or IntegerType.isinstance(val.type)
+                ):
+                    raise ValueError(
+                        f"print() scalar mode supports integer variables, "
+                        f"got {val.type}"
+                    )
+                fmt += "{} "
+                argv.append(val)
+
+        fmt = fmt.strip()
+        ttl.dprint(
+            fmt=fmt,
+            mode="scalar",
+            argv=argv,
+            thread=self._resolve_print_thread("scalar", thread),
+            num_pages=None,
+        )
 
     def _get_cb_tensor_type(self, cb_val, node=None):
         """Extract the tensor type from a TTL CB type."""
