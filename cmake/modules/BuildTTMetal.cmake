@@ -8,12 +8,38 @@
 # Subsequent configures skip the build if _ttnn.so already exists.
 #
 # Variables set (visible to caller via include()):
-#   TT_METAL_HOME         - root of tt-metal source
-#   TT_METAL_PYTHON_PATH  - path to add to PYTHONPATH for ttnn Python
-#   TT_METAL_LIB_PATH     - path to add to LD_LIBRARY_PATH
+# TT_METAL_HOME         - root of tt-metal source
+# TT_METAL_PYTHON_PATH  - path to add to PYTHONPATH for ttnn Python
+# TT_METAL_LIB_PATH     - path to add to LD_LIBRARY_PATH
 
 set(TT_METAL_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third-party/tt-metal")
 
+# ---------------------------------------------------------------------------
+# macOS: skip tt-metal build (Linux-only runtime dependencies).
+# Still set TT_METAL_HOME so headers are available, and provide empty
+# paths for PYTHONPATH / LD_LIBRARY_PATH.
+# ---------------------------------------------------------------------------
+if(APPLE)
+  message(STATUS "tt-metal runtime: skipped on macOS (Linux-only dependencies)")
+  message(STATUS "  ttnn will not be available; use the simulator instead")
+
+  ttlang_ensure_submodules(third-party/tt-metal)
+
+  set(TT_METAL_HOME "${TT_METAL_SOURCE_DIR}")
+  set(TT_METAL_PYTHON_PATH "")
+  set(TT_METAL_LIB_PATH "")
+
+  # Provide a no-op clean target for consistency.
+  add_custom_target(clean-ttmetal
+    COMMENT "tt-metal is not built on macOS; nothing to clean."
+  )
+
+  return()
+endif()
+
+# ---------------------------------------------------------------------------
+# Linux path: full tt-metal build from submodule.
+# ---------------------------------------------------------------------------
 ttlang_ensure_submodules(third-party/tt-metal)
 
 # tt-metal has nested submodules (tracy, tt_llk, umd) required for building
@@ -22,14 +48,16 @@ ttlang_ensure_submodules(third-party/tt-metal)
 # only the top-level source tree is needed for JIT headers at device runtime.
 if(NOT TTLANG_USE_TOOLCHAIN)
   set(_nested_missing FALSE)
+
   foreach(_sub tt_metal/third_party/tracy/CMakeLists.txt
-               tt_metal/third_party/tt_llk/README.md
-               tt_metal/third_party/umd/CMakeLists.txt)
+    tt_metal/third_party/tt_llk/README.md
+    tt_metal/third_party/umd/CMakeLists.txt)
     if(NOT EXISTS "${TT_METAL_SOURCE_DIR}/${_sub}")
       set(_nested_missing TRUE)
       break()
     endif()
   endforeach()
+
   if(_nested_missing AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
     message(STATUS "Initializing tt-metal nested submodules...")
     execute_process(
@@ -37,6 +65,7 @@ if(NOT TTLANG_USE_TOOLCHAIN)
       WORKING_DIRECTORY "${TT_METAL_SOURCE_DIR}"
       RESULT_VARIABLE _sub_result
     )
+
     if(NOT _sub_result EQUAL 0)
       message(FATAL_ERROR
         "Failed to initialize tt-metal nested submodules. Run manually:\n"
@@ -49,11 +78,14 @@ endif()
 # Verify tt-metal submodule matches the version expected by tt-mlir.
 # ---------------------------------------------------------------------------
 set(_TTMLIR_THIRD_PARTY_CMAKELISTS "${CMAKE_SOURCE_DIR}/third-party/tt-mlir/third_party/CMakeLists.txt")
+
 if(EXISTS "${_TTMLIR_THIRD_PARTY_CMAKELISTS}")
   file(STRINGS "${_TTMLIR_THIRD_PARTY_CMAKELISTS}" _ttmetal_version_line
-       REGEX "set\\(TT_METAL_VERSION")
+    REGEX "set\\(TT_METAL_VERSION")
+
   if(_ttmetal_version_line)
     string(REGEX MATCH "\"([a-f0-9]+)\"" _match "${_ttmetal_version_line}")
+
     if(_match)
       ttlang_verify_ttmetal_sha("${TT_METAL_SOURCE_DIR}" "${CMAKE_MATCH_1}")
     endif()
@@ -93,6 +125,7 @@ endif()
 # ccache forwarding
 set(TTMETAL_ENABLE_CCACHE OFF)
 set(TTMETAL_DISABLE_PRECOMPILE_HEADERS OFF)
+
 if("${CMAKE_CXX_COMPILER_LAUNCHER}" STREQUAL "ccache")
   set(TTMETAL_ENABLE_CCACHE ON)
   set(TTMETAL_DISABLE_PRECOMPILE_HEADERS ON)
@@ -123,10 +156,12 @@ else()
     -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
     -DCMAKE_CXX_COMPILER_LAUNCHER=${CMAKE_CXX_COMPILER_LAUNCHER}
     -DCPM_SOURCE_CACHE=${CPM_SOURCE_CACHE}
+
     # Python bindings -- use the same interpreter as the tt-lang venv
     -DPython3_EXECUTABLE=${Python3_EXECUTABLE}
     -DPython3_FIND_VIRTUALENV=ONLY
     -DWITH_PYTHON_BINDINGS=ON
+
     # Minimal build flags
     -DTT_UNITY_BUILDS=ON
     -DENABLE_CCACHE=${TTMETAL_ENABLE_CCACHE}
@@ -149,6 +184,7 @@ else()
     COMMAND ${CMAKE_COMMAND} ${_TTMETAL_CMAKE_ARGS}
     RESULT_VARIABLE _TTMETAL_CONFIG_RESULT
   )
+
   if(NOT _TTMETAL_CONFIG_RESULT EQUAL 0)
     message(FATAL_ERROR "tt-metal configure failed (exit ${_TTMETAL_CONFIG_RESULT})")
   endif()
@@ -159,6 +195,7 @@ else()
     COMMAND ${CMAKE_COMMAND} --build "${TTMETAL_BUILD_DIR}"
     RESULT_VARIABLE _TTMETAL_BUILD_RESULT
   )
+
   if(NOT _TTMETAL_BUILD_RESULT EQUAL 0)
     message(FATAL_ERROR "tt-metal build failed (exit ${_TTMETAL_BUILD_RESULT})")
   endif()
@@ -183,6 +220,7 @@ endif()
 foreach(_so _ttnn.so _ttnncpp.so)
   set(_src "${TTMETAL_BUILD_DIR}/ttnn/${_so}")
   set(_dst "${TT_METAL_SOURCE_DIR}/ttnn/ttnn/${_so}")
+
   if(EXISTS "${_src}")
     file(COPY_FILE "${_src}" "${_dst}" ONLY_IF_DIFFERENT)
   else()
