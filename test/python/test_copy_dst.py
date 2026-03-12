@@ -60,9 +60,10 @@ def dst_intermediate_reuse_kernel(a, b, out):
             tx.wait()
 
 
-@pytest.mark.skip(
-    reason="copy_dest_values.h not included in tt-mlir TTKernelToCpp.cpp (#384). "
-    "tt-metal TT_THROW during compilation corrupts runtime state for subsequent tests."
+@pytest.mark.forked
+@pytest.mark.xfail(
+    reason="copy_dest_values.h not included in tt-mlir TTKernelToCpp.cpp (#384)",
+    strict=True,
 )
 def test_dst_intermediate_reuse(device):
     """Compile kernel where DST intermediate is reused (triggers copy_dst)."""
