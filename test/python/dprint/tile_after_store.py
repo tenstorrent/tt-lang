@@ -51,10 +51,10 @@ def tile_after_store_kernel(inp, out):
             tx.wait()
 
 
-# Before store: output CB is empty, tile rows are all zeros.
+# Before store: output CB is uninitialized (zeros on sim, garbage on HW).
 # CHECK: before store
 # CHECK: ======
-# CHECK: 0 : 0 0 0 0 0 0
+# CHECK: 0 :
 # CHECK: ++++++
 
 # After store: CB now has exp(random_input), expect non-zero floats.

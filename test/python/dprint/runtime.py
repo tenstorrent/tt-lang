@@ -166,13 +166,14 @@ def dprint_f32_kernel(inp_f32, out_f32):
 # FileCheck patterns -- f32 kernel (runs after bf16 kernel)
 # =============================================================================
 
-# Loop prints in compute (two iterations)
-# CHECK: f32 loop iter
-# CHECK: f32 loop iter
+# Loop prints in compute (two iterations, math thread).
+# Use thread prefix to avoid matching codegen DPRINT statements.
+# CHECK-DAG: TR1: f32 loop iter
+# CHECK-DAG: TR1: f32 loop iter
 
-# Loop prints in DM (NCRISC, two iterations)
-# CHECK: f32 dm read iter
-# CHECK: f32 dm read iter
+# Loop prints in DM (NCRISC, two iterations).
+# CHECK-DAG: NC: f32 dm read iter
+# CHECK-DAG: NC: f32 dm read iter
 
 
 # =============================================================================
