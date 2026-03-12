@@ -58,7 +58,6 @@ jobs:
       - name: Checkout tt-lang
         uses: actions/checkout@v5
         with:
-          submodules: recursive
           fetch-depth: 1
 
       - name: Git safe directory
