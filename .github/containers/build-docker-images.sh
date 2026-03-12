@@ -91,6 +91,25 @@ echo ""
 echo "Note: tt-lang builds LLVM, tt-metal, and tt-mlir from submodules"
 echo ""
 
+# Compute image names up front (used by both build and check-only paths).
+if [ "$NO_PUSH" = false ]; then
+    BASE_IMAGE="ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
+    DIST_IMAGE="ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
+    IRD_IMAGE="ghcr.io/$REPO/tt-lang-ird-ubuntu-22-04:$DOCKER_TAG"
+else
+    BASE_IMAGE="tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
+    DIST_IMAGE="tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
+    IRD_IMAGE="tt-lang-ird-ubuntu-22-04:$DOCKER_TAG"
+fi
+
+# Write image names to files for workflow consumption (avoids fragile log parsing).
+echo "$BASE_IMAGE" > .docker-image-base
+echo "$DIST_IMAGE" > .docker-image-name
+echo "$IRD_IMAGE"  > .docker-image-ird
+
+# Extract tt-metal submodule SHA for Dockerfile.base build arg.
+TT_METAL_SHA=$(git ls-tree HEAD third-party/tt-metal 2>/dev/null | awk '{print $3}')
+
 # Build function
 build_image() {
     local name=$1
@@ -198,20 +217,8 @@ fi
 
 
 
-# Compute image names -- NO_PUSH only affects the registry prefix
-if [ "$NO_PUSH" = false ]; then
-    BASE_IMAGE="ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
-    DIST_IMAGE="ghcr.io/$REPO/tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
-    IRD_IMAGE="ghcr.io/$REPO/tt-lang-ird-ubuntu-22-04:$DOCKER_TAG"
-    PUSH_LABEL="built and pushed"
-else
-    BASE_IMAGE="tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
-    DIST_IMAGE="tt-lang-dist-ubuntu-22-04:$DOCKER_TAG"
-    IRD_IMAGE="tt-lang-ird-ubuntu-22-04:$DOCKER_TAG"
-    PUSH_LABEL="built locally"
-fi
-
 # Primary output image for this run
+PUSH_LABEL=$( [ "$NO_PUSH" = false ] && echo "built and pushed" || echo "built locally" )
 case "$IMAGE_TYPE" in
     base) OUTPUT_IMAGE="$BASE_IMAGE" ;;
     ird)  OUTPUT_IMAGE="$IRD_IMAGE"  ;;
