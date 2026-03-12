@@ -891,9 +891,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // SignpostOp is lowered in a separate pass (ttl-lower-signpost-to-emitc).
   target.addLegalOp<SignpostOp>();
 
-  // CopyTileOp is a data movement op (CB -> DST), lowered in the tile ops
+  // CopyTileOp and CopyDstOp are data movement ops, lowered in the tile ops
   // lowering phase.
-  target.addLegalOp<CopyTileOp>();
+  target.addLegalOp<CopyTileOp, CopyDstOp>();
 
   // Tile compute ops (identified by TTLTileComputeOpTrait) remain legal
   // until the tile ops lowering phase.
@@ -965,8 +965,8 @@ lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
         if (tt::ttl::isTileComputeOp(op)) {
           return false;
         }
-        // CopyTileOp (data movement) is illegal.
-        if (isa<CopyTileOp>(op)) {
+        // CopyTileOp and CopyDstOp (data movement) are illegal.
+        if (isa<CopyTileOp, CopyDstOp>(op)) {
           return false;
         }
         // DST lifecycle ops are illegal.
