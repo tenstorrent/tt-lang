@@ -43,6 +43,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         *)
+            echo "WARNING: Unknown argument: $1" >&2
             shift
             ;;
     esac

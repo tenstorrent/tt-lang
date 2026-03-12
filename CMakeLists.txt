@@ -17,7 +17,6 @@ include(TTLangUtils)
 include(GetVersionFromGit)
 ttlang_set_version("${TTLANG_VERSION}")
 
-option(TTLANG_ENABLE_BINDINGS_PYTHON "Enable Python bindings" ON)
 option(CODE_COVERAGE "Enable coverage reporting" OFF)
 option(TTLANG_ENABLE_DOCS "Enable Sphinx documentation build" OFF)
 
@@ -87,12 +86,8 @@ include(BuildTTMetal)
 # Detect Python dev packages (Python3, pybind11, nanobind) using MLIR's
 # helpers.  This must run after BuildLLVM (which sets Python3_EXECUTABLE to the
 # venv when building from submodule) and before add_subdirectory(python).
-if(TTLANG_ENABLE_BINDINGS_PYTHON)
-  include(MLIRDetectPythonEnv)
-  mlir_configure_python_dev_packages()
-else()
-  find_package(Python3 COMPONENTS Interpreter REQUIRED)
-endif()
+include(MLIRDetectPythonEnv)
+mlir_configure_python_dev_packages()
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
   message(FATAL_ERROR "In-source builds are not allowed. Please make a new directory (called a build directory) and run CMake from there.")
@@ -131,13 +126,10 @@ add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(tools)
 
-if(TTLANG_ENABLE_BINDINGS_PYTHON)
-  message(STATUS "Enabling Python API")
-  set(TTLANG_PYTHON_PACKAGES_DIR "${CMAKE_CURRENT_BINARY_DIR}/python_packages")
-  add_subdirectory(python)
+set(TTLANG_PYTHON_PACKAGES_DIR "${CMAKE_CURRENT_BINARY_DIR}/python_packages")
+add_subdirectory(python)
 
-  ttlang_pip_install_requirements("${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/dev-requirements.txt")
-endif()
+ttlang_pip_install_requirements("${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/dev-requirements.txt")
 
 add_subdirectory(test)
 
@@ -194,7 +186,6 @@ message(STATUS "  LLVM install:     ${LLVM_INSTALL_DIR}")
 message(STATUS "  tt-metal:         ${TT_METAL_HOME}")
 message(STATUS "  Python:           ${Python3_EXECUTABLE}")
 message(STATUS "  Python venv:      ${TTLANG_PYTHON_VENV}")
-message(STATUS "  Python bindings:  ${TTLANG_ENABLE_BINDINGS_PYTHON}")
 message(STATUS "  Perf tracing:     ${TTLANG_ENABLE_PERF_TRACE}")
 message(STATUS "  Device detected:  ${TTLANG_HAS_DEVICE}")
 message(STATUS "")

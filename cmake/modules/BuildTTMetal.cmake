@@ -16,21 +16,33 @@ set(TT_METAL_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third-party/tt-metal")
 
 ttlang_ensure_submodules(third-party/tt-metal)
 
-# Check that nested submodules are initialized when tt-metal needs to be
-# built from source. When using a pre-built toolchain the nested submodules
-# (tracy, tt_llk, umd) are not required — only the top-level source tree
-# is needed for JIT headers at device runtime.
+# tt-metal has nested submodules (tracy, tt_llk, umd) required for building
+# from source. Initialize them recursively if not already present.
+# When using a pre-built toolchain the nested submodules are not required —
+# only the top-level source tree is needed for JIT headers at device runtime.
 if(NOT TTLANG_USE_TOOLCHAIN)
+  set(_nested_missing FALSE)
   foreach(_sub tt_metal/third_party/tracy/CMakeLists.txt
                tt_metal/third_party/tt_llk/README.md
                tt_metal/third_party/umd/CMakeLists.txt)
     if(NOT EXISTS "${TT_METAL_SOURCE_DIR}/${_sub}")
-      get_filename_component(_sub_dir "${_sub}" DIRECTORY)
-      message(FATAL_ERROR
-        "tt-metal nested submodule ${_sub_dir} not initialized. Run:\n"
-        "  cd ${TT_METAL_SOURCE_DIR} && git submodule update --init --recursive")
+      set(_nested_missing TRUE)
+      break()
     endif()
   endforeach()
+  if(_nested_missing AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
+    message(STATUS "Initializing tt-metal nested submodules...")
+    execute_process(
+      COMMAND git submodule update --init --recursive --depth 1
+      WORKING_DIRECTORY "${TT_METAL_SOURCE_DIR}"
+      RESULT_VARIABLE _sub_result
+    )
+    if(NOT _sub_result EQUAL 0)
+      message(FATAL_ERROR
+        "Failed to initialize tt-metal nested submodules. Run manually:\n"
+        "  cd ${TT_METAL_SOURCE_DIR} && git submodule update --init --recursive")
+    endif()
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------
