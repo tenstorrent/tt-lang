@@ -21,27 +21,35 @@
 # Sets ${out_var} to the path if found, empty string otherwise.
 # ---------------------------------------------------------------------------
 function(_ttlang_find_venv_python venv_dir out_var)
+  # Collect candidate interpreter paths in priority order.
+  set(_candidates)
   foreach(_name python3 python)
     if(EXISTS "${venv_dir}/bin/${_name}")
-      set(${out_var} "${venv_dir}/bin/${_name}" PARENT_SCOPE)
-      return()
+      list(APPEND _candidates "${venv_dir}/bin/${_name}")
     endif()
   endforeach()
   # Fall back to versioned names (python3.X).
   file(GLOB _versioned "${venv_dir}/bin/python3.*")
-  # Filter out paths containing ".py" or config suffixes.
-  set(_filtered)
   foreach(_p ${_versioned})
     get_filename_component(_fname "${_p}" NAME)
     if(NOT _fname MATCHES "\\." OR _fname MATCHES "^python3\\.[0-9]+$")
-      list(APPEND _filtered "${_p}")
+      list(APPEND _candidates "${_p}")
     endif()
   endforeach()
-  if(_filtered)
-    list(GET _filtered 0 _first)
-    set(${out_var} "${_first}" PARENT_SCOPE)
-    return()
-  endif()
+
+  # Verify each candidate is actually executable (not a dangling symlink).
+  foreach(_cand ${_candidates})
+    execute_process(
+      COMMAND "${_cand}" --version
+      RESULT_VARIABLE _rc
+      OUTPUT_QUIET ERROR_QUIET
+    )
+    if(_rc EQUAL 0)
+      set(${out_var} "${_cand}" PARENT_SCOPE)
+      return()
+    endif()
+  endforeach()
+
   set(${out_var} "" PARENT_SCOPE)
 endfunction()
 

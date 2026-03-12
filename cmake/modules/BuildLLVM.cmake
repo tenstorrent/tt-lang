@@ -66,8 +66,6 @@ elseif(DEFINED TTLANG_TOOLCHAIN_DIR AND NOT DEFINED MLIR_PREFIX)
   # Build mode: install toolchain components into TTLANG_TOOLCHAIN_DIR.
   set(LLVM_INSTALL_DIR "${TTLANG_TOOLCHAIN_DIR}" CACHE PATH
     "Install prefix for the submodule LLVM/MLIR build" FORCE)
-  set(TTMETAL_BUILD_DIR "${TTLANG_TOOLCHAIN_DIR}/tt-metal" CACHE PATH
-    "tt-metal build directory" FORCE)
 
   if(TTLANG_FORCE_TOOLCHAIN_REBUILD)
     file(REMOVE "${TTLANG_TOOLCHAIN_DIR}/lib/cmake/mlir/MLIRConfig.cmake")
@@ -90,25 +88,61 @@ if(DEFINED MLIR_PREFIX)
 endif()
 
 # ---------------------------------------------------------------------------
-# Choose between pre-built LLVM (Option A) or submodule build (Option B).
-# MLIR_PREFIX is set either explicitly by the user or by TTLANG_USE_TOOLCHAIN.
+# Python venv setup.
+#
+# Both pre-built toolchain and submodule-build modes need a working Python
+# venv.  The venv may not exist yet (first configure), or it may have been
+# stripped from the toolchain cache because venvs are not portable across
+# machines.  In either case, create a fresh venv using the system Python and
+# install tt-lang's runtime requirements.
+# ---------------------------------------------------------------------------
+_ttlang_find_venv_python("${TTLANG_PYTHON_VENV}" _VENV_PYTHON)
+
+if(NOT _VENV_PYTHON)
+  message(STATUS "Creating Python venv at ${TTLANG_PYTHON_VENV}...")
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE} -m venv --prompt ttlang "${TTLANG_PYTHON_VENV}"
+    RESULT_VARIABLE _VENV_RESULT
+  )
+  if(NOT _VENV_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to create Python venv")
+  endif()
+
+  _ttlang_find_venv_python("${TTLANG_PYTHON_VENV}" _VENV_PYTHON)
+  _ttlang_activate_venv("${TTLANG_PYTHON_VENV}")
+
+  execute_process(
+    COMMAND "${_VENV_PYTHON}" -m pip install --upgrade pip --quiet
+  )
+endif()
+
+# Install/update tt-lang Python requirements on every configure (pip is a
+# no-op when packages are already satisfied).  requirements.txt includes all
+# runtime dependencies: MLIR bindings, tt-metal/ttnn, and tt-lang itself.
+ttlang_pip_install_requirements("${_VENV_PYTHON}"
+  "${CMAKE_SOURCE_DIR}/requirements.txt" FATAL)
+
+set(Python3_EXECUTABLE "${_VENV_PYTHON}")
+message(STATUS "Python venv: ${TTLANG_PYTHON_VENV}")
+message(STATUS "  Python: ${Python3_EXECUTABLE}")
+
+# ---------------------------------------------------------------------------
+# Pre-built LLVM/MLIR (toolchain or user-supplied MLIR_PREFIX/MLIR_DIR).
 # ---------------------------------------------------------------------------
 if(DEFINED MLIR_PREFIX OR DEFINED MLIR_DIR)
-  # ---------------------------------------------------------------------------
-  # Option A: Pre-built LLVM/MLIR
-  # ---------------------------------------------------------------------------
   find_package(MLIR REQUIRED CONFIG)
 
   # Derive the install prefix from MLIR_DIR (strip lib/cmake/mlir).
   get_filename_component(LLVM_INSTALL_DIR "${MLIR_DIR}/../../.." ABSOLUTE)
 
-  # Verify the pre-built LLVM matches tt-mlir's expected commit.
+  # Verify the pre-built LLVM matches tt-lang's expected commit.
   if(DEFINED _TTLANG_EXPECTED_LLVM_SHA)
     ttlang_verify_llvm_sha("${LLVM_INSTALL_DIR}" "${_TTLANG_EXPECTED_LLVM_SHA}")
   endif()
 
 # ---------------------------------------------------------------------------
-# Option B: Build from submodule (configure-time)
+# Build LLVM/MLIR from submodule (configure-time).
 # ---------------------------------------------------------------------------
 else()
   ttlang_ensure_submodules(third-party/llvm-project)
@@ -139,45 +173,12 @@ else()
   message(STATUS "  Install dir:   ${LLVM_INSTALL_DIR}")
   message(STATUS "  ccache:        ${_LLVM_CCACHE_BUILD}")
 
-  # --- Python venv setup ---
-  # MLIR Python bindings need pybind11, nanobind, numpy, etc.
-  # TTLANG_PYTHON_VENV is set by TTLangPython.cmake; create the venv if
-  # it does not exist yet (first-time submodule build).
-  _ttlang_find_venv_python("${TTLANG_PYTHON_VENV}" _VENV_PYTHON)
-
-  if(NOT _VENV_PYTHON)
-    message(STATUS "Creating Python venv at ${TTLANG_PYTHON_VENV}...")
-    find_package(Python3 COMPONENTS Interpreter REQUIRED)
-    execute_process(
-      COMMAND ${Python3_EXECUTABLE} -m venv --prompt ttlang "${TTLANG_PYTHON_VENV}"
-      RESULT_VARIABLE _VENV_RESULT
-    )
-    if(NOT _VENV_RESULT EQUAL 0)
-      message(FATAL_ERROR "Failed to create Python venv")
-    endif()
-
-    _ttlang_find_venv_python("${TTLANG_PYTHON_VENV}" _VENV_PYTHON)
-    _ttlang_activate_venv("${TTLANG_PYTHON_VENV}")
-
-    execute_process(
-      COMMAND "${_VENV_PYTHON}" -m pip install --upgrade pip --quiet
-    )
-  endif()
-
-  # Install/update Python requirements on every configure (pip is a no-op when
-  # packages are already satisfied, so this is cheap on subsequent runs).
+  # Install LLVM-specific Python build dependencies (nanobind, PyYAML, etc.
+  # for MLIR Python bindings) and lit for test execution.
   ttlang_pip_install_requirements("${_VENV_PYTHON}"
     "${LLVM_SUBMODULE_DIR}/mlir/python/requirements.txt" FATAL)
-  ttlang_pip_install_requirements("${_VENV_PYTHON}"
-    "${CMAKE_SOURCE_DIR}/requirements.txt" FATAL)
-
-  # Install lit from the LLVM source tree so that llvm-lit can import it
-  # regardless of whether the toolchain was built locally or restored from cache.
   ttlang_pip_install_package("${_VENV_PYTHON}"
     "${LLVM_SUBMODULE_DIR}/llvm/utils/lit" FATAL)
-
-  set(Python3_EXECUTABLE "${_VENV_PYTHON}")
-  message(STATUS "  Python:        ${Python3_EXECUTABLE}")
 
   # Check if LLVM is already built (skip rebuild if install exists).
   if(EXISTS "${LLVM_INSTALL_DIR}/lib/cmake/mlir/MLIRConfig.cmake")

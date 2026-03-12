@@ -104,14 +104,10 @@ message(STATUS "  Commit SHA: ${_TTMETAL_SHORT_SHA}")
 ttlang_apply_patches("${TT_METAL_SOURCE_DIR}"
   "${CMAKE_SOURCE_DIR}/third-party/patches/ttmetal-*.patch")
 
-# Install minimal Python dependencies required to import ttnn at runtime
-ttlang_pip_install_requirements("${Python3_EXECUTABLE}"
-  "${CMAKE_SOURCE_DIR}/third-party/requirements-metal.txt")
-
 # ---------------------------------------------------------------------------
 # Build configuration
 # ---------------------------------------------------------------------------
-set(TTMETAL_BUILD_DIR "${TT_METAL_SOURCE_DIR}/build" CACHE PATH
+set(TTMETAL_BUILD_DIR "${CMAKE_BINARY_DIR}/tt-metal" CACHE PATH
   "tt-metal build directory")
 set(TTMETAL_LIBRARY_DIR "${TTMETAL_BUILD_DIR}/lib")
 

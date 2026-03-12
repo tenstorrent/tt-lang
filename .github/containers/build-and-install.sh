@@ -8,19 +8,22 @@
 #   build-and-install.sh [OPTIONS]
 #
 # Modes (mutually exclusive):
-#   (default)              Full pipeline: configure + build + install + finalize
+#   (default)              Full pipeline: configure + install tt-metal + build + install + finalize
 #   --toolchain-only       Configure only (LLVM + tt-metal) + finalize; no tt-lang build
 #   --configure-only       Configure only; keep build dirs for downstream steps
-#   --copy-runtime-libs    Copy tt-metal runtime libs/packages into toolchain dir
+#   --install-ttmetal      Install tt-metal artifacts from build dir into toolchain
 #   --build-and-install    Build tt-lang + install (assumes configure already ran)
-#   --finalize             Normalize toolchain + cleanup build dirs
+#   --finalize             Normalize toolchain + cleanup
+#
+# Options:
+#   --remove-build-dir     Remove CMAKE_BINARY_DIR after finalize (for Docker builds)
 #
 # Typical multi-stage usage (build outside Docker, copy results in):
-#   1. build-and-install.sh --configure-only        # Build LLVM + tt-metal
-#   2. build-and-install.sh --copy-runtime-libs      # Copy libs into toolchain
-#   3. cp -a toolchain/ ird-toolchain/               # Save ird toolchain
-#   4. build-and-install.sh --build-and-install       # Build + install tt-lang
-#   5. build-and-install.sh --finalize                # Normalize + cleanup
+#   1. build-and-install.sh --configure-only         # Build LLVM + tt-metal
+#   2. build-and-install.sh --install-ttmetal         # Install tt-metal into toolchain
+#   3. cp -a toolchain/ ird-toolchain/                # Save ird toolchain
+#   4. build-and-install.sh --build-and-install        # Build + install tt-lang
+#   5. build-and-install.sh --finalize --remove-build-dir  # Normalize + cleanup
 
 set -e
 
@@ -31,6 +34,7 @@ set -e
 git config --global --add safe.directory '*'
 
 MODE="full"
+REMOVE_BUILD_DIR=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -42,8 +46,8 @@ while [[ $# -gt 0 ]]; do
             MODE="configure-only"
             shift
             ;;
-        --copy-runtime-libs)
-            MODE="copy-runtime-libs"
+        --install-ttmetal)
+            MODE="install-ttmetal"
             shift
             ;;
         --build-and-install)
@@ -54,6 +58,10 @@ while [[ $# -gt 0 ]]; do
             MODE="finalize"
             shift
             ;;
+        --remove-build-dir)
+            REMOVE_BUILD_DIR=true
+            shift
+            ;;
         *)
             echo "WARNING: Unknown argument: $1" >&2
             shift
@@ -62,7 +70,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 TTLANG_TOOLCHAIN_DIR="${TTLANG_TOOLCHAIN_DIR:-/opt/ttlang-toolchain}"
-TTMETAL_BUILD_DIR="$TTLANG_TOOLCHAIN_DIR/tt-metal"
+CMAKE_BINARY_DIR="${CMAKE_BINARY_DIR:-build}"
 
 # ---- Phase: Configure (cmake configure + pip install) ----
 do_configure() {
@@ -73,7 +81,7 @@ do_configure() {
         _use_toolchain=ON
     fi
 
-    cmake -G Ninja -B build \
+    cmake -G Ninja -B "$CMAKE_BINARY_DIR" \
         -DCMAKE_BUILD_TYPE=Release \
         -DTTLANG_USE_TOOLCHAIN=$_use_toolchain \
         -DTTLANG_TOOLCHAIN_DIR=$TTLANG_TOOLCHAIN_DIR \
@@ -83,82 +91,33 @@ do_configure() {
     echo "=== Disk space after configure ==="
     df -BM
 
-    source build/env/activate
+    source "$CMAKE_BINARY_DIR/env/activate"
 
     echo "=== Installing Python runtime dependencies into toolchain venv ==="
     pip install -r requirements.txt --no-cache-dir
 }
 
-# ---- Phase: Copy tt-metal runtime libs into toolchain ----
-do_copy_runtime_libs() {
-    echo "=== Copying tt-metal runtime libraries ==="
-    # Copy tt-metal runtime shared libraries
-    if [ -d "$TTMETAL_BUILD_DIR/lib" ]; then
-        mkdir -p "$TTLANG_TOOLCHAIN_DIR/lib"
-        cp -prL "$TTMETAL_BUILD_DIR"/lib/*.so* "$TTLANG_TOOLCHAIN_DIR/lib/" 2>/dev/null || true
-        echo "Copied tt-metal runtime libraries"
-    fi
-
-    # Copy ttnn shared libraries
-    for so_dir in "$TTMETAL_BUILD_DIR/ttnn" "$TTMETAL_BUILD_DIR/tt_metal"; do
-        if [ -d "$so_dir" ]; then
-            mkdir -p "$TTLANG_TOOLCHAIN_DIR/lib"
-            find "$so_dir" -name "*.so" -exec cp -pL {} "$TTLANG_TOOLCHAIN_DIR/lib/" \; 2>/dev/null || true
-        fi
-    done
-
-    # Copy ttnn Python package
-    if [ -d "third-party/tt-metal/ttnn/ttnn" ]; then
-        mkdir -p "$TTLANG_TOOLCHAIN_DIR/python_packages/ttnn"
-        cp -prL third-party/tt-metal/ttnn/ttnn/* "$TTLANG_TOOLCHAIN_DIR/python_packages/ttnn/" 2>/dev/null || true
-        echo "Copied ttnn Python package"
-    fi
-
-    # Copy Tracy profiler tools
-    TRACY_BIN="$TTMETAL_BUILD_DIR/tools/profiler/bin"
-    if [ -d "$TRACY_BIN" ]; then
-        mkdir -p "$TTLANG_TOOLCHAIN_DIR/bin"
-        cp -p "$TRACY_BIN/capture-release" "$TTLANG_TOOLCHAIN_DIR/bin/" 2>/dev/null || true
-        cp -p "$TRACY_BIN/csvexport-release" "$TTLANG_TOOLCHAIN_DIR/bin/" 2>/dev/null || true
-        echo "Copied Tracy profiler tools"
-    fi
-
-    # Copy Tracy Python module
-    if [ -d "third-party/tt-metal/tools/tracy" ]; then
-        mkdir -p "$TTLANG_TOOLCHAIN_DIR/python_packages/tracy"
-        cp -pr third-party/tt-metal/tools/tracy/*.py "$TTLANG_TOOLCHAIN_DIR/python_packages/tracy/" 2>/dev/null || true
-        echo "Copied Tracy Python module"
-    fi
-
-    # Copy runtime artifacts (linker scripts, LLK headers, etc.) into the
-    # toolchain so JIT device compilation works without nested submodules.
-    bash scripts/copy-ttmetal-runtime-artifacts.sh \
-        third-party/tt-metal "$TTMETAL_BUILD_DIR"
-
-    # Copy tt-metal source tree needed for JIT firmware compilation.
-    # The JIT build system resolves headers and firmware .cc files
-    # relative to TT_METAL_HOME, so the toolchain must contain the
-    # full tt_metal/ and ttnn/cpp/ subtrees (~89 MB).
-    echo "Copying tt-metal JIT source tree..."
-    TT_METAL_SRC="third-party/tt-metal"
-    cp -a "$TT_METAL_SRC/tt_metal" "$TTMETAL_BUILD_DIR/"
-    mkdir -p "$TTMETAL_BUILD_DIR/ttnn"
-    cp -a "$TT_METAL_SRC/ttnn/cpp" "$TTMETAL_BUILD_DIR/ttnn/"
-    echo "Copied tt-metal JIT source tree"
+# ---- Phase: Install tt-metal artifacts into toolchain ----
+do_install_ttmetal() {
+    echo "=== Installing tt-metal into toolchain ==="
+    bash scripts/install-ttmetal.sh \
+        third-party/tt-metal \
+        "$CMAKE_BINARY_DIR/tt-metal" \
+        "$TTLANG_TOOLCHAIN_DIR/tt-metal"
 }
 
 # ---- Phase: Build + Install tt-lang ----
 do_build_and_install() {
-    source build/env/activate
+    source "$CMAKE_BINARY_DIR/env/activate"
 
     echo "=== Building tt-lang ==="
-    cmake --build build
+    cmake --build "$CMAKE_BINARY_DIR"
 
     echo "=== Disk space after build ==="
     df -BM
 
     echo "=== Installing tt-lang ==="
-    cmake --install build --prefix "$TTLANG_TOOLCHAIN_DIR"
+    cmake --install "$CMAKE_BINARY_DIR" --prefix "$TTLANG_TOOLCHAIN_DIR"
 }
 
 # ---- Phase: Finalize (normalize toolchain + cleanup) ----
@@ -179,8 +138,10 @@ do_finalize() {
     # Clean up temp scripts
     rm -f /tmp/normalize-toolchain-install.sh /tmp/cleanup-toolchain.sh
 
-    echo "=== Removing build directories ==="
-    rm -rf build
+    if [ "$REMOVE_BUILD_DIR" = true ]; then
+        echo "=== Removing build directory: $CMAKE_BINARY_DIR ==="
+        rm -rf "$CMAKE_BINARY_DIR"
+    fi
 
     echo "=== Disk space after cleanup ==="
     df -BM
@@ -190,14 +151,14 @@ do_finalize() {
 case "$MODE" in
     full)
         do_configure
+        do_install_ttmetal
         do_build_and_install
-        do_copy_runtime_libs
         do_finalize
         echo "=== Build complete ==="
         ;;
     toolchain-only)
         do_configure
-        do_copy_runtime_libs
+        do_install_ttmetal
         do_finalize
         echo "=== Toolchain build complete ==="
         ;;
@@ -205,9 +166,9 @@ case "$MODE" in
         do_configure
         echo "=== Configure complete (build dirs preserved) ==="
         ;;
-    copy-runtime-libs)
-        do_copy_runtime_libs
-        echo "=== Runtime libs copied ==="
+    install-ttmetal)
+        do_install_ttmetal
+        echo "=== tt-metal installed into toolchain ==="
         ;;
     build-and-install)
         do_build_and_install
