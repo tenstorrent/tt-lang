@@ -293,6 +293,17 @@ def TTLAnnotateCBAssociations
   let dependentDialects = [];
 }
 
+def TTLLowerDPrintToEmitC
+    : Pass<"ttl-lower-dprint-to-emitc", "::mlir::ModuleOp"> {
+  let summary = "Lower ttl.dprint ops to EmitC verbatim for debug printing";
+  let description = [{
+    Converts ttl.dprint operations to EmitC verbatim code that emits
+    device debug print calls. Resolves CB indices, DST register slots,
+    and data formats from the IR. Runs before convert-ttl-to-ttkernel
+    so that DST assignments and CB annotations are still available.
+  }];
+}
+
 def TTLLowerSignpostToEmitC
     : Pass<"ttl-lower-signpost-to-emitc", "::mlir::ModuleOp"> {
   let summary = "Lower ttl.signpost ops to EmitC verbatim for profiling";

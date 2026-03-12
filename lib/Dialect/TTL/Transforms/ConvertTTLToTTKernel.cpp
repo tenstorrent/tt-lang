@@ -888,8 +888,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   target.addLegalOp<TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
                     TileRegsReleaseOp>();
 
-  // SignpostOp is lowered in a separate pass (ttl-lower-signpost-to-emitc).
-  target.addLegalOp<SignpostOp>();
+  // SignpostOp and DPrintOp are lowered in separate EmitC passes.
+  target.addLegalOp<SignpostOp, DPrintOp>();
 
   // Tile compute ops and data movement ops (copy_tile, copy_dst) remain legal
   // until the tile ops lowering phase.

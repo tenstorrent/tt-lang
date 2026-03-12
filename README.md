@@ -121,6 +121,41 @@ Note: this project is currently in early prototype phase, examples are not final
 - [Performance Tools](docs/performance-tools.md) - Profiling, signposts, and Perfetto trace visualization
 - [Testing Guide](test/TESTING.md) - How to write and run tests using LLVM lit
 - [Sphinx docs](docs/README.md) - How to build, view, and extend the documentation (docs are disabled by default; enable with `-DTTLANG_ENABLE_DOCS=ON` and build with `cmake --build build --target ttlang-docs`)
+- [Print Debugging](docs/print-debugging.md) - Debug kernel code with `print()` statements
+
+## Print Debugging
+
+Use `print()` inside kernel code to emit device debug prints. Enable at runtime with `TT_METAL_DPRINT_CORES`:
+
+```bash
+export TT_METAL_DPRINT_CORES=0,0   # core to capture
+python my_kernel.py 2>&1 > output.txt
+```
+
+```python
+@ttl.compute()
+def compute():
+    with inp_dfb.wait() as tile, out_dfb.reserve() as o:
+        print("hello")                             # auto: math thread
+        print(tile)                                # auto: pack thread
+        result = ttl.exp(tile)
+        print(_dump_dst_registers=True, label="after exp") # auto: math thread
+        o.store(result)
+
+@ttl.datamovement()
+def dm_write():
+    print(out_dfb)                               # CB metadata
+    with out_dfb.wait() as blk:
+        print(blk, num_pages=1)                  # raw tensor page
+        tx = ttl.copy(blk, out[0, 0])
+        tx.wait()
+```
+
+- Prints can be extremely large and slow; redirect output to a file and use grep
+- Always guard compute prints with `thread=` to avoid overlapping output from the three TRISC threads
+- Prints all tiles/dst reg in a block
+
+See [docs/print-debugging.md](docs/print-debugging.md) for all supported modes (scalars, tiles, tensor pages, CB details, DST registers, thread conditioning).
 
 ## Claude Skills
 
