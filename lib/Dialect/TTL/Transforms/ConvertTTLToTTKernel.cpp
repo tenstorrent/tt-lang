@@ -891,14 +891,12 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // SignpostOp is lowered in a separate pass (ttl-lower-signpost-to-emitc).
   target.addLegalOp<SignpostOp>();
 
-  // CopyTileOp and CopyDstOp are data movement ops, lowered in the tile ops
-  // lowering phase.
-  target.addLegalOp<CopyTileOp, CopyDstOp>();
-
-  // Tile compute ops (identified by TTLTileComputeOpTrait) remain legal
+  // Tile compute ops and data movement ops (copy_tile, copy_dst) remain legal
   // until the tile ops lowering phase.
-  target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>(
-      [](Operation *op) { return tt::ttl::isTileComputeOp(op); });
+  target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>([](Operation *op) {
+    return tt::ttl::isTileComputeOp(op) ||
+           op->hasTrait<TTLDataMovementOpTrait>();
+  });
 
   // TensorSliceOp is legal while it has users (CopyLowering will consume them).
   // Once users are gone, TensorSliceLowering erases the op.
@@ -956,17 +954,17 @@ lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // Other dialects are legal (func, tensor, etc.) EXCEPT tile ops.
   computeTarget.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
-  // Mark TTL ops that need lowering as illegal (tile compute ops, CopyTileOp,
-  // DST lifecycle). All other TTL ops (ComputeOp, YieldOp, AttachCBOp) were
-  // explicitly marked legal above.
+  // Mark TTL ops that need lowering as illegal (tile compute ops, data movement
+  // ops, DST lifecycle). All other TTL ops (ComputeOp, YieldOp, AttachCBOp)
+  // were explicitly marked legal above.
   computeTarget.addDynamicallyLegalDialect<tt::ttl::TTLDialect>(
       [](Operation *op) {
         // Tile compute ops (add, mul, exp, etc.) are illegal.
         if (tt::ttl::isTileComputeOp(op)) {
           return false;
         }
-        // CopyTileOp and CopyDstOp (data movement) are illegal.
-        if (isa<CopyTileOp, CopyDstOp>(op)) {
+        // Data movement ops (copy_tile, copy_dst) are illegal.
+        if (op->hasTrait<TTLDataMovementOpTrait>()) {
           return false;
         }
         // DST lifecycle ops are illegal.

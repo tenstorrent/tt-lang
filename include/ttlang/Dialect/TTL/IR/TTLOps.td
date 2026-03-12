@@ -471,7 +471,8 @@ def TTL_LinearizedIndexOp : TTL_Op<"linearized_index", [Pure]> {
 
 def TTL_CopyTileOp : TTL_Op<"copy_tile",
                             [MemoryEffects<[MemRead, MemWrite]>,
-                             TTL_CBInputTileOpTrait]> {
+                             TTL_CBInputTileOpTrait,
+                             TTL_DataMovementOpTrait]> {
   let summary = "Copy a tile from a circular buffer into a DST register";
   let description = [{
     Performs a CB -> DST copy, matching `copy_tile_init` + `copy_tile` in the
@@ -496,7 +497,8 @@ def TTL_CopyTileOp : TTL_Op<"copy_tile",
 def TTL_CopyDstOp : TTL_Op<"copy_dst",
                            [SameOperandsAndResultType,
                             MemoryEffects<[MemRead, MemWrite]>,
-                            TTL_DSTInputsTrait]> {
+                            TTL_DSTInputsTrait,
+                            TTL_DataMovementOpTrait]> {
   let summary = "Copy a tile from one DST register to another";
   let description = [{
     Performs DST -> DST copy for multi-consumer value preservation. Used when
