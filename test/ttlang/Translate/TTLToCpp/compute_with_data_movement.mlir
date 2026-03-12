@@ -1,79 +1,297 @@
+// FPU path (default): add uses add_tiles (reads from CB), no copy_tile for add.
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-assign-dst{enable-fpu-binary-ops=0},ttl-insert-tile-regs-sync,ttl-lower-to-loops,ttl-annotate-cb-associations),convert-ttl-to-ttkernel,ttkernel-insert-inits,canonicalize,cse,lower-affine)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-assign-dst,ttl-insert-tile-regs-sync,ttl-lower-to-loops,ttl-annotate-cb-associations),convert-ttl-to-ttkernel,ttkernel-insert-inits,canonicalize,cse,lower-affine)' \
 // RUN:   -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
-// RUN: FileCheck %s --input-file=%t.cpp
+// RUN: FileCheck %s --input-file=%t.cpp --check-prefix=FPU
+
+// SFPU path: all binary ops use copy_tile + SFPU binary ops.
+// RUN: ttlang-opt %s \
+// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-assign-dst{enable-fpu-binary-ops=0},ttl-insert-tile-regs-sync,ttl-lower-to-loops,ttl-annotate-cb-associations),convert-ttl-to-ttkernel,ttkernel-insert-inits,canonicalize,cse,lower-affine)' \
+// RUN:   -o %t.sfpu.ttkernel.mlir
+// RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.sfpu.ttkernel.mlir -o %t.sfpu.emitc.mlir
+// RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.sfpu.cpp %t.sfpu.emitc.mlir
+// RUN: FileCheck %s --input-file=%t.sfpu.cpp --check-prefix=SFPU
 
 // Purpose: Complete example with reader, compute, and writer threads.
-// Pattern: reader (NOC) → CBs → compute (MATH) → CB → writer (NOC)
+// Pattern: reader (NOC) -> CBs -> compute (MATH) -> CB -> writer (NOC)
 // Operation: f(A + B) where f is exp, matching the C++ example pattern.
-// Note: enable-fpu-binary-ops=0 keeps SFPU lowering path (not testing FPU detection).
 
 #dram = #ttnn.buffer_type<dram>
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<2x2x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// CHECK-LABEL: // reader_binary
-// CHECK: void kernel_main() {
-// CHECK-DAG:   size_t [[ONE:.*]] = 1;
-// CHECK-DAG:   size_t [[BOUND:.*]] = 2;
-// CHECK-DAG:   size_t [[PAGE_SIZE:.*]] = 4096;
-// CHECK-DAG:   size_t [[ZERO:.*]] = 0;
+// =============================================================================
+// FPU path: reader kernel (same for both paths)
+// =============================================================================
+// FPU-LABEL: // reader_binary
+// FPU: void kernel_main() {
+// FPU-DAG:   size_t [[BOUND:v[0-9]+]] = 2
+// FPU-DAG:   size_t [[ONE:v[0-9]+]] = 1
+// FPU-DAG:   size_t [[PAGE_SIZE:v[0-9]+]] = 4096
+// FPU-DAG:   size_t [[ZERO:v[0-9]+]] = 0
 
 // Read tensor A into CB0
-// CHECK:   int32_t [[RT_ARG_A:.*]] = get_common_arg_val<uint32_t>([[ZERO]]);
-// CHECK-NEXT:   auto [[ARGS_A:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<2, 0>();
-// CHECK-NEXT:   TensorAccessor [[ACC_A:.*]] = TensorAccessor([[ARGS_A]], [[RT_ARG_A]],
-// CHECK:   int32_t [[CB0_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(0));
-// Cast CB ptr to size_t for index arithmetic
-// CHECK-NEXT:   ptrdiff_t [[CB0_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB0_PTR]];
-// CHECK-NEXT:   size_t [[CB0_PTR_IDX:v[0-9]+]] = (size_t) [[CB0_PTR_PTRDIFF]];
-// CHECK-NEXT:   for (size_t [[I_A:.*]] = [[ZERO]]; [[I_A]] < [[BOUND]]; [[I_A]] += [[ONE]]) {
-// CHECK-NEXT:     for (size_t [[J_A:.*]] = [[ZERO]]; [[J_A]] < [[BOUND]]; [[J_A]] += [[ONE]]) {
-// Tile offset computation: i * cols + j
-// CHECK:       size_t [[TILE_OFF_A_Y:v[0-9]+]] = [[I_A]] * [[BOUND]];
-// CHECK-NEXT:       size_t [[TILE_OFF_A_X:v[0-9]+]] = [[TILE_OFF_A_Y]] + [[J_A]];
-// CB address computation: cb_ptr + tile_offset * page_size (all size_t arithmetic)
-// CHECK-NEXT:       size_t [[BYTE_OFF_A:v[0-9]+]] = [[TILE_OFF_A_X]] * [[PAGE_SIZE]];
-// CHECK-NEXT:       size_t [[CB_ADDR_A_IDX:v[0-9]+]] = [[CB0_PTR_IDX]] + [[BYTE_OFF_A]];
-// Cast to i32 for NOC operation
-// CHECK-NEXT:       ptrdiff_t [[TILE_OFF_A_PTR:v[0-9]+]] = (ptrdiff_t) [[TILE_OFF_A_X]];
-// CHECK-NEXT:       int32_t [[TILE_OFF_A:v[0-9]+]] = (int32_t) [[TILE_OFF_A_PTR]];
-// CHECK-NEXT:       ptrdiff_t [[CB_ADDR_A_PTR:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR_A_IDX]];
-// CHECK-NEXT:       int32_t [[CB_ADDR_A:v[0-9]+]] = (int32_t) [[CB_ADDR_A_PTR]];
-// CHECK-NEXT:       noc_async_read_tile([[TILE_OFF_A]], [[ACC_A]], [[CB_ADDR_A]]);
-// CHECK:     }
-// CHECK-NEXT:   }
-// CHECK-NEXT:   noc_async_read_barrier();
+// FPU:   int32_t [[RT_ARG_A:.*]] = get_common_arg_val<uint32_t>([[ZERO]]);
+// FPU-NEXT:   auto [[ARGS_A:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<2, 0>();
+// FPU-NEXT:   TensorAccessor [[ACC_A:.*]] = TensorAccessor([[ARGS_A]], [[RT_ARG_A]],
+// CB pointer casting chain: int32_t -> ptrdiff_t -> size_t
+// FPU:   int32_t [[CB0_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(0));
+// FPU-NEXT:   ptrdiff_t [[CB0_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB0_PTR]];
+// FPU-NEXT:   size_t [[CB0_PTR_IDX:v[0-9]+]] = (size_t) [[CB0_PTR_PTRDIFF]];
+// FPU:   for (size_t [[I_A:.*]] = [[ZERO]]; [[I_A]] < [[BOUND]]; [[I_A]] += [[ONE]]) {
+// FPU-NEXT:     for (size_t [[J_A:.*]] = [[ZERO]]; [[J_A]] < [[BOUND]]; [[J_A]] += [[ONE]]) {
+// Tile offset: linearize 2D index (i * bound + j)
+// FPU:       size_t [[TILE_OFF_A_Y:v[0-9]+]] = [[I_A]] * [[BOUND]];
+// FPU-NEXT:  size_t [[TILE_OFF_A:v[0-9]+]] = [[TILE_OFF_A_Y]] + [[J_A]];
+// Byte offset: tile_offset * page_size + cb_base
+// FPU-NEXT:  size_t [[BYTE_OFF_A:v[0-9]+]] = [[TILE_OFF_A]] * [[PAGE_SIZE]];
+// FPU-NEXT:  size_t [[CB_ADDR_A_IDX:v[0-9]+]] = [[CB0_PTR_IDX]] + [[BYTE_OFF_A]];
+// Cast tile offset and CB address to int32_t for noc_async_read_tile
+// FPU-NEXT:  ptrdiff_t [[TILE_OFF_A_PD:v[0-9]+]] = (ptrdiff_t) [[TILE_OFF_A]];
+// FPU-NEXT:  int32_t [[TILE_OFF_A_I32:v[0-9]+]] = (int32_t) [[TILE_OFF_A_PD]];
+// FPU-NEXT:  ptrdiff_t [[CB_ADDR_A_PD:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR_A_IDX]];
+// FPU-NEXT:  int32_t [[CB_ADDR_A:v[0-9]+]] = (int32_t) [[CB_ADDR_A_PD]];
+// FPU-NEXT:  noc_async_read_tile([[TILE_OFF_A_I32]], [[ACC_A]], [[CB_ADDR_A]]);
+// FPU:     }
+// FPU-NEXT:   }
+// FPU-NEXT:   noc_async_read_barrier();
 
 // Read tensor B into CB1
-// CHECK:   int32_t [[RT_ARG_B:.*]] = get_common_arg_val<uint32_t>([[ONE]]);
-// CHECK-NEXT:   auto [[ARGS_B:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 1>();
-// CHECK-NEXT:   TensorAccessor [[ACC_B:.*]] = TensorAccessor([[ARGS_B]], [[RT_ARG_B]],
-// CHECK:   int32_t [[CB1_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(1));
-// Cast CB ptr to size_t for index arithmetic
-// CHECK-NEXT:   ptrdiff_t [[CB1_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB1_PTR]];
-// CHECK-NEXT:   size_t [[CB1_PTR_IDX:v[0-9]+]] = (size_t) [[CB1_PTR_PTRDIFF]];
-// CHECK-NEXT:   for (size_t [[I_B:.*]] = [[ZERO]]; [[I_B]] < [[BOUND]]; [[I_B]] += [[ONE]]) {
-// CHECK-NEXT:     for (size_t [[J_B:.*]] = [[ZERO]]; [[J_B]] < [[BOUND]]; [[J_B]] += [[ONE]]) {
-// Tile offset computation: i * cols + j
-// CHECK:       size_t [[TILE_OFF_B_Y:v[0-9]+]] = [[I_B]] * [[BOUND]];
-// CHECK-NEXT:       size_t [[TILE_OFF_B_X:v[0-9]+]] = [[TILE_OFF_B_Y]] + [[J_B]];
-// CB address computation: cb_ptr + tile_offset * page_size (all size_t arithmetic)
-// CHECK-NEXT:       size_t [[BYTE_OFF_B:v[0-9]+]] = [[TILE_OFF_B_X]] * [[PAGE_SIZE]];
-// CHECK-NEXT:       size_t [[CB_ADDR_B_IDX:v[0-9]+]] = [[CB1_PTR_IDX]] + [[BYTE_OFF_B]];
-// Cast to i32 for NOC operation
-// CHECK-NEXT:       ptrdiff_t [[TILE_OFF_B_PTR:v[0-9]+]] = (ptrdiff_t) [[TILE_OFF_B_X]];
-// CHECK-NEXT:       int32_t [[TILE_OFF_B:v[0-9]+]] = (int32_t) [[TILE_OFF_B_PTR]];
-// CHECK-NEXT:       ptrdiff_t [[CB_ADDR_B_PTR:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR_B_IDX]];
-// CHECK-NEXT:       int32_t [[CB_ADDR_B:v[0-9]+]] = (int32_t) [[CB_ADDR_B_PTR]];
-// CHECK-NEXT:       noc_async_read_tile([[TILE_OFF_B]], [[ACC_B]], [[CB_ADDR_B]]);
-// CHECK:     }
-// CHECK-NEXT:   }
-// CHECK-NEXT:   noc_async_read_barrier();
-// CHECK-NEXT:   return;
-// CHECK-NEXT: }
+// FPU:   int32_t [[RT_ARG_B:.*]] = get_common_arg_val<uint32_t>([[ONE]]);
+// FPU-NEXT:   auto [[ARGS_B:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 1>();
+// FPU-NEXT:   TensorAccessor [[ACC_B:.*]] = TensorAccessor([[ARGS_B]], [[RT_ARG_B]],
+// CB pointer casting chain: int32_t -> ptrdiff_t -> size_t
+// FPU:   int32_t [[CB1_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(1));
+// FPU-NEXT:   ptrdiff_t [[CB1_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB1_PTR]];
+// FPU-NEXT:   size_t [[CB1_PTR_IDX:v[0-9]+]] = (size_t) [[CB1_PTR_PTRDIFF]];
+// FPU:   for (size_t [[I_B:.*]] = [[ZERO]]; [[I_B]] < [[BOUND]]; [[I_B]] += [[ONE]]) {
+// FPU-NEXT:     for (size_t [[J_B:.*]] = [[ZERO]]; [[J_B]] < [[BOUND]]; [[J_B]] += [[ONE]]) {
+// Tile offset: linearize 2D index (i * bound + j)
+// FPU:       size_t [[TILE_OFF_B_Y:v[0-9]+]] = [[I_B]] * [[BOUND]];
+// FPU-NEXT:  size_t [[TILE_OFF_B:v[0-9]+]] = [[TILE_OFF_B_Y]] + [[J_B]];
+// Byte offset: tile_offset * page_size + cb_base
+// FPU-NEXT:  size_t [[BYTE_OFF_B:v[0-9]+]] = [[TILE_OFF_B]] * [[PAGE_SIZE]];
+// FPU-NEXT:  size_t [[CB_ADDR_B_IDX:v[0-9]+]] = [[CB1_PTR_IDX]] + [[BYTE_OFF_B]];
+// Cast tile offset and CB address to int32_t for noc_async_read_tile
+// FPU-NEXT:  ptrdiff_t [[TILE_OFF_B_PD:v[0-9]+]] = (ptrdiff_t) [[TILE_OFF_B]];
+// FPU-NEXT:  int32_t [[TILE_OFF_B_I32:v[0-9]+]] = (int32_t) [[TILE_OFF_B_PD]];
+// FPU-NEXT:  ptrdiff_t [[CB_ADDR_B_PD:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR_B_IDX]];
+// FPU-NEXT:  int32_t [[CB_ADDR_B:v[0-9]+]] = (int32_t) [[CB_ADDR_B_PD]];
+// FPU-NEXT:  noc_async_read_tile([[TILE_OFF_B_I32]], [[ACC_B]], [[CB_ADDR_B]]);
+// FPU:     }
+// FPU-NEXT:   }
+// FPU-NEXT:   noc_async_read_barrier();
+// FPU-NEXT:   return;
+
+// =============================================================================
+// FPU path: compute kernel -- binary_op_init_common, add_tiles, exp
+// =============================================================================
+// FPU-LABEL: // compute_fused
+// FPU: void kernel_main() {
+// FPU-DAG:   int32_t [[TILES:v[0-9]+]] = 4
+// FPU-DAG:   size_t [[STEP:v[0-9]+]] = 1
+// FPU-DAG:   size_t [[CBOUND:v[0-9]+]] = 2
+// FPU-DAG:   size_t [[CZERO:v[0-9]+]] = 0
+
+// FPU:       cb_wait_front(get_compile_time_arg_val(0), [[TILES]]);
+// FPU-NEXT:  cb_wait_front(get_compile_time_arg_val(1), [[TILES]]);
+// FPU-NEXT:  cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+// FPU-NEXT:  binary_op_init_common(get_compile_time_arg_val(0), get_compile_time_arg_val(1), get_compile_time_arg_val(2));
+
+// FPU:       for (size_t [[CI:.*]] = [[CZERO]]; [[CI]] < [[CBOUND]]; [[CI]] += [[STEP]]) {
+// FPU-NEXT:    for (size_t [[CJ:.*]] = [[CZERO]]; [[CJ]] < [[CBOUND]]; [[CJ]] += [[STEP]]) {
+// FPU:           tile_regs_acquire();
+// Linear tile index: i * bound + j
+// FPU:           size_t [[CTILE_Y:v[0-9]+]] = [[CI]] * [[CBOUND]];
+// FPU-NEXT:      size_t [[CTILE_IDX:v[0-9]+]] = [[CTILE_Y]] + [[CJ]];
+// No copy_tile for FPU add -- operands read directly from CB
+// FPU-NOT:       copy_tile
+// FPU:           add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+// FPU-NEXT:      add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1), [[CTILE_IDX]], [[CTILE_IDX]], [[CZERO]]);
+// FPU-NEXT:      exp_tile_init();
+// FPU-NEXT:      exp_tile([[CZERO]]);
+// FPU-NEXT:      tile_regs_commit();
+// FPU-NEXT:      tile_regs_wait();
+// FPU-NEXT:      pack_tile<true>([[CZERO]], get_compile_time_arg_val(2), [[CTILE_IDX]]);
+// FPU-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
+// FPU-NEXT:      tile_regs_release();
+
+// FPU-NOT:   init_sfpu
+// FPU-NOT:   add_binary_tile
+
+// =============================================================================
+// FPU path: writer kernel
+// =============================================================================
+// FPU-LABEL: // writer_unary
+// FPU: void kernel_main() {
+// FPU-DAG:   size_t [[WBOUND:v[0-9]+]] = 2
+// FPU-DAG:   size_t [[WONE:v[0-9]+]] = 1
+// FPU-DAG:   size_t [[WPAGE:v[0-9]+]] = 4096
+// FPU-DAG:   size_t [[WZERO:v[0-9]+]] = 0
+// FPU:   int32_t [[WRT_ARG:.*]] = get_common_arg_val<uint32_t>([[WZERO]]);
+// FPU-NEXT:   auto [[WARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<1, 0>();
+// FPU-NEXT:   TensorAccessor [[WACC:.*]] = TensorAccessor([[WARGS]], [[WRT_ARG]],
+// CB pointer casting chain: int32_t -> ptrdiff_t -> size_t
+// FPU:   int32_t [[WR_PTR:.*]] = get_read_ptr(get_compile_time_arg_val(2));
+// FPU-NEXT:   ptrdiff_t [[WR_PTR_PD:v[0-9]+]] = (ptrdiff_t) [[WR_PTR]];
+// FPU-NEXT:   size_t [[WR_PTR_IDX:v[0-9]+]] = (size_t) [[WR_PTR_PD]];
+// FPU:   for (size_t [[WI:.*]] = [[WZERO]]; [[WI]] < [[WBOUND]]; [[WI]] += [[WONE]]) {
+// FPU-NEXT:     for (size_t [[WJ:.*]] = [[WZERO]]; [[WJ]] < [[WBOUND]]; [[WJ]] += [[WONE]]) {
+// Tile offset: linearize 2D index (i * bound + j)
+// FPU:       size_t [[WTILE_Y:v[0-9]+]] = [[WI]] * [[WBOUND]];
+// FPU-NEXT:  size_t [[WTILE_OFF:v[0-9]+]] = [[WTILE_Y]] + [[WJ]];
+// Byte offset: tile_offset * page_size + cb_base
+// FPU-NEXT:  size_t [[WBYTE_OFF:v[0-9]+]] = [[WTILE_OFF]] * [[WPAGE]];
+// FPU-NEXT:  size_t [[WCB_ADDR_IDX:v[0-9]+]] = [[WR_PTR_IDX]] + [[WBYTE_OFF]];
+// Cast tile offset and CB address to int32_t for noc_async_write_tile
+// FPU-NEXT:  ptrdiff_t [[WTILE_PD:v[0-9]+]] = (ptrdiff_t) [[WTILE_OFF]];
+// FPU-NEXT:  int32_t [[WTILE_I32:v[0-9]+]] = (int32_t) [[WTILE_PD]];
+// FPU-NEXT:  ptrdiff_t [[WCB_ADDR_PD:v[0-9]+]] = (ptrdiff_t) [[WCB_ADDR_IDX]];
+// FPU-NEXT:  int32_t [[WCB_ADDR:v[0-9]+]] = (int32_t) [[WCB_ADDR_PD]];
+// FPU-NEXT:  noc_async_write_tile([[WTILE_I32]], [[WACC]], [[WCB_ADDR]]);
+// FPU:     }
+// FPU-NEXT:   }
+// FPU-NEXT:   noc_async_write_barrier();
+
+// =============================================================================
+// SFPU path: reader kernel (same for both paths)
+// =============================================================================
+// SFPU-LABEL: // reader_binary
+// SFPU: void kernel_main() {
+// SFPU-DAG:   size_t [[BOUND:v[0-9]+]] = 2
+// SFPU-DAG:   size_t [[ONE:v[0-9]+]] = 1
+// SFPU-DAG:   size_t [[PAGE_SIZE:v[0-9]+]] = 4096
+// SFPU-DAG:   size_t [[ZERO:v[0-9]+]] = 0
+
+// Read tensor A into CB0
+// SFPU:   int32_t [[RT_ARG_A:.*]] = get_common_arg_val<uint32_t>([[ZERO]]);
+// SFPU-NEXT:   auto [[ARGS_A:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<2, 0>();
+// SFPU-NEXT:   TensorAccessor [[ACC_A:.*]] = TensorAccessor([[ARGS_A]], [[RT_ARG_A]],
+// CB pointer casting chain: int32_t -> ptrdiff_t -> size_t
+// SFPU:   int32_t [[CB0_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(0));
+// SFPU-NEXT:   ptrdiff_t [[CB0_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB0_PTR]];
+// SFPU-NEXT:   size_t [[CB0_PTR_IDX:v[0-9]+]] = (size_t) [[CB0_PTR_PTRDIFF]];
+// SFPU:   for (size_t [[I_A:.*]] = [[ZERO]]; [[I_A]] < [[BOUND]]; [[I_A]] += [[ONE]]) {
+// SFPU-NEXT:     for (size_t [[J_A:.*]] = [[ZERO]]; [[J_A]] < [[BOUND]]; [[J_A]] += [[ONE]]) {
+// Tile offset: linearize 2D index (i * bound + j)
+// SFPU:       size_t [[TILE_OFF_A_Y:v[0-9]+]] = [[I_A]] * [[BOUND]];
+// SFPU-NEXT:  size_t [[TILE_OFF_A:v[0-9]+]] = [[TILE_OFF_A_Y]] + [[J_A]];
+// Byte offset: tile_offset * page_size + cb_base
+// SFPU-NEXT:  size_t [[BYTE_OFF_A:v[0-9]+]] = [[TILE_OFF_A]] * [[PAGE_SIZE]];
+// SFPU-NEXT:  size_t [[CB_ADDR_A_IDX:v[0-9]+]] = [[CB0_PTR_IDX]] + [[BYTE_OFF_A]];
+// Cast tile offset and CB address to int32_t for noc_async_read_tile
+// SFPU-NEXT:  ptrdiff_t [[TILE_OFF_A_PD:v[0-9]+]] = (ptrdiff_t) [[TILE_OFF_A]];
+// SFPU-NEXT:  int32_t [[TILE_OFF_A_I32:v[0-9]+]] = (int32_t) [[TILE_OFF_A_PD]];
+// SFPU-NEXT:  ptrdiff_t [[CB_ADDR_A_PD:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR_A_IDX]];
+// SFPU-NEXT:  int32_t [[CB_ADDR_A:v[0-9]+]] = (int32_t) [[CB_ADDR_A_PD]];
+// SFPU-NEXT:  noc_async_read_tile([[TILE_OFF_A_I32]], [[ACC_A]], [[CB_ADDR_A]]);
+// SFPU:     }
+// SFPU-NEXT:   }
+// SFPU-NEXT:   noc_async_read_barrier();
+
+// Read tensor B into CB1
+// SFPU:   int32_t [[RT_ARG_B:.*]] = get_common_arg_val<uint32_t>([[ONE]]);
+// SFPU-NEXT:   auto [[ARGS_B:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 1>();
+// SFPU-NEXT:   TensorAccessor [[ACC_B:.*]] = TensorAccessor([[ARGS_B]], [[RT_ARG_B]],
+// CB pointer casting chain: int32_t -> ptrdiff_t -> size_t
+// SFPU:   int32_t [[CB1_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(1));
+// SFPU-NEXT:   ptrdiff_t [[CB1_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB1_PTR]];
+// SFPU-NEXT:   size_t [[CB1_PTR_IDX:v[0-9]+]] = (size_t) [[CB1_PTR_PTRDIFF]];
+// SFPU:   for (size_t [[I_B:.*]] = [[ZERO]]; [[I_B]] < [[BOUND]]; [[I_B]] += [[ONE]]) {
+// SFPU-NEXT:     for (size_t [[J_B:.*]] = [[ZERO]]; [[J_B]] < [[BOUND]]; [[J_B]] += [[ONE]]) {
+// Tile offset: linearize 2D index (i * bound + j)
+// SFPU:       size_t [[TILE_OFF_B_Y:v[0-9]+]] = [[I_B]] * [[BOUND]];
+// SFPU-NEXT:  size_t [[TILE_OFF_B:v[0-9]+]] = [[TILE_OFF_B_Y]] + [[J_B]];
+// Byte offset: tile_offset * page_size + cb_base
+// SFPU-NEXT:  size_t [[BYTE_OFF_B:v[0-9]+]] = [[TILE_OFF_B]] * [[PAGE_SIZE]];
+// SFPU-NEXT:  size_t [[CB_ADDR_B_IDX:v[0-9]+]] = [[CB1_PTR_IDX]] + [[BYTE_OFF_B]];
+// Cast tile offset and CB address to int32_t for noc_async_read_tile
+// SFPU-NEXT:  ptrdiff_t [[TILE_OFF_B_PD:v[0-9]+]] = (ptrdiff_t) [[TILE_OFF_B]];
+// SFPU-NEXT:  int32_t [[TILE_OFF_B_I32:v[0-9]+]] = (int32_t) [[TILE_OFF_B_PD]];
+// SFPU-NEXT:  ptrdiff_t [[CB_ADDR_B_PD:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR_B_IDX]];
+// SFPU-NEXT:  int32_t [[CB_ADDR_B:v[0-9]+]] = (int32_t) [[CB_ADDR_B_PD]];
+// SFPU-NEXT:  noc_async_read_tile([[TILE_OFF_B_I32]], [[ACC_B]], [[CB_ADDR_B]]);
+// SFPU:     }
+// SFPU-NEXT:   }
+// SFPU-NEXT:   noc_async_read_barrier();
+// SFPU-NEXT:   return;
+
+// =============================================================================
+// SFPU path: compute kernel -- init_sfpu, copy_tile, add_binary_tile, exp
+// =============================================================================
+// SFPU-LABEL: // compute_fused
+// SFPU: void kernel_main() {
+// SFPU-DAG:   int32_t [[TILES:v[0-9]+]] = 4
+// SFPU-DAG:   size_t [[STEP:v[0-9]+]] = 1
+// SFPU-DAG:   size_t [[CBOUND:v[0-9]+]] = 2
+// SFPU-DAG:   size_t [[CZERO:v[0-9]+]] = 0
+
+// SFPU:       cb_wait_front(get_compile_time_arg_val(0), [[TILES]]);
+// SFPU-NEXT:  cb_wait_front(get_compile_time_arg_val(1), [[TILES]]);
+// SFPU-NEXT:  cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+// SFPU-NEXT:  init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
+
+// SFPU:       for (size_t [[CI:.*]] = [[CZERO]]; [[CI]] < [[CBOUND]]; [[CI]] += [[STEP]]) {
+// SFPU-NEXT:    for (size_t [[CJ:.*]] = [[CZERO]]; [[CJ]] < [[CBOUND]]; [[CJ]] += [[STEP]]) {
+// Linear tile index computed before tile_regs_acquire (for copy_tile CB index)
+// SFPU:           size_t [[CTILE_Y:v[0-9]+]] = [[CI]] * {{.*}};
+// SFPU-NEXT:      size_t [[CTILE_IDX:v[0-9]+]] = [[CTILE_Y]] + [[CJ]];
+// SFPU-NEXT:      tile_regs_acquire();
+// SFPU-NEXT:      copy_tile_init(get_compile_time_arg_val(0));
+// SFPU-NEXT:      copy_tile(get_compile_time_arg_val(0), [[CTILE_IDX]], [[CZERO]]);
+// SFPU-NEXT:      copy_tile_init(get_compile_time_arg_val(1));
+// SFPU-NEXT:      copy_tile(get_compile_time_arg_val(1), [[CTILE_IDX]], [[STEP]]);
+// SFPU-NEXT:      add_binary_tile_init();
+// SFPU-NEXT:      add_binary_tile([[CZERO]], [[STEP]], [[CZERO]]);
+// SFPU-NEXT:      exp_tile_init();
+// SFPU-NEXT:      exp_tile([[CZERO]]);
+// SFPU-NEXT:      tile_regs_commit();
+// SFPU-NEXT:      tile_regs_wait();
+// Linearized index recomputed for pack_tile CB offset
+// SFPU:           size_t [[PTILE_Y:v[0-9]+]] = [[CI]] * [[CBOUND]];
+// SFPU-NEXT:      size_t [[PTILE_IDX:v[0-9]+]] = [[PTILE_Y]] + [[CJ]];
+// SFPU-NEXT:      pack_tile<true>([[CZERO]], get_compile_time_arg_val(2), [[PTILE_IDX]]);
+// SFPU-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
+// SFPU-NEXT:      tile_regs_release();
+
+// SFPU-NOT:   binary_op_init_common
+// SFPU-NOT:   add_tiles
+
+// =============================================================================
+// SFPU path: writer kernel
+// =============================================================================
+// SFPU-LABEL: // writer_unary
+// SFPU: void kernel_main() {
+// SFPU-DAG:   size_t [[WBOUND:v[0-9]+]] = 2
+// SFPU-DAG:   size_t [[WONE:v[0-9]+]] = 1
+// SFPU-DAG:   size_t [[WPAGE:v[0-9]+]] = 4096
+// SFPU-DAG:   size_t [[WZERO:v[0-9]+]] = 0
+// SFPU:   int32_t [[WRT_ARG:.*]] = get_common_arg_val<uint32_t>([[WZERO]]);
+// SFPU-NEXT:   auto [[WARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<1, 0>();
+// SFPU-NEXT:   TensorAccessor [[WACC:.*]] = TensorAccessor([[WARGS]], [[WRT_ARG]],
+// CB pointer casting chain: int32_t -> ptrdiff_t -> size_t
+// SFPU:   int32_t [[WR_PTR:.*]] = get_read_ptr(get_compile_time_arg_val(2));
+// SFPU-NEXT:   ptrdiff_t [[WR_PTR_PD:v[0-9]+]] = (ptrdiff_t) [[WR_PTR]];
+// SFPU-NEXT:   size_t [[WR_PTR_IDX:v[0-9]+]] = (size_t) [[WR_PTR_PD]];
+// SFPU:   for (size_t [[WI:.*]] = [[WZERO]]; [[WI]] < [[WBOUND]]; [[WI]] += [[WONE]]) {
+// SFPU-NEXT:     for (size_t [[WJ:.*]] = [[WZERO]]; [[WJ]] < [[WBOUND]]; [[WJ]] += [[WONE]]) {
+// Tile offset: linearize 2D index (i * bound + j)
+// SFPU:       size_t [[WTILE_Y:v[0-9]+]] = [[WI]] * [[WBOUND]];
+// SFPU-NEXT:  size_t [[WTILE_OFF:v[0-9]+]] = [[WTILE_Y]] + [[WJ]];
+// Byte offset: tile_offset * page_size + cb_base
+// SFPU-NEXT:  size_t [[WBYTE_OFF:v[0-9]+]] = [[WTILE_OFF]] * [[WPAGE]];
+// SFPU-NEXT:  size_t [[WCB_ADDR_IDX:v[0-9]+]] = [[WR_PTR_IDX]] + [[WBYTE_OFF]];
+// Cast tile offset and CB address to int32_t for noc_async_write_tile
+// SFPU-NEXT:  ptrdiff_t [[WTILE_PD:v[0-9]+]] = (ptrdiff_t) [[WTILE_OFF]];
+// SFPU-NEXT:  int32_t [[WTILE_I32:v[0-9]+]] = (int32_t) [[WTILE_PD]];
+// SFPU-NEXT:  ptrdiff_t [[WCB_ADDR_PD:v[0-9]+]] = (ptrdiff_t) [[WCB_ADDR_IDX]];
+// SFPU-NEXT:  int32_t [[WCB_ADDR:v[0-9]+]] = (int32_t) [[WCB_ADDR_PD]];
+// SFPU-NEXT:  noc_async_write_tile([[WTILE_I32]], [[WACC]], [[WCB_ADDR]]);
+// SFPU:     }
+// SFPU-NEXT:   }
+// SFPU-NEXT:   noc_async_write_barrier();
 
 // Reader kernel: reads A and B from DRAM, pushes to CB0 and CB1
 func.func @reader_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %b: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>)
@@ -94,71 +312,6 @@ func.func @reader_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %b: 
 
   func.return
 }
-
-// CHECK-LABEL: // compute_fused
-// CHECK: void kernel_main() {
-// CHECK-DAG:   int32_t [[TILES:.*]] = 4;
-// CHECK-DAG:   size_t [[BOUND:.*]] = 2;
-// CHECK-DAG:   size_t [[ONE:.*]] = 1;
-// CHECK-DAG:   size_t [[ZERO:.*]] = 0;
-
-// Wait for inputs from reader
-// CHECK:   cb_wait_front(get_compile_time_arg_val(0), [[TILES]]);
-// CHECK-NEXT:   cb_wait_front(get_compile_time_arg_val(1), [[TILES]]);
-
-// Reserve output CB2 for packing (before loops)
-// CHECK-NEXT:   cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
-
-// Initialize SFPU for CB data formats
-// CHECK-NEXT:   init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
-
-// Nested loops over 2x2 tile grid
-// CHECK-NEXT:   for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[ONE]]) {
-// CHECK-NEXT:     for (size_t [[J:.*]] = [[ZERO]]; [[J]] < [[BOUND]]; [[J]] += [[ONE]]) {
-
-// Compute linear tile index: i * cols + j
-// CHECK:            size_t [[COL_SIZE:.*]] = 2;
-// CHECK-NEXT:       size_t [[IOFF:.*]] = [[I]] * [[COL_SIZE]];
-// CHECK-NEXT:       size_t [[LINIDX:.*]] = [[IOFF]] + [[J]];
-
-// Acquire DST registers (inside loop)
-// CHECK-NEXT:       tile_regs_acquire();
-
-// Load tiles into DST (at first use: CB0 first, then CB1)
-// CHECK-NEXT:       copy_tile_init(get_compile_time_arg_val(0));
-// CHECK-NEXT:       copy_tile(get_compile_time_arg_val(0), [[LINIDX]], [[ZERO]]);
-// CHECK-NEXT:       copy_tile_init(get_compile_time_arg_val(1));
-// CHECK-NEXT:       copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[ONE]]);
-
-// Compute: A + B
-// CHECK-NEXT:       add_binary_tile_init();
-// CHECK-NEXT:       add_binary_tile([[ZERO]], [[ONE]], [[ZERO]]);
-
-// Compute: exp(A + B)
-// CHECK-NEXT:       exp_tile_init();
-// CHECK-NEXT:       exp_tile([[ZERO]]);
-
-// Synchronize DST registers before pack
-// CHECK-NEXT:       tile_regs_commit();
-// CHECK-NEXT:       tile_regs_wait();
-
-// Compute CB tile index: i * 2 + j (linearized row-major index)
-// CHECK:       size_t [[CB_OFF_I:v[0-9]+]] = [[I]] * {{.*}};
-// CHECK-NEXT:       size_t [[CB_IDX:v[0-9]+]] = [[CB_OFF_I]] + [[J]];
-
-// Pack result to output CB2
-// CHECK-NEXT:       pack_tile<true>([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX]]);
-
-// Push to signal data ready
-// CHECK-NEXT:       cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
-
-// Release DST registers (inside loop)
-// CHECK-NEXT:       tile_regs_release();
-
-// End loops
-// CHECK-NEXT:     }
-// CHECK-NEXT:   }
-// CHECK-NEXT:   return;
 
 // Compute kernel: reads from CB0, CB1, computes f(A+B), writes to CB2
 func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -196,41 +349,6 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
-
-// CHECK-LABEL: // writer_unary
-// CHECK: void kernel_main() {
-// CHECK-DAG:   size_t [[ONE:.*]] = 1;
-// CHECK-DAG:   size_t [[BOUND:.*]] = 2;
-// CHECK-DAG:   size_t [[PAGE_SIZE:.*]] = 4096;
-// CHECK-DAG:   size_t [[ZERO:.*]] = 0;
-
-// Write output to DRAM from CB2
-// CHECK:   int32_t [[RT_ARG_OUT:.*]] = get_common_arg_val<uint32_t>([[ZERO]]);
-// CHECK-NEXT:   auto [[ARGS_OUT:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<1, 0>();
-// CHECK-NEXT:   TensorAccessor [[ACC_OUT:.*]] = TensorAccessor([[ARGS_OUT]], [[RT_ARG_OUT]],
-// CHECK:   int32_t [[CB2_PTR:.*]] = get_read_ptr(get_compile_time_arg_val(2));
-// Cast CB ptr to size_t for index arithmetic
-// CHECK-NEXT:   ptrdiff_t [[CB2_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB2_PTR]];
-// CHECK-NEXT:   size_t [[CB2_PTR_IDX:v[0-9]+]] = (size_t) [[CB2_PTR_PTRDIFF]];
-// CHECK-NEXT:   for (size_t [[I_OUT:.*]] = [[ZERO]]; [[I_OUT]] < [[BOUND]]; [[I_OUT]] += [[ONE]]) {
-// CHECK-NEXT:     for (size_t [[J_OUT:.*]] = [[ZERO]]; [[J_OUT]] < [[BOUND]]; [[J_OUT]] += [[ONE]]) {
-// Tile offset computation: i * cols + j
-// CHECK:       size_t [[TILE_OFF_OUT_Y:v[0-9]+]] = [[I_OUT]] * [[BOUND]];
-// CHECK-NEXT:       size_t [[TILE_OFF_OUT_X:v[0-9]+]] = [[TILE_OFF_OUT_Y]] + [[J_OUT]];
-// CB address computation: cb_ptr + tile_offset * page_size (all size_t arithmetic)
-// CHECK-NEXT:       size_t [[BYTE_OFF_OUT:v[0-9]+]] = [[TILE_OFF_OUT_X]] * [[PAGE_SIZE]];
-// CHECK-NEXT:       size_t [[CB_ADDR_OUT_IDX:v[0-9]+]] = [[CB2_PTR_IDX]] + [[BYTE_OFF_OUT]];
-// Cast to i32 for NOC operation
-// CHECK-NEXT:       ptrdiff_t [[TILE_OFF_OUT_PTR:v[0-9]+]] = (ptrdiff_t) [[TILE_OFF_OUT_X]];
-// CHECK-NEXT:       int32_t [[TILE_OFF_OUT:v[0-9]+]] = (int32_t) [[TILE_OFF_OUT_PTR]];
-// CHECK-NEXT:       ptrdiff_t [[CB_ADDR_OUT_PTR:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR_OUT_IDX]];
-// CHECK-NEXT:       int32_t [[CB_ADDR_OUT:v[0-9]+]] = (int32_t) [[CB_ADDR_OUT_PTR]];
-// CHECK-NEXT:       noc_async_write_tile([[TILE_OFF_OUT]], [[ACC_OUT]], [[CB_ADDR_OUT]]);
-// CHECK:     }
-// CHECK-NEXT:   }
-// CHECK-NEXT:   noc_async_write_barrier();
-// CHECK-NEXT:   return;
-// CHECK-NEXT: }
 
 // Writer kernel: pops from CB2, writes to DRAM
 func.func @writer_unary(%out: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>)

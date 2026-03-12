@@ -223,6 +223,55 @@ def TTLLowerToLoops
   ];
 }
 
+def TTLScheduleOperations
+    : Pass<"ttl-schedule-operations", "::mlir::func::FuncOp"> {
+  let summary = "Group tile operations by kind within sync regions";
+  let description = [{
+    Reorders tile operations within sync regions (`tile_regs_acquire` to
+    `tile_regs_commit`) to group by operation kind. After `ttl-lower-to-loops`
+    unrolls a subblocked compute, tile ops from different iterations are
+    interleaved. This pass groups them so `ttkernel-insert-inits` can emit
+    one init per consecutive group of same-type ops.
+
+    Ops are sorted by (dependency depth, category, TypeID, init affinity,
+    dst_idx). Dependency depth considers RAW (SSA def-use), WAW (same DST
+    write index), and WAR (write after prior read of same DST index) hazards.
+    Ops at the same depth are independent and can be reordered.
+
+    Only tile ops between `tile_regs_acquire` and `tile_regs_commit` are
+    scheduled. Store ops (after the commit/wait boundary) are not reordered.
+
+    Category ordering:
+      CopyTile < Bcast < FPUBinary < SFPUUnary < SFPUBinary < CopyDst
+
+    Example:
+    ```mlir
+    // Before (interleaved by tile iteration):
+    ttl.tile_regs_acquire
+    %s0 = ttl.tile_add %a0, %b0 {dst_idx = 0}
+    %e0 = ttl.tile_exp %s0 {dst_idx = 0}
+    %s1 = ttl.tile_add %a1, %b1 {dst_idx = 1}
+    %e1 = ttl.tile_exp %s1 {dst_idx = 1}
+    ttl.tile_regs_commit
+
+    // After (grouped by kind at each dependency depth):
+    ttl.tile_regs_acquire
+    %s0 = ttl.tile_add %a0, %b0 {dst_idx = 0}  // depth 0
+    %s1 = ttl.tile_add %a1, %b1 {dst_idx = 1}  // depth 0
+    %e0 = ttl.tile_exp %s0 {dst_idx = 0}       // depth 1
+    %e1 = ttl.tile_exp %s1 {dst_idx = 1}       // depth 1
+    ttl.tile_regs_commit
+    ```
+
+    References:
+    - Hennessy & Patterson, "Computer Architecture", Ch. 3: RAW/WAR/WAW hazards
+    - Cooper & Torczon, "Engineering a Compiler", Ch. 12: list scheduling with
+      topological depth levels
+  }];
+
+  let dependentDialects = [];
+}
+
 def TTLAnnotateCBAssociations
     : Pass<"ttl-annotate-cb-associations", "::mlir::func::FuncOp"> {
   let summary = "Annotate ttl.compute block args with CB index associations";

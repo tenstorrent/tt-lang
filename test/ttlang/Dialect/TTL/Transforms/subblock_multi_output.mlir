@@ -5,7 +5,7 @@
 // Shape: 4x4 bf16 (capacity=8). Multi-dim tiling: tileSizes=[2,4], product=8.
 // Loop on dim 0 (0 to 4 step 2). Stride 4 for dim 0 offset.
 
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttcore-register-device,func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-subblock-compute-for-dst))' | FileCheck %s --check-prefix=SUBBLOCK
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-subblock-compute-for-dst))' | FileCheck %s --check-prefix=SUBBLOCK
 
 // SUBBLOCK-LABEL: func.func @fused_compute
 // Verify three separate scf.for loops with inner ttl.compute ops (one per

@@ -1,83 +1,104 @@
+// FPU path (default): add uses add_tiles (reads from CB), mul uses SFPU.
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse, lower-affine)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse, lower-affine)' \
 // RUN:   -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
-// RUN: FileCheck %s --input-file=%t.cpp
+// RUN: FileCheck %s --input-file=%t.cpp --check-prefix=FPU
+
+// SFPU path: all binary ops use copy_tile + SFPU binary ops.
+// RUN: ttlang-opt %s \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse, lower-affine)' \
+// RUN:   -o %t.sfpu.ttkernel.mlir
+// RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.sfpu.ttkernel.mlir -o %t.sfpu.emitc.mlir
+// RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.sfpu.cpp %t.sfpu.emitc.mlir
+// RUN: FileCheck %s --input-file=%t.sfpu.cpp --check-prefix=SFPU
 
 // Purpose: end-to-end TTL -> TTKernel -> emitc -> C++ for fused chain.
-// Verifies: add + exp fused compute with CB-based data flow.
-// Note: enable-fpu-binary-ops=0 keeps SFPU lowering path (not testing FPU detection).
+// Verifies: add + mul + exp fused compute with CB-based data flow.
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// CHECK-LABEL: void kernel_main()
+// =============================================================================
+// FPU path: binary_op_init_common, add_tiles, copy_tile (for mul rhs), mul_binary_tile, exp
+// =============================================================================
+// FPU-LABEL: void kernel_main()
 
-// --- Constants ---
-// CHECK-DAG:   int32_t [[TILES:v[0-9]+]] = 4
-// CHECK-DAG:   size_t [[BOUND:v[0-9]+]] = 2
-// CHECK-DAG:   size_t [[STEP:v[0-9]+]] = 1
-// CHECK-DAG:   size_t [[ZERO:v[0-9]+]] = 0
+// FPU-DAG:   int32_t [[TILES:v[0-9]+]] = 4
+// FPU-DAG:   size_t [[BOUND:v[0-9]+]] = 2
+// FPU-DAG:   size_t [[STEP:v[0-9]+]] = 1
+// FPU-DAG:   size_t [[ZERO:v[0-9]+]] = 0
 
-// --- Reserve output CB2 for packing (before loops) ---
-// CHECK:       cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+// FPU:       cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+// FPU:       binary_op_init_common(get_compile_time_arg_val(0), get_compile_time_arg_val(1), get_compile_time_arg_val(2));
 
-// --- Nested loops over 2x2 tile grid ---
-// CHECK:       for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[STEP]]) {
-// CHECK-NEXT:    for (size_t [[J:.*]] = [[ZERO]]; [[J]] < [[BOUND]]; [[J]] += [[STEP]]) {
+// FPU:       for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[STEP]]) {
+// FPU-NEXT:    for (size_t [[J:.*]] = [[ZERO]]; [[J]] < [[BOUND]]; [[J]] += [[STEP]]) {
 
-// --- Compute linear tile index: i * cols + j ---
-// CHECK:           size_t [[COL_SIZE:.*]] = 2;
-// CHECK-NEXT:      size_t [[IOFF:.*]] = [[I]] * [[COL_SIZE]];
-// CHECK-NEXT:      size_t [[LINIDX:.*]] = [[IOFF]] + [[J]];
+// FPU:           tile_regs_acquire();
 
-// --- DST register lifecycle (acquire inside loop) ---
-// CHECK-NEXT:      tile_regs_acquire();
+// FPU:           add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+// FPU-NEXT:      add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
 
-// --- Load tiles into DST (at first use: CB0 first, then CB1) ---
-// CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(0));
-// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(0), [[LINIDX]], [[ZERO]]);
-// CHECK-NEXT:      copy_tile_init(get_compile_time_arg_val(1));
-// CHECK-NEXT:      copy_tile(get_compile_time_arg_val(1), [[LINIDX]], [[STEP]]);
+// mul rhs from CB needs copy_tile
+// FPU:           copy_tile_init(get_compile_time_arg_val(1));
+// FPU-NEXT:      copy_tile(get_compile_time_arg_val(1),
 
-// --- Add: DST[0] + DST[1] -> DST[0] ---
-// CHECK-NEXT:      add_binary_tile_init();
-// CHECK-NEXT:      add_binary_tile([[ZERO]], [[STEP]], [[ZERO]]);
+// FPU:           mul_binary_tile_init();
+// FPU-NEXT:      mul_binary_tile(
 
-// --- Mul: DST[0] * DST[1] -> DST[0] ---
-// CHECK-NEXT:      mul_binary_tile_init();
-// CHECK-NEXT:      mul_binary_tile([[ZERO]], [[STEP]], [[ZERO]]);
+// FPU:           exp_tile_init();
+// FPU-NEXT:      exp_tile(
 
-// --- Exp: exp(DST[0]) -> DST[0] ---
-// CHECK-NEXT:      exp_tile_init();
-// CHECK-NEXT:      exp_tile([[ZERO]]);
+// FPU:           tile_regs_commit();
+// FPU-NEXT:      tile_regs_wait();
+// FPU:           pack_tile<true>([[ZERO]], get_compile_time_arg_val(2),
+// FPU:           tile_regs_release();
 
-// --- DST register synchronization ---
-// CHECK-NEXT:      tile_regs_commit();
-// CHECK-NEXT:      tile_regs_wait();
+// FPU-NOT:   init_sfpu
+// FPU-NOT:   add_binary_tile
 
-// --- Compute CB tile index: i * 2 + j (linearized row-major index) ---
-// CHECK:      size_t [[CB_OFF_I:v[0-9]+]] = [[I]] * {{.*}};
-// CHECK-NEXT:      size_t [[CB_IDX:v[0-9]+]] = [[CB_OFF_I]] + [[J]];
+// =============================================================================
+// SFPU path: init_sfpu, copy_tile + add_binary_tile, mul_binary_tile, exp
+// =============================================================================
+// SFPU-LABEL: void kernel_main()
 
-// --- Pack DST[0] to output CB2 ---
-// CHECK-NEXT:      pack_tile<true>([[ZERO]], get_compile_time_arg_val(2), [[CB_IDX]]);
+// SFPU-DAG:   int32_t [[TILES:v[0-9]+]] = 4
+// SFPU-DAG:   size_t [[BOUND:v[0-9]+]] = 2
+// SFPU-DAG:   size_t [[STEP:v[0-9]+]] = 1
+// SFPU-DAG:   size_t [[ZERO:v[0-9]+]] = 0
 
-// --- Push to signal data ready ---
-// CHECK-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
+// SFPU:       cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+// SFPU:       init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
 
-// --- DST register lifecycle (release inside loop) ---
-// CHECK-NEXT:      tile_regs_release();
+// SFPU:       for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[STEP]]) {
+// SFPU-NEXT:    for (size_t [[J:.*]] = [[ZERO]]; [[J]] < [[BOUND]]; [[J]] += [[STEP]]) {
 
-// --- End of inner and outer loops ---
-// CHECK-NEXT:    }
-// CHECK-NEXT:  }
-// CHECK-NEXT:  return;
+// SFPU:           tile_regs_acquire();
 
-// --- Verify no tensor operations remain ---
-// CHECK-NOT:   tensor.extract
-// CHECK-NOT:   tensor.insert
-// CHECK-NOT:   tensor.empty
+// SFPU:           copy_tile_init(get_compile_time_arg_val(0));
+// SFPU-NEXT:      copy_tile(get_compile_time_arg_val(0), {{.*}}, [[ZERO]]);
+// SFPU-NEXT:      copy_tile_init(get_compile_time_arg_val(1));
+// SFPU-NEXT:      copy_tile(get_compile_time_arg_val(1), {{.*}}, [[STEP]]);
+
+// SFPU-NEXT:      add_binary_tile_init();
+// SFPU-NEXT:      add_binary_tile([[ZERO]], [[STEP]], [[ZERO]]);
+
+// SFPU-NEXT:      mul_binary_tile_init();
+// SFPU-NEXT:      mul_binary_tile([[ZERO]], [[STEP]], [[ZERO]]);
+
+// SFPU-NEXT:      exp_tile_init();
+// SFPU-NEXT:      exp_tile([[ZERO]]);
+
+// SFPU-NEXT:      tile_regs_commit();
+// SFPU-NEXT:      tile_regs_wait();
+
+// SFPU:           pack_tile<true>([[ZERO]], get_compile_time_arg_val(2),
+// SFPU:           tile_regs_release();
+
+// SFPU-NOT:   binary_op_init_common
+// SFPU-NOT:   add_tiles
+
 func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                 %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>>

@@ -4,10 +4,8 @@
 
 #include "ttlang/Dialect/TTL/Pipelines/TTLPipelines.h"
 
-#include "ttlang/Config.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
-#include "ttmlir/Dialect/TTCore/Transforms/Passes.h"
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Dialect/EmitC/Transforms/Passes.h"
@@ -20,18 +18,21 @@ namespace mlir::tt::ttl {
 
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
-  if (TTLANG_HAS_DEVICE) {
-    pm.addPass(mlir::tt::ttcore::createTTCoreRegisterDevicePass());
-  }
   pm.addPass(createTTLConvertTTLToCompute());
   pm.addPass(createTTLSetComputeKernelConfig());
-  // FPU binary lowering patterns are not yet available, so disable FPU binary
-  // detection to keep binary ops on the SFPU path.
-  TTLAssignDSTOptions assignDSTOpts;
-  assignDSTOpts.enableFPUBinaryOps = false;
-  pm.addPass(createTTLAssignDST(assignDSTOpts));
+  {
+    TTLAssignDSTOptions assignDstOpts;
+    assignDstOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
+    pm.addPass(createTTLAssignDST(assignDstOpts));
+  }
+  if (options.maximizeDST) {
+    pm.addPass(createTTLSubblockComputeForDST());
+  }
   pm.addPass(createTTLInsertTileRegsSync());
   pm.addPass(createTTLLowerToLoops());
+  if (options.maximizeDST) {
+    pm.addPass(createTTLScheduleOperations());
+  }
   pm.addPass(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLConvertTTLToTTKernel());
   pm.addPass(createTTKernelInsertInits());

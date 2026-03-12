@@ -113,10 +113,12 @@ def assert_success_output(code: int, out: str) -> None:
             "eltwise_pipe_core3.py",
             marks=requires_ttnn,
         ),
+        "matmul.py",
         "singlecore_matmul.py",
         "multicore_matmul.py",
         "matmul_1d.py",
         "matmul_1d_mcast.py",
+        "eltwise_1d_broadcast.py",
         pytest.param(
             "tutorial/ttnn_base.py",
             marks=requires_ttnn,
@@ -190,7 +192,7 @@ def test_eltwise_add2_fails_with_expected_error(scheduler: str) -> None:
     ), f"Expected eltwise_add_error.py to fail, but it exited with code 0"
     # Check for the core error message (shape mismatch)
     assert (
-        "Tensor shape (32, 32) (=(1, 1) tiles) does not match Block shape (2, 2) tiles"
+        "Tensor shape (32, 32) does not match Block shape (2, 2) (tile counts: 1 vs 4)"
         in out
     ), f"Expected error message not found in output:\n{out}"
 
@@ -320,3 +322,33 @@ def test_eltwise_add_deadlock_detection() -> None:
 
     finally:
         tmp_path.unlink()
+
+
+@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
+def test_eltwise_1d_broadcast_warning(scheduler: str) -> None:
+    """Test that eltwise_1d_broadcast.py displays 1D broadcast hardware warning.
+
+    This example demonstrates broadcasting with 1D blocks. Since 1D broadcasts
+    are not supported by current hardware, the simulator should emit warnings
+    when ttl.math.broadcast() is called on 1D blocks, but the script should
+    still execute successfully.
+    """
+    code, out = run_ttlang_sim_and_capture(
+        EXAMPLES_DIR / "eltwise_1d_broadcast.py", scheduler=scheduler
+    )
+
+    # The example should run successfully (warnings don't fail execution)
+    assert code == 0, (
+        f"Expected eltwise_1d_broadcast.py to succeed, but it exited with code {code}\n"
+        f"Output:\n{out}"
+    )
+
+    # Verify the 1D broadcast warning appears
+    assert (
+        "warning: 1D broadcast is not supported on current hardware" in out
+    ), f"Expected 1D broadcast warning not found in output:\n{out}"
+
+    # Verify source location is shown (the broadcast calls are in eltwise_compute function)
+    assert (
+        "examples/eltwise_1d_broadcast.py:" in out
+    ), f"Expected source location not found in output:\n{out}"

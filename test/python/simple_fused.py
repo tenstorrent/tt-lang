@@ -3,9 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: tt-device
-# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
+# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
+# RUN: env %python %s > %t.fpu.output 2>&1
+# RUN: FileCheck %s --check-prefix=CHECK-CPP-FPU < %t.fpu.output
 
 """
 Simple fused kernel - verifies ttl.math.exp(inp) + ttl.math.sqrt(bias) fusion lowers correctly.
@@ -134,6 +136,40 @@ def fused_kernel(inp, bias, out):
 # CHECK-CPP: cb_pop_front(get_compile_time_arg_val(0),
 # CHECK-CPP: cb_pop_front(get_compile_time_arg_val(1),
 # CHECK-CPP: cb_push_back(get_compile_time_arg_val(2),
+
+# =============================================================================
+# FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
+# Add stays SFPU (both inputs from DST), but scheduling groups copy_tiles
+# =============================================================================
+
+# CHECK-CPP-FPU: // fused_compute
+# CHECK-CPP-FPU: void kernel_main()
+# CHECK-CPP-FPU: cb_wait_front(get_compile_time_arg_val(0),
+# CHECK-CPP-FPU: cb_wait_front(get_compile_time_arg_val(1),
+# CHECK-CPP-FPU: cb_reserve_back(get_compile_time_arg_val(2),
+# CHECK-CPP-FPU: init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
+# CHECK-CPP-FPU: tile_regs_acquire();
+
+# Scheduling groups copy_tiles together before SFPU ops
+# CHECK-CPP-FPU: copy_tile_init(get_compile_time_arg_val(0));
+# CHECK-CPP-FPU: copy_tile(get_compile_time_arg_val(0),
+# CHECK-CPP-FPU: copy_tile_init(get_compile_time_arg_val(1));
+# CHECK-CPP-FPU: copy_tile(get_compile_time_arg_val(1),
+
+# SFPU ops after copies
+# CHECK-CPP-FPU: exp_tile_init();
+# CHECK-CPP-FPU: exp_tile(
+# CHECK-CPP-FPU: sqrt_tile_init();
+# CHECK-CPP-FPU: sqrt_tile(
+# CHECK-CPP-FPU: add_binary_tile_init();
+# CHECK-CPP-FPU: add_binary_tile(
+# CHECK-CPP-FPU: tile_regs_commit();
+# CHECK-CPP-FPU: tile_regs_wait();
+# CHECK-CPP-FPU: pack_tile<true>(
+# CHECK-CPP-FPU: tile_regs_release();
+# CHECK-CPP-FPU: cb_pop_front(get_compile_time_arg_val(0),
+# CHECK-CPP-FPU: cb_pop_front(get_compile_time_arg_val(1),
+# CHECK-CPP-FPU: cb_push_back(get_compile_time_arg_val(2),
 
 
 if __name__ == "__main__":

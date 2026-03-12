@@ -47,6 +47,7 @@ def get_compute_kernel(
     """
     cache_key = (
         f"{op.name}_{op.ttl_op}_{config.block_h}x{config.block_w}_{config.dtype}"
+        f"_dst{config.maximize_dst}_fpu{config.enable_fpu_binary_ops}"
     )
     if cache_key in _kernel_cache:
         return _kernel_cache[cache_key]
@@ -56,7 +57,12 @@ def get_compute_kernel(
     module = build_e2e_module(op.name, op.arity, e2e_config)
 
     # Run TTL pass pipeline to get EmitC.
-    compiled_module = compile_ttl_to_ttkernel(module, device)
+    compiled_module = compile_ttl_to_ttkernel(
+        module,
+        device,
+        maximize_dst=config.maximize_dst,
+        enable_fpu_binary_ops=config.enable_fpu_binary_ops,
+    )
 
     # Translate to C++ kernels.
     noc_kernels, compute_kernel = translate_module_to_kernels(compiled_module)
@@ -111,7 +117,12 @@ def run_compute_test(
     # 3. Build full ME2E module to get reader/writer kernels.
     # We need the full module to extract all kernels (reader, compute, writer).
     module = build_e2e_module(op.name, op.arity, e2e_config)
-    compiled_module = compile_ttl_to_ttkernel(module, device)
+    compiled_module = compile_ttl_to_ttkernel(
+        module,
+        device,
+        maximize_dst=config.maximize_dst,
+        enable_fpu_binary_ops=config.enable_fpu_binary_ops,
+    )
     noc_kernels, compute_kernel_spec = translate_module_to_kernels(compiled_module)
 
     # Replace compute kernel source with cached/generated one.
