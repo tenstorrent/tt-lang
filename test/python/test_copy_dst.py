@@ -60,10 +60,8 @@ def dst_intermediate_reuse_kernel(a, b, out):
             tx.wait()
 
 
-@pytest.mark.forked
-@pytest.mark.xfail(
-    reason="copy_dest_values.h not included in tt-mlir TTKernelToCpp.cpp (#384)",
-    strict=True,
+@pytest.mark.skip(
+    reason="copy_dest_values.h not included in tt-mlir TTKernelToCpp.cpp (#384)"
 )
 def test_dst_intermediate_reuse(device):
     """Compile kernel where DST intermediate is reused (triggers copy_dst)."""
