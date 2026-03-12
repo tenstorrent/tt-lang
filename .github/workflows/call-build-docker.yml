@@ -135,15 +135,18 @@ jobs:
           docker pull "$BASE_IMAGE"
           echo "BASE_IMAGE=$BASE_IMAGE" >> $GITHUB_ENV
 
-      - name: Copy runtime libs into toolchain
+      - name: Configure tt-lang
         run: |
+          df -h
           docker run --rm \
             -v ${{ github.workspace }}:/workspace \
             -v /opt/ttlang-toolchain:/opt/ttlang-toolchain \
             -w /workspace \
             -e TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
             "$BASE_IMAGE" \
-            bash .github/containers/build-and-install.sh --copy-runtime-libs
+            bash .github/containers/build-and-install.sh --configure-only
+          echo "=== Configure complete ==="
+          df -h
 
       - name: Normalize toolchain
         run: |

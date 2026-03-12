@@ -67,13 +67,18 @@ TTMETAL_BUILD_DIR="$TTLANG_TOOLCHAIN_DIR/tt-metal"
 # ---- Phase: Configure (cmake configure + pip install) ----
 do_configure() {
     echo "=== Configuring tt-lang ==="
+    # Use the pre-built toolchain if it already contains LLVM.
+    local _use_toolchain=OFF
+    if [ -f "$TTLANG_TOOLCHAIN_DIR/lib/cmake/mlir/MLIRConfig.cmake" ]; then
+        _use_toolchain=ON
+    fi
+
     cmake -G Ninja -B build \
         -DCMAKE_BUILD_TYPE=Release \
-        -DLLVM_INSTALL_DIR=$TTLANG_TOOLCHAIN_DIR \
-        -DTTMETAL_BUILD_DIR=$TTMETAL_BUILD_DIR \
+        -DTTLANG_USE_TOOLCHAIN=$_use_toolchain \
+        -DTTLANG_TOOLCHAIN_DIR=$TTLANG_TOOLCHAIN_DIR \
         -DTTLANG_PYTHON_VENV=$TTLANG_TOOLCHAIN_DIR/venv \
-        -DTTLANG_ENABLE_PERF_TRACE=ON \
-        -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
+        -DTTLANG_ENABLE_PERF_TRACE=ON
 
     echo "=== Disk space after configure ==="
     df -BM
