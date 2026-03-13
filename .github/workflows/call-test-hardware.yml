@@ -114,7 +114,7 @@ jobs:
       - name: Simulator tests
         run: |
           source build/env/activate
-          python3 -m pytest test/sim -v --tb=short --junitxml=build/test/sim-report.xml
+          python3 -m pytest test/sim -v -n auto --tb=short --junitxml=build/test/sim-report.xml
 
       - name: Upload test reports
         uses: actions/upload-artifact@v5
