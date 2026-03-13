@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQUIRES: ttnn
+# REQUIRES: ttnn, tt-device
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.output
 
