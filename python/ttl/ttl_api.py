@@ -1160,6 +1160,7 @@ def _compile_kernel(
             pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
 
         pipeline_passes += [
+            "ttl-lower-dprint-to-emitc",
             "convert-ttl-to-ttkernel",
             "ttkernel-insert-inits",
             "canonicalize",

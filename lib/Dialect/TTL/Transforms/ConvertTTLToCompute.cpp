@@ -126,13 +126,28 @@ static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *elementwiseOp,
 // Fused compute building
 //===----------------------------------------------------------------------===//
 
-/// Collect signpost ops interleaved with fused ops so they can be moved into
-/// the compute body. Walks backwards from the first fused op for leading
-/// signposts, between fused ops for interleaved ones, and forward from the
-/// last fused op for trailing ones (stopping at cb_push/cb_pop).
+/// Check if an op is a user signpost or a tile-level dprint that should
+/// be pulled into the compute body alongside fused tile ops. Only DST and
+/// tile mode dprints need tile-level context; scalar and CB prints stay
+/// outside the loop.
+static bool isSideEffectOpForCompute(Operation *op) {
+  if (auto sp = dyn_cast<SignpostOp>(op)) {
+    return sp.getName().starts_with("ttl_");
+  }
+  if (auto dp = dyn_cast<DPrintOp>(op)) {
+    StringRef mode = dp.getMode();
+    return mode == "dst" || mode == "tile";
+  }
+  return false;
+}
+
+/// Collect signpost and dprint ops interleaved with fused ops so they can
+/// be moved into the compute body. Walks backwards from the first fused op
+/// for leading ops, between fused ops for interleaved ones, and forward
+/// from the last fused op for trailing ones (stopping at cb_push/cb_pop).
 static SmallVector<std::pair<Operation *, Operation *>>
-collectInterleavedSignposts(const ElementwiseTraceResult &trace,
-                            Operation *sinkOp) {
+collectInterleavedSideEffectOps(const ElementwiseTraceResult &trace,
+                                Operation *sinkOp) {
   DenseSet<Operation *> fusedSet(trace.opsInOrder.begin(),
                                  trace.opsInOrder.end());
 
@@ -151,19 +166,14 @@ collectInterleavedSignposts(const ElementwiseTraceResult &trace,
     return {};
   }
 
-  // Result: pairs of (signpost, insertAfterThisFusedOp). nullptr means
-  // the signpost is leading (before all fused ops).
+  // Result: pairs of (op, insertAfterThisFusedOp). nullptr means
+  // the op is leading (before all fused ops).
   SmallVector<std::pair<Operation *, Operation *>> result;
 
-  auto isUserSignpost = [](Operation *op) {
-    auto sp = dyn_cast<SignpostOp>(op);
-    return sp && sp.getName().starts_with("ttl_");
-  };
-
-  // Leading signposts: walk backwards from first fused op.
+  // Leading ops: walk backwards from first fused op.
   SmallVector<Operation *> leading;
   for (auto *op = firstFused->getPrevNode(); op; op = op->getPrevNode()) {
-    if (isUserSignpost(op)) {
+    if (isSideEffectOpForCompute(op)) {
       leading.push_back(op);
     } else {
       break;
@@ -173,21 +183,21 @@ collectInterleavedSignposts(const ElementwiseTraceResult &trace,
     result.push_back({*it, nullptr});
   }
 
-  // Interleaved signposts: walk from first to last fused op.
+  // Interleaved ops: walk from first to last fused op.
   Operation *prevFused = nullptr;
   for (auto *op = firstFused; op && op != lastFused->getNextNode();
        op = op->getNextNode()) {
     if (fusedSet.contains(op)) {
       prevFused = op;
-    } else if (isUserSignpost(op)) {
+    } else if (isSideEffectOpForCompute(op)) {
       result.push_back({op, prevFused});
     }
   }
 
-  // Trailing signposts: walk forward from last fused op, skipping
-  // non-signpost ops (store, attach_cb) until cb_push/cb_pop.
+  // Trailing ops: walk forward from last fused op, skipping
+  // non-side-effect ops (store, attach_cb) until cb_push/cb_pop.
   for (auto *op = lastFused->getNextNode(); op; op = op->getNextNode()) {
-    if (isUserSignpost(op)) {
+    if (isSideEffectOpForCompute(op)) {
       result.push_back({op, lastFused});
     } else if (isa<CBPushOp>(op) || isa<CBPopOp>(op)) {
       break;
@@ -215,8 +225,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
                 "ttl.cb_reserve)");
   }
 
-  // Collect signpost ops before they get orphaned by fusion.
-  auto signpostPairs = collectInterleavedSignposts(trace, sinkOp);
+  // Collect signpost and dprint ops before they get orphaned by fusion.
+  auto sideEffectPairs = collectInterleavedSideEffectOps(trace, sinkOp);
 
   Location loc = sinkOp->getLoc();
   MLIRContext *ctx = rewriter.getContext();
@@ -294,53 +304,58 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     tensorToTile[trace.rootInputs[i]] = body->getArgument(i);
   }
 
-  // Build a map from fused op -> index in signpostPairs for quick lookup
-  // of which signposts precede each fused op.
+  // Categorize collected side-effect ops by position relative to fused ops.
   assert(!trace.opsInOrder.empty() &&
          "buildFusedCompute requires non-empty opsInOrder");
-  DenseMap<Operation *, SmallVector<SignpostOp>> signpostsBefore;
-  SmallVector<SignpostOp> leadingSignposts;
-  SmallVector<SignpostOp> trailingSignposts;
+  DenseMap<Operation *, SmallVector<Operation *>> opsBefore;
+  SmallVector<Operation *> leadingOps;
+  SmallVector<Operation *> trailingOps;
 
   Operation *lastFusedOp = trace.opsInOrder.back();
-  for (auto &[signpostOp, afterFused] : signpostPairs) {
-    auto sp = cast<SignpostOp>(signpostOp);
+  for (auto &[sideEffectOp, afterFused] : sideEffectPairs) {
     if (!afterFused) {
-      leadingSignposts.push_back(sp);
+      leadingOps.push_back(sideEffectOp);
     } else if (afterFused == lastFusedOp) {
-      trailingSignposts.push_back(sp);
+      trailingOps.push_back(sideEffectOp);
     } else {
-      // Find the next fused op after afterFused to attach this signpost to.
+      // Attach to the next fused op after afterFused.
       bool found = false;
       for (size_t i = 0; i < trace.opsInOrder.size(); ++i) {
         if (trace.opsInOrder[i] == afterFused &&
             i + 1 < trace.opsInOrder.size()) {
-          signpostsBefore[trace.opsInOrder[i + 1]].push_back(sp);
+          opsBefore[trace.opsInOrder[i + 1]].push_back(sideEffectOp);
           found = true;
           break;
         }
       }
       if (!found) {
-        trailingSignposts.push_back(sp);
+        trailingOps.push_back(sideEffectOp);
       }
     }
   }
 
-  // Emit leading signposts
-  for (auto sp : leadingSignposts) {
-    rewriter.create<SignpostOp>(sp.getLoc(), sp.getNameAttr(),
-                                sp.getIsEndAttr());
+  // Helper: clone a signpost or dprint op into the compute body.
+  auto emitSideEffectOp = [&](Operation *op) {
+    if (auto sp = dyn_cast<SignpostOp>(op)) {
+      rewriter.create<SignpostOp>(sp.getLoc(), sp.getNameAttr(),
+                                  sp.getIsEndAttr());
+    } else {
+      rewriter.clone(*op);
+    }
+  };
+
+  // Emit leading side-effect ops
+  for (auto *op : leadingOps) {
+    emitSideEffectOp(op);
   }
 
-  // Emit tile ops in topological order, with interleaved signposts
+  // Emit tile ops in topological order with interleaved side-effect ops
   Value finalResult;
   for (Operation *op : trace.opsInOrder) {
-    // Emit signposts that precede this fused op
-    auto it = signpostsBefore.find(op);
-    if (it != signpostsBefore.end()) {
-      for (auto sp : it->second) {
-        rewriter.create<SignpostOp>(sp.getLoc(), sp.getNameAttr(),
-                                    sp.getIsEndAttr());
+    auto it = opsBefore.find(op);
+    if (it != opsBefore.end()) {
+      for (auto *seOp : it->second) {
+        emitSideEffectOp(seOp);
       }
     }
 
@@ -374,20 +389,21 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     finalResult = tileResult;
   }
 
-  // Emit trailing begin signposts, then tile stores, then end signposts.
-  // This places tile_store inside the innermost signpost scope.
-  auto firstEndIt = llvm::find_if(trailingSignposts,
-                                  [](SignpostOp sp) { return sp.getIsEnd(); });
-  for (auto it = trailingSignposts.begin(); it != firstEndIt; ++it) {
-    rewriter.create<SignpostOp>(it->getLoc(), it->getNameAttr(),
-                                it->getIsEndAttr());
+  // Emit trailing begin signposts and dprints, then tile stores, then end
+  // signposts. This places tile_store inside the innermost signpost scope.
+  auto isEndSignpost = [](Operation *op) {
+    auto sp = dyn_cast<SignpostOp>(op);
+    return sp && sp.getIsEnd();
+  };
+  auto firstEndIt = llvm::find_if(trailingOps, isEndSignpost);
+  for (auto it = trailingOps.begin(); it != firstEndIt; ++it) {
+    emitSideEffectOp(*it);
   }
 
   emitTileStores(rewriter, loc, finalResult, sinkOp);
 
-  for (auto it = firstEndIt; it != trailingSignposts.end(); ++it) {
-    rewriter.create<SignpostOp>(it->getLoc(), it->getNameAttr(),
-                                it->getIsEndAttr());
+  for (auto it = firstEndIt; it != trailingOps.end(); ++it) {
+    emitSideEffectOp(*it);
   }
 
   rewriter.create<YieldOp>(loc);
@@ -403,9 +419,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     }
   }
 
-  // Erase the original signpost ops (now cloned into compute body).
-  for (auto &[signpostOp, _] : signpostPairs) {
-    rewriter.eraseOp(signpostOp);
+  // Erase the original side-effect ops (now cloned into compute body).
+  for (auto &[op, _] : sideEffectPairs) {
+    rewriter.eraseOp(op);
   }
 
   return success();
