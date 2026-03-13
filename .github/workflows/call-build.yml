@@ -79,11 +79,21 @@ jobs:
                   fail-on-cache-miss: true
 
             - name: Configure tt-lang
+              if: ${{ !inputs.build_docs }}
               run: |
                   cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
                       -DTTLANG_USE_TOOLCHAIN=ON \
                       -DTTLANG_ENABLE_PERF_TRACE=ON
+
+            - name: Configure tt-lang (with docs)
+              if: ${{ inputs.build_docs }}
+              run: |
+                  cmake -G Ninja -B build \
+                      -DCMAKE_BUILD_TYPE=Release \
+                      -DTTLANG_USE_TOOLCHAIN=ON \
+                      -DTTLANG_ENABLE_PERF_TRACE=ON \
+                      -DTTLANG_ENABLE_DOCS=ON
 
             - name: Setup ccache
               uses: hendrikmuhs/ccache-action@v1.2

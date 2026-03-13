@@ -25,6 +25,8 @@ jobs:
   build:
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
+    with:
+      build_docs: true  # TEMPORARY: testing docs build fix
 
   test-sim:
     uses: ./.github/workflows/call-test-sim.yml
