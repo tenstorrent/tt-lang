@@ -119,7 +119,9 @@ class TTLGenericCompiler(TTCompilerBase):
 
     _syntax = {}
 
-    def __init__(self, name, kernel_type=None, captures={}, *args, **kwargs):
+    def __init__(self, name, kernel_type=None, captures=None, *args, **kwargs):
+        if captures is None:
+            captures = {}
         super().__init__(name, kernel_type, *args, **kwargs)
         self.loc = Location.name(self.name)
         self.captures = captures
@@ -344,8 +346,12 @@ class TTLGenericCompiler(TTCompilerBase):
             self._raise_error(node, f"Unknown function: {namespace}.{node.attr}")
         return fn(*func_args, **kwargs)
 
-    def visit_Attribute(self, node, func_args=[], kwargs={}):
+    def visit_Attribute(self, node, func_args=None, kwargs=None):
         """Override to set location context and catch errors for method calls."""
+        if func_args is None:
+            func_args = []
+        if kwargs is None:
+            kwargs = {}
         with self._loc_for_node(node):
             try:
                 # Handle ttl.XXX and ttl.math.XXX attribute access
