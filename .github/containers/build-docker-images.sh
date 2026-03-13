@@ -62,9 +62,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # submodule patching during cmake configure makes it dirty.
 DIRTY_FILES=$(git diff --name-only HEAD -- . ':!third-party')
 if [ -z "$CI" ] && [ -n "$DIRTY_FILES" ]; then
-    echo "ERROR: Uncommitted changes:"
-    echo "$DIRTY_FILES"
-    exit 1
+echo "ERROR: Uncommitted changes:"
+echo "$DIRTY_FILES"
+exit 1
 fi
 
 echo "=== tt-lang Docker Image Builder ==="

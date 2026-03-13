@@ -42,6 +42,8 @@ endif()
 # Set variables for activate.in and skip the build.
 # ---------------------------------------------------------------------------
 if(TTLANG_USE_TOOLCHAIN)
+  set(TTMETAL_BUILD_DIR "${TTLANG_TOOLCHAIN_DIR}/tt-metal" CACHE PATH
+    "tt-metal build directory (from toolchain)" FORCE)
   set(TT_METAL_HOME "${TTMETAL_BUILD_DIR}")
   set(TT_METAL_PYTHON_PATH "${TTMETAL_BUILD_DIR}/python_packages/ttnn:${TTMETAL_BUILD_DIR}/python_packages/tools")
   set(TT_METAL_LIB_PATH "${TTMETAL_BUILD_DIR}/lib")
@@ -273,7 +275,15 @@ endif()
 # Set variables for activate.in
 # ---------------------------------------------------------------------------
 set(TT_METAL_HOME "${TT_METAL_SOURCE_DIR}")
-set(TT_METAL_PYTHON_PATH "${TT_METAL_SOURCE_DIR}/ttnn:${TT_METAL_SOURCE_DIR}/tools")
+if(DEFINED TTLANG_TOOLCHAIN_DIR)
+  # Use the installed layout so that env/activate works after the source tree
+  # is removed (e.g. inside Docker images built from the toolchain).
+  set(TT_METAL_PYTHON_PATH "${TTLANG_TOOLCHAIN_DIR}/tt-metal/python_packages/ttnn:${TTLANG_TOOLCHAIN_DIR}/tt-metal/python_packages/tools")
+else()
+  # Pure source-tree build without a toolchain install: reference the source
+  # tree directly (mirrors tt-metal's own layout).
+  set(TT_METAL_PYTHON_PATH "${TT_METAL_SOURCE_DIR}/ttnn:${TT_METAL_SOURCE_DIR}/tools")
+endif()
 set(TT_METAL_LIB_PATH "${TTMETAL_BUILD_DIR}/lib:${TTMETAL_BUILD_DIR}/tt_metal:${TTMETAL_BUILD_DIR}/ttnn:${TTMETAL_BUILD_DIR}/tt_stl:${TTMETAL_BUILD_DIR}/_deps/fmt-build:${TTMETAL_BUILD_DIR}/tt_metal/third_party/umd/device")
 
 # ---------------------------------------------------------------------------

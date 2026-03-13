@@ -51,6 +51,7 @@ fi
 # PYTHONPATH points to the outer ttnn/ directory.  This avoids ttnn's
 # types.py shadowing the stdlib types module.
 if [ -d "$SRC/ttnn/ttnn" ]; then
+    rm -rf "$INSTALL/python_packages/ttnn"
     mkdir -p "$INSTALL/python_packages/ttnn/ttnn"
     cp -prL "$SRC/ttnn/ttnn/"* "$INSTALL/python_packages/ttnn/ttnn/" 2>/dev/null || true
     echo "Installed ttnn Python package"
@@ -60,6 +61,7 @@ fi
 # Mirrors source layout: tools/ contains the tracy package, added to
 # PYTHONPATH as a separate entry.
 if [ -d "$SRC/tools/tracy" ]; then
+    rm -rf "$INSTALL/python_packages/tools"
     mkdir -p "$INSTALL/python_packages/tools/tracy"
     cp -pr "$SRC/tools/tracy/"*.py "$INSTALL/python_packages/tools/tracy/" 2>/dev/null || true
     echo "Installed Tracy Python module"

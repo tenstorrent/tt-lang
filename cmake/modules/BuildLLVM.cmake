@@ -58,8 +58,6 @@ if(TTLANG_USE_TOOLCHAIN AND NOT DEFINED MLIR_PREFIX)
   endif()
 
   set(MLIR_PREFIX "${TTLANG_TOOLCHAIN_DIR}")
-  set(TTMETAL_BUILD_DIR "${TTLANG_TOOLCHAIN_DIR}/tt-metal" CACHE PATH
-    "tt-metal build directory (from toolchain)" FORCE)
   message(STATUS "Using ttlang toolchain at: ${TTLANG_TOOLCHAIN_DIR}")
 
 elseif(DEFINED TTLANG_TOOLCHAIN_DIR AND NOT DEFINED MLIR_PREFIX)
