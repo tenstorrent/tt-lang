@@ -36,7 +36,6 @@ Point directly at an LLVM/MLIR install prefix. tt-metal still builds from submod
 
 ## Common options
 - `-DCMAKE_BUILD_TYPE=Debug` for developer iteration.
-- `-DTTLANG_ENABLE_BINDINGS_PYTHON=ON` (default) to build Python bindings.
 - `-DTTLANG_FORCE_TOOLCHAIN_REBUILD=ON` to force rebuild into an existing toolchain prefix.
 
 See [`docs/BUILD_SYSTEM.md`](../BUILD_SYSTEM.md) for full details on all CMake options.

@@ -176,11 +176,13 @@ docker run -it \
 
 - `Dockerfile.base` -- base image from ubuntu:22.04 with Python and system deps
 - `Dockerfile` -- multi-stage build (`ird` and `dist` targets, with separate build stages)
-- `build-and-install.sh` -- cmake configure/build/install; `--toolchain-only` skips tt-lang build
+- `build-and-install.sh` -- cmake configure/build/install with mode flags (`--toolchain-only`, `--force-rebuild`, `--test-toolchain`, etc. Used by CI and local toolchain builds. See '--help' for usage.)
 - `entrypoint.sh` -- activates tt-lang environment on container start
 - `activate-install.sh` -- environment activation for installed tt-lang (used in containers)
 - `build-docker-images.sh` -- build/push script with `--image-type` filter
 - `cleanup-toolchain.sh` -- normalizes toolchain venv (lib64 symlink fix), strips LLVM binaries, and optionally removes headers/static libs for dist
 - `get-docker-tag.sh` -- generates deterministic Docker tags from submodule SHAs and file hashes
 - `test-docker-smoke.sh` -- quick smoke test for container functionality
-- `CONTAINER_README.md` -- welcome message shown inside the container
+- `CONTAINER_README.md` -- welcome message shown inside dist container
+- `IRD_README.md` -- welcome message shown inside IRD container
+- `../scripts/normalize-toolchain-install.sh` -- replaces symlinks with actual files for portable toolchain installs

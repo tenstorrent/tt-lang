@@ -272,6 +272,7 @@ build/
 | `TTLANG_ACCEPT_LLVM_MISMATCH` | `OFF` | Allow LLVM SHA mismatch with pre-built installs |
 | `TTLANG_ACCEPT_TTMETAL_MISMATCH` | `OFF` | Allow tt-metal SHA mismatch with pre-built installs |
 | `TTLANG_ENABLE_PERF_TRACE` | `ON` | Enable tt-metal performance tracing support |
+| `TTLANG_ENABLE_DOCS` | `OFF` | Enable Sphinx documentation build (`ttlang-docs` target) |
 | `CODE_COVERAGE` | `OFF` | Enable code coverage reporting |
 | `TTLANG_FORCE_TOOLCHAIN_REBUILD` | `OFF` | Force rebuild of LLVM and tt-metal into `TTLANG_TOOLCHAIN_DIR` |
 

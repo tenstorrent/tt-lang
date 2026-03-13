@@ -50,8 +50,8 @@ sudo install -d -o $(id -u) -g $(id -g) /opt/ttlang-toolchain
 ```
 
 ```bash
-# Debug build with Python bindings
-cmake -GNinja -Bbuild . -DCMAKE_BUILD_TYPE=Debug -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
+# Debug build
+cmake -GNinja -Bbuild . -DCMAKE_BUILD_TYPE=Debug
 
 # Build toolchain (LLVM + tt-metal) into a reusable prefix
 cmake -GNinja -Bbuild . -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
