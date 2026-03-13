@@ -38,6 +38,22 @@ if(APPLE)
 endif()
 
 # ---------------------------------------------------------------------------
+# Pre-built toolchain: tt-metal artifacts are already installed.
+# Set variables for activate.in and skip the build.
+# ---------------------------------------------------------------------------
+if(TTLANG_USE_TOOLCHAIN)
+  set(TT_METAL_HOME "${TTMETAL_BUILD_DIR}")
+  set(TT_METAL_PYTHON_PATH "${TTMETAL_BUILD_DIR}/python_packages/ttnn:${TT_METAL_SOURCE_DIR}/tools")
+  set(TT_METAL_LIB_PATH "${TTMETAL_BUILD_DIR}/lib")
+
+  add_custom_target(clean-ttmetal
+    COMMENT "tt-metal uses pre-built toolchain; nothing to clean."
+  )
+
+  return()
+endif()
+
+# ---------------------------------------------------------------------------
 # Linux path: full tt-metal build from submodule.
 # ---------------------------------------------------------------------------
 ttlang_ensure_submodules(third-party/tt-metal)
