@@ -37,6 +37,18 @@ cmake --build build
 source build/env/activate
 ```
 
+## Installing
+
+After building, install tt-lang and its toolchain into a prefix directory:
+
+```bash
+cmake --install build --prefix /opt/ttlang-toolchain
+```
+
+When `TTLANG_TOOLCHAIN_DIR` is set during configure, LLVM, tt-metal, and the Python venv are already placed there. The install step adds tt-lang's own artifacts (binaries, Python packages, examples, tests, and the environment activation script).
+
+The resulting prefix is self-contained and can be used to build Docker images or shared across machines (the venv will be recreated on first configure).
+
 ## Submodules
 
 `.gitmodules` pins three submodules:
