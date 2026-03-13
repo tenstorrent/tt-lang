@@ -40,7 +40,7 @@ from .constants import TILE_SHAPE
 from .errors import DFBContractError
 from .stats import record_dfb_reserve, record_dfb_wait
 from .ttnnsim import Tensor, tile_count_from_tensor
-from .typedefs import Index, Shape, Size
+from .typedefs import Index, PositiveInt, Shape, Size
 
 
 class Block:
@@ -888,10 +888,10 @@ class Block:
     def __mod__(self, other: "Block") -> "Block":
         return self._binary_op(other, _op.mod)
 
-    def __pow__(self, other: Union["Block", int]) -> "Block":
+    def __pow__(self, other: Union["Block", "PositiveInt"]) -> "Block":
         """Element-wise exponentiation.
 
-        Supports both Block and scalar integer exponents.
+        Supports both Block and scalar positive integer exponents.
         """
         match other:
             case int():

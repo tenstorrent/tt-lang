@@ -22,6 +22,7 @@ import torch
 from .diagnostics import warn_once_per_location
 from .dfb import Block, track_source_blocks, matmul
 from .ttnnsim import Tensor
+from .typedefs import PositiveInt
 
 _ = matmul
 
@@ -320,7 +321,7 @@ def min(a: Block, b: Block) -> Block:
 
 
 # Unary operations with scalar parameters
-def rsub(a: Block, b: int) -> Block:
+def rsub(a: Block, b: PositiveInt) -> Block:
     """Subtract a from b where b is scalar unsigned integer (b - a).
 
     Args:
@@ -334,7 +335,7 @@ def rsub(a: Block, b: int) -> Block:
 
 
 # Activation functions with parameters
-def relu_max(expr: Block, upper_limit: int) -> Block:
+def relu_max(expr: Block, upper_limit: PositiveInt) -> Block:
     """ReLU with upper limit.
 
     Equivalent to: ttl.math.relu(ttl.math.min(x, upper_limit))
@@ -353,7 +354,7 @@ def relu_max(expr: Block, upper_limit: int) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
-def relu_min(expr: Block, lower_limit: int) -> Block:
+def relu_min(expr: Block, lower_limit: PositiveInt) -> Block:
     """ReLU with lower limit.
 
     Equivalent to: ttl.math.relu(ttl.math.max(x, lower_limit))
@@ -372,7 +373,7 @@ def relu_min(expr: Block, lower_limit: int) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
-def leaky_relu(expr: Block, slope: float) -> Block:
+def leaky_relu(expr: Block, slope: PositiveInt) -> Block:
     """Leaky ReLU activation.
 
     Args:
@@ -389,7 +390,7 @@ def leaky_relu(expr: Block, slope: float) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
-def elu(expr: Block, alpha: float) -> Block:
+def elu(expr: Block, alpha: PositiveInt) -> Block:
     """ELU activation.
 
     Args:
@@ -406,7 +407,7 @@ def elu(expr: Block, alpha: float) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
-def celu(expr: Block, alpha: float, alpha_recip: float) -> Block:
+def celu(expr: Block, alpha: PositiveInt, alpha_recip: PositiveInt) -> Block:
     """CELU activation.
 
     Args:
@@ -424,7 +425,7 @@ def celu(expr: Block, alpha: float, alpha_recip: float) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
-def prelu(expr: Block, alpha: float) -> Block:
+def prelu(expr: Block, alpha: PositiveInt) -> Block:
     """PReLU activation.
 
     Args:
@@ -443,7 +444,7 @@ def prelu(expr: Block, alpha: float) -> Block:
 
 
 def softplus(
-    expr: Block, beta: float, beta_reciprocal: float, threshold: float
+    expr: Block, beta: PositiveInt, beta_reciprocal: PositiveInt, threshold: PositiveInt
 ) -> Block:
     """Softplus activation.
 
@@ -463,7 +464,7 @@ def softplus(
     return _apply_unary_with_params(expr, _op)
 
 
-def hardtanh(expr: Block, min_val: float, max_val: float) -> Block:
+def hardtanh(expr: Block, min_val: PositiveInt, max_val: PositiveInt) -> Block:
     """Hardtanh activation.
 
     Args:
@@ -482,7 +483,7 @@ def hardtanh(expr: Block, min_val: float, max_val: float) -> Block:
 
 
 # Rounding functions with parameters
-def round(expr: Block, decimals: int = 0) -> Block:
+def round(expr: Block, decimals: PositiveInt = 0) -> Block:
     """Round to specified number of decimal places.
 
     Args:
@@ -499,7 +500,7 @@ def round(expr: Block, decimals: int = 0) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
-def clamp(expr: Block, min: int, max: int) -> Block:
+def clamp(expr: Block, min: PositiveInt, max: PositiveInt) -> Block:
     """Clamp values to specified min and max.
 
     Args:
@@ -517,7 +518,7 @@ def clamp(expr: Block, min: int, max: int) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
-def threshold(expr: Block, threshold: int, value: int) -> Block:
+def threshold(expr: Block, threshold: PositiveInt, value: PositiveInt) -> Block:
     """Replace values greater than threshold with specified value.
 
     Args:
@@ -530,7 +531,8 @@ def threshold(expr: Block, threshold: int, value: int) -> Block:
     """
 
     def _op(t: torch.Tensor) -> torch.Tensor:
-        return torch.threshold(t, threshold=threshold, value=value)
+        # Spec: replace values GREATER THAN threshold (not <= like torch.threshold)
+        return torch.where(t > threshold, torch.tensor(value, dtype=t.dtype), t)
 
     return _apply_unary_with_params(expr, _op)
 

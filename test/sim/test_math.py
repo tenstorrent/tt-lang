@@ -1148,3 +1148,31 @@ def test_1d_broadcast_warning(capsys):
     # Verify the broadcast operation still returns a valid Block
     assert isinstance(result, Block)
     assert result.shape == (1,)
+
+
+def test_threshold_replaces_greater_than():
+    """Test that ttl.math.threshold replaces values GREATER THAN threshold.
+
+    Per spec: "For all values greater than specified threshold replace with specified value"
+    This is different from torch.threshold which replaces values <= threshold.
+    """
+    # Create a block with values [1.0, 5.0, 10.0, 15.0]
+    tiles = [
+        Tensor(torch.tensor([[1.0, 5.0], [10.0, 15.0]])),
+    ]
+    block = Block.from_list(tiles, shape=(1, 1))
+
+    # Apply threshold: replace values > 8 with 99
+    result = ttl.math.threshold(block, threshold=8, value=99)
+
+    # Expected: [1.0, 5.0, 99.0, 99.0]
+    # Values 1.0 and 5.0 are <= 8, so they stay unchanged
+    # Values 10.0 and 15.0 are > 8, so they become 99.0
+    expected = torch.tensor([[1.0, 5.0], [99.0, 99.0]])
+    result_tensor = result.to_list()[0].to_torch()
+
+    assert torch.allclose(result_tensor, expected), (
+        f"threshold(threshold=8, value=99) failed.\n"
+        f"Expected: {expected}\n"
+        f"Got: {result_tensor}"
+    )
