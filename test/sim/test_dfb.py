@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 import torch
 from test_utils import (
+    make_element_for_buffer_shape,
     make_full_tensor,
     make_ones_tensor,
     make_ones_tile,
@@ -31,6 +32,7 @@ from python.sim.dfb import (
     Block,
     DataflowBuffer,
 )
+from python.sim.math import broadcast
 from python.sim.blockstate import (
     set_current_thread_type,
     clear_current_thread_type,
@@ -56,20 +58,20 @@ def setup_thread_context(compute_thread_context):
 def configured_dfb() -> DataflowBuffer:
     """Create a DataflowBuffer with capacity 4 (shape=(1,1), buffer_factor=4)."""
     element = make_ones_tile()
-    return DataflowBuffer(element=element, shape=(1, 1), buffer_factor=4)
+    return DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=4)
 
 
 @pytest.fixture
 def configured_dfb8() -> DataflowBuffer:
     """Create a DataflowBuffer with capacity 8 (shape=(1,1), buffer_factor=8)."""
     element = make_ones_tile()
-    return DataflowBuffer(element=element, shape=(1, 1), buffer_factor=8)
+    return DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=8)
 
 
 def test_dataflow_buffer_basic() -> None:
     """Test basic DataflowBuffer operations."""
     element = make_ones_tile()
-    dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+    dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
 
     assert dfb.shape == (1, 1)
     assert dfb.capacity_tiles == 2
@@ -85,7 +87,7 @@ def test_dataflow_buffer_basic() -> None:
     read_view = dfb.wait()
     assert len(read_view) == 1
 
-    out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+    out_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
     out_block = out_dfb.reserve()
     out_block.store(read_view)
     out_block.push()
@@ -101,8 +103,8 @@ def test_dataflow_buffer_basic() -> None:
 
 def test_dataflow_buffer_multi_tile() -> None:
     """Test DataflowBuffer with multiple tiles per operation."""
-    element = make_ones_tile()
-    dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=3)
+    element = make_element_for_buffer_shape((2, 1))
+    dfb = DataflowBuffer(likeness_tensor=element, shape=(2, 1), buffer_factor=3)
 
     assert dfb.shape == (2, 1)
     assert dfb.capacity_tiles == 6
@@ -128,7 +130,7 @@ def test_dataflow_buffer_multi_tile() -> None:
     assert len(read_view) == 2  # Should have 2 tiles available
 
     # Use waited block as source (STORE_SRC) before pop
-    out_dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=2)
+    out_dfb = DataflowBuffer(likeness_tensor=element, shape=(2, 1), buffer_factor=2)
     out_block = out_dfb.reserve()
     out_block.store(read_view)
     out_block.push()
@@ -155,7 +157,7 @@ def test_copy_operations_with_dm_context() -> None:
         tensor_a = make_rand_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
 
         element = make_ones_tile()
-        dfb_a = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+        dfb_a = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
 
         # Test copy from tensor to dataflow buffer (DM thread can do this)
         dfb_view = dfb_a.reserve()
@@ -194,12 +196,12 @@ def test_error_handling() -> None:
     """Test error conditions."""
     element = make_ones_tile()
     with pytest.raises(ValueError):
-        DataflowBuffer(element=element, shape=(0, 1))  # Invalid shape element
+        DataflowBuffer(likeness_tensor=element, shape=(0, 1))  # Invalid shape element
 
     with pytest.raises(ValueError):
-        DataflowBuffer(element=element, shape=(1, 1), buffer_factor=0)
+        DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=0)
 
-    dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+    dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
 
     # # Can't push without reserve - DFBAPI will catch this
     # with pytest.raises(DFBContractError):
@@ -231,11 +233,16 @@ def test_copy_in_dm_thread_context() -> None:
         a_in = make_rand_tensor(rows, cols)
         c_in = make_rand_tensor(TILE_SHAPE[0], cols)
 
-        element = make_ones_tile()
         a_in_dfb = DataflowBuffer(
-            element=element, shape=(granularity, 1), buffer_factor=2
+            likeness_tensor=make_element_for_buffer_shape((granularity, 1)),
+            shape=(granularity, 1),
+            buffer_factor=2,
         )
-        c_in_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+        c_in_dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            buffer_factor=2,
+        )
 
         # Verify the dataflow buffers were created correctly
         assert a_in_dfb.shape == (granularity, 1)
@@ -276,14 +283,20 @@ def test_copy_in_dm_thread_context() -> None:
         assert c_list[0] is not None
         assert a_list[0] is not None
 
-        out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+        out_dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            buffer_factor=2,
+        )
         out_block = out_dfb.reserve()
         out_block.store(c_data)
         out_block.push()
         c_data.pop()
 
         out_dfb2 = DataflowBuffer(
-            element=element, shape=(granularity, 1), buffer_factor=2
+            likeness_tensor=make_element_for_buffer_shape((granularity, 1)),
+            shape=(granularity, 1),
+            buffer_factor=2,
         )
         out_block2 = out_dfb2.reserve()
         out_block2.store(a_data)
@@ -305,7 +318,7 @@ def test_single_pending_reserve_constraint() -> None:
 
     try:
         element = make_ones_tile()
-        dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+        dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
 
         # Create a source tensor for copy operations
         src_tensor = make_ones_tile()
@@ -346,7 +359,7 @@ def test_single_pending_wait_constraint() -> None:
 
     try:
         element = make_ones_tile()
-        dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+        dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
 
         set_current_thread_type(ThreadType.DM)
         block = dfb.reserve()
@@ -369,7 +382,7 @@ def test_single_pending_wait_constraint() -> None:
         ):
             dfb.wait()
 
-        out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+        out_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
         out_block = out_dfb.reserve()
         out_block.store(data1)
         out_block.push()
@@ -399,8 +412,8 @@ def test_reserve_store_push_pop_workflow() -> None:
     import torch
     from python.sim import ttnn, TILE_SHAPE
 
-    element = make_zeros_tile()
-    dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=2)
+    element = make_element_for_buffer_shape((2, 1))
+    dfb = DataflowBuffer(likeness_tensor=element, shape=(2, 1), buffer_factor=2)
 
     with dfb.reserve() as write_block:
         write_block.store(
@@ -413,7 +426,7 @@ def test_reserve_store_push_pop_workflow() -> None:
             )
         )
 
-    out_dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=4)
+    out_dfb = DataflowBuffer(likeness_tensor=element, shape=(2, 1), buffer_factor=4)
     with dfb.wait() as read_block:
         # Use waited block as STORE_SRC before context exit
         out_block = out_dfb.reserve()
@@ -472,7 +485,7 @@ def test_make_dataflow_buffer_like_infers_type() -> None:
     """Test that make_dataflow_buffer_like correctly infers the element type."""
     from python.sim import ttl
 
-    tensor = make_rand_tensor(TILE_SHAPE[0], TILE_SHAPE[1])
+    tensor = make_rand_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
 
     dfb = ttl.make_dataflow_buffer_like(tensor, shape=(2, 2), buffer_factor=3)
 
@@ -488,15 +501,15 @@ def test_make_dataflow_buffer_like_multiple_tensors() -> None:
     from python.sim import ttl
 
     a = make_rand_tensor(TILE_SHAPE[0] * 4, TILE_SHAPE[1] * 4)
-    b = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
-    c = make_ones_tensor(TILE_SHAPE[0], TILE_SHAPE[1])
+    b = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1])
+    c = make_ones_tensor(TILE_SHAPE[0], TILE_SHAPE[1] * 2)
 
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(4, 4), buffer_factor=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 1), buffer_factor=2)
     c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 2), buffer_factor=3)
 
-    assert a_dfb.shape == (1, 1)
-    assert a_dfb.capacity_tiles == 2
+    assert a_dfb.shape == (4, 4)
+    assert a_dfb.capacity_tiles == 32
 
     assert b_dfb.shape == (2, 1)
     assert b_dfb.capacity_tiles == 4
@@ -538,7 +551,7 @@ def test_make_dataflow_buffer_like_with_example_pattern() -> None:
 def test_can_wait_and_can_reserve() -> None:
     """Test can_wait() and can_reserve() methods."""
     element = make_ones_tile()
-    dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+    dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
 
     # Initially, buffer is empty
     # can_reserve should return True (we have 2 free tiles)
@@ -566,7 +579,7 @@ def test_can_wait_and_can_reserve() -> None:
     assert dfb.can_wait() is True  # Still have data to read
     assert dfb.can_reserve() is False  # No free space
 
-    out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+    out_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
     read1 = dfb.wait()
 
     # After wait(), we have 1 tile read-locked, 1 tile still visible, 0 tiles free
@@ -599,8 +612,8 @@ def test_can_wait_and_can_reserve() -> None:
 
 def test_can_methods_multi_tile() -> None:
     """Test can_wait() and can_reserve() with multi-tile operations."""
-    element = make_ones_tile()
-    dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=3)
+    element = make_element_for_buffer_shape((2, 1))
+    dfb = DataflowBuffer(likeness_tensor=element, shape=(2, 1), buffer_factor=3)
 
     # Initially empty
     assert dfb.can_reserve() is True  # 6 free tiles, need 2
@@ -662,7 +675,7 @@ def test_can_methods_always_work() -> None:
 def test_context_manager_syntax() -> None:
     """Test the context manager (with statement) syntax for reserve and wait."""
     element = make_ones_tile()
-    dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+    dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
 
     # Test reserve with context manager
     test_data = make_ones_tile()
@@ -671,7 +684,7 @@ def test_context_manager_syntax() -> None:
         # push() is automatically called on exit
 
     # Test wait with context manager
-    out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+    out_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
     with dfb.wait() as read_view:
         out_block = out_dfb.reserve()
         out_block.store(read_view)
@@ -692,12 +705,12 @@ def test_context_manager_syntax() -> None:
     with dfb.reserve() as w1:
         w1.store(Block.from_tensor(make_ones_tile()))
 
-    dfb2 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+    dfb2 = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
     with dfb2.reserve() as w2:
         w2.store(Block.from_tensor(make_zeros_tile()))
 
-    out_dfb3 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
-    out_dfb4 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+    out_dfb3 = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
+    out_dfb4 = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
     with dfb.wait() as r1, dfb2.wait() as r2:
         # Use waited blocks as STORE_SRC before context managers exit and call pop
         out_block3 = out_dfb3.reserve()
@@ -721,8 +734,8 @@ def test_context_manager_syntax() -> None:
 
 def test_store_accumulate_first_assigns() -> None:
     """Test that the first store(acc=True) assigns instead of accumulates."""
-    element = make_zeros_tile()
-    dfb = DataflowBuffer(element=element, shape=(3, 1), buffer_factor=2)
+    element = make_element_for_buffer_shape((3, 1))
+    dfb = DataflowBuffer(likeness_tensor=element, shape=(3, 1), buffer_factor=2)
 
     with dfb.reserve() as block:
         import torch
@@ -763,8 +776,8 @@ def test_store_accumulate_first_assigns() -> None:
 
 def test_store_accumulate_vs_regular_store() -> None:
     """Test that regular store() and store(acc=True) have different paths."""
-    element = make_zeros_tile()
-    dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=2)
+    element = make_element_for_buffer_shape((2, 1))
+    dfb = DataflowBuffer(likeness_tensor=element, shape=(2, 1), buffer_factor=2)
 
     import torch
     from python.sim import ttnn, TILE_SHAPE
@@ -781,7 +794,7 @@ def test_store_accumulate_vs_regular_store() -> None:
             )
         )  # Regular store
 
-    out_dfb = DataflowBuffer(element=element, shape=(2, 1), buffer_factor=2)
+    out_dfb = DataflowBuffer(likeness_tensor=element, shape=(2, 1), buffer_factor=2)
     with dfb.wait() as block_read:
         # Use waited block as STORE_SRC before context exit
         out_block = out_dfb.reserve()
@@ -823,7 +836,7 @@ def test_store_accumulate_vs_regular_store() -> None:
 def test_block_state_machine_restrictions() -> None:
     """Test that block state machine enforces access restrictions."""
     element = make_zeros_tile()
-    dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+    dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
 
     import torch
     from python.sim import ttnn, TILE_SHAPE
@@ -848,7 +861,7 @@ def test_block_state_machine_restrictions() -> None:
         read_block.store(Block.from_tensor(ttnn.Tensor(torch.full(TILE_SHAPE, 10.0))))
 
     # Use waited block as STORE_SRC before pop
-    out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+    out_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
     out_block = out_dfb.reserve()
     out_block.store(read_block)
     out_block.push()
@@ -909,7 +922,7 @@ def test_push_validates_expected_state() -> None:
 
     try:
         element = make_ones_tile()
-        dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+        dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
 
         # Create a block in WAIT state (POP expected)
         # First, populate the DFB
@@ -937,7 +950,7 @@ def test_push_validates_expected_state() -> None:
             waited_block.mark_push_complete()
 
         # Clean up properly - use waited block as STORE_SRC before pop
-        out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+        out_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
         out_block = out_dfb.reserve()
         out_block.store(waited_block)
         out_block.push()
@@ -957,7 +970,7 @@ def test_dataflow_buffer_basic_flow(configured_dfb8: DataflowBuffer) -> None:
     """Test ring-buffer mechanics via the public API at operation granularity."""
     element = make_ones_tile()
     in_dfb = configured_dfb8
-    out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=8)
+    out_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=8)
 
     stats = in_dfb.stats()
     assert stats.capacity == 8
@@ -987,7 +1000,9 @@ def test_dataflow_buffer_basic_flow(configured_dfb8: DataflowBuffer) -> None:
         values = stored.to_list()
         assert len(values) == 1
         assert tensors_exact_equal(values[0], test_tensors[i])
-        drain_blk = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+        drain_blk = DataflowBuffer(
+            likeness_tensor=element, shape=(1, 1), buffer_factor=2
+        )
         drain = drain_blk.reserve()
         drain.store(stored)
         drain.push()
@@ -1007,7 +1022,7 @@ def test_dataflow_buffer_basic_flow(configured_dfb8: DataflowBuffer) -> None:
     assert stats.visible == 8
     assert stats.free == 0
 
-    out_dfb2 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=8)
+    out_dfb2 = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=8)
     for i in range(8):
         read_blk = in_dfb.wait()
         out_blk = out_dfb2.reserve()
@@ -1023,7 +1038,7 @@ def test_dfb_pages_nonblocking(configured_dfb8: DataflowBuffer) -> None:
     """Test that stats() reflects operation-granularity state at each step."""
     element = make_ones_tile()
     dfb = configured_dfb8
-    out_dfb = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+    out_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
 
     assert dfb.stats().visible == 0
     assert dfb.stats().free == 8
@@ -1070,7 +1085,7 @@ def test_per_core_dfb_limit_exceeds_max() -> None:
 
     # Inject max_dfbs + 1 DataflowBuffers into the context.
     for i in range(max_dfbs + 1):
-        prog.context[f"dfb_{i}"] = DataflowBuffer(element=element, shape=(1, 1))
+        prog.context[f"dfb_{i}"] = DataflowBuffer(likeness_tensor=element, shape=(1, 1))
 
     with pytest.raises(RuntimeError, match="exceeds the hardware limit"):
         prog()
@@ -1081,10 +1096,10 @@ def test_heterogeneous_dfbs_independent() -> None:
     set_current_thread_type(ThreadType.COMPUTE)
 
     try:
-        element = make_full_tensor(32, 32, 1.0)
+        element = make_full_tensor(64, 64, 1.0)
 
-        dfb1 = DataflowBuffer(element=element, shape=(2, 2), buffer_factor=2)
-        dfb2 = DataflowBuffer(element=element, shape=(2, 2), buffer_factor=2)
+        dfb1 = DataflowBuffer(likeness_tensor=element, shape=(2, 2), buffer_factor=2)
+        dfb2 = DataflowBuffer(likeness_tensor=element, shape=(2, 2), buffer_factor=2)
 
         write1 = dfb1.reserve()
         write1.store(
@@ -1126,8 +1141,8 @@ def test_two_dfbs_independent_state() -> None:
     try:
         element = make_full_tensor(32, 32, 1.0)
 
-        dfb1 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
-        dfb2 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+        dfb1 = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
+        dfb2 = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
 
         write1 = dfb1.reserve()
         write1.store(Block.from_tensor(make_full_tensor(32, 32, 42.0)))
@@ -1296,7 +1311,7 @@ def test_1d_dataflow_buffer_reserve_push_wait_pop():
     )
 
     element = Tensor(torch.zeros(32))
-    dfb = DataflowBuffer(element=element, shape=(1,), buffer_factor=2)
+    dfb = DataflowBuffer(likeness_tensor=element, shape=(1,), buffer_factor=2)
 
     assert dfb.shape == (1,)
     assert dfb.capacity_tiles == 2
@@ -1317,7 +1332,7 @@ def test_1d_dataflow_buffer_reserve_push_wait_pop():
         assert result[0].to_torch().shape == (32,)
         assert torch.allclose(result[0].to_torch(), data.to_torch())
 
-        out_dfb = DataflowBuffer(element=element, shape=(1,), buffer_factor=2)
+        out_dfb = DataflowBuffer(likeness_tensor=element, shape=(1,), buffer_factor=2)
         out_block = out_dfb.reserve()
         out_block.store(read)
         out_block.push()
@@ -1334,8 +1349,9 @@ def test_1d_multi_tile_dataflow_buffer():
         clear_current_thread_type,
     )
 
-    element = Tensor(torch.zeros(32))
-    dfb = DataflowBuffer(element=element, shape=(4,), buffer_factor=2)
+    # Full buffer element shape for 4 tiles of size 32 each
+    element = Tensor(torch.zeros(128))
+    dfb = DataflowBuffer(likeness_tensor=element, shape=(4,), buffer_factor=2)
 
     assert dfb.shape == (4,)
     assert dfb.capacity_tiles == 8
@@ -1357,7 +1373,7 @@ def test_1d_multi_tile_dataflow_buffer():
         for i, tile in enumerate(result):
             assert torch.allclose(tile.to_torch(), torch.full((32,), float(i)))
 
-        out_dfb = DataflowBuffer(element=element, shape=(4,), buffer_factor=2)
+        out_dfb = DataflowBuffer(likeness_tensor=element, shape=(4,), buffer_factor=2)
         out_block = out_dfb.reserve()
         out_block.store(read)
         out_block.push()
@@ -1471,6 +1487,87 @@ def test_5d_grid_from_tensor_infers_shape():
     data = torch.zeros(2, 3, 4, 64, 96)
     block = Block.from_tensor(Tensor(data))
     assert block.shape == (2, 3, 4, 2, 3)
+
+
+def test_store_broadcast_expansion():
+    """Test that store() expands source blocks to match destination shape when using broadcast()."""
+    # Create DFBs for testing broadcast expansion with element-based semantics
+
+    # Test 1: Broadcast (1, 2) -> (3, 2) with degenerate tiles (element size 1 in first dim)
+    # Source has full buffer shape (1, 64) - 1 row, 2×32=64 columns
+    # First dim has element size 1, so it can be broadcast along dim 1 (rows)
+    src_elem = Tensor(
+        torch.zeros(1, 64, dtype=torch.bfloat16)
+    )  # Full buffer element shape
+    src_dfb = DataflowBuffer(likeness_tensor=src_elem, shape=(1, 2), buffer_factor=2)
+
+    # Destination has full buffer shape (96, 64) - 3×32=96 rows, 2×32=64 columns
+    dst_elem = Tensor(
+        torch.zeros(96, 64, dtype=torch.bfloat16)
+    )  # Full buffer element shape
+    dst_dfb = DataflowBuffer(likeness_tensor=dst_elem, shape=(3, 2), buffer_factor=2)
+
+    with src_dfb.reserve() as src_blk:
+        # Fill source with degenerate tiles: first column = 10, second column = 20
+        src_tiles = [
+            Tensor(torch.full((1, 32), 10.0, dtype=torch.bfloat16)),
+            Tensor(torch.full((1, 32), 20.0, dtype=torch.bfloat16)),
+        ]
+        src_temp = Block.from_list(src_tiles, shape=(1, 2))
+        src_blk.store(src_temp)
+
+    with dst_dfb.reserve() as dst_blk:
+        with src_dfb.wait() as src_wait:
+            # Explicitly broadcast to expand first dimension (dims=[1] in innermost-first convention)
+            broadcast_src = broadcast(src_wait, dims=[1])
+            # Store with broadcast expansion
+            dst_blk.store(broadcast_src)
+
+            # Check that tiles were replicated correctly
+            result = dst_blk.to_list()
+            assert len(result) == 6
+            # Each row should have the same values: [10, 20]
+            for i in range(3):  # 3 rows
+                assert torch.allclose(
+                    result[i * 2].to_torch(),
+                    torch.full((32, 32), 10.0, dtype=torch.bfloat16),
+                )
+                assert torch.allclose(
+                    result[i * 2 + 1].to_torch(),
+                    torch.full((32, 32), 20.0, dtype=torch.bfloat16),
+                )
+
+    # Test 2: Broadcast (1, 1) -> (2, 2) with proper element shapes
+    # Source has full buffer shape (1, 1) - broadcast along both dimensions
+    src2_elem = Tensor(
+        torch.zeros(1, 1, dtype=torch.bfloat16)
+    )  # Full buffer element shape
+    src2_dfb = DataflowBuffer(likeness_tensor=src2_elem, shape=(1, 1), buffer_factor=2)
+
+    # Destination has full buffer shape (64, 64) - 2×32=64 rows, 2×32=64 columns
+    dst2_elem = Tensor(
+        torch.zeros(64, 64, dtype=torch.bfloat16)
+    )  # Full buffer element shape
+    dst2_dfb = DataflowBuffer(likeness_tensor=dst2_elem, shape=(2, 2), buffer_factor=2)
+
+    with src2_dfb.reserve() as src2_blk:
+        src2_tiles = [Tensor(torch.full((1, 1), 42.0, dtype=torch.bfloat16))]
+        src2_temp = Block.from_list(src2_tiles, shape=(1, 1))
+        src2_blk.store(src2_temp)
+
+    with dst2_dfb.reserve() as dst2_blk:
+        with src2_dfb.wait() as src2_wait:
+            # Explicitly broadcast to expand both dimensions (dims=[0, 1])
+            broadcast_src2 = broadcast(src2_wait, dims=[0, 1])
+            dst2_blk.store(broadcast_src2)
+
+            # Check all tiles are 42.0
+            result2 = dst2_blk.to_list()
+            assert len(result2) == 4
+            for tile in result2:
+                assert torch.allclose(
+                    tile.to_torch(), torch.full((32, 32), 42.0, dtype=torch.bfloat16)
+                )
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ including error handling and edge cases.
 
 import pytest
 from test_utils import (
+    make_element_for_buffer_shape,
     make_full_tile,
     make_ones_tile,
     make_rand_tensor,
@@ -288,7 +289,11 @@ class TestCopyWithStateMachine:
         set_current_thread_type(ThreadType.DM)
 
         source = make_rand_tensor(64, 32)  # 2x1 tiles
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(2, 1), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((2, 1)),
+            shape=(2, 1),
+            buffer_factor=2,
+        )
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -304,7 +309,11 @@ class TestCopyWithStateMachine:
         set_current_thread_type(ThreadType.DM)
 
         # Setup: Fill DFB with data using reserve->store->push pattern
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(2, 1), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((2, 1)),
+            shape=(2, 1),
+            buffer_factor=2,
+        )
         source = make_rand_tensor(64, 32)
 
         with dfb.reserve() as block:
@@ -331,7 +340,11 @@ class TestCopyWithStateMachine:
         set_current_thread_type(ThreadType.DM)
 
         source = make_ones_tile()
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            buffer_factor=2,
+        )
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -347,7 +360,11 @@ class TestCopyWithStateMachine:
         set_current_thread_type(ThreadType.DM)
 
         source = make_rand_tensor(128, 32)  # 4x1 tiles
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(4, 1), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((4, 1)),
+            shape=(4, 1),
+            buffer_factor=2,
+        )
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -365,10 +382,10 @@ class TestCopyWithStateMachine:
 
         tile = make_full_tile(123.0)
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         pipe = Pipe(210, 211)
 
@@ -401,10 +418,14 @@ class TestCopyWithStateMachine:
 
         source = make_rand_tensor(64, 32)  # 2x1 tiles
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(2, 1), buffer_factor=2
+            likeness_tensor=make_element_for_buffer_shape((2, 1)),
+            shape=(2, 1),
+            buffer_factor=2,
         )
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(2, 1), buffer_factor=2
+            likeness_tensor=make_element_for_buffer_shape((2, 1)),
+            shape=(2, 1),
+            buffer_factor=2,
         )
         pipe = Pipe((26, 3), (26, slice(4, 6)))
 
@@ -441,7 +462,11 @@ class TestCopyWithStateMachine:
         set_current_thread_type(ThreadType.DM)
 
         source = make_rand_tensor(64, 32)  # 2 tiles
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(2, 1), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((2, 1)),
+            shape=(2, 1),
+            buffer_factor=2,
+        )
         result = make_rand_tensor(64, 32)
 
         # Stage 1: Load tensor to DFB
@@ -468,7 +493,11 @@ class TestCopyWithStateMachine:
         set_current_thread_type(ThreadType.DM)
 
         source = make_ones_tile()
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            buffer_factor=2,
+        )
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -487,7 +516,11 @@ class TestCopyWithStateMachine:
         set_current_thread_type(ThreadType.DM)
 
         source = make_ones_tile()
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            buffer_factor=2,
+        )
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -506,7 +539,11 @@ class TestCopyWithStateMachine:
         set_current_thread_type(ThreadType.DM)
 
         source = make_rand_tensor(64, 64)  # 2x2 tiles
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(2, 2), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((2, 2)),
+            shape=(2, 2),
+            buffer_factor=2,
+        )
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -524,10 +561,10 @@ class TestCopyWithStateMachine:
 
         pipe = Pipe(10, 20)
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
 
         # Send data to pipe
@@ -562,7 +599,11 @@ class TestCopyTransactionProperties:
         set_current_thread_type(ThreadType.DM)
 
         source = make_ones_tile()
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            buffer_factor=2,
+        )
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -586,7 +627,11 @@ class TestCopyTransactionProperties:
         set_current_thread_type(ThreadType.DM)
 
         source = make_rand_tensor(64, 32)
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(2, 1), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((2, 1)),
+            shape=(2, 1),
+            buffer_factor=2,
+        )
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -609,7 +654,11 @@ class TestCopyTransactionProperties:
 
         # Tensor -> Block is always synchronous
         source = make_ones_tile()
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            buffer_factor=2,
+        )
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -632,10 +681,10 @@ class TestCopyContextManagerExtraction:
 
         source = make_full_tile(42.0)
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         pipe = Pipe(1000, 1001)
 
@@ -671,7 +720,11 @@ class TestCopyContextManagerExtraction:
         set_current_thread_type(ThreadType.DM)
 
         source = make_full_tile(3.14)
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            buffer_factor=2,
+        )
 
         # Tensor -> Context manager
         with dfb.reserve() as ctx:
@@ -697,7 +750,11 @@ class TestCopyErrorConditions:
         set_current_thread_type(ThreadType.DM)
 
         source = make_ones_tile()
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            buffer_factor=2,
+        )
 
         with dfb.reserve() as block:
             # copy() should return a CopyTransaction immediately

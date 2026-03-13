@@ -114,7 +114,7 @@ def _format_dfb(dfb: DataflowBuffer) -> str:
     """
     lines = [f"<DataflowBuffer name='{getattr(dfb, '_name', 'unnamed')}'>"]
     lines.append(f"  shape: {dfb.shape}")
-    lines.append(f"  element: {dfb.element}")
+    lines.append(f"  likeness_tensor: {dfb.likeness_tensor}")
     lines.append(f"  buffer_factor: {dfb.buffer_factor}")
     lines.append(f"  capacity: {dfb.capacity_tiles} tiles")
     lines.append(f"  rd_ptr (head): {dfb._state.head}")

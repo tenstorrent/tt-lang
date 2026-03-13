@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from test_utils import (
+    make_element_for_buffer_shape,
     make_full_tile,
     make_ones_tile,
     make_rand_tensor,
@@ -77,7 +78,9 @@ class TestCopyValidationErrors:
         torch_3d = torch.ones(2, 32, 32)
         tensor_3d = ttnn.Tensor(torch_3d)
 
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
+        )
 
         with pytest.raises(ValueError, match="does not match"):
             with dfb.reserve() as block:
@@ -91,7 +94,11 @@ class TestCopyValidationErrors:
 
         # 3 tiles in tensor but DFB expects 2 tiles
         source = make_rand_tensor(96, 32)  # 3x1 tiles
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(2, 1), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((2, 1)),
+            shape=(2, 1),
+            buffer_factor=2,
+        )
 
         with pytest.raises(
             ValueError, match="Tensor shape .* does not match.*Block shape"
@@ -120,7 +127,7 @@ class TestPipeErrorHandling:
                 # Use a unique pipe address to avoid interference
                 pipe = Pipe(9999, 10000)
                 dfb = DataflowBuffer(
-                    element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+                    likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
                 )
 
                 with dfb.reserve() as block:
@@ -143,10 +150,14 @@ class TestPipeErrorHandling:
 
         pipe = Pipe(5000, 5001)
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(2, 1), buffer_factor=2
+            likeness_tensor=make_element_for_buffer_shape((2, 1)),
+            shape=(2, 1),
+            buffer_factor=2,
         )
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            buffer_factor=2,
         )
 
         # Send 2 tiles
@@ -183,13 +194,13 @@ class TestPipeMulticast:
 
         tile = make_full_tile(42.0)
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         dst_dfb1 = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         dst_dfb2 = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
 
         # Send data
@@ -232,7 +243,9 @@ class TestContextManagerHandlers:
         set_current_thread_type(ThreadType.DM)
 
         source = make_full_tile(5.0)
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
+        )
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -253,7 +266,9 @@ class TestContextManagerHandlers:
         set_current_thread_type(ThreadType.DM)
 
         source = make_full_tile(7.0)
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
+        )
 
         # Write to DFB
         with dfb.reserve() as block:
@@ -279,7 +294,7 @@ class TestContextManagerHandlers:
 
         # Send data
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         with src_dfb.reserve() as src_block:
             tx = copy(tile, src_block)
@@ -291,7 +306,7 @@ class TestContextManagerHandlers:
 
         # Receive using ReserveContext
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         result = make_zeros_tile()
         with dst_dfb.reserve() as dst_block:
@@ -315,7 +330,7 @@ class TestContextManagerHandlers:
 
         # Send using WaitContext
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         with src_dfb.reserve() as src_block:
             tx = copy(tile, src_block)
@@ -327,7 +342,7 @@ class TestContextManagerHandlers:
 
         # Receive
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         result = make_zeros_tile()
         with dst_dfb.reserve() as dst_block:
@@ -351,7 +366,7 @@ class TestContextManagerHandlers:
 
         # Send using ReserveContext
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         with src_dfb.reserve() as src_block:
             tx1 = copy(tile, src_block)
@@ -365,7 +380,7 @@ class TestContextManagerHandlers:
 
         # Receive
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         result = make_zeros_tile()
         with dst_dfb.reserve() as dst_block:
@@ -393,10 +408,10 @@ class TestPipeCoreRangeTypes:
 
         tile = make_full_tile(15.0)
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
 
         # Send
@@ -433,10 +448,10 @@ class TestPipeCoreRangeTypes:
 
         tile = make_full_tile(17.0)
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
 
         # Send
@@ -472,7 +487,7 @@ class TestPipeCoreRangeTypes:
 
         tile = make_full_tile(19.0)
         src_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
 
         # Send data
@@ -487,7 +502,7 @@ class TestPipeCoreRangeTypes:
         # Receive from all 4 receivers
         for i in range(4):
             dst_dfb = DataflowBuffer(
-                element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+                likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
             )
             result = make_zeros_tile()
 
@@ -512,7 +527,9 @@ class TestCanWaitBehavior:
         set_current_thread_type(ThreadType.DM)
 
         source = make_ones_tile()
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
+        )
 
         with dfb.reserve() as block:
             tx = copy(source, block)
@@ -527,7 +544,9 @@ class TestCanWaitBehavior:
         set_current_thread_type(ThreadType.DM)
 
         source = make_full_tile(21.0)
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
+        )
 
         # Store data
         with dfb.reserve() as block:
@@ -550,7 +569,9 @@ class TestCanWaitBehavior:
 
         pipe = Pipe(11000, 11001)
         tile = make_full_tile(23.0)
-        dfb = DataflowBuffer(element=make_ones_tile(), shape=(1, 1), buffer_factor=2)
+        dfb = DataflowBuffer(
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
+        )
 
         # Store data
         with dfb.reserve() as block:
@@ -572,7 +593,7 @@ class TestCanWaitBehavior:
 
         pipe = Pipe(12000, 12001)
         dst_dfb = DataflowBuffer(
-            element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
         )
 
         with dst_dfb.reserve() as dst_block:
@@ -582,7 +603,7 @@ class TestCanWaitBehavior:
 
             # Now send data in a separate "thread" (simulated by just doing it)
             src_dfb = DataflowBuffer(
-                element=make_ones_tile(), shape=(1, 1), buffer_factor=2
+                likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
             )
             tile = make_full_tile(25.0)
 

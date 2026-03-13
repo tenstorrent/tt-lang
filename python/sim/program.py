@@ -147,7 +147,7 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                     case DataflowBuffer():
                         # Create a fresh DFB for this core.
                         new_dfb = DataflowBuffer(
-                            element=value.element,
+                            likeness_tensor=value.likeness_tensor,
                             shape=value.shape,
                             buffer_factor=value.buffer_factor,
                         )

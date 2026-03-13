@@ -570,8 +570,12 @@ class TestBlockCompletion:
 
             # Create multiple dataflow buffers
             element = make_ones_tensor(32, 32)
-            dfb1 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
-            dfb2 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+            dfb1 = DataflowBuffer(
+                likeness_tensor=element, shape=(1, 1), buffer_factor=2
+            )
+            dfb2 = DataflowBuffer(
+                likeness_tensor=element, shape=(1, 1), buffer_factor=2
+            )
 
             @ttl.datamovement()
             def dm0():

@@ -19,7 +19,6 @@ from typing import Any, Callable, List, Optional, Set
 
 import torch
 
-from .blockstate import BlockAcquisition, ThreadType
 from .diagnostics import warn_once_per_location
 from .dfb import Block, track_source_blocks, matmul
 from .ttnnsim import Tensor
@@ -48,25 +47,19 @@ def broadcast(
     _unused_arg: Optional[Any] = None,
     dims: Optional[List[int]] = None,
 ) -> Block:
-    """Broadcast a block along specified dimensions.
+    """Mark a block for broadcasting along specified dimensions.
 
-    This function replicates values within each tile along the specified dimensions.
-    After reduce operations store values at specific positions (e.g., reduce_max with
-    dims=[0] stores max at column 0), broadcast replicates those values.
+    This function validates the broadcast request and marks the block with metadata.
+    The actual broadcasting (both within-tile replication and grid expansion) happens
+    lazily when the block is stored or used in operations.
 
     Dimension indexing uses the innermost-first convention: dims=[0] refers to the
     innermost (last) dimension of the block shape, dims=[1] to the next-to-innermost,
     and so on. This matches the convention used throughout the ttl.math API.
 
     For a 2-D grid block of shape (N, M):
-    - dims=[0] (innermost/columns): takes values from column 0 and replicates across
-      all columns. Block must have size 1 in M.
-    - dims=[1] (next-to-innermost/rows): takes values from row 0 and replicates across
-      all rows. Block must have size 1 in N.
-
-    For ND grids, batch dimensions (all dims before the last tile.ndim grid dims)
-    have no within-tile axis to broadcast; they are grid-level-only and the tile
-    content is left unchanged.
+    - dims=[0] (innermost/columns): Block must have element size 1 in last dimension.
+    - dims=[1] (next-to-innermost/rows): Block must have element size 1 in first dimension.
 
     Args:
         block: Input block to broadcast
@@ -74,14 +67,15 @@ def broadcast(
         dims: List of dimension indices to broadcast along (0=innermost)
 
     Returns:
-        Block with values replicated along the specified dimensions
+        Block marked with broadcast metadata
     """
     if dims is None:
         raise ValueError("dims parameter is required for broadcast()")
 
-    # Validate that the dimensions being broadcast have size 1 at grid level.
+    # Validate that the dimensions being broadcast have element size 1.
     # User dims use innermost-first convention: translate to internal (outermost-first).
     block_shape = block._shape  # type: ignore[attr-defined]
+    element_shape = block._element_shape  # type: ignore[attr-defined]
     ndim = len(block_shape)
 
     # Check if this is a 1D broadcast and issue a warning
@@ -95,50 +89,17 @@ def broadcast(
                 f"with only {ndim} dimensions"
             )
         internal_dim = ndim - 1 - dim
-        if block_shape[internal_dim] != 1:
+        # Check element size, not tile size
+        if element_shape[internal_dim] != 1:
             raise ValueError(
-                f"Cannot broadcast along dimension {dim}: dimension must have size 1, "
-                f"but has size {block_shape[internal_dim]}"
+                f"Cannot broadcast along dimension {dim}: dimension must have element size 1, "
+                f"but has element size {element_shape[internal_dim]}"
             )
 
-    # Map block-grid dimensions to within-tile dimensions.
-    # The last tile.ndim grid dimensions correspond to tile-internal axes 0, 1, ...
-    # Leading (batch) grid dimensions have no tile-internal counterpart.
-    input_tensors = [t.to_torch() for t in block.to_list()]
-    result_tensors: List[Tensor] = []
+    # Mark block with broadcast metadata for lazy expansion
+    block._broadcast_dims = tuple(dims)  # type: ignore[attr-defined]
 
-    for tile in input_tensors:
-        tile_ndim = tile.ndim
-        # Number of leading grid dims that are batch-only (no tile axis).
-        num_batch_grid_dims = ndim - tile_ndim
-        slices = [slice(None)] * tile_ndim
-        for dim in dims:
-            internal_dim = ndim - 1 - dim
-            tile_dim = internal_dim - num_batch_grid_dims
-            if tile_dim < 0:
-                # Batch grid dimension: no within-tile axis, leave slice unchanged.
-                continue
-            slices[tile_dim] = slice(0, 1)
-
-        # Extract the slice and expand back to original shape
-        result_tile = tile[tuple(slices)].expand(tile.shape).clone()
-        result_tensors.append(Tensor(result_tile))
-
-    result_block = Block.from_list(result_tensors, block_shape)
-
-    # Preserve source block tracking for wait() blocks
-    if block._source_blocks:  # type: ignore[attr-defined]
-        result_block._source_blocks = block._source_blocks.copy()  # type: ignore[attr-defined]
-
-    # If block itself is a wait() block, add it to source_blocks
-    if (
-        not block._is_temporary  # type: ignore[attr-defined]
-        and block.acquisition == BlockAcquisition.WAIT
-        and block.thread_type == ThreadType.COMPUTE
-    ):
-        result_block._source_blocks.append(block)  # type: ignore[attr-defined]
-
-    return result_block
+    return block
 
 
 # Helper function to create unary operation wrappers
