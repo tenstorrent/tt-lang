@@ -234,6 +234,26 @@ execute_process(
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 
 # ---------------------------------------------------------------------------
+# Install tt-metal artifacts into toolchain directory.
+# In build mode with TTLANG_TOOLCHAIN_DIR set, copy shared libraries, Python
+# packages, runtime artifacts, and JIT source trees so the toolchain is
+# self-contained for Docker image builds and cross-machine caching.
+# ---------------------------------------------------------------------------
+if(DEFINED TTLANG_TOOLCHAIN_DIR AND NOT TTLANG_USE_TOOLCHAIN)
+  set(_TTMETAL_INSTALL_DIR "${TTLANG_TOOLCHAIN_DIR}/tt-metal")
+  message(STATUS "Installing tt-metal artifacts into ${_TTMETAL_INSTALL_DIR}")
+  execute_process(
+    COMMAND bash "${CMAKE_SOURCE_DIR}/scripts/install-ttmetal.sh"
+      "${TT_METAL_SOURCE_DIR}" "${TTMETAL_BUILD_DIR}" "${_TTMETAL_INSTALL_DIR}"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    RESULT_VARIABLE _TTMETAL_INSTALL_RESULT
+  )
+  if(NOT _TTMETAL_INSTALL_RESULT EQUAL 0)
+    message(WARNING "tt-metal install into toolchain failed (exit ${_TTMETAL_INSTALL_RESULT})")
+  endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # Set variables for activate.in
 # ---------------------------------------------------------------------------
 set(TT_METAL_HOME "${TT_METAL_SOURCE_DIR}")

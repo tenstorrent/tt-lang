@@ -123,13 +123,6 @@ endif()
 ttlang_pip_install_requirements("${_VENV_PYTHON}"
   "${CMAKE_SOURCE_DIR}/requirements.txt" FATAL)
 
-# Install lit from the LLVM source tree when the submodule is available.
-# llvm-lit requires the lit Python package to run tests.
-if(EXISTS "${LLVM_SUBMODULE_DIR}/llvm/utils/lit/setup.py")
-  ttlang_pip_install_package("${_VENV_PYTHON}"
-    "${LLVM_SUBMODULE_DIR}/llvm/utils/lit" FATAL)
-endif()
-
 set(Python3_EXECUTABLE "${_VENV_PYTHON}")
 message(STATUS "Python venv: ${TTLANG_PYTHON_VENV}")
 message(STATUS "  Python: ${Python3_EXECUTABLE}")
