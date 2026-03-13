@@ -28,7 +28,6 @@ def eltwise_pipe(
 
     # Check that c_in is 1x1 and expand it to tile shape (1, 1) -> (1, 1, 32, 32) -> (32, 32)
     assert c_in.shape == (1, 1), f"c_in must be 1x1, got {c_in.shape}"
-    c_expanded = ttnn.squeeze(ttnn.repeat(c_in, (1, 1, *ttl.TILE_SHAPE)))
 
     row_tiles = a_in.shape[0] // ttl.TILE_SHAPE[0]
     col_tiles = a_in.shape[1] // ttl.TILE_SHAPE[1]
@@ -48,7 +47,7 @@ def eltwise_pipe(
         b_in, shape=(granularity, 1), buffer_factor=buffer_factor
     )
     c_in_dfb = ttl.make_dataflow_buffer_like(
-        c_expanded, shape=(1, 1), buffer_factor=buffer_factor
+        c_in, shape=(1, 1), buffer_factor=buffer_factor
     )
     out_dfb = ttl.make_dataflow_buffer_like(
         out, shape=(granularity, 1), buffer_factor=buffer_factor
@@ -111,7 +110,7 @@ def eltwise_pipe(
             def pipe_src(pipe_id):
                 print(f"dm0 (C multicast SRC): core={core_num}")
                 # C is only 1 tile
-                tx = ttl.copy(c_expanded[slice(0, 1), slice(0, 1)], c_block)
+                tx = ttl.copy(c_in[slice(0, 1), slice(0, 1)], c_block)
                 tx.wait()
                 tx2 = ttl.copy(c_block, pipe_id)
                 tx2.wait()

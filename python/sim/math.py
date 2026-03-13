@@ -21,6 +21,7 @@ import torch
 
 from .diagnostics import warn_once_per_location
 from .dfb import Block, track_source_blocks, matmul
+from .blockstate import BlockAcquisition, ThreadType
 from .ttnnsim import Tensor
 from .typedefs import PositiveInt
 
@@ -45,14 +46,21 @@ def _warn_1d_broadcast_unsupported() -> None:
 
 def broadcast(
     block: Block,
-    _unused_arg: Optional[Any] = None,
+    output_hint: Optional[Block] = None,
     dims: Optional[List[int]] = None,
 ) -> Block:
-    """Mark a block for broadcasting along specified dimensions.
+    """Broadcast a block along specified dimensions.
 
-    This function validates the broadcast request and marks the block with metadata.
-    The actual broadcasting (both within-tile replication and grid expansion) happens
-    lazily when the block is stored or used in operations.
+    This function can operate in two modes:
+
+    1. **Eager expansion** (when output_hint is provided):
+       Immediately expands the block to match the output hint's shape and returns
+       a fully materialized Block. This allows multiple broadcasts to be used in
+       the same expression without conflicts.
+
+    2. **Lazy expansion** (when output_hint is None):
+       Marks the block with broadcast metadata. Actual expansion happens later
+       when the block is stored or used in operations.
 
     Dimension indexing uses the innermost-first convention: dims=[0] refers to the
     innermost (last) dimension of the block shape, dims=[1] to the next-to-innermost,
@@ -64,11 +72,21 @@ def broadcast(
 
     Args:
         block: Input block to broadcast
-        _unused_arg: Unused argument for compatibility (typically output block shape hint)
+        output_hint: Optional output block providing target shape for eager expansion
         dims: List of dimension indices to broadcast along (0=innermost)
 
     Returns:
-        Block marked with broadcast metadata
+        Block with broadcast applied (either lazy metadata or eagerly expanded)
+
+    Examples:
+        # Eager expansion - immediately materialized
+        a_bcast = ttl.math.broadcast(a_blk, y_blk, dims=[0])
+        b_bcast = ttl.math.broadcast(b_blk, y_blk, dims=[1])
+        y_blk.store(a_bcast * b_bcast)  # Works - both are materialized
+
+        # Lazy expansion - deferred until use
+        a_bcast = ttl.math.broadcast(a_blk, dims=[0])
+        y_blk.store(a_bcast * b_blk)  # a_bcast expands during store
     """
     if dims is None:
         raise ValueError("dims parameter is required for broadcast()")
@@ -97,9 +115,36 @@ def broadcast(
                 f"but has element size {element_shape[internal_dim]}"
             )
 
-    # Mark block with broadcast metadata for lazy expansion
-    block._broadcast_dims = tuple(dims)  # type: ignore[attr-defined]
+    # If output hint is provided, perform eager expansion
+    if output_hint is not None:
+        target_shape = output_hint._shape  # type: ignore[attr-defined]
+        target_element_shape = output_hint._element_shape  # type: ignore[attr-defined]
 
+        # Validate dimensionality matches
+        if len(target_shape) != len(block_shape):
+            raise ValueError(
+                f"Broadcast output hint has {len(target_shape)} dimensions, "
+                f"but source block has {len(block_shape)} dimensions"
+            )
+
+        # Use PyTorch broadcasting to expand the tensor
+        src_tensor = block._buf.to_torch()  # type: ignore[attr-defined]
+        expanded_tensor = src_tensor.expand(*target_element_shape)
+
+        # Create a new materialized block directly with the target shape
+        # Use Block constructor to create a temporary block
+        result_block = Block(
+            tensor=Tensor(expanded_tensor.contiguous()),
+            shape=target_shape,
+            acquisition=BlockAcquisition.RESERVE,
+            thread_type=ThreadType.COMPUTE,
+            is_temporary=True,
+        )
+        track_source_blocks(result_block, block)
+        return result_block
+
+    # No output hint - use lazy expansion with metadata
+    block._broadcast_dims = tuple(dims)  # type: ignore[attr-defined]
     return block
 
 
