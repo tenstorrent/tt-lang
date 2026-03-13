@@ -645,7 +645,7 @@ class TTLGenericCompiler(TTCompilerBase):
         object-mode dprint."""
         if ttl.CircularBufferType.maybe_downcast(val.type) is not None:
             return True
-        if RankedTensorType.isinstance(val.type):
+        if isinstance(val.type, RankedTensorType):
             return True
         return False
 
@@ -662,7 +662,7 @@ class TTLGenericCompiler(TTCompilerBase):
             )
             return
 
-        if RankedTensorType.isinstance(val.type):
+        if isinstance(val.type, RankedTensorType):
             if is_tensor_accessor:
                 # Tensor accessors use page-based printing (spec: num_pages
                 # defaults to 1). TileSlice is not available for raw tensors.
@@ -715,7 +715,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 fmt += str(const_val) + " "
             else:
                 if not (
-                    IndexType.isinstance(val.type) or IntegerType.isinstance(val.type)
+                    isinstance(val.type, IndexType) or isinstance(val.type, IntegerType)
                 ):
                     raise ValueError(
                         f"print() scalar mode supports integer variables, "
