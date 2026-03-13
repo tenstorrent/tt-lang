@@ -15,10 +15,10 @@
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h" // IWYU pragma: keep
+#include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h" // IWYU pragma: keep
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
-#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h" // IWYU pragma: keep
-#include "llvm/ADT/TypeSwitch.h"            // IWYU pragma: keep
+#include "llvm/ADT/TypeSwitch.h" // IWYU pragma: keep
 #include <cstdint>
 
 #define GET_OP_CLASSES
@@ -63,6 +63,32 @@ SliceAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
   return llvm::success();
 }
 
+llvm::LogicalResult
+LayoutAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+                   ArrayRef<int64_t> shape, Type elementType,
+                   BufferType bufferType, ArrayRef<int64_t> grid,
+                   TensorMemoryLayout memoryLayout) {
+  if (shape.empty()) {
+    return emitError() << "layout shape must not be empty";
+  }
+  if (grid.empty()) {
+    return emitError() << "layout grid must not be empty";
+  }
+  for (int64_t dim : shape) {
+    if (dim <= 0) {
+      return emitError() << "layout shape dimensions must be positive, got "
+                         << dim;
+    }
+  }
+  for (int64_t dim : grid) {
+    if (dim <= 0) {
+      return emitError() << "layout grid dimensions must be positive, got "
+                         << dim;
+    }
+  }
+  return llvm::success();
+}
+
 } // namespace mlir::tt::ttl
 
 mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
@@ -99,8 +125,8 @@ mlir::LogicalResult mlir::tt::ttl::AttachCBOp::verify() {
                          << cbTy.getElementType() << ")";
   }
 
-  // TODO: Revisit shape rank validation for TTNN tensors.
-  // TTNN tensors have 4D device shape (grid + shard) while CBs have 2D shard
+  // TODO: Revisit shape rank validation for tensors with TTL layout.
+  // Device tensors have 4D device shape (grid + shard) while CBs have 2D shard
   // shape. For now, only validate element types match. The relationship between
   // tensor shape and CB shape needs further investigation.
 
@@ -175,12 +201,12 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
     }
   }
 
-  // TT-Lang programs operate on TTNN tensors. Require a TTNN layout encoding so
-  // lowering can derive tile/addressing information.
+  // TT-Lang programs require a TTL layout encoding on tensors so lowering
+  // can derive tile/addressing information.
   auto enc = rankedTensorTy.getEncoding();
-  if (!enc || !mlir::isa<tt::ttnn::TTNNLayoutAttr>(enc)) {
+  if (!enc || !mlir::isa<LayoutAttr>(enc)) {
     return emitOpError()
-           << "expects tensor operand to carry TTNNLayout encoding; got "
+           << "expects tensor operand to carry ttl.layout encoding; got "
            << rankedTensorTy;
   }
 
@@ -398,8 +424,8 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
     mapOffsetsAndSizes(b, loc, indexingMaps[idx], input, offsets, sizes,
                        operandOffsets, operandSizes, operandStrides);
 
-    auto slice = b.create<mlir::tensor::ExtractSliceOp>(
-        loc, input, operandOffsets, operandSizes, operandStrides);
+    auto slice = mlir::tensor::ExtractSliceOp::create(
+        b, loc, input, operandOffsets, operandSizes, operandStrides);
     tiledInputs.push_back(slice);
     generatedSlices.push_back(slice);
   }
@@ -413,15 +439,15 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
     mapOffsetsAndSizes(b, loc, indexingMaps[numInputs + idx], output, offsets,
                        sizes, operandOffsets, operandSizes, operandStrides);
 
-    auto slice = b.create<mlir::tensor::ExtractSliceOp>(
-        loc, output, operandOffsets, operandSizes, operandStrides);
+    auto slice = mlir::tensor::ExtractSliceOp::create(
+        b, loc, output, operandOffsets, operandSizes, operandStrides);
     tiledOutputs.push_back(slice);
     generatedSlices.push_back(slice);
   }
 
   // Build the tiled compute op with subblock operands.
-  auto tiledOp = b.create<ComputeOp>(
-      loc, mlir::TypeRange(tiledOutputs), tiledInputs, tiledOutputs,
+  auto tiledOp = ComputeOp::create(
+      b, loc, mlir::TypeRange(tiledOutputs), tiledInputs, tiledOutputs,
       getIndexingMapsAttr(), getIteratorTypesAttr());
 
   // Clone the body region into the new compute op.

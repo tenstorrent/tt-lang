@@ -8,8 +8,8 @@
 import ast
 import inspect
 
-from ttmlir.dialects import arith, emitc, func, memref, scf
-from ttmlir.ir import *
+from ttl.dialects import arith, emitc, func, memref, scf
+from ttl.ir import *
 
 from .base_ast import PyKernelAstBase
 from .kernel_types import ClassRegistry
@@ -86,7 +86,7 @@ class TTCompilerBase(PyKernelAstBase):
 
         self.name = name
         try:
-            from ttmlir.dialects._ods_common import get_default_loc_context
+            from ttl.dialects._ods_common import get_default_loc_context
 
             default_context = get_default_loc_context()
         except ValueError:
@@ -145,7 +145,7 @@ class TTCompilerBase(PyKernelAstBase):
             if_cond = arith.cmpi(
                 arith.CmpIPredicate.ne, if_cond, arith.ConstantOp(cond_type, 0)
             )
-        if_exp = scf.IfOp(cond=if_cond, hasElse=bool(node.orelse))
+        if_exp = scf.IfOp(cond=if_cond, has_else=bool(node.orelse))
 
         self._on_scope_exit()
         with InsertionPoint(if_exp.then_block), Location.unknown():
@@ -414,7 +414,7 @@ class TTCompilerBase(PyKernelAstBase):
 
     def visit_Print(self, node):
         # Import ttkernel here to avoid circular import at module level
-        from ttmlir.dialects import ttkernel
+        from ttl.dialects import ttkernel
 
         fmt = ""
         argv = []

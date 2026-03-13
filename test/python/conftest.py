@@ -47,6 +47,7 @@ from ttlang_test_utils import is_hardware_available, is_ttnn_available
 
 _ttnn_available = is_ttnn_available()
 _hardware_available = is_hardware_available()
+_ttnn_import_failed = False  # Set True after first failed import to prevent nanobind re-registration crash
 
 # Lit tests that should not be collected by pytest (they have # RUN: directives)
 collect_ignore = [
@@ -83,12 +84,17 @@ def pytest_configure(config):
 @pytest.fixture
 def ttnn_device():
     """Fixture that provides a TTNN device, skipping if unavailable."""
-    if not _ttnn_available:
+    global _ttnn_import_failed
+    if not _ttnn_available or _ttnn_import_failed:
         pytest.skip("TTNN not available")
     if not _hardware_available:
         pytest.skip("No Tenstorrent device available")
 
-    import ttnn
+    try:
+        import ttnn
+    except Exception:
+        _ttnn_import_failed = True
+        raise
 
     device = ttnn.open_device(device_id=0)
     yield device

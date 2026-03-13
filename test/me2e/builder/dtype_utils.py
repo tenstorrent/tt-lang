@@ -9,7 +9,7 @@ Shared utilities for converting between torch dtypes and MLIR type strings.
 """
 
 import torch
-from ttmlir.dialects import ttcore
+from ttl.dialects import ttcore
 
 
 def torch_dtype_to_mlir_str(dtype: torch.dtype) -> str:

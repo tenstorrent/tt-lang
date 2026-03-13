@@ -1,9 +1,10 @@
 [pytest]
-# Make tt-lang python package importable for tests run from the test tree.
+# Make tt-lang python packages importable for tests run from the test tree.
+# @CMAKE_BINARY_DIR@ is substituted by CMake's configure_file().
 pythonpath =
-    ../build/python_packages
-    ../python
-    ..
+    @CMAKE_BINARY_DIR@/python_packages
+    @CMAKE_SOURCE_DIR@/python
+    @CMAKE_SOURCE_DIR@
 testpaths = me2e sim
 
 # Configure pytest-order to order tests within each class separately.

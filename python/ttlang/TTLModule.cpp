@@ -4,10 +4,12 @@
 
 #include "ttlang/Bindings/Python/TTLangModule.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 
 #include "mlir/CAPI/IR.h"
 
+#include <nanobind/stl/optional.h>
 #include <nanobind/stl/vector.h>
 
 namespace nb = nanobind;
@@ -60,4 +62,45 @@ void populateTTLModule(nb::module_ &m) {
           "element_type",
           [](CircularBufferType &self) { return wrap(self.getElementType()); })
       .def_prop_ro("buffer_factor", &CircularBufferType::getBufferFactor);
+
+  //===--------------------------------------------------------------------===//
+  // LayoutAttr
+  //===--------------------------------------------------------------------===//
+
+  tt_attribute_class<LayoutAttr>(m, "LayoutAttr")
+      .def_static(
+          "get",
+          [](MlirContext ctx, std::vector<int64_t> shape, MlirType elementType,
+             uint32_t bufferType, std::vector<int64_t> grid,
+             std::optional<uint32_t> memLayout) {
+            auto memoryLayout =
+                memLayout.has_value()
+                    ? static_cast<TensorMemoryLayout>(*memLayout)
+                    : TensorMemoryLayout::Interleaved;
+            return wrap(LayoutAttr::get(unwrap(ctx), shape, unwrap(elementType),
+                                        static_cast<BufferType>(bufferType),
+                                        grid, memoryLayout));
+          },
+          nb::arg("ctx"), nb::arg("shape"), nb::arg("element_type"),
+          nb::arg("buffer_type"), nb::arg("grid"),
+          nb::arg("memory_layout") = nb::none())
+      .def_prop_ro("shape",
+                   [](LayoutAttr &self) {
+                     auto s = self.getShape();
+                     return std::vector<int64_t>(s.begin(), s.end());
+                   })
+      .def_prop_ro("element_type",
+                   [](LayoutAttr &self) { return wrap(self.getElementType()); })
+      .def_prop_ro("buffer_type",
+                   [](LayoutAttr &self) {
+                     return static_cast<uint32_t>(self.getBufferType());
+                   })
+      .def_prop_ro("grid",
+                   [](LayoutAttr &self) {
+                     auto g = self.getGrid();
+                     return std::vector<int64_t>(g.begin(), g.end());
+                   })
+      .def_prop_ro("memory_layout", [](LayoutAttr &self) {
+        return static_cast<uint32_t>(self.getMemoryLayout());
+      });
 }

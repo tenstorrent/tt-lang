@@ -62,6 +62,11 @@ constexpr llvm::StringLiteral kTileOffsetAttrName("ttl.tile_offset");
 constexpr llvm::StringLiteral
     kBcastOutputCBIndexAttrName("ttl.bcast_output_cb_index");
 
+/// Trait for data movement operations (copy_tile, copy_dst).
+template <typename ConcreteType>
+class TTLDataMovementOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLDataMovementOpTrait> {};
+
 /// Trait for tile compute operations (add, mul, exp, etc.).
 template <typename ConcreteType>
 class TTLTileComputeOpTrait

@@ -9,14 +9,13 @@ func.func @bind_cb() {
 
 // -----
 
-#dram = #ttnn.buffer_type<dram>
-#layout_interleaved = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>,
-                      memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout_interleaved = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // CHECK-LABEL: func.func @copy_read_wait
-// CHECK-SAME: (%[[T:.*]]: tensor<1x1x!ttcore.tile<32x32, f32>, #ttnn_layout>)
+// CHECK-SAME: (%[[T:.*]]: tensor<1x1x!ttcore.tile<32x32, f32>, #ttl.layout<{{.*}}>>)
 // CHECK: %[[CB:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[1, 1], f32, 2>
-// CHECK: %[[XF:.*]] = ttl.copy %[[T]], %[[CB]] : (tensor<1x1x!ttcore.tile<32x32, f32>, #ttnn_layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+// CHECK: %[[XF:.*]] = ttl.copy %[[T]], %[[CB]] : (tensor<1x1x!ttcore.tile<32x32, f32>, #ttl.layout<{{.*}}>>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
 // CHECK: ttl.wait %[[XF]] : !ttl.transfer_handle<read>
 func.func @copy_read_wait(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_interleaved>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
@@ -27,14 +26,13 @@ func.func @copy_read_wait(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_inter
 
 // -----
 
-#dram = #ttnn.buffer_type<dram>
-#layout_interleaved = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>,
-                      memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout_interleaved = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // CHECK-LABEL: func.func @copy_write_wait
-// CHECK-SAME: (%[[T:.*]]: tensor<1x1x!ttcore.tile<32x32, f32>, #ttnn_layout>)
+// CHECK-SAME: (%[[T:.*]]: tensor<1x1x!ttcore.tile<32x32, f32>, #ttl.layout<{{.*}}>>)
 // CHECK: %[[CB:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[1, 1], f32, 2>
-// CHECK: %[[XF:.*]] = ttl.copy %[[CB]], %[[T]] : (!ttl.cb<[1, 1], f32, 2>, tensor<1x1x!ttcore.tile<32x32, f32>, #ttnn_layout>) -> !ttl.transfer_handle<write>
+// CHECK: %[[XF:.*]] = ttl.copy %[[CB]], %[[T]] : (!ttl.cb<[1, 1], f32, 2>, tensor<1x1x!ttcore.tile<32x32, f32>, #ttl.layout<{{.*}}>>) -> !ttl.transfer_handle<write>
 // CHECK: ttl.wait %[[XF]] : !ttl.transfer_handle<write>
 func.func @copy_write_wait(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_interleaved>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
@@ -45,14 +43,13 @@ func.func @copy_write_wait(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_inte
 
 // -----
 
-#l1 = #ttnn.buffer_type<l1>
-#layout_tile = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>,
-               memref<1x1x!ttcore.tile<32x32, f32>, #l1>, <block_sharded>>
+#layout_tile = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+               buffer = l1, grid = [1, 1], memory = single_bank>
 
 // CHECK-LABEL: func.func @copy_read_wait_tile_layout
-// CHECK-SAME: (%[[T:.*]]: tensor<1x1x!ttcore.tile<32x32, f32>, #ttnn_layout>)
+// CHECK-SAME: (%[[T:.*]]: tensor<1x1x!ttcore.tile<32x32, f32>, #ttl.layout<{{.*}}>>)
 // CHECK: %[[CB:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[1, 1], f32, 2>
-// CHECK: %[[XF:.*]] = ttl.copy %[[T]], %[[CB]] : (tensor<1x1x!ttcore.tile<32x32, f32>, #ttnn_layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+// CHECK: %[[XF:.*]] = ttl.copy %[[T]], %[[CB]] : (tensor<1x1x!ttcore.tile<32x32, f32>, #ttl.layout<{{.*}}>>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
 // CHECK: ttl.wait %[[XF]] : !ttl.transfer_handle<read>
 func.func @copy_read_wait_tile_layout(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_tile>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>

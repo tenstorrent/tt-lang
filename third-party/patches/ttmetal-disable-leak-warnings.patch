@@ -1,0 +1,13 @@
+diff --git a/ttnn/cpp/ttnn-nanobind/__init__.cpp b/ttnn/cpp/ttnn-nanobind/__init__.cpp
+index a0b002c0ca..2d3055f751 100644
+--- a/ttnn/cpp/ttnn-nanobind/__init__.cpp
++++ b/ttnn/cpp/ttnn-nanobind/__init__.cpp
+@@ -79,7 +79,7 @@ namespace nb = nanobind;
+ namespace ttnn::operations {
+
+ void py_module(nb::module_& mod) {
+-    nb::set_leak_warnings(true);
++    nb::set_leak_warnings(false);
+
+     auto m_core = mod.def_submodule("core", "core operations");
+     core::py_module_types(m_core);

@@ -51,7 +51,7 @@ config.test_exec_root = os.path.join(config.ttlang_obj_root, "test")
 # Create Output directories for lit temp files (%t substitution).
 # This is needed when running from pre-built artifacts where the build
 # directory may not have the Output subdirectories created.
-for subdir in ["python", "ttlang", "bindings/python"]:
+for subdir in ["python", "python/dprint", "ttlang", "bindings/python"]:
     output_dir = os.path.join(config.test_exec_root, subdir, "Output")
     os.makedirs(output_dir, exist_ok=True)
 
@@ -86,11 +86,6 @@ if llvm_config is not None:
 tool_dirs = [
     os.path.join(config.ttlang_obj_root, "bin"),
 ]
-# Add tt-mlir tools directory if available
-if hasattr(config, "ttmlir_path") and config.ttmlir_path:
-    ttmlir_bin = os.path.join(config.ttmlir_path, "bin")
-    if os.path.exists(ttmlir_bin):
-        tool_dirs.append(ttmlir_bin)
 if hasattr(config, "llvm_tools_dir"):
     tool_dirs.append(config.llvm_tools_dir)
 if hasattr(config, "lit_tools_dir"):
@@ -124,12 +119,6 @@ python_paths = [
     config.test_source_root,  # For ttlang_test_utils and other test utilities
 ]
 
-# Add tt-mlir Python packages if available
-if hasattr(config, "ttmlir_path") and config.ttmlir_path:
-    ttmlir_python = os.path.join(config.ttmlir_path, "python_packages")
-    if os.path.exists(ttmlir_python):
-        python_paths.append(ttmlir_python)
-
 # Include existing PYTHONPATH last
 python_paths.append(os.environ.get("PYTHONPATH", ""))
 
@@ -157,17 +146,27 @@ for env_var in [
 if platform.system() == "Darwin":
     config.available_features.add("system-darwin")
 
-# Add TTNN feature if available (attempt actual import to detect broken binaries on macOS)
-try:
-    import ttnn
+# Add TTNN feature if available.  Use a subprocess to test the import because a
+# broken or partially-built _ttnn.so can segfault, which is not catchable.
+import subprocess as _sp
 
-    sys.path.insert(0, os.path.join(config.test_source_root))
-    from ttlang_test_utils import is_ttnn_available
-
-    if is_ttnn_available():
-        config.available_features.add("ttnn")
-except (ImportError, ModuleNotFoundError):
-    pass
+_ttnn_check = _sp.run(
+    [
+        config.python_executable,
+        "-c",
+        "import ttnn; from ttlang_test_utils import is_ttnn_available; "
+        "raise SystemExit(0 if is_ttnn_available() else 1)",
+    ],
+    capture_output=True,
+    env={
+        **os.environ,
+        "PYTHONPATH": config.test_source_root
+        + os.pathsep
+        + os.environ.get("PYTHONPATH", ""),
+    },
+)
+if _ttnn_check.returncode == 0:
+    config.available_features.add("ttnn")
 
 # Add tt-device feature if hardware is available (detected by CMake at configure time)
 # Also enable if TT_METAL_SIMULATOR is set (allows running tests in simulation mode)

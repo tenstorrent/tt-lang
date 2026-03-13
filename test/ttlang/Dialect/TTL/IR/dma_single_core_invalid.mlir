@@ -3,8 +3,8 @@
 
 // -----
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 module {
   func.func @tensor_to_tensor_invalid(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>, %arg1: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -31,12 +31,12 @@ module {
 
 // -----
 
-// Tensor operand must carry TTNNLayout encoding.
+// Tensor operand must carry ttl.layout encoding.
 module {
   func.func @tensor_missing_layout_invalid(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
-    // expected-error @below {{expects tensor operand to carry TTNNLayout encoding}}
+    // expected-error @below {{expects tensor operand to carry ttl.layout encoding}}
     %xf = ttl.copy %arg0, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
     func.return
@@ -59,8 +59,8 @@ module {
 
 // -----
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // Copy without a corresponding wait is invalid in the MVP.
 module {
@@ -103,8 +103,8 @@ module {
 
 // -----
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // Two-phase loops with fewer wait iterations than copy iterations is invalid.
 // This exercises the verifier's loop iteration space comparison.
@@ -135,8 +135,8 @@ module {
 
 // -----
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // Using an untyped transfer handle is invalid: direction typing is required so
 // lowering can always select a specific barrier.
@@ -152,8 +152,8 @@ module {
 
 // -----
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // Pipelined loop with a loop-carried handle but no wait in the loop body is
 // invalid: it drops intermediate transfers without synchronization.

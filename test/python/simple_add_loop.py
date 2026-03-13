@@ -64,9 +64,6 @@ def add_loop_kernel(lhs, rhs, out):
 # Initial IR Checks - Verify scf.for loop is generated in compute
 # =============================================================================
 
-# CHECK: #ttnn.buffer_type<l1>
-# CHECK: #ttnn_layout = #ttnn.ttnn_layout<{{.*}}memref<1x1x!ttcore.tile<32x32, bf16>{{.*}}>
-
 # CHECK-LABEL: func.func @add_compute
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}
 

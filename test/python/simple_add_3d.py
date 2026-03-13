@@ -65,8 +65,6 @@ def add_3d_kernel(lhs, rhs, out):
 # Initial IR Checks - 3D layout
 # =============================================================================
 
-# CHECK: #ttnn_layout = #ttnn.ttnn_layout<{{.*}}>
-
 # =============================================================================
 # Compute kernel: 3D CB types and tensor ops
 # =============================================================================
@@ -92,21 +90,21 @@ def add_3d_kernel(lhs, rhs, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @dm_read
-# CHECK-SAME: %arg0: tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout>
-# CHECK-SAME: %arg1: tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout>
+# CHECK-SAME: %arg0: tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [2, 64, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+# CHECK-SAME: %arg1: tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [2, 64, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
 
 # tensor_slice with 3 indices on first tensor
-# CHECK: ttl.tensor_slice %arg0[%{{.*}}, %{{.*}}, %{{.*}}] : tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout> -> tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout>
+# CHECK: ttl.tensor_slice %arg0[%{{.*}}, %{{.*}}, %{{.*}}] : tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [2, 64, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
 # CHECK: ttl.copy
 
 # tensor_slice with 3 indices on second tensor
-# CHECK: ttl.tensor_slice %arg1[%{{.*}}, %{{.*}}, %{{.*}}] : tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout> -> tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout>
+# CHECK: ttl.tensor_slice %arg1[%{{.*}}, %{{.*}}, %{{.*}}] : tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [2, 64, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
 
 # CHECK-LABEL: func.func @dm_write
-# CHECK-SAME: %arg0: tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout>
+# CHECK-SAME: %arg0: tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [2, 64, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
 
 # tensor_slice with 3 indices on output
-# CHECK: ttl.tensor_slice %arg0[%{{.*}}, %{{.*}}, %{{.*}}] : tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout> -> tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout>
+# CHECK: ttl.tensor_slice %arg0[%{{.*}}, %{{.*}}, %{{.*}}] : tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [2, 64, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
 
 # =============================================================================
 # C++ Kernel Checks - Verify 3D loop nests in generated code

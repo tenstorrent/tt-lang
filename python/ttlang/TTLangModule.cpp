@@ -3,9 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttlang/Bindings/Python/TTLangModule.h"
-#include "mlir/CAPI/IR.h"
-#include "ttlang/Dialect/TTL/IR/TTL.h"
-#include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang-c/Dialects.h"
 
 namespace nb = nanobind;
 using namespace mlir;
@@ -14,15 +12,18 @@ using namespace mlir::python::nanobind_adaptors;
 NB_MODULE(_ttlang, m) {
   m.doc() = "tt-lang Python bindings for TTL dialect";
 
-  // Local ttlang pass registration
-  mlir::tt::ttl::registerTTLPasses();
+  // Register TTL passes via CAPI (avoids ODR with shared CAPI library)
+  ttlangRegisterPasses();
 
   // Register TTL dialect with any Context that loads this module
   m.def(
       "register_ttl_dialect",
       [](MlirContext context) {
-        MLIRContext *ctx = unwrap(context);
-        ctx->loadDialect<mlir::tt::ttl::TTLDialect>();
+        MlirDialectRegistry registry = mlirDialectRegistryCreate();
+        ttlangRegisterTTLDialect(registry);
+        mlirContextAppendDialectRegistry(context, registry);
+        mlirDialectRegistryDestroy(registry);
+        mlirContextLoadAllAvailableDialects(context);
       },
       nb::arg("context"),
       "Register and load the TTL dialect into the given context");
@@ -30,10 +31,7 @@ NB_MODULE(_ttlang, m) {
   // Register dialects into a dialect registry (for site initialization)
   m.def(
       "register_dialects",
-      [](MlirDialectRegistry _registry) {
-        mlir::DialectRegistry *registry = unwrap(_registry);
-        registry->insert<mlir::tt::ttl::TTLDialect>();
-      },
+      [](MlirDialectRegistry registry) { ttlangRegisterTTLDialect(registry); },
       nb::arg("dialectRegistry"),
       "Register all tt-lang dialects into the given dialect registry");
 

@@ -64,7 +64,7 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
   map[mlir::TypeID::get<ttk::TTK_COMPUTE>()] = {                               \
       [](OpBuilder &b, Location l, Operation *) {                              \
-        b.create<ttk::TTK_INIT>(l);                                            \
+        ttk::TTK_INIT::create(b, l);                                           \
       }};
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
@@ -72,7 +72,7 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
   map[mlir::TypeID::get<ttk::TTK_COMPUTE>()] = {                               \
       [](OpBuilder &b, Location l, Operation *) {                              \
-        b.create<ttk::TTK_INIT>(l);                                            \
+        ttk::TTK_INIT::create(b, l);                                           \
       }};
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
@@ -80,7 +80,7 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
 #define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   map[mlir::TypeID::get<ttk::TTK_COMPUTE>()] = {                               \
       [](OpBuilder &b, Location l, Operation *) {                              \
-        b.create<ttk::TTK_INIT>(l);                                            \
+        ttk::TTK_INIT::create(b, l);                                           \
       }};
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
@@ -88,21 +88,21 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
 #define TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)         \
   map[mlir::TypeID::get<ttk::TTK_COMPUTE>()] = {                               \
       [](OpBuilder &b, Location l, Operation *computeOp) {                     \
-        b.create<ttk::TTK_INIT>(l, computeOp->getOperand(0),                   \
-                                computeOp->getOperand(1));                     \
+        ttk::TTK_INIT::create(b, l, computeOp->getOperand(0),                  \
+                              computeOp->getOperand(1));                       \
       }};
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   // CopyTile: init takes 1 CB argument (cb0, the first operand).
   map[mlir::TypeID::get<ttk::CopyTileOp>()] = {
       [](OpBuilder &b, Location l, Operation *computeOp) {
-        b.create<ttk::CopyTileInitOp>(l, computeOp->getOperand(0));
+        ttk::CopyTileInitOp::create(b, l, computeOp->getOperand(0));
       }};
 
   // CopyDestValues: init takes no arguments.
   map[mlir::TypeID::get<ttk::CopyDestValuesOp>()] = {
       [](OpBuilder &b, Location l, Operation *) {
-        b.create<ttk::CopyDestValuesInitOp>(l);
+        ttk::CopyDestValuesInitOp::create(b, l);
       }};
 
   // UnaryBcast: init takes 2 CB args + bcast_type attr.
@@ -133,8 +133,8 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
         });
         assert(outCB && "get_compile_time_arg_val must exist for cb_index");
 
-        b.create<ttk::UnaryBcastInitOp>(l, bcastOp.getInCb(), outCB,
-                                        bcastOp.getBcastTypeAttr());
+        ttk::UnaryBcastInitOp::create(b, l, bcastOp.getInCb(), outCB,
+                                      bcastOp.getBcastTypeAttr());
       }};
 
   return map;
@@ -308,9 +308,9 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
     Location loc = acquireOp->getLoc();
 
     if (hasFPUBinary && in0CB && in1CB) {
-      builder.create<ttk::BinaryOpInitCommonOp>(loc, in0CB, in1CB, outputCB);
+      ttk::BinaryOpInitCommonOp::create(builder, loc, in0CB, in1CB, outputCB);
     } else if (inputCB) {
-      builder.create<ttk::InitSFPUOp>(loc, inputCB, outputCB);
+      ttk::InitSFPUOp::create(builder, loc, inputCB, outputCB);
     }
   });
   return hadError ? failure() : success();

@@ -1,217 +1,102 @@
-name: Build tt-lang with tt-mlir (FetchContent) and run HW tests
+name: Build tt-lang
 
 on:
     workflow_dispatch:
         inputs:
-            tt-mlir-commit:
-                description: 'tt-mlir commit SHA (overrides third-party/tt-mlir.commit)'
-                required: false
-                type: string
-            linux_runner:
-                description: "Linux runner to use"
-                type: choice
-                options:
-                    - ubuntu-latest
-                    - mlir-large-runner-lang
-                default: "ubuntu-latest"
             build_docs:
                 description: "Build and deploy documentation."
                 type: boolean
                 default: false
     workflow_call:
         inputs:
-            tt-mlir-commit:
-                description: 'tt-mlir commit SHA (overrides third-party/tt-mlir.commit)'
-                required: false
-                type: string
-            linux_runner:
-                description: "Linux runner to use (ubuntu-latest or mlir-large-runner-lang)"
-                type: string
-                required: false
-                default: "ubuntu-latest"
             build_docs:
                 description: "Build and deploy documentation."
                 type: boolean
                 required: false
                 default: false
-    schedule:
-        - cron: "0 12 * * *"
 
 permissions:
     checks: write
     contents: read
 
 jobs:
-    get-mlir-tag:
-        runs-on: ubuntu-latest
-        outputs:
-            mlir-tag: ${{ steps.read.outputs.tag }}
-        steps:
-            - uses: actions/checkout@v4
-            - id: read
-              run: echo "tag=$(cat third-party/tt-mlir-docker-tag | tr -d '[:space:]')" >> $GITHUB_OUTPUT
+    configure-deps:
+        uses: ./.github/workflows/call-build-toolchain.yml
 
-    # Determine tt-mlir commit and check if it's already cached.
-    # Runs on a cheap runner to avoid occupying a large runner just for a cache lookup.
-    check-ttmlir-cache:
-        runs-on: ubuntu-latest
-        outputs:
-            ttmlir-commit: ${{ steps.ttmlir-commit.outputs.commit }}
-            cache-hit: ${{ steps.cache-ttmlir.outputs.cache-hit }}
-        steps:
-            - name: Checkout tt-lang
-              uses: actions/checkout@v4
-
-            - name: Determine tt-mlir commit
-              id: ttmlir-commit
-              run: |
-                  bash .github/scripts/determine-ttmlir-commit.sh "${{ inputs.tt-mlir-commit }}" "third-party/tt-mlir.commit"
-
-            - name: Check tt-mlir cache
-              id: cache-ttmlir
-              uses: actions/cache@v4
-              with:
-                  path: tt-mlir-install
-                  key: ${{ runner.os }}-ttlang-ttmlir-${{ steps.ttmlir-commit.outputs.commit }}-v2
-                  lookup-only: true
-
-    # Build tt-mlir via FetchContent (only on cache miss).
-    # This ensures the expensive tt-mlir build (~60-90 min) is always cached,
-    # even if downstream tt-lang build/test steps fail.
-    build-tt-mlir:
-        needs: [get-mlir-tag, check-ttmlir-cache]
-        if: needs.check-ttmlir-cache.outputs.cache-hit != 'true'
-        name: build-tt-mlir (mlir-large-runner-lang)
-        runs-on: mlir-large-runner-lang
-        timeout-minutes: 120
-
-        container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:${{ needs.get-mlir-tag.outputs.mlir-tag }}
-
-        defaults:
-            run:
-                shell: bash
-
-        env:
-            TT_LANG_HOME: ${{ github.workspace }}
-            TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
-            CMAKE_BUILD_PARALLEL_LEVEL: 2
-
-        steps:
-            - name: Maximize space
-              uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
-
-            - name: Checkout tt-lang
-              uses: actions/checkout@v4
-              with:
-                  fetch-depth: 0
-
-            - name: Set TT_MLIR_DIR
-              run: echo "TT_MLIR_DIR=$(pwd)/tt-mlir-install" >> $GITHUB_ENV
-
-            # On cache miss: cmake configure triggers FetchContent build of tt-mlir.
-            # This is the same approach used by build-and-install.sh in the Docker build.
-            - name: Configure tt-lang (builds tt-mlir via FetchContent)
-              run: |
-                  echo "Configuring tt-lang with tt-mlir commit: ${{ needs.check-ttmlir-cache.outputs.ttmlir-commit }}"
-                  cmake -G Ninja -B build \
-                      -DCMAKE_BUILD_TYPE=Release \
-                      -DCMAKE_CXX_COMPILER=clang++-17 \
-                      -DCMAKE_C_COMPILER=clang-17 \
-                      -DTTMLIR_CMAKE_BUILD_TYPE=Release \
-                      -DTTMLIR_INSTALL_PREFIX=${{ env.TT_MLIR_DIR }} \
-                      -DTTMLIR_GIT_TAG=${{ needs.check-ttmlir-cache.outputs.ttmlir-commit }} \
-                      -DTTLANG_ENABLE_PERF_TRACE=ON
-
-            # Build tt-lang to complete the FetchContent install
-            - name: Build tt-lang (completes tt-mlir install)
-              run: |
-                  source build/env/activate
-                  cmake --build build
-
-            - name: Copy ttrt runtime (contains ttnn Python package) to tt-mlir-install
-              run: |
-                  set -x
-                  # TODO: Remove when tt-mlir install is fixed to install the runtime python packages
-                  mkdir -p tt-mlir-install/python_packages/ttrt/runtime
-                  cp -pr build/_deps/tt-mlir-build/python_packages/ttrt/runtime/* \
-                      tt-mlir-install/python_packages/ttrt/runtime/
-
-                  # Copy tracy Python module (required by ttnn runtime)
-                  TT_METAL_SRC="build/_deps/tt-mlir-src/third_party/tt-metal/src/tt-metal"
-                  if [ -d "$TT_METAL_SRC/tools/tracy" ]; then
-                      mkdir -p tt-mlir-install/python_packages/tracy
-                      cp -pr "$TT_METAL_SRC/tools/tracy/"*.py tt-mlir-install/python_packages/tracy/
-                      echo "Copied tracy Python module"
-                  else
-                      echo "Warning: tracy Python module not found at $TT_METAL_SRC/tools/tracy"
-                  fi
-
-            - name: Normalize tt-mlir installation
-              run: |
-                  .github/scripts/normalize-ttmlir-install.sh tt-mlir-install
-
-            - name: Save tt-mlir cache
-              uses: actions/cache/save@v4
-              with:
-                  path: tt-mlir-install
-                  key: ${{ runner.os }}-ttlang-ttmlir-${{ needs.check-ttmlir-cache.outputs.ttmlir-commit }}-v2
-
-    # Build and test tt-lang using cached tt-mlir.
     build-tt-lang:
-        name: build-tt-lang (${{ inputs.linux_runner || 'mlir-large-runner-lang' }})
-        needs: [get-mlir-tag, check-ttmlir-cache, build-tt-mlir]
-        if: always() && !failure() && !cancelled()
-        runs-on: ${{ inputs.linux_runner || 'mlir-large-runner-lang' }}
+        name: "Build and test tt-lang"
+        needs: configure-deps
+        runs-on: ubuntu-22.04
         timeout-minutes: 60
 
-        container: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:${{ needs.get-mlir-tag.outputs.mlir-tag }}
-
         defaults:
             run:
                 shell: bash
 
-        env:
-            TT_LANG_HOME: ${{ github.workspace }}
-            TTMLIR_TOOLCHAIN_DIR: /opt/ttmlir-toolchain
-
         steps:
-            - name: Maximize space
-              uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
-
             - name: Checkout tt-lang
-              uses: actions/checkout@v4
+              uses: actions/checkout@v5
               with:
-                  fetch-depth: 0
+                  fetch-depth: 1
 
-            - name: Restore tt-mlir installation from cache
-              uses: actions/cache/restore@v4
+            - name: Setup Python 3.12
+              uses: actions/setup-python@v5
               with:
-                  path: tt-mlir-install
-                  key: ${{ runner.os }}-ttlang-ttmlir-${{ needs.check-ttmlir-cache.outputs.ttmlir-commit }}-v2
+                  python-version: "3.12"
+
+            - name: Install system dependencies
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y \
+                      build-essential \
+                      libhwloc-dev libyaml-cpp-dev libboost-all-dev \
+                      libtbb-dev libcapstone-dev \
+                      cmake ninja-build ccache pkg-config \
+                      python3-venv python3-dev \
+                      wget zstd
+
+            - name: Install Clang 18
+              run: |
+                  wget https://apt.llvm.org/llvm.sh
+                  chmod u+x llvm.sh
+                  sudo ./llvm.sh 18
+                  sudo apt-get install -y libc++-18-dev libc++abi-18-dev
+                  sudo ln -sf /usr/bin/clang-18 /usr/bin/clang
+                  sudo ln -sf /usr/bin/clang++-18 /usr/bin/clang++
+                  rm -f llvm.sh
+
+            - name: Fix git safe directory for submodules
+              run: git config --global --add safe.directory '*'
+
+            - name: Prepare toolchain directory
+              run: sudo install -d -o $(id -u) -g $(id -g) /opt/ttlang-toolchain
+
+            - name: Restore toolchain cache
+              uses: actions/cache/restore@v5
+              with:
+                  path: /opt/ttlang-toolchain
+                  key: ${{ needs.configure-deps.outputs.cache-key }}
                   fail-on-cache-miss: true
 
-            - name: Setup ccache for tt-lang
-              uses: hendrikmuhs/ccache-action@v1.2
-              with:
-                  key: ${{ runner.os }}-ttlang-for-ttmlir-sha-${{ needs.check-ttmlir-cache.outputs.ttmlir-commit }}
-                  max-size: 200M
-
-            - name: Configure tt-lang with pre-installed tt-mlir
+            - name: Configure tt-lang
               run: |
                   cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
-                      -DCMAKE_CXX_COMPILER=clang++-17 \
-                      -DCMAKE_C_COMPILER=clang-17 \
-                      -DTTMLIR_DIR=$(pwd)/tt-mlir-install/lib/cmake/ttmlir \
-                      -DFETCHCONTENT_UPDATES_DISCONNECTED=ON \
-                      -DTTLANG_ENABLE_DOCS=${{ inputs.build_docs && 'ON' || 'OFF' }}
+                      -DTTLANG_USE_TOOLCHAIN=ON \
+                      -DTTLANG_ENABLE_PERF_TRACE=ON
+
+            - name: Setup ccache
+              uses: hendrikmuhs/ccache-action@v1.2
+              with:
+                  key: Linux-ttlang-build
+                  max-size: 200M
 
             - name: Build tt-lang
               run: |
                   source build/env/activate
                   cmake --build build
 
-            - name: Test the tt-lang build
+            - name: Smoketest
               run: |
                   source build/env/activate
                   python test/python/smoketest.py
@@ -239,36 +124,13 @@ jobs:
 
             - name: Upload documentation artifact
               if: inputs.build_docs
-              uses: actions/upload-pages-artifact@v3
+              uses: actions/upload-pages-artifact@v4
               with:
                   path: ./build/docs/sphinx/_build/html
 
-            - name: Archive build artifacts
-              run: |
-                  set -x
-                  ARTIFACT_NAME=$(.github/scripts/get-artifact-archive-name.sh "${{ github.sha }}")
-                  echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
-
-                  # Archive self-contained tt-mlir-install and tt-lang build directory
-                  tar -I 'zstd --long=31 --adapt=min=9 -T0' -cf "${ARTIFACT_NAME}" \
-                    --exclude='build/_deps' \
-                    tt-mlir-install build
-
-            - name: Upload build artifacts for hardware tests
-              uses: actions/upload-artifact@v4
-              with:
-                  name: ttlang-fetchcontent-ttmlir-install-ubuntu
-                  path: ${{ env.ARTIFACT_NAME }}
-                  if-no-files-found: error
-                  retention-days: 1
-
     test-hardware:
-        needs: build-tt-lang
-        if: always() && needs.build-tt-lang.result == 'success'
         uses: ./.github/workflows/call-test-hardware.yml
         secrets: inherit
         with:
             runs-on: n150
-            build-os: ubuntu
             timeout: 60
-            artifact-prefix: ttlang-fetchcontent

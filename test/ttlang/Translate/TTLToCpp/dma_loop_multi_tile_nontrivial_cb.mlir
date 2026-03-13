@@ -26,9 +26,10 @@
 //     noc_async_read_barrier()
 //   }
 
-#dram = #ttnn.buffer_type<dram>
-#layout_2x2 = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<2x2x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
-#layout_3x2 = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<3x2x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout_2x2 = #ttl.layout<shape = [2, 2], element_type = !ttcore.tile<32x32, f32>,
+                          buffer = dram, grid = [1, 1], memory = interleaved>
+#layout_3x2 = #ttl.layout<shape = [3, 2], element_type = !ttcore.tile<32x32, f32>,
+                          buffer = dram, grid = [1, 1], memory = interleaved>
 
 // CHECK-LABEL: // dma_loop_multi_tile
 // CHECK: void kernel_main() {

@@ -49,7 +49,7 @@ if [ -e /dev/tenstorrent/0 ]; then
             --device=/dev/tenstorrent/0 \
             -v /dev/hugepages:/dev/hugepages \
             -v /dev/hugepages-1G:/dev/hugepages-1G \
-            tt-lang-dist-ubuntu-22-04:latest python /opt/ttmlir-toolchain/examples/tutorial/multicore_grid_auto.py
+            tt-lang-dist-ubuntu-22-04:latest python /opt/ttlang-toolchain/examples/tutorial/multicore_grid_auto.py
 else
     echo "Test 3: SKIPPED (no hardware)"
 fi

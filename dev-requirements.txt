@@ -1,10 +1,12 @@
 # Development dependencies
 -r requirements.txt
-pytest-order>=1.0.0
 black
+lit
 myst-parser
 pre-commit
 pyright
+pytest-order>=1.0.0
+pytest-xdist>=3.0
 sphinx
 sphinx-rtd-theme
 sphinxcontrib-mermaid

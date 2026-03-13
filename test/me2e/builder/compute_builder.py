@@ -11,7 +11,7 @@ on data in circular buffers. Uses Python MLIR bindings for type safety.
 
 from typing import Callable, List
 
-from ttmlir.ir import Context, Location, Module
+from ttl.ir import Context, Location, Module
 
 import ttl.dialects.ttl as ttl
 

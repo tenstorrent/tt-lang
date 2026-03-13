@@ -21,7 +21,7 @@ from enum import Enum
 from typing import Any, Callable, List, Optional, Tuple
 
 import torch
-from ttmlir.ir import (
+from ttl.ir import (
     Attribute,
     ArrayAttr,
     Context,
@@ -34,8 +34,8 @@ from ttmlir.ir import (
     Module,
     RankedTensorType,
 )
-from ttmlir.dialects import arith, func, scf
-from ttmlir.dialects import ttcore
+from ttl.dialects import arith, func, scf
+from ttl.dialects import ttcore
 
 import ttl.dialects.ttl as ttl
 
@@ -595,7 +595,7 @@ def generate_layout_attrs(config: E2EConfig) -> str:
     Generate MLIR layout attributes for tensors.
 
     Uses config.buffer_type and config.memory_layout to generate appropriate
-    layout attributes.
+    TTL layout attributes.
 
     Args:
         config: Test configuration.
@@ -606,17 +606,18 @@ def generate_layout_attrs(config: E2EConfig) -> str:
     rows, cols = config.grid_shape
     dtype_str = torch_dtype_to_mlir_str(config.dtype)
 
-    # Buffer type attribute (dram or l1).
     buffer_type = config.buffer_type.value  # "dram" or "l1"
-    buffer_attr = f"#buffer = #ttnn.buffer_type<{buffer_type}>"
-
-    # Memory layout (interleaved or sharded variants).
-    # Uses 2D memref [tiles_y, tiles_x] to match Python DSL approach.
     layout_type = config.memory_layout.value  # "interleaved", "height_sharded", etc.
-    layout_attr = f"#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<{rows}x{cols}x!ttcore.tile<32x32, {dtype_str}>, #buffer>, <{layout_type}>>"
+    shape_h = rows * 32
+    shape_w = cols * 32
+    layout_attr = (
+        f"#layout = #ttl.layout<shape = [{shape_h}, {shape_w}], "
+        f"element_type = !ttcore.tile<32x32, {dtype_str}>, "
+        f"buffer = {buffer_type}, grid = [{rows}, {cols}], "
+        f"memory = {layout_type}>"
+    )
 
     return f"""
-{buffer_attr}
 {layout_attr}
 #map = affine_map<(d0, d1) -> (d0, d1)>
 """

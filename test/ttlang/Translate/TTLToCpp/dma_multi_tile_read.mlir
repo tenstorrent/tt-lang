@@ -9,8 +9,8 @@
 // Generated tile loops: for tile_y in 0..2, for tile_x in 0..2
 // Tile offset = tile_y * tiles_x + tile_x (row-major ordering)
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // CHECK-LABEL: // dma_multi_tile_read
 // CHECK: void kernel_main() {

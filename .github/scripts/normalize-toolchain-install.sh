@@ -2,21 +2,21 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Normalize tt-mlir-install by replacing symlinks with actual files.
+# Normalize toolchain installation by replacing symlinks with actual files.
 # This makes the installation self-contained for caching and artifact archiving.
 #
-# Usage: normalize-ttmlir-install.sh <tt-mlir-install-dir>
+# Usage: normalize-toolchain-install.sh <install-dir>
 
 set -euo pipefail
 
-INSTALL_DIR="${1:?Usage: $0 <tt-mlir-install-dir>}"
+INSTALL_DIR="${1:?Usage: $0 <install-dir>}"
 
 if [ ! -d "$INSTALL_DIR" ]; then
     echo "Error: Directory '$INSTALL_DIR' does not exist"
     exit 1
 fi
 
-echo "Normalizing tt-mlir installation at: $INSTALL_DIR"
+echo "Normalizing toolchain installation at: $INSTALL_DIR"
 
 ABS_INSTALL_DIR=$(cd "$INSTALL_DIR" && pwd)
 
@@ -47,8 +47,8 @@ mapfile -t symlinks < <(find "$INSTALL_DIR" -type l)
 echo "Found ${#symlinks[@]} symlinks to normalize"
 
 for link in "${symlinks[@]}"; do
-    target=$(readlink -f "$link")
-    if [ -e "$target" ]; then
+    target=$(readlink -f "$link" 2>/dev/null) || true
+    if [ -n "$target" ] && [ -e "$target" ]; then
         rm "$link"
         if [ -d "$target" ]; then
             cp -r "$target" "$link"
@@ -60,5 +60,11 @@ for link in "${symlinks[@]}"; do
         echo "  Warning: Broken symlink (target missing): $link -> $target"
     fi
 done
+
+# Ensure venv has a 'python' symlink (some venvs only create python3).
+if [ -d "$INSTALL_DIR/venv/bin" ] && [ ! -e "$INSTALL_DIR/venv/bin/python" ]; then
+    ln -s python3 "$INSTALL_DIR/venv/bin/python"
+    echo "  Created python -> python3 symlink in venv"
+fi
 
 echo "Normalization complete."

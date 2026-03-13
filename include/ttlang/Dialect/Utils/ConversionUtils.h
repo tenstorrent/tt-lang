@@ -116,7 +116,7 @@ inline FailureOr<Value> computeCBTileIndexFromLoops(
 
   // Compute index: sum(IV * transform(stride)) + transform(tile_offset).
   // Tile loops processed outermost first for row-major ordering.
-  Value result = builder.create<arith::ConstantIndexOp>(loc, 0);
+  Value result = arith::ConstantIndexOp::create(builder, loc, 0);
   for (scf::ForOp loop : llvm::reverse(tileLoops)) {
     auto strideAttr = loop->getAttrOfType<IntegerAttr>(kTileLoopAttrName);
     if (!strideAttr) {
@@ -131,11 +131,11 @@ inline FailureOr<Value> computeCBTileIndexFromLoops(
     if (stride == 1) {
       term = loop.getInductionVar();
     } else {
-      Value strideVal = builder.create<arith::ConstantIndexOp>(loc, stride);
-      term =
-          builder.create<arith::MulIOp>(loc, loop.getInductionVar(), strideVal);
+      Value strideVal = arith::ConstantIndexOp::create(builder, loc, stride);
+      term = arith::MulIOp::create(builder, loc, loop.getInductionVar(),
+                                   strideVal);
     }
-    result = builder.create<arith::AddIOp>(loc, result, term);
+    result = arith::AddIOp::create(builder, loc, result, term);
   }
 
   // Add subblock offsets: IV * transform(stride) for each subblock loop.
@@ -154,19 +154,19 @@ inline FailureOr<Value> computeCBTileIndexFromLoops(
     if (stride == 1) {
       offset = loop.getInductionVar();
     } else {
-      Value strideVal = builder.create<arith::ConstantIndexOp>(loc, stride);
-      offset =
-          builder.create<arith::MulIOp>(loc, loop.getInductionVar(), strideVal);
+      Value strideVal = arith::ConstantIndexOp::create(builder, loc, stride);
+      offset = arith::MulIOp::create(builder, loc, loop.getInductionVar(),
+                                     strideVal);
     }
-    result = builder.create<arith::AddIOp>(loc, result, offset);
+    result = arith::AddIOp::create(builder, loc, result, offset);
   }
 
   // Add per-tile offset from unrolled emission.
   if (auto tileOffset = op->getAttrOfType<IntegerAttr>(kTileOffsetAttrName)) {
     int64_t offset = strideTransform(tileOffset.getInt());
     if (offset != 0) {
-      Value offsetVal = builder.create<arith::ConstantIndexOp>(loc, offset);
-      result = builder.create<arith::AddIOp>(loc, result, offsetVal);
+      Value offsetVal = arith::ConstantIndexOp::create(builder, loc, offset);
+      result = arith::AddIOp::create(builder, loc, result, offsetVal);
     }
   }
 
@@ -216,7 +216,7 @@ convertTTLCBToTTKernel(Value cb, ConversionPatternRewriter &rewriter,
     return result;
   }
 
-  auto cast = rewriter.create<UnrealizedConversionCastOp>(loc, ttkCbTy, cb);
+  auto cast = UnrealizedConversionCastOp::create(rewriter, loc, ttkCbTy, cb);
   return cast.getResult(0);
 }
 

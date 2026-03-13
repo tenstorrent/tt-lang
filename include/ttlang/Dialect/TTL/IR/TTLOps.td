@@ -78,7 +78,7 @@ def TTL_AttachCBOp : TTL_Op<"attach_cb", []> {
 def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
   let summary = "Create a view into a tensor at specific tile indices";
   let description = [{
-    `ttl.tensor_slice` creates a view into a TTNN tensor at a specific tile
+    `ttl.tensor_slice` creates a view into a tensor at a specific tile
     position. The resulting tensor can be passed to `ttl.copy` to transfer
     tiles starting at the specified position.
 
@@ -102,7 +102,7 @@ def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
     ```
   }];
   let arguments = (ins
-    TTNNTensor:$tensor,
+    TTLLayoutTensor:$tensor,
     Variadic<Index>:$indices
   );
   let results = (outs AnyRankedTensor:$result);
@@ -120,7 +120,7 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     corresponding `ttl.wait` has completed.
 
     Exactly one operand must be a circular buffer (`!ttl.cb`). The other operand
-    must be a ranked tensor (the result of a tensor slice) with TTNN layout
+    must be a ranked tensor (the result of a tensor slice) with TTL layout
     encoding (transfers all tiles via loop).
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
@@ -129,8 +129,8 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     Example:
 
     ```mlir
-    #dram = #ttnn.buffer_type<dram>
-    #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+    #layout = #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, f32>,
+                          buffer = L1, grid = [1, 1], memory = Interleaved>
 
     func.func @dma_single(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
       %cb = ttl.bind_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
@@ -434,6 +434,39 @@ def TTL_SignpostOp : TTL_Op<"signpost", []> {
 }
 
 //===----------------------------------------------------------------------===//
+// Debug print operations
+//===----------------------------------------------------------------------===//
+
+def TTL_DPrintOp : TTL_Op<"dprint", []> {
+  let summary = "Debug print from device kernel";
+  let description = [{
+    Emits device debug print calls. Mode determines the output format:
+    - "scalar": prints format string with scalar values
+    - "cb": prints CB metadata (size, limit, ptrs)
+    - "tile": prints full 32x32 tile contents from a CB
+    - "tensor": prints raw memory pages from tensor backing buffer
+    - "dst": dumps live DST register slots
+
+    Example:
+    ```mlir
+    ttl.dprint "x = {}" (%x) {mode = "scalar"} : (index)
+    ttl.dprint "input" (%cb) {mode = "cb"} : (!ttl.cb<...>)
+    ttl.dprint "after exp" () {mode = "dst"}
+    ```
+  }];
+
+  let arguments = (ins
+    StrAttr:$fmt,
+    StrAttr:$mode,
+    Variadic<AnyType>:$argv,
+    OptionalAttr<StrAttr>:$thread,
+    OptionalAttr<I64Attr>:$num_pages
+  );
+
+  let assemblyFormat = "$fmt `(` $argv `)` attr-dict `:` `(` type($argv) `)`";
+}
+
+//===----------------------------------------------------------------------===//
 // Tile-Level Operations (for use inside ttl.compute body)
 //===----------------------------------------------------------------------===//
 
@@ -471,7 +504,8 @@ def TTL_LinearizedIndexOp : TTL_Op<"linearized_index", [Pure]> {
 
 def TTL_CopyTileOp : TTL_Op<"copy_tile",
                             [MemoryEffects<[MemRead, MemWrite]>,
-                             TTL_CBInputTileOpTrait]> {
+                             TTL_CBInputTileOpTrait,
+                             TTL_DataMovementOpTrait]> {
   let summary = "Copy a tile from a circular buffer into a DST register";
   let description = [{
     Performs a CB -> DST copy, matching `copy_tile_init` + `copy_tile` in the
@@ -496,7 +530,8 @@ def TTL_CopyTileOp : TTL_Op<"copy_tile",
 def TTL_CopyDstOp : TTL_Op<"copy_dst",
                            [SameOperandsAndResultType,
                             MemoryEffects<[MemRead, MemWrite]>,
-                            TTL_DSTInputsTrait]> {
+                            TTL_DSTInputsTrait,
+                            TTL_DataMovementOpTrait]> {
   let summary = "Copy a tile from one DST register to another";
   let description = [{
     Performs DST -> DST copy for multi-consumer value preservation. Used when

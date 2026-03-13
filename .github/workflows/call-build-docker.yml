@@ -14,57 +14,55 @@ on:
     outputs:
       docker-image:
         description: "Built Docker image name with tag"
-        value: ${{ jobs.check-if-images-already-exist.outputs.docker-image || jobs.build-image-dist.outputs.docker-image }}
+        value: ${{ jobs.check-if-images-already-exist.outputs.docker-image || jobs.build-images.outputs.docker-image }}
       docker-image-base:
         description: "Base Docker image name with tag"
         value: ${{ jobs.check-if-images-already-exist.outputs.docker-image-base || jobs.build-image-base.outputs.docker-image-base }}
 
 permissions:
+  contents: read
   packages: write
   checks: write
 
 jobs:
+  configure-deps:
+    uses: ./.github/workflows/call-build-toolchain.yml
+
   check-if-images-already-exist:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     outputs:
       docker-image: ${{ steps.check.outputs.docker-image }}
       docker-image-base: ${{ steps.check.outputs.docker-image-base }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ttlang_sha_override || github.sha }}
-          fetch-depth: 0
+          fetch-depth: 1
           fetch-tags: true
-
-      - name: Read tt-mlir commit
-        id: ttmlir-commit
-        run: |
-          COMMIT=$(cat third-party/tt-mlir.commit | tr -d '[:space:]')
-          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
 
       - name: Check if Docker image exists
         id: check
-        run: .github/scripts/check-docker-images.sh "${{ steps.ttmlir-commit.outputs.commit }}"
+        run: .github/scripts/check-docker-images.sh
 
-  # Builds the base image on a lightweight runner; dist and ird depend on this
+  # Builds the base image (system deps, Python, Clang)
   build-image-base:
     needs: [check-if-images-already-exist]
     if: needs.check-if-images-already-exist.outputs.docker-image == ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 60
 
     outputs:
       docker-image-base: ${{ steps.build.outputs.docker-image-base }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ttlang_sha_override || github.sha }}
-          fetch-depth: 0
+          fetch-depth: 1
           fetch-tags: true
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -85,58 +83,137 @@ jobs:
             exit 1
           fi
 
-          DOCKER_IMAGE_BASE=$(tail -n 1 docker.log)
+          DOCKER_IMAGE_BASE=$(cat .docker-image-base)
           echo "docker-image-base=$DOCKER_IMAGE_BASE" >> $GITHUB_OUTPUT
-          echo "✓ Base image built successfully"
+          echo "Base image built successfully: $DOCKER_IMAGE_BASE"
 
-  # Runs on a separate large runner after base image is ready
-  build-image-dist:
-    needs: [check-if-images-already-exist, build-image-base]
+  # Builds LLVM + tt-metal on the host (via docker run with base image),
+  # then packages dist and ird Docker images.
+  build-images:
+    needs: [check-if-images-already-exist, build-image-base, configure-deps]
     if: needs.check-if-images-already-exist.outputs.docker-image == ''
-    runs-on: mlir-large-runner-lang
+    runs-on: ubuntu-22.04
     timeout-minutes: 360
 
     outputs:
-      docker-image: ${{ steps.build.outputs.docker-image }}
+      docker-image: ${{ steps.build-dist.outputs.docker-image }}
 
     steps:
-      - name: Maximize space
-        uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
-
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ttlang_sha_override || github.sha }}
-          fetch-depth: 0
+          submodules: recursive
+          fetch-depth: 1
           fetch-tags: true
 
       - name: Free up some more space
-        run: |
-          .github/scripts/cleanup-ci-space.sh
+        run: .github/scripts/cleanup-ci-space.sh
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ github.token }}
 
-      - name: Clean up Docker before build
+      - name: Fix git safe directory for submodules
+        run: git config --global --add safe.directory '*'
+
+      - name: Prepare toolchain directory
+        run: sudo install -d -o $(id -u) -g $(id -g) /opt/ttlang-toolchain
+
+      - name: Restore toolchain cache
+        uses: actions/cache/restore@v5
+        with:
+          path: /opt/ttlang-toolchain
+          key: ${{ needs.configure-deps.outputs.cache-key }}
+          fail-on-cache-miss: true
+
+      - name: Patch missing runtime artifacts into cached toolchain
+        run: bash scripts/copy-ttmetal-runtime-artifacts.sh third-party/tt-metal /opt/ttlang-toolchain
+
+      - name: Pull base image
         run: |
-          echo "Cleaning up Docker system before build..."
+          BASE_IMAGE="${{ needs.build-image-base.outputs.docker-image-base }}"
+          docker pull "$BASE_IMAGE"
+          echo "BASE_IMAGE=$BASE_IMAGE" >> $GITHUB_ENV
+
+      - name: Configure tt-lang
+        run: |
+          df -h
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -v /opt/ttlang-toolchain:/opt/ttlang-toolchain \
+            -w /workspace \
+            -e TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
+            "$BASE_IMAGE" \
+            bash .github/containers/build-and-install.sh --configure-only
+          echo "=== Configure complete ==="
+          df -h
+
+      - name: Normalize toolchain
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -v /opt/ttlang-toolchain:/opt/ttlang-toolchain \
+            -w /workspace \
+            "$BASE_IMAGE" \
+            bash -c "
+              bash .github/scripts/normalize-toolchain-install.sh /opt/ttlang-toolchain
+              bash .github/containers/cleanup-toolchain.sh /opt/ttlang-toolchain
+            "
+
+      - name: Save ird toolchain
+        run: |
+          echo "=== Saving ird toolchain ==="
+          sudo cp -a /opt/ttlang-toolchain ird-toolchain
+          echo "ird toolchain size:"
+          du -sh ird-toolchain
+
+      - name: Build + install tt-lang
+        run: |
+          echo "=== Building tt-lang ==="
+          df -h
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -v /opt/ttlang-toolchain:/opt/ttlang-toolchain \
+            -w /workspace \
+            -e TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
+            "$BASE_IMAGE" \
+            bash .github/containers/build-and-install.sh --build-and-install
+          echo "=== tt-lang build complete ==="
+          df -h
+
+      - name: Cleanup dist toolchain
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -v /opt/ttlang-toolchain:/opt/ttlang-toolchain \
+            -w /workspace \
+            "$BASE_IMAGE" \
+            bash .github/containers/cleanup-toolchain.sh /opt/ttlang-toolchain --dist
+
+      - name: Clean up build dirs to free space before Docker build
+        run: |
+          echo "Removing build directories..."
+          sudo rm -rf build
+          df -h
+
+      - name: Clean up Docker before packaging
+        run: |
           docker system prune -af --volumes || true
           docker builder prune -af || true
-          echo "Docker cleanup complete"
           df -h
 
       - name: Build dist Docker image
-        id: build
+        id: build-dist
         env:
           DOCKER_BUILDKIT: 1
           BUILDKIT_STEP_LOG_MAX_SIZE: -1
+          DOCKER_BUILD_EXTRA_ARGS: "--build-context dist-toolchain=/opt/ttlang-toolchain --build-context ird-toolchain=./ird-toolchain"
         run: |
           set -o pipefail
           set -x
-          echo "Space usage: " && df -h
           .github/containers/build-docker-images.sh --image-type dist | tee docker.log
 
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
@@ -144,93 +221,39 @@ jobs:
             exit 1
           fi
 
-          DOCKER_IMAGE=$(tail -n 1 docker.log)
+          DOCKER_IMAGE=$(cat .docker-image-name)
           echo "docker-image=$DOCKER_IMAGE" >> $GITHUB_OUTPUT
-
-          echo "Space usage after build: " && df -h
-          echo "✓ Dist image built successfully"
-
-      - name: Clean up Docker after build
-        if: always()
-        run: |
-          echo "Cleaning up Docker build cache after build..."
-          docker builder prune -af || true
-          echo "Docker cleanup complete"
+          echo "Dist image built successfully: $DOCKER_IMAGE"
           df -h
 
-      - name: Show disk usage on failure
-        if: failure()
-        run: |
-          echo "=== Disk Usage ==="
-          df -h
-          echo ""
-          echo "=== Disk Usage by Directory ==="
-          du -h --max-depth=2 ${{ github.workspace }} 2>/dev/null | sort -hr | head -20 || true
-          echo ""
-          echo "=== Docker Disk Usage ==="
-          docker system df || true
+      - name: Remove dist toolchain to free space
+        run: sudo rm -rf /opt/ttlang-toolchain
 
-  # Runs on a separate large runner in parallel with build-image-dist
-  build-image-ird:
-    needs: [check-if-images-already-exist, build-image-base]
-    if: needs.check-if-images-already-exist.outputs.docker-image == ''
-    runs-on: mlir-large-runner-lang
-    timeout-minutes: 360
-
-    steps:
-      - name: Maximize space
-        uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
-
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ttlang_sha_override || github.sha }}
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Free up some more space
-        run: |
-          .github/scripts/cleanup-ci-space.sh
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ github.token }}
-
-      - name: Clean up Docker before build
-        run: |
-          echo "Cleaning up Docker system before build..."
-          docker system prune -af --volumes || true
-          docker builder prune -af || true
-          echo "Docker cleanup complete"
-          df -h
-
+      # dist-toolchain points to ird-toolchain here because dist toolchain was
+      # already deleted to save space. BuildKit doesn't read dist-toolchain when
+      # targeting ird, but it must be a valid path to avoid build errors.
       - name: Build ird Docker image
-        id: build
         env:
           DOCKER_BUILDKIT: 1
           BUILDKIT_STEP_LOG_MAX_SIZE: -1
+          DOCKER_BUILD_EXTRA_ARGS: "--build-context dist-toolchain=./ird-toolchain --build-context ird-toolchain=./ird-toolchain"
         run: |
           set -o pipefail
           set -x
-          echo "Space usage: " && df -h
-          .github/containers/build-docker-images.sh --image-type ird | tee docker.log
+          .github/containers/build-docker-images.sh --image-type ird | tee docker-ird.log
 
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
             echo "ERROR: Docker build failed"
             exit 1
           fi
 
-          echo "Space usage after build: " && df -h
-          echo "✓ IRD image built successfully"
+          echo "IRD image built successfully"
+          df -h
 
       - name: Clean up Docker after build
         if: always()
         run: |
-          echo "Cleaning up Docker build cache after build..."
           docker builder prune -af || true
-          echo "Docker cleanup complete"
           df -h
 
       - name: Show disk usage on failure
@@ -244,34 +267,3 @@ jobs:
           echo ""
           echo "=== Docker Disk Usage ==="
           docker system df || true
-
-  set-latest-tag:
-    needs: [check-if-images-already-exist, build-image-base, build-image-dist, build-image-ird]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !failure() && !cancelled()
-    steps:
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ github.token }}
-
-      - name: Set latest tag
-        run: |
-          # Get the image name (from either check or build job)
-          DOCKER_IMAGE="${{ needs.check-if-images-already-exist.outputs.docker-image || needs.build-image-dist.outputs.docker-image }}"
-
-          # Extract the tag from the full image name
-          TAG="${DOCKER_IMAGE##*:}"
-
-          echo "Setting latest tag for Docker images with tag: $TAG"
-
-          # Tag all image variants as latest
-          for IMAGE_SUFFIX in "-base" "-dist" "-ird"; do
-            IMAGE_NAME="ghcr.io/tenstorrent/tt-lang/tt-lang${IMAGE_SUFFIX}-ubuntu-22-04"
-            echo "Tagging ${IMAGE_NAME}:${TAG} as latest"
-            skopeo copy "docker://${IMAGE_NAME}:${TAG}" "docker://${IMAGE_NAME}:latest"
-          done
-
-          echo "✓ Latest tags set successfully"

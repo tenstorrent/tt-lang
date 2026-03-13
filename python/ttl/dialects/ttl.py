@@ -4,7 +4,7 @@
 
 """TTL (TT-Lang) dialect Python bindings."""
 
-from ttmlir._mlir_libs import get_dialect_registry
+from ttl._mlir_libs import get_dialect_registry
 
 from .._mlir_libs import _ttlang
 from .._mlir_libs._ttlang import ttl_ir as ir

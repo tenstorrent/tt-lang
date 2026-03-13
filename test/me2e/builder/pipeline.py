@@ -11,10 +11,8 @@ Provides compilation from TTL dialect to TTKernel dialect.
 import os
 from typing import Any, Optional
 
-from ttmlir.ir import Module
-from ttmlir.passmanager import PassManager
-
-from .device_arch import get_mock_arch_from_device
+from ttl.ir import Module
+from ttl.passmanager import PassManager
 
 
 def compile_ttl_to_ttkernel(
@@ -26,24 +24,17 @@ def compile_ttl_to_ttkernel(
     """
     Run the TTL-to-TTKernel pass pipeline on the module.
 
-    Mirrors the pipeline from TTLPipelines.cpp but with proper nesting.
+    Mirrors the pipeline from TTLPipelines.cpp.
 
     Args:
         module: TTL MLIR module to compile.
-        device: Optional TTNN device for architecture detection.
+        device: Optional TTNN device (unused, kept for API compat).
         maximize_dst: Enable DST maximization (subblocking + scheduling).
         enable_fpu_binary_ops: Enable FPU binary op detection (add_tiles, etc).
 
     Returns:
         Compiled module with TTKernel/EmitC ops.
     """
-    # Always use mock architecture detected from device.
-    mock_arch = get_mock_arch_from_device(device)
-    device_pass = f"ttcore-register-device{{mock-system-desc-arch={mock_arch}}}"
-
-    # Build assign-dst pass with options.
-    # NOTE: Pipeline pass ordering mirrors python/ttl/ttl_api.py and
-    # lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
     fpu_flag = int(enable_fpu_binary_ops)
     assign_dst_pass = f"ttl-assign-dst{{enable-fpu-binary-ops={fpu_flag}}}"
 
@@ -64,14 +55,11 @@ def compile_ttl_to_ttkernel(
 
     pipeline_str = (
         f"builtin.module("
-        f"{device_pass},"
         f"func.func({func_pipeline}),"
-        # TTL to TTKernel conversion (module-level pass).
         f"convert-ttl-to-ttkernel,"
         f"ttkernel-insert-inits,"
         f"canonicalize,"
         f"cse,"
-        # Lower to EmitC.
         f"lower-affine,"
         f"convert-ttkernel-to-emitc,"
         f"canonicalize"

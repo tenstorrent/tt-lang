@@ -68,7 +68,7 @@ static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
     OpFoldResult stride = b.getIndexAttr(1);
     OpFoldResult size;
     if (refTy.isDynamicDim(i)) {
-      size = b.create<tensor::DimOp>(loc, maxRankTensor, i).getResult();
+      size = tensor::DimOp::create(b, loc, maxRankTensor, i).getResult();
     } else {
       size = b.getIndexAttr(refTy.getDimSize(i));
     }
@@ -108,7 +108,7 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
   for (auto [idx, input] : llvm::enumerate(op.getInputs())) {
     SmallVector<Value> indices =
         applyIndexingMap(b, loc, indexingMaps[idx], ivs);
-    Value tile = b.create<tensor::ExtractOp>(loc, input, indices);
+    Value tile = tensor::ExtractOp::create(b, loc, input, indices);
     extractedInputs.push_back(tile);
   }
 
@@ -119,7 +119,7 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
   for (auto [idx, output] : llvm::enumerate(op.getOutputs())) {
     SmallVector<Value> indices =
         applyIndexingMap(b, loc, indexingMaps[numInputs + idx], ivs);
-    Value tile = b.create<tensor::ExtractOp>(loc, output, indices);
+    Value tile = tensor::ExtractOp::create(b, loc, output, indices);
     extractedOutputs.push_back(tile);
   }
 
@@ -411,9 +411,9 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
       if (dstBase != 0) {
         OpBuilder b(copyTile);
         Value offsetVal =
-            b.create<arith::ConstantIndexOp>(copyTile.getLoc(), dstBase);
-        Value newDstIndex = b.create<arith::AddIOp>(
-            copyTile.getLoc(), copyTile.getDstIndex(), offsetVal);
+            arith::ConstantIndexOp::create(b, copyTile.getLoc(), dstBase);
+        Value newDstIndex = arith::AddIOp::create(
+            b, copyTile.getLoc(), copyTile.getDstIndex(), offsetVal);
         copyTile.getDstIndexMutable().assign(newDstIndex);
       }
     }

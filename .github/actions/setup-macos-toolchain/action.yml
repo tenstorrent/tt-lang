@@ -12,10 +12,10 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Setup Python 3.11
+    - name: Setup Python 3.12
       uses: actions/setup-python@v5
       with:
-        python-version: "3.11"
+        python-version: "3.12"
 
     - name: Install dependencies
       shell: bash
@@ -26,23 +26,23 @@ runs:
     - name: Create toolchain directory
       shell: bash
       run: |
-        sudo mkdir -p /opt/ttmlir-toolchain
-        sudo chown -R $USER /opt/ttmlir-toolchain
+        sudo mkdir -p /opt/ttlang-toolchain
+        sudo chown -R $USER /opt/ttlang-toolchain
 
     - name: Cache tt-mlir toolchain
       id: cache-toolchain
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
-        path: /opt/ttmlir-toolchain
-        key: macos-ttmlir-toolchain-${{ inputs.toolchain-hash }}-${{ github.ref_name }}
+        path: /opt/ttlang-toolchain
+        key: macos-ttlang-toolchain-${{ inputs.toolchain-hash }}-${{ github.ref_name }}
         restore-keys: |
-          macos-ttmlir-toolchain-${{ inputs.toolchain-hash }}
+          macos-ttlang-toolchain-${{ inputs.toolchain-hash }}
 
     - name: Check if toolchain was restored
       id: check-toolchain
       shell: bash
       run: |
-        if [ -f /opt/ttmlir-toolchain/venv/bin/python3 ] && [ -f /opt/ttmlir-toolchain/bin/llvm-config ]; then
+        if [ -f /opt/ttlang-toolchain/venv/bin/python3 ] && [ -f /opt/ttlang-toolchain/bin/llvm-config ]; then
           echo "restored=true" >> $GITHUB_OUTPUT
           echo "Toolchain was restored from cache"
         else

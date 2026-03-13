@@ -207,9 +207,9 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
       return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
     int64_t dstIdx = dstIdxAttr.getInt();
-    Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
+    Value dstIdxVal = arith::ConstantIndexOp::create(rewriter, loc, dstIdx);
 
-    rewriter.create<TTKernelComputeOp>(loc, dstIdxVal);
+    TTKernelComputeOp::create(rewriter, loc, dstIdxVal);
 
     // Replace all uses with a placeholder (the value is now in DST register)
     // For tile ops, we pass through the input since the result is implicit
@@ -259,11 +259,11 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
     int64_t src0Idx = *src0IdxOpt;
     int64_t src1Idx = *src1IdxOpt;
 
-    Value src0 = rewriter.create<arith::ConstantIndexOp>(loc, src0Idx);
-    Value src1 = rewriter.create<arith::ConstantIndexOp>(loc, src1Idx);
-    Value odst = rewriter.create<arith::ConstantIndexOp>(loc, odstIdx);
+    Value src0 = arith::ConstantIndexOp::create(rewriter, loc, src0Idx);
+    Value src1 = arith::ConstantIndexOp::create(rewriter, loc, src1Idx);
+    Value odst = arith::ConstantIndexOp::create(rewriter, loc, odstIdx);
 
-    rewriter.create<TTKernelComputeOp>(loc, src0, src1, odst);
+    TTKernelComputeOp::create(rewriter, loc, src0, src1, odst);
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
@@ -300,10 +300,10 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
     int64_t dst0Idx = *dst0IdxOpt;
     int64_t dst1Idx = *dst1IdxOpt;
 
-    Value dst0 = rewriter.create<arith::ConstantIndexOp>(loc, dst0Idx);
-    Value dst1 = rewriter.create<arith::ConstantIndexOp>(loc, dst1Idx);
+    Value dst0 = arith::ConstantIndexOp::create(rewriter, loc, dst0Idx);
+    Value dst1 = arith::ConstantIndexOp::create(rewriter, loc, dst1Idx);
 
-    rewriter.create<TTKernelComputeOp>(loc, dst0, dst1, dst0);
+    TTKernelComputeOp::create(rewriter, loc, dst0, dst1, dst0);
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
@@ -351,7 +351,7 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
       return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
     Value dstIdx =
-        rewriter.create<arith::ConstantIndexOp>(loc, dstIdxAttr.getInt());
+        arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
 
     // Verify both CBs have the same number of tiles, which is required
     // for using the same linearized tile index for both operands.
@@ -375,8 +375,8 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
     }
 
     // Emit compute op (init inserted by ttkernel-insert-inits pass).
-    rewriter.create<TTKernelComputeOp>(loc, *lhsCB, *rhsCB, *cbIdx, *cbIdx,
-                                       dstIdx);
+    TTKernelComputeOp::create(rewriter, loc, *lhsCB, *rhsCB, *cbIdx, *cbIdx,
+                              dstIdx);
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
@@ -408,21 +408,19 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
 
     // Emit the copy from CB[src_index] to DST[dst_index]
     // (init inserted by ttkernel-insert-inits pass).
-    rewriter.create<ttk::CopyTileOp>(loc, cb, adaptor.getSrcIndex(),
-                                     adaptor.getDstIndex());
+    ttk::CopyTileOp::create(rewriter, loc, cb, adaptor.getSrcIndex(),
+                            adaptor.getDstIndex());
 
     // Materialize results: dst token from dst_index, and a tile value
     // passthrough (the tile remains the same logical value for downstream tile
     // ops).
-    auto token = rewriter
-                     .create<mlir::UnrealizedConversionCastOp>(
-                         loc, TypeRange{op.getResult(0).getType()},
-                         ValueRange{adaptor.getDstIndex()})
+    auto token = mlir::UnrealizedConversionCastOp::create(
+                     rewriter, loc, TypeRange{op.getResult(0).getType()},
+                     ValueRange{adaptor.getDstIndex()})
                      .getResult(0);
-    auto tile = rewriter
-                    .create<mlir::UnrealizedConversionCastOp>(
-                        loc, TypeRange{op.getResult(1).getType()},
-                        ValueRange{adaptor.getSrc()})
+    auto tile = mlir::UnrealizedConversionCastOp::create(
+                    rewriter, loc, TypeRange{op.getResult(1).getType()},
+                    ValueRange{adaptor.getSrc()})
                     .getResult(0);
     rewriter.replaceOp(op, ValueRange{token, tile});
     return success();
@@ -454,18 +452,17 @@ struct TTLCopyDstToTTKernel : OpConversionPattern<CopyDstOp> {
     int64_t dstDstIdx = dstIdxAttr.getInt();
 
     // Create index constants for src and dst DST registers.
-    Value srcIdx = rewriter.create<arith::ConstantIndexOp>(loc, *srcDstIdx);
-    Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstDstIdx);
+    Value srcIdx = arith::ConstantIndexOp::create(rewriter, loc, *srcDstIdx);
+    Value dstIdx = arith::ConstantIndexOp::create(rewriter, loc, dstDstIdx);
 
     // Emit copy_dest_values(dst0, dst1): copies DST[dst1] → DST[dst0].
-    rewriter.create<ttk::CopyDestValuesOp>(loc, dstIdx, srcIdx);
+    ttk::CopyDestValuesOp::create(rewriter, loc, dstIdx, srcIdx);
 
     // Replace with an unrealized conversion cast to preserve the tile value.
     // The tile is now in DST[dstIdx].
-    auto tile = rewriter
-                    .create<mlir::UnrealizedConversionCastOp>(
-                        loc, TypeRange{op.getResult().getType()},
-                        ValueRange{adaptor.getSrcTile()})
+    auto tile = mlir::UnrealizedConversionCastOp::create(
+                    rewriter, loc, TypeRange{op.getResult().getType()},
+                    ValueRange{adaptor.getSrcTile()})
                     .getResult(0);
     rewriter.replaceOp(op, tile);
     return success();
@@ -569,7 +566,7 @@ static FailureOr<Value> computeBcastShapeExpansionIndex(ttl::TileBcastOp op,
                                                         Location loc) {
   auto bcastType = op.getBcastType();
   if (bcastType == ttl::BcastType::Scalar) {
-    return builder.create<arith::ConstantIndexOp>(loc, 0).getResult();
+    return arith::ConstantIndexOp::create(builder, loc, 0).getResult();
   }
 
   // Get output CB shape to determine numCols for index decomposition.
@@ -642,7 +639,7 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
       return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
     int64_t dstIdxVal = dstIdxAttr.getInt();
-    Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstIdxVal);
+    Value dstIdx = arith::ConstantIndexOp::create(rewriter, loc, dstIdxVal);
 
     // Get input CB tile index.
     // For shape expansion (input CB smaller than output), use broadcast-aware
@@ -668,8 +665,8 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
     auto ttkAttr = convertBcastType(op.getBcastType());
 
     // Emit compute op (init inserted by ttkernel-insert-inits pass).
-    auto bcastOp = rewriter.create<ttk::UnaryBcastTileOp>(loc, *inCB, inCBIdx,
-                                                          dstIdx, ttkAttr);
+    auto bcastOp = ttk::UnaryBcastTileOp::create(rewriter, loc, *inCB, inCBIdx,
+                                                 dstIdx, ttkAttr);
 
     // Propagate output CB index so ttkernel-insert-inits can derive the
     // output CB for unary_bcast_init without walking the function.

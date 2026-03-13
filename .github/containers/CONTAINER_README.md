@@ -5,20 +5,20 @@ Welcome to the tt-lang containerized environment! The environment is automatical
 ## Quick Start
 
 ```bash
-python $TTMLIR_TOOLCHAIN_DIR/examples/tutorial/multicore_grid_auto.py
+python $TTLANG_TOOLCHAIN_DIR/examples/tutorial/multicore_grid_auto.py
 ```
 
 ## Installed Locations
 
-- **Toolchain**: `$TTMLIR_TOOLCHAIN_DIR` (`/opt/ttmlir-toolchain`)
-- **Examples**: `$TTMLIR_TOOLCHAIN_DIR/examples`
-- **Tests**: `$TTMLIR_TOOLCHAIN_DIR/test`
+- **Toolchain**: `$TTLANG_TOOLCHAIN_DIR` (`/opt/ttlang-toolchain`)
+- **Examples**: `$TTLANG_TOOLCHAIN_DIR/examples`
+- **Tests**: `$TTLANG_TOOLCHAIN_DIR/test`
 - **Simulator**: `ttlang-sim` (run `ttlang-sim <script.py>` to simulate without hardware)
-- **Python packages**: `$TTMLIR_TOOLCHAIN_DIR/python_packages`
+- **Python packages**: `$TTLANG_TOOLCHAIN_DIR/python_packages`
 
 ## Available Tools
 
-`vim`, `nano`, `python` (3.11), `pytest`, `tt-smi`, `capture-release`, `csvexport-release` (Tracy profiler)
+`vim`, `nano`, `python` (3.12), `pytest`, `tt-smi`, `capture-release`, `csvexport-release` (Tracy profiler)
 
 ## Documentation
 

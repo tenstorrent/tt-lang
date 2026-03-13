@@ -63,12 +63,6 @@ def add_multitile_kernel(lhs, rhs, out):
 
 
 # =============================================================================
-# Initial IR Checks - Verify tensor layout (64x64 = 4 tiles on single core)
-# =============================================================================
-
-# CHECK: #ttnn_layout = #ttnn.ttnn_layout<{{.*}}memref<1x4x!ttcore.tile<32x32, bf16>{{.*}}>
-
-# =============================================================================
 # Initial IR Checks - Verify compute kernel with multi-tile support
 # =============================================================================
 

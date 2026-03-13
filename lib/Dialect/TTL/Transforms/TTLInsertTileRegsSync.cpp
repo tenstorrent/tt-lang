@@ -79,7 +79,7 @@ struct TTLInsertTileRegsSyncPass
         // the sync region (between acquire and release).
         if (!existingAcquire) {
           builder.setInsertionPoint(computeOp);
-          builder.create<TileRegsAcquireOp>(loc);
+          TileRegsAcquireOp::create(builder, loc);
         }
 
         // Scan for existing sync ops after this compute, stopping at the
@@ -105,13 +105,13 @@ struct TTLInsertTileRegsSyncPass
         // Insert commit, wait, release after the compute op if not present.
         builder.setInsertionPointAfter(computeOp);
         if (!existingCommit) {
-          builder.create<TileRegsCommitOp>(loc);
+          TileRegsCommitOp::create(builder, loc);
         }
         if (!existingWait) {
-          builder.create<TileRegsWaitOp>(loc);
+          TileRegsWaitOp::create(builder, loc);
         }
         if (!existingRelease) {
-          builder.create<TileRegsReleaseOp>(loc);
+          TileRegsReleaseOp::create(builder, loc);
         }
       } else {
         // Inside placement: per-tile sync.
@@ -141,7 +141,7 @@ struct TTLInsertTileRegsSyncPass
         // Acquire: at start of compute body.
         if (!existingAcquire && !acquireOp) {
           builder.setInsertionPointToStart(&body);
-          builder.create<TileRegsAcquireOp>(loc);
+          TileRegsAcquireOp::create(builder, loc);
         }
 
         // Insert commit + wait before the first tile_store.
@@ -152,10 +152,10 @@ struct TTLInsertTileRegsSyncPass
         }
 
         if (!commitOp) {
-          commitOp = builder.create<TileRegsCommitOp>(loc);
+          commitOp = TileRegsCommitOp::create(builder, loc);
         }
         if (!waitOp) {
-          waitOp = builder.create<TileRegsWaitOp>(loc);
+          waitOp = TileRegsWaitOp::create(builder, loc);
         }
         if (!commitOp->isBeforeInBlock(waitOp)) {
           commitOp->moveBefore(waitOp);
@@ -164,7 +164,7 @@ struct TTLInsertTileRegsSyncPass
         // Release: at end of compute body (before yield).
         if (!releaseOp) {
           builder.setInsertionPoint(terminator);
-          builder.create<TileRegsReleaseOp>(loc);
+          TileRegsReleaseOp::create(builder, loc);
         }
       }
     });

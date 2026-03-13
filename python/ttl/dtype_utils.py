@@ -6,16 +6,29 @@
 
 import torch
 
-try:
-    import ttnn
-except (ModuleNotFoundError, ImportError):
-    ttnn = None
+ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
-from ttmlir.dialects import ttcore
+
+def _ensure_ttnn():
+    """Lazy import of ttnn."""
+    global ttnn
+    if ttnn is not None:
+        return ttnn
+    try:
+        import ttnn as _ttnn
+
+        ttnn = _ttnn
+    except (ModuleNotFoundError, ImportError):
+        pass
+    return ttnn
+
+
+from ttl.dialects import ttcore
 
 
 def is_ttnn_tensor(tensor) -> bool:
     """Check if tensor is a ttnn.Tensor."""
+    _ensure_ttnn()
     if ttnn is None:
         return False
     return isinstance(tensor, ttnn.Tensor)

@@ -18,8 +18,8 @@
 // Pattern: reader (NOC) -> CBs -> compute (MATH) -> CB -> writer (NOC)
 // Operation: f(A + B) where f is exp, matching the C++ example pattern.
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<2x2x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [2, 2], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // =============================================================================

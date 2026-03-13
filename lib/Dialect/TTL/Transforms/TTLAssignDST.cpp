@@ -223,11 +223,12 @@ static FailureOr<CopyTileOp> createCopyTileForArg(
     return computeOp.emitOpError("block argument not found in compute inputs");
   }
 
-  Value srcIndex = builder.create<LinearizedIndexOp>(loc, *indexMapAttr);
+  Value srcIndex = LinearizedIndexOp::create(builder, loc, *indexMapAttr);
   Value dstIndex =
-      builder.create<arith::ConstantIndexOp>(loc, assignedDstIndex);
-  auto copy = builder.create<CopyTileOp>(
-      loc, TypeRange{DSTRegisterType::get(arg.getContext()), arg.getType()},
+      arith::ConstantIndexOp::create(builder, loc, assignedDstIndex);
+  auto copy = CopyTileOp::create(
+      builder, loc,
+      TypeRange{DSTRegisterType::get(arg.getContext()), arg.getType()},
       ValueRange{arg, srcIndex, dstIndex});
   dstIndexForValue[copy.getDstTile()] = assignedDstIndex;
   return copy;
@@ -319,11 +320,11 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
         // Use sentinel kPlaceholderIndex for src_index and dst_index - will be
         // replaced later with proper LinearizedIndexOp and allocated DST index
         Value srcIndex =
-            builder.create<arith::ConstantIndexOp>(loc, kPlaceholderIndex);
+            arith::ConstantIndexOp::create(builder, loc, kPlaceholderIndex);
         Value dstIndex =
-            builder.create<arith::ConstantIndexOp>(loc, kPlaceholderIndex);
-        auto copyOp = builder.create<CopyTileOp>(
-            loc,
+            arith::ConstantIndexOp::create(builder, loc, kPlaceholderIndex);
+        auto copyOp = CopyTileOp::create(
+            builder, loc,
             TypeRange{DSTRegisterType::get(value.getContext()),
                       value.getType()},
             ValueRange{value, srcIndex, dstIndex});
@@ -335,7 +336,7 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
         });
       } else {
         // Operation result: insert copy_dst (DST-to-DST)
-        auto copyOp = builder.create<CopyDstOp>(loc, value.getType(), value);
+        auto copyOp = CopyDstOp::create(builder, loc, value.getType(), value);
         copyResult = copyOp.getResult();
         LLVM_DEBUG({
           llvm::dbgs() << "Phase 1: Inserted copy_dst for consumer " << i

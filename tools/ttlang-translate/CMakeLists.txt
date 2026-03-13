@@ -5,7 +5,7 @@ add_llvm_executable(ttlang-translate
 llvm_update_compile_flags(ttlang-translate)
 
 target_link_libraries(ttlang-translate PRIVATE
-  ${TTMLIR_LINK_LIBS}
+  ${TTMLIR_MINIMAL_LIBS}
   MLIRTranslateLib
 )
 

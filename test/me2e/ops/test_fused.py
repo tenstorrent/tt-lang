@@ -20,7 +20,7 @@ from typing import Tuple
 import pytest
 import torch
 from torch import Tensor
-from ttmlir.ir import Context, Module
+from ttl.ir import Context, Module
 
 from ..base import ME2ETestBase
 from ..config import E2EConfig

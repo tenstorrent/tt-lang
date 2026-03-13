@@ -20,7 +20,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
@@ -35,6 +35,6 @@ jobs:
 
       - name: Run Python simulation tests
         env:
-          PYTHONPATH: ${{ github.workspace }}/python:${{ github.workspace }}/examples
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/python:${{ github.workspace }}/examples
         run: |
-          pytest test/sim/ -v
+          pytest test/sim/ -v -n auto

@@ -58,7 +58,7 @@ class ME2ETestBase:
     def test_compile_to_ttkernel(self):
         """Run TTL-to-TTKernel pass pipeline on the generated module."""
         import ttl.dialects.ttl as ttl
-        from ttmlir.ir import Context, Module
+        from ttl.ir import Context, Module
 
         from .builder.pipeline import compile_ttl_to_ttkernel
 
@@ -90,7 +90,7 @@ class ME2ETestBase:
     def test_translate_to_cpp(self):
         """Translate TTKernel ops to C++ kernel sources."""
         import ttl.dialects.ttl as ttl
-        from ttmlir.ir import Context, Module
+        from ttl.ir import Context, Module
 
         from .builder.kernels import translate_module_to_kernels, write_kernels
 

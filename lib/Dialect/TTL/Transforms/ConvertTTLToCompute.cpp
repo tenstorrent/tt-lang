@@ -29,11 +29,11 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
   SmallVector<Value> dynDims;
   for (auto dim : llvm::enumerate(type.getShape())) {
     if (dim.value() == ShapedType::kDynamic) {
-      dynDims.push_back(b.create<tensor::DimOp>(loc, exemplar, dim.index()));
+      dynDims.push_back(tensor::DimOp::create(b, loc, exemplar, dim.index()));
     }
   }
-  return b.create<tensor::EmptyOp>(loc, type.getShape(), type.getElementType(),
-                                   dynDims);
+  return tensor::EmptyOp::create(b, loc, type.getShape(), type.getElementType(),
+                                 dynDims);
 }
 
 /// Find the output CB for an elementwise op by looking at its store users.
@@ -93,7 +93,7 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
     if (!storeOp) {
       continue;
     }
-    rewriter.create<TileStoreOp>(loc, tileResult, storeOp.getView());
+    TileStoreOp::create(rewriter, loc, tileResult, storeOp.getView());
     storesToErase.push_back(storeOp);
   }
   for (StoreOp s : storesToErase) {
@@ -111,10 +111,10 @@ static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *elementwiseOp,
                            ValueRange tileOperands, Type tileType) {
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
   if (isa<TTL_OP##Op>(elementwiseOp))                                          \
-    return b.create<TILE_OP>(loc, tileType, tileOperands[0]);
+    return TILE_OP::create(b, loc, tileType, tileOperands[0]);
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
   if (isa<TTL_OP##Op>(elementwiseOp))                                          \
-    return b.create<TILE_OP>(loc, tileType, tileOperands[0], tileOperands[1]);
+    return TILE_OP::create(b, loc, tileType, tileOperands[0], tileOperands[1]);
 #define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
@@ -126,13 +126,28 @@ static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *elementwiseOp,
 // Fused compute building
 //===----------------------------------------------------------------------===//
 
-/// Collect signpost ops interleaved with fused ops so they can be moved into
-/// the compute body. Walks backwards from the first fused op for leading
-/// signposts, between fused ops for interleaved ones, and forward from the
-/// last fused op for trailing ones (stopping at cb_push/cb_pop).
+/// Check if an op is a user signpost or a tile-level dprint that should
+/// be pulled into the compute body alongside fused tile ops. Only DST and
+/// tile mode dprints need tile-level context; scalar and CB prints stay
+/// outside the loop.
+static bool isSideEffectOpForCompute(Operation *op) {
+  if (auto sp = dyn_cast<SignpostOp>(op)) {
+    return sp.getName().starts_with("ttl_");
+  }
+  if (auto dp = dyn_cast<DPrintOp>(op)) {
+    StringRef mode = dp.getMode();
+    return mode == "dst" || mode == "tile";
+  }
+  return false;
+}
+
+/// Collect signpost and dprint ops interleaved with fused ops so they can
+/// be moved into the compute body. Walks backwards from the first fused op
+/// for leading ops, between fused ops for interleaved ones, and forward
+/// from the last fused op for trailing ones (stopping at cb_push/cb_pop).
 static SmallVector<std::pair<Operation *, Operation *>>
-collectInterleavedSignposts(const ElementwiseTraceResult &trace,
-                            Operation *sinkOp) {
+collectInterleavedSideEffectOps(const ElementwiseTraceResult &trace,
+                                Operation *sinkOp) {
   DenseSet<Operation *> fusedSet(trace.opsInOrder.begin(),
                                  trace.opsInOrder.end());
 
@@ -151,19 +166,14 @@ collectInterleavedSignposts(const ElementwiseTraceResult &trace,
     return {};
   }
 
-  // Result: pairs of (signpost, insertAfterThisFusedOp). nullptr means
-  // the signpost is leading (before all fused ops).
+  // Result: pairs of (op, insertAfterThisFusedOp). nullptr means
+  // the op is leading (before all fused ops).
   SmallVector<std::pair<Operation *, Operation *>> result;
 
-  auto isUserSignpost = [](Operation *op) {
-    auto sp = dyn_cast<SignpostOp>(op);
-    return sp && sp.getName().starts_with("ttl_");
-  };
-
-  // Leading signposts: walk backwards from first fused op.
+  // Leading ops: walk backwards from first fused op.
   SmallVector<Operation *> leading;
   for (auto *op = firstFused->getPrevNode(); op; op = op->getPrevNode()) {
-    if (isUserSignpost(op)) {
+    if (isSideEffectOpForCompute(op)) {
       leading.push_back(op);
     } else {
       break;
@@ -173,21 +183,21 @@ collectInterleavedSignposts(const ElementwiseTraceResult &trace,
     result.push_back({*it, nullptr});
   }
 
-  // Interleaved signposts: walk from first to last fused op.
+  // Interleaved ops: walk from first to last fused op.
   Operation *prevFused = nullptr;
   for (auto *op = firstFused; op && op != lastFused->getNextNode();
        op = op->getNextNode()) {
     if (fusedSet.contains(op)) {
       prevFused = op;
-    } else if (isUserSignpost(op)) {
+    } else if (isSideEffectOpForCompute(op)) {
       result.push_back({op, prevFused});
     }
   }
 
-  // Trailing signposts: walk forward from last fused op, skipping
-  // non-signpost ops (store, attach_cb) until cb_push/cb_pop.
+  // Trailing ops: walk forward from last fused op, skipping
+  // non-side-effect ops (store, attach_cb) until cb_push/cb_pop.
   for (auto *op = lastFused->getNextNode(); op; op = op->getNextNode()) {
-    if (isUserSignpost(op)) {
+    if (isSideEffectOpForCompute(op)) {
       result.push_back({op, lastFused});
     } else if (isa<CBPushOp>(op) || isa<CBPopOp>(op)) {
       break;
@@ -215,8 +225,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
                 "ttl.cb_reserve)");
   }
 
-  // Collect signpost ops before they get orphaned by fusion.
-  auto signpostPairs = collectInterleavedSignposts(trace, sinkOp);
+  // Collect signpost and dprint ops before they get orphaned by fusion.
+  auto sideEffectPairs = collectInterleavedSideEffectOps(trace, sinkOp);
 
   Location loc = sinkOp->getLoc();
   MLIRContext *ctx = rewriter.getContext();
@@ -264,11 +274,11 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // Create init tensor and attach to output CB
   Value init = buildInitTensor(rewriter, loc, type, trace.rootInputs[0]);
   Value initAttached =
-      rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+      AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
 
   // Create ttl.compute op
-  auto computeOp = rewriter.create<ComputeOp>(
-      loc, TypeRange{type}, trace.rootInputs.getArrayRef(),
+  auto computeOp = ComputeOp::create(
+      rewriter, loc, TypeRange{type}, trace.rootInputs.getArrayRef(),
       ValueRange{initAttached}, rewriter.getArrayAttr(maps),
       rewriter.getArrayAttr(iterTypes));
 
@@ -294,53 +304,58 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     tensorToTile[trace.rootInputs[i]] = body->getArgument(i);
   }
 
-  // Build a map from fused op -> index in signpostPairs for quick lookup
-  // of which signposts precede each fused op.
+  // Categorize collected side-effect ops by position relative to fused ops.
   assert(!trace.opsInOrder.empty() &&
          "buildFusedCompute requires non-empty opsInOrder");
-  DenseMap<Operation *, SmallVector<SignpostOp>> signpostsBefore;
-  SmallVector<SignpostOp> leadingSignposts;
-  SmallVector<SignpostOp> trailingSignposts;
+  DenseMap<Operation *, SmallVector<Operation *>> opsBefore;
+  SmallVector<Operation *> leadingOps;
+  SmallVector<Operation *> trailingOps;
 
   Operation *lastFusedOp = trace.opsInOrder.back();
-  for (auto &[signpostOp, afterFused] : signpostPairs) {
-    auto sp = cast<SignpostOp>(signpostOp);
+  for (auto &[sideEffectOp, afterFused] : sideEffectPairs) {
     if (!afterFused) {
-      leadingSignposts.push_back(sp);
+      leadingOps.push_back(sideEffectOp);
     } else if (afterFused == lastFusedOp) {
-      trailingSignposts.push_back(sp);
+      trailingOps.push_back(sideEffectOp);
     } else {
-      // Find the next fused op after afterFused to attach this signpost to.
+      // Attach to the next fused op after afterFused.
       bool found = false;
       for (size_t i = 0; i < trace.opsInOrder.size(); ++i) {
         if (trace.opsInOrder[i] == afterFused &&
             i + 1 < trace.opsInOrder.size()) {
-          signpostsBefore[trace.opsInOrder[i + 1]].push_back(sp);
+          opsBefore[trace.opsInOrder[i + 1]].push_back(sideEffectOp);
           found = true;
           break;
         }
       }
       if (!found) {
-        trailingSignposts.push_back(sp);
+        trailingOps.push_back(sideEffectOp);
       }
     }
   }
 
-  // Emit leading signposts
-  for (auto sp : leadingSignposts) {
-    rewriter.create<SignpostOp>(sp.getLoc(), sp.getNameAttr(),
-                                sp.getIsEndAttr());
+  // Helper: clone a signpost or dprint op into the compute body.
+  auto emitSideEffectOp = [&](Operation *op) {
+    if (auto sp = dyn_cast<SignpostOp>(op)) {
+      SignpostOp::create(rewriter, sp.getLoc(), sp.getNameAttr(),
+                         sp.getIsEndAttr());
+    } else {
+      rewriter.clone(*op);
+    }
+  };
+
+  // Emit leading side-effect ops
+  for (auto *op : leadingOps) {
+    emitSideEffectOp(op);
   }
 
-  // Emit tile ops in topological order, with interleaved signposts
+  // Emit tile ops in topological order with interleaved side-effect ops
   Value finalResult;
   for (Operation *op : trace.opsInOrder) {
-    // Emit signposts that precede this fused op
-    auto it = signpostsBefore.find(op);
-    if (it != signpostsBefore.end()) {
-      for (auto sp : it->second) {
-        rewriter.create<SignpostOp>(sp.getLoc(), sp.getNameAttr(),
-                                    sp.getIsEndAttr());
+    auto it = opsBefore.find(op);
+    if (it != opsBefore.end()) {
+      for (auto *seOp : it->second) {
+        emitSideEffectOp(seOp);
       }
     }
 
@@ -350,8 +365,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     if (auto bcastOp = dyn_cast<BcastOp>(op)) {
       Value inputTile = tensorToTile[bcastOp.getInput()];
       Value outputTile = body->getArguments().back(); // output block arg
-      tileResult = rewriter.create<TileBcastOp>(
-          loc, tileType, inputTile, outputTile, bcastOp.getBcastTypeAttr());
+      tileResult = TileBcastOp::create(rewriter, loc, tileType, inputTile,
+                                       outputTile, bcastOp.getBcastTypeAttr());
     } else {
       // Elementwise ops
       SmallVector<Value, 2> tileOperands;
@@ -374,23 +389,24 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     finalResult = tileResult;
   }
 
-  // Emit trailing begin signposts, then tile stores, then end signposts.
-  // This places tile_store inside the innermost signpost scope.
-  auto firstEndIt = llvm::find_if(trailingSignposts,
-                                  [](SignpostOp sp) { return sp.getIsEnd(); });
-  for (auto it = trailingSignposts.begin(); it != firstEndIt; ++it) {
-    rewriter.create<SignpostOp>(it->getLoc(), it->getNameAttr(),
-                                it->getIsEndAttr());
+  // Emit trailing begin signposts and dprints, then tile stores, then end
+  // signposts. This places tile_store inside the innermost signpost scope.
+  auto isEndSignpost = [](Operation *op) {
+    auto sp = dyn_cast<SignpostOp>(op);
+    return sp && sp.getIsEnd();
+  };
+  auto firstEndIt = llvm::find_if(trailingOps, isEndSignpost);
+  for (auto it = trailingOps.begin(); it != firstEndIt; ++it) {
+    emitSideEffectOp(*it);
   }
 
   emitTileStores(rewriter, loc, finalResult, sinkOp);
 
-  for (auto it = firstEndIt; it != trailingSignposts.end(); ++it) {
-    rewriter.create<SignpostOp>(it->getLoc(), it->getNameAttr(),
-                                it->getIsEndAttr());
+  for (auto it = firstEndIt; it != trailingOps.end(); ++it) {
+    emitSideEffectOp(*it);
   }
 
-  rewriter.create<YieldOp>(loc);
+  YieldOp::create(rewriter, loc);
   rewriter.replaceOp(sinkOp, computeOp.getResult(0));
 
   // Erase the fused ops in reverse topological order (sink to roots).
@@ -403,9 +419,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     }
   }
 
-  // Erase the original signpost ops (now cloned into compute body).
-  for (auto &[signpostOp, _] : signpostPairs) {
-    rewriter.eraseOp(signpostOp);
+  // Erase the original side-effect ops (now cloned into compute body).
+  for (auto &[op, _] : sideEffectPairs) {
+    rewriter.eraseOp(op);
   }
 
   return success();
@@ -468,13 +484,14 @@ static LogicalResult buildBinaryCompute(Operation *op,
   // Create init tensor and attach to output CB.
   Value init = buildInitTensor(rewriter, loc, type, lhs);
   Value initAttached =
-      rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+      AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
 
   // Inputs are already attached, use them directly.
   // Create ttl.compute op
-  auto computeOp = rewriter.create<ComputeOp>(
-      loc, TypeRange{type}, ValueRange{lhs, rhs}, ValueRange{initAttached},
-      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+  auto computeOp =
+      ComputeOp::create(rewriter, loc, TypeRange{type}, ValueRange{lhs, rhs},
+                        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+                        rewriter.getArrayAttr(iterTypes));
 
   // Build the body region with tile type block arguments
   Block *body = rewriter.createBlock(&computeOp.getBody());
@@ -486,10 +503,10 @@ static LogicalResult buildBinaryCompute(Operation *op,
   body->addArgument(tileType, loc); // output tile
 
   rewriter.setInsertionPointToStart(body);
-  Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0),
-                                         body->getArgument(1));
+  Value result = TileOp::create(rewriter, loc, tileType, body->getArgument(0),
+                                body->getArgument(1));
   emitTileStores(rewriter, loc, result, op);
-  rewriter.create<YieldOp>(loc);
+  YieldOp::create(rewriter, loc);
   rewriter.replaceOp(op, computeOp.getResult(0));
   return success();
 }
@@ -545,13 +562,14 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   // Create init tensor and attach to output CB.
   Value init = buildInitTensor(rewriter, loc, type, input);
   Value initAttached =
-      rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+      AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
 
   // Input is already attached, use it directly.
   // Create ttl.compute op
-  auto computeOp = rewriter.create<ComputeOp>(
-      loc, TypeRange{type}, ValueRange{input}, ValueRange{initAttached},
-      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+  auto computeOp =
+      ComputeOp::create(rewriter, loc, TypeRange{type}, ValueRange{input},
+                        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+                        rewriter.getArrayAttr(iterTypes));
 
   // Build the body region with tile type block arguments
   Block *body = rewriter.createBlock(&computeOp.getBody());
@@ -562,9 +580,9 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   body->addArgument(tileType, loc); // output tile
 
   rewriter.setInsertionPointToStart(body);
-  Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0));
+  Value result = TileOp::create(rewriter, loc, tileType, body->getArgument(0));
   emitTileStores(rewriter, loc, result, op);
-  rewriter.create<YieldOp>(loc);
+  YieldOp::create(rewriter, loc);
   rewriter.replaceOp(op, computeOp.getResult(0));
   return success();
 }
@@ -712,12 +730,12 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
 
     Value init = buildInitTensor(rewriter, loc, outputType, op.getOutput());
     Value initAttached =
-        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
 
-    auto computeOp = rewriter.create<ComputeOp>(
-        loc, TypeRange{outputType}, ValueRange{op.getInput(), op.getOutput()},
-        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
-        rewriter.getArrayAttr(iterTypes));
+    auto computeOp = ComputeOp::create(
+        rewriter, loc, TypeRange{outputType},
+        ValueRange{op.getInput(), op.getOutput()}, ValueRange{initAttached},
+        rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
     Type scalarType = outputType.getElementType();
@@ -728,10 +746,10 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
 
     rewriter.setInsertionPointToStart(body);
     Value result =
-        rewriter.create<TileBcastOp>(loc, tileType, body->getArgument(0),
-                                     body->getArgument(1), op.getBcastType());
+        TileBcastOp::create(rewriter, loc, tileType, body->getArgument(0),
+                            body->getArgument(1), op.getBcastType());
     emitTileStores(rewriter, loc, result, op.getOperation());
-    rewriter.create<YieldOp>(loc);
+    YieldOp::create(rewriter, loc);
     rewriter.replaceOp(op, computeOp.getResult(0));
     return success();
   }
@@ -781,11 +799,12 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
 
     Value init = buildInitTensor(rewriter, loc, inputType, input);
     Value initAttached =
-        rewriter.create<AttachCBOp>(loc, init.getType(), init, outputCb);
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outputCb);
 
-    auto computeOp = rewriter.create<ComputeOp>(
-        loc, TypeRange{inputType}, ValueRange{input}, ValueRange{initAttached},
-        rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+    auto computeOp = ComputeOp::create(
+        rewriter, loc, TypeRange{inputType}, ValueRange{input},
+        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+        rewriter.getArrayAttr(iterTypes));
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
     Type scalarType = inputType.getElementType();
@@ -794,8 +813,8 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
     body->addArgument(tileType, loc);
 
     rewriter.setInsertionPointToEnd(body);
-    rewriter.create<TileStoreOp>(loc, body->getArgument(0), reserveView);
-    rewriter.create<YieldOp>(loc);
+    TileStoreOp::create(rewriter, loc, body->getArgument(0), reserveView);
+    YieldOp::create(rewriter, loc);
 
     // make_early_inc_range: replaceOp erases attachOp, invalidating the
     // use-list iterator.

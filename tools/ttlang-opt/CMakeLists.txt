@@ -5,9 +5,10 @@ add_llvm_executable(ttlang-opt
 llvm_update_compile_flags(ttlang-opt)
 
 target_link_libraries(ttlang-opt PRIVATE
-  ${TTMLIR_LINK_LIBS}
+  ${TTMLIR_MINIMAL_LIBS}
   MLIROptLib
   MLIRRegisterAllPasses
+  MLIRRegisterAllDialects
   TTLangTTLTransforms
   TTLangTTLPipelines
   MLIRTTLDialect

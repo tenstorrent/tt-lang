@@ -20,15 +20,15 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
+#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
-#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h"      // IWYU pragma: keep
-#include "ttmlir/Dialect/TTNN/IR/TTNNOpsAttrs.h" // IWYU pragma: keep
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
@@ -60,10 +60,9 @@ public:
       return ttk::CBType::get(t.getContext(), t.getTotalElements(),
                               t.getElementType());
     });
-    // Tensor -> TensorAccessor for TTKernel when TTNN layout is present.
+    // Tensor -> TensorAccessor for TTKernel when TTL layout is present.
     addConversion([](RankedTensorType t) -> Type {
-      if (t.getEncoding() &&
-          mlir::isa<tt::ttnn::TTNNLayoutAttr>(t.getEncoding())) {
+      if (t.getEncoding() && mlir::isa<tt::ttl::LayoutAttr>(t.getEncoding())) {
         return ttk::TensorAccessorType::get(t.getContext());
       }
       return t;
@@ -76,7 +75,8 @@ public:
 
     auto castMaterialization = [](OpBuilder &builder, Type resultType,
                                   ValueRange inputs, Location loc) -> Value {
-      return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
+      return UnrealizedConversionCastOp::create(builder, loc, resultType,
+                                                inputs)
           .getResult(0);
     };
     addSourceMaterialization(castMaterialization);
@@ -126,9 +126,9 @@ getBufferAddressFromRuntimeArg(Value tensor, Location loc,
   if (failed(argIdx)) {
     return failure();
   }
-  auto idxConst = rewriter.create<arith::ConstantIndexOp>(loc, *argIdx);
-  return rewriter
-      .create<ttk::GetCommonArgValOp>(loc, rewriter.getI32Type(), idxConst)
+  auto idxConst = arith::ConstantIndexOp::create(rewriter, loc, *argIdx);
+  return ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(),
+                                        idxConst)
       .getResult();
 }
 
@@ -139,13 +139,13 @@ static Value buildTensorAccessor(Location loc,
                                  ConversionPatternRewriter &rewriter,
                                  int32_t ctaIndex, int32_t crtaIndex,
                                  Value bankBase, Value pageSize) {
-  auto ctaConst = rewriter.create<arith::ConstantIntOp>(loc, ctaIndex, 32);
-  auto crtaConst = rewriter.create<arith::ConstantIntOp>(loc, crtaIndex, 32);
-  auto args = rewriter.create<ttk::TensorAccessorArgsOp>(
-      loc, ctaConst.getResult(), crtaConst.getResult(),
+  auto ctaConst = arith::ConstantIntOp::create(rewriter, loc, ctaIndex, 32);
+  auto crtaConst = arith::ConstantIntOp::create(rewriter, loc, crtaIndex, 32);
+  auto args = ttk::TensorAccessorArgsOp::create(
+      rewriter, loc, ctaConst.getResult(), crtaConst.getResult(),
       /*prev_args=*/Value(), /*cta_expr=*/nullptr, /*crta_expr=*/nullptr);
-  auto accessor = rewriter.create<ttk::TensorAccessorOp>(loc, args.getResult(),
-                                                         bankBase, pageSize);
+  auto accessor = ttk::TensorAccessorOp::create(rewriter, loc, args.getResult(),
+                                                bankBase, pageSize);
   return accessor.getResult();
 }
 
@@ -201,12 +201,12 @@ struct BindCBLowering : OpConversionPattern<BindCBOp> {
     }
 
     // Create ttkernel.get_compile_time_arg_val to get the CB handle.
-    auto getArgVal = rewriter.create<ttk::GetCompileArgValOp>(
-        op.getLoc(), cbType, static_cast<int32_t>(cbIndex));
+    auto getArgVal = ttk::GetCompileArgValOp::create(
+        rewriter, op.getLoc(), cbType, static_cast<int32_t>(cbIndex));
 
     // Cast back to TTL CB type for downstream ops that still expect it.
-    auto cast = rewriter.create<UnrealizedConversionCastOp>(
-        op.getLoc(), op.getResult().getType(), ValueRange{getArgVal});
+    auto cast = UnrealizedConversionCastOp::create(
+        rewriter, op.getLoc(), op.getResult().getType(), ValueRange{getArgVal});
     rewriter.replaceOp(op, cast.getResult(0));
     return success();
   }
@@ -237,7 +237,7 @@ static Value computeNumPages(Value cb, ConversionPatternRewriter &rewriter,
                              Location loc) {
   auto ttlCbTy = getTTLCBType(cb);
   int64_t numPages = ttlCbTy ? ttlCbTy.getElementsPerBlock() : 1;
-  return rewriter.create<arith::ConstantIntOp>(loc, numPages, 32);
+  return arith::ConstantIntOp::create(rewriter, loc, numPages, 32);
 }
 
 template <typename SourceOp, typename TargetOp, bool HasResult>
@@ -261,11 +261,11 @@ struct CBOpLowering : OpConversionPattern<SourceOp> {
     }
 
     Value numPages = computeNumPages(originalCb, rewriter, loc);
-    rewriter.create<TargetOp>(loc, *convertedCb, numPages);
+    TargetOp::create(rewriter, loc, *convertedCb, numPages);
 
     if constexpr (HasResult) {
-      auto viewCast = rewriter.create<UnrealizedConversionCastOp>(
-          loc, op.getResult().getType(), *convertedCb);
+      auto viewCast = UnrealizedConversionCastOp::create(
+          rewriter, loc, op.getResult().getType(), *convertedCb);
       rewriter.replaceOp(op, viewCast.getResult(0));
     } else {
       rewriter.eraseOp(op);
@@ -368,7 +368,7 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
       if (auto dstIdxAttr =
               defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
         dstIndex =
-            rewriter.create<arith::ConstantIndexOp>(loc, dstIdxAttr.getInt());
+            arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
       } else if (auto copyTile = dyn_cast<CopyTileOp>(defOp)) {
         dstIndex = copyTile.getDstIndex();
       } else {
@@ -379,8 +379,8 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
       dstIndex = *cbTileIndex;
     }
 
-    rewriter.create<ttk::PackTileOp>(loc, dstIndex, *cb, *cbTileIndex,
-                                     /*out_of_order=*/true);
+    ttk::PackTileOp::create(rewriter, loc, dstIndex, *cb, *cbTileIndex,
+                            /*out_of_order=*/true);
 
     rewriter.eraseOp(op);
     return success();
@@ -400,7 +400,7 @@ static CopyOperandKind classifyOperand(Value v) {
 }
 
 static Value makeZeroI32(Location loc, ConversionPatternRewriter &rewriter) {
-  return rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
+  return arith::ConstantIntOp::create(rewriter, loc, 0, 32);
 }
 
 static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
@@ -444,8 +444,8 @@ static FailureOr<int32_t> computeCTAIndex(unsigned argIdx, Operation *op) {
   return static_cast<int32_t>(baseCTA + globalTensorIdx);
 }
 
-/// Validate TTNNLayoutAttr encoding on a tensor and return the page size.
-/// Rejects sharded (#118) and row-major (#173) layouts with diagnostics.
+/// Validate TTLLayoutAttr encoding on a tensor and return the page size.
+/// Rejects sharded (#118) layouts with diagnostics.
 static FailureOr<int64_t> getValidatedPageSize(Value tensor, Operation *op) {
   auto tensorTy = llvm::dyn_cast<RankedTensorType>(tensor.getType());
   if (!tensorTy) {
@@ -453,25 +453,28 @@ static FailureOr<int64_t> getValidatedPageSize(Value tensor, Operation *op) {
   }
 
   auto layoutAttr =
-      mlir::dyn_cast_or_null<ttnn::TTNNLayoutAttr>(tensorTy.getEncoding());
+      mlir::dyn_cast_or_null<tt::ttl::LayoutAttr>(tensorTy.getEncoding());
   if (!layoutAttr) {
     return op->emitError(
-        "tensor must have TTNNLayoutAttr encoding for accessor "
-        "materialization; Python layer should reject tensors without TTNN "
-        "layout");
+        "tensor must have ttl.layout encoding for accessor "
+        "materialization; Python layer should reject tensors without layout");
   }
 
-  if (layoutAttr.hasShardedTensorMemoryLayout()) {
+  auto memLayout = layoutAttr.getMemoryLayout();
+  if (memLayout != tt::ttl::TensorMemoryLayout::Interleaved &&
+      memLayout != tt::ttl::TensorMemoryLayout::SingleBank) {
     return op->emitError("sharded memory layout not yet supported for tensor "
                          "accessor; see GH issue #118");
   }
 
-  if (!layoutAttr.isTiled()) {
-    return op->emitError("row-major (non-tiled) layout not yet supported for "
-                         "tensor accessor; see GH issue #173");
+  // TTL layouts are always tiled. Compute page size from tile element type.
+  auto tileType =
+      mlir::dyn_cast<tt::ttcore::TileType>(layoutAttr.getElementType());
+  if (!tileType) {
+    return op->emitError("layout element type must be a TileType");
   }
 
-  return layoutAttr.getElementSizeBytes();
+  return tileType.getSizeBytes();
 }
 
 /// Create a TensorAccessor from a tensor type, bank base address, and
@@ -494,7 +497,8 @@ materializeTensorAccessor(Value tensor, Value bankBase, int64_t pageSizeBytes,
     return failure();
   }
 
-  auto pageSize = rewriter.create<arith::ConstantIntOp>(loc, pageSizeBytes, 32);
+  auto pageSize =
+      arith::ConstantIntOp::create(rewriter, loc, pageSizeBytes, 32);
 
   return buildTensorAccessor(loc, rewriter, *ctaIndex,
                              static_cast<int32_t>(*argIdx), bankBase, pageSize);
@@ -518,7 +522,7 @@ static SmallVector<int64_t> getTileGridShapeFromValue(Value v) {
 static void emitTileLoop(
     OpBuilder &builder, Location loc, ArrayRef<int64_t> tileBounds,
     llvm::function_ref<void(OpBuilder &, Location, ValueRange)> emitBody) {
-  auto zero = builder.create<arith::ConstantIndexOp>(loc, 0);
+  auto zero = arith::ConstantIndexOp::create(builder, loc, 0);
 
   bool allOne = llvm::all_of(tileBounds, [](int64_t d) { return d == 1; });
   if (allOne) {
@@ -527,12 +531,12 @@ static void emitTileLoop(
     return;
   }
 
-  auto one = builder.create<arith::ConstantIndexOp>(loc, 1);
+  auto one = arith::ConstantIndexOp::create(builder, loc, 1);
   SmallVector<Value> lbs(tileBounds.size(), zero);
   SmallVector<Value> ubs;
   SmallVector<Value> steps(tileBounds.size(), one);
   for (int64_t bound : tileBounds) {
-    ubs.push_back(builder.create<arith::ConstantIndexOp>(loc, bound));
+    ubs.push_back(arith::ConstantIndexOp::create(builder, loc, bound));
   }
 
   scf::buildLoopNest(builder, loc, lbs, ubs, steps,
@@ -546,16 +550,16 @@ static void emitTileLoop(
 static Value linearizeNDIndex(OpBuilder &builder, Location loc,
                               ValueRange coords, ArrayRef<int64_t> shape) {
   assert(coords.size() == shape.size() && "coords and shape rank mismatch");
-  Value result = builder.create<arith::ConstantIndexOp>(loc, 0);
+  Value result = arith::ConstantIndexOp::create(builder, loc, 0);
   for (size_t i = 0; i < coords.size(); ++i) {
     // stride = product of shape[i+1..N-1]
     int64_t stride = 1;
     for (size_t j = i + 1; j < shape.size(); ++j) {
       stride *= shape[j];
     }
-    Value strideVal = builder.create<arith::ConstantIndexOp>(loc, stride);
-    Value term = builder.create<arith::MulIOp>(loc, coords[i], strideVal);
-    result = builder.create<arith::AddIOp>(loc, result, term);
+    Value strideVal = arith::ConstantIndexOp::create(builder, loc, stride);
+    Value term = arith::MulIOp::create(builder, loc, coords[i], strideVal);
+    result = arith::AddIOp::create(builder, loc, result, term);
   }
   return result;
 }
@@ -600,8 +604,8 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
   bool isRead = direction == NocCopyDirection::Read;
   Value cbPtr =
       isRead
-          ? rewriter.create<ttk::GetWritePtrOp>(loc, *cbConverted).getResult()
-          : rewriter.create<ttk::GetReadPtrOp>(loc, *cbConverted).getResult();
+          ? ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted).getResult()
+          : ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted).getResult();
 
   // Get CB shape for loop bounds.
   auto cbType = getTTLCBType(cb);
@@ -629,9 +633,9 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
   }
 
   auto indexTy = rewriter.getIndexType();
-  auto cbPtrIdx = rewriter.create<arith::IndexCastOp>(loc, indexTy, cbPtr);
+  auto cbPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, cbPtr);
   auto pageSizeIdx =
-      rewriter.create<arith::ConstantIndexOp>(loc, *pageSizeBytes);
+      arith::ConstantIndexOp::create(rewriter, loc, *pageSizeBytes);
   auto i32Ty = rewriter.getI32Type();
 
   SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
@@ -643,7 +647,7 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
         SmallVector<Value> tensorCoords;
         for (unsigned d = 0; d < tensorRank; ++d) {
           Value coord =
-              b.create<arith::AddIOp>(bodyLoc, startIndices[d], cbIVs[d]);
+              arith::AddIOp::create(b, bodyLoc, startIndices[d], cbIVs[d]);
           tensorCoords.push_back(coord);
         }
 
@@ -654,21 +658,21 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
 
         // Compute CB address: cbPtr + cbTileIdx * pageSize
         Value byteOffset =
-            b.create<arith::MulIOp>(bodyLoc, cbTileIdx, pageSizeIdx);
+            arith::MulIOp::create(b, bodyLoc, cbTileIdx, pageSizeIdx);
         Value cbAddrIdx =
-            b.create<arith::AddIOp>(bodyLoc, cbPtrIdx, byteOffset);
+            arith::AddIOp::create(b, bodyLoc, cbPtrIdx, byteOffset);
 
         // Cast to i32 for NOC operation.
         Value tensorTileIdx32 =
-            b.create<arith::IndexCastOp>(bodyLoc, i32Ty, tensorTileIdx);
-        Value cbAddr = b.create<arith::IndexCastOp>(bodyLoc, i32Ty, cbAddrIdx);
+            arith::IndexCastOp::create(b, bodyLoc, i32Ty, tensorTileIdx);
+        Value cbAddr = arith::IndexCastOp::create(b, bodyLoc, i32Ty, cbAddrIdx);
 
         if (isRead) {
-          b.create<ttk::NocAsyncReadTileOp>(bodyLoc, tensorTileIdx32, *accessor,
-                                            cbAddr);
+          ttk::NocAsyncReadTileOp::create(b, bodyLoc, tensorTileIdx32,
+                                          *accessor, cbAddr);
         } else {
-          b.create<ttk::NocAsyncWriteTileOp>(bodyLoc, tensorTileIdx32,
-                                             *accessor, cbAddr);
+          ttk::NocAsyncWriteTileOp::create(b, bodyLoc, tensorTileIdx32,
+                                           *accessor, cbAddr);
         }
       });
 
@@ -763,9 +767,9 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
           op, "requires direction-typed !ttl.transfer_handle<read|write>");
     }
     if (*kind == TransferKind::read) {
-      rewriter.create<ttk::NocAsyncReadBarrierOp>(op.getLoc());
+      ttk::NocAsyncReadBarrierOp::create(rewriter, op.getLoc());
     } else if (*kind == TransferKind::write) {
-      rewriter.create<ttk::NocAsyncWriteBarrierOp>(op.getLoc());
+      ttk::NocAsyncWriteBarrierOp::create(rewriter, op.getLoc());
     } else {
       // Future-proofing: TransferKind is currently {read, write}, but fail
       // explicitly if it ever expands without updating the lowering.
@@ -888,17 +892,15 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   target.addLegalOp<TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
                     TileRegsReleaseOp>();
 
-  // SignpostOp is lowered in a separate pass (ttl-lower-signpost-to-emitc).
-  target.addLegalOp<SignpostOp>();
+  // SignpostOp and DPrintOp are lowered in separate EmitC passes.
+  target.addLegalOp<SignpostOp, DPrintOp>();
 
-  // CopyTileOp is a data movement op (CB -> DST), lowered in the tile ops
-  // lowering phase.
-  target.addLegalOp<CopyTileOp>();
-
-  // Tile compute ops (identified by TTLTileComputeOpTrait) remain legal
+  // Tile compute ops and data movement ops (copy_tile, copy_dst) remain legal
   // until the tile ops lowering phase.
-  target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>(
-      [](Operation *op) { return tt::ttl::isTileComputeOp(op); });
+  target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>([](Operation *op) {
+    return tt::ttl::isTileComputeOp(op) ||
+           op->hasTrait<TTLDataMovementOpTrait>();
+  });
 
   // TensorSliceOp is legal while it has users (CopyLowering will consume them).
   // Once users are gone, TensorSliceLowering erases the op.
@@ -956,17 +958,17 @@ lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // Other dialects are legal (func, tensor, etc.) EXCEPT tile ops.
   computeTarget.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
-  // Mark TTL ops that need lowering as illegal (tile compute ops, CopyTileOp,
-  // DST lifecycle). All other TTL ops (ComputeOp, YieldOp, AttachCBOp) were
-  // explicitly marked legal above.
+  // Mark TTL ops that need lowering as illegal (tile compute ops, data movement
+  // ops, DST lifecycle). All other TTL ops (ComputeOp, YieldOp, AttachCBOp)
+  // were explicitly marked legal above.
   computeTarget.addDynamicallyLegalDialect<tt::ttl::TTLDialect>(
       [](Operation *op) {
         // Tile compute ops (add, mul, exp, etc.) are illegal.
         if (tt::ttl::isTileComputeOp(op)) {
           return false;
         }
-        // CopyTileOp (data movement) is illegal.
-        if (isa<CopyTileOp>(op)) {
+        // Data movement ops (copy_tile, copy_dst) are illegal.
+        if (op->hasTrait<TTLDataMovementOpTrait>()) {
           return false;
         }
         // DST lifecycle ops are illegal.
@@ -1061,7 +1063,7 @@ static void cleanupComputeKernels(ModuleOp mod, MLIRContext &ctx) {
       func.walk([](func::ReturnOp returnOp) {
         if (returnOp.getNumOperands() > 0) {
           OpBuilder builder(returnOp);
-          builder.create<func::ReturnOp>(returnOp.getLoc());
+          func::ReturnOp::create(builder, returnOp.getLoc());
           returnOp.erase();
         }
       });
