@@ -629,8 +629,12 @@ class TTCompilerBase(PyKernelAstBase):
                     f"Compare operator {type(node.ops).__name__} not implemented"
                 )
 
-    def visit_Attribute(self, node, func_args=[], kwargs={}):
+    def visit_Attribute(self, node, func_args=None, kwargs=None):
         # type name should be !ttkernel.* if it has attributes
+        if func_args is None:
+            func_args = []
+        if kwargs is None:
+            kwargs = {}
         mlir_value = self._var_exists(node.value.id)[node.value.id]
         mlir_type = _get_type_str(mlir_value.type)
         qualified_object_syntax = f"{mlir_type}.{node.attr}"
@@ -725,7 +729,9 @@ class TTCompilerBase(PyKernelAstBase):
         var = memref.alloca(memref_type, [], [])
 
         # Populate the table
-        def populate_list(arr, _idx=[]):
+        def populate_list(arr, _idx=None):
+            if _idx is None:
+                _idx = []
             nonlocal var
             for i, elt in enumerate(arr):
                 idx = _idx + [arith.ConstantOp(IndexType.get(self.ctx), i)]

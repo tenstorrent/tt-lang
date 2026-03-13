@@ -187,7 +187,9 @@ def expand_core_range(core_range: CoreRange) -> List[CoreCoord]:
     # Generate all combinations (Cartesian product)
     result: List[CoreCoord] = []
 
-    def _cartesian_product(ranges: List[List[int]], current: List[int] = []) -> None:
+    def _cartesian_product(ranges: List[List[int]], current: List[int] = None) -> None:
+        if current is None:
+            current = []
         if not ranges:
             # For 1D, append single value; for multi-D, append tuple
             if dims == 1:
