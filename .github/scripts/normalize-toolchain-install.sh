@@ -47,8 +47,8 @@ mapfile -t symlinks < <(find "$INSTALL_DIR" -type l)
 echo "Found ${#symlinks[@]} symlinks to normalize"
 
 for link in "${symlinks[@]}"; do
-    target=$(readlink -f "$link")
-    if [ -e "$target" ]; then
+    target=$(readlink -f "$link" 2>/dev/null) || true
+    if [ -n "$target" ] && [ -e "$target" ]; then
         rm "$link"
         if [ -d "$target" ]; then
             cp -r "$target" "$link"
