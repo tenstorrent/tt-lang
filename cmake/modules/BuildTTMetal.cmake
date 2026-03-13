@@ -43,7 +43,7 @@ endif()
 # ---------------------------------------------------------------------------
 if(TTLANG_USE_TOOLCHAIN)
   set(TT_METAL_HOME "${TTMETAL_BUILD_DIR}")
-  set(TT_METAL_PYTHON_PATH "${TTMETAL_BUILD_DIR}/python_packages/ttnn:${TT_METAL_SOURCE_DIR}/tools")
+  set(TT_METAL_PYTHON_PATH "${TTMETAL_BUILD_DIR}/python_packages/ttnn:${TTMETAL_BUILD_DIR}/python_packages/tools")
   set(TT_METAL_LIB_PATH "${TTMETAL_BUILD_DIR}/lib")
 
   add_custom_target(clean-ttmetal

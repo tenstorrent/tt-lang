@@ -47,16 +47,21 @@ if [ -d "$TRACY_BIN" ]; then
 fi
 
 # --- ttnn Python package ---
+# Preserve the two-level ttnn/ttnn/ layout from the source tree so that
+# PYTHONPATH points to the outer ttnn/ directory.  This avoids ttnn's
+# types.py shadowing the stdlib types module.
 if [ -d "$SRC/ttnn/ttnn" ]; then
-    mkdir -p "$INSTALL/python_packages/ttnn"
-    cp -prL "$SRC/ttnn/ttnn/"* "$INSTALL/python_packages/ttnn/" 2>/dev/null || true
+    mkdir -p "$INSTALL/python_packages/ttnn/ttnn"
+    cp -prL "$SRC/ttnn/ttnn/"* "$INSTALL/python_packages/ttnn/ttnn/" 2>/dev/null || true
     echo "Installed ttnn Python package"
 fi
 
 # --- Tracy Python module ---
+# Mirrors source layout: tools/ contains the tracy package, added to
+# PYTHONPATH as a separate entry.
 if [ -d "$SRC/tools/tracy" ]; then
-    mkdir -p "$INSTALL/python_packages/tracy"
-    cp -pr "$SRC/tools/tracy/"*.py "$INSTALL/python_packages/tracy/" 2>/dev/null || true
+    mkdir -p "$INSTALL/python_packages/tools/tracy"
+    cp -pr "$SRC/tools/tracy/"*.py "$INSTALL/python_packages/tools/tracy/" 2>/dev/null || true
     echo "Installed Tracy Python module"
 fi
 
