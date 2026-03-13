@@ -543,7 +543,7 @@ def fill(expr: Block, value: float) -> Block:
 
     Args:
         expr: Input block (shape is preserved)
-        value: Value to fill with
+        value: Value to fill
 
     Returns:
         Block filled with specified value
