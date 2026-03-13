@@ -129,6 +129,9 @@ jobs:
           key: ${{ needs.configure-deps.outputs.cache-key }}
           fail-on-cache-miss: true
 
+      - name: Patch missing runtime artifacts into cached toolchain
+        run: bash scripts/copy-ttmetal-runtime-artifacts.sh third-party/tt-metal /opt/ttlang-toolchain
+
       - name: Pull base image
         run: |
           BASE_IMAGE="${{ needs.build-image-base.outputs.docker-image-base }}"

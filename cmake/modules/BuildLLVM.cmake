@@ -70,6 +70,9 @@ elseif(DEFINED TTLANG_TOOLCHAIN_DIR AND NOT DEFINED MLIR_PREFIX)
     file(REMOVE "${TTLANG_TOOLCHAIN_DIR}/tt-metal/ttnn/_ttnn.so")
     # Remove LLVM build dir so it reconfigures with the correct install prefix.
     file(REMOVE_RECURSE "${CMAKE_BINARY_DIR}/llvm-build")
+    # Clear cached Python3_EXECUTABLE so find_package discovers the system
+    # interpreter instead of a stale venv path from a previous configure.
+    unset(Python3_EXECUTABLE CACHE)
     message(STATUS "Forcing toolchain rebuild into: ${TTLANG_TOOLCHAIN_DIR}")
   else()
     message(STATUS "Building toolchain into: ${TTLANG_TOOLCHAIN_DIR}")

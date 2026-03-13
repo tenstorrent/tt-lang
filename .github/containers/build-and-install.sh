@@ -14,15 +14,17 @@
 #   --install-ttmetal      Install tt-metal artifacts from build dir into toolchain
 #   --build-and-install    Build tt-lang + install (assumes configure already ran)
 #   --finalize             Normalize toolchain + cleanup
+#   --test-toolchain       Build in a separate dir using the installed toolchain, run tests
 #
 # Options:
+#   --force-rebuild        Force toolchain rebuild (LLVM + tt-metal) even if cached
 #   --remove-build-dir     Remove CMAKE_BINARY_DIR after finalize (for Docker builds)
 #
 # Typical multi-stage usage (build outside Docker, copy results in):
-#   1. build-and-install.sh --configure-only         # Build LLVM + tt-metal
-#   2. build-and-install.sh --install-ttmetal         # Install tt-metal into toolchain
-#   3. cp -a toolchain/ ird-toolchain/                # Save ird toolchain
-#   4. build-and-install.sh --build-and-install        # Build + install tt-lang
+#   1. build-and-install.sh --configure-only               # Build LLVM + tt-metal
+#   2. build-and-install.sh --install-ttmetal              # Install tt-metal into toolchain
+#   3. cp -a toolchain/ ird-toolchain/                     # Save ird toolchain
+#   4. build-and-install.sh --build-and-install            # Build + install tt-lang
 #   5. build-and-install.sh --finalize --remove-build-dir  # Normalize + cleanup
 
 set -e
@@ -35,6 +37,7 @@ git config --global --add safe.directory '*'
 
 MODE="full"
 REMOVE_BUILD_DIR=false
+FORCE_REBUILD=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -58,6 +61,14 @@ while [[ $# -gt 0 ]]; do
             MODE="finalize"
             shift
             ;;
+        --test-toolchain)
+            MODE="test-toolchain"
+            shift
+            ;;
+        --force-rebuild)
+            FORCE_REBUILD=true
+            shift
+            ;;
         --remove-build-dir)
             REMOVE_BUILD_DIR=true
             shift
@@ -72,7 +83,7 @@ done
 TTLANG_TOOLCHAIN_DIR="${TTLANG_TOOLCHAIN_DIR:-/opt/ttlang-toolchain}"
 CMAKE_BINARY_DIR="${CMAKE_BINARY_DIR:-build}"
 
-# ---- Phase: Configure (cmake configure + pip install) ----
+# ---- Configure (cmake configure + pip install) ----
 do_configure() {
     echo "=== Configuring tt-lang ==="
     # Use the pre-built toolchain if it already contains LLVM.
@@ -81,12 +92,18 @@ do_configure() {
         _use_toolchain=ON
     fi
 
+    local _force_rebuild=OFF
+    if [ "$FORCE_REBUILD" = true ]; then
+        _force_rebuild=ON
+    fi
+
     cmake -G Ninja -B "$CMAKE_BINARY_DIR" \
         -DCMAKE_BUILD_TYPE=Release \
         -DTTLANG_USE_TOOLCHAIN=$_use_toolchain \
         -DTTLANG_TOOLCHAIN_DIR=$TTLANG_TOOLCHAIN_DIR \
         -DTTLANG_PYTHON_VENV=$TTLANG_TOOLCHAIN_DIR/venv \
-        -DTTLANG_ENABLE_PERF_TRACE=ON
+        -DTTLANG_ENABLE_PERF_TRACE=ON \
+        -DTTLANG_FORCE_TOOLCHAIN_REBUILD=$_force_rebuild
 
     echo "=== Disk space after configure ==="
     df -BM
@@ -97,7 +114,7 @@ do_configure() {
     pip install -r requirements.txt --no-cache-dir
 }
 
-# ---- Phase: Install tt-metal artifacts into toolchain ----
+# ---- Install tt-metal artifacts into toolchain ----
 do_install_ttmetal() {
     echo "=== Installing tt-metal into toolchain ==="
     bash scripts/install-ttmetal.sh \
@@ -106,7 +123,7 @@ do_install_ttmetal() {
         "$TTLANG_TOOLCHAIN_DIR/tt-metal"
 }
 
-# ---- Phase: Build + Install tt-lang ----
+# ---- Build + install tt-lang ----
 do_build_and_install() {
     source "$CMAKE_BINARY_DIR/env/activate"
 
@@ -120,7 +137,7 @@ do_build_and_install() {
     cmake --install "$CMAKE_BINARY_DIR" --prefix "$TTLANG_TOOLCHAIN_DIR"
 }
 
-# ---- Phase: Finalize (normalize toolchain + cleanup) ----
+# ---- Finalize (normalize toolchain + cleanup) ----
 do_finalize() {
     echo "=== Normalizing and cleaning up toolchain ==="
     if [ -f /tmp/normalize-toolchain-install.sh ]; then
@@ -145,6 +162,36 @@ do_finalize() {
 
     echo "=== Disk space after cleanup ==="
     df -BM
+}
+
+# ---- Test toolchain (separate build using installed toolchain) ----
+do_test_toolchain() {
+    local test_build_dir="${CMAKE_BINARY_DIR}-toolchain-test"
+
+    echo "=== Testing toolchain from ${TTLANG_TOOLCHAIN_DIR} ==="
+    echo "=== Test build dir: ${test_build_dir} ==="
+
+    rm -rf "$test_build_dir"
+
+    cmake -G Ninja -B "$test_build_dir" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DTTLANG_TOOLCHAIN_DIR="$TTLANG_TOOLCHAIN_DIR" \
+        -DTTLANG_USE_TOOLCHAIN=ON
+
+    cmake --build "$test_build_dir"
+
+    if [ -n "${TT_VISIBLE_DEVICES:-}" ]; then
+        if ! tt-smi -r "$TT_VISIBLE_DEVICES"; then
+            echo "WARNING: tt-smi -r $TT_VISIBLE_DEVICES failed" >&2
+        fi
+    fi
+
+    cmake --build "$test_build_dir" --target check-ttlang
+
+    source "$test_build_dir/env/activate"
+    python examples/tutorial/multicore_grid_auto.py
+
+    rm -rf "$test_build_dir"
 }
 
 # ---- Dispatch based on mode ----
@@ -177,5 +224,9 @@ case "$MODE" in
     finalize)
         do_finalize
         echo "=== Finalize complete ==="
+        ;;
+    test-toolchain)
+        do_test_toolchain
+        echo "=== Toolchain test complete ==="
         ;;
 esac

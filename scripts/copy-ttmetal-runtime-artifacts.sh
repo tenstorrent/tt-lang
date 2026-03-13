@@ -14,6 +14,7 @@
 #
 # Artifacts:
 #   runtime/hw/                  - linker scripts and object files (build-generated)
+#   runtime/sfpi/                - SFPI compiler intrinsics (JIT kernel compilation)
 #   tt_metal/third_party/tt_llk/ - LLK headers (ckernel_structs.h, etc.)
 #   tt_metal/soc_descriptors/    - SoC architecture descriptors (device open)
 #   tt_metal/core_descriptors/   - Core architecture descriptors (device open)
@@ -38,6 +39,7 @@ DEST="$2"
 # check-file is used in restore mode to skip if already present in dest.
 ARTIFACTS=(
     "runtime/hw/toolchain"                            "runtime/hw"
+    "runtime/sfpi/include"                            "runtime/sfpi"
     "tt_metal/third_party/tt_llk/README.md"           "tt_metal/third_party/tt_llk"
     "tt_metal/soc_descriptors/blackhole_140_arch.yaml" "tt_metal/soc_descriptors"
     "tt_metal/core_descriptors/blackhole_140_arch.yaml" "tt_metal/core_descriptors"
