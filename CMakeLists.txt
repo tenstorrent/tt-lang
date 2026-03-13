@@ -36,15 +36,6 @@ endif()
 include(TTLangCompilerSetup)
 
 # ---------------------------------------------------------------------------
-# Auto-initialize submodules if not already present.
-# ---------------------------------------------------------------------------
-ttlang_ensure_submodules(
-  third-party/llvm-project
-  third-party/tt-mlir
-  third-party/tt-metal
-)
-
-# ---------------------------------------------------------------------------
 # Toolchain options (declared early because TTLangPython needs them).
 # ---------------------------------------------------------------------------
 option(TTLANG_USE_TOOLCHAIN "Use pre-built LLVM from ttlang toolchain" OFF)

@@ -238,7 +238,7 @@ execute_process(
 # ---------------------------------------------------------------------------
 set(TT_METAL_HOME "${TT_METAL_SOURCE_DIR}")
 set(TT_METAL_PYTHON_PATH "${TT_METAL_SOURCE_DIR}/ttnn:${TT_METAL_SOURCE_DIR}/tools")
-set(TT_METAL_LIB_PATH "${TTMETAL_BUILD_DIR}/lib:${TTMETAL_BUILD_DIR}/tt_metal:${TTMETAL_BUILD_DIR}/ttnn")
+set(TT_METAL_LIB_PATH "${TTMETAL_BUILD_DIR}/lib:${TTMETAL_BUILD_DIR}/tt_metal:${TTMETAL_BUILD_DIR}/ttnn:${TTMETAL_BUILD_DIR}/tt_stl:${TTMETAL_BUILD_DIR}/_deps/fmt-build:${TTMETAL_BUILD_DIR}/tt_metal/third_party/umd/device")
 
 # ---------------------------------------------------------------------------
 # clean-ttmetal target: removes tt-metal build dir and copied extensions so

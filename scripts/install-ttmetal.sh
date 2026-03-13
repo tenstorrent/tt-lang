@@ -27,29 +27,15 @@ echo "  Source:  $SRC"
 echo "  Build:   $BUILD"
 echo "  Install: $INSTALL"
 
-# --- Shared libraries from lib/ ---
-if [ -d "$BUILD/lib" ]; then
-    mkdir -p "$INSTALL/lib"
-    cp -pL "$BUILD"/lib/*.so* "$INSTALL/lib/" 2>/dev/null || true
-    echo "Installed lib/*.so*"
-fi
-
-# --- ttnn shared libraries ---
-if [ -d "$BUILD/ttnn" ]; then
-    mkdir -p "$INSTALL/ttnn"
-    find "$BUILD/ttnn" -maxdepth 1 -name "*.so" -exec cp -pL {} "$INSTALL/ttnn/" \;
-    echo "Installed ttnn/*.so"
-fi
-
-# --- tt_metal shared libraries ---
-if [ -d "$BUILD/tt_metal" ]; then
-    so_files=$(find "$BUILD/tt_metal" -maxdepth 1 -name "*.so" 2>/dev/null)
-    if [ -n "$so_files" ]; then
-        mkdir -p "$INSTALL/tt_metal"
-        echo "$so_files" | while read -r f; do cp -pL "$f" "$INSTALL/tt_metal/"; done
-        echo "Installed tt_metal/*.so"
-    fi
-fi
+# --- Shared libraries ---
+# Flatten all .so files from the build tree into lib/.  This covers libraries
+# from subdirectories like tt_stl/, _deps/fmt-build/, tt_metal/third_party/umd/,
+# etc. without hard-coding each path.  CMakeFiles/ directories are excluded
+# (build intermediates only).
+mkdir -p "$INSTALL/lib"
+find "$BUILD" \( -name "*.so" -o -name "*.so.*" \) -not -path "*/CMakeFiles/*" \
+    -exec cp -pL {} "$INSTALL/lib/" \;
+echo "Installed shared libraries into lib/"
 
 # --- Tracy profiler tools ---
 TRACY_BIN="$BUILD/tools/profiler/bin"

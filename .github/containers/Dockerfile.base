@@ -20,6 +20,8 @@ set -e
 apt-get update -qq
 apt-get install -y -qq software-properties-common
 add-apt-repository ppa:git-core/ppa -y
+echo "deb http://ppa.launchpad.net/ubuntu-toolchain-r/test/ubuntu jammy main" > /etc/apt/sources.list.d/toolchain-test.list
+apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 1E9377A2BA9EF27F 2C277A0A352154E5
 apt-get update -qq
 apt-get install -y -qq \
     build-essential \
@@ -46,7 +48,8 @@ apt-get install -y -qq \
     zstd libzstd-dev \
     unzip \
     ca-certificates \
-    gnupg
+    gnupg \
+    libstdc++6
 
 # Install Python 3.12 (matches tt-mlir)
 add-apt-repository ppa:deadsnakes/ppa -y
