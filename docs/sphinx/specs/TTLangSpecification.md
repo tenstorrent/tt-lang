@@ -178,7 +178,7 @@ def some_compute():
 
 ## 5. Block
 
-A *block* represents memory acquired from a dataflow buffer. Block size is determined by the shape of a dataflow buffer and its memory is allocated when a dataflow buffer is created. Inside of a compute thread a block can participate in a *block expression* with built-in Python operators and TT-Lang math functions as an operand. A block can also be a storage for the result of block expression by using store function. When the store function is invoked multiple times for the same block with the `acc = True` parameter, TT-Lang will generate accumulation for all calls after the first one. When `acc = False`, all stores simply store (no accumulation). Inside of data movement threads a block can participate in `ttl.copy` as a source or a destination.
+A *block* represents memory acquired from a dataflow buffer. Block size is determined by the shape of a dataflow buffer and its memory is allocated when a dataflow buffer is created. Inside of a compute thread a block can participate in a *block expression* with built-in Python operators and TT-Lang math functions as an operand. A block can also be a storage for the result of block expression by using store function. When the store function is invoked multiple times for the same block with the `acc = True` parameter, TT-Lang will generate accumulation through summation for all calls after the first one. When `acc = False`, all stores simply store (no accumulation). Inside of data movement threads a block can participate in `ttl.copy` as a source or a destination.
 
 #### Element-wise with broadcast example
 
