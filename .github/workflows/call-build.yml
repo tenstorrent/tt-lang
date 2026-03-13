@@ -78,12 +78,17 @@ jobs:
                   key: ${{ needs.configure-deps.outputs.cache-key }}
                   fail-on-cache-miss: true
 
+            - name: Set extra CMake options
+              if: inputs.build_docs
+              run: echo "CMAKE_EXTRA_CONFIG_OPTIONS=-DTTLANG_ENABLE_DOCS=ON" >> "$GITHUB_ENV"
+
             - name: Configure tt-lang
               run: |
                   cmake -G Ninja -B build \
                       -DCMAKE_BUILD_TYPE=Release \
                       -DTTLANG_USE_TOOLCHAIN=ON \
-                      -DTTLANG_ENABLE_PERF_TRACE=ON
+                      -DTTLANG_ENABLE_PERF_TRACE=ON \
+                      $CMAKE_EXTRA_CONFIG_OPTIONS
 
             - name: Setup ccache
               uses: hendrikmuhs/ccache-action@v1.2
