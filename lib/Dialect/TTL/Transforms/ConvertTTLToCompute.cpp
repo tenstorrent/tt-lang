@@ -337,8 +337,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // Helper: clone a signpost or dprint op into the compute body.
   auto emitSideEffectOp = [&](Operation *op) {
     if (auto sp = dyn_cast<SignpostOp>(op)) {
-      rewriter.create<SignpostOp>(sp.getLoc(), sp.getNameAttr(),
-                                  sp.getIsEndAttr());
+      SignpostOp::create(rewriter, sp.getLoc(), sp.getNameAttr(),
+                         sp.getIsEndAttr());
     } else {
       rewriter.clone(*op);
     }
