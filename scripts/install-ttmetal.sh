@@ -67,21 +67,18 @@ if [ -d "$SRC/tools/tracy" ]; then
     echo "Installed Tracy Python module"
 fi
 
-# --- Runtime artifacts (linker scripts, LLK headers, SoC/core descriptors) ---
-# These are copied into the build dir during cmake configure by
-# copy-ttmetal-runtime-artifacts.sh.  Re-copy from whichever location has them.
+# --- Runtime artifacts (linker scripts, LLK headers, SoC/core descriptors, sfpi) ---
+# Some artifacts are build-generated (runtime/hw), others live only in the
+# source tree (runtime/sfpi).  Copy from the build dir first for
+# build-generated artifacts, then fill in anything missing from source.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COPY_SCRIPT="$SCRIPT_DIR/copy-ttmetal-runtime-artifacts.sh"
 
 if [ -x "$COPY_SCRIPT" ]; then
-    # The copy script expects <src> <dest>.  Runtime artifacts live in the
-    # build dir (copied there during configure) or in the source tree.
-    # Try the build dir first, fall back to source.
     if [ -d "$BUILD/runtime/hw" ]; then
         bash "$COPY_SCRIPT" "$BUILD" "$INSTALL"
-    else
-        bash "$COPY_SCRIPT" "$SRC" "$INSTALL"
     fi
+    bash "$COPY_SCRIPT" --restore "$SRC" "$INSTALL"
 else
     echo "WARNING: copy-ttmetal-runtime-artifacts.sh not found at $COPY_SCRIPT"
 fi
