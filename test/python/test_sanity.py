@@ -5,6 +5,8 @@
 
 import pytest
 
+pytestmark = pytest.mark.fast
+
 
 def test_ttl_import():
     """Verify ttl module can be imported."""

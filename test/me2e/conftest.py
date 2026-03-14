@@ -38,6 +38,10 @@ def pytest_configure(config):
         "markers",
         "order(after=...): specify test execution order (requires pytest-order)",
     )
+    config.addinivalue_line("markers", "fast: fast smoke tests (always run)")
+    config.addinivalue_line(
+        "markers", "stress: exhaustive shape/parameter sweeps (run only in stress tier)"
+    )
 
 
 def pytest_addoption(parser):
@@ -47,6 +51,13 @@ def pytest_addoption(parser):
         action="store_true",
         default=False,
         help="Save generated MLIR to build directory",
+    )
+    parser.addoption(
+        "--tier",
+        action="store",
+        default="full",
+        choices=("fast", "full", "stress"),
+        help="Test tier: fast (smoke tests), full (default, excludes stress), stress (all tests)",
     )
 
 
@@ -89,6 +100,19 @@ def pytest_collection_modifyitems(config, items):
     - only_target marker processing
     - Marking tests from XFAILS list as xfail
     """
+    # Apply tier filtering first.
+    tier = config.getoption("--tier", default="full")
+    if tier == "fast":
+        skip = pytest.mark.skip(reason="not in fast tier")
+        for item in items:
+            if "fast" not in item.keywords:
+                item.add_marker(skip)
+    elif tier == "full":
+        skip = pytest.mark.skip(reason="stress tier only (use --tier=stress)")
+        for item in items:
+            if "stress" in item.keywords:
+                item.add_marker(skip)
+
     if not TTNN_AVAILABLE:
         skip_ttnn = pytest.mark.skip(reason="ttnn not available")
         for item in items:

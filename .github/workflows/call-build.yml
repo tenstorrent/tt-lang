@@ -7,10 +7,28 @@ on:
                 description: "Build and deploy documentation."
                 type: boolean
                 default: false
+            test-tier:
+                description: "Test tier (fast/full/stress)"
+                type: string
+                default: "full"
+            sim-only:
+                description: "Run only simulator tests"
+                type: boolean
+                default: false
     workflow_call:
         inputs:
             build_docs:
                 description: "Build and deploy documentation."
+                type: boolean
+                required: false
+                default: false
+            test-tier:
+                description: "Test tier (fast/full/stress)"
+                type: string
+                required: false
+                default: "full"
+            sim-only:
+                description: "Run only simulator tests"
                 type: boolean
                 required: false
                 default: false
@@ -134,8 +152,10 @@ jobs:
                   path: ./build/docs/sphinx/_build/html
 
     test-hardware:
+        if: inputs.sim-only != true
         uses: ./.github/workflows/call-test-hardware.yml
         secrets: inherit
         with:
             runs-on: n150
             timeout: 60
+            test-tier: ${{ inputs.test-tier }}

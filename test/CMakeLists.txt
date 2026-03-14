@@ -89,6 +89,35 @@ add_custom_target(check-ttlang-pytest
 )
 set_target_properties(check-ttlang-pytest PROPERTIES FOLDER "Tests")
 
+# Pytest tests - fast tier only (smoke tests).
+add_custom_target(check-ttlang-pytest-fast
+  COMMAND ${Python3_EXECUTABLE} -m pytest
+    ${CMAKE_CURRENT_SOURCE_DIR}/python
+    -v --tb=short --tier=fast
+    --junitxml=${CMAKE_CURRENT_BINARY_DIR}/pytest-fast-report.xml
+  DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
+  COMMENT "Running ttlang fast-tier pytest tests"
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python
+  USES_TERMINAL
+)
+set_target_properties(check-ttlang-pytest-fast PROPERTIES FOLDER "Tests")
+
+# Pytest tests with coverage (test/python/test_*.py files).
+add_custom_target(check-ttlang-pytest-cov
+  COMMAND ${Python3_EXECUTABLE} -m pytest
+    ${CMAKE_CURRENT_SOURCE_DIR}/python
+    -v --tb=short
+    --cov=ttl --cov-report=term-missing
+    --cov-report=xml:${CMAKE_CURRENT_BINARY_DIR}/python-coverage.xml
+    --cov-report=html:${CMAKE_BINARY_DIR}/coverage/python-html
+    --junitxml=${CMAKE_CURRENT_BINARY_DIR}/pytest-cov-report.xml
+  DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
+  COMMENT "Running ttlang pytest tests with coverage"
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python
+  USES_TERMINAL
+)
+set_target_properties(check-ttlang-pytest-cov PROPERTIES FOLDER "Tests")
+
 # Middle end to end tests (test/me2e/).
 add_custom_target(check-ttlang-me2e
   COMMAND ${Python3_EXECUTABLE} -m pytest

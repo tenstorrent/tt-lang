@@ -5,14 +5,10 @@
 """
 Test for TTL elementwise operations across multiple tensor shapes.
 
-Tests elementwise ops against PyTorch equivalents with L1 memory configuration,
-sweeping 1D tile configurations (row or column vectors only).
+Tests elementwise ops against PyTorch equivalents with L1 memory configuration.
 
-Parameterized over:
-- Operations: binary (add, sub, mul, max) and unary (exp, log, sqrt, etc.)
-- Shapes: 1D tile configurations (1x1, 1x2, 1x3, 2x1, 3x1) - 5 shapes total
-
-Total test cases: 13 ops x 5 shapes = 65 tests
+Default tier: 13 ops x 5 representative shapes = 65 tests
+Stress tier adds the full 4x4 grid (13 ops x 16 shapes = 208 tests)
 """
 
 # UNSUPPORTED: system-darwin
@@ -36,7 +32,12 @@ from ttlang_test_utils import assert_allclose, to_dram
 
 TILE_SIZE = 32
 
-TILE_SHAPES = [(r, c) for r in range(1, 5) for c in range(1, 5)]
+# Representative shapes: single-tile, multi-tile (fits DST), multi-tile
+# (exceeds bf16 DST capacity), and asymmetric row/column vectors.
+REPRESENTATIVE_SHAPES = [(1, 1), (2, 2), (3, 3), (1, 3), (3, 1)]
+
+# Full 4x4 grid for stress testing
+STRESS_SHAPES = [(r, c) for r in range(1, 5) for c in range(1, 5)]
 
 
 def tiles_to_tensor_shape(tile_rows: int, tile_cols: int) -> tuple[int, int]:
@@ -322,10 +323,26 @@ UNARY_OPS = {
 # =============================================================================
 
 
-@pytest.mark.parametrize("tile_shape", TILE_SHAPES, ids=lambda s: f"{s[0]}x{s[1]}tiles")
+@pytest.mark.parametrize(
+    "tile_shape", REPRESENTATIVE_SHAPES, ids=lambda s: f"{s[0]}x{s[1]}tiles"
+)
 @pytest.mark.parametrize("op_name", BINARY_OPS.keys())
 def test_binary_op(device, op_name, tile_shape):
-    """Test binary elementwise operation across different shapes."""
+    """Test binary elementwise operation across representative shapes."""
+    _run_binary_op_test(device, op_name, tile_shape)
+
+
+@pytest.mark.stress
+@pytest.mark.parametrize(
+    "tile_shape", STRESS_SHAPES, ids=lambda s: f"{s[0]}x{s[1]}tiles"
+)
+@pytest.mark.parametrize("op_name", BINARY_OPS.keys())
+def test_binary_op_stress(device, op_name, tile_shape):
+    """Exhaustive shape sweep for binary ops."""
+    _run_binary_op_test(device, op_name, tile_shape)
+
+
+def _run_binary_op_test(device, op_name, tile_shape):
     tile_rows, tile_cols = tile_shape
     tensor_shape = tiles_to_tensor_shape(tile_rows, tile_cols)
 
@@ -347,10 +364,26 @@ def test_binary_op(device, op_name, tile_shape):
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("tile_shape", TILE_SHAPES, ids=lambda s: f"{s[0]}x{s[1]}tiles")
+@pytest.mark.parametrize(
+    "tile_shape", REPRESENTATIVE_SHAPES, ids=lambda s: f"{s[0]}x{s[1]}tiles"
+)
 @pytest.mark.parametrize("op_name", BINARY_FN_OPS.keys())
 def test_binary_fn_op(device, op_name, tile_shape):
-    """Test binary elementwise operation (function call) across different shapes."""
+    """Test binary elementwise operation (function call) across representative shapes."""
+    _run_binary_fn_op_test(device, op_name, tile_shape)
+
+
+@pytest.mark.stress
+@pytest.mark.parametrize(
+    "tile_shape", STRESS_SHAPES, ids=lambda s: f"{s[0]}x{s[1]}tiles"
+)
+@pytest.mark.parametrize("op_name", BINARY_FN_OPS.keys())
+def test_binary_fn_op_stress(device, op_name, tile_shape):
+    """Exhaustive shape sweep for binary function ops."""
+    _run_binary_fn_op_test(device, op_name, tile_shape)
+
+
+def _run_binary_fn_op_test(device, op_name, tile_shape):
     tile_rows, tile_cols = tile_shape
     tensor_shape = tiles_to_tensor_shape(tile_rows, tile_cols)
 
@@ -372,10 +405,26 @@ def test_binary_fn_op(device, op_name, tile_shape):
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("tile_shape", TILE_SHAPES, ids=lambda s: f"{s[0]}x{s[1]}tiles")
+@pytest.mark.parametrize(
+    "tile_shape", REPRESENTATIVE_SHAPES, ids=lambda s: f"{s[0]}x{s[1]}tiles"
+)
 @pytest.mark.parametrize("op_name", UNARY_OPS.keys())
 def test_unary_op(device, op_name, tile_shape):
-    """Test unary elementwise operation across different shapes."""
+    """Test unary elementwise operation across representative shapes."""
+    _run_unary_op_test(device, op_name, tile_shape)
+
+
+@pytest.mark.stress
+@pytest.mark.parametrize(
+    "tile_shape", STRESS_SHAPES, ids=lambda s: f"{s[0]}x{s[1]}tiles"
+)
+@pytest.mark.parametrize("op_name", UNARY_OPS.keys())
+def test_unary_op_stress(device, op_name, tile_shape):
+    """Exhaustive shape sweep for unary ops."""
+    _run_unary_op_test(device, op_name, tile_shape)
+
+
+def _run_unary_op_test(device, op_name, tile_shape):
     tile_rows, tile_cols = tile_shape
     tensor_shape = tiles_to_tensor_shape(tile_rows, tile_cols)
 

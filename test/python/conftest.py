@@ -69,11 +69,44 @@ if not _hardware_available:
 # =============================================================================
 
 
+def pytest_addoption(parser):
+    """Add custom CLI options."""
+    parser.addoption(
+        "--tier",
+        action="store",
+        default="full",
+        choices=("fast", "full", "stress"),
+        help="Test tier: fast (smoke tests), full (default, excludes stress), stress (all tests)",
+    )
+
+
 def pytest_configure(config):
     """Register custom markers."""
     config.addinivalue_line(
         "markers", "requires_device: skip test if no TT device is available"
     )
+    config.addinivalue_line("markers", "fast: fast smoke tests (always run)")
+    config.addinivalue_line(
+        "markers", "stress: exhaustive shape/parameter sweeps (run only in stress tier)"
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Filter tests based on --tier selection."""
+    tier = config.getoption("--tier")
+    if tier == "fast":
+        # Only run tests explicitly marked as fast
+        skip = pytest.mark.skip(reason="not in fast tier")
+        for item in items:
+            if "fast" not in item.keywords:
+                item.add_marker(skip)
+    elif tier == "full":
+        # Run everything except stress
+        skip = pytest.mark.skip(reason="stress tier only (use --tier=stress)")
+        for item in items:
+            if "stress" in item.keywords:
+                item.add_marker(skip)
+    # tier == "stress": run everything, no filtering
 
 
 # =============================================================================

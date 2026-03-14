@@ -24,9 +24,15 @@ from ttlang_test_utils import to_dram
 
 TILE_SIZE = 32
 
-# Test shapes: all combinations from 1x1 to 16x16 tiles (512x512 elements max)
-TENSOR_TILE_SHAPES = [(r, c) for r in range(1, 16) for c in range(1, 16)]
-TENSOR_TILE_SHAPES_SHORT = [(r, c) for r in range(1, 5) for c in range(1, 5)]
+# Representative shapes: cover single-tile, multi-tile (fits DST), multi-tile
+# (exceeds bf16 DST capacity of 8), and asymmetric row/column vectors.
+REPRESENTATIVE_SHAPES = [(1, 1), (2, 2), (3, 3), (1, 3), (3, 1)]
+
+# Exhaustive sweep for stress testing
+STRESS_SHAPES = [(r, c) for r in range(1, 16) for c in range(1, 16)]
+
+# Short set for fused kernel tests (representative subset)
+FUSED_SHAPES = [(1, 1), (2, 2), (3, 3)]
 
 
 def tiles_to_tensor_shape(tile_rows: int, tile_cols: int) -> tuple[int, int]:
@@ -175,11 +181,27 @@ def make_test_id(shape):
 
 @pytest.mark.parametrize(
     "tensor_shape",
-    TENSOR_TILE_SHAPES,
-    ids=[make_test_id(s) for s in TENSOR_TILE_SHAPES],
+    REPRESENTATIVE_SHAPES,
+    ids=[make_test_id(s) for s in REPRESENTATIVE_SHAPES],
 )
 def test_tensor_slice_add(device, tensor_shape):
     """Test looping over all tiles with add operation."""
+    _run_add_test(device, tensor_shape)
+
+
+@pytest.mark.stress
+@pytest.mark.parametrize(
+    "tensor_shape",
+    STRESS_SHAPES,
+    ids=[make_test_id(s) for s in STRESS_SHAPES],
+)
+def test_tensor_slice_add_stress(device, tensor_shape):
+    """Exhaustive shape sweep for tensor slice add."""
+    _run_add_test(device, tensor_shape)
+
+
+def _run_add_test(device, tensor_shape):
+    """Shared implementation for tensor slice add tests."""
     tile_rows, tile_cols = tensor_shape
     height, width = tiles_to_tensor_shape(tile_rows, tile_cols)
     kernel = make_add_kernel(tile_rows, tile_cols)
@@ -220,8 +242,8 @@ def test_tensor_slice_add(device, tensor_shape):
 
 @pytest.mark.parametrize(
     "tensor_shape",
-    TENSOR_TILE_SHAPES_SHORT,
-    ids=[make_test_id(s) for s in TENSOR_TILE_SHAPES_SHORT],
+    FUSED_SHAPES,
+    ids=[make_test_id(s) for s in FUSED_SHAPES],
 )
 def test_tensor_slice_fused(device, tensor_shape):
     """Test looping over all tiles with fused exp(inp) + sqrt(bias) operation."""

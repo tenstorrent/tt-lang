@@ -18,13 +18,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  parse-ci-tags:
+    runs-on: ubuntu-latest
+    outputs:
+      test-tier: ${{ steps.parse.outputs.test-tier }}
+      sim-only: ${{ steps.parse.outputs.sim-only }}
+    steps:
+      - id: parse
+        run: |
+          MSG="${{ github.event.head_commit.message || '' }}"
+          MSG_LOWER=$(echo "$MSG" | tr '[:upper:]' '[:lower:]')
+
+          TIER="full"
+          SIM_ONLY="false"
+
+          if [[ "$MSG_LOWER" == *"[ci-fast]"* ]]; then TIER="fast"; fi
+          if [[ "$MSG_LOWER" == *"[ci-stress]"* ]]; then TIER="stress"; fi
+          if [[ "$MSG_LOWER" == *"[ci-full]"* ]]; then TIER="full"; fi
+          if [[ "$MSG_LOWER" == *"[ci-sim]"* ]]; then SIM_ONLY="true"; fi
+
+          # Schedule trigger always uses stress
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then TIER="stress"; fi
+
+          echo "test-tier=$TIER" >> "$GITHUB_OUTPUT"
+          echo "sim-only=$SIM_ONLY" >> "$GITHUB_OUTPUT"
+
   pre-commit:
     uses: ./.github/workflows/call-pre-commit.yml
     secrets: inherit
 
   build:
+    needs: parse-ci-tags
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
+    with:
+      test-tier: ${{ needs.parse-ci-tags.outputs.test-tier }}
+      sim-only: ${{ needs.parse-ci-tags.outputs.sim-only == 'true' }}
 
   test-sim:
     uses: ./.github/workflows/call-test-sim.yml
@@ -33,6 +62,7 @@ jobs:
   check-all-green:
     if: always()
     needs:
+      - parse-ci-tags
       - pre-commit
       - build
       - test-sim

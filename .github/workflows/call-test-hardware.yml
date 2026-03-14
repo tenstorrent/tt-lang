@@ -13,6 +13,11 @@ on:
         required: false
         type: number
         default: 60
+      test-tier:
+        description: 'Test tier (fast/full/stress)'
+        required: false
+        type: string
+        default: 'full'
   workflow_call:
     inputs:
       runs-on:
@@ -25,6 +30,11 @@ on:
         required: false
         type: number
         default: 60
+      test-tier:
+        description: 'Test tier (fast/full/stress)'
+        required: false
+        type: string
+        default: 'full'
 
 permissions:
   checks: write
@@ -104,17 +114,31 @@ jobs:
       - name: ME2E tests (MLIR input end-to-end tests)
         run: |
           source build/env/activate
-          python3 -m pytest test/me2e -v --tb=short --junitxml=build/test/me2e-report.xml
+          python3 -m pytest test/me2e -v --tb=short \
+            --tier=${{ inputs.test-tier }} \
+            --junitxml=build/test/me2e-report.xml
 
       - name: Pytests (Python DSL end-to-end tests)
         run: |
           source build/env/activate
-          python3 -m pytest test/python -v --tb=long --junitxml=build/test/pytest-report.xml
+          python3 -m pytest test/python -v --tb=long \
+            --tier=${{ inputs.test-tier }} \
+            --cov=ttl --cov-report=xml:build/test/python-coverage.xml \
+            --junitxml=build/test/pytest-report.xml
 
       - name: Simulator tests
         run: |
           source build/env/activate
           python3 -m pytest test/sim -v -n auto --tb=short --junitxml=build/test/sim-report.xml
+
+      - name: Upload Python coverage to Codecov
+        uses: codecov/codecov-action@v5
+        if: always()
+        with:
+          files: build/test/python-coverage.xml
+          flags: python
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
 
       - name: Upload test reports
         uses: actions/upload-artifact@v5
@@ -125,5 +149,6 @@ jobs:
             build/test/python-lit-report.xml
             build/test/me2e-report.xml
             build/test/pytest-report.xml
+            build/test/python-coverage.xml
             build/test/sim-report.xml
           retention-days: 7
