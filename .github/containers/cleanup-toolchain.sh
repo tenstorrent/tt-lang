@@ -42,6 +42,7 @@ KEEP_BINS=(
     mlir-opt
     mlir-tblgen
     mlir-translate
+    ttlang-sim
 )
 
 if [ -d "$TOOLCHAIN_DIR/bin" ]; then
