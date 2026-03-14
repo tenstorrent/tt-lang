@@ -73,9 +73,13 @@ while [[ $# -gt 0 ]]; do
             REMOVE_BUILD_DIR=true
             shift
             ;;
+        -h|--help)
+            sed -n '2,/^$/{ s/^# //; s/^#$//; p }' "$0"
+            exit 0
+            ;;
         *)
-            echo "WARNING: Unknown argument: $1" >&2
-            shift
+            echo "ERROR: Unknown argument: $1" >&2
+            exit 1
             ;;
     esac
 done
