@@ -17,10 +17,10 @@ include(TTLangUtils)
 include(GetVersionFromGit)
 ttlang_set_version("${TTLANG_VERSION}")
 
-option(CODE_COVERAGE "Enable coverage reporting" OFF)
+option(TTLANG_CODE_COVERAGE "Enable coverage reporting" OFF)
 option(TTLANG_ENABLE_DOCS "Enable Sphinx documentation build" OFF)
 
-if(CODE_COVERAGE)
+if(TTLANG_CODE_COVERAGE)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
     add_link_options(-fprofile-instr-generate)

@@ -1,0 +1,13 @@
+[run]
+source = python/ttl
+omit =
+    python/ttl/_mlir_libs/*
+    */test/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+
+[html]
+directory = build/coverage/python-html

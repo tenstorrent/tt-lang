@@ -1,0 +1,19 @@
+coverage:
+  status:
+    project:
+      default:
+        target: auto    # no regression from base
+        threshold: 1%   # allow 1% fluctuation
+    patch:
+      default:
+        target: 80%     # new code should be 80%+ covered
+comment:
+  layout: "condensed_header, condensed_files, condensed_footer"
+  behavior: default
+flags:
+  python:
+    paths:
+      - python/ttl/
+  cpp:
+    paths:
+      - lib/
