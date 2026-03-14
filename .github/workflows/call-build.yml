@@ -15,6 +15,10 @@ on:
                 description: "Run only simulator tests"
                 type: boolean
                 default: false
+            code-coverage:
+                description: "Enable C++ code coverage instrumentation"
+                type: boolean
+                default: false
     workflow_call:
         inputs:
             build_docs:
@@ -29,6 +33,11 @@ on:
                 default: "full"
             sim-only:
                 description: "Run only simulator tests"
+                type: boolean
+                required: false
+                default: false
+            code-coverage:
+                description: "Enable C++ code coverage instrumentation"
                 type: boolean
                 required: false
                 default: false
@@ -97,8 +106,15 @@ jobs:
                   fail-on-cache-miss: true
 
             - name: Set extra CMake options
-              if: inputs.build_docs
-              run: echo "CMAKE_EXTRA_CONFIG_OPTIONS=-DTTLANG_ENABLE_DOCS=ON" >> "$GITHUB_ENV"
+              run: |
+                  EXTRA=""
+                  if [ "${{ inputs.build_docs }}" = "true" ]; then
+                    EXTRA="$EXTRA -DTTLANG_ENABLE_DOCS=ON"
+                  fi
+                  if [ "${{ inputs.code-coverage }}" = "true" ]; then
+                    EXTRA="$EXTRA -DTTLANG_CODE_COVERAGE=ON"
+                  fi
+                  echo "CMAKE_EXTRA_CONFIG_OPTIONS=$EXTRA" >> "$GITHUB_ENV"
 
             - name: Configure tt-lang
               run: |
@@ -139,6 +155,31 @@ jobs:
                   source build/env/activate
                   cmake --build build --target check-ttlang-python-lit
 
+            - name: Run C++ coverage
+              if: inputs.code-coverage
+              run: |
+                  source build/env/activate
+                  cmake --build build --target check-ttlang-cpp-cov
+
+            - name: Upload C++ coverage to Codecov
+              if: inputs.code-coverage && always()
+              uses: codecov/codecov-action@v5
+              with:
+                  files: build/coverage/lcov.info
+                  flags: cpp
+                  token: ${{ secrets.CODECOV_TOKEN }}
+                  fail_ci_if_error: false
+
+            - name: Upload C++ coverage reports
+              if: inputs.code-coverage && always()
+              uses: actions/upload-artifact@v5
+              with:
+                  name: cpp-coverage-reports
+                  path: |
+                      build/coverage/lcov.info
+                      build/coverage/cpp-html/
+                  retention-days: 14
+
             - name: Build documentation
               if: inputs.build_docs
               run: |
@@ -159,3 +200,4 @@ jobs:
             runs-on: n150
             timeout: 60
             test-tier: ${{ inputs.test-tier }}
+            code-coverage: ${{ inputs.code-coverage }}

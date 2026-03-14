@@ -54,6 +54,7 @@ jobs:
     with:
       test-tier: ${{ needs.parse-ci-tags.outputs.test-tier }}
       sim-only: ${{ needs.parse-ci-tags.outputs.sim-only == 'true' }}
+      code-coverage: true
 
   test-sim:
     uses: ./.github/workflows/call-test-sim.yml

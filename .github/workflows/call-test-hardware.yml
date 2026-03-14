@@ -18,6 +18,11 @@ on:
         required: false
         type: string
         default: 'full'
+      code-coverage:
+        description: 'Enable C++ code coverage instrumentation'
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       runs-on:
@@ -35,6 +40,11 @@ on:
         required: false
         type: string
         default: 'full'
+      code-coverage:
+        description: 'Enable C++ code coverage instrumentation'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   checks: write
@@ -63,6 +73,7 @@ jobs:
       RUNS_ON: ${{ inputs.runs-on }}
       PYTHONDONTWRITEBYTECODE: 1
       TTLANG_TEST_SEED: 42
+      LLVM_PROFILE_FILE: build/coverage/%p-%m.profraw
 
     steps:
       - name: Checkout tt-lang
@@ -75,10 +86,15 @@ jobs:
 
       - name: Configure tt-lang
         run: |
+          COV_FLAG=""
+          if [ "${{ inputs.code-coverage }}" = "true" ]; then
+            COV_FLAG="-DTTLANG_CODE_COVERAGE=ON"
+          fi
           cmake -G Ninja -B build \
               -DCMAKE_BUILD_TYPE=Release \
               -DTTLANG_USE_TOOLCHAIN=ON \
-              -DTTLANG_ENABLE_PERF_TRACE=ON
+              -DTTLANG_ENABLE_PERF_TRACE=ON \
+              $COV_FLAG
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -131,6 +147,21 @@ jobs:
           source build/env/activate
           python3 -m pytest test/sim -v -n auto --tb=short --junitxml=build/test/sim-report.xml
 
+      - name: Collect C++ coverage
+        if: inputs.code-coverage && always()
+        run: |
+          source build/env/activate
+          bash scripts/collect-cpp-coverage.sh build
+
+      - name: Upload C++ coverage to Codecov
+        if: inputs.code-coverage && always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: build/coverage/lcov.info
+          flags: cpp-hw
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
       - name: Upload Python coverage to Codecov
         uses: codecov/codecov-action@v5
         if: always()
@@ -151,4 +182,5 @@ jobs:
             build/test/pytest-report.xml
             build/test/python-coverage.xml
             build/test/sim-report.xml
+            build/coverage/lcov.info
           retention-days: 7

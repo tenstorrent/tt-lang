@@ -118,6 +118,24 @@ add_custom_target(check-ttlang-pytest-cov
 )
 set_target_properties(check-ttlang-pytest-cov PROPERTIES FOLDER "Tests")
 
+# C++ coverage: run MLIR lit tests with profiling, then collect reports.
+# Only available when built with -DTTLANG_CODE_COVERAGE=ON.
+if(TTLANG_CODE_COVERAGE)
+  add_custom_target(check-ttlang-cpp-cov
+    COMMAND ${CMAKE_COMMAND} -E env
+      "LLVM_PROFILE_FILE=${CMAKE_BINARY_DIR}/coverage/%p.profraw"
+      ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-mlir
+    COMMAND ${CMAKE_COMMAND} -E env
+      "LLVM_PROFILE_FILE=${CMAKE_BINARY_DIR}/coverage/%p.profraw"
+      ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-python-bindings
+    COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/collect-cpp-coverage.sh ${CMAKE_BINARY_DIR}
+    DEPENDS ${TTLANG_TEST_DEPENDS}
+    COMMENT "Running MLIR lit tests with C++ coverage and generating reports"
+    USES_TERMINAL
+  )
+  set_target_properties(check-ttlang-cpp-cov PROPERTIES FOLDER "Tests")
+endif()
+
 # Middle end to end tests (test/me2e/).
 add_custom_target(check-ttlang-me2e
   COMMAND ${Python3_EXECUTABLE} -m pytest
