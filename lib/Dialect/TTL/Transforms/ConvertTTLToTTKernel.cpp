@@ -351,7 +351,8 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
     if (auto defOp = tileValue.getDefiningOp()) {
       if (auto dstIdxAttr =
               defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-        return rewriter.create<arith::ConstantIndexOp>(loc, dstIdxAttr.getInt())
+        return arith::ConstantIndexOp::create(rewriter, loc,
+                                              dstIdxAttr.getInt())
             .getResult();
       }
       if (auto copyTile = dyn_cast<CopyTileOp>(defOp)) {
@@ -409,7 +410,7 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
     }
 
     Value accDstIdx =
-        rewriter.create<arith::ConstantIndexOp>(loc, accDstIdxAttr.getInt());
+        arith::ConstantIndexOp::create(rewriter, loc, accDstIdxAttr.getInt());
 
     // Zero the expression DST register before FPU binary ops. FPU ops like
     // mul_tiles accumulate onto DST (DST[idx] += result) rather than
@@ -420,16 +421,16 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
       if (defOp->hasAttr(kFPUBinaryAttrName)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPoint(defOp);
-        rewriter.create<ttk::FillTileInitOp>(loc);
-        Value zero = rewriter.create<arith::ConstantFloatOp>(
-            loc, rewriter.getF32Type(), APFloat(0.0f));
-        rewriter.create<ttk::FillTileOp>(loc, *srcDstIdx, zero);
+        ttk::FillTileInitOp::create(rewriter, loc);
+        Value zero = arith::ConstantFloatOp::create(
+            rewriter, loc, rewriter.getF32Type(), APFloat(0.0f));
+        ttk::FillTileOp::create(rewriter, loc, *srcDstIdx, zero);
       }
     }
 
     // Emit add_binary_tile: DST[acc] += DST[src].
-    rewriter.create<ttk::AddBinaryTilesOp>(loc, *srcDstIdx, accDstIdx,
-                                           accDstIdx);
+    ttk::AddBinaryTilesOp::create(rewriter, loc, *srcDstIdx, accDstIdx,
+                                  accDstIdx);
 
     // Find the containing flat block (walk up past scf.for if needed).
     Block *syncBlock = op->getBlock();
@@ -471,10 +472,10 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
       if (!llvm::is_contained(emitted, accIdx)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointAfter(acquireOp);
-        rewriter.create<ttk::FillTileInitOp>(loc);
-        Value zero = rewriter.create<arith::ConstantFloatOp>(
-            loc, rewriter.getF32Type(), APFloat(0.0f));
-        rewriter.create<ttk::FillTileOp>(loc, accDstIdx, zero);
+        ttk::FillTileInitOp::create(rewriter, loc);
+        Value zero = arith::ConstantFloatOp::create(
+            rewriter, loc, rewriter.getF32Type(), APFloat(0.0f));
+        ttk::FillTileOp::create(rewriter, loc, accDstIdx, zero);
 
         emitted.push_back(accIdx);
         acquireOp->setAttr(kAccInitEmittedAttrName,
@@ -524,12 +525,12 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
           if (succeeded(recomputedIdx)) {
             packCbTileIndex = *recomputedIdx;
           } else {
-            packCbTileIndex = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+            packCbTileIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
           }
         }
 
-        rewriter.create<ttk::PackTileOp>(loc, accDstIdx, cb, packCbTileIndex,
-                                         /*out_of_order=*/true);
+        ttk::PackTileOp::create(rewriter, loc, accDstIdx, cb, packCbTileIndex,
+                                /*out_of_order=*/true);
 
         packed.push_back(accIdx);
         waitOp->setAttr(kAccInitEmittedAttrName,

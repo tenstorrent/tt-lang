@@ -76,7 +76,7 @@ class AccumulateTestBase(ME2ETestBase):
             t = torch.rand(config.tensor_shape, dtype=config.dtype) * (hi - lo) + lo
             torch_inputs.append(t)
 
-        from ttmlir.ir import Context, Module
+        from ttl.ir import Context, Module
 
         mlir_str = self.get_mlir_template(config)
 

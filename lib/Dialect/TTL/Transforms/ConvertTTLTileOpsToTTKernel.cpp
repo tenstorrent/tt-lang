@@ -396,67 +396,6 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
   }
 };
 
-/// Generic pattern for lowering TTL binary tile ops to TTKernel FPU ops.
-/// FPU binary ops: read both operands from CBs, write result to DST.
-/// add_tiles(in0_cb, in1_cb, in0_tile_index, in1_tile_index, dst_index)
-///
-/// Only matches ops marked with kFPUBinaryAttrName (set by TTLAssignDST).
-template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
-struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
-  using OpConversionPattern<SourceOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    // Only match FPU-marked ops.
-    if (!op->hasAttr(kFPUBinaryAttrName)) {
-      return failure();
-    }
-
-    Location loc = op.getLoc();
-    auto funcOp = op->template getParentOfType<func::FuncOp>();
-    if (!funcOp) {
-      return rewriter.notifyMatchFailure(op, "op not in function");
-    }
-    auto *typeConverter = this->getTypeConverter();
-
-    // Look up CBs for lhs and rhs.
-    auto lhsCB =
-        lookupAndConvertCB(op.getLhs(), funcOp, typeConverter, rewriter, loc);
-    auto rhsCB =
-        lookupAndConvertCB(op.getRhs(), funcOp, typeConverter, rewriter, loc);
-    if (failed(lhsCB) || failed(rhsCB)) {
-      return rewriter.notifyMatchFailure(op,
-                                         "cannot find/convert input CBs for "
-                                         "FPU binary");
-    }
-
-    // DST output index from attribute (assigned by TTLAssignDST).
-    auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>(kDstIdxAttrName);
-    if (!dstIdxAttr) {
-      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
-    }
-    Value dstIdx =
-        rewriter.create<arith::ConstantIndexOp>(loc, dstIdxAttr.getInt());
-
-    // CB tile index from enclosing loops.  The same index is used for
-    // lhs and rhs because FPU-marked ops only appear under parallel
-    // (lockstep) iteration with identity indexing maps.
-    auto cbIdx =
-        utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
-    if (failed(cbIdx)) {
-      return failure();
-    }
-
-    // Emit compute op (init inserted by ttkernel-insert-inits pass).
-    rewriter.create<TTKernelComputeOp>(loc, *lhsCB, *rhsCB, *cbIdx, *cbIdx,
-                                       dstIdx);
-
-    rewriter.replaceOp(op, adaptor.getLhs());
-    return success();
-  }
-};
-
 /// Lower ttl.copy_tile to TTKernel copy_tile_init + copy_tile.
 struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
   using OpConversionPattern<CopyTileOp>::OpConversionPattern;

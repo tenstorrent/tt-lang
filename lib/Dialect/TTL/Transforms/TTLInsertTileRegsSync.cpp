@@ -114,14 +114,14 @@ struct TTLInsertTileRegsSyncPass
       // Place acquire before the first op. Mark it as an accumulation group
       // sync so TTKernelInsertInits uses binary_op_init_common.
       builder.setInsertionPoint(firstOp);
-      auto acquireOp = builder.create<TileRegsAcquireOp>(loc);
+      auto acquireOp = TileRegsAcquireOp::create(builder, loc);
       acquireOp->setAttr(kAccGroupSyncAttrName, builder.getUnitAttr());
 
       // Place commit, wait, release after the last op.
       builder.setInsertionPointAfter(lastOp);
-      builder.create<TileRegsCommitOp>(loc);
-      builder.create<TileRegsWaitOp>(loc);
-      builder.create<TileRegsReleaseOp>(loc);
+      TileRegsCommitOp::create(builder, loc);
+      TileRegsWaitOp::create(builder, loc);
+      TileRegsReleaseOp::create(builder, loc);
     }
   }
 
