@@ -289,7 +289,7 @@ scf.for %iv = 0 to 4 step 2 {
   %a_sub = tensor.extract_slice %a[%iv, 0] [2, 4] [1, 1]
   %out_sub = tensor.extract_slice %out[%iv, 0] [2, 4] [1, 1]
   ttl.compute ins(%a_sub) outs(%out_sub) { ... }
-} {ttl.subblock_stride = 4 : index}
+} {ttl.subblock_loop_stride = 4 : index}
 ```
 
 For a 2x8 f32 op (subblock=[1,4], loops on d0 step 1 and d1 step 4):
@@ -300,8 +300,8 @@ scf.for %i = 0 to 2 step 1 {
     %a_sub = tensor.extract_slice %a[%i, %j] [1, 4] [1, 1]
     %out_sub = tensor.extract_slice %out[%i, %j] [1, 4] [1, 1]
     ttl.compute ins(%a_sub) outs(%out_sub) { ... }
-  } {ttl.subblock_stride = 1 : index}
-} {ttl.subblock_stride = 8 : index}
+  } {ttl.subblock_loop_stride = 1 : index}
+} {ttl.subblock_loop_stride = 8 : index}
 ```
 
 The subblock loops do not carry loop-carried values (`iter_args`).
@@ -318,10 +318,10 @@ compute already fits in one subblock).
 
 Three discardable attributes annotate compiler-generated loops and ops:
 
-- `ttl.subblock_stride` (IndexAttr on `scf.for`): marks subblock
+- `ttl.subblock_loop_stride` (IndexAttr on `scf.for`): marks subblock
   loops. Value is the linearized stride for that dimension (product of
   all dimension sizes after it).
-- `ttl.tile_loop` (IndexAttr on `scf.for`): marks tile iteration
+- `ttl.tile_loop_stride` (IndexAttr on `scf.for`): marks tile iteration
   loops created by `lower-to-loops`. Value is the linearization stride
   from the full tensor shape (which may differ from the loop's upper
   bound when the compute has been subblocked).
@@ -334,8 +334,8 @@ Three discardable attributes annotate compiler-generated loops and ops:
 `computeCBTileIndexFromLoops` (in `ConversionUtils.h`) uses these
 attributes to compute correct absolute CB tile indices during
 TTL-to-TTKernel conversion:
-- Tile loops contribute `IV * stride` from the `ttl.tile_loop` attribute.
-- Subblock loops contribute `IV * stride` from `ttl.subblock_stride`.
+- Tile loops contribute `IV * stride` from the `ttl.tile_loop_stride` attribute.
+- Subblock loops contribute `IV * stride` from `ttl.subblock_loop_stride`.
 - Unmarked loops (user loops, external loops) are ignored.
 
 #### Non-identity indexing maps
@@ -561,7 +561,7 @@ them in two phases:
   present, or `init_sfpu(in_cb, out_cb)` otherwise. CB operands are
   derived from the ops in the region (CopyTile/FPU binary for inputs,
   PackTile for output). Common inits are hoisted above enclosing
-  compiler-generated loops (`ttl.tile_loop`, `ttl.subblock_stride`) but
+  compiler-generated loops (`ttl.tile_loop_stride`, `ttl.subblock_loop_stride`) but
   not past unmarked loops.
 - Phase 2 (per-op inits): Maintains an init key `(TypeID, operands,
   discriminator)` for each compute op and inserts an init only when the

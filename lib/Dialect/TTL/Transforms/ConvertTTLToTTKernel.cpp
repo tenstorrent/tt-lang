@@ -349,11 +349,9 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
           op, "view must come from ttl.cb_reserve (unrealized cast from CB)");
     }
 
-    // CB shape rank is the rank of the view tensor (from cb_reserve).
     auto viewTy = mlir::cast<RankedTensorType>(op.getView().getType());
-    size_t cbShapeRank = viewTy.getRank();
     auto cbTileIndex =
-        utils::computeCBTileIndexFromLoops(op, rewriter, cbShapeRank);
+        utils::computeCBTileIndex(op, rewriter, viewTy.getShape());
     if (failed(cbTileIndex)) {
       return failure();
     }

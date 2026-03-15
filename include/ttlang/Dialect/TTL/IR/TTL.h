@@ -40,19 +40,21 @@ constexpr llvm::StringLiteral kFPUBinaryAttrName("ttl.fpu_binary");
 /// Number of tiles to process per DST sync region (set by TTLAssignDST).
 constexpr llvm::StringLiteral kUnrollFactorAttrName("ttl.unroll_factor");
 
-/// Linearized stride for a subblock loop dimension. Distinguishes subblock
-/// loops from tile iteration loops for CB index computation.
-constexpr llvm::StringLiteral kSubblockStrideAttrName("ttl.subblock_stride");
+/// Marks an scf.for as a compiler-generated subblock loop. The integer value
+/// is the linearization stride of this dimension, assuming row-major tile
+/// ordering in the CB (interleaved layout).
+constexpr llvm::StringLiteral
+    kSubblockLoopStrideAttrName("ttl.subblock_loop_stride");
 
-/// Row-major strides of the CB block iteration domain (before subblocking),
-/// carried on subblocked ComputeOps so tile loops get correct CB linearization
-/// strides.
+/// Linearization strides of the full iteration domain (before subblocking),
+/// carried on subblocked ComputeOps so tile loops get correct CB strides.
 constexpr llvm::StringLiteral
     kFullLinStridesAttrName("ttl.full_linearization_strides");
 
-/// Linearization stride on a tile iteration loop. May differ from the loop
-/// bound when the compute has been subblocked.
-constexpr llvm::StringLiteral kTileLoopAttrName("ttl.tile_loop");
+/// Marks an scf.for as a compiler-generated tile loop. The integer value is
+/// the linearization stride of this dimension, assuming row-major tile
+/// ordering in the CB (interleaved layout).
+constexpr llvm::StringLiteral kTileLoopStrideAttrName("ttl.tile_loop_stride");
 
 /// Linearized tile offset within a subblock, used for CB index computation
 /// in unrolled (loop-free) bodies.

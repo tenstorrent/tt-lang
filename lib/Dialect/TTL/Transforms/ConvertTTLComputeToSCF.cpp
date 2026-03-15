@@ -231,7 +231,7 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     for (auto [idx, loop] : llvm::enumerate(loopNest.loops)) {
       int64_t stride =
           fullStridesAttr ? fullStridesAttr[idx] : domainStrides[idx];
-      loop->setAttr(kTileLoopAttrName, rewriter.getIndexAttr(stride));
+      loop->setAttr(kTileLoopStrideAttrName, rewriter.getIndexAttr(stride));
     }
 
     // Record the outermost tile loop for unrolling if the compute was
@@ -300,7 +300,8 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
     dimSizes[d] = (*ub - *lb) / *step;
     totalTiles *= dimSizes[d];
 
-    auto strideAttr = nest[d]->getAttrOfType<IntegerAttr>(kTileLoopAttrName);
+    auto strideAttr =
+        nest[d]->getAttrOfType<IntegerAttr>(kTileLoopStrideAttrName);
     fullStrides[d] = strideAttr ? strideAttr.getInt() : 1;
   }
 
@@ -390,7 +391,7 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
     int64_t tileIdx = linearize(dimIndices, localStrides);
 
     // tileOffset: linearized using full block strides — determines CB tile
-    // position within the entire block, used by computeCBTileIndexFromLoops.
+    // position within the entire block, used by computeCBTileIndex.
     int64_t tileOffset = linearize(dimIndices, fullStrides);
 
     int64_t dstBase = tileIdx * dstPerIteration;
@@ -419,7 +420,7 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
     }
 
     // Set tile_offset on TTL ops for CB index computation. The attribute is
-    // consumed by computeCBTileIndexFromLoops during TTL-to-TTKernel
+    // consumed by computeCBTileIndex during TTL-to-TTKernel
     // conversion.
     if (auto *dialect = op->getDialect()) {
       if (dialect->getNamespace() == "ttl") {
@@ -534,7 +535,7 @@ struct TTLLowerToLoopsPass
         scf::ForOp inner = nullptr;
         for (Operation &op : *current.getBody()) {
           if (auto forOp = dyn_cast<scf::ForOp>(&op)) {
-            if (forOp->hasAttr(kTileLoopAttrName)) {
+            if (forOp->hasAttr(kTileLoopStrideAttrName)) {
               inner = forOp;
               break;
             }

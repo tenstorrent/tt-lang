@@ -94,7 +94,7 @@ func.func @reduction_fits_in_dst(
 // No second loop -- reduction dim is NOT subblocked.
 // SUBBLOCK-NOT:     scf.for
 // Loop annotated with subblock_stride.
-// SUBBLOCK:       } {ttl.subblock_stride = 3 : index}
+// SUBBLOCK:       } {ttl.subblock_loop_stride = 3 : index}
 func.func @reduction_subblock_parallel_only(
     %a: tensor<8x3x!ttcore.tile<32x32, f32>>)
     -> tensor<8x!ttcore.tile<32x32, f32>> {

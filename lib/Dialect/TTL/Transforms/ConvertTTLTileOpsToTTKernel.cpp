@@ -99,6 +99,35 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
   return Value();
 }
 
+/// Trace a tile-level op operand back through tensor.extract, extract_slice,
+/// and unrealized casts to find the source tensor's shape.
+/// Returns std::nullopt if a ranked tensor cannot be reached.
+static std::optional<SmallVector<int64_t>>
+getOperandTensorShape(Value operand) {
+  Value tensor = operand;
+  if (auto extract = operand.getDefiningOp<tensor::ExtractOp>()) {
+    tensor = extract.getTensor();
+  }
+  while (auto slice = tensor.getDefiningOp<tensor::ExtractSliceOp>()) {
+    tensor = slice.getSource();
+  }
+  while (auto cast = tensor.getDefiningOp<UnrealizedConversionCastOp>()) {
+    // Stop if we already have a tensor type -- don't follow casts past it.
+    if (mlir::isa<RankedTensorType>(tensor.getType())) {
+      break;
+    }
+    if (cast.getInputs().size() == 1) {
+      tensor = cast.getInputs().front();
+    } else {
+      break;
+    }
+  }
+  if (auto tensorTy = mlir::dyn_cast<RankedTensorType>(tensor.getType())) {
+    return SmallVector<int64_t>(tensorTy.getShape());
+  }
+  return std::nullopt;
+}
+
 /// Look up and convert a CB for an operand.
 /// Combines lookupCBByIndex with type conversion to TTKernel CB type.
 static FailureOr<Value> lookupAndConvertCB(Value operand, func::FuncOp funcOp,
@@ -365,11 +394,15 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
                   llvm::Twine(rhsCBTy.getNumTiles()));
     }
 
-    // CB tile index from enclosing loops.  The same index is used for
+    // CB tile index from enclosing loops. The same index is used for
     // lhs and rhs because TTLAssignDST only marks ops as FPU-eligible
     // when both operands have identical indexing maps.
-    auto cbIdx =
-        utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
+    auto operandShape = getOperandTensorShape(op.getLhs());
+    if (!operandShape) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot determine operand tensor shape for CB indexing");
+    }
+    auto cbIdx = utils::computeCBTileIndex(op, rewriter, *operandShape);
     if (failed(cbIdx)) {
       return failure();
     }
@@ -555,11 +588,15 @@ static bool hasBcastShapeExpansion(Value input, Value output,
 }
 
 /// Compute input CB tile index for broadcast with shape expansion.
-/// Uses computeCBTileIndexFromLoops with a stride transform that extracts
-/// the row or col component at compile time (no runtime divui/remui):
-///   - Col broadcast (Nx1): need row index = stride / numCols per loop
-///   - Row broadcast (1xM): need col index = stride % numCols per loop
-///   - Scalar broadcast: input_idx = 0
+///
+/// Uses computeCBTileIndex with a broadcast-derived indexing map:
+///   - Col broadcast (Nx1 input): map (i,j) -> (i), operand shape [N]
+///   - Row broadcast (1xM input): map (i,j) -> (j), operand shape [M]
+///   - Scalar broadcast: constant 0
+///
+/// The iteration domain is 2D (output tile grid). The indexing map projects
+/// out the broadcast dimension(s). computeCBTileIndex handles tile loops,
+/// subblock loops, and tile offsets.
 static FailureOr<Value> computeBcastShapeExpansionIndex(ttl::TileBcastOp op,
                                                         func::FuncOp funcOp,
                                                         OpBuilder &builder,
@@ -569,22 +606,33 @@ static FailureOr<Value> computeBcastShapeExpansionIndex(ttl::TileBcastOp op,
     return arith::ConstantIndexOp::create(builder, loc, 0).getResult();
   }
 
-  // Get output CB shape to determine numCols for index decomposition.
+  auto inShape = getCBTileGridShape(op.getInput(), funcOp);
   auto outShape = getCBTileGridShape(op.getOutput(), funcOp);
-  assert(outShape && "expected 2D tile grid shape for broadcast output");
+  assert(inShape && outShape &&
+         "expected 2D tile grid shapes for broadcast operands");
 
-  int64_t numCols = outShape->second;
+  SmallVector<int64_t> iterDomain = {outShape->first, outShape->second};
 
-  // Extract row or col component from each stride at compile time.
-  auto extractComponent = [&](int64_t stride) -> int64_t {
-    if (bcastType == ttl::BcastType::Col) {
-      return stride / numCols; // row contribution
-    }
-    return stride % numCols; // col contribution
-  };
+  // Build the broadcast indexing map and 1D operand shape.
+  MLIRContext *ctx = builder.getContext();
+  AffineMap bcastMap;
+  SmallVector<int64_t> operandShape;
+  if (bcastType == ttl::BcastType::Col) {
+    // Input is Nx1: only row dimension varies.
+    bcastMap = AffineMap::get(/*dimCount=*/2, /*symbolCount=*/0,
+                              getAffineDimExpr(0, ctx));
+    operandShape.push_back(inShape->first);
+  } else {
+    assert(bcastType == ttl::BcastType::Row);
+    // Input is 1xM: only col dimension varies.
+    bcastMap = AffineMap::get(/*dimCount=*/2, /*symbolCount=*/0,
+                              getAffineDimExpr(1, ctx));
+    operandShape.push_back(inShape->second);
+  }
 
-  return utils::computeCBTileIndexFromLoops(op, builder, /*cbShapeRank=*/2,
-                                            extractComponent);
+  // Broadcast iteration is always 2D (row x col tile grid).
+  return utils::computeCBTileIndex(op, builder, bcastMap, iterDomain,
+                                   operandShape, /*cbShapeRank=*/2);
 }
 
 /// Lower ttl.tile_bcast to TTKernel unary_bcast_init + unary_bcast.
@@ -654,8 +702,12 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
       }
       inCBIdx = *bcastIdx;
     } else {
-      auto cbIdx =
-          utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
+      auto inTensorShape = getOperandTensorShape(op.getInput());
+      if (!inTensorShape) {
+        return rewriter.notifyMatchFailure(
+            op, "cannot determine input tensor shape for CB indexing");
+      }
+      auto cbIdx = utils::computeCBTileIndex(op, rewriter, *inTensorShape);
       if (failed(cbIdx)) {
         return failure();
       }

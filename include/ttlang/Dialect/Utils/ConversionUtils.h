@@ -5,9 +5,13 @@
 #ifndef TTLANG_DIALECT_UTILS_CONVERSIONUTILS_H
 #define TTLANG_DIALECT_UTILS_CONVERSIONUTILS_H
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
@@ -17,34 +21,111 @@
 
 namespace mlir::tt::ttl::utils {
 
-/// Compute a linearized CB tile index from enclosing loop induction variables.
+/// Element-wise scale: values[d] *= scales[d].
+inline void scaleByBlockDims(MutableArrayRef<int64_t> values,
+                             ArrayRef<int64_t> scales) {
+  assert(scales.size() == values.size() &&
+         "scales and values must have the same size");
+  for (size_t d = 0; d < values.size(); ++d) {
+    values[d] *= scales[d];
+  }
+}
+
+/// Element-wise scale of SSA Values by compile-time constants, emitting
+/// arith.muli where the scale is not 1.
+inline void scaleByBlockDims(OpBuilder &builder, Location loc,
+                             MutableArrayRef<Value> coords,
+                             ArrayRef<int64_t> scales) {
+  assert(scales.size() == coords.size() &&
+         "scales and coords must have the same size");
+  for (size_t d = 0; d < coords.size(); ++d) {
+    if (scales[d] != 1) {
+      Value scale = arith::ConstantIndexOp::create(builder, loc, scales[d]);
+      coords[d] = arith::MulIOp::create(builder, loc, coords[d], scale);
+    }
+  }
+}
+
+/// Compute a CB tile index by applying an indexing map to loop IVs,
+/// optional block-dimension scaling, then linearizing in the operand's
+/// shape (row-major).
 ///
-/// CB tiles are addressed by a flat index into the CB's tile buffer. The
-/// lower-to-loops and subblock passes create nested scf.for loops whose IVs
-/// correspond to positions in the iteration domain. Each loop carries a
-/// constant stride attribute (row-major stride of that dimension in the full
-/// tensor). The linearized index is:
+/// The indexing map transforms iteration-domain coordinates to operand-space
+/// coordinates. When blockDims is provided, each mapped coordinate is scaled
+/// by the corresponding block dimension (converting block-level indices to
+/// tile-level offsets). When std::nullopt (default), unit block dims are
+/// assumed (no scaling). Row-major linearization gives the flat tile offset
+/// within the CB.
 ///
-///   index = sum(IV[d] * stride[d]) + tile_offset
+/// Examples:
+///   - Elementwise: identity map, no blockDims -> linearize in [R, C]
+///   - Matmul A: (m,n,k)->(m,k), blockDims=[rt,kt] -> m*rt*K + k*kt
+///   - Transpose: (i,j)->(j,i), no blockDims -> linearize in [C, R]
+///   - Col-broadcast (Nx1): (i,j)->(i), no blockDims -> linearize in [N]
+inline Value computeCBTileIndexFromMap(
+    OpBuilder &builder, Location loc, AffineMap indexingMap, ValueRange loopIVs,
+    ArrayRef<int64_t> operandShape,
+    std::optional<ArrayRef<int64_t>> blockDims = std::nullopt) {
+  assert(static_cast<unsigned>(indexingMap.getNumDims()) == loopIVs.size() &&
+         "loop IV count must match indexing map domain dimensions");
+  assert(indexingMap.getNumResults() == operandShape.size() &&
+         "indexing map result count must match operand shape rank");
+  assert(!blockDims ||
+         blockDims->size() == operandShape.size() &&
+             "blockDims must match operand shape rank when provided");
+
+  // Apply the indexing map: transform iteration-domain IVs to operand-space
+  // coordinates. Each result expression of the map produces one coordinate.
+  SmallVector<OpFoldResult> ivOFRs(loopIVs.begin(), loopIVs.end());
+  SmallVector<Value> mappedCoords;
+  mappedCoords.reserve(indexingMap.getNumResults());
+  for (AffineExpr expr : indexingMap.getResults()) {
+    AffineMap singleMap =
+        AffineMap::get(indexingMap.getNumDims(), /*symbolCount=*/0, expr);
+    OpFoldResult result =
+        affine::makeComposedFoldedAffineApply(builder, loc, singleMap, ivOFRs);
+    mappedCoords.push_back(
+        getValueOrCreateConstantIndexOp(builder, loc, result));
+  }
+
+  // Scale by block dimensions to convert block indices to tile indices.
+  if (blockDims) {
+    scaleByBlockDims(builder, loc, mappedCoords, *blockDims);
+  }
+
+  // Linearize in the operand's row-major layout. Row-major strides are always
+  // positive (innermost is 1, outer strides are products of inner dimensions).
+  SmallVector<int64_t> strides = computeStrides(operandShape);
+  Value index = arith::ConstantIndexOp::create(builder, loc, 0);
+  for (size_t d = 0; d < mappedCoords.size(); ++d) {
+    Value term;
+    if (strides[d] == 1) {
+      term = mappedCoords[d];
+    } else {
+      Value strideVal =
+          arith::ConstantIndexOp::create(builder, loc, strides[d]);
+      term = arith::MulIOp::create(builder, loc, mappedCoords[d], strideVal);
+    }
+    index = arith::AddIOp::create(builder, loc, index, term);
+  }
+  return index;
+}
+
+/// Information about tile loops enclosing an operation.
+struct TileLoopInfo {
+  SmallVector<Value> ivs;           ///< IVs in outermost-first order.
+  SmallVector<int64_t> upperBounds; ///< Upper bounds, outermost-first.
+};
+
+/// Collect tile loop induction variables from enclosing scf.for loops.
 ///
-/// over all compiler-annotated loops (ttl.tile_loop for tile iteration,
-/// ttl.subblock_stride for subblock iteration). Unmarked loops (user loops,
-/// streaming loops) are ignored because they do not affect intra-CB indexing.
+/// Returns IVs and upper bounds of tile loops (marked with
+/// kTileLoopStrideAttrName), in outermost-first order. When cbShapeRank > 0,
+/// only the innermost cbShapeRank tile loops are retained.
 ///
-/// The `strideTransform` callback is applied to each stride at pass execution
-/// time before emitting IR. This lets callers extract per-dimension components
-/// (e.g., stride / numCols for a row index) without emitting runtime division.
-///
-/// When `cbShapeRank > 0`, only the innermost cbShapeRank tile loops
-/// contribute, for CBs with lower rank than the iteration domain.
-///
-/// Note: this assumes DMA kernels write tiles into CBs in row-major order,
-/// which is the case for all current tt-metal reader kernels. If a future
-/// layout changes the CB tile ordering, the stride computation here would
-/// need to account for it.
-inline FailureOr<Value> computeCBTileIndexFromLoops(
-    Operation *op, OpBuilder &builder, size_t cbShapeRank,
-    llvm::function_ref<int64_t(int64_t)> strideTransform) {
+/// Useful when callers need explicit IVs for computeCBTileIndexFromMap.
+inline FailureOr<TileLoopInfo> collectTileLoopIVs(Operation *op,
+                                                  size_t cbShapeRank = 0) {
   // Collect enclosing scf.for loops from innermost to outermost.
   SmallVector<scf::ForOp> allLoops;
   for (Operation *parent = op->getParentOp(); parent;
@@ -54,24 +135,21 @@ inline FailureOr<Value> computeCBTileIndexFromLoops(
     }
   }
 
-  // Classify loops by attribute.
+  // Keep only tile loops.
   SmallVector<scf::ForOp> tileLoops;
-  SmallVector<scf::ForOp> subblockLoops;
   for (scf::ForOp loop : allLoops) {
-    if (loop->hasAttr(kTileLoopAttrName)) {
+    if (loop->hasAttr(kTileLoopStrideAttrName)) {
       tileLoops.push_back(loop);
-    } else if (loop->hasAttr(kSubblockStrideAttrName)) {
-      subblockLoops.push_back(loop);
     }
-    // Unmarked loops are ignored (user loops, external loops).
   }
 
-  // Apply cbShapeRank clipping to tile loops only.
+  // Retain only the innermost cbShapeRank tile loops.
   if (cbShapeRank > 0 && tileLoops.size() > cbShapeRank) {
     tileLoops.resize(cbShapeRank);
   }
 
-  // Validate tile loops.
+  // Validate and collect IVs + bounds.
+  TileLoopInfo info;
   for (scf::ForOp loop : tileLoops) {
     auto lb = getConstantIntValue(loop.getLowerBound());
     if (!lb) {
@@ -92,6 +170,164 @@ inline FailureOr<Value> computeCBTileIndexFromLoops(
     }
   }
 
+  // Parent walk collects innermost-first; reverse so dimension 0 comes first,
+  // matching the indexing map's domain dimension order.
+  for (scf::ForOp loop : llvm::reverse(tileLoops)) {
+    info.ivs.push_back(loop.getInductionVar());
+    info.upperBounds.push_back(*getConstantIntValue(loop.getUpperBound()));
+  }
+
+  return info;
+}
+
+/// Transform a linearized stride from the iteration domain into the operand's
+/// coordinate space via an indexing map (compile-time, no IR emission).
+///
+/// A stride S encodes how much a linearized CB index advances per unit of a
+/// loop IV. This function decomposes S into per-dimension steps (using the
+/// iteration domain's row-major strides), applies the indexing map to select
+/// the relevant dimensions, optionally scales by blockDims, and re-linearizes
+/// in the operand shape.
+///
+/// For identity maps with no blockDims this is a no-op (returns S unchanged).
+inline int64_t transformLinearizedStride(
+    int64_t stride, ArrayRef<int64_t> iterDomainShape, AffineMap indexingMap,
+    ArrayRef<int64_t> operandShape,
+    std::optional<ArrayRef<int64_t>> blockDims = std::nullopt) {
+  assert(indexingMap.getNumDims() == iterDomainShape.size() &&
+         "indexing map domain rank must match iteration domain shape rank");
+  assert(indexingMap.getNumResults() == operandShape.size() &&
+         "indexing map result count must match operand shape rank");
+  assert(!blockDims ||
+         blockDims->size() == operandShape.size() &&
+             "blockDims must match operand shape rank when provided");
+
+  // Fast path: identity map with no block scaling is a no-op.
+  if (indexingMap.isIdentity() && !blockDims) {
+    return stride;
+  }
+
+  // Delinearize stride into per-dimension steps using the iteration domain's
+  // row-major strides. For shape [M, N, K] with strides [N*K, K, 1]:
+  //   stride=N*K -> components=[1, 0, 0] (one M-step)
+  //   stride=K   -> components=[0, 1, 0] (one N-step)
+  //   stride=1   -> components=[0, 0, 1] (one K-step)
+  SmallVector<int64_t> domainStrides = computeStrides(iterDomainShape);
+  SmallVector<int64_t> components(iterDomainShape.size());
+  int64_t remaining = stride;
+  for (size_t d = 0; d < iterDomainShape.size(); ++d) {
+    if (domainStrides[d] > 0) {
+      components[d] = remaining / domainStrides[d];
+      remaining = remaining % domainStrides[d];
+    }
+  }
+
+  // Apply the indexing map: select dimensions referenced by the map.
+  // For projected permutations, each result is an AffineDimExpr.
+  SmallVector<int64_t> mappedComponents;
+  mappedComponents.reserve(indexingMap.getNumResults());
+  for (AffineExpr expr : indexingMap.getResults()) {
+    auto dimExpr = llvm::dyn_cast<AffineDimExpr>(expr);
+    assert(dimExpr && "expected projected permutation (AffineDimExpr results)");
+    mappedComponents.push_back(components[dimExpr.getPosition()]);
+  }
+
+  // Scale by block dimensions to convert block-level steps to tile-level.
+  if (blockDims) {
+    scaleByBlockDims(mappedComponents, *blockDims);
+  }
+
+  // Re-linearize in the operand's row-major layout.
+  SmallVector<int64_t> opStrides = computeStrides(operandShape);
+  int64_t result = 0;
+  for (size_t d = 0; d < mappedComponents.size(); ++d) {
+    result += mappedComponents[d] * opStrides[d];
+  }
+  return result;
+}
+
+/// Emit `IV * stride` (with stride=0 and stride=1 optimizations).
+inline Value emitIVTimesStride(OpBuilder &builder, Location loc, Value iv,
+                               int64_t stride) {
+  if (stride == 1) {
+    return iv;
+  }
+  Value strideVal = arith::ConstantIndexOp::create(builder, loc, stride);
+  return arith::MulIOp::create(builder, loc, iv, strideVal);
+}
+
+/// Compute a CB tile index from enclosing loop structure and an indexing map.
+///
+/// This is the unified mechanism for all CB tile index computation. It
+/// collects tile loops, subblock loops, and tile offsets from the enclosing
+/// IR, transforms each stride through the indexing map (from iteration-domain
+/// space to operand space), and sums the contributions.
+///
+/// For identity maps (elementwise ops), this produces the same result as the
+/// loop strides directly. For non-identity maps (matmul, transpose, reduce,
+/// broadcast), it correctly projects out irrelevant dimensions.
+///
+/// Assumes DMA kernels write tiles into CBs in row-major order (interleaved
+/// layout). Sharded layouts with different CB tile orderings would require
+/// a different linearization scheme.
+///
+/// Parameters:
+///   - indexingMap: transforms iteration-domain coordinates to operand space
+///   - iterDomainShape: full output tensor shape (for delinearizing strides)
+///   - operandShape: this operand's tensor shape (for re-linearizing)
+///   - cbShapeRank: retain only innermost N tile loops (0 = use all)
+///   - blockDims: per-operand-dimension block sizes (std::nullopt = unit dims)
+inline FailureOr<Value>
+computeCBTileIndex(Operation *op, OpBuilder &builder, AffineMap indexingMap,
+                   ArrayRef<int64_t> iterDomainShape,
+                   ArrayRef<int64_t> operandShape, size_t cbShapeRank = 0,
+                   std::optional<ArrayRef<int64_t>> blockDims = std::nullopt) {
+  // Collect enclosing scf.for loops from innermost to outermost.
+  SmallVector<scf::ForOp> allLoops;
+  for (Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+      allLoops.push_back(forOp);
+    }
+  }
+
+  // Classify loops by attribute.
+  SmallVector<scf::ForOp> tileLoops;
+  SmallVector<scf::ForOp> subblockLoops;
+  for (scf::ForOp loop : allLoops) {
+    if (loop->hasAttr(kTileLoopStrideAttrName)) {
+      tileLoops.push_back(loop);
+    } else if (loop->hasAttr(kSubblockLoopStrideAttrName)) {
+      subblockLoops.push_back(loop);
+    }
+    // Unmarked loops are ignored (user loops, external loops).
+  }
+
+  // Retain only the innermost cbShapeRank tile loops.
+  if (cbShapeRank > 0 && tileLoops.size() > cbShapeRank) {
+    tileLoops.resize(cbShapeRank);
+  }
+
+  // Validate tile loops.
+  for (scf::ForOp loop : tileLoops) {
+    auto lb = getConstantIntValue(loop.getLowerBound());
+    if (!lb) {
+      return op->emitOpError()
+             << "enclosing tile loop has dynamic lower bound; "
+             << "expected constant bounds from tile loops";
+    }
+    if (*lb != 0) {
+      return op->emitOpError()
+             << "enclosing tile loop has non-zero lower bound (" << *lb
+             << "); expected lb=0 from tile loops";
+    }
+    if (!getConstantIntValue(loop.getUpperBound())) {
+      return op->emitOpError()
+             << "enclosing tile loop has dynamic upper bound; "
+             << "expected constant bounds from tile loops";
+    }
+  }
+
   // Validate subblock loops.
   for (scf::ForOp loop : subblockLoops) {
     auto lb = getConstantIntValue(loop.getLowerBound());
@@ -105,65 +341,59 @@ inline FailureOr<Value> computeCBTileIndexFromLoops(
              << "enclosing subblock loop has non-zero lower bound (" << *lb
              << "); expected lb=0 from subblock loops";
     }
-    auto step = getConstantIntValue(loop.getStep());
-    if (!step) {
+    if (!getConstantIntValue(loop.getStep())) {
       return op->emitOpError() << "enclosing subblock loop has dynamic step; "
                                << "expected constant step from subblock loops";
     }
   }
 
   Location loc = op->getLoc();
-
-  // Compute index: sum(IV * transform(stride)) + transform(tile_offset).
-  // Tile loops processed outermost first for row-major ordering.
   Value result = arith::ConstantIndexOp::create(builder, loc, 0);
+
+  // Tile loop contributions (outermost first).
   for (scf::ForOp loop : llvm::reverse(tileLoops)) {
-    auto strideAttr = loop->getAttrOfType<IntegerAttr>(kTileLoopAttrName);
+    auto strideAttr = loop->getAttrOfType<IntegerAttr>(kTileLoopStrideAttrName);
     if (!strideAttr) {
       return op->emitOpError() << "enclosing tile loop missing stride value on "
-                               << kTileLoopAttrName << " attribute";
+                               << kTileLoopStrideAttrName << " attribute";
     }
-    int64_t stride = strideTransform(strideAttr.getInt());
+    int64_t stride =
+        transformLinearizedStride(strideAttr.getInt(), iterDomainShape,
+                                  indexingMap, operandShape, blockDims);
     if (stride == 0) {
       continue;
     }
-    Value term;
-    if (stride == 1) {
-      term = loop.getInductionVar();
-    } else {
-      Value strideVal = arith::ConstantIndexOp::create(builder, loc, stride);
-      term = arith::MulIOp::create(builder, loc, loop.getInductionVar(),
-                                   strideVal);
-    }
+    Value term =
+        emitIVTimesStride(builder, loc, loop.getInductionVar(), stride);
     result = arith::AddIOp::create(builder, loc, result, term);
   }
 
-  // Add subblock offsets: IV * transform(stride) for each subblock loop.
+  // Subblock loop contributions. Order doesn't matter (addition is
+  // commutative) — each loop carries its own stride attribute.
   for (scf::ForOp loop : subblockLoops) {
-    auto strideAttr = loop->getAttrOfType<IntegerAttr>(kSubblockStrideAttrName);
+    auto strideAttr =
+        loop->getAttrOfType<IntegerAttr>(kSubblockLoopStrideAttrName);
     if (!strideAttr) {
       return op->emitOpError()
              << "enclosing subblock loop missing stride value on "
-             << kSubblockStrideAttrName << " attribute";
+             << kSubblockLoopStrideAttrName << " attribute";
     }
-    int64_t stride = strideTransform(strideAttr.getInt());
+    int64_t stride =
+        transformLinearizedStride(strideAttr.getInt(), iterDomainShape,
+                                  indexingMap, operandShape, blockDims);
     if (stride == 0) {
       continue;
     }
-    Value offset;
-    if (stride == 1) {
-      offset = loop.getInductionVar();
-    } else {
-      Value strideVal = arith::ConstantIndexOp::create(builder, loc, stride);
-      offset = arith::MulIOp::create(builder, loc, loop.getInductionVar(),
-                                     strideVal);
-    }
-    result = arith::AddIOp::create(builder, loc, result, offset);
+    Value term =
+        emitIVTimesStride(builder, loc, loop.getInductionVar(), stride);
+    result = arith::AddIOp::create(builder, loc, result, term);
   }
 
-  // Add per-tile offset from unrolled emission.
+  // Per-tile offset from unrolled emission.
   if (auto tileOffset = op->getAttrOfType<IntegerAttr>(kTileOffsetAttrName)) {
-    int64_t offset = strideTransform(tileOffset.getInt());
+    int64_t offset =
+        transformLinearizedStride(tileOffset.getInt(), iterDomainShape,
+                                  indexingMap, operandShape, blockDims);
     if (offset != 0) {
       Value offsetVal = arith::ConstantIndexOp::create(builder, loc, offset);
       result = arith::AddIOp::create(builder, loc, result, offsetVal);
@@ -173,12 +403,14 @@ inline FailureOr<Value> computeCBTileIndexFromLoops(
   return result;
 }
 
-/// Convenience overload: identity transform (linearized index).
-inline FailureOr<Value> computeCBTileIndexFromLoops(Operation *op,
-                                                    OpBuilder &builder,
-                                                    size_t cbShapeRank = 0) {
-  return computeCBTileIndexFromLoops(op, builder, cbShapeRank,
-                                     [](int64_t s) { return s; });
+/// Convenience overload for identity indexing maps (elementwise ops).
+/// iterDomainShape and operandShape are both the operand's tensor shape.
+inline FailureOr<Value> computeCBTileIndex(Operation *op, OpBuilder &builder,
+                                           ArrayRef<int64_t> operandShape) {
+  AffineMap identity = AffineMap::getMultiDimIdentityMap(operandShape.size(),
+                                                         builder.getContext());
+  return computeCBTileIndex(op, builder, identity, operandShape, operandShape,
+                            operandShape.size());
 }
 
 /// Convert a TTL CircularBufferType value to a TTKernel CBType value.
