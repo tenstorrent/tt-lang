@@ -40,7 +40,7 @@ from .constants import TILE_SHAPE
 from .errors import DFBContractError
 from .stats import record_dfb_reserve, record_dfb_wait
 from .ttnnsim import Tensor, tile_count_from_tensor
-from .typedefs import Index, Shape, Size
+from .typedefs import Index, PositiveInt, Shape, Size
 
 
 class Block:
@@ -59,12 +59,14 @@ class Block:
     __slots__ = (
         "_buf",
         "_shape",
+        "_element_shape",  # Element-level shape (for broadcast semantics)
         "_acquisition",
         "_thread_type",
         "_access_state",
         "_expected_ops",
         "_is_temporary",
         "_source_blocks",  # Track wait() blocks that contributed to this temporary block
+        "_broadcast_dims",  # Pending broadcast dimensions (None or tuple of ints)
         "dfb",  # Reference to DataflowBuffer for context manager cleanup
         "dfb_state",  # DFBState reference for updating ring-buffer slot on copy_as_dest
         "dfb_slot_idx",  # Index of this block's slot in the ring buffer
@@ -86,8 +88,13 @@ class Block:
     ):
         self._buf = tensor
         self._shape = shape
+        # Element shape is always derived from the tensor's actual shape
+        self._element_shape = tuple(tensor.shape)
         self._is_temporary = is_temporary
         self._source_blocks: List["Block"] = []  # Track source wait() blocks
+        self._broadcast_dims: Optional[tuple[int, ...]] = (
+            None  # Pending broadcast metadata
+        )
         self.dfb = dfb  # Reference to DataflowBuffer for context manager support
         self.dfb_state: Optional[DFBState] = None
         self.dfb_slot_idx: int = -1
@@ -526,13 +533,16 @@ class Block:
             elem_tensor = tile_grid.permute(*perm).reshape(
                 *batch, TM * tile_h, TK * tile_w
             )
-        return cls(
+
+        # Create block with derived element shape
+        block = cls(
             tensor=Tensor(elem_tensor),
             shape=shape,
             acquisition=BlockAcquisition.RESERVE,
             thread_type=ThreadType.COMPUTE,
             is_temporary=True,
         )
+        return block
 
     @classmethod
     def from_tensor(cls, t: Tensor) -> "Block":
@@ -574,6 +584,7 @@ class Block:
             tm = 1 if h == 1 else h // TILE_SHAPE[0]
             tk = 1 if w == 1 else w // TILE_SHAPE[1]
             tile_shape = (*batch_shape, tm, tk)
+
         return cls(
             tensor=t,
             shape=tile_shape,
@@ -648,6 +659,38 @@ class Block:
 
         return result_shape
 
+    @staticmethod
+    def _expand_broadcast_dims(
+        block: "Block",
+        target_shape: Shape,
+        target_element_shape: Shape,
+        broadcast_dims: tuple[int, ...],
+    ) -> Tensor:
+        """Expand a block along broadcast dimensions to match target shape.
+
+        Uses PyTorch broadcasting to expand the block's tensor from its current
+        element shape to the target element shape. All validation is performed
+        by broadcast() before setting _broadcast_dims metadata.
+
+        Uses innermost-first convention: dims=[0] = last dimension in shape.
+
+        Args:
+            block: Source block with broadcast metadata
+            target_shape: Target tile shape to expand to
+            target_element_shape: Target element shape to expand to
+            broadcast_dims: Dimensions to expand (innermost-first indexing)
+
+        Returns:
+            Tensor with expanded element shape
+        """
+
+        # Use PyTorch broadcasting to expand the tensor
+        src_tensor = block._buf.to_torch()
+        expanded_tensor = src_tensor.expand(*target_element_shape)
+
+        # Return tensor directly
+        return Tensor(expanded_tensor.contiguous())
+
     def store(self, items: "Block", acc: bool = False) -> None:
         """Store data into this block.
 
@@ -679,15 +722,26 @@ class Block:
                 if ExpectedOp.STORE_SRC in blk._expected_ops
             )
 
-        # Validate tile counts match
-        src_tiles = tile_count_from_tensor(src_tensor)
-        dst_tiles = math.prod(self._shape)
-        if src_tiles != dst_tiles:
-            raise ValueError(
-                f"Shape mismatch in store(): "
-                f"source {src_tensor.shape} ({src_tiles} tiles) vs "
-                f"block {self._shape} ({dst_tiles} tiles)"
+        # Check if source has broadcast metadata - if so, expand it
+        src_shape = items._shape
+        dst_shape = self._shape
+
+        if hasattr(items, "_broadcast_dims") and items._broadcast_dims is not None:
+            # Source came from broadcast() - expand using metadata
+            src_tensor = self._expand_broadcast_dims(
+                items, dst_shape, self._element_shape, items._broadcast_dims
             )
+        else:
+            # No broadcast metadata - validate tile counts match (allows different dimensionality)
+            src_tiles = math.prod(src_shape)
+            dst_tiles = math.prod(dst_shape)
+            if src_tiles != dst_tiles:
+                raise ValueError(
+                    f"Shape mismatch in store(): "
+                    f"source shape {src_shape} ({src_tiles} tiles) does not match "
+                    f"destination shape {dst_shape} ({dst_tiles} tiles). "
+                    f"Use broadcast() to expand the source if needed."
+                )
 
         # Mark source wait() blocks as consumed
         for source_block in source_blocks_to_mark:
@@ -711,6 +765,51 @@ class Block:
             if self.dfb_state is not None:
                 self.dfb_state.buf[self.dfb_slot_idx] = src_tensor
 
+    @staticmethod
+    def _track_sources_for_result(result_block: "Block", *sources: "Block") -> None:
+        """Track source blocks that contribute to a result block.
+
+        For each source block, if it's a wait() Compute block, add it to the result's
+        source list. If it's already a temporary block, extend with its sources.
+
+        Args:
+            result_block: The result block to track sources for
+            sources: Source blocks that contribute to the result
+        """
+        for source in sources:
+            if (
+                not source._is_temporary
+                and source._acquisition == BlockAcquisition.WAIT
+                and source._thread_type == ThreadType.COMPUTE
+            ):
+                result_block._source_blocks.append(source)
+            elif source._is_temporary:
+                result_block._source_blocks.extend(source._source_blocks)
+
+    def _create_temporary_result(
+        self, result_tensor: Tensor, shape: Shape, *additional_sources: "Block"
+    ) -> "Block":
+        """Create a temporary result block with proper source tracking.
+
+        Args:
+            result_tensor: The computed result tensor
+            shape: The shape of the result block
+            additional_sources: Additional source blocks (for binary/ternary ops)
+
+        Returns:
+            A temporary Block with source blocks tracked
+        """
+        result_block = Block(
+            tensor=result_tensor,
+            shape=shape,
+            acquisition=BlockAcquisition.RESERVE,
+            thread_type=ThreadType.COMPUTE,
+            is_temporary=True,
+        )
+        # Track all source blocks (self + any additional)
+        self._track_sources_for_result(result_block, self, *additional_sources)
+        return result_block
+
     def _binary_op(
         self,
         other: "Block",
@@ -726,53 +825,48 @@ class Block:
         left_shape = self._shape
         right_shape = other._shape
 
-        # Validate broadcast compatibility at the tile-grid level
-        if len(left_shape) != len(right_shape):
+        # Check if either operand has broadcast metadata
+        left_has_broadcast = (
+            hasattr(self, "_broadcast_dims") and self._broadcast_dims is not None
+        )
+        right_has_broadcast = (
+            hasattr(other, "_broadcast_dims") and other._broadcast_dims is not None
+        )
+
+        if left_has_broadcast and right_has_broadcast:
             raise ValueError(
-                f"Cannot broadcast: dimension mismatch between shapes "
-                f"{left_shape} and {right_shape}."
+                f"Cannot perform binary operation: both operands have pending broadcast. "
+                f"Materialize one operand first by storing it."
             )
-        for i, (l_dim, r_dim) in enumerate(zip(left_shape, right_shape)):
-            if l_dim != r_dim and l_dim != 1 and r_dim != 1:
-                raise ValueError(
-                    f"Cannot broadcast: incompatible shapes {left_shape} and "
-                    f"{right_shape}. Dimension {i} has sizes {l_dim} and {r_dim}."
-                )
 
-        result_shape = self._infer_broadcast_shape(left_shape, right_shape)
+        # Expand operand with broadcast metadata to match the other
+        left_buf = self._buf
+        right_buf = other._buf
+        result_shape = left_shape
 
-        if left_shape == right_shape:
-            # Fast path: shapes match, operate on packed tensors directly.
-            result_block = Block(
-                tensor=op(self._buf, other._buf),
-                shape=result_shape,
-                acquisition=BlockAcquisition.RESERVE,
-                thread_type=ThreadType.COMPUTE,
-                is_temporary=True,
+        if left_has_broadcast:
+            # Expand left to match right shape
+            left_buf = self._expand_broadcast_dims(
+                self, right_shape, other._element_shape, self._broadcast_dims
             )
-        else:
-            # Tile-grid broadcasting: tile-grid dims are entangled with element
-            # dims in the packed tensor, so PyTorch cannot broadcast them
-            # automatically.  Fall back to tile-by-tile ops.
-            from .ttnnsim import broadcast_tensors
-
-            result_tiles = broadcast_tensors(
-                self.to_list(), other.to_list(), left_shape, right_shape, op
+            result_shape = right_shape
+        elif right_has_broadcast:
+            # Expand right to match left shape
+            right_buf = self._expand_broadcast_dims(
+                other, left_shape, self._element_shape, other._broadcast_dims
             )
-            result_block = Block.from_list(result_tiles, result_shape)
+            result_shape = left_shape
+        elif left_shape != right_shape:
+            # No broadcast metadata and shapes don't match - error
+            raise ValueError(
+                f"Shape mismatch in binary operation: left shape {left_shape} does not match "
+                f"right shape {right_shape}. Use broadcast() to expand operands."
+            )
 
-        # Track source wait() blocks that contributed to this result
-        for block in [self, other]:
-            if (
-                not block._is_temporary
-                and block._acquisition == BlockAcquisition.WAIT
-                and block._thread_type == ThreadType.COMPUTE
-            ):
-                result_block._source_blocks.append(block)
-            elif block._is_temporary:
-                result_block._source_blocks.extend(block._source_blocks)
-
-        return result_block
+        # Perform operation
+        return self._create_temporary_result(
+            op(left_buf, right_buf), result_shape, other
+        )
 
     # ---- forward operators ----
 
@@ -794,31 +888,24 @@ class Block:
     def __mod__(self, other: "Block") -> "Block":
         return self._binary_op(other, _op.mod)
 
-    def __pow__(self, other: Union["Block", int]) -> "Block":
+    def __pow__(self, other: Union["Block", "PositiveInt"]) -> "Block":
         """Element-wise exponentiation.
 
-        Supports both Block and scalar integer exponents.
+        Supports both Block and scalar positive integer exponents.
         """
         match other:
             case int():
-                result_block = Block(
-                    tensor=self._buf**other,
-                    shape=self._shape,
-                    acquisition=BlockAcquisition.RESERVE,
-                    thread_type=ThreadType.COMPUTE,
-                    is_temporary=True,
-                )
-                if (
-                    not self._is_temporary
-                    and self._acquisition == BlockAcquisition.WAIT
-                    and self._thread_type == ThreadType.COMPUTE
-                ):
-                    result_block._source_blocks.append(self)
-                elif self._is_temporary:
-                    result_block._source_blocks.extend(self._source_blocks)
-                return result_block
+                return self._create_temporary_result(self._buf**other, self._shape)
             case _:
                 return self._binary_op(other, _op.pow)
+
+    def __neg__(self) -> "Block":
+        """Unary negation (-block)."""
+        return self._create_temporary_result(-self._buf, self._shape)
+
+    def __abs__(self) -> "Block":
+        """Absolute value (abs(block))."""
+        return self._create_temporary_result(abs(self._buf), self._shape)
 
     def __matmul__(self, other: "Block") -> "Block":
         # Matrix multiplication is not a broadcasting operation.
@@ -884,7 +971,7 @@ class DataflowBuffer:
     determined by the shape parameter.
 
     Example:
-        dfb = DataflowBuffer(element=t, shape=(2, 3), buffer_factor=2)
+        dfb = DataflowBuffer(likeness_tensor=t, shape=(2, 3), buffer_factor=2)
 
         # Producer workflow
         write_view = dfb.reserve()  # Reserve space for 6 tiles
@@ -899,7 +986,7 @@ class DataflowBuffer:
 
     def __init__(
         self,
-        element: Tensor,
+        likeness_tensor: Tensor,
         shape: Shape,
         buffer_factor: Size = 2,
     ):
@@ -907,7 +994,7 @@ class DataflowBuffer:
         Initialize a DataflowBuffer.
 
         Args:
-            element: Tensor used to determine dtype for zero-initialized reserved blocks
+            likeness_tensor: Tensor providing dtype and element shape (including degenerate dimensions)
             shape: Tile-grid shape for each wait/reserve operation (at least 1 dimension)
             buffer_factor: Capacity multiplier (capacity = prod(shape) * buffer_factor)
 
@@ -921,9 +1008,53 @@ class DataflowBuffer:
         if buffer_factor <= 0:
             raise ValueError(f"buffer_factor must be positive, got {buffer_factor}")
 
-        self.element = element
+        # Validate element shape matches tile shape
+        if len(likeness_tensor.shape) != len(shape):
+            raise ValueError(
+                f"Element shape dimensionality {len(likeness_tensor.shape)} does not match "
+                f"tile shape dimensionality {len(shape)}. Element shape: {likeness_tensor.shape}, "
+                f"tile shape: {shape}"
+            )
+
+        TILE_SIZE = TILE_SHAPE[0]  # 32
+        ndims = len(shape)
+        for i, (edim, tdim) in enumerate(zip(likeness_tensor.shape, shape)):
+            if edim == 1:
+                # Degenerate dimension: tile dimension must also be 1
+                if tdim != 1:
+                    raise ValueError(
+                        f"Element shape dimension {i} is degenerate (size 1), but tile dimension is {tdim} (expected 1). "
+                        f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
+                    )
+            elif i == ndims - 1 or i == ndims - 2:
+                # Last two dimensions are tile dimensions
+                if edim % TILE_SIZE != 0:
+                    raise ValueError(
+                        f"Element shape dimension {i} has size {edim}, which is not a multiple of TILE_SIZE ({TILE_SIZE}). "
+                        f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
+                    )
+                if edim // TILE_SIZE < tdim:
+                    raise ValueError(
+                        f"Element shape dimension {i} has {edim // TILE_SIZE} tiles, but tile shape requires at least {tdim} tiles. "
+                        f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
+                    )
+            else:
+                # Batch/other dimensions
+                if edim < tdim:
+                    raise ValueError(
+                        f"Element shape dimension {i} has size {edim}, but tile shape requires at least {tdim}. "
+                        f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
+                    )
+
+        self.likeness_tensor = likeness_tensor
         self._shape = shape
         self._buffer_factor = buffer_factor
+
+        # Compute element shape from element dimensions and tile shape
+        self._element_shape = tuple(
+            1 if edim == 1 else tdim * TILE_SIZE
+            for edim, tdim in zip(likeness_tensor.shape, shape)
+        )
 
         self._pending_reserved_block: Optional[Block] = None
         self._pending_waited_block: Optional[Block] = None
@@ -1030,16 +1161,10 @@ class DataflowBuffer:
             "block_if_needed() should have been called first."
         )
         slot_idx = state.back_slot()
-        # Build element-space shape.
-        if len(state.shape) == 1:
-            tk = state.shape[0]
-            elem_shape = (tk * TILE_SHAPE[0],)
-        else:
-            nb = len(state.shape) - 2
-            batch = state.shape[:nb]
-            tm, tk = state.shape[nb], state.shape[nb + 1]
-            elem_shape = (*batch, tm * TILE_SHAPE[0], tk * TILE_SHAPE[1])
-        slot = Tensor(torch.zeros(elem_shape, dtype=self.element.dtype))
+        # Create tensor with the DFB's element shape
+        slot = Tensor(
+            torch.zeros(self._element_shape, dtype=self.likeness_tensor.dtype)
+        )
         state.buf[slot_idx] = slot
         state.reserved += 1
 
@@ -1177,7 +1302,7 @@ class DataflowBuffer:
         shape/capacity settings and a clean ring-buffer state.
         """
         new_dfb = DataflowBuffer(
-            element=self.element,
+            likeness_tensor=self.likeness_tensor,
             shape=self._shape,
             buffer_factor=self._buffer_factor,
         )
@@ -1198,28 +1323,30 @@ class DataflowBuffer:
 
 
 def make_dataflow_buffer_like(
-    element: Tensor,
+    likeness_tensor: Tensor,
     shape: Shape,
     buffer_factor: Size = 2,
 ) -> DataflowBuffer:
     """
-    Create a DataflowBuffer with the same dtype as the element.
+    Create a DataflowBuffer with the same dtype and element shape as likeness_tensor.
 
     Args:
-        element: A tensor used to determine the DataflowBuffer's dtype
+        likeness_tensor: A tensor providing dtype and element shape (including degenerate dimensions)
         shape: Tuple of tile-grid dimensions, e.g. (1,) for 1-D, (1, 1) for 2-D,
             (1, 1, 1) for 3-D, etc. The total buffer capacity is
             math.prod(shape) * buffer_factor blocks.
         buffer_factor: Multiplier for total buffer capacity
 
     Returns:
-        A DataflowBuffer with dtype matching the element
+        A DataflowBuffer with dtype and element shape matching likeness_tensor
 
     Example:
-        x = ttnn.zeros((32, 32), dtype=ttnn.float32)
+        x = ttnn.zeros((64, 64), dtype=ttnn.float32)
         x_dfb = make_dataflow_buffer_like(x, shape=(2, 2), buffer_factor=2)
     """
-    return DataflowBuffer(element=element, shape=shape, buffer_factor=buffer_factor)
+    return DataflowBuffer(
+        likeness_tensor=likeness_tensor, shape=shape, buffer_factor=buffer_factor
+    )
 
 
 def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:

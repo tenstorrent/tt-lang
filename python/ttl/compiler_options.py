@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import os
 import sys
-from typing import Optional
+from typing import Optional, Sequence
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -27,13 +28,14 @@ def _make_parser() -> argparse.ArgumentParser:
     """
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument(
-        "--maximize-dst",
+        "--ttl-maximize-dst",
         default=None,
+        dest="maximize_dst",
         action=argparse.BooleanOptionalAction,
         help="Enable DST maximization via subblock compute and scheduling (default: enabled).",
     )
     p.add_argument(
-        "--fpu-binary-ops",
+        "--ttl-fpu-binary-ops",
         default=None,
         dest="enable_fpu_binary_ops",
         action=argparse.BooleanOptionalAction,
@@ -44,8 +46,12 @@ def _make_parser() -> argparse.ArgumentParser:
 
 _PARSER = _make_parser()
 
+# Cached result from the first from_argv() call.  We assume sys.argv does
+# not change after process startup, so a single parse is sufficient.
+_argv_result: Optional[CompilerOptions] = None
 
-def _parse_explicit(tokens: list, *, reject_unknown: bool = False) -> dict:
+
+def _parse_explicit(tokens: Sequence[str], *, reject_unknown: bool = False) -> dict:
     """Parse *tokens* and return only the fields that were explicitly set."""
     if reject_unknown:
         ns, unknown = _PARSER.parse_known_args(tokens)
@@ -85,7 +91,7 @@ class CompilerOptions:
 
     @staticmethod
     def from_string(options: Optional[str] = None) -> CompilerOptions:
-        """Parse an option string (e.g., "--no-maximize-dst").
+        """Parse an option string (e.g., "--no-ttl-maximize-dst").
 
         Later tokens override earlier ones. Returns defaults when
         *options* is `None` or empty.  Raises ``ValueError`` on
@@ -100,18 +106,23 @@ class CompilerOptions:
         """Extract compiler options from `sys.argv`, ignoring
         unrecognised arguments (test runner flags, file paths, etc.).
 
-        If ``--help`` is present, prints available compiler options and exits.
+        The result is cached on first call and reused for subsequent calls
+        (argv is assumed stable for the lifetime of the process).
+
+        If ``--ttl-help`` is present, prints available compiler options and
+        exits.
         """
-        # Only intercept --help when the script is run directly
-        # (not under pytest, lit, or other test runners).
-        if "--help" in sys.argv[1:] and not any(
-            runner in sys.argv[0] for runner in ("pytest", "py.test", "lit")
-        ):
+        global _argv_result
+        if _argv_result is not None:
+            return _argv_result
+
+        if "--ttl-help" in sys.argv[1:]:
             print("TTL compiler options:\n")
             print(CompilerOptions.usage())
             sys.exit(0)
         explicit = _parse_explicit(sys.argv[1:])
-        return CompilerOptions(**explicit, _explicit=frozenset(explicit))
+        _argv_result = CompilerOptions(**explicit, _explicit=frozenset(explicit))
+        return _argv_result
 
     @staticmethod
     def usage() -> str:

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn, tt-device
-# RUN: %python %s --no-maximize-dst --no-fpu-binary-ops > %t.output 2>&1
+# RUN: %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
 # RUN: FileCheck %s < %t.output
 # RUN: %python %s > %t.fpu.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-FPU < %t.fpu.output
@@ -99,7 +99,7 @@ def multi_store_kernel(a, b, out1, out2, out3):
 # CHECK-NOT:      DeviceZoneScopedN(
 
 # =============================================================================
-# FPU path checks (default: --maximize-dst --fpu-binary-ops)
+# FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
 # Single tile add uses FPU binary (add_tiles), 3 stores unchanged
 # =============================================================================
 

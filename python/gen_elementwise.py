@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .dialects import ttl
+from ttl.dialects import ttl
 from ._src.ttl_ast import syntax
 
 if TYPE_CHECKING:

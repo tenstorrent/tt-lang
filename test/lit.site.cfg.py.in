@@ -10,7 +10,6 @@ config.ttlang_obj_root = path("@CMAKE_BINARY_DIR@")
 config.ttlang_source_dir = path("@CMAKE_SOURCE_DIR@")
 config.python_executable = sys.executable
 config.TTLANG_PYTHON_PACKAGES_DIR = path("@TTLANG_PYTHON_PACKAGES_DIR@")
-config.ttmlir_path = "@TTMLIR_PATH@"
 config.ttlang_has_device = @TTLANG_HAS_DEVICE_INT@
 
 import lit.llvm

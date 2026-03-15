@@ -6,9 +6,6 @@
 Constants for the dfbsim module.
 """
 
-# Maximum number of DataflowBuffers per core (hardware limit).
-MAX_DFBS = 32
-
 from .typedefs import Shape
 
 # Private tile size - use TILE_SHAPE in external code

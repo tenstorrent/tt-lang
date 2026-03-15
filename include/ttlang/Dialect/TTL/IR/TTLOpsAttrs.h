@@ -6,6 +6,7 @@
 #define TTLANG_DIALECT_TTL_IR_TTLOPSATTRS_H
 
 #include "mlir/IR/Attributes.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 
 #define GET_ATTRDEF_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrDefs.h.inc"

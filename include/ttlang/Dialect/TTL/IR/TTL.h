@@ -80,6 +80,11 @@ constexpr llvm::StringLiteral kAccGroupIdAttrName("ttl.acc_group");
 /// configures both UNPACK channels) instead of init_sfpu.
 constexpr llvm::StringLiteral kAccGroupSyncAttrName("ttl.acc_group_sync");
 
+/// Trait for data movement operations (copy_tile, copy_dst).
+template <typename ConcreteType>
+class TTLDataMovementOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLDataMovementOpTrait> {};
+
 /// Trait for tile compute operations (add, mul, exp, etc.).
 template <typename ConcreteType>
 class TTLTileComputeOpTrait

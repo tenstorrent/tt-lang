@@ -40,7 +40,7 @@ def eltwise_1d_broadcast(
     #
     # Tensor   Torch shape  Shape in tiles
     # A        N            NT
-    # B        1            1
+    # B        1            1  (scalar - 1 element)
     # Y        N            NT
     # Z        N            NT
     #
@@ -49,6 +49,7 @@ def eltwise_1d_broadcast(
     NT = N // TILE_SIZE
 
     a_dfb = ttl.make_dataflow_buffer_like(A, shape=(1,))
+    # B is a scalar (1 element) that will be broadcast to match A's shape
     b_dfb = ttl.make_dataflow_buffer_like(B, shape=(1,))
     y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1,))
     z_dfb = ttl.make_dataflow_buffer_like(Z, shape=(1,))
@@ -90,6 +91,7 @@ def eltwise_1d_broadcast(
                 a_squared = a_blk**2
                 b_squared = b_blk**2
 
+                # Broadcast b_squared from element_shape=(1,) to match a_squared's element_shape=(32,)
                 y = ttl.math.sqrt(a_squared + ttl.math.broadcast(b_squared, dims=[0]))
                 z = ttl.math.sqrt(a_squared - ttl.math.broadcast(b_squared, dims=[0]))
 
@@ -120,14 +122,13 @@ def eltwise_1d_broadcast(
 
 
 def main() -> int:
-    TILE_SIZE = 32
     N = 128  # 4 tiles
 
     # A = 4.0, B = 3.0 (scalar)
     # Y = sqrt(4^2 + 3^2) = sqrt(25) = 5.0
     # Z = sqrt(4^2 - 3^2) = sqrt(7) ~= 2.6458
     A = ttnn.from_torch(torch.full((N,), 4.0, dtype=torch.float32))
-    B = ttnn.from_torch(torch.full((TILE_SIZE,), 3.0, dtype=torch.float32))
+    B = ttnn.from_torch(torch.tensor([3.0], dtype=torch.float32))  # Scalar - 1 element
     Y = ttnn.empty((N,), dtype=torch.float32)
     Z = ttnn.empty((N,), dtype=torch.float32)
 

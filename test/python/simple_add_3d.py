@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn, tt-device
-# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-maximize-dst --no-fpu-binary-ops > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s > %t.fpu.output 2>&1
@@ -65,8 +65,6 @@ def add_3d_kernel(lhs, rhs, out):
 # Initial IR Checks - 3D layout
 # =============================================================================
 
-# CHECK: #ttnn_layout = #ttnn.ttnn_layout<{{.*}}>
-
 # =============================================================================
 # Compute kernel: 3D CB types and tensor ops
 # =============================================================================
@@ -92,21 +90,21 @@ def add_3d_kernel(lhs, rhs, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @dm_read
-# CHECK-SAME: %arg0: tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout>
-# CHECK-SAME: %arg1: tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout>
+# CHECK-SAME: %arg0: tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [2, 64, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+# CHECK-SAME: %arg1: tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [2, 64, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
 
 # tensor_slice with 3 indices on first tensor
-# CHECK: ttl.tensor_slice %arg0[%{{.*}}, %{{.*}}, %{{.*}}] : tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout> -> tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout>
+# CHECK: ttl.tensor_slice %arg0[%{{.*}}, %{{.*}}, %{{.*}}] : tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [2, 64, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
 # CHECK: ttl.copy
 
 # tensor_slice with 3 indices on second tensor
-# CHECK: ttl.tensor_slice %arg1[%{{.*}}, %{{.*}}, %{{.*}}] : tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout> -> tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout>
+# CHECK: ttl.tensor_slice %arg1[%{{.*}}, %{{.*}}, %{{.*}}] : tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [2, 64, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
 
 # CHECK-LABEL: func.func @dm_write
-# CHECK-SAME: %arg0: tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout>
+# CHECK-SAME: %arg0: tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [2, 64, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
 
 # tensor_slice with 3 indices on output
-# CHECK: ttl.tensor_slice %arg0[%{{.*}}, %{{.*}}, %{{.*}}] : tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout> -> tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout>
+# CHECK: ttl.tensor_slice %arg0[%{{.*}}, %{{.*}}, %{{.*}}] : tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [2, 64, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
 
 # =============================================================================
 # C++ Kernel Checks - Verify 3D loop nests in generated code
@@ -149,7 +147,7 @@ def add_3d_kernel(lhs, rhs, out):
 # CHECK-CPP:       noc_async_write_tile(
 
 # =============================================================================
-# FPU path checks (default: --maximize-dst --fpu-binary-ops)
+# FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
 # 2x2x2 = 8 tiles fits in DST (bf16), fully unrolled with FPU binary add
 # =============================================================================
 

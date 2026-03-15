@@ -7,31 +7,31 @@
 from dataclasses import dataclass
 from typing import List
 
-from ttmlir.dialects import ttcore, ttnn
+from ttl.dialects import ttcore
 
 from .constants import DEFAULT_TILE_SIZE
 from .dtype_utils import tensor_dtype_to_ttcore_datatype
 
 
 @dataclass(frozen=True)
-class TTNNLayoutConfig:
-    """Configuration for TTNN layout creation. Supports L1/DRAM interleaved tiled layouts."""
+class LayoutConfig:
+    """Configuration for TTL layout creation. Supports L1/DRAM interleaved tiled layouts."""
 
     logical_shape: List[int]
     grid: List[int]
     dtype: str
 
 
-# TTNN BufferType enum values (from TTNNOpsEnums.td)
-_TTNN_BUFFER_TYPE_L1 = 1
+# BufferType enum values (match TTLOpsEnums.td)
+BUFFER_TYPE_L1 = 1
 
-# TTNN TensorMemoryLayout enum values (from TTNNOpsEnums.td)
-_TTNN_TENSOR_MEMORY_LAYOUT_INTERLEAVED = 0
+# TensorMemoryLayout enum values (match TTLOpsEnums.td)
+TENSOR_MEMORY_LAYOUT_INTERLEAVED = 0
 
 
-def create_ttnn_layout(ctx, config: TTNNLayoutConfig):
+def create_layout(ctx, config: LayoutConfig):
     """
-    Create a TTNNLayoutAttr for L1 interleaved tiled tensors.
+    Create a TTLLayoutAttr for L1 interleaved tiled tensors.
 
     Supports: L1/DRAM memory, Interleaved layout, tiled (32x32 tiles).
 
@@ -40,7 +40,7 @@ def create_ttnn_layout(ctx, config: TTNNLayoutConfig):
         config: Configuration with logical_shape, grid, and dtype
 
     Returns:
-        TTNNLayoutAttr
+        LayoutAttr
 
     Raises:
         ValueError: If configuration is unsupported
@@ -62,13 +62,14 @@ def create_ttnn_layout(ctx, config: TTNNLayoutConfig):
         ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
     )
 
-    grid_attr = ttcore.ir.GridAttr.get(ctx, mlir_grid)
+    # Import ttl.ir from our _ttlang extension module
+    from ttl._mlir_libs._ttlang import ttl_ir
 
-    return ttnn.ir.TTNNLayoutAttr.get(
+    return ttl_ir.LayoutAttr.get(
         ctx,
         config.logical_shape,
         element_type,
-        _TTNN_BUFFER_TYPE_L1,
-        grid_attr,
-        _TTNN_TENSOR_MEMORY_LAYOUT_INTERLEAVED,
+        BUFFER_TYPE_L1,
+        mlir_grid,
+        TENSOR_MEMORY_LAYOUT_INTERLEAVED,
     )

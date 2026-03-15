@@ -165,6 +165,14 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--max-dfbs",
+        type=int,
+        metavar="N",
+        dest="max_dfbs",
+        help="Maximum number of DataflowBuffers (CBs) per core (default: 32)",
+    )
+
+    parser.add_argument(
         "script_args",
         nargs=argparse.REMAINDER,
         help="Arguments to pass to the script",
@@ -178,6 +186,16 @@ def main() -> None:
 
     # Set up simulator imports before running any code
     setup_simulator_imports()
+
+    # Configure max_dfbs limit if specified
+    if args.max_dfbs is not None:
+        try:
+            from .program import set_max_dfbs
+
+            set_max_dfbs(args.max_dfbs)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
 
     # Configure scheduler algorithm if specified
     if args.scheduler:

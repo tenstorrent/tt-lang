@@ -2,491 +2,316 @@
 
 ## Overview
 
-tt-lang uses a CMake-based build system that **reuses tt-mlir's environment and toolchain**. This approach avoids duplicating LLVM/MLIR builds and ensures consistency between tt-lang and tt-mlir (same compiler, same LLVM version, same Python environment).
+tt-lang uses a CMake-based build system that compiles LLVM/MLIR, a minimal
+tt-mlir subset, tt-metal, and tt-lang's own dialects and tools from pinned git
+submodules. A single `cmake -B build && cmake --build build` invocation produces
+a fully working environment.
 
-The tt-lang build system supports:
-- TableGen and C++ code for MLIR dialects and passes.
-- Python bindings using nanobind.
-- tt-mlir as a dependency (links against tt-mlir libraries and uses its Python bindings).
+The build system supports:
+- Building LLVM/MLIR from submodule (default) or using a pre-built install
+- TableGen and C++ code for MLIR dialects and passes
+- Python bindings using nanobind
+- tt-metal runtime (configure-time build)
 
-## Prerequisites and Build Instructions
+## Prerequisites
 
-See the [README Quick Start](README.md#quick-start) section for prerequisites and build instructions.
+- CMake 3.28+
+- Ninja
+- Clang/Clang++ (or GCC)
+- Python 3.11+
+- Git (submodules must be initialized)
 
-## Configuration and build
+## Quick Start
 
-tt-lang supports three integration scenarios for tt-mlir:
-
-### Scenario 1: Pre-built tt-mlir (Development Mode)
-
-Use a tt-mlir build tree directly without installation. This mode:
-- Points to a tt-mlir build directory using `TTMLIR_BUILD_DIR`
-- Extracts configuration from tt-mlir's CMake cache
-- Uses tt-mlir's Python environment and toolchain settings
-- Does not require tt-mlir installation
-- Respects `TTMLIR_TOOLCHAIN_DIR` if set as an environment variable
-
-**Use this mode when:**
-- You're actively developing tt-mlir alongside tt-lang
-- You need quick iteration without rebuilding/reinstalling tt-mlir
-
-**Configuration:**
 ```bash
-# Set toolchain directory (optional, prevents incorrect derivation from Python path)
-export TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
+cd tt-lang
 
-# Configure with tt-mlir build directory
-cmake -GNinja -Bbuild . -DTTMLIR_BUILD_DIR=/path/to/tt-mlir/build
+# Initialize submodules
+git submodule update --init --recursive
+
+# Configure and build
+cmake -G Ninja -B build .
+cmake --build build
+
+# Activate environment
+source build/env/activate
 ```
 
-### Scenario 2: Pre-installed tt-mlir (Recommended)
+## Installing
 
-Use a pre-installed tt-mlir toolchain. This mode:
-- Finds tt-mlir at `TTMLIR_TOOLCHAIN_DIR` (default: `/opt/ttmlir-toolchain`)
-- Uses the installed tt-mlir's CMake configuration
-- Does not require environment activation
-- Simplest and most reliable for production builds
+After building, install tt-lang and its toolchain into a prefix directory:
 
-**Use this mode when:**
-- You have tt-mlir pre-installed (e.g., in a container or system installation)
-- You want a stable, reproducible build environment
+```bash
+cmake --install build --prefix /opt/ttlang-toolchain
+```
 
-**Important:** The pre-installed tt-mlir must be built with Python bindings enabled (`-DTTMLIR_ENABLE_BINDINGS_PYTHON=ON`). See the [tt-mlir Getting Started guide](https://docs.tenstorrent.com/tt-mlir/getting-started.html) for details on building tt-mlir with Python bindings.
+When `TTLANG_TOOLCHAIN_DIR` is set during configure, LLVM, tt-metal, and the Python venv are already placed there. The install step adds tt-lang's own artifacts (binaries, Python packages, examples, tests, and the environment activation script).
 
-### Scenario 3: Automatic Build
+The resulting prefix is self-contained and can be used to build Docker images or shared across machines (the venv will be recreated on first configure).
 
-Automatically fetch and build tt-mlir if not found. This mode:
-- Fetches tt-mlir from the commit specified in `third-party/tt-mlir.commit`
-- Builds and installs tt-mlir locally in the build directory
-- Requires an existing LLVM/MLIR toolchain and Python environment
-- First build is slow, but subsequent builds reuse the cached installation
+## Submodules
 
-**Use this mode when:**
-- You don't have tt-mlir pre-installed and don't want to build/install it yourself
-- You want a fully automated setup
-- You're setting up a new development environment
+`.gitmodules` pins three submodules:
 
-## How It Works
+| Submodule | Purpose |
+|---|---|
+| `third-party/llvm-project` | LLVM/MLIR source (built at configure time) |
+| `third-party/tt-mlir` | tt-mlir source (only select directories compiled) |
+| `third-party/tt-metal` | Runtime (built at configure time) |
 
-The `ExternTTMLIR.cmake` module finds tt-mlir using the following priority:
+## LLVM/MLIR
 
-### Scenario 1: Pre-built tt-mlir
-If `TTMLIR_BUILD_DIR` is specified:
-1. Looks for `TTMLIRConfig.cmake` in `${TTMLIR_BUILD_DIR}/lib/cmake/ttmlir`
-2. Loads configuration from tt-mlir's CMake cache using `load_cache`:
-   - `CMAKE_HOME_DIRECTORY` → tt-mlir source directory
-   - `_Python3_EXECUTABLE` → Python executable used by tt-mlir (typically from the virtual python environment in the tt-mlir toolchain location)
-3. Sets `TTMLIR_TOOLCHAIN_DIR` from:
-   - Environment variable `TTMLIR_TOOLCHAIN_DIR` (if set, takes precedence)
-   - Otherwise derives it from the Python executable path
-4. Adds tt-mlir's CMake modules to the module path
-5. Sets up Python from `${TTMLIR_TOOLCHAIN_DIR}/venv`
+`cmake/modules/BuildLLVM.cmake` supports two modes, controlled by whether
+`MLIR_PREFIX` or `TTLANG_USE_TOOLCHAIN` is set.
 
-### Scenario 2: Pre-installed tt-mlir
-If `TTMLIR_BUILD_DIR` is not specified:
-1. Sets `TTMLIR_TOOLCHAIN_DIR` from:
-   - Environment variable `TTMLIR_TOOLCHAIN_DIR` (if set)
-   - CMake variable `TTMLIR_TOOLCHAIN_DIR` (if set)
-   - Default: `/opt/ttmlir-toolchain`
-2. Looks for `TTMLIRConfig.cmake` in `${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/ttmlir`
-3. If found, uses the installed tt-mlir configuration
-4. Sets up Python from `${TTMLIR_TOOLCHAIN_DIR}/venv`
-5. Finds MLIR and LLVM from the toolchain
+### Option A: Build from submodule (default)
 
-### Scenario 3: Automatic build
-If tt-mlir is not found in scenarios 1 or 2:
-1. Reads the commit SHA from `third-party/tt-mlir.commit`
-2. Uses `FetchContent_Populate` to clone tt-mlir at the above SHA
-3. Configures tt-mlir with platform-specific options:
-   - **Linux**: Runtime and runtime tests enabled
-   - **macOS**: Runtime and runtime tests disabled
-   - Common: StableHLO OFF, OPMODEL OFF, Python bindings ON, Debug strings ON
-   - Performance trace: Controlled by `TTLANG_ENABLE_PERF_TRACE` (default: OFF)
-4. Builds and installs tt-mlir to `${TTMLIR_INSTALL_PREFIX}` (default: `${CMAKE_BINARY_DIR}/tt-mlir-install`)
-5. Uses the newly built tt-mlir for the tt-lang build
+Builds LLVM from `third-party/llvm-project` at configure time. Creates a Python
+venv in `build/venv/` with MLIR Python bindings and all tt-lang pip requirements.
+The result is cached — subsequent configures skip the LLVM build if
+`build/llvm-install/lib/cmake/mlir/MLIRConfig.cmake` already exists.
 
-**Python Environment:**
-- **Scenarios 1 & 2**: Use Python from `${TTMLIR_TOOLCHAIN_DIR}/venv` with `Python3_FIND_VIRTUALENV=ONLY`
-- **Scenario 3**: Uses Python from `${TTMLIR_TOOLCHAIN_DIR}/venv` for building tt-mlir, but does not set `Python3_EXECUTABLE` globally
+```bash
+cmake -G Ninja -B build .
+```
 
-**Note:** The `third-party/tt-mlir.commit` file pins the exact tt-mlir version for compatibility.
+To install the toolchain (LLVM, tt-metal, Python venv) into a reusable prefix,
+set `TTLANG_TOOLCHAIN_DIR`:
+
+```bash
+cmake -G Ninja -B build -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain .
+```
+
+This redirects the LLVM install, tt-metal build, and Python venv into
+`/opt/ttlang-toolchain` so it can be reused by other builds via Option B.
+
+### Option B: Use a pre-built toolchain or LLVM/MLIR install
+
+Skip the LLVM and tt-metal builds by pointing at an existing toolchain:
+
+```bash
+# Use a toolchain previously built with TTLANG_TOOLCHAIN_DIR
+cmake -G Ninja -B build \
+  -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
+  -DTTLANG_USE_TOOLCHAIN=ON .
+```
+
+`TTLANG_TOOLCHAIN_DIR` can also be set via the environment variable of the
+same name. When not specified with `TTLANG_USE_TOOLCHAIN=ON`, it defaults to
+`/opt/ttlang-toolchain`.
+
+When `TTLANG_USE_TOOLCHAIN=ON`, the build sets `Python3_EXECUTABLE` to the
+toolchain's venv (`${TTLANG_TOOLCHAIN_DIR}/venv/bin/python`) so that MLIR
+Python bindings resolve against the same interpreter they were built with.
+
+Alternatively, point directly at an LLVM/MLIR install prefix:
+
+```bash
+cmake -G Ninja -B build -DMLIR_PREFIX=/path/to/llvm-install .
+```
+
+WARNING: tt-lang may not build successfully if the pre-built LLVM is a
+significantly different version than what tt-mlir and tt-lang expect.
+
+### LLVM SHA verification
+
+When using a pre-built LLVM (either via `MLIR_PREFIX` or
+`TTLANG_USE_TOOLCHAIN`), the build verifies the installed LLVM was built
+from the expected commit. The expected SHA is read from
+`third-party/tt-mlir/env/CMakeLists.txt` (`LLVM_PROJECT_VERSION`), and the
+actual SHA is read from `<prefix>/include/llvm/Support/VCSRevision.h`.
+
+On mismatch, cmake emits a `FATAL_ERROR` with both SHAs. To proceed despite the
+mismatch:
+
+```bash
+cmake -G Ninja -B build -DMLIR_PREFIX=/path/to/llvm -DTTLANG_ACCEPT_LLVM_MISMATCH=ON .
+```
+
+The verification function (`ttlang_verify_llvm_sha`) lives in
+`cmake/modules/TTLangUtils.cmake`. Submodule builds skip verification since git
+already pins the correct commit.
+
+## Minimal tt-mlir subset
+
+`cmake/modules/BuildTTMLIRMinimal.cmake` and `lib/ttmlir-minimal/` compile
+tt-mlir sources directly from the submodule, producing 7 CMake targets:
+
+- `MLIRTTCoreDialect`, `MLIRTTTransforms`
+- `MLIRTTMetalDialect`
+- `MLIRTTKernelDialect`, `MLIRTTKernelTransforms`
+- `TTMLIRTTKernelToEmitC`, `TTKernelTargetCpp`
+
+Flatbuffers stub headers are generated in `build/include/ttmlir/Target/Common/`
+to satisfy compile-time references without requiring a flatc build.
+
+## tt-metal runtime
+
+`cmake/modules/BuildTTMetal.cmake` builds tt-metal at configure time via
+`execute_process`. Post-build, `_ttnn.so` and
+`_ttnncpp.so` are copied so `import ttnn` works after activating the environment.
+
+## Python bindings
+
+`python/ttmlir/` contains a nanobind extension (`_ttmlir`) with TTCore,
+TTKernel, and TTMetal dialect bindings. A CAPI aggregation library
+(`libTTLangPythonCAPI.so`) embeds upstream MLIR + tt-mlir + ttlang C API into a
+single shared object. The Python package prefix is `ttl.`.
+
+Three-stage site initialization registers all dialects on context creation:
+1. `_mlirRegisterEverything` — upstream MLIR dialects (func, arith, scf, etc.)
+2. `_site_initialize_0.py` — tt-mlir dialects (TTCore, TTKernel, TTMetal)
+3. `_site_initialize_1.py` — TTL dialect
+
+## Environment
+
+`env/activate.in` is a configure-time template that produces `build/env/activate`.
+Sourcing it:
+- Activates the Python venv
+- Sets `TT_LANG_HOME`, `TTLANG_ENV_ACTIVATED=1`
+- Prepends `build/bin` to `PATH`
+- Prepends `build/python_packages` and `python/` to `PYTHONPATH`
+- Sets `LD_LIBRARY_PATH` for tt-metal libs
 
 ## Directory Structure
 
+<details>
+<summary>Source tree</summary>
+
 ```
 tt-lang/
-├── CMakeLists.txt                 # Root build file
-├── BUILD_SYSTEM.md                # This file
-├── README.md                      # Project README
-├── requirements.txt               # Python runtime requirements
-├── dev-requirements.txt           # Development requirements
-├── cmake/
-│   └── modules/                   # CMake helper modules
-│       ├── TTLangCompilerSetup.cmake
-│       └── ExternTTMLIR.cmake     # tt-mlir dependency management
+├── cmake/modules/
+│   ├── BuildLLVM.cmake              # LLVM build (submodule or pre-built)
+│   ├── BuildTTMetal.cmake           # tt-metal configure-time build
+│   ├── BuildTTMLIRMinimal.cmake     # Minimal tt-mlir subset (7 targets)
+│   ├── GetVersionFromGit.cmake      # Version extraction from git tags
+│   ├── TTLangCompilerSetup.cmake    # Compiler flags and settings
+│   └── TTLangUtils.cmake            # Utility functions (SHA verification, etc.)
 ├── env/
-│   └── activate.in                # Environment activation template
-├── build/                         # Build directory (created by CMake)
-│   └── env/
-│       └── activate               # Generated activation script
-├── include/
-│   ├── CMakeLists.txt
-│   ├── ttlang/                    # Public C++ headers
-│   │   └── Dialect/TTMetal/Pipelines/
-│   └── ttlang-c/                  # Public C API headers
+│   └── activate.in                  # Configure-time template → build/env/activate
+├── include/ttlang/
+│   ├── Bindings/Python/             # Python binding headers
+│   ├── Dialect/
+│   │   ├── TTKernel/Transforms/     # TTKernel pass declarations
+│   │   ├── TTL/
+│   │   │   ├── IR/                  # TTL dialect ODS-generated headers
+│   │   │   └── Pipelines/           # TTL pass pipeline registration
+│   │   └── Utils/                   # Shared dialect utilities
+│   └── ...
+├── include/ttlang-c/                # C API headers (CAPI aggregation)
 ├── lib/
-│   ├── CMakeLists.txt
-│   └── Dialect/TTMetal/Pipelines/ # TTMetal pipeline implementations
+│   ├── CAPI/                        # C API implementation (libTTLangPythonCAPI.so)
+│   ├── Dialect/
+│   │   ├── TTKernel/Transforms/     # TTKernel pass implementations
+│   │   └── TTL/
+│   │       ├── IR/                  # TTL dialect implementation
+│   │       ├── Pipelines/           # TTL pass pipeline
+│   │       └── Transforms/          # TTL passes (DST assignment, etc.)
+│   └── ttmlir-minimal/
+│       ├── CAPI/                    # Dialect registration bridge (TTCore, TTKernel, TTMetal)
+│       ├── TTKernelToCppRegistration.cpp  # Pass registration for --convert-ttkernel-to-emitc
+│       └── CMakeLists.txt           # Builds 7 tt-mlir targets from submodule sources
 ├── python/
-│   ├── CMakeLists.txt             # Python bindings build
-│   ├── pyproject.toml             # Python project configuration
-│   ├── setup.py                   # Python package setup
-│   ├── sim/                       # Simulator code (Python)
-│   │   └── cbsim/
-│   └── ttlang/                    # Python package
-│       └── __init__.py
-├── third-party/
-│   ├── CMakeLists.txt
-│   └── tt-mlir.commit             # Reference tt-mlir version
-├── tools/
-│   └── ttlang-opt/                # Command-line tool
+│   ├── pykernel/                    # @pykernel_gen decorator and kernel DSL
+│   ├── ttl/                         # TTL Python package (ttl_api.py, dialects, bindings)
+│   │   ├── _mlir_libs/              # Shared objects (_ttl.so, _ttmlir.so, etc.)
+│   │   ├── _src/                    # Internal modules
+│   │   └── dialects/                # Auto-generated dialect Python bindings
+│   ├── ttmlir/                      # nanobind extension for tt-mlir dialects
+│   ├── ttutils/                     # Shared Python utilities
+│   └── utils/                       # Build/codegen utility scripts
 ├── test/
-│   ├── CMakeLists.txt             # Lit test configuration
-│   ├── pytest.ini                 # Pytest configuration for tests
-│   └── sim/
-│       └── test_cbsim.py          # Simulator tests
-└── tests/                         # (empty placeholder)
+│   ├── ttlang/                      # MLIR lit tests (FileCheck)
+│   │   ├── Conversion/              # Conversion pass tests
+│   │   ├── Dialect/                 # Dialect op/verifier tests
+│   │   └── Translate/               # Translation tests
+│   ├── python/                      # Python lit tests
+│   │   ├── invalid/                 # Negative tests (expected errors)
+│   │   └── utils/                   # Test utilities
+│   ├── me2e/                        # Metal end-to-end tests (require device)
+│   └── sim/                         # Simulator tests
+├── third-party/
+│   ├── llvm-project/                # LLVM/MLIR submodule (pinned commit)
+│   ├── tt-mlir/                     # tt-mlir submodule (select dirs compiled)
+│   └── tt-metal/                    # tt-metal submodule (runtime)
+└── tools/
+    ├── ttlang-opt/                  # MLIR opt-like driver
+    └── ttlang-translate/            # MLIR translate driver
 ```
 
-## Build Process
+</details>
 
-### 1. Configure
+<details>
+<summary>Build output (<code>build/</code>)</summary>
 
-The CMake configure step generates a `build/env/activate` script tailored to your build scenario:
-
-```bash
-cd /path/to/tt-lang
-cmake -GNinja -Bbuild .
+```
+build/
+├── bin/                             # ttlang-opt, ttlang-translate, llvm-lit, FileCheck
+├── env/activate                     # Generated from env/activate.in
+├── include/ttmlir/Target/Common/    # Generated flatbuffers stub headers
+├── lib/                             # Built libraries
+├── llvm-build/                      # LLVM build tree (submodule mode only)
+├── llvm-install/                    # LLVM install prefix (submodule mode only)
+├── python_packages/ttl/             # Assembled Python package
+├── test/                            # Lit test output directory
+├── tt-metal-build/                  # tt-metal build tree (note: tt-metal also builds in-source at third-party/tt-metal/build/)
+└── venv/                            # Python venv (submodule mode only)
 ```
 
-This creates `build/env/activate` with the correct paths for whichever tt-mlir scenario was detected.
+</details>
 
-### 2. Activate Environment
+## CMake Options
 
-```bash
-source build/env/activate
-```
-
-**What this does:**
-- Sets `TT_LANG_HOME` to tt-lang project root
-- Sets `TTMLIR_TOOLCHAIN_DIR` to the detected or configured toolchain directory
-- Activates the Python virtual environment from the toolchain
-- Sets `TTLANG_ENV_ACTIVATED=1`
-- Prepends `tt-lang/build/bin` to PATH
-- Prepends `tt-lang/build/python_packages` and `tt-lang/python` to PYTHONPATH
-- Shows which tt-mlir is being used (build tree, installed, or locally built)
-
-### 3. Build tt-lang
-
-```bash
-cmake --build build
-```
-
-**Configuration Options:**
-
-- `CMAKE_BUILD_TYPE` (default: Release) - Build type (Debug, Release, RelWithDebInfo, Asan, Coverage, Assert)
-- `TTMLIR_BUILD_DIR` - Path to tt-mlir build directory (Scenario 1)
-- `TTMLIR_TOOLCHAIN_DIR` (default: `/opt/ttmlir-toolchain`) - Location of tt-mlir toolchain (Scenarios 2 & 3)
-  - Can be set as environment variable: `export TTMLIR_TOOLCHAIN_DIR=/path/to/toolchain`
-  - Or as CMake variable: `-DTTMLIR_TOOLCHAIN_DIR=/path/to/toolchain`
-  - Environment variable takes precedence
-  - **Recommended for Scenario 1**: Set as environment variable to prevent incorrect derivation from Python path
-- `TTMLIR_INSTALL_PREFIX` (default: `${CMAKE_BINARY_DIR}/tt-mlir-install`) - Installation prefix for automatically built tt-mlir (Scenario 3 only)
-- `TTLANG_ENABLE_BINDINGS_PYTHON` (default: OFF) - Enable Python bindings
-- `TTLANG_ENABLE_RUNTIME` (default: OFF) - Enable runtime support
-- `TTLANG_ENABLE_PERF_TRACE` (default: OFF) - Enable performance trace (Scenario 3 only, passed to tt-mlir build)
-- `CODE_COVERAGE` (default: OFF) - Enable code coverage reporting
-
-**Examples:**
-
-```bash
-# Scenario 1: Use pre-built tt-mlir (with explicit toolchain)
-export TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
-cmake -GNinja -Bbuild . -DTTMLIR_BUILD_DIR=/path/to/tt-mlir/build
-
-# Scenario 2: Use pre-installed tt-mlir (via environment variable)
-export TTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
-cmake -GNinja -Bbuild .
-
-# Scenario 2: Use pre-installed tt-mlir (via CMake variable)
-cmake -GNinja -Bbuild . -DTTMLIR_TOOLCHAIN_DIR=/opt/ttmlir-toolchain
-
-# Scenario 3: Automatic build (no extra options needed)
-cmake -GNinja -Bbuild .
-
-# Scenario 3: Automatic build with custom install prefix
-cmake -GNinja -Bbuild . -DTTMLIR_INSTALL_PREFIX=/tmp/my-ttmlir-install
-
-# Scenario 3: Automatic build with performance trace enabled
-cmake -GNinja -Bbuild . -DTTLANG_ENABLE_PERF_TRACE=ON -DTTMLIR_CMAKE_BUILD_TYPE=Release
-
-# Debug build with Python bindings
-cmake -GNinja -Bbuild . -DCMAKE_BUILD_TYPE=Debug -DTTLANG_ENABLE_BINDINGS_PYTHON=ON
-```
-
-This builds:
-- C++ libraries (when added to `lib/`)
-- Python bindings (in `build/python_packages/ttlang/`)
-
-### 4. Use Python Packages
-
-After building, Python packages are available via PYTHONPATH:
-
-```bash
-# Already set by env/activate
-python3 -c "import ttl; print(ttl.__version__)"
-```
-
-Or install as an editable package:
-```bash
-pip install -e python/
-```
-
-## Integration with tt-mlir
-
-### Using tt-mlir's Toolchain
-
-tt-lang **reuses everything from tt-mlir**:
-- LLVM/MLIR installation at `$TTMLIR_TOOLCHAIN_DIR`
-- Python virtual environment at `$TTMLIR_VENV_DIR`
-- CMake modules from `$TT_MLIR_HOME/cmake/modules`
-- Build tools (clang, ninja, llvm-lit, etc.)
-
-### Using tt-mlir's CMake Modules
-
-tt-lang uses tt-mlir's CMake helper modules:
-- `FindMLIR.cmake` - Locates MLIR/LLVM
-- `TTMLIRBuildTypes.cmake` - Custom build types (Asan, Coverage, Assert)
-- Others as needed
-
-These are automatically available via:
-```cmake
-list(APPEND CMAKE_MODULE_PATH "$ENV{TT_MLIR_HOME}/cmake/modules")
-```
-
-### Linking Against tt-mlir
-
-tt-mlir provides `TTMLIRConfig.cmake` that exports targets and variables:
-
-**Variables:**
-- `TTMLIR_INCLUDE_DIRS` - Include directories
-- `TTMLIR_LIBRARY_DIRS` - Library directories
-- `TTMLIR_CMAKE_DIR` - CMake configuration directory
-
-**Targets:**
-- `MLIRTTCoreDialect`
-- `MLIRTTNNDialect`
-- `MLIRTTIRDialect`
-- `TTMLIRSupport`
-- Many more...
-
-**Usage in CMakeLists.txt:**
-```cmake
-# Link against tt-mlir libraries
-target_link_libraries(MyTarget
-  PRIVATE
-    MLIRTTCoreDialect
-    MLIRTTNNDialect
-    # other tt-mlir targets
-)
-```
-
-## Environment Variables
-
-### Input Variables (can be set before CMake configure):
-- `TTMLIR_TOOLCHAIN_DIR` - Toolchain installation directory (e.g., `/opt/ttmlir-toolchain`)
-  - Can be set as an environment variable or CMake variable (`-DTTMLIR_TOOLCHAIN_DIR=...`)
-  - Environment variable takes precedence if set
-  - Defaults to `/opt/ttmlir-toolchain` if not specified
-  - **Important for Scenario 1**: When using a tt-mlir build tree (no install), etting this as an environment variable prevents CMake from incorrectly deriving it from the Python executable path
-
-### Set by tt-lang's generated activate script:
-- `TT_LANG_HOME` - tt-lang project root
-- `TTMLIR_TOOLCHAIN_DIR` - Toolchain directory (exported for reference)
-- `TTLANG_ENV_ACTIVATED` - Set to 1 when tt-lang environment is active
-
-### Modified by tt-lang's activate script:
-- `PATH` - Prepends `$TT_LANG_HOME/build/bin`
-- `PYTHONPATH` - Prepends `$TT_LANG_HOME/build/python_packages` and tt-mlir Python packages
-- Python virtual environment from `${TTMLIR_TOOLCHAIN_DIR}/venv` is activated
-
-## Development Workflow
-
-### First-time Setup
-
-```bash
-# Build tt-lang
-cd /path/to/tt-lang
-cmake -GNinja -Bbuild .      # Configure and generate activation script
-source build/env/activate     # Activate the environment
-cmake --build build           # Build tt-lang
-```
-
-### Daily Development
-
-```bash
-# In each new shell session:
-cd /path/to/tt-lang
-source build/env/activate
-
-# Build
-cmake --build build
-
-# Test
-pytest tests/
-```
-
-### Rebuilding After Changes
-
-```bash
-# After CMakeLists.txt or other CMake changes:
-cmake -GNinja -Bbuild .
-
-# After C++ code changes:
-cmake --build build
-
-# After Python code changes (if no C++ changes):
-# Python files are used directly from source or build/python_packages
-```
-
-
-## Future Additions
-
-As the project grows, you can add:
-
-### Dialects
-- Add headers to `include/ttlang/Dialect/`
-- Add implementation to `lib/Dialect/`
-- Add TableGen definitions (`.td` files)
-
-### Passes and Transformations
-- Add headers to `include/ttlang/Transforms/`
-- Add implementation to `lib/Transforms/`
-
-### C API
-- Add headers to `include/ttlang-c/`
-- Add implementation to `lib/CAPI/`
-
-### Command-line Tools
-- Create tool directories (e.g., `tools/ttlang-opt/`, `tools/ttlang-translate/`)
-- Add executables that link against tt-lang and tt-mlir libraries
-
-### Python Extensions
-- Add C++ Python binding files in `python/` (e.g., `TTLangModule.cpp`)
-- Declare in `python/CMakeLists.txt` using `declare_mlir_python_extension`
-
-### Tests
-- Add lit tests in `test/` directory (TODO: add more details)
-- Add unit tests for C++ code
-- Add Python tests in `tests/`
+| Option | Default | Description |
+|---|---|---|
+| `CMAKE_BUILD_TYPE` | `Release` | Build type (Debug, Release, RelWithDebInfo) |
+| `LLVM_BUILD_TYPE` | `Release` | LLVM build type (independent of project build type) |
+| `TTLANG_TOOLCHAIN_DIR` | — | Toolchain prefix for LLVM, tt-metal, and venv (build or use mode) |
+| `TTLANG_USE_TOOLCHAIN` | `OFF` | Use pre-built toolchain at `TTLANG_TOOLCHAIN_DIR` |
+| `MLIR_PREFIX` | — | Path to pre-built LLVM/MLIR install (skips submodule build) |
+| `TTLANG_ACCEPT_LLVM_MISMATCH` | `OFF` | Allow LLVM SHA mismatch with pre-built installs |
+| `TTLANG_ACCEPT_TTMETAL_MISMATCH` | `OFF` | Allow tt-metal SHA mismatch with pre-built installs |
+| `TTLANG_ENABLE_PERF_TRACE` | `ON` | Enable tt-metal performance tracing support |
+| `TTLANG_ENABLE_DOCS` | `OFF` | Enable Sphinx documentation build (`ttlang-docs` target) |
+| `CODE_COVERAGE` | `OFF` | Enable code coverage reporting |
+| `TTLANG_FORCE_TOOLCHAIN_REBUILD` | `OFF` | Force rebuild of LLVM and tt-metal into `TTLANG_TOOLCHAIN_DIR` |
 
 ## Troubleshooting
 
-### Scenario 1 Issues (Pre-built tt-mlir)
+### LLVM build takes too long
 
-#### Error: "Could not find TTMLIR in build directory"
-**Solution:** Ensure tt-mlir is built:
-```bash
-cd /path/to/tt-mlir
-source env/activate
-cmake -GNinja -Bbuild .
-cmake --build build
-```
-
-Verify `TTMLIRConfig.cmake` exists at `${TTMLIR_BUILD_DIR}/lib/cmake/ttmlir/TTMLIRConfig.cmake`.
-
-#### Warning: "TTMLIR_TOOLCHAIN_DIR differs from tt-mlir's configured installation prefix"
-**Solution:** This warning indicates a mismatch between your specified `TTMLIR_TOOLCHAIN_DIR` and the one tt-mlir was configured with. The build will use tt-mlir's value. To avoid this warning:
-- Set `TTMLIR_TOOLCHAIN_DIR` as an environment variable before configuring (recommended)
-- Or ensure it matches tt-mlir's `CMAKE_INSTALL_PREFIX`
-
-### Scenario 2 Issues (Pre-installed tt-mlir)
-
-#### Error: "Could not find TTMLIR"
-**Solution:** Verify tt-mlir is installed at the expected location:
-```bash
-ls ${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/ttmlir/TTMLIRConfig.cmake
-```
-
-If not found:
-1. Install tt-mlir to the toolchain directory
-2. Or specify the correct location: `-DTTMLIR_TOOLCHAIN_DIR=/path/to/installation`
-3. Or let the build system fetch and build it automatically (Scenario 3)
-
-#### Error: "Python 3 executable not found in toolchain venv"
-**Solution:** Ensure the toolchain has a Python virtual environment:
-```bash
-ls ${TTMLIR_TOOLCHAIN_DIR}/venv/bin/python3
-```
-
-The toolchain must include a Python 3.11+ virtual environment with required packages.
-
-### Scenario 3 Issues (Automatic Build)
-
-#### Error: "Failed to clone tt-mlir"
-**Solution:** Ensure you have:
-1. Network access to GitHub
-2. Git installed and configured
-3. Valid commit hash in `third-party/tt-mlir.commit`
-
-#### Error: "tt-mlir environment not activated"
-**Solution:** The automatic build requires:
-- An existing LLVM/MLIR toolchain at `${TTMLIR_TOOLCHAIN_DIR}`
-- Python 3.11+ in `${TTMLIR_TOOLCHAIN_DIR}/venv`
-
-Ensure these prerequisites are met before attempting automatic build.
-
-#### Build takes too long
-**Solution:** The first automatic build fetches and compiles tt-mlir, which can take 30-60 minutes. To speed up:
+The first submodule build compiles LLVM from source, which can take 30-60 minutes.
+To speed up:
 - Ensure ccache is installed (automatically detected and used)
-- Use a pre-installed tt-mlir (Scenario 2) for faster builds
-- Subsequent builds reuse the cached tt-mlir installation
+- Use a pre-built LLVM via `-DMLIR_PREFIX` or `-DTTLANG_USE_TOOLCHAIN=ON`
+- Subsequent configures skip the build if `llvm-install/` already exists
 
-### Common Issues
+### LLVM SHA mismatch
 
-#### Python import errors
-**Solution:** Ensure Python can find the packages:
+If using a pre-built LLVM and cmake reports a SHA mismatch, the installed LLVM
+was built from a different commit than what tt-mlir expects. Options:
+1. Rebuild LLVM from the correct commit
+2. Pass `-DTTLANG_ACCEPT_LLVM_MISMATCH=ON` to proceed (at your own risk)
+
+### Python import errors
+
+Ensure the environment is activated and the build completed:
 ```bash
-# Check Python executable
-which python3
-
-# Verify it's using the toolchain venv
-python3 -c "import sys; print(sys.prefix)"  # Should show TTMLIR_TOOLCHAIN_DIR/venv
-
-# Test imports
-python3 -c "import ttmlir; import ttl"
+source build/env/activate
+python3 -c "from ttl.dialects import ttl, ttkernel, ttcore"
 ```
 
-If imports fail, verify the build completed successfully and Python packages were installed.
+### nanobind build failures
 
-#### Build errors about missing LLVM/MLIR
-**Solution:** Ensure the toolchain directory contains LLVM/MLIR:
+tt-mlir (and by extension LLVM) builds can be non-deterministic around nanobind
+Python bindings. If you see nanobind-related compiler errors, retry the build
+2-3 times.
+
+### Missing submodules
+
 ```bash
-ls ${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/mlir/MLIRConfig.cmake
-ls ${TTMLIR_TOOLCHAIN_DIR}/lib/cmake/llvm/LLVMConfig.cmake
+git submodule update --init --recursive
 ```
 
-If missing, you need to install or build the LLVM/MLIR toolchain first.
-
-#### CMake configuration errors
-**Solution:** Clean the build directory and reconfigure:
-```bash
-rm -rf build
-cmake -GNinja -Bbuild .
-```
-
-For persistent issues, check:
-1. CMake version is 3.24 or newer
-2. Ninja is installed
-3. Clang/Clang++ are available
-4. All paths in error messages are valid
+For tt-metal specifically, nested submodules (tracy, tt_llk, umd) must also be
+initialized. The build emits clear error messages if they are missing.

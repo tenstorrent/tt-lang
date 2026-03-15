@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn, tt-device
-# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-maximize-dst --no-fpu-binary-ops > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s > %t.fpu.output 2>&1
@@ -61,12 +61,6 @@ def add_multitile_kernel(lhs, rhs, out):
         tx.wait()
         out_blk.pop()
 
-
-# =============================================================================
-# Initial IR Checks - Verify tensor layout (64x64 = 4 tiles on single core)
-# =============================================================================
-
-# CHECK: #ttnn_layout = #ttnn.ttnn_layout<{{.*}}memref<1x4x!ttcore.tile<32x32, bf16>{{.*}}>
 
 # =============================================================================
 # Initial IR Checks - Verify compute kernel with multi-tile support
@@ -135,7 +129,7 @@ def add_multitile_kernel(lhs, rhs, out):
 # CHECK-CPP: cb_push_back(get_compile_time_arg_val(2),
 
 # =============================================================================
-# FPU path checks (default: --maximize-dst --fpu-binary-ops)
+# FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
 # 2x2 = 4 tiles fits in DST (bf16), fully unrolled with FPU binary add
 # =============================================================================
 

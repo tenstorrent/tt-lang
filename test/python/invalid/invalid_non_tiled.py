@@ -20,7 +20,7 @@ import ttnn
 import ttl
 
 
-# CHECK: ValueError: Only tiled tensors supported for TTNN interop
+# CHECK: ValueError: Only tiled tensors supported
 # CHECK-NEXT:   --> {{.*}}invalid_non_tiled.py:[[LINE:[0-9]+]]:1
 # CHECK-NEXT:    |
 # CHECK-NEXT: [[LINE]] | @ttl.kernel(grid=(1, 1), tiled=False)

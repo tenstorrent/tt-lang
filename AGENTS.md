@@ -2,9 +2,9 @@
 
 ## Build/Lint/Test Commands
 - **Environment**: `source build/env/activate` (activate virtual environment first, use actual build dir)
-- **Configure**: with internal tt-mlir build `cmake -G Ninja -B build`;
-with pre-build tt-mlir `cmake -G Ninja -B build -DTTMLIR_BUILD_DIR=/path/to/tt-mlir/build`;
-with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mlir/build/lib/cmake/ttmlir`
+- **Configure**: `cmake -G Ninja -B build`;
+  with pre-built LLVM: `cmake -G Ninja -B build -DMLIR_PREFIX=/path/to/llvm-install`;
+  with ttmlir toolchain: `cmake -G Ninja -B build -DTTLANG_USE_TOOLCHAIN=ON`
 - **Build**: `cmake --build build`
 - **Lint**: `pre-commit run --all-files` (includes clang-format, black,
   copyright checks)
@@ -49,6 +49,18 @@ with pre-installed tt-mlir `cmake -G Ninja -B build -DTTMLIR_DIR=/path/to/tt-mli
   the pass creates; do not include the starting dialect.
 - **Debugging**: use `--debug-only=dialect-conversion` with `ttlang-opt`
 - Use enums instead of integer literals for encoding items in a category.
+
+### Op Creation API
+- Use the static `OpTy::create(builder, loc, ...)` form, **not** the deprecated
+  `builder.create<OpTy>(loc, ...)`. The latter is deprecated in current LLVM and
+  will be removed.
+  ```cpp
+  // Good
+  auto op = MyOp::create(rewriter, loc, resultType, operands);
+
+  // Deprecated -- do not use
+  auto op = rewriter.create<MyOp>(loc, resultType, operands);
+  ```
 
 ### Pattern Rewriter Error Handling
 - **NEVER call `emitOpError()` inside a pattern rewriter** - causes pass to

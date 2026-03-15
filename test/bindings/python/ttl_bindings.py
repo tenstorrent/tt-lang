@@ -4,11 +4,11 @@
 
 # RUN: %python %s | FileCheck %s
 
-# Tests for TTL dialect Python bindings, using both ttmlir and ttlang modules
+# Tests for TTL dialect Python bindings
 
 from ttl.dialects import ttl
-from ttmlir.dialects import ttcore
-from ttmlir.ir import *
+from ttl.dialects import ttcore
+from ttl.ir import *
 
 with Context() as ctx, Location.unknown():
     ttl.ensure_dialects_registered(ctx)

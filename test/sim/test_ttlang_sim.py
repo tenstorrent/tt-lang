@@ -310,6 +310,206 @@ if __name__ == "__main__":
             script.unlink()
 
 
+class TestMaxDfbsCommandLineOption:
+    """Test --max-dfbs command-line option in ttlang-sim."""
+
+    @staticmethod
+    def create_test_script(num_cbs: int) -> Path:
+        """Create a temporary test script that uses a specific number of CBs."""
+        # Generate CB declarations
+        cb_declarations = "\n    ".join(
+            f"cb{i} = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)"
+            for i in range(num_cbs)
+        )
+
+        # Use cb0 for input, cb1 for middle, and last CB for output
+        last_cb = f"cb{num_cbs - 1}"
+        middle_cb = "cb1" if num_cbs > 1 else "cb0"
+
+        content = f"""
+import ttl
+import ttnn
+import torch
+
+@ttl.kernel(grid=(1, 1))
+def test_kernel(a: ttnn.Tensor):
+    {cb_declarations}
+
+    @ttl.compute()
+    def compute():
+        with cb0.reserve() as blk:
+            blk.store(ttl.math.fill(blk, 1.0))
+        with cb0.wait() as a, {middle_cb}.reserve() as o:
+            o.store(a)
+        with {middle_cb}.wait() as a, {last_cb}.reserve() as o:
+            o.store(a)
+
+    @ttl.datamovement()
+    def dm0():
+        pass
+
+    @ttl.datamovement()
+    def dm1():
+        pass
+
+if __name__ == "__main__":
+    device = ttnn.open_device(device_id=0)
+    a = torch.zeros(32, 32)
+    a_tt = ttnn.from_torch(a, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+                           device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+    test_kernel(a_tt)
+    ttnn.close_device(device)
+    print("SUCCESS")
+"""
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)
+        tmp.write(content)
+        tmp.close()
+        return Path(tmp.name)
+
+    def test_max_dfbs_option_below_limit(self):
+        """Test that --max-dfbs below actual usage fails."""
+        script = self.create_test_script(3)  # Script uses 3 CBs
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "sim.ttlang_sim",
+                    "--max-dfbs",
+                    "2",
+                    str(script),
+                ],
+                cwd=Path(__file__).parent.parent.parent,
+                env={"PYTHONPATH": "python"},
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode != 0, "Expected failure with --max-dfbs 2"
+            assert (
+                "exceeds the hardware limit of 2" in result.stderr
+            ), f"Expected CB limit error in stderr, got: {result.stderr}"
+        finally:
+            script.unlink()
+
+    def test_max_dfbs_option_at_limit(self):
+        """Test that --max-dfbs at exact usage succeeds."""
+        script = self.create_test_script(3)  # Script uses 3 CBs
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "sim.ttlang_sim",
+                    "--max-dfbs",
+                    "3",
+                    str(script),
+                ],
+                cwd=Path(__file__).parent.parent.parent,
+                env={"PYTHONPATH": "python"},
+                capture_output=True,
+                text=True,
+            )
+            assert (
+                result.returncode == 0
+            ), f"Expected success with --max-dfbs 3, got stderr: {result.stderr}"
+            assert "SUCCESS" in result.stdout
+        finally:
+            script.unlink()
+
+    def test_max_dfbs_option_above_limit(self):
+        """Test that --max-dfbs above actual usage succeeds."""
+        script = self.create_test_script(3)  # Script uses 3 CBs
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "sim.ttlang_sim",
+                    "--max-dfbs",
+                    "10",
+                    str(script),
+                ],
+                cwd=Path(__file__).parent.parent.parent,
+                env={"PYTHONPATH": "python"},
+                capture_output=True,
+                text=True,
+            )
+            assert (
+                result.returncode == 0
+            ), f"Expected success with --max-dfbs 10, got stderr: {result.stderr}"
+            assert "SUCCESS" in result.stdout
+        finally:
+            script.unlink()
+
+    def test_max_dfbs_option_default(self):
+        """Test that default max_dfbs (32) works."""
+        script = self.create_test_script(3)  # Script uses 3 CBs
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "sim.ttlang_sim", str(script)],
+                cwd=Path(__file__).parent.parent.parent,
+                env={"PYTHONPATH": "python"},
+                capture_output=True,
+                text=True,
+            )
+            assert (
+                result.returncode == 0
+            ), f"Expected success with default limit, got stderr: {result.stderr}"
+            assert "SUCCESS" in result.stdout
+        finally:
+            script.unlink()
+
+    def test_max_dfbs_option_negative(self):
+        """Test that negative --max-dfbs produces error."""
+        script = self.create_test_script(3)
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "sim.ttlang_sim",
+                    "--max-dfbs",
+                    "-5",
+                    str(script),
+                ],
+                cwd=Path(__file__).parent.parent.parent,
+                env={"PYTHONPATH": "python"},
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode != 0, "Expected failure with negative --max-dfbs"
+            assert (
+                "must be non-negative" in result.stderr
+            ), f"Expected validation error in stderr, got: {result.stderr}"
+        finally:
+            script.unlink()
+
+    def test_max_dfbs_option_zero(self):
+        """Test that --max-dfbs 0 is accepted but causes failure if CBs are used."""
+        script = self.create_test_script(1)  # Script uses 1 CB
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "sim.ttlang_sim",
+                    "--max-dfbs",
+                    "0",
+                    str(script),
+                ],
+                cwd=Path(__file__).parent.parent.parent,
+                env={"PYTHONPATH": "python"},
+                capture_output=True,
+                text=True,
+            )
+            assert (
+                result.returncode != 0
+            ), "Expected failure with --max-dfbs 0 when using CBs"
+            assert "exceeds the hardware limit of 0" in result.stderr
+        finally:
+            script.unlink()
+
+
 class TestTensorStatsOption:
     """Test --show-stats command-line option."""
 

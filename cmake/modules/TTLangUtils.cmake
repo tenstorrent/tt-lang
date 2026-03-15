@@ -23,190 +23,44 @@ macro(ttlang_set_version VERSION)
   message(STATUS "tt-lang version: ${TTLANG_VERSION}")
 endmacro()
 
-# ttlang_get_parent_dir(PATH LEVELS OUTPUT_VAR)
-# Gets the parent directory N levels up from a given path.
-# For example: PATH="/a/b/c/d", LEVELS=2 returns "/a/b".
-function(ttlang_get_parent_dir PATH LEVELS OUTPUT_VAR)
-  set(_current_path "${PATH}")
-
-  foreach(_i RANGE 1 ${LEVELS})
-    get_filename_component(_current_path "${_current_path}" DIRECTORY)
+# ttlang_ensure_submodules(SUBMODULES...)
+# Initializes git submodules if not already present.
+# Uses --depth 1 for a shallow clone of just the pinned commit.
+# GitHub supports allowReachableSHA1InWant, so --depth 1 works even for
+# commits that are not at a branch tip.
+# Skipped when there is no .git directory (e.g. Docker build context).
+function(ttlang_ensure_submodules)
+  if(NOT EXISTS "${CMAKE_SOURCE_DIR}/.git")
+    return()
+  endif()
+  foreach(_sub IN LISTS ARGN)
+    if(NOT EXISTS "${CMAKE_SOURCE_DIR}/${_sub}/.git")
+      message(STATUS "Initializing submodule ${_sub}...")
+      execute_process(
+        COMMAND git submodule update --init --depth 1 "${_sub}"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        RESULT_VARIABLE _sub_result
+      )
+      if(NOT _sub_result EQUAL 0)
+        message(FATAL_ERROR
+          "Failed to initialize submodule ${_sub}.\n"
+          "Run manually:\n"
+          "  git submodule update --init --depth 1 ${_sub}")
+      endif()
+    endif()
   endforeach()
-
-  set(${OUTPUT_VAR} "${_current_path}" PARENT_SCOPE)
 endfunction()
-
-# ttlang_execute_with_env(
-# COMMAND <command_string>
-# ENV_SCRIPT <path_to_activate_script>
-# [WORKING_DIRECTORY <directory>]
-# )
-# Executes a command with an environment activation script sourced.
-# The command is run in a bash shell with the environment script sourced first.
-# Output is echoed to stdout and errors are fatal.
-function(ttlang_execute_with_env)
-  set(options)
-  set(oneValueArgs COMMAND ENV_SCRIPT WORKING_DIRECTORY)
-  set(multiValueArgs)
-  cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
-
-  if(NOT ARG_COMMAND)
-    message(FATAL_ERROR "ttlang_execute_with_env: COMMAND is required")
-  endif()
-
-  if(NOT ARG_ENV_SCRIPT)
-    message(FATAL_ERROR "ttlang_execute_with_env: ENV_SCRIPT is required")
-  endif()
-
-  set(_exec_args
-    COMMAND_ECHO STDOUT
-    COMMAND_ERROR_IS_FATAL ANY
-  )
-
-  if(ARG_WORKING_DIRECTORY)
-    list(APPEND _exec_args WORKING_DIRECTORY "${ARG_WORKING_DIRECTORY}")
-  endif()
-
-  execute_process(
-    COMMAND /bin/bash -c ". ${ARG_ENV_SCRIPT} && ${ARG_COMMAND}"
-    ${_exec_args}
-  )
-endfunction()
-
-# ttlang_collect_ttmlir_link_libs(OUTPUT_VAR)
-# Collects all tt-mlir and MLIR libraries needed for linking when using a build tree.
-# This includes:
-# - TTMLIRCompilerStatic (contains RegisterAll.cpp)
-# - All tt-mlir export targets from TTMLIRInstall.cmake
-# - All MLIR dialect, conversion, extension, and translation libraries
-# - Core MLIR libraries
-# The collected libraries are stored in the variable named by OUTPUT_VAR.
-macro(ttlang_collect_ttmlir_link_libs OUTPUT_VAR)
-  # Get MLIR libraries from global properties
-  get_property(dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
-  get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
-  get_property(extension_libs GLOBAL PROPERTY MLIR_EXTENSION_LIBS)
-  get_property(translation_libs GLOBAL PROPERTY MLIR_TRANSLATION_LIBS)
-
-  # Use tt-mlir export targets variable (set by TTMLIRInstall.cmake)
-  if(DEFINED ttmlir_export_targets_filtered)
-    set(_ttmlir_targets ${ttmlir_export_targets_filtered})
-  elseif(DEFINED ttmlir_export_targets)
-    set(_ttmlir_targets ${ttmlir_export_targets})
-  else()
-    set(_ttmlir_targets "")
-  endif()
-
-  # Filter out targets that don't exist
-  set(_ttmlir_targets_existing "")
-
-  foreach(target ${_ttmlir_targets})
-    if(TARGET ${target})
-      list(APPEND _ttmlir_targets_existing ${target})
-    endif()
-  endforeach()
-
-
-  # Some tt-mlir pipeline libraries (TTIR/TTNN) are not exported, so add them
-  # explicitly when available.
-  set(_ttmlir_pipeline_libs
-    MLIRTTIRPipelines
-    MLIRTTNNPipelines
-  )
-  set(_ttmlir_pipeline_libs_existing "")
-
-  foreach(target ${_ttmlir_pipeline_libs})
-    if(TARGET ${target})
-      list(APPEND _ttmlir_pipeline_libs_existing ${target})
-    endif()
-  endforeach()
-
-  set(${OUTPUT_VAR}
-    TTMLIRCompilerStatic
-    ${_ttmlir_targets_existing}
-    ${_ttmlir_pipeline_libs_existing}
-    ${dialect_libs}
-    ${conversion_libs}
-    ${extension_libs}
-    ${translation_libs}
-    MLIRToLLVMIRTranslationRegistration
-    MLIRPass
-    MLIRSupport
-    MLIRRegisterAllPasses
-  )
-endmacro()
-
-# ttlang_setup_ttmlir_build_tree(BUILD_DIR)
-# Sets up tt-mlir from a build tree. This includes:
-# - Loading build cache to get source directory and Python executable
-# - Setting up include and link directories
-# - Importing tt-mlir targets from the build tree
-# - Including tt-mlir CMake modules (TTMLIRBuildTypes, TTMLIRInstall)
-macro(ttlang_setup_ttmlir_build_tree BUILD_DIR)
-  if(NOT EXISTS "${BUILD_DIR}/CMakeCache.txt")
-    message(FATAL_ERROR "TTMLIR_BUILD_DIR points to an install directory, not a build directory. Please set TTMLIR_BUILD_DIR to the tt-mlir build directory (e.g., /path/to/tt-mlir/build), not the install directory.")
-  endif()
-
-  message(STATUS "Using pre-built tt-mlir from build tree: ${BUILD_DIR}")
-
-  # Load build cache to get source directory and configuration
-  load_cache("${BUILD_DIR}" READ_WITH_PREFIX _TTMLIR_
-    CMAKE_HOME_DIRECTORY
-    LLVM_DIR
-    _Python3_EXECUTABLE
-  )
-
-  if(DEFINED _TTMLIR_TTMLIR_ENABLE_STABLEHLO AND _TTMLIR_TTMLIR_ENABLE_STABLEHLO)
-    message(STATUS "tt-lang detected tt-mlir built with StableHLO support enabled.")
-  endif()
-
-  if(DEFINED _TTMLIR_TTMLIR_ENABLE_TNN_JIT AND NOT _TTMLIR_TTMLIR_ENABLE_TNN_JIT)
-    message(WARNING "tt-lang recommends tt-mlir builds with -DTTMLIR_ENABLE_TNN_JIT=ON; continuing without TNN JIT support may disable certain pipelines.")
-  endif()
-
-  if(DEFINED _TTMLIR_LLVM_DIR)
-    list(APPEND CMAKE_MODULE_PATH "${_TTMLIR_LLVM_DIR}/cmake")
-  endif()
-
-  if(DEFINED _TTMLIR__Python3_EXECUTABLE)
-    set(Python3_EXECUTABLE "${_TTMLIR__Python3_EXECUTABLE}" CACHE FILEPATH "Python 3 executable from tt-mlir build" FORCE)
-    message(STATUS "Using Python from tt-mlir build: ${Python3_EXECUTABLE}")
-
-    # Only extract toolchain dir from Python if TTMLIR_TOOLCHAIN_DIR was not set from environment.
-    if(NOT _TTMLIR_TOOLCHAIN_DIR_FROM_ENV)
-      # Python is at /path/to/toolchain/venv/bin/python3, so go up 3 directories to get toolchain root
-      ttlang_get_parent_dir("${Python3_EXECUTABLE}" 3 _TTMLIR_EXTRACTED_TOOLCHAIN_DIR)
-      set(TTMLIR_TOOLCHAIN_DIR "${_TTMLIR_EXTRACTED_TOOLCHAIN_DIR}" CACHE PATH "tt-mlir toolchain installation directory" FORCE)
-    endif()
-  endif()
-
-  if(DEFINED _TTMLIR_CMAKE_HOME_DIRECTORY)
-    # Using a tt-mlir build tree
-    set(_TTMLIR_SOURCE_DIR "${_TTMLIR_CMAKE_HOME_DIRECTORY}")
-
-    if(EXISTS "${_TTMLIR_SOURCE_DIR}/cmake/modules")
-      message(STATUS "Found tt-mlir source directory: ${_TTMLIR_SOURCE_DIR}")
-      list(APPEND CMAKE_MODULE_PATH "${_TTMLIR_SOURCE_DIR}/cmake/modules")
-      include(TTMLIRBuildTypes OPTIONAL)
-      include(TTMLIRInstall OPTIONAL)
-    endif()
-
-    set(TTMLIR_PATH "${BUILD_DIR}")
-    include_directories(${_TTMLIR_SOURCE_DIR}/include ${BUILD_DIR}/include)
-    link_directories(${BUILD_DIR}/lib)
-
-    # Import tt-mlir targets from build tree
-    if(EXISTS "${BUILD_DIR}/lib/cmake/ttmlir/TTMLIRTargets.cmake")
-      include("${BUILD_DIR}/lib/cmake/ttmlir/TTMLIRTargets.cmake")
-    endif()
-  endif()
-endmacro()
 
 # ttlang_check_device_available(OUTPUT_VAR)
 # Checks if a Tenstorrent device is available at configure time by looking for
 # /dev/tenstorrent* files. This is faster than calling ttnn.GetNumAvailableDevices().
 # Sets the variable named by OUTPUT_VAR to TRUE if available, FALSE otherwise.
 function(ttlang_check_device_available OUTPUT_VAR)
+  if(DEFINED ENV{TT_METAL_SIMULATOR})
+    set(${OUTPUT_VAR} TRUE PARENT_SCOPE)
+    message(STATUS "Tenstorrent device: simulator mode (TT_METAL_SIMULATOR=$ENV{TT_METAL_SIMULATOR})")
+    return()
+  endif()
   file(GLOB _tt_device_files "/dev/tenstorrent*")
   if(_tt_device_files)
     set(${OUTPUT_VAR} TRUE PARENT_SCOPE)
@@ -217,6 +71,67 @@ function(ttlang_check_device_available OUTPUT_VAR)
   endif()
 endfunction()
 
+# ttlang_pip_install_requirements(PYTHON_EXE REQUIREMENTS_FILE [FATAL])
+# Installs Python packages from a requirements file using pip.
+# If FATAL is specified, a failure is a fatal error; otherwise it is a warning.
+function(ttlang_pip_install_requirements PYTHON_EXE REQUIREMENTS_FILE)
+  if(NOT EXISTS "${REQUIREMENTS_FILE}")
+    message(WARNING "Requirements file not found: ${REQUIREMENTS_FILE}")
+    return()
+  endif()
+  cmake_path(RELATIVE_PATH REQUIREMENTS_FILE BASE_DIRECTORY "${CMAKE_SOURCE_DIR}" OUTPUT_VARIABLE _req_rel)
+  message(STATUS "Installing Python requirements from ${_req_rel}...")
+  execute_process(
+    COMMAND "${PYTHON_EXE}" -m pip install --quiet -r "${REQUIREMENTS_FILE}"
+    RESULT_VARIABLE _pip_result
+  )
+  if(NOT _pip_result EQUAL 0)
+    if("FATAL" IN_LIST ARGN)
+      message(FATAL_ERROR "Failed to install Python requirements from ${REQUIREMENTS_FILE}")
+    else()
+      message(WARNING "Failed to install Python requirements from ${REQUIREMENTS_FILE}")
+    endif()
+  endif()
+endfunction()
+
+# ttlang_pip_install_package(PYTHON_EXE PACKAGE_PATH [FATAL])
+# Installs a Python package from a local path using pip.
+# If FATAL is specified, a failure is a fatal error; otherwise it is a warning.
+function(ttlang_pip_install_package PYTHON_EXE PACKAGE_PATH)
+  if(NOT EXISTS "${PACKAGE_PATH}")
+    message(WARNING "Package path not found: ${PACKAGE_PATH}")
+    return()
+  endif()
+  execute_process(
+    COMMAND "${PYTHON_EXE}" -m pip install "${PACKAGE_PATH}" --no-build-isolation --quiet
+    RESULT_VARIABLE _pip_result
+  )
+  if(NOT _pip_result EQUAL 0)
+    if("FATAL" IN_LIST ARGN)
+      message(FATAL_ERROR "Failed to pip-install package from ${PACKAGE_PATH}")
+    else()
+      message(WARNING "Failed to pip-install package from ${PACKAGE_PATH}")
+    endif()
+  endif()
+endfunction()
+
+# ttlang_get_submodule_sha(SUBMODULE_DIR OUTPUT_VAR)
+# Retrieves the HEAD commit SHA of a git submodule. Sets OUTPUT_VAR to
+# "unknown" if git fails (e.g. missing .git, dubious ownership).
+function(ttlang_get_submodule_sha SUBMODULE_DIR OUTPUT_VAR)
+  execute_process(
+    COMMAND git -C "${SUBMODULE_DIR}" rev-parse HEAD
+    OUTPUT_VARIABLE _sha
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE _result
+  )
+  if(NOT _result EQUAL 0)
+    set(_sha "unknown")
+  endif()
+  set(${OUTPUT_VAR} "${_sha}" PARENT_SCOPE)
+endfunction()
+
 # ttlang_debug_message(MESSAGE)
 # Prints a STATUS message only if TTLANG_CMAKE_DEBUG environment variable is defined.
 # Useful for verbose debug output during CMake configuration.
@@ -225,3 +140,127 @@ macro(ttlang_debug_message MESSAGE)
     message(STATUS "${MESSAGE}")
   endif()
 endmacro()
+
+# ttlang_verify_llvm_sha(INSTALL_PREFIX EXPECTED_SHA)
+# Verifies that the LLVM installation at INSTALL_PREFIX was built from the
+# expected commit. Reads the SHA from VCSRevision.h and compares against
+# EXPECTED_SHA. On mismatch, emits FATAL_ERROR unless the user passes
+# -DTTLANG_ACCEPT_LLVM_MISMATCH=ON to explicitly accept the risk.
+function(ttlang_verify_llvm_sha INSTALL_PREFIX EXPECTED_SHA)
+  set(_vcs_header "${INSTALL_PREFIX}/include/llvm/Support/VCSRevision.h")
+
+  if(NOT EXISTS "${_vcs_header}")
+    message(WARNING
+      "Cannot verify LLVM commit: ${_vcs_header} not found.\n"
+      "SHA verification skipped.")
+    return()
+  endif()
+
+  file(STRINGS "${_vcs_header}" _vcs_lines
+       REGEX "#define LLVM_REVISION")
+
+  if(NOT _vcs_lines)
+    message(WARNING
+      "Cannot verify LLVM commit: LLVM_REVISION not found in ${_vcs_header}.\n"
+      "SHA verification skipped.")
+    return()
+  endif()
+
+  # Extract the SHA from: #define LLVM_REVISION "abc123..."
+  # Also handles C++ raw string literals: R"(abc123...)"
+  # CMake regex has no {n,m} quantifier, so spell out 7+ hex chars.
+  string(REGEX MATCH "([a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9]+)" _match "${_vcs_lines}")
+  if(NOT _match)
+    message(WARNING
+      "Cannot parse LLVM_REVISION from ${_vcs_header}.\n"
+      "SHA verification skipped.")
+    return()
+  endif()
+  set(_actual_sha "${CMAKE_MATCH_1}")
+
+  if(_actual_sha STREQUAL EXPECTED_SHA)
+    message(STATUS "LLVM SHA verified: ${_actual_sha}")
+    return()
+  endif()
+
+  option(TTLANG_ACCEPT_LLVM_MISMATCH
+    "Accept LLVM SHA mismatch (use at your own risk)" OFF)
+
+  message(AUTHOR_WARNING
+    "LLVM SHA mismatch!\n"
+    "  Expected (tt-mlir): ${EXPECTED_SHA}\n"
+    "  Actual (installed): ${_actual_sha}\n"
+    "  Install prefix:     ${INSTALL_PREFIX}\n"
+    "Using a mismatched LLVM may cause build failures or runtime errors.")
+
+  if(NOT TTLANG_ACCEPT_LLVM_MISMATCH)
+    message(FATAL_ERROR
+      "LLVM SHA mismatch. To proceed despite this, re-run with:\n"
+      "  -DTTLANG_ACCEPT_LLVM_MISMATCH=ON")
+  endif()
+endfunction()
+
+# ttlang_verify_ttmetal_sha(SUBMODULE_DIR EXPECTED_SHA)
+# Verifies that the tt-metal submodule at SUBMODULE_DIR is checked out at the
+# expected commit SHA. The expected SHA is read from tt-mlir's third_party
+# CMakeLists.txt (TT_METAL_VERSION). On mismatch, emits FATAL_ERROR unless the
+# user passes -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON.
+function(ttlang_verify_ttmetal_sha SUBMODULE_DIR EXPECTED_SHA)
+  ttlang_get_submodule_sha("${SUBMODULE_DIR}" _actual_sha)
+
+  if(_actual_sha STREQUAL "unknown")
+    message(WARNING
+      "Cannot verify tt-metal commit: git rev-parse failed in ${SUBMODULE_DIR}.\n"
+      "SHA verification skipped.")
+    return()
+  endif()
+
+  if(_actual_sha STREQUAL EXPECTED_SHA)
+    ttlang_debug_message("tt-metal SHA verified: ${_actual_sha}")
+    return()
+  endif()
+
+  option(TTLANG_ACCEPT_TTMETAL_MISMATCH
+    "Accept tt-metal SHA mismatch (use at your own risk)" OFF)
+
+  message(AUTHOR_WARNING
+    "tt-metal SHA mismatch!\n"
+    "  Expected (tt-mlir): ${EXPECTED_SHA}\n"
+    "  Actual (submodule): ${_actual_sha}\n"
+    "  Submodule path:     ${SUBMODULE_DIR}\n"
+    "Using a mismatched tt-metal may cause JIT compile failures or runtime errors.\n"
+    "To update: cd ${SUBMODULE_DIR} && git fetch origin ${EXPECTED_SHA} && git checkout ${EXPECTED_SHA}")
+
+  if(NOT TTLANG_ACCEPT_TTMETAL_MISMATCH)
+    message(FATAL_ERROR
+      "tt-metal SHA mismatch. To proceed despite this, re-run with:\n"
+      "  -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON")
+  endif()
+endfunction()
+
+# ttlang_apply_patches(SOURCE_DIR PATCHES_GLOB)
+# Applies git patches matching PATCHES_GLOB to SOURCE_DIR.
+# Skips patches that are already applied (checked via git apply --reverse --check).
+function(ttlang_apply_patches SOURCE_DIR PATCHES_GLOB)
+  file(GLOB _patches "${PATCHES_GLOB}")
+  foreach(_patch ${_patches})
+    # Skip if already applied.
+    execute_process(
+      COMMAND git -C "${SOURCE_DIR}" apply --check --reverse "${_patch}"
+      RESULT_VARIABLE _already_applied
+      OUTPUT_QUIET ERROR_QUIET
+    )
+    if(_already_applied EQUAL 0)
+      continue()
+    endif()
+    get_filename_component(_name "${_patch}" NAME)
+    message(STATUS "Applying patch: ${_name}")
+    execute_process(
+      COMMAND git -C "${SOURCE_DIR}" apply "${_patch}"
+      RESULT_VARIABLE _result
+    )
+    if(NOT _result EQUAL 0)
+      message(WARNING "Failed to apply patch: ${_name}")
+    endif()
+  endforeach()
+endfunction()

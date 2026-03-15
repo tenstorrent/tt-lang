@@ -24,7 +24,6 @@ jobs:
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
     with:
-      linux_runner: mlir-large-runner-lang
       build_docs: ${{ github.ref == 'refs/heads/main' }}
 
   test-sim:

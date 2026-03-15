@@ -17,8 +17,8 @@ from sim.ttnnsim import Tensor
 
 def test_broadcast_basic():
     """Test basic broadcast operation."""
-    # Create a (1, 1) block - single tile
-    t1 = [Tensor(torch.tensor([[5.0, 6.0]]))]
+    # Create a (1, 1) block with element_shape=(1, 1) for broadcasting along dim 0
+    t1 = [Tensor(torch.tensor([[5.0]]))]
     block1 = Block.from_list(t1, shape=(1, 1))
 
     # Broadcast along dimension 0 (innermost/columns)
@@ -36,13 +36,13 @@ def test_broadcast_with_operation():
     # Create blocks of different shapes
     # Block A: (1, 2) - two tiles in column dimension
     t_a = [
-        Tensor(torch.tensor([[1.0, 2.0]])),
-        Tensor(torch.tensor([[3.0, 4.0]])),
+        Tensor(torch.tensor([[1.0]])),
+        Tensor(torch.tensor([[3.0]])),
     ]
     block_a = Block.from_list(t_a, shape=(1, 2))
 
-    # Block B: (1, 1) - single tile
-    t_b = [Tensor(torch.tensor([[10.0, 20.0]]))]
+    # Block B: (1, 1) - single tile with element_shape=(1,1) for broadcasting
+    t_b = [Tensor(torch.tensor([[10.0]]))]
     block_b = Block.from_list(t_b, shape=(1, 1))
 
     # Broadcast B and add to A
@@ -65,14 +65,14 @@ def test_broadcast_example_from_spec():
     """
     # Create a_squared with shape (1, 3)
     t_a = [
-        Tensor(torch.tensor([[9.0, 16.0]])),
-        Tensor(torch.tensor([[25.0, 36.0]])),
-        Tensor(torch.tensor([[49.0, 64.0]])),
+        Tensor(torch.tensor([[9.0]])),
+        Tensor(torch.tensor([[25.0]])),
+        Tensor(torch.tensor([[49.0]])),
     ]
     a_squared = Block.from_list(t_a, shape=(1, 3))
 
-    # Create b_squared with shape (1, 1)
-    t_b = [Tensor(torch.tensor([[16.0, 16.0]]))]
+    # Create b_squared with shape (1, 1) and element_shape=(1,1) for broadcasting
+    t_b = [Tensor(torch.tensor([[16.0]]))]
     b_squared = Block.from_list(t_b, shape=(1, 1))
 
     # Broadcast b_squared along dimension 0 (innermost/columns)
@@ -87,8 +87,8 @@ def test_broadcast_example_from_spec():
 
 def test_broadcast_multiple_dims():
     """Test broadcast along multiple dimensions."""
-    # Create a (1, 1) block
-    t1 = [Tensor(torch.tensor([[2.0, 3.0]]))]
+    # Create a (1, 1) block with element_shape=(1,1) for broadcasting both dims
+    t1 = [Tensor(torch.tensor([[2.0]]))]
     block1 = Block.from_list(t1, shape=(1, 1))
 
     # Broadcast along both dimensions
@@ -100,8 +100,8 @@ def test_broadcast_multiple_dims():
 
 def test_broadcast_preserves_data():
     """Test that broadcast preserves the original data."""
-    # Create a block with specific values
-    original_value = torch.tensor([[7.0, 8.0]])
+    # Create a block with specific values and element_shape=(1,1) for broadcasting
+    original_value = torch.tensor([[7.0]])
     t1 = [Tensor(original_value.clone())]
     block1 = Block.from_list(t1, shape=(1, 1))
 
@@ -116,63 +116,70 @@ def test_broadcast_preserves_data():
 
 
 def test_implicit_broadcast_rejected():
-    """Test that implicit broadcasting works automatically when shapes are compatible."""
+    """Test that implicit broadcasting is rejected and requires explicit broadcast()."""
     # Create blocks of different shapes
     # Block A: (1, 2) - two tiles in column dimension
     t_a = [
-        Tensor(torch.tensor([[1.0, 2.0]])),
-        Tensor(torch.tensor([[3.0, 4.0]])),
+        Tensor(torch.tensor([[1.0]])),
+        Tensor(torch.tensor([[3.0]])),
     ]
     block_a = Block.from_list(t_a, shape=(1, 2))
 
-    # Block B: (1, 1) - single tile (will be broadcast automatically)
-    t_b = [Tensor(torch.tensor([[10.0, 20.0]]))]
+    # Block B: (1, 1) - single tile with element_shape=(1,1) (would need broadcasting)
+    t_b = [Tensor(torch.tensor([[10.0]]))]
     block_b = Block.from_list(t_b, shape=(1, 1))
 
-    # Implicit broadcasting should work automatically
-    result = block_a + block_b
+    # Implicit broadcasting should be rejected
+    with pytest.raises(ValueError, match="Use broadcast\\(\\) to expand operands"):
+        result = block_a + block_b
 
-    # Result should have shape (1, 2) and correct values
+    # Explicit broadcasting should work
+    broadcasted_b = ttl.math.broadcast(block_b, dims=[0])
+    result = block_a + broadcasted_b
     assert result._shape == (1, 2)
 
 
 def test_implicit_broadcast_different_shapes():
-    """Test that implicit broadcasting works with different compatible shapes."""
+    """Test that implicit broadcasting is rejected for mismatched shapes."""
     # Block A: (2, 1)
     t_a = [
-        Tensor(torch.tensor([[1.0, 2.0]])),
-        Tensor(torch.tensor([[3.0, 4.0]])),
+        Tensor(torch.tensor([[1.0]])),
+        Tensor(torch.tensor([[3.0]])),
     ]
     block_a = Block.from_list(t_a, shape=(2, 1))
 
     # Block B: (1, 2)
     t_b = [
-        Tensor(torch.tensor([[5.0, 6.0]])),
-        Tensor(torch.tensor([[7.0, 8.0]])),
+        Tensor(torch.tensor([[5.0]])),
+        Tensor(torch.tensor([[7.0]])),
     ]
     block_b = Block.from_list(t_b, shape=(1, 2))
 
-    # Implicit broadcasting should work automatically (both dimensions have a 1)
-    result = block_a * block_b
+    # Implicit broadcasting should be rejected
+    with pytest.raises(ValueError, match="Use broadcast\\(\\) to expand operands"):
+        result = block_a * block_b
 
-    # Result should have shape (2, 2) - both dimensions broadcast
-    assert result._shape == (2, 2)
-    # Verify the result has 4 tiles (2x2)
-    assert len(result) == 4
+    # Explicit broadcasting of both should work
+    broadcasted_a = ttl.math.broadcast(block_a, dims=[0])
+    broadcasted_b = ttl.math.broadcast(block_b, dims=[1])
+
+    # Can't combine two broadcasts together (ambiguous which should expand first)
+    with pytest.raises(ValueError, match="both operands have pending broadcast"):
+        result = broadcasted_a * broadcasted_b
 
 
 def test_matching_shapes_allowed():
     """Test that operations with matching shapes work without broadcast."""
     # Both blocks have shape (1, 2)
     t_a = [
-        Tensor(torch.tensor([[1.0, 2.0]])),
-        Tensor(torch.tensor([[3.0, 4.0]])),
+        Tensor(torch.tensor([[1.0]])),
+        Tensor(torch.tensor([[3.0]])),
     ]
     block_a = Block.from_list(t_a, shape=(1, 2))
 
     t_b = [
-        Tensor(torch.tensor([[10.0, 20.0]])),
-        Tensor(torch.tensor([[30.0, 40.0]])),
+        Tensor(torch.tensor([[10.0]])),
+        Tensor(torch.tensor([[30.0]])),
     ]
     block_b = Block.from_list(t_b, shape=(1, 2))
 
@@ -183,19 +190,19 @@ def test_matching_shapes_allowed():
 
 
 def test_broadcast_on_wrong_dimension_rejected():
-    """Test that broadcasting on a dimension with size != 1 is rejected."""
-    # Block with shape (2, 1) - cannot broadcast on dimension 1 (next-to-innermost,
-    # which is the outermost grid dim of size 2).
+    """Test that broadcasting on a dimension with element size != 1 is rejected."""
+    # Block with shape (2, 1) and element_shape=(2, 1) - cannot broadcast on dimension 1
+    # (next-to-innermost, which is the outermost grid dim of size 2 in elements).
     t_a = [
-        Tensor(torch.tensor([[1.0, 2.0]])),
-        Tensor(torch.tensor([[3.0, 4.0]])),
+        Tensor(torch.tensor([[1.0]])),
+        Tensor(torch.tensor([[3.0]])),
     ]
     block_a = Block.from_list(t_a, shape=(2, 1))
 
-    # Try to broadcast on dimension 1 (outermost for 2D), which has size 2
+    # Try to broadcast on dimension 1 (outermost for 2D), which has element size 2
     with pytest.raises(
         ValueError,
-        match="Cannot broadcast along dimension 1: dimension must have size 1",
+        match="Cannot broadcast along dimension 1: dimension must have element size 1",
     ):
         ttl.math.broadcast(block_a, dims=[1])
 
@@ -203,7 +210,7 @@ def test_broadcast_on_wrong_dimension_rejected():
 def test_broadcast_out_of_range_rejected():
     """Test that broadcasting on non-existent dimension is rejected."""
     # Block with shape (1, 1) - only has dimensions 0 and 1
-    t_a = [Tensor(torch.tensor([[1.0, 2.0]]))]
+    t_a = [Tensor(torch.tensor([[1.0]]))]
     block_a = Block.from_list(t_a, shape=(1, 1))
 
     # Try to broadcast on dimension 2, which doesn't exist
@@ -220,69 +227,68 @@ def test_broadcast_out_of_range_rejected():
 def test_all_broadcast_forms():
     """Test all different forms of broadcast usage work correctly.
 
-    Tests the four forms:
-    1) result = a * b - direct implicit broadcast
-    2) result = a * broadcast(b, dims=[0]) - explicit broadcast with dims
-    3) result = a * broadcast(b, y_unused, dims=[0]) - explicit with unused output hint
-    4) w = broadcast(b, dims=[0]); result = a * w - intermediate variable
+    Tests the three forms:
+    1) result = a * broadcast(b, dims=[0]) - explicit broadcast with dims
+    2) result = a * broadcast(b, y_unused, dims=[0]) - explicit with unused output hint
+    3) w = broadcast(b, dims=[0]); result = a * w - intermediate variable
 
-    Note: We can't test with .store() on temporary blocks created via from_list(),
-    as those are already in DONE state. The patterns above are what work in real code
-    with dataflow buffers.
+    Note: Implicit broadcasting is no longer supported - must use explicit broadcast().
     """
     # Setup: 'a' is MxN (2x3) and 'b' is Mx1 (2x1)
     t_a = [
-        Tensor(torch.tensor([[1.0, 2.0]])),  # Row 0, Col 0
-        Tensor(torch.tensor([[3.0, 4.0]])),  # Row 0, Col 1
-        Tensor(torch.tensor([[5.0, 6.0]])),  # Row 0, Col 2
-        Tensor(torch.tensor([[7.0, 8.0]])),  # Row 1, Col 0
-        Tensor(torch.tensor([[9.0, 10.0]])),  # Row 1, Col 1
-        Tensor(torch.tensor([[11.0, 12.0]])),  # Row 1, Col 2
+        Tensor(torch.tensor([[1.0]])),  # Row 0, Col 0
+        Tensor(torch.tensor([[3.0]])),  # Row 0, Col 1
+        Tensor(torch.tensor([[5.0]])),  # Row 0, Col 2
+        Tensor(torch.tensor([[7.0]])),  # Row 1, Col 0
+        Tensor(torch.tensor([[9.0]])),  # Row 1, Col 1
+        Tensor(torch.tensor([[11.0]])),  # Row 1, Col 2
     ]
     block_a = Block.from_list(t_a, shape=(2, 3))
 
     t_b = [
-        Tensor(torch.tensor([[2.0, 2.0]])),  # Row 0, Col 0
-        Tensor(torch.tensor([[3.0, 3.0]])),  # Row 1, Col 0
+        Tensor(torch.tensor([[2.0]])),  # Row 0, Col 0
+        Tensor(torch.tensor([[3.0]])),  # Row 1, Col 0
     ]
     block_b = Block.from_list(t_b, shape=(2, 1))
 
-    # Form 1: Direct implicit broadcast
-    result1 = block_a * block_b
+    # Form 1: Explicit broadcast with dims (dims=[0]=innermost/columns)
+    result1 = block_a * ttl.math.broadcast(block_b, dims=[0])
 
-    # Form 2: Explicit broadcast with dims (dims=[0]=innermost/columns)
-    result2 = block_a * ttl.math.broadcast(block_b, dims=[0])
+    # Form 2: Explicit broadcast with unused output hint (None since we can't create a DFB here)
+    result2 = block_a * ttl.math.broadcast(block_b, None, dims=[0])
 
-    # Form 3: Explicit broadcast with unused output hint (None since we can't create a DFB here)
-    result3 = block_a * ttl.math.broadcast(block_b, None, dims=[0])
-
-    # Form 4: Store broadcast result first, then use it
+    # Form 3: Store broadcast result first, then use it
     broadcast_b = ttl.math.broadcast(block_b, dims=[0])
-    result4 = block_a * broadcast_b
+    result3 = block_a * broadcast_b
 
     # All forms should produce the same shape
     assert result1.shape == (2, 3)
     assert result2.shape == (2, 3)
     assert result3.shape == (2, 3)
-    assert result4.shape == (2, 3)
 
 
 def test_broadcast_form1_direct_implicit():
-    """Test form 1: y.store(a * b) with direct implicit broadcast."""
+    """Test that implicit broadcasting is rejected (was form 1).
+
+    Note: Direct implicit broadcast is no longer supported. Use explicit broadcast().
+    """
     # a is (1, 3), b is (1, 1)
     t_a = [
-        Tensor(torch.tensor([[1.0, 2.0]])),
-        Tensor(torch.tensor([[3.0, 4.0]])),
-        Tensor(torch.tensor([[5.0, 6.0]])),
+        Tensor(torch.tensor([[1.0]])),
+        Tensor(torch.tensor([[3.0]])),
+        Tensor(torch.tensor([[5.0]])),
     ]
     block_a = Block.from_list(t_a, shape=(1, 3))
 
-    t_b = [Tensor(torch.tensor([[10.0, 10.0]]))]
+    t_b = [Tensor(torch.tensor([[10.0]]))]
     block_b = Block.from_list(t_b, shape=(1, 1))
 
-    # Direct broadcast: no ttl.math.broadcast() call needed
-    result = block_a * block_b
+    # Implicit broadcast should be rejected
+    with pytest.raises(ValueError, match="Use broadcast\\(\\) to expand operands"):
+        result = block_a * block_b
 
+    # Explicit form still works
+    result = block_a * ttl.math.broadcast(block_b, dims=[0])
     assert result.shape == (1, 3)
 
 
@@ -290,13 +296,13 @@ def test_broadcast_form2_explicit_dims():
     """Test form 2: y.store(a * broadcast(b, dims=[0]))."""
     # a is (1, 3), b is (1, 1)
     t_a = [
-        Tensor(torch.tensor([[1.0, 2.0]])),
-        Tensor(torch.tensor([[3.0, 4.0]])),
-        Tensor(torch.tensor([[5.0, 6.0]])),
+        Tensor(torch.tensor([[1.0]])),
+        Tensor(torch.tensor([[3.0]])),
+        Tensor(torch.tensor([[5.0]])),
     ]
     block_a = Block.from_list(t_a, shape=(1, 3))
 
-    t_b = [Tensor(torch.tensor([[10.0, 10.0]]))]
+    t_b = [Tensor(torch.tensor([[10.0]]))]
     block_b = Block.from_list(t_b, shape=(1, 1))
 
     # Explicit broadcast with dims parameter (dims=[0]=innermost/columns)
@@ -309,16 +315,16 @@ def test_broadcast_form3_with_output_hint():
     """Test form 3: y.store(a * broadcast(b, y, dims=[0]))."""
     # a is (1, 3), b is (1, 1)
     t_a = [
-        Tensor(torch.tensor([[1.0, 2.0]])),
-        Tensor(torch.tensor([[3.0, 4.0]])),
-        Tensor(torch.tensor([[5.0, 6.0]])),
+        Tensor(torch.tensor([[1.0]])),
+        Tensor(torch.tensor([[3.0]])),
+        Tensor(torch.tensor([[5.0]])),
     ]
     block_a = Block.from_list(t_a, shape=(1, 3))
 
-    t_b = [Tensor(torch.tensor([[10.0, 10.0]]))]
+    t_b = [Tensor(torch.tensor([[10.0]]))]
     block_b = Block.from_list(t_b, shape=(1, 1))
 
-    t_y = [Tensor(torch.zeros(1, 2)) for _ in range(3)]
+    t_y = [Tensor(torch.zeros(1, 1)) for _ in range(3)]
     block_y = Block.from_list(t_y, shape=(1, 3))
 
     # Explicit broadcast with output block hint (unused but accepted)
@@ -331,13 +337,13 @@ def test_broadcast_form4_intermediate_store():
     """Test form 4: w = broadcast(b, dims=[0]); result = a * w."""
     # a is (1, 3), b is (1, 1)
     t_a = [
-        Tensor(torch.tensor([[1.0, 2.0]])),
-        Tensor(torch.tensor([[3.0, 4.0]])),
-        Tensor(torch.tensor([[5.0, 6.0]])),
+        Tensor(torch.tensor([[1.0]])),
+        Tensor(torch.tensor([[3.0]])),
+        Tensor(torch.tensor([[5.0]])),
     ]
     block_a = Block.from_list(t_a, shape=(1, 3))
 
-    t_b = [Tensor(torch.tensor([[10.0, 10.0]]))]
+    t_b = [Tensor(torch.tensor([[10.0]]))]
     block_b = Block.from_list(t_b, shape=(1, 1))
 
     # Store broadcast result in w first (as an intermediate variable, not .store())
@@ -1016,23 +1022,28 @@ def test_broadcast_3d_grid_batch_dim():
 def test_broadcast_3d_grid_spatial_dim():
     """broadcast on a 3D grid block along a spatial dimension.
 
-    With a (2, 1, 1) block grid and 2D tiles, dim 1 (middle for 3D, maps to
-    internal grid dim 1 = spatial-row) maps to tile-internal dim 0. The first
-    row of each tile should be replicated to all rows.
+    With a (2, 1, 1) block grid and tiles with 1 row, dim 1 (middle for 3D, maps to
+    internal grid dim 1 = spatial-row) maps to tile-internal dim 0. The single
+    row of each tile should be replicated to all rows in the target.
 
     Note: for ndim=3, dims=[1] is the fixed-point of the innermost-first
     translation (3-1-1 = 1), so this test is unchanged from the old convention.
+
+    Updated for element-based semantics: tiles must have element_shape with 1 row
+    to be broadcastable along the row dimension.
     """
-    # tile: row 0 = 7.0, all other rows = 0.0
-    tile_data = torch.zeros(32, 32)
-    tile_data[0, :] = 7.0
+    # Create 1x32 tiles (1 row, 32 cols) that can broadcast along dim 1 (row dimension)
+    tile_data = torch.full((1, 32), 7.0)
     tiles = [Tensor(tile_data.clone()), Tensor(tile_data.clone())]
     block = Block.from_list(tiles, shape=(2, 1, 1))
-    result = ttl.math.broadcast(block, dims=[1])
-    for res_tile in result.to_list():
-        assert torch.all(
-            res_tile.to_torch() == 7.0
-        ), "spatial-row broadcast should replicate row-0 values to all rows"
+    # Note: This will have element_shape=(2, 1, 32), can broadcast along dim 1
+    broadcasted = ttl.math.broadcast(block, dims=[1])
+
+    # After broadcast, the block still has the same value in all elements
+    for res_tile in broadcasted.to_list():
+        torch_tile = res_tile.to_torch()
+        # Tile is 1x32, all values should be 7.0
+        assert torch.all(torch_tile == 7.0), "broadcast should preserve tile values"
 
 
 def test_max_shape_mismatch_raises():
@@ -1137,3 +1148,31 @@ def test_1d_broadcast_warning(capsys):
     # Verify the broadcast operation still returns a valid Block
     assert isinstance(result, Block)
     assert result.shape == (1,)
+
+
+def test_threshold_replaces_greater_than():
+    """Test that ttl.math.threshold replaces values GREATER THAN threshold.
+
+    Per spec: "For all values greater than specified threshold replace with specified value"
+    This is different from torch.threshold which replaces values <= threshold.
+    """
+    # Create a block with values [1.0, 5.0, 10.0, 15.0]
+    tiles = [
+        Tensor(torch.tensor([[1.0, 5.0], [10.0, 15.0]])),
+    ]
+    block = Block.from_list(tiles, shape=(1, 1))
+
+    # Apply threshold: replace values > 8 with 99
+    result = ttl.math.threshold(block, threshold=8, value=99)
+
+    # Expected: [1.0, 5.0, 99.0, 99.0]
+    # Values 1.0 and 5.0 are <= 8, so they stay unchanged
+    # Values 10.0 and 15.0 are > 8, so they become 99.0
+    expected = torch.tensor([[1.0, 5.0], [99.0, 99.0]])
+    result_tensor = result.to_list()[0].to_torch()
+
+    assert torch.allclose(result_tensor, expected), (
+        f"threshold(threshold=8, value=99) failed.\n"
+        f"Expected: {expected}\n"
+        f"Got: {result_tensor}"
+    )

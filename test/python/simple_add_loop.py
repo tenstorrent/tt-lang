@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn, tt-device
-# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-maximize-dst --no-fpu-binary-ops > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s > %t.fpu.output 2>&1
@@ -64,9 +64,6 @@ def add_loop_kernel(lhs, rhs, out):
 # Initial IR Checks - Verify scf.for loop is generated in compute
 # =============================================================================
 
-# CHECK: #ttnn.buffer_type<l1>
-# CHECK: #ttnn_layout = #ttnn.ttnn_layout<{{.*}}memref<1x1x!ttcore.tile<32x32, bf16>{{.*}}>
-
 # CHECK-LABEL: func.func @add_compute
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}
 
@@ -122,7 +119,7 @@ def add_loop_kernel(lhs, rhs, out):
 # CHECK-CPP: cb_pop_front(get_compile_time_arg_val(0),
 
 # =============================================================================
-# FPU path checks (default: --maximize-dst --fpu-binary-ops)
+# FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
 # Initial store uses copy_tile (SFPU), loop add uses FPU add_tiles
 # =============================================================================
 

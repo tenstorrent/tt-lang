@@ -8,21 +8,11 @@ on:
         required: false
         type: string
         default: 'n150'
-      build-os:
-        description: 'Which build artifacts to use (ubuntu or macos)'
-        required: false
-        type: string
-        default: 'ubuntu'
-      artifact-prefix:
-        description: 'Prefix for artifact names (ttlang or ttlang-fetchcontent)'
-        required: false
-        type: string
-        default: 'ttlang'
       timeout:
         description: 'Job timeout in minutes'
         required: false
         type: number
-        default: 30
+        default: 60
   workflow_call:
     inputs:
       runs-on:
@@ -30,44 +20,24 @@ on:
         required: false
         type: string
         default: 'n150'
-      build-os:
-        description: 'Which build artifacts to use (ubuntu or macos)'
-        required: false
-        type: string
-        default: 'ubuntu'
-      artifact-prefix:
-        description: 'Prefix for artifact names (ttlang or ttlang-fetchcontent)'
-        required: false
-        type: string
-        default: 'ttlang'
       timeout:
         description: 'Job timeout in minutes'
         required: false
         type: number
-        default: 30
+        default: 60
 
 permissions:
   checks: write
   contents: read
 
 jobs:
-  get-mlir-tag:
-    runs-on: ubuntu-latest
-    outputs:
-      mlir-tag: ${{ steps.read.outputs.tag }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: read
-        run: echo "tag=$(cat third-party/tt-mlir-docker-tag | tr -d '[:space:]')" >> $GITHUB_OUTPUT
-
   test-n150:
-    needs: [get-mlir-tag]
     name: "Hardware Tests (${{ inputs.runs-on }})"
     runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.runs-on) }}
     timeout-minutes: ${{ inputs.timeout }}
 
     container:
-      image: ghcr.io/tenstorrent/tt-mlir/tt-mlir-ci-ubuntu-22-04:${{ needs.get-mlir-tag.outputs.mlir-tag }}
+      image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest
       options: --device /dev/tenstorrent
       volumes:
         - /dev/hugepages:/dev/hugepages
@@ -86,29 +56,30 @@ jobs:
 
     steps:
       - name: Checkout tt-lang
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Git safe directory
         run: git config --global --add safe.directory "$(pwd)"
 
-      - name: Download build artifacts archive
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ format('{0}-ttmlir-install-{1}', inputs.artifact-prefix, inputs.build-os) }}
-          path: .
-
-      - name: Extract build artifacts
+      - name: Configure tt-lang
         run: |
-          set -x
-          ARTIFACT_FILE=$(.github/scripts/get-artifact-archive-name.sh "${{ github.sha }}")
-          tar -I 'zstd --long=31' -xf "${ARTIFACT_FILE}"
-          rm -f "${ARTIFACT_FILE}"
-          echo "Checking tt-mlir-install structure..."
-          ls -la tt-mlir-install/ tt-mlir-install/python_packages/ || echo "Did not unpack tt-mlir-install"
-          ls -la /opt/ttmlir-toolchain/venv/bin || echo "No valid ttmlir-toolchain found"
-          find tt-mlir-install/python_packages -name "*ttcore*" 2>/dev/null || echo "No ttcore in tt-mlir-install"
+          cmake -G Ninja -B build \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DTTLANG_USE_TOOLCHAIN=ON \
+              -DTTLANG_ENABLE_PERF_TRACE=ON
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: Linux-ttlang-hw-${{ inputs.runs-on }}
+          max-size: 200M
+
+      - name: Build tt-lang
+        run: |
+          source build/env/activate
+          cmake --build build
 
       - name: Install test dependencies
         run: |
@@ -138,16 +109,15 @@ jobs:
       - name: Pytests (Python DSL end-to-end tests)
         run: |
           source build/env/activate
-          # Run pytest directly instead of through ninja
           python3 -m pytest test/python -v --tb=long --junitxml=build/test/pytest-report.xml
 
       - name: Simulator tests
         run: |
           source build/env/activate
-          python3 -m pytest test/sim -v --tb=short --junitxml=build/test/sim-report.xml
+          python3 -m pytest test/sim -v -n auto --tb=short --junitxml=build/test/sim-report.xml
 
       - name: Upload test reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         if: always()
         with:
           name: hardware-test-reports-${{ inputs.runs-on }}

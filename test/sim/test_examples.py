@@ -105,14 +105,9 @@ def assert_success_output(code: int, out: str) -> None:
             marks=requires_ttnn,
         ),
         "eltwise_add.py",
-        pytest.param(
-            "eltwise_pipe.py",
-            marks=requires_ttnn,
-        ),
-        pytest.param(
-            "eltwise_pipe_core3.py",
-            marks=requires_ttnn,
-        ),
+        "eltwise_add_3d.py",
+        "eltwise_pipe.py",
+        "eltwise_pipe_core3.py",
         "matmul.py",
         "singlecore_matmul.py",
         "multicore_matmul.py",

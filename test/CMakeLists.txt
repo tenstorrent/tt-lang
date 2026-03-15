@@ -1,13 +1,12 @@
 # Lit Test configuration
+# (TTLANG_HAS_DEVICE and TTLANG_HAS_DEVICE_INT are set by top-level CMakeLists.txt)
 
-# Check for Tenstorrent device at configure time (must be before configure_lit_site_cfg)
-ttlang_check_device_available(TTLANG_HAS_DEVICE)
-
-if(TTLANG_HAS_DEVICE)
-  set(TTLANG_HAS_DEVICE_INT 1)
-else()
-  set(TTLANG_HAS_DEVICE_INT 0)
-endif()
+# Generate pytest.ini with correct build directory paths.
+configure_file(
+  ${CMAKE_CURRENT_SOURCE_DIR}/pytest.ini.in
+  ${CMAKE_CURRENT_SOURCE_DIR}/pytest.ini
+  @ONLY
+)
 
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
@@ -78,16 +77,12 @@ add_custom_target(check-ttlang
 )
 
 # Pytest tests (test/python/test_*.py files).
-set(TTLANG_PYTEST_DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS})
-if(TARGET install-dev-deps)
-  list(APPEND TTLANG_PYTEST_DEPENDS install-dev-deps)
-endif()
 add_custom_target(check-ttlang-pytest
   COMMAND ${Python3_EXECUTABLE} -m pytest
     ${CMAKE_CURRENT_SOURCE_DIR}/python
     -v --tb=short
     --junitxml=${CMAKE_CURRENT_BINARY_DIR}/pytest-report.xml
-  DEPENDS ${TTLANG_PYTEST_DEPENDS}
+  DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
   COMMENT "Running ttlang pytest tests"
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python
   USES_TERMINAL
@@ -95,17 +90,12 @@ add_custom_target(check-ttlang-pytest
 set_target_properties(check-ttlang-pytest PROPERTIES FOLDER "Tests")
 
 # Middle end to end tests (test/me2e/).
-# Automatically installs dev dependencies (e.g. pytest-order) before running.
-set(TTLANG_ME2E_DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS})
-if(TARGET install-dev-deps)
-  list(APPEND TTLANG_ME2E_DEPENDS install-dev-deps)
-endif()
 add_custom_target(check-ttlang-me2e
   COMMAND ${Python3_EXECUTABLE} -m pytest
     ${CMAKE_CURRENT_SOURCE_DIR}/me2e
     -v --tb=short
     --junitxml=${CMAKE_CURRENT_BINARY_DIR}/me2e-report.xml
-  DEPENDS ${TTLANG_ME2E_DEPENDS}
+  DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
   COMMENT "Running ttlang me2e tests"
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/me2e
   USES_TERMINAL

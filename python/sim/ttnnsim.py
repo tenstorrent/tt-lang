@@ -469,6 +469,14 @@ class Tensor:
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
+    def __neg__(self) -> "Tensor":
+        """Unary negation."""
+        return Tensor(-self._tensor)
+
+    def __abs__(self) -> "Tensor":
+        """Absolute value."""
+        return Tensor(torch.abs(self._tensor))
+
     # ---- Reverse binary operations ----
 
     def __radd__(self, other: Scalar) -> "Tensor":
@@ -588,6 +596,16 @@ def from_torch(
         tensor = tensor.to(dtype)
 
     return Tensor(tensor)
+
+
+def multiply(
+    a: Union[Tensor, torch.Tensor],
+    b: Union[Tensor, torch.Tensor],
+) -> Tensor:
+    """Element-wise multiply (simulator shim for ttnn.multiply)."""
+    a_t = to_torch(a) if isinstance(a, Tensor) else a
+    b_t = to_torch(b) if isinstance(b, Tensor) else b
+    return Tensor(a_t * b_t)
 
 
 def split_work_to_cores(

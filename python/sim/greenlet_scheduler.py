@@ -15,8 +15,9 @@ from greenlet import greenlet
 
 from .blockstate import ThreadType
 from .diagnostics import (
-    lazy_import_diagnostics,
+    print_diagnostic_error,
     find_user_code_location,
+    is_simulator_frame,
     format_core_ranges,
     extract_core_id_from_thread_name,
 )
@@ -116,14 +117,9 @@ class GreenletScheduler:
             )
 
         # Capture location where blocking occurred
-        location_str = ""
-        raw_loc: Optional[Tuple[str, int]] = None
-
-        # Find user code location (skip this method)
-        filename, lineno = find_user_code_location(skip_frames=1)
-        if filename and lineno:
-            location_str = f" at {filename}:{lineno}"
-            raw_loc = (filename, lineno)
+        filename, lineno = find_user_code_location()
+        location_str = f" at {filename}:{lineno}"
+        raw_loc: Optional[Tuple[str, int]] = (filename, lineno)
 
         # Update active entry with blocking info and location
         g, _, _, thread_type, _, _ = self._active[self._current_name]
@@ -183,107 +179,6 @@ class GreenletScheduler:
         """
         return self._current_name
 
-    def _extract_source_location(
-        self, exception: Exception
-    ) -> Tuple[Optional[str], Optional[int], Optional[int]]:
-        """Extract source location from exception traceback.
-
-        Returns:
-            Tuple of (source_file, source_line, source_col)
-        """
-        import traceback
-
-        tb = traceback.extract_tb(exception.__traceback__)
-        source_file = None
-        source_line = None
-        source_col = None
-
-        for frame in tb:
-            # Skip internal greenlet/scheduler/simulator frames
-            if (
-                "greenlet_scheduler.py" not in frame.filename
-                and "greenlet" not in frame.filename
-                and "/python/sim/" not in frame.filename
-            ):
-                source_file = frame.filename
-                source_line = frame.lineno
-                source_col = getattr(frame, "colno", None) or 1
-                break
-
-        return source_file, source_line, source_col
-
-    def _print_pretty_error(
-        self,
-        name: str,
-        exception: Exception,
-        source_file: str,
-        source_line: int,
-        source_col: Optional[int],
-    ) -> bool:
-        """Print error with pretty formatting using TTLangCompileError.
-
-        Args:
-            name: Thread name
-            exception: The exception that was raised
-            source_file: Path to source file
-            source_line: Line number in source file
-            source_col: Column number in source file (defaults to 1 if None)
-
-        Returns:
-            True if pretty printing succeeded, False if TTLangCompileError not available
-        """
-        try:
-            diagnostics = lazy_import_diagnostics()
-            TTLangCompileError = diagnostics.TTLangCompileError
-            compile_error = TTLangCompileError(
-                f"{type(exception).__name__}: {exception}",
-                source_file=source_file,
-                line=source_line,
-                col=source_col or 1,
-            )
-            print(f"\n❌ Error in {name}:")
-            print(compile_error.format())
-            print("-" * 50)
-            return True
-        except ImportError:
-            return False
-
-    def _print_basic_error(
-        self,
-        name: str,
-        exception: Exception,
-        source_file: Optional[str],
-        source_line: Optional[int],
-        include_traceback: bool = False,
-    ) -> None:
-        """Print error with basic formatting.
-
-        Args:
-            name: Thread name
-            exception: The exception that was raised
-            source_file: Path to source file (if available)
-            source_line: Line number in source file (if available)
-            include_traceback: Whether to include full traceback
-        """
-        print(f"\n❌ Error in {name}:")
-        if source_file and source_line:
-            print(f"  File: {source_file}:{source_line}")
-        print(f"  {type(exception).__name__}: {exception}")
-
-        if include_traceback:
-            import traceback
-
-            tb_str = "".join(
-                traceback.format_exception(
-                    type(exception), exception, exception.__traceback__
-                )
-            )
-            print(f"\nFull traceback:")
-            print(tb_str)
-
-        if not include_traceback:
-            print("-" * 50)
-
     def _format_and_raise_thread_error(
         self,
         name: str,
@@ -300,22 +195,36 @@ class GreenletScheduler:
         Raises:
             RuntimeError: Always raises with formatted error message
         """
-        # Extract source location
-        source_file, source_line, source_col = self._extract_source_location(exception)
+        # Extract source location from exception traceback
+        import traceback
 
-        # Try pretty formatting if we have source location
-        if source_file and source_line:
-            pretty_printed = self._print_pretty_error(
-                name, exception, source_file, source_line, source_col
-            )
-            if not pretty_printed:
-                # Fallback if TTLangCompileError is not available
-                self._print_basic_error(
-                    name, exception, source_file, source_line, include_traceback
-                )
-        else:
-            # No source location available
-            self._print_basic_error(name, exception, None, None, include_traceback)
+        tb = traceback.extract_tb(exception.__traceback__)
+        source_file = None
+        source_line = None
+        source_col = None
+
+        for frame in tb:
+            # Skip simulator internal frames
+            if not is_simulator_frame(frame.filename):
+                source_file = frame.filename
+                source_line = frame.lineno
+                source_col = getattr(frame, "colno", None) or 1
+                break
+
+        # Assert we found user code in traceback
+        assert source_file is not None and source_line is not None, (
+            f"No user code found in exception traceback for {name}. "
+            "This indicates a bug in the scheduler or test setup."
+        )
+
+        # Print error with diagnostic formatting
+        print_diagnostic_error(
+            name,
+            f"{type(exception).__name__}: {exception}",
+            source_file,
+            source_line,
+            source_col or 1,
+        )
 
         # Re-raise with thread name included
         error_msg = f"{name}: {type(exception).__name__}: {exception}"
@@ -530,15 +439,13 @@ class GreenletScheduler:
                     raw_loc = blocked_raw_locs.get((op, obj_desc, location))
                     if raw_loc:
                         filename, lineno = raw_loc
-                        diagnostics = lazy_import_diagnostics()
-                        TTLangCompileError = diagnostics.TTLangCompileError
-                        compile_error = TTLangCompileError(
-                            f"deadlock: blocked on {op}(){obj_desc} ({cores_label})",
-                            source_file=filename,
-                            line=lineno,
-                            col=1,
+                        print_diagnostic_error(
+                            "deadlock",
+                            f"blocked on {op}(){obj_desc} ({cores_label})",
+                            filename,
+                            lineno,
+                            1,
                         )
-                        print(compile_error.format())
                     else:
                         print(
                             f"  blocked on {op}(){obj_desc}{location} ({cores_label})"

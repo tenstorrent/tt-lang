@@ -16,6 +16,7 @@ from python.sim.greenlet_scheduler import (
     set_scheduler,
     set_scheduler_algorithm,
 )
+from test_helpers.mock_kernel import do_wait, do_reserve
 
 
 class MockBlockable:
@@ -104,7 +105,7 @@ class TestGreenletScheduler:
         def thread1() -> None:
             execution_order.append("t1-start")
             # This will block since mock_obj is not ready
-            block_if_needed(mock_obj, "wait")
+            do_wait(mock_obj)
             execution_order.append("t1-after-block")
 
         def thread2() -> None:
@@ -132,7 +133,7 @@ class TestGreenletScheduler:
 
         def blocked_thread() -> None:
             # This will block forever
-            block_if_needed(mock_obj, "wait")
+            do_wait(mock_obj)
 
         scheduler.add_thread("t1", blocked_thread, ThreadType.COMPUTE)
 
@@ -150,10 +151,10 @@ class TestGreenletScheduler:
         mock2 = MockBlockable(initially_ready=False)
 
         def thread1() -> None:
-            block_if_needed(mock1, "wait")
+            do_wait(mock1)
 
         def thread2() -> None:
-            block_if_needed(mock2, "reserve")
+            do_reserve(mock2)
 
         scheduler.add_thread("t1", thread1, ThreadType.COMPUTE)
         scheduler.add_thread("t2", thread2, ThreadType.DM)
@@ -190,16 +191,16 @@ class TestGreenletScheduler:
 
         def thread1() -> None:
             execution_order.append("t1-1")
-            block_if_needed(mock1, "wait")
+            do_wait(mock1)
             execution_order.append("t1-2")
-            block_if_needed(mock1, "wait")
+            do_wait(mock1)
             execution_order.append("t1-3")
 
         def thread2() -> None:
             execution_order.append("t2-1")
-            block_if_needed(mock2, "wait")
+            do_wait(mock2)
             execution_order.append("t2-2")
-            block_if_needed(mock2, "wait")
+            do_wait(mock2)
             execution_order.append("t2-3")
 
         scheduler.add_thread("t1", thread1, ThreadType.COMPUTE)
@@ -232,7 +233,7 @@ class TestGreenletScheduler:
 
         def thread() -> None:
             executed.append("before")
-            block_if_needed(mock_obj, "wait")
+            do_wait(mock_obj)
             executed.append("after")
 
         scheduler.add_thread("t1", thread, ThreadType.COMPUTE)
@@ -254,7 +255,7 @@ class TestGreenletScheduler:
 
         def thread1() -> None:
             executed.append("t1-before")
-            block_if_needed(mock_obj, "wait")
+            do_wait(mock_obj)
             executed.append("t1-after")
 
         def thread2() -> None:
@@ -285,7 +286,7 @@ class TestGreenletScheduler:
 
         def thread() -> None:
             for i in range(3):
-                block_if_needed(mock_obj, "wait")
+                do_wait(mock_obj)
                 count.append(i)
 
         scheduler.add_thread("t1", thread, ThreadType.COMPUTE)
@@ -331,7 +332,7 @@ class TestBlockIfNeeded:
 
         def thread1() -> None:
             blocked.append("before")
-            block_if_needed(mock_obj, "wait")
+            do_wait(mock_obj)
             blocked.append("after")
 
         def thread2() -> None:
@@ -356,9 +357,9 @@ class TestBlockIfNeeded:
 
         def thread() -> None:
             executed.append(1)
-            block_if_needed(mock_obj, "wait")
+            do_wait(mock_obj)
             executed.append(2)
-            block_if_needed(mock_obj, "reserve")
+            do_reserve(mock_obj)
             executed.append(3)
 
         scheduler.add_thread("t1", thread, ThreadType.COMPUTE)
@@ -437,12 +438,12 @@ class TestSchedulerAlgorithm:
 
             def thread1() -> None:
                 execution_order.append("t1-1")
-                block_if_needed(mock_obj1, "wait")
+                do_wait(mock_obj1)
                 execution_order.append("t1-2")
 
             def thread2() -> None:
                 execution_order.append("t2-1")
-                block_if_needed(mock_obj2, "wait")
+                do_wait(mock_obj2)
                 execution_order.append("t2-2")
 
             def thread3() -> None:

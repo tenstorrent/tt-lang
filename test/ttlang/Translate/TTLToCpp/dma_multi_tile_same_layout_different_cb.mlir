@@ -13,8 +13,8 @@
 // Expected: Two separate tile loop nests, both iterating 2x2, but with different CB destinations.
 // This demonstrates that tile loop bounds are determined by tensor layout, not CB shape.
 
-#dram = #ttnn.buffer_type<dram>
-#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<2x2x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
+#layout = #ttl.layout<shape = [2, 2], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
 
 // CHECK-LABEL: // same_layout_different_cb
 // CHECK: void kernel_main() {

@@ -19,14 +19,11 @@ from typing import Any, Callable, List, Optional, Set
 
 import torch
 
-from .blockstate import BlockAcquisition, ThreadType
-from .diagnostics import (
-    lazy_import_diagnostics,
-    find_user_code_location,
-    format_core_ranges,
-)
+from .diagnostics import warn_once_per_location
 from .dfb import Block, track_source_blocks, matmul
+from .blockstate import BlockAcquisition, ThreadType
 from .ttnnsim import Tensor
+from .typedefs import PositiveInt
 
 _ = matmul
 
@@ -41,117 +38,63 @@ def _warn_1d_broadcast_unsupported() -> None:
     Tracks which cores hit each source location and only prints once per location,
     showing the list of cores that encountered the issue.
     """
-    # Find user code location (skip this function and caller)
-    source_file, source_line = find_user_code_location(skip_frames=2)
-
-    # Should always find user code in the call stack
-    assert (
-        source_file is not None and source_line is not None
-    ), "Could not determine source location for 1D broadcast warning"
-
-    # Get the current core ID
-    from .greenlet_scheduler import get_current_core_id
-
-    core_id = get_current_core_id()
-
-    # Track this core hitting this location
-    location_key = (source_file, source_line)
-    if location_key not in _broadcast_1d_warnings:
-        _broadcast_1d_warnings[location_key] = set()
-        first_occurrence = True
-    else:
-        first_occurrence = False
-
-    _broadcast_1d_warnings[location_key].add(core_id)
-
-    # Only print on first occurrence for this location
-    if first_occurrence:
-        # Format the core list
-        cores = _broadcast_1d_warnings[location_key]
-        unique_cores = sorted(cores, key=lambda x: (len(x), x))
-
-        if len(unique_cores) == 1 and unique_cores[0] != "unknown":
-            cores_label = unique_cores[0]
-        else:
-            # Extract numeric core IDs (from "core0", "core1", etc.)
-            try:
-                core_numbers = [
-                    int(core[4:])
-                    for core in unique_cores
-                    if core.startswith("core") and core[4:].isdigit()
-                ]
-                if core_numbers:
-                    cores_label = f"cores: {format_core_ranges(core_numbers)}"
-                else:
-                    cores_label = f"cores: {', '.join(unique_cores)}"
-            except (ValueError, IndexError):
-                cores_label = f"cores: {', '.join(unique_cores)}"
-
-        # Try to use diagnostics module for nice formatting
-        try:
-            diagnostics = lazy_import_diagnostics()
-            SourceDiagnostic = diagnostics.SourceDiagnostic
-
-            # Read source lines
-            with open(source_file, "r") as f:
-                source_lines = f.read().splitlines()
-
-            # Format warning using diagnostics module
-            diag = SourceDiagnostic(source_lines, source_file)
-            warning_msg = diag.format_error(
-                line=source_line,
-                col=1,
-                message=f"1D broadcast is not supported on current hardware ({cores_label})",
-                label="warning",
-            )
-            print(warning_msg, flush=True)
-        except (ImportError, IOError, OSError):
-            # Fall back to simple warning if diagnostics unavailable or file unreadable
-            print(
-                f"warning: 1D broadcast is not supported on current hardware ({cores_label})",
-                flush=True,
-            )
+    warn_once_per_location(
+        _broadcast_1d_warnings,
+        "1D broadcast is not supported on current hardware",
+    )
 
 
 def broadcast(
     block: Block,
-    _unused_arg: Optional[Any] = None,
+    output_hint: Optional[Block] = None,
     dims: Optional[List[int]] = None,
 ) -> Block:
     """Broadcast a block along specified dimensions.
 
-    This function replicates values within each tile along the specified dimensions.
-    After reduce operations store values at specific positions (e.g., reduce_max with
-    dims=[0] stores max at column 0), broadcast replicates those values.
+    This function can operate in two modes:
+
+    1. **Eager expansion** (when output_hint is provided):
+       Immediately expands the block to match the output hint's shape and returns
+       a fully materialized Block. This allows multiple broadcasts to be used in
+       the same expression without conflicts.
+
+    2. **Lazy expansion** (when output_hint is None):
+       Marks the block with broadcast metadata. Actual expansion happens later
+       when the block is stored or used in operations.
 
     Dimension indexing uses the innermost-first convention: dims=[0] refers to the
     innermost (last) dimension of the block shape, dims=[1] to the next-to-innermost,
     and so on. This matches the convention used throughout the ttl.math API.
 
     For a 2-D grid block of shape (N, M):
-    - dims=[0] (innermost/columns): takes values from column 0 and replicates across
-      all columns. Block must have size 1 in M.
-    - dims=[1] (next-to-innermost/rows): takes values from row 0 and replicates across
-      all rows. Block must have size 1 in N.
-
-    For ND grids, batch dimensions (all dims before the last tile.ndim grid dims)
-    have no within-tile axis to broadcast; they are grid-level-only and the tile
-    content is left unchanged.
+    - dims=[0] (innermost/columns): Block must have element size 1 in last dimension.
+    - dims=[1] (next-to-innermost/rows): Block must have element size 1 in first dimension.
 
     Args:
         block: Input block to broadcast
-        _unused_arg: Unused argument for compatibility (typically output block shape hint)
+        output_hint: Optional output block providing target shape for eager expansion
         dims: List of dimension indices to broadcast along (0=innermost)
 
     Returns:
-        Block with values replicated along the specified dimensions
+        Block with broadcast applied (either lazy metadata or eagerly expanded)
+
+    Examples:
+        # Eager expansion - immediately materialized
+        a_bcast = ttl.math.broadcast(a_blk, y_blk, dims=[0])
+        b_bcast = ttl.math.broadcast(b_blk, y_blk, dims=[1])
+        y_blk.store(a_bcast * b_bcast)  # Works - both are materialized
+
+        # Lazy expansion - deferred until use
+        a_bcast = ttl.math.broadcast(a_blk, dims=[0])
+        y_blk.store(a_bcast * b_blk)  # a_bcast expands during store
     """
     if dims is None:
         raise ValueError("dims parameter is required for broadcast()")
 
-    # Validate that the dimensions being broadcast have size 1 at grid level.
+    # Validate that the dimensions being broadcast have element size 1.
     # User dims use innermost-first convention: translate to internal (outermost-first).
     block_shape = block._shape  # type: ignore[attr-defined]
+    element_shape = block._element_shape  # type: ignore[attr-defined]
     ndim = len(block_shape)
 
     # Check if this is a 1D broadcast and issue a warning
@@ -165,50 +108,44 @@ def broadcast(
                 f"with only {ndim} dimensions"
             )
         internal_dim = ndim - 1 - dim
-        if block_shape[internal_dim] != 1:
+        # Check element size, not tile size
+        if element_shape[internal_dim] != 1:
             raise ValueError(
-                f"Cannot broadcast along dimension {dim}: dimension must have size 1, "
-                f"but has size {block_shape[internal_dim]}"
+                f"Cannot broadcast along dimension {dim}: dimension must have element size 1, "
+                f"but has element size {element_shape[internal_dim]}"
             )
 
-    # Map block-grid dimensions to within-tile dimensions.
-    # The last tile.ndim grid dimensions correspond to tile-internal axes 0, 1, ...
-    # Leading (batch) grid dimensions have no tile-internal counterpart.
-    input_tensors = [t.to_torch() for t in block.to_list()]
-    result_tensors: List[Tensor] = []
+    # If output hint is provided, perform eager expansion
+    if output_hint is not None:
+        target_shape = output_hint._shape  # type: ignore[attr-defined]
+        target_element_shape = output_hint._element_shape  # type: ignore[attr-defined]
 
-    for tile in input_tensors:
-        tile_ndim = tile.ndim
-        # Number of leading grid dims that are batch-only (no tile axis).
-        num_batch_grid_dims = ndim - tile_ndim
-        slices = [slice(None)] * tile_ndim
-        for dim in dims:
-            internal_dim = ndim - 1 - dim
-            tile_dim = internal_dim - num_batch_grid_dims
-            if tile_dim < 0:
-                # Batch grid dimension: no within-tile axis, leave slice unchanged.
-                continue
-            slices[tile_dim] = slice(0, 1)
+        # Validate dimensionality matches
+        if len(target_shape) != len(block_shape):
+            raise ValueError(
+                f"Broadcast output hint has {len(target_shape)} dimensions, "
+                f"but source block has {len(block_shape)} dimensions"
+            )
 
-        # Extract the slice and expand back to original shape
-        result_tile = tile[tuple(slices)].expand(tile.shape).clone()
-        result_tensors.append(Tensor(result_tile))
+        # Use PyTorch broadcasting to expand the tensor
+        src_tensor = block._buf.to_torch()  # type: ignore[attr-defined]
+        expanded_tensor = src_tensor.expand(*target_element_shape)
 
-    result_block = Block.from_list(result_tensors, block_shape)
+        # Create a new materialized block directly with the target shape
+        # Use Block constructor to create a temporary block
+        result_block = Block(
+            tensor=Tensor(expanded_tensor.contiguous()),
+            shape=target_shape,
+            acquisition=BlockAcquisition.RESERVE,
+            thread_type=ThreadType.COMPUTE,
+            is_temporary=True,
+        )
+        track_source_blocks(result_block, block)
+        return result_block
 
-    # Preserve source block tracking for wait() blocks
-    if block._source_blocks:  # type: ignore[attr-defined]
-        result_block._source_blocks = block._source_blocks.copy()  # type: ignore[attr-defined]
-
-    # If block itself is a wait() block, add it to source_blocks
-    if (
-        not block._is_temporary  # type: ignore[attr-defined]
-        and block.acquisition == BlockAcquisition.WAIT
-        and block.thread_type == ThreadType.COMPUTE
-    ):
-        result_block._source_blocks.append(block)  # type: ignore[attr-defined]
-
-    return result_block
+    # No output hint - use lazy expansion with metadata
+    block._broadcast_dims = tuple(dims)  # type: ignore[attr-defined]
+    return block
 
 
 # Helper function to create unary operation wrappers
@@ -283,6 +220,13 @@ _TORCH_UNARY_OPS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     "softsign": torch.nn.functional.softsign,  # type: ignore[dict-item]
     "hardsigmoid": torch.nn.functional.hardsigmoid,
     "selu": torch.nn.functional.selu,
+    # Rounding functions (from spec) - simple unary
+    "floor": torch.floor,
+    "ceil": torch.ceil,
+    "frac": torch.frac,
+    "trunc": torch.trunc,
+    "sign": torch.sign,
+    "signbit": torch.signbit,
 }
 
 # Auto-generate all simple unary operation functions
@@ -327,6 +271,49 @@ def _apply_binary_op(
 
     result_block = Block.from_list(result_list, shape=a_shape)  # type: ignore[attr-defined]
     track_source_blocks(result_block, a, b)
+    return result_block
+
+
+def _apply_ternary_op(
+    a: Block,
+    b: Block,
+    c: Block,
+    op: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor],
+) -> Block:
+    """Apply a ternary operation element-wise to three blocks.
+
+    All blocks must have the same shape.
+
+    Args:
+        a: First input block
+        b: Second input block
+        c: Third input block
+        op: Ternary operation to apply (takes three torch tensors)
+
+    Returns:
+        Block with operation applied element-wise
+
+    Raises:
+        ValueError: If blocks have different shapes.
+    """
+    a_shape = a._shape  # type: ignore[attr-defined]
+    b_shape = b._shape  # type: ignore[attr-defined]
+    c_shape = c._shape  # type: ignore[attr-defined]
+    if not (a_shape == b_shape == c_shape):
+        raise ValueError(
+            f"Shape mismatch in ternary op: a has shape {a_shape}, "
+            f"b has shape {b_shape}, c has shape {c_shape}"
+        )
+    a_tensors = [t.to_torch() for t in a.to_list()]
+    b_tensors = [t.to_torch() for t in b.to_list()]
+    c_tensors = [t.to_torch() for t in c.to_list()]
+    result_torch: List[torch.Tensor] = [
+        op(a_t, b_t, c_t) for a_t, b_t, c_t in zip(a_tensors, b_tensors, c_tensors)
+    ]
+    result_list: List[Tensor] = [Tensor(t) for t in result_torch]
+
+    result_block = Block.from_list(result_list, shape=a_shape)  # type: ignore[attr-defined]
+    track_source_blocks(result_block, a, b, c)
     return result_block
 
 
@@ -379,7 +366,7 @@ def min(a: Block, b: Block) -> Block:
 
 
 # Unary operations with scalar parameters
-def rsub(a: Block, b: int) -> Block:
+def rsub(a: Block, b: PositiveInt) -> Block:
     """Subtract a from b where b is scalar unsigned integer (b - a).
 
     Args:
@@ -393,7 +380,7 @@ def rsub(a: Block, b: int) -> Block:
 
 
 # Activation functions with parameters
-def relu_max(expr: Block, upper_limit: int) -> Block:
+def relu_max(expr: Block, upper_limit: PositiveInt) -> Block:
     """ReLU with upper limit.
 
     Equivalent to: ttl.math.relu(ttl.math.min(x, upper_limit))
@@ -412,7 +399,7 @@ def relu_max(expr: Block, upper_limit: int) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
-def relu_min(expr: Block, lower_limit: int) -> Block:
+def relu_min(expr: Block, lower_limit: PositiveInt) -> Block:
     """ReLU with lower limit.
 
     Equivalent to: ttl.math.relu(ttl.math.max(x, lower_limit))
@@ -431,7 +418,7 @@ def relu_min(expr: Block, lower_limit: int) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
-def leaky_relu(expr: Block, slope: float) -> Block:
+def leaky_relu(expr: Block, slope: PositiveInt) -> Block:
     """Leaky ReLU activation.
 
     Args:
@@ -448,7 +435,7 @@ def leaky_relu(expr: Block, slope: float) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
-def elu(expr: Block, alpha: float) -> Block:
+def elu(expr: Block, alpha: PositiveInt) -> Block:
     """ELU activation.
 
     Args:
@@ -465,7 +452,7 @@ def elu(expr: Block, alpha: float) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
-def celu(expr: Block, alpha: float, alpha_recip: float) -> Block:
+def celu(expr: Block, alpha: PositiveInt, alpha_recip: PositiveInt) -> Block:
     """CELU activation.
 
     Args:
@@ -483,7 +470,7 @@ def celu(expr: Block, alpha: float, alpha_recip: float) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
-def prelu(expr: Block, alpha: float) -> Block:
+def prelu(expr: Block, alpha: PositiveInt) -> Block:
     """PReLU activation.
 
     Args:
@@ -502,7 +489,7 @@ def prelu(expr: Block, alpha: float) -> Block:
 
 
 def softplus(
-    expr: Block, beta: float, beta_reciprocal: float, threshold: float
+    expr: Block, beta: PositiveInt, beta_reciprocal: PositiveInt, threshold: PositiveInt
 ) -> Block:
     """Softplus activation.
 
@@ -522,7 +509,7 @@ def softplus(
     return _apply_unary_with_params(expr, _op)
 
 
-def hardtanh(expr: Block, min_val: float, max_val: float) -> Block:
+def hardtanh(expr: Block, min_val: PositiveInt, max_val: PositiveInt) -> Block:
     """Hardtanh activation.
 
     Args:
@@ -538,6 +525,133 @@ def hardtanh(expr: Block, min_val: float, max_val: float) -> Block:
         return torch.nn.functional.hardtanh(t, min_val=min_val, max_val=max_val)
 
     return _apply_unary_with_params(expr, _op)
+
+
+# Rounding functions with parameters
+def round(expr: Block, decimals: PositiveInt = 0) -> Block:
+    """Round to specified number of decimal places.
+
+    Args:
+        expr: Input block
+        decimals: Number of decimal places to round to
+
+    Returns:
+        Block with values rounded to specified decimal places
+    """
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        return torch.round(t, decimals=decimals)
+
+    return _apply_unary_with_params(expr, _op)
+
+
+def clamp(expr: Block, min: PositiveInt, max: PositiveInt) -> Block:
+    """Clamp values to specified min and max.
+
+    Args:
+        expr: Input block
+        min: Minimum value
+        max: Maximum value
+
+    Returns:
+        Block with values clamped to [min, max]
+    """
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        return torch.clamp(t, min=min, max=max)
+
+    return _apply_unary_with_params(expr, _op)
+
+
+def threshold(expr: Block, threshold: PositiveInt, value: PositiveInt) -> Block:
+    """Replace values greater than threshold with specified value.
+
+    Args:
+        expr: Input block
+        threshold: Threshold value
+        value: Replacement value for elements > threshold
+
+    Returns:
+        Block with thresholding applied
+    """
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        # Spec: replace values GREATER THAN threshold (not <= like torch.threshold)
+        return torch.where(t > threshold, torch.tensor(value, dtype=t.dtype), t)
+
+    return _apply_unary_with_params(expr, _op)
+
+
+# Fill, mask and where functions
+def fill(expr: Block, value: float) -> Block:
+    """Fill a block with specified value.
+
+    Args:
+        expr: Input block (shape is preserved)
+        value: Value to fill
+
+    Returns:
+        Block filled with specified value
+    """
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        return torch.full_like(t, value)
+
+    return _apply_unary_with_params(expr, _op)
+
+
+def mask(expr: Block, mask: Block) -> Block:
+    """Mask a block by replacing masked elements with 0.
+
+    Args:
+        expr: Input block
+        mask: Mask block (elements equal to 1 are masked)
+
+    Returns:
+        Block with masked elements replaced by 0
+    """
+
+    def _op(t1: torch.Tensor, t2: torch.Tensor) -> torch.Tensor:
+        # Mask: where mask == 1, replace with 0, else keep original
+        return torch.where(t2 == 1, torch.tensor(0.0, dtype=t1.dtype), t1)
+
+    return _apply_binary_op(expr, mask, _op)
+
+
+def mask_posinf(expr: Block, mask: Block) -> Block:
+    """Mask a block by replacing masked elements with positive infinity.
+
+    Args:
+        expr: Input block
+        mask: Mask block (elements equal to 1 are masked)
+
+    Returns:
+        Block with masked elements replaced by positive infinity
+    """
+
+    def _op(t1: torch.Tensor, t2: torch.Tensor) -> torch.Tensor:
+        # Mask: where mask == 1, replace with +inf, else keep original
+        return torch.where(t2 == 1, torch.tensor(float("inf"), dtype=t1.dtype), t1)
+
+    return _apply_binary_op(expr, mask, _op)
+
+
+def where(condition: Block, true_value: Block, false_value: Block) -> Block:
+    """Conditional element selection.
+
+    Args:
+        condition: Condition block (elements equal to 1 are true, 0 are false)
+        true_value: Block to select from when condition is true
+        false_value: Block to select from when condition is false
+
+    Returns:
+        Block with elements selected based on condition
+    """
+
+    def _op(cond: torch.Tensor, tv: torch.Tensor, fv: torch.Tensor) -> torch.Tensor:
+        return torch.where(cond == 1, tv, fv)
+
+    return _apply_ternary_op(condition, true_value, false_value, _op)
 
 
 def _reduce_impl(

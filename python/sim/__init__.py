@@ -9,7 +9,7 @@ from typing import Any
 import types
 from . import ttnnsim as ttnn
 from .dfb import DFBStats
-from .constants import MAX_DFBS, TILE_SHAPE
+from .constants import TILE_SHAPE
 from .copy import CopyTransaction, copy
 from .decorators import compute, datamovement
 from .corecontext import core
@@ -116,7 +116,6 @@ __all__ = [
     "SrcPipeIdentity",
     "DstPipeIdentity",
     "TILE_SHAPE",
-    "MAX_DFBS",
     "copy",
     "CopyTransaction",
     "Program",

@@ -14,9 +14,9 @@ from enum import Enum
 from pathlib import Path
 from typing import List, Tuple
 
-from ttmlir.ir import Module, ArrayAttr, IntegerAttr
-from ttmlir.passes import ttkernel_to_cpp_by_name, get_ttkernel_names
-from ttmlir.dialects import func
+from ttl.ir import Module, ArrayAttr, IntegerAttr
+from ttl.passes import ttkernel_to_cpp_by_name, get_ttkernel_names
+from ttl.dialects import func
 
 
 class ThreadType(Enum):
