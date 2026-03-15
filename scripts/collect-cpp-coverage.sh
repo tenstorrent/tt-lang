@@ -50,25 +50,46 @@ echo "Found ${#PROFRAW_FILES[@]} profraw file(s)"
 echo "Merging profiles..."
 "$LLVM_PROFDATA" merge -sparse "${PROFRAW_FILES[@]}" -o "${COV_DIR}/coverage.profdata"
 
-# Find shared objects to report on
-OBJECTS=()
+# Find instrumented binaries and shared objects to report on.
+# llvm-cov needs the first object as a positional arg and the rest via -object.
+OBJECT_FILES=()
 while IFS= read -r -d '' f; do
-    OBJECTS+=("-object" "$f")
+    OBJECT_FILES+=("$f")
+done < <(find "${BUILD_DIR}/bin" -maxdepth 1 -type f -executable -print0 2>/dev/null)
+while IFS= read -r -d '' f; do
+    OBJECT_FILES+=("$f")
+done < <(find "${BUILD_DIR}/python_packages" -name '*.so' -print0 2>/dev/null)
+while IFS= read -r -d '' f; do
+    OBJECT_FILES+=("$f")
 done < <(find "${BUILD_DIR}/lib" -name '*.so' -print0 2>/dev/null)
 
-if [[ ${#OBJECTS[@]} -eq 0 ]]; then
-    echo "Error: no shared objects found in ${BUILD_DIR}/lib" >&2
+if [[ ${#OBJECT_FILES[@]} -eq 0 ]]; then
+    echo "Error: no instrumented binaries found in ${BUILD_DIR}" >&2
     exit 1
 fi
 
-# Source filters: include only tt-lang source, exclude build artifacts and deps
+# llvm-cov takes the first binary as a positional arg, rest as -object flags
+OBJECTS=("${OBJECT_FILES[0]}")
+for ((i = 1; i < ${#OBJECT_FILES[@]}; i++)); do
+    OBJECTS+=("-object" "${OBJECT_FILES[$i]}")
+done
+
+# Resolve tt-lang source root for filtering.
+SOURCE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Source filters: exclude everything that is not tt-lang's own source.
 FILTERS=(
-    -ignore-filename-regex='build/.*'
-    -ignore-filename-regex='third-party/.*'
-    -ignore-filename-regex='_deps/.*'
-    -ignore-filename-regex='third_party/.*'
-    -ignore-filename-regex='tt-mlir/.*'
+    -ignore-filename-regex='/opt/'
+    -ignore-filename-regex='/third-party/'
+    -ignore-filename-regex='/build/'
+    -ignore-filename-regex='/nanobind/'
+    -ignore-filename-regex='/pybind11/'
+    -ignore-filename-regex='/site-packages/'
+    -ignore-filename-regex='/usr/'
+    -ignore-filename-regex='/python/'
 )
+
+echo "Source root: ${SOURCE_DIR}"
 
 # Generate LCOV report for CI upload
 echo "Generating LCOV report..."
