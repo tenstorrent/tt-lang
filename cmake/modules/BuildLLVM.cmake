@@ -66,7 +66,7 @@ elseif(DEFINED TTLANG_TOOLCHAIN_DIR AND NOT DEFINED MLIR_PREFIX)
     "Install prefix for the submodule LLVM/MLIR build" FORCE)
 
   unset(MLIR_DIR CACHE)
-  
+
   if(TTLANG_FORCE_TOOLCHAIN_REBUILD)
     file(REMOVE "${TTLANG_TOOLCHAIN_DIR}/lib/cmake/mlir/MLIRConfig.cmake")
     file(REMOVE "${TTLANG_TOOLCHAIN_DIR}/tt-metal/ttnn/_ttnn.so")
