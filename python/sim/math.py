@@ -19,6 +19,7 @@ from typing import Any, Callable, List, Optional, Set
 
 import torch
 
+from .context import get_context
 from .diagnostics import warn_once_per_location
 from .dfb import Block, track_source_blocks, matmul
 from .blockstate import BlockAcquisition, ThreadType
@@ -26,10 +27,6 @@ from .ttnnsim import Tensor
 from .typedefs import PositiveInt
 
 _ = matmul
-
-# Track 1D broadcast warnings by (filename, line) -> set of core_ids
-# This allows us to deduplicate warnings and show which cores hit each location
-_broadcast_1d_warnings: dict[tuple[str, int], set[str]] = {}
 
 
 def _warn_1d_broadcast_unsupported() -> None:
@@ -39,7 +36,7 @@ def _warn_1d_broadcast_unsupported() -> None:
     showing the list of cores that encountered the issue.
     """
     warn_once_per_location(
-        _broadcast_1d_warnings,
+        get_context().warnings.broadcast_1d_warnings,
         "1D broadcast is not supported on current hardware",
     )
 

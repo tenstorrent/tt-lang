@@ -23,6 +23,7 @@ from typing import (
     Union,
 )
 
+from .context import get_context, _PipeEntry
 from .dfb import Block
 from .pipe import AnySrcPipeIdentity, DstPipeIdentity, SrcPipeIdentity
 from .stats import (
@@ -66,27 +67,13 @@ CopyEndpointType = Union[
 ]
 
 
-# Global pipe state for simulating NoC pipe communication.
-# Each entry holds a queue of (data, remaining_receiver_count, message_id, receivers_set)
-# and a message-ID counter. No locking is needed because the greenlet scheduler is
-# cooperative: only one greenlet runs at a time.
-# In a real implementation this would be handled by NoC hardware.
-class _PipeEntry(TypedDict):
-    queue: Deque[
-        Tuple[Tensor, Count, int, set[int]]
-    ]  # (data, remaining, msg_id, receivers_who_got_it)
-    next_msg_id: int
-
-
-_pipe_buffer: Dict[AnyPipe, _PipeEntry] = {}
-
-
 def _get_or_create_pipe_entry(pipe: AnyPipe) -> _PipeEntry:
     """Get or create the pipe buffer entry for a given pipe."""
-    entry = _pipe_buffer.get(pipe)
+    pipe_buffer = get_context().copy_state.pipe_buffer
+    entry = pipe_buffer.get(pipe)
     if entry is None:
         new_entry: _PipeEntry = {"queue": deque(), "next_msg_id": 0}
-        _pipe_buffer[pipe] = new_entry
+        pipe_buffer[pipe] = new_entry
         return new_entry
     return entry
 
@@ -134,7 +121,8 @@ class CopyTransferHandler(Protocol):
         ...
 
 
-# Global handler registry: (src_type, dst_type) -> handler instance
+# Handler registry: (src_type, dst_type) -> handler instance
+# This is a static lookup table that doesn't change, so it stays as module-level
 handler_registry: Dict[
     Tuple[CopyEndpointType, CopyEndpointType], CopyTransferHandler
 ] = {}
@@ -159,6 +147,7 @@ def register_copy_handler(src_type: CopyEndpointType, dst_type: CopyEndpointType
     """
 
     def decorator(handler_cls: Type[CopyTransferHandler]):
+        # Register handler in module-level registry
         handler_registry[(src_type, dst_type)] = handler_cls()
         return handler_cls
 
@@ -286,7 +275,8 @@ class PipeToBlockHandler:
         current core has not yet received.  The greenlet scheduler polls this
         before calling transfer(), so transfer() can assume data is available.
         """
-        entry = _pipe_buffer.get(src)
+        pipe_buffer = get_context().copy_state.pipe_buffer
+        entry = pipe_buffer.get(src)
         if entry is None or len(entry["queue"]) == 0:
             return False
 

@@ -11,14 +11,11 @@ allowing users to print tensors, blocks, and dataflow buffers with custom format
 from typing import Any
 import builtins
 
+from .context import get_context
 from .ttnnsim import Tensor
 from .dfb import Block, DataflowBuffer
 from .blockstate import AccessState, BlockAcquisition, ThreadType
 from .diagnostics import warn_once_per_location
-
-
-# Track block print warnings by (filename, line) -> set of core_ids
-_block_print_warnings: dict[tuple[str, int], set[str]] = {}
 
 
 def _format_tensor(tensor: Tensor, num_pages: int = 1) -> str:
@@ -54,7 +51,7 @@ def _warn_block_in_illegal_state(block: Block, message: str) -> None:
         message: The warning message to display
     """
     warn_once_per_location(
-        _block_print_warnings,
+        get_context().warnings.block_print_warnings,
         message,
     )
 

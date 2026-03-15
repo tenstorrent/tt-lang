@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from greenlet import greenlet
 
 from .blockstate import ThreadType
+from .context import get_context
 from .diagnostics import (
     print_diagnostic_error,
     find_user_code_location,
@@ -23,25 +24,20 @@ from .diagnostics import (
 )
 
 
-# Global scheduler algorithm selection
-_scheduler_algorithm: str = "fair"
-
-
 def set_scheduler_algorithm(algorithm: str) -> None:
     """Set the scheduling algorithm.
 
     Args:
         algorithm: Either 'greedy' or 'fair'
     """
-    global _scheduler_algorithm
     if algorithm not in ("greedy", "fair"):
         raise ValueError(f"Invalid scheduler algorithm: {algorithm}")
-    _scheduler_algorithm = algorithm
+    get_context().config.scheduler_algorithm = algorithm
 
 
 def get_scheduler_algorithm() -> str:
     """Get the current scheduling algorithm."""
-    return _scheduler_algorithm
+    return get_context().config.scheduler_algorithm
 
 
 class GreenletScheduler:
@@ -477,10 +473,6 @@ class GreenletScheduler:
                 return f" on {class_name}"
 
 
-# Global scheduler instance for the current execution
-_current_scheduler: Optional[GreenletScheduler] = None
-
-
 def get_scheduler() -> GreenletScheduler:
     """Get the current scheduler instance.
 
@@ -490,17 +482,17 @@ def get_scheduler() -> GreenletScheduler:
     Raises:
         RuntimeError: If no scheduler is active
     """
-    if _current_scheduler is None:
+    scheduler = get_context().scheduler
+    if scheduler is None:
         raise RuntimeError(
             "No active scheduler. This should only be called from within a kernel."
         )
-    return _current_scheduler
+    return scheduler
 
 
 def set_scheduler(scheduler: Optional[GreenletScheduler]) -> None:
     """Set the current scheduler instance."""
-    global _current_scheduler
-    _current_scheduler = scheduler
+    get_context().scheduler = scheduler
 
 
 def get_current_core_id() -> str:
