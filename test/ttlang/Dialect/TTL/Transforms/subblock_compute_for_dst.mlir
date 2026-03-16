@@ -396,8 +396,8 @@ func.func @tile_multidim_remainder_3x3(%a: tensor<3x3x!ttcore.tile<32x32, f32>>)
 // BCAST-TILED-NEXT:         ttl.tile_store
 // BCAST-TILED-NEXT:         ttl.yield
 // BCAST-TILED-NEXT:       } -> tensor<1x2x!ttcore.tile<32x32, f32>>
-// BCAST-TILED:          } {ttl.subblock_loop_stride
-// BCAST-TILED:        } {ttl.subblock_loop_stride
+// BCAST-TILED:          } {ttl.subblock_dim = 1 : index, ttl.subblock_loop_stride
+// BCAST-TILED:        } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride
 func.func @subblock_broadcast_col(
     %a: tensor<4x4x!ttcore.tile<32x32, f32>>,
     %b: tensor<4x1x!ttcore.tile<32x32, f32>>)
