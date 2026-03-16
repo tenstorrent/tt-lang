@@ -12,9 +12,7 @@ transition table used by Block to validate correct usage patterns.
 from enum import Enum, auto
 from typing import Dict, Optional, Tuple
 
-
-# Global variable to track current thread type in cooperative scheduling
-_current_thread_type: Optional["ThreadType"] = None
+from .context import get_context
 
 
 def get_current_thread_type() -> "ThreadType":
@@ -26,12 +24,13 @@ def get_current_thread_type() -> "ThreadType":
     Raises:
         RuntimeError: If thread type is not set (not within a thread context)
     """
-    if _current_thread_type is None:
+    current_thread_type = get_context().current_thread_type
+    if current_thread_type is None:
         raise RuntimeError(
             "Thread context not set. Must be called within a kernel thread or after "
             "calling set_current_thread_type()."
         )
-    return _current_thread_type
+    return current_thread_type
 
 
 def set_current_thread_type(thread_type: Optional["ThreadType"]) -> None:
@@ -40,14 +39,12 @@ def set_current_thread_type(thread_type: Optional["ThreadType"]) -> None:
     Args:
         thread_type: The thread type to set, or None to clear the context
     """
-    global _current_thread_type
-    _current_thread_type = thread_type
+    get_context().current_thread_type = thread_type
 
 
 def clear_current_thread_type() -> None:
     """Clear the current thread type."""
-    global _current_thread_type
-    _current_thread_type = None
+    get_context().current_thread_type = None
 
 
 class AccessState(Enum):

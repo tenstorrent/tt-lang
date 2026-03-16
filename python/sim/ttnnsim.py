@@ -29,7 +29,6 @@ try:
 
     TTNN_AVAILABLE = True  # type: ignore[reportConstantRedefinition]
 except ImportError:
-    ttnn = None  # type: ignore[assignment]
     TTNN_AVAILABLE = False  # type: ignore[reportConstantRedefinition]
 
 from .constants import TILE_SHAPE

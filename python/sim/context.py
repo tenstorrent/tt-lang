@@ -18,7 +18,9 @@ if TYPE_CHECKING:
     from .greenlet_scheduler import GreenletScheduler
     from .pipe import AnyPipe
     from .ttnnsim import Tensor
-    from .typedefs import Count
+    from .typedefs import Count, Shape
+    from .blockstate import ThreadType
+    from .decorators import BindableTemplate
 
 
 @dataclass
@@ -27,6 +29,7 @@ class SimulatorConfig:
 
     max_dfbs: int = 32
     scheduler_algorithm: str = "fair"
+    default_auto_grid: "Shape" = (8, 8)
 
 
 @dataclass
@@ -87,6 +90,8 @@ class SimulatorContext:
     copy_state: CopySystemState = field(default_factory=CopySystemState)
     warnings: WarningState = field(default_factory=WarningState)
     scheduler: Optional["GreenletScheduler"] = None
+    current_thread_type: Optional["ThreadType"] = None
+    thread_registry: "list[BindableTemplate]" = field(default_factory=list)
 
 
 def get_context() -> SimulatorContext:

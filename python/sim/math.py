@@ -792,6 +792,7 @@ def reduce_sum(
 # Clean up temporary variables
 for _name in ["_op_name", "_torch_fn"]:
     globals().pop(_name, None)
+del _name  # Clean up the loop variable itself
 
 
 def transpose(block: Block, _output_hint: Optional[Block] = None) -> Block:
