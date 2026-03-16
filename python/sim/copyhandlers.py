@@ -15,6 +15,7 @@ from typing import (
     Any,
     Deque,
     Dict,
+    Final,
     List,
     Protocol,
     Tuple,
@@ -122,9 +123,10 @@ class CopyTransferHandler(Protocol):
 
 
 # Handler registry: (src_type, dst_type) -> handler instance
-# This is a static lookup table that doesn't change, so it stays as module-level
-handler_registry: Dict[
-    Tuple[CopyEndpointType, CopyEndpointType], CopyTransferHandler
+# Static lookup table populated at import time via @register_copy_handler decorators.
+# Uses uppercase naming and Final to indicate this is a constant that should not be reassigned.
+HANDLER_REGISTRY: Final[
+    Dict[Tuple[CopyEndpointType, CopyEndpointType], CopyTransferHandler]
 ] = {}
 
 
@@ -148,7 +150,7 @@ def register_copy_handler(src_type: CopyEndpointType, dst_type: CopyEndpointType
 
     def decorator(handler_cls: Type[CopyTransferHandler]):
         # Register handler in module-level registry
-        handler_registry[(src_type, dst_type)] = handler_cls()
+        HANDLER_REGISTRY[(src_type, dst_type)] = handler_cls()
         return handler_cls
 
     return decorator
@@ -353,7 +355,7 @@ class BlockToSrcPipeIdentityHandler:
     def _get_delegate(self) -> CopyTransferHandler:
         """Lazy initialization of delegate handler."""
         if self._delegate is None:
-            self._delegate = handler_registry[(Block, Pipe)]
+            self._delegate = HANDLER_REGISTRY[(Block, Pipe)]
         return self._delegate
 
     def validate(self, src: Block, dst: AnySrcPipeIdentity) -> None:
@@ -378,7 +380,7 @@ class DstPipeIdentityToBlockHandler:
     def _get_delegate(self) -> CopyTransferHandler:
         """Lazy initialization of delegate handler."""
         if self._delegate is None:
-            self._delegate = handler_registry[(Pipe, Block)]
+            self._delegate = HANDLER_REGISTRY[(Pipe, Block)]
         return self._delegate
 
     def validate(self, src: DstPipeIdentity, dst: Block) -> None:
