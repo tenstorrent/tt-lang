@@ -88,7 +88,7 @@ add_subdirectory(
   "${CMAKE_BINARY_DIR}/include/ttmlir/Conversion")
 
 # ---------------------------------------------------------------------------
-# Flatbuffers: tt-lang does not use flatbuffers; ensure no gittt-mlir code tries to include
+# Flatbuffers: tt-lang does not use flatbuffers; ensure no tt-mlir code tries to include them
 add_compile_definitions(TTMLIR_NO_FLATBUFFERS)
 
 # ---------------------------------------------------------------------------
