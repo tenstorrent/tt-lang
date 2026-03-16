@@ -75,6 +75,7 @@ def execute_script_with_simulator(
         code = compile(script_path.read_text(), str(script_path), "exec")
 
         if capture_output:
+            assert output_capture is not None  # Guaranteed by capture_output=True
             with redirect_stdout(output_capture), redirect_stderr(output_capture):  # type: ignore
                 exit_code = _execute_code(
                     code, exec_globals, script_path, output_capture
@@ -82,7 +83,7 @@ def execute_script_with_simulator(
         else:
             exit_code = _execute_code(code, exec_globals, script_path, None)
 
-        output = output_capture.getvalue() if capture_output else ""
+        output = output_capture.getvalue() if capture_output and output_capture else ""
         return exit_code, output
 
     finally:

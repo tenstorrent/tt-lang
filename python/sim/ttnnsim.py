@@ -903,6 +903,8 @@ _EXCLUDE_FROM_WRAPPING = {
 
 # Get all operations with golden functions and create wrappers at module load time
 if TTNN_AVAILABLE:
+    import ttnn  # type: ignore[reportMissingImports]  # Re-import for type checker to know ttnn is bound in this block
+
     _operations_to_wrap = [name for name in dir(ttnn) if not name.startswith("_")]
 
     for _op_name in _operations_to_wrap:

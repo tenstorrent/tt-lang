@@ -14,12 +14,11 @@ import types
 from typing import Any, Dict, List
 
 from .dfb import DataflowBuffer
-from .decorators import BindableTemplate
+from .typedefs import BindableTemplate, Shape
 from .blockstate import ThreadType
 from .context import get_context
 from .greenlet_scheduler import GreenletScheduler, set_scheduler
 from .ttnnsim import Tensor
-from .typedefs import Shape
 from .debug_print import ttlang_print
 
 

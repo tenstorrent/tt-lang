@@ -7,10 +7,9 @@ Statistics collection for simulator operations.
 Tracks tensor read/write operations and provides summary reporting.
 """
 
-from typing import TYPE_CHECKING, Any, Union
+from typing import Any, Union
 
-if TYPE_CHECKING:
-    from .ttnnsim import Tensor
+from .ttnnsim import Tensor
 
 from .context import get_context
 from .ttnnsim import tile_count_from_tensor

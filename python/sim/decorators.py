@@ -12,20 +12,11 @@ per-core execution contexts.
 
 import types
 from types import CellType, FunctionType
-from typing import Any, Callable, Dict, List, Protocol
+from typing import Any, Callable, Dict, List
 
 from .blockstate import ThreadType
 from .context import get_context
-
-
-class BindableTemplate(Protocol):
-    """Protocol for templates that can be bound to a specific execution context."""
-
-    __name__: str
-
-    def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
-        """Bind the template to a specific execution context."""
-        ...
+from .typedefs import BindableTemplate
 
 
 def _make_cell(value: Any) -> CellType:

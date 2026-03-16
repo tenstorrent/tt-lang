@@ -15,12 +15,13 @@ are implemented manually.
 
 import math as _math
 from itertools import product as _iter_product
-from typing import Any, Callable, List, Optional, Set
+from typing import Callable, List, Optional, Set
 
 import torch
 
 from .context import get_context
 from .diagnostics import warn_once_per_location
+from .greenlet_scheduler import get_current_core_id
 from .dfb import Block, track_source_blocks, matmul
 from .blockstate import BlockAcquisition, ThreadType
 from .ttnnsim import Tensor
@@ -38,6 +39,7 @@ def _warn_1d_broadcast_unsupported() -> None:
     warn_once_per_location(
         get_context().warnings.broadcast_1d_warnings,
         "1D broadcast is not supported on current hardware",
+        get_current_core_id(),
     )
 
 
@@ -790,9 +792,11 @@ def reduce_sum(
 
 
 # Clean up temporary variables
-for _name in ["_op_name", "_torch_fn"]:
-    globals().pop(_name, None)
-del _name  # Clean up the loop variable itself
+_cleanup_name: Optional[str] = None
+for _cleanup_name in ("_op_name", "_torch_fn"):
+    globals().pop(_cleanup_name, None)
+if _cleanup_name is not None:  # Always true after loop executes
+    del _cleanup_name
 
 
 def transpose(block: Block, _output_hint: Optional[Block] = None) -> Block:

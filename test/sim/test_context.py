@@ -12,14 +12,16 @@ import pytest
 from greenlet import greenlet, getcurrent
 
 from python.sim.context import (
+    get_context,
+    set_context,
+    reset_context,
+)
+from python.sim.context_types import (
     SimulatorContext,
     SimulatorConfig,
     SimulatorStats,
     CopySystemState,
     WarningState,
-    get_context,
-    set_context,
-    reset_context,
 )
 
 

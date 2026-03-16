@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from greenlet import greenlet
 
 from .blockstate import ThreadType
-from .context import get_context
+from .context import get_context, set_current_thread_type, clear_current_thread_type
 from .diagnostics import (
     print_diagnostic_error,
     find_user_code_location,
@@ -236,7 +236,6 @@ class GreenletScheduler:
         one block_if_needed check). Threads that blocked on their first check
         keep ts=0, giving them priority in fair scheduling.
         """
-        from .blockstate import set_current_thread_type, clear_current_thread_type
 
         for name in list(self._active.keys()):
             g, blocking_obj, _, thread_type, _, _ = self._active[name]
@@ -350,10 +349,6 @@ class GreenletScheduler:
                 self._current_name = name
 
                 # Run thread until it blocks or completes
-                from .blockstate import (
-                    set_current_thread_type,
-                    clear_current_thread_type,
-                )
 
                 set_current_thread_type(thread_type)
                 try:

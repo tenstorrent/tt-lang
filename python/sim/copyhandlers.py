@@ -11,20 +11,18 @@ New transfer types can be added by creating a new handler and decorating it with
 
 from collections import deque
 from typing import (
-    TYPE_CHECKING,
     Any,
-    Deque,
     Dict,
     Final,
     List,
     Protocol,
     Tuple,
     Type,
-    TypedDict,
     Union,
 )
 
-from .context import get_context, _PipeEntry
+from .context import get_context
+from .context_types import PipeEntry
 from .dfb import Block
 from .pipe import AnySrcPipeIdentity, DstPipeIdentity, SrcPipeIdentity
 from .stats import (
@@ -35,10 +33,8 @@ from .stats import (
 )
 from .ttnnsim import Tensor
 from .pipe import AnyDst, AnyPipe, Pipe
-from .typedefs import CoreCoord, Count
-
-if TYPE_CHECKING:
-    from .pipe import SrcPipeIdentity
+from .typedefs import CoreCoord
+from .pipe import SrcPipeIdentity
 
 
 # TODO: Ideally, to avoid duplication, we would want something like this:
@@ -68,12 +64,12 @@ CopyEndpointType = Union[
 ]
 
 
-def _get_or_create_pipe_entry(pipe: AnyPipe) -> _PipeEntry:
+def _get_or_create_pipe_entry(pipe: AnyPipe) -> PipeEntry:
     """Get or create the pipe buffer entry for a given pipe."""
     pipe_buffer = get_context().copy_state.pipe_buffer
     entry = pipe_buffer.get(pipe)
     if entry is None:
-        new_entry: _PipeEntry = {"queue": deque(), "next_msg_id": 0}
+        new_entry: PipeEntry = {"queue": deque(), "next_msg_id": 0}
         pipe_buffer[pipe] = new_entry
         return new_entry
     return entry

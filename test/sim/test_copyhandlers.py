@@ -21,7 +21,8 @@ from test_utils import (
 )
 
 from python.sim import ttnn
-from python.sim.blockstate import set_current_thread_type, ThreadType
+from python.sim.blockstate import ThreadType
+from python.sim.context import set_current_thread_type
 from python.sim.dfb import Block, DataflowBuffer
 from python.sim.copyhandlers import (
     BlockToPipeHandler,

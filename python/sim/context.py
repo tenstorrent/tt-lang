@@ -8,90 +8,14 @@ All simulator state is stored in the current greenlet's attributes,
 eliminating the need for module-level globals.
 """
 
-from collections import defaultdict, deque
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Deque, Dict, Optional, Set, Tuple, TypedDict
+from __future__ import annotations
+
+from typing import Optional
 
 from greenlet import getcurrent
 
-if TYPE_CHECKING:
-    from .greenlet_scheduler import GreenletScheduler
-    from .pipe import AnyPipe
-    from .ttnnsim import Tensor
-    from .typedefs import Count, Shape
-    from .blockstate import ThreadType
-    from .decorators import BindableTemplate
-
-
-@dataclass
-class SimulatorConfig:
-    """Simulator configuration settings."""
-
-    max_dfbs: int = 32
-    scheduler_algorithm: str = "fair"
-    default_auto_grid: "Shape" = (8, 8)
-
-
-@dataclass
-class SimulatorStats:
-    """Statistics collection state."""
-
-    enabled: bool = False
-    stats_by_name: Dict[str, Dict[str, int]] = field(
-        default_factory=lambda: defaultdict(
-            lambda: {"reads": 0, "writes": 0, "tiles_read": 0, "tiles_written": 0}
-        )
-    )
-    pipe_stats_by_name: Dict[str, Dict[str, int]] = field(
-        default_factory=lambda: defaultdict(
-            lambda: {"reads": 0, "writes": 0, "tiles_read": 0, "tiles_written": 0}
-        )
-    )
-    dfb_stats_by_name: Dict[str, Dict[str, int]] = field(
-        default_factory=lambda: defaultdict(
-            lambda: {"reserves": 0, "waits": 0, "tiles_reserved": 0, "tiles_waited": 0}
-        )
-    )
-    dfb_name_counter: int = 0
-
-
-class _PipeEntry(TypedDict):
-    """Pipe buffer entry for NoC pipe communication simulation.
-
-    Each entry holds a queue of messages and a message-ID counter.
-    No locking needed because greenlet scheduler is cooperative.
-    """
-
-    queue: "Deque[Tuple[Tensor, Count, int, set[int]]]"
-    next_msg_id: int
-
-
-@dataclass
-class CopySystemState:
-    """Copy system runtime state (per-greenlet)."""
-
-    pipe_buffer: "Dict[AnyPipe, _PipeEntry]" = field(default_factory=dict)
-
-
-@dataclass
-class WarningState:
-    """Warning deduplication tracking."""
-
-    broadcast_1d_warnings: Dict[tuple[str, int], Set[str]] = field(default_factory=dict)
-    block_print_warnings: Dict[tuple[str, int], Set[str]] = field(default_factory=dict)
-
-
-@dataclass
-class SimulatorContext:
-    """Complete simulator runtime context stored per-greenlet."""
-
-    config: SimulatorConfig = field(default_factory=SimulatorConfig)
-    stats: SimulatorStats = field(default_factory=SimulatorStats)
-    copy_state: CopySystemState = field(default_factory=CopySystemState)
-    warnings: WarningState = field(default_factory=WarningState)
-    scheduler: Optional["GreenletScheduler"] = None
-    current_thread_type: Optional["ThreadType"] = None
-    thread_registry: "list[BindableTemplate]" = field(default_factory=list)
+from .context_types import SimulatorContext
+from .blockstate import ThreadType
 
 
 def get_context() -> SimulatorContext:
@@ -143,3 +67,35 @@ def reset_context() -> None:
     Primarily useful for test cleanup.
     """
     getcurrent()._sim_context = SimulatorContext()  # type: ignore
+
+
+def get_current_thread_type() -> ThreadType:
+    """Get the current thread type.
+
+    Returns:
+        ThreadType
+
+    Raises:
+        RuntimeError: If thread type is not set (not within a thread context)
+    """
+    current_thread_type = get_context().current_thread_type
+    if current_thread_type is None:
+        raise RuntimeError(
+            "Thread context not set. Must be called within a kernel thread or after "
+            "calling set_current_thread_type()."
+        )
+    return current_thread_type
+
+
+def set_current_thread_type(thread_type: Optional[ThreadType]) -> None:
+    """Set the current thread type.
+
+    Args:
+        thread_type: The thread type to set, or None to clear the context
+    """
+    get_context().current_thread_type = thread_type
+
+
+def clear_current_thread_type() -> None:
+    """Clear the current thread type."""
+    get_context().current_thread_type = None
