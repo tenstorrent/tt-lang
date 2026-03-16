@@ -916,5 +916,12 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
                          << ") must match tile type (" << tileType << ")";
   }
 
+  // Indices must be either empty (pre-lowering) or match the view rank.
+  size_t numIndices = getIndices().size();
+  if (numIndices != 0 && numIndices != static_cast<size_t>(viewTy.getRank())) {
+    return emitOpError() << "expected 0 or " << viewTy.getRank()
+                         << " indices, got " << numIndices;
+  }
+
   return success();
 }

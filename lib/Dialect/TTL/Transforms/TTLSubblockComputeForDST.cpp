@@ -306,13 +306,15 @@ private:
       return failure();
     }
 
-    // Annotate each loop with ttl.subblock_loop_stride so downstream passes
-    // (computeCBTileIndex) can distinguish subblock loops from tile
-    // iteration loops and compute correct linearized CB offsets.
+    // Annotate each loop with stride and dimension index so downstream passes
+    // can distinguish subblock loops from tile loops and compute correct
+    // CB offsets (both linearized and per-dimension).
     for (size_t i = 0; i < subblockedDims.size(); ++i) {
       loopNest.loops[i]->setAttr(
           kSubblockLoopStrideAttrName,
           b.getIndexAttr(blockStrides[subblockedDims[i]]));
+      loopNest.loops[i]->setAttr(kSubblockDimAttrName,
+                                 b.getIndexAttr(subblockedDims[i]));
     }
 
     // Replace the original compute op with its output operands.

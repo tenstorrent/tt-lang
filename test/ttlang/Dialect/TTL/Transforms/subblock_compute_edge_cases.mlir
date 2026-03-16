@@ -46,7 +46,7 @@ func.func @subblock_2d_6x6(%a: tensor<6x6x!ttcore.tile<32x32, f32>>)
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
     %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %reserve : !ttcore.tile<32x32, f32>, tensor<6x6x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %exp, %reserve[] : !ttcore.tile<32x32, f32>, tensor<6x6x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<6x6x!ttcore.tile<32x32, f32>>
 
@@ -109,7 +109,7 @@ func.func @consecutive_computes(
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %o0: !ttcore.tile<32x32, f32>):
     %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %r0 : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %exp, %r0[] : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<4x4x!ttcore.tile<32x32, f32>>
 
@@ -121,7 +121,7 @@ func.func @consecutive_computes(
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%b_tile: !ttcore.tile<32x32, f32>, %o1: !ttcore.tile<32x32, f32>):
     %log = ttl.tile_log %b_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %log, %r1 : !ttcore.tile<32x32, f32>, tensor<1x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %log, %r1[] : !ttcore.tile<32x32, f32>, tensor<1x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x2x!ttcore.tile<32x32, f32>>
 
@@ -183,7 +183,7 @@ func.func @subblock_row_broadcast(
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %reserve : !ttcore.tile<32x32, f32>, tensor<6x6x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sum, %reserve[] : !ttcore.tile<32x32, f32>, tensor<6x6x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<6x6x!ttcore.tile<32x32, f32>>
 
@@ -243,7 +243,7 @@ func.func @subblock_scalar_broadcast(
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %c_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %c_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %reserve : !ttcore.tile<32x32, f32>, tensor<6x6x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sum, %reserve[] : !ttcore.tile<32x32, f32>, tensor<6x6x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<6x6x!ttcore.tile<32x32, f32>>
 

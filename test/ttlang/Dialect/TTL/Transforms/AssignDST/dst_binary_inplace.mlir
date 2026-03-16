@@ -56,7 +56,7 @@ func.func @max_plus_min(%a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %mx = ttl.tile_max %a_tile, %b_tile : !ttcore.tile<32x32, bf16>
     %mn = ttl.tile_min %a_tile, %b_tile : !ttcore.tile<32x32, bf16>
     %sum = ttl.tile_add %mx, %mn : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %sum, %out_view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %sum, %out_view[] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -98,7 +98,7 @@ func.func @single_max(%a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
       {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, bf16>, %b_tile: !ttcore.tile<32x32, bf16>, %out_tile: !ttcore.tile<32x32, bf16>):
     %mx = ttl.tile_max %a_tile, %b_tile : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %mx, %out_view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %mx, %out_view[] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>

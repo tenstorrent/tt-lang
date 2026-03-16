@@ -23,7 +23,7 @@ module {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     scf.for %iv = %c0 to %ub step %c1 {
-      ttl.tile_store %tile, %view {ttl.cb_index_map = affine_map<(d0, d1) -> (d0, d1)>, ttl.cb_iter_domain_shape = array<i64: 4, 4>} : !ttcore.tile<32x32, bf16>, tensor<4x4x!ttcore.tile<32x32, bf16>>
+      ttl.tile_store %tile, %view[%c0, %c0] : !ttcore.tile<32x32, bf16>, tensor<4x4x!ttcore.tile<32x32, bf16>>
     } {ttl.tile_loop_stride = 1 : index}
     func.return
   }
@@ -39,11 +39,12 @@ module {
       %tile: !ttcore.tile<32x32, bf16>) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %fake_cb = builtin.unrealized_conversion_cast to !ttkernel.cb<16, !ttcore.tile<32x32, bf16>>
     %view = builtin.unrealized_conversion_cast %fake_cb : !ttkernel.cb<16, !ttcore.tile<32x32, bf16>> to tensor<4x4x!ttcore.tile<32x32, bf16>>
+    %c0 = arith.constant 0 : index
     %c2 = arith.constant 2 : index
     %c16 = arith.constant 16 : index
     %c1 = arith.constant 1 : index
     scf.for %iv = %c2 to %c16 step %c1 {
-      ttl.tile_store %tile, %view {ttl.cb_index_map = affine_map<(d0, d1) -> (d0, d1)>, ttl.cb_iter_domain_shape = array<i64: 4, 4>} : !ttcore.tile<32x32, bf16>, tensor<4x4x!ttcore.tile<32x32, bf16>>
+      ttl.tile_store %tile, %view[%c0, %c0] : !ttcore.tile<32x32, bf16>, tensor<4x4x!ttcore.tile<32x32, bf16>>
     } {ttl.tile_loop_stride = 1 : index}
     func.return
   }
@@ -63,7 +64,7 @@ module {
     %c0 = arith.constant 0 : index
     %c16 = arith.constant 16 : index
     scf.for %iv = %c0 to %c16 step %step {
-      ttl.tile_store %tile, %view {ttl.cb_index_map = affine_map<(d0, d1) -> (d0, d1)>, ttl.cb_iter_domain_shape = array<i64: 4, 4>} : !ttcore.tile<32x32, bf16>, tensor<4x4x!ttcore.tile<32x32, bf16>>
+      ttl.tile_store %tile, %view[%c0, %c0] : !ttcore.tile<32x32, bf16>, tensor<4x4x!ttcore.tile<32x32, bf16>>
     } {ttl.subblock_loop_stride = 1 : index}
     func.return
   }
@@ -80,11 +81,26 @@ module {
       %lb: index) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %fake_cb = builtin.unrealized_conversion_cast to !ttkernel.cb<16, !ttcore.tile<32x32, bf16>>
     %view = builtin.unrealized_conversion_cast %fake_cb : !ttkernel.cb<16, !ttcore.tile<32x32, bf16>> to tensor<4x4x!ttcore.tile<32x32, bf16>>
+    %c0 = arith.constant 0 : index
     %c16 = arith.constant 16 : index
     %c1 = arith.constant 1 : index
     scf.for %iv = %lb to %c16 step %c1 {
-      ttl.tile_store %tile, %view {ttl.cb_index_map = affine_map<(d0, d1) -> (d0, d1)>, ttl.cb_iter_domain_shape = array<i64: 4, 4>} : !ttcore.tile<32x32, bf16>, tensor<4x4x!ttcore.tile<32x32, bf16>>
+      ttl.tile_store %tile, %view[%c0, %c0] : !ttcore.tile<32x32, bf16>, tensor<4x4x!ttcore.tile<32x32, bf16>>
     } {ttl.tile_loop_stride = 1 : index}
+    func.return
+  }
+}
+
+// -----
+
+// Missing indices: tile_store with empty indices reaching convert-ttl-to-ttkernel.
+// expected-error @below {{tile_store has no indices; ttl-lower-to-loops must run first}}
+module {
+  func.func @tile_store_missing_indices(
+      %tile: !ttcore.tile<32x32, bf16>) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %fake_cb = builtin.unrealized_conversion_cast to !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+    %view = builtin.unrealized_conversion_cast %fake_cb : !ttkernel.cb<4, !ttcore.tile<32x32, bf16>> to tensor<2x2x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %tile, %view[] : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
     func.return
   }
 }

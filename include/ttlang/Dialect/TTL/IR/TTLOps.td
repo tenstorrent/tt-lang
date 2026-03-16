@@ -806,19 +806,29 @@ def TTL_TileStoreOp : TTL_Op<"tile_store", [MemoryEffects<[MemWrite]>]> {
     tile_mul). The view must be from a prior `ttl.cb_reserve` call on the
     same CB.
 
+    The `indices` operands are multi-dimensional CB tile coordinates, materialized
+    by `ttl-lower-to-loops` from the ComputeOp's output indexing maps and loop IVs.
+    Before lowering, indices is empty. At `convert-ttl-to-ttkernel` time, the
+    indices are linearized to a flat CB tile index for `pack_tile`.
+
     Example:
     ```mlir
-    %view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-                                 -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.tile_store %tile, %view : !ttcore.tile<32x32, bf16>,
-                                  tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %view = ttl.cb_reserve %cb : <[2, 3], !ttcore.tile<32x32, bf16>, 1>
+                                 -> tensor<2x3x!ttcore.tile<32x32, bf16>>
+    // Before lower-to-loops (inside ttl.compute body):
+    ttl.tile_store %tile, %view[] : !ttcore.tile<32x32, bf16>,
+                                    tensor<2x3x!ttcore.tile<32x32, bf16>>
+    // After lower-to-loops:
+    ttl.tile_store %tile, %view[%row, %col] : !ttcore.tile<32x32, bf16>,
+                                              tensor<2x3x!ttcore.tile<32x32, bf16>>
     ```
   }];
   let arguments = (ins
     AnyType:$tile,
-    AnyRankedTensor:$view
+    AnyRankedTensor:$view,
+    Variadic<Index>:$indices
   );
-  let assemblyFormat = "$tile `,` $view attr-dict `:` type($tile) `,` type($view)";
+  let assemblyFormat = "$tile `,` $view `[` $indices `]` attr-dict `:` type($tile) `,` type($view)";
   let hasVerifier = 1;
 }
 

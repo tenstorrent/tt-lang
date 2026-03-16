@@ -41,7 +41,7 @@ func.func @tile_index_2x3(
   ^bb0(%a: !ttcore.tile<32x32, bf16>, %b: !ttcore.tile<32x32, bf16>,
        %c: !ttcore.tile<32x32, bf16>):
     %sum = ttl.tile_add %a, %b : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %sum, %view : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %sum, %view[] : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<2x3x!ttcore.tile<32x32, bf16>>
 
@@ -109,10 +109,7 @@ func.func @bcast_index_2x3()
           : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>)
           -> !ttcore.tile<32x32, bf16>
       // Store the row-broadcast result (arbitrary choice for the test)
-      ttl.tile_store %row_bcast, %view
-          {ttl.cb_index_map = affine_map<(d0, d1) -> (d0, d1)>,
-           ttl.cb_iter_domain_shape = array<i64: 2, 3>}
-          : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
+      ttl.tile_store %row_bcast, %view[%row, %col] : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
       ttl.tile_regs_commit
       ttl.tile_regs_wait
       ttl.tile_regs_release
@@ -124,4 +121,3 @@ func.func @bcast_index_2x3()
   ttl.cb_push %cb_out : <[2, 3], !ttcore.tile<32x32, bf16>, 1>
   func.return
 }
-

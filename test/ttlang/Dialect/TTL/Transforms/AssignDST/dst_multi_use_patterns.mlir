@@ -79,7 +79,7 @@ func.func @diamond_intermediate_reuse(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %diff = ttl.tile_sub %sum, %c_tile : !ttcore.tile<32x32, f32>
     %prod = ttl.tile_mul %sum, %d_tile : !ttcore.tile<32x32, f32>
     %combo = ttl.tile_add %diff, %prod : !ttcore.tile<32x32, f32>
-    ttl.tile_store %combo, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %combo, %out_view[] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
 
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -142,7 +142,7 @@ func.func @intermediate_result_fan_out(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>
     %use2 = ttl.tile_exp %intermediate : !ttcore.tile<32x32, f32>
     %use3 = ttl.tile_add %intermediate, %use1 : !ttcore.tile<32x32, f32>
     %final = ttl.tile_add %use3, %use2 : !ttcore.tile<32x32, f32>
-    ttl.tile_store %final, %out_view_0 : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %final, %out_view_0[] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
 
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -211,7 +211,7 @@ func.func @multi_consumer_all_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %add = ttl.tile_add %mul, %c_tile : !ttcore.tile<32x32, f32>
     %sub = ttl.tile_sub %mul, %c_tile : !ttcore.tile<32x32, f32>
     %final = ttl.tile_add %add, %sub : !ttcore.tile<32x32, f32>
-    ttl.tile_store %final, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %final, %out_view[] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

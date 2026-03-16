@@ -49,10 +49,10 @@ inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
 ///
 /// Recognized producers:
 /// - `ttl.attach_cb`: explicit association between a tensor SSA value and a CB.
-/// - `ttl.cb_wait`: returns a tensor view backed by the CB's pages.
+/// - `ttl.cb_wait`: returns a tensor view backed by the CB's pages (consumer).
+/// - `ttl.cb_reserve`: returns a tensor view backed by the CB's pages
+/// (producer).
 /// - `unrealized_conversion_cast`: trace through to find the original producer.
-///
-/// Both operations establish a tensor->CB association for compute/DMA purposes.
 inline mlir::Value getAttachedCB(mlir::Value tensor) {
   // Trace through unrealized conversion casts (from dialect conversion).
   tensor = traceUnrealizedCasts(tensor);
@@ -73,6 +73,9 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
   }
   if (auto wait = tensor.getDefiningOp<mlir::tt::ttl::CBWaitOp>()) {
     return wait.getCb();
+  }
+  if (auto reserve = tensor.getDefiningOp<mlir::tt::ttl::CBReserveOp>()) {
+    return reserve.getCb();
   }
   return mlir::Value();
 }

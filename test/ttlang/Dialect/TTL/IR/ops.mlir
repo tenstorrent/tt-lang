@@ -81,7 +81,7 @@ func.func @copy_tile_basic(%t_tensor: tensor<1x1x!ttcore.tile<32x32, f32>>, %src
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%t: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
     %dst, %dst_tile = ttl.copy_tile %t, %src_idx, %dst_idx : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-    ttl.tile_store %dst_tile, %out_view : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %dst_tile, %out_view[] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, f32>>

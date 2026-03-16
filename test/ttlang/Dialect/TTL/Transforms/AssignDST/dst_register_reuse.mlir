@@ -48,7 +48,7 @@ func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sum, %out_view[] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -113,7 +113,7 @@ func.func @chain_reuse(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: tensor<1x
     %x2 = ttl.tile_add %x1, %arg2 : !ttcore.tile<32x32, f32>
     %x3 = ttl.tile_add %x2, %arg2 : !ttcore.tile<32x32, f32>
     %x4 = ttl.tile_add %x3, %arg2 : !ttcore.tile<32x32, f32>
-    ttl.tile_store %x4, %out_view_0 : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %x4, %out_view_0[] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
 
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -173,7 +173,7 @@ func.func @block_arg_multi_use(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: t
     %x0 = ttl.tile_add %arg0, %arg1 : !ttcore.tile<32x32, f32>
     %x1 = ttl.tile_add %arg0, %x0 : !ttcore.tile<32x32, f32>
     %x2 = ttl.tile_add %arg0, %x1 : !ttcore.tile<32x32, f32>
-    ttl.tile_store %x2, %out_view_1 : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %x2, %out_view_1[] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
 
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -227,7 +227,7 @@ func.func @silu_pattern(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>) -> tensor<1x1
     // Phase 1 should insert copy_tile so sigmoid doesn't clobber x
     %sig = ttl.tile_sigmoid %x : !ttcore.tile<32x32, f32>
     %prod = ttl.tile_mul %x, %sig : !ttcore.tile<32x32, f32>
-    ttl.tile_store %prod, %out_view_2 : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %prod, %out_view_2[] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 

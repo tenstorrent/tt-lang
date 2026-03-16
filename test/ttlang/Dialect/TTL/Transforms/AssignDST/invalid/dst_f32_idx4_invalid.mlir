@@ -58,7 +58,7 @@ func.func @f32_capacity_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %sum1 = ttl.tile_add %abs_c, %abs_d : !ttcore.tile<32x32, f32>
     %sum2 = ttl.tile_add %sum0, %abs_e : !ttcore.tile<32x32, f32>
     %final = ttl.tile_add %sum1, %sum2 : !ttcore.tile<32x32, f32>
-    ttl.tile_store %final, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %final, %out_view[] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

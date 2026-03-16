@@ -91,7 +91,7 @@ func.func @war_hazard_three_input(
     %t = ttl.tile_tanh %a_tile : !ttcore.tile<32x32, bf16>
     %sum1 = ttl.tile_add %t, %b_tile : !ttcore.tile<32x32, bf16>
     %sum2 = ttl.tile_add %sum1, %c_tile : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %sum2, %result_view : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %sum2, %result_view[] : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<2x1x!ttcore.tile<32x32, bf16>>
 

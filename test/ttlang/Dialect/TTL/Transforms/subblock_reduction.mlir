@@ -49,7 +49,7 @@ func.func @reduction_fits_in_dst(
        ttl.unroll_factor = 6 : i64} {
   ^bb0(%in: !ttcore.tile<32x32, f32>, %acc: !ttcore.tile<32x32, f32>):
     %add = ttl.tile_add %in, %acc : !ttcore.tile<32x32, f32>
-    ttl.tile_store %add, %reserve : !ttcore.tile<32x32, f32>, tensor<2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %add, %reserve[] : !ttcore.tile<32x32, f32>, tensor<2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x!ttcore.tile<32x32, f32>>
 
@@ -116,7 +116,7 @@ func.func @reduction_subblock_parallel_only(
        ttl.unroll_factor = 8 : i64} {
   ^bb0(%in: !ttcore.tile<32x32, f32>, %acc: !ttcore.tile<32x32, f32>):
     %add = ttl.tile_add %in, %acc : !ttcore.tile<32x32, f32>
-    ttl.tile_store %add, %reserve2 : !ttcore.tile<32x32, f32>, tensor<8x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %add, %reserve2[] : !ttcore.tile<32x32, f32>, tensor<8x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<8x!ttcore.tile<32x32, f32>>
 
@@ -167,7 +167,7 @@ func.func @reduction_exceeds_dst_budget(
        ttl.unroll_factor = 8 : i64} {
   ^bb0(%in: !ttcore.tile<32x32, f32>, %acc: !ttcore.tile<32x32, f32>):
     %add = ttl.tile_add %in, %acc : !ttcore.tile<32x32, f32>
-    ttl.tile_store %add, %reserve3 : !ttcore.tile<32x32, f32>, tensor<2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %add, %reserve3[] : !ttcore.tile<32x32, f32>, tensor<2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x!ttcore.tile<32x32, f32>>
 

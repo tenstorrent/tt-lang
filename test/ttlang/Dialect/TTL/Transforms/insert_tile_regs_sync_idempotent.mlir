@@ -29,7 +29,7 @@ func.func @idempotent_non_subblocked(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>
   %result = ttl.compute ins(%arg_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>) outs(%output_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>) {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} {
     ^bb0(%in: !ttcore.tile<32x32, bf16>, %out: !ttcore.tile<32x32, bf16>):
       %tok, %tile = ttl.copy_tile %in, %c0, %c0 : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
-      ttl.tile_store %tile, %out_view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.tile_store %tile, %out_view[] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -63,7 +63,7 @@ func.func @idempotent_subblocked(%arg0: tensor<1x8x!ttcore.tile<32x32, f32>>) ->
       %c0 = arith.constant 0 : index
       %tok, %tile = ttl.copy_tile %in, %c0, %c0 {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
       %exp = ttl.tile_exp %tile {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-      ttl.tile_store %exp, %out_view : !ttcore.tile<32x32, f32>, tensor<1x8x!ttcore.tile<32x32, f32>>
+      ttl.tile_store %exp, %out_view[] : !ttcore.tile<32x32, f32>, tensor<1x8x!ttcore.tile<32x32, f32>>
       ttl.yield
   } -> tensor<1x8x!ttcore.tile<32x32, f32>>
   func.return %result : tensor<1x8x!ttcore.tile<32x32, f32>>

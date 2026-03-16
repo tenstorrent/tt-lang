@@ -44,7 +44,7 @@ func.func @separate_output_region_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f3
     // Use all three results to keep them live simultaneously, exceeding capacity=2.
     %sum1 = ttl.tile_add %abs_a, %abs_b : !ttcore.tile<32x32, f32>
     %final = ttl.tile_add %sum1, %abs_c : !ttcore.tile<32x32, f32>
-    ttl.tile_store %final, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %final, %out_view[] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

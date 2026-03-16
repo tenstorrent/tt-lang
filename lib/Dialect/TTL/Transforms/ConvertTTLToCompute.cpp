@@ -93,7 +93,8 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
     if (!storeOp) {
       continue;
     }
-    TileStoreOp::create(rewriter, loc, tileResult, storeOp.getView());
+    TileStoreOp::create(rewriter, loc, tileResult, storeOp.getView(),
+                        /*indices=*/ValueRange{});
     storesToErase.push_back(storeOp);
   }
   for (StoreOp s : storesToErase) {
@@ -813,7 +814,8 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
     body->addArgument(tileType, loc);
 
     rewriter.setInsertionPointToEnd(body);
-    TileStoreOp::create(rewriter, loc, body->getArgument(0), reserveView);
+    TileStoreOp::create(rewriter, loc, body->getArgument(0), reserveView,
+                        /*indices=*/ValueRange{});
     YieldOp::create(rewriter, loc);
 
     // make_early_inc_range: replaceOp erases attachOp, invalidating the

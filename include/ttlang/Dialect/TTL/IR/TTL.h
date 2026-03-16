@@ -46,6 +46,10 @@ constexpr llvm::StringLiteral kUnrollFactorAttrName("ttl.unroll_factor");
 constexpr llvm::StringLiteral
     kSubblockLoopStrideAttrName("ttl.subblock_loop_stride");
 
+/// Iteration domain dimension index on a subblock loop, recording which
+/// dimension the loop iterates over.
+constexpr llvm::StringLiteral kSubblockDimAttrName("ttl.subblock_dim");
+
 /// Linearization strides of the full iteration domain (before subblocking),
 /// carried on subblocked ComputeOps so tile loops get correct CB strides.
 constexpr llvm::StringLiteral
@@ -63,13 +67,6 @@ constexpr llvm::StringLiteral kTileOffsetAttrName("ttl.tile_offset");
 /// Output CB index on tile_bcast ops, avoiding SSA tracing during lowering.
 constexpr llvm::StringLiteral
     kBcastOutputCBIndexAttrName("ttl.bcast_output_cb_index");
-
-/// Output indexing map on tile_store, for non-identity CB index computation.
-constexpr llvm::StringLiteral kCBIndexMapAttrName("ttl.cb_index_map");
-
-/// Iteration domain shape on tile_store, for delinearizing loop strides.
-constexpr llvm::StringLiteral
-    kCBIterDomainShapeAttrName("ttl.cb_iter_domain_shape");
 
 /// Trait for data movement operations (copy_tile, copy_dst).
 template <typename ConcreteType>

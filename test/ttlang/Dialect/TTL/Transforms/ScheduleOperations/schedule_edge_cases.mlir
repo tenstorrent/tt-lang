@@ -103,7 +103,7 @@ func.func @single_type_already_sorted(
        %b_tile: !ttcore.tile<32x32, bf16>,
        %out_tile: !ttcore.tile<32x32, bf16>):
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %sum, %result_view : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %sum, %result_view[] : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<2x1x!ttcore.tile<32x32, bf16>>
 
@@ -248,8 +248,8 @@ func.func @copy_before_sfpu_reorder(
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, bf16>
     // Unary: exp of c (needs copy_tile, independent of add)
     %exp = ttl.tile_exp %c_tile : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %sum, %rv0 : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
-    ttl.tile_store %exp, %rv1 : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %sum, %rv0[] : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %exp, %rv1[] : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> (tensor<2x1x!ttcore.tile<32x32, bf16>>, tensor<2x1x!ttcore.tile<32x32, bf16>>)
 

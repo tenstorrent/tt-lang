@@ -11,6 +11,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
@@ -349,19 +350,22 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
           op, "view must come from ttl.cb_reserve (unrealized cast from CB)");
     }
 
+    // Linearize multi-dimensional CB indices to a flat tile index.
     auto viewTy = mlir::cast<RankedTensorType>(op.getView().getType());
-    auto mapAttr = op->getAttrOfType<AffineMapAttr>(kCBIndexMapAttrName);
-    auto domainShape =
-        op->getAttrOfType<DenseI64ArrayAttr>(kCBIterDomainShapeAttrName);
-    if (!mapAttr || !domainShape) {
-      return op.emitError("tile_store missing cb_index_map or "
-                          "cb_iter_domain_shape attributes");
+    ValueRange indices = adaptor.getIndices();
+    if (indices.empty()) {
+      return op.emitError("tile_store has no indices; "
+                          "ttl-lower-to-loops must run first");
     }
-    auto cbTileIndex = utils::computeCBTileIndex(
-        op, rewriter, mapAttr.getValue(), domainShape.asArrayRef(),
-        viewTy.getShape(), /*cbShapeRank=*/0);
-    if (failed(cbTileIndex)) {
-      return failure();
+    SmallVector<int64_t> strides = computeStrides(viewTy.getShape());
+    Value cbTileIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    for (auto [i, coord] : llvm::enumerate(indices)) {
+      Value term = (strides[i] == 1)
+                       ? coord
+                       : arith::MulIOp::create(rewriter, loc, coord,
+                                               arith::ConstantIndexOp::create(
+                                                   rewriter, loc, strides[i]));
+      cbTileIndex = arith::AddIOp::create(rewriter, loc, cbTileIndex, term);
     }
 
     // Determine DST index from the source op:
@@ -382,10 +386,10 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
                << defOp->getName();
       }
     } else {
-      dstIndex = *cbTileIndex;
+      dstIndex = cbTileIndex;
     }
 
-    ttk::PackTileOp::create(rewriter, loc, dstIndex, *cb, *cbTileIndex,
+    ttk::PackTileOp::create(rewriter, loc, dstIndex, *cb, cbTileIndex,
                             /*out_of_order=*/true);
 
     rewriter.eraseOp(op);

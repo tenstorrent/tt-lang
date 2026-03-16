@@ -4,6 +4,7 @@
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -153,41 +154,73 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
     }
   }
 
-  // Build view -> output index mapping for annotating tile_store with the
-  // correct output indexing map. Assigns output indices by unique view order.
-  DenseMap<Value, size_t> viewToOutputIdx;
-  for (Operation &bodyOp : bodyBlock.without_terminator()) {
-    if (auto ts = dyn_cast<TileStoreOp>(&bodyOp)) {
-      Value view = ts.getView();
-      if (!viewToOutputIdx.contains(view)) {
-        viewToOutputIdx[view] = viewToOutputIdx.size();
-      }
+  // Build CB -> output index mapping for determining the correct output
+  // indexing map per tile_store. Each output's CB (via getAttachedCB) is
+  // matched against the tile_store's view CB (via cb_reserve).
+  DenseMap<Value, size_t> cbToOutputIdx;
+  for (auto [idx, output] : llvm::enumerate(op.getOutputs())) {
+    Value cb = getAttachedCB(output);
+    if (cb) {
+      cbToOutputIdx[cb] = idx;
     }
   }
 
-  // Pre-compute iteration domain shape for tile_store annotation.
-  SmallVector<int64_t> iterDomainShape(op.getStaticLoopRanges());
+  // Collect per-dimension subblock offsets from enclosing subblock loops.
+  // Each subblock loop carries kSubblockDimAttrName indicating which
+  // iteration domain dimension it iterates over.
+  SmallVector<std::pair<int64_t, Value>> subblockOffsets; // (dim, IV)
+  for (Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+      if (auto dimAttr =
+              forOp->getAttrOfType<IntegerAttr>(kSubblockDimAttrName)) {
+        subblockOffsets.emplace_back(dimAttr.getInt(), forOp.getInductionVar());
+      }
+    }
+  }
 
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (isa<LinearizedIndexOp>(&bodyOp)) {
       continue;
     }
 
-    Operation *clonedOp = b.clone(bodyOp, mapping);
-
-    // Annotate cloned tile_store ops with the output indexing map and
-    // iteration domain shape. These are consumed by computeCBTileIndex
-    // in ConvertTTLToTTKernel to produce correct CB indices for
-    // non-identity maps (reduction, broadcast, transpose, matmul).
-    if (isa<TileStoreOp>(&bodyOp)) {
-      size_t outputIdx =
-          viewToOutputIdx.lookup(cast<TileStoreOp>(&bodyOp).getView());
+    // Materialize multi-dimensional CB indices on tile_store ops from the
+    // output indexing map and tile loop IVs, with subblock offsets added.
+    if (auto tileStore = dyn_cast<TileStoreOp>(&bodyOp)) {
+      // Determine output index via CB matching. A tile_store may target a
+      // CB not in the compute's outs() (#396); default to output 0.
+      Value viewCB = getAttachedCB(tileStore.getView());
+      size_t outputIdx = 0;
+      if (viewCB) {
+        auto it = cbToOutputIdx.find(viewCB);
+        if (it != cbToOutputIdx.end()) {
+          outputIdx = it->second;
+        }
+      }
       AffineMap outputMap = indexingMaps[numInputs + outputIdx];
 
-      clonedOp->setAttr(kCBIndexMapAttrName, AffineMapAttr::get(outputMap));
-      clonedOp->setAttr(kCBIterDomainShapeAttrName,
-                         b.getDenseI64ArrayAttr(iterDomainShape));
+      // Apply the output indexing map to tile loop IVs.
+      SmallVector<Value> indices = applyIndexingMap(b, loc, outputMap, ivs);
+
+      // Add subblock offsets for subblocked dimensions.
+      for (auto [dim, sbIV] : subblockOffsets) {
+        // Find which output coordinate this dimension maps to.
+        for (unsigned r = 0; r < outputMap.getNumResults(); ++r) {
+          if (auto dimExpr = dyn_cast<AffineDimExpr>(outputMap.getResult(r))) {
+            if (static_cast<int64_t>(dimExpr.getPosition()) == dim) {
+              indices[r] = arith::AddIOp::create(b, loc, indices[r], sbIV);
+            }
+          }
+        }
+      }
+
+      Value tile = mapping.lookupOrDefault(tileStore.getTile());
+      Value view = mapping.lookupOrDefault(tileStore.getView());
+      TileStoreOp::create(b, loc, tile, view, indices);
+      continue;
     }
+
+    b.clone(bodyOp, mapping);
   }
 
   return success();
