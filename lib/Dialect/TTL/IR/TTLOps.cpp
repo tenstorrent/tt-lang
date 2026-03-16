@@ -408,6 +408,28 @@ mlir::tt::ttl::ComputeOp::getIterationDomain(mlir::OpBuilder &b) {
   return domain;
 }
 
+mlir::SmallVector<int64_t>
+mlir::tt::ttl::ComputeOp::getStaticIterationDomainSizes() {
+  mlir::OpBuilder b(getOperation());
+  mlir::SmallVector<mlir::Range> domain = getIterationDomain(b);
+  mlir::SmallVector<int64_t> sizes;
+  sizes.reserve(domain.size());
+  for (auto &range : domain) {
+    auto size = mlir::getConstantIntValue(range.size);
+    assert(size && "ComputeOp verifier guarantees static shapes");
+    sizes.push_back(*size);
+  }
+  return sizes;
+}
+
+int64_t mlir::tt::ttl::ComputeOp::getTotalIterationTiles() {
+  int64_t total = 1;
+  for (int64_t s : getStaticIterationDomainSizes()) {
+    total *= s;
+  }
+  return total;
+}
+
 llvm::FailureOr<mlir::TilingResult>
 mlir::tt::ttl::ComputeOp::getTiledImplementation(
     mlir::OpBuilder &b, llvm::ArrayRef<mlir::OpFoldResult> offsets,

@@ -106,6 +106,86 @@ def same_tile_two_outputs_kernel(a, b, out1, out2):
 
 
 @ttl.kernel(grid=(1, 1))
+def three_outputs_kernel(a, b, out1, out2, out3):
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    out1_dfb = ttl.make_dataflow_buffer_like(out1, shape=(1, 1), buffer_factor=2)
+    out2_dfb = ttl.make_dataflow_buffer_like(out2, shape=(1, 1), buffer_factor=2)
+    out3_dfb = ttl.make_dataflow_buffer_like(out3, shape=(1, 1), buffer_factor=2)
+
+    @ttl.compute()
+    def compute():
+        with a_dfb.wait() as av, b_dfb.wait() as bv:
+            result = av + bv
+            with (
+                out1_dfb.reserve() as o1,
+                out2_dfb.reserve() as o2,
+                out3_dfb.reserve() as o3,
+            ):
+                o1.store(result)
+                o2.store(result)
+                o3.store(result)
+
+    @ttl.datamovement()
+    def dm_read():
+        with a_dfb.reserve() as blk:
+            tx = ttl.copy(a[0, 0], blk)
+            tx.wait()
+        with b_dfb.reserve() as blk:
+            tx = ttl.copy(b[0, 0], blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out1_dfb.wait() as blk:
+            tx = ttl.copy(blk, out1[0, 0])
+            tx.wait()
+        with out2_dfb.wait() as blk:
+            tx = ttl.copy(blk, out2[0, 0])
+            tx.wait()
+        with out3_dfb.wait() as blk:
+            tx = ttl.copy(blk, out3[0, 0])
+            tx.wait()
+
+
+@ttl.kernel(grid=(1, 1))
+def fused_bcast_two_outputs_kernel(a, b, out1, out2):
+    """Fused chain: broadcast(b) + a -> store to 2 outputs.
+    a is 4x1 tiles (128x32), b is 1x1 tile (32x32), output is 4x1 tiles.
+    Tests broadcast inside a fused compute with multi-output."""
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(4, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    out1_dfb = ttl.make_dataflow_buffer_like(out1, shape=(4, 1), buffer_factor=2)
+    out2_dfb = ttl.make_dataflow_buffer_like(out2, shape=(4, 1), buffer_factor=2)
+
+    @ttl.compute()
+    def compute():
+        with a_dfb.wait() as av, b_dfb.wait() as bv:
+            result = av + ttl.math.broadcast(bv, dims=[0])
+            with out1_dfb.reserve() as o1, out2_dfb.reserve() as o2:
+                o1.store(result)
+                o2.store(result)
+
+    @ttl.datamovement()
+    def dm_read():
+        with a_dfb.reserve() as blk:
+            tx = ttl.copy(a[0:4, 0], blk)
+            tx.wait()
+        with b_dfb.reserve() as blk:
+            tx = ttl.copy(b[0, 0], blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out1_dfb.wait() as blk:
+            tx = ttl.copy(blk, out1[0:4, 0])
+            tx.wait()
+        with out2_dfb.wait() as blk:
+            tx = ttl.copy(blk, out2[0:4, 0])
+            tx.wait()
+
+
+@ttl.kernel(grid=(1, 1))
 def store_then_forward_kernel(a, b, out_main, out_copy):
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
@@ -178,6 +258,34 @@ def test_same_tile_two_outputs(device):
     r1 = ttnn.to_torch(out1).float()
     r2 = ttnn.to_torch(out2).float()
     expected = torch.full_like(r1, 5.0)
+    assert torch.allclose(r1, expected)
+    assert torch.allclose(r2, expected)
+
+
+def test_three_outputs(device):
+    a = to_dram(torch.full((32, 32), 3.0, dtype=torch.bfloat16), device)
+    b = to_dram(torch.full((32, 32), 2.0, dtype=torch.bfloat16), device)
+    out1 = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
+    out2 = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
+    out3 = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
+
+    three_outputs_kernel(a, b, out1, out2, out3)
+    expected = torch.full((32, 32), 5.0)
+    for out in [out1, out2, out3]:
+        r = ttnn.to_torch(out).float()
+        assert torch.allclose(r, expected)
+
+
+def test_fused_bcast_two_outputs(device):
+    a = to_dram(torch.full((128, 32), 3.0, dtype=torch.bfloat16), device)
+    b = to_dram(torch.full((32, 32), 2.0, dtype=torch.bfloat16), device)
+    out1 = to_dram(torch.zeros((128, 32), dtype=torch.bfloat16), device)
+    out2 = to_dram(torch.zeros((128, 32), dtype=torch.bfloat16), device)
+
+    fused_bcast_two_outputs_kernel(a, b, out1, out2)
+    expected = torch.full((128, 32), 5.0)
+    r1 = ttnn.to_torch(out1).float()
+    r2 = ttnn.to_torch(out2).float()
     assert torch.allclose(r1, expected)
     assert torch.allclose(r2, expected)
 

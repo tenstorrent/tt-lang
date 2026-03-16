@@ -295,6 +295,14 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     // Return a flat list of all operand dimensions as OpFoldResults.
     SmallVector<OpFoldResult> createFlatListOfOperandDims(OpBuilder &b,
                                                           Location loc);
+
+    // Extract static dimension sizes from the iteration domain.
+    SmallVector<int64_t> getStaticIterationDomainSizes();
+
+    // Compute total tiles in the iteration domain. Handles multi-output
+    // computes with potentially different output shapes, as well as
+    // reductions where the output shape is smaller than the iteration domain.
+    int64_t getTotalIterationTiles();
   }];
 }
 

@@ -938,21 +938,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         std::uint32_t dstPerIteration = maxDstUsed + 1;
         std::uint32_t unrollFactor = capacity / dstPerIteration;
 
-        // Compute total tiles from the first output tensor shape.
-        // TODO: For reductions, use the iteration domain (input shape) instead,
-        // since the output has fewer dimensions than the loop nest.
-        // TODO(#396): Assumes all outputs share the same shape. This breaks
-        // if multi-output computes ever have differently-shaped outputs.
-        int64_t totalTiles = 1;
-        Value firstOutput = computeOp.getOutputs().front();
-        auto outputTy = cast<RankedTensorType>(firstOutput.getType());
-        for (int64_t dim : outputTy.getShape()) {
-          if (dim == ShapedType::kDynamic) {
-            totalTiles = 1;
-            break;
-          }
-          totalTiles *= dim;
-        }
+        int64_t totalTiles = computeOp.getTotalIterationTiles();
 
         unrollFactor =
             std::min(unrollFactor, static_cast<std::uint32_t>(totalTiles));
