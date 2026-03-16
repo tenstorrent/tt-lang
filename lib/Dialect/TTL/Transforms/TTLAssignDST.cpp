@@ -941,6 +941,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         // Compute total tiles from the first output tensor shape.
         // TODO: For reductions, use the iteration domain (input shape) instead,
         // since the output has fewer dimensions than the loop nest.
+        // TODO(#396): Assumes all outputs share the same shape. This breaks
+        // if multi-output computes ever have differently-shaped outputs.
         int64_t totalTiles = 1;
         Value firstOutput = computeOp.getOutputs().front();
         auto outputTy = cast<RankedTensorType>(firstOutput.getType());

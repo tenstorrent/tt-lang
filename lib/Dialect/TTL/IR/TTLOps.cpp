@@ -824,6 +824,15 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   // The body must contain at least one tile_store. tile_store is the hardware
   // write (becomes pack_tile) and is the only mechanism for the compute to
   // produce observable output via pack to the output circular buffer.
+  //
+  // Each tile_store's target CB must match a formal output CB.
+  DenseSet<Value> outputCBs;
+  for (Value output : getOutputs()) {
+    if (Value cb = getAttachedCB(output)) {
+      outputCBs.insert(cb);
+    }
+  }
+
   bool hasTileStore = false;
   for (Operation &op : bodyBlock.without_terminator()) {
     auto store = dyn_cast<TileStoreOp>(&op);
@@ -831,8 +840,13 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
       continue;
     }
     hasTileStore = true;
-    if (!store.getView().getDefiningOp<CBReserveOp>()) {
+    auto reserve = store.getView().getDefiningOp<CBReserveOp>();
+    if (!reserve) {
       return store.emitOpError() << "view must be produced by ttl.cb_reserve";
+    }
+    if (!outputCBs.contains(reserve.getCb())) {
+      return store.emitOpError()
+             << "stores to CB that is not a formal output of the compute";
     }
   }
   if (!hasTileStore) {
