@@ -64,6 +64,13 @@ constexpr llvm::StringLiteral kTileOffsetAttrName("ttl.tile_offset");
 constexpr llvm::StringLiteral
     kBcastOutputCBIndexAttrName("ttl.bcast_output_cb_index");
 
+/// Output indexing map on tile_store, for non-identity CB index computation.
+constexpr llvm::StringLiteral kCBIndexMapAttrName("ttl.cb_index_map");
+
+/// Iteration domain shape on tile_store, for delinearizing loop strides.
+constexpr llvm::StringLiteral
+    kCBIterDomainShapeAttrName("ttl.cb_iter_domain_shape");
+
 /// Trait for data movement operations (copy_tile, copy_dst).
 template <typename ConcreteType>
 class TTLDataMovementOpTrait

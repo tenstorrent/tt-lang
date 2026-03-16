@@ -350,8 +350,16 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
     }
 
     auto viewTy = mlir::cast<RankedTensorType>(op.getView().getType());
-    auto cbTileIndex =
-        utils::computeCBTileIndex(op, rewriter, viewTy.getShape());
+    auto mapAttr = op->getAttrOfType<AffineMapAttr>(kCBIndexMapAttrName);
+    auto domainShape =
+        op->getAttrOfType<DenseI64ArrayAttr>(kCBIterDomainShapeAttrName);
+    if (!mapAttr || !domainShape) {
+      return op.emitError("tile_store missing cb_index_map or "
+                          "cb_iter_domain_shape attributes");
+    }
+    auto cbTileIndex = utils::computeCBTileIndex(
+        op, rewriter, mapAttr.getValue(), domainShape.asArrayRef(),
+        viewTy.getShape(), /*cbShapeRank=*/0);
     if (failed(cbTileIndex)) {
       return failure();
     }

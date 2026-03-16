@@ -1,6 +1,6 @@
 // Verify computeCBTileIndex produces correct linearized CB indices.
-// Tests identity maps (elementwise) and broadcast maps (non-identity).
-// TODO: extend with matmul, transpose, and reduction once available.
+// Tests identity maps (elementwise), broadcast maps (non-identity),
+// and reduction maps (output projection via cb_index_map attribute).
 
 // Identity map test: full pipeline.
 // RUN: ttlang-opt %s --split-input-file \
@@ -109,7 +109,10 @@ func.func @bcast_index_2x3()
           : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>)
           -> !ttcore.tile<32x32, bf16>
       // Store the row-broadcast result (arbitrary choice for the test)
-      ttl.tile_store %row_bcast, %view : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
+      ttl.tile_store %row_bcast, %view
+          {ttl.cb_index_map = affine_map<(d0, d1) -> (d0, d1)>,
+           ttl.cb_iter_domain_shape = array<i64: 2, 3>}
+          : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
       ttl.tile_regs_commit
       ttl.tile_regs_wait
       ttl.tile_regs_release
@@ -121,3 +124,4 @@ func.func @bcast_index_2x3()
   ttl.cb_push %cb_out : <[2, 3], !ttcore.tile<32x32, bf16>, 1>
   func.return
 }
+

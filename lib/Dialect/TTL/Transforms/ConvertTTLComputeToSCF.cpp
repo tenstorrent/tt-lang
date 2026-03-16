@@ -153,9 +153,40 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
     }
   }
 
+  // Build view -> output index mapping for annotating tile_store with the
+  // correct output indexing map. Assigns output indices by unique view order.
+  DenseMap<Value, size_t> viewToOutputIdx;
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
-    if (!isa<LinearizedIndexOp>(&bodyOp)) {
-      b.clone(bodyOp, mapping);
+    if (auto ts = dyn_cast<TileStoreOp>(&bodyOp)) {
+      Value view = ts.getView();
+      if (!viewToOutputIdx.contains(view)) {
+        viewToOutputIdx[view] = viewToOutputIdx.size();
+      }
+    }
+  }
+
+  // Pre-compute iteration domain shape for tile_store annotation.
+  SmallVector<int64_t> iterDomainShape(op.getStaticLoopRanges());
+
+  for (Operation &bodyOp : bodyBlock.without_terminator()) {
+    if (isa<LinearizedIndexOp>(&bodyOp)) {
+      continue;
+    }
+
+    Operation *clonedOp = b.clone(bodyOp, mapping);
+
+    // Annotate cloned tile_store ops with the output indexing map and
+    // iteration domain shape. These are consumed by computeCBTileIndex
+    // in ConvertTTLToTTKernel to produce correct CB indices for
+    // non-identity maps (reduction, broadcast, transpose, matmul).
+    if (isa<TileStoreOp>(&bodyOp)) {
+      size_t outputIdx =
+          viewToOutputIdx.lookup(cast<TileStoreOp>(&bodyOp).getView());
+      AffineMap outputMap = indexingMaps[numInputs + outputIdx];
+
+      clonedOp->setAttr(kCBIndexMapAttrName, AffineMapAttr::get(outputMap));
+      clonedOp->setAttr(kCBIterDomainShapeAttrName,
+                         b.getDenseI64ArrayAttr(iterDomainShape));
     }
   }
 
