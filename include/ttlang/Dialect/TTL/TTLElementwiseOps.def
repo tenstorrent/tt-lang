@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+// SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -90,6 +90,9 @@ TTL_UNARY_TILE_OP(Relu, ReluTileOp, ReluTileInitOp, ReluTileOp)
 TTL_UNARY_TILE_OP(Sigmoid, SigmoidTileOp, SigmoidTileInitOp, SigmoidTileOp)
 TTL_UNARY_TILE_OP(Floor, FloorTileOp, RoundingTileInitOp, FloorTileOp)
 TTL_UNARY_TILE_OP(Recip, RecipTileOp, RecipTileInitOp, RecipTileOp)
+TTL_UNARY_TILE_OP(Sin, SinTileOp, SinTileInitOp, SinTileOp)
+TTL_UNARY_TILE_OP(Cos, CosTileOp, CosTileInitOp, CosTileOp)
+TTL_UNARY_TILE_OP(Tan, TanTileOp, TanTileInitOp, TanTileOp)
 
 // CB -> DST ops with attribute
 TTL_CB_UNARY_ATTR_OP(Bcast, TileBcastOp, UnaryBcastInitOp, UnaryBcastTileOp)

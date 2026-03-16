@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+// SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -632,6 +632,9 @@ defm TTL_Abs : TTL_UnaryElementwisePair<"abs", "abs_tile">;
 defm TTL_Relu : TTL_UnaryElementwisePair<"relu", "relu_tile">;
 defm TTL_Floor : TTL_UnaryElementwisePair<"floor", "floor_tile">;
 defm TTL_Recip : TTL_UnaryElementwisePair<"recip", "recip_tile">;
+defm TTL_Sin : TTL_UnaryElementwisePair<"sin", "sin_tile">;
+defm TTL_Cos : TTL_UnaryElementwisePair<"cos", "cos_tile">;
+defm TTL_Tan : TTL_UnaryElementwisePair<"tan", "tan_tile">;
 
 //===----------------------------------------------------------------------===//
 // Broadcast Operation
