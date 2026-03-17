@@ -20,6 +20,8 @@
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "llvm/ADT/TypeSwitch.h" // IWYU pragma: keep
 #include <cstdint>
+#include <functional>
+#include <numeric>
 
 #define GET_OP_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOps.cpp.inc"
@@ -423,11 +425,9 @@ mlir::tt::ttl::ComputeOp::getStaticIterationDomainSizes() {
 }
 
 int64_t mlir::tt::ttl::ComputeOp::getTotalIterationTiles() {
-  int64_t total = 1;
-  for (int64_t s : getStaticIterationDomainSizes()) {
-    total *= s;
-  }
-  return total;
+  auto sizes = getStaticIterationDomainSizes();
+  return std::accumulate(sizes.begin(), sizes.end(), int64_t{1},
+                         std::multiplies<>());
 }
 
 llvm::FailureOr<mlir::TilingResult>

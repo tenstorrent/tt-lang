@@ -38,7 +38,7 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
 
 /// Collect all unique output CBs from store users of an op's result.
 /// Preserves first-seen order and deduplicates (same CB stored to twice
-/// produces one output). Returns empty when no stores exist or any
+/// produces one output). Returns empty if no stores exist or if any
 /// store's view is not from cb_reserve.
 static SmallVector<Value> collectOutputCBs(Operation *op) {
   assert(op->getNumResults() > 0 &&
@@ -47,11 +47,13 @@ static SmallVector<Value> collectOutputCBs(Operation *op) {
   DenseSet<Value> seen;
   for (OpOperand &use : op->getResult(0).getUses()) {
     if (auto storeOp = dyn_cast<StoreOp>(use.getOwner())) {
-      if (auto reserve = storeOp.getView().getDefiningOp<CBReserveOp>()) {
-        Value cb = reserve.getCb();
-        if (seen.insert(cb).second) {
-          result.push_back(cb);
-        }
+      auto reserve = storeOp.getView().getDefiningOp<CBReserveOp>();
+      if (!reserve) {
+        return {};
+      }
+      Value cb = reserve.getCb();
+      if (seen.insert(cb).second) {
+        result.push_back(cb);
       }
     }
   }
@@ -450,7 +452,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
 /// Build a ttl.compute op with a single binary tile operation in the body.
 /// Inputs must already be attached to CBs via ttl.attach_cb.
-/// The output CB is identified via ttl.store on the op's result.
+/// Output CBs are the reserved CBs to which the op's result is stored.
 template <typename TileOp>
 static LogicalResult buildBinaryCompute(Operation *op,
                                         PatternRewriter &rewriter, Value lhs,
@@ -541,7 +543,7 @@ static LogicalResult buildBinaryCompute(Operation *op,
 
 /// Build a ttl.compute op with a single unary tile operation in the body.
 /// Input must already be attached to a CB via ttl.attach_cb.
-/// The output CB is identified via ttl.store on the op's result.
+/// Output CBs are the reserved CBs to which the op's result is stored.
 template <typename TileOp>
 static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
                                        Value input) {
