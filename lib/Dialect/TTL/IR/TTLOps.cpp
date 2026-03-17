@@ -855,6 +855,7 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     }
   }
 
+  DenseSet<Value> storedCBs;
   bool hasTileStore = false;
   for (Operation &op : bodyBlock.without_terminator()) {
     auto store = dyn_cast<TileStoreOp>(&op);
@@ -870,9 +871,18 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
       return store.emitOpError()
              << "stores to CB that is not a formal output of the compute";
     }
+    storedCBs.insert(reserve.getCb());
   }
   if (!hasTileStore) {
     return emitOpError("body must contain at least one ttl.tile_store");
+  }
+
+  for (Value output : getOutputs()) {
+    if (Value cb = getAttachedCB(output)) {
+      if (!storedCBs.contains(cb)) {
+        return emitOpError("formal output CB has no tile_store in the body");
+      }
+    }
   }
 
   return success();
