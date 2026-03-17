@@ -7,12 +7,23 @@
 import pytest
 from greenlet import greenlet
 from python.sim.blockstate import ThreadType
-from python.sim.context import set_current_thread_type
+from python.sim.context import set_current_thread_type, reset_context
 from python.sim.greenlet_scheduler import (
     GreenletScheduler,
     set_scheduler,
     set_scheduler_algorithm,
 )
+
+
+@pytest.fixture(autouse=True)
+def reset_simulator_context():
+    """Reset simulator context before each test to ensure test isolation.
+
+    This ensures that modifications to context config (e.g., max_dfbs) or
+    state in one test don't leak into other tests when running in parallel.
+    """
+    reset_context()
+    yield
 
 
 def setup_scheduler_and_thread_context(thread_type: ThreadType) -> GreenletScheduler:
