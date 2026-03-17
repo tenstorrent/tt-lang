@@ -7,7 +7,7 @@ Type aliases with Pydantic constraints for runtime validation.
 """
 
 from enum import Enum, auto
-from typing import Annotated, Tuple, Union
+from typing import Annotated, Any, Callable, Dict, Protocol, Tuple, Union
 
 from pydantic import Field
 
@@ -45,3 +45,13 @@ Shape = Tuple[Size, ...]
 # preceding elements are batch indices (implicit tile size 1, so tile-space
 # and element-space are identical for those dimensions).
 TensorKey = Union[Selector, Tuple[Selector, ...]]
+
+
+class BindableTemplate(Protocol):
+    """Protocol for templates that can be bound to a specific execution context."""
+
+    __name__: str
+
+    def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
+        """Bind the template to a specific execution context."""
+        ...

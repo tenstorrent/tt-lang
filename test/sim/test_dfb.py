@@ -34,10 +34,12 @@ from python.sim.dfb import (
 )
 from python.sim.math import broadcast
 from python.sim.blockstate import (
-    set_current_thread_type,
-    clear_current_thread_type,
     ThreadType,
     BlockAcquisition,
+)
+from python.sim.context import (
+    set_current_thread_type,
+    clear_current_thread_type,
 )
 
 
@@ -1304,11 +1306,8 @@ def test_1d_block_from_list():
 
 def test_1d_dataflow_buffer_reserve_push_wait_pop():
     """DataflowBuffer with 1-D shape correctly reserves, pushes, and delivers data."""
-    from python.sim.blockstate import (
-        ThreadType,
-        set_current_thread_type,
-        clear_current_thread_type,
-    )
+    from python.sim.blockstate import ThreadType
+    from python.sim.context import set_current_thread_type, clear_current_thread_type
 
     element = Tensor(torch.zeros(32))
     dfb = DataflowBuffer(likeness_tensor=element, shape=(1,), buffer_factor=2)
@@ -1343,11 +1342,8 @@ def test_1d_dataflow_buffer_reserve_push_wait_pop():
 
 def test_1d_multi_tile_dataflow_buffer():
     """DataflowBuffer with 1-D shape (4,) operates over 4 tiles per operation."""
-    from python.sim.blockstate import (
-        ThreadType,
-        set_current_thread_type,
-        clear_current_thread_type,
-    )
+    from python.sim.blockstate import ThreadType
+    from python.sim.context import set_current_thread_type, clear_current_thread_type
 
     # Full buffer element shape for 4 tiles of size 32 each
     element = Tensor(torch.zeros(128))

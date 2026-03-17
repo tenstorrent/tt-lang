@@ -37,9 +37,105 @@ def setup_simulator_imports() -> None:
     sys.modules["ttnn"] = ttnn  # type: ignore[assignment]
 
 
+def execute_script_with_simulator(
+    script_path: Path,
+    capture_output: bool = False,
+    argv: list[str] | None = None,
+) -> tuple[int, str]:
+    """
+    Execute a script with simulator backend.
+
+    Args:
+        script_path: Path to the Python file to execute
+        capture_output: If True, capture and return stdout/stderr; if False, print directly
+        argv: Command-line arguments to pass to the script (for sys.argv)
+
+    Returns:
+        (exit_code, output) tuple where exit_code is 0 on success, 1 on error,
+        and output is captured text if capture_output=True, empty string otherwise
+    """
+    import io
+    from contextlib import redirect_stdout, redirect_stderr
+
+    if argv is None:
+        argv = []
+
+    # Set up sys.argv for the executed script
+    original_argv = sys.argv
+    sys.argv = [str(script_path)] + argv
+
+    output_capture = io.StringIO() if capture_output else None
+    exec_globals: dict[str, Any] = {
+        "__name__": "__main__",
+        "__file__": str(script_path),
+        "__builtins__": __builtins__,
+    }
+
+    try:
+        code = compile(script_path.read_text(), str(script_path), "exec")
+
+        if capture_output:
+            assert output_capture is not None  # Guaranteed by capture_output=True
+            with redirect_stdout(output_capture), redirect_stderr(output_capture):  # type: ignore
+                exit_code = _execute_code(
+                    code, exec_globals, script_path, output_capture
+                )
+        else:
+            exit_code = _execute_code(code, exec_globals, script_path, None)
+
+        output = output_capture.getvalue() if capture_output and output_capture else ""
+        return exit_code, output
+
+    finally:
+        sys.argv = original_argv
+
+
+def _execute_code(
+    code: Any,
+    exec_globals: dict[str, Any],
+    script_path: Path,
+    error_output: Any,
+) -> int:
+    """Execute compiled code and return exit code."""
+    import traceback
+
+    try:
+        exec(code, exec_globals)
+        return 0
+    except SystemExit as e:
+        return e.code if isinstance(e.code, int) else int(bool(e.code))
+    except RuntimeError as e:
+        # RuntimeError with __cause__ is from greenlet scheduler (including deadlocks)
+        if e.__cause__ is not None:
+            if error_output:
+                traceback.print_exception(
+                    type(e), e, e.__traceback__, file=error_output
+                )
+            else:
+                traceback.print_exception(type(e), e, e.__traceback__)
+            return 1
+        else:
+            if error_output:
+                print(f"\nError executing {script_path.name}:", file=error_output)
+                traceback.print_exception(
+                    type(e), e, e.__traceback__, file=error_output
+                )
+            else:
+                print(f"\nError executing {script_path.name}:", file=sys.stderr)
+                _print_filtered_traceback(e, script_path)
+            return 1
+    except Exception as e:
+        if error_output:
+            traceback.print_exception(type(e), e, e.__traceback__, file=error_output)
+        else:
+            print(f"\nError executing {script_path.name}:", file=sys.stderr)
+            raise
+        return 1
+
+
 def run_file(filepath: str, argv: list[str]) -> None:
     """
-    Execute a kernel file with simulator backend.
+    Execute a kernel file with simulator backend (CLI wrapper).
 
     Args:
         filepath: Path to the Python file to execute
@@ -50,34 +146,11 @@ def run_file(filepath: str, argv: list[str]) -> None:
         print(f"Error: File not found: {file_path}", file=sys.stderr)
         sys.exit(1)
 
-    # Add script's directory to sys.path to enable relative imports
-    sys.path.insert(0, str(file_path.parent))
-
-    # Set up sys.argv for the executed script
-    sys.argv = [str(file_path)] + argv
-
-    # Read and execute the file
-    with open(file_path) as f:
-        code = compile(f.read(), str(file_path), "exec")
-        # Get the shadowed modules from sys.modules so they're available in exec
-        exec_globals: dict[str, Any] = {
-            "__name__": "__main__",
-            "__file__": str(file_path),
-            "__builtins__": __builtins__,
-        }
-        try:
-            exec(code, exec_globals)
-        except RuntimeError as e:
-            # RuntimeError with __cause__ is from greenlet scheduler exception handling
-            # (including deadlocks) and already has formatted error printed - suppress traceback
-            if e.__cause__ is not None:
-                sys.exit(1)
-            print(f"\nError executing {file_path.name}:", file=sys.stderr)
-            _print_filtered_traceback(e, file_path)
-            sys.exit(1)
-        except Exception:
-            print(f"\nError executing {file_path.name}:", file=sys.stderr)
-            raise
+    exit_code, _ = execute_script_with_simulator(
+        file_path, capture_output=False, argv=argv
+    )
+    if exit_code != 0:
+        sys.exit(exit_code)
 
 
 def _print_filtered_traceback(exc: Exception, user_file: Path) -> None:
