@@ -509,20 +509,34 @@ def TTL_CopyTileOp : TTL_Op<"copy_tile",
   let summary = "Copy a tile from a circular buffer into a DST register";
   let description = [{
     Performs a CB -> DST copy, matching `copy_tile_init` + `copy_tile` in the
-    TTKernel API. The source is identified by a circular buffer operand and an
-    input tile index; the destination is the DST register index. This is used by
-    the DST assignment pass to make CB -> DST copies explicit before tile-level
-    compute is lowered.
+    TTKernel API. The source is identified by a circular buffer operand and
+    multi-dimensional CB tile coordinates; the destination is the DST register
+    index.
+
+    The `src_indices` are multi-dimensional CB tile coordinates, materialized
+    by `ttl-lower-to-loops` from the ComputeOp's input indexing maps and loop
+    IVs. Before lowering, src_indices is empty. At `convert-ttl-to-ttkernel`
+    time, the indices are linearized to a flat CB tile index for `copy_tile`.
+
+    Example:
+    ```mlir
+    // Before lower-to-loops (inside ttl.compute body):
+    %tok, %tile = ttl.copy_tile %src[], %c0 : !ttcore.tile<32x32, bf16>, index
+                  -> !ttl.dst, !ttcore.tile<32x32, bf16>
+    // After lower-to-loops:
+    %tok, %tile = ttl.copy_tile %src[%row, %col], %c0 : !ttcore.tile<32x32, bf16>, index
+                  -> !ttl.dst, !ttcore.tile<32x32, bf16>
+    ```
   }];
   let arguments = (ins
     TTL_TileType:$src,
-    Index:$src_index,
-    Index:$dst_index
+    Index:$dst_index,
+    Variadic<Index>:$src_indices
   );
   let results = (outs TTL_DSTRegister:$dst_token, TTL_TileType:$dst_tile);
   let assemblyFormat =
-      "$src `,` $src_index `,` $dst_index attr-dict `:` "
-      "type($src) `,` type($src_index) `,` type($dst_index) "
+      "$src `[` $src_indices `]` `,` $dst_index attr-dict `:` "
+      "type($src) `,` type($dst_index) "
       "`->` type($dst_token) `,` type($dst_tile)";
   let hasVerifier = 1;
 }

@@ -6,12 +6,12 @@
 
 #include "ttlang/Dialect/TTKernel/Transforms/TTKernelCleanupPatterns.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
@@ -357,16 +357,8 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
       return op.emitError("tile_store has no indices; "
                           "ttl-lower-to-loops must run first");
     }
-    SmallVector<int64_t> strides = computeStrides(viewTy.getShape());
-    Value cbTileIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
-    for (auto [i, coord] : llvm::enumerate(indices)) {
-      Value term = (strides[i] == 1)
-                       ? coord
-                       : arith::MulIOp::create(rewriter, loc, coord,
-                                               arith::ConstantIndexOp::create(
-                                                   rewriter, loc, strides[i]));
-      cbTileIndex = arith::AddIOp::create(rewriter, loc, cbTileIndex, term);
-    }
+    Value cbTileIndex = affine::AffineLinearizeIndexOp::create(
+        rewriter, loc, indices, viewTy.getShape());
 
     // Determine DST index from the source op:
     // - Tile compute ops and copy_dst: have dst_idx attribute

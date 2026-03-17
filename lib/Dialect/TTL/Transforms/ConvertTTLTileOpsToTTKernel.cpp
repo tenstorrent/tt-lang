@@ -16,6 +16,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -439,9 +440,23 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
     }
     Value cb = *cbResult;
 
-    // Emit the copy from CB[src_index] to DST[dst_index]
+    // Linearize multi-dimensional src_indices to a flat CB tile index.
+    ValueRange srcIndices = adaptor.getSrcIndices();
+    if (srcIndices.empty()) {
+      return op.emitError("copy_tile has no src_indices; "
+                          "ttl-lower-to-loops must run first");
+    }
+    auto srcShape = getOperandTensorShape(op.getSrc());
+    if (!srcShape) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot determine source tensor shape for linearization");
+    }
+    Value flatSrcIndex = affine::AffineLinearizeIndexOp::create(
+        rewriter, loc, srcIndices, *srcShape);
+
+    // Emit the copy from CB[flat_index] to DST[dst_index]
     // (init inserted by ttkernel-insert-inits pass).
-    ttk::CopyTileOp::create(rewriter, loc, cb, adaptor.getSrcIndex(),
+    ttk::CopyTileOp::create(rewriter, loc, cb, flatSrcIndex,
                             adaptor.getDstIndex());
 
     // Materialize results: dst token from dst_index, and a tile value
