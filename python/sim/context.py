@@ -32,14 +32,14 @@ def get_context() -> SimulatorContext:
     Returns:
         SimulatorContext for the current greenlet tree
     """
-    g = getcurrent()
+    greenlet = getcurrent()
 
     # Walk up the greenlet parent chain to find context
-    while g is not None:
-        if hasattr(g, "_sim_context"):
-            return g._sim_context  # type: ignore
+    while greenlet is not None:
+        if hasattr(greenlet, "_sim_context"):
+            return greenlet._sim_context  # type: ignore
         # Move to parent greenlet
-        g = getattr(g, "parent", None)
+        greenlet = getattr(greenlet, "parent", None)
 
     # No context found in any parent - create one on the root greenlet
     # This happens when called outside of any Program execution
