@@ -10,6 +10,7 @@
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/SetVector.h"
 #include <optional>
 
@@ -47,12 +48,9 @@ inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
 
 /// Return the circular buffer attached to `tensor`, or null if none/ambiguous.
 ///
-/// Recognized producers:
-/// - `ttl.attach_cb`: explicit association between a tensor SSA value and a CB.
-/// - `ttl.cb_wait`: returns a tensor view backed by the CB's pages (consumer).
-/// - `ttl.cb_reserve`: returns a tensor view backed by the CB's pages
-/// (producer).
-/// - `unrealized_conversion_cast`: trace through to find the original producer.
+/// Traces through ViewLikeOpInterface (cb_reserve, cb_wait),
+/// tensor.extract_slice, tensor.extract, unrealized_conversion_cast,
+/// and attach_cb to find the underlying CB value.
 inline mlir::Value getAttachedCB(mlir::Value tensor) {
   // Trace through unrealized conversion casts (from dialect conversion).
   tensor = traceUnrealizedCasts(tensor);
@@ -71,12 +69,17 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
   if (auto attach = tensor.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
     return attach.getCb();
   }
-  if (auto wait = tensor.getDefiningOp<mlir::tt::ttl::CBWaitOp>()) {
-    return wait.getCb();
+
+  // Trace through ViewLikeOpInterface: cb_reserve and cb_wait return
+  // the CB directly as their view source.
+  if (auto viewLike = tensor.getDefiningOp<mlir::ViewLikeOpInterface>()) {
+    mlir::Value source = viewLike.getViewSource();
+    if (mlir::isa<CircularBufferType>(source.getType())) {
+      return source;
+    }
+    return getAttachedCB(source);
   }
-  if (auto reserve = tensor.getDefiningOp<mlir::tt::ttl::CBReserveOp>()) {
-    return reserve.getCb();
-  }
+
   return mlir::Value();
 }
 
