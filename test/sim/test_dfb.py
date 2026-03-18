@@ -27,10 +27,11 @@ from test_utils import (
 )
 
 from python.sim import TILE_SHAPE, copy, ttnn
-from python.sim.ttnnsim import Tensor
+from python.sim.ttnnsim import ROW_MAJOR_LAYOUT, TILE_LAYOUT, Tensor
 from python.sim.dfb import (
     Block,
     DataflowBuffer,
+    make_dataflow_buffer_like,
 )
 from python.sim.math import broadcast
 from python.sim.blockstate import (
@@ -1570,3 +1571,83 @@ if __name__ == "__main__":
     import sys
 
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ---- Row-major DataflowBuffer tests (Step 3) ----
+
+
+class TestRowMajorDataflowBuffer:
+    """Tests for DataflowBuffer with ROW_MAJOR_LAYOUT likeness tensors."""
+
+    # --- construction ---
+
+    def test_row_major_dfb_construction(self) -> None:
+        """Row-major DFB can be constructed with non-tile-aligned shape."""
+        likeness = Tensor(torch.zeros(4, 8, dtype=torch.bfloat16), ROW_MAJOR_LAYOUT)
+        dfb = DataflowBuffer(likeness_tensor=likeness, shape=(4, 8), buffer_factor=2)
+        assert dfb.shape == (4, 8)
+        assert dfb.buffer_factor == 2
+
+    def test_row_major_dfb_shape_need_not_match_likeness_rank(self) -> None:
+        """For row-major, shape rank may differ from likeness tensor rank."""
+        # Likeness is 4D (like an image batch), shape is 1D (per-pixel channels).
+        likeness = Tensor(
+            torch.zeros(2, 4, 4, 8, dtype=torch.float32), ROW_MAJOR_LAYOUT
+        )
+        dfb = DataflowBuffer(likeness_tensor=likeness, shape=(8,), buffer_factor=2)
+        assert dfb.shape == (8,)
+
+    def test_make_dataflow_buffer_like_row_major(self) -> None:
+        """make_dataflow_buffer_like works with a row-major likeness tensor."""
+        likeness = Tensor(torch.zeros(3, 5, dtype=torch.float32), ROW_MAJOR_LAYOUT)
+        dfb = make_dataflow_buffer_like(likeness, shape=(3, 5))
+        assert dfb.shape == (3, 5)
+
+    def test_row_major_dfb_element_shape_equals_shape(self) -> None:
+        """For row-major, _element_shape equals shape directly (no tile scaling)."""
+        likeness = Tensor(torch.zeros(3, 7, dtype=torch.float32), ROW_MAJOR_LAYOUT)
+        dfb = DataflowBuffer(likeness_tensor=likeness, shape=(3, 7), buffer_factor=2)
+        assert dfb._element_shape == (3, 7)
+
+    def test_tiled_dfb_element_shape_scaled(self) -> None:
+        """Regression: tiled DFB element shape is still scaled by TILE_SIZE."""
+        likeness = Tensor(torch.zeros(64, 64, dtype=torch.float32))
+        dfb = DataflowBuffer(likeness_tensor=likeness, shape=(2, 2), buffer_factor=2)
+        assert dfb._element_shape == (64, 64)
+
+    # --- reserve/wait/push/pop cycle ---
+
+    def test_row_major_reserve_produces_correct_tensor(self) -> None:
+        """Reserved slot tensor has row-major layout and element shape == DFB shape."""
+        likeness = Tensor(torch.zeros(3, 5, dtype=torch.float32), ROW_MAJOR_LAYOUT)
+        dfb = DataflowBuffer(likeness_tensor=likeness, shape=(3, 5), buffer_factor=2)
+
+        blk = dfb.reserve()
+        assert blk.layout == ROW_MAJOR_LAYOUT
+        assert blk.raw_tensor.shape == (3, 5)
+
+    def test_row_major_reserve_preserves_dtype(self) -> None:
+        """Reserved slot tensor has the same dtype as the likeness tensor."""
+        likeness = Tensor(torch.zeros(4, dtype=torch.float32), ROW_MAJOR_LAYOUT)
+        dfb = DataflowBuffer(likeness_tensor=likeness, shape=(4,), buffer_factor=2)
+
+        blk = dfb.reserve()
+        assert blk.raw_tensor.dtype == torch.float32
+
+    # --- Block.layout property ---
+
+    def test_block_layout_property_row_major(self) -> None:
+        """Block.layout returns ROW_MAJOR_LAYOUT for row-major DFB blocks."""
+        likeness = Tensor(torch.zeros(2, 3, dtype=torch.float32), ROW_MAJOR_LAYOUT)
+        dfb = DataflowBuffer(likeness_tensor=likeness, shape=(2, 3), buffer_factor=2)
+
+        blk = dfb.reserve()
+        assert blk.layout == ROW_MAJOR_LAYOUT
+
+    def test_block_layout_property_tiled(self) -> None:
+        """Block.layout returns TILE_LAYOUT for tiled DFB blocks (regression guard)."""
+        likeness = Tensor(torch.zeros(32, 32, dtype=torch.float32))
+        dfb = DataflowBuffer(likeness_tensor=likeness, shape=(1, 1), buffer_factor=2)
+
+        blk = dfb.reserve()
+        assert blk.layout == TILE_LAYOUT
