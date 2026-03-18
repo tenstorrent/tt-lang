@@ -98,6 +98,67 @@ inline int64_t transformLinearizedStride(
   return result;
 }
 
+/// Element-wise scale of SSA Values by compile-time constants, emitting
+/// arith.muli where the scale is not 1.
+inline void scaleByBlockDims(OpBuilder &builder, Location loc,
+                             MutableArrayRef<Value> coords,
+                             ArrayRef<int64_t> scales) {
+  assert(scales.size() == coords.size() &&
+         "scales and coords must have the same size");
+  for (size_t d = 0; d < coords.size(); ++d) {
+    if (scales[d] != 1) {
+      Value scale = arith::ConstantIndexOp::create(builder, loc, scales[d]);
+      coords[d] = arith::MulIOp::create(builder, loc, coords[d], scale);
+    }
+  }
+}
+
+/// Compute a CB tile index by applying an indexing map to loop IVs,
+/// optional block-dimension scaling, then linearizing in the operand's
+/// shape (row-major). Used by both block-matmul and tile-loop lowering.
+inline Value computeCBTileIndexFromMap(
+    OpBuilder &builder, Location loc, AffineMap indexingMap, ValueRange loopIVs,
+    ArrayRef<int64_t> operandShape,
+    std::optional<ArrayRef<int64_t>> blockDims = std::nullopt) {
+  assert(static_cast<unsigned>(indexingMap.getNumDims()) == loopIVs.size() &&
+         "loop IV count must match indexing map domain dimensions");
+  assert(indexingMap.getNumResults() == operandShape.size() &&
+         "indexing map result count must match operand shape rank");
+  assert((!blockDims || blockDims->size() == operandShape.size()) &&
+         "blockDims must match operand shape rank when provided");
+
+  SmallVector<OpFoldResult> ivOFRs(loopIVs.begin(), loopIVs.end());
+  SmallVector<Value> mappedCoords;
+  mappedCoords.reserve(indexingMap.getNumResults());
+  for (AffineExpr expr : indexingMap.getResults()) {
+    AffineMap singleMap =
+        AffineMap::get(indexingMap.getNumDims(), /*symbolCount=*/0, expr);
+    OpFoldResult result =
+        affine::makeComposedFoldedAffineApply(builder, loc, singleMap, ivOFRs);
+    mappedCoords.push_back(
+        getValueOrCreateConstantIndexOp(builder, loc, result));
+  }
+
+  if (blockDims) {
+    scaleByBlockDims(builder, loc, mappedCoords, *blockDims);
+  }
+
+  SmallVector<int64_t> strides = computeStrides(operandShape);
+  Value index = arith::ConstantIndexOp::create(builder, loc, 0);
+  for (size_t d = 0; d < mappedCoords.size(); ++d) {
+    Value term;
+    if (strides[d] == 1) {
+      term = mappedCoords[d];
+    } else {
+      Value strideVal =
+          arith::ConstantIndexOp::create(builder, loc, strides[d]);
+      term = arith::MulIOp::create(builder, loc, mappedCoords[d], strideVal);
+    }
+    index = arith::AddIOp::create(builder, loc, index, term);
+  }
+  return index;
+}
+
 /// Emit `IV * stride` (with stride=0 and stride=1 optimizations).
 inline Value emitIVTimesStride(OpBuilder &builder, Location loc, Value iv,
                                int64_t stride) {
@@ -253,16 +314,6 @@ computeCBTileIndex(Operation *op, OpBuilder &builder, AffineMap indexingMap,
   }
 
   return result;
-}
-
-/// Convenience overload for identity indexing maps (elementwise ops).
-/// iterDomainShape and operandShape are both the operand's tensor shape.
-inline FailureOr<Value> computeCBTileIndex(Operation *op, OpBuilder &builder,
-                                           ArrayRef<int64_t> operandShape) {
-  AffineMap identity = AffineMap::getMultiDimIdentityMap(operandShape.size(),
-                                                         builder.getContext());
-  return computeCBTileIndex(op, builder, identity, operandShape, operandShape,
-                            operandShape.size());
 }
 
 /// Convert a TTL CircularBufferType value to a TTKernel CBType value.

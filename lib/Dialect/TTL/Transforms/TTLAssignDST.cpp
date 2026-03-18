@@ -440,9 +440,16 @@ static void buildLiveIntervals(Block *body,
   // With explicit overwrite mode, DST reuse between FPU binary ops would be
   // safe and this interval extension could be removed.
   {
+    // Include TileMatmulBlockOp alongside FPU binary ops: matmul_block also
+    // accumulates into DST and its slot must not be reused by another
+    // accumulating op within the same sync region.
+    auto isFPUAccumulatingOp = [](Operation &op) {
+      return op.hasAttr(kFPUBinaryAttrName) || isa<TileMatmulBlockOp>(&op);
+    };
+
     SmallVector<int64_t> fpuBinaryStarts;
     for (Operation &op : *body) {
-      if (op.hasAttr(kFPUBinaryAttrName)) {
+      if (isFPUAccumulatingOp(op)) {
         fpuBinaryStarts.push_back(opIndex[&op]);
       }
     }
@@ -450,7 +457,7 @@ static void buildLiveIntervals(Block *body,
     if (fpuBinaryStarts.size() > 1) {
       int64_t lastFPUStart = *llvm::max_element(fpuBinaryStarts);
       for (Operation &op : *body) {
-        if (!op.hasAttr(kFPUBinaryAttrName)) {
+        if (!isFPUAccumulatingOp(op)) {
           continue;
         }
         for (Value result : op.getResults()) {

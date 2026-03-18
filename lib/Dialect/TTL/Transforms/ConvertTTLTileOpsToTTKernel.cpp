@@ -397,13 +397,17 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
 
     // CB tile index from enclosing loops. The same index is used for
     // lhs and rhs because TTLAssignDST only marks ops as FPU-eligible
-    // when both operands have identical indexing maps.
+    // when both operands have identical indexing maps (identity).
     auto operandShape = getOperandTensorShape(op.getLhs());
     if (!operandShape) {
       return rewriter.notifyMatchFailure(
           op, "cannot determine operand tensor shape for CB indexing");
     }
-    auto cbIdx = utils::computeCBTileIndex(op, rewriter, *operandShape);
+    AffineMap identity = AffineMap::getMultiDimIdentityMap(
+        operandShape->size(), rewriter.getContext());
+    auto cbIdx = utils::computeCBTileIndex(op, rewriter, identity,
+                                            *operandShape, *operandShape,
+                                            operandShape->size());
     if (failed(cbIdx)) {
       return failure();
     }
@@ -722,7 +726,11 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
         return rewriter.notifyMatchFailure(
             op, "cannot determine input tensor shape for CB indexing");
       }
-      auto cbIdx = utils::computeCBTileIndex(op, rewriter, *inTensorShape);
+      AffineMap identity = AffineMap::getMultiDimIdentityMap(
+          inTensorShape->size(), rewriter.getContext());
+      auto cbIdx = utils::computeCBTileIndex(op, rewriter, identity,
+                                              *inTensorShape, *inTensorShape,
+                                              inTensorShape->size());
       if (failed(cbIdx)) {
         return failure();
       }
@@ -775,6 +783,100 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
       TTLTileBinaryFPUToTTKernel<TILE_OP, ttk::TTK_INIT, ttk::TTK_COMPUTE>;
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
+//===----------------------------------------------------------------------===//
+// Matmul Block Lowering
+//===----------------------------------------------------------------------===//
+
+/// Lower ttl.tile_matmul_block to ttkernel.experimental::matmul_block.
+/// Block dimensions (rt, ct, kt, nt) are derived from the enclosing
+/// ttl.compute's operand tensor shapes.
+struct TTLTileMatmulBlockToTTKernel
+    : OpConversionPattern<TileMatmulBlockOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileMatmulBlockOp op, TileMatmulBlockOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "op not in function");
+    }
+    auto *typeConverter = this->getTypeConverter();
+
+    // Look up CBs for lhs (A) and rhs (B).
+    auto lhsCB =
+        lookupAndConvertCB(op.getLhs(), funcOp, typeConverter, rewriter, loc);
+    auto rhsCB =
+        lookupAndConvertCB(op.getRhs(), funcOp, typeConverter, rewriter, loc);
+    if (failed(lhsCB) || failed(rhsCB)) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot find/convert input CBs for matmul_block");
+    }
+
+    // DST output index from attribute (assigned by TTLAssignDST).
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    Value dstIdx =
+        arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
+
+    // Derive block dimensions and CB tile indices from the enclosing compute's
+    // operand shapes and indexing maps.
+    auto lhsShape = getOperandTensorShape(op.getLhs());
+    auto rhsShape = getOperandTensorShape(op.getRhs());
+    if (!lhsShape || !rhsShape) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot determine operand tensor shapes for block dimensions");
+    }
+    // lhs is [M, K], rhs is [K, N].
+    int32_t rt = (*lhsShape)[0];  // M
+    int32_t kt = (*lhsShape)[1];  // K
+    int32_t ct = (*rhsShape)[1];  // N
+    int32_t nt = ct;              // B column dim (stride for K advancement)
+
+    // Build per-operand indexing maps for CB tile index computation.
+    // Matmul semantics: lhs is [M,K], rhs is [K,N], iteration domain is [M,N,K].
+    //   lhs map: (m,n,k) -> (m,k)
+    //   rhs map: (m,n,k) -> (k,n)
+    MLIRContext *ctx = rewriter.getContext();
+    auto d0 = getAffineDimExpr(0, ctx);  // m
+    auto d1 = getAffineDimExpr(1, ctx);  // n
+    auto d2 = getAffineDimExpr(2, ctx);  // k
+    AffineMap lhsMap = AffineMap::get(3, 0, {d0, d2}, ctx);
+    AffineMap rhsMap = AffineMap::get(3, 0, {d2, d1}, ctx);
+    SmallVector<int64_t> iterDomainSizes = {rt, ct, kt};
+
+    auto lhsIdx = utils::computeCBTileIndex(op, rewriter, lhsMap,
+                                             iterDomainSizes, *lhsShape);
+    auto rhsIdx = utils::computeCBTileIndex(op, rewriter, rhsMap,
+                                             iterDomainSizes, *rhsShape);
+    if (failed(lhsIdx) || failed(rhsIdx)) {
+      return failure();
+    }
+
+    Value transpose =
+        arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(0));
+    Value ctVal =
+        arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(ct));
+    Value rtVal =
+        arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(rt));
+    Value ktVal =
+        arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(kt));
+    Value ntVal =
+        arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(nt));
+
+    // Emit matmul_block (init inserted by ttkernel-insert-inits pass).
+    ttk::ExperimentalMatmulBlockOp::create(rewriter, loc, *lhsCB, *rhsCB,
+                                           *lhsIdx, *rhsIdx, dstIdx, transpose,
+                                           ctVal, rtVal, ktVal, ntVal);
+
+    rewriter.replaceOp(op, adaptor.getLhs());
+    return success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -816,6 +918,9 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // Bcast ops need the type converter for CB lookup.
   patterns.add<TTLTileBcastToTTKernel>(*typeConverter, ctx);
+
+  // Matmul block needs the type converter for CB lookup.
+  patterns.add<TTLTileMatmulBlockToTTKernel>(*typeConverter, ctx);
 }
 
 } // namespace mlir::tt::ttl
