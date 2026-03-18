@@ -43,8 +43,6 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
@@ -890,45 +888,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       // src_indices on copy_tile and indices on tile_store.
       {
         auto indexingMaps = computeOp.getIndexingMapsArray();
-        unsigned iterRank = computeOp.getIteratorTypesArray().size();
-
-        // Get or create iter_index ops. convert-ttl-to-compute may have
-        // already created them for tile_store indices; reuse if present.
-        SmallVector<Value> iterIndices(iterRank, Value());
-        for (Operation &op : *body) {
-          if (auto iterIdx = dyn_cast<IterIndexOp>(&op)) {
-            unsigned dim = static_cast<unsigned>(iterIdx.getDim());
-            if (dim < iterRank && !iterIndices[dim]) {
-              iterIndices[dim] = iterIdx.getResult();
-            }
-          }
-        }
-        builder.setInsertionPointToStart(body);
-        Location iterLoc = computeOp.getLoc();
-        for (unsigned d = 0; d < iterRank; ++d) {
-          if (!iterIndices[d]) {
-            iterIndices[d] = IterIndexOp::create(builder, iterLoc, d);
-          }
-        }
-
-        // Helper: apply an indexing map to iter_index values.
-        // For projected permutations this folds to a subset of iter_index
-        // values with no extra ops.
-        auto applyMap = [&iterIndices](OpBuilder &b, Location loc,
-                                       AffineMap map) -> SmallVector<Value> {
-          SmallVector<OpFoldResult> operands(iterIndices.begin(),
-                                             iterIndices.end());
-          SmallVector<Value> mapped;
-          mapped.reserve(map.getNumResults());
-          for (AffineExpr expr : map.getResults()) {
-            AffineMap singleMap =
-                AffineMap::get(map.getNumDims(), map.getNumSymbols(), expr);
-            OpFoldResult result = affine::makeComposedFoldedAffineApply(
-                b, loc, singleMap, operands);
-            mapped.push_back(getValueOrCreateConstantIndexOp(b, loc, result));
-          }
-          return mapped;
-        };
+        SmallVector<Value> iterIndices =
+            getOrCreateIterIndices(builder, computeOp);
 
         // Populate copy_tile src_indices.
         SmallVector<CopyTileOp> copyTiles;
@@ -952,8 +913,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
           AffineMap inputMap = indexingMaps[argIdx];
 
           builder.setInsertionPoint(ct);
-          SmallVector<Value> cbIndices =
-              applyMap(builder, ct.getLoc(), inputMap);
+          SmallVector<Value> cbIndices = applyIndexingMapToIterIndices(
+              builder, ct.getLoc(), inputMap, iterIndices);
 
           auto newCopy = CopyTileOp::create(
               builder, ct.getLoc(),
@@ -981,7 +942,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
 
         LLVM_DEBUG({
           llvm::dbgs() << "=== Populated CB indices using iter_index ("
-                       << iterRank << "D) ===\n";
+                       << iterIndices.size() << "D) ===\n";
         });
       }
 

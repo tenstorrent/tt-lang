@@ -90,56 +90,6 @@ static void insertAtLastStore(PatternRewriter &rewriter, Operation *op) {
   rewriter.setInsertionPoint(lastStore);
 }
 
-/// Get or create iter_index ops at the start of the compute body. Returns
-/// one Value per iteration domain dimension.
-static SmallVector<Value> getOrCreateIterIndices(OpBuilder &builder,
-                                                 ComputeOp computeOp) {
-  Block &body = computeOp.getBody().front();
-  unsigned iterRank = computeOp.getIteratorTypesArray().size();
-
-  SmallVector<Value> existing(iterRank, Value());
-  for (Operation &op : body) {
-    if (auto iterIdx = dyn_cast<IterIndexOp>(&op)) {
-      unsigned dim = static_cast<unsigned>(iterIdx.getDim());
-      if (dim < iterRank) {
-        existing[dim] = iterIdx.getResult();
-      }
-    }
-  }
-  if (llvm::none_of(existing, [](Value v) { return !v; })) {
-    return existing;
-  }
-
-  // Create missing iter_index ops at block start.
-  OpBuilder::InsertionGuard guard(builder);
-  builder.setInsertionPointToStart(&body);
-  Location loc = computeOp.getLoc();
-  for (unsigned d = 0; d < iterRank; ++d) {
-    if (!existing[d]) {
-      existing[d] = IterIndexOp::create(builder, loc, d);
-    }
-  }
-  return existing;
-}
-
-/// Apply an output indexing map to iter_index values to produce CB-space
-/// tile_store indices.
-static SmallVector<Value> computeStoreIndices(OpBuilder &builder, Location loc,
-                                              AffineMap outputMap,
-                                              ValueRange iterIndices) {
-  SmallVector<OpFoldResult> operands(iterIndices.begin(), iterIndices.end());
-  SmallVector<Value> indices;
-  indices.reserve(outputMap.getNumResults());
-  for (AffineExpr expr : outputMap.getResults()) {
-    AffineMap singleMap =
-        AffineMap::get(outputMap.getNumDims(), outputMap.getNumSymbols(), expr);
-    OpFoldResult result = affine::makeComposedFoldedAffineApply(
-        builder, loc, singleMap, operands);
-    indices.push_back(getValueOrCreateConstantIndexOp(builder, loc, result));
-  }
-  return indices;
-}
-
 /// Create tile_store(s) in the compute body for the given tile result and
 /// erase the corresponding block-level stores. Populates tile_store indices
 /// from iter_index ops and the output indexing map.
@@ -190,7 +140,7 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
     }
     AffineMap outputMap = indexingMaps[numInputs + outputIdx];
     SmallVector<Value> indices =
-        computeStoreIndices(rewriter, loc, outputMap, iterIndices);
+        applyIndexingMapToIterIndices(rewriter, loc, outputMap, iterIndices);
 
     TileStoreOp::create(rewriter, loc, tileResult, storeOp.getView(), indices);
     storesToErase.push_back(storeOp);
@@ -947,7 +897,7 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
     SmallVector<Value> iterIndices =
         getOrCreateIterIndices(rewriter, computeOp);
     SmallVector<Value> storeIndices =
-        computeStoreIndices(rewriter, loc, identityMap, iterIndices);
+        applyIndexingMapToIterIndices(rewriter, loc, identityMap, iterIndices);
     TileStoreOp::create(rewriter, loc, body->getArgument(0), reserveView,
                         storeIndices);
     YieldOp::create(rewriter, loc);

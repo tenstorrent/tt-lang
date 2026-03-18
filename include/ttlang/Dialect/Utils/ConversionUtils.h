@@ -21,73 +21,6 @@
 
 namespace mlir::tt::ttl::utils {
 
-/// Information about tile loops enclosing an operation.
-struct TileLoopInfo {
-  SmallVector<Value> ivs;           ///< IVs in outermost-first order.
-  SmallVector<int64_t> upperBounds; ///< Upper bounds, outermost-first.
-};
-
-/// Collect tile loop induction variables from enclosing scf.for loops.
-///
-/// Returns IVs and upper bounds of tile loops (marked with
-/// kTileLoopStrideAttrName), in outermost-first order. When cbShapeRank > 0,
-/// only the innermost cbShapeRank tile loops are retained.
-inline FailureOr<TileLoopInfo> collectTileLoopIVs(Operation *op,
-                                                  size_t cbShapeRank = 0) {
-  // Collect enclosing scf.for loops from innermost to outermost.
-  SmallVector<scf::ForOp> allLoops;
-  for (Operation *parent = op->getParentOp(); parent;
-       parent = parent->getParentOp()) {
-    if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-      allLoops.push_back(forOp);
-    }
-  }
-
-  // Keep only tile loops.
-  SmallVector<scf::ForOp> tileLoops;
-  for (scf::ForOp loop : allLoops) {
-    if (loop->hasAttr(kTileLoopStrideAttrName)) {
-      tileLoops.push_back(loop);
-    }
-  }
-
-  // Retain only the innermost cbShapeRank tile loops.
-  if (cbShapeRank > 0 && tileLoops.size() > cbShapeRank) {
-    tileLoops.resize(cbShapeRank);
-  }
-
-  // Validate and collect IVs + bounds.
-  TileLoopInfo info;
-  for (scf::ForOp loop : tileLoops) {
-    auto lb = getConstantIntValue(loop.getLowerBound());
-    if (!lb) {
-      return op->emitOpError()
-             << "enclosing tile loop has dynamic lower bound; "
-             << "expected constant bounds from tile loops";
-    }
-    if (*lb != 0) {
-      return op->emitOpError()
-             << "enclosing tile loop has non-zero lower bound (" << *lb
-             << "); expected lb=0 from tile loops";
-    }
-    auto ub = getConstantIntValue(loop.getUpperBound());
-    if (!ub) {
-      return op->emitOpError()
-             << "enclosing tile loop has dynamic upper bound; "
-             << "expected constant bounds from tile loops";
-    }
-  }
-
-  // Parent walk collects innermost-first; reverse so dimension 0 comes first,
-  // matching the indexing map's domain dimension order.
-  for (scf::ForOp loop : llvm::reverse(tileLoops)) {
-    info.ivs.push_back(loop.getInductionVar());
-    info.upperBounds.push_back(*getConstantIntValue(loop.getUpperBound()));
-  }
-
-  return info;
-}
-
 /// Element-wise scale: values[d] *= scales[d].
 inline void scaleByBlockDims(MutableArrayRef<int64_t> values,
                              ArrayRef<int64_t> scales) {
@@ -138,6 +71,8 @@ inline int64_t transformLinearizedStride(
       remaining = remaining % domainStrides[d];
     }
   }
+  assert(remaining == 0 &&
+         "stride is not a multiple of any domain dimension stride");
 
   // Apply the indexing map: select dimensions referenced by the map.
   // For projected permutations, each result is an AffineDimExpr.
@@ -285,8 +220,8 @@ computeCBTileIndex(Operation *op, OpBuilder &builder, AffineMap indexingMap,
     result = arith::AddIOp::create(builder, loc, result, term);
   }
 
-  // Subblock loop contributions. Order doesn't matter (addition is
-  // commutative) — each loop carries its own stride attribute.
+  // Subblock loop contributions. Order is irrelevant (addition is
+  // commutative); each loop carries its own stride attribute.
   for (scf::ForOp loop : subblockLoops) {
     auto strideAttr =
         loop->getAttrOfType<IntegerAttr>(kSubblockLoopStrideAttrName);
