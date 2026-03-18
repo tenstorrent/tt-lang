@@ -184,7 +184,6 @@ def test_copy_operations_with_dm_context() -> None:
         assert output_tensor.shape == TILE_SHAPE
         # The output tensor should now contain the data from the dataflow buffer
         # Verify at least some data was copied (non-zero)
-        import torch
 
         assert output_tensor.to_torch().sum() != 0
 
@@ -315,7 +314,6 @@ def test_copy_in_dm_thread_context() -> None:
 
 def test_single_pending_reserve_constraint() -> None:
     """Test that only one reserve() is allowed before push()."""
-    from python.sim.copy import copy
 
     set_current_thread_type(ThreadType.DM)
 
@@ -356,7 +354,6 @@ def test_single_pending_reserve_constraint() -> None:
 
 def test_single_pending_wait_constraint() -> None:
     """Test that only one wait() is allowed before pop()."""
-    from python.sim.copy import copy
 
     set_current_thread_type(ThreadType.COMPUTE)
 

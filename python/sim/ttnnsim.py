@@ -243,6 +243,34 @@ def tile_count_from_tensor(t: "Tensor") -> int:
     return math.prod((*batch, tm, tk))
 
 
+def check_count_match(
+    src_count: int,
+    dst_count: int,
+    layout: IndexType,
+    src_desc: str,
+    dst_desc: str,
+) -> None:
+    """Raise ValueError if src_count != dst_count, with a layout-aware message.
+
+    Args:
+        src_count: Logical unit count of the source (tiles or elements).
+        dst_count: Logical unit count of the destination.
+        layout: Layout that determines the unit name ("tile" or "element").
+        src_desc: Human-readable description of the source (e.g. "Tensor shape (32, 32)").
+        dst_desc: Human-readable description of the destination.
+
+    Raises:
+        ValueError: If src_count != dst_count.
+    """
+    if src_count == dst_count:
+        return
+    unit = "element" if layout == ROW_MAJOR_LAYOUT else "tile"
+    raise ValueError(
+        f"{src_desc} does not match {dst_desc} "
+        f"({unit} counts: {src_count} vs {dst_count})"
+    )
+
+
 class Tensor:
     """TTNN-like Tensor wrapper built on torch.Tensor.
 

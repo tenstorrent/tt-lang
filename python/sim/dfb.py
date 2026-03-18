@@ -609,15 +609,23 @@ class Block:
         Raises:
             ValueError: If tensor tile count does not match this block's shape.
         """
-        # Validate tile count compatibility: same number of tiles, same ndim
-        src_tile_count = tile_count_from_tensor(tensor)
-        dst_tile_count = math.prod(self._shape)
-        if src_tile_count != dst_tile_count:
+        # Layouts must match - cannot copy between tiled and row-major endpoints.
+        if tensor.layout != self.layout:
             raise ValueError(
-                f"Shape mismatch in copy_as_dest(): "
-                f"source tensor {tensor.shape} has {src_tile_count} tiles, "
-                f"but block {self._shape} expects {dst_tile_count} tiles"
+                f"Layout mismatch in copy_as_dest(): "
+                f"source tensor has layout {tensor.layout.name}, "
+                f"but block has layout {self.layout.name}"
             )
+
+        from .ttnnsim import check_count_match
+
+        check_count_match(
+            tile_count_from_tensor(tensor),
+            math.prod(self._shape),
+            self.layout,
+            f"source tensor {tensor.shape}",
+            f"block {self._shape}",
+        )
 
         if tensor.shape == self._buf.shape:
             # Fast path: same element shape — copy data in-place
