@@ -2,28 +2,33 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-# TODO: This could probably be done better with lit tests
-"""CLI tests that invoke ttlang-sim for simulator examples.
+"""In-process tests for simulator examples.
 
-Runs the ttlang-sim launcher against each script under examples/ and verifies
-that the output indicates success.
+Runs example scripts directly in the test process, using context reset
+between tests for isolation. This is much faster than subprocess-based testing.
 """
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-# Check if ttnn is available
+# Check if ttnn is available BEFORE we shadow it with simulator version
 try:
     import ttnn
 
     TTNN_AVAILABLE = True
 except ImportError:
     TTNN_AVAILABLE = False
+
+# Import simulator modules
+from python.sim.context import reset_context
+from python.sim.greenlet_scheduler import set_scheduler_algorithm
+from python.sim.stats import reset_stats
+from python.sim.ttlang_sim import execute_script_with_simulator
+from python import sim
 
 # Marker for tests that require ttnn
 requires_ttnn = pytest.mark.skipif(
@@ -33,63 +38,49 @@ requires_ttnn = pytest.mark.skipif(
 
 # Paths
 THIS_DIR = Path(__file__).resolve().parent
-
-
-def find_repo_root(start: Path) -> Path:
-    """Find the repository root by searching upward from the starting path.
-
-    Args:
-        start: Directory to begin searching from
-
-    Returns:
-        Path to the repository root directory
-
-    The function searches upward through parent directories looking for
-    characteristic markers (examples/ and python/sim/). If not found,
-    falls back to the parent of the starting directory.
-    """
-    for p in [start] + list(start.parents):
-        if (p / "examples").exists() and (p / "python" / "sim").exists():
-            return p
-    # Fallback: assume repo root is the parent of tests
-    return start.parent
-
-
-REPO_ROOT = find_repo_root(THIS_DIR)
+REPO_ROOT = THIS_DIR.parent.parent
 EXAMPLES_DIR = REPO_ROOT / "examples"
 EXAMPLES_METAL_DIR = REPO_ROOT / "examples" / "metal_examples"
 
-# Use the current Python interpreter to run the launcher module reliably
-PYTHON = sys.executable
-LAUNCHER_MODULE = [PYTHON, "-m", "sim.ttlang_sim"]
+
+@pytest.fixture(autouse=True)
+def reset_simulator_context():
+    """Reset simulator context before each test for isolation."""
+    reset_context()
+    reset_stats()
+    yield
 
 
-def run_ttlang_sim_and_capture(
-    script_path: Path, scheduler: str | None = None
+def run_script_in_process(
+    script_path: Path, scheduler: str = "fair"
 ) -> tuple[int, str]:
-    """Run ttlang-sim against the provided example script and return (code, output).
+    """Run a script in-process with simulator backend.
 
     Args:
-        script_path: Path to the script to run
-        scheduler: Optional scheduler algorithm ('greedy' or 'fair')
+        script_path: Path to the Python file to execute
+        scheduler: Scheduler algorithm ('greedy' or 'fair')
+
+    Returns:
+        (exit_code, output) tuple where exit_code is 0 on success, 1 on error
     """
-    cmd = LAUNCHER_MODULE + [str(script_path)]
-    if scheduler:
-        cmd += ["--scheduler", scheduler]
-    proc = subprocess.run(
-        cmd,
-        cwd=REPO_ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-    )
-    return proc.returncode, proc.stdout
+    set_scheduler_algorithm(scheduler)
 
+    # Shadow sys.modules locally (same as ttlang_sim.setup_simulator_imports())
+    # Done here so it doesn't interfere with other tests in parallel execution
+    original_modules = {"ttl": sys.modules.get("ttl"), "ttnn": sys.modules.get("ttnn")}
+    sys.modules["ttl"] = sim.ttl  # type: ignore[assignment]
+    sys.modules["ttnn"] = sim.ttnn  # type: ignore[assignment]
 
-def assert_success_output(code: int, out: str) -> None:
-    """Assert that ttlang-sim ran successfully and produced success output."""
-    assert code == 0, f"ttlang-sim exited with code {code}. Output:\n{out}"
+    try:
+        # Use the shared execution logic from ttlang_sim
+        return execute_script_with_simulator(script_path, capture_output=True)
+    finally:
+        # Restore original sys.modules to avoid interfering with other tests
+        for name, original in original_modules.items():
+            if original is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = original
 
 
 @pytest.mark.parametrize(
@@ -146,15 +137,15 @@ def assert_success_output(code: int, out: str) -> None:
 )
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])
 def test_example_cli(script_name: str, scheduler: str) -> None:
-    """Test simulator examples run successfully via ttlang-sim CLI with both schedulers."""
+    """Test simulator examples run successfully with both schedulers."""
     # Skip matmul_1d_mcast.py with fair scheduler (times out due to pipe handling issue)
     if script_name == "matmul_1d_mcast.py" and scheduler == "fair":
         pytest.skip(
             "matmul_1d_mcast.py times out with fair scheduler (TODO: investigate)"
         )
 
-    code, out = run_ttlang_sim_and_capture(EXAMPLES_DIR / script_name, scheduler)
-    assert_success_output(code, out)
+    code, out = run_script_in_process(EXAMPLES_DIR / script_name, scheduler)
+    assert code == 0, f"Script failed with code {code}. Output:\n{out}"
 
 
 @pytest.mark.parametrize(
@@ -166,9 +157,9 @@ def test_example_cli(script_name: str, scheduler: str) -> None:
 )
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])
 def test_metal_example_cli(example_path: str, scheduler: str) -> None:
-    """Test metal examples run successfully via ttlang-sim CLI with both schedulers."""
-    code, out = run_ttlang_sim_and_capture(EXAMPLES_METAL_DIR / example_path, scheduler)
-    assert_success_output(code, out)
+    """Test metal examples run successfully with both schedulers."""
+    code, out = run_script_in_process(EXAMPLES_METAL_DIR / example_path, scheduler)
+    assert code == 0, f"Script failed with code {code}. Output:\n{out}"
 
 
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])
@@ -179,9 +170,7 @@ def test_eltwise_add2_fails_with_expected_error(scheduler: str) -> None:
     block that expects multiple tiles. The error message should clearly indicate
     the mismatch and point to the exact line where the error occurs.
     """
-    code, out = run_ttlang_sim_and_capture(
-        EXAMPLES_DIR / "eltwise_add_error.py", scheduler=scheduler
-    )
+    code, out = run_script_in_process(EXAMPLES_DIR / "eltwise_add_error.py", scheduler)
     assert (
         code != 0
     ), f"Expected eltwise_add_error.py to fail, but it exited with code 0"
@@ -219,9 +208,7 @@ def test_copy_lock_error_fails_with_expected_error(scheduler: str) -> None:
     attempting to write to a block destination before wait() completes. The error
     message should clearly indicate the access violation.
     """
-    code, out = run_ttlang_sim_and_capture(
-        EXAMPLES_DIR / "copy_lock_error.py", scheduler=scheduler
-    )
+    code, out = run_script_in_process(EXAMPLES_DIR / "copy_lock_error.py", scheduler)
     assert code != 0, f"Expected copy_lock_error.py to fail, but it exited with code 0"
     # Check for the core error message (copy access violation)
     assert (
@@ -280,7 +267,7 @@ def test_eltwise_add_deadlock_detection() -> None:
         tmp_path = Path(tmp.name)
 
     try:
-        code, out = run_ttlang_sim_and_capture(tmp_path)
+        code, out = run_script_in_process(tmp_path)
 
         assert (
             code != 0
@@ -328,8 +315,8 @@ def test_eltwise_1d_broadcast_warning(scheduler: str) -> None:
     when ttl.math.broadcast() is called on 1D blocks, but the script should
     still execute successfully.
     """
-    code, out = run_ttlang_sim_and_capture(
-        EXAMPLES_DIR / "eltwise_1d_broadcast.py", scheduler=scheduler
+    code, out = run_script_in_process(
+        EXAMPLES_DIR / "eltwise_1d_broadcast.py", scheduler
     )
 
     # The example should run successfully (warnings don't fail execution)

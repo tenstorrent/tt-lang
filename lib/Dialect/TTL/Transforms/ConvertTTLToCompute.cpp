@@ -36,19 +36,28 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
                                  dynDims);
 }
 
-/// Find the output CB for an elementwise op by looking at its store users.
-/// Returns nullptr when no store exists or its view is not from cb_reserve.
-/// Callers handle nullptr via notifyMatchFailure.
-static Value findOutputCB(Operation *op) {
-  assert(op->getNumResults() > 0 && "findOutputCB requires op with results");
+/// Collect all unique output CBs from store users of an op's result.
+/// Preserves first-seen order and deduplicates (same CB stored to twice
+/// produces one output). Returns empty if no stores exist or if any
+/// store's view is not from cb_reserve.
+static SmallVector<Value> collectOutputCBs(Operation *op) {
+  assert(op->getNumResults() > 0 &&
+         "collectOutputCBs requires op with results");
+  SmallVector<Value> result;
+  DenseSet<Value> seen;
   for (OpOperand &use : op->getResult(0).getUses()) {
     if (auto storeOp = dyn_cast<StoreOp>(use.getOwner())) {
-      if (auto reserve = storeOp.getView().getDefiningOp<CBReserveOp>()) {
-        return reserve.getCb();
+      auto reserve = storeOp.getView().getDefiningOp<CBReserveOp>();
+      if (!reserve) {
+        return {};
+      }
+      Value cb = reserve.getCb();
+      if (seen.insert(cb).second) {
+        result.push_back(cb);
       }
     }
   }
-  return nullptr;
+  return result;
 }
 
 /// Find the last block-level store that uses this op's result.
@@ -74,7 +83,7 @@ static StoreOp findLastStore(Operation *op) {
 static void insertAtLastStore(PatternRewriter &rewriter, Operation *op) {
   StoreOp lastStore = findLastStore(op);
   assert(lastStore && "insertAtLastStore called but op has no store users; "
-                      "callers must verify via findOutputCB first");
+                      "callers must verify via collectOutputCBs first");
   rewriter.setInsertionPoint(lastStore);
 }
 
@@ -218,9 +227,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     return failure();
   }
 
-  // Find output CB via the store on the sink op's result.
-  Value outCb = findOutputCB(sinkOp);
-  if (!outCb) {
+  // Find all output CBs via stores on the sink op's result.
+  SmallVector<Value> outCbs = collectOutputCBs(sinkOp);
+  if (outCbs.empty()) {
     return rewriter.notifyMatchFailure(
         sinkOp, "no output CB found (missing ttl.store or view not from "
                 "ttl.cb_reserve)");
@@ -263,7 +272,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       maps.push_back(AffineMapAttr::get(identityMap));
     }
   }
-  maps.push_back(AffineMapAttr::get(identityMap)); // output
+  for (size_t i = 0; i < outCbs.size(); ++i) {
+    maps.push_back(AffineMapAttr::get(identityMap));
+  }
 
   // Build iterator types: all parallel
   SmallVector<Attribute> iterTypes(type.getRank(),
@@ -272,15 +283,21 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // Position compute after all reserves by inserting before the last store.
   insertAtLastStore(rewriter, sinkOp);
 
-  // Create init tensor and attach to output CB
-  Value init = buildInitTensor(rewriter, loc, type, trace.rootInputs[0]);
-  Value initAttached =
-      AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
+  // Create init tensors and attach to output CBs.
+  SmallVector<Value> allInitAttached;
+  SmallVector<Type> resultTypes;
+  for (Value outCb : outCbs) {
+    Value init = buildInitTensor(rewriter, loc, type, trace.rootInputs[0]);
+    Value initAttached =
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
+    allInitAttached.push_back(initAttached);
+    resultTypes.push_back(type);
+  }
 
   // Create ttl.compute op
   auto computeOp = ComputeOp::create(
-      rewriter, loc, TypeRange{type}, trace.rootInputs.getArrayRef(),
-      ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+      rewriter, loc, TypeRange(resultTypes), trace.rootInputs.getArrayRef(),
+      ValueRange(allInitAttached), rewriter.getArrayAttr(maps),
       rewriter.getArrayAttr(iterTypes));
 
   // Build the body region
@@ -295,7 +312,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
     body->addArgument(tileType, loc);
   }
-  body->addArgument(tileType, loc); // output tile
+  for (size_t i = 0; i < outCbs.size(); ++i) {
+    body->addArgument(tileType, loc);
+  }
 
   rewriter.setInsertionPointToStart(body);
 
@@ -434,7 +453,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
 /// Build a ttl.compute op with a single binary tile operation in the body.
 /// Inputs must already be attached to CBs via ttl.attach_cb.
-/// The output CB is identified via ttl.store on the op's result.
+/// Output CBs are the reserved CBs to which the op's result is stored.
 template <typename TileOp>
 static LogicalResult buildBinaryCompute(Operation *op,
                                         PatternRewriter &rewriter, Value lhs,
@@ -459,9 +478,9 @@ static LogicalResult buildBinaryCompute(Operation *op,
     return failure();
   }
 
-  // Find output CB via the store on this op's result.
-  Value outCb = findOutputCB(op);
-  if (!outCb) {
+  // Find all output CBs via stores on this op's result.
+  SmallVector<Value> outCbs = collectOutputCBs(op);
+  if (outCbs.empty()) {
     return rewriter.notifyMatchFailure(
         op, "no output CB found (missing ttl.store, view not from "
             "ttl.cb_reserve, or intermediate value handled by fusion)");
@@ -470,10 +489,13 @@ static LogicalResult buildBinaryCompute(Operation *op,
   Location loc = op->getLoc();
   MLIRContext *ctx = rewriter.getContext();
 
-  // Build identity indexing maps: (d0, d1, ...) -> (d0, d1, ...)
+  // Build identity indexing maps: 2 inputs + N outputs.
   AffineMap identityMap =
       AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
-  SmallVector<Attribute> maps(3, AffineMapAttr::get(identityMap));
+  SmallVector<Attribute> maps(2, AffineMapAttr::get(identityMap));
+  for (size_t i = 0; i < outCbs.size(); ++i) {
+    maps.push_back(AffineMapAttr::get(identityMap));
+  }
 
   // Build iterator types: all parallel
   SmallVector<Attribute> iterTypes(type.getRank(),
@@ -482,17 +504,23 @@ static LogicalResult buildBinaryCompute(Operation *op,
   // Position compute after all reserves by inserting before the last store.
   insertAtLastStore(rewriter, op);
 
-  // Create init tensor and attach to output CB.
-  Value init = buildInitTensor(rewriter, loc, type, lhs);
-  Value initAttached =
-      AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
+  // Create init tensors and attach to output CBs.
+  SmallVector<Value> allInitAttached;
+  SmallVector<Type> resultTypes;
+  for (Value outCb : outCbs) {
+    Value init = buildInitTensor(rewriter, loc, type, lhs);
+    Value initAttached =
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
+    allInitAttached.push_back(initAttached);
+    resultTypes.push_back(type);
+  }
 
   // Inputs are already attached, use them directly.
   // Create ttl.compute op
-  auto computeOp =
-      ComputeOp::create(rewriter, loc, TypeRange{type}, ValueRange{lhs, rhs},
-                        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
-                        rewriter.getArrayAttr(iterTypes));
+  auto computeOp = ComputeOp::create(
+      rewriter, loc, TypeRange(resultTypes), ValueRange{lhs, rhs},
+      ValueRange(allInitAttached), rewriter.getArrayAttr(maps),
+      rewriter.getArrayAttr(iterTypes));
 
   // Build the body region with tile type block arguments
   Block *body = rewriter.createBlock(&computeOp.getBody());
@@ -501,7 +529,9 @@ static LogicalResult buildBinaryCompute(Operation *op,
   Type tileType = ttcore::TileType::get(scalarType);
   body->addArgument(tileType, loc); // lhs tile
   body->addArgument(tileType, loc); // rhs tile
-  body->addArgument(tileType, loc); // output tile
+  for (size_t i = 0; i < outCbs.size(); ++i) {
+    body->addArgument(tileType, loc); // output tile
+  }
 
   rewriter.setInsertionPointToStart(body);
   Value result = TileOp::create(rewriter, loc, tileType, body->getArgument(0),
@@ -514,7 +544,7 @@ static LogicalResult buildBinaryCompute(Operation *op,
 
 /// Build a ttl.compute op with a single unary tile operation in the body.
 /// Input must already be attached to a CB via ttl.attach_cb.
-/// The output CB is identified via ttl.store on the op's result.
+/// Output CBs are the reserved CBs to which the op's result is stored.
 template <typename TileOp>
 static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
                                        Value input) {
@@ -537,9 +567,9 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
     return failure();
   }
 
-  // Find output CB via the store on this op's result.
-  Value outCb = findOutputCB(op);
-  if (!outCb) {
+  // Find all output CBs via stores on this op's result.
+  SmallVector<Value> outCbs = collectOutputCBs(op);
+  if (outCbs.empty()) {
     return rewriter.notifyMatchFailure(
         op, "no output CB found (missing ttl.store, view not from "
             "ttl.cb_reserve, or intermediate value handled by fusion)");
@@ -548,10 +578,13 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   Location loc = op->getLoc();
   MLIRContext *ctx = rewriter.getContext();
 
-  // Build identity indexing maps: (d0, d1, ...) -> (d0, d1, ...)
+  // Build identity indexing maps: 1 input + N outputs.
   AffineMap identityMap =
       AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
-  SmallVector<Attribute> maps(2, AffineMapAttr::get(identityMap));
+  SmallVector<Attribute> maps(1, AffineMapAttr::get(identityMap));
+  for (size_t i = 0; i < outCbs.size(); ++i) {
+    maps.push_back(AffineMapAttr::get(identityMap));
+  }
 
   // Build iterator types: all parallel for now
   SmallVector<Attribute> iterTypes(type.getRank(),
@@ -560,17 +593,23 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   // Position compute after all reserves by inserting before the last store.
   insertAtLastStore(rewriter, op);
 
-  // Create init tensor and attach to output CB.
-  Value init = buildInitTensor(rewriter, loc, type, input);
-  Value initAttached =
-      AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
+  // Create init tensors and attach to output CBs.
+  SmallVector<Value> allInitAttached;
+  SmallVector<Type> resultTypes;
+  for (Value outCb : outCbs) {
+    Value init = buildInitTensor(rewriter, loc, type, input);
+    Value initAttached =
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
+    allInitAttached.push_back(initAttached);
+    resultTypes.push_back(type);
+  }
 
   // Input is already attached, use it directly.
   // Create ttl.compute op
-  auto computeOp =
-      ComputeOp::create(rewriter, loc, TypeRange{type}, ValueRange{input},
-                        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
-                        rewriter.getArrayAttr(iterTypes));
+  auto computeOp = ComputeOp::create(
+      rewriter, loc, TypeRange(resultTypes), ValueRange{input},
+      ValueRange(allInitAttached), rewriter.getArrayAttr(maps),
+      rewriter.getArrayAttr(iterTypes));
 
   // Build the body region with tile type block arguments
   Block *body = rewriter.createBlock(&computeOp.getBody());
@@ -578,7 +617,9 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   // Create tile type: !ttcore.tile<32x32, dtype>
   Type tileType = ttcore::TileType::get(scalarType);
   body->addArgument(tileType, loc); // input tile
-  body->addArgument(tileType, loc); // output tile
+  for (size_t i = 0; i < outCbs.size(); ++i) {
+    body->addArgument(tileType, loc); // output tile
+  }
 
   rewriter.setInsertionPointToStart(body);
   Value result = TileOp::create(rewriter, loc, tileType, body->getArgument(0));

@@ -29,7 +29,6 @@ try:
 
     TTNN_AVAILABLE = True  # type: ignore[reportConstantRedefinition]
 except ImportError:
-    ttnn = None  # type: ignore[assignment]
     TTNN_AVAILABLE = False  # type: ignore[reportConstantRedefinition]
 
 from .constants import TILE_SHAPE
@@ -904,6 +903,8 @@ _EXCLUDE_FROM_WRAPPING = {
 
 # Get all operations with golden functions and create wrappers at module load time
 if TTNN_AVAILABLE:
+    import ttnn  # type: ignore[reportMissingImports]  # Re-import for type checker to know ttnn is bound in this block
+
     _operations_to_wrap = [name for name in dir(ttnn) if not name.startswith("_")]
 
     for _op_name in _operations_to_wrap:
@@ -931,6 +932,9 @@ if TTNN_AVAILABLE:
         # Let other exceptions propagate - they indicate real bugs
 
     # Clean up temporary variables
-    for name in ["_operations_to_wrap", "_op_name", "_op", "_golden_fn"]:
-        if name in dir():
-            del globals()[name]
+    _cleanup_name: Optional[str] = None
+    for _cleanup_name in ("_operations_to_wrap", "_op_name", "_op", "_golden_fn"):
+        if _cleanup_name in globals():
+            del globals()[_cleanup_name]
+    if _cleanup_name is not None:
+        del _cleanup_name

@@ -33,8 +33,8 @@ from .blockstate import (
     ExpectedOp,
     ThreadType,
     STATE_TRANSITIONS,
-    get_current_thread_type,
 )
+from .context import get_current_thread_type
 from .dfbstate import DFBState
 from .constants import TILE_SHAPE
 from .errors import DFBContractError
@@ -846,12 +846,14 @@ class Block:
 
         if left_has_broadcast:
             # Expand left to match right shape
+            assert self._broadcast_dims is not None  # Checked by left_has_broadcast
             left_buf = self._expand_broadcast_dims(
                 self, right_shape, other._element_shape, self._broadcast_dims
             )
             result_shape = right_shape
         elif right_has_broadcast:
             # Expand right to match left shape
+            assert other._broadcast_dims is not None  # Checked by right_has_broadcast
             right_buf = self._expand_broadcast_dims(
                 other, left_shape, self._element_shape, other._broadcast_dims
             )
@@ -1244,6 +1246,26 @@ class DataflowBuffer:
     def buffer_factor(self) -> Size:
         """Get the buffer factor (capacity multiplier)."""
         return self._buffer_factor
+
+    @property
+    def head(self) -> int:
+        """Get the head pointer from the ring buffer state (for debug printing)."""
+        return self._state.head
+
+    @property
+    def visible(self) -> int:
+        """Get the visible count from the ring buffer state (for debug printing)."""
+        return self._state.visible
+
+    @property
+    def reserved(self) -> int:
+        """Get the reserved count from the ring buffer state (for debug printing)."""
+        return self._state.reserved
+
+    @property
+    def free(self) -> int:
+        """Get the free count from the ring buffer state (for debug printing)."""
+        return self._state.free()
 
     def stats(self) -> DFBStats:
         """Get current buffer statistics (all counts in operations)."""

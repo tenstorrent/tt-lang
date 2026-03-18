@@ -14,7 +14,7 @@ from .copyhandlers import (
     CopyEndpoint,
     CopyEndpointType,
     CopyTransferHandler,
-    handler_registry,
+    HANDLER_REGISTRY,
 )
 
 
@@ -88,7 +88,7 @@ class CopyTransaction:
             ValueError: If no handler is registered for this type combination
         """
         try:
-            return handler_registry[(src_type, dst_type)]
+            return HANDLER_REGISTRY[(src_type, dst_type)]
         except KeyError:
             raise ValueError(
                 f"No copy handler registered for ({src_type.__name__}, {dst_type.__name__})"

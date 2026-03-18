@@ -11,18 +11,18 @@ New transfer types can be added by creating a new handler and decorating it with
 
 from collections import deque
 from typing import (
-    TYPE_CHECKING,
     Any,
-    Deque,
     Dict,
+    Final,
     List,
     Protocol,
     Tuple,
     Type,
-    TypedDict,
     Union,
 )
 
+from .context import get_context
+from .context_types import PipeEntry
 from .dfb import Block
 from .pipe import AnySrcPipeIdentity, DstPipeIdentity, SrcPipeIdentity
 from .stats import (
@@ -33,10 +33,8 @@ from .stats import (
 )
 from .ttnnsim import Tensor
 from .pipe import AnyDst, AnyPipe, Pipe
-from .typedefs import CoreCoord, Count
-
-if TYPE_CHECKING:
-    from .pipe import SrcPipeIdentity
+from .typedefs import CoreCoord
+from .pipe import SrcPipeIdentity
 
 
 # TODO: Ideally, to avoid duplication, we would want something like this:
@@ -66,27 +64,13 @@ CopyEndpointType = Union[
 ]
 
 
-# Global pipe state for simulating NoC pipe communication.
-# Each entry holds a queue of (data, remaining_receiver_count, message_id, receivers_set)
-# and a message-ID counter. No locking is needed because the greenlet scheduler is
-# cooperative: only one greenlet runs at a time.
-# In a real implementation this would be handled by NoC hardware.
-class _PipeEntry(TypedDict):
-    queue: Deque[
-        Tuple[Tensor, Count, int, set[int]]
-    ]  # (data, remaining, msg_id, receivers_who_got_it)
-    next_msg_id: int
-
-
-_pipe_buffer: Dict[AnyPipe, _PipeEntry] = {}
-
-
-def _get_or_create_pipe_entry(pipe: AnyPipe) -> _PipeEntry:
+def _get_or_create_pipe_entry(pipe: AnyPipe) -> PipeEntry:
     """Get or create the pipe buffer entry for a given pipe."""
-    entry = _pipe_buffer.get(pipe)
+    pipe_buffer = get_context().copy_state.pipe_buffer
+    entry = pipe_buffer.get(pipe)
     if entry is None:
-        new_entry: _PipeEntry = {"queue": deque(), "next_msg_id": 0}
-        _pipe_buffer[pipe] = new_entry
+        new_entry: PipeEntry = {"queue": deque(), "next_msg_id": 0}
+        pipe_buffer[pipe] = new_entry
         return new_entry
     return entry
 
@@ -134,9 +118,11 @@ class CopyTransferHandler(Protocol):
         ...
 
 
-# Global handler registry: (src_type, dst_type) -> handler instance
-handler_registry: Dict[
-    Tuple[CopyEndpointType, CopyEndpointType], CopyTransferHandler
+# Handler registry: (src_type, dst_type) -> handler instance
+# Static lookup table populated at import time via @register_copy_handler decorators.
+# Uses uppercase naming and Final to indicate this is a constant that should not be reassigned.
+HANDLER_REGISTRY: Final[
+    Dict[Tuple[CopyEndpointType, CopyEndpointType], CopyTransferHandler]
 ] = {}
 
 
@@ -159,7 +145,8 @@ def register_copy_handler(src_type: CopyEndpointType, dst_type: CopyEndpointType
     """
 
     def decorator(handler_cls: Type[CopyTransferHandler]):
-        handler_registry[(src_type, dst_type)] = handler_cls()
+        # Register handler in module-level registry
+        HANDLER_REGISTRY[(src_type, dst_type)] = handler_cls()
         return handler_cls
 
     return decorator
@@ -286,7 +273,8 @@ class PipeToBlockHandler:
         current core has not yet received.  The greenlet scheduler polls this
         before calling transfer(), so transfer() can assume data is available.
         """
-        entry = _pipe_buffer.get(src)
+        pipe_buffer = get_context().copy_state.pipe_buffer
+        entry = pipe_buffer.get(src)
         if entry is None or len(entry["queue"]) == 0:
             return False
 
@@ -363,7 +351,7 @@ class BlockToSrcPipeIdentityHandler:
     def _get_delegate(self) -> CopyTransferHandler:
         """Lazy initialization of delegate handler."""
         if self._delegate is None:
-            self._delegate = handler_registry[(Block, Pipe)]
+            self._delegate = HANDLER_REGISTRY[(Block, Pipe)]
         return self._delegate
 
     def validate(self, src: Block, dst: AnySrcPipeIdentity) -> None:
@@ -388,7 +376,7 @@ class DstPipeIdentityToBlockHandler:
     def _get_delegate(self) -> CopyTransferHandler:
         """Lazy initialization of delegate handler."""
         if self._delegate is None:
-            self._delegate = handler_registry[(Pipe, Block)]
+            self._delegate = HANDLER_REGISTRY[(Pipe, Block)]
         return self._delegate
 
     def validate(self, src: DstPipeIdentity, dst: Block) -> None:

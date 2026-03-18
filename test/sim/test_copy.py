@@ -18,7 +18,8 @@ from test_utils import (
     tensors_equal,
 )
 
-from python.sim.blockstate import BlockAcquisition, ThreadType, set_current_thread_type
+from python.sim.blockstate import BlockAcquisition, ThreadType
+from python.sim.context import set_current_thread_type
 from python.sim.dfb import Block, DataflowBuffer
 from python.sim.ttnnsim import Tensor
 from python.sim.copy import CopyTransaction, copy

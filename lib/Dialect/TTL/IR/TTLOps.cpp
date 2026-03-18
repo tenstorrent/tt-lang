@@ -20,6 +20,8 @@
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "llvm/ADT/TypeSwitch.h" // IWYU pragma: keep
 #include <cstdint>
+#include <functional>
+#include <numeric>
 
 #define GET_OP_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOps.cpp.inc"
@@ -407,6 +409,26 @@ mlir::tt::ttl::ComputeOp::getIterationDomain(mlir::OpBuilder &b) {
     domain.push_back(mlir::Range{b.getIndexAttr(0), size, b.getIndexAttr(1)});
   }
   return domain;
+}
+
+mlir::SmallVector<int64_t>
+mlir::tt::ttl::ComputeOp::getStaticIterationDomainSizes() {
+  mlir::OpBuilder b(getOperation());
+  mlir::SmallVector<mlir::Range> domain = getIterationDomain(b);
+  mlir::SmallVector<int64_t> sizes;
+  sizes.reserve(domain.size());
+  for (auto &range : domain) {
+    auto size = mlir::getConstantIntValue(range.size);
+    assert(size && "ComputeOp verifier guarantees static shapes");
+    sizes.push_back(*size);
+  }
+  return sizes;
+}
+
+int64_t mlir::tt::ttl::ComputeOp::getTotalIterationTiles() {
+  auto sizes = getStaticIterationDomainSizes();
+  return std::accumulate(sizes.begin(), sizes.end(), int64_t{1},
+                         std::multiplies<>());
 }
 
 llvm::FailureOr<mlir::TilingResult>
@@ -825,6 +847,16 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   // The body must contain at least one tile_store. tile_store is the hardware
   // write (becomes pack_tile) and is the only mechanism for the compute to
   // produce observable output via pack to the output circular buffer.
+  //
+  // Each tile_store's target CB must match a formal output CB.
+  DenseSet<Value> outputCBs;
+  for (Value output : getOutputs()) {
+    if (Value cb = getAttachedCB(output)) {
+      outputCBs.insert(cb);
+    }
+  }
+
+  DenseSet<Value> storedCBs;
   bool hasTileStore = false;
   for (Operation &op : bodyBlock.without_terminator()) {
     auto store = dyn_cast<TileStoreOp>(&op);
@@ -832,12 +864,26 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
       continue;
     }
     hasTileStore = true;
-    if (!store.getView().getDefiningOp<CBReserveOp>()) {
+    auto reserve = store.getView().getDefiningOp<CBReserveOp>();
+    if (!reserve) {
       return store.emitOpError() << "view must be produced by ttl.cb_reserve";
     }
+    if (!outputCBs.contains(reserve.getCb())) {
+      return store.emitOpError()
+             << "stores to CB that is not a formal output of the compute";
+    }
+    storedCBs.insert(reserve.getCb());
   }
   if (!hasTileStore) {
     return emitOpError("body must contain at least one ttl.tile_store");
+  }
+
+  for (Value output : getOutputs()) {
+    if (Value cb = getAttachedCB(output)) {
+      if (!storedCBs.contains(cb)) {
+        return emitOpError("formal output CB has no tile_store in the body");
+      }
+    }
   }
 
   return success();

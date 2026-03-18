@@ -7,54 +7,38 @@ Statistics collection for simulator operations.
 Tracks tensor read/write operations and provides summary reporting.
 """
 
-from collections import defaultdict
-from typing import TYPE_CHECKING, Any, Union
+from typing import Any, Union
 
-if TYPE_CHECKING:
-    from .ttnnsim import Tensor
+from .ttnnsim import Tensor
 
+from .context import get_context
 from .ttnnsim import tile_count_from_tensor
 from .pipe import AnyPipe
 from .typedefs import CoreCoord, CoreRange
 
-# Statistics collection state
-_stats_enabled = False
-_stats_by_name: dict[str, dict[str, int]] = defaultdict(
-    lambda: {"reads": 0, "writes": 0, "tiles_read": 0, "tiles_written": 0}
-)
-_pipe_stats_by_name: dict[str, dict[str, int]] = defaultdict(
-    lambda: {"reads": 0, "writes": 0, "tiles_read": 0, "tiles_written": 0}
-)
-_dfb_stats_by_name: dict[str, dict[str, int]] = defaultdict(
-    lambda: {"reserves": 0, "waits": 0, "tiles_reserved": 0, "tiles_waited": 0}
-)
-_dfb_name_counter = 0
-
 
 def enable_stats() -> None:
     """Enable statistics collection."""
-    global _stats_enabled
-    _stats_enabled = True
+    get_context().stats.enabled = True
 
 
 def disable_stats() -> None:
     """Disable statistics collection."""
-    global _stats_enabled
-    _stats_enabled = False
+    get_context().stats.enabled = False
 
 
 def is_stats_enabled() -> bool:
     """Check if statistics collection is enabled."""
-    return _stats_enabled
+    return get_context().stats.enabled
 
 
 def reset_stats() -> None:
     """Reset all collected statistics."""
-    global _stats_by_name, _pipe_stats_by_name, _dfb_stats_by_name, _dfb_name_counter
-    _stats_by_name.clear()
-    _pipe_stats_by_name.clear()
-    _dfb_stats_by_name.clear()
-    _dfb_name_counter = 0
+    ctx = get_context()
+    ctx.stats.stats_by_name.clear()
+    ctx.stats.pipe_stats_by_name.clear()
+    ctx.stats.dfb_stats_by_name.clear()
+    ctx.stats.dfb_name_counter = 0
 
 
 def register_tensor_name(tensor: "Tensor", name: str) -> None:
@@ -95,14 +79,15 @@ def record_tensor_read(tensor: "Tensor") -> None:
     Args:
         tensor: The tensor being read from
     """
-    if not _stats_enabled:
+    ctx = get_context()
+    if not ctx.stats.enabled:
         return
 
     name = _get_tensor_name(tensor)
     num_tiles = _calculate_tensor_tiles(tensor)
 
-    _stats_by_name[name]["reads"] += 1
-    _stats_by_name[name]["tiles_read"] += num_tiles
+    ctx.stats.stats_by_name[name]["reads"] += 1
+    ctx.stats.stats_by_name[name]["tiles_read"] += num_tiles
 
 
 def record_tensor_write(tensor: "Tensor") -> None:
@@ -111,14 +96,15 @@ def record_tensor_write(tensor: "Tensor") -> None:
     Args:
         tensor: The tensor being written to
     """
-    if not _stats_enabled:
+    ctx = get_context()
+    if not ctx.stats.enabled:
         return
 
     name = _get_tensor_name(tensor)
     num_tiles = _calculate_tensor_tiles(tensor)
 
-    _stats_by_name[name]["writes"] += 1
-    _stats_by_name[name]["tiles_written"] += num_tiles
+    ctx.stats.stats_by_name[name]["writes"] += 1
+    ctx.stats.stats_by_name[name]["tiles_written"] += num_tiles
 
 
 def _get_pipe_name(pipe: AnyPipe) -> str:
@@ -168,14 +154,15 @@ def record_pipe_write(pipe: AnyPipe, block_data: "Tensor") -> None:
         pipe: The pipe being written to
         block_data: Tensor being sent through the pipe
     """
-    if not _stats_enabled:
+    ctx = get_context()
+    if not ctx.stats.enabled:
         return
 
     name = _get_pipe_name(pipe)
     num_tiles = _calculate_tensor_tiles(block_data)
 
-    _pipe_stats_by_name[name]["writes"] += 1
-    _pipe_stats_by_name[name]["tiles_written"] += num_tiles
+    ctx.stats.pipe_stats_by_name[name]["writes"] += 1
+    ctx.stats.pipe_stats_by_name[name]["tiles_written"] += num_tiles
 
 
 def record_pipe_read(pipe: AnyPipe, block_data: "Tensor") -> None:
@@ -185,14 +172,15 @@ def record_pipe_read(pipe: AnyPipe, block_data: "Tensor") -> None:
         pipe: The pipe being read from
         block_data: Tensor being received from the pipe
     """
-    if not _stats_enabled:
+    ctx = get_context()
+    if not ctx.stats.enabled:
         return
 
     name = _get_pipe_name(pipe)
     num_tiles = _calculate_tensor_tiles(block_data)
 
-    _pipe_stats_by_name[name]["reads"] += 1
-    _pipe_stats_by_name[name]["tiles_read"] += num_tiles
+    ctx.stats.pipe_stats_by_name[name]["reads"] += 1
+    ctx.stats.pipe_stats_by_name[name]["tiles_read"] += num_tiles
 
 
 def register_dfb_name(dfb: Any, name: str) -> None:
@@ -226,9 +214,9 @@ def _get_dfb_name(dfb: Any) -> str:
         return f"dfb_{dfb_id}"
 
     # Fall back to generating a unique name
-    global _dfb_name_counter
-    _dfb_name_counter += 1
-    return f"dfb_unnamed_{_dfb_name_counter}"
+    ctx = get_context()
+    ctx.stats.dfb_name_counter += 1
+    return f"dfb_unnamed_{ctx.stats.dfb_name_counter}"
 
 
 def record_dfb_reserve(dfb: Any, num_tiles: int) -> None:
@@ -238,13 +226,14 @@ def record_dfb_reserve(dfb: Any, num_tiles: int) -> None:
         dfb: The DFB being reserved from
         num_tiles: Number of tiles being reserved
     """
-    if not _stats_enabled:
+    ctx = get_context()
+    if not ctx.stats.enabled:
         return
 
     name = _get_dfb_name(dfb)
 
-    _dfb_stats_by_name[name]["reserves"] += 1
-    _dfb_stats_by_name[name]["tiles_reserved"] += num_tiles
+    ctx.stats.dfb_stats_by_name[name]["reserves"] += 1
+    ctx.stats.dfb_stats_by_name[name]["tiles_reserved"] += num_tiles
 
 
 def record_dfb_wait(dfb: Any, num_tiles: int) -> None:
@@ -254,28 +243,30 @@ def record_dfb_wait(dfb: Any, num_tiles: int) -> None:
         dfb: The DFB being waited on
         num_tiles: Number of tiles being waited for
     """
-    if not _stats_enabled:
+    ctx = get_context()
+    if not ctx.stats.enabled:
         return
 
     name = _get_dfb_name(dfb)
 
-    _dfb_stats_by_name[name]["waits"] += 1
-    _dfb_stats_by_name[name]["tiles_waited"] += num_tiles
+    ctx.stats.dfb_stats_by_name[name]["waits"] += 1
+    ctx.stats.dfb_stats_by_name[name]["tiles_waited"] += num_tiles
 
 
 def print_stats() -> None:
     """Print collected tensor, pipe, and DFB statistics."""
-    has_tensor_stats = bool(_stats_by_name)
-    has_pipe_stats = bool(_pipe_stats_by_name)
-    has_dfb_stats = bool(_dfb_stats_by_name)
+    ctx = get_context()
+    has_tensor_stats = bool(ctx.stats.stats_by_name)
+    has_pipe_stats = bool(ctx.stats.pipe_stats_by_name)
+    has_dfb_stats = bool(ctx.stats.dfb_stats_by_name)
 
     if not has_tensor_stats and not has_pipe_stats and not has_dfb_stats:
         print("\nNo statistics collected.")
         return
 
-    tensor_stats_copy = dict(_stats_by_name)
-    pipe_stats_copy = dict(_pipe_stats_by_name)
-    dfb_stats_copy = dict(_dfb_stats_by_name)
+    tensor_stats_copy = dict(ctx.stats.stats_by_name)
+    pipe_stats_copy = dict(ctx.stats.pipe_stats_by_name)
+    dfb_stats_copy = dict(ctx.stats.dfb_stats_by_name)
 
     # Print tensor statistics
     if has_tensor_stats:

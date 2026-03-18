@@ -125,21 +125,14 @@ private:
         computeOp->getAttrOfType<IntegerAttr>(kUnrollFactorAttrName);
     int64_t unrollFactor = unrollAttr.getInt();
     Location loc = computeOp.getLoc();
-
     OpBuilder b(computeOp);
-    SmallVector<Range> iterDomain = computeOp.getIterationDomain(b);
-    int64_t rank = iterDomain.size();
 
     // Collect dim sizes and compute total tile count.
-    SmallVector<int64_t> dimSizes(rank);
-    int64_t totalTiles = 1;
+    SmallVector<int64_t> dimSizes = computeOp.getStaticIterationDomainSizes();
+    int64_t rank = dimSizes.size();
+    int64_t totalTiles = computeOp.getTotalIterationTiles();
     SmallVector<utils::IteratorType> iterTypes =
         computeOp.getIteratorTypesArray();
-    for (int64_t d = 0; d < rank; ++d) {
-      // ComputeOp verifier guarantees static shapes.
-      dimSizes[d] = *getConstantIntValue(iterDomain[d].size);
-      totalTiles *= dimSizes[d];
-    }
 
     // Compute row-major strides over the CB block iteration domain for tile
     // offset computation. Used for loop annotation, CB linearization strides

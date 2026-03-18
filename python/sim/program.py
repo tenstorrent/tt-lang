@@ -14,15 +14,12 @@ import types
 from typing import Any, Dict, List
 
 from .dfb import DataflowBuffer
-from .decorators import BindableTemplate
+from .typedefs import BindableTemplate, Shape
 from .blockstate import ThreadType
+from .context import get_context
 from .greenlet_scheduler import GreenletScheduler, set_scheduler
 from .ttnnsim import Tensor
-from .typedefs import Shape
 from .debug_print import ttlang_print
-
-# Maximum number of DataflowBuffers per core (hardware limit).
-_max_dfbs: int = 32
 
 
 def set_max_dfbs(limit: int) -> None:
@@ -39,8 +36,7 @@ def set_max_dfbs(limit: int) -> None:
     """
     if limit < 0:
         raise ValueError(f"max_dfbs must be non-negative, got {limit}")
-    global _max_dfbs
-    _max_dfbs = limit
+    get_context().config.max_dfbs = limit
 
 
 def get_max_dfbs() -> int:
@@ -49,7 +45,7 @@ def get_max_dfbs() -> int:
     Returns:
         Current CB limit per core
     """
-    return _max_dfbs
+    return get_context().config.max_dfbs
 
 
 def Program(*funcs: BindableTemplate, grid: Shape) -> Any:

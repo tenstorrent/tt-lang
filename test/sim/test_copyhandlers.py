@@ -21,14 +21,15 @@ from test_utils import (
 )
 
 from python.sim import ttnn
-from python.sim.blockstate import set_current_thread_type, ThreadType
+from python.sim.blockstate import ThreadType
+from python.sim.context import set_current_thread_type
 from python.sim.dfb import Block, DataflowBuffer
 from python.sim.copyhandlers import (
     BlockToPipeHandler,
     BlockToTensorHandler,
     PipeToBlockHandler,
     TensorToBlockHandler,
-    handler_registry,
+    HANDLER_REGISTRY,
 )
 from python.sim.pipe import Pipe
 
@@ -51,17 +52,17 @@ class TestHandlerRegistry:
 
     def test_registry_populated(self):
         """Test that all handlers are registered."""
-        assert (ttnn.Tensor, Block) in handler_registry
-        assert (Block, ttnn.Tensor) in handler_registry
-        assert (Block, Pipe) in handler_registry
-        assert (Pipe, Block) in handler_registry
+        assert (ttnn.Tensor, Block) in HANDLER_REGISTRY
+        assert (Block, ttnn.Tensor) in HANDLER_REGISTRY
+        assert (Block, Pipe) in HANDLER_REGISTRY
+        assert (Pipe, Block) in HANDLER_REGISTRY
 
     def test_registry_handlers_correct_type(self):
         """Test that registered handlers are the correct instances."""
-        assert isinstance(handler_registry[(ttnn.Tensor, Block)], TensorToBlockHandler)
-        assert isinstance(handler_registry[(Block, ttnn.Tensor)], BlockToTensorHandler)
-        assert isinstance(handler_registry[(Block, Pipe)], BlockToPipeHandler)
-        assert isinstance(handler_registry[(Pipe, Block)], PipeToBlockHandler)
+        assert isinstance(HANDLER_REGISTRY[(ttnn.Tensor, Block)], TensorToBlockHandler)
+        assert isinstance(HANDLER_REGISTRY[(Block, ttnn.Tensor)], BlockToTensorHandler)
+        assert isinstance(HANDLER_REGISTRY[(Block, Pipe)], BlockToPipeHandler)
+        assert isinstance(HANDLER_REGISTRY[(Pipe, Block)], PipeToBlockHandler)
 
 
 class TestCopyValidationErrors:
