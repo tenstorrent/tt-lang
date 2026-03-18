@@ -37,6 +37,7 @@ from .typedefs import Count, IndexType, Selector, Shape, TensorKey
 # Public constants (mirror TTL constants)
 TILE_SIZE: int = TILE_SHAPE[0]
 TILE_LAYOUT = IndexType.TILE
+ROW_MAJOR_LAYOUT = IndexType.ROW_MAJOR
 
 
 def broadcast_tensors(
@@ -213,16 +214,22 @@ def close_device(device: Device) -> None:
 
 
 def tile_count_from_tensor(t: "Tensor") -> int:
-    """Return the number of tiles a Tensor represents.
+    """Return the number of shape units a Tensor represents.
 
-    For 2-D+ tensors the last two element dimensions are divided by TILE_SHAPE
+    For row-major tensors each scalar is a unit, so the count is the total
+    number of elements: math.prod(shape).
+
+    For tiled tensors the last two element dimensions are divided by TILE_SHAPE
     (treating H==1 or W==1 as degenerate single-tile dimensions); leading
     dimensions are batch dimensions each contributing independently.
 
-    For 1-D tensors the single dimension is divided by TILE_SHAPE[0] (treating
-    size==1 as a degenerate single-tile dimension); there are no batch dims.
+    For 1-D tiled tensors the single dimension is divided by TILE_SHAPE[0]
+    (treating size==1 as a degenerate single-tile dimension).
     """
     import math
+
+    if t.layout == ROW_MAJOR_LAYOUT:
+        return math.prod(t.shape)
 
     s = t.shape
     if len(s) == 1:
@@ -239,13 +246,16 @@ def tile_count_from_tensor(t: "Tensor") -> int:
 class Tensor:
     """TTNN-like Tensor wrapper built on torch.Tensor.
 
-    Exposes `.shape` and keeps underlying storage in `_tensor`.
+    Exposes `.shape`, `.dtype`, and `.layout`.  The layout determines how
+    indices are interpreted: TILE_LAYOUT uses tile-space indexing (each index
+    unit = 32 elements); ROW_MAJOR_LAYOUT uses element-space indexing directly.
     """
 
-    def __init__(self, tensor: torch.Tensor) -> None:
+    def __init__(self, tensor: torch.Tensor, layout: IndexType = TILE_LAYOUT) -> None:
         if tensor.ndim < 1:
             raise ValueError(f"Tensor must have at least 1 dimension, got 0-d scalar")
         self._tensor: torch.Tensor = tensor
+        self._layout: IndexType = layout
 
     @property
     def shape(self) -> Shape:
@@ -255,13 +265,19 @@ class Tensor:
     def dtype(self) -> torch.dtype:
         return self._tensor.dtype
 
+    @property
+    def layout(self) -> IndexType:
+        return self._layout
+
     def _validate_tile_alignment(self) -> None:
         """Validate that this tensor supports tile-style indexing.
 
+        Must only be called for TILE_LAYOUT tensors.
+
         For 2-D+ tensors the last two dimensions must be tile-aligned (or
         degenerate); leading batch dimensions may have any size.
-        For 1-D tensors the single dimension must be a multiple of TILE_SHAPE[0]
-        (or exactly 1).
+        For 1-D tensors the single dimension must be a multiple of
+        TILE_SHAPE[0] (or exactly 1).
 
         Raises:
             ValueError: If the tensor has fewer than 1 dimension,
@@ -325,34 +341,49 @@ class Tensor:
             )
 
     def _to_element_key(self, key: Tuple[Selector, ...]) -> Tuple[Selector, ...]:
-        """Translate a tile-coordinate key to an element-space index tuple.
+        """Translate a coordinate key to an element-space index tuple.
 
-        The last two elements of the key are tile-row and tile-col coordinates,
-        scaled by TILE_SHAPE to produce element-space slices.  Preceding batch
-        elements are passed through unchanged (implicit tile size 1, so
-        tile-space and element-space are identical for those dimensions).
+        For ROW_MAJOR_LAYOUT tensors, indices are already in element-space:
+        integer indices are normalized to unit slices, but no TILE_SHAPE
+        multiplication is applied.
+
+        For TILE_LAYOUT tensors the last two elements of the key are tile-row
+        and tile-col coordinates, scaled by TILE_SHAPE to produce element-space
+        slices.  Preceding batch elements are passed through unchanged (implicit
+        tile size 1, so tile-space and element-space are identical for those
+        dimensions).
 
         Args:
             key: Tuple whose length must exactly match the tensor's rank.
                 For a 1-D tensor: 1 element.  For an N-D tensor (N >= 2): N
-                elements, where the last two are tile-row and tile-col
-                coordinates and the preceding elements are batch indices.
+                elements.
 
         Returns:
             Tuple suitable for indexing the underlying torch.Tensor directly.
 
         Raises:
             ValueError: If key length does not match tensor rank, the tensor
-                is not tile-aligned, or a tile slice has missing or stepped
-                bounds.
+                is not tile-aligned (tiled only), or a tile slice has missing
+                or stepped bounds.
         """
-        self._validate_tile_alignment()
         ndim = len(self._tensor.shape)
         if len(key) != ndim:
             raise ValueError(
                 f"Key length {len(key)} does not match tensor rank {ndim}: "
                 f"expected exactly {ndim} element(s)"
             )
+
+        if self._layout == ROW_MAJOR_LAYOUT:
+            # Element-space indexing: normalize ints to unit slices, no scaling.
+            normalized: List[Selector] = []
+            for k in key:
+                if isinstance(k, int):
+                    normalized.append(slice(k, k + 1))
+                else:
+                    normalized.append(k)
+            return tuple(normalized)
+
+        self._validate_tile_alignment()
         if ndim == 1:
             col_s = self._normalize_tile_index(key[0])
             self._validate_tile_slice(col_s, "col")
@@ -382,7 +413,10 @@ class Tensor:
 
     def __repr__(self) -> str:
         # Delegate to torch for value and dtype formatting (handles truncation for large tensors).
-        return f"Tensor(shape={tuple(self._tensor.shape)}, data={repr(self._tensor)})"
+        layout_str = (
+            f", layout={self._layout.name}" if self._layout != TILE_LAYOUT else ""
+        )
+        return f"Tensor(shape={tuple(self._tensor.shape)}{layout_str}, data={repr(self._tensor)})"
 
     def to_torch(self) -> torch.Tensor:
         """Public accessor for the underlying torch tensor."""
@@ -394,9 +428,9 @@ class Tensor:
         """Element-wise addition."""
         match other:
             case Tensor():
-                return Tensor(self._tensor + other._tensor)
+                return Tensor(self._tensor + other._tensor, self._layout)
             case float() | int():
-                return Tensor(self._tensor + other)
+                return Tensor(self._tensor + other, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -404,9 +438,9 @@ class Tensor:
         """Element-wise subtraction."""
         match other:
             case Tensor():
-                return Tensor(self._tensor - other._tensor)
+                return Tensor(self._tensor - other._tensor, self._layout)
             case float() | int():
-                return Tensor(self._tensor - other)
+                return Tensor(self._tensor - other, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -414,9 +448,9 @@ class Tensor:
         """Element-wise multiplication."""
         match other:
             case Tensor():
-                return Tensor(self._tensor * other._tensor)
+                return Tensor(self._tensor * other._tensor, self._layout)
             case float() | int():
-                return Tensor(self._tensor * other)
+                return Tensor(self._tensor * other, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -424,9 +458,9 @@ class Tensor:
         """Element-wise true division."""
         match other:
             case Tensor():
-                return Tensor(self._tensor / other._tensor)
+                return Tensor(self._tensor / other._tensor, self._layout)
             case float() | int():
-                return Tensor(self._tensor / other)
+                return Tensor(self._tensor / other, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -434,9 +468,9 @@ class Tensor:
         """Element-wise floor division."""
         match other:
             case Tensor():
-                return Tensor(self._tensor // other._tensor)
+                return Tensor(self._tensor // other._tensor, self._layout)
             case float() | int():
-                return Tensor(self._tensor // other)
+                return Tensor(self._tensor // other, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -444,9 +478,9 @@ class Tensor:
         """Element-wise modulo."""
         match other:
             case Tensor():
-                return Tensor(self._tensor % other._tensor)
+                return Tensor(self._tensor % other._tensor, self._layout)
             case float() | int():
-                return Tensor(self._tensor % other)
+                return Tensor(self._tensor % other, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -454,9 +488,9 @@ class Tensor:
         """Element-wise exponentiation."""
         match other:
             case Tensor():
-                return Tensor(self._tensor**other._tensor)
+                return Tensor(self._tensor**other._tensor, self._layout)
             case float() | int():
-                return Tensor(self._tensor**other)
+                return Tensor(self._tensor**other, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -464,17 +498,17 @@ class Tensor:
         """Matrix multiplication."""
         match other:
             case Tensor():
-                return Tensor(self._tensor @ other._tensor)
+                return Tensor(self._tensor @ other._tensor, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
     def __neg__(self) -> "Tensor":
         """Unary negation."""
-        return Tensor(-self._tensor)
+        return Tensor(-self._tensor, self._layout)
 
     def __abs__(self) -> "Tensor":
         """Absolute value."""
-        return Tensor(torch.abs(self._tensor))
+        return Tensor(torch.abs(self._tensor), self._layout)
 
     # ---- Reverse binary operations ----
 
@@ -482,7 +516,7 @@ class Tensor:
         """Reverse element-wise addition."""
         match other:
             case float() | int():
-                return Tensor(other + self._tensor)
+                return Tensor(other + self._tensor, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -490,7 +524,7 @@ class Tensor:
         """Reverse element-wise subtraction."""
         match other:
             case float() | int():
-                return Tensor(other - self._tensor)
+                return Tensor(other - self._tensor, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -498,7 +532,7 @@ class Tensor:
         """Reverse element-wise multiplication."""
         match other:
             case float() | int():
-                return Tensor(other * self._tensor)
+                return Tensor(other * self._tensor, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -506,7 +540,7 @@ class Tensor:
         """Reverse element-wise true division."""
         match other:
             case float() | int():
-                return Tensor(other / self._tensor)
+                return Tensor(other / self._tensor, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -514,7 +548,7 @@ class Tensor:
         """Reverse element-wise floor division."""
         match other:
             case float() | int():
-                return Tensor(other // self._tensor)
+                return Tensor(other // self._tensor, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -522,7 +556,7 @@ class Tensor:
         """Reverse element-wise modulo."""
         match other:
             case float() | int():
-                return Tensor(other % self._tensor)
+                return Tensor(other % self._tensor, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -530,30 +564,26 @@ class Tensor:
         """Reverse element-wise exponentiation."""
         match other:
             case float() | int():
-                return Tensor(other**self._tensor)
+                return Tensor(other**self._tensor, self._layout)
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
 
 def rand(
-    shape: Shape, dtype: torch.dtype = bfloat16, layout: Any = TILE_LAYOUT
+    shape: Shape, dtype: torch.dtype = bfloat16, layout: IndexType = TILE_LAYOUT
 ) -> Tensor:
-    """Create a random tensor with given shape and dtype.
-
-    Layout is a placeholder and not used in the simulator, but kept for API compatibility.
-    """
-    # Use torch.rand; for bfloat16 we cast after creation
+    """Create a random tensor with given shape, dtype, and layout."""
     t = torch.rand(shape, dtype=torch.float32)
     t = t.to(dtype)
-    return Tensor(t)
+    return Tensor(t, layout)
 
 
 def empty(
-    shape: Shape, dtype: torch.dtype = bfloat16, layout: Any = TILE_LAYOUT
+    shape: Shape, dtype: torch.dtype = bfloat16, layout: IndexType = TILE_LAYOUT
 ) -> Tensor:
-    """Create an uninitialized tensor with given shape and dtype."""
+    """Create an uninitialized tensor with given shape, dtype, and layout."""
     t = torch.empty(shape, dtype=dtype)
-    return Tensor(t)
+    return Tensor(t, layout)
 
 
 def to_torch(t: Union[Tensor, torch.Tensor]) -> torch.Tensor:
@@ -571,30 +601,26 @@ def to_torch(t: Union[Tensor, torch.Tensor]) -> torch.Tensor:
 def from_torch(
     tensor: torch.Tensor,
     dtype: Optional[torch.dtype] = None,
-    layout: Any = None,
+    layout: IndexType = TILE_LAYOUT,
     device: Optional[Device] = None,
     memory_config: Any = None,
 ) -> Tensor:
     """Convert a torch.Tensor to a TTNN simulator Tensor.
 
-    Accepts additional keyword arguments for API compatibility with TTNN
-    (layout, device, memory_config), but these are no-ops in the simulator.
-
     Args:
         tensor: Input torch tensor to wrap
         dtype: Optional dtype to convert to (defaults to tensor's dtype)
-        layout: Layout parameter (no-op in simulator)
+        layout: Layout for the resulting Tensor (TILE_LAYOUT or ROW_MAJOR_LAYOUT)
         device: Device parameter (no-op in simulator)
         memory_config: Memory config parameter (no-op in simulator)
 
     Returns:
         Tensor wrapping the input (potentially converted) torch tensor
     """
-    # Convert dtype if specified
     if dtype is not None and tensor.dtype != dtype:
         tensor = tensor.to(dtype)
 
-    return Tensor(tensor)
+    return Tensor(tensor, layout)
 
 
 def multiply(

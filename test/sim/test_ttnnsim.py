@@ -1059,3 +1059,156 @@ class TestTensorTileIndexing:
         tile = t[0, 0]
         assert tile.shape == (32, 1)
         assert torch.allclose(tile.to_torch(), raw)
+
+
+# ---- Row-major layout tests ----
+
+
+class TestRowMajorLayout:
+    """Tests for ROW_MAJOR_LAYOUT Tensor behaviour (Steps 1 and 2)."""
+
+    # --- constants and construction ---
+
+    def test_row_major_constant_accessible(self) -> None:
+        """ROW_MAJOR_LAYOUT is exported from ttnnsim and is distinct from TILE_LAYOUT."""
+        assert hasattr(ttnn, "ROW_MAJOR_LAYOUT")
+        assert hasattr(ttnn, "TILE_LAYOUT")
+        assert ttnn.ROW_MAJOR_LAYOUT != ttnn.TILE_LAYOUT
+
+    def test_tensor_default_layout_is_tile(self) -> None:
+        """Tensors constructed without explicit layout default to TILE_LAYOUT."""
+        t = ttnn.Tensor(torch.zeros(32, 32))
+        assert t.layout == ttnn.TILE_LAYOUT
+
+    def test_tensor_row_major_layout_property(self) -> None:
+        """Tensor.layout reports ROW_MAJOR_LAYOUT when constructed with it."""
+        t = ttnn.Tensor(torch.zeros(7, 13), ttnn.ROW_MAJOR_LAYOUT)
+        assert t.layout == ttnn.ROW_MAJOR_LAYOUT
+
+    # --- non-tile-aligned shapes accepted ---
+
+    def test_non_tile_aligned_shape_accepted(self) -> None:
+        """Row-major Tensors with non-tile-aligned dimensions do not raise."""
+        t = ttnn.Tensor(torch.zeros(7, 13), ttnn.ROW_MAJOR_LAYOUT)
+        assert t.shape == (7, 13)
+
+    def test_tile_alignment_not_checked_on_getitem(self) -> None:
+        """Indexing a row-major Tensor with a non-tile-aligned shape does not raise."""
+        raw = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+        t = ttnn.Tensor(raw, ttnn.ROW_MAJOR_LAYOUT)
+        result = t[0, 0]  # element (0, 0) as a (1, 1) slice
+        assert result.shape == (1, 1)
+        assert result.to_torch().item() == 0.0
+
+    # --- element-space indexing (no tile scaling) ---
+
+    def test_integer_index_becomes_unit_slice(self) -> None:
+        """Integer index n maps to element slice n:n+1, not n*32:(n+1)*32."""
+        raw = torch.arange(16, dtype=torch.float32).reshape(4, 4)
+        t = ttnn.Tensor(raw, ttnn.ROW_MAJOR_LAYOUT)
+        result = t[1, 2]
+        assert result.shape == (1, 1)
+        assert result.to_torch().item() == raw[1, 2].item()
+
+    def test_slice_index_passes_through_unchanged(self) -> None:
+        """Slice indices are passed through without any TILE_SHAPE scaling."""
+        raw = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+        t = ttnn.Tensor(raw, ttnn.ROW_MAJOR_LAYOUT)
+        result = t[slice(1, 3), slice(0, 4)]
+        assert result.shape == (2, 4)
+        assert torch.equal(result.to_torch(), raw[1:3, 0:4])
+
+    def test_1d_integer_index(self) -> None:
+        """1-D row-major: integer index n selects element n:n+1."""
+        raw = torch.arange(8, dtype=torch.float32)
+        t = ttnn.Tensor(raw, ttnn.ROW_MAJOR_LAYOUT)
+        result = t[3]
+        assert result.shape == (1,)
+        assert result.to_torch().item() == 3.0
+
+    def test_nd_indexing(self) -> None:
+        """Row-major indexing works for 3-D tensors without tile scaling."""
+        raw = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4)
+        t = ttnn.Tensor(raw, ttnn.ROW_MAJOR_LAYOUT)
+        result = t[1, 2, slice(0, 4)]
+        assert result.shape == (1, 1, 4)
+        assert torch.equal(result.to_torch(), raw[1:2, 2:3, 0:4])
+
+    def test_setitem_row_major(self) -> None:
+        """__setitem__ writes at element-space coordinates for row-major."""
+        raw = torch.zeros(4, 4, dtype=torch.float32)
+        t = ttnn.Tensor(raw, ttnn.ROW_MAJOR_LAYOUT)
+        t[2, 3] = ttnn.Tensor(torch.full((1, 1), 99.0))
+        assert raw[2, 3].item() == 99.0
+        assert raw[0, 0].item() == 0.0
+
+    # --- repr ---
+
+    def test_repr_shows_row_major_layout(self) -> None:
+        """repr includes layout=ROW_MAJOR for row-major tensors."""
+        t = ttnn.Tensor(torch.zeros(3, 4), ttnn.ROW_MAJOR_LAYOUT)
+        r = repr(t)
+        assert "ROW_MAJOR" in r
+
+    def test_repr_omits_layout_for_tile(self) -> None:
+        """repr does not include a layout field for the default TILE_LAYOUT."""
+        t = ttnn.Tensor(torch.zeros(32, 32))
+        assert "layout" not in repr(t)
+
+    # --- creation helpers propagate layout ---
+
+    def test_rand_propagates_row_major(self) -> None:
+        t = ttnn.rand((5, 7), dtype=ttnn.float32, layout=ttnn.ROW_MAJOR_LAYOUT)
+        assert t.layout == ttnn.ROW_MAJOR_LAYOUT
+        assert t.shape == (5, 7)
+
+    def test_empty_propagates_row_major(self) -> None:
+        t = ttnn.empty((3, 11), dtype=ttnn.float32, layout=ttnn.ROW_MAJOR_LAYOUT)
+        assert t.layout == ttnn.ROW_MAJOR_LAYOUT
+
+    def test_from_torch_propagates_row_major(self) -> None:
+        raw = torch.randn(5, 9)
+        t = ttnn.from_torch(raw, layout=ttnn.ROW_MAJOR_LAYOUT)
+        assert t.layout == ttnn.ROW_MAJOR_LAYOUT
+        assert t.shape == (5, 9)
+
+    # --- layout propagates through arithmetic ---
+
+    def test_arithmetic_preserves_row_major(self) -> None:
+        """Binary and unary ops on row-major Tensors return row-major Tensors."""
+        a = ttnn.Tensor(torch.ones(3, 4), ttnn.ROW_MAJOR_LAYOUT)
+        b = ttnn.Tensor(torch.ones(3, 4), ttnn.ROW_MAJOR_LAYOUT)
+
+        assert (a + b).layout == ttnn.ROW_MAJOR_LAYOUT
+        assert (a - b).layout == ttnn.ROW_MAJOR_LAYOUT
+        assert (a * b).layout == ttnn.ROW_MAJOR_LAYOUT
+        assert (a / b).layout == ttnn.ROW_MAJOR_LAYOUT
+        assert (a**2).layout == ttnn.ROW_MAJOR_LAYOUT
+        assert (-a).layout == ttnn.ROW_MAJOR_LAYOUT
+        assert abs(a).layout == ttnn.ROW_MAJOR_LAYOUT
+
+    def test_scalar_arithmetic_preserves_row_major(self) -> None:
+        """Scalar operands preserve the layout of the Tensor side."""
+        a = ttnn.Tensor(torch.ones(3, 4), ttnn.ROW_MAJOR_LAYOUT)
+        assert (a + 1.0).layout == ttnn.ROW_MAJOR_LAYOUT
+        assert (2.0 * a).layout == ttnn.ROW_MAJOR_LAYOUT
+
+    # --- tile_count_from_tensor ---
+
+    def test_tile_count_row_major_returns_scalar_count(self) -> None:
+        """tile_count_from_tensor returns total element count for row-major."""
+        t = ttnn.Tensor(torch.zeros(3, 4), ttnn.ROW_MAJOR_LAYOUT)
+        assert ttnn.tile_count_from_tensor(t) == 12
+
+    def test_tile_count_row_major_1d(self) -> None:
+        t = ttnn.Tensor(torch.zeros(7), ttnn.ROW_MAJOR_LAYOUT)
+        assert ttnn.tile_count_from_tensor(t) == 7
+
+    def test_tile_count_row_major_nd(self) -> None:
+        t = ttnn.Tensor(torch.zeros(2, 3, 5), ttnn.ROW_MAJOR_LAYOUT)
+        assert ttnn.tile_count_from_tensor(t) == 30
+
+    def test_tile_count_tiled_unaffected(self) -> None:
+        """Tile count for tiled tensors is unchanged (regression guard)."""
+        t = ttnn.Tensor(torch.zeros(64, 64))  # 2x2 tiles
+        assert ttnn.tile_count_from_tensor(t) == 4
