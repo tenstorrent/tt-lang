@@ -49,8 +49,10 @@ func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %out_view[] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sum, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -111,13 +113,15 @@ func.func @chain_reuse(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: tensor<1x
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>,
        %arg2: !ttcore.tile<32x32, f32>,
        %out: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
 
     %x0 = ttl.tile_add %arg0, %arg1 : !ttcore.tile<32x32, f32>
     %x1 = ttl.tile_add %x0, %arg2 : !ttcore.tile<32x32, f32>
     %x2 = ttl.tile_add %x1, %arg2 : !ttcore.tile<32x32, f32>
     %x3 = ttl.tile_add %x2, %arg2 : !ttcore.tile<32x32, f32>
     %x4 = ttl.tile_add %x3, %arg2 : !ttcore.tile<32x32, f32>
-    ttl.tile_store %x4, %out_view_0[] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %x4, %out_view_0[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
 
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -173,13 +177,15 @@ func.func @block_arg_multi_use(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: t
      iterator_types = ["parallel", "parallel"]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>,
        %out: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
 
     // arg0 is used 3 times: first add is FPU (both block args),
     // subsequent adds use arg0 with DST results
     %x0 = ttl.tile_add %arg0, %arg1 : !ttcore.tile<32x32, f32>
     %x1 = ttl.tile_add %arg0, %x0 : !ttcore.tile<32x32, f32>
     %x2 = ttl.tile_add %arg0, %x1 : !ttcore.tile<32x32, f32>
-    ttl.tile_store %x2, %out_view_1[] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %x2, %out_view_1[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
 
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -231,11 +237,13 @@ func.func @silu_pattern(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>) -> tensor<1x1
     {indexing_maps = [#map, #map],
      iterator_types = ["parallel", "parallel"]} {
   ^bb0(%x: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     // x is used by both sigmoid AND mul -> multi-consumer with unary
     // Phase 1 should insert copy_tile so sigmoid doesn't clobber x
     %sig = ttl.tile_sigmoid %x : !ttcore.tile<32x32, f32>
     %prod = ttl.tile_mul %x, %sig : !ttcore.tile<32x32, f32>
-    ttl.tile_store %prod, %out_view_2[] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %prod, %out_view_2[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 

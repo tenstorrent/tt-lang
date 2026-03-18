@@ -91,6 +91,8 @@ func.func @seven_op_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     // Seven-operation fused chain - each must appear in output with dst_idx
     %add = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %sub = ttl.tile_sub %add, %b_tile : !ttcore.tile<32x32, f32>
@@ -99,7 +101,7 @@ func.func @seven_op_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %log = ttl.tile_log %exp : !ttcore.tile<32x32, f32>
     %neg = ttl.tile_neg %log : !ttcore.tile<32x32, f32>
     %sqrt = ttl.tile_sqrt %neg : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sqrt, %result_view[] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sqrt, %result_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

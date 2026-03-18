@@ -194,7 +194,7 @@ static FailureOr<CopyTileOp> createCopyTileForArg(
   Location loc = builder.getInsertionPoint()->getLoc();
   Value dstIndex =
       arith::ConstantIndexOp::create(builder, loc, assignedDstIndex);
-  // src_indices are empty here; materialized later by LowerToLoops.
+  // src_indices are empty here; populated by the iter_index phase below.
   auto copy = CopyTileOp::create(
       builder, loc,
       TypeRange{DSTRegisterType::get(arg.getContext()), arg.getType()},
@@ -892,13 +892,23 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         auto indexingMaps = computeOp.getIndexingMapsArray();
         unsigned iterRank = computeOp.getIteratorTypesArray().size();
 
-        // Create one iter_index per dimension at the block start.
+        // Get or create iter_index ops. convert-ttl-to-compute may have
+        // already created them for tile_store indices; reuse if present.
+        SmallVector<Value> iterIndices(iterRank, Value());
+        for (Operation &op : *body) {
+          if (auto iterIdx = dyn_cast<IterIndexOp>(&op)) {
+            unsigned dim = static_cast<unsigned>(iterIdx.getDim());
+            if (dim < iterRank && !iterIndices[dim]) {
+              iterIndices[dim] = iterIdx.getResult();
+            }
+          }
+        }
         builder.setInsertionPointToStart(body);
         Location iterLoc = computeOp.getLoc();
-        SmallVector<Value> iterIndices;
-        iterIndices.reserve(iterRank);
         for (unsigned d = 0; d < iterRank; ++d) {
-          iterIndices.push_back(IterIndexOp::create(builder, iterLoc, d));
+          if (!iterIndices[d]) {
+            iterIndices[d] = IterIndexOp::create(builder, iterLoc, d);
+          }
         }
 
         // Helper: apply an indexing map to iter_index values.
@@ -957,52 +967,16 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
           ct.erase();
         }
 
-        // Build CB -> output index mapping for multi-output tile_store
-        // disambiguation. Single-output computes always use output 0.
-        size_t numInputs = computeOp.getNumInputs();
-        size_t numOutputs = computeOp.getNumOutputs();
-        DenseMap<Value, size_t> cbToOutputIdx;
-        if (numOutputs > 1) {
-          for (auto [idx, output] : llvm::enumerate(computeOp.getOutputs())) {
-            Value cb = getAttachedCB(output);
-            if (cb) {
-              cbToOutputIdx[cb] = idx;
-            }
-          }
-        }
-
-        // Populate tile_store indices.
-        SmallVector<TileStoreOp> tileStores;
+        // All copy_tile ops must have populated src_indices at this point.
         for (Operation &op : *body) {
-          if (auto ts = dyn_cast<TileStoreOp>(&op)) {
-            if (ts.getIndices().empty()) {
-              tileStores.push_back(ts);
+          if (auto ct = dyn_cast<CopyTileOp>(&op)) {
+            if (ct.getSrcIndices().empty()) {
+              ct.emitOpError()
+                  << "copy_tile has empty src_indices after iter_index phase";
+              signalPassFailure();
+              return;
             }
           }
-        }
-        for (TileStoreOp ts : tileStores) {
-          size_t outputIdx = 0;
-          if (numOutputs > 1) {
-            Value viewCB = getAttachedCB(ts.getView());
-            assert(viewCB && "multi-output compute requires tile_store view "
-                             "traceable to a CB via getAttachedCB");
-            auto it = cbToOutputIdx.find(viewCB);
-            assert(it != cbToOutputIdx.end() &&
-                   "tile_store view CB not found in compute output mapping");
-            outputIdx = it->second;
-          }
-          AffineMap outputMap = indexingMaps[numInputs + outputIdx];
-
-          builder.setInsertionPoint(ts);
-          SmallVector<Value> cbIndices =
-              applyMap(builder, ts.getLoc(), outputMap);
-
-          auto newStore = TileStoreOp::create(
-              builder, ts.getLoc(), ts.getTile(), ts.getView(), cbIndices);
-          for (NamedAttribute attr : ts->getAttrs()) {
-            newStore->setAttr(attr.getName(), attr.getValue());
-          }
-          ts.erase();
         }
 
         LLVM_DEBUG({

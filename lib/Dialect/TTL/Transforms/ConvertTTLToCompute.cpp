@@ -2,12 +2,15 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
@@ -87,23 +90,109 @@ static void insertAtLastStore(PatternRewriter &rewriter, Operation *op) {
   rewriter.setInsertionPoint(lastStore);
 }
 
+/// Get or create iter_index ops at the start of the compute body. Returns
+/// one Value per iteration domain dimension.
+static SmallVector<Value> getOrCreateIterIndices(OpBuilder &builder,
+                                                 ComputeOp computeOp) {
+  Block &body = computeOp.getBody().front();
+  unsigned iterRank = computeOp.getIteratorTypesArray().size();
+
+  SmallVector<Value> existing(iterRank, Value());
+  for (Operation &op : body) {
+    if (auto iterIdx = dyn_cast<IterIndexOp>(&op)) {
+      unsigned dim = static_cast<unsigned>(iterIdx.getDim());
+      if (dim < iterRank) {
+        existing[dim] = iterIdx.getResult();
+      }
+    }
+  }
+  if (llvm::none_of(existing, [](Value v) { return !v; })) {
+    return existing;
+  }
+
+  // Create missing iter_index ops at block start.
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(&body);
+  Location loc = computeOp.getLoc();
+  for (unsigned d = 0; d < iterRank; ++d) {
+    if (!existing[d]) {
+      existing[d] = IterIndexOp::create(builder, loc, d);
+    }
+  }
+  return existing;
+}
+
+/// Apply an output indexing map to iter_index values to produce CB-space
+/// tile_store indices.
+static SmallVector<Value> computeStoreIndices(OpBuilder &builder, Location loc,
+                                              AffineMap outputMap,
+                                              ValueRange iterIndices) {
+  SmallVector<OpFoldResult> operands(iterIndices.begin(), iterIndices.end());
+  SmallVector<Value> indices;
+  indices.reserve(outputMap.getNumResults());
+  for (AffineExpr expr : outputMap.getResults()) {
+    AffineMap singleMap =
+        AffineMap::get(outputMap.getNumDims(), outputMap.getNumSymbols(), expr);
+    OpFoldResult result = affine::makeComposedFoldedAffineApply(
+        builder, loc, singleMap, operands);
+    indices.push_back(getValueOrCreateConstantIndexOp(builder, loc, result));
+  }
+  return indices;
+}
+
 /// Create tile_store(s) in the compute body for the given tile result and
-/// erase the corresponding block-level stores. Handles multiple stores
-/// (e.g., same result stored to two outputs).
+/// erase the corresponding block-level stores. Populates tile_store indices
+/// from iter_index ops and the output indexing map.
 static void emitTileStores(PatternRewriter &rewriter, Location loc,
-                           Value tileResult, Operation *elementwiseOp) {
-  // Collect-then-erase: we cannot erase stores while iterating getUses()
-  // because erasing invalidates the use-list iterator.
-  assert(elementwiseOp->getNumResults() > 0 &&
+                           Value tileResult, Operation *sourceOp) {
+  assert(sourceOp->getNumResults() > 0 &&
          "emitTileStores requires op with results");
+
+  // Find the parent ComputeOp from the current insertion point.
+  auto *insertBlock = rewriter.getInsertionBlock();
+  auto computeOp = dyn_cast<ComputeOp>(insertBlock->getParentOp());
+  assert(computeOp && "emitTileStores must be called inside a compute body");
+
+  SmallVector<Value> iterIndices = getOrCreateIterIndices(rewriter, computeOp);
+  auto indexingMaps = computeOp.getIndexingMapsArray();
+  size_t numInputs = computeOp.getNumInputs();
+
+  // Build CB -> output index mapping for multi-output disambiguation.
+  size_t numOutputs = computeOp.getNumOutputs();
+  DenseMap<Value, size_t> cbToOutputIdx;
+  if (numOutputs > 1) {
+    for (auto [idx, output] : llvm::enumerate(computeOp.getOutputs())) {
+      Value cb = getAttachedCB(output);
+      if (cb) {
+        cbToOutputIdx[cb] = idx;
+      }
+    }
+  }
+
+  // Collect-then-erase: cannot erase stores while iterating getUses().
   SmallVector<StoreOp> storesToErase;
-  for (OpOperand &use : elementwiseOp->getResult(0).getUses()) {
+  for (OpOperand &use : sourceOp->getResult(0).getUses()) {
     auto storeOp = dyn_cast<StoreOp>(use.getOwner());
     if (!storeOp) {
       continue;
     }
-    TileStoreOp::create(rewriter, loc, tileResult, storeOp.getView(),
-                        /*indices=*/ValueRange{});
+
+    // Determine output index for this store's view CB.
+    size_t outputIdx = 0;
+    if (numOutputs > 1) {
+      Value viewCB = getAttachedCB(storeOp.getView());
+      if (viewCB) {
+        auto it = cbToOutputIdx.find(viewCB);
+        if (it != cbToOutputIdx.end()) {
+          outputIdx = it->second;
+        }
+      }
+    }
+    AffineMap outputMap = indexingMaps[numInputs + outputIdx];
+    SmallVector<Value> indices =
+        computeStoreIndices(rewriter, loc, outputMap, iterIndices);
+
+    TileStoreOp::create(rewriter, loc, tileResult, storeOp.getView(), indices);
     storesToErase.push_back(storeOp);
   }
   for (StoreOp s : storesToErase) {
@@ -117,13 +206,13 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
 
 /// Emit the tile-level op corresponding to a block-level elementwise op.
 /// Returns the result Value, or null on failure.
-static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *elementwiseOp,
+static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *sourceOp,
                            ValueRange tileOperands, Type tileType) {
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
-  if (isa<TTL_OP##Op>(elementwiseOp))                                          \
+  if (isa<TTL_OP##Op>(sourceOp))                                               \
     return TILE_OP::create(b, loc, tileType, tileOperands[0]);
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
-  if (isa<TTL_OP##Op>(elementwiseOp))                                          \
+  if (isa<TTL_OP##Op>(sourceOp))                                               \
     return TILE_OP::create(b, loc, tileType, tileOperands[0], tileOperands[1]);
 #define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
@@ -855,8 +944,12 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
     body->addArgument(tileType, loc);
 
     rewriter.setInsertionPointToEnd(body);
+    SmallVector<Value> iterIndices =
+        getOrCreateIterIndices(rewriter, computeOp);
+    SmallVector<Value> storeIndices =
+        computeStoreIndices(rewriter, loc, identityMap, iterIndices);
     TileStoreOp::create(rewriter, loc, body->getArgument(0), reserveView,
-                        /*indices=*/ValueRange{});
+                        storeIndices);
     YieldOp::create(rewriter, loc);
 
     // make_early_inc_range: replaceOp erases attachOp, invalidating the

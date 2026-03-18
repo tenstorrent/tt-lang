@@ -353,10 +353,6 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
     // Linearize multi-dimensional CB indices to a flat tile index.
     auto viewTy = mlir::cast<RankedTensorType>(op.getView().getType());
     ValueRange indices = adaptor.getIndices();
-    if (indices.empty()) {
-      return op.emitError("tile_store has no indices; "
-                          "ttl-lower-to-loops must run first");
-    }
     Value cbTileIndex = affine::AffineLinearizeIndexOp::create(
         rewriter, loc, indices, viewTy.getShape());
 

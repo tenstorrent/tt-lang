@@ -76,12 +76,14 @@ func.func @diamond_intermediate_reuse(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %c_tile: !ttcore.tile<32x32, f32>,
        %d_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
 
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %diff = ttl.tile_sub %sum, %c_tile : !ttcore.tile<32x32, f32>
     %prod = ttl.tile_mul %sum, %d_tile : !ttcore.tile<32x32, f32>
     %combo = ttl.tile_add %diff, %prod : !ttcore.tile<32x32, f32>
-    ttl.tile_store %combo, %out_view[] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %combo, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
 
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -136,6 +138,8 @@ func.func @intermediate_result_fan_out(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>
      iterator_types = ["parallel", "parallel"]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>,
        %arg2: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
 
     // Compute an intermediate result
     %intermediate = ttl.tile_add %arg0, %arg1 : !ttcore.tile<32x32, f32>
@@ -146,7 +150,7 @@ func.func @intermediate_result_fan_out(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>
     %use2 = ttl.tile_exp %intermediate : !ttcore.tile<32x32, f32>
     %use3 = ttl.tile_add %intermediate, %use1 : !ttcore.tile<32x32, f32>
     %final = ttl.tile_add %use3, %use2 : !ttcore.tile<32x32, f32>
-    ttl.tile_store %final, %out_view_0[] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %final, %out_view_0[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
 
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -212,12 +216,14 @@ func.func @multi_consumer_all_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %c_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %mul = ttl.tile_mul %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     // Both consumers are binary - no copy_dst needed
     %add = ttl.tile_add %mul, %c_tile : !ttcore.tile<32x32, f32>
     %sub = ttl.tile_sub %mul, %c_tile : !ttcore.tile<32x32, f32>
     %final = ttl.tile_add %add, %sub : !ttcore.tile<32x32, f32>
-    ttl.tile_store %final, %out_view[] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %final, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

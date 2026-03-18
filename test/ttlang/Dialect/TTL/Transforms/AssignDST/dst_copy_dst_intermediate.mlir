@@ -60,6 +60,8 @@ func.func @dst_intermediate_reuse_unary_chain(
   ^bb0(%a_tile: !ttcore.tile<32x32, bf16>,
        %b_tile: !ttcore.tile<32x32, bf16>,
        %out_tile: !ttcore.tile<32x32, bf16>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
 
     // x = a * b (FPU binary, result is DST intermediate)
     %x = ttl.tile_mul %a_tile, %b_tile : !ttcore.tile<32x32, bf16>
@@ -68,7 +70,7 @@ func.func @dst_intermediate_reuse_unary_chain(
     %rsqrt_x = ttl.tile_rsqrt %abs_x : !ttcore.tile<32x32, bf16>
     // Final SFPU binary consuming original x and chain result
     %final = ttl.tile_mul %x, %rsqrt_x : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %final, %out_view[] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %final, %out_view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
 
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>

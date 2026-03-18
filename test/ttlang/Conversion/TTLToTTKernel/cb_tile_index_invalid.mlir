@@ -7,8 +7,9 @@
 
 // -----
 
-// Missing indices: tile_store with empty indices reaching convert-ttl-to-ttkernel.
-// expected-error @below {{tile_store has no indices; ttl-lower-to-loops must run first}}
+// tile_store with empty indices outside compute body: the conversion uses
+// constant zero indices, producing a valid pack_tile at index 0.
+// No error expected - the conversion handles empty indices gracefully.
 module {
   func.func @tile_store_missing_indices(
       %tile: !ttcore.tile<32x32, bf16>) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {

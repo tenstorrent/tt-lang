@@ -49,9 +49,11 @@ func.func @copy_tile_with_bcast_and_add(
       {indexing_maps = [#map, #map, #map],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %b_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %bcast = ttl.tile_bcast %a_tile, %out_tile 2 : i32 : (!ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32>
     %add = ttl.tile_add %bcast, %b_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %add, %out_view[] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %add, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -95,8 +97,10 @@ func.func @two_inputs_both_need_copy(
       {indexing_maps = [#map, #map, #map],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %b_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %add = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %add, %out_view_0[] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %add, %out_view_0[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

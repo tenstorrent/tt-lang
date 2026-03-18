@@ -29,6 +29,8 @@ func.func @invalid_placeholder_copy(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>,
     {indexing_maps = [#map, #map, #map],
      iterator_types = ["parallel", "parallel"]} {
   ^bb0(%x: !ttcore.tile<32x32, f32>, %y: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     // First compute an intermediate result
     %add = ttl.tile_add %x, %y : !ttcore.tile<32x32, f32>
     // Pre-existing copy_tile with placeholder sentinel indices
@@ -39,7 +41,7 @@ func.func @invalid_placeholder_copy(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>,
         {ttl.placeholder_copy}
         : !ttcore.tile<32x32, f32>, index -> !ttl.dst, !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %copied : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %out_view[] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %exp, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 

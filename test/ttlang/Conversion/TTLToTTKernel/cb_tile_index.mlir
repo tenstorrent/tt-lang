@@ -38,8 +38,10 @@ func.func @tile_index_2x3(
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a: !ttcore.tile<32x32, bf16>, %b: !ttcore.tile<32x32, bf16>,
        %c: !ttcore.tile<32x32, bf16>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %sum = ttl.tile_add %a, %b : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %sum, %view[] : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %sum, %view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<2x3x!ttcore.tile<32x32, bf16>>
 

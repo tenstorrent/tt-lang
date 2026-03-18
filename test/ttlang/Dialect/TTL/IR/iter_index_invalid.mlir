@@ -27,9 +27,11 @@ func.func @dim_out_of_range(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
       outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     // expected-error @below {{'ttl.iter_index' op dimension 3 is out of range for iteration domain of rank 2}}
     %idx = ttl.iter_index 3 : index
-    ttl.tile_store %arg0, %out_view[] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %arg0, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   return
@@ -53,9 +55,11 @@ func.func @negative_dim(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
       outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [#map1, #map1], iterator_types = ["parallel", "parallel"]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     // expected-error @below {{'ttl.iter_index' op dimension -1 is out of range for iteration domain of rank 2}}
     %idx = ttl.iter_index -1 : index
-    ttl.tile_store %arg0, %out_view[] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %arg0, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   return
