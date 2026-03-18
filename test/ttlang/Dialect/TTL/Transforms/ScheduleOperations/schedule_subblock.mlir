@@ -42,11 +42,14 @@
 // FPU-NEXT:        ttkernel.tanh_tile(%[[C2]])
 // FPU-NEXT:        ttkernel.tile_regs_commit()
 // FPU-NEXT:        ttkernel.tile_regs_wait()
-// FPU-NEXT:        ttkernel.pack_tile(%[[C0]], %[[CB_OUT]], %[[BASE]], true)
-// FPU-NEXT:        ttkernel.pack_tile(%[[C1]], %[[CB_OUT]], %[[IDX1]], true)
-// FPU-NEXT:        ttkernel.pack_tile(%[[C2]], %[[CB_OUT]], %[[IDX2]], true)
+// FPU-NEXT:        %[[PIDX0:.*]] = affine.linearize_index [%[[IV]], %[[C0]]] by (2, 3)
+// FPU-NEXT:        ttkernel.pack_tile(%[[C0]], %[[CB_OUT]], %[[PIDX0]], true)
+// FPU-NEXT:        %[[PIDX1:.*]] = affine.linearize_index [%[[IV]], %[[C1]]] by (2, 3)
+// FPU-NEXT:        ttkernel.pack_tile(%[[C1]], %[[CB_OUT]], %[[PIDX1]], true)
+// FPU-NEXT:        %[[PIDX2:.*]] = affine.linearize_index [%[[IV]], %[[C2]]] by (2, 3)
+// FPU-NEXT:        ttkernel.pack_tile(%[[C2]], %[[CB_OUT]], %[[PIDX2]], true)
 // FPU-NEXT:        ttkernel.tile_regs_release()
-// FPU-NEXT:      }
+// FPU-NEXT:      } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 3 : index}
 // FPU-NEXT:      ttkernel.cb_push_back(%[[CB_OUT]], %[[C6_I32]])
 // FPU-NOT: ttkernel.copy_tile
 // FPU-NOT: ttkernel.add_binary_tile
@@ -57,14 +60,19 @@
 // 2 tiles * 2 copies = 4 copy_tile ops per sync region (within f32 capacity).
 // =============================================================================
 // SFPU-LABEL: func.func @f32_subblock_scheduling
+// SFPU-DAG:   %[[SC0:.*]] = arith.constant 0 : index
+// SFPU-DAG:   %[[SC1:.*]] = arith.constant 1 : index
+// SFPU-DAG:   %[[SC2:.*]] = arith.constant 2 : index
+// SFPU-DAG:   %[[SC3:.*]] = arith.constant 3 : index
 // SFPU: ttkernel.init_sfpu
-// SFPU: ttkernel.tile_regs_acquire
+// SFPU: scf.for %[[IV:.*]] = %[[SC0]] to %[[SC3]] step %[[SC1]]
+// SFPU:   ttkernel.tile_regs_acquire
 // SFPU:       ttkernel.copy_tile_init(
 // SFPU-NEXT:  ttkernel.copy_tile(
-// SFPU-NEXT:  ttkernel.copy_tile(
+// SFPU:       ttkernel.copy_tile(
 // SFPU-NEXT:  ttkernel.copy_tile_init(
 // SFPU-NEXT:  ttkernel.copy_tile(
-// SFPU-NEXT:  ttkernel.copy_tile(
+// SFPU:       ttkernel.copy_tile(
 // SFPU-NEXT:  ttkernel.add_binary_tile_init
 // SFPU-NEXT:  ttkernel.add_binary_tile(
 // SFPU-NEXT:  ttkernel.add_binary_tile(
@@ -72,6 +80,7 @@
 // SFPU-NEXT:  ttkernel.tanh_tile(
 // SFPU-NEXT:  ttkernel.tanh_tile(
 // SFPU-NEXT:  ttkernel.tile_regs_commit
+// SFPU:   } {ttl.subblock_dim = 1 : index, ttl.subblock_loop_stride = 1 : index}
 // SFPU-NOT:   ttkernel.add_tiles
 
 #map = affine_map<(d0, d1) -> (d0, d1)>

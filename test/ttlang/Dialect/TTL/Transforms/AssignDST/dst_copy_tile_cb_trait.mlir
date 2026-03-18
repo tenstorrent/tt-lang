@@ -33,12 +33,14 @@ func.func @copy_tile_with_bcast_and_add(
 
 // CHECK: %[[RESULT:.*]] = ttl.compute
 // CHECK-NEXT: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
+// CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
 // Bcast reads from CB - no copy_tile for %A in bcast position.
 // CHECK-NEXT:   %[[BCAST:.*]] = ttl.tile_bcast %[[A]], %[[OUT]] 2 : i32 {dst_idx = 0 : i32}
 // B needs copy_tile for tile_add (DST-reading op).
-// CHECK:        %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[B]], %{{.*}}, %{{.*}} {dst_idx = 1 : i32}
+// CHECK:        %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]], %{{.*}} {dst_idx = 1 : i32}
 // CHECK-NEXT:   %[[ADD:.*]] = ttl.tile_add %[[BCAST]], %[[DTILE]] {dst_idx = 0 : i32}
-// CHECK-NEXT:   ttl.tile_store
+// CHECK-NEXT:   ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:   ttl.yield
   %out_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %result = ttl.compute
@@ -79,10 +81,12 @@ func.func @two_inputs_both_need_copy(
 
 // CHECK: %[[RESULT:.*]] = ttl.compute
 // CHECK-NEXT: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
+// CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary: reads from CB, no copy_tile needed.
 // CHECK-NOT:  ttl.copy_tile
-// CHECK-NEXT: %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary}
-// CHECK:      ttl.tile_store
+// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary}
+// CHECK:      ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT: ttl.yield
   %out_view_0 = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %result = ttl.compute

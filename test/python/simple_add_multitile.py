@@ -12,7 +12,7 @@
 """
 Multi-tile add kernel - verifies correct tile indexing across 2x2 tile grid.
 
-Uses 64x64 tensors (2x2 tiles of 32x32) to test that linearized_index
+Uses 64x64 tensors (2x2 tiles of 32x32) to test that iter_index
 correctly computes tile offsets in loops.
 """
 

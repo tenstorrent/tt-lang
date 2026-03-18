@@ -43,6 +43,8 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
@@ -164,7 +166,6 @@ struct Interval {
   int64_t end;   // Operation index of last use
   Value value;   // SSA value this interval represents
 };
-
 
 /// Allocate a DST register and create a CopyTileOp for a block argument.
 /// Looks up assignment first; falls back to allocating a free register.
@@ -882,6 +883,132 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
             return;
           }
         }
+      }
+
+      //=== Populate CB indices using iter_index ===
+      // Create iter_index ops and apply per-operand indexing maps to produce
+      // src_indices on copy_tile and indices on tile_store.
+      {
+        auto indexingMaps = computeOp.getIndexingMapsArray();
+        unsigned iterRank = computeOp.getIteratorTypesArray().size();
+
+        // Create one iter_index per dimension at the block start.
+        builder.setInsertionPointToStart(body);
+        Location iterLoc = computeOp.getLoc();
+        SmallVector<Value> iterIndices;
+        iterIndices.reserve(iterRank);
+        for (unsigned d = 0; d < iterRank; ++d) {
+          iterIndices.push_back(IterIndexOp::create(builder, iterLoc, d));
+        }
+
+        // Helper: apply an indexing map to iter_index values.
+        // For projected permutations this folds to a subset of iter_index
+        // values with no extra ops.
+        auto applyMap = [&iterIndices](OpBuilder &b, Location loc,
+                                       AffineMap map) -> SmallVector<Value> {
+          SmallVector<OpFoldResult> operands(iterIndices.begin(),
+                                             iterIndices.end());
+          SmallVector<Value> mapped;
+          mapped.reserve(map.getNumResults());
+          for (AffineExpr expr : map.getResults()) {
+            AffineMap singleMap =
+                AffineMap::get(map.getNumDims(), map.getNumSymbols(), expr);
+            OpFoldResult result = affine::makeComposedFoldedAffineApply(
+                b, loc, singleMap, operands);
+            mapped.push_back(getValueOrCreateConstantIndexOp(b, loc, result));
+          }
+          return mapped;
+        };
+
+        // Populate copy_tile src_indices.
+        SmallVector<CopyTileOp> copyTiles;
+        for (Operation &op : *body) {
+          if (auto ct = dyn_cast<CopyTileOp>(&op)) {
+            if (ct.getSrcIndices().empty()) {
+              copyTiles.push_back(ct);
+            }
+          }
+        }
+        for (CopyTileOp ct : copyTiles) {
+          // copy_tile sources inside a compute body are always block arguments.
+          auto blockArg = dyn_cast<BlockArgument>(ct.getSrc());
+          assert(blockArg &&
+                 "copy_tile src must be a block argument inside compute body");
+
+          unsigned argIdx = blockArg.getArgNumber();
+          // ComputeOp verifier guarantees block args match indexing maps.
+          assert(argIdx < indexingMaps.size() &&
+                 "block arg index out of range for indexing maps");
+          AffineMap inputMap = indexingMaps[argIdx];
+
+          builder.setInsertionPoint(ct);
+          SmallVector<Value> cbIndices =
+              applyMap(builder, ct.getLoc(), inputMap);
+
+          auto newCopy = CopyTileOp::create(
+              builder, ct.getLoc(),
+              TypeRange{ct.getDstToken().getType(), ct.getDstTile().getType()},
+              ct.getSrc(), ct.getDstIndex(), cbIndices);
+          for (NamedAttribute attr : ct->getAttrs()) {
+            newCopy->setAttr(attr.getName(), attr.getValue());
+          }
+          ct.getDstToken().replaceAllUsesWith(newCopy.getDstToken());
+          ct.getDstTile().replaceAllUsesWith(newCopy.getDstTile());
+          ct.erase();
+        }
+
+        // Build CB -> output index mapping for multi-output tile_store
+        // disambiguation. Single-output computes always use output 0.
+        size_t numInputs = computeOp.getNumInputs();
+        size_t numOutputs = computeOp.getNumOutputs();
+        DenseMap<Value, size_t> cbToOutputIdx;
+        if (numOutputs > 1) {
+          for (auto [idx, output] : llvm::enumerate(computeOp.getOutputs())) {
+            Value cb = getAttachedCB(output);
+            if (cb) {
+              cbToOutputIdx[cb] = idx;
+            }
+          }
+        }
+
+        // Populate tile_store indices.
+        SmallVector<TileStoreOp> tileStores;
+        for (Operation &op : *body) {
+          if (auto ts = dyn_cast<TileStoreOp>(&op)) {
+            if (ts.getIndices().empty()) {
+              tileStores.push_back(ts);
+            }
+          }
+        }
+        for (TileStoreOp ts : tileStores) {
+          size_t outputIdx = 0;
+          if (numOutputs > 1) {
+            Value viewCB = getAttachedCB(ts.getView());
+            assert(viewCB && "multi-output compute requires tile_store view "
+                             "traceable to a CB via getAttachedCB");
+            auto it = cbToOutputIdx.find(viewCB);
+            assert(it != cbToOutputIdx.end() &&
+                   "tile_store view CB not found in compute output mapping");
+            outputIdx = it->second;
+          }
+          AffineMap outputMap = indexingMaps[numInputs + outputIdx];
+
+          builder.setInsertionPoint(ts);
+          SmallVector<Value> cbIndices =
+              applyMap(builder, ts.getLoc(), outputMap);
+
+          auto newStore = TileStoreOp::create(
+              builder, ts.getLoc(), ts.getTile(), ts.getView(), cbIndices);
+          for (NamedAttribute attr : ts->getAttrs()) {
+            newStore->setAttr(attr.getName(), attr.getValue());
+          }
+          ts.erase();
+        }
+
+        LLVM_DEBUG({
+          llvm::dbgs() << "=== Populated CB indices using iter_index ("
+                       << iterRank << "D) ===\n";
+        });
       }
 
       //=== Compute and attach unroll_factor ===

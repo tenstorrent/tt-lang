@@ -81,22 +81,23 @@ Replaces tensor-level `ttl.add` with `ttl.compute` region containing element-wis
 
 Pass: [lib/Dialect/TTL/Transforms/TTLAssignDST.cpp](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp)
 
-Inserts `ttl.copy_tile` to load tiles into DST registers. Assigns `dst_idx` attributes to tile math ops. The `ttl.linearized_index` computes tile position: for 2x2, maps (0,0)->0, (0,1)->1, (1,0)->2, (1,1)->3.
+Inserts `ttl.copy_tile` to load tiles into DST registers. Assigns `dst_idx` attributes to tile math ops. Creates `ttl.iter_index` ops for each iteration dimension and wires per-operand indexing maps as CB-space coordinates on `copy_tile` and `tile_store`. For a 2x2 grid with identity maps, each copy_tile gets `[%i, %j]` indices.
 
 ```mlir
 %11 = ttl.compute ins(%4, %6 : ...) outs(%10 : ...) {...} {
 ^bb0(%arg0: !ttcore.tile<32x32, bf16>, %arg1: !ttcore.tile<32x32, bf16>, %arg2: !ttcore.tile<32x32, bf16>):
-  %13 = ttl.linearized_index affine_map<(d0, d1) -> (d0 * 2 + d1)> : index
+  %i = ttl.iter_index 0 : index
+  %j = ttl.iter_index 1 : index
   %c0 = arith.constant 0 : index
-  %dst_token, %dst_tile = ttl.copy_tile %arg0, %13, %c0 : !ttcore.tile<32x32, bf16>, index, index
-                                                        -> !ttl.dst, !ttcore.tile<32x32, bf16>
+  %dst_token, %dst_tile = ttl.copy_tile %arg0[%i, %j], %c0 {dst_idx = 0 : i32}
+      : !ttcore.tile<32x32, bf16>, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
 
-  %14 = ttl.linearized_index affine_map<(d0, d1) -> (d0 * 2 + d1)> : index
   %c1 = arith.constant 1 : index
-  %dst_token_0, %dst_tile_1 = ttl.copy_tile %arg1, %14, %c1 : !ttcore.tile<32x32, bf16>, index, index
-                                                            -> !ttl.dst, !ttcore.tile<32x32, bf16>
+  %dst_token_0, %dst_tile_1 = ttl.copy_tile %arg1[%i, %j], %c1 {dst_idx = 1 : i32}
+      : !ttcore.tile<32x32, bf16>, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
 
   %15 = ttl.tile_add %dst_tile, %dst_tile_1 {dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>
+  ttl.tile_store %15, %view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
   ttl.yield
 } -> tensor<2x2x!ttcore.tile<32x32, bf16>>
 ```

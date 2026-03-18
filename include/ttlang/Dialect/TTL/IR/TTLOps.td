@@ -479,26 +479,43 @@ def TTL_TileType : TypeConstraint<
     CPred<"llvm::isa<mlir::tt::ttcore::TileType>($_self)">,
     "ttcore.tile type">;
 
-def TTL_LinearizedIndexOp : TTL_Op<"linearized_index", [Pure]> {
-  let summary = "Placeholder for row-major linearized index computation";
+def TTL_IterIndexOp : TTL_Op<"iter_index", [Pure,
+    ParentOneOf<["ComputeOp"]>]> {
+  let summary = "Get the current iteration index for a dimension";
   let description = [{
-    Represents a linearized index that will be computed from iteration dimensions
-    during loop lowering. The `index_map` specifies the row-major linearization
-    formula (e.g., affine_map<(d0, d1) -> (d0 * cols + d1)>).
+    Returns the current iteration coordinate for the given dimension of the
+    enclosing `ttl.compute`'s iteration domain. Follows the `linalg.index`
+    pattern.
 
-    This op has no operands because it references iteration dimensions that don't
-    exist as SSA values until loops are materialized. During loop lowering, this
-    op is replaced with affine.apply using concrete loop IVs.
+    Created by `ttl-assign-dst` alongside `ttl.copy_tile` and
+    `ttl.tile_store` ops. The per-operand indexing map is applied to the
+    iter_index results (via `affine.apply`) to produce operand-space
+    coordinates for `copy_tile` and `tile_store`. For identity maps, the
+    iter_index values pass through unchanged.
 
-    Example:
+    During `ttl-lower-to-loops`, each `ttl.iter_index` is replaced with the
+    corresponding loop induction variable. During `ttl-subblock-compute-for-dst`,
+    subblock offsets are added to the iter_index results for subblocked
+    dimensions (same adjustment pattern as `linalg.index` during tiling).
+
+    Example (identity map -- iter_index values used directly as indices):
     ```mlir
-    %idx = ttl.linearized_index affine_map<(d0, d1) -> (d0 * 2 + d1)> : index
-    ttl.copy_tile %tile, %idx, %dst_idx : ...
+    ttl.compute ins(%in : tensor<2x3x!tile>) outs(%out : tensor<2x3x!tile>)
+        {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                          affine_map<(d0, d1) -> (d0, d1)>],
+         iterator_types = ["parallel", "parallel"]} {
+    ^bb0(%a: !ttcore.tile<32x32, bf16>, %b: !ttcore.tile<32x32, bf16>):
+        %i = ttl.iter_index 0 : index
+        %j = ttl.iter_index 1 : index
+        %tok, %tile = ttl.copy_tile %a[%i, %j], %c0 : ...
+        ttl.tile_store %result, %view[%i, %j] : ...
+        ttl.yield
+    }
     ```
   }];
-  let arguments = (ins AffineMapAttr:$index_map);
+  let arguments = (ins I64Attr:$dim);
   let results = (outs Index:$result);
-  let assemblyFormat = "$index_map attr-dict `:` type($result)";
+  let assemblyFormat = "$dim attr-dict `:` type($result)";
   let hasVerifier = 1;
 }
 
@@ -513,17 +530,20 @@ def TTL_CopyTileOp : TTL_Op<"copy_tile",
     multi-dimensional CB tile coordinates; the destination is the DST register
     index.
 
-    The `src_indices` are multi-dimensional CB tile coordinates, materialized
-    by `ttl-lower-to-loops` from the ComputeOp's input indexing maps and loop
-    IVs. Before lowering, src_indices is empty. At `convert-ttl-to-ttkernel`
-    time, the indices are linearized to a flat CB tile index for `copy_tile`.
+    The `src_indices` are multi-dimensional CB tile coordinates derived from
+    `ttl.iter_index` ops and the per-operand indexing map. They are populated
+    by `ttl-assign-dst` inside the `ttl.compute` body and resolved to concrete
+    loop IVs by `ttl-lower-to-loops`. At `convert-ttl-to-ttkernel` time, the
+    indices are linearized to a flat CB tile index for `copy_tile`.
 
     Example:
     ```mlir
-    // Before lower-to-loops (inside ttl.compute body):
-    %tok, %tile = ttl.copy_tile %src[], %c0 : !ttcore.tile<32x32, bf16>, index
+    // After assign-dst (inside ttl.compute body, iter_index provides coordinates):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
+    %tok, %tile = ttl.copy_tile %src[%i, %j], %c0 : !ttcore.tile<32x32, bf16>, index
                   -> !ttl.dst, !ttcore.tile<32x32, bf16>
-    // After lower-to-loops:
+    // After lower-to-loops (iter_index replaced with loop IVs):
     %tok, %tile = ttl.copy_tile %src[%row, %col], %c0 : !ttcore.tile<32x32, bf16>, index
                   -> !ttl.dst, !ttcore.tile<32x32, bf16>
     ```
@@ -820,19 +840,22 @@ def TTL_TileStoreOp : TTL_Op<"tile_store", [MemoryEffects<[MemWrite]>]> {
     tile_mul). The view must be from a prior `ttl.cb_reserve` call on the
     same CB.
 
-    The `indices` operands are multi-dimensional CB tile coordinates, materialized
-    by `ttl-lower-to-loops` from the ComputeOp's output indexing maps and loop IVs.
-    Before lowering, indices is empty. At `convert-ttl-to-ttkernel` time, the
+    The `indices` operands are multi-dimensional CB tile coordinates derived
+    from `ttl.iter_index` ops and the output indexing map. They are populated
+    by `ttl-assign-dst` inside the `ttl.compute` body and resolved to concrete
+    loop IVs by `ttl-lower-to-loops`. At `convert-ttl-to-ttkernel` time, the
     indices are linearized to a flat CB tile index for `pack_tile`.
 
     Example:
     ```mlir
     %view = ttl.cb_reserve %cb : <[2, 3], !ttcore.tile<32x32, bf16>, 1>
                                  -> tensor<2x3x!ttcore.tile<32x32, bf16>>
-    // Before lower-to-loops (inside ttl.compute body):
-    ttl.tile_store %tile, %view[] : !ttcore.tile<32x32, bf16>,
-                                    tensor<2x3x!ttcore.tile<32x32, bf16>>
-    // After lower-to-loops:
+    // After assign-dst (inside ttl.compute body):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
+    ttl.tile_store %tile, %view[%i, %j] : !ttcore.tile<32x32, bf16>,
+                                           tensor<2x3x!ttcore.tile<32x32, bf16>>
+    // After lower-to-loops (iter_index replaced with loop IVs):
     ttl.tile_store %tile, %view[%row, %col] : !ttcore.tile<32x32, bf16>,
                                               tensor<2x3x!ttcore.tile<32x32, bf16>>
     ```

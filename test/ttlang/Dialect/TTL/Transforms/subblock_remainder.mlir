@@ -7,13 +7,17 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-subblock-compute-for-dst))' | FileCheck %s --check-prefix=SUBBLOCK
 
 // SUBBLOCK-LABEL: func.func @remainder_3x3
-// Verify outer loop with inner ttl.compute containing linearized_index offset.
-// Stride 3 for dim 0: arith.muli(iv, 3) then arith.addi.
-// SUBBLOCK:        scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}}
+// Verify outer subblock loop. Inner compute has iter_index ops with subblock
+// offset (arith.addi) for the subblocked dimension (d0). The non-subblocked
+// dimension (d1) has a plain iter_index.
+// SUBBLOCK:        scf.for %[[SB_IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}}
 // SUBBLOCK:          ttl.compute
-// SUBBLOCK:            ttl.linearized_index
-// SUBBLOCK:            arith.muli %[[IV]],
-// SUBBLOCK-NEXT:       arith.addi
+// SUBBLOCK:            %[[I_DIM0:.*]] = ttl.iter_index 0 : index
+// SUBBLOCK:            %[[I_DIM0_OFFSETTED:.*]] = arith.addi %[[I_DIM0]], %[[SB_IV]] : index
+// SUBBLOCK:            %[[I_DIM1:.*]] = ttl.iter_index 1 : index
+// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_OFFSETTED]], %[[I_DIM1]]], %{{.*}}
+// SUBBLOCK:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_OFFSETTED]], %[[I_DIM1]]]
+// SUBBLOCK:        } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 3 : index}
 
 module {
   func.func @remainder_3x3() attributes {ttl.base_cta_index = 0 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {

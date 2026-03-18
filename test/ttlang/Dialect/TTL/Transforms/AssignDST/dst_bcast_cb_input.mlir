@@ -23,10 +23,12 @@ func.func @bcast_standalone(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 
 // CHECK: %[[RESULT:.*]] = ttl.compute
 // CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT: %[[I0:.*]] = ttl.iter_index 0 : index
+// CHECK-NEXT: %[[I1:.*]] = ttl.iter_index 1 : index
 // No copy_tile for bcast input - it reads from CB directly
 // CHECK-NOT: ttl.copy_tile %[[A]]
 // CHECK: %[[BCAST:.*]] = ttl.tile_bcast %[[A]], %[[OUT]] 2 : i32 {dst_idx = 0 : i32}
-// CHECK:      ttl.tile_store
+// CHECK:      ttl.tile_store %[[BCAST]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT: ttl.yield
   %out_view = ttl.cb_reserve %cb1 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %result = ttl.compute
@@ -62,10 +64,12 @@ func.func @bcast_then_exp(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 
 // CHECK: %[[RESULT:.*]] = ttl.compute
 // CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT: %[[I0:.*]] = ttl.iter_index 0 : index
+// CHECK-NEXT: %[[I1:.*]] = ttl.iter_index 1 : index
 // CHECK-NOT: ttl.copy_tile %[[A]]
 // CHECK: %[[BCAST:.*]] = ttl.tile_bcast %[[A]], %[[OUT]] 2 : i32 {dst_idx = 0 : i32}
 // CHECK-NEXT: %[[EXP:.*]] = ttl.tile_exp %[[BCAST]] {dst_idx = 0 : i32}
-// CHECK:      ttl.tile_store
+// CHECK:      ttl.tile_store %[[EXP]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT: ttl.yield
   %out_view = ttl.cb_reserve %cb1 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %result = ttl.compute
@@ -104,14 +108,16 @@ func.func @bcast_then_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   %b_cb = ttl.attach_cb %b, %cb1 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %init_cb = ttl.attach_cb %init, %cb2 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
+// CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
 // CHECK: %[[RESULT:.*]] = ttl.compute
 // CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
+// CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
 // Bcast reads from CB directly. B copy_tile inserted at first use (tile_add).
 // CHECK-NEXT:   %[[BCAST:.*]] = ttl.tile_bcast %[[A]], %[[OUT]] 2 : i32 {dst_idx = 0 : i32}
-// CHECK-NEXT:   %[[LINIDX:.*]] = ttl.linearized_index
-// CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[B]], %[[LINIDX]], %{{.*}} {dst_idx = 1 : i32}
+// CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]], %[[C1]] {dst_idx = 1 : i32}
 // CHECK-NEXT:   %[[ADD:.*]] = ttl.tile_add %[[BCAST]], %[[DTILE]] {dst_idx = 0 : i32}
-// CHECK-NEXT:   ttl.tile_store
+// CHECK-NEXT:   ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:   ttl.yield
   %out_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %result = ttl.compute

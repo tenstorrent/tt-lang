@@ -882,9 +882,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                       StringRef passName) {
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
-  target.addLegalDialect<arith::ArithDialect, BuiltinDialect, scf::SCFDialect,
-                         func::FuncDialect, tensor::TensorDialect,
-                         ttkernel::TTKernelDialect>();
+  target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
+                         BuiltinDialect, scf::SCFDialect, func::FuncDialect,
+                         tensor::TensorDialect, ttkernel::TTKernelDialect>();
 
   // Structural ops remain legal (converted elsewhere or kept as-is).
   target.addLegalOp<ComputeOp, YieldOp, AttachCBOp>();
@@ -950,10 +950,8 @@ static LogicalResult
 lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                        TTLToTTKernelTypeConverter &typeConverter) {
   ConversionTarget computeTarget(ctx);
-  // TTKernel ops are legal (target dialect)
   computeTarget.addLegalDialect<ttkernel::TTKernelDialect>();
-  // Arith ops are legal (used for index constants)
-  computeTarget.addLegalDialect<arith::ArithDialect>();
+  computeTarget.addLegalDialect<affine::AffineDialect, arith::ArithDialect>();
   // Keep compute ops legal (tile-only lowering here).
   computeTarget.addLegalOp<ComputeOp, YieldOp>();
 

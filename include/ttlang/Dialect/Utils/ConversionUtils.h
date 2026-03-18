@@ -21,96 +21,6 @@
 
 namespace mlir::tt::ttl::utils {
 
-/// Element-wise scale: values[d] *= scales[d].
-inline void scaleByBlockDims(MutableArrayRef<int64_t> values,
-                             ArrayRef<int64_t> scales) {
-  assert(scales.size() == values.size() &&
-         "scales and values must have the same size");
-  for (size_t d = 0; d < values.size(); ++d) {
-    values[d] *= scales[d];
-  }
-}
-
-/// Element-wise scale of SSA Values by compile-time constants, emitting
-/// arith.muli where the scale is not 1.
-inline void scaleByBlockDims(OpBuilder &builder, Location loc,
-                             MutableArrayRef<Value> coords,
-                             ArrayRef<int64_t> scales) {
-  assert(scales.size() == coords.size() &&
-         "scales and coords must have the same size");
-  for (size_t d = 0; d < coords.size(); ++d) {
-    if (scales[d] != 1) {
-      Value scale = arith::ConstantIndexOp::create(builder, loc, scales[d]);
-      coords[d] = arith::MulIOp::create(builder, loc, coords[d], scale);
-    }
-  }
-}
-
-/// Compute a CB tile index by applying an indexing map to loop IVs,
-/// optional block-dimension scaling, then linearizing in the operand's
-/// shape (row-major).
-///
-/// The indexing map transforms iteration-domain coordinates to operand-space
-/// coordinates. When blockDims is provided, each mapped coordinate is scaled
-/// by the corresponding block dimension (converting block-level indices to
-/// tile-level offsets). When std::nullopt (default), unit block dims are
-/// assumed (no scaling). Row-major linearization gives the flat tile offset
-/// within the CB.
-///
-/// Examples:
-///   - Elementwise: identity map, no blockDims -> linearize in [R, C]
-///   - Matmul A: (m,n,k)->(m,k), blockDims=[rt,kt] -> m*rt*K + k*kt
-///   - Transpose: (i,j)->(j,i), no blockDims -> linearize in [C, R]
-///   - Col-broadcast (Nx1): (i,j)->(i), no blockDims -> linearize in [N]
-inline Value computeCBTileIndexFromMap(
-    OpBuilder &builder, Location loc, AffineMap indexingMap, ValueRange loopIVs,
-    ArrayRef<int64_t> operandShape,
-    std::optional<ArrayRef<int64_t>> blockDims = std::nullopt) {
-  assert(static_cast<unsigned>(indexingMap.getNumDims()) == loopIVs.size() &&
-         "loop IV count must match indexing map domain dimensions");
-  assert(indexingMap.getNumResults() == operandShape.size() &&
-         "indexing map result count must match operand shape rank");
-  assert(!blockDims ||
-         blockDims->size() == operandShape.size() &&
-             "blockDims must match operand shape rank when provided");
-
-  // Apply the indexing map: transform iteration-domain IVs to operand-space
-  // coordinates. Each result expression of the map produces one coordinate.
-  SmallVector<OpFoldResult> ivOFRs(loopIVs.begin(), loopIVs.end());
-  SmallVector<Value> mappedCoords;
-  mappedCoords.reserve(indexingMap.getNumResults());
-  for (AffineExpr expr : indexingMap.getResults()) {
-    AffineMap singleMap =
-        AffineMap::get(indexingMap.getNumDims(), /*symbolCount=*/0, expr);
-    OpFoldResult result =
-        affine::makeComposedFoldedAffineApply(builder, loc, singleMap, ivOFRs);
-    mappedCoords.push_back(
-        getValueOrCreateConstantIndexOp(builder, loc, result));
-  }
-
-  // Scale by block dimensions to convert block indices to tile indices.
-  if (blockDims) {
-    scaleByBlockDims(builder, loc, mappedCoords, *blockDims);
-  }
-
-  // Linearize in the operand's row-major layout. Row-major strides are always
-  // positive (innermost is 1, outer strides are products of inner dimensions).
-  SmallVector<int64_t> strides = computeStrides(operandShape);
-  Value index = arith::ConstantIndexOp::create(builder, loc, 0);
-  for (size_t d = 0; d < mappedCoords.size(); ++d) {
-    Value term;
-    if (strides[d] == 1) {
-      term = mappedCoords[d];
-    } else {
-      Value strideVal =
-          arith::ConstantIndexOp::create(builder, loc, strides[d]);
-      term = arith::MulIOp::create(builder, loc, mappedCoords[d], strideVal);
-    }
-    index = arith::AddIOp::create(builder, loc, index, term);
-  }
-  return index;
-}
-
 /// Information about tile loops enclosing an operation.
 struct TileLoopInfo {
   SmallVector<Value> ivs;           ///< IVs in outermost-first order.
@@ -122,8 +32,6 @@ struct TileLoopInfo {
 /// Returns IVs and upper bounds of tile loops (marked with
 /// kTileLoopStrideAttrName), in outermost-first order. When cbShapeRank > 0,
 /// only the innermost cbShapeRank tile loops are retained.
-///
-/// Useful when callers need explicit IVs for computeCBTileIndexFromMap.
 inline FailureOr<TileLoopInfo> collectTileLoopIVs(Operation *op,
                                                   size_t cbShapeRank = 0) {
   // Collect enclosing scf.for loops from innermost to outermost.
@@ -180,6 +88,16 @@ inline FailureOr<TileLoopInfo> collectTileLoopIVs(Operation *op,
   return info;
 }
 
+/// Element-wise scale: values[d] *= scales[d].
+inline void scaleByBlockDims(MutableArrayRef<int64_t> values,
+                             ArrayRef<int64_t> scales) {
+  assert(scales.size() == values.size() &&
+         "scales and values must have the same size");
+  for (size_t d = 0; d < values.size(); ++d) {
+    values[d] *= scales[d];
+  }
+}
+
 /// Transform a linearized stride from the iteration domain into the operand's
 /// coordinate space via an indexing map (compile-time, no IR emission).
 ///
@@ -198,9 +116,8 @@ inline int64_t transformLinearizedStride(
          "indexing map domain rank must match iteration domain shape rank");
   assert(indexingMap.getNumResults() == operandShape.size() &&
          "indexing map result count must match operand shape rank");
-  assert(!blockDims ||
-         blockDims->size() == operandShape.size() &&
-             "blockDims must match operand shape rank when provided");
+  assert((!blockDims || blockDims->size() == operandShape.size()) &&
+         "blockDims must match operand shape rank when provided");
 
   // Fast path: identity map with no block scaling is a no-op.
   if (indexingMap.isIdentity() && !blockDims) {

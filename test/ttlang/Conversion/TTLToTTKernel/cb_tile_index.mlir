@@ -8,14 +8,12 @@
 // RUN:   | FileCheck %s
 
 // 2x3 output with tile loops (not unrolled): pack_tile receives
-// index = %row * 3 + %col as arith.muli + arith.addi.
+// index from affine.linearize_index [%row, %col] by (2, 3).
 //
 // CHECK-LABEL: func.func @tile_index_2x3
-// CHECK-DAG:   %[[C3:.*]] = arith.constant 3 : index
 // CHECK:       scf.for %[[ROW:.*]] = %{{.*}} to %{{.*}}
 // CHECK:         scf.for %[[COL:.*]] = %{{.*}} to %{{.*}}
-// CHECK:           %[[ROW_OFFSET:.*]] = arith.muli %[[ROW]], %[[C3]]
-// CHECK:           %[[IDX:.*]] = arith.addi %[[ROW_OFFSET]], %[[COL]]
+// CHECK:           %[[IDX:.*]] = affine.linearize_index [%[[ROW]], %[[COL]]] by (2, 3)
 // CHECK:           ttkernel.pack_tile(%{{.*}}, %{{.*}}, %[[IDX]]
 
 func.func @tile_index_2x3(
@@ -62,16 +60,14 @@ func.func @tile_index_2x3(
 // directly test computeCBTileIndex with non-identity indexing maps.
 //
 // CHECK-LABEL: func.func @bcast_index_2x3
-// CHECK-DAG:   %[[C3:.*]] = arith.constant 3 : index
 // CHECK:       scf.for %[[ROW:.*]] = %{{.*}} to %{{.*}}
 // CHECK:         scf.for %[[COL:.*]] = %{{.*}} to %{{.*}}
 //                  Col-broadcast input: index = %row
 // CHECK:           ttkernel.unary_bcast(%{{.*}}, %[[ROW]], %{{.*}}, <col>)
 //                  Row-broadcast input: index = %col
 // CHECK:           ttkernel.unary_bcast(%{{.*}}, %[[COL]], %{{.*}}, <row>)
-//                  Output pack: index = %row * 3 + %col
-// CHECK:           %[[ROW_OFF:.*]] = arith.muli %[[ROW]], %[[C3]]
-// CHECK:           %[[OUT_IDX:.*]] = arith.addi %[[ROW_OFF]], %[[COL]]
+//                  Output pack: index from affine.linearize_index
+// CHECK:           %[[OUT_IDX:.*]] = affine.linearize_index [%[[ROW]], %[[COL]]] by (2, 3)
 // CHECK:           ttkernel.pack_tile(%{{.*}}, %{{.*}}, %[[OUT_IDX]]
 
 func.func @bcast_index_2x3()

@@ -70,8 +70,7 @@ constexpr llvm::StringLiteral
 
 /// Marks a copy_tile as a placeholder inserted during DST assignment Phase 1.
 /// Replaced with a proper copy in Phase 2b.
-constexpr llvm::StringLiteral
-    kPlaceholderCopyAttrName("ttl.placeholder_copy");
+constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
 
 /// Trait for data movement operations (copy_tile, copy_dst).
 template <typename ConcreteType>
