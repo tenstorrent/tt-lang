@@ -830,9 +830,12 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
     }
     // lhs is [M, K] per K-step (K=1 for block matmul pattern).
     // rhs is [K, N] per K-step (K=1 for block matmul pattern).
-    int32_t rt = (*lhsShape)[0]; // M
-    int32_t ct = (*rhsShape)[1]; // N
-    int32_t nt = ct;             // B column dim
+    int32_t rt = (*lhsShape)[0]; // M (A row count in tiles)
+    int32_t ct = (*rhsShape)[1]; // N (B column count in tiles)
+    // nt_dim is the B column stride: the experimental::matmul_block wrapper
+    // advances in1_tile_index by nt_dim per K-step. For non-transposed B
+    // laid out row-major, one K-step moves past N columns, so nt == ct.
+    int32_t nt = ct;
 
     // CB tile indices are always 0: the CB is popped and refilled each
     // K-step, so the read pointer resets. kt_dim=1 (one K-step per call,

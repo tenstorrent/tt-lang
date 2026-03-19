@@ -106,16 +106,13 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
       }};
 
   // MatmulBlock: per-op init is mm_block_init_short (reconfigures UNPACK+MATH).
-  // Args: in0_cb, in1_cb, transpose, ct, rt, kt.
   map[mlir::TypeID::get<ttk::ExperimentalMatmulBlockOp>()] = {
       [](OpBuilder &b, Location l, Operation *computeOp) {
-        Value transpose = computeOp->getOperand(5); // transpose
-        Value ct = computeOp->getOperand(6);        // ct_dim
-        Value rt = computeOp->getOperand(7);        // rt_dim
-        Value kt = computeOp->getOperand(8);        // kt_dim
-        ttk::MatmulBlockInitShortOp::create(b, l, computeOp->getOperand(0),
-                                            computeOp->getOperand(1), transpose,
-                                            ct, rt, kt);
+        auto matmul = cast<ttk::ExperimentalMatmulBlockOp>(computeOp);
+        ttk::MatmulBlockInitShortOp::create(
+            b, l, matmul.getIn0CbId(), matmul.getIn1CbId(),
+            matmul.getTranspose(), matmul.getCtDim(), matmul.getRtDim(),
+            matmul.getKtDim());
       }};
 
   // UnaryBcast: init takes 2 CB args + bcast_type attr.

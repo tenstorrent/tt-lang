@@ -854,9 +854,9 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
     Value rhs = op.getRhs();
 
     if (!getAttachedCB(lhs) || !getAttachedCB(rhs)) {
-      return rewriter.notifyMatchFailure(op,
-                                         "matmul inputs not CB-attached; "
-                                         "handled by fused add+matmul pattern");
+      return rewriter.notifyMatchFailure(
+          op, "matmul inputs must be CB-attached; fusion of matmul with "
+              "elementwise ops is not yet supported");
     }
 
     auto lhsType = getTensorType(lhs);

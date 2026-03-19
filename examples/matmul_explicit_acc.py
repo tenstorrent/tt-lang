@@ -5,11 +5,20 @@
 # Matmul with bias using explicit CB-spilled accumulation.
 # Y = A @ B + C
 #
-# Accumulation across the K dimension is performed explicitly using a
-# temporary dataflow buffer (tmp_dfb) rather than store(..., acc=True).
-# Each K-step result is packed to the temp CB and reloaded on the next
-# iteration, with element-wise addition for accumulation. The bias C is
-# added in a separate compute phase after K-accumulation completes.
+# Data movement access pattern:
+#   The DM reader iterates output tiles in (mt, nt) order. For each output
+#   tile, it first loads the bias tile C[mt, nt], then streams all KT
+#   A-column/B-row tiles: A[mt, 0..KT-1] paired with B[0..KT-1, nt].
+#   Each (A, B) pair is a 1x1 tile DFB push that the compute engine
+#   consumes in lock-step. The DM writer reads the final output tile
+#   Y[mt, nt] after K-accumulation and bias addition complete.
+#
+# Compute accumulation pattern:
+#   Accumulation across the K dimension is performed explicitly using a
+#   temporary dataflow buffer (tmp_dfb) rather than store(..., acc=True).
+#   Each K-step result is packed to the temp CB and reloaded on the next
+#   iteration, with element-wise addition for accumulation. The bias C is
+#   added in a separate compute phase after K-accumulation completes.
 #
 # This pattern maps directly to the tt-metal bmm_large_block_zm.cpp
 # approach (pack partials to cb_intermed0, reload on next K-block).

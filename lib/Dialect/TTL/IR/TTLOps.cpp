@@ -1000,6 +1000,16 @@ mlir::LogicalResult mlir::tt::ttl::MatmulOp::verify() {
                          << resultType.getRank();
   }
 
+  if (!lhsType.hasStaticShape()) {
+    return emitOpError() << "lhs must have static shape";
+  }
+  if (!rhsType.hasStaticShape()) {
+    return emitOpError() << "rhs must have static shape";
+  }
+  if (!resultType.hasStaticShape()) {
+    return emitOpError() << "result must have static shape";
+  }
+
   int64_t lhsK = lhsType.getDimSize(1);
   int64_t rhsK = rhsType.getDimSize(0);
   if (lhsK != rhsK) {
@@ -1021,6 +1031,12 @@ mlir::LogicalResult mlir::tt::ttl::MatmulOp::verify() {
     return emitOpError() << "element type mismatch: lhs has "
                          << lhsType.getElementType() << " but rhs has "
                          << rhsType.getElementType();
+  }
+
+  if (resultType.getElementType() != lhsType.getElementType()) {
+    return emitOpError() << "result element type " << resultType.getElementType()
+                         << " must match input element type "
+                         << lhsType.getElementType();
   }
 
   return success();
