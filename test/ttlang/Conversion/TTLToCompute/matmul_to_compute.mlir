@@ -3,6 +3,10 @@
 // Matmul lowered to ttl.compute with tile_matmul_block.
 // 3D iteration space [M, N, K] with matmul indexing maps.
 
+// CHECK-DAG: #[[$LHS_MAP:.*]] = affine_map<(d0, d1, d2) -> (d0, d2)>
+// CHECK-DAG: #[[$RHS_MAP:.*]] = affine_map<(d0, d1, d2) -> (d2, d1)>
+// CHECK-DAG: #[[$OUT_MAP:.*]] = affine_map<(d0, d1, d2) -> (d0, d1)>
+
 // CHECK-LABEL: func.func @matmul_1x1_bf16
 func.func @matmul_1x1_bf16(
     %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
@@ -52,6 +56,7 @@ func.func @matmul_2x4_4x3(
   // CHECK: ttl.compute
   // CHECK-SAME: ins({{.*}} : tensor<2x4x!ttcore.tile<32x32, bf16>>, tensor<4x3x!ttcore.tile<32x32, bf16>>)
   // CHECK-SAME: outs({{.*}} : tensor<2x3x!ttcore.tile<32x32, bf16>>)
+  // CHECK-SAME: indexing_maps = [#[[$LHS_MAP]], #[[$RHS_MAP]], #[[$OUT_MAP]]]
   // CHECK-SAME: iterator_types = ["parallel", "parallel", "reduction"]
   // CHECK: ttl.tile_matmul_block
   %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 4], !ttcore.tile<32x32, bf16>, 2>

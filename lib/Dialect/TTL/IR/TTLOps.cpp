@@ -1034,7 +1034,8 @@ mlir::LogicalResult mlir::tt::ttl::MatmulOp::verify() {
   }
 
   if (resultType.getElementType() != lhsType.getElementType()) {
-    return emitOpError() << "result element type " << resultType.getElementType()
+    return emitOpError() << "result element type "
+                         << resultType.getElementType()
                          << " must match input element type "
                          << lhsType.getElementType();
   }
