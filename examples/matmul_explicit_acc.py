@@ -110,20 +110,31 @@ def main() -> None:
         C_torch = torch.randn((M, N), dtype=torch.bfloat16)
 
         A = ttnn.from_torch(
-            A_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device,
+            A_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
         B = ttnn.from_torch(
-            B_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device,
+            B_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
         C = ttnn.from_torch(
-            C_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device,
+            C_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
         Y = ttnn.from_torch(
-            torch.zeros((M, N), dtype=torch.bfloat16), dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT, device=device,
+            torch.zeros((M, N), dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
 
