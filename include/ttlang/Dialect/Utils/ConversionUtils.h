@@ -255,16 +255,6 @@ computeCBTileIndex(Operation *op, OpBuilder &builder, AffineMap indexingMap,
   return result;
 }
 
-/// Convenience overload for identity indexing maps (elementwise ops).
-/// iterDomainShape and operandShape are both the operand's tensor shape.
-inline FailureOr<Value> computeCBTileIndex(Operation *op, OpBuilder &builder,
-                                           ArrayRef<int64_t> operandShape) {
-  AffineMap identity = AffineMap::getMultiDimIdentityMap(operandShape.size(),
-                                                         builder.getContext());
-  return computeCBTileIndex(op, builder, identity, operandShape, operandShape,
-                            operandShape.size());
-}
-
 /// Convert a TTL CircularBufferType value to a TTKernel CBType value.
 /// If the value is already a TTKernel CB, returns it unchanged.
 /// Uses the TypeConverter to materialize the conversion when provided,

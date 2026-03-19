@@ -519,6 +519,18 @@ class TTCompilerBase(PyKernelAstBase):
                 rhs, arith.ConstantOp(IndexType.get(self.ctx), 0)
             ).result
 
+        # Matmul: operands have different shapes (A[M,K] @ B[K,N]), so dispatch
+        # before the elementwise type-matching cast.
+        if isinstance(node.op, ast.MatMult):
+            mlir_type = _get_type_str(lhs.type)
+            fn = self._fn_map.get(
+                f"{mlir_type}.__matmul__",
+                lambda *a, **k: (_ for _ in ()).throw(
+                    NotImplementedError("MatMult not implemented")
+                ),
+            )
+            return fn(lhs, rhs)
+
         if lhs.type != rhs.type:
             rhs = _cast(rhs, lhs.type)
         assert lhs.type == rhs.type, f"{lhs.type} != {rhs.type}"
@@ -541,8 +553,6 @@ class TTCompilerBase(PyKernelAstBase):
                 return qualified_or("__mul__", arith.muli, lhs, rhs)
             case ast.Div():
                 return qualified_or("__truediv__", unimplemented, lhs, rhs)
-            case ast.MatMult():
-                return qualified_or("__matmul__", unimplemented, lhs, rhs)
             case ast.FloorDiv():
                 return qualified_or("__floordiv__", arith.divsi, lhs, rhs)
             case ast.Mod():

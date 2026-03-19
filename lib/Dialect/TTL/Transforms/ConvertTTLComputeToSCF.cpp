@@ -36,46 +36,11 @@ namespace {
 /// maximum tensor rank equals iterator_types.size(). Use the tensor with the
 /// largest shape for loop bounds (handles broadcasts where output is larger
 /// than input).
+/// Compute the iteration domain from the ComputeOp's TilingInterface.
+/// This correctly handles matmul's 3D iteration space (M, N, K) where the
+/// iteration domain exceeds the operand rank due to reduction dimensions.
 static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
-  SmallVector<Range> domain;
-  Location loc = op.getLoc();
-
-  // Use the largest operand's shape for loop bounds so that broadcast
-  // dimensions (size 1 in the smaller operand) still get iterated.
-  // Prefer higher rank, then larger element count for same rank.
-  Value maxRankTensor;
-  int64_t maxRank = 0;
-  int64_t maxElements = 0;
-  for (Value operand : llvm::concat<Value>(op.getInputs(), op.getOutputs())) {
-    auto type = cast<RankedTensorType>(operand.getType());
-    int64_t rank = type.getRank();
-    // ComputeOp verifier guarantees static shapes, so getNumElements is safe to
-    // use here.
-    int64_t elements = type.getNumElements();
-    if (rank > maxRank || (rank == maxRank && elements > maxElements)) {
-      maxRank = rank;
-      maxElements = elements;
-      maxRankTensor = operand;
-    }
-  }
-
-  if (!maxRankTensor) {
-    return domain;
-  }
-
-  auto refTy = cast<RankedTensorType>(maxRankTensor.getType());
-  for (int64_t i = 0; i < refTy.getRank(); ++i) {
-    OpFoldResult offset = b.getIndexAttr(0);
-    OpFoldResult stride = b.getIndexAttr(1);
-    OpFoldResult size;
-    if (refTy.isDynamicDim(i)) {
-      size = tensor::DimOp::create(b, loc, maxRankTensor, i).getResult();
-    } else {
-      size = b.getIndexAttr(refTy.getDimSize(i));
-    }
-    domain.push_back(Range{offset, size, stride});
-  }
-  return domain;
+  return op.getIterationDomain(b);
 }
 
 /// Apply an indexing map to the induction variables using MLIR's

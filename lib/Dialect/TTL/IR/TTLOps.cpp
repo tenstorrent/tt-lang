@@ -704,18 +704,18 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   auto iteratorCount = getIteratorTypes().size();
   auto maps = mapsAttr;
 
-  // Verify that the iteration domain size (from iterator_types) is correctly
-  // reflected. All indexing maps must have iteratorCount input dimensions.
-  // The iteration domain is derived from the maximum tensor rank, which should
-  // match iteratorCount.
+  // The iteration domain (from iterator_types) must be at least as large as the
+  // maximum operand rank. Extra dimensions are reduction dims that do not
+  // appear in any operand's shape (e.g., the K dimension in matmul: rank-2
+  // operands with a 3D [M, N, K] iteration space).
   int64_t maxTensorRank = 0;
   for (Value operand : llvm::concat<Value>(getInputs(), getOutputs())) {
     auto ty = cast<RankedTensorType>(operand.getType());
     maxTensorRank = std::max(maxTensorRank, ty.getRank());
   }
-  if (static_cast<size_t>(maxTensorRank) != iteratorCount) {
+  if (iteratorCount < static_cast<size_t>(maxTensorRank)) {
     return emitOpError("iterator_types count (")
-           << iteratorCount << ") must match maximum tensor rank ("
+           << iteratorCount << ") must be >= maximum tensor rank ("
            << maxTensorRank << ")";
   }
 
@@ -977,6 +977,67 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
              numIndices != static_cast<size_t>(viewTy.getRank())) {
     return emitOpError() << "expected 0 or " << viewTy.getRank()
                          << " indices, got " << numIndices;
+  }
+
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::MatmulOp::verify() {
+  auto lhsType = mlir::cast<RankedTensorType>(getLhs().getType());
+  auto rhsType = mlir::cast<RankedTensorType>(getRhs().getType());
+  auto resultType = mlir::cast<RankedTensorType>(getResult().getType());
+
+  if (lhsType.getRank() != 2) {
+    return emitOpError() << "lhs must be rank 2, got rank "
+                         << lhsType.getRank();
+  }
+  if (rhsType.getRank() != 2) {
+    return emitOpError() << "rhs must be rank 2, got rank "
+                         << rhsType.getRank();
+  }
+  if (resultType.getRank() != 2) {
+    return emitOpError() << "result must be rank 2, got rank "
+                         << resultType.getRank();
+  }
+
+  if (!lhsType.hasStaticShape()) {
+    return emitOpError() << "lhs must have static shape";
+  }
+  if (!rhsType.hasStaticShape()) {
+    return emitOpError() << "rhs must have static shape";
+  }
+  if (!resultType.hasStaticShape()) {
+    return emitOpError() << "result must have static shape";
+  }
+
+  int64_t lhsK = lhsType.getDimSize(1);
+  int64_t rhsK = rhsType.getDimSize(0);
+  if (lhsK != rhsK) {
+    return emitOpError() << "K dimension mismatch: lhs has " << lhsK
+                         << " columns but rhs has " << rhsK << " rows";
+  }
+
+  int64_t expectedM = lhsType.getDimSize(0);
+  int64_t expectedN = rhsType.getDimSize(1);
+  if (resultType.getDimSize(0) != expectedM ||
+      resultType.getDimSize(1) != expectedN) {
+    return emitOpError() << "result shape [" << resultType.getDimSize(0) << ", "
+                         << resultType.getDimSize(1) << "] does not match "
+                         << "expected [" << expectedM << ", " << expectedN
+                         << "]";
+  }
+
+  if (lhsType.getElementType() != rhsType.getElementType()) {
+    return emitOpError() << "element type mismatch: lhs has "
+                         << lhsType.getElementType() << " but rhs has "
+                         << rhsType.getElementType();
+  }
+
+  if (resultType.getElementType() != lhsType.getElementType()) {
+    return emitOpError() << "result element type "
+                         << resultType.getElementType()
+                         << " must match input element type "
+                         << lhsType.getElementType();
   }
 
   return success();

@@ -41,6 +41,13 @@ def _make_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         help="Use FPU for binary add/sub/mul (default: enabled).",
     )
+    p.add_argument(
+        "--ttl-block-matmul",
+        default=None,
+        dest="use_block_matmul",
+        action=argparse.BooleanOptionalAction,
+        help="Lower matmul to block-level hardware calls (default: enabled).",
+    )
     return p
 
 
@@ -81,6 +88,7 @@ class CompilerOptions:
 
     maximize_dst: bool = True
     enable_fpu_binary_ops: bool = True
+    use_block_matmul: bool = True
 
     # Fields that were explicitly provided (not defaulted). Excluded from
     # equality and hashing so two instances with the same bool values are

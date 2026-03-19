@@ -86,8 +86,20 @@ class TensorBlock:
         return ttl.div(ast_self.type, ast_self, rhs)
 
     def __matmul__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        """Matrix multiplication is not yet supported in TTL mode."""
-        raise NotImplementedError("Matrix multiplication not yet supported in TTL mode")
+        """Matrix multiplication using ttl.matmul.
+
+        Computes C[M,N] = A[M,K] * B[K,N]. Both operands must be
+        CB-attached tensors of tiles.
+        """
+        lhs_type = ast_self.type
+        rhs_type = rhs.type
+        lhs_shape = list(lhs_type.shape)
+        rhs_shape = list(rhs_type.shape)
+        result_shape = [lhs_shape[0], rhs_shape[1]]
+        result_type = RankedTensorType.get(
+            result_shape, lhs_type.element_type, lhs_type.encoding
+        )
+        return ttl.matmul(result_type, ast_self, rhs)
 
     def store(ast_self: TensorBlock, rhs: TensorBlock) -> None:
         """Store result tensor to the output CB reserve view.

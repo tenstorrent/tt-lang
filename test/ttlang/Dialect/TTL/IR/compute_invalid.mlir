@@ -485,7 +485,8 @@ func.func @compute_dynamic_output(
 
 // Test: More iterator dimensions than any tensor rank (catches malformed IR
 // where iteration domain doesn't correspond to any actual tensor).
-func.func @compute_iterator_exceeds_tensor_rank(
+// Iterator count below max tensor rank (1 < 2).
+func.func @compute_iterator_below_tensor_rank(
     %a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %cba: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
     %cbout: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
@@ -497,13 +498,13 @@ func.func @compute_iterator_exceeds_tensor_rank(
   %init_att = ttl.attach_cb %init, %cbout
       : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
         -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{iterator_types count (3) must match maximum tensor rank (2)}}
+  // expected-error @below {{iterator_types count (1) must be >= maximum tensor rank (2)}}
   %0 = ttl.compute
       ins(%a_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
-      {indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1)>,
-                        affine_map<(d0, d1, d2) -> (d0, d1)>],
-       iterator_types = ["parallel", "parallel", "parallel"]} {
+      {indexing_maps = [affine_map<(d0) -> (d0, d0)>,
+                        affine_map<(d0) -> (d0, d0)>],
+       iterator_types = ["parallel"]} {
     ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
       ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>

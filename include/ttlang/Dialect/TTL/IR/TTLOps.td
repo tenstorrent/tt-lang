@@ -712,6 +712,46 @@ def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait]> {
   let assemblyFormat = "$input `,` $output $bcast_type attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
 }
 
+//===----------------------------------------------------------------------===//
+// Matrix Multiplication
+//===----------------------------------------------------------------------===//
+
+def TTL_MatmulOp : TTL_Op<"matmul", [Pure]> {
+  let summary = "Matrix multiply two tensors of tiles";
+  let description = [{
+    Block-level matrix multiply: result[i, j] = sum_k(lhs[i, k] * rhs[k, j]).
+    Both inputs must be rank-2 tensors of tiles. The inner (K) dimensions
+    must match: lhs.shape[1] == rhs.shape[0]. Result shape is
+    [lhs.shape[0], rhs.shape[1]].
+
+    Lowered to ttl.compute with ttl.tile_matmul_block by convert-ttl-to-compute.
+  }];
+  let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs);
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat =
+      "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
+  let hasVerifier = 1;
+}
+
+def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
+    [TTL_CBInputTileOpTrait]> {
+  let summary = "Block-level matrix multiply-accumulate (CB inputs, DST output)";
+  let description = [{
+    Multiplies a block of A tiles by a block of B tiles and accumulates
+    into DST registers (DST += A * B). Both A and B are read from circular
+    buffers. The block dimensions (rt, ct, kt) are derived from the
+    enclosing ttl.compute's operand shapes during TTKernel lowering.
+
+    Maps to ttkernel.mm_block_init + ttkernel.experimental::matmul_block.
+  }];
+  // Accepts both tile types (inside compute body) and tensor types (after
+  // lower-matmul-block flattens the compute into a direct CB reference).
+  let arguments = (ins AnyType:$lhs, AnyType:$rhs);
+  let results = (outs AnyType:$result);
+  let assemblyFormat =
+      "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
+}
+
 // Circular buffer synchronization operations
 //===----------------------------------------------------------------------===//
 

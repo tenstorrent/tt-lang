@@ -100,6 +100,7 @@ def run_script_in_process(
         "eltwise_pipe.py",
         "eltwise_pipe_core3.py",
         "matmul.py",
+        "matmul_explicit_acc.py",
         "singlecore_matmul.py",
         "multicore_matmul.py",
         "matmul_1d.py",

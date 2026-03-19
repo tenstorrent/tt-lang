@@ -63,80 +63,10 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Physical DST register size in tiles (constant across all architectures).
-constexpr std::uint32_t kDstPhysicalSizeTiles = 16;
-
 /// Sentinel value for placeholder copy_tile indices. Using max value since
 /// valid indices are small non-negative integers. This is replaced with proper
 /// indices during the copy_tile insertion phase.
 constexpr int64_t kPlaceholderIndex = std::numeric_limits<int64_t>::max();
-
-/// Compute the logical DST capacity based on element types and sync mode.
-///
-/// The DST register file has 16 physical tiles. Logical capacity is derived:
-///   - Default (double-buffered): physical / 2 = 8 tiles
-///   - Full sync (dst_full_sync_en): no halving = 16 tiles
-///   - f32 accumulation: halved again (tiles are 2x wider)
-///
-/// This is a standalone computation that does not require tt-mlir's device
-/// infrastructure (SystemDescAttr, DeviceOp, ChipDescAttr). The formula is
-/// architecture-independent across Grayskull, Wormhole, and Blackhole.
-static std::uint32_t getDstCapacity(bool isFloat32, bool fullSyncEn) {
-  std::uint32_t capacity = kDstPhysicalSizeTiles;
-  if (!fullSyncEn) {
-    capacity /= 2; // Double-buffering halves available tiles.
-  }
-  if (isFloat32) {
-    capacity /= 2; // f32 tiles occupy 2x the space.
-  }
-  return capacity;
-}
-
-/// Compute DST capacity for a compute op.
-/// Returns failure for mixed f32/non-f32 tile arguments.
-/// TODO(#264): Support mixed dtypes instead of erroring (e.g. use f32
-/// capacity).
-static FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
-  bool fullSyncEn = false;
-  if (auto fullSyncAttr =
-          computeOp->getAttrOfType<mlir::BoolAttr>(kDstFullSyncEnAttrName)) {
-    fullSyncEn = fullSyncAttr.getValue();
-  }
-
-  bool fp32DestAccEn = false;
-  if (auto fp32Attr =
-          computeOp->getAttrOfType<mlir::BoolAttr>(kFp32DestAccEnAttrName)) {
-    fp32DestAccEn = fp32Attr.getValue();
-  }
-
-  bool sawF32 = false;
-  bool sawNonF32 = false;
-  Block &body = computeOp.getRegion().front();
-  for (BlockArgument arg : body.getArguments()) {
-    std::optional<Type> currentType = getTileElementType(arg.getType());
-    if (currentType) {
-      if (currentType->isF32()) {
-        sawF32 = true;
-      } else {
-        sawNonF32 = true;
-      }
-    }
-  }
-
-  if (sawF32) {
-    fp32DestAccEn = true;
-  }
-
-  if (sawF32 && sawNonF32) {
-    return computeOp.emitOpError(
-        "mixed f32 and non-f32 tile arguments; "
-        "DST capacity uses f32 limits (4 tiles) which may produce "
-        "incorrect results");
-  }
-
-  bool isFloat32 = sawF32 || fp32DestAccEn;
-  return getDstCapacity(isFloat32, fullSyncEn);
-}
 
 static bool isTileValue(Value v) { return isa<ttcore::TileType>(v.getType()); }
 
@@ -440,9 +370,16 @@ static void buildLiveIntervals(Block *body,
   // With explicit overwrite mode, DST reuse between FPU binary ops would be
   // safe and this interval extension could be removed.
   {
+    // Include TileMatmulBlockOp alongside FPU binary ops: matmul_block also
+    // accumulates into DST and its slot must not be reused by another
+    // accumulating op within the same sync region.
+    auto isFPUAccumulatingOp = [](Operation &op) {
+      return op.hasAttr(kFPUBinaryAttrName) || isa<TileMatmulBlockOp>(&op);
+    };
+
     SmallVector<int64_t> fpuBinaryStarts;
     for (Operation &op : *body) {
-      if (op.hasAttr(kFPUBinaryAttrName)) {
+      if (isFPUAccumulatingOp(op)) {
         fpuBinaryStarts.push_back(opIndex[&op]);
       }
     }
@@ -450,7 +387,7 @@ static void buildLiveIntervals(Block *body,
     if (fpuBinaryStarts.size() > 1) {
       int64_t lastFPUStart = *llvm::max_element(fpuBinaryStarts);
       for (Operation &op : *body) {
-        if (!op.hasAttr(kFPUBinaryAttrName)) {
+        if (!isFPUAccumulatingOp(op)) {
           continue;
         }
         for (Value result : op.getResults()) {

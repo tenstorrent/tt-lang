@@ -29,6 +29,9 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addPass(createTTLSubblockComputeForDST());
   }
   pm.addPass(createTTLInsertTileRegsSync());
+  if (options.useBlockMatmul) {
+    pm.addPass(createTTLLowerMatmulBlock());
+  }
   pm.addPass(createTTLLowerToLoops());
   if (options.maximizeDST) {
     pm.addPass(createTTLScheduleOperations());

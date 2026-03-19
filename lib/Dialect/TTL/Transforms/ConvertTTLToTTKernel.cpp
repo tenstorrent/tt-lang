@@ -356,25 +356,31 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
     Value cbTileIndex = affine::AffineLinearizeIndexOp::create(
         rewriter, loc, indices, viewTy.getShape());
 
-    // Determine DST index from the source op:
-    // - Tile compute ops and copy_dst: have dst_idx attribute
-    // - copy_tile (passthrough): read dst_index operand
-    // - CB-reading ops (bcast, reduce): no dst_idx, use CB tile index
+    // Determine DST index. Priority:
+    // 1. tile_store's own dst_idx (set by lower-matmul-block for per-tile pack)
+    // 2. Source op's dst_idx (tile compute ops, copy_dst)
+    // 3. copy_tile's dst_index operand
+    // 4. CB tile index (CB-reading ops like bcast, reduce)
     Value dstIndex;
-    auto tileValue = adaptor.getTile();
-    if (auto defOp = tileValue.getDefiningOp()) {
-      if (auto dstIdxAttr =
-              defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-        dstIndex =
-            arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
-      } else if (auto copyTile = dyn_cast<CopyTileOp>(defOp)) {
-        dstIndex = copyTile.getDstIndex();
-      } else {
-        return op.emitError("tile_store source op lacks dst_idx attribute: ")
-               << defOp->getName();
-      }
+    if (auto storeIdx = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
+      dstIndex =
+          arith::ConstantIndexOp::create(rewriter, loc, storeIdx.getInt());
     } else {
-      dstIndex = cbTileIndex;
+      auto tileValue = adaptor.getTile();
+      if (auto defOp = tileValue.getDefiningOp()) {
+        if (auto dstIdxAttr =
+                defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
+          dstIndex = arith::ConstantIndexOp::create(rewriter, loc,
+                                                    dstIdxAttr.getInt());
+        } else if (auto copyTile = dyn_cast<CopyTileOp>(defOp)) {
+          dstIndex = copyTile.getDstIndex();
+        } else {
+          return op.emitError("tile_store source op lacks dst_idx attribute: ")
+                 << defOp->getName();
+        }
+      } else {
+        dstIndex = cbTileIndex;
+      }
     }
 
     ttk::PackTileOp::create(rewriter, loc, dstIndex, *cb, cbTileIndex,

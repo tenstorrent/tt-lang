@@ -105,6 +105,16 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
         ttk::CopyDestValuesInitOp::create(b, l);
       }};
 
+  // MatmulBlock: per-op init is mm_block_init_short (reconfigures UNPACK+MATH).
+  map[mlir::TypeID::get<ttk::ExperimentalMatmulBlockOp>()] = {
+      [](OpBuilder &b, Location l, Operation *computeOp) {
+        auto matmul = cast<ttk::ExperimentalMatmulBlockOp>(computeOp);
+        ttk::MatmulBlockInitShortOp::create(
+            b, l, matmul.getIn0CbId(), matmul.getIn1CbId(),
+            matmul.getTranspose(), matmul.getCtDim(), matmul.getRtDim(),
+            matmul.getKtDim());
+      }};
+
   // UnaryBcast: init takes 2 CB args + bcast_type attr.
   map[mlir::TypeID::get<ttk::UnaryBcastTileOp>()] = {
       [](OpBuilder &b, Location l, Operation *computeOp) {
@@ -165,6 +175,11 @@ static InitKey computeInitKey(Operation *op) {
     return {typeId, {op->getOperand(0), op->getOperand(1)}};
   }
 
+  // For matmul_block: key includes CB operands (first 2 operands).
+  if (isa<ttk::ExperimentalMatmulBlockOp>(op)) {
+    return {typeId, {op->getOperand(0), op->getOperand(1)}};
+  }
+
   // For CopyTile: key includes the CB operand (first operand).
   if (isa<ttk::CopyTileOp>(op)) {
     return {typeId, {op->getOperand(0)}};
@@ -199,11 +214,19 @@ static bool isSyncBoundary(Operation *op) {
 /// Multiple output CBs are allowed when they share the same element type
 /// (PACK data format routing is identical). The first output CB encountered
 /// is returned for the common init.
-static FailureOr<bool> analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp,
-                                         Value &inputCB, Value &in0CB,
-                                         Value &in1CB, Value &outputCB) {
-  Block *block = acquireOp->getBlock();
+/// Result of analyzing a sync region for common init insertion.
+struct SyncRegionAnalysis {
   bool hasFPUBinary = false;
+  bool hasMatmul = false;
+  // For matmul: block dimensions from the first matmul_block op found.
+  Value matmulTranspose, matmulCt, matmulRt, matmulKt;
+};
+
+static FailureOr<SyncRegionAnalysis>
+analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
+                  Value &in0CB, Value &in1CB, Value &outputCB) {
+  Block *block = acquireOp->getBlock();
+  SyncRegionAnalysis result;
   bool foundRelease = false;
   bool hadError = false;
 
@@ -224,10 +247,24 @@ static FailureOr<bool> analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp,
         }
       } else if (isa<ttk::AddTilesOp, ttk::SubTilesOp, ttk::MulTilesOp>(
                      inner)) {
-        hasFPUBinary = true;
+        result.hasFPUBinary = true;
         if (!in0CB) {
           in0CB = inner->getOperand(0);
           in1CB = inner->getOperand(1);
+        }
+      } else if (auto matmul =
+                     dyn_cast<ttk::ExperimentalMatmulBlockOp>(inner)) {
+        result.hasMatmul = true;
+        if (!in0CB) {
+          in0CB = matmul.getIn0CbId();
+          in1CB = matmul.getIn1CbId();
+        }
+        // Capture block dims from first matmul for mm_block_init.
+        if (!result.matmulTranspose) {
+          result.matmulTranspose = matmul.getTranspose();
+          result.matmulCt = matmul.getCtDim();
+          result.matmulRt = matmul.getRtDim();
+          result.matmulKt = matmul.getKtDim();
         }
       } else if (auto bcast = dyn_cast<ttk::UnaryBcastTileOp>(inner)) {
         if (!inputCB) {
@@ -256,7 +293,7 @@ static FailureOr<bool> analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp,
   if (hadError) {
     return failure();
   }
-  return hasFPUBinary;
+  return result;
 }
 
 /// Find the outermost enclosing insertion point by walking up through
@@ -286,12 +323,13 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
   bool hadError = false;
   moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
     Value inputCB, in0CB, in1CB, outputCB;
-    auto result = analyzeSyncRegion(acquireOp, inputCB, in0CB, in1CB, outputCB);
-    if (failed(result)) {
+    auto analysisResult =
+        analyzeSyncRegion(acquireOp, inputCB, in0CB, in1CB, outputCB);
+    if (failed(analysisResult)) {
       hadError = true;
       return;
     }
-    bool hasFPUBinary = *result;
+    SyncRegionAnalysis analysis = *analysisResult;
 
     // No output CB means the sync region has no pack ops -- nothing to
     // configure for UNPACK + PACK routing.
@@ -307,7 +345,12 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
     OpBuilder builder(insertBefore);
     Location loc = acquireOp->getLoc();
 
-    if (hasFPUBinary && in0CB && in1CB) {
+    if (analysis.hasMatmul && in0CB && in1CB) {
+      // mm_block_init configures UNPACK + MATH + PACK for matmul_block.
+      ttk::MatmulBlockInitOp::create(
+          builder, loc, in0CB, in1CB, outputCB, analysis.matmulTranspose,
+          analysis.matmulCt, analysis.matmulRt, analysis.matmulKt);
+    } else if (analysis.hasFPUBinary && in0CB && in1CB) {
       ttk::BinaryOpInitCommonOp::create(builder, loc, in0CB, in1CB, outputCB);
     } else if (inputCB) {
       ttk::InitSFPUOp::create(builder, loc, inputCB, outputCB);
