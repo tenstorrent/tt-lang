@@ -1648,3 +1648,120 @@ class TestRowMajorDataflowBuffer:
 
         blk = dfb.reserve()
         assert blk.layout == TILE_LAYOUT
+
+
+# ---- to_list / from_list / from_tensor row-major guards (Step 5) ----
+
+
+class TestRowMajorBlockGuards:
+    """Tests for row-major guards on tile-centric Block methods."""
+
+    # --- to_list ---
+
+    def test_to_list_1d_row_major_returns_single_row(self) -> None:
+        """to_list() on a 1-D row-major block returns one tensor = the whole buffer."""
+        data = torch.arange(8, dtype=torch.float32)
+        likeness = Tensor(data, ROW_MAJOR_LAYOUT)
+        dfb = DataflowBuffer(likeness_tensor=likeness, shape=(8,), buffer_factor=2)
+        blk = dfb.reserve()
+        rows = blk.to_list()
+        assert len(rows) == 1
+        assert rows[0].shape == (8,)
+        assert rows[0].layout == ROW_MAJOR_LAYOUT
+
+    def test_to_list_2d_row_major_returns_one_row_per_leading_dim(self) -> None:
+        """to_list() on a (4, 8) row-major block returns 4 rows each of shape (8,)."""
+        likeness = Tensor(torch.zeros(4, 8, dtype=torch.float32), ROW_MAJOR_LAYOUT)
+        dfb = DataflowBuffer(likeness_tensor=likeness, shape=(4, 8), buffer_factor=2)
+        blk = dfb.reserve()
+        rows = blk.to_list()
+        assert len(rows) == 4
+        assert all(r.shape == (8,) for r in rows)
+        assert all(r.layout == ROW_MAJOR_LAYOUT for r in rows)
+
+    def test_to_list_3d_row_major_row_count(self) -> None:
+        """to_list() on a (2, 3, 5) row-major block returns 6 rows each of shape (5,)."""
+        likeness = Tensor(torch.zeros(2, 3, 5, dtype=torch.float32), ROW_MAJOR_LAYOUT)
+        dfb = DataflowBuffer(likeness_tensor=likeness, shape=(2, 3, 5), buffer_factor=2)
+        blk = dfb.reserve()
+        rows = blk.to_list()
+        assert len(rows) == 6
+        assert all(r.shape == (5,) for r in rows)
+
+    def test_to_list_row_major_data_roundtrip(self) -> None:
+        """Rows from to_list() contain the correct data."""
+        data = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+        likeness = Tensor(data, ROW_MAJOR_LAYOUT)
+        dfb = DataflowBuffer(likeness_tensor=likeness, shape=(3, 4), buffer_factor=2)
+        blk = dfb.reserve()
+        blk.raw_tensor.to_torch().copy_(data)
+        rows = blk.to_list()
+        for i, row in enumerate(rows):
+            assert torch.equal(row.to_torch(), data[i])
+
+    def test_to_list_works_for_tiled_block(self) -> None:
+        """to_list() still works for tiled blocks (regression guard)."""
+        likeness = Tensor(torch.zeros(32, 32, dtype=torch.float32))
+        dfb = DataflowBuffer(likeness_tensor=likeness, shape=(1, 1), buffer_factor=2)
+        blk = dfb.reserve()
+        tiles = blk.to_list()
+        assert len(tiles) == 1
+
+    # --- from_list ---
+
+    def test_from_list_1d_row_major_roundtrip(self) -> None:
+        """from_list() with a single row-major tensor reconstructs a 1-D block."""
+        row = Tensor(torch.arange(8, dtype=torch.float32), ROW_MAJOR_LAYOUT)
+        blk = Block.from_list([row], shape=(8,))
+        assert blk.shape == (8,)
+        assert blk.layout == ROW_MAJOR_LAYOUT
+        assert torch.equal(blk.raw_tensor.to_torch(), row.to_torch())
+
+    def test_from_list_2d_row_major_roundtrip(self) -> None:
+        """from_list() assembles rows into a 2-D row-major block correctly."""
+        rows = [Tensor(torch.full((4,), float(i)), ROW_MAJOR_LAYOUT) for i in range(3)]
+        blk = Block.from_list(rows, shape=(3, 4))
+        assert blk.shape == (3, 4)
+        assert blk.layout == ROW_MAJOR_LAYOUT
+        for i, row in enumerate(rows):
+            assert torch.equal(blk.raw_tensor.to_torch()[i], row.to_torch())
+
+    def test_to_list_from_list_row_major_inverse(self) -> None:
+        """to_list() and from_list() are inverses for row-major blocks."""
+        data = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+        likeness = Tensor(data, ROW_MAJOR_LAYOUT)
+        dfb = DataflowBuffer(likeness_tensor=likeness, shape=(3, 4), buffer_factor=2)
+        blk = dfb.reserve()
+        blk.raw_tensor.to_torch().copy_(data)
+        reconstructed = Block.from_list(blk.to_list(), shape=(3, 4))
+        assert torch.equal(reconstructed.raw_tensor.to_torch(), data)
+
+    def test_from_list_works_for_tiled_tensors(self) -> None:
+        """from_list() still works for tiled tensors (regression guard)."""
+        tiled_tensors = [
+            Tensor(torch.zeros(32, 32, dtype=torch.float32)),
+            Tensor(torch.zeros(32, 32, dtype=torch.float32)),
+        ]
+        blk = Block.from_list(tiled_tensors, shape=(1, 2))
+        assert blk.shape == (1, 2)
+
+    # --- from_tensor ---
+
+    def test_from_tensor_row_major_uses_shape_directly(self) -> None:
+        """from_tensor() with a row-major tensor uses tensor.shape as the block shape."""
+        t = Tensor(torch.zeros(3, 7, dtype=torch.float32), ROW_MAJOR_LAYOUT)
+        blk = Block.from_tensor(t)
+        assert blk.shape == (3, 7)
+        assert blk.layout == ROW_MAJOR_LAYOUT
+
+    def test_from_tensor_row_major_non_tile_aligned(self) -> None:
+        """from_tensor() with a non-tile-aligned row-major tensor succeeds."""
+        t = Tensor(torch.zeros(5, 11, dtype=torch.float32), ROW_MAJOR_LAYOUT)
+        blk = Block.from_tensor(t)
+        assert blk.shape == (5, 11)
+
+    def test_from_tensor_tiled_still_infers_tile_grid(self) -> None:
+        """from_tensor() with a tiled tensor still infers the tile-grid shape."""
+        t = Tensor(torch.zeros(64, 64, dtype=torch.float32))
+        blk = Block.from_tensor(t)
+        assert blk.shape == (2, 2)
