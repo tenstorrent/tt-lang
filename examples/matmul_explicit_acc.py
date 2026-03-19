@@ -23,14 +23,11 @@
 # This pattern maps directly to the tt-metal bmm_large_block_zm.cpp
 # approach (pack partials to cb_intermed0, reload on next K-block).
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
-
 import torch
+import ttl
+import ttnn
 
-from sim import ttl, ttnn
+TILE_SIZE = 32
 
 
 @ttl.kernel(grid=(1, 1))
@@ -40,7 +37,6 @@ def matmul_with_bias(
     C: ttnn.Tensor,
     Y: ttnn.Tensor,
 ) -> None:
-    TILE_SIZE = 32
     M = A.shape[0]
     K = A.shape[1]
     N = B.shape[1]
@@ -51,8 +47,9 @@ def matmul_with_bias(
     a_dfb = ttl.make_dataflow_buffer_like(A, shape=(1, 1))
     b_dfb = ttl.make_dataflow_buffer_like(B, shape=(1, 1))
     c_dfb = ttl.make_dataflow_buffer_like(C, shape=(1, 1))
-    # Temporary CB for K-accumulation (compute-local, no DM thread touches it)
-    tmp_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1), buffer_factor=2)
+    # Compute-local CBs for K-accumulation (DM threads do not touch these).
+    partial_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1), buffer_factor=2)
+    acc_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1), buffer_factor=2)
     y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1))
 
     @ttl.datamovement()
@@ -60,31 +57,37 @@ def matmul_with_bias(
         for mt in range(MT):
             for nt in range(NT):
                 with c_dfb.reserve() as c_blk:
-                    ttl.copy(C[mt, nt], c_blk).wait()
+                    tx = ttl.copy(C[mt, nt], c_blk)
+                    tx.wait()
 
                 for kt in range(KT):
                     with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
-                        ttl.copy(A[mt, kt], a_blk).wait()
-                        ttl.copy(B[kt, nt], b_blk).wait()
+                        tx_a = ttl.copy(A[mt, kt], a_blk)
+                        tx_a.wait()
+                        tx_b = ttl.copy(B[kt, nt], b_blk)
+                        tx_b.wait()
 
     @ttl.compute()
     def compute():
         for _ in range(MT):
             for _ in range(NT):
-                # Store initial block product into temporary tmp_dfb.
+                # First K-step: matmul directly to accumulator.
                 with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
-                    with tmp_dfb.reserve() as tmp_blk:
-                        tmp_blk.store(a_blk @ b_blk)
+                    with acc_dfb.reserve() as acc:
+                        acc.store(a_blk @ b_blk)
 
-                # Reload partial, compute block matmul and accumulate into tmp_dfb
+                # Remaining K-steps: matmul to partial, add with accumulator.
                 for _ in range(KT - 1):
                     with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
-                        with tmp_dfb.wait() as prev_blk:
-                            with tmp_dfb.reserve() as tmp_blk:
-                                tmp_blk.store(prev_blk + (a_blk @ b_blk))
+                        with partial_dfb.reserve() as p:
+                            p.store(a_blk @ b_blk)
+
+                    with partial_dfb.wait() as new, acc_dfb.wait() as prev:
+                        with acc_dfb.reserve() as acc:
+                            acc.store(prev + new)
 
                 # Add bias C to accumulated result, store to output.
-                with tmp_dfb.wait() as acc_blk, c_dfb.wait() as c_blk:
+                with acc_dfb.wait() as acc_blk, c_dfb.wait() as c_blk:
                     with y_dfb.reserve() as y_blk:
                         y_blk.store(acc_blk + c_blk)
 
@@ -93,30 +96,52 @@ def matmul_with_bias(
         for mt in range(MT):
             for nt in range(NT):
                 with y_dfb.wait() as y_blk:
-                    ttl.copy(y_blk, Y[mt, nt]).wait()
+                    tx = ttl.copy(y_blk, Y[mt, nt])
+                    tx.wait()
 
 
 def main() -> None:
-    M, K, N = 64, 96, 64
+    device = ttnn.open_device(device_id=0)
+    try:
+        M, K, N = 64, 96, 64
 
-    A_torch = torch.rand((M, K), dtype=torch.float32)
-    B_torch = torch.rand((K, N), dtype=torch.float32)
-    C_torch = torch.rand((M, N), dtype=torch.float32)
+        A_torch = torch.randn((M, K), dtype=torch.bfloat16)
+        B_torch = torch.randn((K, N), dtype=torch.bfloat16)
+        C_torch = torch.randn((M, N), dtype=torch.bfloat16)
 
-    A = ttnn.from_torch(A_torch)
-    B = ttnn.from_torch(B_torch)
-    C = ttnn.from_torch(C_torch)
-    Y = ttnn.empty((M, N), dtype=torch.float32)
+        A = ttnn.from_torch(
+            A_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        B = ttnn.from_torch(
+            B_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        C = ttnn.from_torch(
+            C_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        Y = ttnn.from_torch(
+            torch.zeros((M, N), dtype=torch.bfloat16), dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT, device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
 
-    matmul_with_bias(A, B, C, Y)
+        matmul_with_bias(A, B, C, Y)
 
-    result = ttnn.to_torch(Y)
-    expected = A_torch @ B_torch + C_torch
+        result = ttnn.to_torch(Y)
+        expected = A_torch @ B_torch + C_torch
 
-    assert torch.allclose(
-        result, expected, atol=1e-4
-    ), f"Mismatch! Max diff: {(result - expected).abs().max().item()}"
-    print("PASSED!")
+        pcc = torch.corrcoef(
+            torch.stack([result.flatten().float(), expected.flatten().float()])
+        )[0, 1].item()
+        assert pcc > 0.99, (
+            f"PCC {pcc:.6f} < 0.99 for matmul+bias. "
+            f"Max diff: {(result - expected).abs().max().item()}"
+        )
+        print("PASSED!")
+    finally:
+        ttnn.close_device(device)
 
 
 if __name__ == "__main__":
