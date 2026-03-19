@@ -666,16 +666,15 @@ def _reduce_impl(
     Reduces the block along specified grid dimensions using torch operations.
     Each reduced dimension collapses to size 1 in the resulting grid.
 
-    Dimension indexing for positive dims uses the innermost-first convention:
-    dims=[0] refers to the innermost (last) dimension of the block shape,
-    dims=[1] to the next-to-innermost, and so on. Negative dims use standard
-    Python convention: dims=[-1] is the innermost (same as dims=[0]),
-    dims=[-2] is the next-to-innermost (same as dims=[1]), and so on.
+    Dimension indexing uses standard Python convention: positive dim 0 is the
+    outermost dimension, dim 1 is the next, and so on. Negative dims count from
+    the innermost: dim -1 is the innermost (last) dimension, dim -2 is the
+    next-to-innermost, and so on.
 
     Args:
         block: Input block.
         scaler: Scaler block; its first tile is multiplied into every result tile.
-        dims: Grid dimensions to reduce over (0=innermost, -1=innermost via Python indexing).
+        dims: Grid dimensions to reduce over (standard Python indexing).
         op: 'sum' or 'max'.
 
     Returns:
@@ -691,11 +690,9 @@ def _reduce_impl(
                 f"Cannot reduce along dimension {d}: block grid has only {ndim} dimensions"
             )
 
-    # Translate user-facing dims to internal grid dims (0=outermost).
-    # Positive dims use innermost-first: d=0 -> last internal, d=1 -> second-to-last, ...
-    # Negative dims use Python standard: d=-1 -> last internal (same as d=0 positive),
-    # d=-2 -> second-to-last (same as d=1 positive), ...
-    internal_dims_set = {ndim - 1 - d if d >= 0 else ndim + d for d in dims_set}
+    # Translate user-facing dims to internal grid indices using standard Python
+    # indexing: d % ndim maps both positive and negative dims correctly.
+    internal_dims_set = {d % ndim for d in dims_set}
 
     # Get the scaler
     scaler_tile = scaler.to_list()[0].to_torch()
@@ -763,7 +760,7 @@ def reduce_max(
         block: Input block.
         scaler: Scaler block; its first tile is multiplied into every result tile.
         _output_hint: Unused output block hint (kept for API compatibility).
-        dims: Grid dimensions to reduce over (0-indexed).
+        dims: Grid dimensions to reduce over (standard Python indexing).
 
     Returns:
         Block with reduced dimensions.
@@ -788,7 +785,7 @@ def reduce_sum(
         block: Input block.
         scaler: Scaler block; its first tile is multiplied into every result tile.
         _output_hint: Unused output block hint (kept for API compatibility).
-        dims: Grid dimensions to reduce over (0-indexed).
+        dims: Grid dimensions to reduce over (standard Python indexing).
 
     Returns:
         Block with reduced dimensions.

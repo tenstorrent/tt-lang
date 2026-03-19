@@ -580,7 +580,7 @@ def test_exp_multitile():
 
 
 def test_reduce_max_rows():
-    """Test reduce_max over rows (outermost/next-to-innermost dimension 1 for 2D)."""
+    """Test reduce_max over rows (outermost dimension 0 for 2D)."""
     # Create a (2, 1) block - two tiles in row dimension
     t_a = [
         Tensor(torch.tensor([[1.0, 5.0]])),
@@ -592,8 +592,8 @@ def test_reduce_max_rows():
     t_s = [Tensor(torch.tensor([[2.0, 2.0]]))]
     scaler = Block.from_list(t_s, shape=(1, 1))
 
-    # Reduce over dimension 1 (next-to-innermost = outermost for 2D = row grid dim)
-    result = ttl.math.reduce_max(block_a, scaler, dims=[1])
+    # Reduce over dimension 0 (outermost = rows in standard Python indexing)
+    result = ttl.math.reduce_max(block_a, scaler, dims=[0])
 
     # Result should have shape (1, 1) - rows reduced
     assert result.shape == (1, 1)
@@ -606,7 +606,7 @@ def test_reduce_max_rows():
 
 
 def test_reduce_max_cols():
-    """Test reduce_max over columns (innermost dimension 0 for 2D)."""
+    """Test reduce_max over columns (innermost dimension -1 for 2D)."""
     # Create a (1, 2) block - two tiles in column dimension
     t_a = [
         Tensor(torch.tensor([[1.0, 5.0]])),
@@ -618,8 +618,8 @@ def test_reduce_max_cols():
     t_s = [Tensor(torch.tensor([[1.0, 1.0]]))]
     scaler = Block.from_list(t_s, shape=(1, 1))
 
-    # Reduce over dimension 0 (innermost = column grid dim for 2D)
-    result = ttl.math.reduce_max(block_a, scaler, dims=[0])
+    # Reduce over dimension -1 (innermost = column grid dim in standard Python indexing)
+    result = ttl.math.reduce_max(block_a, scaler, dims=[-1])
 
     # Result should have shape (1, 1) - columns reduced
     assert result.shape == (1, 1)
@@ -692,7 +692,7 @@ def test_reduce_max_empty_dims():
 
 
 def test_reduce_sum_rows():
-    """Test reduce_sum over rows (outermost/next-to-innermost dimension 1 for 2D)."""
+    """Test reduce_sum over rows (outermost dimension 0 for 2D)."""
     # Create a (2, 1) block - two tiles in row dimension
     t_a = [
         Tensor(torch.tensor([[1.0, 2.0]])),
@@ -704,8 +704,8 @@ def test_reduce_sum_rows():
     t_s = [Tensor(torch.tensor([[2.0, 2.0]]))]
     scaler = Block.from_list(t_s, shape=(1, 1))
 
-    # Reduce over dimension 1 (next-to-innermost = outermost for 2D = row grid dim)
-    result = ttl.math.reduce_sum(block_a, scaler, dims=[1])
+    # Reduce over dimension 0 (outermost = rows in standard Python indexing)
+    result = ttl.math.reduce_sum(block_a, scaler, dims=[0])
 
     # Result should have shape (1, 1) - rows reduced
     assert result.shape == (1, 1)
@@ -718,7 +718,7 @@ def test_reduce_sum_rows():
 
 
 def test_reduce_sum_cols():
-    """Test reduce_sum over columns (innermost dimension 0 for 2D)."""
+    """Test reduce_sum over columns (innermost dimension -1 for 2D)."""
     # Create a (1, 2) block - two tiles in column dimension
     t_a = [
         Tensor(torch.tensor([[1.0, 2.0]])),
@@ -730,8 +730,8 @@ def test_reduce_sum_cols():
     t_s = [Tensor(torch.tensor([[1.0, 1.0]]))]
     scaler = Block.from_list(t_s, shape=(1, 1))
 
-    # Reduce over dimension 0 (innermost = column grid dim for 2D)
-    result = ttl.math.reduce_sum(block_a, scaler, dims=[0])
+    # Reduce over dimension -1 (innermost = column grid dim in standard Python indexing)
+    result = ttl.math.reduce_sum(block_a, scaler, dims=[-1])
 
     # Result should have shape (1, 1) - columns reduced
     assert result.shape == (1, 1)
@@ -862,14 +862,14 @@ def test_reduce_max_1d_multi_tile():
 
 
 def test_reduce_sum_batched_3d_batch_dim():
-    """reduce_sum on a (2, 1, 1) block reducing only the batch dim (outermost = dim 2 for 3D)."""
+    """reduce_sum on a (2, 1, 1) block reducing only the batch dim (outermost = dim 0)."""
     # Two (1,1) batch entries; tile values 4.0 and 6.0 -> grid sum 10.0 per position
     t1 = Tensor(torch.full((1, 1), 4.0))
     t2 = Tensor(torch.full((1, 1), 6.0))
     block = Block.from_list([t1, t2], shape=(2, 1, 1))
     scaler = Block.from_list([Tensor(torch.full((1, 1), 1.0))], shape=(1, 1))
-    # dims=[2] = outermost dim for 3D (batch); internal index = 3-1-2 = 0
-    result = ttl.math.reduce_sum(block, scaler, dims=[2])
+    # dims=[0] = outermost dim (batch) in standard Python indexing
+    result = ttl.math.reduce_sum(block, scaler, dims=[0])
     # Batch dim collapsed; spatial dims unchanged: result shape (1, 1, 1)
     assert result.shape == (1, 1, 1)
     out = result.to_list()[0].to_torch()
@@ -878,14 +878,14 @@ def test_reduce_sum_batched_3d_batch_dim():
 
 
 def test_reduce_sum_batched_3d_spatial_dim():
-    """reduce_sum on a (2, 1, 2) block reducing spatial col dim (innermost = dim 0 for 3D)."""
+    """reduce_sum on a (2, 1, 2) block reducing spatial col dim (innermost = dim -1 for 3D)."""
     # Two batch entries, one row of two column tiles each
     # All tiles filled with 1.0; reducing innermost dim (N=2 -> 1) with within-tile col reduction
     tiles = [Tensor(torch.full((2, 2), 1.0)) for _ in range(4)]  # 2 batch * 1 * 2 tiles
     block = Block.from_list(tiles, shape=(2, 1, 2))
     scaler = Block.from_list([Tensor(torch.full((2, 2), 1.0))], shape=(1, 1))
-    # dims=[0] = innermost dim for 3D (spatial col); internal index = 3-1-0 = 2
-    result = ttl.math.reduce_sum(block, scaler, dims=[0])
+    # dims=[-1] = innermost dim (spatial col) in standard Python indexing
+    result = ttl.math.reduce_sum(block, scaler, dims=[-1])
     # Spatial col dim reduced: result shape (2, 1, 1)
     assert result.shape == (2, 1, 1)
 
