@@ -40,19 +40,25 @@ constexpr llvm::StringLiteral kFPUBinaryAttrName("ttl.fpu_binary");
 /// Number of tiles to process per DST sync region (set by TTLAssignDST).
 constexpr llvm::StringLiteral kUnrollFactorAttrName("ttl.unroll_factor");
 
-/// Linearized stride for a subblock loop dimension. Distinguishes subblock
-/// loops from tile iteration loops for CB index computation.
-constexpr llvm::StringLiteral kSubblockStrideAttrName("ttl.subblock_stride");
+/// Marks an scf.for as a compiler-generated subblock loop. The integer value
+/// is the linearization stride of this dimension, assuming row-major tile
+/// ordering in the CB (interleaved layout).
+constexpr llvm::StringLiteral
+    kSubblockLoopStrideAttrName("ttl.subblock_loop_stride");
 
-/// Row-major strides of the CB block iteration domain (before subblocking),
-/// carried on subblocked ComputeOps so tile loops get correct CB linearization
-/// strides.
+/// Iteration domain dimension index on a subblock loop, recording which
+/// dimension the loop iterates over.
+constexpr llvm::StringLiteral kSubblockDimAttrName("ttl.subblock_dim");
+
+/// Linearization strides of the full iteration domain (before subblocking),
+/// carried on subblocked ComputeOps so tile loops get correct CB strides.
 constexpr llvm::StringLiteral
     kFullLinStridesAttrName("ttl.full_linearization_strides");
 
-/// Linearization stride on a tile iteration loop. May differ from the loop
-/// bound when the compute has been subblocked.
-constexpr llvm::StringLiteral kTileLoopAttrName("ttl.tile_loop");
+/// Marks an scf.for as a compiler-generated tile loop. The integer value is
+/// the linearization stride of this dimension, assuming row-major tile
+/// ordering in the CB (interleaved layout).
+constexpr llvm::StringLiteral kTileLoopStrideAttrName("ttl.tile_loop_stride");
 
 /// Linearized tile offset within a subblock, used for CB index computation
 /// in unrolled (loop-free) bodies.
@@ -61,6 +67,10 @@ constexpr llvm::StringLiteral kTileOffsetAttrName("ttl.tile_offset");
 /// Output CB index on tile_bcast ops, avoiding SSA tracing during lowering.
 constexpr llvm::StringLiteral
     kBcastOutputCBIndexAttrName("ttl.bcast_output_cb_index");
+
+/// Marks a copy_tile as a placeholder inserted during DST assignment Phase 1.
+/// Replaced with a proper copy in Phase 2b.
+constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
 
 /// Trait for data movement operations (copy_tile, copy_dst).
 template <typename ConcreteType>

@@ -253,40 +253,25 @@ private:
                              nestedBuilder.getDenseI64ArrayAttr(blockStrides));
 
             if (auto innerCompute = dyn_cast<ComputeOp>(tiledOp)) {
-              SmallVector<LinearizedIndexOp> linIdxOps;
+              // Add subblock IV offset to iter_index results for subblocked
+              // dimensions (local -> global coordinates for CB indexing).
+              // Same pattern as linalg.index adjustment during tiling.
+              SmallVector<IterIndexOp> iterIdxOps;
               innerCompute.getBody().front().walk(
-                  [&](LinearizedIndexOp op) { linIdxOps.push_back(op); });
-              for (LinearizedIndexOp linIdx : linIdxOps) {
-                OpBuilder::InsertionGuard guard(nestedBuilder);
-                nestedBuilder.setInsertionPointAfter(linIdx);
-
-                // Compute offset = sum(iv[d] * blockStrides[d]) for subblocked
-                // dims.
-                Value offset;
+                  [&](IterIndexOp op) { iterIdxOps.push_back(op); });
+              for (IterIndexOp iterIdx : iterIdxOps) {
+                int64_t dim = iterIdx.getDim();
+                // Find if this dimension is being subblocked.
                 for (size_t i = 0; i < subblockedDims.size(); ++i) {
-                  int64_t stride = blockStrides[subblockedDims[i]];
-
-                  Value contribution;
-                  if (stride == 1) {
-                    contribution = ivs[i];
-                  } else {
-                    Value strideVal = arith::ConstantIndexOp::create(
-                        nestedBuilder, nestedLoc, stride);
-                    contribution = arith::MulIOp::create(
-                        nestedBuilder, nestedLoc, ivs[i], strideVal);
+                  if (static_cast<int64_t>(subblockedDims[i]) == dim) {
+                    OpBuilder::InsertionGuard guard(nestedBuilder);
+                    nestedBuilder.setInsertionPointAfter(iterIdx);
+                    Value adjusted = arith::AddIOp::create(
+                        nestedBuilder, nestedLoc, iterIdx.getResult(), ivs[i]);
+                    iterIdx.getResult().replaceAllUsesExcept(
+                        adjusted, adjusted.getDefiningOp());
+                    break;
                   }
-
-                  offset = offset
-                               ? arith::AddIOp::create(nestedBuilder, nestedLoc,
-                                                       offset, contribution)
-                               : contribution;
-                }
-
-                if (offset) {
-                  Value adjusted = arith::AddIOp::create(
-                      nestedBuilder, nestedLoc, linIdx.getResult(), offset);
-                  linIdx.getResult().replaceAllUsesExcept(
-                      adjusted, adjusted.getDefiningOp());
                 }
               }
             }
@@ -299,13 +284,15 @@ private:
       return failure();
     }
 
-    // Annotate each loop with ttl.subblock_stride so downstream passes
-    // (computeCBTileIndexFromLoops) can distinguish subblock loops from tile
-    // iteration loops and compute correct linearized CB offsets.
+    // Annotate each loop with stride and dimension index so downstream passes
+    // can distinguish subblock loops from tile loops and compute correct
+    // CB offsets (both linearized and per-dimension).
     for (size_t i = 0; i < subblockedDims.size(); ++i) {
       loopNest.loops[i]->setAttr(
-          kSubblockStrideAttrName,
+          kSubblockLoopStrideAttrName,
           b.getIndexAttr(blockStrides[subblockedDims[i]]));
+      loopNest.loops[i]->setAttr(kSubblockDimAttrName,
+                                 b.getIndexAttr(subblockedDims[i]));
     }
 
     // Replace the original compute op with its output operands.

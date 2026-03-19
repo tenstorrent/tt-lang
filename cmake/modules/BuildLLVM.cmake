@@ -22,6 +22,11 @@ set(LLVM_SUBMODULE_DIR "${CMAKE_SOURCE_DIR}/third-party/llvm-project")
 if(EXISTS "${LLVM_SUBMODULE_DIR}/.git")
   ttlang_get_submodule_sha("${LLVM_SUBMODULE_DIR}" _TTLANG_EXPECTED_LLVM_SHA)
   ttlang_debug_message("Expected LLVM SHA (from submodule): ${_TTLANG_EXPECTED_LLVM_SHA}")
+  # If the submodule .git exists but the SHA could not be read (e.g. Docker
+  # container with a gitlink but no actual objects), unset to skip verification.
+  if(TTLANG_USE_TOOLCHAIN AND _TTLANG_EXPECTED_LLVM_SHA STREQUAL "unknown")
+    unset(_TTLANG_EXPECTED_LLVM_SHA)
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------

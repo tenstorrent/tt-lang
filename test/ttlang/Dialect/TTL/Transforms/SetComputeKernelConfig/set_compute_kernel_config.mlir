@@ -38,8 +38,10 @@ func.func @f32_auto_enable(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
       {indexing_maps = [#map, #map, #map],
        iterator_types = ["parallel", "parallel"]} {
     ^bb0(%a_arg: !ttcore.tile<32x32, f32>, %b_arg: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
+      %i = ttl.iter_index 0 : index
+      %j = ttl.iter_index 1 : index
       %sum = ttl.tile_add %a_arg, %b_arg : !ttcore.tile<32x32, f32>
-      ttl.tile_store %sum, %out_view : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.tile_store %sum, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
@@ -81,7 +83,9 @@ func.func @bf16_enable_options(%a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
       {indexing_maps = [#map, #map, #map],
        iterator_types = ["parallel", "parallel"]} {
     ^bb0(%a_arg: !ttcore.tile<32x32, bf16>, %b_arg: !ttcore.tile<32x32, bf16>, %out: !ttcore.tile<32x32, bf16>):
-      ttl.tile_store %out, %out_view_0 : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %i = ttl.iter_index 0 : index
+      %j = ttl.iter_index 1 : index
+      ttl.tile_store %out, %out_view_0[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
 
@@ -126,7 +130,9 @@ func.func @preserve_existing(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
        fp32_dest_acc_en = false,
        dst_full_sync_en = false} {
     ^bb0(%a_arg: !ttcore.tile<32x32, f32>, %b_arg: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
-      ttl.tile_store %out, %out_view_1 : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+      %i = ttl.iter_index 0 : index
+      %j = ttl.iter_index 1 : index
+      ttl.tile_store %out, %out_view_1[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 

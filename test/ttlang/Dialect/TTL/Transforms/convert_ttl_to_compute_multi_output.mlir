@@ -21,7 +21,9 @@
 // COMPUTE-SAME:   outs(%[[INIT_ATT3]], %[[INIT_ATT2]] :
 // COMPUTE-SAME:   indexing_maps = [#[[$ID]], #[[$ID]], #[[$ID]], #[[$ID]]]
 // COMPUTE:      ^bb0(%[[IN0:.*]]: !ttcore.tile<32x32, bf16>, %[[IN1:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT0:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT1:.*]]: !ttcore.tile<32x32, bf16>):
-// COMPUTE-NEXT:   %[[SUM:.*]] = ttl.tile_add %[[IN0]], %[[IN1]] : !ttcore.tile<32x32, bf16>
+// COMPUTE:        ttl.iter_index
+// COMPUTE:        ttl.iter_index
+// COMPUTE:        %[[SUM:.*]] = ttl.tile_add %[[IN0]], %[[IN1]] : !ttcore.tile<32x32, bf16>
 // COMPUTE-NEXT:   ttl.tile_store %[[SUM]], %[[R3]]
 // COMPUTE-NEXT:   ttl.tile_store %[[SUM]], %[[R2]]
 // COMPUTE-NEXT:   ttl.yield

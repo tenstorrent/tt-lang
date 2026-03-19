@@ -20,6 +20,9 @@ TileOpCategory classifyTileOp(Operation *op) {
   if (isa<TileBcastOp>(op)) {
     return TileOpCategory::Bcast;
   }
+  if (isa<TileMatmulBlockOp>(op)) {
+    return TileOpCategory::FPUBinary;
+  }
   // TODO: add TileOpCategory::Transpose case when TTL transpose op is added.
 
   // FPU binary: marked by kFPUBinaryAttrName attribute.

@@ -113,9 +113,10 @@ def bcast_multitile_kernel(
 # CHECK-NEXT:     DeviceZoneScopedN("ttl_store");
 # CHECK-NEXT:     tile_regs_commit();
 # CHECK-NEXT:     tile_regs_wait();
-# CHECK-NEXT:     size_t [[V12:.*]] = [[K]] * [[V4]];
-# CHECK-NEXT:     size_t [[V13:.*]] = [[V12]] + [[L]];
-# CHECK-NEXT:     pack_tile<true>([[V6]], get_compile_time_arg_val(3), [[V13]]);
+# CHECK-NEXT:     size_t [[V12:.*]] = 4;
+# CHECK-NEXT:     size_t [[V13:.*]] = [[K]] * [[V12]];
+# CHECK-NEXT:     size_t [[V14:.*]] = [[V13]] + [[L]];
+# CHECK-NEXT:     pack_tile<true>([[V6]], get_compile_time_arg_val(3), [[V14]]);
 # CHECK-NEXT:     }
 # CHECK-NEXT:     }
 # CHECK-NEXT:     }

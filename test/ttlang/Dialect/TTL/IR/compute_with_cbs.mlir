@@ -21,7 +21,9 @@ func.func @compute_with_cbs(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor
   // CHECK-NEXT: ttl.cb_reserve
   // CHECK-NEXT: %[[RESULT:.*]] = ttl.compute ins(%[[A_CB]], %[[B_CB]] : {{.*}}) outs(%[[INIT_CB]] : {{.*}})
   // CHECK-NEXT: ^bb0(%[[AT:.*]]: !ttcore.tile<32x32, f32>, %[[BT:.*]]: !ttcore.tile<32x32, f32>, %[[CT:.*]]: !ttcore.tile<32x32, f32>):
-  // CHECK-NEXT:   %[[SUM:.*]] = ttl.tile_add %[[AT]], %[[BT]]
+  // CHECK:        ttl.iter_index
+  // CHECK:        ttl.iter_index
+  // CHECK:        %[[SUM:.*]] = ttl.tile_add %[[AT]], %[[BT]]
   // CHECK:        ttl.tile_store
   // CHECK-NEXT:   ttl.yield
   // CHECK-NEXT: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -48,8 +50,10 @@ func.func @compute_with_cbs(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor
   ^bb0(%at: !ttcore.tile<32x32, f32>,
        %bt: !ttcore.tile<32x32, f32>,
        %ct: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %sum = ttl.tile_add %at, %bt : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %out_view : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sum, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -73,7 +77,9 @@ func.func @compute_with_cbs_reuse(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   // CHECK-NEXT: ttl.cb_reserve
   // CHECK-NEXT: %[[RESULT:.*]] = ttl.compute ins(%[[A_CB0]], %[[A_CB1]] : {{.*}}) outs(%[[INIT_CB]] : {{.*}})
   // CHECK-NEXT: ^bb0(%[[AT0:.*]]: !ttcore.tile<32x32, f32>, %[[AT1:.*]]: !ttcore.tile<32x32, f32>, %[[CT:.*]]: !ttcore.tile<32x32, f32>):
-  // CHECK-NEXT:   %[[SUM:.*]] = ttl.tile_add %[[AT0]], %[[AT1]]
+  // CHECK:        ttl.iter_index
+  // CHECK:        ttl.iter_index
+  // CHECK:        %[[SUM:.*]] = ttl.tile_add %[[AT0]], %[[AT1]]
   // CHECK:        ttl.tile_store
   // CHECK-NEXT:   ttl.yield
   // CHECK-NEXT: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -100,8 +106,10 @@ func.func @compute_with_cbs_reuse(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   ^bb0(%at0: !ttcore.tile<32x32, f32>,
        %at1: !ttcore.tile<32x32, f32>,
        %ct: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %sum = ttl.tile_add %at0, %at1 : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %out_view : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sum, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>

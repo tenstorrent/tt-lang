@@ -25,17 +25,19 @@
 // CHECK-LABEL: func.func @diamond_intermediate_reuse
 // CHECK:           %[[RES:.*]] = ttl.compute
 // CHECK-NEXT:      ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[C:.*]]: !ttcore.tile<32x32, f32>, %[[D:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
+// CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary add: both operands are block args, no copy_tile needed
-// CHECK-NEXT:      %[[SUM:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary} : !ttcore.tile<32x32, f32>
+// CHECK:           %[[SUM:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary} : !ttcore.tile<32x32, f32>
 // Copy C before sub (SFPU operand needs copy_tile)
-// CHECK:           %{{.*}}, %[[TC:.*]] = ttl.copy_tile %[[C]], %{{.*}}, %{{.*}} {dst_idx = 1 : i32}
+// CHECK:           %{{.*}}, %[[TC:.*]] = ttl.copy_tile %[[C]][%[[I0]], %[[I1]]], %{{.*}} {dst_idx = 1 : i32}
 // CHECK-NEXT:      %[[DIFF:.*]] = ttl.tile_sub %[[SUM]], %[[TC]] {dst_idx = 1 : i32}
-// Copy D before mul (SFPU operand needs copy_tile); linearized_index intervenes
-// CHECK:           %{{.*}}, %[[TD:.*]] = ttl.copy_tile %[[D]], %{{.*}}, %{{.*}} {dst_idx = 2 : i32}
+// Copy D before mul (SFPU operand needs copy_tile)
+// CHECK:           %{{.*}}, %[[TD:.*]] = ttl.copy_tile %[[D]][%[[I0]], %[[I1]]], %{{.*}} {dst_idx = 2 : i32}
 // CHECK-NEXT:      %[[PROD:.*]] = ttl.tile_mul %[[SUM]], %[[TD]] {dst_idx = 0 : i32}
 // CHECK-NEXT:      %[[COMBO:.*]] = ttl.tile_add %[[DIFF]], %[[PROD]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // SEPARATE:        ttl.tile_add {{.*}} {dst_idx = 3 : i32}
-// CHECK:           ttl.tile_store
+// CHECK:           ttl.tile_store %[[COMBO]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
@@ -74,12 +76,14 @@ func.func @diamond_intermediate_reuse(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %c_tile: !ttcore.tile<32x32, f32>,
        %d_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
 
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %diff = ttl.tile_sub %sum, %c_tile : !ttcore.tile<32x32, f32>
     %prod = ttl.tile_mul %sum, %d_tile : !ttcore.tile<32x32, f32>
     %combo = ttl.tile_add %diff, %prod : !ttcore.tile<32x32, f32>
-    ttl.tile_store %combo, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %combo, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
 
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -97,12 +101,14 @@ func.func @diamond_intermediate_reuse(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-LABEL: func.func @intermediate_result_fan_out
 // CHECK:           ttl.compute
 // CHECK-NEXT:      ^bb0(%[[ARG0:.*]]: !ttcore.tile<32x32, f32>, %[[ARG1:.*]]: !ttcore.tile<32x32, f32>, %[[ARG2:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
+// CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary add: both operands are block args, no copy_tile needed
-// CHECK-NEXT:      %[[INTERMEDIATE:.*]] = ttl.tile_add %[[ARG0]], %[[ARG1]] {dst_idx = 0 : i32, ttl.fpu_binary} : !ttcore.tile<32x32, f32>
+// CHECK:           %[[INTERMEDIATE:.*]] = ttl.tile_add %[[ARG0]], %[[ARG1]] {dst_idx = 0 : i32, ttl.fpu_binary} : !ttcore.tile<32x32, f32>
 // copy_dst preserves intermediate for mul (fan-out use)
 // CHECK-NEXT:      %[[COPY_DST1:.*]] = ttl.copy_dst %[[INTERMEDIATE]] {dst_idx = 1 : i32}
 // Copy ARG2 before mul (SFPU operand needs copy_tile)
-// CHECK:           %{{.*}}, %[[DST_TILE:.*]] = ttl.copy_tile %[[ARG2]], %{{.*}}, %{{.*}} {dst_idx = 2 : i32}
+// CHECK:           %{{.*}}, %[[DST_TILE:.*]] = ttl.copy_tile %[[ARG2]][%[[I0]], %[[I1]]], %{{.*}} {dst_idx = 2 : i32}
 // CHECK-NEXT:      %[[MUL:.*]] = ttl.tile_mul %[[COPY_DST1]], %[[DST_TILE]] {dst_idx = 1 : i32}
 // copy_dst preserves intermediate for exp (fan-out use)
 // CHECK-NEXT:      %[[COPY_DST2:.*]] = ttl.copy_dst %[[INTERMEDIATE]] {dst_idx = 2 : i32}
@@ -110,7 +116,7 @@ func.func @diamond_intermediate_reuse(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:      %[[ADD1:.*]] = ttl.tile_add %[[INTERMEDIATE]], %[[MUL]] {dst_idx = 0 : i32}
 // CHECK-NEXT:      %[[FINAL:.*]] = ttl.tile_add %[[ADD1]], %[[EXP]] {dst_idx = 0 : i32}
 // SEPARATE:        ttl.tile_add {{.*}} {dst_idx = 3 : i32}
-// CHECK:           ttl.tile_store
+// CHECK:           ttl.tile_store %[[FINAL]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield
 
 func.func @intermediate_result_fan_out(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: tensor<1x1x!ttcore.tile<32x32, f32>>, %i2: tensor<1x1x!ttcore.tile<32x32, f32>>)
@@ -132,6 +138,8 @@ func.func @intermediate_result_fan_out(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>
      iterator_types = ["parallel", "parallel"]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>,
        %arg2: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
 
     // Compute an intermediate result
     %intermediate = ttl.tile_add %arg0, %arg1 : !ttcore.tile<32x32, f32>
@@ -142,7 +150,7 @@ func.func @intermediate_result_fan_out(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>
     %use2 = ttl.tile_exp %intermediate : !ttcore.tile<32x32, f32>
     %use3 = ttl.tile_add %intermediate, %use1 : !ttcore.tile<32x32, f32>
     %final = ttl.tile_add %use3, %use2 : !ttcore.tile<32x32, f32>
-    ttl.tile_store %final, %out_view_0 : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %final, %out_view_0[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
 
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -165,16 +173,18 @@ func.func @intermediate_result_fan_out(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>
 // CHECK-LABEL: func.func @multi_consumer_all_binary
 // CHECK:           ttl.compute
 // CHECK-NEXT:      ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[C:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
+// CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary mul
-// CHECK-NEXT:      %[[MUL:.*]] = ttl.tile_mul %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary}
+// CHECK:           %[[MUL:.*]] = ttl.tile_mul %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary}
 // No copy_dst needed - both consumers are binary
 // CHECK-NOT:       ttl.copy_dst
 // C copied once; CSE deduplicates the two copy_tile calls
-// CHECK:           %{{.*}}, %[[TC:.*]] = ttl.copy_tile %[[C]]
+// CHECK:           %{{.*}}, %[[TC:.*]] = ttl.copy_tile %[[C]][%[[I0]], %[[I1]]]
 // CHECK-NEXT:      %[[ADD:.*]] = ttl.tile_add %[[MUL]], %[[TC]]
 // CHECK-NEXT:      %[[SUB:.*]] = ttl.tile_sub %[[MUL]], %[[TC]]
 // CHECK-NEXT:      %[[FINAL:.*]] = ttl.tile_add %[[ADD]], %[[SUB]]
-// CHECK:           ttl.tile_store
+// CHECK:           ttl.tile_store %[[FINAL]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield
 
 func.func @multi_consumer_all_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -206,12 +216,14 @@ func.func @multi_consumer_all_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %c_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %mul = ttl.tile_mul %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     // Both consumers are binary - no copy_dst needed
     %add = ttl.tile_add %mul, %c_tile : !ttcore.tile<32x32, f32>
     %sub = ttl.tile_sub %mul, %c_tile : !ttcore.tile<32x32, f32>
     %final = ttl.tile_add %add, %sub : !ttcore.tile<32x32, f32>
-    ttl.tile_store %final, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %final, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

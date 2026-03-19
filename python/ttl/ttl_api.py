@@ -1148,10 +1148,10 @@ def _compile_kernel(
         ]
         if compiler_options.maximize_dst:
             pipeline_passes.append("func.func(ttl-subblock-compute-for-dst)")
-        pipeline_passes += [
-            "func.func(ttl-insert-tile-regs-sync)",
-            "func.func(ttl-lower-to-loops)",
-        ]
+        pipeline_passes.append("func.func(ttl-insert-tile-regs-sync)")
+        if compiler_options.use_block_matmul:
+            pipeline_passes.append("func.func(ttl-lower-matmul-block)")
+        pipeline_passes.append("func.func(ttl-lower-to-loops)")
         if compiler_options.maximize_dst:
             pipeline_passes.append("func.func(ttl-schedule-operations)")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")

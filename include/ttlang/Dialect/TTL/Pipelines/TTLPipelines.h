@@ -25,6 +25,11 @@ struct TTLToTTKernelPipelineOptions
   Option<bool> enableFPUBinaryOps{
       *this, "enable-fpu-binary-ops",
       llvm::cl::desc("Use FPU for binary add/sub/mul."), llvm::cl::init(true)};
+  Option<bool> useBlockMatmul{
+      *this, "use-block-matmul",
+      llvm::cl::desc("Lower matmul to block-level hardware calls "
+                     "(experimental::matmul_block) instead of per-tile loops."),
+      llvm::cl::init(true)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,

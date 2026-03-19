@@ -4,6 +4,7 @@
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -35,46 +36,11 @@ namespace {
 /// maximum tensor rank equals iterator_types.size(). Use the tensor with the
 /// largest shape for loop bounds (handles broadcasts where output is larger
 /// than input).
+/// Compute the iteration domain from the ComputeOp's TilingInterface.
+/// This correctly handles matmul's 3D iteration space (M, N, K) where the
+/// iteration domain exceeds the operand rank due to reduction dimensions.
 static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
-  SmallVector<Range> domain;
-  Location loc = op.getLoc();
-
-  // Use the largest operand's shape for loop bounds so that broadcast
-  // dimensions (size 1 in the smaller operand) still get iterated.
-  // Prefer higher rank, then larger element count for same rank.
-  Value maxRankTensor;
-  int64_t maxRank = 0;
-  int64_t maxElements = 0;
-  for (Value operand : llvm::concat<Value>(op.getInputs(), op.getOutputs())) {
-    auto type = cast<RankedTensorType>(operand.getType());
-    int64_t rank = type.getRank();
-    // ComputeOp verifier guarantees static shapes, so getNumElements is safe to
-    // use here.
-    int64_t elements = type.getNumElements();
-    if (rank > maxRank || (rank == maxRank && elements > maxElements)) {
-      maxRank = rank;
-      maxElements = elements;
-      maxRankTensor = operand;
-    }
-  }
-
-  if (!maxRankTensor) {
-    return domain;
-  }
-
-  auto refTy = cast<RankedTensorType>(maxRankTensor.getType());
-  for (int64_t i = 0; i < refTy.getRank(); ++i) {
-    OpFoldResult offset = b.getIndexAttr(0);
-    OpFoldResult stride = b.getIndexAttr(1);
-    OpFoldResult size;
-    if (refTy.isDynamicDim(i)) {
-      size = tensor::DimOp::create(b, loc, maxRankTensor, i).getResult();
-    } else {
-      size = b.getIndexAttr(refTy.getDimSize(i));
-    }
-    domain.push_back(Range{offset, size, stride});
-  }
-  return domain;
+  return op.getIterationDomain(b);
 }
 
 /// Apply an indexing map to the induction variables using MLIR's
@@ -132,31 +98,25 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
     mapping.map(bodyBlock.getArgument(numInputs + idx), extractedOutputs[idx]);
   }
 
-  // linearized_index ops reference loop IVs that don't exist yet during
-  // cloning, so resolve them to affine.apply results before cloning the body.
+  // Resolve iter_index ops to loop IVs via the IRMapping.
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
-    if (auto linIdx = dyn_cast<LinearizedIndexOp>(&bodyOp)) {
-      AffineMap indexMap = linIdx.getIndexMap();
-
-      if (static_cast<int64_t>(ivs.size()) != indexMap.getNumDims()) {
-        return failure();
-      }
-
-      // TODO: Add symbol handling for dynamic dimensions using getMixedSizes()
-      // to query tensor dimensions and pass as affine map symbols
-      SmallVector<OpFoldResult> operands(ivs.begin(), ivs.end());
-      OpFoldResult result =
-          affine::makeComposedFoldedAffineApply(b, loc, indexMap, operands);
-      Value linearIdx = getValueOrCreateConstantIndexOp(b, loc, result);
-
-      mapping.map(linIdx.getResult(), linearIdx);
+    if (auto iterIdx = dyn_cast<IterIndexOp>(&bodyOp)) {
+      int64_t dim = iterIdx.getDim();
+      // IterIndexOp verifier guarantees dim < iteration domain rank,
+      // which equals ivs.size() (loops from the same domain).
+      assert(dim < static_cast<int64_t>(ivs.size()) &&
+             "iter_index dim out of range for loop IVs");
+      mapping.map(iterIdx.getResult(), ivs[dim]);
     }
   }
 
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
-    if (!isa<LinearizedIndexOp>(&bodyOp)) {
-      b.clone(bodyOp, mapping);
+    // iter_index ops are resolved via the mapping -- skip the original ops.
+    if (isa<IterIndexOp>(&bodyOp)) {
+      continue;
     }
+
+    b.clone(bodyOp, mapping);
   }
 
   return success();
@@ -231,7 +191,7 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     for (auto [idx, loop] : llvm::enumerate(loopNest.loops)) {
       int64_t stride =
           fullStridesAttr ? fullStridesAttr[idx] : domainStrides[idx];
-      loop->setAttr(kTileLoopAttrName, rewriter.getIndexAttr(stride));
+      loop->setAttr(kTileLoopStrideAttrName, rewriter.getIndexAttr(stride));
     }
 
     // Record the outermost tile loop for unrolling if the compute was
@@ -300,7 +260,8 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
     dimSizes[d] = (*ub - *lb) / *step;
     totalTiles *= dimSizes[d];
 
-    auto strideAttr = nest[d]->getAttrOfType<IntegerAttr>(kTileLoopAttrName);
+    auto strideAttr =
+        nest[d]->getAttrOfType<IntegerAttr>(kTileLoopStrideAttrName);
     fullStrides[d] = strideAttr ? strideAttr.getInt() : 1;
   }
 
@@ -390,7 +351,7 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
     int64_t tileIdx = linearize(dimIndices, localStrides);
 
     // tileOffset: linearized using full block strides — determines CB tile
-    // position within the entire block, used by computeCBTileIndexFromLoops.
+    // position within the entire block, used by computeCBTileIndex.
     int64_t tileOffset = linearize(dimIndices, fullStrides);
 
     int64_t dstBase = tileIdx * dstPerIteration;
@@ -419,7 +380,7 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
     }
 
     // Set tile_offset on TTL ops for CB index computation. The attribute is
-    // consumed by computeCBTileIndexFromLoops during TTL-to-TTKernel
+    // consumed by computeCBTileIndex during TTL-to-TTKernel
     // conversion.
     if (auto *dialect = op->getDialect()) {
       if (dialect->getNamespace() == "ttl") {
@@ -534,7 +495,7 @@ struct TTLLowerToLoopsPass
         scf::ForOp inner = nullptr;
         for (Operation &op : *current.getBody()) {
           if (auto forOp = dyn_cast<scf::ForOp>(&op)) {
-            if (forOp->hasAttr(kTileLoopAttrName)) {
+            if (forOp->hasAttr(kTileLoopStrideAttrName)) {
               inner = forOp;
               break;
             }

@@ -179,6 +179,29 @@ def TTLInsertTileRegsSync
   ];
 }
 
+def TTLLowerMatmulBlock
+    : Pass<"ttl-lower-matmul-block", "::mlir::func::FuncOp"> {
+  let summary = "Lower matmul computes to block-level hardware calls";
+  let description = [{
+    Marks `ttl.compute` ops containing `ttl.tile_matmul_block` for block-level
+    lowering by setting the `ttl.block_matmul` attribute. This attribute tells
+    `ttl-lower-to-loops` to collapse the iteration domain to a single point
+    (no per-tile loops), since matmul_block handles the full block atomically.
+
+    The pass also expands the single `tile_store` in the body into M*N stores
+    (one per output tile in the block), since matmul_block writes M*N DST
+    registers that each need to be packed.
+
+    The output must fit in DST (M*N <= capacity). Subblocking for larger
+    outputs is not yet implemented.
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
 def TTLLowerToLoops
     : Pass<"ttl-lower-to-loops", "::mlir::func::FuncOp"> {
   let summary = "Lower ttl.compute structured ops to scf.for loops";

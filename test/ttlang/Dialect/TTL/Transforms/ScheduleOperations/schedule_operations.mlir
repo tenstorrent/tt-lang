@@ -75,12 +75,12 @@
 // SFPU: ttkernel.init_sfpu(%[[SCB0]], %[[SCB2]])
 // SFPU: scf.for %[[IV:.*]] = %[[SC0]] to %[[SC2]] step %[[SC1]]
 // SFPU:   ttkernel.tile_regs_acquire
-// SFPU:   %[[BASE:.*]] = arith.muli %[[IV]], %[[SC2]]
-// SFPU:   %[[BASE1:.*]] = arith.addi %[[BASE]], %[[SC1]]
+// SFPU:   %[[BASE:.*]] = affine.linearize_index [%[[IV]], %[[SC0]]] by (2, 2)
 // Copy tiles grouped by source CB (one init per CB):
 // SFPU:   ttkernel.copy_tile_init(%[[SCB0]])
 // SFPU:   ttkernel.copy_tile(%[[SCB0]], %[[BASE]], %[[SC0]])
 // SFPU-NOT: ttkernel.copy_tile_init
+// SFPU:   %[[BASE1:.*]] = affine.linearize_index [%[[IV]], %[[SC1]]] by (2, 2)
 // SFPU:   ttkernel.copy_tile(%[[SCB0]], %[[BASE1]], %[[SC2]])
 // SFPU:   ttkernel.copy_tile_init(%[[SCB1]])
 // SFPU:   ttkernel.copy_tile(%[[SCB1]], %[[BASE]], %[[SC1]])
@@ -101,6 +101,7 @@
 // SFPU:   ttkernel.pack_tile(%[[SC0]], %[[SCB2]], %[[BASE]], true)
 // SFPU:   ttkernel.pack_tile(%[[SC2]], %[[SCB2]], %[[BASE1]], true)
 // SFPU:   ttkernel.tile_regs_release
+// SFPU: } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 2 : index}
 // SFPU: ttkernel.cb_push_back(%[[SCB2]], %[[SC4]])
 // SFPU-NOT: ttkernel.add_tiles
 
@@ -129,9 +130,11 @@ func.func @add_exp_scheduled(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %sum : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %exp, %result_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

@@ -63,80 +63,10 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Physical DST register size in tiles (constant across all architectures).
-constexpr std::uint32_t kDstPhysicalSizeTiles = 16;
-
 /// Sentinel value for placeholder copy_tile indices. Using max value since
 /// valid indices are small non-negative integers. This is replaced with proper
 /// indices during the copy_tile insertion phase.
 constexpr int64_t kPlaceholderIndex = std::numeric_limits<int64_t>::max();
-
-/// Compute the logical DST capacity based on element types and sync mode.
-///
-/// The DST register file has 16 physical tiles. Logical capacity is derived:
-///   - Default (double-buffered): physical / 2 = 8 tiles
-///   - Full sync (dst_full_sync_en): no halving = 16 tiles
-///   - f32 accumulation: halved again (tiles are 2x wider)
-///
-/// This is a standalone computation that does not require tt-mlir's device
-/// infrastructure (SystemDescAttr, DeviceOp, ChipDescAttr). The formula is
-/// architecture-independent across Grayskull, Wormhole, and Blackhole.
-static std::uint32_t getDstCapacity(bool isFloat32, bool fullSyncEn) {
-  std::uint32_t capacity = kDstPhysicalSizeTiles;
-  if (!fullSyncEn) {
-    capacity /= 2; // Double-buffering halves available tiles.
-  }
-  if (isFloat32) {
-    capacity /= 2; // f32 tiles occupy 2x the space.
-  }
-  return capacity;
-}
-
-/// Compute DST capacity for a compute op.
-/// Returns failure for mixed f32/non-f32 tile arguments.
-/// TODO(#264): Support mixed dtypes instead of erroring (e.g. use f32
-/// capacity).
-static FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
-  bool fullSyncEn = false;
-  if (auto fullSyncAttr =
-          computeOp->getAttrOfType<mlir::BoolAttr>(kDstFullSyncEnAttrName)) {
-    fullSyncEn = fullSyncAttr.getValue();
-  }
-
-  bool fp32DestAccEn = false;
-  if (auto fp32Attr =
-          computeOp->getAttrOfType<mlir::BoolAttr>(kFp32DestAccEnAttrName)) {
-    fp32DestAccEn = fp32Attr.getValue();
-  }
-
-  bool sawF32 = false;
-  bool sawNonF32 = false;
-  Block &body = computeOp.getRegion().front();
-  for (BlockArgument arg : body.getArguments()) {
-    std::optional<Type> currentType = getTileElementType(arg.getType());
-    if (currentType) {
-      if (currentType->isF32()) {
-        sawF32 = true;
-      } else {
-        sawNonF32 = true;
-      }
-    }
-  }
-
-  if (sawF32) {
-    fp32DestAccEn = true;
-  }
-
-  if (sawF32 && sawNonF32) {
-    return computeOp.emitOpError(
-        "mixed f32 and non-f32 tile arguments; "
-        "DST capacity uses f32 limits (4 tiles) which may produce "
-        "incorrect results");
-  }
-
-  bool isFloat32 = sawF32 || fp32DestAccEn;
-  return getDstCapacity(isFloat32, fullSyncEn);
-}
 
 static bool isTileValue(Value v) { return isa<ttcore::TileType>(v.getType()); }
 
@@ -165,34 +95,6 @@ struct Interval {
   Value value;   // SSA value this interval represents
 };
 
-/// Compute the AffineMap for linearizing CB tile indices for a block argument.
-/// Returns failure if the argument is not found in inputs.
-static FailureOr<AffineMapAttr> computeIndexMapAttr(BlockArgument arg,
-                                                    ComputeOp computeOp,
-                                                    OpBuilder &builder) {
-  Block *body = &computeOp.getRegion().front();
-  for (auto [idx, input] : llvm::enumerate(computeOp.getInputs())) {
-    if (arg == body->getArgument(idx)) {
-      auto tensorType = cast<RankedTensorType>(input.getType());
-      int64_t rank = tensorType.getRank();
-
-      SmallVector<int64_t> staticShape(tensorType.getShape().begin(),
-                                       tensorType.getShape().end());
-      SmallVector<int64_t> strides = mlir::computeStrides(staticShape);
-
-      AffineExpr linearExpr = builder.getAffineConstantExpr(0);
-      for (int64_t i = 0; i < rank; ++i) {
-        linearExpr = linearExpr + builder.getAffineDimExpr(i) *
-                                      builder.getAffineConstantExpr(strides[i]);
-      }
-
-      AffineMap indexMap = AffineMap::get(rank, /*numSymbols=*/0, linearExpr);
-      return AffineMapAttr::get(indexMap);
-    }
-  }
-  return failure();
-}
-
 /// Allocate a DST register and create a CopyTileOp for a block argument.
 /// Looks up assignment first; falls back to allocating a free register.
 /// If dstIndexOverride is provided, it takes precedence over the assignment
@@ -218,18 +120,13 @@ static FailureOr<CopyTileOp> createCopyTileForArg(
   inUse.set(assignedDstIndex);
 
   Location loc = builder.getInsertionPoint()->getLoc();
-  auto indexMapAttr = computeIndexMapAttr(arg, computeOp, builder);
-  if (failed(indexMapAttr)) {
-    return computeOp.emitOpError("block argument not found in compute inputs");
-  }
-
-  Value srcIndex = LinearizedIndexOp::create(builder, loc, *indexMapAttr);
   Value dstIndex =
       arith::ConstantIndexOp::create(builder, loc, assignedDstIndex);
+  // src_indices are empty here; populated by the iter_index phase below.
   auto copy = CopyTileOp::create(
       builder, loc,
       TypeRange{DSTRegisterType::get(arg.getContext()), arg.getType()},
-      ValueRange{arg, srcIndex, dstIndex});
+      ValueRange{arg, dstIndex});
   dstIndexForValue[copy.getDstTile()] = assignedDstIndex;
   return copy;
 }
@@ -316,18 +213,17 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
 
       Value copyResult;
       if (isa<BlockArgument>(value)) {
-        // Block argument: insert copy_tile (CB-to-DST)
-        // Use sentinel kPlaceholderIndex for src_index and dst_index - will be
-        // replaced later with proper LinearizedIndexOp and allocated DST index
-        Value srcIndex =
-            arith::ConstantIndexOp::create(builder, loc, kPlaceholderIndex);
+        // Block argument: insert placeholder copy_tile (CB-to-DST).
+        // Replaced later with proper DST index allocation. Marked with
+        // kPlaceholderCopyAttrName so Phase 2b can identify and replace it.
         Value dstIndex =
             arith::ConstantIndexOp::create(builder, loc, kPlaceholderIndex);
         auto copyOp = CopyTileOp::create(
             builder, loc,
             TypeRange{DSTRegisterType::get(value.getContext()),
                       value.getType()},
-            ValueRange{value, srcIndex, dstIndex});
+            ValueRange{value, dstIndex});
+        copyOp->setAttr(kPlaceholderCopyAttrName, builder.getUnitAttr());
         copyResult = copyOp.getDstTile();
         LLVM_DEBUG({
           llvm::dbgs()
@@ -474,9 +370,16 @@ static void buildLiveIntervals(Block *body,
   // With explicit overwrite mode, DST reuse between FPU binary ops would be
   // safe and this interval extension could be removed.
   {
+    // Include TileMatmulBlockOp alongside FPU binary ops: matmul_block also
+    // accumulates into DST and its slot must not be reused by another
+    // accumulating op within the same sync region.
+    auto isFPUAccumulatingOp = [](Operation &op) {
+      return op.hasAttr(kFPUBinaryAttrName) || isa<TileMatmulBlockOp>(&op);
+    };
+
     SmallVector<int64_t> fpuBinaryStarts;
     for (Operation &op : *body) {
-      if (op.hasAttr(kFPUBinaryAttrName)) {
+      if (isFPUAccumulatingOp(op)) {
         fpuBinaryStarts.push_back(opIndex[&op]);
       }
     }
@@ -484,7 +387,7 @@ static void buildLiveIntervals(Block *body,
     if (fpuBinaryStarts.size() > 1) {
       int64_t lastFPUStart = *llvm::max_element(fpuBinaryStarts);
       for (Operation &op : *body) {
-        if (!op.hasAttr(kFPUBinaryAttrName)) {
+        if (!isFPUAccumulatingOp(op)) {
           continue;
         }
         for (Value result : op.getResults()) {
@@ -798,13 +701,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         }
       }
 
-      // Helper to check if a copy_tile has placeholder indices
       auto isPlaceholderCopy = [](CopyTileOp copyTile) {
-        if (auto srcConst = copyTile.getSrcIndex()
-                                .getDefiningOp<arith::ConstantIndexOp>()) {
-          return srcConst.value() == kPlaceholderIndex;
-        }
-        return false;
+        return copyTile->hasAttr(kPlaceholderCopyAttrName);
       };
 
       // First: Replace placeholder copy_tile ops with proper copies
@@ -843,12 +741,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         placeholder.getDstTile().replaceAllUsesWith(newCopy->getDstTile());
         placeholder.getDstToken().replaceAllUsesWith(newCopy->getDstToken());
 
-        Operation *srcIndexDef = placeholder.getSrcIndex().getDefiningOp();
         Operation *dstIndexDef = placeholder.getDstIndex().getDefiningOp();
         placeholder.erase();
-        if (srcIndexDef && srcIndexDef->use_empty()) {
-          srcIndexDef->erase();
-        }
         if (dstIndexDef && dstIndexDef->use_empty()) {
           dstIndexDef->erase();
         }
@@ -915,19 +809,78 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       }
 
       //=== Post-pass verification: no placeholder copy_tile ops ===
-      // A placeholder copy_tile has kPlaceholderIndex as src_index or
-      // dst_index. These are inserted in Phase 1 for block args with multiple
-      // consumers and should have been replaced with proper copies.
       for (Operation &op : *body) {
         if (auto copyTile = dyn_cast<CopyTileOp>(&op)) {
           if (isPlaceholderCopy(copyTile)) {
             copyTile.emitOpError()
-                << "placeholder copy_tile not replaced with proper copy "
-                << "(src_index has sentinel value " << kPlaceholderIndex << ")";
+                << "placeholder copy_tile not replaced with proper copy";
             signalPassFailure();
             return;
           }
         }
+      }
+
+      //=== Populate CB indices using iter_index ===
+      // Create iter_index ops and apply per-operand indexing maps to produce
+      // src_indices on copy_tile and indices on tile_store.
+      {
+        auto indexingMaps = computeOp.getIndexingMapsArray();
+        SmallVector<Value> iterIndices =
+            getOrCreateIterIndices(builder, computeOp);
+
+        // Populate copy_tile src_indices.
+        SmallVector<CopyTileOp> copyTiles;
+        for (Operation &op : *body) {
+          if (auto ct = dyn_cast<CopyTileOp>(&op)) {
+            if (ct.getSrcIndices().empty()) {
+              copyTiles.push_back(ct);
+            }
+          }
+        }
+        for (CopyTileOp ct : copyTiles) {
+          // copy_tile sources inside a compute body are always block arguments.
+          auto blockArg = dyn_cast<BlockArgument>(ct.getSrc());
+          assert(blockArg &&
+                 "copy_tile src must be a block argument inside compute body");
+
+          unsigned argIdx = blockArg.getArgNumber();
+          // ComputeOp verifier guarantees block args match indexing maps.
+          assert(argIdx < indexingMaps.size() &&
+                 "block arg index out of range for indexing maps");
+          AffineMap inputMap = indexingMaps[argIdx];
+
+          builder.setInsertionPoint(ct);
+          SmallVector<Value> cbIndices = applyIndexingMapToIterIndices(
+              builder, ct.getLoc(), inputMap, iterIndices);
+
+          auto newCopy = CopyTileOp::create(
+              builder, ct.getLoc(),
+              TypeRange{ct.getDstToken().getType(), ct.getDstTile().getType()},
+              ct.getSrc(), ct.getDstIndex(), cbIndices);
+          for (NamedAttribute attr : ct->getAttrs()) {
+            newCopy->setAttr(attr.getName(), attr.getValue());
+          }
+          ct.getDstToken().replaceAllUsesWith(newCopy.getDstToken());
+          ct.getDstTile().replaceAllUsesWith(newCopy.getDstTile());
+          ct.erase();
+        }
+
+        // All copy_tile ops must have populated src_indices at this point.
+        for (Operation &op : *body) {
+          if (auto ct = dyn_cast<CopyTileOp>(&op)) {
+            if (ct.getSrcIndices().empty()) {
+              ct.emitOpError()
+                  << "copy_tile has empty src_indices after iter_index phase";
+              signalPassFailure();
+              return;
+            }
+          }
+        }
+
+        LLVM_DEBUG({
+          llvm::dbgs() << "=== Populated CB indices using iter_index ("
+                       << iterIndices.size() << "D) ===\n";
+        });
       }
 
       //=== Compute and attach unroll_factor ===

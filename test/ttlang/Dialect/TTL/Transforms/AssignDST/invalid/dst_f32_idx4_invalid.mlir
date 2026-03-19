@@ -46,6 +46,8 @@ func.func @f32_capacity_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %d_tile: !ttcore.tile<32x32, f32>,
        %e_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     // Five unary ops on separate block args - each needs copy_tile + DST.
     // All five results are used later, keeping them live simultaneously.
     %abs_a = ttl.tile_abs %a_tile : !ttcore.tile<32x32, f32>
@@ -58,7 +60,7 @@ func.func @f32_capacity_overflow(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %sum1 = ttl.tile_add %abs_c, %abs_d : !ttcore.tile<32x32, f32>
     %sum2 = ttl.tile_add %sum0, %abs_e : !ttcore.tile<32x32, f32>
     %final = ttl.tile_add %sum1, %sum2 : !ttcore.tile<32x32, f32>
-    ttl.tile_store %final, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %final, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
