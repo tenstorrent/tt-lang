@@ -21,7 +21,7 @@ def test_broadcast_basic():
     t1 = [Tensor(torch.tensor([[5.0]]))]
     block1 = Block.from_list(t1, shape=(1, 1))
 
-    # Broadcast along dimension 0 (innermost/columns)
+    # Broadcast along dimension 0 (outermost/rows); (1,1) has both dims = 1
     broadcasted = ttl.math.broadcast(block1, dims=[0])
 
     # Check that broadcast returns a Block
@@ -159,9 +159,10 @@ def test_implicit_broadcast_different_shapes():
     with pytest.raises(ValueError, match="Use broadcast\\(\\) to expand operands"):
         result = block_a * block_b
 
-    # Explicit broadcasting of both should work
-    broadcasted_a = ttl.math.broadcast(block_a, dims=[0])
-    broadcasted_b = ttl.math.broadcast(block_b, dims=[1])
+    # Explicit broadcasting of both should work.
+    # block_a (2,1): broadcast cols (innermost, dims=[-1]); block_b (1,2): broadcast rows (outermost, dims=[0])
+    broadcasted_a = ttl.math.broadcast(block_a, dims=[-1])
+    broadcasted_b = ttl.math.broadcast(block_b, dims=[0])
 
     # Can't combine two broadcasts together (ambiguous which should expand first)
     with pytest.raises(ValueError, match="both operands have pending broadcast"):
@@ -191,20 +192,20 @@ def test_matching_shapes_allowed():
 
 def test_broadcast_on_wrong_dimension_rejected():
     """Test that broadcasting on a dimension with element size != 1 is rejected."""
-    # Block with shape (2, 1) and element_shape=(2, 1) - cannot broadcast on dimension 1
-    # (next-to-innermost, which is the outermost grid dim of size 2 in elements).
+    # Block with shape (2, 1) and element_shape=(2, 1) - cannot broadcast on dimension 0
+    # (outermost/rows, which has element size 2).
     t_a = [
         Tensor(torch.tensor([[1.0]])),
         Tensor(torch.tensor([[3.0]])),
     ]
     block_a = Block.from_list(t_a, shape=(2, 1))
 
-    # Try to broadcast on dimension 1 (outermost for 2D), which has element size 2
+    # Try to broadcast on dimension 0 (outermost/rows for 2D), which has element size 2
     with pytest.raises(
         ValueError,
-        match="Cannot broadcast along dimension 1: dimension must have element size 1",
+        match="Cannot broadcast along dimension 0: dimension must have element size 1",
     ):
-        ttl.math.broadcast(block_a, dims=[1])
+        ttl.math.broadcast(block_a, dims=[0])
 
 
 def test_broadcast_out_of_range_rejected():
@@ -228,9 +229,9 @@ def test_all_broadcast_forms():
     """Test all different forms of broadcast usage work correctly.
 
     Tests the three forms:
-    1) result = a * broadcast(b, dims=[0]) - explicit broadcast with dims
-    2) result = a * broadcast(b, y_unused, dims=[0]) - explicit with unused output hint
-    3) w = broadcast(b, dims=[0]); result = a * w - intermediate variable
+    1) result = a * broadcast(b, dims=[-1]) - explicit broadcast with dims
+    2) result = a * broadcast(b, y_unused, dims=[-1]) - explicit with unused output hint
+    3) w = broadcast(b, dims=[-1]); result = a * w - intermediate variable
 
     Note: Implicit broadcasting is no longer supported - must use explicit broadcast().
     """
@@ -251,14 +252,14 @@ def test_all_broadcast_forms():
     ]
     block_b = Block.from_list(t_b, shape=(2, 1))
 
-    # Form 1: Explicit broadcast with dims (dims=[0]=innermost/columns)
-    result1 = block_a * ttl.math.broadcast(block_b, dims=[0])
+    # Form 1: Explicit broadcast with dims (dims=[-1]=innermost/columns)
+    result1 = block_a * ttl.math.broadcast(block_b, dims=[-1])
 
     # Form 2: Explicit broadcast with unused output hint (None since we can't create a DFB here)
-    result2 = block_a * ttl.math.broadcast(block_b, None, dims=[0])
+    result2 = block_a * ttl.math.broadcast(block_b, None, dims=[-1])
 
     # Form 3: Store broadcast result first, then use it
-    broadcast_b = ttl.math.broadcast(block_b, dims=[0])
+    broadcast_b = ttl.math.broadcast(block_b, dims=[-1])
     result3 = block_a * broadcast_b
 
     # All forms should produce the same shape
@@ -998,7 +999,7 @@ def test_matmul_mismatched_inner_dims_raises():
 
 
 def test_broadcast_3d_grid_batch_dim():
-    """broadcast on a 3D grid block along the batch dimension (outermost = dim 2 for 3D).
+    """broadcast on a 3D grid block along the batch dimension (outermost = dim 0).
 
     The batch grid dim has no within-tile axis; the tile content must be
     left unchanged (the existing single tile is simply replicated at the
@@ -1008,9 +1009,9 @@ def test_broadcast_3d_grid_batch_dim():
     # Each tile is a (32, 32) matrix filled with a distinct value.
     tiles = [Tensor(torch.full((32, 32), float(i))) for i in range(4)]
     block = Block.from_list(tiles, shape=(1, 2, 2))
-    # Broadcast along batch dim (outermost = dim 2 for 3D); the grid dim already has size 1
-    # so this is a no-op at the grid level and must not corrupt tile content.
-    result = ttl.math.broadcast(block, dims=[2])
+    # Broadcast along batch dim (outermost = dim 0 in standard Python indexing);
+    # the grid dim already has size 1 so this is a no-op at the grid level.
+    result = ttl.math.broadcast(block, dims=[0])
     assert result.shape == (1, 2, 2)
     result_tiles = result.to_list()
     for orig, res in zip(tiles, result_tiles):
@@ -1022,15 +1023,12 @@ def test_broadcast_3d_grid_batch_dim():
 def test_broadcast_3d_grid_spatial_dim():
     """broadcast on a 3D grid block along a spatial dimension.
 
-    With a (2, 1, 1) block grid and tiles with 1 row, dim 1 (middle for 3D, maps to
-    internal grid dim 1 = spatial-row) maps to tile-internal dim 0. The single
+    With a (2, 1, 1) block grid and tiles with 1 row, dims=[1] refers to the
+    middle (spatial-row) dimension in standard Python indexing. The single
     row of each tile should be replicated to all rows in the target.
 
-    Note: for ndim=3, dims=[1] is the fixed-point of the innermost-first
-    translation (3-1-1 = 1), so this test is unchanged from the old convention.
-
-    Updated for element-based semantics: tiles must have element_shape with 1 row
-    to be broadcastable along the row dimension.
+    For this 3D block with element_shape=(2, 1, 32), element_shape[1]=1
+    so dims=[1] is valid (middle/spatial-row dim has element size 1).
     """
     # Create 1x32 tiles (1 row, 32 cols) that can broadcast along dim 1 (row dimension)
     tile_data = torch.full((1, 32), 7.0)
