@@ -22,7 +22,7 @@ import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import to_dram
+from ttlang_test_utils import assert_allclose, to_dram, to_l1
 
 TILE = 32
 
@@ -104,3 +104,74 @@ def test_matmul_block_sizes(Mt, Kt, Nt, device):
         f"PCC {pcc:.6f} < 0.999 for {Mt}x{Kt}x{Nt} matmul. "
         f"Max diff: {(result - golden).abs().max().item()}"
     )
+
+
+@pytest.mark.requires_device
+def test_matmul_m_tiling_distinct(device):
+    """M-tiling with distinct fixed values verifies tile indexing.
+
+    A[2x1] @ B[1x1] = C[2x1]. Top tile = 1, bottom tile = 3, B = ones.
+    C top = 32, C bottom = 96. A tile swap would produce 96 on top.
+    """
+    a_torch = torch.ones(2 * TILE, TILE, dtype=torch.bfloat16)
+    a_torch[TILE:, :] = 3.0
+    b_torch = torch.ones(TILE, TILE, dtype=torch.bfloat16)
+
+    a = to_dram(a_torch, device)
+    b = to_dram(b_torch, device)
+    out = to_dram(torch.zeros(2 * TILE, TILE, dtype=torch.bfloat16), device)
+
+    matmul_kernel(a, b, out)
+
+    result = ttnn.to_torch(out)
+    golden = a_torch @ b_torch
+    assert_allclose(result.float(), golden.float(), rtol=1e-2, atol=1e-1)
+
+
+@pytest.mark.requires_device
+def test_matmul_n_tiling_distinct(device):
+    """N-tiling with distinct per-tile random values verifies tile indexing.
+
+    A[1x1] @ B[1x2] = C[1x2]. B's column tiles have different value ranges
+    so a tile-indexing bug would produce visibly wrong per-tile results.
+    """
+    a_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16) * 0.5
+    b_torch = torch.zeros(TILE, 2 * TILE, dtype=torch.bfloat16)
+    b_torch[:, :TILE] = torch.randn(TILE, TILE, dtype=torch.bfloat16) * 0.5 + 1.0
+    b_torch[:, TILE:] = torch.randn(TILE, TILE, dtype=torch.bfloat16) * 0.5 - 1.0
+
+    a = to_dram(a_torch, device)
+    b = to_dram(b_torch, device)
+    out = to_dram(torch.zeros(TILE, 2 * TILE, dtype=torch.bfloat16), device)
+
+    matmul_kernel(a, b, out)
+
+    result = ttnn.to_torch(out)
+    golden = a_torch @ b_torch
+    pcc = torch.corrcoef(
+        torch.stack([result.flatten().float(), golden.flatten().float()])
+    )[0, 1].item()
+    assert pcc > 0.999, (
+        f"PCC {pcc:.6f} < 0.999 for N-tiling distinct matmul. "
+        f"Max diff: {(result - golden).abs().max().item()}"
+    )
+
+
+@pytest.mark.requires_device
+def test_matmul_l1(device):
+    """Matmul with tensors in L1 memory (instead of DRAM)."""
+    a_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    b_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+
+    a = to_l1(a_torch, device)
+    b = to_l1(b_torch, device)
+    out = to_l1(torch.zeros(TILE, TILE, dtype=torch.bfloat16), device)
+
+    matmul_kernel(a, b, out)
+
+    result = ttnn.to_torch(out)
+    golden = a_torch @ b_torch
+    pcc = torch.corrcoef(
+        torch.stack([result.flatten().float(), golden.flatten().float()])
+    )[0, 1].item()
+    assert pcc > 0.999, f"PCC {pcc:.6f} < 0.999 for L1 matmul"

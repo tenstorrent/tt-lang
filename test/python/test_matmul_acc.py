@@ -19,7 +19,7 @@ import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import to_dram
+from ttlang_test_utils import assert_allclose, to_dram
 
 TILE = 32
 
@@ -95,6 +95,7 @@ def matmul_acc_kernel(a, b, out):
         (1, 3, 1),  # Odd K.
         (2, 2, 4),  # 2x4 output = 8 tiles at max DST, K=2.
         (1, 4, 4),  # Wide output with K accumulation.
+        (1, 2, 2),  # Non-square: A[1,2] @ B[2,2] = C[1,2].
     ],
     ids=[
         "1x1x1",
@@ -106,6 +107,7 @@ def matmul_acc_kernel(a, b, out):
         "1x3x1",
         "2x2x4",
         "1x4x4",
+        "1x2x2",
     ],
 )
 @pytest.mark.requires_device
@@ -236,5 +238,41 @@ def test_matmul_bcast_bias(Mt, Kt, Nt, device):
     # more rounding error than matmul alone.
     assert pcc > 0.95, (
         f"PCC {pcc:.6f} < 0.95 for {Mt}x{Kt}x{Nt} matmul+bcast_bias. "
+        f"Max diff: {(result - golden).abs().max().item()}"
+    )
+
+
+# =============================================================================
+# Distinct per-tile values: verifies tile indexing in multi-tile matmul
+# =============================================================================
+
+
+@pytest.mark.requires_device
+def test_matmul_distinct_tiles(device):
+    """[2x2] @ [2x2] = [2x2] with distinct random values per tile.
+
+    Each tile is filled with random values from a different range so that
+    a tile-indexing bug would produce visibly wrong per-tile results.
+    """
+    a_torch = torch.zeros(2 * TILE, 2 * TILE, dtype=torch.bfloat16)
+    a_torch[:TILE, :TILE] = torch.randn(TILE, TILE, dtype=torch.bfloat16) * 0.5 + 1.0
+    a_torch[:TILE, TILE:] = torch.randn(TILE, TILE, dtype=torch.bfloat16) * 0.5 - 1.0
+    a_torch[TILE:, :TILE] = torch.randn(TILE, TILE, dtype=torch.bfloat16) * 0.5 + 2.0
+    a_torch[TILE:, TILE:] = torch.randn(TILE, TILE, dtype=torch.bfloat16) * 0.5 - 2.0
+    b_torch = torch.randn(2 * TILE, 2 * TILE, dtype=torch.bfloat16) * 0.5
+
+    a = to_dram(a_torch, device)
+    b = to_dram(b_torch, device)
+    out = to_dram(torch.zeros(2 * TILE, 2 * TILE, dtype=torch.bfloat16), device)
+
+    matmul_acc_kernel(a, b, out)
+
+    result = ttnn.to_torch(out)
+    golden = a_torch @ b_torch
+    pcc = torch.corrcoef(
+        torch.stack([result.flatten().float(), golden.flatten().float()])
+    )[0, 1].item()
+    assert pcc > 0.99, (
+        f"PCC {pcc:.6f} < 0.99 for 2x2x2 distinct-tile matmul. "
         f"Max diff: {(result - golden).abs().max().item()}"
     )
