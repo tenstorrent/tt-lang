@@ -3,18 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: tt-device
-# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
+# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
+# RUN: FileCheck %s --check-prefix=CHECK-RESULT < %t.output
 
 """
 Standalone matmul: single 1x1 tile multiply through the full pipeline.
 Verifies ttl.matmul in initial IR and experimental::matmul_block in C++ output.
 """
-
-import os
-
-os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 import ttl
 
@@ -81,6 +78,7 @@ def matmul_kernel(a, b, out):
 # CHECK-CPP: experimental::matmul_block(
 # CHECK-CPP: pack_tile
 
+# CHECK-RESULT: PASS
 
 if __name__ == "__main__":
     device = ttnn.open_device(device_id=0)
@@ -117,6 +115,16 @@ if __name__ == "__main__":
         out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
 
         matmul_kernel(a, b, out)
+
+        result = ttnn.to_torch(out)
+        golden = a_torch @ b_torch
+        pcc = torch.corrcoef(
+            torch.stack([result.flatten().float(), golden.flatten().float()])
+        )[0, 1].item()
+        if pcc > 0.999:
+            print("PASS")
+        else:
+            print(f"FAIL: PCC {pcc:.6f} < 0.999")
 
     finally:
         ttnn.close_device(device)

@@ -34,11 +34,44 @@ func.func @matmul_lhs_rank3(
 
 // -----
 
-// Test: Element type mismatch
+// Test: Element type mismatch between inputs
 func.func @matmul_element_mismatch(
     %a: tensor<2x3x!ttcore.tile<32x32, bf16>>,
     %b: tensor<3x4x!ttcore.tile<32x32, f32>>) -> tensor<2x4x!ttcore.tile<32x32, bf16>> {
   // expected-error @below {{element type mismatch}}
   %r = ttl.matmul %a, %b : tensor<2x3x!ttcore.tile<32x32, bf16>>, tensor<3x4x!ttcore.tile<32x32, f32>> -> tensor<2x4x!ttcore.tile<32x32, bf16>>
   return %r : tensor<2x4x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
+// Test: rhs not rank 2
+func.func @matmul_rhs_rank1(
+    %a: tensor<2x3x!ttcore.tile<32x32, bf16>>,
+    %b: tensor<3x!ttcore.tile<32x32, bf16>>) -> tensor<2x3x!ttcore.tile<32x32, bf16>> {
+  // expected-error @below {{rhs must be rank 2, got rank 1}}
+  %r = ttl.matmul %a, %b : tensor<2x3x!ttcore.tile<32x32, bf16>>, tensor<3x!ttcore.tile<32x32, bf16>> -> tensor<2x3x!ttcore.tile<32x32, bf16>>
+  return %r : tensor<2x3x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
+// Test: Dynamic shape on lhs
+func.func @matmul_dynamic_lhs(
+    %a: tensor<?x3x!ttcore.tile<32x32, bf16>>,
+    %b: tensor<3x4x!ttcore.tile<32x32, bf16>>) -> tensor<2x4x!ttcore.tile<32x32, bf16>> {
+  // expected-error @below {{lhs must have static shape}}
+  %r = ttl.matmul %a, %b : tensor<?x3x!ttcore.tile<32x32, bf16>>, tensor<3x4x!ttcore.tile<32x32, bf16>> -> tensor<2x4x!ttcore.tile<32x32, bf16>>
+  return %r : tensor<2x4x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
+// Test: Result element type mismatch (inputs bf16 but result f32)
+func.func @matmul_result_element_mismatch(
+    %a: tensor<2x3x!ttcore.tile<32x32, bf16>>,
+    %b: tensor<3x4x!ttcore.tile<32x32, bf16>>) -> tensor<2x4x!ttcore.tile<32x32, f32>> {
+  // expected-error @below {{result element type '!ttcore.tile<32x32, f32>' must match input element type '!ttcore.tile<32x32, bf16>'}}
+  %r = ttl.matmul %a, %b : tensor<2x3x!ttcore.tile<32x32, bf16>>, tensor<3x4x!ttcore.tile<32x32, bf16>> -> tensor<2x4x!ttcore.tile<32x32, f32>>
+  return %r : tensor<2x4x!ttcore.tile<32x32, f32>>
 }
