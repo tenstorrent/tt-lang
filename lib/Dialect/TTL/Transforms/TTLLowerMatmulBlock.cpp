@@ -44,6 +44,34 @@ static TileMatmulBlockOp findMatmulBlock(ComputeOp computeOp) {
   return result;
 }
 
+/// Validate that all matmul computes fit within DST capacity.
+/// Returns failure and emits diagnostics for any that exceed the limit.
+static LogicalResult validateMatmulDSTCapacity(func::FuncOp func) {
+  bool hadError = false;
+  func.walk([&](ComputeOp computeOp) {
+    if (!findMatmulBlock(computeOp)) {
+      return;
+    }
+    auto capacityOrErr = computeDSTCapacity(computeOp);
+    if (failed(capacityOrErr)) {
+      hadError = true;
+      return;
+    }
+    auto outType = cast<RankedTensorType>(computeOp.getOutputs()[0].getType());
+    int64_t M = outType.getDimSize(0);
+    int64_t N = outType.getDimSize(1);
+    int64_t dstCapacity = static_cast<int64_t>(*capacityOrErr);
+    if (M * N > dstCapacity) {
+      computeOp.emitOpError()
+          << "matmul output " << M << "x" << N << " = " << M * N
+          << " tiles exceeds DST capacity of " << dstCapacity
+          << "; automatic subblocking is not yet implemented";
+      hadError = true;
+    }
+  });
+  return hadError ? failure() : success();
+}
+
 /// Replace a matmul compute with flat ops: sync + matmul_block + stores.
 struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
   using OpRewritePattern<ComputeOp>::OpRewritePattern;
@@ -61,19 +89,6 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
     auto outType = cast<RankedTensorType>(computeOp.getOutputs()[0].getType());
     int64_t M = outType.getDimSize(0);
     int64_t N = outType.getDimSize(1);
-
-    // DST capacity check using dtype-aware computation. TODO: subblocking.
-    auto capacityOrErr = computeDSTCapacity(computeOp);
-    if (failed(capacityOrErr)) {
-      return failure();
-    }
-    int64_t dstCapacity = static_cast<int64_t>(*capacityOrErr);
-    if (M * N > dstCapacity) {
-      return rewriter.notifyMatchFailure(computeOp, [&](Diagnostic &diag) {
-        diag << "matmul output " << M << "x" << N << " = " << M * N
-             << " tiles exceeds DST capacity of " << dstCapacity;
-      });
-    }
 
     // Find the store view for tile_stores.
     SmallVector<TileStoreOp> stores;
@@ -133,6 +148,9 @@ struct TTLLowerMatmulBlockPass
 
   void runOnOperation() override {
     func::FuncOp func = getOperation();
+    if (failed(validateMatmulDSTCapacity(func))) {
+      return signalPassFailure();
+    }
     RewritePatternSet patterns(func.getContext());
     patterns.add<LowerMatmulBlockCompute>(func.getContext());
     if (failed(applyPatternsGreedily(func, std::move(patterns)))) {

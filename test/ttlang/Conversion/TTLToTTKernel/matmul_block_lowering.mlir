@@ -93,3 +93,46 @@ func.func @matmul_2x4_4x3(
   ttl.store %mm, %reserve : tensor<2x3x!ttcore.tile<32x32, bf16>>, tensor<2x3x!ttcore.tile<32x32, bf16>>
   func.return %mm : tensor<2x3x!ttcore.tile<32x32, bf16>>
 }
+
+// -----
+
+// =============================================================================
+// Test 3: 2x2 f32. DST capacity is 4 for f32, so 2x2=4 fits exactly.
+// =============================================================================
+
+// CHECK-LABEL: func.func @matmul_2x2_f32
+// CHECK-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
+// CHECK-DAG: %[[C1_I32:.*]] = arith.constant 1 : i32
+// CHECK-DAG: %[[C2_I32:.*]] = arith.constant 2 : i32
+// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
+// CHECK-DAG: %[[C2:.*]] = arith.constant 2 : index
+// CHECK-DAG: %[[C3:.*]] = arith.constant 3 : index
+// CHECK-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+// CHECK-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+// CHECK-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<8, !ttcore.tile<32x32, f32>>
+// CHECK:      "ttkernel.mm_block_init"(%[[CB0]], %[[CB1]], %[[CB2]], %[[C0_I32]], %[[C2_I32]], %[[C2_I32]], %[[C1_I32]])
+// CHECK:      ttkernel.tile_regs_acquire
+// CHECK-NEXT: "ttkernel.mm_block_init_short"(%[[CB0]], %[[CB1]], %[[C0_I32]], %[[C2_I32]], %[[C2_I32]], %[[C1_I32]])
+// CHECK-NEXT: "ttkernel.experimental::matmul_block"(%[[CB0]], %[[CB1]], %[[C0]], %[[C0]], %[[C0]], %[[C0_I32]], %[[C2_I32]], %[[C2_I32]], %[[C1_I32]], %[[C2_I32]])
+// CHECK-NEXT: ttkernel.tile_regs_commit
+// CHECK-NEXT: ttkernel.tile_regs_wait
+// CHECK-NEXT: ttkernel.pack_tile(%[[C0]], %[[CB2]], %[[C0]]
+// CHECK-NEXT: ttkernel.pack_tile(%[[C1]], %[[CB2]], %[[C1]]
+// CHECK-NEXT: ttkernel.pack_tile(%[[C2]], %[[CB2]], %[[C2]]
+// CHECK-NEXT: ttkernel.pack_tile(%[[C3]], %[[CB2]], %[[C3]]
+// CHECK-NEXT: ttkernel.tile_regs_release
+// CHECK-NOT:  scf.for
+func.func @matmul_2x2_f32(
+    %arg0: tensor<2x1x!ttcore.tile<32x32, f32>>,
+    %arg1: tensor<1x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 1], !ttcore.tile<32x32, f32>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+  %a = ttl.attach_cb %arg0, %cb0 : (tensor<2x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x1x!ttcore.tile<32x32, f32>>
+  %b = ttl.attach_cb %arg1, %cb1 : (tensor<1x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x2x!ttcore.tile<32x32, f32>>
+  %reserve = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %mm = ttl.matmul %a, %b : tensor<2x1x!ttcore.tile<32x32, f32>>, tensor<1x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  ttl.store %mm, %reserve : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
+  func.return %mm : tensor<2x2x!ttcore.tile<32x32, f32>>
+}
