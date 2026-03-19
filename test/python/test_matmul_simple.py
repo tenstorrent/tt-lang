@@ -71,9 +71,12 @@ def matmul_kernel(a, b, out):
         (2, 1, 2),  # Multi-tile output, K=1 outer product.
         (2, 1, 3),  # Non-square output, K=1.
         (1, 1, 4),  # Wide output, K=1.
+        (4, 1, 1),  # Tall output, K=1.
         (2, 1, 4),  # 2x4 output = 8 tiles, max for bf16 DST.
+        (4, 1, 2),  # 4x2 output = 8 tiles, tall rectangle at max DST.
+        (1, 1, 8),  # 1x8 output = 8 tiles, wide at max DST.
     ],
-    ids=["1x1x1", "2x1x2", "2x1x3", "1x1x4", "2x1x4"],
+    ids=["1x1x1", "2x1x2", "2x1x3", "1x1x4", "4x1x1", "2x1x4", "4x1x2", "1x1x8"],
 )
 @pytest.mark.requires_device
 def test_matmul_block_sizes(Mt, Kt, Nt, device):

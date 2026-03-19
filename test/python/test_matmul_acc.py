@@ -92,8 +92,21 @@ def matmul_acc_kernel(a, b, out):
         (2, 1, 2),
         (2, 2, 2),
         (2, 4, 2),
+        (1, 3, 1),  # Odd K.
+        (2, 2, 4),  # 2x4 output = 8 tiles at max DST, K=2.
+        (1, 4, 4),  # Wide output with K accumulation.
     ],
-    ids=["1x1x1", "1x2x1", "1x4x1", "2x1x2", "2x2x2", "2x4x2"],
+    ids=[
+        "1x1x1",
+        "1x2x1",
+        "1x4x1",
+        "2x1x2",
+        "2x2x2",
+        "2x4x2",
+        "1x3x1",
+        "2x2x4",
+        "1x4x4",
+    ],
 )
 @pytest.mark.requires_device
 def test_matmul_accumulate(Mt, Kt, Nt, device):
