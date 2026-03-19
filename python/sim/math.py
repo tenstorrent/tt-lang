@@ -695,9 +695,7 @@ def _reduce_impl(
     # Positive dims use innermost-first: d=0 -> last internal, d=1 -> second-to-last, ...
     # Negative dims use Python standard: d=-1 -> last internal (same as d=0 positive),
     # d=-2 -> second-to-last (same as d=1 positive), ...
-    internal_dims_set = {
-        ndim - 1 - d if d >= 0 else ndim + d for d in dims_set
-    }
+    internal_dims_set = {ndim - 1 - d if d >= 0 else ndim + d for d in dims_set}
 
     # Get the scaler
     scaler_tile = scaler.to_list()[0].to_torch()
