@@ -600,7 +600,11 @@ class Tensor:
 
 
 def rand(
-    shape: Shape, dtype: torch.dtype = bfloat16, layout: IndexType = TILE_LAYOUT
+    shape: Shape,
+    dtype: torch.dtype = bfloat16,
+    layout: IndexType = TILE_LAYOUT,
+    device: object = None,
+    memory_config: object = None,
 ) -> Tensor:
     """Create a random tensor with given shape, dtype, and layout."""
     t = torch.rand(shape, dtype=torch.float32)
@@ -609,7 +613,11 @@ def rand(
 
 
 def empty(
-    shape: Shape, dtype: torch.dtype = bfloat16, layout: IndexType = TILE_LAYOUT
+    shape: Shape,
+    dtype: torch.dtype = bfloat16,
+    layout: IndexType = TILE_LAYOUT,
+    device: object = None,
+    memory_config: object = None,
 ) -> Tensor:
     """Create an uninitialized tensor with given shape, dtype, and layout."""
     t = torch.empty(shape, dtype=dtype)
