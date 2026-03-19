@@ -50,19 +50,29 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
 
   LogicalResult matchAndRewrite(ComputeOp computeOp,
                                 PatternRewriter &rewriter) const override {
-    if (!findMatmulBlock(computeOp)) {
+    auto mmOp = findMatmulBlock(computeOp);
+    if (!mmOp) {
       return failure();
     }
+
+    assert(computeOp.getInputs().size() >= 2 &&
+           "matmul compute must have at least 2 inputs (lhs, rhs)");
 
     auto outType = cast<RankedTensorType>(computeOp.getOutputs()[0].getType());
     int64_t M = outType.getDimSize(0);
     int64_t N = outType.getDimSize(1);
 
-    // DST capacity check. TODO: subblocking.
-    int64_t dstCapacity = 8;
+    // DST capacity check using dtype-aware computation. TODO: subblocking.
+    auto capacityOrErr = computeDSTCapacity(computeOp);
+    if (failed(capacityOrErr)) {
+      return failure();
+    }
+    int64_t dstCapacity = static_cast<int64_t>(*capacityOrErr);
     if (M * N > dstCapacity) {
-      return rewriter.notifyMatchFailure(computeOp,
-                                         "matmul output exceeds DST capacity");
+      return rewriter.notifyMatchFailure(computeOp, [&](Diagnostic &diag) {
+        diag << "matmul output " << M << "x" << N << " = " << M * N
+             << " tiles exceeds DST capacity of " << dstCapacity;
+      });
     }
 
     // Find the store view for tile_stores.
@@ -75,7 +85,7 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
     Value outView = stores[0].getView();
 
     Location loc = computeOp.getLoc();
-    Type tileType = findMatmulBlock(computeOp).getResult().getType();
+    Type tileType = mmOp.getResult().getType();
 
     rewriter.setInsertionPoint(computeOp);
 

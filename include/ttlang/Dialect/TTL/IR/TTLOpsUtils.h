@@ -15,6 +15,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/SetVector.h"
+#include <cstdint>
 #include <optional>
 
 namespace mlir::tt::ttl {
@@ -275,6 +276,77 @@ applyIndexingMapToIterIndices(OpBuilder &builder, Location loc, AffineMap map,
         mlir::getValueOrCreateConstantIndexOp(builder, loc, result));
   }
   return mapped;
+}
+
+//===----------------------------------------------------------------------===//
+// DST capacity computation
+//===----------------------------------------------------------------------===//
+
+/// Physical DST register size in tiles (constant across all architectures).
+constexpr std::uint32_t kDstPhysicalSizeTiles = 16;
+
+/// Compute the logical DST capacity based on element types and sync mode.
+///
+/// The DST register file has 16 physical tiles. Logical capacity is derived:
+///   - Default (double-buffered): physical / 2 = 8 tiles
+///   - Full sync (dst_full_sync_en): no halving = 16 tiles
+///   - f32 accumulation: halved again (tiles are 2x wider)
+///
+/// Architecture-independent across Grayskull, Wormhole, and Blackhole.
+inline std::uint32_t getDstCapacity(bool isFloat32, bool fullSyncEn) {
+  std::uint32_t capacity = kDstPhysicalSizeTiles;
+  if (!fullSyncEn) {
+    capacity /= 2; // Double-buffering halves available tiles.
+  }
+  if (isFloat32) {
+    capacity /= 2; // f32 tiles occupy 2x the space.
+  }
+  return capacity;
+}
+
+/// Compute DST capacity for a compute op by inspecting block argument types
+/// and sync-mode attributes.
+/// Returns failure for mixed f32/non-f32 tile arguments.
+inline FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
+  bool fullSyncEn = false;
+  if (auto fullSyncAttr =
+          computeOp->getAttrOfType<mlir::BoolAttr>(kDstFullSyncEnAttrName)) {
+    fullSyncEn = fullSyncAttr.getValue();
+  }
+
+  bool fp32DestAccEn = false;
+  if (auto fp32Attr =
+          computeOp->getAttrOfType<mlir::BoolAttr>(kFp32DestAccEnAttrName)) {
+    fp32DestAccEn = fp32Attr.getValue();
+  }
+
+  bool sawF32 = false;
+  bool sawNonF32 = false;
+  Block &body = computeOp.getRegion().front();
+  for (BlockArgument arg : body.getArguments()) {
+    std::optional<Type> currentType = getTileElementType(arg.getType());
+    if (currentType) {
+      if (currentType->isF32()) {
+        sawF32 = true;
+      } else {
+        sawNonF32 = true;
+      }
+    }
+  }
+
+  if (sawF32) {
+    fp32DestAccEn = true;
+  }
+
+  if (sawF32 && sawNonF32) {
+    return computeOp.emitOpError(
+        "mixed f32 and non-f32 tile arguments; "
+        "DST capacity uses f32 limits (4 tiles) which may produce "
+        "incorrect results");
+  }
+
+  bool isFloat32 = sawF32 || fp32DestAccEn;
+  return getDstCapacity(isFloat32, fullSyncEn);
 }
 
 } // namespace mlir::tt::ttl

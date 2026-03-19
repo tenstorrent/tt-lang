@@ -62,20 +62,19 @@ def matmul_with_bias(
     def compute():
         for _ in range(MT):
             for _ in range(NT):
-                # Phase 1: Accumulate A@B over K into tmp_dfb.
-                # First K-step: store matmul result directly.
+                # Store initial block product into temporary tmp_dfb.
                 with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
                     with tmp_dfb.reserve() as tmp_blk:
                         tmp_blk.store(a_blk @ b_blk)
 
-                # Remaining K-steps: reload partial, add new product, store back.
+                # Reload partial, compute block matmul and accumulate into tmp_dfb
                 for _ in range(KT - 1):
                     with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
                         with tmp_dfb.wait() as prev_blk:
                             with tmp_dfb.reserve() as tmp_blk:
                                 tmp_blk.store(prev_blk + (a_blk @ b_blk))
 
-                # Phase 2: Add bias C to accumulated result, store to output.
+                # Add bias C to accumulated result, store to output.
                 with tmp_dfb.wait() as acc_blk, c_dfb.wait() as c_blk:
                     with y_dfb.reserve() as y_blk:
                         y_blk.store(acc_blk + c_blk)
