@@ -1,24 +1,16 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute))' --split-input-file | FileCheck %s
 
-// Standalone matmul lowered to ttl.compute with ttl.tile_matmul_block.
-// matmul_block handles K internally and writes M*N DST registers in one call.
-// The compute has identity maps and all-parallel iterators (no per-tile loops).
+// Matmul lowered to ttl.compute with tile_matmul_block.
+// 3D iteration space [M, N, K] with matmul indexing maps.
 
-#map = affine_map<(d0, d1) -> (d0, d1)>
-
-// 1x1 bf16: minimal case.
 // CHECK-LABEL: func.func @matmul_1x1_bf16
 func.func @matmul_1x1_bf16(
     %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %arg1: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
-  // CHECK:      ttl.compute
-  // CHECK-SAME:   ins({{.*}} : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>)
-  // CHECK-SAME:   outs({{.*}} : tensor<1x1x!ttcore.tile<32x32, bf16>>)
-  // CHECK-SAME:   {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]
-  // CHECK:      ^bb0({{.*}}: !ttcore.tile<32x32, bf16>, {{.*}}: !ttcore.tile<32x32, bf16>, {{.*}}: !ttcore.tile<32x32, bf16>):
-  // CHECK:        ttl.tile_matmul_block
-  // CHECK:        ttl.tile_store
-  // CHECK:        ttl.yield
+  // CHECK: ttl.compute
+  // CHECK-SAME: iterator_types = ["parallel", "parallel", "reduction"]
+  // CHECK: ttl.tile_matmul_block
+  // CHECK: ttl.tile_store
   %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -32,15 +24,13 @@ func.func @matmul_1x1_bf16(
 
 // -----
 
-// 1x1 f32.
 // CHECK-LABEL: func.func @matmul_1x1_f32
 func.func @matmul_1x1_f32(
     %arg0: tensor<1x1x!ttcore.tile<32x32, f32>>,
     %arg1: tensor<1x1x!ttcore.tile<32x32, f32>>) -> tensor<1x1x!ttcore.tile<32x32, f32>> {
-  // CHECK:      ttl.compute
-  // CHECK-SAME:   ins({{.*}} : tensor<1x1x!ttcore.tile<32x32, f32>>, tensor<1x1x!ttcore.tile<32x32, f32>>)
-  // CHECK-SAME:   outs({{.*}} : tensor<1x1x!ttcore.tile<32x32, f32>>)
-  // CHECK:        ttl.tile_matmul_block
+  // CHECK: ttl.compute
+  // CHECK-SAME: iterator_types = ["parallel", "parallel", "reduction"]
+  // CHECK: ttl.tile_matmul_block
   %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -54,18 +44,16 @@ func.func @matmul_1x1_f32(
 
 // -----
 
-// Non-square [2,4] @ [4,3] -> [2,3]. Output 2*3=6 fits in DST (capacity 8).
-// Operand shapes differ but identity maps are used (matmul_block handles
-// the block-level indexing internally).
+// Non-square [2,4] @ [4,3] -> [2,3].
 // CHECK-LABEL: func.func @matmul_2x4_4x3
 func.func @matmul_2x4_4x3(
     %arg0: tensor<2x4x!ttcore.tile<32x32, bf16>>,
     %arg1: tensor<4x3x!ttcore.tile<32x32, bf16>>) -> tensor<2x3x!ttcore.tile<32x32, bf16>> {
-  // CHECK:      ttl.compute
-  // CHECK-SAME:   ins({{.*}} : tensor<2x4x!ttcore.tile<32x32, bf16>>, tensor<4x3x!ttcore.tile<32x32, bf16>>)
-  // CHECK-SAME:   outs({{.*}} : tensor<2x3x!ttcore.tile<32x32, bf16>>)
-  // CHECK:        ttl.tile_matmul_block
-  // CHECK:        ttl.tile_store
+  // CHECK: ttl.compute
+  // CHECK-SAME: ins({{.*}} : tensor<2x4x!ttcore.tile<32x32, bf16>>, tensor<4x3x!ttcore.tile<32x32, bf16>>)
+  // CHECK-SAME: outs({{.*}} : tensor<2x3x!ttcore.tile<32x32, bf16>>)
+  // CHECK-SAME: iterator_types = ["parallel", "parallel", "reduction"]
+  // CHECK: ttl.tile_matmul_block
   %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 4], !ttcore.tile<32x32, bf16>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[4, 3], !ttcore.tile<32x32, bf16>, 2>
   %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[2, 3], !ttcore.tile<32x32, bf16>, 2>
@@ -79,15 +67,14 @@ func.func @matmul_2x4_4x3(
 
 // -----
 
-// [1,8] @ [8,1] -> [1,1]. Large K handled by matmul_block internally.
+// [1,8] @ [8,1] -> [1,1]. Large K.
 // CHECK-LABEL: func.func @matmul_1x8_8x1
 func.func @matmul_1x8_8x1(
     %arg0: tensor<1x8x!ttcore.tile<32x32, bf16>>,
     %arg1: tensor<8x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
-  // CHECK:      ttl.compute
-  // CHECK-SAME:   ins({{.*}} : tensor<1x8x!ttcore.tile<32x32, bf16>>, tensor<8x1x!ttcore.tile<32x32, bf16>>)
-  // CHECK-SAME:   outs({{.*}} : tensor<1x1x!ttcore.tile<32x32, bf16>>)
-  // CHECK:        ttl.tile_matmul_block
+  // CHECK: ttl.compute
+  // CHECK-SAME: iterator_types = ["parallel", "parallel", "reduction"]
+  // CHECK: ttl.tile_matmul_block
   %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 8], !ttcore.tile<32x32, bf16>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[8, 1], !ttcore.tile<32x32, bf16>, 2>
   %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>

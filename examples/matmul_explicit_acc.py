@@ -105,9 +105,9 @@ def main() -> None:
     result = ttnn.to_torch(Y)
     expected = A_torch @ B_torch + C_torch
 
-    assert torch.allclose(result, expected, atol=1e-4), (
-        f"Mismatch! Max diff: {(result - expected).abs().max().item()}"
-    )
+    assert torch.allclose(
+        result, expected, atol=1e-4
+    ), f"Mismatch! Max diff: {(result - expected).abs().max().item()}"
     print("PASSED!")
 
 

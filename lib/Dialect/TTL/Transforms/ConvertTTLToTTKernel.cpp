@@ -371,7 +371,7 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
         if (auto dstIdxAttr =
                 defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
           dstIndex = arith::ConstantIndexOp::create(rewriter, loc,
-                                                     dstIdxAttr.getInt());
+                                                    dstIdxAttr.getInt());
         } else if (auto copyTile = dyn_cast<CopyTileOp>(defOp)) {
           dstIndex = copyTile.getDstIndex();
         } else {

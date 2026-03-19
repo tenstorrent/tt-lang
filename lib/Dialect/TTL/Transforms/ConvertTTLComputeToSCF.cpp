@@ -146,15 +146,6 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       return failure();
     }
 
-    // Block matmul: collapse iteration to a single point. The matmul_block
-    // op handles the full block atomically; no per-tile loops needed.
-    bool isBlockMatmul = op->hasAttr("ttl.block_matmul");
-    if (isBlockMatmul) {
-      for (auto &range : iterDomain) {
-        range.size = rewriter.getIndexAttr(1);
-      }
-    }
-
     SmallVector<Value> lowerBounds, upperBounds, steps;
     for (auto [idx, range] : llvm::enumerate(iterDomain)) {
       Value lb = getValueOrCreateConstantIndexOp(rewriter, loc, range.offset);

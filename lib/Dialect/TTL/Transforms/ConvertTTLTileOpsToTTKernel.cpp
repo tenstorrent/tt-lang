@@ -405,9 +405,9 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
     }
     AffineMap identity = AffineMap::getMultiDimIdentityMap(
         operandShape->size(), rewriter.getContext());
-    auto cbIdx = utils::computeCBTileIndex(op, rewriter, identity,
-                                            *operandShape, *operandShape,
-                                            operandShape->size());
+    auto cbIdx =
+        utils::computeCBTileIndex(op, rewriter, identity, *operandShape,
+                                  *operandShape, operandShape->size());
     if (failed(cbIdx)) {
       return failure();
     }
@@ -728,9 +728,9 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
       }
       AffineMap identity = AffineMap::getMultiDimIdentityMap(
           inTensorShape->size(), rewriter.getContext());
-      auto cbIdx = utils::computeCBTileIndex(op, rewriter, identity,
-                                              *inTensorShape, *inTensorShape,
-                                              inTensorShape->size());
+      auto cbIdx =
+          utils::computeCBTileIndex(op, rewriter, identity, *inTensorShape,
+                                    *inTensorShape, inTensorShape->size());
       if (failed(cbIdx)) {
         return failure();
       }
@@ -790,8 +790,7 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
 /// Lower ttl.tile_matmul_block to ttkernel.experimental::matmul_block.
 /// Block dimensions (rt, ct, kt, nt) are derived from the enclosing
 /// ttl.compute's operand tensor shapes.
-struct TTLTileMatmulBlockToTTKernel
-    : OpConversionPattern<TileMatmulBlockOp> {
+struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -822,55 +821,39 @@ struct TTLTileMatmulBlockToTTKernel
     Value dstIdx =
         arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
 
-    // Derive block dimensions and CB tile indices from the enclosing compute's
-    // operand shapes and indexing maps.
+    // Derive block dimensions from operand shapes.
     auto lhsShape = getOperandTensorShape(op.getLhs());
     auto rhsShape = getOperandTensorShape(op.getRhs());
     if (!lhsShape || !rhsShape) {
       return rewriter.notifyMatchFailure(
           op, "cannot determine operand tensor shapes for block dimensions");
     }
-    // lhs is [M, K], rhs is [K, N].
-    int32_t rt = (*lhsShape)[0];  // M
-    int32_t kt = (*lhsShape)[1];  // K
-    int32_t ct = (*rhsShape)[1];  // N
-    int32_t nt = ct;              // B column dim (stride for K advancement)
+    // lhs is [M, K] per K-step (K=1 for block matmul pattern).
+    // rhs is [K, N] per K-step (K=1 for block matmul pattern).
+    int32_t rt = (*lhsShape)[0]; // M
+    int32_t ct = (*rhsShape)[1]; // N
+    int32_t nt = ct;             // B column dim
 
-    // Build per-operand indexing maps for CB tile index computation.
-    // Matmul semantics: lhs is [M,K], rhs is [K,N], iteration domain is [M,N,K].
-    //   lhs map: (m,n,k) -> (m,k)
-    //   rhs map: (m,n,k) -> (k,n)
-    MLIRContext *ctx = rewriter.getContext();
-    auto d0 = getAffineDimExpr(0, ctx);  // m
-    auto d1 = getAffineDimExpr(1, ctx);  // n
-    auto d2 = getAffineDimExpr(2, ctx);  // k
-    AffineMap lhsMap = AffineMap::get(3, 0, {d0, d2}, ctx);
-    AffineMap rhsMap = AffineMap::get(3, 0, {d2, d1}, ctx);
-    SmallVector<int64_t> iterDomainSizes = {rt, ct, kt};
-
-    auto lhsIdx = utils::computeCBTileIndex(op, rewriter, lhsMap,
-                                             iterDomainSizes, *lhsShape);
-    auto rhsIdx = utils::computeCBTileIndex(op, rewriter, rhsMap,
-                                             iterDomainSizes, *rhsShape);
-    if (failed(lhsIdx) || failed(rhsIdx)) {
-      return failure();
-    }
+    // CB tile indices are always 0: the CB is popped and refilled each
+    // K-step, so the read pointer resets. kt_dim=1 (one K-step per call,
+    // matching the proven tt-metal pattern).
+    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
 
     Value transpose =
         arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(0));
-    Value ctVal =
-        arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(ct));
-    Value rtVal =
-        arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(rt));
+    Value ctVal = arith::ConstantOp::create(rewriter, loc,
+                                            rewriter.getI32IntegerAttr(ct));
+    Value rtVal = arith::ConstantOp::create(rewriter, loc,
+                                            rewriter.getI32IntegerAttr(rt));
     Value ktVal =
-        arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(kt));
-    Value ntVal =
-        arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(nt));
+        arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(1));
+    Value ntVal = arith::ConstantOp::create(rewriter, loc,
+                                            rewriter.getI32IntegerAttr(nt));
 
-    // Emit matmul_block (init inserted by ttkernel-insert-inits pass).
-    ttk::ExperimentalMatmulBlockOp::create(rewriter, loc, *lhsCB, *rhsCB,
-                                           *lhsIdx, *rhsIdx, dstIdx, transpose,
-                                           ctVal, rtVal, ktVal, ntVal);
+    // Emit matmul_block with kt_dim=1 (init inserted by ttkernel-insert-inits).
+    ttk::ExperimentalMatmulBlockOp::create(rewriter, loc, *lhsCB, *rhsCB, zero,
+                                           zero, dstIdx, transpose, ctVal,
+                                           rtVal, ktVal, ntVal);
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();

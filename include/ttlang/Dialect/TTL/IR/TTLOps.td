@@ -744,8 +744,10 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
 
     Maps to ttkernel.mm_block_init + ttkernel.experimental::matmul_block.
   }];
-  let arguments = (ins TTL_TileType:$lhs, TTL_TileType:$rhs);
-  let results = (outs TTL_TileType:$result);
+  // Accepts both tile types (inside compute body) and tensor types (after
+  // lower-matmul-block flattens the compute into a direct CB reference).
+  let arguments = (ins AnyType:$lhs, AnyType:$rhs);
+  let results = (outs AnyType:$result);
   let assemblyFormat =
       "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
 }

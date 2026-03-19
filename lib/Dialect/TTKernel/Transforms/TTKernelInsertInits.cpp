@@ -109,13 +109,13 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
   // Args: in0_cb, in1_cb, transpose, ct, rt, kt.
   map[mlir::TypeID::get<ttk::ExperimentalMatmulBlockOp>()] = {
       [](OpBuilder &b, Location l, Operation *computeOp) {
-        Value transpose = computeOp->getOperand(5);  // transpose
-        Value ct = computeOp->getOperand(6);          // ct_dim
-        Value rt = computeOp->getOperand(7);          // rt_dim
-        Value kt = computeOp->getOperand(8);          // kt_dim
+        Value transpose = computeOp->getOperand(5); // transpose
+        Value ct = computeOp->getOperand(6);        // ct_dim
+        Value rt = computeOp->getOperand(7);        // rt_dim
+        Value kt = computeOp->getOperand(8);        // kt_dim
         ttk::MatmulBlockInitShortOp::create(b, l, computeOp->getOperand(0),
-                                            computeOp->getOperand(1),
-                                            transpose, ct, rt, kt);
+                                            computeOp->getOperand(1), transpose,
+                                            ct, rt, kt);
       }};
 
   // UnaryBcast: init takes 2 CB args + bcast_type attr.
@@ -350,9 +350,9 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
 
     if (analysis.hasMatmul && in0CB && in1CB) {
       // mm_block_init configures UNPACK + MATH + PACK for matmul_block.
-      ttk::MatmulBlockInitOp::create(builder, loc, in0CB, in1CB, outputCB,
-                                     analysis.matmulTranspose, analysis.matmulCt,
-                                     analysis.matmulRt, analysis.matmulKt);
+      ttk::MatmulBlockInitOp::create(
+          builder, loc, in0CB, in1CB, outputCB, analysis.matmulTranspose,
+          analysis.matmulCt, analysis.matmulRt, analysis.matmulKt);
     } else if (analysis.hasFPUBinary && in0CB && in1CB) {
       ttk::BinaryOpInitCommonOp::create(builder, loc, in0CB, in1CB, outputCB);
     } else if (inputCB) {

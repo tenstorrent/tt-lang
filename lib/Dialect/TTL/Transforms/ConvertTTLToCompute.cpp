@@ -854,9 +854,9 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
     Value rhs = op.getRhs();
 
     if (!getAttachedCB(lhs) || !getAttachedCB(rhs)) {
-      return rewriter.notifyMatchFailure(
-          op, "matmul inputs not CB-attached; "
-              "handled by fused add+matmul pattern");
+      return rewriter.notifyMatchFailure(op,
+                                         "matmul inputs not CB-attached; "
+                                         "handled by fused add+matmul pattern");
     }
 
     auto lhsType = getTensorType(lhs);
@@ -877,9 +877,9 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
     MLIRContext *ctx = rewriter.getContext();
 
     // 3D iteration space [M, N, K] with matmul indexing maps.
-    auto d0 = getAffineDimExpr(0, ctx);  // m
-    auto d1 = getAffineDimExpr(1, ctx);  // n
-    auto d2 = getAffineDimExpr(2, ctx);  // k
+    auto d0 = getAffineDimExpr(0, ctx); // m
+    auto d1 = getAffineDimExpr(1, ctx); // n
+    auto d2 = getAffineDimExpr(2, ctx); // k
     AffineMap lhsMap = AffineMap::get(3, 0, {d0, d2}, ctx);
     AffineMap rhsMap = AffineMap::get(3, 0, {d2, d1}, ctx);
     AffineMap outMap = AffineMap::get(3, 0, {d0, d1}, ctx);
@@ -920,9 +920,8 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
 
     rewriter.setInsertionPointToStart(body);
 
-    Value result = TileMatmulBlockOp::create(rewriter, loc, tileType,
-                                             body->getArgument(0),
-                                             body->getArgument(1));
+    Value result = TileMatmulBlockOp::create(
+        rewriter, loc, tileType, body->getArgument(0), body->getArgument(1));
     emitTileStores(rewriter, loc, result, op);
     YieldOp::create(rewriter, loc);
     rewriter.replaceOp(op, computeOp.getResult(0));

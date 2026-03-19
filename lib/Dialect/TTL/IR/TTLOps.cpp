@@ -705,9 +705,9 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   auto maps = mapsAttr;
 
   // The iteration domain (from iterator_types) must be at least as large as the
-  // maximum operand rank. Extra dimensions are reduction dims that do not appear
-  // in any operand's shape (e.g., the K dimension in matmul: rank-2 operands
-  // with a 3D [M, N, K] iteration space).
+  // maximum operand rank. Extra dimensions are reduction dims that do not
+  // appear in any operand's shape (e.g., the K dimension in matmul: rank-2
+  // operands with a 3D [M, N, K] iteration space).
   int64_t maxTensorRank = 0;
   for (Value operand : llvm::concat<Value>(getInputs(), getOutputs())) {
     auto ty = cast<RankedTensorType>(operand.getType());
@@ -988,10 +988,12 @@ mlir::LogicalResult mlir::tt::ttl::MatmulOp::verify() {
   auto resultType = mlir::cast<RankedTensorType>(getResult().getType());
 
   if (lhsType.getRank() != 2) {
-    return emitOpError() << "lhs must be rank 2, got rank " << lhsType.getRank();
+    return emitOpError() << "lhs must be rank 2, got rank "
+                         << lhsType.getRank();
   }
   if (rhsType.getRank() != 2) {
-    return emitOpError() << "rhs must be rank 2, got rank " << rhsType.getRank();
+    return emitOpError() << "rhs must be rank 2, got rank "
+                         << rhsType.getRank();
   }
   if (resultType.getRank() != 2) {
     return emitOpError() << "result must be rank 2, got rank "
