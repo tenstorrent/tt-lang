@@ -229,6 +229,9 @@ result = ttl.math.relu(x)     # ReLU (max(0, x))
 result = ttl.math.abs(x)      # Absolute value
 result = ttl.math.neg(x)      # Negation (-x)
 result = ttl.math.floor(x)    # Floor
+result = ttl.math.sin(x)      # Sine
+result = ttl.math.cos(x)      # Cosine
+result = ttl.math.tan(x)      # Tangent
 ```
 
 ### Matrix Multiplication (IMPORTANT: Different semantics!)
