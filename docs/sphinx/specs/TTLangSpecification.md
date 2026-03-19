@@ -1078,27 +1078,35 @@ def matmul_read():
 | Functionality | Simulator | Compiler |
 | :---- | :---- | :---- |
 | 2D grid `ttl.grid_size` and `ttl.core` with `dims=2`| 0.1.7 | 0.1.7 |
-| 2D grid `ttl.grid_size` and `ttl.core` with any `dims` | 0.1.7 | N/A |
-| 4D grid `ttl.grid_size` and `ttl.core` | N/A | N/A |
+| 2D grid `ttl.grid_size` and `ttl.core` with any `dims` | 0.1.7 | N/S |
+| 4D grid `ttl.grid_size` and `ttl.core` | N/S | N/S |
+| SPMD | N/A | N/S |
 | `ttl.make_dataflow_buffer_like` with 2D+ `shape` | 0.1.7 | 0.1.7 |
-| `ttl.make_dataflow_buffer_like` with any `shape` | 0.1.7 | N/A |
-| `store` with `acc = False` | 0.1.7 | 0.1.7 |
-| `store` with `acc = True` | 0.1.7 | N/A |
+| `ttl.make_dataflow_buffer_like` with any `shape` | 0.1.7 | N/S |
+| `ttl.make_dataflow_buffer_like` for tilized tensors | 0.1.7 | 0.1.7 |
+| `ttl.make_dataflow_buffer_like` for row-major tensors | N/S | N/S |
+| `ttl.Block.store` with `acc = False` | 0.1.7 | 0.1.7 |
+| `ttl.Block.store` with `acc = True` | 0.1.7 | N/S |
 | `ttl.copy` and `ttl.Transfer` | 0.1.7 | 0.1.7 |
-| `ttl.GroupTransfer` | N/A | N/A |
-| `ttl.Semaphore` | N/A | N/A |
-| `ttl.PipeNet` and `ttl.Pipe` | 0.1.7 | N/A |
+| `ttl.GroupTransfer` | N/S | N/S |
+| `ttl.Semaphore` on 2D grid | N/S | N/S |
+| `ttl.Semaphore` on 4D grid | N/S | N/S |
+| `ttl.PipeNet` and `ttl.Pipe` on 2D grid | 0.1.7 | N/S |
+| `ttl.PipeNet` and `ttl.Pipe` on 4D grid | N/S | N/S |
 | `ttl.signpost` (ignored in simulator) | 0.1.7 | 0.1.7 |
 | Debug printing with `print` | 0.1.7 | 0.1.7 |
 | Built-in unary math operators: `-`, `abs` | 0.1.7 | 0.1.7 |
 | Built-in binary math operators: `+`, `-`, `*`, `/` | 0.1.7 | 0.1.7 |
-| Built-in binary math operators: `@`, `%`, `//`, `^`, | 0.1.7 | N/A |
+| Built-in binary math operators: `@`, `%`, `//`, `^`, | 0.1.7 | N/S |
 | `ttl.math` unary math functions: `exp`, `log`, `sqrt`, `rsqrt`, `tanh`, `sigmoid`, `relu`, `floor`, `recip`, `sin`, `cos`, `tan` | 0.1.7 | 0.1.7 |
-| `ttl.math` unary math functions: `exp2`, `expm1`, `logp1`, `square`, `tan`, `atan`, `atanh`, `asin`, `asinh`, `acos`, `acosh`, `gelu`, `silu`, `softsign`, `hardsigmoid`, `selu`, `ceil`, `frac`, `trunc`, `sign`, `signbit`, `rsub`, `relu_max`, `relu_min`, `leaky_relu`, `elu`, `celu`, `prelu`, `softplus`, `hardtanh`, `round`, `clamp`, `threshold`, `fill` | 0.1.7 | N/A |
+| `ttl.math` unary math functions: `exp2`, `expm1`, `logp1`, `square`, `tan`, `atan`, `atanh`, `asin`, `asinh`, `acos`, `acosh`, `gelu`, `silu`, `softsign`, `hardsigmoid`, `selu`, `ceil`, `frac`, `trunc`, `sign`, `signbit`, `rsub`, `relu_max`, `relu_min`, `leaky_relu`, `elu`, `celu`, `prelu`, `softplus`, `hardtanh`, `round`, `clamp`, `threshold`, `fill` | 0.1.7 | N/S |
 | `ttl.math` binary math functions: `min`, `max` | 0.1.7 | 0.1.7 |
-| `ttl.math` binary math functions: `mask`, `mask_posinf`, `` | 0.1.7 | N/A |
-| `ttl.math.where` | 0.1.7 | N/A |
+| `ttl.math` binary math functions: `mask`, `mask_posinf`, `` | 0.1.7 | N/S |
+| `ttl.math.where` | 0.1.7 | N/S |
 | `ttl.math.broadcast` | 0.1.7 | 0.1.7 |
-| `ttl.math.reduce_max` | 0.1.7 | N/A |
-| `ttl.math.reduce_sum` | 0.1.7 | N/A |
-| `ttl.math.transpose` | 0.1.7 | N/A |
+| `ttl.math.reduce_max` | 0.1.7 | N/S |
+| `ttl.math.reduce_sum` | 0.1.7 | N/S |
+| `ttl.math.transpose` | 0.1.7 | N/S |
+
+* N/S - Not Supported
+* N/A - Not Applicable
