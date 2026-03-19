@@ -430,7 +430,9 @@ class Tensor:
     def __getitem__(self, key: TensorKey) -> "Tensor":
         # Python passes a bare int/slice (not a tuple) for single-element indexing.
         normalized: Tuple[Selector, ...] = key if isinstance(key, tuple) else (key,)
-        result = Tensor(self._tensor[cast(Any, self._to_element_key(normalized))])
+        result = Tensor(
+            self._tensor[cast(Any, self._to_element_key(normalized))], self._layout
+        )
         if hasattr(self, "_name"):
             result._name = self._name  # type: ignore
         return result

@@ -163,11 +163,12 @@ def _create_unary_op_wrapper(
 
     def wrapper(block: Block) -> Block:
         # Apply the operation to each tensor in the block
+        layout = block.layout
         result_torch: List[torch.Tensor] = [
             torch_fn(t.to_torch()) for t in block.to_list()
         ]
 
-        result_list: List[Tensor] = [Tensor(t) for t in result_torch]
+        result_list: List[Tensor] = [Tensor(t, layout) for t in result_torch]
         result_block = Block.from_list(result_list, shape=block._shape)  # type: ignore[attr-defined]
         track_source_blocks(result_block, block)
         return result_block
@@ -261,12 +262,13 @@ def _apply_binary_op(
         raise ValueError(
             f"Shape mismatch in binary op: a has shape {a_shape}, b has shape {b_shape}"
         )
+    layout = a.layout
     a_tensors = [t.to_torch() for t in a.to_list()]
     b_tensors = [t.to_torch() for t in b.to_list()]
     result_torch: List[torch.Tensor] = [
         op(a_t, b_t) for a_t, b_t in zip(a_tensors, b_tensors)
     ]
-    result_list: List[Tensor] = [Tensor(t) for t in result_torch]
+    result_list: List[Tensor] = [Tensor(t, layout) for t in result_torch]
 
     result_block = Block.from_list(result_list, shape=a_shape)  # type: ignore[attr-defined]
     track_source_blocks(result_block, a, b)
@@ -303,13 +305,14 @@ def _apply_ternary_op(
             f"Shape mismatch in ternary op: a has shape {a_shape}, "
             f"b has shape {b_shape}, c has shape {c_shape}"
         )
+    layout = a.layout
     a_tensors = [t.to_torch() for t in a.to_list()]
     b_tensors = [t.to_torch() for t in b.to_list()]
     c_tensors = [t.to_torch() for t in c.to_list()]
     result_torch: List[torch.Tensor] = [
         op(a_t, b_t, c_t) for a_t, b_t, c_t in zip(a_tensors, b_tensors, c_tensors)
     ]
-    result_list: List[Tensor] = [Tensor(t) for t in result_torch]
+    result_list: List[Tensor] = [Tensor(t, layout) for t in result_torch]
 
     result_block = Block.from_list(result_list, shape=a_shape)  # type: ignore[attr-defined]
     track_source_blocks(result_block, a, b, c)
@@ -329,8 +332,9 @@ def _apply_unary_with_params(
     Returns:
         Block with operation applied element-wise
     """
+    layout = block.layout
     result_torch: List[torch.Tensor] = [op(t.to_torch()) for t in block.to_list()]
-    result_list: List[Tensor] = [Tensor(t) for t in result_torch]
+    result_list: List[Tensor] = [Tensor(t, layout) for t in result_torch]
 
     result_block = Block.from_list(result_list, shape=block._shape)  # type: ignore[attr-defined]
     track_source_blocks(result_block, block)
@@ -734,7 +738,7 @@ def _reduce_impl(
                 result_tile = stacked.max(dim=0).values
 
         # Apply scaler
-        result_tensors.append(Tensor(result_tile * scaler_tile))
+        result_tensors.append(Tensor(result_tile * scaler_tile, block.layout))
 
     result_block = Block.from_list(result_tensors, shape=result_shape)
     track_source_blocks(result_block, block, scaler)
@@ -820,7 +824,8 @@ def transpose(block: Block, _output_hint: Optional[Block] = None) -> Block:
         )
 
     # Transpose each tile (swap rows/columns within tiles)
-    transposed_tiles = [Tensor(t.to_torch().T) for t in block.to_list()]
+    layout = block.layout
+    transposed_tiles = [Tensor(t.to_torch().T, layout) for t in block.to_list()]
 
     # Also swap the tile grid dimensions: (M, N) -> (N, M)
     M, N = block._shape  # type: ignore[attr-defined]
