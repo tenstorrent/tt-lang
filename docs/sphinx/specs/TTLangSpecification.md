@@ -1103,7 +1103,7 @@ def matmul_read():
 | `ttl.math` binary math functions: `min`, `max` | 0.1.7 | 0.1.7 |
 | `ttl.math` binary math functions: `mask`, `mask_posinf` | 0.1.7 | N/S |
 | `ttl.math.where` | 0.1.7 | N/S |
-| `ttl.math.broadcast` | 0.1.7 | 0.1.7 |
+| `ttl.math.broadcast` (compiler requires target block as argument) | 0.1.7 | 0.1.7 |
 | `ttl.math.reduce_max` | 0.1.7 | N/S |
 | `ttl.math.reduce_sum` | 0.1.7 | N/S |
 | `ttl.math.transpose` | 0.1.7 | N/S |
