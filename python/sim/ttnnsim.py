@@ -624,6 +624,37 @@ def empty(
     return Tensor(t, layout)
 
 
+def upsample(
+    input_tensor: "Tensor",
+    scale_factor: "int | float | list[int] | list[float]",
+    *,
+    mode: str = "nearest",
+    memory_config: object = None,
+    compute_kernel_config: object = None,
+) -> "Tensor":
+    """Upsample a 4D tensor in NHWC layout.
+
+    Mirrors ttnn.upsample. Accepts scale_factor as a scalar or [H_scale, W_scale].
+    memory_config and compute_kernel_config are accepted and ignored.
+    """
+    import torch.nn.functional as F
+
+    # Normalise scale_factor to (scale_h, scale_w)
+    if isinstance(scale_factor, (int, float)):
+        scale_h: float = float(scale_factor)
+        scale_w: float = float(scale_factor)
+    else:
+        scale_h = float(scale_factor[0])
+        scale_w = float(scale_factor[1])
+
+    # NHWC -> NCHW for PyTorch, apply interpolate, then back to NHWC
+    t = input_tensor.to_torch().float()
+    t_nchw = t.permute(0, 3, 1, 2)
+    t_up = F.interpolate(t_nchw, scale_factor=(scale_h, scale_w), mode=mode)
+    t_nhwc = t_up.permute(0, 2, 3, 1).to(t.dtype)
+    return Tensor(t_nhwc, ROW_MAJOR_LAYOUT)
+
+
 def to_torch(t: Union[Tensor, torch.Tensor]) -> torch.Tensor:
     """Convert a simulator Tensor or torch.Tensor to torch.Tensor."""
     match t:

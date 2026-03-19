@@ -35,8 +35,12 @@ def tt_lang_upsample_nearest_rowwise_interleaved(
         f"all_cores: {all_cores}, core_group_1: {core_group_1}, core_group_2: {core_group_2}, work_per_core1: {work_per_core1}, work_per_core2: {work_per_core2}"
     )
 
-    num_cores_group_1 = core_group_1[0][-1] - core_group_1[1][-1] + 1
-    num_cores_group_2 = core_group_2[0][-1] - core_group_2[1][-1] + 1
+    num_cores_group_1 = (
+        core_group_1[1][-1] - core_group_1[0][-1] + 1 if core_group_1 else 0
+    )
+    num_cores_group_2 = (
+        core_group_2[1][-1] - core_group_2[0][-1] + 1 if core_group_2 else 0
+    )
 
     def get_work_per_core(core_id):
         if core_id < num_cores_group_1:
@@ -127,8 +131,10 @@ def test_tt_lang_upsample_nearest_rowwise_interleaved(input_shape, scale_factor)
     )
 
     golden_tensor = ttnn.upsample(input_tensor, scale_factor)
+    print(f"golden_tensor: {golden_tensor}")
+    print(f"output_tensor: {output_tensor}")
 
-    assert_with_ulp(output_tensor, golden_tensor, ulp=1)
+    assert_with_ulp(output_tensor.to_torch(), golden_tensor.to_torch(), ulp_threshold=1)
     print("Test passed!")
 
 
