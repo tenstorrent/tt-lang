@@ -1101,7 +1101,7 @@ def matmul_read():
 | `ttl.math` unary math functions: `exp`, `log`, `sqrt`, `rsqrt`, `tanh`, `sigmoid`, `relu`, `floor`, `recip`, `sin`, `cos`, `tan` | 0.1.7 | 0.1.7 |
 | `ttl.math` unary math functions: `exp2`, `expm1`, `logp1`, `square`, `tan`, `atan`, `atanh`, `asin`, `asinh`, `acos`, `acosh`, `gelu`, `silu`, `softsign`, `hardsigmoid`, `selu`, `ceil`, `frac`, `trunc`, `sign`, `signbit`, `rsub`, `relu_max`, `relu_min`, `leaky_relu`, `elu`, `celu`, `prelu`, `softplus`, `hardtanh`, `round`, `clamp`, `threshold`, `fill` | 0.1.7 | N/S |
 | `ttl.math` binary math functions: `min`, `max` | 0.1.7 | 0.1.7 |
-| `ttl.math` binary math functions: `mask`, `mask_posinf`, `` | 0.1.7 | N/S |
+| `ttl.math` binary math functions: `mask`, `mask_posinf` | 0.1.7 | N/S |
 | `ttl.math.where` | 0.1.7 | N/S |
 | `ttl.math.broadcast` | 0.1.7 | 0.1.7 |
 | `ttl.math.reduce_max` | 0.1.7 | N/S |
