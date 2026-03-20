@@ -40,6 +40,7 @@
 | 0.9 | 03/04/2026 | Add `ttl.GroupTransfer` |
 | 0.9 | 03/06/2026 | Add `ttl.signpost` |
 | 0.10 | 03/06/2026 | Add debug printing |
+| 0.11 | 03/19/2026 | Rename `ttl.core` to `ttl.node` |
 
 ## 1. Introduction
 
