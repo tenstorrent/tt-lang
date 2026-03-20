@@ -176,11 +176,11 @@ def test_1d_matmul_metal(
 
     # Single sender node at (0, 0) broadcasts to all other nodes
     in0_sender_node = ttnn.NodeRangeSet(
-        [ttnn.NodeRange(ttnn.NodeCoord(0, 0), ttnn.NodeCoord(0, 0))]
+        [ttnn.NodeRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))]
     )
     # All compute nodes (entire grid used for computation)
     all_nodes = ttnn.num_nodes_to_noderangeset(
-        num_worker_nodes, ttnn.NodeCoord(num_nodes_x, num_nodes_y), row_wise=True
+        num_worker_nodes, ttnn.CoreCoord(num_nodes_x, num_nodes_y), row_wise=True
     )
     # Receiver nodes are all nodes except the single sender node (0,0)
     in0_receiver_nodes = all_nodes.subtract(in0_sender_node)
@@ -358,7 +358,7 @@ def test_1d_matmul_metal(
         f"1D matmul: Single sender at (0,0) multicasts to {total_receivers} receivers, across a grid of {num_x_nodes} x {num_y_nodes} nodes"
     )
 
-    noc_of_sender = device.worker_node_from_logical_node(ttnn.NodeCoord(0, 0))
+    noc_of_sender = device.worker_node_from_logical_node(ttnn.CoreCoord(0, 0))
 
     # Assign work to nodes
     worker_node_idx = 0
@@ -372,7 +372,7 @@ def test_1d_matmul_metal(
                 # NOTE: multicast nocs require perfect rectangular node regions
                 # so when num_worker_nodes % num_nodes_x != 0, the last row of nodes will be multicasted to, but not utilized
                 mcast_end_node_noc = device.worker_node_from_logical_node(
-                    ttnn.NodeCoord(num_x_nodes - 1, num_y_nodes - 1)
+                    ttnn.CoreCoord(num_x_nodes - 1, num_y_nodes - 1)
                 )
 
                 in0_sender_rt_args[output_idx_x][output_idx_y] = [

@@ -47,7 +47,7 @@ def test_metal_matmul(M, K, N):
     all_nodes = ttnn.NodeRangeSet(
         [
             ttnn.NodeRange(
-                ttnn.NodeCoord(0, 0), ttnn.NodeCoord(num_blocks_x - 1, num_blocks_y - 1)
+                ttnn.CoreCoord(0, 0), ttnn.CoreCoord(num_blocks_x - 1, num_blocks_y - 1)
             )
         ]
     )

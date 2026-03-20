@@ -27,9 +27,9 @@ def test_multinode_matmul(M, K, N):
     num_output_tiles_total = (M * N) // (ttnn.TILE_SIZE * ttnn.TILE_SIZE)
 
     device_node_size = device.compute_with_storage_grid_size()
-    upper_bound_node = ttnn.NodeCoord(device_node_size.x - 1, device_node_size.y - 1)
+    upper_bound_node = ttnn.CoreCoord(device_node_size.x - 1, device_node_size.y - 1)
     device_node_grid = ttnn.NodeRangeSet(
-        [ttnn.NodeRange(ttnn.NodeCoord(0, 0), upper_bound_node)]
+        [ttnn.NodeRange(ttnn.CoreCoord(0, 0), upper_bound_node)]
     )
     print(
         f"node_grid: {device_node_grid}, num_output_tiles_total: {num_output_tiles_total}"

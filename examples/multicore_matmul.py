@@ -51,7 +51,7 @@ def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
 
     # Get grid size and compute work distribution
     y_size, x_size = ttl.grid_size(dims=2)
-    node_grid = ttnn.NodeCoord(x_size, y_size)
+    node_grid = ttnn.CoreCoord(x_size, y_size)
 
     print(f"node_grid: {node_grid}, num_output_tiles_total: {num_output_tiles_total}")
     (
