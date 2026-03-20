@@ -56,7 +56,7 @@ ttl.store %act, %reserve : tensor<2x2x...>, tensor<2x2x...>
 
 Pass: [lib/Dialect/TTL/Transforms/ConvertTTLToCompute.cpp](../lib/Dialect/TTL/Transforms/ConvertTTLToCompute.cpp)
 
-The `convert-ttl-to-compute` pass lowers tensor-level ops into `ttl.compute` regions containing tile-level ops. When an elementwise op's input is not CB-attached, `traceElementwiseToRoots` ([lib/Dialect/TTL/IR/TTLOpsUtils.cpp](../lib/Dialect/TTL/IR/TTLOpsUtils.cpp)) walks the SSA chain to find CB-attached roots and fusable intermediate ops. Here it traces from the store's input through `relu -> add -> matmul`. The matmul is a fusable leaf: both CB-attached inputs become roots. The add is folded into a 3-operand `tile_matmul_block(a, b, accumulator)` — no `tile_add` is emitted. The relu is emitted in-place after the matmul. All four tensor-level ops collapse into one `ttl.compute`.
+The `convert-ttl-to-compute` pass lowers tensor-level ops into `ttl.compute` regions containing tile-level ops. When a fusable op's input is not CB-attached, `traceFusionToRoots` ([lib/Dialect/TTL/IR/TTLOpsUtils.cpp](../lib/Dialect/TTL/IR/TTLOpsUtils.cpp)) walks the SSA chain to find CB-attached roots and fusable intermediate ops. Here it traces from the store's input through `relu -> add -> matmul`. The matmul is a fusable leaf: both CB-attached inputs become roots. The add is folded into a 3-operand `tile_matmul_block(a, b, accumulator)` — no `tile_add` is emitted. The relu is emitted in-place after the matmul. All four tensor-level ops collapse into one `ttl.compute`.
 
 The indexing maps encode the broadcast pattern: `A[2x1]` broadcasts along `d1` (`(d0,d1) -> (d0,0)`), `B[1x2]` along `d0` (`(d0,d1) -> (0,d1)`), `C[2x2]` and output use identity maps.
 

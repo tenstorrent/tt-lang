@@ -40,8 +40,8 @@ TileOpCategory classifyTileOp(Operation *op) {
   return TileOpCategory::Unknown;
 }
 
-ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value) {
-  ElementwiseTraceResult result;
+FusionTraceResult traceFusionToRoots(mlir::Value value) {
+  FusionTraceResult result;
 
   // Base case: CB-attached value is a root
   if (getAttachedCB(value)) {
@@ -88,14 +88,14 @@ ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value) {
   }
 
   if (!isElementwiseOp(defOp)) {
-    result.failureReason = TraceFailureReason::NotElementwiseOp;
+    result.failureReason = TraceFailureReason::NotFusableOp;
     result.failedValue = value;
     return result;
   }
 
   // Recursively trace all operands
   for (mlir::Value operand : getElementwiseOperands(defOp)) {
-    auto operandTrace = traceElementwiseToRoots(operand);
+    auto operandTrace = traceFusionToRoots(operand);
     if (operandTrace.failureReason != TraceFailureReason::Success) {
       return operandTrace;
     }
@@ -115,7 +115,7 @@ ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value) {
 }
 
 void emitFusionFailureDiagnostics(mlir::Operation *op,
-                                  const ElementwiseTraceResult &trace) {
+                                  const FusionTraceResult &trace) {
   mlir::Value v = trace.failedValue;
   switch (trace.failureReason) {
   case TraceFailureReason::Success:
@@ -127,9 +127,9 @@ void emitFusionFailureDiagnostics(mlir::Operation *op,
           << "this value (block argument) needs ttl.cb_wait or ttl.attach_cb";
     }
     break;
-  case TraceFailureReason::NotElementwiseOp:
+  case TraceFailureReason::NotFusableOp:
     if (v && v.getDefiningOp()) {
-      op->emitError("fusion failed: cannot trace through non-elementwise op")
+      op->emitError("fusion failed: cannot trace through non-fusable op")
               .attachNote(v.getDefiningOp()->getLoc())
           << "this op '" << v.getDefiningOp()->getName() << "' is not fusable";
     }

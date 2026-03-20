@@ -138,16 +138,16 @@ getElementwiseOperands(mlir::Operation *op) {
   return {};
 }
 
-/// Reason why elementwise tracing failed.
+/// Reason why fusion tracing failed.
 enum class TraceFailureReason {
   Success,
   NotCBAttached,
-  NotElementwiseOp,
+  NotFusableOp,
   MultipleUses,
 };
 
-/// Result of tracing through elementwise ops to CB-attached roots.
-struct ElementwiseTraceResult {
+/// Result of tracing through fusable ops to CB-attached roots.
+struct FusionTraceResult {
   /// CB-attached input values that form the roots of the chain.
   llvm::SmallSetVector<mlir::Value, 2> rootInputs;
   /// Operations in the chain, topologically ordered (roots first, sink last).
@@ -158,16 +158,16 @@ struct ElementwiseTraceResult {
   mlir::Value failedValue;
 };
 
-/// Trace a value through elementwise ops to find CB-attached roots.
-/// Recursively traces through arbitrary depth elementwise chains.
+/// Trace a value through fusable ops (elementwise, matmul, bcast) to find
+/// CB-attached roots. Recursively traces through arbitrary depth chains.
 ///
 /// On failure, sets failureReason and failedValue in the result.
 /// Check failureReason == TraceFailureReason::Success to determine success.
-ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value);
+FusionTraceResult traceFusionToRoots(mlir::Value value);
 
-/// Emit diagnostics explaining why elementwise fusion failed.
+/// Emit diagnostics explaining why fusion tracing failed.
 void emitFusionFailureDiagnostics(mlir::Operation *op,
-                                  const ElementwiseTraceResult &trace);
+                                  const FusionTraceResult &trace);
 
 //===----------------------------------------------------------------------===//
 // Tile operation categories for scheduling and init consolidation

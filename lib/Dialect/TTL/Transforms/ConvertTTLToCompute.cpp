@@ -27,6 +27,23 @@ static RankedTensorType getTensorType(Value v) {
   return dyn_cast<RankedTensorType>(v.getType());
 }
 
+/// Check if `input` is broadcast-compatible with `output`: for each dimension,
+/// either the sizes match or the input size is 1.
+static bool isBroadcastCompatible(RankedTensorType input,
+                                  RankedTensorType output) {
+  if (input.getRank() != output.getRank()) {
+    return false;
+  }
+  for (int64_t d = 0; d < output.getRank(); ++d) {
+    int64_t inDim = input.getDimSize(d);
+    int64_t outDim = output.getDimSize(d);
+    if (inDim != outDim && inDim != 1) {
+      return false;
+    }
+  }
+  return true;
+}
+
 static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
                              Value exemplar) {
   SmallVector<Value> dynDims;
@@ -195,7 +212,7 @@ static bool isSideEffectOpForCompute(Operation *op) {
 /// for leading ops, between fused ops for interleaved ones, and forward
 /// from the last fused op for trailing ones (stopping at cb_push/cb_pop).
 static SmallVector<std::pair<Operation *, Operation *>>
-collectInterleavedSideEffectOps(const ElementwiseTraceResult &trace,
+collectInterleavedSideEffectOps(const FusionTraceResult &trace,
                                 Operation *sinkOp) {
   DenseSet<Operation *> fusedSet(trace.opsInOrder.begin(),
                                  trace.opsInOrder.end());
@@ -256,11 +273,11 @@ collectInterleavedSideEffectOps(const ElementwiseTraceResult &trace,
   return result;
 }
 
-/// Build a fused ttl.compute from traced elementwise chain.
+/// Build a fused ttl.compute from traced fusable chain.
 /// The trace result contains CB-attached root inputs and ops to fuse.
 static LogicalResult buildFusedCompute(Operation *sinkOp,
                                        PatternRewriter &rewriter,
-                                       const ElementwiseTraceResult &trace) {
+                                       const FusionTraceResult &trace) {
   auto type = getTensorType(sinkOp->getResult(0));
   if (!type) {
     return failure();
@@ -279,6 +296,21 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   Location loc = sinkOp->getLoc();
   MLIRContext *ctx = rewriter.getContext();
+
+  // Validate broadcast compatibility: each root input dimension must either
+  // match the output or be 1 (broadcast). Any other mismatch means the
+  // identity-or-broadcast indexing map heuristic would produce incorrect maps.
+  for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
+    auto inputType = getTensorType(trace.rootInputs[i]);
+    if (!inputType) {
+      continue;
+    }
+    if (!isBroadcastCompatible(inputType, type)) {
+      return rewriter.notifyMatchFailure(
+          sinkOp, "fusion failed: input " + Twine(i) +
+                      " is not broadcast-compatible with output");
+    }
+  }
 
   // Build indexing maps: broadcast-aware for inputs, identity for output.
   // When an input has size 1 in a dimension but the output doesn't, that
@@ -505,15 +537,16 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
         for (Value operand : getElementwiseOperands(op)) {
           auto it2 = tensorToTile.find(operand);
           if (it2 == tensorToTile.end()) {
-            return op->emitError(
-                "fusion failed: operand not mapped to tile value");
+            return rewriter.notifyMatchFailure(
+                op, "fusion failed: operand not mapped to tile value");
           }
           tileOperands.push_back(it2->second);
         }
 
         tileResult = emitTileOpFor(rewriter, loc, op, tileOperands, tileType);
         if (!tileResult) {
-          return op->emitError("fusion failed: unsupported op type");
+          return rewriter.notifyMatchFailure(
+              op, "fusion failed: unsupported op type");
         }
       }
     }
@@ -625,11 +658,10 @@ static LogicalResult buildComputeFromInputs(
   return success();
 }
 
-/// Try elementwise fusion for an op whose inputs are not all CB-attached.
+/// Try fusion for an op whose inputs are not all CB-attached.
 /// Returns success if fusion was performed, failure otherwise.
-static LogicalResult tryElementwiseFusion(Operation *op,
-                                          PatternRewriter &rewriter) {
-  auto traceResult = traceElementwiseToRoots(op->getResult(0));
+static LogicalResult tryFusion(Operation *op, PatternRewriter &rewriter) {
+  auto traceResult = traceFusionToRoots(op->getResult(0));
   if (traceResult.failureReason == TraceFailureReason::Success &&
       !traceResult.opsInOrder.empty()) {
     return buildFusedCompute(op, rewriter, traceResult);
@@ -651,7 +683,7 @@ static LogicalResult buildBinaryCompute(Operation *op,
   }
 
   if (!getAttachedCB(lhs) || !getAttachedCB(rhs)) {
-    return tryElementwiseFusion(op, rewriter);
+    return tryFusion(op, rewriter);
   }
 
   MLIRContext *ctx = rewriter.getContext();
@@ -681,7 +713,7 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   }
 
   if (!getAttachedCB(input)) {
-    return tryElementwiseFusion(op, rewriter);
+    return tryFusion(op, rewriter);
   }
 
   MLIRContext *ctx = rewriter.getContext();
@@ -889,12 +921,20 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
     }
 
     // If the matmul result feeds into a single elementwise op, defer to
-    // fusion — the elementwise pattern will trace through the matmul.
+    // fusion — the fusion pattern will trace through the matmul.
+    // Only defer when the matmul inputs are broadcast-compatible with the
+    // user's output shape; otherwise fusion would reject and cycle.
     if (op.getResult().hasOneUse()) {
       Operation *user = *op.getResult().getUsers().begin();
-      if (isElementwiseOp(user)) {
-        return rewriter.notifyMatchFailure(
-            op, "deferring matmul to elementwise fusion");
+      if (isElementwiseOp(user) && user->getNumResults() > 0) {
+        auto userOutType = getTensorType(user->getResult(0));
+        auto lhsType = getTensorType(lhs);
+        auto rhsType = getTensorType(rhs);
+        if (userOutType &&
+            (!lhsType || isBroadcastCompatible(lhsType, userOutType)) &&
+            (!rhsType || isBroadcastCompatible(rhsType, userOutType))) {
+          return rewriter.notifyMatchFailure(op, "deferring matmul to fusion");
+        }
       }
     }
 

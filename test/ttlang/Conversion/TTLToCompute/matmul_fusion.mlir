@@ -163,6 +163,87 @@ func.func @matmul_standalone() attributes {ttl.base_cta_index = 4 : i32, ttl.crt
 
 // -----
 
+// Multi-tile matmul+add with K-sliced inputs (broadcast-compatible).
+// LHS [2,1] and RHS [1,2] are broadcast-compatible with [2,2] output.
+// This is the standard pattern from Python K-accumulation loops.
+
+// CHECK-LABEL: func.func @matmul_add_broadcast_compatible
+// CHECK:         ttl.compute
+// CHECK-SAME:      indexing_maps
+// CHECK-SAME:      iterator_types = ["parallel", "parallel"]
+// CHECK:           ttl.tile_matmul_block
+// CHECK-NOT:       ttl.tile_add
+func.func @matmul_add_broadcast_compatible() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  %cb3 = ttl.bind_cb {cb_index = 3, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  %w0 = ttl.cb_wait %cb0 : <[2, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x1x!ttcore.tile<32x32, bf16>>
+  %a = ttl.attach_cb %w0, %cb0 : (tensor<2x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x1x!ttcore.tile<32x32, bf16>>
+  %w1 = ttl.cb_wait %cb1 : <[1, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+  %b = ttl.attach_cb %w1, %cb1 : (tensor<1x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+  %w2 = ttl.cb_wait %cb2 : <[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %c = ttl.attach_cb %w2, %cb2 : (tensor<2x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %reserve = ttl.cb_reserve %cb3 : <[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %mm = ttl.matmul %a, %b : tensor<2x1x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, bf16>> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %sum = ttl.add %mm, %c : tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  ttl.store %sum, %reserve : tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %cb3 : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %cb0 : <[2, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %cb1 : <[1, 2], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %cb2 : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}
+
+// -----
+
+// Matmul with broadcast-incompatible inputs: LHS [2,4] and RHS [4,2] are not
+// broadcast-compatible with the [2,2] output (dim 1 of LHS is 4, not 1 or 2).
+// Fusion is rejected. With explicit CB staging between matmul and add, they
+// lower as separate computes: matmul gets a 3D [M,N,K] iteration space with
+// reduction, add gets a 2D parallel compute.
+
+// CHECK-LABEL: func.func @matmul_add_incompatible_shapes
+// CHECK:         ttl.compute
+// CHECK-SAME:      iterator_types = ["parallel", "parallel", "reduction"]
+// CHECK:           ttl.tile_matmul_block
+// CHECK:         ttl.compute
+// CHECK-SAME:      iterator_types = ["parallel", "parallel"]
+// CHECK:           ttl.tile_add
+func.func @matmul_add_incompatible_shapes() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 4], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[4, 2], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  %cb_mm = ttl.bind_cb {cb_index = 3, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  %cb_out = ttl.bind_cb {cb_index = 4, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  // Matmul inputs
+  %w0 = ttl.cb_wait %cb0 : <[2, 4], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x4x!ttcore.tile<32x32, bf16>>
+  %a = ttl.attach_cb %w0, %cb0 : (tensor<2x4x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 4], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x4x!ttcore.tile<32x32, bf16>>
+  %w1 = ttl.cb_wait %cb1 : <[4, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<4x2x!ttcore.tile<32x32, bf16>>
+  %b = ttl.attach_cb %w1, %cb1 : (tensor<4x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[4, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<4x2x!ttcore.tile<32x32, bf16>>
+  // Matmul -> intermediate CB
+  %mm_reserve = ttl.cb_reserve %cb_mm : <[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %mm = ttl.matmul %a, %b : tensor<2x4x!ttcore.tile<32x32, bf16>>, tensor<4x2x!ttcore.tile<32x32, bf16>> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  ttl.store %mm, %mm_reserve : tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %cb_mm : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  // Add reads from intermediate CB + bias CB
+  %w_mm = ttl.cb_wait %cb_mm : <[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %mm_val = ttl.attach_cb %w_mm, %cb_mm : (tensor<2x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %w2 = ttl.cb_wait %cb2 : <[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %c = ttl.attach_cb %w2, %cb2 : (tensor<2x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %out_reserve = ttl.cb_reserve %cb_out : <[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %sum = ttl.add %mm_val, %c : tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  ttl.store %sum, %out_reserve : tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %cb_out : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %cb0 : <[2, 4], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %cb1 : <[4, 2], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %cb_mm : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %cb2 : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}
+
+// -----
+
 // Matmul+sub: the fold only applies to add. Sub produces a 2-operand matmul
 // followed by an explicit tile_sub.
 
