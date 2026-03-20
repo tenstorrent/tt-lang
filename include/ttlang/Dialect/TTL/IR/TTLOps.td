@@ -303,6 +303,14 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     // computes with potentially different output shapes, as well as
     // reductions where the output shape is smaller than the iteration domain.
     int64_t getTotalIterationTiles();
+
+    // Return whether the body contains an op of the given type.
+    template <typename OpTy>
+    bool containsOp() {
+      bool found = false;
+      getBody().walk([&](OpTy) { found = true; return WalkResult::interrupt(); });
+      return found;
+    }
   }];
 }
 

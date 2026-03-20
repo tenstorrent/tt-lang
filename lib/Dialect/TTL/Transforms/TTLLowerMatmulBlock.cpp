@@ -49,7 +49,7 @@ static TileMatmulBlockOp findMatmulBlock(ComputeOp computeOp) {
 static LogicalResult validateMatmulDSTCapacity(func::FuncOp func) {
   bool hadError = false;
   func.walk([&](ComputeOp computeOp) {
-    if (!findMatmulBlock(computeOp)) {
+    if (!computeOp.containsOp<TileMatmulBlockOp>()) {
       return;
     }
     auto capacityOrErr = computeDSTCapacity(computeOp);
@@ -196,7 +196,7 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
       emitPerTileUnaryOps(rewriter, loc, unaryOp, placeholder, M, N);
     }
 
-    // Sync commit + wait.
+    // Sync commit + wait (math → pack boundary).
     TileRegsCommitOp::create(rewriter, loc);
     TileRegsWaitOp::create(rewriter, loc);
 
