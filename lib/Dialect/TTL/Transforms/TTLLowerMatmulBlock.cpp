@@ -6,8 +6,8 @@
 // TTLLowerMatmulBlock Pass
 //===----------------------------------------------------------------------===//
 //
-// Replaces ttl.compute ops containing tile_matmul_block with a flat sequence:
-// sync acquire, matmul_block, M*N tile_stores, sync release.
+// Replaces ttl.compute ops containing tile_matmul_block with a linear
+// sequence: sync acquire, matmul_block, M*N tile_stores, sync release.
 //
 // CB lifecycle (wait/pop for inputs, reserve/push for output) is NOT emitted
 // here — it comes from the user's DFB operations outside the compute.
@@ -109,9 +109,9 @@ static void emitPerTileUnaryOps(OpBuilder &rewriter, Location loc,
   }
 }
 
-/// Replace a matmul compute with flat ops: sync + matmul_block + stores.
-/// Handles fused bodies containing accumulator (copy_tile), post-matmul
-/// unary ops (relu, etc.), and tile_stores.
+/// Replace a matmul compute with a linear sequence of tile-level ops:
+/// sync acquire, copy_tiles (accumulator), matmul_block, unary post-ops,
+/// sync commit/wait, tile_stores, sync release.
 struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
   using OpRewritePattern<ComputeOp>::OpRewritePattern;
 
