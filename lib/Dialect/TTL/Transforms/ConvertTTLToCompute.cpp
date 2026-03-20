@@ -666,8 +666,8 @@ static LogicalResult tryFusion(Operation *op, PatternRewriter &rewriter) {
       !traceResult.opsInOrder.empty()) {
     return buildFusedCompute(op, rewriter, traceResult);
   }
-  emitFusionFailureDiagnostics(op, traceResult);
-  return failure();
+  return rewriter.notifyMatchFailure(
+      op, "fusion failed: " + describeTraceFailure(traceResult.failureReason));
 }
 
 /// Build a ttl.compute op with a single binary tile operation in the body.
@@ -789,6 +789,8 @@ static AffineMap buildBcastInputMap(MLIRContext *ctx, bool expandRows,
 }
 
 /// Validate that shape expansion is compatible with bcast type.
+/// Uses emitError (not notifyMatchFailure) because these are user-facing
+/// errors with no alternative pattern to try. TODO: move to BcastOp verifier.
 static LogicalResult validateBcastExpansion(BcastOp op, bool expandRows,
                                             bool expandCols) {
   auto bcastType = op.getBcastType();
@@ -823,6 +825,9 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
 
     Value inputCb = getAttachedCB(op.getInput());
     Value outCb = getAttachedCB(op.getOutput());
+    // Bcast validation uses emitError (not notifyMatchFailure) because these
+    // are user-facing errors with no alternative pattern. TODO: move to
+    // verifier.
     if (!inputCb) {
       return op.emitError(
           "broadcast input must come directly from a circular buffer, not from "
@@ -920,29 +925,23 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
                                          "matmul inputs must be CB-attached");
     }
 
-    // If the matmul result feeds into a single elementwise op, defer to
-    // fusion — the fusion pattern will trace through the matmul.
-    // Only defer when the matmul inputs are broadcast-compatible with the
-    // user's output shape; otherwise fusion would reject and cycle.
-    if (op.getResult().hasOneUse()) {
-      Operation *user = *op.getResult().getUsers().begin();
-      if (isElementwiseOp(user) && user->getNumResults() > 0) {
-        auto userOutType = getTensorType(user->getResult(0));
-        auto lhsType = getTensorType(lhs);
-        auto rhsType = getTensorType(rhs);
-        if (userOutType &&
-            (!lhsType || isBroadcastCompatible(lhsType, userOutType)) &&
-            (!rhsType || isBroadcastCompatible(rhsType, userOutType))) {
-          return rewriter.notifyMatchFailure(op, "deferring matmul to fusion");
-        }
-      }
-    }
-
     auto lhsType = getTensorType(lhs);
     auto rhsType = getTensorType(rhs);
     auto resultType = getTensorType(op.getResult());
-    if (!lhsType || !rhsType || !resultType) {
-      return failure();
+
+    // Defer to fusion when the matmul result feeds into a single elementwise
+    // op and the matmul inputs are broadcast-compatible with the user's output
+    // shape. Without the broadcast check, fusion would reject and the greedy
+    // rewriter would cycle.
+    if (op.getResult().hasOneUse()) {
+      Operation *user = *op.getResult().getUsers().begin();
+      if (isElementwiseOp(user)) {
+        auto userOutType = getTensorType(user->getResult(0));
+        if (isBroadcastCompatible(lhsType, userOutType) &&
+            isBroadcastCompatible(rhsType, userOutType)) {
+          return rewriter.notifyMatchFailure(op, "deferring matmul to fusion");
+        }
+      }
     }
 
     MLIRContext *ctx = rewriter.getContext();

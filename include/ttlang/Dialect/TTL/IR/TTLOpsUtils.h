@@ -143,7 +143,6 @@ enum class TraceFailureReason {
   Success,
   NotCBAttached,
   NotFusableOp,
-  MultipleUses,
 };
 
 /// Result of tracing through fusable ops to CB-attached roots.
@@ -165,9 +164,8 @@ struct FusionTraceResult {
 /// Check failureReason == TraceFailureReason::Success to determine success.
 FusionTraceResult traceFusionToRoots(mlir::Value value);
 
-/// Emit diagnostics explaining why fusion tracing failed.
-void emitFusionFailureDiagnostics(mlir::Operation *op,
-                                  const FusionTraceResult &trace);
+/// Return a human-readable description of a trace failure reason.
+llvm::StringRef describeTraceFailure(TraceFailureReason reason);
 
 //===----------------------------------------------------------------------===//
 // Tile operation categories for scheduling and init consolidation

@@ -167,9 +167,12 @@ func.func @matmul_standalone() attributes {ttl.base_cta_index = 4 : i32, ttl.crt
 // LHS [2,1] and RHS [1,2] are broadcast-compatible with [2,2] output.
 // This is the standard pattern from Python K-accumulation loops.
 
+// CHECK: #[[$BCAST_ROW:.*]] = affine_map<(d0, d1) -> (d0, 0)>
+// CHECK: #[[$BCAST_COL:.*]] = affine_map<(d0, d1) -> (0, d1)>
+
 // CHECK-LABEL: func.func @matmul_add_broadcast_compatible
 // CHECK:         ttl.compute
-// CHECK-SAME:      indexing_maps
+// CHECK-SAME:      indexing_maps = [#[[$BCAST_ROW]], #[[$BCAST_COL]],
 // CHECK-SAME:      iterator_types = ["parallel", "parallel"]
 // CHECK:           ttl.tile_matmul_block
 // CHECK-NOT:       ttl.tile_add

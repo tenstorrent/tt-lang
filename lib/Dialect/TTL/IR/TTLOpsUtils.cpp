@@ -114,34 +114,16 @@ FusionTraceResult traceFusionToRoots(mlir::Value value) {
   return result;
 }
 
-void emitFusionFailureDiagnostics(mlir::Operation *op,
-                                  const FusionTraceResult &trace) {
-  mlir::Value v = trace.failedValue;
-  switch (trace.failureReason) {
+llvm::StringRef describeTraceFailure(TraceFailureReason reason) {
+  switch (reason) {
   case TraceFailureReason::Success:
-    break;
+    return "success";
   case TraceFailureReason::NotCBAttached:
-    if (v) {
-      op->emitError("fusion failed: value is not attached to a circular buffer")
-              .attachNote(v.getLoc())
-          << "this value (block argument) needs ttl.cb_wait or ttl.attach_cb";
-    }
-    break;
+    return "value is not attached to a circular buffer";
   case TraceFailureReason::NotFusableOp:
-    if (v && v.getDefiningOp()) {
-      op->emitError("fusion failed: cannot trace through non-fusable op")
-              .attachNote(v.getDefiningOp()->getLoc())
-          << "this op '" << v.getDefiningOp()->getName() << "' is not fusable";
-    }
-    break;
-  case TraceFailureReason::MultipleUses:
-    if (v && v.getDefiningOp()) {
-      op->emitError("fusion failed: intermediate value has multiple uses")
-              .attachNote(v.getDefiningOp()->getLoc())
-          << "this op's result is used multiple times";
-    }
-    break;
+    return "cannot trace through non-fusable op";
   }
+  llvm_unreachable("unhandled TraceFailureReason");
 }
 
 } // namespace mlir::tt::ttl
