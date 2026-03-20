@@ -227,6 +227,9 @@ UNARY_OPS = {
     "sin": (make_unary_kernel("sin", "sin"), torch.sin),
     "cos": (make_unary_kernel("cos", "cos"), torch.cos),
     "tan": (make_unary_kernel("tan", "tan"), torch.tan),
+    "asin": (make_unary_kernel("asin", "asin"), torch.asin),
+    "acos": (make_unary_kernel("acos", "acos"), torch.acos),
+    "atan": (make_unary_kernel("atan", "atan"), torch.atan),
 }
 
 

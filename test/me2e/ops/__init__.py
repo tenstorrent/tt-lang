@@ -44,6 +44,9 @@ OP_TORCH_MAP: Dict[str, Callable[..., Tensor]] = {
     "sin": torch.sin,
     "cos": torch.cos,
     "tan": torch.tan,
+    "asin": torch.asin,
+    "acos": torch.acos,
+    "atan": torch.atan,
 }
 
 # Domain constraints for ops that require specific input ranges.
@@ -79,6 +82,8 @@ OP_PCC_THRESHOLD_OVERRIDES: Dict[str, Dict[torch.dtype, float]] = {
     "exp": {torch.float32: 0.9998},
     "tanh": {torch.float32: 0.993},
     "recip": {torch.bfloat16: 0.999},
+    "acos": {torch.float32: 0.999, torch.bfloat16: 0.999},
+    "asin": {torch.float32: 0.999, torch.bfloat16: 0.999},
 }
 
 
