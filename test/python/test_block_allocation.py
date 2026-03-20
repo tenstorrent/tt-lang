@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Test comparing split_work_to_cores with ttnn.split_work_to_cores
+Test comparing split_work_to_nodes with ttnn.split_work_to_nodes
 get_large_matmul_params is compared with hard coded expected values
 """
 import pytest
@@ -13,7 +13,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from ttl.utils.block_allocation import (
     get_large_matmul_params,
-    split_work_to_cores,
+    split_work_to_nodes,
 )
 
 
@@ -51,10 +51,10 @@ def extract_coords_from_ttnn_corerangeset(core_range_set):
         ((8, 8), 127, True),
     ],
 )
-def test_split_work_to_cores(grid_size_tuple, units, row_wise):
-    """Compare results from split_work_to_cores and ttnn.split_work_to_cores"""
+def test_split_work_to_nodes(grid_size_tuple, units, row_wise):
+    """Compare results from split_work_to_nodes and ttnn.split_work_to_nodes"""
     # Call new function
-    new_result = split_work_to_cores(grid_size_tuple, units, row_wise)
+    new_result = split_work_to_nodes(grid_size_tuple, units, row_wise)
     new_total, new_g1, new_g2, new_w1, new_w2 = new_result
 
     # Call ttnn function
@@ -69,7 +69,7 @@ def test_split_work_to_cores(grid_size_tuple, units, row_wise):
         ]
     )
 
-    ttnn_result = ttnn.split_work_to_cores(ttnn_grid, units, row_wise)
+    ttnn_result = ttnn.split_work_to_nodes(ttnn_grid, units, row_wise)
     ttnn_total, ttnn_all, ttnn_g1, ttnn_g2, ttnn_w1, ttnn_w2 = ttnn_result
 
     # Extract coordinates from ttnn function
