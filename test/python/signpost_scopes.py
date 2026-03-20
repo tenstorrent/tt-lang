@@ -25,49 +25,66 @@ except ImportError:
     exit(0)
 
 
+TILE_SIZE = 32
+GRANULARITY = 4
+
+
 @ttl.kernel(grid=(1, 1))
-def matmul_accum_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 2), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 1), buffer_factor=2)
-    ab_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
-    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
+def matmul_accum_kernel(
+    a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
+):
+    M = GRANULARITY
+    K = GRANULARITY
+    N = GRANULARITY
+
+    iters = y.shape[0] // TILE_SIZE // M
+
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(M, K), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(K, N), buffer_factor=2)
+    ab_dfb = ttl.make_dataflow_buffer_like(y, shape=(M, N), buffer_factor=2)
+    c_dfb = ttl.make_dataflow_buffer_like(y, shape=(M, N), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(y, shape=(M, N), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
-        with (
-            a_dfb.wait() as a_blk,
-            b_dfb.wait() as b_blk,
-            ab_dfb.reserve() as ab_blk,
-        ):
-            with ttl.signpost("matmul"):
-                ab_blk.store(a_blk @ b_blk)
+        for _ in range(iters):
+            with (
+                a_dfb.wait() as a_blk,
+                b_dfb.wait() as b_blk,
+                ab_dfb.reserve() as ab_blk,
+            ):
+                with ttl.signpost("matmul"):
+                    ab_blk.store(a_blk @ b_blk)
 
-        with (
-            ab_dfb.wait() as ab_blk,
-            c_dfb.wait() as c_blk,
-            out_dfb.reserve() as out_blk,
-        ):
-            with ttl.signpost("accumulate"):
-                out_blk.store(ab_blk + c_blk)
+            with (
+                ab_dfb.wait() as ab_blk,
+                c_dfb.wait() as c_blk,
+                out_dfb.reserve() as out_blk,
+            ):
+                with ttl.signpost("accumulate"):
+                    out_blk.store(ab_blk + c_blk)
 
     @ttl.datamovement()
     def dm_read():
-        with a_dfb.reserve() as blk:
-            tx = ttl.copy(a[0:1, 0:2], blk)
-            tx.wait()
-        with b_dfb.reserve() as blk:
-            tx = ttl.copy(b[0:2, 0:1], blk)
-            tx.wait()
-        with c_dfb.reserve() as blk:
-            tx = ttl.copy(c[0, 0], blk)
-            tx.wait()
+        cx, _ = ttl.core(dims=2)
+        for i in range(iters):
+            with a_dfb.reserve() as blk:
+                tx = ttl.copy(a[i * M : (i + 1) * M, 0:K], blk)
+                tx.wait()
+            with b_dfb.reserve() as blk:
+                tx = ttl.copy(b[0:K, i * N : (i + 1) * N], blk)
+                tx.wait()
+            with c_dfb.reserve() as blk:
+                tx = ttl.copy(c[i * M : (i + 1) * M, i * N : (i + 1) * N], blk)
+                tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        with out_dfb.wait() as blk:
-            tx = ttl.copy(blk, c[0, 0])
-            tx.wait()
+        cx, _ = ttl.core(dims=2)
+        for i in range(iters):
+            with out_dfb.wait() as blk:
+                tx = ttl.copy(blk, y[i * M : (i + 1) * M, i * N : (i + 1) * N])
+                tx.wait()
 
 
 # =============================================================================
@@ -92,9 +109,12 @@ if __name__ == "__main__":
     device = ttnn.open_device(device_id=0)
 
     try:
-        a = torch.randn(32, 64, dtype=torch.bfloat16)
-        b = torch.randn(64, 32, dtype=torch.bfloat16)
-        c = torch.zeros(32, 32, dtype=torch.bfloat16)
+        shape = (2048, 2048)
+
+        a = torch.randn(shape, dtype=torch.bfloat16)
+        b = torch.randn(shape, dtype=torch.bfloat16)
+        c = torch.randn(shape, dtype=torch.bfloat16)
+        y = torch.zeros(shape, dtype=torch.bfloat16)
 
         def from_torch(tensor):
             return ttnn.from_torch(
@@ -108,8 +128,9 @@ if __name__ == "__main__":
         a_tt = from_torch(a)
         b_tt = from_torch(b)
         c_tt = from_torch(c)
+        y_tt = from_torch(y)
 
-        matmul_accum_kernel(a_tt, b_tt, c_tt)
+        matmul_accum_kernel(a_tt, b_tt, c_tt, y_tt)
 
     finally:
         ttnn.close_device(device)
