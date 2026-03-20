@@ -321,10 +321,9 @@ static void buildLiveIntervals(Block *body,
     });
   }
 
-  // Merge intervals for matmul accumulator (accumulator and output share DST).
-  // When tile_matmul_block has a 3rd operand (accumulator), the accumulator
-  // is pre-loaded into DST via copy_tile and the matmul accumulates on top.
-  // Both must occupy the same DST register.
+  // Merge intervals for matmul accumulator and output. The accumulator is
+  // loaded into DST via copy_tile; matmul_block accumulates into the same
+  // register (DST += A*B).
   for (Operation &op : *body) {
     auto matmul = dyn_cast<TileMatmulBlockOp>(&op);
     if (!matmul || !matmul.getAccumulator()) {

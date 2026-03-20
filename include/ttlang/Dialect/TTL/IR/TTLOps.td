@@ -742,11 +742,10 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
     buffers. The block dimensions (rt, ct, kt) are derived from the
     enclosing ttl.compute's operand shapes during TTKernel lowering.
 
-    When the optional `accumulator` operand is present, it must be
-    pre-loaded into DST (via copy_tile) before the matmul executes.
-    The matmul accumulates on top: result = accumulator + lhs @ rhs.
-    This is used to fuse matmul with an add (the add vanishes because
-    matmul_block inherently accumulates).
+    When the optional `accumulator` operand is present, it is pre-loaded
+    into DST via copy_tile before the matmul. The result is
+    accumulator + lhs @ rhs, exploiting matmul_block's additive
+    accumulation to eliminate an explicit add.
 
     Maps to ttkernel.mm_block_init + ttkernel.experimental::matmul_block.
   }];

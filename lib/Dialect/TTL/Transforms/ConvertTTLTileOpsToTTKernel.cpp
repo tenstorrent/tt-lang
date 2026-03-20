@@ -853,13 +853,10 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
     Value ntVal = arith::ConstantOp::create(rewriter, loc,
                                             rewriter.getI32IntegerAttr(nt));
 
-    // Accumulator: if present, emit copy_tile ops to pre-load DST.
-    // The accumulator tensor is the 3rd operand, set by lower-matmul-block.
-    // TODO: Replace rt*ct individual copy_tile ops with a single
-    // copy_block_matmul_partials(cb, 0, 0, rt*ct) call once a proper
-    // TTKernel op exists for it. The tt-metal function is defined in
-    // tt_metal/hw/inc/api/compute/tile_move_copy.h. Similarly, the M*N
-    // pack_tile ops emitted by TileStoreLowering should use pack_tile_block.
+    // Accumulator: emit rt*ct copy_tile ops to load DST before matmul_block.
+    // TODO: Replace with copy_block_matmul_partials(cb, 0, 0, rt*ct) once a
+    // TTKernel op exists (tt_metal/hw/inc/api/compute/tile_move_copy.h).
+    // Similarly, pack_tile ops should use pack_tile_block (pack.h).
     if (op.getAccumulator()) {
       auto accCB = lookupAndConvertCB(op.getAccumulator(), funcOp,
                                       typeConverter, rewriter, loc);

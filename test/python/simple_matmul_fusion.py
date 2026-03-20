@@ -9,10 +9,9 @@
 # RUN: FileCheck %s --check-prefix=CHECK-RESULT < %t.output
 
 """
-Matmul fusion: store((a @ b) + c) fuses into a single compute where the add
-vanishes — matmul_block's inherent DST accumulation handles the addition.
-Verifies tensor-level ops in initial IR, copy_tile + matmul_block in C++ output,
-and numerical correctness on hardware.
+Matmul with accumulation: store((a @ b) + c) lowers to copy_tile(c) +
+matmul_block(DST += A*B), eliminating the explicit add. Verifies initial IR,
+generated C++ op sequence, and numerical correctness on hardware.
 """
 
 import ttl

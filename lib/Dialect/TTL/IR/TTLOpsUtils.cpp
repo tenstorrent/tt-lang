@@ -69,9 +69,8 @@ ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value) {
     // Input not CB-attached - fall through to failure
   }
 
-  // Special case: MatmulOp can be fused when both inputs are CB-attached.
-  // Matmul reads both operands from CBs and writes to DST (DST += A*B).
-  // It becomes a leaf in the trace — the trace does not recurse into it.
+  // Special case: MatmulOp with CB-attached inputs is a fusable leaf.
+  // Both inputs become roots; the trace does not recurse into the matmul.
   if (auto matmulOp = llvm::dyn_cast<MatmulOp>(defOp)) {
     mlir::Value lhs = matmulOp.getLhs();
     mlir::Value rhs = matmulOp.getRhs();

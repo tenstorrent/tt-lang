@@ -138,9 +138,7 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
     }
     Value outView = stores[0].getView();
 
-    // Collect per-tile unary ops in the body (between matmul and store).
-    // These are in-place ops (relu, exp, etc.) that must be expanded to
-    // M*N calls on each DST register.
+    // Collect in-place unary ops between matmul and store for M*N expansion.
     SmallVector<Operation *> postMatmulUnaryOps;
     bool foundMatmul = false;
     for (Operation &bodyOp : computeOp.getBody().front()) {
@@ -153,8 +151,28 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
       }
     }
 
-    // Determine accumulator input (if 3-operand matmul).
+    // Map matmul body operands to compute input tensors via block arg indices.
+    // The body's block arg order matches the compute's input order, but the
+    // matmul's lhs/rhs may not be at indices 0/1 (e.g., fused computes place
+    // the accumulator operand first).
+    auto getInputForBodyOperand = [&](Value bodyVal) -> Value {
+      // Trace through copy_tile (assign-dst inserts these for CB block args).
+      if (auto copyOp = bodyVal.getDefiningOp<CopyTileOp>()) {
+        bodyVal = copyOp.getSrc();
+      }
+      if (auto blockArg = dyn_cast<BlockArgument>(bodyVal)) {
+        return computeOp.getInputs()[blockArg.getArgNumber()];
+      }
+      return {};
+    };
+
+    Value lhsTensor = getInputForBodyOperand(mmOp.getLhs());
+    Value rhsTensor = getInputForBodyOperand(mmOp.getRhs());
+    assert(lhsTensor && rhsTensor && "matmul operands must trace to inputs");
+
     int64_t accInputIdx = getAccumulatorInputIndex(mmOp);
+    Value accTensor =
+        accInputIdx >= 0 ? computeOp.getInputs()[accInputIdx] : Value();
 
     Location loc = computeOp.getLoc();
     Type tileType = mmOp.getResult().getType();
@@ -164,14 +182,10 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
     // Sync acquire.
     TileRegsAcquireOp::create(rewriter, loc);
 
-    // Single matmul_block call. Operands are the CB-attached input tensors.
-    // If an accumulator is present, pass it as the 3rd operand — the TTKernel
-    // lowering will emit M*N copy_tile ops to pre-load DST before the matmul.
-    Value accTensor =
-        accInputIdx >= 0 ? computeOp.getInputs()[accInputIdx] : Value();
-    auto mmResult = TileMatmulBlockOp::create(
-        rewriter, loc, tileType, computeOp.getInputs()[0],
-        computeOp.getInputs()[1], accTensor);
+    // Single matmul_block call. The accumulator (if present) is passed as
+    // the 3rd operand; TTKernel lowering emits rt*ct copy_tile ops for it.
+    auto mmResult = TileMatmulBlockOp::create(rewriter, loc, tileType,
+                                              lhsTensor, rhsTensor, accTensor);
     mmResult->setAttr(kDstIdxAttrName, rewriter.getI32IntegerAttr(0));
 
     // Per-tile unary post-ops (relu, exp, etc.).

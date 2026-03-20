@@ -411,13 +411,14 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // Emit tile ops in topological order with interleaved side-effect ops.
   //
   // Matmul+add fold: when a MatmulOp result feeds into an AddOp in the
-  // chain, we fold them into a single 3-operand TileMatmulBlockOp.  The
-  // add vanishes because matmul_block inherently accumulates (DST += A*B).
-  // Pre-loading the add's other operand into DST gives accumulator + A*B.
+  // chain, both are replaced by a single 3-operand TileMatmulBlockOp
+  // (lhs, rhs, accumulator). matmul_block accumulates (DST += A*B), so
+  // pre-loading the accumulator into DST yields accumulator + A*B without
+  // an explicit tile_add.
   //
-  // Deferred emission: when a matmul's single user is an add in the chain,
-  // we stash its tile operands and emit the 3-operand form when the add is
-  // reached.
+  // The matmul is emitted before the add in topological order. When the
+  // matmul's sole user is an add in the chain, emission is deferred: the
+  // tile operands are stashed and the 3-operand form is emitted at the add.
   DenseMap<Value, std::pair<Value, Value>> deferredMatmul;
 
   Value finalResult;
@@ -438,12 +439,10 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       tileResult = TileBcastOp::create(rewriter, loc, tileType, inputTile,
                                        outputTile, bcastOp.getBcastTypeAttr());
     } else if (auto matmulOp = dyn_cast<MatmulOp>(op)) {
-      // MatmulOp: reads both operands from CB, writes to DST.
       Value lhsTile = tensorToTile[matmulOp.getLhs()];
       Value rhsTile = tensorToTile[matmulOp.getRhs()];
 
-      // Check if matmul result feeds into an AddOp in this chain — if so,
-      // defer emission so we can fold the add into a 3-operand matmul.
+      // Defer emission if the sole user is an AddOp in this chain.
       bool deferred = false;
       if (matmulOp.getResult().hasOneUse()) {
         Operation *user = *matmulOp.getResult().getUsers().begin();
