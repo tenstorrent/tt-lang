@@ -49,7 +49,7 @@ class Pipe(Generic[DstT]):
     src_core: CoreCoord
     dst_core_range: DstT
 
-    def has_current_core(self) -> bool:
+    def has_current_node(self) -> bool:
         """Check if the current core participates in this pipe (either as source or destination).
 
         This is useful for early-exit patterns where non-participating cores should skip work.
