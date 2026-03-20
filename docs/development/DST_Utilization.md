@@ -199,7 +199,7 @@ prime numbers larger than `unrollFactor`. Examples:
 Mitigation: choose block dimensions with non-prime sizes. Powers of 2
 (2, 4, 8, 16) and composite numbers (6, 12) always have divisors that
 enable subblocking. For example, use 8x1 instead of 7x1. In practice,
-most block shapes come from tensor/core-grid ratios where power-of-2
+most block shapes come from tensor/node-grid ratios where power-of-2
 dimensions are common.
 
 A future improvement would support peeling/remainder loops (e.g.,
@@ -209,14 +209,14 @@ prime block dimensions.
 
 #### DST utilization examples
 
-Block shape is the per-core tile grid, not the full tensor. A tensor
-of `T_r x T_c` tiles distributed over a `G_r x G_c` core grid gives
-each core a block of `(T_r/G_r) x (T_c/G_c)` tiles. In most realistic
-cases tensors contain many blocks; larger tensors on more cores produce
-smaller per-core blocks. Example mappings for a 32x32 tile tensor:
+Block shape is the per-node tile grid, not the full tensor. A tensor
+of `T_r x T_c` tiles distributed over a `G_r x G_c` node grid gives
+each node a block of `(T_r/G_r) x (T_c/G_c)` tiles. In most realistic
+cases tensors contain many blocks; larger tensors on more nodes produce
+smaller per-node blocks. Example mappings for a 32x32 tile tensor:
 
 ```
-Tensor (tiles)   Core Grid   Block Shape   Blocks
+Tensor (tiles)   Node Grid   Block Shape   Blocks
 --------------   ---------   -----------   ------
 32x32            32x32       1x1            1024
 32x32            16x16       2x2             256
