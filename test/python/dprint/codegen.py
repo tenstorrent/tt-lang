@@ -52,7 +52,7 @@ def dprint_test_kernel(inp, out):
 
     @ttl.datamovement()
     def dm_read():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
         print("dm_read core:", x, y)
         print("inp:", inp, num_pages=1)
         print("A:", inp)

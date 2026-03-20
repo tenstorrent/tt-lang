@@ -56,7 +56,7 @@ def tt_lang_multicore_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
 
     @ttl.compute()
     def mm_compute():
-        core_x, core_y = ttl.core(dims=2)
+        core_x, core_y = ttl.node(dims=2)
         out_row = per_core_M * core_y
         out_col = per_core_N * core_x
         if (out_row < Mt) and (out_col < Nt):
@@ -70,7 +70,7 @@ def tt_lang_multicore_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
 
     @ttl.datamovement()
     def mm_reader():
-        core_x, core_y = ttl.core(dims=2)
+        core_x, core_y = ttl.node(dims=2)
         out_row = per_core_M * core_y
         out_col = per_core_N * core_x
         if (out_row < Mt) and (out_col < Nt):
@@ -91,7 +91,7 @@ def tt_lang_multicore_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
     # blocking only occurs on the k dim, so each core writes its entire output block at once
     @ttl.datamovement()
     def mm_writer():
-        core_x, core_y = ttl.core(dims=2)
+        core_x, core_y = ttl.node(dims=2)
         out_row = per_core_M * core_y
         out_col = per_core_N * core_x
         if (out_row < Mt) and (out_col < Nt):
@@ -151,7 +151,7 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
 
     @ttl.compute()
     def mm_compute():
-        core_x, core_y = ttl.core(dims=2)
+        core_x, core_y = ttl.node(dims=2)
         out_row = core_y
         out_col = core_x
         if (out_row < Mt) and (out_col < Nt):
@@ -162,7 +162,7 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
 
     @ttl.datamovement()
     def mm_reader():
-        core_x, core_y = ttl.core(dims=2)
+        core_x, core_y = ttl.node(dims=2)
         out_row = core_y
         out_col = core_x
         if (out_row < Mt) and (out_col < Nt):
@@ -176,7 +176,7 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     # blocking only occurs on the k dim, so each core writes its entire output block at once
     @ttl.datamovement()
     def mm_writer():
-        core_x, core_y = ttl.core(dims=2)
+        core_x, core_y = ttl.node(dims=2)
         out_row = core_y
         out_col = core_x
         if (out_row < Mt) and (out_col < Nt):

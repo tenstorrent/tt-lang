@@ -447,7 +447,7 @@ def large_tensor_kernel(inp, out):
 
     @ttl.datamovement()
     def dm_read():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
         for block_idx in range(BLOCKS_PER_CORE):
             # Calculate tile coordinates for this core and block
             row = y * 8 + (block_idx // 4) * 2  # Example indexing
@@ -458,7 +458,7 @@ def large_tensor_kernel(inp, out):
 
     @ttl.datamovement()
     def dm_write():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
         for block_idx in range(BLOCKS_PER_CORE):
             row = y * 8 + (block_idx // 4) * 2
             col = x * 8 + (block_idx % 4) * 2
@@ -512,7 +512,7 @@ def gather_kernel(inp, out):
 
     @ttl.compute()
     def compute():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
         if x == 0:
             # Coordinator: accumulate from gather_dfb
             for _ in range(3):
@@ -525,14 +525,14 @@ def gather_kernel(inp, out):
 
     @ttl.datamovement()
     def dm_read():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
         with inp_dfb.reserve() as blk:
             tx = ttl.copy(inp[y, x], blk)
             tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
 
         # Workers send their results via pipes
         if x == 1:
@@ -627,7 +627,7 @@ def multicore_kernel(lhs, rhs, out):
     @ttl.datamovement()
     def dm_read():
         # Get this core's coordinates
-        x, y = ttl.core(dims=2)  # x=column, y=row
+        x, y = ttl.node(dims=2)  # x=column, y=row
 
         with lhs_dfb.reserve() as blk:
             # Tensor indexing is [row, col] = [y, x]
@@ -640,7 +640,7 @@ def multicore_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_write():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
         with out_dfb.wait() as blk:
             tx = ttl.copy(blk, out[y, x])
             tx.wait()
@@ -1079,7 +1079,7 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
 
     @ttl.compute()
     def compute():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
 
         # === Stage 1: Local reduce of A slices (all cores) ===
         blocks_per_core = ROWS_PER_CORE * COLS_PER_CORE
@@ -1127,7 +1127,7 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
 
     @ttl.datamovement()
     def dm_read():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
 
         with scaler_dfb.reserve() as s_blk:
             tx = ttl.copy(scaler[0, 0], s_blk)
@@ -1147,7 +1147,7 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
 
     @ttl.datamovement()
     def dm_write():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
 
         # Workers send to coordinator
         if x == 1:
@@ -1680,7 +1680,7 @@ def layer1_kernel(x, w1, bias1, hidden_out):
 
     @ttl.datamovement()
     def dm_read():
-        core_x, _ = ttl.core(dims=2)
+        core_x, _ = ttl.node(dims=2)
 
         # All cores read the SAME input x
         with x_dfb.reserve() as blk:
@@ -1701,7 +1701,7 @@ def layer1_kernel(x, w1, bias1, hidden_out):
 
     @ttl.datamovement()
     def dm_write():
-        core_x, _ = ttl.core(dims=2)
+        core_x, _ = ttl.node(dims=2)
 
         # Each core writes DIFFERENT output columns
         col_start = core_x * CHUNK_TILES

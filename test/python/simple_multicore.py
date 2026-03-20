@@ -42,7 +42,7 @@ def multicore_add(lhs, rhs, out):
         with lhs_dfb.reserve() as lhs_blk, rhs_dfb.reserve() as rhs_blk:
             # core(dims=2) returns (x, y) where x=col, y=row
             # tensor indexing is [row, col] = [y, x]
-            x, y = ttl.core(dims=2)
+            x, y = ttl.node(dims=2)
             tx_lhs = ttl.copy(lhs[y, x], lhs_blk)
             tx_rhs = ttl.copy(rhs[y, x], rhs_blk)
             tx_lhs.wait()
@@ -51,7 +51,7 @@ def multicore_add(lhs, rhs, out):
     @ttl.datamovement()
     def dm_write():
         with out_dfb.wait() as out_blk:
-            x, y = ttl.core(dims=2)
+            x, y = ttl.node(dims=2)
             tx = ttl.copy(out_blk, out[y, x])
             tx.wait()
 
@@ -63,7 +63,7 @@ def multicore_add(lhs, rhs, out):
 # CHECK-LABEL: func.func @dm_read
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0 : i32, 1 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
-# Verify core_x() and core_y() ops appear in the IR (from x, y = ttl.core(dims=2))
+# Verify core_x() and core_y() ops appear in the IR (from x, y = ttl.node(dims=2))
 # CHECK: ttl.core_x
 # CHECK: ttl.core_y
 

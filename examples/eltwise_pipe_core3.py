@@ -64,7 +64,7 @@ def eltwise_pipe_core3(
     def compute_func():
         if not pipe.has_current_core():
             return  # This core is not participating in C multicast
-        core_num = ttl.core(dims=1)  # linear core index
+        core_num = ttl.node(dims=1)  # linear core index
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
@@ -102,7 +102,7 @@ def eltwise_pipe_core3(
         if not pipe.has_current_core():
             return  # This core is not participating in C multicast
 
-        core_num = ttl.core(dims=1)  # linear core index
+        core_num = ttl.node(dims=1)  # linear core index
 
         # Pipe communication setup - must happen before main loop
         with c_in_dfb.reserve() as c_block:
@@ -145,7 +145,7 @@ def eltwise_pipe_core3(
     def dm1():
         if not pipe.has_current_core():
             return  # This core is not participating in C multicast
-        core_num = ttl.core(dims=1)  # linear core index
+        core_num = ttl.node(dims=1)  # linear core index
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 

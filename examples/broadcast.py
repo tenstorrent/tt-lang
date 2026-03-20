@@ -56,7 +56,7 @@ def __demo_kernel(a, b, c, y):
 
     @ttl.datamovement()
     def demo_read():
-        core_x, core_y = ttl.core(dims=2)
+        core_x, core_y = ttl.node(dims=2)
         for core_row in range(rows_per_core):
             row = core_x * rows_per_core + core_row
             start_row_tile = row * row_tiles_per_block
@@ -97,7 +97,7 @@ def __demo_kernel(a, b, c, y):
 
     @ttl.datamovement()
     def demo_write():
-        core_x, core_y = ttl.core(dims=2)
+        core_x, core_y = ttl.node(dims=2)
         for core_row in range(rows_per_core):
             row = core_x * rows_per_core + core_row
             start_row_tile = row * row_tiles_per_block

@@ -106,7 +106,7 @@ def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
 
     @ttl.datamovement()
     def dm_read():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
         row = y * 2
         col = x * 2
 
@@ -128,7 +128,7 @@ def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
 
     @ttl.datamovement()
     def dm_write():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
         row = y * 2
         col = x * 2
 

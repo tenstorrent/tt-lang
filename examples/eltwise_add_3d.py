@@ -38,7 +38,7 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
 
     @ttl.compute()
     def compute():
-        core_col, core_row = ttl.core(dims=2)
+        core_col, core_row = ttl.node(dims=2)
         for batch in range(batch_tiles):
             for local_row in range(rows_per_core):
                 row = core_row * rows_per_core + local_row
@@ -55,7 +55,7 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
 
     @ttl.datamovement()
     def read():
-        core_col, core_row = ttl.core(dims=2)
+        core_col, core_row = ttl.node(dims=2)
         for batch in range(batch_tiles):
             b0, b1 = batch * BATCH_GRANULARITY, (batch + 1) * BATCH_GRANULARITY
             for local_row in range(rows_per_core):
@@ -77,7 +77,7 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
 
     @ttl.datamovement()
     def write():
-        core_col, core_row = ttl.core(dims=2)
+        core_col, core_row = ttl.node(dims=2)
         for batch in range(batch_tiles):
             b0, b1 = batch * BATCH_GRANULARITY, (batch + 1) * BATCH_GRANULARITY
             for local_row in range(rows_per_core):

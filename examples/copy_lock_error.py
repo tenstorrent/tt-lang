@@ -46,7 +46,7 @@ def eltwise_add(
 
     @ttl.compute()
     def compute_func():
-        core_num = ttl.core(dims=1)  # linear core index
+        core_num = ttl.node(dims=1)  # linear core index
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
@@ -71,7 +71,7 @@ def eltwise_add(
 
     @ttl.datamovement()
     def dm0():
-        core_num = ttl.core(dims=1)  # linear core index
+        core_num = ttl.node(dims=1)  # linear core index
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 
@@ -95,7 +95,7 @@ def eltwise_add(
 
     @ttl.datamovement()
     def dm1():
-        core_num = ttl.core(dims=1)  # linear core index
+        core_num = ttl.node(dims=1)  # linear core index
         start_col_tile = core_num * cols_per_core
         end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
 

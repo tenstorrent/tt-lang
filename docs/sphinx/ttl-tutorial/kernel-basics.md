@@ -79,17 +79,17 @@ x_size, y_size, z_size = ttl.grid_size(dims=3)  # x_size = 8, y_size = 8, z_size
 
 ### Core Coordinates
 
-`ttl.core(dims)` returns zero-based, contiguous core coordinates for the current Tensix core.
+`ttl.node(dims)` returns zero-based, contiguous core coordinates for the current Tensix core.
 
 ```python
 # For (8, 8) single-chip grid
-x = ttl.core(dims=1)  # x in [0, 64)
+x = ttl.node(dims=1)  # x in [0, 64)
 
 # For (8, 8, 8) multi-chip grid
-x, y = ttl.core(dims=2)  # x in [0, 8), y in [0, 64)
+x, y = ttl.node(dims=2)  # x in [0, 8), y in [0, 64)
 
 # For (8, 8) single-chip grid
-x, y, z = ttl.core(dims=3)  # x in [0, 8), y in [0, 8), z = 0
+x, y, z = ttl.node(dims=3)  # x in [0, 8), y in [0, 8), z = 0
 ```
 
 Both functions can be used inside kernel functions and thread functions.

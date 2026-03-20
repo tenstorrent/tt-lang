@@ -63,7 +63,7 @@ def multicore_loop(lhs, rhs, out):
             for local_c in range({tiles_per_core_col}):
                 with lhs_dfb.reserve() as lhs_blk, rhs_dfb.reserve() as rhs_blk:
                     # core(dims=2) returns (x, y) where x=col, y=row
-                    x, y = ttl.core(dims=2)
+                    x, y = ttl.node(dims=2)
                     row = y * {tiles_per_core_row} + local_r
                     col = x * {tiles_per_core_col} + local_c
                     tx_lhs = ttl.copy(lhs[row, col], lhs_blk)
@@ -76,7 +76,7 @@ def multicore_loop(lhs, rhs, out):
         for local_r in range({tiles_per_core_row}):
             for local_c in range({tiles_per_core_col}):
                 with out_dfb.wait() as out_blk:
-                    x, y = ttl.core(dims=2)
+                    x, y = ttl.node(dims=2)
                     row = y * {tiles_per_core_row} + local_r
                     col = x * {tiles_per_core_col} + local_c
                     tx = ttl.copy(out_blk, out[row, col])

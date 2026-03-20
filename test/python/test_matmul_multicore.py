@@ -43,7 +43,7 @@ def matmul_multicore_2rows(a, b, out):
 
     @ttl.datamovement()
     def dm_read():
-        _, core_row = ttl.core(dims=2)
+        _, core_row = ttl.node(dims=2)
         with a_dfb.reserve() as blk:
             tx = ttl.copy(a[core_row, 0], blk)
             tx.wait()
@@ -53,7 +53,7 @@ def matmul_multicore_2rows(a, b, out):
 
     @ttl.datamovement()
     def dm_write():
-        _, core_row = ttl.core(dims=2)
+        _, core_row = ttl.node(dims=2)
         with out_dfb.wait() as blk:
             tx = ttl.copy(blk, out[core_row, 0:Nt])
             tx.wait()

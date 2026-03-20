@@ -14,7 +14,7 @@ from ttl.ttl import (
     Program,
     make_dataflow_buffer_like,
     copy,
-    core,
+    node,
     grid_size,
     math,
 )
@@ -43,7 +43,7 @@ __all__ = [
     "CopyTransferHandler",
     "make_dataflow_buffer_like",
     "copy",
-    "core",
+    "node",
     "grid_size",
     "math",
     "signpost",

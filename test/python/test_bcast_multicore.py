@@ -117,7 +117,7 @@ def bcast_kernel(a, b, c, out1, out2, out3):
 
     @ttl.datamovement()
     def dm_read():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
 
         # Read L1 tile FIRST (so it's available for broadcast)
         with c_dfb.reserve() as c_blk:
@@ -137,7 +137,7 @@ def bcast_kernel(a, b, c, out1, out2, out3):
 
     @ttl.datamovement()
     def dm_write():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
 
         # Write DRAM tiles (4x4 per core)
         for local_r in range(4):
@@ -282,7 +282,7 @@ def make_bcast_granularity_kernel(granularity: int):
 
         @ttl.datamovement()
         def dm_read():
-            core_x, core_y = ttl.core(dims=2)
+            core_x, core_y = ttl.node(dims=2)
             for core_row in range(rows_per_core):
                 row = core_x * rows_per_core + core_row
                 start_row = row * block_rows
@@ -297,7 +297,7 @@ def make_bcast_granularity_kernel(granularity: int):
 
         @ttl.datamovement()
         def dm_write():
-            core_x, core_y = ttl.core(dims=2)
+            core_x, core_y = ttl.node(dims=2)
             for core_row in range(rows_per_core):
                 row = core_x * rows_per_core + core_row
                 start_row = row * block_rows

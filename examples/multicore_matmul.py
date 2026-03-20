@@ -91,7 +91,7 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
 
     @ttl.compute()
     def mm_compute():
-        core_id = ttl.core(dims=1)
+        core_id = ttl.node(dims=1)
         num_tiles = get_tiles_per_core(core_id)
 
         for _ in range(num_tiles):
@@ -106,7 +106,7 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
 
     @ttl.datamovement()
     def mm_reader():
-        core_id = ttl.core(dims=1)
+        core_id = ttl.node(dims=1)
         num_tiles = get_tiles_per_core(core_id)
 
         # A[Mt, Kt] @ B[Kt, Nt] = C[Mt, Nt]
@@ -125,7 +125,7 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
 
     @ttl.datamovement()
     def mm_writer():
-        core_id = ttl.core(dims=1)
+        core_id = ttl.node(dims=1)
         num_tiles = get_tiles_per_core(core_id)
 
         # A[Mt, Kt] @ B[Kt, Nt] = C[Mt, Nt]

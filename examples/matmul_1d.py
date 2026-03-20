@@ -56,7 +56,7 @@ def matmul_1d(
 
     @ttl.compute()
     def compute():
-        core_index = ttl.core(dims=1)
+        core_index = ttl.node(dims=1)
         if core_index < num_working_cores:
             for mb in range(Mb):
                 for local_nb in range(nb_per_core):
@@ -69,7 +69,7 @@ def matmul_1d(
 
     @ttl.datamovement()
     def a_reader_a_b_reader():
-        core_index = ttl.core(dims=1)
+        core_index = ttl.node(dims=1)
         if core_index < num_working_cores:
             for mb in range(Mb):
                 for local_nb in range(nb_per_core):
@@ -96,7 +96,7 @@ def matmul_1d(
 
     @ttl.datamovement()
     def out_writer():
-        core_index = ttl.core(dims=1)
+        core_index = ttl.node(dims=1)
         if core_index < num_working_cores:
             for mb in range(Mb):
                 for block_n in range(nb_per_core):

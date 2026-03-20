@@ -280,9 +280,9 @@ class PipeToBlockHandler:
 
         # Check whether there is a message this core has not yet received.
         try:
-            from .corecontext import core
+            from .corecontext import node
 
-            core_id = core(dims=1)
+            core_id = node(dims=1)
             return any(core_id not in recv_set for _, _, _, recv_set in entry["queue"])
         except (ImportError, RuntimeError):
             # Non-kernel context: any queued message is receivable.
@@ -299,9 +299,9 @@ class PipeToBlockHandler:
 
         # Determine current core ID for per-core message tracking.
         try:
-            from .corecontext import core
+            from .corecontext import node
 
-            core_id = core(dims=1)
+            core_id = node(dims=1)
             core_id_available = True
         except (ImportError, RuntimeError):
             core_id_available = False

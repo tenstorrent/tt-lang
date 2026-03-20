@@ -58,7 +58,7 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
 
     @ttl.datamovement()
     def demo_read():
-        core_col, core_row = ttl.core(dims=2)
+        core_col, core_row = ttl.node(dims=2)
 
         for local_row in range(rows_per_core):
             row = core_row * rows_per_core + local_row
@@ -103,7 +103,7 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
 
     @ttl.datamovement()
     def demo_write():
-        core_col, core_row = ttl.core(dims=2)
+        core_col, core_row = ttl.node(dims=2)
 
         for local_row in range(rows_per_core):
             row = core_row * rows_per_core + local_row

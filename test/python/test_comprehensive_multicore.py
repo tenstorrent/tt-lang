@@ -99,7 +99,7 @@ def comprehensive_kernel(a, b, c, out1, out2, out3):
             b_dfb.reserve() as b_blk,
             c_dfb.reserve() as c_blk,
         ):
-            x, y = ttl.core(dims=2)
+            x, y = ttl.node(dims=2)
             row = y * CB_ROWS
             col = x * CB_COLS
             tx_a = ttl.copy(a[row : row + CB_ROWS, col : col + CB_COLS], a_blk)
@@ -116,7 +116,7 @@ def comprehensive_kernel(a, b, c, out1, out2, out3):
             out2_dfb.wait() as o2_blk,
             out3_dfb.wait() as o3_blk,
         ):
-            x, y = ttl.core(dims=2)
+            x, y = ttl.node(dims=2)
             row = y * CB_ROWS
             col = x * CB_COLS
             tx1 = ttl.copy(o1_blk, out1[row : row + CB_ROWS, col : col + CB_COLS])

@@ -66,7 +66,7 @@ def matmul_1d(
 
     @ttl.compute()
     def mm_compute():
-        core = ttl.core(dims=1)
+        core = ttl.node(dims=1)
         if core >= num_working_cores:
             return
         for block_m in range(num_blocks_m):
@@ -78,7 +78,7 @@ def matmul_1d(
 
     @ttl.datamovement()
     def mm_reader():
-        core = ttl.core(dims=1)
+        core = ttl.node(dims=1)
         if core >= num_working_cores:
             return
         for block_m in range(num_blocks_m):
@@ -107,7 +107,7 @@ def matmul_1d(
 
     @ttl.datamovement()
     def mm_writer():
-        core = ttl.core(dims=1)
+        core = ttl.node(dims=1)
         if core >= num_working_cores:
             return
         for block_m in range(num_blocks_m):
