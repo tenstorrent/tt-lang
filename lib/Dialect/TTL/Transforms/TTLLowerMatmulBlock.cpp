@@ -72,7 +72,46 @@ static LogicalResult validateMatmulDSTCapacity(func::FuncOp func) {
   return hadError ? failure() : success();
 }
 
+/// Determine the compute input index for the matmul's accumulator operand.
+/// The accumulator is a block argument of the compute body; its index in the
+/// body's argument list corresponds to its position in the compute's inputs.
+/// Returns -1 if the accumulator is not a block argument or is absent.
+static int64_t getAccumulatorInputIndex(TileMatmulBlockOp mmOp) {
+  Value acc = mmOp.getAccumulator();
+  if (!acc) {
+    return -1;
+  }
+  // Trace through copy_tile: assign-dst inserts copy_tile for CB block args,
+  // so the accumulator value may be the copy_tile result rather than the
+  // block arg directly.
+  if (auto copyOp = acc.getDefiningOp<CopyTileOp>()) {
+    acc = copyOp.getSrc();
+  }
+  if (auto blockArg = dyn_cast<BlockArgument>(acc)) {
+    return blockArg.getArgNumber();
+  }
+  return -1;
+}
+
+/// Emit M*N copies of an in-place unary tile op (relu, exp, etc.) by cloning
+/// the body op. Each copy operates on DST[m*N + n].
+static void emitPerTileUnaryOps(OpBuilder &rewriter, Location loc,
+                                Operation *bodyOp, Value placeholder, int64_t M,
+                                int64_t N) {
+  for (int64_t m = 0; m < M; ++m) {
+    for (int64_t n = 0; n < N; ++n) {
+      int64_t dstIdx = m * N + n;
+      auto *cloned = rewriter.clone(*bodyOp);
+      // Remap operand to placeholder (original references body block arg).
+      cloned->setOperand(0, placeholder);
+      cloned->setAttr(kDstIdxAttrName, rewriter.getI32IntegerAttr(dstIdx));
+    }
+  }
+}
+
 /// Replace a matmul compute with flat ops: sync + matmul_block + stores.
+/// Handles fused bodies containing accumulator (copy_tile), post-matmul
+/// unary ops (relu, etc.), and tile_stores.
 struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
   using OpRewritePattern<ComputeOp>::OpRewritePattern;
 
@@ -99,6 +138,24 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
     }
     Value outView = stores[0].getView();
 
+    // Collect per-tile unary ops in the body (between matmul and store).
+    // These are in-place ops (relu, exp, etc.) that must be expanded to
+    // M*N calls on each DST register.
+    SmallVector<Operation *> postMatmulUnaryOps;
+    bool foundMatmul = false;
+    for (Operation &bodyOp : computeOp.getBody().front()) {
+      if (isa<TileMatmulBlockOp>(&bodyOp)) {
+        foundMatmul = true;
+        continue;
+      }
+      if (foundMatmul && bodyOp.hasTrait<TTLInPlaceOpTrait>()) {
+        postMatmulUnaryOps.push_back(&bodyOp);
+      }
+    }
+
+    // Determine accumulator input (if 3-operand matmul).
+    int64_t accInputIdx = getAccumulatorInputIndex(mmOp);
+
     Location loc = computeOp.getLoc();
     Type tileType = mmOp.getResult().getType();
 
@@ -108,24 +165,35 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
     TileRegsAcquireOp::create(rewriter, loc);
 
     // Single matmul_block call. Operands are the CB-attached input tensors.
-    auto mmResult = TileMatmulBlockOp::create(rewriter, loc, tileType,
-                                              computeOp.getInputs()[0],
-                                              computeOp.getInputs()[1]);
+    // If an accumulator is present, pass it as the 3rd operand — the TTKernel
+    // lowering will emit M*N copy_tile ops to pre-load DST before the matmul.
+    Value accTensor =
+        accInputIdx >= 0 ? computeOp.getInputs()[accInputIdx] : Value();
+    auto mmResult = TileMatmulBlockOp::create(
+        rewriter, loc, tileType, computeOp.getInputs()[0],
+        computeOp.getInputs()[1], accTensor);
     mmResult->setAttr(kDstIdxAttrName, rewriter.getI32IntegerAttr(0));
+
+    // Per-tile unary post-ops (relu, exp, etc.).
+    Value placeholder = UnrealizedConversionCastOp::create(
+                            rewriter, loc, tileType, ValueRange{})
+                            .getResult(0);
+    for (Operation *unaryOp : postMatmulUnaryOps) {
+      emitPerTileUnaryOps(rewriter, loc, unaryOp, placeholder, M, N);
+    }
 
     // Sync commit + wait.
     TileRegsCommitOp::create(rewriter, loc);
     TileRegsWaitOp::create(rewriter, loc);
 
-    // M*N tile_stores. TODO: replace with pack_tile_block.
-    Value mmTile = UnrealizedConversionCastOp::create(rewriter, loc, tileType,
-                                                      ValueRange{})
-                       .getResult(0);
+    // M*N tile_stores.
+    // TODO: Replace with pack_tile_block(0, out_cb, M*N) once a proper
+    // TTKernel op exists. See copy_block_matmul_partials TODO above.
     for (int64_t m = 0; m < M; ++m) {
       for (int64_t n = 0; n < N; ++n) {
         Value mIdx = arith::ConstantIndexOp::create(rewriter, loc, m);
         Value nIdx = arith::ConstantIndexOp::create(rewriter, loc, n);
-        auto store = TileStoreOp::create(rewriter, loc, mmTile, outView,
+        auto store = TileStoreOp::create(rewriter, loc, placeholder, outView,
                                          ValueRange{mIdx, nIdx});
         store->setAttr(kDstIdxAttrName, rewriter.getI32IntegerAttr(m * N + n));
       }

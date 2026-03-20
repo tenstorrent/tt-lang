@@ -3,12 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: tt-device
-# RUN: not %python %s 2>&1 | FileCheck %s
+# RUN: %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: fusing matmul result with elementwise add in a single
-store expression is not yet supported. The user must store the matmul
-result to a temporary CB first, then add in a separate compute step.
+Matmul fusion: fusing matmul with elementwise add is now supported.
+This test verifies that (a @ b) + c compiles successfully through the
+full pipeline (it used to be rejected as unsupported).
 """
 
 import os
@@ -19,9 +19,9 @@ import ttnn
 import ttl
 
 
-# CHECK: fusion failed: cannot trace through non-elementwise op
+# CHECK: Compiled kernel ready
 @ttl.kernel(grid=(1, 1))
-def invalid_matmul_fusion(a, b, c, out):
+def matmul_fusion(a, b, c, out):
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
     c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
@@ -59,8 +59,6 @@ if __name__ == "__main__":
     device = ttnn.open_device(device_id=0)
     try:
         make = lambda: to_dram(torch.randn(32, 32, dtype=torch.bfloat16), device)
-        invalid_matmul_fusion(make(), make(), make(), make())
-        print("ERROR: Expected error was not raised!")
-        exit(1)
+        matmul_fusion(make(), make(), make(), make())
     finally:
         ttnn.close_device(device)

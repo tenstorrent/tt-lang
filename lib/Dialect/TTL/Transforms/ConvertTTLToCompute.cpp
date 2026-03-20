@@ -408,7 +408,18 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     emitSideEffectOp(op);
   }
 
-  // Emit tile ops in topological order with interleaved side-effect ops
+  // Emit tile ops in topological order with interleaved side-effect ops.
+  //
+  // Matmul+add fold: when a MatmulOp result feeds into an AddOp in the
+  // chain, we fold them into a single 3-operand TileMatmulBlockOp.  The
+  // add vanishes because matmul_block inherently accumulates (DST += A*B).
+  // Pre-loading the add's other operand into DST gives accumulator + A*B.
+  //
+  // Deferred emission: when a matmul's single user is an add in the chain,
+  // we stash its tile operands and emit the 3-operand form when the add is
+  // reached.
+  DenseMap<Value, std::pair<Value, Value>> deferredMatmul;
+
   Value finalResult;
   for (Operation *op : trace.opsInOrder) {
     auto it = opsBefore.find(op);
@@ -426,7 +437,54 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       Value outputTile = body->getArguments().back(); // output block arg
       tileResult = TileBcastOp::create(rewriter, loc, tileType, inputTile,
                                        outputTile, bcastOp.getBcastTypeAttr());
+    } else if (auto matmulOp = dyn_cast<MatmulOp>(op)) {
+      // MatmulOp: reads both operands from CB, writes to DST.
+      Value lhsTile = tensorToTile[matmulOp.getLhs()];
+      Value rhsTile = tensorToTile[matmulOp.getRhs()];
+
+      // Check if matmul result feeds into an AddOp in this chain — if so,
+      // defer emission so we can fold the add into a 3-operand matmul.
+      bool deferred = false;
+      if (matmulOp.getResult().hasOneUse()) {
+        Operation *user = *matmulOp.getResult().getUsers().begin();
+        if (isa<AddOp>(user) && trace.opsInOrder.contains(user)) {
+          deferredMatmul[matmulOp.getResult()] = {lhsTile, rhsTile};
+          deferred = true;
+        }
+      }
+      if (!deferred) {
+        tileResult = TileMatmulBlockOp::create(rewriter, loc, tileType, lhsTile,
+                                               rhsTile, Value());
+      }
     } else {
+      // Check for matmul+add fold before falling through to elementwise.
+      if (isa<AddOp>(op)) {
+        auto operands = getElementwiseOperands(op);
+        auto tryFold = [&](Value tensorA, Value tensorB) -> Value {
+          auto dfIt = deferredMatmul.find(tensorA);
+          if (dfIt == deferredMatmul.end()) {
+            return nullptr;
+          }
+          auto [mmLhs, mmRhs] = dfIt->second;
+          Value accTile = tensorToTile.lookup(tensorB);
+          if (!accTile) {
+            return nullptr;
+          }
+          return TileMatmulBlockOp::create(rewriter, loc, tileType, mmLhs,
+                                           mmRhs, accTile);
+        };
+        Value folded = tryFold(operands[0], operands[1]);
+        if (!folded) {
+          folded = tryFold(operands[1], operands[0]);
+        }
+        if (folded) {
+          tileResult = folded;
+          tensorToTile[op->getResult(0)] = tileResult;
+          finalResult = tileResult;
+          continue;
+        }
+      }
+
       // Elementwise ops
       SmallVector<Value, 2> tileOperands;
       for (Value operand : getElementwiseOperands(op)) {
@@ -444,8 +502,10 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       }
     }
 
-    tensorToTile[op->getResult(0)] = tileResult;
-    finalResult = tileResult;
+    if (tileResult) {
+      tensorToTile[op->getResult(0)] = tileResult;
+      finalResult = tileResult;
+    }
   }
 
   // Emit trailing begin signposts and dprints, then tile stores, then end
@@ -808,9 +868,18 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
     Value rhs = op.getRhs();
 
     if (!getAttachedCB(lhs) || !getAttachedCB(rhs)) {
-      return rewriter.notifyMatchFailure(
-          op, "matmul inputs must be CB-attached; fusion of matmul with "
-              "elementwise ops is not yet supported");
+      return rewriter.notifyMatchFailure(op,
+                                         "matmul inputs must be CB-attached");
+    }
+
+    // If the matmul result feeds into a single elementwise op, defer to
+    // fusion — the elementwise pattern will trace through the matmul.
+    if (op.getResult().hasOneUse()) {
+      Operation *user = *op.getResult().getUsers().begin();
+      if (isElementwiseOp(user)) {
+        return rewriter.notifyMatchFailure(
+            op, "deferring matmul to elementwise fusion");
+      }
     }
 
     auto lhsType = getTensorType(lhs);
@@ -838,8 +907,9 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
     return buildComputeFromInputs(
         op, rewriter, ValueRange{lhs, rhs}, resultType, inputMaps, outMap,
         iterTypes, [](OpBuilder &b, Location loc, Type tileType, Block *body) {
-          return TileMatmulBlockOp::create(
-              b, loc, tileType, body->getArgument(0), body->getArgument(1));
+          return TileMatmulBlockOp::create(b, loc, tileType,
+                                           body->getArgument(0),
+                                           body->getArgument(1), Value());
         });
   }
 };

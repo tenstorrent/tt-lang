@@ -742,14 +742,23 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
     buffers. The block dimensions (rt, ct, kt) are derived from the
     enclosing ttl.compute's operand shapes during TTKernel lowering.
 
+    When the optional `accumulator` operand is present, it must be
+    pre-loaded into DST (via copy_tile) before the matmul executes.
+    The matmul accumulates on top: result = accumulator + lhs @ rhs.
+    This is used to fuse matmul with an add (the add vanishes because
+    matmul_block inherently accumulates).
+
     Maps to ttkernel.mm_block_init + ttkernel.experimental::matmul_block.
   }];
   // Accepts both tile types (inside compute body) and tensor types (after
   // lower-matmul-block flattens the compute into a direct CB reference).
-  let arguments = (ins AnyType:$lhs, AnyType:$rhs);
+  let arguments = (ins AnyType:$lhs, AnyType:$rhs,
+                       Optional<AnyType>:$accumulator);
   let results = (outs AnyType:$result);
-  let assemblyFormat =
-      "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
+  let assemblyFormat = [{
+    $lhs `,` $rhs (`,` $accumulator^)? attr-dict `:`
+    type($lhs) `,` type($rhs) (`,` type($accumulator)^)? `->` type($result)
+  }];
 }
 
 // Circular buffer synchronization operations
