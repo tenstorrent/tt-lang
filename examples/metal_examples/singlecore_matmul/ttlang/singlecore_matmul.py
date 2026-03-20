@@ -14,7 +14,7 @@ from utils.correctness import assert_with_ulp
 
 
 @ttl.kernel(grid=(1, 1))
-def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
+def tt_lang_singlenode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
     M = a.shape[0]
@@ -63,15 +63,15 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
                     out_wr.wait()
 
 
-def test_singlecore_matmul_tt_lang():
-    """Test singlecore matmul kernel."""
+def test_singlenode_matmul_tt_lang():
+    """Test singlenode matmul kernel."""
     device = ttnn.open_device(device_id=0)
     M, K, N = 256, 256, 256
     a = ttnn.rand((M, K), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
     b = ttnn.rand((K, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
     c = ttnn.empty((M, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
 
-    tt_lang_singlecore_matmul(a, b, c)
+    tt_lang_singlenode_matmul(a, b, c)
 
     golden = torch.matmul(
         ttnn.to_torch(a).to(torch.bfloat16), ttnn.to_torch(b).to(torch.bfloat16)
@@ -83,4 +83,4 @@ def test_singlecore_matmul_tt_lang():
 
 
 if __name__ == "__main__":
-    test_singlecore_matmul_tt_lang()
+    test_singlenode_matmul_tt_lang()

@@ -22,7 +22,7 @@ void MAIN {
   // out_subblock_w*K_block_size* b_num_subblocks;
   uint32_t b_block_num_tiles = get_compile_time_arg_val(5);
   // out_subblock_w*b_num_subblocks
-  uint32_t b_per_core_w = get_compile_time_arg_val(6);
+  uint32_t b_per_node_w = get_compile_time_arg_val(6);
   // outer inner dim (in inner dim blocks)
   uint32_t num_blocks = get_compile_time_arg_val(7);
   // inner row block size in tiles
@@ -75,7 +75,7 @@ void MAIN {
                   b_index_subblock_offset + b_index_inner_dim_offset + w;
               matmul_tiles(tt::CBIndex::c_0, tt::CBIndex::c_1, a_index, b_index,
                            dst_index);
-              b_index_inner_dim_offset += b_per_core_w;
+              b_index_inner_dim_offset += b_per_node_w;
             }
             dst_index++;
           }

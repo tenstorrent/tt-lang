@@ -437,19 +437,19 @@ def large_tensor_kernel(inp, out):
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
-    BLOCKS_PER_CORE = 4  # 8x8 tiles / 2x2 block = 4x4 = 16 blocks... adjust per core
+    BLOCKS_PER_NODE = 4  # 8x8 tiles / 2x2 block = 4x4 = 16 blocks... adjust per node
 
     @ttl.compute()
     def compute():
-        for _ in range(BLOCKS_PER_CORE):
+        for _ in range(BLOCKS_PER_NODE):
             with inp_dfb.wait() as i, out_dfb.reserve() as o:
                 o.store(ttl.math.exp(i))
 
     @ttl.datamovement()
     def dm_read():
         x, y = ttl.node(dims=2)
-        for block_idx in range(BLOCKS_PER_CORE):
-            # Calculate tile coordinates for this core and block
+        for block_idx in range(BLOCKS_PER_NODE):
+            # Calculate tile coordinates for this node and block
             row = y * 8 + (block_idx // 4) * 2  # Example indexing
             col = x * 8 + (block_idx % 4) * 2
             with inp_dfb.reserve() as blk:
@@ -459,7 +459,7 @@ def large_tensor_kernel(inp, out):
     @ttl.datamovement()
     def dm_write():
         x, y = ttl.node(dims=2)
-        for block_idx in range(BLOCKS_PER_CORE):
+        for block_idx in range(BLOCKS_PER_NODE):
             row = y * 8 + (block_idx // 4) * 2
             col = x * 8 + (block_idx % 4) * 2
             with out_dfb.wait() as blk:
