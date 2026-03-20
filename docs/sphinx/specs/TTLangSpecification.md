@@ -23,6 +23,7 @@
 * [Appendix A. Glossary](#appendix-a-glossary)
 * [Appendix B. Block operators and math functions](#appendix-b-block-operators-and-math-functions)
 * [Appendix C. Naming guidelines](#appendix-c-naming-guidelines)
+* [Appendix D. Functionality matrix](#appendix-D-functionality-matrix)
 
 ## 0. Versions
 
@@ -1071,3 +1072,41 @@ def matmul_read():
 | Block | Snake case with `blk` suffix. Example `attention_mask_blk`, `bias_blk2` |
 | Transfer handle | Snake case with `xf` suffix. Example `attention_mask_xf`, `bias_xf2` |
 | Pipe net | Snake case with `net` suffix. Example `mcast_attention_mask_net`, `bias_net2` |
+
+## Appendix D. Functionality matrix
+
+| Functionality | Simulator | Compiler |
+| :---- | :---- | :---- |
+| 2D grid `ttl.grid_size` and `ttl.core` with `dims=2`| 0.1.7 | 0.1.7 |
+| 2D grid `ttl.grid_size` and `ttl.core` with any `dims` | 0.1.7 | N/S |
+| 4D grid `ttl.grid_size` and `ttl.core` | N/S | N/S |
+| SPMD | N/A | N/S |
+| `ttl.make_dataflow_buffer_like` with 2D+ `shape` | 0.1.7 | 0.1.7 |
+| `ttl.make_dataflow_buffer_like` with any `shape` | 0.1.7 | N/S |
+| `ttl.make_dataflow_buffer_like` for tilized tensors | 0.1.7 | 0.1.7 |
+| `ttl.make_dataflow_buffer_like` for row-major tensors | N/S | N/S |
+| `ttl.Block.store` with `acc = False` | 0.1.7 | 0.1.7 |
+| `ttl.Block.store` with `acc = True` | 0.1.7 | N/S |
+| `ttl.copy` and `ttl.Transfer` | 0.1.7 | 0.1.7 |
+| `ttl.GroupTransfer` | N/S | N/S |
+| `ttl.Semaphore` on 2D grid | N/S | N/S |
+| `ttl.Semaphore` on 4D grid | N/S | N/S |
+| `ttl.PipeNet` and `ttl.Pipe` on 2D grid | 0.1.7 | N/S |
+| `ttl.PipeNet` and `ttl.Pipe` on 4D grid | N/S | N/S |
+| `ttl.signpost` (ignored in simulator) | 0.1.7 | 0.1.7 |
+| Debug printing with `print` | 0.1.7 | 0.1.7 |
+| Built-in unary math operators: `-`, `abs` | 0.1.7 | 0.1.7 |
+| Built-in binary math operators: `+`, `-`, `*`, `/` | 0.1.7 | 0.1.7 |
+| Built-in binary math operators: `@`, `%`, `//`, `^`, | 0.1.7 | N/S |
+| `ttl.math` unary math functions: `exp`, `log`, `sqrt`, `rsqrt`, `tanh`, `sigmoid`, `relu`, `floor`, `recip`, `sin`, `cos`, `tan` | 0.1.7 | 0.1.7 |
+| `ttl.math` unary math functions: `exp2`, `expm1`, `logp1`, `square`, `tan`, `atan`, `atanh`, `asin`, `asinh`, `acos`, `acosh`, `gelu`, `silu`, `softsign`, `hardsigmoid`, `selu`, `ceil`, `frac`, `trunc`, `sign`, `signbit`, `rsub`, `relu_max`, `relu_min`, `leaky_relu`, `elu`, `celu`, `prelu`, `softplus`, `hardtanh`, `round`, `clamp`, `threshold`, `fill` | 0.1.7 | N/S |
+| `ttl.math` binary math functions: `min`, `max` | 0.1.7 | 0.1.7 |
+| `ttl.math` binary math functions: `mask`, `mask_posinf` | 0.1.7 | N/S |
+| `ttl.math.where` | 0.1.7 | N/S |
+| `ttl.math.broadcast` (compiler requires target block as argument) | 0.1.7 | 0.1.7 |
+| `ttl.math.reduce_max` | 0.1.7 | N/S |
+| `ttl.math.reduce_sum` | 0.1.7 | N/S |
+| `ttl.math.transpose` | 0.1.7 | N/S |
+
+* N/S - Not Supported
+* N/A - Not Applicable

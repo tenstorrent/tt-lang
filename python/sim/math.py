@@ -61,37 +61,40 @@ def broadcast(
        Marks the block with broadcast metadata. Actual expansion happens later
        when the block is stored or used in operations.
 
-    Dimension indexing uses the innermost-first convention: dims=[0] refers to the
-    innermost (last) dimension of the block shape, dims=[1] to the next-to-innermost,
-    and so on. This matches the convention used throughout the ttl.math API.
+    Dimension indexing uses standard Python convention: positive dim 0 is the
+    outermost dimension, dim 1 is the next, and so on. Negative indices count
+    from the innermost: dim -1 is the innermost (last) dimension, dim -2 is
+    the next-to-innermost, and so on.
 
     For a 2-D grid block of shape (N, M):
-    - dims=[0] (innermost/columns): Block must have element size 1 in last dimension.
-    - dims=[1] (next-to-innermost/rows): Block must have element size 1 in first dimension.
+    - dims=[0] or dims=[-2] (outermost/rows): Block must have element size 1 in first dimension.
+    - dims=[1] or dims=[-1] (innermost/columns): Block must have element size 1 in last dimension.
 
     Args:
         block: Input block to broadcast
         output_hint: Optional output block providing target shape for eager expansion
-        dims: List of dimension indices to broadcast along (0=innermost)
+        dims: List of dimension indices to broadcast along (standard Python indexing)
 
     Returns:
         Block with broadcast applied (either lazy metadata or eagerly expanded)
 
     Examples:
         # Eager expansion - immediately materialized
-        a_bcast = ttl.math.broadcast(a_blk, y_blk, dims=[0])
-        b_bcast = ttl.math.broadcast(b_blk, y_blk, dims=[1])
+        # a_blk shape (N, 1): broadcast along innermost (cols) to match y_blk shape (N, M)
+        a_bcast = ttl.math.broadcast(a_blk, y_blk, dims=[-1])
+        # b_blk shape (1, M): broadcast along outermost (rows) to match y_blk shape (N, M)
+        b_bcast = ttl.math.broadcast(b_blk, y_blk, dims=[0])
         y_blk.store(a_bcast * b_bcast)  # Works - both are materialized
 
         # Lazy expansion - deferred until use
-        a_bcast = ttl.math.broadcast(a_blk, dims=[0])
+        a_bcast = ttl.math.broadcast(a_blk, dims=[-1])
         y_blk.store(a_bcast * b_blk)  # a_bcast expands during store
     """
     if dims is None:
         raise ValueError("dims parameter is required for broadcast()")
 
     # Validate that the dimensions being broadcast have element size 1.
-    # User dims use innermost-first convention: translate to internal (outermost-first).
+    # dims uses standard Python indexing: positive 0 = outermost, -1 = innermost.
     block_shape = block._shape  # type: ignore[attr-defined]
     element_shape = block._element_shape  # type: ignore[attr-defined]
     ndim = len(block_shape)
@@ -101,17 +104,16 @@ def broadcast(
         _warn_1d_broadcast_unsupported()
 
     for dim in dims:
-        if dim >= ndim:
+        if dim >= ndim or dim < -ndim:
             raise ValueError(
                 f"Cannot broadcast along dimension {dim}: block has shape {block_shape} "
                 f"with only {ndim} dimensions"
             )
-        internal_dim = ndim - 1 - dim
-        # Check element size, not tile size
-        if element_shape[internal_dim] != 1:
+        # Standard Python indexing: element_shape[dim] handles both positive and negative.
+        if element_shape[dim] != 1:
             raise ValueError(
                 f"Cannot broadcast along dimension {dim}: dimension must have element size 1, "
-                f"but has element size {element_shape[internal_dim]}"
+                f"but has element size {element_shape[dim]}"
             )
 
     # If output hint is provided, perform eager expansion
@@ -664,14 +666,15 @@ def _reduce_impl(
     Reduces the block along specified grid dimensions using torch operations.
     Each reduced dimension collapses to size 1 in the resulting grid.
 
-    Dimension indexing uses the innermost-first convention: dims=[0] refers to
-    the innermost (last) dimension of the block shape, dims=[1] to the next-to-
-    innermost, and so on.
+    Dimension indexing uses standard Python convention: positive dim 0 is the
+    outermost dimension, dim 1 is the next, and so on. Negative dims count from
+    the innermost: dim -1 is the innermost (last) dimension, dim -2 is the
+    next-to-innermost, and so on.
 
     Args:
         block: Input block.
         scaler: Scaler block; its first tile is multiplied into every result tile.
-        dims: Grid dimensions to reduce over (0=innermost).
+        dims: Grid dimensions to reduce over (standard Python indexing).
         op: 'sum' or 'max'.
 
     Returns:
@@ -682,13 +685,14 @@ def _reduce_impl(
     dims_set: Set[int] = set(dims)
 
     for d in dims_set:
-        if d >= ndim:
+        if d >= ndim or d < -ndim:
             raise ValueError(
                 f"Cannot reduce along dimension {d}: block grid has only {ndim} dimensions"
             )
 
-    # Translate user-facing dims (0=innermost) to internal grid dims (0=outermost).
-    internal_dims_set = {ndim - 1 - d for d in dims_set}
+    # Translate user-facing dims to internal grid indices using standard Python
+    # indexing: d % ndim maps both positive and negative dims correctly.
+    internal_dims_set = {d % ndim for d in dims_set}
 
     # Get the scaler
     scaler_tile = scaler.to_list()[0].to_torch()
@@ -756,7 +760,7 @@ def reduce_max(
         block: Input block.
         scaler: Scaler block; its first tile is multiplied into every result tile.
         _output_hint: Unused output block hint (kept for API compatibility).
-        dims: Grid dimensions to reduce over (0-indexed).
+        dims: Grid dimensions to reduce over (standard Python indexing).
 
     Returns:
         Block with reduced dimensions.
@@ -781,7 +785,7 @@ def reduce_sum(
         block: Input block.
         scaler: Scaler block; its first tile is multiplied into every result tile.
         _output_hint: Unused output block hint (kept for API compatibility).
-        dims: Grid dimensions to reduce over (0-indexed).
+        dims: Grid dimensions to reduce over (standard Python indexing).
 
     Returns:
         Block with reduced dimensions.
