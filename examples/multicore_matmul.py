@@ -61,7 +61,7 @@ def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
         node_group_2,
         work_per_node1,
         work_per_node2,
-    ) = ttnn.split_work_to_nodes(node_grid, num_output_tiles_total, row_wise=True)
+    ) = ttnn.split_work_to_cores(node_grid, num_output_tiles_total, row_wise=True)
     print(
         f"all_nodes: {all_nodes}, node_group_1: {node_group_1}, node_group_2: {node_group_2}, "
         f"work_per_node1: {work_per_node1}, work_per_node2: {work_per_node2}"
