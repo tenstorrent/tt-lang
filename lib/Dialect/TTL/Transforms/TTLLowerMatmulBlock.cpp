@@ -72,25 +72,17 @@ static LogicalResult validateMatmulDSTCapacity(func::FuncOp func) {
   return hadError ? failure() : success();
 }
 
-/// Determine the compute input index for the matmul's accumulator operand.
-/// The accumulator is a block argument of the compute body; its index in the
-/// body's argument list corresponds to its position in the compute's inputs.
-/// Returns -1 if the accumulator is not a block argument or is absent.
-static int64_t getAccumulatorInputIndex(TileMatmulBlockOp mmOp) {
-  Value acc = mmOp.getAccumulator();
-  if (!acc) {
-    return -1;
+/// Trace a value through copy_tile (inserted by assign-dst) to its source
+/// block argument. Returns the block arg index, or std::nullopt if the value
+/// does not trace to a block argument.
+static std::optional<unsigned> traceToBlockArgIndex(Value v) {
+  if (auto copyOp = v.getDefiningOp<CopyTileOp>()) {
+    v = copyOp.getSrc();
   }
-  // Trace through copy_tile: assign-dst inserts copy_tile for CB block args,
-  // so the accumulator value may be the copy_tile result rather than the
-  // block arg directly.
-  if (auto copyOp = acc.getDefiningOp<CopyTileOp>()) {
-    acc = copyOp.getSrc();
-  }
-  if (auto blockArg = dyn_cast<BlockArgument>(acc)) {
+  if (auto blockArg = dyn_cast<BlockArgument>(v)) {
     return blockArg.getArgNumber();
   }
-  return -1;
+  return std::nullopt;
 }
 
 /// Emit M*N copies of an in-place unary tile op (relu, exp, etc.) by cloning
@@ -102,7 +94,7 @@ static void emitPerTileUnaryOps(OpBuilder &rewriter, Location loc,
     for (int64_t n = 0; n < N; ++n) {
       int64_t dstIdx = m * N + n;
       auto *cloned = rewriter.clone(*bodyOp);
-      // Remap operand to placeholder (original references body block arg).
+      // The body is erased after expansion; use placeholder for DST reference.
       cloned->setOperand(0, placeholder);
       cloned->setAttr(kDstIdxAttrName, rewriter.getI32IntegerAttr(dstIdx));
     }
@@ -156,23 +148,22 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
     // matmul's lhs/rhs may not be at indices 0/1 (e.g., fused computes place
     // the accumulator operand first).
     auto getInputForBodyOperand = [&](Value bodyVal) -> Value {
-      // Trace through copy_tile (assign-dst inserts these for CB block args).
-      if (auto copyOp = bodyVal.getDefiningOp<CopyTileOp>()) {
-        bodyVal = copyOp.getSrc();
-      }
-      if (auto blockArg = dyn_cast<BlockArgument>(bodyVal)) {
-        return computeOp.getInputs()[blockArg.getArgNumber()];
-      }
-      return {};
+      auto idx = traceToBlockArgIndex(bodyVal);
+      return idx ? computeOp.getInputs()[*idx] : Value();
     };
 
     Value lhsTensor = getInputForBodyOperand(mmOp.getLhs());
     Value rhsTensor = getInputForBodyOperand(mmOp.getRhs());
     assert(lhsTensor && rhsTensor && "matmul operands must trace to inputs");
 
-    int64_t accInputIdx = getAccumulatorInputIndex(mmOp);
-    Value accTensor =
-        accInputIdx >= 0 ? computeOp.getInputs()[accInputIdx] : Value();
+    // Accumulator (3rd operand) maps to a compute input if present.
+    Value accTensor;
+    if (Value acc = mmOp.getAccumulator()) {
+      auto accIdx = traceToBlockArgIndex(acc);
+      assert(accIdx && *accIdx < computeOp.getInputs().size() &&
+             "accumulator must trace to a compute input");
+      accTensor = computeOp.getInputs()[*accIdx];
+    }
 
     Location loc = computeOp.getLoc();
     Type tileType = mmOp.getResult().getType();

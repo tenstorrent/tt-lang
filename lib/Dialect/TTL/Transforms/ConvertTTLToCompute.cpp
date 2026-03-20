@@ -432,7 +432,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
     Value tileResult;
 
-    // Special case: BcastOp reads from CB, needs TileBcastOp
+    // BcastOp reads from CB and writes to DST; emits TileBcastOp.
     if (auto bcastOp = dyn_cast<BcastOp>(op)) {
       Value inputTile = tensorToTile[bcastOp.getInput()];
       Value outputTile = body->getArguments().back(); // output block arg
@@ -469,6 +469,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
           if (!accTile) {
             return nullptr;
           }
+          deferredMatmul.erase(dfIt);
           return TileMatmulBlockOp::create(rewriter, loc, tileType, mmLhs,
                                            mmRhs, accTile);
         };
@@ -478,26 +479,42 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
         }
         if (folded) {
           tileResult = folded;
-          tensorToTile[op->getResult(0)] = tileResult;
-          finalResult = tileResult;
-          continue;
+          // Proceeds to the common tensorToTile/finalResult assignment below.
         }
       }
 
-      // Elementwise ops
-      SmallVector<Value, 2> tileOperands;
-      for (Value operand : getElementwiseOperands(op)) {
-        auto it2 = tensorToTile.find(operand);
-        if (it2 == tensorToTile.end()) {
-          return op->emitError(
-              "fusion failed: operand not mapped to tile value");
-        }
-        tileOperands.push_back(it2->second);
-      }
-
-      tileResult = emitTileOpFor(rewriter, loc, op, tileOperands, tileType);
+      // If the matmul+add fold did not apply (e.g., matmul+sub, or both
+      // operands are matmul results), emit deferred matmuls as 2-operand
+      // tile_matmul_block so the elementwise path can resolve them.
       if (!tileResult) {
-        return op->emitError("fusion failed: unsupported op type");
+        for (Value operand : getElementwiseOperands(op)) {
+          auto dfIt = deferredMatmul.find(operand);
+          if (dfIt != deferredMatmul.end()) {
+            auto [mmLhs, mmRhs] = dfIt->second;
+            Value mmTile = TileMatmulBlockOp::create(rewriter, loc, tileType,
+                                                     mmLhs, mmRhs, Value());
+            tensorToTile[operand] = mmTile;
+            deferredMatmul.erase(dfIt);
+          }
+        }
+      }
+
+      // Elementwise ops (skipped if matmul+add fold already produced a result).
+      if (!tileResult) {
+        SmallVector<Value, 2> tileOperands;
+        for (Value operand : getElementwiseOperands(op)) {
+          auto it2 = tensorToTile.find(operand);
+          if (it2 == tensorToTile.end()) {
+            return op->emitError(
+                "fusion failed: operand not mapped to tile value");
+          }
+          tileOperands.push_back(it2->second);
+        }
+
+        tileResult = emitTileOpFor(rewriter, loc, op, tileOperands, tileType);
+        if (!tileResult) {
+          return op->emitError("fusion failed: unsupported op type");
+        }
       }
     }
 

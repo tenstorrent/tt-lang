@@ -333,7 +333,7 @@ static void buildLiveIntervals(Block *body,
     Value acc = matmul.getAccumulator();
     Value out = matmul.getResult();
 
-    if (!intervals.count(acc) || !intervals.count(out)) {
+    if (!intervals.contains(acc) || !intervals.contains(out)) {
       continue;
     }
 

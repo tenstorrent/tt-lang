@@ -491,9 +491,12 @@ def TTL_DPrintOp : TTL_Op<"dprint", []> {
 class TTL_TileOp<string mnemonic, list<Trait> traits = []>
     : TTL_Op<mnemonic, !listconcat(traits, [TTL_TileComputeOpTrait])>;
 
-def TTL_TileType : TypeConstraint<
+def TTL_TileType : Type<
     CPred<"llvm::isa<mlir::tt::ttcore::TileType>($_self)">,
     "ttcore.tile type">;
+
+// Tile type inside compute body; ranked tensor after lower-matmul-block.
+def TTL_TileOrTensor : AnyTypeOf<[TTL_TileType, AnyRankedTensor]>;
 
 def TTL_IterIndexOp : TTL_Op<"iter_index", [Pure,
     ParentOneOf<["ComputeOp"]>]> {
@@ -757,11 +760,9 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
 
     Maps to ttkernel.mm_block_init + ttkernel.experimental::matmul_block.
   }];
-  // Accepts both tile types (inside compute body) and tensor types (after
-  // lower-matmul-block flattens the compute into a direct CB reference).
-  let arguments = (ins AnyType:$lhs, AnyType:$rhs,
-                       Optional<AnyType>:$accumulator);
-  let results = (outs AnyType:$result);
+  let arguments = (ins TTL_TileOrTensor:$lhs, TTL_TileOrTensor:$rhs,
+                       Optional<TTL_TileOrTensor>:$accumulator);
+  let results = (outs TTL_TileOrTensor:$result);
   let assemblyFormat = [{
     $lhs `,` $rhs (`,` $accumulator^)? attr-dict `:`
     type($lhs) `,` type($rhs) (`,` type($accumulator)^)? `->` type($result)
