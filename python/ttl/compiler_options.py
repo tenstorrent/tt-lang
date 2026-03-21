@@ -48,6 +48,13 @@ def _make_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         help="Lower matmul to block-level hardware calls (default: enabled).",
     )
+    p.add_argument(
+        "--ttl-combine-pack-tiles",
+        default=None,
+        dest="combine_pack_tiles",
+        action=argparse.BooleanOptionalAction,
+        help="Combine consecutive pack_tile ops into pack_tile_block (default: enabled).",
+    )
     return p
 
 
@@ -89,6 +96,7 @@ class CompilerOptions:
     maximize_dst: bool = True
     enable_fpu_binary_ops: bool = True
     use_block_matmul: bool = True
+    combine_pack_tiles: bool = True
 
     # Fields that were explicitly provided (not defaulted). Excluded from
     # equality and hashing so two instances with the same bool values are

@@ -8,6 +8,8 @@
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s > %t.fpu.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-CPP-FPU < %t.fpu.output
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s --no-ttl-combine-pack-tiles > %t.fpu.noblock.output 2>&1
+# RUN: FileCheck %s --check-prefix=CHECK-CPP-FPU-NOBLOCK < %t.fpu.noblock.output
 
 """
 3D add kernel with multi-tile CB - verifies ND shape support in TTL ops.
@@ -162,11 +164,18 @@ def add_3d_kernel(lhs, rhs, out):
 # CHECK-CPP-FPU: add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
 # CHECK-CPP-FPU: tile_regs_commit();
 # CHECK-CPP-FPU: tile_regs_wait();
-# CHECK-CPP-FPU: pack_tile<true>(
+# CHECK-CPP-FPU: pack_tile_block(
+# CHECK-CPP-FPU-NOT: pack_tile<true>(
 # CHECK-CPP-FPU: tile_regs_release();
 # CHECK-CPP-FPU: cb_pop_front(get_compile_time_arg_val(0),
 # CHECK-CPP-FPU: cb_pop_front(get_compile_time_arg_val(1),
 # CHECK-CPP-FPU: cb_push_back(get_compile_time_arg_val(2),
+
+# With --no-ttl-combine-pack-tiles: individual pack_tile ops preserved.
+# CHECK-CPP-FPU-NOBLOCK: tile_regs_wait();
+# CHECK-CPP-FPU-NOBLOCK-COUNT-8: pack_tile<true>(
+# CHECK-CPP-FPU-NOBLOCK: tile_regs_release();
+# CHECK-CPP-FPU-NOBLOCK-NOT: pack_tile_block(
 
 
 if __name__ == "__main__":
