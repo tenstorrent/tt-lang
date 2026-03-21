@@ -140,7 +140,7 @@ class TestBasicExecution:
         tt_testing.assert_close(out.to_torch()[0:64, 0:32], expected.to_torch())
 
 
-class TestMultiCore:
+class TestMultinode:
     """Test multi-core execution."""
 
     def test_two_core_execution(self) -> None:
@@ -1021,7 +1021,7 @@ if __name__ == "__main__":
     test_basic.test_cooperative_mode_basic()
     test_basic.test_multi_tile_computation()
 
-    test_multi = TestMultiCore()
+    test_multi = TestMultinode()
     test_multi.test_two_core_execution()
     test_multi.test_four_core_2d_grid()
 

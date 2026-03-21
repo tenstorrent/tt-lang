@@ -101,8 +101,8 @@ def run_script_in_process(
         "eltwise_pipe_core3.py",
         "matmul.py",
         "matmul_acc.py",
-        "singlecore_matmul.py",
-        "multicore_matmul.py",
+        "single_node_matmul.py",
+        "multinode_matmul.py",
         "matmul_1d.py",
         "matmul_1d_mcast.py",
         "eltwise_1d_broadcast.py",
@@ -111,27 +111,27 @@ def run_script_in_process(
             marks=requires_ttnn,
         ),
         pytest.param(
-            "tutorial/single_core_single_tile_block.py",
+            "tutorial/single_node_single_tile_block.py",
             marks=requires_ttnn,
         ),
         pytest.param(
-            "tutorial/single_core_multitile_block.py",
+            "tutorial/single_node_multitile_block.py",
             marks=requires_ttnn,
         ),
         pytest.param(
-            "tutorial/multicore.py",
+            "tutorial/multinode.py",
             marks=requires_ttnn,
         ),
         pytest.param(
-            "tutorial/multicore_grid_auto.py",
+            "tutorial/multinode_grid_auto.py",
             marks=requires_ttnn,
         ),
         pytest.param(
-            "tutorial/single_core_broadcast_single_tile_block.py",
+            "tutorial/single_node_broadcast_single_tile_block.py",
             marks=requires_ttnn,
         ),
         pytest.param(
-            "tutorial/single_core_broadcast_multitile_blocks.py",
+            "tutorial/single_node_broadcast_multitile_blocks.py",
             marks=requires_ttnn,
         ),
     ],
@@ -152,8 +152,8 @@ def test_example_cli(script_name: str, scheduler: str) -> None:
 @pytest.mark.parametrize(
     "example_path",
     [
-        "singlecore_matmul/ttlang/singlecore_matmul.py",
-        "multicore_matmul/ttlang/multicore_matmul.py",
+        "single_node_matmul/ttlang/single_node_matmul.py",
+        "multinode_matmul/ttlang/multinode_matmul.py",
     ],
 )
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])

@@ -73,12 +73,12 @@ echo ""
 # Run tutorial examples
 echo "=== Running tutorial examples ==="
 TUTORIALS=(
-    examples/tutorial/single_core_single_tile_block.py
-    examples/tutorial/single_core_multitile_block.py
-    examples/tutorial/single_core_broadcast_single_tile_block.py
-    examples/tutorial/single_core_broadcast_multitile_blocks.py
-    examples/tutorial/multicore.py
-    examples/tutorial/multicore_grid_auto.py
+    examples/tutorial/single_node_single_tile_block.py
+    examples/tutorial/single_node_multitile_block.py
+    examples/tutorial/single_node_broadcast_single_tile_block.py
+    examples/tutorial/single_node_broadcast_multitile_blocks.py
+    examples/tutorial/multinode.py
+    examples/tutorial/multinode_grid_auto.py
 )
 
 PASSED=0
@@ -101,7 +101,7 @@ echo ""
 echo "=== Running examples ==="
 EXAMPLES=(
     examples/eltwise_add.py
-    examples/singlecore_matmul.py
+    examples/single_node_matmul.py
 )
 
 for e in "${EXAMPLES[@]}"; do
@@ -137,7 +137,7 @@ DOCKER_ARGS=(
 
 if [ "$SHELL_MODE" = true ]; then
     echo "Dropping into shell. Environment is auto-activated."
-    echo "Try: python3 examples/tutorial/single_core_single_tile_block.py"
+    echo "Try: python3 examples/tutorial/single_node_single_tile_block.py"
     echo ""
     sudo docker run -it "${DOCKER_ARGS[@]}" "$IMAGE" bash
 else

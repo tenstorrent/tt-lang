@@ -8,7 +8,7 @@
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
 """
-Multicore kernel lit test - verifies core(dims=2) lowers to
+Multinode kernel lit test - verifies core(dims=2) lowers to
 get_absolute_logical_x() and get_absolute_logical_y() in generated C++.
 
 Tests an 8x8 grid kernel that uses dynamic core indices for tile indexing.
@@ -24,8 +24,8 @@ import ttl
 
 
 @ttl.kernel(grid=(8, 8))
-def multicore_add(lhs, rhs, out):
-    """Multicore add kernel - each core processes its own tile."""
+def multinode_add(lhs, rhs, out):
+    """Multinode add kernel - each core processes its own tile."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -94,7 +94,7 @@ if __name__ == "__main__":
     import torch
     from ttlang_test_utils import require_hardware
 
-    print("=== Multicore Add Kernel Test ===")
+    print("=== Multinode Add Kernel Test ===")
     require_hardware()
 
     device = ttnn.open_device(device_id=0)
@@ -127,10 +127,10 @@ if __name__ == "__main__":
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
 
-        print("Compiling multicore add kernel...")
-        multicore_add(lhs, rhs, out)
+        print("Compiling multinode add kernel...")
+        multinode_add(lhs, rhs, out)
 
-        print("=== Multicore Add Kernel Test Complete ===")
+        print("=== Multinode Add Kernel Test Complete ===")
 
     finally:
         ttnn.close_device(device)
