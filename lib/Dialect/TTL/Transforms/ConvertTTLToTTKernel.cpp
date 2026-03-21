@@ -391,6 +391,71 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
   }
 };
 
+/// Lower ttl.tile_store_block to ttkernel.pack_tile_block.
+struct TileStoreBlockOpConversion
+    : OpConversionPattern<TileStoreBlockOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileStoreBlockOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+
+    auto cb = getCBFromView(adaptor.getView());
+    if (failed(cb)) {
+      return rewriter.notifyMatchFailure(
+          op, "view must come from ttl.cb_reserve (unrealized cast from CB)");
+    }
+
+    // Assert no pack_tile ops target the same CB in this block.
+    // pack_tile_block advances the CB write pointer sequentially; mixing
+    // with out-of-order pack_tile on the same CB would corrupt the pointer.
+    for (auto &sibling : *op->getBlock()) {
+      if (auto packTile = dyn_cast<ttk::PackTileOp>(&sibling)) {
+        if (packTile.getOutCb() == *cb) {
+          return rewriter.notifyMatchFailure(
+              op, "tile_store_block and tile_store must not target the same "
+                  "dataflow buffer");
+        }
+      }
+    }
+
+    ttk::PackTileBlockOp::create(rewriter, loc, adaptor.getDstStartIndex(),
+                                 *cb, adaptor.getNtiles());
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Lower ttl.reload_partials to copy_block_matmul_partials + cb_pop_front.
+/// Matches tt-metal's reload_from_cb_to_dst pattern.
+struct ReloadPartialsOpConversion
+    : OpConversionPattern<ReloadPartialsOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ReloadPartialsOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+
+    auto cb = utils::convertTTLCBToTTKernel(adaptor.getCb(), rewriter, loc);
+    if (failed(cb)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
+    }
+
+    ttk::CopyBlockMatmulPartialsOp::create(
+        rewriter, loc, *cb, adaptor.getStartTileIndex(),
+        adaptor.getDstStartIndex(), adaptor.getNtiles());
+
+    Value numPages = computeNumPages(op.getCb(), rewriter, loc);
+    ttk::CBPopFrontOp::create(rewriter, loc, *cb, numPages);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 enum class CopyOperandKind { TensorSlice, CircularBuffer, Unknown };
 
 static CopyOperandKind classifyOperand(Value v) {
@@ -921,7 +986,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   RewritePatternSet patterns(&ctx);
   patterns.add<BindCBLowering, TensorSliceLowering, CopyLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering>(
+               TileStoreLowering, TileStoreBlockOpConversion,
+               ReloadPartialsOpConversion, StoreLowering,
+               CoreXLowering, CoreYLowering>(
       typeConverter, &ctx);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);

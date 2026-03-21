@@ -170,13 +170,25 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
 
     rewriter.setInsertionPoint(computeOp);
 
+    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value ntilesVal = arith::ConstantIndexOp::create(rewriter, loc, M * N);
+
     // Sync acquire.
     TileRegsAcquireOp::create(rewriter, loc);
 
-    // Single matmul_block call. The accumulator (if present) is passed as
-    // the 3rd operand; TTKernel lowering emits rt*ct copy_tile ops for it.
+    // Reload accumulator partials into DST and release the DFB read slot.
+    // This matches tt-metal's reload_from_cb_to_dst: the DFB must be popped
+    // before any subsequent write to the same DFB (pack_tile_block).
+    if (accTensor) {
+      Value accCB = getAttachedCB(accTensor);
+      assert(accCB && "accumulator must be attached to a DFB");
+      ReloadPartialsOp::create(rewriter, loc, accCB, zero, zero, ntilesVal);
+    }
+
+    // Matmul_block. No accumulator operand — data is already in DST from
+    // reload_partials above.
     auto mmResult = TileMatmulBlockOp::create(rewriter, loc, tileType,
-                                              lhsTensor, rhsTensor, accTensor);
+                                              lhsTensor, rhsTensor, Value());
     mmResult->setAttr(kDstIdxAttrName, rewriter.getI32IntegerAttr(0));
 
     // Per-tile unary post-ops (relu, exp, etc.).
@@ -187,25 +199,31 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
       emitPerTileUnaryOps(rewriter, loc, unaryOp, placeholder, M, N);
     }
 
-    // Sync commit + wait (math → pack boundary).
+    // Sync commit + wait (math -> pack boundary).
     TileRegsCommitOp::create(rewriter, loc);
     TileRegsWaitOp::create(rewriter, loc);
 
-    // M*N tile_stores.
-    // TODO: Replace with pack_tile_block(0, out_cb, M*N) once a proper
-    // TTKernel op exists. See copy_block_matmul_partials TODO above.
-    for (int64_t m = 0; m < M; ++m) {
-      for (int64_t n = 0; n < N; ++n) {
-        Value mIdx = arith::ConstantIndexOp::create(rewriter, loc, m);
-        Value nIdx = arith::ConstantIndexOp::create(rewriter, loc, n);
-        auto store = TileStoreOp::create(rewriter, loc, placeholder, outView,
-                                         ValueRange{mIdx, nIdx});
-        store->setAttr(kDstIdxAttrName, rewriter.getI32IntegerAttr(m * N + n));
-      }
-    }
+    // Pack all M*N result tiles from DST into the output DFB.
+    TileStoreBlockOp::create(rewriter, loc, zero, outView, ntilesVal);
 
     // Sync release.
     TileRegsReleaseOp::create(rewriter, loc);
+
+    // Erase the original cb_pop for the accumulator DFB. The pop is now
+    // part of reload_partials, so the DFB lifecycle pop would double-pop.
+    if (accTensor) {
+      Value accCB = getAttachedCB(accTensor);
+      if (accCB) {
+        for (auto &op : llvm::make_early_inc_range(*computeOp->getBlock())) {
+          if (auto popOp = dyn_cast<CBPopOp>(&op)) {
+            if (popOp.getCb() == accCB && computeOp->isBeforeInBlock(popOp)) {
+              rewriter.eraseOp(popOp);
+              break;
+            }
+          }
+        }
+      }
+    }
 
     // Replace compute with placeholder tensor.
     Value emptyTensor = tensor::EmptyOp::create(

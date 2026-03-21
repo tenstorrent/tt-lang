@@ -934,4 +934,57 @@ def TTL_TileStoreOp : TTL_Op<"tile_store", [MemoryEffects<[MemWrite]>]> {
   let hasVerifier = 1;
 }
 
+def TTL_TileStoreBlockOp : TTL_Op<"tile_store_block", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Pack a contiguous block of tiles from DST into a dataflow buffer";
+  let description = [{
+    `ttl.tile_store_block` packs `ntiles` contiguous tiles from the DST register
+    starting at `dst_start_index` into a dataflow buffer view obtained from
+    `ttl.cb_reserve`. Instead of packing one tile at a time (as `ttl.tile_store`
+    does), this packs the entire block in a single call. The dataflow buffer's
+    internal write pointer advances by `ntiles`; it is reset by `cb_push_back`.
+
+    Lowers to `ttkernel.pack_tile_block`.
+
+    Example:
+    ```mlir
+    %view = ttl.cb_reserve %cb : <[2, 2], !ttcore.tile<32x32, bf16>, 1>
+                                 -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store_block %c0, %view, %c4
+        : index, tensor<2x2x!ttcore.tile<32x32, bf16>>
+    ```
+  }];
+  let arguments = (ins
+    Index:$dst_start_index,
+    AnyRankedTensor:$view,
+    Index:$ntiles
+  );
+  let assemblyFormat = "$dst_start_index `,` $view `,` $ntiles attr-dict `:` type($dst_start_index) `,` type($view)";
+}
+
+def TTL_ReloadPartialsOp : TTL_Op<"reload_partials", [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Load partial results from a dataflow buffer into DST and release the buffer";
+  let description = [{
+    `ttl.reload_partials` reads `ntiles` contiguous tiles from a dataflow buffer
+    into DST registers starting at `dst_start_index`, then releases the DFB read
+    slot. This is a single semantic unit matching tt-metal's
+    `reload_from_cb_to_dst` pattern: the DFB is popped immediately after the
+    read, before any subsequent write to the same DFB.
+
+    Lowers to `ttkernel.copy_block_matmul_partials` + `ttkernel.cb_pop_front`.
+
+    Example:
+    ```mlir
+    ttl.reload_partials %acc_cb, %c0, %c0, %c4
+        : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+    ```
+  }];
+  let arguments = (ins
+    TTL_CircularBuffer:$cb,
+    Index:$start_tile_index,
+    Index:$dst_start_index,
+    Index:$ntiles
+  );
+  let assemblyFormat = "$cb `,` $start_tile_index `,` $dst_start_index `,` $ntiles attr-dict `:` type($cb)";
+}
+
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPS_TD

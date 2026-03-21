@@ -88,3 +88,36 @@ func.func @copy_tile_basic(%t_tensor: tensor<1x1x!ttcore.tile<32x32, f32>>, %src
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, f32>>
 }
+
+// -----
+
+// Round-trip test for ttl.tile_store_block.
+
+// CHECK-LABEL: func.func @tile_store_block
+// CHECK-SAME: (%[[VIEW:.*]]: tensor<2x2x!ttcore.tile<32x32, bf16>>)
+// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[C4:.*]] = arith.constant 4 : index
+// CHECK: ttl.tile_store_block %[[C0]], %[[VIEW]], %[[C4]] : index, tensor<2x2x!ttcore.tile<32x32, bf16>>
+func.func @tile_store_block(%view: tensor<2x2x!ttcore.tile<32x32, bf16>>) {
+  %c0 = arith.constant 0 : index
+  %c4 = arith.constant 4 : index
+  ttl.tile_store_block %c0, %view, %c4 : index, tensor<2x2x!ttcore.tile<32x32, bf16>>
+  func.return
+}
+
+// -----
+
+// Round-trip test for ttl.reload_partials.
+
+// CHECK-LABEL: func.func @reload_partials
+// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[C4:.*]] = arith.constant 4 : index
+// CHECK: %[[CB:.*]] = ttl.bind_cb
+// CHECK: ttl.reload_partials %[[CB]], %[[C0]], %[[C0]], %[[C4]] : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+func.func @reload_partials() {
+  %c0 = arith.constant 0 : index
+  %c4 = arith.constant 4 : index
+  %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  ttl.reload_partials %cb, %c0, %c0, %c4 : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}
