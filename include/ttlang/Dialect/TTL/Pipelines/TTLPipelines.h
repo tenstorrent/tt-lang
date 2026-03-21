@@ -33,7 +33,7 @@ struct TTLToTTKernelPipelineOptions
   Option<bool> combinePackTiles{
       *this, "combine-pack-tiles",
       llvm::cl::desc("Combine consecutive pack_tile ops into pack_tile_block."),
-      llvm::cl::init(true)};
+      llvm::cl::init(false)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,
