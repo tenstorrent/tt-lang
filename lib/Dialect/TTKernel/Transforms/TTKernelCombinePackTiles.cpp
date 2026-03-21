@@ -6,8 +6,8 @@
 // TTKernelCombinePackTiles Pass
 //===----------------------------------------------------------------------===//
 //
-// Combines consecutive pack_tile ops on the same DFB with contiguous DST
-// and CB tile indices into a single pack_tile_block call.
+// Combines consecutive pack_tile ops on the same dataflow buffer with
+// contiguous DST and DFB tile indices into a single pack_tile_block call.
 //
 //===----------------------------------------------------------------------===//
 
@@ -32,9 +32,9 @@ namespace {
 namespace ttk = mlir::tt::ttkernel;
 
 /// Check whether a pack_tile op extends the current contiguous run:
-/// same CB, DST index == expected next, CB index == expected next.
-static bool extendRun(ttk::PackTileOp op, Value runCB, int64_t expectedDst,
-                      int64_t expectedCb) {
+/// same DFB, DST index == expected next, DFB tile index == expected next.
+static bool extendsRun(ttk::PackTileOp op, Value runCB, int64_t expectedDst,
+                       int64_t expectedCb) {
   auto dst = getConstantIntValue(op.getDstIndex());
   auto cb = getConstantIntValue(op.getOutIndex());
   return dst && cb && op.getOutCb() == runCB && *dst == expectedDst &&
@@ -50,7 +50,7 @@ static void replaceRun(ArrayRef<ttk::PackTileOp> run) {
 
   Value ntiles = arith::ConstantIndexOp::create(builder, loc, run.size());
   ttk::PackTileBlockOp::create(builder, loc, first.getDstIndex(),
-                                first.getOutCb(), ntiles);
+                               first.getOutCb(), ntiles);
 
   for (ttk::PackTileOp op : run) {
     op->erase();
@@ -63,18 +63,19 @@ struct TTKernelCombinePackTilesPass
 
   void runOnOperation() override {
     getOperation().walk([](Block *block) {
+      // Collect all combinable runs first, then replace them. Replacing
+      // during iteration would invalidate the block's operation list.
+      SmallVector<SmallVector<ttk::PackTileOp>> runs;
       SmallVector<ttk::PackTileOp> run;
 
       auto flush = [&]() {
         if (run.size() >= 2) {
-          replaceRun(run);
+          runs.push_back(std::move(run));
         }
         run.clear();
       };
 
       for (Operation &op : *block) {
-        // Constant definitions may appear between pack_tile ops (they
-        // define the index operands) and do not break a run.
         if (isa<arith::ConstantOp, arith::ConstantIndexOp,
                 arith::ConstantIntOp>(&op)) {
           continue;
@@ -88,9 +89,9 @@ struct TTKernelCombinePackTilesPass
         }
 
         if (!run.empty() &&
-            extendRun(packOp, run.front().getOutCb(),
-                      *getConstantIntValue(run.back().getDstIndex()) + 1,
-                      *getConstantIntValue(run.back().getOutIndex()) + 1)) {
+            extendsRun(packOp, run.front().getOutCb(),
+                       *getConstantIntValue(run.back().getDstIndex()) + 1,
+                       *getConstantIntValue(run.back().getOutIndex()) + 1)) {
           run.push_back(packOp);
         } else {
           flush();
@@ -99,6 +100,10 @@ struct TTKernelCombinePackTilesPass
       }
 
       flush();
+
+      for (auto &r : runs) {
+        replaceRun(r);
+      }
     });
   }
 };

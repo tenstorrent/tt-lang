@@ -943,8 +943,6 @@ def TTL_TileStoreBlockOp : TTL_Op<"tile_store_block", [MemoryEffects<[MemWrite]>
     does), this packs the entire block in a single call. The dataflow buffer's
     internal write pointer advances by `ntiles`; it is reset by `cb_push_back`.
 
-    Lowers to `ttkernel.pack_tile_block`.
-
     Example:
     ```mlir
     %view = ttl.cb_reserve %cb : <[2, 2], !ttcore.tile<32x32, bf16>, 1>
@@ -959,6 +957,7 @@ def TTL_TileStoreBlockOp : TTL_Op<"tile_store_block", [MemoryEffects<[MemWrite]>
     Index:$ntiles
   );
   let assemblyFormat = "$dst_start_index `,` $view `,` $ntiles attr-dict `:` type($dst_start_index) `,` type($view)";
+  let hasVerifier = 1;
 }
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPS_TD

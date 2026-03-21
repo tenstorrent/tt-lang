@@ -406,19 +406,6 @@ struct TileStoreBlockOpConversion : OpConversionPattern<TileStoreBlockOp> {
           op, "view must come from ttl.cb_reserve (unrealized cast from CB)");
     }
 
-    // Assert no pack_tile ops target the same CB in this block.
-    // pack_tile_block advances the CB write pointer sequentially; mixing
-    // with out-of-order pack_tile on the same CB would corrupt the pointer.
-    for (auto &sibling : *op->getBlock()) {
-      if (auto packTile = dyn_cast<ttk::PackTileOp>(&sibling)) {
-        if (packTile.getOutCb() == *cb) {
-          return rewriter.notifyMatchFailure(
-              op, "tile_store_block and tile_store must not target the same "
-                  "dataflow buffer");
-        }
-      }
-    }
-
     ttk::PackTileBlockOp::create(rewriter, loc, adaptor.getDstStartIndex(), *cb,
                                  adaptor.getNtiles());
 

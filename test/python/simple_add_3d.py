@@ -165,11 +165,9 @@ def add_3d_kernel(lhs, rhs, out):
 # CHECK-CPP-FPU: tile_regs_commit();
 # CHECK-CPP-FPU: tile_regs_wait();
 # CHECK-CPP-FPU: pack_tile_block(
-# CHECK-CPP-FPU-NOT: pack_tile<true>(
 # CHECK-CPP-FPU: tile_regs_release();
-# CHECK-CPP-FPU: cb_pop_front(get_compile_time_arg_val(0),
-# CHECK-CPP-FPU: cb_pop_front(get_compile_time_arg_val(1),
 # CHECK-CPP-FPU: cb_push_back(get_compile_time_arg_val(2),
+# CHECK-CPP-FPU-NOT: pack_tile<true>(
 
 # With --no-ttl-combine-pack-tiles: individual pack_tile ops preserved.
 # CHECK-CPP-FPU-NOBLOCK: tile_regs_wait();

@@ -265,6 +265,26 @@ mlir::LogicalResult mlir::tt::ttl::CopyTileOp::verify() {
   return success();
 }
 
+mlir::LogicalResult mlir::tt::ttl::TileStoreBlockOp::verify() {
+  // When ntiles is a static constant, validate it is positive and does not
+  // exceed the view tensor's total element count.
+  if (auto ntiles = getConstantIntValue(getNtiles())) {
+    if (*ntiles <= 0) {
+      return emitOpError() << "ntiles must be positive, got " << *ntiles;
+    }
+    auto viewTy = mlir::cast<RankedTensorType>(getView().getType());
+    int64_t viewSize = 1;
+    for (int64_t dim : viewTy.getShape()) {
+      viewSize *= dim;
+    }
+    if (*ntiles > viewSize) {
+      return emitOpError() << "ntiles (" << *ntiles
+                           << ") exceeds view tensor size (" << viewSize << ")";
+    }
+  }
+  return success();
+}
+
 void mlir::tt::ttl::ComputeOp::print(mlir::OpAsmPrinter &p) {
   // Print inputs (ins operands)
   p << " ins(";
