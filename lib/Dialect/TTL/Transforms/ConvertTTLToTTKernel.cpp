@@ -392,8 +392,7 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
 };
 
 /// Lower ttl.tile_store_block to ttkernel.pack_tile_block.
-struct TileStoreBlockOpConversion
-    : OpConversionPattern<TileStoreBlockOp> {
+struct TileStoreBlockOpConversion : OpConversionPattern<TileStoreBlockOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -420,36 +419,8 @@ struct TileStoreBlockOpConversion
       }
     }
 
-    ttk::PackTileBlockOp::create(rewriter, loc, adaptor.getDstStartIndex(),
-                                 *cb, adaptor.getNtiles());
-
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-/// Lower ttl.reload_partials to copy_block_matmul_partials + cb_pop_front.
-/// Matches tt-metal's reload_from_cb_to_dst pattern.
-struct ReloadPartialsOpConversion
-    : OpConversionPattern<ReloadPartialsOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(ReloadPartialsOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-
-    auto cb = utils::convertTTLCBToTTKernel(adaptor.getCb(), rewriter, loc);
-    if (failed(cb)) {
-      return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
-    }
-
-    ttk::CopyBlockMatmulPartialsOp::create(
-        rewriter, loc, *cb, adaptor.getStartTileIndex(),
-        adaptor.getDstStartIndex(), adaptor.getNtiles());
-
-    Value numPages = computeNumPages(op.getCb(), rewriter, loc);
-    ttk::CBPopFrontOp::create(rewriter, loc, *cb, numPages);
+    ttk::PackTileBlockOp::create(rewriter, loc, adaptor.getDstStartIndex(), *cb,
+                                 adaptor.getNtiles());
 
     rewriter.eraseOp(op);
     return success();
@@ -986,10 +957,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   RewritePatternSet patterns(&ctx);
   patterns.add<BindCBLowering, TensorSliceLowering, CopyLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               TileStoreLowering, TileStoreBlockOpConversion,
-               ReloadPartialsOpConversion, StoreLowering,
-               CoreXLowering, CoreYLowering>(
-      typeConverter, &ctx);
+               TileStoreLowering, TileStoreBlockOpConversion, StoreLowering,
+               CoreXLowering, CoreYLowering>(typeConverter, &ctx);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 

@@ -176,19 +176,10 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
     // Sync acquire.
     TileRegsAcquireOp::create(rewriter, loc);
 
-    // Reload accumulator partials into DST and release the DFB read slot.
-    // This matches tt-metal's reload_from_cb_to_dst: the DFB must be popped
-    // before any subsequent write to the same DFB (pack_tile_block).
-    if (accTensor) {
-      Value accCB = getAttachedCB(accTensor);
-      assert(accCB && "accumulator must be attached to a DFB");
-      ReloadPartialsOp::create(rewriter, loc, accCB, zero, zero, ntilesVal);
-    }
-
-    // Matmul_block. No accumulator operand — data is already in DST from
-    // reload_partials above.
+    // Matmul_block with optional accumulator. TTKernel lowering emits
+    // individual copy_tile ops for the accumulator load.
     auto mmResult = TileMatmulBlockOp::create(rewriter, loc, tileType,
-                                              lhsTensor, rhsTensor, Value());
+                                              lhsTensor, rhsTensor, accTensor);
     mmResult->setAttr(kDstIdxAttrName, rewriter.getI32IntegerAttr(0));
 
     // Per-tile unary post-ops (relu, exp, etc.).
@@ -208,22 +199,6 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
 
     // Sync release.
     TileRegsReleaseOp::create(rewriter, loc);
-
-    // Erase the original cb_pop for the accumulator DFB. The pop is now
-    // part of reload_partials, so the DFB lifecycle pop would double-pop.
-    if (accTensor) {
-      Value accCB = getAttachedCB(accTensor);
-      if (accCB) {
-        for (auto &op : llvm::make_early_inc_range(*computeOp->getBlock())) {
-          if (auto popOp = dyn_cast<CBPopOp>(&op)) {
-            if (popOp.getCb() == accCB && computeOp->isBeforeInBlock(popOp)) {
-              rewriter.eraseOp(popOp);
-              break;
-            }
-          }
-        }
-      }
-    }
 
     // Replace compute with placeholder tensor.
     Value emptyTensor = tensor::EmptyOp::create(

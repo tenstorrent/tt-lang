@@ -104,20 +104,3 @@ func.func @tile_store_block(%view: tensor<2x2x!ttcore.tile<32x32, bf16>>) {
   ttl.tile_store_block %c0, %view, %c4 : index, tensor<2x2x!ttcore.tile<32x32, bf16>>
   func.return
 }
-
-// -----
-
-// Round-trip test for ttl.reload_partials.
-
-// CHECK-LABEL: func.func @reload_partials
-// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
-// CHECK-DAG: %[[C4:.*]] = arith.constant 4 : index
-// CHECK: %[[CB:.*]] = ttl.bind_cb
-// CHECK: ttl.reload_partials %[[CB]], %[[C0]], %[[C0]], %[[C4]] : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
-func.func @reload_partials() {
-  %c0 = arith.constant 0 : index
-  %c4 = arith.constant 4 : index
-  %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
-  ttl.reload_partials %cb, %c0, %c0, %c4 : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
-  func.return
-}

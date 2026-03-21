@@ -961,30 +961,4 @@ def TTL_TileStoreBlockOp : TTL_Op<"tile_store_block", [MemoryEffects<[MemWrite]>
   let assemblyFormat = "$dst_start_index `,` $view `,` $ntiles attr-dict `:` type($dst_start_index) `,` type($view)";
 }
 
-def TTL_ReloadPartialsOp : TTL_Op<"reload_partials", [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "Load partial results from a dataflow buffer into DST and release the buffer";
-  let description = [{
-    `ttl.reload_partials` reads `ntiles` contiguous tiles from a dataflow buffer
-    into DST registers starting at `dst_start_index`, then releases the DFB read
-    slot. This is a single semantic unit matching tt-metal's
-    `reload_from_cb_to_dst` pattern: the DFB is popped immediately after the
-    read, before any subsequent write to the same DFB.
-
-    Lowers to `ttkernel.copy_block_matmul_partials` + `ttkernel.cb_pop_front`.
-
-    Example:
-    ```mlir
-    ttl.reload_partials %acc_cb, %c0, %c0, %c4
-        : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
-    ```
-  }];
-  let arguments = (ins
-    TTL_CircularBuffer:$cb,
-    Index:$start_tile_index,
-    Index:$dst_start_index,
-    Index:$ntiles
-  );
-  let assemblyFormat = "$cb `,` $start_tile_index `,` $dst_start_index `,` $ntiles attr-dict `:` type($cb)";
-}
-
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPS_TD

@@ -1,6 +1,7 @@
-// Summary: End-to-end test for the flat matmul_block lowering pattern.
-// The lower-matmul-block pass replaces the compute with:
-// sync acquire -> matmul_block(kt=1) -> commit -> wait -> pack_tile_block -> release.
+// Summary: End-to-end test for the matmul_block lowering pattern.
+// The lower-matmul-block pass replaces the compute with a straight-line
+// sequence: sync acquire -> [copy_tile for accumulator] -> matmul_block(kt=1)
+// -> commit -> wait -> pack_tile_block -> release.
 // DFB lifecycle (wait/pop/reserve/push) comes from user code, not the pass.
 
 // RUN: ttlang-opt %s \
@@ -132,8 +133,8 @@ func.func @matmul_2x2_f32(
 // -----
 
 // =============================================================================
-// Test 4: Matmul with accumulator (matmul+add fold). Accumulator is loaded via
-// copy_block_matmul_partials, result packed via pack_tile_block.
+// Test 4: Matmul with accumulator (matmul+add fold). Accumulator loaded via
+// copy_tile, result packed via pack_tile_block.
 // =============================================================================
 
 // CHECK-LABEL: func.func @matmul_add_accumulator
@@ -147,16 +148,13 @@ func.func @matmul_2x2_f32(
 // CHECK-DAG: %[[CB3:.*]] = ttkernel.get_compile_time_arg_val(3) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
 // CHECK:      "ttkernel.mm_block_init"(%[[CB0]], %[[CB1]], %[[CB3]], %[[C0_I32]], %[[C1_I32]], %[[C1_I32]], %[[C1_I32]])
 // CHECK:      ttkernel.tile_regs_acquire
-// Accumulator: copy_block_matmul_partials then cb_pop_front (reload_partials).
-// CHECK:      ttkernel.copy_block_matmul_partials(%[[CB2]], %[[C0]], %[[C0]], %[[C1]])
-// CHECK-NEXT: ttkernel.cb_pop_front(%[[CB2]]
+// Accumulator loaded via individual copy_tile.
+// CHECK:      ttkernel.copy_tile(%[[CB2]], %[[C0]], %[[C0]])
 // CHECK:      "ttkernel.experimental::matmul_block"
 // CHECK:      ttkernel.tile_regs_commit
 // CHECK-NEXT: ttkernel.tile_regs_wait
 // CHECK-NEXT: ttkernel.pack_tile_block(%[[C0]], %[[CB3]], %[[C1]])
 // CHECK-NEXT: ttkernel.tile_regs_release
-// No individual copy_tile or pack_tile ops.
-// CHECK-NOT:  ttkernel.copy_tile(
 // CHECK-NOT:  ttkernel.pack_tile(
 func.func @matmul_add_accumulator() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
