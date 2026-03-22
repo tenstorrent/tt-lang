@@ -25,6 +25,11 @@ from model import QwenModel
 
 
 def test_prefill():
+    from setup import is_ready
+    if not is_ready():
+        print("Weights not found. Run: python examples/qwen/setup.py")
+        sys.exit(1)
+
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     # Load tokenizer

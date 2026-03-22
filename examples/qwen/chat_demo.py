@@ -110,6 +110,13 @@ def main():
 
     tokenizer = get_tokenizer()
 
+    # Check weights exist
+    from setup import is_ready
+    if not is_ready():
+        print("Weights not found. Run setup first:\n")
+        print("  python examples/qwen/setup.py\n")
+        sys.exit(1)
+
     device = ttnn.open_device(device_id=0)
     try:
         model = QwenModel(device)
