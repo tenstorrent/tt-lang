@@ -98,7 +98,7 @@ tt-lang builds are generally reliable. If builds fail, check that tt-mlir built 
 
 ## Testing
 
-See `docs/TESTING.md` for complete testing documentation including:
+See `test/TESTING.md` for complete testing documentation including:
 - Running lit tests
 - Test output locations
 - Writing new tests
