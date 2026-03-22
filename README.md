@@ -108,7 +108,7 @@ Performance tracing (Tracy) is enabled by default. To disable it, add `-DTTLANG_
 
 ### 2.3 Building without Docker
 
-To build tt-lang directly on a host machine without Docker, see the [build system documentation](docs/BUILD_SYSTEM.md). It covers prerequisites, all supported build modes (from submodules, reusable toolchain, pre-built toolchain), and version compatibility.
+To build tt-lang directly on a host machine without Docker, see the [build system documentation](docs/sphinx/build.md). It covers prerequisites, all supported build modes (from submodules, reusable toolchain, pre-built toolchain), and version compatibility.
 
 ### 2.4 Container Tips
 

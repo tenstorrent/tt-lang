@@ -44,11 +44,11 @@ def dm_write():
         tx.wait()
 ```
 
-- Prints can be extremely large and slow; redirect output to a file and use grep
-- Always guard compute prints with `thread=` to avoid overlapping output from the three TRISC threads
-- Prints all tiles/dst reg in a block
+- Prints can be extremely large and slow; redirect output to a file and use grep.
+- In compute kernels, guard prints with `thread="math"`, `thread="pack"`, or `thread="unpack"` to avoid overlapping output from the three TRISC threads.
+- When using multi-tile block sizes (CB shape > 1x1), prints inside the generated loop will dump all tiles in the block.
 
-See the [full print debugging reference](../print-debugging.md) for all supported modes (scalars, tiles, tensor pages, CB details, DST registers, thread conditioning).
+See the [full print debugging reference](reference/print-debugging.md) for all supported modes (scalars, tiles, tensor pages, CB details, DST registers, thread conditioning).
 
 ## Performance Tools
 
@@ -61,7 +61,7 @@ TT-Lang includes built-in performance analysis tools for profiling kernels on ha
 
 Performance tracing (Tracy) is enabled by default at build time. To disable it, configure with `-DTTLANG_ENABLE_PERF_TRACE=OFF`.
 
-See the [full performance tools reference](../performance-tools.md) for environment variable details, valid combinations, and sample output.
+See the [full performance tools reference](reference/performance-tools.md) for environment variable details, valid combinations, and sample output.
 
 ## Simulator
 
@@ -69,7 +69,7 @@ For users who want to run simulator examples without building the full compiler 
 
 ```bash
 ./bin/ttlang-sim examples/eltwise_add.py
-pytest test/sim/
+python -m pytest test/sim/
 ```
 
 The simulator runs as standard Python code, enabling any Python debugger to work with it.
@@ -105,4 +105,4 @@ See the `examples/` and `test/` directories for complete working examples, inclu
 - `test/python/simple_add.py`
 - `test/python/simple_fused.py`
 
-The [tutorial](../../examples/tutorial/) provides step-by-step examples from single-tile to multicore kernels.
+The [tutorial](ttl-tutorial/index.md) provides step-by-step examples from single-tile to multicore kernels.

@@ -15,6 +15,13 @@ TTL Documentation
 
 .. toctree::
    :maxdepth: 1
+   :caption: Reference
+
+   reference/print-debugging
+   reference/performance-tools
+
+.. toctree::
+   :maxdepth: 1
    :caption: Contributor Guide
 
    build

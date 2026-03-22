@@ -1,45 +1,107 @@
 # Getting Started
 
-## Prerequisites
-- CMake 3.28+, Ninja, and Clang 17+ or GCC 11+.
-- Python 3.11+.
+The fastest way to get started with tt-lang is with a pre-built Docker image on a machine with Tenstorrent hardware. If you want to build from source without Docker, see the [build system documentation](build.md).
+
+## Docker quick start
+
+Two images are available:
+
+| Image | Purpose | Can run tt-lang programs? | Can build tt-lang? |
+|-------|---------|:-------------------------:|:-------------------:|
+| **dist** | Run tt-lang programs | Yes | No |
+| **ird** | Develop and build from source | Yes | Yes |
+
+### Running programs (dist image)
+
+The **dist** image contains a fully built tt-lang installation at `/opt/ttlang-toolchain`. Use it to compile and run tt-lang programs without building anything.
+
+```bash
+docker run -d --name $USER-dist \
+  --device=/dev/tenstorrent/0:/dev/tenstorrent/0 \
+  -v /dev/hugepages:/dev/hugepages \
+  -v /dev/hugepages-1G:/dev/hugepages-1G \
+  -v $HOME:$HOME \
+  ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:latest \
+  sleep infinity
+
+docker exec -it $USER-dist /bin/bash
+```
+
+The environment activates automatically on login. Run an example immediately:
+
+```bash
+python /opt/ttlang-toolchain/examples/tutorial/multicore_grid_auto.py
+```
+
+### Building from source (ird image)
+
+The **ird** image has the pre-built toolchain (LLVM, tt-metal, Python venv) but does not include tt-lang itself. Clone and build against the toolchain:
+
+```bash
+docker run -d --name $USER-ird \
+  --device=/dev/tenstorrent/0:/dev/tenstorrent/0 \
+  -v /dev/hugepages:/dev/hugepages \
+  -v /dev/hugepages-1G:/dev/hugepages-1G \
+  -v $HOME:$HOME \
+  -v $SSH_AUTH_SOCK:/ssh-agent -e SSH_AUTH_SOCK=/ssh-agent \
+  ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest \
+  sleep infinity
+
+docker exec -it $USER-ird /bin/bash
+```
+
+Inside the container:
+
+```bash
+git clone https://github.com/tenstorrent/tt-lang.git
+cd tt-lang
+cmake -G Ninja -B build -DTTLANG_USE_TOOLCHAIN=ON
+source build/env/activate
+cmake --build build
+```
+
+Verify the build and run an example:
+
+```bash
+ninja -C build check-ttlang-all
+python examples/tutorial/multicore_grid_auto.py
+```
+
+## Building without Docker
+
+### Prerequisites
+
+- CMake 3.28+, Ninja, and Clang 17+ or GCC 11+
+- Python 3.11+
 - For faster builds: a pre-built toolchain at `TTLANG_TOOLCHAIN_DIR` (default `/opt/ttlang-toolchain`). Without one, LLVM and tt-metal build from submodules on first configure.
 
-## Configure and build
+### With pre-built toolchain
 
-### With pre-built toolchain (fast)
 ```bash
 cmake -G Ninja -B build -DTTLANG_USE_TOOLCHAIN=ON
 source build/env/activate
 cmake --build build
 ```
 
-### From submodules (no prerequisites beyond system packages)
+### From submodules
+
 ```bash
 cmake -G Ninja -B build
 source build/env/activate
 cmake --build build
 ```
 
+See the [build system documentation](build.md) for all supported build modes and CMake options.
+
 ## Quick checks
-- All tests: `ninja -C build check-ttlang-all`
-- Compiler tests: `ninja -C build check-ttlang-mlir`
+
+- Full compiler suite: `ninja -C build check-ttlang-all`
+- MLIR tests only: `ninja -C build check-ttlang-mlir`
 - Single MLIR test: `llvm-lit test/ttlang/Dialect/TTL/IR/ops.mlir`
-- Simulator smoke: `pytest test/sim -q`
+- Simulator tests: `python -m pytest test/sim -q` (not included in `check-ttlang-all`)
 
-## Docker testing
+## Next steps
 
-Run tests inside a Docker container using a local build (no rebuild required):
-```bash
-scripts/docker-test.sh all
-scripts/docker-test.sh mlir
-scripts/docker-test.sh -- pytest test/me2e/ -k some_test
-```
-
-## Documentation
-```bash
-cmake -G Ninja -B build -DTTLANG_ENABLE_DOCS=ON
-cmake --build build --target ttlang-docs
-python -m http.server 8000 -d build/docs/sphinx/_build/html
-```
-Open http://localhost:8000/index.html.
+- Work through the [tutorial](ttl-tutorial/index.md) for step-by-step examples from single-tile to multicore kernels
+- Read the [programming guide](programming-guide.md) for compiler options, print debugging, and performance tools
+- Explore the `examples/` directory for complete working programs
