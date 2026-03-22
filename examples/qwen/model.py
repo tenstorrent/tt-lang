@@ -64,15 +64,60 @@ class QwenModel:
         # Embedding weights (host-side for lookup)
         self.embed_weight = self.ckpt["embed_weight"].float()
 
-        # Upload layer weights to device
+        # Upload layer weights to device + pre-split per-head weights
         print(f"Uploading {self.num_layers} layers to device...")
         t0 = time.time()
         self.layer_weights = []
+        heads_per_group = self.num_q_heads // self.num_kv_heads  # 7
+
         for i in range(self.num_layers):
             layer_data = self.ckpt["layers"][i]
             layer_on_device = {
                 k: self._to_device(v) for k, v in layer_data.items()
             }
+
+            # Pre-split Q/K/V weights per head for decode (avoids host reshape)
+            # Q: [896, 896] → 14 × [896, 64]
+            q_w = layer_data["q_proj_weight"]  # [896, 896]
+            q_b = layer_data["q_proj_bias"]    # [32, 896]
+            # Pre-scale Q weights by 1/sqrt(head_dim) so decode never needs runtime scaling
+            attn_scale = 1.0 / math.sqrt(self.head_dim)
+            layer_on_device["q_head_weights"] = []
+            layer_on_device["q_head_biases"] = []
+            for h in range(self.num_q_heads):
+                col_start = h * self.head_dim
+                col_end = col_start + self.head_dim
+                layer_on_device["q_head_weights"].append(
+                    self._to_device((q_w[:, col_start:col_end] * attn_scale).contiguous()))
+                layer_on_device["q_head_biases"].append(
+                    self._to_device((q_b[:, col_start:col_end] * attn_scale).contiguous()))
+
+            # K: [896, 128] → 2 × [896, 64]
+            k_w = layer_data["k_proj_weight"]  # [896, 128]
+            k_b = layer_data["k_proj_bias"]    # [32, 128]
+            layer_on_device["k_head_weights"] = []
+            layer_on_device["k_head_biases"] = []
+            for h in range(self.num_kv_heads):
+                col_start = h * self.head_dim
+                col_end = col_start + self.head_dim
+                layer_on_device["k_head_weights"].append(
+                    self._to_device(k_w[:, col_start:col_end].contiguous()))
+                layer_on_device["k_head_biases"].append(
+                    self._to_device(k_b[:, col_start:col_end].contiguous()))
+
+            # V: [896, 128] → 2 × [896, 64]
+            v_w = layer_data["v_proj_weight"]  # [896, 128]
+            v_b = layer_data["v_proj_bias"]    # [32, 128]
+            layer_on_device["v_head_weights"] = []
+            layer_on_device["v_head_biases"] = []
+            for h in range(self.num_kv_heads):
+                col_start = h * self.head_dim
+                col_end = col_start + self.head_dim
+                layer_on_device["v_head_weights"].append(
+                    self._to_device(v_w[:, col_start:col_end].contiguous()))
+                layer_on_device["v_head_biases"].append(
+                    self._to_device(v_b[:, col_start:col_end].contiguous()))
+
             self.layer_weights.append(layer_on_device)
             if (i + 1) % 8 == 0:
                 print(f"  {i + 1}/{self.num_layers} layers uploaded")
@@ -439,29 +484,84 @@ class QwenModel:
         return self._run_mlp(post_attn, layer_idx, padded_seq)
 
     def transformer_layer_decode(self, x_device, layer_idx, pos):
-        """Decode: single token attention using KV cache."""
+        """Decode: single token, per-head device projections + RoPE + softmax.
+
+        Remaining host transfers: KV cache update (4KB pull + 128KB push per KV head),
+        head output collection (4KB pull per head + 56KB concat push).
+        """
         w = self.layer_weights[layer_idx]
+        heads_per_group = self.num_q_heads // self.num_kv_heads
+        cache_len = self.padded_max_seq
+        attend_len = pos + 1
 
         normed = self._rmsnorm_device(x_device, w["input_layernorm_weight"])
 
-        q_torch, k_torch, v_torch = self._run_attn_projections(normed, layer_idx, TILE)
+        # Decode mask (reuse across heads)
+        if not hasattr(self, '_decode_mask_cache') or self._decode_mask_pos != pos:
+            decode_mask = torch.full((TILE, cache_len), float("-inf"), dtype=torch.bfloat16)
+            decode_mask[0, :attend_len] = 0.0
+            self._decode_mask_dev = self._to_device(decode_mask)
+            self._decode_mask_pos = pos
 
-        # RoPE for single position
-        q_rot, k_rot = self._apply_rope_single(q_torch[:1], k_torch[:1], pos)
+        # Reset attention buffer
+        self._decode_attn_buf.zero_()
 
-        # Update cache with new K, V
-        self._update_kv_cache(layer_idx, k_rot, v_torch[:1].float(), pos, 1)
+        for kv_idx in range(self.num_kv_heads):
+            # Per-head K projection + RoPE on device
+            k_dev = self._alloc_zeros((TILE, self.head_dim))
+            linear_bias_kernel(normed, w["k_head_weights"][kv_idx],
+                               w["k_head_biases"][kv_idx], k_dev)
+            k_rot_dev = self._alloc_zeros((TILE, self.head_dim))
+            rope_kernel(k_dev, self._decode_cos_dev, self._decode_sin_dev, k_rot_dev)
 
-        # Attention using cache
-        attn_combined = self._attention_decode(q_rot, layer_idx, pos)
+            # Per-head V projection (no RoPE)
+            v_dev = self._alloc_zeros((TILE, self.head_dim))
+            linear_bias_kernel(normed, w["v_head_weights"][kv_idx],
+                               w["v_head_biases"][kv_idx], v_dev)
 
-        # Pad to [TILE, hidden] and continue
-        attn_padded = torch.zeros(TILE, self.hidden_size, dtype=torch.bfloat16)
-        attn_padded[:1] = attn_combined
-        attn_device = self._to_device(attn_padded)
+            # KV cache update: pull new K/V, update host mirror, re-upload cache
+            k_rot_host = ttnn.to_torch(k_rot_dev)
+            v_host = ttnn.to_torch(v_dev)
+            self.kv_cache[layer_idx][kv_idx]["k"][pos] = k_rot_host[0].float()
+            self.kv_cache[layer_idx][kv_idx]["v"][pos] = v_host[0].float()
+            k_t_full = self.kv_cache[layer_idx][kv_idx]["k"][:self.max_seq_len].bfloat16().t().contiguous()
+            v_full = self.kv_cache[layer_idx][kv_idx]["v"][:self.max_seq_len].bfloat16().contiguous()
+            k_t_dev = self._to_device(k_t_full)
+            v_dev_cache = self._to_device(v_full)
+
+            for q_local in range(heads_per_group):
+                q_idx = kv_idx * heads_per_group + q_local
+
+                # Per-head Q projection + RoPE (weights pre-scaled by 1/sqrt(d))
+                q_dev = self._alloc_zeros((TILE, self.head_dim))
+                linear_bias_kernel(normed, w["q_head_weights"][q_idx],
+                                   w["q_head_biases"][q_idx], q_dev)
+                q_rot_dev = self._alloc_zeros((TILE, self.head_dim))
+                rope_kernel(q_dev, self._decode_cos_dev, self._decode_sin_dev, q_rot_dev)
+
+                # Attention on device: scores → softmax → output
+                scores_dev = self._alloc_zeros((TILE, cache_len))
+                linear_kernel(q_rot_dev, k_t_dev, scores_dev)
+
+                weights_dev = device_softmax(
+                    scores_dev, self._decode_mask_dev,
+                    self.ones_scaler_device, self.device
+                )
+
+                head_out_dev = self._alloc_zeros((TILE, self.head_dim))
+                linear_kernel(weights_dev, v_dev_cache, head_out_dev)
+
+                # Collect head output (4KB pull, accumulate on host)
+                head_out_host = ttnn.to_torch(head_out_dev)
+                col_start = q_idx * self.head_dim
+                col_end = col_start + self.head_dim
+                self._decode_attn_buf[:, col_start:col_end] = head_out_host
+
+        # Upload concatenated attention (56KB, single transfer)
+        attn_out_device = self._to_device(self._decode_attn_buf)
 
         proj_out = self._alloc_zeros((TILE, self.hidden_size))
-        linear_kernel(attn_device, w["o_proj_weight"], proj_out)
+        linear_kernel(attn_out_device, w["o_proj_weight"], proj_out)
 
         post_attn = self._alloc_zeros((TILE, self.hidden_size))
         add_kernel(x_device, proj_out, post_attn)
@@ -539,9 +639,20 @@ class QwenModel:
         x_padded = torch.zeros(TILE, self.hidden_size, dtype=torch.bfloat16)
         x_padded[0] = x[0].bfloat16()
 
+        # Prepare position-specific RoPE cos/sin tiles (8KB upload, once per token)
+        cos_pos = torch.ones(TILE, self.head_dim, dtype=torch.bfloat16)
+        sin_pos = torch.zeros(TILE, self.head_dim, dtype=torch.bfloat16)
+        cos_pos[0] = self.rope_cos[pos].bfloat16()
+        sin_pos[0] = self.rope_sin[pos].bfloat16()
+
+        # Attention buffer for head concatenation
+        self._decode_attn_buf = torch.zeros(TILE, self.hidden_size, dtype=torch.bfloat16)
+
         # All device work in one suppress block
         with self._suppress_output():
             x_device = self._to_device(x_padded)
+            self._decode_cos_dev = self._to_device(cos_pos)
+            self._decode_sin_dev = self._to_device(sin_pos)
 
             for layer_idx in range(self.num_layers):
                 x_device = self.transformer_layer_decode(x_device, layer_idx, pos)
