@@ -33,12 +33,12 @@ namespace ttk = mlir::tt::ttkernel;
 
 /// Check whether a pack_tile op extends the current contiguous run:
 /// same DFB, DST index == expected next, DFB tile index == expected next.
-static bool extendsRun(ttk::PackTileOp op, Value runCB, int64_t expectedDst,
-                       int64_t expectedCb) {
+static bool extendsRun(ttk::PackTileOp op, Value runDFB, int64_t expectedDst,
+                       int64_t expectedDfbIdx) {
   auto dst = getConstantIntValue(op.getDstIndex());
   auto cb = getConstantIntValue(op.getOutIndex());
-  return dst && cb && op.getOutCb() == runCB && *dst == expectedDst &&
-         *cb == expectedCb;
+  return dst && cb && op.getOutCb() == runDFB && *dst == expectedDst &&
+         *cb == expectedDfbIdx;
 }
 
 /// Replace a run of 2+ consecutive pack_tile ops with a single

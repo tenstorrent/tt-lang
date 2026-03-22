@@ -113,3 +113,20 @@ func.func @non_contiguous_cb() attributes {ttkernel.thread = #ttkernel.thread<co
   ttkernel.pack_tile(%c1, %cb, %c2, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
   return
 }
+
+// -----
+
+// DST indices starting at non-zero offset: combined with correct base.
+
+// CHECK-LABEL: func.func @nonzero_base
+// CHECK-DAG: %[[C2:.*]] = arith.constant 2 : index
+// CHECK: ttkernel.pack_tile_block(%[[C2]],
+// CHECK-NOT: ttkernel.pack_tile(
+func.func @nonzero_base() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c2 = arith.constant 2 : index
+  %c3 = arith.constant 3 : index
+  ttkernel.pack_tile(%c2, %cb, %c2, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.pack_tile(%c3, %cb, %c3, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  return
+}
