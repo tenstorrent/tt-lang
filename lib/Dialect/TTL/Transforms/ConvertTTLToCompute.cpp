@@ -27,6 +27,23 @@ static RankedTensorType getTensorType(Value v) {
   return dyn_cast<RankedTensorType>(v.getType());
 }
 
+/// Check if `input` is broadcast-compatible with `output`: for each dimension,
+/// either the sizes match or the input size is 1.
+static bool isBroadcastCompatible(RankedTensorType input,
+                                  RankedTensorType output) {
+  if (input.getRank() != output.getRank()) {
+    return false;
+  }
+  for (int64_t d = 0; d < output.getRank(); ++d) {
+    int64_t inDim = input.getDimSize(d);
+    int64_t outDim = output.getDimSize(d);
+    if (inDim != outDim && inDim != 1) {
+      return false;
+    }
+  }
+  return true;
+}
+
 static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
                              Value exemplar) {
   SmallVector<Value> dynDims;
@@ -195,7 +212,7 @@ static bool isSideEffectOpForCompute(Operation *op) {
 /// for leading ops, between fused ops for interleaved ones, and forward
 /// from the last fused op for trailing ones (stopping at cb_push/cb_pop).
 static SmallVector<std::pair<Operation *, Operation *>>
-collectInterleavedSideEffectOps(const ElementwiseTraceResult &trace,
+collectInterleavedSideEffectOps(const FusionTraceResult &trace,
                                 Operation *sinkOp) {
   DenseSet<Operation *> fusedSet(trace.opsInOrder.begin(),
                                  trace.opsInOrder.end());
@@ -256,11 +273,11 @@ collectInterleavedSideEffectOps(const ElementwiseTraceResult &trace,
   return result;
 }
 
-/// Build a fused ttl.compute from traced elementwise chain.
+/// Build a fused ttl.compute from traced fusable chain.
 /// The trace result contains CB-attached root inputs and ops to fuse.
 static LogicalResult buildFusedCompute(Operation *sinkOp,
                                        PatternRewriter &rewriter,
-                                       const ElementwiseTraceResult &trace) {
+                                       const FusionTraceResult &trace) {
   auto type = getTensorType(sinkOp->getResult(0));
   if (!type) {
     return failure();
@@ -279,6 +296,21 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   Location loc = sinkOp->getLoc();
   MLIRContext *ctx = rewriter.getContext();
+
+  // Validate broadcast compatibility: each root input dimension must either
+  // match the output or be 1 (broadcast). Any other mismatch means the
+  // identity-or-broadcast indexing map heuristic would produce incorrect maps.
+  for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
+    auto inputType = getTensorType(trace.rootInputs[i]);
+    if (!inputType) {
+      continue;
+    }
+    if (!isBroadcastCompatible(inputType, type)) {
+      return rewriter.notifyMatchFailure(
+          sinkOp, "fusion failed: input " + Twine(i) +
+                      " is not broadcast-compatible with output");
+    }
+  }
 
   // Build indexing maps: broadcast-aware for inputs, identity for output.
   // When an input has size 1 in a dimension but the output doesn't, that
@@ -408,7 +440,19 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     emitSideEffectOp(op);
   }
 
-  // Emit tile ops in topological order with interleaved side-effect ops
+  // Emit tile ops in topological order with interleaved side-effect ops.
+  //
+  // Matmul+add fold: when a MatmulOp result feeds into an AddOp in the
+  // chain, both are replaced by a single 3-operand TileMatmulBlockOp
+  // (lhs, rhs, accumulator). matmul_block accumulates (DST += A*B), so
+  // pre-loading the accumulator into DST yields accumulator + A*B without
+  // an explicit tile_add.
+  //
+  // The matmul is emitted before the add in topological order. When the
+  // matmul's sole user is an add in the chain, emission is deferred: the
+  // tile operands are stashed and the 3-operand form is emitted at the add.
+  DenseMap<Value, std::pair<Value, Value>> deferredMatmul;
+
   Value finalResult;
   for (Operation *op : trace.opsInOrder) {
     auto it = opsBefore.find(op);
@@ -420,32 +464,97 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
     Value tileResult;
 
-    // Special case: BcastOp reads from CB, needs TileBcastOp
+    // BcastOp reads from CB and writes to DST; emits TileBcastOp.
     if (auto bcastOp = dyn_cast<BcastOp>(op)) {
       Value inputTile = tensorToTile[bcastOp.getInput()];
       Value outputTile = body->getArguments().back(); // output block arg
       tileResult = TileBcastOp::create(rewriter, loc, tileType, inputTile,
                                        outputTile, bcastOp.getBcastTypeAttr());
-    } else {
-      // Elementwise ops
-      SmallVector<Value, 2> tileOperands;
-      for (Value operand : getElementwiseOperands(op)) {
-        auto it2 = tensorToTile.find(operand);
-        if (it2 == tensorToTile.end()) {
-          return op->emitError(
-              "fusion failed: operand not mapped to tile value");
+    } else if (auto matmulOp = dyn_cast<MatmulOp>(op)) {
+      Value lhsTile = tensorToTile[matmulOp.getLhs()];
+      Value rhsTile = tensorToTile[matmulOp.getRhs()];
+
+      // Defer emission if the sole user is an AddOp in this chain.
+      bool deferred = false;
+      if (matmulOp.getResult().hasOneUse()) {
+        Operation *user = *matmulOp.getResult().getUsers().begin();
+        if (isa<AddOp>(user) && trace.opsInOrder.contains(user)) {
+          deferredMatmul[matmulOp.getResult()] = {lhsTile, rhsTile};
+          deferred = true;
         }
-        tileOperands.push_back(it2->second);
+      }
+      if (!deferred) {
+        tileResult = TileMatmulBlockOp::create(rewriter, loc, tileType, lhsTile,
+                                               rhsTile, Value());
+      }
+    } else {
+      // Check for matmul+add fold before falling through to elementwise.
+      if (isa<AddOp>(op)) {
+        auto operands = getElementwiseOperands(op);
+        auto tryFold = [&](Value tensorA, Value tensorB) -> Value {
+          auto dfIt = deferredMatmul.find(tensorA);
+          if (dfIt == deferredMatmul.end()) {
+            return nullptr;
+          }
+          auto [mmLhs, mmRhs] = dfIt->second;
+          Value accTile = tensorToTile.lookup(tensorB);
+          if (!accTile) {
+            return nullptr;
+          }
+          deferredMatmul.erase(dfIt);
+          return TileMatmulBlockOp::create(rewriter, loc, tileType, mmLhs,
+                                           mmRhs, accTile);
+        };
+        Value folded = tryFold(operands[0], operands[1]);
+        if (!folded) {
+          folded = tryFold(operands[1], operands[0]);
+        }
+        if (folded) {
+          tileResult = folded;
+          // Proceeds to the common tensorToTile/finalResult assignment below.
+        }
       }
 
-      tileResult = emitTileOpFor(rewriter, loc, op, tileOperands, tileType);
+      // If the matmul+add fold did not apply (e.g., matmul+sub, or both
+      // operands are matmul results), emit deferred matmuls as 2-operand
+      // tile_matmul_block so the elementwise path can resolve them.
       if (!tileResult) {
-        return op->emitError("fusion failed: unsupported op type");
+        for (Value operand : getElementwiseOperands(op)) {
+          auto dfIt = deferredMatmul.find(operand);
+          if (dfIt != deferredMatmul.end()) {
+            auto [mmLhs, mmRhs] = dfIt->second;
+            Value mmTile = TileMatmulBlockOp::create(rewriter, loc, tileType,
+                                                     mmLhs, mmRhs, Value());
+            tensorToTile[operand] = mmTile;
+            deferredMatmul.erase(dfIt);
+          }
+        }
+      }
+
+      // Elementwise ops (skipped if matmul+add fold already produced a result).
+      if (!tileResult) {
+        SmallVector<Value, 2> tileOperands;
+        for (Value operand : getElementwiseOperands(op)) {
+          auto it2 = tensorToTile.find(operand);
+          if (it2 == tensorToTile.end()) {
+            return rewriter.notifyMatchFailure(
+                op, "fusion failed: operand not mapped to tile value");
+          }
+          tileOperands.push_back(it2->second);
+        }
+
+        tileResult = emitTileOpFor(rewriter, loc, op, tileOperands, tileType);
+        if (!tileResult) {
+          return rewriter.notifyMatchFailure(
+              op, "fusion failed: unsupported op type");
+        }
       }
     }
 
-    tensorToTile[op->getResult(0)] = tileResult;
-    finalResult = tileResult;
+    if (tileResult) {
+      tensorToTile[op->getResult(0)] = tileResult;
+      finalResult = tileResult;
+    }
   }
 
   // Emit trailing begin signposts and dprints, then tile stores, then end
@@ -549,17 +658,16 @@ static LogicalResult buildComputeFromInputs(
   return success();
 }
 
-/// Try elementwise fusion for an op whose inputs are not all CB-attached.
+/// Try fusion for an op whose inputs are not all CB-attached.
 /// Returns success if fusion was performed, failure otherwise.
-static LogicalResult tryElementwiseFusion(Operation *op,
-                                          PatternRewriter &rewriter) {
-  auto traceResult = traceElementwiseToRoots(op->getResult(0));
+static LogicalResult tryFusion(Operation *op, PatternRewriter &rewriter) {
+  auto traceResult = traceFusionToRoots(op->getResult(0));
   if (traceResult.failureReason == TraceFailureReason::Success &&
       !traceResult.opsInOrder.empty()) {
     return buildFusedCompute(op, rewriter, traceResult);
   }
-  emitFusionFailureDiagnostics(op, traceResult);
-  return failure();
+  return rewriter.notifyMatchFailure(
+      op, "fusion failed: " + describeTraceFailure(traceResult.failureReason));
 }
 
 /// Build a ttl.compute op with a single binary tile operation in the body.
@@ -575,7 +683,7 @@ static LogicalResult buildBinaryCompute(Operation *op,
   }
 
   if (!getAttachedCB(lhs) || !getAttachedCB(rhs)) {
-    return tryElementwiseFusion(op, rewriter);
+    return tryFusion(op, rewriter);
   }
 
   MLIRContext *ctx = rewriter.getContext();
@@ -605,7 +713,7 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   }
 
   if (!getAttachedCB(input)) {
-    return tryElementwiseFusion(op, rewriter);
+    return tryFusion(op, rewriter);
   }
 
   MLIRContext *ctx = rewriter.getContext();
@@ -681,6 +789,8 @@ static AffineMap buildBcastInputMap(MLIRContext *ctx, bool expandRows,
 }
 
 /// Validate that shape expansion is compatible with bcast type.
+/// Uses emitError (not notifyMatchFailure) because these are user-facing
+/// errors with no alternative pattern to try. TODO: move to BcastOp verifier.
 static LogicalResult validateBcastExpansion(BcastOp op, bool expandRows,
                                             bool expandCols) {
   auto bcastType = op.getBcastType();
@@ -715,6 +825,9 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
 
     Value inputCb = getAttachedCB(op.getInput());
     Value outCb = getAttachedCB(op.getOutput());
+    // Bcast validation uses emitError (not notifyMatchFailure) because these
+    // are user-facing errors with no alternative pattern. TODO: move to
+    // verifier.
     if (!inputCb) {
       return op.emitError(
           "broadcast input must come directly from a circular buffer, not from "
@@ -808,16 +921,27 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
     Value rhs = op.getRhs();
 
     if (!getAttachedCB(lhs) || !getAttachedCB(rhs)) {
-      return rewriter.notifyMatchFailure(
-          op, "matmul inputs must be CB-attached; fusion of matmul with "
-              "elementwise ops is not yet supported");
+      return rewriter.notifyMatchFailure(op,
+                                         "matmul inputs must be CB-attached");
     }
 
     auto lhsType = getTensorType(lhs);
     auto rhsType = getTensorType(rhs);
     auto resultType = getTensorType(op.getResult());
-    if (!lhsType || !rhsType || !resultType) {
-      return failure();
+
+    // Defer to fusion when the matmul result feeds into a single elementwise
+    // op and the matmul inputs are broadcast-compatible with the user's output
+    // shape. Without the broadcast check, fusion would reject and the greedy
+    // rewriter would cycle.
+    if (op.getResult().hasOneUse()) {
+      Operation *user = *op.getResult().getUsers().begin();
+      if (isElementwiseOp(user)) {
+        auto userOutType = getTensorType(user->getResult(0));
+        if (isBroadcastCompatible(lhsType, userOutType) &&
+            isBroadcastCompatible(rhsType, userOutType)) {
+          return rewriter.notifyMatchFailure(op, "deferring matmul to fusion");
+        }
+      }
     }
 
     MLIRContext *ctx = rewriter.getContext();
@@ -838,8 +962,9 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
     return buildComputeFromInputs(
         op, rewriter, ValueRange{lhs, rhs}, resultType, inputMaps, outMap,
         iterTypes, [](OpBuilder &b, Location loc, Type tileType, Block *body) {
-          return TileMatmulBlockOp::create(
-              b, loc, tileType, body->getArgument(0), body->getArgument(1));
+          return TileMatmulBlockOp::create(b, loc, tileType,
+                                           body->getArgument(0),
+                                           body->getArgument(1), Value());
         });
   }
 };

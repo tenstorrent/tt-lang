@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Multicore matmul: output rows partitioned across a 1D grid.
+Multinode matmul: output rows partitioned across a 1D grid.
 Each core computes C_strip = A_strip @ B where A_strip is the core's
 row-block of A and B is read in full by every core.
 """
@@ -24,7 +24,7 @@ TILE = 32
 
 
 @ttl.kernel(grid=(1, 2))
-def matmul_multicore_2rows(a, b, out):
+def matmul_multinode_2rows(a, b, out):
     """2-core matmul: each core computes one row-block of the output."""
     Nt = b.shape[1] // TILE
 
@@ -43,7 +43,7 @@ def matmul_multicore_2rows(a, b, out):
 
     @ttl.datamovement()
     def dm_read():
-        _, core_row = ttl.core(dims=2)
+        _, core_row = ttl.node(dims=2)
         with a_dfb.reserve() as blk:
             tx = ttl.copy(a[core_row, 0], blk)
             tx.wait()
@@ -53,7 +53,7 @@ def matmul_multicore_2rows(a, b, out):
 
     @ttl.datamovement()
     def dm_write():
-        _, core_row = ttl.core(dims=2)
+        _, core_row = ttl.node(dims=2)
         with out_dfb.wait() as blk:
             tx = ttl.copy(blk, out[core_row, 0:Nt])
             tx.wait()
@@ -61,7 +61,7 @@ def matmul_multicore_2rows(a, b, out):
 
 @pytest.mark.parametrize("Nt", [1, 2, 4], ids=["Nt1", "Nt2", "Nt4"])
 @pytest.mark.requires_device
-def test_matmul_multicore_2rows(Nt, device):
+def test_matmul_multinode_2rows(Nt, device):
     """2-core matmul partitioned by output rows."""
     M, K, N = 2 * TILE, TILE, Nt * TILE
 
@@ -72,7 +72,7 @@ def test_matmul_multicore_2rows(Nt, device):
     b = to_dram(b_torch, device)
     out = to_dram(torch.zeros(M, N, dtype=torch.bfloat16), device)
 
-    matmul_multicore_2rows(a, b, out)
+    matmul_multinode_2rows(a, b, out)
 
     result = ttnn.to_torch(out)
     golden = a_torch @ b_torch

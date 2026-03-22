@@ -8,25 +8,25 @@ import ttnn
 from utils.correctness import assert_with_ulp
 
 
-def get_number_of_cores(core_range_set):
-    """Get total number of cores in a CoreRangeSet.
+def get_number_of_nodes(node_range_set):
+    """Get total number of nodes in a NodeRangeSet.
 
     Args:
-        core_range_set: A CoreRangeSet containing one or more CoreRange objects
+        node_range_set: A NodeRangeSet containing one or more NodeRange objects
 
     Returns:
-        Total number of cores across all ranges
+        Total number of nodes across all ranges
     """
-    total_cores = 0
-    for core_range in core_range_set.ranges():
-        x_range = core_range.end.x - core_range.start.x + 1
-        y_range = core_range.end.y - core_range.start.y + 1
-        total_cores += x_range * y_range
-    return total_cores
+    total_nodes = 0
+    for node_range in node_range_set.ranges():
+        x_range = node_range.end.x - node_range.start.x + 1
+        y_range = node_range.end.y - node_range.start.y + 1
+        total_nodes += x_range * y_range
+    return total_nodes
 
 
 @ttl.kernel(grid=(13, 10))
-def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -> None:
+def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -> None:
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
 
@@ -51,48 +51,48 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
 
     # Get grid size and compute work distribution
     y_size, x_size = ttl.grid_size(dims=2)
-    core_grid = ttnn.CoreCoord(x_size, y_size)
+    node_grid = ttnn.CoreCoord(x_size, y_size)
 
-    print(f"core_grid: {core_grid}, num_output_tiles_total: {num_output_tiles_total}")
+    print(f"node_grid: {node_grid}, num_output_tiles_total: {num_output_tiles_total}")
     (
         _,
-        all_cores,
-        core_group_1,
-        core_group_2,
-        work_per_core1,
-        work_per_core2,
-    ) = ttnn.split_work_to_cores(core_grid, num_output_tiles_total, row_wise=True)
+        all_nodes,
+        node_group_1,
+        node_group_2,
+        work_per_node1,
+        work_per_node2,
+    ) = ttnn.split_work_to_cores(node_grid, num_output_tiles_total, row_wise=True)
     print(
-        f"all_cores: {all_cores}, core_group_1: {core_group_1}, core_group_2: {core_group_2}, "
-        f"work_per_core1: {work_per_core1}, work_per_core2: {work_per_core2}"
+        f"all_nodes: {all_nodes}, node_group_1: {node_group_1}, node_group_2: {node_group_2}, "
+        f"work_per_node1: {work_per_node1}, work_per_node2: {work_per_node2}"
     )
 
-    num_cores_group_1 = get_number_of_cores(core_group_1)
-    num_cores_group_2 = get_number_of_cores(core_group_2)
+    num_nodes_group_1 = get_number_of_nodes(node_group_1)
+    num_nodes_group_2 = get_number_of_nodes(node_group_2)
 
-    def get_tiles_per_core(core_id):
-        if core_id < num_cores_group_1:
-            return work_per_core1
-        elif core_id < num_cores_group_1 + num_cores_group_2:
-            return work_per_core2
+    def get_tiles_per_node(node_id):
+        if node_id < num_nodes_group_1:
+            return work_per_node1
+        elif node_id < num_nodes_group_1 + num_nodes_group_2:
+            return work_per_node2
         else:  # no work assigned
             return 0
 
-    def get_start_tile_id(core_id):
-        if core_id < num_cores_group_1:
-            return core_id * work_per_core1
-        elif core_id < num_cores_group_1 + num_cores_group_2:
+    def get_start_tile_id(node_id):
+        if node_id < num_nodes_group_1:
+            return node_id * work_per_node1
+        elif node_id < num_nodes_group_1 + num_nodes_group_2:
             return (
-                num_cores_group_1 * work_per_core1
-                + (core_id - num_cores_group_1) * work_per_core2
+                num_nodes_group_1 * work_per_node1
+                + (node_id - num_nodes_group_1) * work_per_node2
             )
         else:  # no work assigned
             return 0
 
     @ttl.compute()
     def mm_compute():
-        core_id = ttl.core(dims=1)
-        num_tiles = get_tiles_per_core(core_id)
+        node_id = ttl.node(dims=1)
+        num_tiles = get_tiles_per_node(node_id)
 
         for _ in range(num_tiles):
             # Reserve output block once for the entire K accumulation
@@ -106,12 +106,12 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
 
     @ttl.datamovement()
     def mm_reader():
-        core_id = ttl.core(dims=1)
-        num_tiles = get_tiles_per_core(core_id)
+        node_id = ttl.node(dims=1)
+        num_tiles = get_tiles_per_node(node_id)
 
         # A[Mt, Kt] @ B[Kt, Nt] = C[Mt, Nt]
         for tile_id in range(num_tiles):
-            current_tile_id = get_start_tile_id(core_id) + tile_id
+            current_tile_id = get_start_tile_id(node_id) + tile_id
             out_row = current_tile_id // Nt
             out_col = current_tile_id % Nt
 
@@ -125,12 +125,12 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
 
     @ttl.datamovement()
     def mm_writer():
-        core_id = ttl.core(dims=1)
-        num_tiles = get_tiles_per_core(core_id)
+        node_id = ttl.node(dims=1)
+        num_tiles = get_tiles_per_node(node_id)
 
         # A[Mt, Kt] @ B[Kt, Nt] = C[Mt, Nt]
         for tile_id in range(num_tiles):
-            current_tile_id = get_start_tile_id(core_id) + tile_id
+            current_tile_id = get_start_tile_id(node_id) + tile_id
             out_row = current_tile_id // Nt
             out_col = current_tile_id % Nt
 
@@ -149,9 +149,9 @@ def main() -> None:
     print(f"Matrix multiplication: ({M}, {K}) @ ({K}, {N}) = ({M}, {N})")
     print(f"Tiles: A={M//32}x{K//32}, B={K//32}x{N//32}, Out={M//32}x{N//32}")
     print(f"Total output tiles: {(M//32) * (N//32)}")
-    print(f"Grid: 8x8 = 64 cores")
+    print(f"Grid: 8x8 = 64 nodes")
 
-    tt_lang_multicore_matmul(a, b, out)
+    tt_lang_multinode_matmul(a, b, out)
 
     # Compute golden result
     golden = a @ b

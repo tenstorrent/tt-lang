@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Broadcast multicore test: scoping-based tile reuse pattern.
+Broadcast multinode test: scoping-based tile reuse pattern.
 
 Key feature: Different tensor sizes with scoping-based broadcast. The L1 tensor
 (256x256) has 1 tile per core, while DRAM tensors (1024x1024) have 16 tiles per
@@ -13,7 +13,7 @@ all 16 DRAM tiles, effectively "broadcasting" the L1 value.
 Features:
 - 2MB DRAM tensors (1024x1024): a, b, out1, out2 - 4x4 tiles per core
 - 128KB L1 tensors (256x256): c, out3 - 1x1 tile per core
-- 8x8 multicore grid with dynamic indexing via core(dims=2)
+- 8x8 multinode grid with dynamic indexing via core(dims=2)
 - 1x1 DFB shapes for all CBs (shapes match in binary ops)
 - L1 tile 'c' held in outer scope, reused across 16 DRAM iterations
 - 20 fused ops across 3 outputs
@@ -54,7 +54,7 @@ L1_SHAPE = (
 @ttl.kernel(grid=(8, 8))
 def bcast_kernel(a, b, c, out1, out2, out3):
     """
-    Multicore kernel with 20 fused ops across 3 outputs.
+    Multinode kernel with 20 fused ops across 3 outputs.
     DRAM tensors (a, b, out1, out2): 4x4 tiles per core, processed 1x1 at a time
     L1 tensors (c, out3): 1x1 tile per core
 
@@ -117,7 +117,7 @@ def bcast_kernel(a, b, c, out1, out2, out3):
 
     @ttl.datamovement()
     def dm_read():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
 
         # Read L1 tile FIRST (so it's available for broadcast)
         with c_dfb.reserve() as c_blk:
@@ -137,7 +137,7 @@ def bcast_kernel(a, b, c, out1, out2, out3):
 
     @ttl.datamovement()
     def dm_write():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
 
         # Write DRAM tiles (4x4 per core)
         for local_r in range(4):
@@ -202,7 +202,7 @@ def compute_expected_l1(c):
     return exp3
 
 
-def test_bcast_multicore(device):
+def test_bcast_multinode(device):
     """Test scoping-based broadcast: L1 tile reused across DRAM iterations."""
     # Random DRAM inputs
     a_torch = torch.rand(DRAM_SHAPE, dtype=torch.bfloat16) * 2.0 - 1.0
@@ -251,13 +251,13 @@ def test_bcast_multicore(device):
 def make_bcast_granularity_kernel(granularity: int):
     """Factory to create broadcast kernels with different DFB granularities.
 
-    Tests ttl.math.broadcast with varying DFB block sizes on multicore grid.
+    Tests ttl.math.broadcast with varying DFB block sizes on multinode grid.
     Uses row broadcast (dims=[0]) pattern.
     """
 
     @ttl.kernel(grid=(8, 8))
     def bcast_granularity_kernel(inp, out):
-        """Multicore broadcast kernel with parameterized granularity."""
+        """multinode broadcast kernel with parameterized granularity."""
         block_rows = granularity
         block_cols = granularity
 
@@ -282,7 +282,7 @@ def make_bcast_granularity_kernel(granularity: int):
 
         @ttl.datamovement()
         def dm_read():
-            core_x, core_y = ttl.core(dims=2)
+            core_x, core_y = ttl.node(dims=2)
             for core_row in range(rows_per_core):
                 row = core_x * rows_per_core + core_row
                 start_row = row * block_rows
@@ -297,7 +297,7 @@ def make_bcast_granularity_kernel(granularity: int):
 
         @ttl.datamovement()
         def dm_write():
-            core_x, core_y = ttl.core(dims=2)
+            core_x, core_y = ttl.node(dims=2)
             for core_row in range(rows_per_core):
                 row = core_x * rows_per_core + core_row
                 start_row = row * block_rows
@@ -340,7 +340,7 @@ _bcast_kernel_g2 = make_bcast_granularity_kernel(2)
     ],
     ids=["granularity_1x1", "granularity_2x2"],
 )
-def test_bcast_multicore_granularity(device, granularity, kernel):
+def test_bcast_multinode_granularity(device, granularity, kernel):
     """Test ttl.math.broadcast with different DFB granularities on 8x8 grid.
 
     Validates that broadcast works correctly with varying DFB block sizes:

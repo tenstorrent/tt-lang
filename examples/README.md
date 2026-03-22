@@ -33,7 +33,7 @@ python examples/<example_name>.py
 |---------|-------------|:---:|:--:|
 | `eltwise_add.py` | Element-wise addition of two tensors | ✓ | ✓ |
 | `eltwise_pipe.py` | Fused element-wise ops using pipe multicasting | ✓ | ✗ |
-| `eltwise_pipe_core3.py` | Variant of eltwise_pipe with different core config | ✓ | ✗ |
+| `eltwise_pipe_node3.py` | Variant of eltwise_pipe with different node config | ✓ | ✗ |
 
 ### Broadcasting
 
@@ -47,8 +47,8 @@ python examples/<example_name>.py
 
 | Example | Description | Sim | HW |
 |---------|-------------|:---:|:--:|
-| `singlecore_matmul.py` | Single-core matrix multiplication | ✓ | ✗ |
-| `multicore_matmul.py` | Multi-core matmul with work distribution | ✓ | ✗ |
+| `singlenode_matmul.py` | Single-node matrix multiplication | ✓ | ✗ |
+| `multinode_matmul.py` | Multi-node matmul with work distribution | ✓ | ✗ |
 
 ### Demo/Tutorial
 
@@ -71,9 +71,9 @@ The `metal_examples/` directory contains paired implementations comparing tt-lan
 
 | Example | Description | Sim | HW |
 |---------|-------------|:---:|:--:|
-| `singlecore_matmul/ttlang/` | Single-core matmul in tt-lang | ✓ | ✗ |
-| `multicore_matmul/ttlang/` | Multi-core matmul in tt-lang | ✓ | ✗ |
-| `multicore_reuse_matmul/ttlang/` | Reuse-optimized matmul in tt-lang | ✓ | ✗ |
+| `singlenode_matmul/ttlang/` | Single-node matmul in tt-lang | ✓ | ✗ |
+| `multinode_matmul/ttlang/` | Multi-node matmul in tt-lang | ✓ | ✗ |
+| `multinode_reuse_matmul/ttlang/` | Reuse-optimized matmul in tt-lang | ✓ | ✗ |
 
 The `metal/` subdirectories contain reference Metal implementations for comparison.
 

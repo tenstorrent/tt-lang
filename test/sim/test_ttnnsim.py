@@ -427,7 +427,7 @@ def test_core_range():
     assert r.num_cores() == 12
 
 
-def test_core_range_single_core():
+def test_core_range_single_node():
     """Test CoreRange with a single core."""
     c = ttnn.CoreCoord(5, 7)
     r = ttnn.CoreRange(c, c)

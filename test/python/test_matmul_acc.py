@@ -3,10 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Matmul with explicit K-accumulation using the decomposed pattern.
+Matmul with K-accumulation via explicit and fused patterns.
 
-Each K-step: matmul to intermediate CB, then add with accumulator.
-Follows the same compute-local CB pattern as simple_add_loop.py.
+Explicit: matmul to intermediate CB per K-step, then elementwise add with
+accumulator. Requires partial_dfb + acc_dfb.
+
+Fused: `prev + a @ b` lowers to copy_tile(prev) + matmul_block(DST += A*B).
+The add is eliminated. Requires only acc_dfb.
 """
 
 # REQUIRES: ttnn
@@ -83,35 +86,79 @@ def matmul_acc_kernel(a, b, out):
             tx.wait()
 
 
-@pytest.mark.parametrize(
-    "Mt,Kt,Nt",
-    [
-        (1, 1, 1),
-        (1, 2, 1),
-        (1, 4, 1),
-        (2, 1, 2),
-        (2, 2, 2),
-        (2, 4, 2),
-        (1, 3, 1),  # Odd K.
-        (2, 2, 4),  # 2x4 output = 8 tiles at max DST, K=2.
-        (1, 4, 4),  # Wide output with K accumulation.
-        (1, 2, 2),  # Non-square: A[1,2] @ B[2,2] = C[1,2].
-    ],
-    ids=[
-        "1x1x1",
-        "1x2x1",
-        "1x4x1",
-        "2x1x2",
-        "2x2x2",
-        "2x4x2",
-        "1x3x1",
-        "2x2x4",
-        "1x4x4",
-        "1x2x2",
-    ],
-)
-@pytest.mark.requires_device
-def test_matmul_accumulate(Mt, Kt, Nt, device):
+@ttl.kernel(grid=(1, 1))
+def matmul_fused_acc_kernel(a, b, out):
+    """Fused accumulation: prev + a @ b folds into copy_tile + matmul_block."""
+    Mt = a.shape[0] // TILE
+    Kt = a.shape[1] // TILE
+    Nt = b.shape[1] // TILE
+
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(Mt, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, Nt), buffer_factor=2)
+    # Compute-local accumulator. No partial_dfb needed — fusion eliminates it.
+    acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), buffer_factor=2)
+
+    @ttl.compute()
+    def mm_compute():
+        # First K-step: matmul directly to accumulator.
+        a_blk = a_dfb.wait()
+        b_blk = b_dfb.wait()
+        with acc_dfb.reserve() as acc:
+            acc.store(a_blk @ b_blk)
+        a_blk.pop()
+        b_blk.pop()
+
+        # Remaining K-steps: fused prev + a @ b (add vanishes).
+        for _ in range(Kt - 1):
+            with (
+                a_dfb.wait() as a_blk,
+                b_dfb.wait() as b_blk,
+                acc_dfb.wait() as prev,
+            ):
+                with acc_dfb.reserve() as acc:
+                    acc.store(prev + a_blk @ b_blk)
+
+        # Copy final accumulator to output.
+        with acc_dfb.wait() as final:
+            with out_dfb.reserve() as o:
+                o.store(final)
+
+    @ttl.datamovement()
+    def dm_read():
+        for kt in range(Kt):
+            with a_dfb.reserve() as blk:
+                tx = ttl.copy(a[0:Mt, kt : kt + 1], blk)
+                tx.wait()
+            with b_dfb.reserve() as blk:
+                tx = ttl.copy(b[kt : kt + 1, 0:Nt], blk)
+                tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as blk:
+            tx = ttl.copy(blk, out[0:Mt, 0:Nt])
+            tx.wait()
+
+
+SHAPE_PARAMS = [
+    (1, 1, 1),
+    (1, 2, 1),
+    (1, 4, 1),
+    (2, 1, 2),
+    (2, 2, 2),
+    (2, 4, 2),
+    (1, 3, 1),  # Odd K.
+    (2, 2, 4),  # 2x4 output = 8 tiles at max DST, K=2.
+    (1, 4, 4),  # Wide output with K accumulation.
+    (1, 2, 2),  # Non-square: A[1,2] @ B[2,2] = C[1,2].
+]
+
+SHAPE_IDS = [f"{m}x{k}x{n}" for m, k, n in SHAPE_PARAMS]
+
+
+def _run_matmul_acc(kernel_fn, Mt, Kt, Nt, device):
+    """Shared test harness: run kernel, compare against torch golden."""
     M, K, N = Mt * TILE, Kt * TILE, Nt * TILE
 
     a_torch = torch.randn(M, K, dtype=torch.bfloat16)
@@ -121,7 +168,7 @@ def test_matmul_accumulate(Mt, Kt, Nt, device):
     b = to_dram(b_torch, device)
     out = to_dram(torch.zeros(M, N, dtype=torch.bfloat16), device)
 
-    matmul_acc_kernel(a, b, out)
+    kernel_fn(a, b, out)
 
     result = ttnn.to_torch(out)
     golden = a_torch @ b_torch
@@ -133,6 +180,20 @@ def test_matmul_accumulate(Mt, Kt, Nt, device):
         f"PCC {pcc:.6f} < 0.99 for {Mt}x{Kt}x{Nt} matmul. "
         f"Max diff: {(result - golden).abs().max().item()}"
     )
+
+
+@pytest.mark.parametrize("Mt,Kt,Nt", SHAPE_PARAMS, ids=SHAPE_IDS)
+@pytest.mark.requires_device
+def test_matmul_accumulate_explicit(Mt, Kt, Nt, device):
+    """Explicit accumulation: matmul to partial CB, then add with accumulator."""
+    _run_matmul_acc(matmul_acc_kernel, Mt, Kt, Nt, device)
+
+
+@pytest.mark.parametrize("Mt,Kt,Nt", SHAPE_PARAMS, ids=SHAPE_IDS)
+@pytest.mark.requires_device
+def test_matmul_accumulate_fused(Mt, Kt, Nt, device):
+    """Fused accumulation: prev + a @ b compiles to copy_tile + matmul_block."""
+    _run_matmul_acc(matmul_fused_acc_kernel, Mt, Kt, Nt, device)
 
 
 # =============================================================================
@@ -274,5 +335,266 @@ def test_matmul_distinct_tiles(device):
     )[0, 1].item()
     assert pcc > 0.99, (
         f"PCC {pcc:.6f} < 0.99 for 2x2x2 distinct-tile matmul. "
+        f"Max diff: {(result - golden).abs().max().item()}"
+    )
+
+
+# =============================================================================
+# Fused accumulation with outer block loop: block sizes smaller than the full
+# output, so the compute iterates over output blocks. Exercises the
+# lower-matmul-block input index mapping (the accumulator shifts lhs/rhs
+# positions in the compute's input list).
+# =============================================================================
+
+
+@ttl.kernel(grid=(1, 1))
+def matmul_fused_acc_blocked_kernel(a, b, out):
+    """Fused accumulation with 1x1 output blocks and outer M/N/K loops."""
+    Mt = a.shape[0] // TILE
+    Kt = a.shape[1] // TILE
+    Nt = b.shape[1] // TILE
+
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
+    acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
+    @ttl.compute()
+    def mm_compute():
+        for _ in range(Mt):
+            for _ in range(Nt):
+                # First K-step: matmul directly to accumulator.
+                a_blk = a_dfb.wait()
+                b_blk = b_dfb.wait()
+                with acc_dfb.reserve() as acc:
+                    acc.store(a_blk @ b_blk)
+                a_blk.pop()
+                b_blk.pop()
+
+                # Remaining K-steps: fused prev + a @ b.
+                for _ in range(Kt - 1):
+                    with (
+                        a_dfb.wait() as a_blk,
+                        b_dfb.wait() as b_blk,
+                        acc_dfb.wait() as prev,
+                    ):
+                        with acc_dfb.reserve() as acc:
+                            acc.store(prev + a_blk @ b_blk)
+
+                with acc_dfb.wait() as final:
+                    with out_dfb.reserve() as o:
+                        o.store(final)
+
+    @ttl.datamovement()
+    def dm_read():
+        for mt in range(Mt):
+            for nt in range(Nt):
+                for kt in range(Kt):
+                    with a_dfb.reserve() as blk:
+                        tx = ttl.copy(a[mt, kt], blk)
+                        tx.wait()
+                    with b_dfb.reserve() as blk:
+                        tx = ttl.copy(b[kt, nt], blk)
+                        tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        for mt in range(Mt):
+            for nt in range(Nt):
+                with out_dfb.wait() as blk:
+                    tx = ttl.copy(blk, out[mt, nt])
+                    tx.wait()
+
+
+BLOCKED_PARAMS = [
+    (2, 1, 2),  # K=1: fused path not exercised, only standalone matmul.
+    (2, 2, 2),  # Square output, basic K-accumulation.
+    (4, 2, 2),  # Tall output, M-loop dominant.
+    (1, 3, 4),  # Single M row, wide output, odd K.
+    (4, 2, 1),  # Single N column, tall output.
+    (2, 3, 4),  # Non-square with odd K.
+    (2, 8, 2),  # Long K-accumulation chain.
+]
+
+BLOCKED_IDS = [f"{m}x{k}x{n}_blocked" for m, k, n in BLOCKED_PARAMS]
+
+
+@pytest.mark.parametrize("Mt,Kt,Nt", BLOCKED_PARAMS, ids=BLOCKED_IDS)
+@pytest.mark.requires_device
+def test_matmul_fused_acc_blocked(Mt, Kt, Nt, device):
+    """Fused accumulation with outer block loop (1x1 blocks)."""
+    _run_matmul_acc(matmul_fused_acc_blocked_kernel, Mt, Kt, Nt, device)
+
+
+# =============================================================================
+# Post-matmul unary fusion: relu(a @ b) and relu(a @ b + prev)
+# =============================================================================
+
+
+@ttl.kernel(grid=(1, 1))
+def matmul_relu_kernel(a, b, out):
+    """Post-matmul relu: relu(a @ b) fuses into matmul_block + relu_tile."""
+    Mt = a.shape[0] // TILE
+    Kt = a.shape[1] // TILE
+    Nt = b.shape[1] // TILE
+
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(Mt, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, Nt), buffer_factor=2)
+    acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), buffer_factor=2)
+
+    @ttl.compute()
+    def mm_compute():
+        # First K-step: matmul to accumulator (no relu on intermediates).
+        a_blk = a_dfb.wait()
+        b_blk = b_dfb.wait()
+        with acc_dfb.reserve() as acc:
+            acc.store(a_blk @ b_blk)
+        a_blk.pop()
+        b_blk.pop()
+
+        # Remaining K-steps: fused accumulation.
+        for _ in range(Kt - 1):
+            with (
+                a_dfb.wait() as a_blk,
+                b_dfb.wait() as b_blk,
+                acc_dfb.wait() as prev,
+            ):
+                with acc_dfb.reserve() as acc:
+                    acc.store(prev + a_blk @ b_blk)
+
+        # Final step: relu applied after full K-accumulation.
+        with acc_dfb.wait() as final:
+            with out_dfb.reserve() as o:
+                o.store(ttl.math.relu(final))
+
+    @ttl.datamovement()
+    def dm_read():
+        for kt in range(Kt):
+            with a_dfb.reserve() as blk:
+                tx = ttl.copy(a[0:Mt, kt : kt + 1], blk)
+                tx.wait()
+            with b_dfb.reserve() as blk:
+                tx = ttl.copy(b[kt : kt + 1, 0:Nt], blk)
+                tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as blk:
+            tx = ttl.copy(blk, out[0:Mt, 0:Nt])
+            tx.wait()
+
+
+@pytest.mark.parametrize(
+    "Mt,Kt,Nt",
+    [
+        (1, 1, 1),
+        (2, 2, 2),
+        (1, 4, 2),
+    ],
+    ids=[f"{m}x{k}x{n}" for m, k, n in [(1, 1, 1), (2, 2, 2), (1, 4, 2)]],
+)
+@pytest.mark.requires_device
+def test_matmul_relu(Mt, Kt, Nt, device):
+    """relu(A @ B): relu applied after full K-accumulation."""
+    M, K, N = Mt * TILE, Kt * TILE, Nt * TILE
+
+    a_torch = torch.randn(M, K, dtype=torch.bfloat16)
+    b_torch = torch.randn(K, N, dtype=torch.bfloat16)
+
+    a = to_dram(a_torch, device)
+    b = to_dram(b_torch, device)
+    out = to_dram(torch.zeros(M, N, dtype=torch.bfloat16), device)
+
+    matmul_relu_kernel(a, b, out)
+
+    result = ttnn.to_torch(out)
+    golden = torch.relu(a_torch @ b_torch)
+
+    pcc = torch.corrcoef(
+        torch.stack([result.flatten().float(), golden.flatten().float()])
+    )[0, 1].item()
+    assert pcc > 0.99, (
+        f"PCC {pcc:.6f} < 0.99 for {Mt}x{Kt}x{Nt} matmul+relu. "
+        f"Max diff: {(result - golden).abs().max().item()}"
+    )
+
+
+# =============================================================================
+# Fused matmul + add + unary: relu(a @ b + prev) in a single expression.
+# The add folds into the 3-operand matmul and relu is applied in-place,
+# all within one compute body.
+# =============================================================================
+
+
+@ttl.kernel(grid=(1, 1))
+def matmul_add_relu_kernel(a, b, c, out):
+    """relu((a @ b) + c) as a single fused expression."""
+    Mt = a.shape[0] // TILE
+    Nt = b.shape[1] // TILE
+
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(Mt, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, Nt), buffer_factor=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(Mt, Nt), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), buffer_factor=2)
+
+    @ttl.compute()
+    def mm_compute():
+        with (
+            a_dfb.wait() as a_blk,
+            b_dfb.wait() as b_blk,
+            c_dfb.wait() as c_blk,
+        ):
+            with out_dfb.reserve() as o:
+                o.store(ttl.math.relu(a_blk @ b_blk + c_blk))
+
+    @ttl.datamovement()
+    def dm_read():
+        with a_dfb.reserve() as blk:
+            tx = ttl.copy(a[0:Mt, 0:1], blk)
+            tx.wait()
+        with b_dfb.reserve() as blk:
+            tx = ttl.copy(b[0:1, 0:Nt], blk)
+            tx.wait()
+        with c_dfb.reserve() as blk:
+            tx = ttl.copy(c[0:Mt, 0:Nt], blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as blk:
+            tx = ttl.copy(blk, out[0:Mt, 0:Nt])
+            tx.wait()
+
+
+@pytest.mark.parametrize(
+    "Mt,Nt",
+    [(1, 1), (2, 2), (1, 4)],
+    ids=[f"{m}x{n}" for m, n in [(1, 1), (2, 2), (1, 4)]],
+)
+@pytest.mark.requires_device
+def test_matmul_add_relu(Mt, Nt, device):
+    """relu((A @ B) + C): add folded + relu in-place, single fused compute."""
+    M, K, N = Mt * TILE, TILE, Nt * TILE
+
+    a_torch = torch.randn(M, K, dtype=torch.bfloat16)
+    b_torch = torch.randn(K, N, dtype=torch.bfloat16)
+    c_torch = torch.randn(M, N, dtype=torch.bfloat16)
+
+    a = to_dram(a_torch, device)
+    b = to_dram(b_torch, device)
+    c = to_dram(c_torch, device)
+    out = to_dram(torch.zeros(M, N, dtype=torch.bfloat16), device)
+
+    matmul_add_relu_kernel(a, b, c, out)
+
+    result = ttnn.to_torch(out)
+    golden = torch.relu(a_torch @ b_torch + c_torch)
+
+    pcc = torch.corrcoef(
+        torch.stack([result.flatten().float(), golden.flatten().float()])
+    )[0, 1].item()
+    assert pcc > 0.99, (
+        f"PCC {pcc:.6f} < 0.99 for {Mt}x1x{Nt} matmul+add+relu. "
         f"Max diff: {(result - golden).abs().max().item()}"
     )

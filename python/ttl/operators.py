@@ -349,8 +349,8 @@ def copy(src, dst) -> CopyTransferHandler:
         )
 
 
-@syntax("core")
-def core(*, dims):
+@syntax("node")
+def node(*, dims):
     """
     Get the coordinates of the current core.
 
@@ -366,7 +366,7 @@ def core(*, dims):
         ValueError: If dims is not 2
 
     Example:
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
     """
     dims_val = _get_constant_int(dims)
     if dims_val != 2:

@@ -42,7 +42,7 @@ python path/to/program.py  # just run with python
 **Sample output:**
 ```
 --- Program 1024 (__demo_kernel) ---
-grid: 1x1 (1 cores)
+grid: 1x1 (1 nodes)
 duration: 2,225,436 cycles (1.65 ms)
   DRAM read:          5.4 MB  (2790 transfers)
   DRAM write:         5.0 MB  (2582 transfers)
@@ -96,7 +96,7 @@ export TT_METAL_HOME=/workspace/tt-mlir/third_party/tt-metal/src/tt-metal
 export TT_METAL_DEVICE_PROFILER=1
 export TT_METAL_PROFILER_MID_RUN_DUMP=1
 export TTLANG_AUTO_PROFILE=1
-python examples/tutorial/multicore_grid_auto.py
+python examples/tutorial/multinode_grid_auto.py
 ```
 
 **Sample output:**
@@ -108,7 +108,7 @@ THREAD: NCRISC     [demo_read] (8000 ops, 160,260 cycles, 100.0% of total)
 LINE   %TIME   CYCLES     SOURCE
 ------ ------- ---------- ----------------------------------------------------------------------
 105                       def demo_read():
-106      2.5%  18-50          core_x, core_y = ttl.core(dims=2)  (x192, avg=21.3, total=4,086)
+106      2.5%  18-50          core_x, core_y = ttl.node(dims=2)  (x192, avg=21.3, total=4,086)
 108                           for core_row in range(rows_per_core):
 109      3.7%  18-49              row = core_x * rows_per_core + core_row  (x256, avg=23.4, total=5,996)
 110      3.4%  18-41              start_row_tile = row * row_tiles_per_block  (x256, avg=21.6, total=5,517)
@@ -125,7 +125,7 @@ LINE   %TIME   CYCLES     SOURCE
 
 See [auto-profiler-examples/](https://github.com/tenstorrent/tt-lang/tree/main/docs/auto-profiler-examples) for more complete sample outputs.
 
-> **Warning:** Each core supports only 125 signposts. Kernels with many operations in tight loops may overflow this buffer, causing later signposts to be silently dropped and mismatched cycle counts. See [#268](https://github.com/tenstorrent/tt-lang/issues/268) for details.
+> **Warning:** Each node supports only 125 signposts. Kernels with many operations in tight loops may overflow this buffer, causing later signposts to be silently dropped and mismatched cycle counts. See [#268](https://github.com/tenstorrent/tt-lang/issues/268) for details.
 
 ## User-Defined Signposts
 
@@ -133,7 +133,7 @@ Use `ttl.signpost("name")` as a context manager to measure cycle counts for targ
 
 Signposts and auto-profiling must be used independently. If both are enabled, user signposts are skipped with a warning.
 
-**Important:** Each core supports only 125 signposts. To avoid overflowing the signpost buffer, update your kernel to run only one iteration when profiling. Watch for warnings about buffer overflow in the output.
+**Important:** Each node supports only 125 signposts. To avoid overflowing the signpost buffer, update your kernel to run only one iteration when profiling. Watch for warnings about buffer overflow in the output.
 
 **Required environment variables:**
 ```bash

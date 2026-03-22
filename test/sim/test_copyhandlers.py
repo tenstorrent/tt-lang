@@ -390,7 +390,7 @@ class TestContextManagerHandlers:
 class TestPipeCoreRangeTypes:
     """Test pipe multicast with different dst_core_range types."""
 
-    def test_pipe_single_core_int(self) -> None:
+    def test_pipe_single_node_int(self) -> None:
         """Test pipe with single 1D core (int)."""
 
         set_current_thread_type(ThreadType.DM)
@@ -427,7 +427,7 @@ class TestPipeCoreRangeTypes:
 
         assert tensors_equal(result, tile)
 
-    def test_pipe_single_core_tuple(self) -> None:
+    def test_pipe_single_node_tuple(self) -> None:
         """Test pipe with single multi-dimensional core (tuple)."""
 
         set_current_thread_type(ThreadType.DM)

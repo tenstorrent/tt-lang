@@ -5,11 +5,11 @@
 """
 1D Matmul Metal Example
 
-This example demonstrates a 1D matmul where only input A (in0) is multicast across cores.
+This example demonstrates a 1D matmul where only input A (in0) is multicast across nodes.
 Unlike the 2D matmul where both inputs are multicast, here:
-- in0 is broadcast from a single sender core (0,0) to all other cores
-- in1 is read locally by each core (no multicast)
-- Output is written locally by each core
+- in0 is broadcast from a single sender node (0,0) to all other nodes
+- in1 is read locally by each node (no multicast)
+- Output is written locally by each node
 """
 
 import pytest
@@ -21,13 +21,13 @@ TS = ttnn.TILE_SIZE  # 32
 
 
 @pytest.mark.parametrize(
-    "M,N,K,n_blocks_per_core,block_m,block_n,block_k,subblock_h,subblock_w",
+    "M,N,K,n_blocks_per_node,block_m,block_n,block_k,subblock_h,subblock_w",
     [
         (TS, 2 * TS, TS, 1, 1, 1, 1, 1, 1),  # trivial base case
         (TS, 14 * TS, TS, 1, 1, 1, 1, 1, 1),  # just over 1 row for all arch
         (TS, 8 * TS, TS * 2, 1, 1, 1, 1, 1, 1),  # 2 blocks in k dim
         (TS * 2, 8 * TS, TS, 1, 1, 1, 1, 1, 1),  # 2 blocks in m dim
-        (TS, 8 * TS * 2, TS, 2, 1, 1, 1, 1, 1),  # 2 blocks per core in n dim
+        (TS, 8 * TS * 2, TS, 2, 1, 1, 1, 1, 1),  # 2 blocks per node in n dim
         (TS * 6, 2 * TS, TS * 2, 1, 2, 1, 1, 2, 1),
         (
             TS,
@@ -39,7 +39,7 @@ TS = ttnn.TILE_SIZE  # 32
             1,
             1,
             1,
-        ),  # 2 blocks per core in n dim, with 2 blocks in k dim
+        ),  # 2 blocks per node in n dim, with 2 blocks in k dim
         (
             TS * 16,
             8 * TS,
@@ -83,7 +83,7 @@ TS = ttnn.TILE_SIZE  # 32
             2,
             2,
             2,
-        ),  # above but with 2 blocks per core in n dim
+        ),  # above but with 2 blocks per node in n dim
         (
             TS * 4,
             64 * TS * 2 * 4,
@@ -94,7 +94,7 @@ TS = ttnn.TILE_SIZE  # 32
             2,
             2,
             2,
-        ),  # above but all cores wh
+        ),  # above but all nodes wh
         (
             TS * 8,
             120 * TS * 2 * 8,
@@ -105,7 +105,7 @@ TS = ttnn.TILE_SIZE  # 32
             16,
             4,
             2,
-        ),  # all cores small bh 640/768 L1 tile limit
+        ),  # all nodes small bh 640/768 L1 tile limit
         (
             TS * 8 * 2,
             120 * TS * 2 * 8,
@@ -120,7 +120,7 @@ TS = ttnn.TILE_SIZE  # 32
     ],
 )
 def test_1d_matmul_metal(
-    M, N, K, n_blocks_per_core, block_m, block_n, block_k, subblock_h, subblock_w
+    M, N, K, n_blocks_per_node, block_m, block_n, block_k, subblock_h, subblock_w
 ):
     device = ttnn.open_device(device_id=0)
     # Allocate input and output tensors in DRAM
@@ -151,39 +151,39 @@ def test_1d_matmul_metal(
     Nt = N // ttnn.TILE_SIZE
     Kt = K // ttnn.TILE_SIZE
 
-    device_core_size = device.compute_with_storage_grid_size()
-    num_cores_x = device_core_size.x
-    num_cores_y = device_core_size.y
-    print(f"Device compute_with_storage_grid_size: ({num_cores_x}, {num_cores_y})")
-    num_worker_cores = Nt // (block_n * n_blocks_per_core)
+    device_node_size = device.compute_with_storage_grid_size()
+    num_nodes_x = device_node_size.x
+    num_nodes_y = device_node_size.y
+    print(f"Device compute_with_storage_grid_size: ({num_nodes_x}, {num_nodes_y})")
+    num_worker_nodes = Nt // (block_n * n_blocks_per_node)
     assert (
-        num_cores_x * num_cores_y >= num_worker_cores
-    ), "Not enough cores to run the test with the given number of blocks per core"
+        num_nodes_x * num_nodes_y >= num_worker_nodes
+    ), "Not enough nodes to run the test with the given number of blocks per node"
     assert Mt % block_m == 0, "block_m must divide Mt"
     assert Nt % block_n == 0, "block_n must divide Nt"
     assert (
-        Nt % (block_n * n_blocks_per_core) == 0
-    ), "number of n blocks split across cores must divide Nt"
+        Nt % (block_n * n_blocks_per_node) == 0
+    ), "number of n blocks split across nodes must divide Nt"
     assert Kt % block_k == 0, "block_k must divide Kt"
     assert block_m % subblock_h == 0, "subblock_h must divide block_m"
     assert block_n % subblock_w == 0, "subblock_w must divide block_n"
 
-    # For 1D matmul: Use single core (0,0) as sender for in0 multicast
-    # All other cores are receivers and all cores do computation
+    # For 1D matmul: Use single node (0,0) as sender for in0 multicast
+    # All other nodes are receivers and all nodes do computation
     assert (
-        num_worker_cores > 1
+        num_worker_nodes > 1
     ), "1D matmul requires multiple blocks to use all 4 kernels"
 
-    # Single sender core at (0, 0) broadcasts to all other cores
-    in0_sender_core = ttnn.CoreRangeSet(
-        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))]
+    # Single sender node at (0, 0) broadcasts to all other nodes
+    in0_sender_node = ttnn.NodeRangeSet(
+        [ttnn.NodeRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))]
     )
-    # All compute cores (entire grid used for computation)
-    all_cores = ttnn.num_cores_to_corerangeset(
-        num_worker_cores, ttnn.CoreCoord(num_cores_x, num_cores_y), row_wise=True
+    # All compute nodes (entire grid used for computation)
+    all_nodes = ttnn.num_nodes_to_noderangeset(
+        num_worker_nodes, ttnn.CoreCoord(num_nodes_x, num_nodes_y), row_wise=True
     )
-    # Receiver cores are all cores except the single sender core (0,0)
-    in0_receiver_cores = all_cores.subtract(in0_sender_core)
+    # Receiver nodes are all nodes except the single sender node (0,0)
+    in0_receiver_nodes = all_nodes.subtract(in0_sender_node)
 
     # Circular buffer setup
     dtype_size = 2  # bfloat16
@@ -218,22 +218,22 @@ def test_1d_matmul_metal(
     buffer_factor = 2
     a_cb_descriptor = ttnn.CBDescriptor(
         total_size=buffer_factor * cb_page_size * (block_m * block_k),
-        core_ranges=all_cores,
+        node_ranges=all_nodes,
         format_descriptors=[a_cb_format],
     )
     b_cb_descriptor = ttnn.CBDescriptor(
         total_size=buffer_factor * cb_page_size * (block_n * block_k),
-        core_ranges=all_cores,
+        node_ranges=all_nodes,
         format_descriptors=[b_cb_format],
     )
     out_cb_descriptor = ttnn.CBDescriptor(
         total_size=cb_page_size * (block_m * block_n),
-        core_ranges=all_cores,
+        node_ranges=all_nodes,
         format_descriptors=[out_cb_format],
     )
     intermediate_cb_descriptor = ttnn.CBDescriptor(
         total_size=cb_page_size * (block_m * block_n),
-        core_ranges=all_cores,
+        node_ranges=all_nodes,
         format_descriptors=[intermediate_cb_format],
     )
     in0_sender_semaphore_id = 0
@@ -246,7 +246,7 @@ def test_1d_matmul_metal(
     in1_num_subblocks = block_n // subblock_w
     in1_block_num_tiles = block_n * block_k
     num_blocks_inner_dim = Kt // block_k
-    num_blocks_w_dim = n_blocks_per_core
+    num_blocks_w_dim = n_blocks_per_node
     num_blocks_h_dim = Mt // block_m
     out_subblock_num_tiles = subblock_h * subblock_w
     compute_compile_time_args = [
@@ -278,8 +278,8 @@ def test_1d_matmul_metal(
         num_blocks_h_dim,
         in0_sender_semaphore_id,
         in0_receiver_semaphore_id,
-        num_worker_cores - 1,
-        num_worker_cores - 1,
+        num_worker_nodes - 1,
+        num_worker_nodes - 1,
     ]
     # Add TensorAccessor compile time args for in0
     in0_sender_compile_time_args.extend(
@@ -340,39 +340,39 @@ def test_1d_matmul_metal(
     )
 
     # KERNEL RUNTIME ARGS
-    # Setup runtime args for each core
-    num_x_cores = num_cores_x if num_cores_x < num_worker_cores else num_worker_cores
-    num_y_cores = (
-        -(-num_worker_cores // num_cores_x) if num_cores_x < num_worker_cores else 1
+    # Setup runtime args for each node
+    num_x_nodes = num_nodes_x if num_nodes_x < num_worker_nodes else num_worker_nodes
+    num_y_nodes = (
+        -(-num_worker_nodes // num_nodes_x) if num_nodes_x < num_worker_nodes else 1
     )
 
-    in0_sender_rt_args = [[[] for _ in range(num_y_cores)] for _ in range(num_x_cores)]
+    in0_sender_rt_args = [[[] for _ in range(num_y_nodes)] for _ in range(num_x_nodes)]
     in0_receiver_rt_args = [
-        [[] for _ in range(num_y_cores)] for _ in range(num_x_cores)
+        [[] for _ in range(num_y_nodes)] for _ in range(num_x_nodes)
     ]
-    in1_writer_rt_args = [[[] for _ in range(num_y_cores)] for _ in range(num_x_cores)]
-    compute_rt_args = [[[] for _ in range(num_y_cores)] for _ in range(num_x_cores)]
+    in1_writer_rt_args = [[[] for _ in range(num_y_nodes)] for _ in range(num_x_nodes)]
+    compute_rt_args = [[[] for _ in range(num_y_nodes)] for _ in range(num_x_nodes)]
 
-    total_receivers = num_worker_cores - 1
+    total_receivers = num_worker_nodes - 1
     print(
-        f"1D matmul: Single sender at (0,0) multicasts to {total_receivers} receivers, across a grid of {num_x_cores} x {num_y_cores} cores"
+        f"1D matmul: Single sender at (0,0) multicasts to {total_receivers} receivers, across a grid of {num_x_nodes} x {num_y_nodes} nodes"
     )
 
-    noc_of_sender = device.worker_core_from_logical_core(ttnn.CoreCoord(0, 0))
+    noc_of_sender = device.worker_node_from_logical_node(ttnn.CoreCoord(0, 0))
 
-    # Assign work to cores
-    worker_core_idx = 0
-    for output_idx_y in range(num_y_cores):
-        for output_idx_x in range(num_x_cores):
-            if worker_core_idx >= num_worker_cores:
+    # Assign work to nodes
+    worker_node_idx = 0
+    for output_idx_y in range(num_y_nodes):
+        for output_idx_x in range(num_x_nodes):
+            if worker_node_idx >= num_worker_nodes:
                 break
-            # in0 sender args (only for core (0,0))
-            # Single sender multicasts to all other cores in the grid
+            # in0 sender args (only for node (0,0))
+            # Single sender multicasts to all other nodes in the grid
             if output_idx_x == 0 and output_idx_y == 0:
-                # NOTE: multicast nocs require perfect rectangular core regions
-                # so when num_worker_cores % num_cores_x != 0, the last row of cores will be multicasted to, but not utilized
-                mcast_end_core_noc = device.worker_core_from_logical_core(
-                    ttnn.CoreCoord(num_x_cores - 1, num_y_cores - 1)
+                # NOTE: multicast nocs require perfect rectangular node regions
+                # so when num_worker_nodes % num_nodes_x != 0, the last row of nodes will be multicasted to, but not utilized
+                mcast_end_node_noc = device.worker_node_from_logical_node(
+                    ttnn.CoreCoord(num_x_nodes - 1, num_y_nodes - 1)
                 )
 
                 in0_sender_rt_args[output_idx_x][output_idx_y] = [
@@ -380,44 +380,44 @@ def test_1d_matmul_metal(
                     0,
                     noc_of_sender.x,
                     noc_of_sender.y,
-                    mcast_end_core_noc.x,
-                    mcast_end_core_noc.y,
+                    mcast_end_node_noc.x,
+                    mcast_end_node_noc.y,
                 ]
                 print(
-                    f"IN0_SENDER - RUNTIME_ARGS for core ({output_idx_x}, {output_idx_y}), worker: {worker_core_idx}"
+                    f"IN0_SENDER - RUNTIME_ARGS for node ({output_idx_x}, {output_idx_y}), worker: {worker_node_idx}"
                 )
                 print(
                     f"IN0_SENDER_CORE - RUNTIME_ARGS ({len(in0_sender_rt_args[output_idx_x][output_idx_y])} args): {', '.join(map(str, in0_sender_rt_args[output_idx_x][output_idx_y]))}"
                 )
 
-            # in0 receiver args (for all cores except (0,0))
+            # in0 receiver args (for all nodes except (0,0))
             if not (output_idx_x == 0 and output_idx_y == 0):
                 in0_receiver_rt_args[output_idx_x][output_idx_y] = [
                     noc_of_sender.x,
                     noc_of_sender.y,
                 ]
                 print(
-                    f"IN0_RECEIVER - RUNTIME_ARGS for core ({output_idx_x}, {output_idx_y}), worker: {worker_core_idx}"
+                    f"IN0_RECEIVER - RUNTIME_ARGS for node ({output_idx_x}, {output_idx_y}), worker: {worker_node_idx}"
                 )
                 print(
                     f"IN0_RECEIVER_CORE - RUNTIME_ARGS ({len(in0_receiver_rt_args[output_idx_x][output_idx_y])} args): {', '.join(map(str, in0_receiver_rt_args[output_idx_x][output_idx_y]))}"
                 )
 
-            # in1 reader + writer args (all cores)
+            # in1 reader + writer args (all nodes)
             in1_writer_rt_args[output_idx_x][output_idx_y] = [
                 b_tensor.buffer_address(),
-                worker_core_idx * n_blocks_per_core * block_n,
+                worker_node_idx * n_blocks_per_node * block_n,
                 output_tensor.buffer_address(),
-                worker_core_idx * n_blocks_per_core * block_n,
+                worker_node_idx * n_blocks_per_node * block_n,
             ]
 
             print(
-                f"IN1_SENDER_WRITER - RUNTIME_ARGS for core ({output_idx_x}, {output_idx_y}), worker: {worker_core_idx}"
+                f"IN1_SENDER_WRITER - RUNTIME_ARGS for node ({output_idx_x}, {output_idx_y}), worker: {worker_node_idx}"
             )
             print(
                 f"IN1_SENDER_WRITER_CORE - RUNTIME_ARGS ({len(in1_writer_rt_args[output_idx_x][output_idx_y])} args): {', '.join(map(str, in1_writer_rt_args[output_idx_x][output_idx_y]))}"
             )
-            worker_core_idx += 1
+            worker_node_idx += 1
 
     # Compute config
     computeConfig = ttnn.ComputeConfigDescriptor()
@@ -427,7 +427,7 @@ def test_1d_matmul_metal(
     in0_sender_kernel_descriptor = ttnn.KernelDescriptor(
         kernel_source="examples/metal_examples/1d_mcast_matmul/metal/kernels/sender_in0_interleaved.cpp",
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        core_ranges=in0_sender_core,
+        node_ranges=in0_sender_node,
         compile_time_args=in0_sender_compile_time_args,
         runtime_args=in0_sender_rt_args,
         config=ttnn.ReaderConfigDescriptor(),
@@ -436,7 +436,7 @@ def test_1d_matmul_metal(
     in0_receiver_kernel_descriptor = ttnn.KernelDescriptor(
         kernel_source="examples/metal_examples/1d_mcast_matmul/metal/kernels/reciever_in0_interleaved.cpp",
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        core_ranges=in0_receiver_cores,
+        node_ranges=in0_receiver_nodes,
         compile_time_args=in0_receiver_compile_time_args,
         runtime_args=in0_receiver_rt_args,
         config=ttnn.ReaderConfigDescriptor(),
@@ -445,7 +445,7 @@ def test_1d_matmul_metal(
     in1_writer_kernel_descriptor = ttnn.KernelDescriptor(
         kernel_source="examples/metal_examples/1d_mcast_matmul/metal/kernels/reader_in1_writer_out_interleaved.cpp",
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        core_ranges=all_cores,
+        node_ranges=all_nodes,
         compile_time_args=in1_writer_compile_time_args,
         runtime_args=in1_writer_rt_args,
         config=ttnn.WriterConfigDescriptor(),
@@ -454,7 +454,7 @@ def test_1d_matmul_metal(
     compute_kernel_descriptor = ttnn.KernelDescriptor(
         kernel_source="examples/metal_examples/1d_mcast_matmul/metal/kernels/reuse_compute.cpp",
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        core_ranges=all_cores,
+        node_ranges=all_nodes,
         compile_time_args=compute_compile_time_args,
         runtime_args=compute_rt_args,
         config=computeConfig,
@@ -465,12 +465,12 @@ def test_1d_matmul_metal(
         ttnn.SemaphoreDescriptor(
             id=in0_sender_semaphore_id,
             initial_value=0,
-            core_ranges=in0_sender_core,
+            node_ranges=in0_sender_node,
         ),
         ttnn.SemaphoreDescriptor(
             id=in0_receiver_semaphore_id,
             initial_value=0,
-            core_ranges=all_cores,
+            node_ranges=all_nodes,
         ),
     ]
 

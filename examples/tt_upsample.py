@@ -9,7 +9,7 @@ import ttnn
 import ttl
 
 from utils.correctness import assert_with_ulp
-from utils.block_allocation import split_work_to_cores
+from utils.block_allocation import split_work_to_nodes
 
 
 @ttl.kernel(grid=(8, 8))
@@ -29,7 +29,7 @@ def tt_lang_upsample_nearest_rowwise_interleaved(
     num_rows = N * H * W
     print(f"num_rows: {num_rows}")
     (all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
-        split_work_to_cores((ttl.grid_size(dims=1),), num_rows)
+        split_work_to_nodes((ttl.grid_size(dims=1),), num_rows)
     )
     print(
         f"all_cores: {all_cores}, core_group_1: {core_group_1}, core_group_2: {core_group_2}, work_per_core1: {work_per_core1}, work_per_core2: {work_per_core2}"
@@ -67,7 +67,7 @@ def tt_lang_upsample_nearest_rowwise_interleaved(
 
     @ttl.datamovement()
     def mm_reader():
-        core_id = ttl.core(dims=1)
+        core_id = ttl.node(dims=1)
         for row in range(get_work_per_core(core_id)):
             row_idx = get_start_row(core_id) + row
             n = row_idx // (H * W)
@@ -80,7 +80,7 @@ def tt_lang_upsample_nearest_rowwise_interleaved(
 
     @ttl.datamovement()
     def mm_writer():
-        core_id = ttl.core(dims=1)
+        core_id = ttl.node(dims=1)
         for row in range(get_work_per_core(core_id)):
             row_idx = get_start_row(core_id) + row
             n = row_idx // (H * W)

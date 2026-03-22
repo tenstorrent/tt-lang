@@ -30,7 +30,7 @@ def eltwise_add(
 
     # Parallelizing by columns here to get reuse on C
     grid_h, grid_w = ttl.grid_size()
-    cols_per_core = math.ceil(col_tiles / (grid_h * grid_w))
+    cols_per_node = math.ceil(col_tiles / (grid_h * grid_w))
     buffer_factor = 2
 
     # Create circular buffers
@@ -46,15 +46,15 @@ def eltwise_add(
 
     @ttl.compute()
     def compute_func():
-        core_num = ttl.core(dims=1)  # linear core index
-        start_col_tile = core_num * cols_per_core
-        end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
+        node_num = ttl.node(dims=1)  # linear node index
+        start_col_tile = node_num * cols_per_node
+        end_col_tile = min(start_col_tile + cols_per_node, col_tiles)
 
         for ct in range(start_col_tile, end_col_tile):
             # TODO: Perhaps consider making Block pointers that come from wait()/reserve() read/write only respectively?
             for rt_block in range(row_tiles // granularity):
                 print(
-                    "Compute: ", f"core={core_num}", f"column={ct}", f"block={rt_block}"
+                    "Compute: ", f"node={node_num}", f"column={ct}", f"block={rt_block}"
                 )
                 a_block = a_in_dfb.wait()
                 b_block = b_in_dfb.wait()
@@ -71,13 +71,13 @@ def eltwise_add(
 
     @ttl.datamovement()
     def dm0():
-        core_num = ttl.core(dims=1)  # linear core index
-        start_col_tile = core_num * cols_per_core
-        end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
+        node_num = ttl.node(dims=1)  # linear node index
+        start_col_tile = node_num * cols_per_node
+        end_col_tile = min(start_col_tile + cols_per_node, col_tiles)
 
         for ct in range(start_col_tile, end_col_tile):
             for rt_block in range(row_tiles // granularity):
-                print("dm0: ", f"core={core_num}", f"column={ct}", f"block={rt_block}")
+                print("dm0: ", f"node={node_num}", f"column={ct}", f"block={rt_block}")
                 row_slice = slice(rt_block * granularity, (rt_block + 1) * granularity)
                 col_slice = slice(ct, ct + 1)
                 # Write the dfbs just as above
@@ -95,13 +95,13 @@ def eltwise_add(
 
     @ttl.datamovement()
     def dm1():
-        core_num = ttl.core(dims=1)  # linear core index
-        start_col_tile = core_num * cols_per_core
-        end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
+        node_num = ttl.node(dims=1)  # linear node index
+        start_col_tile = node_num * cols_per_node
+        end_col_tile = min(start_col_tile + cols_per_node, col_tiles)
 
         for ct in range(start_col_tile, end_col_tile):
             for rt_block in range(row_tiles // granularity):
-                print("dm1: ", f"core={core_num}", f"column={ct}", f"block={rt_block}")
+                print("dm1: ", f"node={node_num}", f"column={ct}", f"block={rt_block}")
                 row_slice = slice(rt_block * granularity, (rt_block + 1) * granularity)
                 col_slice = slice(ct, ct + 1)
 

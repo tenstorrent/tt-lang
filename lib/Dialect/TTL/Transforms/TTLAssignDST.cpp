@@ -321,6 +321,34 @@ static void buildLiveIntervals(Block *body,
     });
   }
 
+  // Merge intervals for matmul accumulator and output. The accumulator is
+  // loaded into DST via copy_tile; matmul_block accumulates into the same
+  // register (DST += A*B).
+  for (Operation &op : *body) {
+    auto matmul = dyn_cast<TileMatmulBlockOp>(&op);
+    if (!matmul || !matmul.getAccumulator()) {
+      continue;
+    }
+
+    Value acc = matmul.getAccumulator();
+    Value out = matmul.getResult();
+
+    if (!intervals.contains(acc) || !intervals.contains(out)) {
+      continue;
+    }
+
+    auto itA = merged.findLeader(merged.insert(acc));
+    auto itB = merged.findLeader(merged.insert(out));
+    if (itA != itB) {
+      merged.unionSets(itA, itB);
+    }
+
+    LLVM_DEBUG({
+      llvm::dbgs() << "Phase 2: Merged matmul accumulator " << acc
+                   << " and output " << out << "\n";
+    });
+  }
+
   // Propagate merged intervals: all values in a merged set get the same
   // interval (the union of all their individual intervals).
   DenseSet<Value> processed;

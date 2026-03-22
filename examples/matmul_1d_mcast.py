@@ -32,12 +32,12 @@ def matmul_1d(
     Kb = Kt // granularity_k
     Nb = Nt // granularity_n
 
-    nb_per_core = -(-Nb // ttl.grid_size(dims=1))  # divceil
-    num_working_cores = -(-Nb // nb_per_core)  # divceil
+    nb_per_node = -(-Nb // ttl.grid_size(dims=1))  # divceil
+    num_working_nodes = -(-Nb // nb_per_node)  # divceil
 
     read_tiles = (
         granularity_k * granularity_n * Mb * Kb * Nb
-        + granularity_m * granularity_k * Mb * Kb * nb_per_core
+        + granularity_m * granularity_k * Mb * Kb * nb_per_node
     )
     write_tiles = (granularity_n * granularity_m) * Mb * Nb
 
@@ -52,18 +52,18 @@ def matmul_1d(
         out, shape=(granularity_m, granularity_n), buffer_factor=bf
     )
 
-    mcast_a_net = ttl.PipeNet([ttl.Pipe((0,), (slice(1, num_working_cores),))])
+    mcast_a_net = ttl.PipeNet([ttl.Pipe((0,), (slice(1, num_working_nodes),))])
 
     def block_slice(block_offset, block_size):
         return slice(block_offset * block_size, (block_offset + 1) * block_size)
 
     @ttl.compute()
     def compute():
-        core_index = ttl.core(dims=1)
-        if core_index < num_working_cores:
+        node_index = ttl.node(dims=1)
+        if node_index < num_working_nodes:
             for mb in range(Mb):
-                for local_nb in range(nb_per_core):
-                    nb = local_nb + core_index * nb_per_core
+                for local_nb in range(nb_per_node):
+                    nb = local_nb + node_index * nb_per_node
                     if nb < Nb:
                         with out_dfb.reserve() as out_blk:
                             for kb in range(Kb):
@@ -72,11 +72,11 @@ def matmul_1d(
 
     @ttl.datamovement()
     def a_reader_a_mcast_b_reader():
-        core_index = ttl.core(dims=1)
-        if core_index < num_working_cores:
+        node_index = ttl.node(dims=1)
+        if node_index < num_working_nodes:
             for mb in range(Mb):
-                for local_nb in range(nb_per_core):
-                    nb = local_nb + core_index * nb_per_core
+                for local_nb in range(nb_per_node):
+                    nb = local_nb + node_index * nb_per_node
                     if nb < Nb:
                         for kb in range(Kb):
                             with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
@@ -107,11 +107,11 @@ def matmul_1d(
 
     @ttl.datamovement()
     def out_writer():
-        core_index = ttl.core(dims=1)
-        if core_index < num_working_cores:
+        node_index = ttl.node(dims=1)
+        if node_index < num_working_nodes:
             for mb in range(Mb):
-                for block_n in range(nb_per_core):
-                    nb = block_n + core_index * nb_per_core
+                for block_n in range(nb_per_node):
+                    nb = block_n + node_index * nb_per_node
                     if nb < Nb:
 
                         with out_dfb.wait() as out_blk:

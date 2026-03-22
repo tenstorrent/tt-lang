@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Comprehensive multicore test combining multiple features:
+Comprehensive multinode test combining multiple features:
 - 2MB DRAM inputs (a, b) + L1 input (c)
 - 2MB DRAM outputs (out1, out2) + L1 output (out3)
-- 8x8 multicore grid with dynamic indexing via core(dims=2)
+- 8x8 multinode grid with dynamic indexing via core(dims=2)
 - 4x4 DFB shape with buffer_factor=2
 - 20 fused ops using bounded operations
 - Random inputs
@@ -34,7 +34,7 @@ TENSOR_SHAPE = (GRID_ROWS * CB_ROWS * TILE_SIZE, GRID_COLS * CB_COLS * TILE_SIZE
 @ttl.kernel(grid=(GRID_ROWS, GRID_COLS))
 def comprehensive_kernel(a, b, c, out1, out2, out3):
     """
-    Multicore kernel with 20 fused ops across 3 outputs.
+    Multinode kernel with 20 fused ops across 3 outputs.
     - out1 = f(a, b): 7 ops
     - out2 = g(b, c): 7 ops
     - out3 = h(a, c): 6 ops
@@ -99,7 +99,7 @@ def comprehensive_kernel(a, b, c, out1, out2, out3):
             b_dfb.reserve() as b_blk,
             c_dfb.reserve() as c_blk,
         ):
-            x, y = ttl.core(dims=2)
+            x, y = ttl.node(dims=2)
             row = y * CB_ROWS
             col = x * CB_COLS
             tx_a = ttl.copy(a[row : row + CB_ROWS, col : col + CB_COLS], a_blk)
@@ -116,7 +116,7 @@ def comprehensive_kernel(a, b, c, out1, out2, out3):
             out2_dfb.wait() as o2_blk,
             out3_dfb.wait() as o3_blk,
         ):
-            x, y = ttl.core(dims=2)
+            x, y = ttl.node(dims=2)
             row = y * CB_ROWS
             col = x * CB_COLS
             tx1 = ttl.copy(o1_blk, out1[row : row + CB_ROWS, col : col + CB_COLS])
@@ -160,8 +160,8 @@ def compute_expected(a, b, c):
     return exp1, exp2, exp3
 
 
-def test_comprehensive_multicore(device):
-    """Test comprehensive multicore kernel with mixed DRAM/L1 tensors."""
+def test_comprehensive_multinode(device):
+    """Test comprehensive multinode kernel with mixed DRAM/L1 tensors."""
     # Random inputs
     a_torch = torch.rand(TENSOR_SHAPE, dtype=torch.bfloat16) * 2.0 - 1.0
     b_torch = torch.rand(TENSOR_SHAPE, dtype=torch.bfloat16) * 2.0 - 1.0

@@ -70,7 +70,7 @@ def dprint_bf16_kernel(inp, inp2, out):
 
     @ttl.datamovement()
     def dm_read():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
         print("bf16 dm hello")
         print("core:", x, y)
         with inp_dfb.reserve() as blk:

@@ -133,7 +133,7 @@ Note: this project is currently in early prototype phase, examples are not final
 
 ## Documentation
 
-- [Tutorial](examples/tutorial/) - Step-by-step examples from single-tile to multicore kernels
+- [Tutorial](examples/tutorial/) - Step-by-step examples from single-tile to multinode kernels
 - [Build System](docs/BUILD_SYSTEM.md) - Detailed build configuration options and integration scenarios
 - [Performance Tools](docs/performance-tools.md) - Profiling, signposts, and Perfetto trace visualization
 - [Testing Guide](test/TESTING.md) - How to write and run tests using LLVM lit
@@ -325,10 +325,10 @@ Kernels accept compiler options that control code generation (e.g., `--no-ttl-ma
 
 ```bash
 # List available options
-python examples/tutorial/multicore_grid_auto.py --ttl-help
+python examples/tutorial/multinode_grid_auto.py --ttl-help
 
 # Run a kernel with options
-python examples/tutorial/multicore_grid_auto.py --no-ttl-maximize-dst
+python examples/tutorial/multinode_grid_auto.py --no-ttl-maximize-dst
 ```
 
 See `python/ttl/compiler_options.py` for details on priority ordering and the merge protocol.

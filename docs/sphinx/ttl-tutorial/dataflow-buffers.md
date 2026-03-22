@@ -2,7 +2,7 @@
 
 ## Overview
 
-A dataflow buffer is a communication primitive for synchronizing the passing of data between thread functions within one Tensix core. An analogy is a conveyor belt in a factory: the producer (data movement thread) places items onto the belt, and the consumer (compute thread) picks them up. The belt has a fixed number of slots, and when full, the producer must wait for the consumer to free up space.
+A dataflow buffer is a communication primitive for synchronizing the passing of data between thread functions within one node. An analogy is a conveyor belt in a factory: the producer (data movement thread) places items onto the belt, and the consumer (compute thread) picks them up. The belt has a fixed number of slots, and when full, the producer must wait for the consumer to free up space.
 
 A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing a TT-NN tensor, shape, and buffer factor.
 

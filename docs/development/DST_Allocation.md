@@ -8,7 +8,7 @@ computations. This pass
 assigns DST indices to tile operations based on their execution
 category.
 
-## Core Principle: Operation Classification
+## Node Principle: Operation Classification
 
 Each tile operation falls into one of the following categories based on
 its execution engine and DST register usage. Categories marked with
