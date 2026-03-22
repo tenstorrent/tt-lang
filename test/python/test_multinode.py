@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Test for multicore kernel execution with core(dims=2) indexing.
+Test for multinode kernel execution with core(dims=2) indexing.
 
 Each core processes 2x2 tiles using dynamic indices based on its grid position.
 Parameterized over grid shapes up to 8x8 cores (hardware limit).
@@ -36,14 +36,14 @@ def grid_to_tensor_shape(grid_rows: int, grid_cols: int) -> tuple[int, int]:
     )
 
 
-# Multicore kernel template: each core processes 2x2 tiles via nested loop
-MULTICORE_LOOP_KERNEL_TEMPLATE = '''
+# multinode kernel template: each core processes 2x2 tiles via nested loop
+MULTINODE_LOOP_KERNEL_TEMPLATE = '''
 import ttl
 
 # Grid: {grid_cols} cols x {grid_rows} rows
 @ttl.kernel(grid=({grid_cols}, {grid_rows}))  # (cols, rows)
-def multicore_loop(lhs, rhs, out):
-    """Multicore kernel: each core loops over 2x2 tiles computing exp(lhs) + sqrt(rhs)."""
+def multinode_loop(lhs, rhs, out):
+    """Multinode kernel: each core loops over 2x2 tiles computing exp(lhs) + sqrt(rhs)."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -63,7 +63,7 @@ def multicore_loop(lhs, rhs, out):
             for local_c in range({tiles_per_core_col}):
                 with lhs_dfb.reserve() as lhs_blk, rhs_dfb.reserve() as rhs_blk:
                     # core(dims=2) returns (x, y) where x=col, y=row
-                    x, y = ttl.core(dims=2)
+                    x, y = ttl.node(dims=2)
                     row = y * {tiles_per_core_row} + local_r
                     col = x * {tiles_per_core_col} + local_c
                     tx_lhs = ttl.copy(lhs[row, col], lhs_blk)
@@ -76,7 +76,7 @@ def multicore_loop(lhs, rhs, out):
         for local_r in range({tiles_per_core_row}):
             for local_c in range({tiles_per_core_col}):
                 with out_dfb.wait() as out_blk:
-                    x, y = ttl.core(dims=2)
+                    x, y = ttl.node(dims=2)
                     row = y * {tiles_per_core_row} + local_r
                     col = x * {tiles_per_core_col} + local_c
                     tx = ttl.copy(out_blk, out[row, col])
@@ -88,12 +88,12 @@ _kernel_cache = {}
 
 
 def make_kernel(grid_rows: int, grid_cols: int):
-    """Generate a multicore loop kernel for the given grid dimensions."""
+    """Generate a multinode loop kernel for the given grid dimensions."""
     cache_key = (grid_rows, grid_cols)
     if cache_key in _kernel_cache:
         return _kernel_cache[cache_key]
 
-    code = MULTICORE_LOOP_KERNEL_TEMPLATE.format(
+    code = MULTINODE_LOOP_KERNEL_TEMPLATE.format(
         grid_rows=grid_rows,
         grid_cols=grid_cols,
         tiles_per_core_row=TILES_PER_CORE_ROW,
@@ -114,7 +114,7 @@ def make_kernel(grid_rows: int, grid_cols: int):
     spec.loader.exec_module(module)
     temp_kernel_files.append(temp_path)
 
-    kernel = module.multicore_loop
+    kernel = module.multinode_loop
     _kernel_cache[cache_key] = kernel
     return kernel
 
@@ -124,8 +124,8 @@ def make_kernel(grid_rows: int, grid_cols: int):
     GRID_SHAPES,
     ids=[f"{r}x{c}" for r, c in GRID_SHAPES],
 )
-def test_multicore_loop(device, grid_shape):
-    """Test multicore kernel with 2x2 tiles per core: exp(lhs) + sqrt(rhs)."""
+def test_multinode_loop(device, grid_shape):
+    """Test multinode kernel with 2x2 tiles per core: exp(lhs) + sqrt(rhs)."""
     grid_rows, grid_cols = grid_shape
     height, width = grid_to_tensor_shape(grid_rows, grid_cols)
     kernel = make_kernel(grid_rows, grid_cols)

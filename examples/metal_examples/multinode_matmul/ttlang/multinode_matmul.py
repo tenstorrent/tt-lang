@@ -9,22 +9,22 @@ import ttnn
 import ttl
 
 from utils.correctness import assert_with_ulp
-from utils.block_allocation import split_work_to_cores
+from utils.block_allocation import split_work_to_nodes
 
 
-def get_number_of_cores(grid_range):
-    total_cores = 0
+def get_number_of_nodes(grid_range):
+    total_nodes = 0
     if len(grid_range) != 0:
         start = grid_range[0]
         end = grid_range[1]
         x_range = end[0] - start[0] + 1
         y_range = end[1] - start[1] + 1
-        total_cores += x_range * y_range
-    return total_cores
+        total_nodes += x_range * y_range
+    return total_nodes
 
 
 @ttl.kernel(grid=(13, 10))
-def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
+def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
     M = a.shape[0]
@@ -46,41 +46,41 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     )
 
     print(f"num_output_tiles_total: {num_output_tiles_total}")
-    (all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
-        split_work_to_cores(
+    (all_nodes, node_group_1, node_group_2, work_per_node1, work_per_node2) = (
+        split_work_to_nodes(
             ttl.grid_size(dims=2), num_output_tiles_total, row_wise=True
         )
     )
     print(
-        f"all_cores: {all_cores}, core_group_1: {core_group_1}, core_group_2: {core_group_2}, work_per_core1: {work_per_core1}, work_per_core2: {work_per_core2}"
+        f"all_nodes: {all_nodes}, node_group_1: {node_group_1}, node_group_2: {node_group_2}, work_per_node1: {work_per_node1}, work_per_node2: {work_per_node2}"
     )
 
-    num_cores_group_1 = get_number_of_cores(core_group_1)
-    num_cores_group_2 = get_number_of_cores(core_group_2)
+    num_nodes_group_1 = get_number_of_nodes(node_group_1)
+    num_nodes_group_2 = get_number_of_nodes(node_group_2)
 
-    def get_tiles_per_core(core_id):
-        if core_id < num_cores_group_1:
-            return work_per_core1
-        elif core_id < num_cores_group_1 + num_cores_group_2:
-            return work_per_core2
+    def get_tiles_per_node(node_id):
+        if node_id < num_nodes_group_1:
+            return work_per_node1
+        elif node_id < num_nodes_group_1 + num_nodes_group_2:
+            return work_per_node2
         else:  # no work assigned
             return 0
 
-    def get_start_tile_id(core_id):
-        if core_id < num_cores_group_1:
-            return core_id * work_per_core1
-        elif core_id < num_cores_group_1 + num_cores_group_2:
+    def get_start_tile_id(node_id):
+        if node_id < num_nodes_group_1:
+            return node_id * work_per_node1
+        elif node_id < num_nodes_group_1 + num_nodes_group_2:
             return (
-                num_cores_group_1 * work_per_core1
-                + (core_id - num_cores_group_1) * work_per_core2
+                num_nodes_group_1 * work_per_node1
+                + (node_id - num_nodes_group_1) * work_per_node2
             )
         else:  # no work assigned
             return 0
 
     @ttl.compute()
     def mm_compute():
-        core_id = ttl.core(dims=1)
-        for _ in range(get_tiles_per_core(core_id)):
+        node_id = ttl.node(dims=1)
+        for _ in range(get_tiles_per_node(node_id)):
             with out_dfb.reserve() as out_blk:
                 for _ in range(Kt):
                     with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
@@ -88,10 +88,10 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
 
     @ttl.datamovement()
     def mm_reader():
-        core_id = ttl.core(dims=1)
+        node_id = ttl.node(dims=1)
         # A[Mt, Kt] @ B[Kt, Nt] = C[Mt, Nt]
-        for tile_id in range(get_tiles_per_core(core_id)):
-            current_tile_id = get_start_tile_id(core_id) + tile_id
+        for tile_id in range(get_tiles_per_node(node_id)):
+            current_tile_id = get_start_tile_id(node_id) + tile_id
             out_row = current_tile_id // Nt
             out_col = current_tile_id % Nt
             for k in range(Kt):
@@ -103,10 +103,10 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
 
     @ttl.datamovement()
     def mm_writer():
-        core_id = ttl.core(dims=1)
+        node_id = ttl.node(dims=1)
         # A[Mt, Kt] @ B[Kt, Nt] = C[Mt, Nt]
-        for tile_id in range(get_tiles_per_core(core_id)):
-            current_tile_id = get_start_tile_id(core_id) + tile_id
+        for tile_id in range(get_tiles_per_node(node_id)):
+            current_tile_id = get_start_tile_id(node_id) + tile_id
             out_row = current_tile_id // Nt
             out_col = current_tile_id % Nt
             with out_dfb.wait() as out_blk:
@@ -115,14 +115,14 @@ def tt_lang_multicore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
 
 
 @pytest.mark.parametrize("M,K,N", [(256, 256, 256), (512, 512, 512)])
-def test_multicore_matmul_tt_lang(M, K, N):
-    """Test multicore matmul kernel."""
+def test_multinode_matmul_tt_lang(M, K, N):
+    """Test multinode matmul kernel."""
     device = ttnn.open_device(device_id=0)
     a = ttnn.rand((M, K), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
     b = ttnn.rand((K, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
     c = ttnn.empty((M, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
 
-    tt_lang_multicore_matmul(a, b, c)
+    tt_lang_multinode_matmul(a, b, c)
 
     golden = torch.matmul(
         ttnn.to_torch(a).to(torch.bfloat16), ttnn.to_torch(b).to(torch.bfloat16)
@@ -135,4 +135,4 @@ def test_multicore_matmul_tt_lang(M, K, N):
 
 if __name__ == "__main__":
     # TODO: This won't work with 256, 256, 256
-    test_multicore_matmul_tt_lang(640, 640, 640)
+    test_multinode_matmul_tt_lang(640, 640, 640)

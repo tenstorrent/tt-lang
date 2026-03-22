@@ -38,7 +38,7 @@ def invalid_core_dims_kernel(lhs, rhs, out):
     def dm_read():
         with lhs_dfb.reserve() as lhs_blk, rhs_dfb.reserve() as rhs_blk:
             # This should fail - dims=3 not supported
-            x, y, z = ttl.core(dims=3)
+            x, y, z = ttl.node(dims=3)
             tx_lhs = ttl.copy(lhs[y, x], lhs_blk)
             tx_rhs = ttl.copy(rhs[y, x], rhs_blk)
             tx_lhs.wait()
@@ -47,7 +47,7 @@ def invalid_core_dims_kernel(lhs, rhs, out):
     @ttl.datamovement()
     def dm_write():
         with out_dfb.wait() as out_blk:
-            x, y = ttl.core(dims=2)
+            x, y = ttl.node(dims=2)
             tx = ttl.copy(out_blk, out[y, x])
             tx.wait()
 

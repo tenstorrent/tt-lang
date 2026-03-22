@@ -9,7 +9,7 @@ without requiring any code changes to the kernel files.
 
 Usage:
     ttlang-sim examples/eltwise_add.py
-    ttlang-sim examples/singlecore_matmul.py --show-stats --grid 4,4
+    ttlang-sim examples/single_node_matmul.py --show-stats --grid 4,4
 """
 
 import sys
@@ -203,8 +203,8 @@ def main() -> None:
         description="Run tt-lang kernels on the simulator backend",
         epilog="Examples:\n"
         "  ttlang-sim examples/eltwise_add.py\n"
-        "  ttlang-sim examples/singlecore_matmul.py --show-stats\n"
-        "  ttlang-sim examples/tutorial/multicore.py --grid 4,4",
+        "  ttlang-sim examples/single_node_matmul.py --show-stats\n"
+        "  ttlang-sim examples/tutorial/multinode.py --grid 4,4",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 

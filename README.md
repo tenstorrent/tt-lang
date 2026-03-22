@@ -114,6 +114,16 @@ To build tt-lang directly on a host machine without Docker, see the [build syste
 
 To map a different TT device, change the `--device` argument (e.g., `--device=/dev/tenstorrent/1:/dev/tenstorrent/0`).
 
+### 2.5 Functional Simulator
+
+tt-lang includes a functional simulator that runs kernels as pure Python, without requiring Tenstorrent hardware or the full compiler stack. Use it to validate kernel logic and debug with any Python debugger:
+
+```bash
+./bin/ttlang-sim examples/eltwise_add.py
+```
+
+The simulator typically supports more language features than the compiler at any given point — see the [functionality matrix](docs/sphinx/specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current coverage. See the [programming guide](docs/sphinx/programming-guide.md#simulator) for debugger setup and details.
+
 ## 3. Documentation
 
 Full documentation is built with Sphinx. The source lives in [docs/sphinx/](docs/sphinx/) and covers:

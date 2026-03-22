@@ -1,7 +1,7 @@
 // Tests for ttl-subblock-compute-for-dst with multiple output CBs.
 // Verifies that 3 independent compute chains writing to 3 separate output
 // CBs are each correctly subblocked for DST.
-// Derived from test_comprehensive_multicore (20 fused ops, 3 outputs).
+// Derived from test_comprehensive_multinode (20 fused ops, 3 outputs).
 // Shape: 4x4 bf16 (capacity=8). Multi-dim tiling: tileSizes=[2,4], product=8.
 // Loop on dim 0 (0 to 4 step 2). Stride 4 for dim 0 offset.
 

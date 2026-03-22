@@ -853,6 +853,28 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
     Value ntVal = arith::ConstantOp::create(rewriter, loc,
                                             rewriter.getI32IntegerAttr(nt));
 
+    // Accumulator: emit rt*ct copy_tile ops to load DST before matmul_block.
+    // TODO: Replace with copy_block_matmul_partials(cb, 0, 0, rt*ct) once a
+    // TTKernel op exists (tt_metal/hw/inc/api/compute/tile_move_copy.h).
+    // Similarly, pack_tile ops should use pack_tile_block (pack.h).
+    if (op.getAccumulator()) {
+      auto accCB = lookupAndConvertCB(op.getAccumulator(), funcOp,
+                                      typeConverter, rewriter, loc);
+      if (failed(accCB)) {
+        return rewriter.notifyMatchFailure(
+            op, "cannot find/convert accumulator CB for matmul_block");
+      }
+
+      // Emit rt*ct copy_tile ops: CB tile [i] -> DST[i].
+      // copy_tile_init is inserted later by ttkernel-insert-inits.
+      int32_t ntiles = rt * ct;
+      for (int32_t i = 0; i < ntiles; ++i) {
+        Value cbIdx = arith::ConstantIndexOp::create(rewriter, loc, i);
+        Value dstTileIdx = arith::ConstantIndexOp::create(rewriter, loc, i);
+        ttk::CopyTileOp::create(rewriter, loc, *accCB, cbIdx, dstTileIdx);
+      }
+    }
+
     // Emit matmul_block with kt_dim=1 (init inserted by ttkernel-insert-inits).
     ttk::ExperimentalMatmulBlockOp::create(rewriter, loc, *lhsCB, *rhsCB, zero,
                                            zero, dstIdx, transpose, ctVal,

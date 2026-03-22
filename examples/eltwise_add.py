@@ -15,8 +15,8 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
     col_tiles = a_in.shape[1] // TILE_SIZE
 
     grid_cols, grid_rows = ttl.grid_size(dims=2)
-    rows_per_core = -(-row_tiles // grid_rows)
-    cols_per_core = -(-col_tiles // grid_cols)
+    rows_per_node = -(-row_tiles // grid_rows)
+    cols_per_node = -(-col_tiles // grid_cols)
 
     a_dfb = ttl.make_dataflow_buffer_like(a_in, shape=(GRANULARITY, 1), buffer_factor=2)
     b_dfb = ttl.make_dataflow_buffer_like(b_in, shape=(GRANULARITY, 1), buffer_factor=2)
@@ -26,12 +26,12 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
 
     @ttl.compute()
     def compute():
-        core_col, core_row = ttl.core(dims=2)
-        for local_row in range(rows_per_core):
-            row = core_row * rows_per_core + local_row
+        node_col, node_row = ttl.node(dims=2)
+        for local_row in range(rows_per_node):
+            row = node_row * rows_per_node + local_row
             if row < row_tiles:
-                for local_col in range(cols_per_core):
-                    col = core_col * cols_per_core + local_col
+                for local_col in range(cols_per_node):
+                    col = node_col * cols_per_node + local_col
                     if col < col_tiles:
                         with (
                             a_dfb.wait() as a_blk,
@@ -42,13 +42,13 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
 
     @ttl.datamovement()
     def read():
-        core_col, core_row = ttl.core(dims=2)
-        for local_row in range(rows_per_core):
-            row = core_row * rows_per_core + local_row
+        node_col, node_row = ttl.node(dims=2)
+        for local_row in range(rows_per_node):
+            row = node_row * rows_per_node + local_row
             if row < row_tiles:
                 r0, r1 = row * GRANULARITY, (row + 1) * GRANULARITY
-                for local_col in range(cols_per_core):
-                    col = core_col * cols_per_core + local_col
+                for local_col in range(cols_per_node):
+                    col = node_col * cols_per_node + local_col
                     if col < col_tiles:
                         with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:
                             tx_a = ttl.copy(a_in[r0:r1, col : col + 1], a_blk)
@@ -58,13 +58,13 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
 
     @ttl.datamovement()
     def write():
-        core_col, core_row = ttl.core(dims=2)
-        for local_row in range(rows_per_core):
-            row = core_row * rows_per_core + local_row
+        node_col, node_row = ttl.node(dims=2)
+        for local_row in range(rows_per_node):
+            row = node_row * rows_per_node + local_row
             if row < row_tiles:
                 r0, r1 = row * GRANULARITY, (row + 1) * GRANULARITY
-                for local_col in range(cols_per_core):
-                    col = core_col * cols_per_core + local_col
+                for local_col in range(cols_per_node):
+                    col = node_col * cols_per_node + local_col
                     if col < col_tiles:
                         with out_dfb.wait() as out_blk:
                             tx = ttl.copy(out_blk, out[r0:r1, col : col + 1])

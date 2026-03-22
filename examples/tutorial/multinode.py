@@ -28,8 +28,8 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
 
     grid_cols, grid_rows = ttl.grid_size(dims=2)
 
-    rows_per_core = a.shape[0] // TILE_SIZE // row_tiles_per_block // grid_rows
-    cols_per_core = a.shape[1] // TILE_SIZE // col_tiles_per_block // grid_rows
+    rows_per_node = a.shape[0] // TILE_SIZE // row_tiles_per_block // grid_rows
+    cols_per_node = a.shape[1] // TILE_SIZE // col_tiles_per_block // grid_rows
 
     a_dfb = ttl.make_dataflow_buffer_like(
         a, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
@@ -46,8 +46,8 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
 
     @ttl.compute()
     def demo_compute():
-        for _ in range(rows_per_core):
-            for _ in range(cols_per_core):
+        for _ in range(rows_per_node):
+            for _ in range(cols_per_node):
                 with (
                     a_dfb.wait() as a_blk,
                     b_dfb.wait() as b_blk,
@@ -58,15 +58,15 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
 
     @ttl.datamovement()
     def demo_read():
-        core_col, core_row = ttl.core(dims=2)
+        node_col, node_row = ttl.node(dims=2)
 
-        for local_row in range(rows_per_core):
-            row = core_row * rows_per_core + local_row
+        for local_row in range(rows_per_node):
+            row = node_row * rows_per_node + local_row
             start_row_tile = row * row_tiles_per_block
             end_row_tile = (row + 1) * row_tiles_per_block
 
-            for local_col in range(cols_per_core):
-                col = core_col * cols_per_core + local_col
+            for local_col in range(cols_per_node):
+                col = node_col * cols_per_node + local_col
                 start_col_tile = col * col_tiles_per_block
                 end_col_tile = (col + 1) * col_tiles_per_block
 
@@ -103,15 +103,15 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
 
     @ttl.datamovement()
     def demo_write():
-        core_col, core_row = ttl.core(dims=2)
+        node_col, node_row = ttl.node(dims=2)
 
-        for local_row in range(rows_per_core):
-            row = core_row * rows_per_core + local_row
+        for local_row in range(rows_per_node):
+            row = node_row * rows_per_node + local_row
             start_row_tile = row * row_tiles_per_block
             end_row_tile = (row + 1) * row_tiles_per_block
 
-            for local_col in range(cols_per_core):
-                col = core_col * cols_per_core + local_col
+            for local_col in range(cols_per_node):
+                col = node_col * cols_per_node + local_col
                 start_col_tile = col * col_tiles_per_block
                 end_col_tile = (col + 1) * col_tiles_per_block
 

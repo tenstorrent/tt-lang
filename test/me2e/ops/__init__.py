@@ -42,6 +42,9 @@ OP_TORCH_MAP: Dict[str, Callable[..., Tensor]] = {
     "sigmoid": torch.sigmoid,
     "floor": torch.floor,
     "recip": torch.reciprocal,
+    "sin": torch.sin,
+    "cos": torch.cos,
+    "tan": torch.tan,
 }
 
 # Domain constraints for ops that require specific input ranges.
@@ -51,6 +54,7 @@ OP_INPUT_RANGES: Dict[str, Tuple[float, float]] = {
     "rsqrt": (0.01, 10.0),  # rsqrt requires positive inputs
     "recip": (0.01, 10.0),  # recip requires non-zero inputs
     "div": (0.01, 10.0),  # div requires non-zero divisor
+    "tan": (-1.0, 1.0),  # Avoid pi/2 where tan diverges.
 }
 
 # Per-op ULP threshold overrides keyed by dtype.

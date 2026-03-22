@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Adversarial multicore test designed to stress compiler optimizations.
+Adversarial multinode test designed to stress compiler optimizations.
 
 Evil features:
 - Non-square grid (8x6) and tensors (512x384)
@@ -106,7 +106,7 @@ def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
 
     @ttl.datamovement()
     def dm_read():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
         row = y * 2
         col = x * 2
 
@@ -128,7 +128,7 @@ def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
 
     @ttl.datamovement()
     def dm_write():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
         row = y * 2
         col = x * 2
 
@@ -186,7 +186,7 @@ def compute_expected(a, b, c, d):
     return exp1, exp2, exp3, exp4
 
 
-def test_adversarial_multicore(device):
+def test_adversarial_multinode(device):
     """Test adversarial kernel designed to break compiler optimizations."""
     # Random inputs
     a_torch = torch.rand(TENSOR_SHAPE, dtype=torch.bfloat16) * 2.0 - 1.0

@@ -9,7 +9,7 @@ from utils.correctness import assert_with_ulp
 
 
 @ttl.kernel(grid=(1, 1))
-def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -> None:
+def tt_lang_singlenode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -> None:
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
 
@@ -79,7 +79,7 @@ def main() -> None:
     print(f"Matrix multiplication: ({M}, {K}) @ ({K}, {N}) = ({M}, {N})")
     print(f"Tiles: A={M//32}x{K//32}, B={K//32}x{N//32}, Out={M//32}x{N//32}")
 
-    tt_lang_singlecore_matmul(a, b, out)
+    tt_lang_singlenode_matmul(a, b, out)
 
     # Compute golden result
     golden = a @ b

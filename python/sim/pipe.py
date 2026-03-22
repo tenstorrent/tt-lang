@@ -13,7 +13,7 @@ This module provides:
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, List, TypeVar, Union
 
-from .corecontext import core, flatten_core_index, grid_size
+from .corecontext import node, flatten_core_index, grid_size
 from .typedefs import CoreCoord, CoreRange
 
 # Type variable for Pipe destination type
@@ -49,7 +49,7 @@ class Pipe(Generic[DstT]):
     src_core: CoreCoord
     dst_core_range: DstT
 
-    def has_current_core(self) -> bool:
+    def has_current_node(self) -> bool:
         """Check if the current core participates in this pipe (either as source or destination).
 
         This is useful for early-exit patterns where non-participating cores should skip work.
@@ -59,7 +59,7 @@ class Pipe(Generic[DstT]):
             True if the current core is either the source or in the destination range.
         """
         # Check if current core is the source
-        current_core_linear = core(dims=1)
+        current_core_linear = node(dims=1)
         pipe_src_linear = flatten_core_index(self.src_core)
         if current_core_linear == pipe_src_linear:
             return True
@@ -218,13 +218,13 @@ def core_in_dst_range(
     match dst_core_range:
         case int():
             # Single 1D core - compare with 1D core index
-            current_core_linear = core(dims=1)
+            current_core_linear = node(dims=1)
             return current_core_linear == dst_core_range
 
         case tuple() if any(type(item) is slice for item in dst_core_range):
             # CoreRange with slices - expand and check membership
             dims = len(dst_core_range)
-            current_core_coords = core(dims=dims)
+            current_core_coords = node(dims=dims)
 
             # Convert single value to tuple for comparison
             match current_core_coords:
@@ -263,7 +263,7 @@ def core_in_dst_range(
         case tuple():
             # Single multi-dimensional core - get coordinates matching the dimensionality
             dims = len(dst_core_range)
-            current_core_coords = core(dims=dims)
+            current_core_coords = node(dims=dims)
             return current_core_coords == dst_core_range
 
 
@@ -294,7 +294,7 @@ class PipeNet(Generic[DstT]):
                      The function receives a SrcPipeIdentity that exposes the
                      destination via its .dst property.
         """
-        current_core_linear = core(dims=1)
+        current_core_linear = node(dims=1)
 
         for pipe in self._pipes:
             pipe_src_linear = flatten_core_index(pipe.src_core)

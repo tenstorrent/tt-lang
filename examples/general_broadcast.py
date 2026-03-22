@@ -26,8 +26,8 @@ def __demo_kernel(a, b, c, y):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY
     grid_x, grid_y = ttl.grid_size(dims=2)
-    rows_per_core = a.shape[0] // TILE_SIZE // grid_x // row_tiles_per_block
-    cols_per_core = a.shape[1] // TILE_SIZE // grid_y // col_tiles_per_block
+    rows_per_node = a.shape[0] // TILE_SIZE // grid_x // row_tiles_per_block
+    cols_per_node = a.shape[1] // TILE_SIZE // grid_y // col_tiles_per_block
 
     # Determine DFB shapes based on tensor dimensions
     b_row_tiles = row_tiles_per_block if b.shape[0] > TILE_SIZE else 1
@@ -50,8 +50,8 @@ def __demo_kernel(a, b, c, y):
 
     @ttl.compute()
     def demo_compute():
-        for _ in range(rows_per_core):
-            for _ in range(cols_per_core):
+        for _ in range(rows_per_node):
+            for _ in range(cols_per_node):
                 with (
                     a_dfb.wait() as a_blk,
                     b_dfb.wait() as b_blk,
@@ -85,13 +85,13 @@ def __demo_kernel(a, b, c, y):
 
     @ttl.datamovement()
     def demo_read():
-        core_x, core_y = ttl.core(dims=2)
-        for core_row in range(rows_per_core):
-            row = core_x * rows_per_core + core_row
+        node_x, node_y = ttl.node(dims=2)
+        for node_row in range(rows_per_node):
+            row = node_x * rows_per_node + node_row
             start_row_tile = row * row_tiles_per_block
             end_row_tile = (row + 1) * row_tiles_per_block
-            for core_col in range(cols_per_core):
-                col = core_y * cols_per_core + core_col
+            for node_col in range(cols_per_node):
+                col = node_y * cols_per_node + node_col
                 start_col_tile = col * col_tiles_per_block
                 end_col_tile = (col + 1) * col_tiles_per_block
                 with (
@@ -136,13 +136,13 @@ def __demo_kernel(a, b, c, y):
 
     @ttl.datamovement()
     def demo_write():
-        core_x, core_y = ttl.core(dims=2)
-        for core_row in range(rows_per_core):
-            row = core_x * rows_per_core + core_row
+        node_x, node_y = ttl.node(dims=2)
+        for node_row in range(rows_per_node):
+            row = node_x * rows_per_node + node_row
             start_row_tile = row * row_tiles_per_block
             end_row_tile = (row + 1) * row_tiles_per_block
-            for core_col in range(cols_per_core):
-                col = core_y * cols_per_core + core_col
+            for node_col in range(cols_per_node):
+                col = node_y * cols_per_node + node_col
                 start_col_tile = col * col_tiles_per_block
                 end_col_tile = (col + 1) * col_tiles_per_block
                 with y_dfb.wait() as y_blk:

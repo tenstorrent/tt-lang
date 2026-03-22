@@ -31,8 +31,8 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
     rows = a.shape[0] // TILE_SIZE // row_tiles_per_block
     cols = a.shape[1] // TILE_SIZE // col_tiles_per_block
 
-    rows_per_core = -(-rows // grid_rows)  # divceil
-    cols_per_core = -(-cols // grid_cols)  # divceil
+    rows_per_node = -(-rows // grid_rows)  # divceil
+    cols_per_node = -(-cols // grid_cols)  # divceil
 
     a_dfb = ttl.make_dataflow_buffer_like(
         a, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
@@ -49,13 +49,13 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
 
     @ttl.compute()
     def demo_compute():
-        core_col, core_row = ttl.core(dims=2)
+        node_col, node_row = ttl.node(dims=2)
 
-        for local_row in range(rows_per_core):
-            row = core_row * rows_per_core + local_row
+        for local_row in range(rows_per_node):
+            row = node_row * rows_per_node + local_row
             if row < rows:
-                for local_col in range(cols_per_core):
-                    col = core_col * cols_per_core + local_col
+                for local_col in range(cols_per_node):
+                    col = node_col * cols_per_node + local_col
                     if col < cols:
                         with (
                             a_dfb.wait() as a_blk,
@@ -67,16 +67,16 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
 
     @ttl.datamovement()
     def demo_read():
-        core_col, core_row = ttl.core(dims=2)
+        node_col, node_row = ttl.node(dims=2)
 
-        for local_row in range(rows_per_core):
-            row = core_row * rows_per_core + local_row
+        for local_row in range(rows_per_node):
+            row = node_row * rows_per_node + local_row
             if row < rows:
                 start_row_tile = row * row_tiles_per_block
                 end_row_tile = (row + 1) * row_tiles_per_block
 
-                for local_col in range(cols_per_core):
-                    col = core_col * cols_per_core + local_col
+                for local_col in range(cols_per_node):
+                    col = node_col * cols_per_node + local_col
                     if col < cols:
                         start_col_tile = col * col_tiles_per_block
                         end_col_tile = (col + 1) * col_tiles_per_block
@@ -114,16 +114,16 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
 
     @ttl.datamovement()
     def demo_write():
-        core_col, core_row = ttl.core(dims=2)
+        node_col, node_row = ttl.node(dims=2)
 
-        for local_row in range(rows_per_core):
-            row = core_row * rows_per_core + local_row
+        for local_row in range(rows_per_node):
+            row = node_row * rows_per_node + local_row
             if row < rows:
                 start_row_tile = row * row_tiles_per_block
                 end_row_tile = (row + 1) * row_tiles_per_block
 
-                for local_col in range(cols_per_core):
-                    col = core_col * cols_per_core + local_col
+                for local_col in range(cols_per_node):
+                    col = node_col * cols_per_node + local_col
                     if col < cols:
                         start_col_tile = col * col_tiles_per_block
                         end_col_tile = (col + 1) * col_tiles_per_block

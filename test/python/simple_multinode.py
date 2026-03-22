@@ -8,7 +8,7 @@
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
 """
-Multicore kernel lit test - verifies core(dims=2) lowers to
+Multinode kernel lit test - verifies core(dims=2) lowers to
 get_absolute_logical_x() and get_absolute_logical_y() in generated C++.
 
 Tests an 8x8 grid kernel that uses dynamic core indices for tile indexing.
@@ -24,8 +24,8 @@ import ttl
 
 
 @ttl.kernel(grid=(8, 8))
-def multicore_add(lhs, rhs, out):
-    """Multicore add kernel - each core processes its own tile."""
+def multinode_add(lhs, rhs, out):
+    """Multinode add kernel - each core processes its own tile."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -42,7 +42,7 @@ def multicore_add(lhs, rhs, out):
         with lhs_dfb.reserve() as lhs_blk, rhs_dfb.reserve() as rhs_blk:
             # core(dims=2) returns (x, y) where x=col, y=row
             # tensor indexing is [row, col] = [y, x]
-            x, y = ttl.core(dims=2)
+            x, y = ttl.node(dims=2)
             tx_lhs = ttl.copy(lhs[y, x], lhs_blk)
             tx_rhs = ttl.copy(rhs[y, x], rhs_blk)
             tx_lhs.wait()
@@ -51,7 +51,7 @@ def multicore_add(lhs, rhs, out):
     @ttl.datamovement()
     def dm_write():
         with out_dfb.wait() as out_blk:
-            x, y = ttl.core(dims=2)
+            x, y = ttl.node(dims=2)
             tx = ttl.copy(out_blk, out[y, x])
             tx.wait()
 
@@ -63,7 +63,7 @@ def multicore_add(lhs, rhs, out):
 # CHECK-LABEL: func.func @dm_read
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0 : i32, 1 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
-# Verify core_x() and core_y() ops appear in the IR (from x, y = ttl.core(dims=2))
+# Verify core_x() and core_y() ops appear in the IR (from x, y = ttl.node(dims=2))
 # CHECK: ttl.core_x
 # CHECK: ttl.core_y
 
@@ -94,7 +94,7 @@ if __name__ == "__main__":
     import torch
     from ttlang_test_utils import require_hardware
 
-    print("=== Multicore Add Kernel Test ===")
+    print("=== Multinode Add Kernel Test ===")
     require_hardware()
 
     device = ttnn.open_device(device_id=0)
@@ -127,10 +127,10 @@ if __name__ == "__main__":
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
 
-        print("Compiling multicore add kernel...")
-        multicore_add(lhs, rhs, out)
+        print("Compiling multinode add kernel...")
+        multinode_add(lhs, rhs, out)
 
-        print("=== Multicore Add Kernel Test Complete ===")
+        print("=== Multinode Add Kernel Test Complete ===")
 
     finally:
         ttnn.close_device(device)

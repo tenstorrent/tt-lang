@@ -303,6 +303,14 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     // computes with potentially different output shapes, as well as
     // reductions where the output shape is smaller than the iteration domain.
     int64_t getTotalIterationTiles();
+
+    // Return whether the body contains an op of the given type.
+    template <typename OpTy>
+    bool containsOp() {
+      bool found = false;
+      getBody().walk([&](OpTy) { found = true; return WalkResult::interrupt(); });
+      return found;
+    }
   }];
 }
 
@@ -483,9 +491,12 @@ def TTL_DPrintOp : TTL_Op<"dprint", []> {
 class TTL_TileOp<string mnemonic, list<Trait> traits = []>
     : TTL_Op<mnemonic, !listconcat(traits, [TTL_TileComputeOpTrait])>;
 
-def TTL_TileType : TypeConstraint<
+def TTL_TileType : Type<
     CPred<"llvm::isa<mlir::tt::ttcore::TileType>($_self)">,
     "ttcore.tile type">;
+
+// Tile type inside compute body; ranked tensor after lower-matmul-block.
+def TTL_TileOrTensor : AnyTypeOf<[TTL_TileType, AnyRankedTensor]>;
 
 def TTL_IterIndexOp : TTL_Op<"iter_index", [Pure,
     ParentOneOf<["ComputeOp"]>]> {
@@ -742,14 +753,20 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
     buffers. The block dimensions (rt, ct, kt) are derived from the
     enclosing ttl.compute's operand shapes during TTKernel lowering.
 
+    When the optional `accumulator` operand is present, it is pre-loaded
+    into DST via copy_tile before the matmul. The result is
+    accumulator + lhs @ rhs, exploiting matmul_block's additive
+    accumulation to eliminate an explicit add.
+
     Maps to ttkernel.mm_block_init + ttkernel.experimental::matmul_block.
   }];
-  // Accepts both tile types (inside compute body) and tensor types (after
-  // lower-matmul-block flattens the compute into a direct CB reference).
-  let arguments = (ins AnyType:$lhs, AnyType:$rhs);
-  let results = (outs AnyType:$result);
-  let assemblyFormat =
-      "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
+  let arguments = (ins TTL_TileOrTensor:$lhs, TTL_TileOrTensor:$rhs,
+                       Optional<TTL_TileOrTensor>:$accumulator);
+  let results = (outs TTL_TileOrTensor:$result);
+  let assemblyFormat = [{
+    $lhs `,` $rhs (`,` $accumulator^)? attr-dict `:`
+    type($lhs) `,` type($rhs) (`,` type($accumulator)^)? `->` type($result)
+  }];
 }
 
 // Circular buffer synchronization operations

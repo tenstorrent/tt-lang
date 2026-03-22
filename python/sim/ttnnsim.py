@@ -13,7 +13,7 @@ Scope:
 - Random/empty tensor creation
 - Helpers to convert to native torch tensors
 - Constants for tile layout and tile size
-- Core coordinate and range classes for multicore operations
+- Core coordinate and range classes for multinode operations
 """
 
 from __future__ import annotations

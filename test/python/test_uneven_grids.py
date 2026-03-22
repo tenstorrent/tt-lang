@@ -79,7 +79,7 @@ def uneven_grid_kernel(lhs, rhs, out):
 
     @ttl.compute()
     def compute():
-        core_x, core_y = ttl.core(dims=2)
+        core_x, core_y = ttl.node(dims=2)
         start_y = core_y * tiles_per_core_y
         start_x = core_x * tiles_per_core_x
 
@@ -94,7 +94,7 @@ def uneven_grid_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        core_x, core_y = ttl.core(dims=2)
+        core_x, core_y = ttl.node(dims=2)
         start_y = core_y * tiles_per_core_y
         start_x = core_x * tiles_per_core_x
 
@@ -112,7 +112,7 @@ def uneven_grid_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_write():
-        core_x, core_y = ttl.core(dims=2)
+        core_x, core_y = ttl.node(dims=2)
         start_y = core_y * tiles_per_core_y
         start_x = core_x * tiles_per_core_x
 
@@ -239,7 +239,7 @@ def multitile_uneven_kernel(lhs, rhs, out):
 
     @ttl.compute()
     def compute():
-        core_x, core_y = ttl.core(dims=2)
+        core_x, core_y = ttl.node(dims=2)
         start_block_y = core_y * blocks_per_core_y
         start_block_x = core_x * blocks_per_core_x
 
@@ -256,7 +256,7 @@ def multitile_uneven_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        core_x, core_y = ttl.core(dims=2)
+        core_x, core_y = ttl.node(dims=2)
         start_block_y = core_y * blocks_per_core_y
         start_block_x = core_x * blocks_per_core_x
 
@@ -282,7 +282,7 @@ def multitile_uneven_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_write():
-        core_x, core_y = ttl.core(dims=2)
+        core_x, core_y = ttl.node(dims=2)
         start_block_y = core_y * blocks_per_core_y
         start_block_x = core_x * blocks_per_core_x
 

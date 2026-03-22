@@ -40,8 +40,8 @@ TileOpCategory classifyTileOp(Operation *op) {
   return TileOpCategory::Unknown;
 }
 
-ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value) {
-  ElementwiseTraceResult result;
+FusionTraceResult traceFusionToRoots(mlir::Value value) {
+  FusionTraceResult result;
 
   // Base case: CB-attached value is a root
   if (getAttachedCB(value)) {
@@ -57,8 +57,6 @@ ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value) {
   }
 
   // Special case: BcastOp can be fused when its input is CB-attached.
-  // Bcast reads from CB and writes to DST, so it can be the first op
-  // in a fused compute block.
   if (auto bcastOp = llvm::dyn_cast<BcastOp>(defOp)) {
     mlir::Value bcastInput = bcastOp.getInput();
     if (getAttachedCB(bcastInput)) {
@@ -66,18 +64,38 @@ ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value) {
       result.opsInOrder.insert(defOp);
       return result;
     }
-    // Input not CB-attached - fall through to failure
+    // Bcast recognized but input not CB-attached.
+    result.failureReason = TraceFailureReason::NotCBAttached;
+    result.failedValue = bcastInput;
+    return result;
+  }
+
+  // Special case: MatmulOp with CB-attached inputs is a fusable leaf.
+  // Both inputs become roots; the trace does not recurse into the matmul.
+  if (auto matmulOp = llvm::dyn_cast<MatmulOp>(defOp)) {
+    mlir::Value lhs = matmulOp.getLhs();
+    mlir::Value rhs = matmulOp.getRhs();
+    if (getAttachedCB(lhs) && getAttachedCB(rhs)) {
+      result.rootInputs.insert(lhs);
+      result.rootInputs.insert(rhs);
+      result.opsInOrder.insert(defOp);
+      return result;
+    }
+    // Matmul recognized but inputs not CB-attached.
+    result.failureReason = TraceFailureReason::NotCBAttached;
+    result.failedValue = getAttachedCB(lhs) ? rhs : lhs;
+    return result;
   }
 
   if (!isElementwiseOp(defOp)) {
-    result.failureReason = TraceFailureReason::NotElementwiseOp;
+    result.failureReason = TraceFailureReason::NotFusableOp;
     result.failedValue = value;
     return result;
   }
 
   // Recursively trace all operands
   for (mlir::Value operand : getElementwiseOperands(defOp)) {
-    auto operandTrace = traceElementwiseToRoots(operand);
+    auto operandTrace = traceFusionToRoots(operand);
     if (operandTrace.failureReason != TraceFailureReason::Success) {
       return operandTrace;
     }
@@ -96,34 +114,16 @@ ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value) {
   return result;
 }
 
-void emitFusionFailureDiagnostics(mlir::Operation *op,
-                                  const ElementwiseTraceResult &trace) {
-  mlir::Value v = trace.failedValue;
-  switch (trace.failureReason) {
+llvm::StringRef describeTraceFailure(TraceFailureReason reason) {
+  switch (reason) {
   case TraceFailureReason::Success:
-    break;
+    return "success";
   case TraceFailureReason::NotCBAttached:
-    if (v) {
-      op->emitError("fusion failed: value is not attached to a circular buffer")
-              .attachNote(v.getLoc())
-          << "this value (block argument) needs ttl.cb_wait or ttl.attach_cb";
-    }
-    break;
-  case TraceFailureReason::NotElementwiseOp:
-    if (v && v.getDefiningOp()) {
-      op->emitError("fusion failed: cannot trace through non-elementwise op")
-              .attachNote(v.getDefiningOp()->getLoc())
-          << "this op '" << v.getDefiningOp()->getName() << "' is not fusable";
-    }
-    break;
-  case TraceFailureReason::MultipleUses:
-    if (v && v.getDefiningOp()) {
-      op->emitError("fusion failed: intermediate value has multiple uses")
-              .attachNote(v.getDefiningOp()->getLoc())
-          << "this op's result is used multiple times";
-    }
-    break;
+    return "value is not attached to a circular buffer";
+  case TraceFailureReason::NotFusableOp:
+    return "cannot trace through non-fusable op";
   }
+  llvm_unreachable("unhandled TraceFailureReason");
 }
 
 } // namespace mlir::tt::ttl

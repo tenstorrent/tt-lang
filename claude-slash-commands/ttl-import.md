@@ -416,9 +416,9 @@ def fused_kernel(inp, out):
 
 ## Multi-Tile Processing and Streaming
 
-For tensors larger than 32x32, process multiple tiles. **Use multicore and loops:**
+For tensors larger than 32x32, process multiple tiles. **Use multinode and loops:**
 
-- **Multicore is encouraged** - use the whole chip for real workloads. Single-core kernels are fine for incremental development but won't deliver meaningful performance.
+- **multinode is encouraged** - use the whole chip for real workloads. Single-node kernels are fine for incremental development but won't deliver meaningful performance.
 - **Loops are supported** in both compute and datamovement threads - use them to stream large tensors through smaller CBs.
 
 ### IMPORTANT: Match the User's Target Data Size
@@ -429,27 +429,27 @@ For tensors larger than 32x32, process multiple tiles. **Use multicore and loops
 # User wants to process 2048x2048 tensors (64x64 tiles)
 # Don't shrink to 32x32 for testing - make it work at target size!
 
-@ttl.kernel(grid=(8, 8))  # Use multicore
+@ttl.kernel(grid=(8, 8))  # Use multinode
 def large_tensor_kernel(inp, out):
-    # Each core handles 8x8 tiles worth of data
+    # Each node handles 8x8 tiles worth of data
     # But DFB only holds 2x2 tiles at a time - stream through with loops
 
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
-    BLOCKS_PER_CORE = 4  # 8x8 tiles / 2x2 block = 4x4 = 16 blocks... adjust per core
+    BLOCKS_PER_NODE = 4  # 8x8 tiles / 2x2 block = 4x4 = 16 blocks... adjust per node
 
     @ttl.compute()
     def compute():
-        for _ in range(BLOCKS_PER_CORE):
+        for _ in range(BLOCKS_PER_NODE):
             with inp_dfb.wait() as i, out_dfb.reserve() as o:
                 o.store(ttl.math.exp(i))
 
     @ttl.datamovement()
     def dm_read():
-        x, y = ttl.core(dims=2)
-        for block_idx in range(BLOCKS_PER_CORE):
-            # Calculate tile coordinates for this core and block
+        x, y = ttl.node(dims=2)
+        for block_idx in range(BLOCKS_PER_NODE):
+            # Calculate tile coordinates for this node and block
             row = y * 8 + (block_idx // 4) * 2  # Example indexing
             col = x * 8 + (block_idx % 4) * 2
             with inp_dfb.reserve() as blk:
@@ -458,8 +458,8 @@ def large_tensor_kernel(inp, out):
 
     @ttl.datamovement()
     def dm_write():
-        x, y = ttl.core(dims=2)
-        for block_idx in range(BLOCKS_PER_CORE):
+        x, y = ttl.node(dims=2)
+        for block_idx in range(BLOCKS_PER_NODE):
             row = y * 8 + (block_idx // 4) * 2
             col = x * 8 + (block_idx % 4) * 2
             with out_dfb.wait() as blk:
@@ -468,28 +468,28 @@ def large_tensor_kernel(inp, out):
 ```
 
 **Key streaming principles:**
-1. **DFB size is limited by L1** (~1.5MB per core) - you can't fit huge tensors
+1. **DFB size is limited by L1** (~1.5MB per node) - you can't fit huge tensors
 2. **Stream blocks through CBs** - read a block, process it, write it, repeat
 3. **Loop counts must match** - compute iterations = dm_read iterations = dm_write iterations
 4. **DRAM is large but slow** - keep data in L1 as long as possible, stream to avoid DRAM round-trips
 
-## Pipes (Core-to-Core Communication)
+## Pipes (Node-to-Node Communication)
 
-**WARNING: Use pipes sparingly.** Pipes enable communication between cores but are error-prone and a common cause of hangs. Get your kernel working without pipes first, then add them only if needed for performance.
+**WARNING: Use pipes sparingly.** Pipes enable communication between nodes but are error-prone and a common cause of hangs. Get your kernel working without pipes first, then add them only if needed for performance.
 
 **WARNING: pipes do not work in the simulator.** The pipes APIs below are not implemented in the simulator, you may find partial support, but the APIs in the simulator and the compiler are different, and when you go to run on HW, you will hit issues. If you need to use pipes, do it after you have the base program working in sim.
 
 ### Pipe API
 
 ```python
-# Create a pipe: one source core to one destination core
+# Create a pipe: one source node to one destination node
 pipe = ttl.Pipe(src=(source_x, source_y), dst=(dest_x, dest_y))
 
-# Send data through pipe (in dm_write on source core)
+# Send data through pipe (in dm_write on source node)
 tx = ttl.copy(blk, pipe)
 tx.wait()
 
-# Receive data from pipe (in dm_write on destination core)
+# Receive data from pipe (in dm_write on destination node)
 tx = ttl.copy(pipe, blk)
 tx.wait()
 ```
@@ -512,7 +512,7 @@ def gather_kernel(inp, out):
 
     @ttl.compute()
     def compute():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
         if x == 0:
             # Coordinator: accumulate from gather_dfb
             for _ in range(3):
@@ -525,14 +525,14 @@ def gather_kernel(inp, out):
 
     @ttl.datamovement()
     def dm_read():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
         with inp_dfb.reserve() as blk:
             tx = ttl.copy(inp[y, x], blk)
             tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
 
         # Workers send their results via pipes
         if x == 1:
@@ -570,18 +570,18 @@ def gather_kernel(inp, out):
 
 - **Pipes cause hangs** when send/receive don't match - every `ttl.copy(blk, pipe)` needs a corresponding `ttl.copy(pipe, blk)`
 - **IMPORTANT: Set a low timeout** when testing pipes for faster iteration
-- **Start without pipes** - get single-core or independent multi-core working first
+- **Start without pipes** - get single-node or independent multi-node working first
 - **Add pipes incrementally** - test after adding each pipe
 - **Kill zombie processes** if hung: `~/.claude/commands/tools/remote-run.sh pkill -9 python`
 
 ### Hardware Limits
 
-- **32 CBs max** per core
-- **~1.5MB L1** per core
+- **32 CBs max** per node
+- **~1.5MB L1** per node
 - **~100MB total SRAM** across chip - utilize as much as possible for throughput
 - **Tile size**: 32x32 elements = 2KB (bfloat16)
 
-### Option 1: Large DFB Shape (Single Core)
+### Option 1: Large DFB Shape (Single Node)
 
 Larger DFB shapes give better throughput. Aim for 4x4 or 8x8 if L1 allows:
 
@@ -607,12 +607,12 @@ def multitile_kernel(lhs, rhs, out):
         # ... similar for rhs ...
 ```
 
-### Option 2: Multicore (Parallel)
+### Option 2: Multinode (Parallel)
 
 ```python
-# 256x256 tensor across 8x8 grid = 1 tile per core
+# 256x256 tensor across 8x8 grid = 1 tile per node
 @ttl.kernel(grid=(8, 8))
-def multicore_kernel(lhs, rhs, out):
+def multinode_kernel(lhs, rhs, out):
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -626,8 +626,8 @@ def multicore_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        # Get this core's coordinates
-        x, y = ttl.core(dims=2)  # x=column, y=row
+        # Get this node's coordinates
+        x, y = ttl.node(dims=2)  # x=column, y=row
 
         with lhs_dfb.reserve() as blk:
             # Tensor indexing is [row, col] = [y, x]
@@ -640,12 +640,12 @@ def multicore_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_write():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
         with out_dfb.wait() as blk:
             tx = ttl.copy(blk, out[y, x])
             tx.wait()
 
-# Call: multicore_kernel(lhs, rhs, out)
+# Call: multinode_kernel(lhs, rhs, out)
 ```
 
 ## Tensor Setup
@@ -779,7 +779,7 @@ if __name__ == "__main__":
 
 | GPU Concept | TT-Lang Equivalent |
 |------------|-------------------|
-| Thread block / workgroup | Grid of Tensix cores (`grid=(rows, cols)`) |
+| Thread block / workgroup | Grid of Tensix nodes (`grid=(rows, cols)`) |
 | Shared memory | L1 via circular buffers |
 | Global memory | DRAM with DMA transfers |
 | Warp/wave operations | Tile-level operations (32x32) |
@@ -800,7 +800,7 @@ __global__ void add_kernel(float* a, float* b, float* c, int n) {
 
 **TT-Lang equivalent:**
 ```python
-@ttl.kernel(grid=(1, 1))  # Or multicore for large tensors
+@ttl.kernel(grid=(1, 1))  # Or multinode for large tensors
 def add_kernel(a, b, c):
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
@@ -1024,23 +1024,23 @@ print("Expected:", torch.exp(inp_torch))
 
 ### Complete Example: Distributed Reduce-Broadcast-Matmul with Pipes
 
-This is a complete working test from `test/python/test_full_reduce_bcast_matmul.py` showing multicore computation with pipes:
+This is a complete working test from `test/python/test_full_reduce_bcast_matmul.py` showing multinode computation with pipes:
 
 ```python
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Distributed reduce -> bcast -> matmul with multicore communication.
+Distributed reduce -> bcast -> matmul with multinode communication.
 
-Each core independently:
+Each node independently:
 1. Reduces its own A slice to a local scalar
 2. Broadcasts that scalar to 4x4 tiles
 3. Matmuls broadcasted value with B
 
 Then coordinator gathers and sums all partial matmul results.
 
-Grid: 4x1 (4 cores in a row)
+Grid: 4x1 (4 nodes in a row)
 """
 COORDINATOR = 0
 ROWS_PER_CORE = 2
@@ -1079,9 +1079,9 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
 
     @ttl.compute()
     def compute():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
 
-        # === Stage 1: Local reduce of A slices (all cores) ===
+        # === Stage 1: Local reduce of A slices (all nodes) ===
         blocks_per_core = ROWS_PER_CORE * COLS_PER_CORE
 
         with scaler_dfb.wait() as s:
@@ -1100,12 +1100,12 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
                 with reduce_out_dfb.wait() as t, reduce_acc_dfb.wait() as acc, reduce_acc_dfb.reserve() as new_acc:
                     new_acc.store(acc + t)
 
-        # === Stage 2: Broadcast local sum to 4x4 tiles (all cores) ===
+        # === Stage 2: Broadcast local sum to 4x4 tiles (all nodes) ===
         with reduce_acc_dfb.wait() as local_sum, bcast_out_dfb.reserve() as bout:
             broadcasted = ttl.math.broadcast(local_sum, bout, dims=[0, 1])
             bout.store(broadcasted)
 
-        # === Stage 3: Matmul (4x4) @ (4x4) -> (4x4) (all cores) ===
+        # === Stage 3: Matmul (4x4) @ (4x4) -> (4x4) (all nodes) ===
         with bcast_out_dfb.wait() as a_bcast, b_dfb.wait() as b, matmul_out_dfb.reserve() as c:
             result = ttl.math.matmul(a_bcast, b, c)
             c.store(result)
@@ -1127,7 +1127,7 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
 
     @ttl.datamovement()
     def dm_read():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
 
         with scaler_dfb.reserve() as s_blk:
             tx = ttl.copy(scaler[0, 0], s_blk)
@@ -1147,7 +1147,7 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
 
     @ttl.datamovement()
     def dm_write():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
 
         # Workers send to coordinator
         if x == 1:
@@ -1632,33 +1632,33 @@ def rmsnorm_kernel(x, weight, scaler, out):
 
 ---
 
-## Pattern 7: Multicore Output Partitioning (No Pipes)
+## Pattern 7: Multinode Output Partitioning (No Pipes)
 
-Multiple cores compute independent output columns in parallel. All cores read the same input, but each reads different weight columns and writes different output columns. No inter-core communication needed.
+Multiple nodes compute independent output columns in parallel. All nodes read the same input, but each reads different weight columns and writes different output columns. No inter-node communication needed.
 
 **Key ideas:**
-- `grid=(NUM_CORES, 1)` distributes work across cores
-- All cores read the SAME input tensor (broadcast read)
-- Each core reads DIFFERENT weight/bias slices based on `core_x`
-- Each core writes DIFFERENT output slices based on `core_x`
+- `grid=(NUM_CORES, 1)` distributes work across nodes
+- All nodes read the SAME input tensor (broadcast read)
+- Each node reads DIFFERENT weight/bias slices based on `core_x`
+- Each node writes DIFFERENT output slices based on `core_x`
 - `buffer_factor=1` for data used only once (bias)
 
 ```python
 # MNIST Layer 1: hidden = relu(x @ w1 + bias1)
-# 8 cores compute 8 chunks of the 1024-wide hidden layer in parallel
+# 8 nodes compute 8 chunks of the 1024-wide hidden layer in parallel
 
 BATCH_TILES = 1
 INPUT_TILES = 25   # 800 input features / 32 = 25 tiles
-CHUNK_TILES = 4    # Each core handles 128 hidden units = 4 tiles
-NUM_CHUNKS = 8     # 1024 hidden / 128 per core = 8 cores
+CHUNK_TILES = 4    # Each node handles 128 hidden units = 4 tiles
+NUM_CHUNKS = 8     # 1024 hidden / 128 per node = 8 nodes
 
 
 @ttl.kernel(grid=(NUM_CHUNKS, 1))
 def layer1_kernel(x, w1, bias1, hidden_out):
-    # Input DFB - same data read by all cores
+    # Input DFB - same data read by all nodes
     x_dfb = ttl.make_dataflow_buffer_like(x, shape=(BATCH_TILES, INPUT_TILES), buffer_factor=1)
 
-    # Weight/bias CBs - each core reads different columns
+    # Weight/bias CBs - each node reads different columns
     w1_dfb = ttl.make_dataflow_buffer_like(w1, shape=(INPUT_TILES, CHUNK_TILES), buffer_factor=1)
     bias1_dfb = ttl.make_dataflow_buffer_like(bias1, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=1)
 
@@ -1680,14 +1680,14 @@ def layer1_kernel(x, w1, bias1, hidden_out):
 
     @ttl.datamovement()
     def dm_read():
-        core_x, _ = ttl.core(dims=2)
+        core_x, _ = ttl.node(dims=2)
 
-        # All cores read the SAME input x
+        # All nodes read the SAME input x
         with x_dfb.reserve() as blk:
             tx = ttl.copy(x[0:BATCH_TILES, 0:INPUT_TILES], blk)
             tx.wait()
 
-        # Each core reads DIFFERENT weight columns based on core_x
+        # Each node reads DIFFERENT weight columns based on core_x
         col_start = core_x * CHUNK_TILES
         col_end = col_start + CHUNK_TILES
 
@@ -1701,9 +1701,9 @@ def layer1_kernel(x, w1, bias1, hidden_out):
 
     @ttl.datamovement()
     def dm_write():
-        core_x, _ = ttl.core(dims=2)
+        core_x, _ = ttl.node(dims=2)
 
-        # Each core writes DIFFERENT output columns
+        # Each node writes DIFFERENT output columns
         col_start = core_x * CHUNK_TILES
         col_end = col_start + CHUNK_TILES
 
@@ -1726,7 +1726,7 @@ Stream weight chunks, accumulate partial matmul results, then apply row-wise sof
 
 ```python
 # MNIST Layer 2: out = softmax(sum_over_chunks(hidden_chunk @ w2_chunk) + bias2)
-# Single core streams 8 chunks and accumulates, then applies row-wise softmax
+# Single node streams 8 chunks and accumulates, then applies row-wise softmax
 
 BATCH_TILES = 1
 CHUNK_TILES = 4    # 128 hidden units per chunk = 4 tiles

@@ -51,7 +51,7 @@ Three goals, in priority order:
 
 ### 1. Maximize Core Utilization (target: 100%)
 
-The kernel MUST use all available cores. If the kernel runs on `grid=(1, 1)`, it is leaving performance on the table. Partition work across cores using the multicore patterns from `/ttl-import`. Check `PERF SUMMARY` for grid size.
+The kernel MUST use all available cores. If the kernel runs on `grid=(1, 1)`, it is leaving performance on the table. Partition work across cores using the multinode patterns from `/ttl-import`. Check `PERF SUMMARY` for grid size.
 
 ### 2. Reduce DRAM Traffic
 

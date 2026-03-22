@@ -12,7 +12,7 @@ from .dfb import DFBStats
 from .constants import TILE_SHAPE
 from .copy import CopyTransaction, copy
 from .decorators import compute, datamovement
-from .corecontext import core
+from .corecontext import node
 from .kernel import kernel
 from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
 from .program import Program
@@ -69,7 +69,7 @@ class _TTLNamespace:
         from .constants import TILE_SHAPE
         from .copy import copy
         from .decorators import compute, datamovement
-        from .corecontext import core, grid_size
+        from .corecontext import node, grid_size
         from .kernel import kernel
         from . import math as math_module
         from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
@@ -81,7 +81,7 @@ class _TTLNamespace:
         self.make_dataflow_buffer_like = make_dataflow_buffer_like
         self.compute = compute
         self.datamovement = datamovement
-        self.core = core
+        self.node = node
         self.copy = copy
         self.transpose = math_module.transpose
         self.Pipe = Pipe

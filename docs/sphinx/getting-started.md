@@ -101,6 +101,17 @@ cmake --build build
 See the [build system documentation](build.md) for all supported build modes and
 CMake options.
 
+## Functional simulator
+
+tt-lang includes a functional simulator that runs kernels as pure Python without requiring Tenstorrent hardware or the full compiler stack. Use it to validate kernel logic and debug with any Python debugger:
+
+```bash
+./bin/ttlang-sim examples/eltwise_add.py
+python -m pytest test/sim/
+```
+
+The simulator typically supports more language features than the compiler at any given point — see the [functionality matrix](specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current coverage. See the [programming guide](programming-guide.md#simulator) for debugger setup and more details.
+
 ## Quick checks
 
 - Full compiler suite: `ninja -C build check-ttlang-all`

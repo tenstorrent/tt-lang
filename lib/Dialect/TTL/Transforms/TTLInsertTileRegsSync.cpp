@@ -58,6 +58,12 @@ struct TTLInsertTileRegsSyncPass
     func::FuncOp funcOp = getOperation();
 
     funcOp.walk([&](ComputeOp computeOp) {
+      // Matmul computes are handled by ttl-lower-matmul-block, which emits
+      // its own sync ops as part of the flat expansion.
+      if (computeOp.containsOp<TileMatmulBlockOp>()) {
+        return;
+      }
+
       Location loc = computeOp.getLoc();
 
       // Find existing acquire preceding this compute. Stop at another compute
