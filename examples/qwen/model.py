@@ -22,7 +22,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from kernels.linear import linear_kernel, linear_bias_kernel
 from kernels.elementwise import add_kernel, silu_mul_kernel
 from kernels.rope import rope_kernel
-from kernels.rmsnorm import rmsnorm
+from kernels.rmsnorm import device_rmsnorm, rmsnorm_mul_kernel
+from kernels.softmax import device_softmax
 from utils import load_checkpoint
 
 TILE = 32
@@ -79,6 +80,18 @@ class QwenModel:
 
         # Final norm weight
         self.final_norm_weight = self._to_device(self.ckpt["final_norm_weight"])
+
+        # Pre-computed scalers for device-side reduce ops
+        self.mean_scaler_device = self._to_device(
+            torch.full((TILE, TILE), 1.0 / self.hidden_size, dtype=torch.bfloat16)
+        )
+        self.ones_scaler_device = self._to_device(
+            torch.ones(TILE, TILE, dtype=torch.bfloat16)
+        )
+        # Attention scale: 1/sqrt(head_dim), pre-applied to Q before matmul
+        self.attn_scale_device = self._to_device(
+            torch.full((TILE, TILE), 1.0 / math.sqrt(self.head_dim), dtype=torch.bfloat16)
+        )
 
         # KV cache (initialized on first prefill)
         self.kv_cache = None
@@ -138,6 +151,28 @@ class QwenModel:
             os.dup2(saved_stderr, stderr_fd)
             os.close(saved_stdout)
             os.close(saved_stderr)
+
+    # -----------------------------------------------------------------
+    # RMSNorm helpers
+    # -----------------------------------------------------------------
+    def _rmsnorm_host(self, x_device, gamma_device):
+        """RMSNorm with host-side reduction. For prefill (all rows matter)."""
+        x_torch = ttnn.to_torch(x_device).float()
+        seq, hidden = x_torch.shape
+        mean_sq = (x_torch ** 2).mean(dim=-1, keepdim=True)
+        rsqrt_val = torch.rsqrt(mean_sq + self.rms_norm_eps)
+        scale = rsqrt_val.expand(-1, TILE).bfloat16().contiguous()
+        if seq % TILE != 0:
+            scale = torch.nn.functional.pad(scale, (0, 0, 0, TILE - seq % TILE))
+        scale_device = self._to_device(scale)
+        y_device = self._alloc_zeros(x_torch.shape)
+        rmsnorm_mul_kernel(x_device, scale_device, gamma_device, y_device)
+        return y_device
+
+    def _rmsnorm_device(self, x_device, gamma_device):
+        """RMSNorm fully on device. For decode (only row 0 matters)."""
+        return device_rmsnorm(x_device, gamma_device,
+                              self.mean_scaler_device, self.device)
 
     # -----------------------------------------------------------------
     # RoPE
@@ -260,13 +295,12 @@ class QwenModel:
                     q_head = torch.nn.functional.pad(q_head, (0, 0, 0, padded_seq - seq_len))
                 q_dev = self._to_device(q_head)
 
-                # Scores = Q[padded_seq, head_dim] @ K^T[head_dim, max_seq]
+                # Scores = Q @ K^T
                 scores_dev = self._alloc_zeros((padded_seq, self.padded_max_seq))
                 linear_kernel(q_dev, k_t_dev, scores_dev)
 
-                # Host softmax — mask: [padded_seq, max_seq]
+                # Host softmax for prefill (device softmax only handles single-row decode)
                 scores = ttnn.to_torch(scores_dev).float()
-                # Expand causal mask to cover full cache width
                 prefill_mask = torch.full((padded_seq, self.padded_max_seq), float("-inf"))
                 prefill_mask[:padded_seq, :padded_seq] = causal_mask
                 scores = scores * scale_val + prefill_mask
@@ -299,6 +333,9 @@ class QwenModel:
         decode_mask = torch.full((TILE, cache_len), float("-inf"))
         decode_mask[0, :attend_len] = 0.0
 
+        # Pre-compute mask on device (same for all heads)
+        decode_mask_dev = self._to_device(decode_mask.bfloat16())
+
         outputs = []
         for kv_idx in range(self.num_kv_heads):
             k_t_dev, v_dev = self._get_kv_device(layer_idx, kv_idx)
@@ -306,21 +343,23 @@ class QwenModel:
             for q_local in range(heads_per_group):
                 q_idx = kv_idx * heads_per_group + q_local
                 q_head = q_heads[0, q_idx, :].contiguous().bfloat16()
+                # Pre-scale Q by 1/sqrt(head_dim) on host (tiny: 1 tile)
+                q_head = q_head * scale_val
                 q_padded = torch.zeros(TILE, self.head_dim, dtype=torch.bfloat16)
                 q_padded[0] = q_head
                 q_dev = self._to_device(q_padded)
 
-                # Scores = Q[TILE, head_dim] @ K^T[head_dim, cache_len]
+                # Scores = scaled_Q @ K^T (already scaled, no post-scale needed)
                 scores_dev = self._alloc_zeros((TILE, cache_len))
                 linear_kernel(q_dev, k_t_dev, scores_dev)
 
-                # Host softmax with decode mask
+                # Host softmax (device softmax needs cross-tile reduce debugging)
                 scores = ttnn.to_torch(scores_dev).float()
-                scores = scores * scale_val + decode_mask
+                scores = scores + decode_mask.float()
                 weights = torch.nn.functional.softmax(scores, dim=-1).bfloat16()
                 weights_dev = self._to_device(weights)
 
-                # Attn output = weights[TILE, cache_len] @ V[cache_len, head_dim]
+                # Attn output = weights @ V
                 head_out_dev = self._alloc_zeros((TILE, self.head_dim))
                 linear_kernel(weights_dev, v_dev, head_out_dev)
                 outputs.append(ttnn.to_torch(head_out_dev)[:1])
@@ -330,12 +369,14 @@ class QwenModel:
     # -----------------------------------------------------------------
     # Transformer layer
     # -----------------------------------------------------------------
-    def _run_mlp(self, post_attn_device, layer_idx, seq_len):
+    def _run_mlp(self, post_attn_device, layer_idx, seq_len, decode=False):
         """MLP block shared between prefill and decode."""
         w = self.layer_weights[layer_idx]
 
-        normed2 = rmsnorm(post_attn_device, w["post_attention_layernorm_weight"],
-                          self.device, self.rms_norm_eps)
+        if decode:
+            normed2 = self._rmsnorm_device(post_attn_device, w["post_attention_layernorm_weight"])
+        else:
+            normed2 = self._rmsnorm_host(post_attn_device, w["post_attention_layernorm_weight"])
 
         gate_out = self._alloc_zeros((seq_len, self.intermediate_size))
         linear_kernel(normed2, w["gate_proj_weight"], gate_out)
@@ -378,8 +419,7 @@ class QwenModel:
         w = self.layer_weights[layer_idx]
         padded_seq = ((seq_len + TILE - 1) // TILE) * TILE
 
-        normed = rmsnorm(x_device, w["input_layernorm_weight"],
-                         self.device, self.rms_norm_eps)
+        normed = self._rmsnorm_host(x_device, w["input_layernorm_weight"])
 
         q_torch, k_torch, v_torch = self._run_attn_projections(normed, layer_idx, padded_seq)
 
@@ -403,8 +443,7 @@ class QwenModel:
         """Decode: single token attention using KV cache."""
         w = self.layer_weights[layer_idx]
 
-        normed = rmsnorm(x_device, w["input_layernorm_weight"],
-                         self.device, self.rms_norm_eps)
+        normed = self._rmsnorm_device(x_device, w["input_layernorm_weight"])
 
         q_torch, k_torch, v_torch = self._run_attn_projections(normed, layer_idx, TILE)
 
@@ -428,7 +467,7 @@ class QwenModel:
         post_attn = self._alloc_zeros((TILE, self.hidden_size))
         add_kernel(x_device, proj_out, post_attn)
 
-        return self._run_mlp(post_attn, layer_idx, TILE)
+        return self._run_mlp(post_attn, layer_idx, TILE, decode=True)
 
     # -----------------------------------------------------------------
     # Public API
@@ -472,8 +511,7 @@ class QwenModel:
 
             self.cache_pos = seq_len
 
-            x_device = rmsnorm(x_device, self.final_norm_weight,
-                               self.device, self.rms_norm_eps)
+            x_device = self._rmsnorm_host(x_device, self.final_norm_weight)
             x_host = ttnn.to_torch(x_device).float()
 
         # lm_head on host
@@ -511,8 +549,7 @@ class QwenModel:
 
             self.cache_pos = pos + 1
 
-            x_device = rmsnorm(x_device, self.final_norm_weight,
-                               self.device, self.rms_norm_eps)
+            x_device = self._rmsnorm_device(x_device, self.final_norm_weight)
             x_host = ttnn.to_torch(x_device).float()
 
         # lm_head on host
