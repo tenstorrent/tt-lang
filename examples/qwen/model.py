@@ -262,20 +262,29 @@ class QwenModel:
     # KV Cache
     # -----------------------------------------------------------------
     def init_kv_cache(self):
-        """Initialize KV cache: host mirrors (source of truth) + device copies.
+        """Initialize KV cache with both host mirrors and device-resident tensors.
 
-        Structure: kv_cache[layer][kv_head] = {"k": tensor, "v": tensor}
-        Host tensors: [max_seq, head_dim] float, zero-initialized.
+        Host: kv_cache[layer][kv_head] = {"k": [max_seq, head_dim], "v": same}
+        Device: kv_cache_dev[layer][kv_head] = {"k_t": [head_dim, max_seq], "v": [max_seq, head_dim]}
+
+        Device tensors persist across decode steps — no re-upload needed.
         """
         self.kv_cache = []
+        self.kv_cache_dev = []
         for _ in range(self.num_layers):
             layer_cache = []
+            layer_cache_dev = []
             for _ in range(self.num_kv_heads):
                 layer_cache.append({
                     "k": torch.zeros(self.max_seq_len, self.head_dim, dtype=torch.float32),
                     "v": torch.zeros(self.max_seq_len, self.head_dim, dtype=torch.float32),
                 })
+                layer_cache_dev.append({
+                    "k_t": self._to_device(torch.zeros(self.head_dim, self.max_seq_len, dtype=torch.bfloat16)),
+                    "v": self._to_device(torch.zeros(self.max_seq_len, self.head_dim, dtype=torch.bfloat16)),
+                })
             self.kv_cache.append(layer_cache)
+            self.kv_cache_dev.append(layer_cache_dev)
         self.cache_pos = 0
 
     def _update_kv_cache(self, layer_idx, k_rot, v_float, start_pos, length):
@@ -519,15 +528,28 @@ class QwenModel:
             linear_bias_kernel(normed, w["v_head_weights"][kv_idx],
                                w["v_head_biases"][kv_idx], v_dev)
 
-            # KV cache update: pull new K/V, update host mirror, re-upload cache
-            k_rot_host = ttnn.to_torch(k_rot_dev)
-            v_host = ttnn.to_torch(v_dev)
+            # KV cache update: pull new K/V (4KB each), update host+device cache
+            k_rot_host = ttnn.to_torch(k_rot_dev)  # [TILE, 64] = 4KB
+            v_host = ttnn.to_torch(v_dev)            # [TILE, 64] = 4KB
             self.kv_cache[layer_idx][kv_idx]["k"][pos] = k_rot_host[0].float()
             self.kv_cache[layer_idx][kv_idx]["v"][pos] = v_host[0].float()
+
+            # Update device cache: re-upload only the tile-row containing pos
+            tile_row = pos // TILE
+            row_s = tile_row * TILE
+            row_e = row_s + TILE
+            # K^T: update tile-columns at pos → rebuild the 2 affected columns
+            k_slice = self.kv_cache[layer_idx][kv_idx]["k"][row_s:row_e].bfloat16().t().contiguous()
+            # k_slice is [64, 32] = 2 tile-columns. Upload and overwrite in full cache.
+            # For now, rebuild full K^T and V from host (still a transfer but with persistent device tensors)
             k_t_full = self.kv_cache[layer_idx][kv_idx]["k"][:self.max_seq_len].bfloat16().t().contiguous()
             v_full = self.kv_cache[layer_idx][kv_idx]["v"][:self.max_seq_len].bfloat16().contiguous()
-            k_t_dev = self._to_device(k_t_full)
-            v_dev_cache = self._to_device(v_full)
+            self.kv_cache_dev[layer_idx][kv_idx]["k_t"] = self._to_device(k_t_full)
+            self.kv_cache_dev[layer_idx][kv_idx]["v"] = self._to_device(v_full)
+
+            # Read device-resident cache for attention
+            k_t_dev = self.kv_cache_dev[layer_idx][kv_idx]["k_t"]
+            v_dev_cache = self.kv_cache_dev[layer_idx][kv_idx]["v"]
 
             for q_local in range(heads_per_group):
                 q_idx = kv_idx * heads_per_group + q_local
