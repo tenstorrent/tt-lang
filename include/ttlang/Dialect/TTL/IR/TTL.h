@@ -68,6 +68,10 @@ constexpr llvm::StringLiteral kTileOffsetAttrName("ttl.tile_offset");
 constexpr llvm::StringLiteral
     kBcastOutputCBIndexAttrName("ttl.bcast_output_cb_index");
 
+/// Output CB index on tile_reduce ops, avoiding SSA tracing during lowering.
+constexpr llvm::StringLiteral
+    kReduceOutputCBIndexAttrName("ttl.reduce_output_cb_index");
+
 /// Marks a copy_tile as a placeholder inserted during DST assignment Phase 1.
 /// Replaced with a proper copy in Phase 2b.
 constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");

@@ -147,6 +147,36 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
                                       bcastOp.getBcastTypeAttr());
       }};
 
+  // ReduceTile: init takes in_cb, scaler_cb, out_cb + reduce_type/dim attrs.
+  // Uninit is also needed after reduce_tile.
+  map[mlir::TypeID::get<ttk::ReduceTileOp>()] = {
+      [](OpBuilder &b, Location l, Operation *computeOp) {
+        auto reduceOp = cast<ttk::ReduceTileOp>(computeOp);
+        auto funcOp = computeOp->getParentOfType<func::FuncOp>();
+        assert(funcOp && "reduce_tile must be inside a function");
+
+        // Look up output CB via the annotated index.
+        auto cbIdxAttr =
+            computeOp->getAttrOfType<IntegerAttr>(kReduceOutputCBIndexAttrName);
+        assert(cbIdxAttr && "expected ttl.reduce_output_cb_index attribute");
+
+        Value outCB;
+        int64_t cbIdx = cbIdxAttr.getInt();
+        funcOp->walk([&](ttk::GetCompileArgValOp argOp) {
+          if (static_cast<int64_t>(argOp.getArgIndex()) == cbIdx) {
+            outCB = argOp.getResult();
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        });
+        assert(outCB && "get_compile_time_arg_val must exist for cb_index");
+
+        ttk::ReduceInitOp::create(b, l, reduceOp.getInCb(),
+                                  reduceOp.getScalingCb(), outCB,
+                                  reduceOp.getReduceTypeAttr(),
+                                  reduceOp.getReduceDimAttr());
+      }};
+
   return map;
 }
 
@@ -190,6 +220,13 @@ static InitKey computeInitKey(Operation *op) {
   if (auto bcast = dyn_cast<ttk::UnaryBcastTileOp>(op)) {
     return {
         typeId, {bcast.getInCb()}, static_cast<int64_t>(bcast.getBcastType())};
+  }
+
+  // For ReduceTile: key includes in_cb, scaler_cb, and reduce_type+dim.
+  if (auto reduce = dyn_cast<ttk::ReduceTileOp>(op)) {
+    int64_t disc = (static_cast<int64_t>(reduce.getReduceType()) << 8) |
+                   static_cast<int64_t>(reduce.getReduceDim());
+    return {typeId, {reduce.getInCb(), reduce.getScalingCb()}, disc};
   }
 
   // For all other ops (SFPU unary/binary, CopyDst): key is just the TypeID.
@@ -269,6 +306,10 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
       } else if (auto bcast = dyn_cast<ttk::UnaryBcastTileOp>(inner)) {
         if (!inputCB) {
           inputCB = bcast.getInCb();
+        }
+      } else if (auto reduce = dyn_cast<ttk::ReduceTileOp>(inner)) {
+        if (!inputCB) {
+          inputCB = reduce.getInCb();
         }
       }
       if (auto pack = dyn_cast<ttk::PackTileOp>(inner)) {
@@ -385,19 +426,38 @@ struct TTKernelInsertInitsPass
         hadError = true;
       }
     });
+    // Validate preconditions: all reduce_tile ops must carry the output CB
+    // index attribute (set during TTL -> TTKernel lowering).
+    moduleOp->walk([&](ttk::ReduceTileOp reduceOp) {
+      if (!reduceOp->hasAttr(kReduceOutputCBIndexAttrName)) {
+        reduceOp->emitOpError(
+            "missing ttl.reduce_output_cb_index attribute; "
+            "cannot insert reduce_init");
+        hadError = true;
+      }
+    });
     if (hadError) {
       signalPassFailure();
       return;
     }
 
     // Phase 2: Insert per-op inits for compute ops.
+    // Also handles reduce_uninit: inserted when transitioning away from
+    // reduce_tile or at sync boundaries after reduce_tile.
     auto computeToInit = buildComputeToInitMap();
     moduleOp->walk([&](Block *block) {
       std::optional<InitKey> prevKey;
+      bool prevWasReduce = false;
 
       for (Operation &op : *block) {
         // Reset tracking at sync boundaries.
         if (isSyncBoundary(&op)) {
+          // Insert reduce_uninit if the previous op was a reduce.
+          if (prevWasReduce) {
+            OpBuilder builder(&op);
+            ttk::ReduceUninitOp::create(builder, op.getLoc());
+            prevWasReduce = false;
+          }
           prevKey = std::nullopt;
           continue;
         }
@@ -406,6 +466,14 @@ struct TTKernelInsertInitsPass
         auto it = computeToInit.find(op.getName().getTypeID());
         if (it == computeToInit.end()) {
           continue;
+        }
+
+        bool isReduce = isa<ttk::ReduceTileOp>(&op);
+
+        // Insert reduce_uninit when transitioning away from reduce.
+        if (prevWasReduce && !isReduce) {
+          OpBuilder builder(&op);
+          ttk::ReduceUninitOp::create(builder, op.getLoc());
         }
 
         // Compute init key for this op.
@@ -418,6 +486,17 @@ struct TTKernelInsertInitsPass
         }
 
         prevKey = key;
+        prevWasReduce = isReduce;
+      }
+
+      // If the block ends with reduce ops, insert reduce_uninit at the end.
+      if (prevWasReduce && !block->empty()) {
+        OpBuilder builder(block, block->end());
+        // Insert before the terminator if one exists.
+        if (block->back().hasTrait<OpTrait::IsTerminator>()) {
+          builder.setInsertionPoint(&block->back());
+        }
+        ttk::ReduceUninitOp::create(builder, block->back().getLoc());
       }
     });
   }

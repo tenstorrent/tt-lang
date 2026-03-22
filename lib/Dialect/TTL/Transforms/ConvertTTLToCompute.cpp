@@ -904,6 +904,97 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Reduce Lowering
+//===----------------------------------------------------------------------===//
+
+/// Generic reduce lowering: TTL tensor reduce op -> ttl.compute with tile
+/// reduce. Parameterized on the high-level op type and the tile-level op type.
+template <typename ReduceOpTy, typename TileReduceOpTy>
+struct LowerReduceToCompute : OpRewritePattern<ReduceOpTy> {
+  using OpRewritePattern<ReduceOpTy>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(ReduceOpTy op,
+                                PatternRewriter &rewriter) const override {
+    auto outputType = getTensorType(op.getResult());
+    auto inputType = getTensorType(op.getInput());
+    auto scalerType = getTensorType(op.getScaler());
+    if (!outputType || !inputType || !scalerType) {
+      return failure();
+    }
+
+    Value inputCb = getAttachedCB(op.getInput());
+    Value scalerCb = getAttachedCB(op.getScaler());
+    Value outCb = getAttachedCB(op.getOutput());
+    if (!inputCb) {
+      return op.emitError("reduce input must be attached to a circular buffer");
+    }
+    if (!scalerCb) {
+      return op.emitError(
+          "reduce scaler must be attached to a circular buffer");
+    }
+    if (!outCb) {
+      return op.emitError(
+          "reduce output must be attached to a circular buffer");
+    }
+
+    if (inputType.getRank() != 2 || outputType.getRank() != 2) {
+      return op.emitError("reduce requires rank-2 tensors");
+    }
+
+    Location loc = op.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    AffineMap outputMap = AffineMap::getMultiDimIdentityMap(2, ctx);
+    AffineMap inputMap = AffineMap::getMultiDimIdentityMap(2, ctx);
+    AffineMap scalerMap = AffineMap::getMultiDimIdentityMap(2, ctx);
+
+    SmallVector<Attribute> maps = {AffineMapAttr::get(inputMap),
+                                   AffineMapAttr::get(scalerMap),
+                                   AffineMapAttr::get(outputMap),
+                                   AffineMapAttr::get(outputMap)};
+
+    SmallVector<Attribute> iterTypes(outputType.getRank(),
+                                     rewriter.getStringAttr("parallel"));
+
+    if (findLastStore(op)) {
+      insertAtLastStore(rewriter, op);
+    }
+
+    Value init = buildInitTensor(rewriter, loc, outputType, op.getOutput());
+    Value initAttached =
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
+
+    auto computeOp = ComputeOp::create(
+        rewriter, loc, TypeRange{outputType},
+        ValueRange{op.getInput(), op.getScaler(), op.getOutput()},
+        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+        rewriter.getArrayAttr(iterTypes));
+
+    Block *body = rewriter.createBlock(&computeOp.getBody());
+    Type scalarType = outputType.getElementType();
+    Type tileType = ttcore::TileType::get(scalarType);
+    body->addArgument(tileType, loc); // input
+    body->addArgument(tileType, loc); // scaler
+    body->addArgument(tileType, loc); // output (for CB tracking)
+    body->addArgument(tileType, loc); // init
+
+    rewriter.setInsertionPointToStart(body);
+    Value result = TileReduceOpTy::create(
+        rewriter, loc, tileType, body->getArgument(0), body->getArgument(1),
+        body->getArgument(2), op.getReduceDim());
+    emitTileStores(rewriter, loc, result, op.getOperation());
+    YieldOp::create(rewriter, loc);
+    rewriter.replaceOp(op, computeOp.getResult(0));
+    return success();
+  }
+};
+
+using LowerReduceSumToCompute =
+    LowerReduceToCompute<ReduceSumOp, TileReduceSumOp>;
+using LowerReduceMaxToCompute =
+    LowerReduceToCompute<ReduceMaxOp, TileReduceMaxOp>;
+
+//===----------------------------------------------------------------------===//
 // Matmul Lowering
 //===----------------------------------------------------------------------===//
 
@@ -1107,6 +1198,8 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   patterns.add<LowerBcastToCompute>(ctx);
+  patterns.add<LowerReduceSumToCompute>(ctx);
+  patterns.add<LowerReduceMaxToCompute>(ctx);
   patterns.add<LowerMatmulToCompute>(ctx);
   patterns.add<LowerStoreToCompute>(ctx);
 }

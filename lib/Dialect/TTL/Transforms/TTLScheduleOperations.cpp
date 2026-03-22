@@ -45,6 +45,13 @@ static int64_t getInitAffinity(Operation *op) {
   if (auto bcast = dyn_cast<TileBcastOp>(op)) {
     return static_cast<int64_t>(bcast.getBcastType());
   }
+  // TileReduceSumOp / TileReduceMaxOp: group by reduce_dim.
+  if (auto reduce = dyn_cast<TileReduceSumOp>(op)) {
+    return static_cast<int64_t>(reduce.getReduceDim());
+  }
+  if (auto reduce = dyn_cast<TileReduceMaxOp>(op)) {
+    return static_cast<int64_t>(reduce.getReduceDim());
+  }
   // CopyTileOp: group by input CB so copies from the same CB stay adjacent
   // (avoiding redundant copy_tile_init re-inits). After loop lowering, the
   // source is a scalar tile from tensor.extract — trace through it to reach

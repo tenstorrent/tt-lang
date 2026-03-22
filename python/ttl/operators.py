@@ -463,6 +463,98 @@ def broadcast(input: TensorBlock, output: TensorBlock, dims: List[int]) -> Tenso
     return ttl.bcast(output.type, input, output, bcast_attr)
 
 
+@syntax("reduce_sum")
+def reduce_sum(
+    input: TensorBlock,
+    scaler: TensorBlock,
+    output: TensorBlock,
+    dims: List[int],
+) -> TensorBlock:
+    """
+    Reduce-sum along specified dimension.
+
+    Reduces a tile by summing along the given dimension, applying the scaler
+    during reduction. Only single-dimension reduction is supported.
+
+    Args:
+        input: Input tensor (CB-attached)
+        scaler: Scaler tensor (CB-attached, e.g. 1/N for mean)
+        output: Output tensor (CB-attached, used for output CB tracking)
+        dims: Dimension to reduce: [0] reduces rows, [1] reduces columns
+
+    Returns:
+        Result tensor with reduced values
+    """
+    from ttl.ir import IntegerAttr, IntegerType
+
+    if isinstance(input.type, RankedTensorType) and input.type.rank != 2:
+        raise ValueError(
+            f"reduce_sum only supports 2D tensors, got rank {input.type.rank}."
+        )
+
+    # Hardware dimension mapping:
+    # - REDUCE_ROW (0): reduces each row to one value (sum across columns)
+    #   → Python dims=[1] (reduce along column axis)
+    # - REDUCE_COL (1): reduces each column to one value (sum across rows)
+    #   → Python dims=[0] (reduce along row axis)
+    dims_set = set(dims)
+    if dims_set == {0}:
+        reduce_dim_val = 1  # REDUCE_COL: collapse rows
+    elif dims_set == {1}:
+        reduce_dim_val = 0  # REDUCE_ROW: collapse columns
+    else:
+        raise ValueError(f"Invalid dims: {dims}. Must be [0] or [1]")
+
+    ctx = input.type.context
+    i32_type = IntegerType.get_signless(32, ctx)
+    reduce_dim_attr = IntegerAttr.get(i32_type, reduce_dim_val)
+    return ttl.reduce_sum(output.type, input, scaler, output, reduce_dim_attr)
+
+
+@syntax("reduce_max")
+def reduce_max(
+    input: TensorBlock,
+    scaler: TensorBlock,
+    output: TensorBlock,
+    dims: List[int],
+) -> TensorBlock:
+    """
+    Reduce-max along specified dimension.
+
+    Reduces a tile by taking the max along the given dimension, applying the
+    scaler during reduction. Only single-dimension reduction is supported.
+
+    Args:
+        input: Input tensor (CB-attached)
+        scaler: Scaler tensor (CB-attached, typically all 1.0)
+        output: Output tensor (CB-attached, used for output CB tracking)
+        dims: Dimension to reduce: [0] reduces rows, [1] reduces columns
+
+    Returns:
+        Result tensor with reduced values
+    """
+    from ttl.ir import IntegerAttr, IntegerType
+
+    if isinstance(input.type, RankedTensorType) and input.type.rank != 2:
+        raise ValueError(
+            f"reduce_max only supports 2D tensors, got rank {input.type.rank}."
+        )
+
+    # Hardware dimension mapping (same as reduce_sum above)
+    dims_set = set(dims)
+    if dims_set == {0}:
+        reduce_dim_val = 1  # REDUCE_COL: collapse rows
+    elif dims_set == {1}:
+        reduce_dim_val = 0  # REDUCE_ROW: collapse columns
+    else:
+        raise ValueError(f"Invalid dims: {dims}. Must be [0] or [1]")
+
+    ctx = input.type.context
+    i32_type = IntegerType.get_signless(32, ctx)
+    reduce_dim_attr = IntegerAttr.get(i32_type, reduce_dim_val)
+    return ttl.reduce_max(output.type, input, scaler, output, reduce_dim_attr)
+
+
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
@@ -470,5 +562,7 @@ __all__ = [
     "core",
     "grid_size",
     "signpost",
+    "reduce_sum",
+    "reduce_max",
     *_generated_all,
 ]

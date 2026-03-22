@@ -94,6 +94,39 @@ struct TTLAnnotateCBAssociationsPass
 
       bcast->setAttr(kBcastOutputCBIndexAttrName, bindOp.getCbIndexAttr());
     });
+
+    // Annotate tile_reduce_sum and tile_reduce_max ops with their output CB
+    // index so the conversion pass can look it up without SSA tracing.
+    auto annotateReduceOutput = [&](Operation *reduceOp, Value output) {
+      Value cb = getAttachedCB(output);
+      if (!cb) {
+        reduceOp->emitError(
+            "output does not have an attached circular buffer");
+        signalPassFailure();
+        return;
+      }
+      auto bindOp = cb.getDefiningOp<BindCBOp>();
+      if (!bindOp) {
+        auto diag = reduceOp->emitError()
+                    << "output circular buffer is not from ttl.bind_cb; "
+                       "cb_index required for reduce lowering";
+        diag.attachNote(cb.getLoc()) << "circular buffer defined here";
+        signalPassFailure();
+        return;
+      }
+      int64_t cbIndex = bindOp.getCbIndexAttr().getInt();
+      assert(cbIndex >= 0 && cbIndex < kMaxCircularBuffers &&
+             "cb_index out of range (BindCBOp verifier bug?)");
+      reduceOp->setAttr(kReduceOutputCBIndexAttrName,
+                        bindOp.getCbIndexAttr());
+    };
+
+    func.walk([&](TileReduceSumOp op) {
+      annotateReduceOutput(op, op.getOutput());
+    });
+    func.walk([&](TileReduceMaxOp op) {
+      annotateReduceOutput(op, op.getOutput());
+    });
   }
 };
 

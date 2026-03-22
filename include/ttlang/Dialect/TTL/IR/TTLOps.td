@@ -724,6 +724,72 @@ def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait]> {
 }
 
 //===----------------------------------------------------------------------===//
+// Reduce Operations
+//===----------------------------------------------------------------------===//
+
+def TTL_ReduceSumOp : TTL_Op<"reduce_sum", []> {
+  let summary = "Reduce-sum a tensor along a specified dimension";
+  let description = [{
+    Reduces a tensor by summing along the specified dimension.
+    Requires a scaler tensor (typically 1/N for mean, or 1.0 for raw sum).
+    The hardware applies the scaler during reduction.
+
+    reduce_dim specifies the reduction dimension:
+    - Row: reduce across rows (output has 1 row, N cols)
+    - Col: reduce across columns (output: N rows, 1 col)
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$scaler, AnyType:$output,
+                       TTL_ReduceDimAttr:$reduce_dim);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $scaler `,` $output $reduce_dim attr-dict `:` `(` type($input) `,` type($scaler) `,` type($output) `)` `->` type($result)";
+}
+
+def TTL_ReduceMaxOp : TTL_Op<"reduce_max", []> {
+  let summary = "Reduce-max a tensor along a specified dimension";
+  let description = [{
+    Reduces a tensor by taking the max along the specified dimension.
+    Requires a scaler tensor (typically 1.0).
+    The hardware applies the scaler during reduction.
+
+    reduce_dim specifies the reduction dimension:
+    - Row: reduce across rows (output has 1 row, N cols)
+    - Col: reduce across columns (output: N rows, 1 col)
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$scaler, AnyType:$output,
+                       TTL_ReduceDimAttr:$reduce_dim);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $scaler `,` $output $reduce_dim attr-dict `:` `(` type($input) `,` type($scaler) `,` type($output) `)` `->` type($result)";
+}
+
+def TTL_TileReduceSumOp : TTL_TileOp<"tile_reduce_sum", [TTL_CBInputTileOpTrait]> {
+  let summary = "Tile-level reduce-sum operation";
+  let description = [{
+    Reduces a tile by summing along the specified dimension.
+    Maps to ttkernel.reduce_init + reduce_tile + reduce_uninit with
+    reduce_type=Sum. Reads input and scaler from CBs, writes result to DST.
+    The output operand carries the output CB for init-time PACK configuration.
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$scaler, AnyType:$output,
+                       TTL_ReduceDimAttr:$reduce_dim);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $scaler `,` $output $reduce_dim attr-dict `:` `(` type($input) `,` type($scaler) `,` type($output) `)` `->` type($result)";
+}
+
+def TTL_TileReduceMaxOp : TTL_TileOp<"tile_reduce_max", [TTL_CBInputTileOpTrait]> {
+  let summary = "Tile-level reduce-max operation";
+  let description = [{
+    Reduces a tile by taking the max along the specified dimension.
+    Maps to ttkernel.reduce_init + reduce_tile + reduce_uninit with
+    reduce_type=Max. Reads input and scaler from CBs, writes result to DST.
+    The output operand carries the output CB for init-time PACK configuration.
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$scaler, AnyType:$output,
+                       TTL_ReduceDimAttr:$reduce_dim);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $scaler `,` $output $reduce_dim attr-dict `:` `(` type($input) `,` type($scaler) `,` type($output) `)` `->` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
 // Matrix Multiplication
 //===----------------------------------------------------------------------===//
 

@@ -756,6 +756,142 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Reduce Tile Op Lowering
+//===----------------------------------------------------------------------===//
+
+/// Convert TTL ReduceDim to TTKernel ReduceDim.
+static ttk::ReduceDim convertReduceDim(ttl::ReduceDim ttlDim) {
+  switch (ttlDim) {
+  case ttl::ReduceDim::Row:
+    return ttk::ReduceDim::Row;
+  case ttl::ReduceDim::Col:
+    return ttk::ReduceDim::Col;
+  }
+  llvm_unreachable("unknown ReduceDim");
+}
+
+/// Lower TTL tile_reduce_sum / tile_reduce_max to TTKernel reduce ops.
+/// Emits: reduce_init, reduce_tile, reduce_uninit.
+/// Parameterized on the TTL tile op type and the TTKernel reduce type.
+template <typename TileReduceOpTy, ttk::ReduceType kReduceType>
+struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOpTy> {
+  using OpConversionPattern<TileReduceOpTy>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileReduceOpTy op, typename TileReduceOpTy::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto funcOp = op->template getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "op not in function");
+    }
+
+    auto *typeConverter = this->getTypeConverter();
+
+    // Look up input CB.
+    auto inCB =
+        lookupAndConvertCB(op.getInput(), funcOp, typeConverter, rewriter, loc);
+    if (failed(inCB)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert input CB");
+    }
+
+    // Look up scaler CB.
+    auto scalerCB = lookupAndConvertCB(op.getScaler(), funcOp, typeConverter,
+                                       rewriter, loc);
+    if (failed(scalerCB)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert scaler CB");
+    }
+
+    // Look up output CB (needed for reduce_init).
+    auto outCB = lookupAndConvertCB(op.getOutput(), funcOp, typeConverter,
+                                    rewriter, loc);
+    if (failed(outCB)) {
+      // Try the output CB index annotation.
+      if (auto cbIdx =
+              op->template getAttrOfType<IntegerAttr>(
+                  kReduceOutputCBIndexAttrName)) {
+        Value cb;
+        funcOp->walk([&](BindCBOp bindOp) {
+          if (bindOp.getCbIndexAttr().getInt() == cbIdx.getInt()) {
+            cb = bindOp.getResult();
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        });
+        if (cb) {
+          outCB =
+              utils::convertTTLCBToTTKernel(cb, rewriter, loc, typeConverter);
+        }
+      }
+      if (failed(outCB)) {
+        return rewriter.notifyMatchFailure(op,
+                                           "cannot find/convert output CB");
+      }
+    }
+
+    // Get DST index from attribute (assigned by TTLAssignDST pass).
+    auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    int64_t dstIdxVal = dstIdxAttr.getInt();
+    Value dstIdx = arith::ConstantIndexOp::create(rewriter, loc, dstIdxVal);
+
+    // Get input CB tile index.
+    auto inTensorShape = getOperandTensorShape(op.getInput());
+    if (!inTensorShape) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot determine input tensor shape for CB indexing");
+    }
+    AffineMap identity = AffineMap::getMultiDimIdentityMap(
+        inTensorShape->size(), rewriter.getContext());
+    auto inCBIdx =
+        utils::computeCBTileIndex(op, rewriter, identity, *inTensorShape,
+                                  *inTensorShape, inTensorShape->size());
+    if (failed(inCBIdx)) {
+      return failure();
+    }
+
+    // Scaler CB tile index (same shape iteration).
+    auto scalerTensorShape = getOperandTensorShape(op.getScaler());
+    if (!scalerTensorShape) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot determine scaler tensor shape for CB indexing");
+    }
+    AffineMap scalerIdentity = AffineMap::getMultiDimIdentityMap(
+        scalerTensorShape->size(), rewriter.getContext());
+    auto scalerCBIdx = utils::computeCBTileIndex(
+        op, rewriter, scalerIdentity, *scalerTensorShape, *scalerTensorShape,
+        scalerTensorShape->size());
+    if (failed(scalerCBIdx)) {
+      return failure();
+    }
+
+    auto ttkReduceDim = convertReduceDim(op.getReduceDim());
+
+    // Emit reduce_tile (init/uninit inserted by ttkernel-insert-inits pass).
+    auto reduceOp = ttk::ReduceTileOp::create(
+        rewriter, loc, *inCB, *scalerCB, *inCBIdx, *scalerCBIdx, dstIdx,
+        kReduceType, ttkReduceDim);
+
+    // Propagate output CB index for ttkernel-insert-inits.
+    if (auto cbIdx = op->template getAttrOfType<IntegerAttr>(
+            kReduceOutputCBIndexAttrName)) {
+      reduceOp->setAttr(kReduceOutputCBIndexAttrName, cbIdx);
+    }
+
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
+using TTLTileReduceSumToTTKernel =
+    TTLTileReduceToTTKernel<TileReduceSumOp, ttk::ReduceType::Sum>;
+using TTLTileReduceMaxToTTKernel =
+    TTLTileReduceToTTKernel<TileReduceMaxOp, ttk::ReduceType::Max>;
+
+//===----------------------------------------------------------------------===//
 // Tile Op Lowerings - Generated from TTLElementwiseOps.def
 //===----------------------------------------------------------------------===//
 
@@ -926,6 +1062,10 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // Bcast ops need the type converter for CB lookup.
   patterns.add<TTLTileBcastToTTKernel>(*typeConverter, ctx);
+
+  // Reduce ops need the type converter for CB lookup.
+  patterns.add<TTLTileReduceSumToTTKernel>(*typeConverter, ctx);
+  patterns.add<TTLTileReduceMaxToTTKernel>(*typeConverter, ctx);
 
   // Matmul block needs the type converter for CB lookup.
   patterns.add<TTLTileMatmulBlockToTTKernel>(*typeConverter, ctx);
