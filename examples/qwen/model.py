@@ -1,0 +1,551 @@
+# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+Qwen 2.5 0.5B-Instruct model wrapper for tt-lang.
+
+Manages weight loading, device upload, KV cache, and the full forward pass
+for both prefill and decode phases.
+"""
+
+import contextlib
+import io
+import math
+import os
+import sys
+import time
+
+import torch
+import ttnn
+
+sys.path.insert(0, os.path.dirname(__file__))
+from kernels.linear import linear_kernel, linear_bias_kernel
+from kernels.elementwise import add_kernel, silu_mul_kernel
+from kernels.rmsnorm import rmsnorm
+from utils import load_checkpoint
+
+TILE = 32
+
+
+class QwenModel:
+    """Qwen 2.5 0.5B-Instruct running on Tenstorrent Blackhole via tt-lang."""
+
+    def __init__(self, device, checkpoint_path=None):
+        self.device = device
+
+        # Load checkpoint
+        if checkpoint_path is None:
+            checkpoint_path = os.path.join(
+                os.path.dirname(__file__), "weights", "qwen2.5-0.5b.pt"
+            )
+        print(f"Loading checkpoint from {checkpoint_path}...")
+        self.ckpt = torch.load(checkpoint_path, weights_only=True)
+        self.config = self.ckpt["config"]
+
+        self.hidden_size = self.config["hidden_size"]       # 896
+        self.num_layers = self.config["num_layers"]          # 24
+        self.num_q_heads = self.config["num_q_heads"]        # 14
+        self.num_kv_heads = self.config["num_kv_heads"]      # 2
+        self.head_dim = self.config["head_dim"]              # 64
+        self.intermediate_size = self.config["intermediate_size"]  # 4864
+        self.vocab_size = self.config["vocab_size"]          # 151936
+        self.rms_norm_eps = self.config["rms_norm_eps"]      # 1e-6
+        self.max_seq_len = self.config["max_seq_len"]        # 512
+        self.padded_max_seq = ((self.max_seq_len + TILE - 1) // TILE) * TILE  # 512
+
+        # RoPE tables (host-side, float)
+        self.rope_cos = self.ckpt["rope_cos"].float()
+        self.rope_sin = self.ckpt["rope_sin"].float()
+
+        # Embedding weights (host-side for lookup)
+        self.embed_weight = self.ckpt["embed_weight"].float()
+
+        # Upload layer weights to device
+        print(f"Uploading {self.num_layers} layers to device...")
+        t0 = time.time()
+        self.layer_weights = []
+        for i in range(self.num_layers):
+            layer_data = self.ckpt["layers"][i]
+            layer_on_device = {
+                k: self._to_device(v) for k, v in layer_data.items()
+            }
+            self.layer_weights.append(layer_on_device)
+            if (i + 1) % 8 == 0:
+                print(f"  {i + 1}/{self.num_layers} layers uploaded")
+        print(f"  All layers uploaded in {time.time() - t0:.1f}s")
+
+        # Final norm weight
+        self.final_norm_weight = self._to_device(self.ckpt["final_norm_weight"])
+
+        # KV cache (initialized on first prefill)
+        self.kv_cache = None
+        self.cache_pos = 0  # number of positions filled
+
+        # Quiet mode: suppress compilation output
+        self.quiet = False
+        self._compile_log = os.path.join(
+            os.path.dirname(__file__), "compile.log"
+        )
+
+    # -----------------------------------------------------------------
+    # Helpers
+    # -----------------------------------------------------------------
+    def _to_device(self, tensor):
+        return ttnn.from_torch(
+            tensor, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+            device=self.device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+
+    def _alloc_zeros(self, shape):
+        return self._to_device(torch.zeros(shape, dtype=torch.bfloat16))
+
+    @contextlib.contextmanager
+    def _suppress_output(self):
+        """Redirect stdout/stderr to compile log when quiet mode is on.
+
+        Uses fd-level redirection to also capture C++ output from tt-metal
+        runtime, which writes directly to fd 1/2 bypassing Python's sys.stdout.
+        """
+        if not self.quiet:
+            yield
+            return
+
+        # Flush Python buffers first
+        sys.stdout.flush()
+        sys.stderr.flush()
+
+        # Save original file descriptors
+        stdout_fd = sys.stdout.fileno()
+        stderr_fd = sys.stderr.fileno()
+        saved_stdout = os.dup(stdout_fd)
+        saved_stderr = os.dup(stderr_fd)
+
+        try:
+            log_fd = os.open(self._compile_log,
+                             os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+            os.dup2(log_fd, stdout_fd)
+            os.dup2(log_fd, stderr_fd)
+            os.close(log_fd)
+            yield
+        finally:
+            # Flush before restoring
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os.dup2(saved_stdout, stdout_fd)
+            os.dup2(saved_stderr, stderr_fd)
+            os.close(saved_stdout)
+            os.close(saved_stderr)
+
+    # -----------------------------------------------------------------
+    # RoPE
+    # -----------------------------------------------------------------
+    def _rotate_half(self, x):
+        x1 = x[..., : x.shape[-1] // 2]
+        x2 = x[..., x.shape[-1] // 2 :]
+        return torch.cat((-x2, x1), dim=-1)
+
+    def _apply_rope_prefill(self, q, k, seq_len):
+        """Apply RoPE to full sequence (prefill)."""
+        cos = self.rope_cos[:seq_len]
+        sin = self.rope_sin[:seq_len]
+
+        def apply_rotary(t, num_heads):
+            t = t.view(seq_len, num_heads, self.head_dim)
+            cos_t = cos.unsqueeze(1)
+            sin_t = sin.unsqueeze(1)
+            return (t * cos_t + self._rotate_half(t) * sin_t).view(
+                seq_len, num_heads * self.head_dim
+            )
+
+        return apply_rotary(q, self.num_q_heads), apply_rotary(k, self.num_kv_heads)
+
+    def _apply_rope_single(self, q, k, pos):
+        """Apply RoPE to a single position (decode)."""
+        cos = self.rope_cos[pos:pos+1]  # [1, head_dim]
+        sin = self.rope_sin[pos:pos+1]
+
+        def apply_rotary(t, num_heads):
+            # t: [1, num_heads * head_dim]
+            t = t.view(1, num_heads, self.head_dim)
+            cos_t = cos.unsqueeze(1)
+            sin_t = sin.unsqueeze(1)
+            return (t * cos_t + self._rotate_half(t) * sin_t).view(
+                1, num_heads * self.head_dim
+            )
+
+        return apply_rotary(q, self.num_q_heads), apply_rotary(k, self.num_kv_heads)
+
+    # -----------------------------------------------------------------
+    # KV Cache
+    # -----------------------------------------------------------------
+    def init_kv_cache(self):
+        """Initialize KV cache: host mirrors (source of truth) + device copies.
+
+        Structure: kv_cache[layer][kv_head] = {"k": tensor, "v": tensor}
+        Host tensors: [max_seq, head_dim] float, zero-initialized.
+        """
+        self.kv_cache = []
+        for _ in range(self.num_layers):
+            layer_cache = []
+            for _ in range(self.num_kv_heads):
+                layer_cache.append({
+                    "k": torch.zeros(self.max_seq_len, self.head_dim, dtype=torch.float32),
+                    "v": torch.zeros(self.max_seq_len, self.head_dim, dtype=torch.float32),
+                })
+            self.kv_cache.append(layer_cache)
+        self.cache_pos = 0
+
+    def _update_kv_cache(self, layer_idx, k_rot, v_float, start_pos, length):
+        """Update host KV cache mirrors for a range of positions.
+
+        k_rot: [length, num_kv_heads * head_dim] float
+        v_float: [length, num_kv_heads * head_dim] float
+        """
+        k_heads = k_rot.view(length, self.num_kv_heads, self.head_dim)
+        v_heads = v_float.view(length, self.num_kv_heads, self.head_dim)
+
+        for kv_idx in range(self.num_kv_heads):
+            self.kv_cache[layer_idx][kv_idx]["k"][start_pos:start_pos+length] = k_heads[:, kv_idx]
+            self.kv_cache[layer_idx][kv_idx]["v"][start_pos:start_pos+length] = v_heads[:, kv_idx]
+
+    def _get_kv_device(self, layer_idx, kv_idx):
+        """Upload KV cache to device DRAM, return K^T and V as device tensors.
+
+        Always uses padded_max_seq (512) for consistent tensor shapes,
+        avoiding kernel recompilation as the cache grows.
+
+        Returns:
+            k_t_dev: [head_dim, padded_max_seq] on device
+            v_dev: [padded_max_seq, head_dim] on device
+        """
+        cache = self.kv_cache[layer_idx][kv_idx]
+
+        # K^T: [head_dim, max_seq] — full cache, zeros beyond current pos
+        k_t = cache["k"][:self.max_seq_len].bfloat16().t().contiguous()
+        k_t_dev = self._to_device(k_t)
+
+        # V: [max_seq, head_dim]
+        v = cache["v"][:self.max_seq_len].bfloat16().contiguous()
+        v_dev = self._to_device(v)
+
+        return k_t_dev, v_dev
+
+    # -----------------------------------------------------------------
+    # Attention
+    # -----------------------------------------------------------------
+    def _attention_prefill(self, q_rot, k_rot, v_float, layer_idx, seq_len, causal_mask):
+        """GQA attention for prefill: uses freshly computed K,V and stores to cache."""
+        scale_val = 1.0 / math.sqrt(self.head_dim)
+        heads_per_group = self.num_q_heads // self.num_kv_heads
+
+        # Store K,V into cache
+        self._update_kv_cache(layer_idx, k_rot, v_float, 0, seq_len)
+
+        q_heads = q_rot.view(seq_len, self.num_q_heads, self.head_dim)
+
+        outputs = []
+        for kv_idx in range(self.num_kv_heads):
+            # Get cached K^T and V on device (full max_seq_len shape)
+            k_t_dev, v_dev = self._get_kv_device(layer_idx, kv_idx)
+
+            for q_local in range(heads_per_group):
+                q_idx = kv_idx * heads_per_group + q_local
+                q_head = q_heads[:seq_len, q_idx, :].contiguous().bfloat16()
+                # Pad Q to tile boundary
+                padded_seq = ((seq_len + TILE - 1) // TILE) * TILE
+                if padded_seq > seq_len:
+                    q_head = torch.nn.functional.pad(q_head, (0, 0, 0, padded_seq - seq_len))
+                q_dev = self._to_device(q_head)
+
+                # Scores = Q[padded_seq, head_dim] @ K^T[head_dim, max_seq]
+                scores_dev = self._alloc_zeros((padded_seq, self.padded_max_seq))
+                linear_kernel(q_dev, k_t_dev, scores_dev)
+
+                # Host softmax — mask: [padded_seq, max_seq]
+                scores = ttnn.to_torch(scores_dev).float()
+                # Expand causal mask to cover full cache width
+                prefill_mask = torch.full((padded_seq, self.padded_max_seq), float("-inf"))
+                prefill_mask[:padded_seq, :padded_seq] = causal_mask
+                scores = scores * scale_val + prefill_mask
+                weights = torch.nn.functional.softmax(scores, dim=-1).bfloat16()
+                weights_dev = self._to_device(weights)
+
+                # Attn output = weights[padded_seq, max_seq] @ V[max_seq, head_dim]
+                head_out_dev = self._alloc_zeros((padded_seq, self.head_dim))
+                linear_kernel(weights_dev, v_dev, head_out_dev)
+                outputs.append(ttnn.to_torch(head_out_dev)[:seq_len])
+
+        return torch.cat(outputs, dim=-1).bfloat16()
+
+    def _attention_decode(self, q_rot, layer_idx, pos):
+        """GQA attention for decode: Q is single position, K/V from full cache.
+
+        Uses fixed max_seq_len (512) for all tensor shapes to avoid recompilation.
+        The decode mask ensures only positions 0..pos are attended to.
+        """
+        scale_val = 1.0 / math.sqrt(self.head_dim)
+        heads_per_group = self.num_q_heads // self.num_kv_heads
+        attend_len = pos + 1
+        cache_len = self.padded_max_seq  # always 512
+
+        q_heads = q_rot.view(1, self.num_q_heads, self.head_dim)
+
+        # Decode mask: [TILE, cache_len]
+        # Row 0: attend to 0..pos, -inf for pos+1..cache_len-1
+        # Rows 1..31: all -inf (padding rows)
+        decode_mask = torch.full((TILE, cache_len), float("-inf"))
+        decode_mask[0, :attend_len] = 0.0
+
+        outputs = []
+        for kv_idx in range(self.num_kv_heads):
+            k_t_dev, v_dev = self._get_kv_device(layer_idx, kv_idx)
+
+            for q_local in range(heads_per_group):
+                q_idx = kv_idx * heads_per_group + q_local
+                q_head = q_heads[0, q_idx, :].contiguous().bfloat16()
+                q_padded = torch.zeros(TILE, self.head_dim, dtype=torch.bfloat16)
+                q_padded[0] = q_head
+                q_dev = self._to_device(q_padded)
+
+                # Scores = Q[TILE, head_dim] @ K^T[head_dim, cache_len]
+                scores_dev = self._alloc_zeros((TILE, cache_len))
+                linear_kernel(q_dev, k_t_dev, scores_dev)
+
+                # Host softmax with decode mask
+                scores = ttnn.to_torch(scores_dev).float()
+                scores = scores * scale_val + decode_mask
+                weights = torch.nn.functional.softmax(scores, dim=-1).bfloat16()
+                weights_dev = self._to_device(weights)
+
+                # Attn output = weights[TILE, cache_len] @ V[cache_len, head_dim]
+                head_out_dev = self._alloc_zeros((TILE, self.head_dim))
+                linear_kernel(weights_dev, v_dev, head_out_dev)
+                outputs.append(ttnn.to_torch(head_out_dev)[:1])
+
+        return torch.cat(outputs, dim=-1).bfloat16()
+
+    # -----------------------------------------------------------------
+    # Transformer layer
+    # -----------------------------------------------------------------
+    def _run_mlp(self, post_attn_device, layer_idx, seq_len):
+        """MLP block shared between prefill and decode."""
+        w = self.layer_weights[layer_idx]
+
+        normed2 = rmsnorm(post_attn_device, w["post_attention_layernorm_weight"],
+                          self.device, self.rms_norm_eps)
+
+        gate_out = self._alloc_zeros((seq_len, self.intermediate_size))
+        linear_kernel(normed2, w["gate_proj_weight"], gate_out)
+
+        up_out = self._alloc_zeros((seq_len, self.intermediate_size))
+        linear_kernel(normed2, w["up_proj_weight"], up_out)
+
+        hidden = self._alloc_zeros((seq_len, self.intermediate_size))
+        silu_mul_kernel(gate_out, up_out, hidden)
+
+        mlp_out = self._alloc_zeros((seq_len, self.hidden_size))
+        linear_kernel(hidden, w["down_proj_weight"], mlp_out)
+
+        output = self._alloc_zeros((seq_len, self.hidden_size))
+        add_kernel(post_attn_device, mlp_out, output)
+        return output
+
+    def _run_attn_projections(self, normed_device, layer_idx, seq_len):
+        """Q/K/V projections shared between prefill and decode."""
+        w = self.layer_weights[layer_idx]
+
+        q_out = self._alloc_zeros((seq_len, self.hidden_size))
+        linear_bias_kernel(normed_device, w["q_proj_weight"], w["q_proj_bias"], q_out)
+
+        kv_dim = self.num_kv_heads * self.head_dim
+        k_out = self._alloc_zeros((seq_len, kv_dim))
+        linear_bias_kernel(normed_device, w["k_proj_weight"], w["k_proj_bias"], k_out)
+
+        v_out = self._alloc_zeros((seq_len, kv_dim))
+        linear_bias_kernel(normed_device, w["v_proj_weight"], w["v_proj_bias"], v_out)
+
+        return (
+            ttnn.to_torch(q_out).float(),
+            ttnn.to_torch(k_out).float(),
+            ttnn.to_torch(v_out).float(),
+        )
+
+    def transformer_layer_prefill(self, x_device, layer_idx, seq_len, causal_mask):
+        """Prefill: full sequence attention, populate KV cache."""
+        w = self.layer_weights[layer_idx]
+        padded_seq = ((seq_len + TILE - 1) // TILE) * TILE
+
+        normed = rmsnorm(x_device, w["input_layernorm_weight"],
+                         self.device, self.rms_norm_eps)
+
+        q_torch, k_torch, v_torch = self._run_attn_projections(normed, layer_idx, padded_seq)
+
+        q_rot, k_rot = self._apply_rope_prefill(q_torch[:seq_len], k_torch[:seq_len], seq_len)
+        attn_combined = self._attention_prefill(q_rot, k_rot, v_torch[:seq_len], layer_idx, seq_len, causal_mask)
+
+        # Pad attention output back to tile boundary
+        if padded_seq > seq_len:
+            attn_combined = torch.nn.functional.pad(attn_combined, (0, 0, 0, padded_seq - seq_len))
+        attn_device = self._to_device(attn_combined)
+
+        proj_out = self._alloc_zeros((padded_seq, self.hidden_size))
+        linear_kernel(attn_device, w["o_proj_weight"], proj_out)
+
+        post_attn = self._alloc_zeros((padded_seq, self.hidden_size))
+        add_kernel(x_device, proj_out, post_attn)
+
+        return self._run_mlp(post_attn, layer_idx, padded_seq)
+
+    def transformer_layer_decode(self, x_device, layer_idx, pos):
+        """Decode: single token attention using KV cache."""
+        w = self.layer_weights[layer_idx]
+
+        normed = rmsnorm(x_device, w["input_layernorm_weight"],
+                         self.device, self.rms_norm_eps)
+
+        q_torch, k_torch, v_torch = self._run_attn_projections(normed, layer_idx, TILE)
+
+        # RoPE for single position
+        q_rot, k_rot = self._apply_rope_single(q_torch[:1], k_torch[:1], pos)
+
+        # Update cache with new K, V
+        self._update_kv_cache(layer_idx, k_rot, v_torch[:1].float(), pos, 1)
+
+        # Attention using cache
+        attn_combined = self._attention_decode(q_rot, layer_idx, pos)
+
+        # Pad to [TILE, hidden] and continue
+        attn_padded = torch.zeros(TILE, self.hidden_size, dtype=torch.bfloat16)
+        attn_padded[:1] = attn_combined
+        attn_device = self._to_device(attn_padded)
+
+        proj_out = self._alloc_zeros((TILE, self.hidden_size))
+        linear_kernel(attn_device, w["o_proj_weight"], proj_out)
+
+        post_attn = self._alloc_zeros((TILE, self.hidden_size))
+        add_kernel(x_device, proj_out, post_attn)
+
+        return self._run_mlp(post_attn, layer_idx, TILE)
+
+    # -----------------------------------------------------------------
+    # Public API
+    # -----------------------------------------------------------------
+    def prefill(self, input_ids):
+        """Run prefill: embedding → 24 layers → norm → lm_head. Populates KV cache.
+
+        Args:
+            input_ids: list of token IDs
+
+        Returns:
+            logits: [seq_len, vocab_size] torch tensor on host
+        """
+        seq_len = len(input_ids)
+        assert seq_len <= self.max_seq_len
+
+        padded_seq = ((seq_len + TILE - 1) // TILE) * TILE
+
+        # Init KV cache
+        self.init_kv_cache()
+
+        # Embedding (host-side, no device calls)
+        ids_tensor = torch.tensor(input_ids, dtype=torch.long)
+        x = self.embed_weight[ids_tensor]
+        if padded_seq > seq_len:
+            x = torch.nn.functional.pad(x, (0, 0, 0, padded_seq - seq_len))
+
+        # Causal mask
+        causal_mask = torch.triu(
+            torch.full((padded_seq, padded_seq), float("-inf")), diagonal=1
+        )
+
+        # All device work in one suppress block
+        with self._suppress_output():
+            x_device = self._to_device(x.bfloat16())
+
+            for layer_idx in range(self.num_layers):
+                x_device = self.transformer_layer_prefill(
+                    x_device, layer_idx, seq_len, causal_mask
+                )
+
+            self.cache_pos = seq_len
+
+            x_device = rmsnorm(x_device, self.final_norm_weight,
+                               self.device, self.rms_norm_eps)
+            x_host = ttnn.to_torch(x_device).float()
+
+        # lm_head on host
+        embed_w = self.embed_weight[:self.vocab_size]
+        logits = x_host[:seq_len] @ embed_w.t()
+
+        return logits
+
+    def decode_step(self, token_id, pos=None):
+        """Run one decode step: single token through 24 layers.
+
+        Args:
+            token_id: int, the token to process
+            pos: int, position in sequence (default: self.cache_pos)
+
+        Returns:
+            logits: [1, vocab_size] torch tensor on host
+        """
+        if pos is None:
+            pos = self.cache_pos
+
+        assert pos < self.max_seq_len, f"pos {pos} >= max_seq_len {self.max_seq_len}"
+
+        # Embedding (host-side)
+        x = self.embed_weight[token_id:token_id+1]
+        x_padded = torch.zeros(TILE, self.hidden_size, dtype=torch.bfloat16)
+        x_padded[0] = x[0].bfloat16()
+
+        # All device work in one suppress block
+        with self._suppress_output():
+            x_device = self._to_device(x_padded)
+
+            for layer_idx in range(self.num_layers):
+                x_device = self.transformer_layer_decode(x_device, layer_idx, pos)
+
+            self.cache_pos = pos + 1
+
+            x_device = rmsnorm(x_device, self.final_norm_weight,
+                               self.device, self.rms_norm_eps)
+            x_host = ttnn.to_torch(x_device).float()
+
+        # lm_head on host
+        embed_w = self.embed_weight[:self.vocab_size]
+        logits = x_host[:1] @ embed_w.t()
+
+        return logits
+
+    def generate(self, input_ids, max_new_tokens=50, temperature=0.0):
+        """Prefill + decode loop. Yields generated token IDs.
+
+        Args:
+            input_ids: list of prompt token IDs
+            max_new_tokens: max tokens to generate
+            temperature: 0.0 for greedy, >0 for sampling
+        """
+        # Prefill
+        logits = self.prefill(input_ids)
+
+        # First generated token
+        if temperature == 0.0:
+            next_token = logits[-1].argmax().item()
+        else:
+            probs = torch.nn.functional.softmax(logits[-1] / temperature, dim=-1)
+            next_token = torch.multinomial(probs, 1).item()
+
+        yield next_token
+
+        # Decode loop
+        for _ in range(max_new_tokens - 1):
+            logits = self.decode_step(next_token)
+
+            if temperature == 0.0:
+                next_token = logits[0].argmax().item()
+            else:
+                probs = torch.nn.functional.softmax(logits[0] / temperature, dim=-1)
+                next_token = torch.multinomial(probs, 1).item()
+
+            yield next_token
