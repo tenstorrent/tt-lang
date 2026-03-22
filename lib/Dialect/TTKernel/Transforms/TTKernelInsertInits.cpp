@@ -147,6 +147,34 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
                                       bcastOp.getBcastTypeAttr());
       }};
 
+  // TransposeTile: init takes in_cb, out_cb. No uninit needed (hardware API
+  // does not define transpose_wh_uninit; the next init reconfigures).
+  map[mlir::TypeID::get<ttk::TransposeTileOp>()] = {
+      [](OpBuilder &b, Location l, Operation *computeOp) {
+        auto transposeOp = cast<ttk::TransposeTileOp>(computeOp);
+        auto funcOp = computeOp->getParentOfType<func::FuncOp>();
+        assert(funcOp && "transpose_wh_tile must be inside a function");
+
+        // Look up output CB via the annotated index.
+        auto cbIdxAttr = computeOp->getAttrOfType<IntegerAttr>(
+            kTransposeOutputCBIndexAttrName);
+        assert(cbIdxAttr &&
+               "expected ttl.transpose_output_cb_index attribute");
+
+        Value outCB;
+        int64_t cbIdx = cbIdxAttr.getInt();
+        funcOp->walk([&](ttk::GetCompileArgValOp argOp) {
+          if (static_cast<int64_t>(argOp.getArgIndex()) == cbIdx) {
+            outCB = argOp.getResult();
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        });
+        assert(outCB && "get_compile_time_arg_val must exist for cb_index");
+
+        ttk::TransposeInitOp::create(b, l, transposeOp.getIcb(), outCB);
+      }};
+
   // ReduceTile: init takes in_cb, scaler_cb, out_cb + reduce_type/dim attrs.
   // Uninit is also needed after reduce_tile.
   map[mlir::TypeID::get<ttk::ReduceTileOp>()] = {
@@ -220,6 +248,11 @@ static InitKey computeInitKey(Operation *op) {
   if (auto bcast = dyn_cast<ttk::UnaryBcastTileOp>(op)) {
     return {
         typeId, {bcast.getInCb()}, static_cast<int64_t>(bcast.getBcastType())};
+  }
+
+  // For TransposeTile: key includes the input CB operand.
+  if (auto transpose = dyn_cast<ttk::TransposeTileOp>(op)) {
+    return {typeId, {transpose.getIcb()}};
   }
 
   // For ReduceTile: key includes in_cb, scaler_cb, and reduce_type+dim.
@@ -310,6 +343,10 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
       } else if (auto reduce = dyn_cast<ttk::ReduceTileOp>(inner)) {
         if (!inputCB) {
           inputCB = reduce.getInCb();
+        }
+      } else if (auto transpose = dyn_cast<ttk::TransposeTileOp>(inner)) {
+        if (!inputCB) {
+          inputCB = transpose.getIcb();
         }
       }
       if (auto pack = dyn_cast<ttk::PackTileOp>(inner)) {
@@ -436,6 +473,16 @@ struct TTKernelInsertInitsPass
         hadError = true;
       }
     });
+    // Validate preconditions: all transpose_wh_tile ops must carry the output
+    // CB index attribute (set during TTL -> TTKernel lowering).
+    moduleOp->walk([&](ttk::TransposeTileOp transposeOp) {
+      if (!transposeOp->hasAttr(kTransposeOutputCBIndexAttrName)) {
+        transposeOp->emitOpError(
+            "missing ttl.transpose_output_cb_index attribute; "
+            "cannot insert transpose_wh_init");
+        hadError = true;
+      }
+    });
     if (hadError) {
       signalPassFailure();
       return;
@@ -444,6 +491,7 @@ struct TTKernelInsertInitsPass
     // Phase 2: Insert per-op inits for compute ops.
     // Also handles reduce_uninit: inserted when transitioning away from
     // reduce_tile or at sync boundaries after reduce_tile.
+    // Note: transpose has no uninit (hardware API does not define one).
     auto computeToInit = buildComputeToInitMap();
     moduleOp->walk([&](Block *block) {
       std::optional<InitKey> prevKey;

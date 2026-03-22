@@ -756,6 +756,72 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Transpose Tile Op Lowering
+//===----------------------------------------------------------------------===//
+
+/// Lower ttl.tile_transpose to TTKernel transpose_wh_tile.
+/// Reads from input CB, writes to DST. Init/uninit are handled by
+/// ttkernel-insert-inits.
+struct TTLTileTransposeToTTKernel : OpConversionPattern<TileTransposeOp> {
+  using OpConversionPattern<TileTransposeOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileTransposeOp op, TileTransposeOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "op not in function");
+    }
+
+    auto *typeConverter = this->getTypeConverter();
+    auto inCB =
+        lookupAndConvertCB(op.getInput(), funcOp, typeConverter, rewriter, loc);
+    if (failed(inCB)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert input CB");
+    }
+
+    // Get DST index from attribute (assigned by TTLAssignDST pass).
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    int64_t dstIdxVal = dstIdxAttr.getInt();
+    Value dstIdx = arith::ConstantIndexOp::create(rewriter, loc, dstIdxVal);
+
+    // Compute input CB tile index using identity map (same-shape iteration).
+    auto inTensorShape = getOperandTensorShape(op.getInput());
+    if (!inTensorShape) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot determine input tensor shape for CB indexing");
+    }
+    AffineMap identity = AffineMap::getMultiDimIdentityMap(
+        inTensorShape->size(), rewriter.getContext());
+    auto cbIdx =
+        utils::computeCBTileIndex(op, rewriter, identity, *inTensorShape,
+                                  *inTensorShape, inTensorShape->size());
+    if (failed(cbIdx)) {
+      return failure();
+    }
+
+    // Emit transpose_wh_tile (init/uninit inserted by ttkernel-insert-inits).
+    auto transposeOp =
+        ttk::TransposeTileOp::create(rewriter, loc, *inCB, *cbIdx, dstIdx);
+
+    // Propagate output CB index so ttkernel-insert-inits can derive the
+    // output CB for transpose_wh_init without walking the function.
+    if (auto cbIdxAttr =
+            op->getAttrOfType<IntegerAttr>(kTransposeOutputCBIndexAttrName)) {
+      transposeOp->setAttr(kTransposeOutputCBIndexAttrName, cbIdxAttr);
+    }
+
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Reduce Tile Op Lowering
 //===----------------------------------------------------------------------===//
 
@@ -1062,6 +1128,9 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // Bcast ops need the type converter for CB lookup.
   patterns.add<TTLTileBcastToTTKernel>(*typeConverter, ctx);
+
+  // Transpose ops need the type converter for CB lookup.
+  patterns.add<TTLTileTransposeToTTKernel>(*typeConverter, ctx);
 
   // Reduce ops need the type converter for CB lookup.
   patterns.add<TTLTileReduceSumToTTKernel>(*typeConverter, ctx);

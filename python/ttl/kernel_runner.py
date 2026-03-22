@@ -253,15 +253,13 @@ def run_kernel_on_device(
     )
 
     # Build and execute program.
-    # TODO: Enable custom_program_hash once tt-metal exposes it in Python bindings.
-    # See tt-metal/ttnn/cpp/ttnn-nanobind/program_descriptors.cpp - needs to add
-    # custom_program_hash parameter to ProgramDescriptor binding.
     program = ttnn.ProgramDescriptor(
         kernels=kernel_descriptors,
         cbs=cb_descriptors,
         semaphores=[],
-        # custom_program_hash=program_hash,
     )
+    if program_hash is not None:
+        program.custom_program_hash = program_hash & 0xFFFFFFFFFFFFFFFF
 
     return ttnn.generic_op(list(tensors), program)
 

@@ -904,6 +904,74 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Transpose Lowering
+//===----------------------------------------------------------------------===//
+
+/// Pattern for transpose op: TTL tensor op -> ttl.compute with tile_transpose.
+struct LowerTransposeToCompute : OpRewritePattern<TransposeOp> {
+  using OpRewritePattern<TransposeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto outputType = getTensorType(op.getResult());
+    auto inputType = getTensorType(op.getInput());
+    if (!outputType || !inputType) {
+      return failure();
+    }
+
+    Value inputCb = getAttachedCB(op.getInput());
+    Value outCb = getAttachedCB(op.getOutput());
+    if (!inputCb) {
+      return op.emitError(
+          "transpose input must come directly from a circular buffer");
+    }
+    if (!outCb) {
+      return op.emitError(
+          "transpose output must be attached to a circular buffer");
+    }
+
+    Location loc = op.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    AffineMap identityMap = AffineMap::getMultiDimIdentityMap(2, ctx);
+    SmallVector<Attribute> maps = {AffineMapAttr::get(identityMap),
+                                   AffineMapAttr::get(identityMap),
+                                   AffineMapAttr::get(identityMap)};
+    SmallVector<Attribute> iterTypes(outputType.getRank(),
+                                     rewriter.getStringAttr("parallel"));
+
+    if (findLastStore(op)) {
+      insertAtLastStore(rewriter, op);
+    }
+
+    Value init = buildInitTensor(rewriter, loc, outputType, op.getOutput());
+    Value initAttached =
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
+
+    auto computeOp = ComputeOp::create(
+        rewriter, loc, TypeRange{outputType},
+        ValueRange{op.getInput(), op.getOutput()}, ValueRange{initAttached},
+        rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+
+    Block *body = rewriter.createBlock(&computeOp.getBody());
+    Type scalarType = outputType.getElementType();
+    Type tileType = ttcore::TileType::get(scalarType);
+    body->addArgument(tileType, loc);
+    body->addArgument(tileType, loc);
+    body->addArgument(tileType, loc);
+
+    rewriter.setInsertionPointToStart(body);
+    Value result =
+        TileTransposeOp::create(rewriter, loc, tileType, body->getArgument(0),
+                                body->getArgument(1));
+    emitTileStores(rewriter, loc, result, op.getOperation());
+    YieldOp::create(rewriter, loc);
+    rewriter.replaceOp(op, computeOp.getResult(0));
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Reduce Lowering
 //===----------------------------------------------------------------------===//
 
@@ -1198,6 +1266,7 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   patterns.add<LowerBcastToCompute>(ctx);
+  patterns.add<LowerTransposeToCompute>(ctx);
   patterns.add<LowerReduceSumToCompute>(ctx);
   patterns.add<LowerReduceMaxToCompute>(ctx);
   patterns.add<LowerMatmulToCompute>(ctx);

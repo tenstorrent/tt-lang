@@ -463,6 +463,21 @@ def broadcast(input: TensorBlock, output: TensorBlock, dims: List[int]) -> Tenso
     return ttl.bcast(output.type, input, output, bcast_attr)
 
 
+@syntax("transpose")
+def transpose(input: TensorBlock, output: TensorBlock) -> TensorBlock:
+    """
+    Transpose a 32x32 tile (swap rows and columns).
+
+    Args:
+        input: Input tensor (CB-attached)
+        output: Output tensor (CB-attached, used for output CB tracking)
+
+    Returns:
+        Result tensor with transposed values (out[i][j] = in[j][i])
+    """
+    return ttl.transpose(output.type, input, output)
+
+
 @syntax("reduce_sum")
 def reduce_sum(
     input: TensorBlock,

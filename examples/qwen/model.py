@@ -24,6 +24,8 @@ from kernels.elementwise import add_kernel, silu_mul_kernel
 from kernels.rope import batch_rope_kernel
 from kernels.rmsnorm import fused_device_rmsnorm, rmsnorm_mul_kernel
 from kernels.fused_attn import fused_attn_head_kernel
+from kernels.group_attn import head_attn_kernels
+from kernels.kv_cache_update import get_kv_cache_update_kernel
 from utils import load_checkpoint
 
 TILE = 32
@@ -287,6 +289,21 @@ class QwenModel:
             self.kv_cache_dev.append(layer_cache_dev)
         self.cache_pos = 0
 
+        # Pre-compute row/column masks for on-device KV cache updates
+        self._row_masks = []
+        self._inv_row_masks = []
+        self._col_masks = []
+        self._inv_col_masks = []
+        for p in range(TILE):
+            rm = torch.zeros(TILE, TILE, dtype=torch.bfloat16)
+            rm[p, :] = 1.0
+            self._row_masks.append(self._to_device(rm))
+            self._inv_row_masks.append(self._to_device(1.0 - rm))
+            cm = torch.zeros(TILE, TILE, dtype=torch.bfloat16)
+            cm[:, p] = 1.0
+            self._col_masks.append(self._to_device(cm))
+            self._inv_col_masks.append(self._to_device(1.0 - cm))
+
     def _update_kv_cache(self, layer_idx, k_rot, v_float, start_pos, length):
         """Update host KV cache mirrors for a range of positions.
 
@@ -494,18 +511,15 @@ class QwenModel:
         return self._run_mlp(post_attn, layer_idx, padded_seq)
 
     def transformer_layer_decode(self, x_device, layer_idx, pos):
-        """Decode: fused kernels. ~28 kernel calls per layer.
+        """Decode: fully on-device. 29 kernel calls per layer, zero host transfers.
 
-        Combined QKV projections (3) + batch RoPE (2) + fused attention (14) +
-        O proj (1) + add (2) + fused RMSNorm (2) + MLP (4) = 28 calls.
-
-        Host transfers: KV cache update only (8KB pull + 256KB push per layer).
-        Head outputs collected on host for concatenation (56KB pull + 56KB push).
+        Fused RMSNorm (1) + QKV projections (3) + batch RoPE (2) +
+        KV cache update (1) + per-head attention (14, flash/online softmax,
+        Q read at column offsets) + O proj (1) + add (1) + fused RMSNorm (1) +
+        MLP (4) + add (1) = 29 calls. All on device.
         """
         w = self.layer_weights[layer_idx]
         heads_per_group = self.num_q_heads // self.num_kv_heads
-        cache_len = self.padded_max_seq
-        attend_len = pos + 1
 
         # 1. Fused RMSNorm (1 call)
         normed = fused_device_rmsnorm(x_device, w["input_layernorm_weight"],
@@ -528,30 +542,26 @@ class QwenModel:
         k_rot = self._alloc_zeros((TILE, self.num_kv_heads * self.head_dim))
         batch_rope_kernel(k_out, self._decode_cos_dev, self._decode_sin_dev, k_rot)
 
-        # 4. KV cache update (host transfer — pull K_rot + V, update cache, push back)
-        k_rot_host = ttnn.to_torch(k_rot)   # [TILE, 128] = 8KB
-        v_host = ttnn.to_torch(v_out)        # [TILE, 128] = 8KB
-        for kv_idx in range(self.num_kv_heads):
-            col_s = kv_idx * self.head_dim
-            col_e = col_s + self.head_dim
-            self.kv_cache[layer_idx][kv_idx]["k"][pos] = k_rot_host[0, col_s:col_e].float()
-            self.kv_cache[layer_idx][kv_idx]["v"][pos] = v_host[0, col_s:col_e].float()
-            # Re-upload full cache (still needed — partial tile update not supported)
-            k_t_full = self.kv_cache[layer_idx][kv_idx]["k"][:self.max_seq_len].bfloat16().t().contiguous()
-            v_full = self.kv_cache[layer_idx][kv_idx]["v"][:self.max_seq_len].bfloat16().contiguous()
-            self.kv_cache_dev[layer_idx][kv_idx]["k_t"] = self._to_device(k_t_full)
-            self.kv_cache_dev[layer_idx][kv_idx]["v"] = self._to_device(v_full)
+        # 4. KV cache update — fully on device, zero host transfers
+        tile_slot = pos // TILE
+        sub_pos = pos % TILE
+        update_kernel = get_kv_cache_update_kernel(tile_slot)
+        update_kernel(
+            k_rot, v_out,
+            self.kv_cache_dev[layer_idx][0]["k_t"],
+            self.kv_cache_dev[layer_idx][1]["k_t"],
+            self.kv_cache_dev[layer_idx][0]["v"],
+            self.kv_cache_dev[layer_idx][1]["v"],
+            self._row_masks[sub_pos], self._inv_row_masks[sub_pos],
+            self._col_masks[sub_pos], self._inv_col_masks[sub_pos],
+        )
 
-        # 5. Decode mask (reuse across heads within a layer)
-        decode_mask = torch.full((TILE, cache_len), float("-inf"), dtype=torch.bfloat16)
-        decode_mask[0, :attend_len] = 0.0
-        decode_mask_dev = self._to_device(decode_mask)
+        # 5. Decode mask (created once per token, shared across all layers)
+        decode_mask_dev = self._decode_mask_dev
 
-        # 6. Per-head fused attention (14 calls)
-        # Pull Q_rot to host for per-head slicing, apply pre-scaling
-        q_rot_host = ttnn.to_torch(q_rot)  # [TILE, 896] = 56KB
-        scale_val = 1.0 / math.sqrt(self.head_dim)
-        self._decode_attn_buf.zero_()
+        # 6. Per-head attention (14 calls) — zero host transfers
+        # Each kernel reads Q at its column offset, writes output at its offset
+        attn_out_device = self._alloc_zeros((TILE, self.hidden_size))
 
         for kv_idx in range(self.num_kv_heads):
             k_t_dev = self.kv_cache_dev[layer_idx][kv_idx]["k_t"]
@@ -559,33 +569,11 @@ class QwenModel:
 
             for q_local in range(heads_per_group):
                 q_idx = kv_idx * heads_per_group + q_local
-                col_s = q_idx * self.head_dim
-                col_e = col_s + self.head_dim
-
-                # Extract and pre-scale single head Q
-                q_head = q_rot_host[:, col_s:col_e].clone()
-                q_head[0] = q_head[0] * scale_val
-                q_head_dev = self._to_device(q_head)
-
-                # Attention: score + host softmax + output (3 calls)
-                scores_dev = self._alloc_zeros((TILE, cache_len))
-                linear_kernel(q_head_dev, k_t_dev, scores_dev)
-
-                scores_host = ttnn.to_torch(scores_dev).float()
-                weights_host = torch.nn.functional.softmax(
-                    scores_host + decode_mask.float(), dim=-1
-                ).bfloat16()
-                weights_dev = self._to_device(weights_host)
-
-                head_out_dev = self._alloc_zeros((TILE, self.head_dim))
-                linear_kernel(weights_dev, v_dev_cache, head_out_dev)
-
-                # Collect head output
-                head_out_host = ttnn.to_torch(head_out_dev)
-                self._decode_attn_buf[:, col_s:col_e] = head_out_host
-
-        # Upload concatenated attention (56KB)
-        attn_out_device = self._to_device(self._decode_attn_buf)
+                head_attn_kernels[q_idx](
+                    q_rot, k_t_dev, v_dev_cache,
+                    decode_mask_dev, self.ones_scaler_device,
+                    self.attn_scale_device, attn_out_device,
+                )
 
         # 7. O projection + residual (2 calls)
         proj_out = self._alloc_zeros((TILE, self.hidden_size))
@@ -690,6 +678,12 @@ class QwenModel:
             x_device = self._to_device(x_padded)
             self._decode_cos_dev = self._to_device(cos_pos)
             self._decode_sin_dev = self._to_device(sin_pos)
+
+            # Decode mask — create once, reuse across all 24 layers
+            cache_len = self.padded_max_seq
+            decode_mask = torch.full((TILE, cache_len), float("-inf"), dtype=torch.bfloat16)
+            decode_mask[0, :pos + 1] = 0.0
+            self._decode_mask_dev = self._to_device(decode_mask)
 
             for layer_idx in range(self.num_layers):
                 x_device = self.transformer_layer_decode(x_device, layer_idx, pos)

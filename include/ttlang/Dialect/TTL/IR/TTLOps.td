@@ -690,6 +690,35 @@ defm TTL_Cos : TTL_UnaryElementwisePair<"cos", "cos_tile">;
 defm TTL_Tan : TTL_UnaryElementwisePair<"tan", "tan_tile">;
 
 //===----------------------------------------------------------------------===//
+// Transpose Operation
+//===----------------------------------------------------------------------===//
+
+def TTL_TransposeOp : TTL_Op<"transpose", []> {
+  let summary = "Transpose a 32x32 tile (swap rows and columns)";
+  let description = [{
+    Transposes the input tile so that out[i][j] = in[j][i].
+    Reads from CB, writes result to DST then packs to output CB.
+    Both input and output must be CB-attached tensors.
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$output);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $output attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
+}
+
+def TTL_TileTransposeOp : TTL_TileOp<"tile_transpose", [TTL_CBInputTileOpTrait]> {
+  let summary = "Tile-level transpose operation";
+  let description = [{
+    Transposes a 32x32 tile (swap rows and columns).
+    Maps to ttkernel.transpose_wh_init + ttkernel.transpose_wh_tile +
+    ttkernel.transpose_wh_uninit. Reads input from CB, writes result to DST.
+    The output operand carries the output CB for init-time PACK configuration.
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$output);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $output attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
 // Broadcast Operation
 //===----------------------------------------------------------------------===//
 
