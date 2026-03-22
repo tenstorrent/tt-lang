@@ -58,12 +58,12 @@ python examples/<example_name>.py
 
 ### Error Examples (Negative Tests)
 
-These examples intentionally fail to demonstrate error handling:
+The `errors/` subdirectory contains examples with intentionally incorrect code. They demonstrate how the simulator reports common mistakes.
 
 | Example | Description | Expected Error |
 |---------|-------------|----------------|
-| `eltwise_add_error.py` | Shape mismatch in copy operation | "Tensor shape does not match Block shape" |
-| `copy_lock_error.py` | Block access before wait() completes | "Cannot write to Block: Block has no access" |
+| `errors/eltwise_add_error.py` | Shape mismatch in copy operation | "Tensor shape does not match Block shape" |
+| `errors/copy_lock_error.py` | Block access before wait() completes | "Cannot write to Block: Block has no access" |
 
 ## Metal Examples
 

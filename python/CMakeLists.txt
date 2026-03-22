@@ -182,6 +182,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     dtype_utils.py
     layouts.py
     operators.py
+    version.py
 )
 
 # Add generated elementwise ops file and config file

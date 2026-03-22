@@ -10,12 +10,13 @@
 # Discovers candidates under examples/ (top-level *.py only) and
 # examples/tutorial/ (recursive *.py) that contain the substring @ttl.kernel.
 #
-# Optional opt-out (first 80 lines of the file):
-#     # <description>
-#     #
+# Tags (first 80 lines of the file):
 #     # TTLANG_HARDWARE_CI: skip-compiler
-# Use skip-compiler for simulator-only scripts or any example that must not run
-# in this hardware compiler batch.
+#         Do not run at all (simulator-only, negative tests, etc.).
+#     # TTLANG_HARDWARE_CI: xfail-compiler
+#         Run, but expect a non-zero exit. XFAIL if it fails as expected;
+#         XPASS (unexpected pass) if it succeeds -- treated as a failure so
+#         the tag can be removed.
 #
 # Usage: from repo root after build, with venv active:
 #   source build/env/activate
@@ -23,15 +24,17 @@
 #
 # Optional first argument: repo root (default: current directory).
 
-set -euo pipefail
+set -uo pipefail
 
 ROOT="$(cd "${1:-.}" && pwd)"
 SCAN_LINES=80
 SKIP_TAG="TTLANG_HARDWARE_CI: skip-compiler"
+XFAIL_TAG="TTLANG_HARDWARE_CI: xfail-compiler"
+
+# ── helpers ──────────────────────────────────────────────────────────────────
 
 file_has_tag() {
-  local path="$1"
-  local tag="$2"
+  local path="$1" tag="$2"
   head -n "${SCAN_LINES}" "${path}" | grep -Fq "# ${tag}"
 }
 
@@ -49,13 +52,17 @@ collect_scripts() {
   done
   shopt -u nullglob
 
-  if [[ -d "${ROOT}/examples/tutorial" ]]; then
-    while IFS= read -r -d '' f; do
-      has_ttl_kernel "$f" || continue
-      printf '%s\n' "${f#"${ROOT}/"}"
-    done < <(find "${ROOT}/examples/tutorial" -type f -name "*.py" -print0)
-  fi
+  for subdir in tutorial errors; do
+    if [[ -d "${ROOT}/examples/${subdir}" ]]; then
+      while IFS= read -r -d '' f; do
+        has_ttl_kernel "$f" || continue
+        printf '%s\n' "${f#"${ROOT}/"}"
+      done < <(find "${ROOT}/examples/${subdir}" -type f -name "*.py" -print0)
+    fi
+  done
 }
+
+# ── discover ─────────────────────────────────────────────────────────────────
 
 mapfile -t SCRIPTS < <(collect_scripts | sort -u)
 
@@ -64,6 +71,11 @@ if [[ ${#SCRIPTS[@]} -eq 0 ]]; then
   exit 1
 fi
 
+# ── run ──────────────────────────────────────────────────────────────────────
+
+declare -a RESULTS=()
+N_PASS=0  N_FAIL=0  N_SKIP=0  N_XFAIL=0  N_XPASS=0
+
 for script in "${SCRIPTS[@]}"; do
   path="${ROOT}/${script}"
   if [[ ! -f "${path}" ]]; then
@@ -71,13 +83,58 @@ for script in "${SCRIPTS[@]}"; do
     exit 1
   fi
 
+  # ── skip ──
   if file_has_tag "${path}" "${SKIP_TAG}"; then
-    echo "=== SKIP (hardware CI compiler step): ${script}  # ${SKIP_TAG} ==="
+    RESULTS+=("${script} ... SKIP")
+    (( N_SKIP++ ))
     continue
   fi
 
-  echo "=== python3 ${script} ==="
-  (cd "${ROOT}" && python3 "${script}")
+  # ── determine expectation ──
+  expect_fail=false
+  if file_has_tag "${path}" "${XFAIL_TAG}"; then
+    expect_fail=true
+  fi
+
+  # ── execute ──
+  echo "--- ${script} ---"
+  rc=0
+  (cd "${ROOT}" && python3 "${script}") || rc=$?
+
+  # ── classify result ──
+  if [[ ${rc} -eq 0 ]]; then
+    if ${expect_fail}; then
+      RESULTS+=("${script} ... XPASS (unexpected pass)")
+      (( N_XPASS++ ))
+    else
+      RESULTS+=("${script} ... PASS")
+      (( N_PASS++ ))
+    fi
+  else
+    if ${expect_fail}; then
+      RESULTS+=("${script} ... XFAIL (expected failure, rc=${rc})")
+      (( N_XFAIL++ ))
+    else
+      RESULTS+=("${script} ... FAIL (rc=${rc})")
+      (( N_FAIL++ ))
+    fi
+  fi
 done
 
-echo "compile-and-run-examples.sh: done"
+# ── summary ──────────────────────────────────────────────────────────────────
+
+echo ""
+echo "========================================"
+echo "  compile-and-run-examples: results"
+echo "========================================"
+for r in "${RESULTS[@]}"; do
+  echo "  ${r}"
+done
+echo "----------------------------------------"
+printf "  PASS: %d  FAIL: %d  SKIP: %d  XFAIL: %d  XPASS: %d  Total: %d\n" \
+  "${N_PASS}" "${N_FAIL}" "${N_SKIP}" "${N_XFAIL}" "${N_XPASS}" "${#SCRIPTS[@]}"
+echo "========================================"
+
+if [[ ${N_FAIL} -gt 0 || ${N_XPASS} -gt 0 ]]; then
+  exit 1
+fi

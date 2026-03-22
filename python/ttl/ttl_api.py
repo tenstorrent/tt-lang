@@ -1210,6 +1210,9 @@ def _compile_kernel(
             pass
 
         if os.environ.get("TTLANG_VERBOSE_PASSES"):
+            from ttl.version import __version__
+
+            print(f"ttlang {__version__}")
             print("Running custom pipeline:", pm)
             ctx.enable_multithreading(False)
             pm.enable_ir_printing(
@@ -1232,7 +1235,9 @@ def _compile_kernel(
                 first_thread = next(iter(all_source_lines.keys()))
                 source_lines = all_source_lines[first_thread]
                 source_file = all_source_files.get(first_thread)
-            formatted = format_mlir_error(error_msg, source_lines, source_file)
+            from ttl.version import __version__
+
+            formatted = f"ttlang {__version__}\n{format_mlir_error(error_msg, source_lines, source_file)}"
             raise RuntimeError(formatted) from None
 
         final_mlir_path = os.environ.get("TTLANG_FINAL_MLIR")
