@@ -27,7 +27,7 @@ data movement and synchronization.
 
 TT-Lang integrates tightly with TT-NN, enabling programs that mix high-level
 TT-NN operations with low-level kernel code. The toolchain includes a
-[functional simulator](programming-guide.md#simulator) for catching bugs before
+[functional simulator](simulator.md) for catching bugs before
 running on hardware, line-by-line
 [performance profiling](reference/performance-tools.md), and AI-assisted
 development through [Claude Code](claude-skills.md) slash commands.

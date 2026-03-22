@@ -65,39 +65,7 @@ See the [full performance tools reference](reference/performance-tools.md) for e
 
 ## Simulator
 
-For users who want to run simulator examples without building the full compiler stack:
-
-```bash
-./bin/ttlang-sim examples/eltwise_add.py
-python -m pytest test/sim/
-```
-
-The simulator runs as standard Python code, enabling any Python debugger to work with it.
-
-### VSCode Debugger
-
-Create a debug configuration in `.vscode/launch.json`:
-
-```json
-{
-  "name": "Debug TTL Simulator",
-  "type": "debugpy",
-  "request": "launch",
-  "module": "sim.ttlang_sim",
-  "args": ["${file}"],
-  "console": "integratedTerminal",
-  "justMyCode": false,
-  "cwd": "${workspaceFolder}",
-  "env": {
-    "PYTHONPATH": "${workspaceFolder}/python"
-  }
-}
-```
-
-1. Open a kernel file in VSCode (e.g., `examples/eltwise_add.py`)
-2. Set breakpoints in your kernel code
-3. Press F5 or select "Debug TTL Simulator" from the Run menu
-4. The debugger stops at breakpoints, allowing variable inspection and step-through execution
+See the [Functional Simulator](simulator.md) page for running kernels without hardware, debugging setup, and test commands.
 
 ## Examples
 

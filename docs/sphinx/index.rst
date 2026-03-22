@@ -6,6 +6,7 @@ TTL Documentation
    :caption: User Guide
 
    overview
+   simulator
    getting-started
    ttl-tutorial/index
    programming-guide

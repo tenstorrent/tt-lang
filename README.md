@@ -20,7 +20,17 @@ TT-Lang bridges this gap through progressive disclosure: simple kernels require 
 
 ## 2. Quick Start
 
-The fastest way to get started with tt-lang on Tenstorrent hardware is with a pre-built Docker image. Two images are available, each serving a different purpose:
+The fastest way to try tt-lang is with the [functional simulator](docs/sphinx/simulator.md), which runs kernels as pure Python — no hardware, no compiler build required:
+
+```bash
+git clone https://github.com/tenstorrent/tt-lang.git
+cd tt-lang
+cmake -G Ninja -B build -DTTLANG_SIM_ONLY=ON
+source build/env/activate
+./bin/ttlang-sim examples/eltwise_add.py
+```
+
+To compile and run kernels on Tenstorrent hardware, use a pre-built Docker image. Two images are available:
 
 | Image | Purpose | Can run tt-lang programs? | Can clone/build tt-lang? |
 |-------|---------|:-------------------------:|:------------------------:|
@@ -122,14 +132,15 @@ tt-lang includes a functional simulator that runs kernels as pure Python, withou
 ./bin/ttlang-sim examples/eltwise_add.py
 ```
 
-The simulator typically supports more language features than the compiler at any given point — see the [functionality matrix](docs/sphinx/specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current coverage. See the [programming guide](docs/sphinx/programming-guide.md#simulator) for debugger setup and details.
+The simulator typically supports more language features than the compiler at any given point — see the [functionality matrix](docs/sphinx/specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current coverage. See the [programming guide](docs/sphinx/simulator.md) for debugger setup and details.
 
 ## 3. Documentation
 
 Full documentation is built with Sphinx. The source lives in [docs/sphinx/](docs/sphinx/) and covers:
 
 - [Tutorial](docs/sphinx/ttl-tutorial/index.md) — step-by-step examples from single-tile to multinode kernels
-- [Programming Guide](docs/sphinx/programming-guide.md) — compiler options, print debugging, performance tools, simulator
+- [Programming Guide](docs/sphinx/programming-guide.md) — compiler options, print debugging, performance tools
+- [Functional Simulator](docs/sphinx/simulator.md) — run kernels without hardware, debugging setup
 - [Claude Skills](docs/sphinx/claude-skills.md) — AI-assisted kernel translation, profiling, and optimization via [Claude Code](https://claude.com/claude-code)
 - [Build System](docs/sphinx/build.md) — build configuration, toolchain modes, and version compatibility
 - [Testing](docs/sphinx/testing.md) — how to write and run tests

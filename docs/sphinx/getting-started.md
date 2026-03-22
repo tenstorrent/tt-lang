@@ -1,8 +1,16 @@
 # Getting Started
 
-The fastest way to get started with tt-lang is with a pre-built Docker image on
-a machine with Tenstorrent hardware. If you want to build from source without
-Docker, see the [build system documentation](build.md).
+The fastest way to get started with tt-lang is with the [functional simulator](simulator.md), which runs kernels as pure Python — no Tenstorrent hardware, no compiler build required:
+
+```bash
+git clone https://github.com/tenstorrent/tt-lang.git
+cd tt-lang
+cmake -G Ninja -B build -DTTLANG_SIM_ONLY=ON
+source build/env/activate
+./bin/ttlang-sim examples/eltwise_add.py
+```
+
+To compile and run kernels on hardware, use a pre-built Docker image or build from source as described below.
 
 ## Docker quick start
 
@@ -110,7 +118,7 @@ tt-lang includes a functional simulator that runs kernels as pure Python without
 python -m pytest test/sim/
 ```
 
-The simulator typically supports more language features than the compiler at any given point — see the [functionality matrix](specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current coverage. See the [programming guide](programming-guide.md#simulator) for debugger setup and more details.
+The simulator typically supports more language features than the compiler at any given point — see the [functionality matrix](specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current coverage. See the [programming guide](simulator.md) for debugger setup and more details.
 
 ## Quick checks
 
