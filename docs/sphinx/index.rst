@@ -14,14 +14,14 @@ TTL Documentation
    tools
 
 .. toctree::
-   :maxdepth: 1
+   :maxdepth: 2
    :caption: Reference
 
    reference/print-debugging
    reference/performance-tools
 
 .. toctree::
-   :maxdepth: 1
+   :maxdepth: 2
    :caption: Contributor Guide
 
    build
