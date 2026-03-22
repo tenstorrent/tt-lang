@@ -58,7 +58,7 @@ The environment activates automatically on login. Run an example immediately:
 python /opt/ttlang-toolchain/examples/tutorial/multicore_grid_auto.py
 ```
 
-To learn more, work through the [tutorial](docs/sphinx/ttl-tutorial/index.md) and explore the [programming guide](docs/sphinx/programming-guide.md) for compiler options, debugging, and performance tools.
+To learn more, work through the [tutorial](docs/sphinx/ttl-tutorial/index.md), explore the [programming guide](docs/sphinx/programming-guide.md) for compiler options, debugging, and performance tools, or use [Claude Code](https://claude.com/claude-code) with the built-in [slash commands](docs/sphinx/claude-skills.md) to translate kernels, profile, and optimize.
 
 ### 2.2 ![ird](https://img.shields.io/badge/ird-blueviolet) Development image (for building tt-lang)
 
@@ -118,7 +118,7 @@ To map a different TT device, change the `--device` argument (e.g., `--device=/d
 
 Full documentation is built with Sphinx. The source lives in [docs/sphinx/](docs/sphinx/) and covers:
 
-- [Tutorial](docs/sphinx/ttl-tutorial/index.md) — step-by-step examples from single-tile to multicore kernels
+- [Tutorial](docs/sphinx/ttl-tutorial/index.md) — step-by-step examples from single-tile to multinode kernels
 - [Programming Guide](docs/sphinx/programming-guide.md) — compiler options, print debugging, performance tools, simulator
 - [Claude Skills](docs/sphinx/claude-skills.md) — AI-assisted kernel translation, profiling, and optimization via [Claude Code](https://claude.com/claude-code)
 - [Build System](docs/sphinx/build.md) — build configuration, toolchain modes, and version compatibility

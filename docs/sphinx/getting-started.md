@@ -1,6 +1,8 @@
 # Getting Started
 
-The fastest way to get started with tt-lang is with a pre-built Docker image on a machine with Tenstorrent hardware. If you want to build from source without Docker, see the [build system documentation](build.md).
+The fastest way to get started with tt-lang is with a pre-built Docker image on
+a machine with Tenstorrent hardware. If you want to build from source without
+Docker, see the [build system documentation](build.md).
 
 ## Docker quick start
 
@@ -13,7 +15,9 @@ Two images are available:
 
 ### Running programs (dist image)
 
-The **dist** image contains a fully built tt-lang installation at `/opt/ttlang-toolchain`. Use it to compile and run tt-lang programs without building anything.
+The **dist** image contains a fully built tt-lang installation at
+`/opt/ttlang-toolchain`. Use it to compile and run tt-lang programs without
+building anything.
 
 ```bash
 docker run -d --name $USER-dist \
@@ -35,7 +39,8 @@ python /opt/ttlang-toolchain/examples/tutorial/multicore_grid_auto.py
 
 ### Building from source (ird image)
 
-The **ird** image has the pre-built toolchain (LLVM, tt-metal, Python venv) but does not include tt-lang itself. Clone and build against the toolchain:
+The **ird** image has the pre-built toolchain (LLVM, tt-metal, Python venv) but
+does not include tt-lang itself. Clone and build against the toolchain:
 
 ```bash
 docker run -d --name $USER-ird \
@@ -73,7 +78,9 @@ python examples/tutorial/multicore_grid_auto.py
 
 - CMake 3.28+, Ninja, and Clang 17+ or GCC 11+
 - Python 3.11+
-- For faster builds: a pre-built toolchain at `TTLANG_TOOLCHAIN_DIR` (default `/opt/ttlang-toolchain`). Without one, LLVM and tt-metal build from submodules on first configure.
+- For faster builds: a pre-built toolchain at `TTLANG_TOOLCHAIN_DIR` (default
+  `/opt/ttlang-toolchain`). Without one, LLVM and tt-metal build from submodules
+  on first configure.
 
 ### With pre-built toolchain
 
@@ -91,17 +98,23 @@ source build/env/activate
 cmake --build build
 ```
 
-See the [build system documentation](build.md) for all supported build modes and CMake options.
+See the [build system documentation](build.md) for all supported build modes and
+CMake options.
 
 ## Quick checks
 
 - Full compiler suite: `ninja -C build check-ttlang-all`
 - MLIR tests only: `ninja -C build check-ttlang-mlir`
 - Single MLIR test: `llvm-lit test/ttlang/Dialect/TTL/IR/ops.mlir`
-- Simulator tests: `python -m pytest test/sim -q` (not included in `check-ttlang-all`)
+- Simulator tests: `python -m pytest test/sim -q` (not included in
+  `check-ttlang-all`)
 
 ## Next steps
 
-- Work through the [tutorial](ttl-tutorial/index.md) for step-by-step examples from single-tile to multicore kernels
-- Read the [programming guide](programming-guide.md) for compiler options, print debugging, and performance tools
+- Work through the [tutorial](ttl-tutorial/index.md) for step-by-step examples
+  from single-tile to multinode kernels
+- Read the [programming guide](programming-guide.md) for compiler options, print
+  debugging, and performance tools
+- Use [Claude Code](https://claude.com/claude-code) with the built-in
+  [slash commands](claude-skills.md) to translate kernels, profile, and optimize
 - Explore the `examples/` directory for complete working programs
