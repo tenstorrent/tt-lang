@@ -1,10 +1,11 @@
 {% extends "!layout.html" %}
 
 {% block document %}
-<div class="admonition warning global-development-warning">
-    <p class="admonition-title">(⚠️ in early development ⚠️)</p>
-    <p><strong>The language implementation has not yet been finalized and programs are not yet expected to run.</strong>
-    </p>
+<div class="admonition note global-development-warning">
+    <p class="admonition-title">Under active development</p>
+    <p>This project is under active development. See the
+    <a href="{{ pathto('specs/TTLangSpecification') }}#appendix-d-functionality-matrix">functionality matrix</a>
+    for current simulator and compiler support.</p>
 </div>
 {{ super() }}
 {% endblock %}

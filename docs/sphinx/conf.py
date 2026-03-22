@@ -57,5 +57,8 @@ def autodoc_skip_member(
     return skip
 
 
+html_css_files = ["custom.css"]
+
+
 def setup(app: Any) -> None:
     app.connect("autodoc-skip-member", autodoc_skip_member)

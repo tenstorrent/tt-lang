@@ -8,6 +8,6 @@ The language is built around explicit data movement and compute threads with syn
 
 TT-Lang integrates tightly with TT-NN, enabling programs that mix high-level TT-NN operations with low-level kernel code. The toolchain includes a functional simulator for catching bugs before running on hardware, line-by-line performance profiling, and AI-assisted development through [Claude Code](https://claude.com/claude-code) slash commands.
 
-**This project is currently in early development. The language spec has not yet been finalized and programs are not yet expected to run on hardware.**
+This project is under active development. See the [functionality matrix](specs/TTLangSpecification.md#appendix-d-functionality-matrix) in the language specification for current simulator and compiler support.
 
 To get started, see [Getting Started](getting-started.md). For a hands-on introduction, work through the [tutorial](ttl-tutorial/index.md).

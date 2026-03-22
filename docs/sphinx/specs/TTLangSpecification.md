@@ -2,30 +2,30 @@
 
 # Language Specification
 
-* [0. Versions](#0-versions)
-* [1. Introduction](#1-introduction)
-* [2. Kernel program](#2-kernel-program)
-* [3. Grid](#3-grid)
-    * [3.1. Grid size function](#31-grid-size-function)
-    * [3.2. Node function](#32-node-function)
-* [4. Dataflow buffer](#4-dataflow-buffer)
-* [5. Block](#5-block)
-    * [5.1. Block states](#51-block-states)
-* [6. Pipe](#6-pipe)
-    * [6.1. Pipe net](#61-pipe-net)
-* [7. Tensor slice](#7-tensor-slice)
-* [8. Copy](#8-copy)
-    * [8.1. Group transfer](#81-group-transfer)
-* [9. Semaphore](#9-semaphore)
-* [10. Performance and debugging](#10-performance-and-debugging)
-    * [10.1. Profiling signpost](#101-profiling-signpost)
-    * [10.2. Debug printing](#102-debug-printing)
+* [0. Specification Versions](#specification-versions)
+* [1. Introduction](#introduction)
+* [2. Kernel program](#kernel-program)
+* [3. Grid](#grid)
+    * [3.1. Grid size function](#grid-size-function)
+    * [3.2. Node function](#node-function)
+* [4. Dataflow buffer](#dataflow-buffer)
+* [5. Block](#block)
+    * [5.1. Block states](#block-states)
+* [6. Pipe](#pipe)
+    * [6.1. Pipe net](#pipe-net)
+* [7. Tensor slice](#tensor-slice)
+* [8. Copy](#copy)
+    * [8.1. Group transfer](#group-transfer)
+* [9. Semaphore](#semaphore)
+* [10. Performance and debugging](#performance-and-debugging)
+    * [10.1. Profiling signpost](#profiling-signpost)
+    * [10.2. Debug printing](#debug-printing)
 * [Appendix A. Glossary](#appendix-a-glossary)
 * [Appendix B. Block operators and math functions](#appendix-b-block-operators-and-math-functions)
 * [Appendix C. Naming guidelines](#appendix-c-naming-guidelines)
 * [Appendix D. Functionality matrix](#appendix-D-functionality-matrix)
 
-## 0. Versions
+## 0. Specification Versions
 
 | *Version* | *Date* | *Description of changes* |
 | :---- | :---- | :---- |

@@ -1,10 +1,10 @@
-# tt-lang (⚠️ in early development ⚠️)
+# tt-lang
 
 ![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
 ![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Build Status](https://github.com/tenstorrent/tt-lang/workflows/CI/badge.svg)
 
-A Python-based Domain-Specific Language (DSL) for authoring high-performance custom kernels on Tenstorrent hardware. **This project is currently in early development stages, the language spec has not yet been finalized and programs are not yet expected to run.**
+A Python-based Domain-Specific Language (DSL) for authoring high-performance custom kernels on Tenstorrent hardware. This project is under active development — see the [functionality matrix](docs/sphinx/specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current simulator and compiler support.
 
 ## 1. Vision
 
