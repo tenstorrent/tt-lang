@@ -391,29 +391,6 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
   }
 };
 
-/// Lower ttl.tile_store_block to ttkernel.pack_tile_block.
-struct TileStoreBlockOpConversion : OpConversionPattern<TileStoreBlockOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(TileStoreBlockOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-
-    auto cb = getCBFromView(adaptor.getView());
-    if (failed(cb)) {
-      return rewriter.notifyMatchFailure(
-          op, "view must come from ttl.cb_reserve (unrealized cast from CB)");
-    }
-
-    ttk::PackTileBlockOp::create(rewriter, loc, adaptor.getDstStartIndex(), *cb,
-                                 adaptor.getNtiles());
-
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
 enum class CopyOperandKind { TensorSlice, CircularBuffer, Unknown };
 
 static CopyOperandKind classifyOperand(Value v) {
@@ -944,7 +921,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   RewritePatternSet patterns(&ctx);
   patterns.add<BindCBLowering, TensorSliceLowering, CopyLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               TileStoreLowering, TileStoreBlockOpConversion, StoreLowering,
+               TileStoreLowering, StoreLowering,
                CoreXLowering, CoreYLowering>(typeConverter, &ctx);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);

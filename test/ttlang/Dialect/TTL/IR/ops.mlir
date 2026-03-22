@@ -88,19 +88,3 @@ func.func @copy_tile_basic(%t_tensor: tensor<1x1x!ttcore.tile<32x32, f32>>, %src
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, f32>>
 }
-
-// -----
-
-// Round-trip test for ttl.tile_store_block.
-
-// CHECK-LABEL: func.func @tile_store_block
-// CHECK-SAME: (%[[VIEW:.*]]: tensor<2x2x!ttcore.tile<32x32, bf16>>)
-// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
-// CHECK-DAG: %[[C4:.*]] = arith.constant 4 : index
-// CHECK: ttl.tile_store_block %[[C0]], %[[VIEW]], %[[C4]] : index, tensor<2x2x!ttcore.tile<32x32, bf16>>
-func.func @tile_store_block(%view: tensor<2x2x!ttcore.tile<32x32, bf16>>) {
-  %c0 = arith.constant 0 : index
-  %c4 = arith.constant 4 : index
-  ttl.tile_store_block %c0, %view, %c4 : index, tensor<2x2x!ttcore.tile<32x32, bf16>>
-  func.return
-}

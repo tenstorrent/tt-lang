@@ -170,9 +170,6 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
 
     rewriter.setInsertionPoint(computeOp);
 
-    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
-    Value ntilesVal = arith::ConstantIndexOp::create(rewriter, loc, M * N);
-
     // Sync acquire.
     TileRegsAcquireOp::create(rewriter, loc);
 
@@ -194,8 +191,17 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
     TileRegsCommitOp::create(rewriter, loc);
     TileRegsWaitOp::create(rewriter, loc);
 
-    // Pack all M*N result tiles from DST into the output DFB.
-    TileStoreBlockOp::create(rewriter, loc, zero, outView, ntilesVal);
+    // M*N individual tile_store ops. The combine-pack-tiles pass can
+    // optionally consolidate these into pack_tile_block downstream.
+    for (int64_t m = 0; m < M; ++m) {
+      for (int64_t n = 0; n < N; ++n) {
+        Value mIdx = arith::ConstantIndexOp::create(rewriter, loc, m);
+        Value nIdx = arith::ConstantIndexOp::create(rewriter, loc, n);
+        auto store = TileStoreOp::create(rewriter, loc, placeholder, outView,
+                                         ValueRange{mIdx, nIdx});
+        store->setAttr(kDstIdxAttrName, rewriter.getI32IntegerAttr(m * N + n));
+      }
+    }
 
     // Sync release.
     TileRegsReleaseOp::create(rewriter, loc);

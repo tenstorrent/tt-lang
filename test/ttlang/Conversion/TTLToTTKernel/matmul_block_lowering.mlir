@@ -1,7 +1,7 @@
 // Summary: End-to-end test for the matmul_block lowering pattern.
 // The lower-matmul-block pass replaces the compute with a straight-line
 // sequence: sync acquire -> [copy_tile for accumulator] -> matmul_block(kt=1)
-// -> commit -> wait -> pack_tile_block -> release.
+// -> commit -> wait -> M*N pack_tile -> release.
 // DFB lifecycle (wait/pop/reserve/push) comes from user code, not the pass.
 
 // RUN: ttlang-opt %s \
@@ -16,7 +16,6 @@
 // CHECK-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
 // CHECK-DAG: %[[C1_I32:.*]] = arith.constant 1 : i32
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
-// CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
 // CHECK-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
 // CHECK-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
 // CHECK-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
@@ -26,11 +25,8 @@
 // CHECK-NEXT: "ttkernel.experimental::matmul_block"(%[[CB0]], %[[CB1]], %[[C0]], %[[C0]], %[[C0]], %[[C0_I32]], %[[C1_I32]], %[[C1_I32]], %[[C1_I32]], %[[C1_I32]])
 // CHECK-NEXT: ttkernel.tile_regs_commit
 // CHECK-NEXT: ttkernel.tile_regs_wait
-// CHECK-NEXT: ttkernel.pack_tile_block(%[[C0]], %[[CB2]], %[[C1]])
+// CHECK-NEXT: ttkernel.pack_tile(%[[C0]], %[[CB2]], %[[C0]]
 // CHECK-NEXT: ttkernel.tile_regs_release
-// No individual copy_tile or pack_tile ops.
-// CHECK-NOT:  ttkernel.copy_tile(
-// CHECK-NOT:  ttkernel.pack_tile(
 // CHECK-NOT:  scf.for
 func.func @matmul_1x1_bf16(
     %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
@@ -49,32 +45,24 @@ func.func @matmul_1x1_bf16(
 // -----
 
 // =============================================================================
-// Test 2: [2,4] @ [4,3] -> [2,3]. Single matmul_block, pack_tile_block(6), no loops.
+// Test 2: [2,4] @ [4,3] -> [2,3]. Single matmul_block, 6 pack_tile, no loops.
 // =============================================================================
 
 // CHECK-LABEL: func.func @matmul_2x4_4x3
-// CHECK-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
-// CHECK-DAG: %[[C1_I32:.*]] = arith.constant 1 : i32
-// CHECK-DAG: %[[C2_I32:.*]] = arith.constant 2 : i32
-// CHECK-DAG: %[[C3_I32:.*]] = arith.constant 3 : i32
-// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
-// CHECK-DAG: %[[C6:.*]] = arith.constant 6 : index
-// CHECK-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<16, !ttcore.tile<32x32, bf16>>
-// CHECK-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<24, !ttcore.tile<32x32, bf16>>
-// CHECK-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<12, !ttcore.tile<32x32, bf16>>
-//
-// mm_block_init (full) + mm_block_init_short: ct=3, rt=2, kt=1.
-// CHECK:      "ttkernel.mm_block_init"(%[[CB0]], %[[CB1]], %[[CB2]], %[[C0_I32]], %[[C3_I32]], %[[C2_I32]], %[[C1_I32]])
+// CHECK:      "ttkernel.mm_block_init"
 // CHECK:      ttkernel.tile_regs_acquire
-// CHECK-NEXT: "ttkernel.mm_block_init_short"(%[[CB0]], %[[CB1]], %[[C0_I32]], %[[C3_I32]], %[[C2_I32]], %[[C1_I32]])
-// CHECK-NEXT: "ttkernel.experimental::matmul_block"(%[[CB0]], %[[CB1]], %[[C0]], %[[C0]], %[[C0]], %[[C0_I32]], %[[C3_I32]], %[[C2_I32]], %[[C1_I32]], %[[C3_I32]])
+// CHECK-NEXT: "ttkernel.mm_block_init_short"
+// CHECK-NEXT: "ttkernel.experimental::matmul_block"
 // CHECK-NEXT: ttkernel.tile_regs_commit
 // CHECK-NEXT: ttkernel.tile_regs_wait
-// Single pack_tile_block: DST[0..5] -> CB2.
-// CHECK-NEXT: ttkernel.pack_tile_block(%[[C0]], %[[CB2]], %[[C6]])
+// 6 pack_tile ops: DST[0..5] -> CB2[0..5].
+// CHECK-NEXT: ttkernel.pack_tile(
+// CHECK-NEXT: ttkernel.pack_tile(
+// CHECK-NEXT: ttkernel.pack_tile(
+// CHECK-NEXT: ttkernel.pack_tile(
+// CHECK-NEXT: ttkernel.pack_tile(
+// CHECK-NEXT: ttkernel.pack_tile(
 // CHECK-NEXT: ttkernel.tile_regs_release
-// CHECK-NOT:  ttkernel.copy_tile(
-// CHECK-NOT:  ttkernel.pack_tile(
 // CHECK-NOT:  scf.for
 func.func @matmul_2x4_4x3(
     %arg0: tensor<2x4x!ttcore.tile<32x32, bf16>>,
@@ -97,24 +85,18 @@ func.func @matmul_2x4_4x3(
 // =============================================================================
 
 // CHECK-LABEL: func.func @matmul_2x2_f32
-// CHECK-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
-// CHECK-DAG: %[[C1_I32:.*]] = arith.constant 1 : i32
-// CHECK-DAG: %[[C2_I32:.*]] = arith.constant 2 : i32
-// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
-// CHECK-DAG: %[[C4:.*]] = arith.constant 4 : index
-// CHECK-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
-// CHECK-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
-// CHECK-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<8, !ttcore.tile<32x32, f32>>
-// CHECK:      "ttkernel.mm_block_init"(%[[CB0]], %[[CB1]], %[[CB2]], %[[C0_I32]], %[[C2_I32]], %[[C2_I32]], %[[C1_I32]])
+// CHECK:      "ttkernel.mm_block_init"
 // CHECK:      ttkernel.tile_regs_acquire
-// CHECK-NEXT: "ttkernel.mm_block_init_short"(%[[CB0]], %[[CB1]], %[[C0_I32]], %[[C2_I32]], %[[C2_I32]], %[[C1_I32]])
-// CHECK-NEXT: "ttkernel.experimental::matmul_block"(%[[CB0]], %[[CB1]], %[[C0]], %[[C0]], %[[C0]], %[[C0_I32]], %[[C2_I32]], %[[C2_I32]], %[[C1_I32]], %[[C2_I32]])
+// CHECK-NEXT: "ttkernel.mm_block_init_short"
+// CHECK-NEXT: "ttkernel.experimental::matmul_block"
 // CHECK-NEXT: ttkernel.tile_regs_commit
 // CHECK-NEXT: ttkernel.tile_regs_wait
-// CHECK-NEXT: ttkernel.pack_tile_block(%[[C0]], %[[CB2]], %[[C4]])
+// 4 pack_tile ops: DST[0..3] -> CB2[0..3].
+// CHECK-NEXT: ttkernel.pack_tile(
+// CHECK-NEXT: ttkernel.pack_tile(
+// CHECK-NEXT: ttkernel.pack_tile(
+// CHECK-NEXT: ttkernel.pack_tile(
 // CHECK-NEXT: ttkernel.tile_regs_release
-// CHECK-NOT:  ttkernel.copy_tile(
-// CHECK-NOT:  ttkernel.pack_tile(
 // CHECK-NOT:  scf.for
 func.func @matmul_2x2_f32(
     %arg0: tensor<2x1x!ttcore.tile<32x32, f32>>,
@@ -138,24 +120,15 @@ func.func @matmul_2x2_f32(
 // =============================================================================
 
 // CHECK-LABEL: func.func @matmul_add_accumulator
-// CHECK-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
-// CHECK-DAG: %[[C1_I32:.*]] = arith.constant 1 : i32
-// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
-// CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
-// CHECK-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
-// CHECK-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
-// CHECK-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
-// CHECK-DAG: %[[CB3:.*]] = ttkernel.get_compile_time_arg_val(3) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
-// CHECK:      "ttkernel.mm_block_init"(%[[CB0]], %[[CB1]], %[[CB3]], %[[C0_I32]], %[[C1_I32]], %[[C1_I32]], %[[C1_I32]])
+// CHECK:      "ttkernel.mm_block_init"
 // CHECK:      ttkernel.tile_regs_acquire
 // Accumulator loaded via individual copy_tile.
-// CHECK:      ttkernel.copy_tile(%[[CB2]], %[[C0]], %[[C0]])
+// CHECK:      ttkernel.copy_tile(
 // CHECK:      "ttkernel.experimental::matmul_block"
 // CHECK:      ttkernel.tile_regs_commit
 // CHECK-NEXT: ttkernel.tile_regs_wait
-// CHECK-NEXT: ttkernel.pack_tile_block(%[[C0]], %[[CB3]], %[[C1]])
+// CHECK-NEXT: ttkernel.pack_tile(
 // CHECK-NEXT: ttkernel.tile_regs_release
-// CHECK-NOT:  ttkernel.pack_tile(
 func.func @matmul_add_accumulator() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>

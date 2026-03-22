@@ -934,30 +934,4 @@ def TTL_TileStoreOp : TTL_Op<"tile_store", [MemoryEffects<[MemWrite]>]> {
   let hasVerifier = 1;
 }
 
-def TTL_TileStoreBlockOp : TTL_Op<"tile_store_block", [MemoryEffects<[MemWrite]>]> {
-  let summary = "Pack a contiguous block of tiles from DST into a dataflow buffer";
-  let description = [{
-    `ttl.tile_store_block` packs `ntiles` contiguous tiles from the DST register
-    starting at `dst_start_index` into a dataflow buffer view obtained from
-    `ttl.cb_reserve`. Instead of packing one tile at a time (as `ttl.tile_store`
-    does), this packs the entire block in a single call. The dataflow buffer's
-    internal write pointer advances by `ntiles`; it is reset by `cb_push_back`.
-
-    Example:
-    ```mlir
-    %view = ttl.cb_reserve %cb : <[2, 2], !ttcore.tile<32x32, bf16>, 1>
-                                 -> tensor<2x2x!ttcore.tile<32x32, bf16>>
-    ttl.tile_store_block %c0, %view, %c4
-        : index, tensor<2x2x!ttcore.tile<32x32, bf16>>
-    ```
-  }];
-  let arguments = (ins
-    Index:$dst_start_index,
-    AnyRankedTensor:$view,
-    Index:$ntiles
-  );
-  let assemblyFormat = "$dst_start_index `,` $view `,` $ntiles attr-dict `:` type($dst_start_index) `,` type($view)";
-  let hasVerifier = 1;
-}
-
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPS_TD
