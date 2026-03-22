@@ -21,6 +21,7 @@ import ttnn
 sys.path.insert(0, os.path.dirname(__file__))
 from kernels.linear import linear_kernel, linear_bias_kernel
 from kernels.elementwise import add_kernel, silu_mul_kernel
+from kernels.rope import rope_kernel
 from kernels.rmsnorm import rmsnorm
 from utils import load_checkpoint
 
@@ -53,9 +54,11 @@ class QwenModel:
         self.max_seq_len = self.config["max_seq_len"]        # 512
         self.padded_max_seq = ((self.max_seq_len + TILE - 1) // TILE) * TILE  # 512
 
-        # RoPE tables (host-side, float)
+        # RoPE tables — host copies for reference + device copies for kernel
         self.rope_cos = self.ckpt["rope_cos"].float()
         self.rope_sin = self.ckpt["rope_sin"].float()
+        self.rope_cos_device = self._to_device(self.ckpt["rope_cos"].bfloat16())
+        self.rope_sin_device = self._to_device(self.ckpt["rope_sin"].bfloat16())
 
         # Embedding weights (host-side for lookup)
         self.embed_weight = self.ckpt["embed_weight"].float()

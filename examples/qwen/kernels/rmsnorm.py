@@ -51,60 +51,74 @@ import ttnn
 TILE = 32
 
 
-@ttl.kernel(grid=(1, 1))
+GRID_Y = 11
+GRID_X = 10
+
+
+@ttl.kernel(grid=(GRID_Y, GRID_X))
 def rmsnorm_mul_kernel(X, scale, gamma, Y):
-    """Y = X * scale * gamma, applied tile-by-tile.
+    """Y = X * scale * gamma, multi-core.
 
     X: [Mt, Nt] tiles — input
-    scale: [Mt, 1] tiles — rsqrt(mean(x^2)) per row, broadcast across columns
-    gamma: [1, Nt] tiles — learnable weight, broadcast across rows
+    scale: [Mt, 1] tiles — rsqrt(mean(x^2)) per row
+    gamma: [1, Nt] tiles — learnable weight
     Y: [Mt, Nt] tiles — output
-
-    The DM thread reads scale once per row (broadcasts to all Nt columns).
     """
     Mt = X.shape[0] // TILE
     Nt = X.shape[1] // TILE
+    num_tiles = Mt * Nt
 
     x_dfb = ttl.make_dataflow_buffer_like(X, shape=(1, 1), buffer_factor=2)
     s_dfb = ttl.make_dataflow_buffer_like(scale, shape=(1, 1), buffer_factor=2)
     g_dfb = ttl.make_dataflow_buffer_like(gamma, shape=(1, 1), buffer_factor=2)
     y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1), buffer_factor=2)
 
+    y_size, x_size = ttl.grid_size(dims=2)
+    num_cores = y_size * x_size
+    chunk = (num_tiles + num_cores - 1) // num_cores
+
     @ttl.datamovement()
     def read():
-        for m in range(Mt):
-            for n in range(Nt):
-                with x_dfb.reserve() as blk:
-                    tx = ttl.copy(X[m, n], blk)
-                    tx.wait()
-                # Read the same scale tile for every column in this row
-                with s_dfb.reserve() as blk:
-                    tx = ttl.copy(scale[m, 0], blk)
-                    tx.wait()
-                # Read gamma for this column
-                with g_dfb.reserve() as blk:
-                    tx = ttl.copy(gamma[0, n], blk)
-                    tx.wait()
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        tile_start = nid * chunk
+        for tid in range(chunk):
+            idx = (tile_start + tid) % num_tiles
+            m = idx // Nt
+            n = idx % Nt
+            with x_dfb.reserve() as blk:
+                tx = ttl.copy(X[m, n], blk)
+                tx.wait()
+            with s_dfb.reserve() as blk:
+                tx = ttl.copy(scale[m, 0], blk)
+                tx.wait()
+            with g_dfb.reserve() as blk:
+                tx = ttl.copy(gamma[0, n], blk)
+                tx.wait()
 
     @ttl.compute()
     def compute():
-        for _ in range(Mt):
-            for _ in range(Nt):
-                with (
-                    x_dfb.wait() as x_blk,
-                    s_dfb.wait() as s_blk,
-                    g_dfb.wait() as g_blk,
-                    y_dfb.reserve() as y_blk,
-                ):
-                    y_blk.store(x_blk * s_blk * g_blk)
+        for _ in range(chunk):
+            with (
+                x_dfb.wait() as x_blk,
+                s_dfb.wait() as s_blk,
+                g_dfb.wait() as g_blk,
+                y_dfb.reserve() as y_blk,
+            ):
+                y_blk.store(x_blk * s_blk * g_blk)
 
     @ttl.datamovement()
     def write():
-        for m in range(Mt):
-            for n in range(Nt):
-                with y_dfb.wait() as blk:
-                    tx = ttl.copy(blk, Y[m, n])
-                    tx.wait()
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        tile_start = nid * chunk
+        for tid in range(chunk):
+            idx = (tile_start + tid) % num_tiles
+            m = idx // Nt
+            n = idx % Nt
+            with y_dfb.wait() as blk:
+                tx = ttl.copy(blk, Y[m, n])
+                tx.wait()
 
 
 def rmsnorm(x_device, gamma_device, device, eps=1e-6):
