@@ -8,6 +8,8 @@ TTL Documentation
    overview
    getting-started
    ttl-tutorial/index
+   programming-guide
+   claude-skills
    testing
    tools
 

@@ -17,7 +17,7 @@ The build system supports:
 
 - CMake 3.28+
 - Ninja
-- Clang/Clang++ (or GCC)
+- Clang/Clang++ 17+ (or GCC 11+)
 - Python 3.11+
 - Git (submodules must be initialized)
 
