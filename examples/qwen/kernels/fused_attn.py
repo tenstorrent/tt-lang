@@ -21,16 +21,17 @@ CACHE_TILES = 16  # max_seq / TILE = 512/32
 
 
 @ttl.kernel(grid=(1, 1))
-def fused_attn_head_kernel(Q_rot, K_T, V, mask, scaler, scratch, attn_out):
+def fused_attn_head_kernel(Q_rot, K_T, V, mask, scaler, scratch_a, scratch_b, attn_out):
     """Fused attention for 1 Q head: score + softmax + output.
 
-    Q_rot:    [TILE, head_dim] = [32, 64] — single head Q, pre-rotated
-    K_T:      [head_dim, max_seq] = [64, 512] = [2, 16] tiles
-    V:        [max_seq, head_dim] = [512, 64] = [16, 2] tiles
-    mask:     [TILE, max_seq] = [32, 512] = [1, 16] tiles
-    scaler:   [TILE, TILE] ones
-    scratch:  [TILE, max_seq] = [32, 512] — DRAM scratch for softmax
-    attn_out: [TILE, head_dim] = [32, 64] — output
+    Q_rot:     [TILE, head_dim] = [32, 64] — single head Q, pre-rotated
+    K_T:       [head_dim, max_seq] = [64, 512] = [2, 16] tiles
+    V:         [max_seq, head_dim] = [512, 64] = [16, 2] tiles
+    mask:      [TILE, max_seq] = [32, 512] = [1, 16] tiles
+    scaler:    [TILE, TILE] ones
+    scratch_a: [TILE, max_seq] — DRAM scratch for scores/masked/exp
+    scratch_b: [TILE, max_seq] — DRAM scratch for normalized weights
+    attn_out:  [TILE, head_dim] = [32, 64] — output
     """
     Kt_q = 2   # head_dim / TILE
     Nt_s = K_T.shape[1] // TILE  # 16
@@ -78,23 +79,23 @@ def fused_attn_head_kernel(Q_rot, K_T, V, mask, scaler, scratch, attn_out):
                 tx = ttl.copy(mask[0, nt], blk)
                 tx.wait()
 
-        # Phase 3: re-read masked from scratch
+        # Phase 3: re-read masked from scratch_a
         for nt in range(Nt_s):
             with score_dfb.reserve() as blk:
-                tx = ttl.copy(scratch[0, nt], blk)
+                tx = ttl.copy(scratch_a[0, nt], blk)
                 tx.wait()
 
-        # Phase 4: re-read exp from scratch
+        # Phase 4: re-read exp from scratch_a
         for nt in range(Nt_s):
             with score_dfb.reserve() as blk:
-                tx = ttl.copy(scratch[0, nt], blk)
+                tx = ttl.copy(scratch_a[0, nt], blk)
                 tx.wait()
 
-        # Phase 5: weights from scratch + V for output matmul
+        # Phase 5: weights from scratch_b + V for output matmul
         for nt_out in range(Nt_v):
             for kt_v in range(Kt_v):
                 with w_dfb.reserve() as blk:
-                    tx = ttl.copy(scratch[0, kt_v], blk)
+                    tx = ttl.copy(scratch_b[0, kt_v], blk)
                     tx.wait()
                 with v_dfb.reserve() as blk:
                     tx = ttl.copy(V[kt_v, nt_out], blk)
@@ -194,25 +195,25 @@ def fused_attn_head_kernel(Q_rot, K_T, V, mask, scaler, scratch, attn_out):
 
     @ttl.datamovement()
     def write():
-        # Phase 1: scores to scratch
+        # Phase 1: scores to scratch_a
         for nt in range(Nt_s):
             with score_dfb.wait() as blk:
-                tx = ttl.copy(blk, scratch[0, nt])
+                tx = ttl.copy(blk, scratch_a[0, nt])
                 tx.wait()
-        # Phase 2: masked to scratch
+        # Phase 2: masked to scratch_a (overwrites scores — safe, reader done with them)
         for nt in range(Nt_s):
             with masked_dfb.wait() as blk:
-                tx = ttl.copy(blk, scratch[0, nt])
+                tx = ttl.copy(blk, scratch_a[0, nt])
                 tx.wait()
-        # Phase 3: exp to scratch
+        # Phase 3: exp to scratch_a (overwrites masked — safe, reader done with them)
         for nt in range(Nt_s):
             with exp_dfb.wait() as blk:
-                tx = ttl.copy(blk, scratch[0, nt])
+                tx = ttl.copy(blk, scratch_a[0, nt])
                 tx.wait()
-        # Phase 4: normalized weights to scratch
+        # Phase 4: normalized weights to scratch_b (DIFFERENT tensor — no race!)
         for nt in range(Nt_s):
             with exp_dfb.wait() as blk:
-                tx = ttl.copy(blk, scratch[0, nt])
+                tx = ttl.copy(blk, scratch_b[0, nt])
                 tx.wait()
         # Phase 5: output
         for nt in range(Nt_v):
@@ -248,10 +249,11 @@ def test_fused_attn(device):
     V = _to_device(V_t, device)
     mask = _to_device(mask_t, device)
     sc = _to_device(sc_t, device)
-    scratch = _to_device(torch.zeros(TILE, 512, dtype=torch.bfloat16), device)
+    scratch_a = _to_device(torch.zeros(TILE, 512, dtype=torch.bfloat16), device)
+    scratch_b = _to_device(torch.zeros(TILE, 512, dtype=torch.bfloat16), device)
     out = _to_device(torch.zeros(TILE, 64, dtype=torch.bfloat16), device)
 
-    fused_attn_head_kernel(Q, K_T, V, mask, sc, scratch, out)
+    fused_attn_head_kernel(Q, K_T, V, mask, sc, scratch_a, scratch_b, out)
     result = ttnn.to_torch(out)
 
     # Reference

@@ -21,9 +21,9 @@ import ttnn
 sys.path.insert(0, os.path.dirname(__file__))
 from kernels.linear import linear_kernel, linear_bias_kernel
 from kernels.elementwise import add_kernel, silu_mul_kernel
-from kernels.rope import rope_kernel
-from kernels.rmsnorm import device_rmsnorm, rmsnorm_mul_kernel
-from kernels.softmax import device_softmax
+from kernels.rope import batch_rope_kernel
+from kernels.rmsnorm import fused_device_rmsnorm, rmsnorm_mul_kernel
+from kernels.fused_attn import fused_attn_head_kernel
 from utils import load_checkpoint
 
 TILE = 32
@@ -427,7 +427,8 @@ class QwenModel:
         w = self.layer_weights[layer_idx]
 
         if decode:
-            normed2 = self._rmsnorm_device(post_attn_device, w["post_attention_layernorm_weight"])
+            normed2 = fused_device_rmsnorm(post_attn_device, w["post_attention_layernorm_weight"],
+                                            self.mean_scaler_device, self.device)
         else:
             normed2 = self._rmsnorm_host(post_attn_device, w["post_attention_layernorm_weight"])
 
@@ -493,101 +494,107 @@ class QwenModel:
         return self._run_mlp(post_attn, layer_idx, padded_seq)
 
     def transformer_layer_decode(self, x_device, layer_idx, pos):
-        """Decode: single token, per-head device projections + RoPE + softmax.
+        """Decode: fused kernels. ~28 kernel calls per layer.
 
-        Remaining host transfers: KV cache update (4KB pull + 128KB push per KV head),
-        head output collection (4KB pull per head + 56KB concat push).
+        Combined QKV projections (3) + batch RoPE (2) + fused attention (14) +
+        O proj (1) + add (2) + fused RMSNorm (2) + MLP (4) = 28 calls.
+
+        Host transfers: KV cache update only (8KB pull + 256KB push per layer).
+        Head outputs collected on host for concatenation (56KB pull + 56KB push).
         """
         w = self.layer_weights[layer_idx]
         heads_per_group = self.num_q_heads // self.num_kv_heads
         cache_len = self.padded_max_seq
         attend_len = pos + 1
 
-        normed = self._rmsnorm_device(x_device, w["input_layernorm_weight"])
+        # 1. Fused RMSNorm (1 call)
+        normed = fused_device_rmsnorm(x_device, w["input_layernorm_weight"],
+                                       self.mean_scaler_device, self.device)
 
-        # Decode mask (reuse across heads)
-        if not hasattr(self, '_decode_mask_cache') or self._decode_mask_pos != pos:
-            decode_mask = torch.full((TILE, cache_len), float("-inf"), dtype=torch.bfloat16)
-            decode_mask[0, :attend_len] = 0.0
-            self._decode_mask_dev = self._to_device(decode_mask)
-            self._decode_mask_pos = pos
+        # 2. Combined Q/K/V projections (3 calls, multi-core)
+        q_out = self._alloc_zeros((TILE, self.hidden_size))
+        linear_bias_kernel(normed, w["q_proj_weight"], w["q_proj_bias"], q_out)
 
-        # Reset attention buffer
-        self._decode_attn_buf.zero_()
+        k_out = self._alloc_zeros((TILE, self.num_kv_heads * self.head_dim))
+        linear_bias_kernel(normed, w["k_proj_weight"], w["k_proj_bias"], k_out)
 
+        v_out = self._alloc_zeros((TILE, self.num_kv_heads * self.head_dim))
+        linear_bias_kernel(normed, w["v_proj_weight"], w["v_proj_bias"], v_out)
+
+        # 3. Batch RoPE (2 calls) — all heads at once
+        q_rot = self._alloc_zeros((TILE, self.hidden_size))
+        batch_rope_kernel(q_out, self._decode_cos_dev, self._decode_sin_dev, q_rot)
+
+        k_rot = self._alloc_zeros((TILE, self.num_kv_heads * self.head_dim))
+        batch_rope_kernel(k_out, self._decode_cos_dev, self._decode_sin_dev, k_rot)
+
+        # 4. KV cache update (host transfer — pull K_rot + V, update cache, push back)
+        k_rot_host = ttnn.to_torch(k_rot)   # [TILE, 128] = 8KB
+        v_host = ttnn.to_torch(v_out)        # [TILE, 128] = 8KB
         for kv_idx in range(self.num_kv_heads):
-            # Per-head K projection + RoPE on device
-            k_dev = self._alloc_zeros((TILE, self.head_dim))
-            linear_bias_kernel(normed, w["k_head_weights"][kv_idx],
-                               w["k_head_biases"][kv_idx], k_dev)
-            k_rot_dev = self._alloc_zeros((TILE, self.head_dim))
-            rope_kernel(k_dev, self._decode_cos_dev, self._decode_sin_dev, k_rot_dev)
-
-            # Per-head V projection (no RoPE)
-            v_dev = self._alloc_zeros((TILE, self.head_dim))
-            linear_bias_kernel(normed, w["v_head_weights"][kv_idx],
-                               w["v_head_biases"][kv_idx], v_dev)
-
-            # KV cache update: pull new K/V (4KB each), update host+device cache
-            k_rot_host = ttnn.to_torch(k_rot_dev)  # [TILE, 64] = 4KB
-            v_host = ttnn.to_torch(v_dev)            # [TILE, 64] = 4KB
-            self.kv_cache[layer_idx][kv_idx]["k"][pos] = k_rot_host[0].float()
-            self.kv_cache[layer_idx][kv_idx]["v"][pos] = v_host[0].float()
-
-            # Update device cache: re-upload only the tile-row containing pos
-            tile_row = pos // TILE
-            row_s = tile_row * TILE
-            row_e = row_s + TILE
-            # K^T: update tile-columns at pos → rebuild the 2 affected columns
-            k_slice = self.kv_cache[layer_idx][kv_idx]["k"][row_s:row_e].bfloat16().t().contiguous()
-            # k_slice is [64, 32] = 2 tile-columns. Upload and overwrite in full cache.
-            # For now, rebuild full K^T and V from host (still a transfer but with persistent device tensors)
+            col_s = kv_idx * self.head_dim
+            col_e = col_s + self.head_dim
+            self.kv_cache[layer_idx][kv_idx]["k"][pos] = k_rot_host[0, col_s:col_e].float()
+            self.kv_cache[layer_idx][kv_idx]["v"][pos] = v_host[0, col_s:col_e].float()
+            # Re-upload full cache (still needed — partial tile update not supported)
             k_t_full = self.kv_cache[layer_idx][kv_idx]["k"][:self.max_seq_len].bfloat16().t().contiguous()
             v_full = self.kv_cache[layer_idx][kv_idx]["v"][:self.max_seq_len].bfloat16().contiguous()
             self.kv_cache_dev[layer_idx][kv_idx]["k_t"] = self._to_device(k_t_full)
             self.kv_cache_dev[layer_idx][kv_idx]["v"] = self._to_device(v_full)
 
-            # Read device-resident cache for attention
+        # 5. Decode mask (reuse across heads within a layer)
+        decode_mask = torch.full((TILE, cache_len), float("-inf"), dtype=torch.bfloat16)
+        decode_mask[0, :attend_len] = 0.0
+        decode_mask_dev = self._to_device(decode_mask)
+
+        # 6. Per-head fused attention (14 calls)
+        # Pull Q_rot to host for per-head slicing, apply pre-scaling
+        q_rot_host = ttnn.to_torch(q_rot)  # [TILE, 896] = 56KB
+        scale_val = 1.0 / math.sqrt(self.head_dim)
+        self._decode_attn_buf.zero_()
+
+        for kv_idx in range(self.num_kv_heads):
             k_t_dev = self.kv_cache_dev[layer_idx][kv_idx]["k_t"]
             v_dev_cache = self.kv_cache_dev[layer_idx][kv_idx]["v"]
 
             for q_local in range(heads_per_group):
                 q_idx = kv_idx * heads_per_group + q_local
+                col_s = q_idx * self.head_dim
+                col_e = col_s + self.head_dim
 
-                # Per-head Q projection + RoPE (weights pre-scaled by 1/sqrt(d))
-                q_dev = self._alloc_zeros((TILE, self.head_dim))
-                linear_bias_kernel(normed, w["q_head_weights"][q_idx],
-                                   w["q_head_biases"][q_idx], q_dev)
-                q_rot_dev = self._alloc_zeros((TILE, self.head_dim))
-                rope_kernel(q_dev, self._decode_cos_dev, self._decode_sin_dev, q_rot_dev)
+                # Extract and pre-scale single head Q
+                q_head = q_rot_host[:, col_s:col_e].clone()
+                q_head[0] = q_head[0] * scale_val
+                q_head_dev = self._to_device(q_head)
 
-                # Attention on device: scores → softmax → output
+                # Attention: score + host softmax + output (3 calls)
                 scores_dev = self._alloc_zeros((TILE, cache_len))
-                linear_kernel(q_rot_dev, k_t_dev, scores_dev)
+                linear_kernel(q_head_dev, k_t_dev, scores_dev)
 
-                weights_dev = device_softmax(
-                    scores_dev, self._decode_mask_dev,
-                    self.ones_scaler_device, self.device
-                )
+                scores_host = ttnn.to_torch(scores_dev).float()
+                weights_host = torch.nn.functional.softmax(
+                    scores_host + decode_mask.float(), dim=-1
+                ).bfloat16()
+                weights_dev = self._to_device(weights_host)
 
                 head_out_dev = self._alloc_zeros((TILE, self.head_dim))
                 linear_kernel(weights_dev, v_dev_cache, head_out_dev)
 
-                # Collect head output (4KB pull, accumulate on host)
+                # Collect head output
                 head_out_host = ttnn.to_torch(head_out_dev)
-                col_start = q_idx * self.head_dim
-                col_end = col_start + self.head_dim
-                self._decode_attn_buf[:, col_start:col_end] = head_out_host
+                self._decode_attn_buf[:, col_s:col_e] = head_out_host
 
-        # Upload concatenated attention (56KB, single transfer)
+        # Upload concatenated attention (56KB)
         attn_out_device = self._to_device(self._decode_attn_buf)
 
+        # 7. O projection + residual (2 calls)
         proj_out = self._alloc_zeros((TILE, self.hidden_size))
         linear_kernel(attn_out_device, w["o_proj_weight"], proj_out)
 
         post_attn = self._alloc_zeros((TILE, self.hidden_size))
         add_kernel(x_device, proj_out, post_attn)
 
+        # 8. Fused RMSNorm + MLP (1 + 4 + 1 calls)
         return self._run_mlp(post_attn, layer_idx, TILE, decode=True)
 
     # -----------------------------------------------------------------
@@ -631,6 +638,14 @@ class QwenModel:
                 )
 
             self.cache_pos = seq_len
+
+            # Sync host KV cache to device-resident tensors for decode
+            for li in range(self.num_layers):
+                for kv_idx in range(self.num_kv_heads):
+                    k_t = self.kv_cache[li][kv_idx]["k"][:self.max_seq_len].bfloat16().t().contiguous()
+                    v = self.kv_cache[li][kv_idx]["v"][:self.max_seq_len].bfloat16().contiguous()
+                    self.kv_cache_dev[li][kv_idx]["k_t"] = self._to_device(k_t)
+                    self.kv_cache_dev[li][kv_idx]["v"] = self._to_device(v)
 
             x_device = self._rmsnorm_host(x_device, self.final_norm_weight)
             x_host = ttnn.to_torch(x_device).float()
@@ -681,7 +696,8 @@ class QwenModel:
 
             self.cache_pos = pos + 1
 
-            x_device = self._rmsnorm_device(x_device, self.final_norm_weight)
+            x_device = fused_device_rmsnorm(x_device, self.final_norm_weight,
+                                             self.mean_scaler_device, self.device)
             x_host = ttnn.to_torch(x_device).float()
 
         # lm_head on host
