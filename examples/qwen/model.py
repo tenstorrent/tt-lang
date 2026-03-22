@@ -353,11 +353,10 @@ class QwenModel:
                 scores_dev = self._alloc_zeros((TILE, cache_len))
                 linear_kernel(q_dev, k_t_dev, scores_dev)
 
-                # Host softmax (device softmax needs cross-tile reduce debugging)
-                scores = ttnn.to_torch(scores_dev).float()
-                scores = scores + decode_mask.float()
-                weights = torch.nn.functional.softmax(scores, dim=-1).bfloat16()
-                weights_dev = self._to_device(weights)
+                # Device softmax — no host transfer!
+                weights_dev = device_softmax(
+                    scores_dev, decode_mask_dev, self.ones_scaler_device, self.device
+                )
 
                 # Attn output = weights @ V
                 head_out_dev = self._alloc_zeros((TILE, self.head_dim))

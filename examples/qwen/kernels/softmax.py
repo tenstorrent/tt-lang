@@ -146,28 +146,14 @@ def fused_exp_sum_kernel(masked, row_max, scaler, exp_out, sum_out):
     @ttl.compute()
     def compute():
         for _ in range(Mt):
+            # Keep scaler alive for the entire row (used in reduce_sum)
             with mx_dfb.wait() as max_blk, sc_dfb.wait() as sc_blk:
-                # Scalar broadcast: max[0,0] has the row-0 max,
-                # broadcast to all positions for subtraction
+                # Scalar broadcast max
                 with mx_bc_dfb.reserve() as mx_bc:
                     mx_bc.store(ttl.math.broadcast(max_blk, mx_bc, dims=[0, 1]))
 
-            with mx_bc_dfb.wait() as max_bc:
-                # First column: exp → output + local CB → reduce → init sum
-                with m_dfb.wait() as masked_blk:
-                    with e_dfb.reserve() as exp_tile:
-                        exp_tile.store(ttl.math.exp(masked_blk - max_bc))
-                    with exp_local_dfb.reserve() as el:
-                        el.store(ttl.math.exp(masked_blk - max_bc))
-                with exp_local_dfb.wait() as el_blk:
-                    with tmp_dfb.reserve() as tmp:
-                        tmp.store(ttl.math.reduce_sum(el_blk, sc_blk, tmp, dims=[1]))
-                with tmp_dfb.wait() as reduced:
-                    with acc_dfb.reserve() as acc:
-                        acc.store(reduced)
-
-                # Remaining columns
-                for _ in range(Nt - 1):
+                with mx_bc_dfb.wait() as max_bc:
+                    # First column
                     with m_dfb.wait() as masked_blk:
                         with e_dfb.reserve() as exp_tile:
                             exp_tile.store(ttl.math.exp(masked_blk - max_bc))
@@ -176,9 +162,23 @@ def fused_exp_sum_kernel(masked, row_max, scaler, exp_out, sum_out):
                     with exp_local_dfb.wait() as el_blk:
                         with tmp_dfb.reserve() as tmp:
                             tmp.store(ttl.math.reduce_sum(el_blk, sc_blk, tmp, dims=[1]))
-                    with tmp_dfb.wait() as reduced, acc_dfb.wait() as prev:
+                    with tmp_dfb.wait() as reduced:
                         with acc_dfb.reserve() as acc:
-                            acc.store(prev + reduced)
+                            acc.store(reduced)
+
+                    # Remaining columns
+                    for _ in range(Nt - 1):
+                        with m_dfb.wait() as masked_blk:
+                            with e_dfb.reserve() as exp_tile:
+                                exp_tile.store(ttl.math.exp(masked_blk - max_bc))
+                            with exp_local_dfb.reserve() as el:
+                                el.store(ttl.math.exp(masked_blk - max_bc))
+                        with exp_local_dfb.wait() as el_blk:
+                            with tmp_dfb.reserve() as tmp:
+                                tmp.store(ttl.math.reduce_sum(el_blk, sc_blk, tmp, dims=[1]))
+                        with tmp_dfb.wait() as reduced, acc_dfb.wait() as prev:
+                            with acc_dfb.reserve() as acc:
+                                acc.store(prev + reduced)
 
             with acc_dfb.wait() as final_sum:
                 with sm_dfb.reserve() as sm:
