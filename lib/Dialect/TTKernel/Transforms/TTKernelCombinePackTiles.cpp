@@ -68,7 +68,9 @@ struct TTKernelCombinePackTilesPass
       SmallVector<SmallVector<ttk::PackTileOp>> runs;
       SmallVector<ttk::PackTileOp> run;
 
-      auto flush = [&]() {
+      // Finalize the current run: save it for replacement if combinable
+      // (2+ ops), then clear for the next group.
+      auto finalizeRun = [&]() {
         if (run.size() >= 2) {
           runs.push_back(std::move(run));
         }
@@ -84,7 +86,7 @@ struct TTKernelCombinePackTilesPass
         auto packOp = dyn_cast<ttk::PackTileOp>(&op);
         if (!packOp || !getConstantIntValue(packOp.getDstIndex()) ||
             !getConstantIntValue(packOp.getOutIndex())) {
-          flush();
+          finalizeRun();
           continue;
         }
 
@@ -94,12 +96,12 @@ struct TTKernelCombinePackTilesPass
                        *getConstantIntValue(run.back().getOutIndex()) + 1)) {
           run.push_back(packOp);
         } else {
-          flush();
+          finalizeRun();
           run.push_back(packOp);
         }
       }
 
-      flush();
+      finalizeRun();
 
       for (auto &r : runs) {
         replaceRun(r);
