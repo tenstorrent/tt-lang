@@ -261,49 +261,51 @@ static void addElementAccessHelpers(func::FuncOp func, OpBuilder &builder,
   builder.setInsertionPointToStart(&func.getBody().front());
   auto loc = func.getLoc();
 
+  // Use lambdas (valid inside function bodies in C++17) instead of nested
+  // function definitions, which are not allowed in C++.
   if (needsBF16) {
     emitVerbatim(loc,
-        "static inline uint32_t _ttl_elem_read_bf16("
-        "uint32_t l1_addr, uint32_t row, uint32_t col) {"
+        "auto _ttl_elem_read_bf16 = [](uint32_t l1_addr, uint32_t row,"
+        " uint32_t col) -> uint32_t {"
         " volatile tt_l1_ptr uint16_t* base ="
         " reinterpret_cast<volatile tt_l1_ptr uint16_t*>(l1_addr);"
         " uint32_t face = (row >= 16 ? 2 : 0) + (col >= 16 ? 1 : 0);"
         " uint32_t offset = face * 256 + (row % 16) * 16 + (col % 16);"
         " return (uint32_t)base[offset];"
-        " }",
+        " };",
         builder);
     emitVerbatim(loc,
-        "static inline void _ttl_elem_write_bf16("
-        "uint32_t l1_addr, uint32_t row, uint32_t col, uint32_t val) {"
+        "auto _ttl_elem_write_bf16 = [](uint32_t l1_addr, uint32_t row,"
+        " uint32_t col, uint32_t val) {"
         " volatile tt_l1_ptr uint16_t* base ="
         " reinterpret_cast<volatile tt_l1_ptr uint16_t*>(l1_addr);"
         " uint32_t face = (row >= 16 ? 2 : 0) + (col >= 16 ? 1 : 0);"
         " uint32_t offset = face * 256 + (row % 16) * 16 + (col % 16);"
         " base[offset] = (uint16_t)val;"
-        " }",
+        " };",
         builder);
   }
 
   if (needsF32) {
     emitVerbatim(loc,
-        "static inline uint32_t _ttl_elem_read_f32("
-        "uint32_t l1_addr, uint32_t row, uint32_t col) {"
+        "auto _ttl_elem_read_f32 = [](uint32_t l1_addr, uint32_t row,"
+        " uint32_t col) -> uint32_t {"
         " volatile tt_l1_ptr uint32_t* base ="
         " reinterpret_cast<volatile tt_l1_ptr uint32_t*>(l1_addr);"
         " uint32_t face = (row >= 16 ? 2 : 0) + (col >= 16 ? 1 : 0);"
         " uint32_t offset = face * 256 + (row % 16) * 16 + (col % 16);"
         " return base[offset];"
-        " }",
+        " };",
         builder);
     emitVerbatim(loc,
-        "static inline void _ttl_elem_write_f32("
-        "uint32_t l1_addr, uint32_t row, uint32_t col, uint32_t val) {"
+        "auto _ttl_elem_write_f32 = [](uint32_t l1_addr, uint32_t row,"
+        " uint32_t col, uint32_t val) {"
         " volatile tt_l1_ptr uint32_t* base ="
         " reinterpret_cast<volatile tt_l1_ptr uint32_t*>(l1_addr);"
         " uint32_t face = (row >= 16 ? 2 : 0) + (col >= 16 ? 1 : 0);"
         " uint32_t offset = face * 256 + (row % 16) * 16 + (col % 16);"
         " base[offset] = val;"
-        " }",
+        " };",
         builder);
   }
 }
