@@ -121,7 +121,7 @@ __all__ = [
     "copy",
     "CopyTransaction",
     "Program",
-    "core",
+    "node",
     "compute",
     "datamovement",
     "kernel",
