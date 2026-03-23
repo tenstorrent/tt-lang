@@ -33,6 +33,7 @@ from kernels.multicore_attn import (
 )
 from kernels.kv_cache_update import get_kv_cache_update_kernel
 from kernels.kv_cache_update_traced import kv_cache_update_traced, build_full_masks
+from kernels.argmax import DeviceArgmax
 from utils import load_checkpoint
 
 TILE = 32
@@ -154,6 +155,9 @@ class QwenModel:
         # KV cache (initialized on first prefill)
         self.kv_cache = None
         self.cache_pos = 0  # number of positions filled
+
+        # Device-side argmax for greedy decode (avoids 9.7MB logits readback)
+        self.device_argmax = DeviceArgmax(device, vocab_size=self.vocab_size)
 
         # Quiet mode: suppress compilation output
         self.quiet = False
@@ -739,8 +743,18 @@ class QwenModel:
         ttnn.end_trace_capture(self.device, self._trace_id, cq_id=0)
         print(" done.")
 
-    def decode_step_traced(self, token_id, pos=None):
-        """Decode one token using trace replay. Much faster dispatch."""
+    def decode_step_traced(self, token_id, pos=None, greedy=False):
+        """Decode one token using trace replay. Much faster dispatch.
+
+        Args:
+            token_id: input token ID
+            pos: position in sequence (default: self.cache_pos)
+            greedy: if True, return token ID via device argmax (no logits readback)
+
+        Returns:
+            If greedy: int token ID
+            Else: [1, vocab_size] logits tensor (host)
+        """
         if pos is None:
             pos = self.cache_pos
 
@@ -784,10 +798,14 @@ class QwenModel:
             ttnn.execute_trace(self.device, self._trace_id, cq_id=0, blocking=True)
             self._trace_kv_ready = True
 
-            logits_host = ttnn.to_torch(self._tb["logits"]).float()
+            if greedy:
+                result = self.device_argmax(self._tb["logits"])
+            else:
+                logits_host = ttnn.to_torch(self._tb["logits"]).float()
+                result = logits_host[:1]
 
         self.cache_pos = pos + 1
-        return logits_host[:1]
+        return result
 
     # -----------------------------------------------------------------
     # Public API
@@ -848,15 +866,17 @@ class QwenModel:
 
         return logits
 
-    def decode_step(self, token_id, pos=None):
+    def decode_step(self, token_id, pos=None, greedy=False):
         """Run one decode step: single token through 24 layers.
 
         Args:
             token_id: int, the token to process
             pos: int, position in sequence (default: self.cache_pos)
+            greedy: if True, return token ID via device argmax (no logits readback)
 
         Returns:
-            logits: [1, vocab_size] torch tensor on host
+            If greedy: int token ID
+            Else: [1, vocab_size] logits tensor (host)
         """
         if pos is None:
             pos = self.cache_pos
@@ -900,9 +920,14 @@ class QwenModel:
             # lm_head on device
             logits_dev = self._alloc_zeros((TILE, self.vocab_size))
             linear_kernel(x_device, self.lm_head_weight_device, logits_dev)
-            logits_host = ttnn.to_torch(logits_dev).float()
 
-        return logits_host[:1]
+            if greedy:
+                result = self.device_argmax(logits_dev)
+            else:
+                logits_host = ttnn.to_torch(logits_dev).float()
+                result = logits_host[:1]
+
+        return result
 
     def generate(self, input_ids, max_new_tokens=50, temperature=0.0, use_trace=False):
         """Prefill + decode loop. Yields generated token IDs.
@@ -932,13 +957,15 @@ class QwenModel:
                 self._capture_decode_trace()
 
         # Decode loop
+        greedy = (temperature == 0.0)
         decode_fn = self.decode_step_traced if use_trace else self.decode_step
         for _ in range(max_new_tokens - 1):
-            logits = decode_fn(next_token)
+            result = decode_fn(next_token, greedy=greedy)
 
-            if temperature == 0.0:
-                next_token = logits[0].argmax().item()
+            if greedy:
+                next_token = result  # device argmax returns int directly
             else:
+                logits = result
                 probs = torch.nn.functional.softmax(logits[0] / temperature, dim=-1)
                 next_token = torch.multinomial(probs, 1).item()
 
