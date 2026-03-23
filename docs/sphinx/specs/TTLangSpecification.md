@@ -1,6 +1,4 @@
-# TT-Lang
-
-# Language Specification
+# TT-Lang Specification
 
 * [0. Specification Versions](#specification-versions)
 * [1. Introduction](#introduction)
@@ -23,7 +21,7 @@
 * [Appendix A. Glossary](#appendix-a-glossary)
 * [Appendix B. Block operators and math functions](#appendix-b-block-operators-and-math-functions)
 * [Appendix C. Naming guidelines](#appendix-c-naming-guidelines)
-* [Appendix D. Functionality matrix](#appendix-D-functionality-matrix)
+* [Appendix D. Functionality matrix](#appendix-d-functionality-matrix)
 
 ## 0. Specification Versions
 

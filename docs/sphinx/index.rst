@@ -18,6 +18,7 @@ TTL Documentation
    :maxdepth: 2
    :caption: Reference
 
+   TT-Lang Spec <specs/TTLangSpecification>
    reference/print-debugging
    reference/performance-tools
 
