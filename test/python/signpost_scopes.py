@@ -186,13 +186,10 @@ def bcast_multitile_kernel(
 # CHECK-FPU-NEXT:   }
 # CHECK-FPU-NEXT:   }
 
-# Sync and pack (4 tiles)
+# Sync and pack (4 tiles combined into pack_tile_block)
 # CHECK-FPU-NEXT:   tile_regs_commit();
 # CHECK-FPU-NEXT:   tile_regs_wait();
-# CHECK-FPU:        pack_tile<true>(
-# CHECK-FPU:        pack_tile<true>(
-# CHECK-FPU:        pack_tile<true>(
-# CHECK-FPU:        pack_tile<true>(
+# CHECK-FPU:        pack_tile_block(
 # CHECK-FPU-NEXT:   tile_regs_release();
 # CHECK-FPU-NEXT: }
 # CHECK-FPU-NOT:  DeviceZoneScopedN(

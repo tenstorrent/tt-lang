@@ -97,7 +97,13 @@ struct TTKernelCombinePackTilesPass
           run.push_back(packOp);
         } else {
           finalizeRun();
-          run.push_back(packOp);
+          // pack_tile_block always writes to the CB starting from index 0
+          // (per the op definition: the CB write pointer is reset by
+          // cb_reserve_back and advanced by ntiles per call). A run can
+          // only be combined when the first CB tile index is 0.
+          if (*getConstantIntValue(packOp.getOutIndex()) == 0) {
+            run.push_back(packOp);
+          }
         }
       }
 

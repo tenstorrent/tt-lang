@@ -77,7 +77,7 @@ func.func @single_pack() attributes {ttkernel.thread = #ttkernel.thread<compute>
 // -----
 
 // Intervening non-constant op (tile_regs_release) breaks the run into two
-// separate groups, each combined independently.
+// separate groups. Both start at CB index 0, so each is combined independently.
 
 // CHECK-LABEL: func.func @interleaved
 // CHECK: ttkernel.pack_tile_block(
@@ -116,13 +116,15 @@ func.func @non_contiguous_cb() attributes {ttkernel.thread = #ttkernel.thread<co
 
 // -----
 
-// DST indices starting at non-zero offset: combined with correct base.
+// Non-zero CB start index: pack_tile_block always writes starting from CB
+// index 0 (per op definition), so runs with non-zero first CB index cannot
+// be combined.
 
-// CHECK-LABEL: func.func @nonzero_base
-// CHECK-DAG: %[[C2:.*]] = arith.constant 2 : index
-// CHECK: ttkernel.pack_tile_block(%[[C2]],
-// CHECK-NOT: ttkernel.pack_tile(
-func.func @nonzero_base() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+// CHECK-LABEL: func.func @nonzero_base_no_combine
+// CHECK: ttkernel.pack_tile(
+// CHECK: ttkernel.pack_tile(
+// CHECK-NOT: ttkernel.pack_tile_block
+func.func @nonzero_base_no_combine() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
   %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
   %c2 = arith.constant 2 : index
   %c3 = arith.constant 3 : index

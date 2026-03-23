@@ -444,9 +444,11 @@ def TTKernelCombinePackTiles
     a single `ttkernel.pack_tile_block`. This reduces the number of hardware
     pack operations after loop unrolling.
 
-    Only combines runs where both DST indices and CB tile indices step by 1.
-    Runs are broken by different CBs, non-contiguous indices, non-constant
-    indices, or intervening non-constant ops. Runs of length 1 are skipped.
+    Only combines runs where both DST indices and CB tile indices step by 1,
+    and the first CB tile index is 0 (pack_tile_block always writes to the CB
+    starting from index 0, per the op definition). Runs are broken by different
+    CBs, non-contiguous indices, non-constant indices, or intervening
+    non-constant ops. Runs of length 1 are skipped.
 
     Example:
     ```mlir
