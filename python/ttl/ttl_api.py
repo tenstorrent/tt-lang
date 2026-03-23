@@ -1180,6 +1180,7 @@ def _compile_kernel(
 
         pipeline_passes += [
             "ttl-lower-dprint-to-emitc",
+            "ttl-lower-element-access-to-emitc",
             "convert-ttl-to-ttkernel",
             "ttkernel-insert-inits",
             "canonicalize",
