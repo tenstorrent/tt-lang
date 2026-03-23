@@ -30,9 +30,9 @@ from pydantic import validate_call
 from .blockstate import (
     AccessState,
     BlockAcquisition,
+    BlockStateMachine,
     ExpectedOp,
     ThreadType,
-    STATE_TRANSITIONS,
 )
 from .context import get_current_thread_type
 from .dfbstate import DFBState
@@ -60,10 +60,7 @@ class Block:
         "_buf",
         "_shape",
         "_element_shape",  # Element-level shape (for broadcast semantics)
-        "_acquisition",
-        "_thread_type",
-        "_access_state",
-        "_expected_ops",
+        "_sm",  # BlockStateMachine: owns all access-state logic
         "_is_temporary",
         "_source_blocks",  # Track wait() blocks that contributed to this temporary block
         "_broadcast_dims",  # Pending broadcast dimensions (None or tuple of ints)
@@ -99,52 +96,33 @@ class Block:
         self.dfb_state: Optional[DFBState] = None
         self.dfb_slot_idx: int = -1
 
-        # State machine variables
-        self._acquisition: BlockAcquisition = acquisition
-        self._thread_type: ThreadType = thread_type
-        self._access_state: AccessState = AccessState.OS
-        self._expected_ops: set[ExpectedOp] = set()  # Empty set = not initialized
-
-        # Initialize state based on acquisition method and thread type
-        # Skip state machine for temporary blocks (computation results)
+        # Delegate all access-state logic to BlockStateMachine
+        self._sm: BlockStateMachine = BlockStateMachine(acquisition, thread_type)
         if not is_temporary:
-            self._initialize_state()
+            self._sm.initialize()
         else:
-            # Temporary blocks have full read/write access, no state machine
-            self._access_state = AccessState.RW
-            self._expected_ops = set()  # No restrictions
+            self._sm.set_unrestricted()
 
-    def _initialize_state(self) -> None:
-        """Initialize the block state machine based on acquisition and thread type.
+    # ------------------------------------------------------------------
+    # Property proxies onto the state machine (used by dfb.py internals,
+    # tests, and the public API properties further below).
+    # ------------------------------------------------------------------
 
-        This is called automatically from __init__.
-        """
-        # Set initial state based on acquisition method and thread type
-        if self._acquisition == BlockAcquisition.RESERVE:
-            if self._thread_type == ThreadType.DM:
-                self._access_state = AccessState.MW
-                self._expected_ops = {
-                    ExpectedOp.COPY_DST
-                }  # DM reserves to receive data
-            elif self._thread_type == ThreadType.COMPUTE:
-                # Compute threads start in MW (must-write) state
-                # Can choose either store(acc=False) or store(acc=True)
-                # Note: store(acc=True) will transition to A before reading
-                self._access_state = AccessState.MW
-                self._expected_ops = {ExpectedOp.STORE, ExpectedOp.STORE_ACC}
-        elif self._acquisition == BlockAcquisition.WAIT:
-            # wait() blocks have data already present
-            # DM threads copy out the data first, compute threads can read it directly
-            if self._thread_type == ThreadType.DM:
-                self._access_state = AccessState.MR
-                self._expected_ops = {
-                    ExpectedOp.COPY_SRC
-                }  # DM threads copy data out first
-            elif self._thread_type == ThreadType.COMPUTE:
-                # Compute threads: wait() blocks start in MR state
-                # Can only be used as source in another block's store operation
-                self._access_state = AccessState.MR
-                self._expected_ops = {ExpectedOp.STORE_SRC}
+    @property
+    def _acquisition(self) -> BlockAcquisition:
+        return self._sm.acquisition
+
+    @property
+    def _thread_type(self) -> ThreadType:
+        return self._sm.thread_type
+
+    @property
+    def _access_state(self) -> AccessState:
+        return self._sm.access_state
+
+    @property
+    def _expected_ops(self) -> set[ExpectedOp]:
+        return self._sm.expected_ops
 
     def __enter__(self) -> "Block":
         """Context manager entry - returns self for use in with statement."""
@@ -199,99 +177,21 @@ class Block:
             )
         self.dfb.push_block()
 
-    def _validate_state(self, operation: str, expected_op: ExpectedOp) -> None:
-        """Validate that the current operation is allowed in the current state.
-
-        Args:
-            operation: Name of the operation being performed
-            expected_op: The operation being performed
-
-        Raises:
-            RuntimeError: If the operation is not allowed in the current state
-        """
-        # Note: We don't check AccessState.NA here because NA is valid for internal
-        # state transitions (like tx.wait()). NA only blocks user access via
-        # _check_can_read() and _check_can_write().
-
-        if not self._expected_ops:
-            raise RuntimeError(
-                f"Cannot perform {operation}: Block is in DONE/uninitialized state. "
-                f"No more operations are expected on this block. "
-                f"Current state: {self._access_state.name}"
-            )
-
-        if expected_op not in self._expected_ops:
-            expected_names = ", ".join(
-                op.name for op in sorted(self._expected_ops, key=lambda x: x.name)
-            )
-            raise RuntimeError(
-                f"Cannot perform {operation}: Expected one of [{expected_names}], but got {operation}. "
-                f"Current state: Acquisition={self._acquisition.name}, "
-                f"Thread={self._thread_type.name}, Access={self._access_state.name}"
-            )
-
-    def _transition_state(
-        self,
-        operation_key: str,
-        operation_display: str,
-        expected_op: ExpectedOp,
-    ) -> None:
-        """Execute a state machine transition using the transition table.
-
-        Args:
-            operation_key: Key for looking up transition in the table (e.g., "copy_src", "store_dst", "store_dst_acc")
-            operation_display: Human-readable operation name for error messages
-            expected_op: Expected operation for validation
-
-        Raises:
-            RuntimeError: If the state transition is invalid
-        """
-        # Validate that this operation is expected
-        self._validate_state(operation_display, expected_op)
-
-        # Look up transitions for this acquisition/thread_type combination
-        context_key = (self._acquisition, self._thread_type)
-        context_transitions = STATE_TRANSITIONS.get(context_key)
-
-        if context_transitions is None:
-            raise RuntimeError(
-                f"Impossible! No transitions defined for: "
-                f"Acquisition={self._acquisition.name}, "
-                f"Thread={self._thread_type.name}"
-            )
-
-        # Look up specific transition
-        transition_key = (operation_key, self._access_state)
-        transition = context_transitions.get(transition_key)
-
-        if transition is None:
-            raise RuntimeError(
-                f"Impossible! Invalid state for {operation_display}: "
-                f"Acquisition={self._acquisition.name}, "
-                f"Thread={self._thread_type.name}, "
-                f"Access={self._access_state.name}"
-            )
-
-        # Execute transition
-        new_access_state, new_expected_ops = transition
-        self._access_state = new_access_state
-        self._expected_ops = new_expected_ops
-
     def mark_copy_as_source(self) -> None:
         """Mark that this block is being used as a copy source."""
-        self._transition_state("copy_src", "copy (as source)", ExpectedOp.COPY_SRC)
+        self._sm.transition("copy_src", "copy (as source)", ExpectedOp.COPY_SRC)
 
     def mark_copy_as_dest(self) -> None:
         """Mark that this block is being used as a copy destination."""
-        self._transition_state("copy_dst", "copy (as destination)", ExpectedOp.COPY_DST)
+        self._sm.transition("copy_dst", "copy (as destination)", ExpectedOp.COPY_DST)
 
     def mark_tx_wait_complete(self) -> None:
         """Mark that tx.wait() has completed for a copy operation."""
-        self._transition_state("tx_wait", "tx.wait()", ExpectedOp.TX_WAIT)
+        self._sm.transition("tx_wait", "tx.wait()", ExpectedOp.TX_WAIT)
 
     def mark_store_read_complete(self) -> None:
         """Mark that this block was used as source (input) in a store operation."""
-        self._transition_state("store_src", "store (as source)", ExpectedOp.STORE_SRC)
+        self._sm.transition("store_src", "store (as source)", ExpectedOp.STORE_SRC)
 
     def mark_store_complete(self, acc: bool = False) -> None:
         """Mark that store() has completed on this block (as destination).
@@ -300,66 +200,19 @@ class Block:
             acc: Whether this is an accumulate store operation
         """
         if acc:
-            operation_type = "store_dst_acc"
-            operation_display = "store(acc=True)"
-            expected_op = ExpectedOp.STORE_ACC
+            self._sm.transition(
+                "store_dst_acc", "store(acc=True)", ExpectedOp.STORE_ACC
+            )
         else:
-            operation_type = "store_dst"
-            operation_display = "store(acc=False)"
-            expected_op = ExpectedOp.STORE
-        self._transition_state(operation_type, operation_display, expected_op)
+            self._sm.transition("store_dst", "store(acc=False)", ExpectedOp.STORE)
 
     def mark_push_complete(self) -> None:
-        """Mark that push() has completed.
-
-        Valid states (per state machine diagram):
-        - Must be a reserve() block (not wait())
-        - Must have PUSH in expected operations
-        """
-        # Validate that operation is expected
-        self._validate_state("push()", ExpectedOp.PUSH)
-
-        # Additional validation: push() requires RESERVE acquisition
-        if self._acquisition != BlockAcquisition.RESERVE:
-            raise RuntimeError(
-                f"Cannot perform push(): push() is only valid for reserve() blocks, "
-                f"got {self._acquisition.name} block. "
-                f"Current state: Thread={self._thread_type.name}, Access={self._access_state.name}"
-            )
-
-        # Transition to DONE (Out of Scope)
-        self._access_state = AccessState.OS
-        self._expected_ops = set()  # Empty = DONE
+        """Mark that push() has completed (RESERVE blocks only)."""
+        self._sm.transition_push()
 
     def mark_pop_complete(self) -> None:
-        """Mark that pop() has completed.
-
-        Valid states (per state machine diagram):
-        - Must be a wait() block (not reserve())
-        - Must have POP in expected operations
-        - Can pop from MR (never used as source), RW (used as source), or A (accumulated)
-        """
-        # Validate that operation is expected
-        self._validate_state("pop()", ExpectedOp.POP)
-
-        # Additional validation: pop() requires WAIT acquisition
-        if self._acquisition != BlockAcquisition.WAIT:
-            raise RuntimeError(
-                f"Cannot perform pop(): pop() is only valid for wait() blocks, "
-                f"got {self._acquisition.name} block. "
-                f"Current state: Thread={self._thread_type.name}, Access={self._access_state.name}"
-            )
-
-        # Additional validation: Can only pop from MR, RW, or A states
-        if self._access_state not in (AccessState.MR, AccessState.RW, AccessState.A):
-            raise RuntimeError(
-                f"Cannot perform pop(): Invalid access state {self._access_state.name}. "
-                f"Expected MR (never used), RW (used as source), or A (accumulated)."
-            )
-
-        # Transition to DONE (Out of Scope)
-        self._access_state = AccessState.OS
-        self._expected_ops = set()  # Empty = DONE
+        """Mark that pop() has completed (WAIT blocks only)."""
+        self._sm.transition_pop()
 
     def __len__(self) -> Size:
         return math.prod(self._shape)
@@ -404,7 +257,7 @@ class Block:
                 f"Cannot read from Block: Block has no access ({self._access_state.name} state). "
                 f"Current state: {self._access_state.name}, Expected operations: [{expected_ops_str}]"
             )
-        # NAR state (async read in progress) allows reads since we're copying FROM this block
+        # ROR state (async read in progress) allows reads since we're copying FROM this block
 
     def _check_can_write(self) -> None:
         """Check if this Block can be written to.
@@ -423,7 +276,7 @@ class Block:
                 f"Cannot write to Block: Block is locked as copy destination until tx.wait() completes (copy lock error). "
                 f"Current state: {self._access_state.name}, Expected operations: [TX_WAIT]"
             )
-        if self._access_state in (AccessState.NAR, AccessState.OS):
+        if self._access_state in (AccessState.ROR, AccessState.OS):
             expected_ops_str = (
                 ", ".join(
                     op.name for op in sorted(self._expected_ops, key=lambda x: x.name)
