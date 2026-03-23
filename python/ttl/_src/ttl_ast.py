@@ -191,15 +191,11 @@ class TTLGenericCompiler(TTCompilerBase):
                 var_name = node.targets[0].id
                 value = self.visit(node.value)
 
-                # Only use memref for integer scalars (i32, i64, index).
-                # Everything else (transfer handles, tensors, CBs, etc.)
-                # gets normal SSA assignment in the current scope.
-                if not self._is_i32_scalar(value):
-                    self.symbol_tables[-1][var_name] = value
-                    return
-
+                # Check if this is updating an EXISTING outer-scope variable.
+                # If so, use memref for any integer type (i32, i64, index)
+                # so the update survives the loop/if scope.
                 outer_table = self._find_outer_scope(var_name)
-                if outer_table is not None:
+                if outer_table is not None and self._is_integer_scalar(value):
                     existing = outer_table[var_name]
                     if hasattr(existing, "type") and isinstance(
                         existing.type, MemRefType
@@ -209,12 +205,19 @@ class TTLGenericCompiler(TTCompilerBase):
                         mr = self._alloca_scalar(existing)
                         outer_table[var_name] = mr
                         self._store_to_memref(mr, value)
-                else:
-                    # New variable inside loop — allocate memref in the
-                    # enclosing (pre-loop) scope so it survives the loop.
+                    return
+
+                # For NEW variables inside loops, only i32 (from element_read)
+                # gets memref treatment.  Index-typed loop variables (idx, m, n)
+                # stay as plain SSA to avoid breaking tensor subscript indexing.
+                if outer_table is None and self._is_i32_scalar(value):
                     mr = self._alloca_scalar(value)
                     enclosing = self.symbol_tables[-2] if len(self.symbol_tables) > 1 else self.symbol_tables[-1]
                     enclosing[var_name] = mr
+                    return
+
+                # Everything else: normal SSA assignment
+                self.symbol_tables[-1][var_name] = value
                 return
             return super().visit_Assign(node)
 
@@ -235,12 +238,27 @@ class TTLGenericCompiler(TTCompilerBase):
             sym_table[elt.id] = val
 
     @staticmethod
-    def _is_i32_scalar(value):
-        """Check if an MLIR value is a 32-bit integer scalar.
+    def _is_integer_scalar(value):
+        """Check if an MLIR value is an integer scalar (i32, i64, or index).
 
-        Only i32 values (typically from element_read) get memref treatment
-        for cross-scope survival.  Index values, i64, tensors, transfer
-        handles, and everything else use normal SSA assignment.
+        Integer scalars get memref<1xi32> treatment for cross-scope survival
+        in loops and if-blocks.  Values are cast to i32 via _cast_to_i32.
+        Tensors, transfer handles, CBs, etc. use normal SSA assignment.
+        """
+        if not hasattr(value, "type"):
+            return False
+        ty = value.type
+        if isinstance(ty, IndexType):
+            return True
+        return isinstance(ty, IntegerType)
+
+    @staticmethod
+    def _is_i32_scalar(value):
+        """Check if an MLIR value is specifically i32 (from element_read).
+
+        Narrower check used for NEW variables inside loops — only i32
+        values get automatic memref allocation.  Prevents index-typed
+        loop variables (idx, m, n) from being wrapped in memrefs.
         """
         if not hasattr(value, "type"):
             return False
