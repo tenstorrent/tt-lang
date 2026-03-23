@@ -219,10 +219,13 @@ def bcast_multitile_kernel(
 # CHECK-FPU-NEXT:           add_binary_tile(
 # CHECK-FPU-NEXT:           add_binary_tile(
 
-# Sync and pack (4 tiles combined into pack_tile_block)
+# Sync and pack (4 tiles, non-constant CB indices prevent combining)
 # CHECK-FPU-NEXT:           tile_regs_commit();
 # CHECK-FPU-NEXT:           tile_regs_wait();
-# CHECK-FPU:                pack_tile_block(
+# CHECK-FPU:                pack_tile<true>(
+# CHECK-FPU:                pack_tile<true>(
+# CHECK-FPU:                pack_tile<true>(
+# CHECK-FPU:                pack_tile<true>(
 # CHECK-FPU-NEXT:           tile_regs_release();
 # CHECK-FPU-NEXT:         }
 # CHECK-FPU-NEXT:         }
