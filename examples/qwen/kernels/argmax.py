@@ -199,6 +199,8 @@ def parallel_index_find_kernel(logits, global_max, index_out):
     chunk = (Nt + num_cores - 1) // num_cores
 
     in_dfb = ttl.make_dataflow_buffer_like(logits, shape=(1, 1), buffer_factor=2)
+    # Compute-local CB: passes tiles from compute to write thread
+    pass_dfb = ttl.make_dataflow_buffer_like(logits, shape=(1, 1), buffer_factor=2)
     mx_dfb = ttl.make_dataflow_buffer_like(global_max, shape=(1, 1), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(index_out, shape=(1, 1), buffer_factor=2)
 
@@ -219,12 +221,13 @@ def parallel_index_find_kernel(logits, global_max, index_out):
 
     @ttl.compute()
     def compute():
-        # Pass-through: consume all CBs so DM write can proceed
+        # Pass mx_dfb through and copy in_dfb → pass_dfb for the write thread
         with mx_dfb.wait() as blk:
             pass
         for _ in range(chunk):
-            with in_dfb.wait() as blk:
-                pass
+            with in_dfb.wait() as in_blk:
+                with pass_dfb.reserve() as out_blk:
+                    out_blk.store(in_blk)
         for _ in range(1):
             with out_dfb.reserve() as oblk:
                 pass
@@ -240,18 +243,23 @@ def parallel_index_find_kernel(logits, global_max, index_out):
             max_val = ttl.element_read(mx_blk, 0, 0)
 
         # Scan this core's tiles for the max value
-        best_idx = 0
+        best_lo = 0
+        best_hi = 0
         for tid in range(chunk):
             col = (tile_start + tid) % Nt
-            with in_dfb.wait() as blk:
+            with pass_dfb.wait() as blk:
                 for c in range(32):
                     val = ttl.element_read(blk, 0, c)
                     if val == max_val:
-                        best_idx = col * 32 + c
+                        # Store tile col and local col separately to
+                        # avoid uint16 overflow in element_write
+                        best_lo = c
+                        best_hi = col
 
-        # Write found index to output
+        # Write found index as two uint16 values: [0,0]=low, [0,1]=high
         with out_dfb.reserve() as oblk:
-            ttl.element_write(oblk, 0, 0, best_idx)
+            ttl.element_write(oblk, 0, 0, best_lo)
+            ttl.element_write(oblk, 0, 1, best_hi)
             tx = ttl.copy(oblk, index_out[0, nid])
             tx.wait()
             oblk.pop()
@@ -315,14 +323,19 @@ class DeviceArgmax:
 
         # Tiny readback: per-core indices (bf16-encoded in tile [0,0] positions)
         ttnn.copy_device_to_host_tensor(self.index_out_dev, self._index_out_host)
-        # element_write stores integer index as raw uint16 bits in bf16 tiles.
-        # to_torch() interprets them as bf16 floats, mangling the values.
-        # Fix: convert back to bf16 and view as int16 to recover raw bits.
+        # element_write stores local_col at [0,0] and tile_col at [0,1]
+        # per core to avoid uint16 overflow.
         idx_bf16 = self._index_out_host.to_torch().to(torch.bfloat16)
-        idx_raw = idx_bf16.view(torch.int16).to(torch.int32)
-        core_indices = idx_raw[0, ::TILE].numpy()[:self.num_cores]
-        valid = core_indices[core_indices > 0]
-        return int(valid.min()) if len(valid) > 0 else 0
+        idx_raw = idx_bf16.view(torch.int16).to(torch.int64)
+        local_cols = idx_raw[0, ::TILE].numpy()[:self.num_cores] & 0xFFFF
+        tile_cols = idx_raw[0, 1::TILE].numpy()[:self.num_cores] & 0xFFFF
+        # Reconstruct global indices
+        core_indices = tile_cols * TILE + local_cols
+        # Filter: valid results have tile_col > 0 or local_col > 0
+        valid_mask = (tile_cols > 0) | (local_cols > 0)
+        if valid_mask.any():
+            return int(core_indices[valid_mask].min())
+        return 0
 
 
 # ---------------------------------------------------------------------------
