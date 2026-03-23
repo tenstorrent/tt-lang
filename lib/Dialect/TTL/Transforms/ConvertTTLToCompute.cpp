@@ -159,7 +159,11 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
     SmallVector<Value> indices =
         applyIndexingMapToIterIndices(rewriter, loc, outputMap, iterIndices);
 
-    TileStoreOp::create(rewriter, loc, tileResult, storeOp.getView(), indices);
+    auto tileStore = TileStoreOp::create(rewriter, loc, tileResult,
+                                         storeOp.getView(), indices);
+    if (storeOp.getAcc()) {
+      tileStore.setAcc(true);
+    }
     storesToErase.push_back(storeOp);
   }
   for (StoreOp s : storesToErase) {
@@ -1031,8 +1035,11 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
         getOrCreateIterIndices(rewriter, computeOp);
     SmallVector<Value> storeIndices =
         applyIndexingMapToIterIndices(rewriter, loc, identityMap, iterIndices);
-    TileStoreOp::create(rewriter, loc, body->getArgument(0), reserveView,
-                        storeIndices);
+    auto tileStore = TileStoreOp::create(rewriter, loc, body->getArgument(0),
+                                         reserveView, storeIndices);
+    if (op.getAcc()) {
+      tileStore.setAcc(true);
+    }
     YieldOp::create(rewriter, loc);
 
     // make_early_inc_range: replaceOp erases attachOp, invalidating the
