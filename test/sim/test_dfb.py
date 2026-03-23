@@ -34,10 +34,12 @@ from python.sim.dfb import (
 )
 from python.sim.math import broadcast
 from python.sim.blockstate import (
-    set_current_thread_type,
-    clear_current_thread_type,
     ThreadType,
     BlockAcquisition,
+)
+from python.sim.context import (
+    set_current_thread_type,
+    clear_current_thread_type,
 )
 
 
@@ -1304,11 +1306,8 @@ def test_1d_block_from_list():
 
 def test_1d_dataflow_buffer_reserve_push_wait_pop():
     """DataflowBuffer with 1-D shape correctly reserves, pushes, and delivers data."""
-    from python.sim.blockstate import (
-        ThreadType,
-        set_current_thread_type,
-        clear_current_thread_type,
-    )
+    from python.sim.blockstate import ThreadType
+    from python.sim.context import set_current_thread_type, clear_current_thread_type
 
     element = Tensor(torch.zeros(32))
     dfb = DataflowBuffer(likeness_tensor=element, shape=(1,), buffer_factor=2)
@@ -1343,11 +1342,8 @@ def test_1d_dataflow_buffer_reserve_push_wait_pop():
 
 def test_1d_multi_tile_dataflow_buffer():
     """DataflowBuffer with 1-D shape (4,) operates over 4 tiles per operation."""
-    from python.sim.blockstate import (
-        ThreadType,
-        set_current_thread_type,
-        clear_current_thread_type,
-    )
+    from python.sim.blockstate import ThreadType
+    from python.sim.context import set_current_thread_type, clear_current_thread_type
 
     # Full buffer element shape for 4 tiles of size 32 each
     element = Tensor(torch.zeros(128))
@@ -1495,7 +1491,7 @@ def test_store_broadcast_expansion():
 
     # Test 1: Broadcast (1, 2) -> (3, 2) with degenerate tiles (element size 1 in first dim)
     # Source has full buffer shape (1, 64) - 1 row, 2×32=64 columns
-    # First dim has element size 1, so it can be broadcast along dim 1 (rows)
+    # First dim (outermost/rows) has element size 1, broadcast along dim 0 (outermost)
     src_elem = Tensor(
         torch.zeros(1, 64, dtype=torch.bfloat16)
     )  # Full buffer element shape
@@ -1518,8 +1514,8 @@ def test_store_broadcast_expansion():
 
     with dst_dfb.reserve() as dst_blk:
         with src_dfb.wait() as src_wait:
-            # Explicitly broadcast to expand first dimension (dims=[1] in innermost-first convention)
-            broadcast_src = broadcast(src_wait, dims=[1])
+            # Explicitly broadcast to expand row dimension (dims=[0] = outermost in standard Python indexing)
+            broadcast_src = broadcast(src_wait, dims=[0])
             # Store with broadcast expansion
             dst_blk.store(broadcast_src)
 

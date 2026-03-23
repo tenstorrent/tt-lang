@@ -23,13 +23,16 @@
 // CHECK-DAG: %[[C_CB:.*]] = ttl.attach_cb %[[CARG:.*]], %[[CB2]]
 // CHECK-DAG: %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT:.*]], %[[CB3]]
 // FPU binary add (no copies for A, B), then copy C for SFPU mul.
+// iter_index ops provide iteration coordinates for CB indexing.
 // CHECK: %[[RES:.*]] = ttl.compute
 // CHECK-NEXT: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[C:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
+// CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
+// CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
 // CHECK-NEXT:   %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary} : !ttcore.tile<32x32, f32>
-// CHECK:        %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[C]], %{{.*}}, %{{.*}} {dst_idx = 1 : i32}
+// CHECK-NEXT:   %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[C]][%[[I0]], %[[I1]]], %[[C1]] {dst_idx = 1 : i32}
 // CHECK-NEXT:   %[[MUL:.*]] = ttl.tile_mul %[[ADD]], %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[MUL]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-// CHECK-NEXT:   ttl.tile_store
+// CHECK-NEXT:   ttl.tile_store %[[EXP]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:   ttl.yield
 // CHECK-NEXT: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 // CHECK-NEXT: return %[[RES]]
@@ -68,10 +71,12 @@ func.func @add_mul_exp_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %c_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %mul = ttl.tile_mul %sum, %c_tile : !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %mul : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %exp, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return %result : tensor<2x2x!ttcore.tile<32x32, f32>>

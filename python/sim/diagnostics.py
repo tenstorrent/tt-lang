@@ -220,6 +220,7 @@ def print_diagnostic_error(
 def warn_once_per_location(
     warnings_dict: dict[tuple[str, int], set[str]],
     message: str,
+    core_id: str,
 ) -> None:
     """Issue a warning once per source location, tracking which cores hit it.
 
@@ -229,14 +230,10 @@ def warn_once_per_location(
     Args:
         warnings_dict: Dictionary tracking {(filename, line): set(core_ids)}
         message: Warning message to display
+        core_id: ID of the current core (from get_current_core_id())
     """
     # Find user code location
     source_file, source_line = find_user_code_location()
-
-    # Get the current core ID
-    from .greenlet_scheduler import get_current_core_id
-
-    core_id = get_current_core_id()
 
     # Track this core hitting this location
     location_key = (source_file, source_line)

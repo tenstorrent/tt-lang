@@ -282,7 +282,7 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core_id = ttl.core(dims=1)
+                core_id = ttl.node(dims=1)
                 # Should be an int, not a tuple
                 assert isinstance(core_id, int)
                 assert 0 <= core_id < 8
@@ -308,7 +308,7 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core_id = ttl.core(dims=1)
+                core_id = ttl.node(dims=1)
                 # Should be a single int from 0 to 5 (2*3 - 1)
                 assert isinstance(core_id, int)
                 assert 0 <= core_id < 6
@@ -334,7 +334,7 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core_coord = ttl.core(dims=2)
+                core_coord = ttl.node(dims=2)
                 # Should be a tuple of 2 ints
                 assert isinstance(core_coord, tuple)
                 assert len(core_coord) == 2
@@ -362,7 +362,7 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core_id = ttl.core(dims=1)
+                core_id = ttl.node(dims=1)
                 # Should be a single int from 0 to 23 (2*3*4 - 1)
                 assert isinstance(core_id, int)
                 assert 0 <= core_id < 24
@@ -388,7 +388,7 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core_coord = ttl.core(dims=2)
+                core_coord = ttl.node(dims=2)
                 # Should be a tuple of 2 ints
                 assert isinstance(core_coord, tuple)
                 assert len(core_coord) == 2
@@ -418,7 +418,7 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core_coord = ttl.core(dims=3)
+                core_coord = ttl.node(dims=3)
                 # Should be a tuple of 3 ints
                 assert isinstance(core_coord, tuple)
                 assert len(core_coord) == 3
@@ -447,7 +447,7 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core_coord = ttl.core(dims=3)
+                core_coord = ttl.node(dims=3)
                 # Should be a tuple of 3 ints, third one padded with 0
                 assert isinstance(core_coord, tuple)
                 assert len(core_coord) == 3
@@ -476,8 +476,8 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core_default = ttl.core()
-                core_explicit = ttl.core(dims=2)
+                core_default = ttl.node()
+                core_explicit = ttl.node(dims=2)
                 # Should be the same
                 assert core_default == core_explicit
                 assert isinstance(core_default, tuple)
@@ -498,7 +498,7 @@ class TestCore:
     def test_core_outside_program_raises(self):
         """Test that core() raises error when called outside Program context."""
         with pytest.raises(RuntimeError, match="core not available"):
-            ttl.core()
+            ttl.node()
 
     def test_core_in_nested_functions(self):
         """Test core() works in nested function calls."""
@@ -510,7 +510,7 @@ class TestCore:
             @ttl.compute()
             def compute_func():
                 def helper_function():
-                    return ttl.core(dims=2)
+                    return ttl.node(dims=2)
 
                 def another_helper():
                     coord = helper_function()
@@ -547,7 +547,7 @@ class TestCore:
 
             @ttl.datamovement()
             def dm0():
-                core_coord = ttl.core(dims=2)
+                core_coord = ttl.node(dims=2)
                 assert isinstance(core_coord, tuple)
                 assert len(core_coord) == 2
                 assert 0 <= core_coord[0] < 2
@@ -555,7 +555,7 @@ class TestCore:
 
             @ttl.datamovement()
             def dm1():
-                core_coord = ttl.core(dims=2)
+                core_coord = ttl.node(dims=2)
                 assert isinstance(core_coord, tuple)
                 assert len(core_coord) == 2
                 assert 0 <= core_coord[0] < 2
@@ -574,9 +574,9 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core1 = ttl.core(dims=2)
-                core2 = ttl.core(dims=2)
-                core3 = ttl.core(dims=2)
+                core1 = ttl.node(dims=2)
+                core2 = ttl.node(dims=2)
+                core3 = ttl.node(dims=2)
 
                 # All calls should return the same value
                 assert core1 == core2 == core3
@@ -602,9 +602,9 @@ class TestCore:
 
             @ttl.compute()
             def compute_func():
-                core1d = ttl.core(dims=1)
-                core2d = ttl.core(dims=2)
-                core3d = ttl.core(dims=3)
+                core1d = ttl.node(dims=1)
+                core2d = ttl.node(dims=2)
+                core3d = ttl.node(dims=3)
 
                 # Verify consistency: all should be valid
                 assert isinstance(core1d, int)
@@ -738,9 +738,9 @@ class TestFlattenCoreCoord:
             @ttl.compute()
             def compute_func():
                 # Get 2D core coordinates
-                core_2d = ttl.core(dims=2)
+                core_2d = ttl.node(dims=2)
                 # Get 1D core index
-                core_1d = ttl.core(dims=1)
+                core_1d = ttl.node(dims=1)
 
                 # Flattening the 2D coordinates should equal the 1D index
                 flattened = flatten_core_index(core_2d)

@@ -88,18 +88,8 @@ add_subdirectory(
   "${CMAKE_BINARY_DIR}/include/ttmlir/Conversion")
 
 # ---------------------------------------------------------------------------
-# Flatbuffers stub headers
-#
-# TTCoreOpsTypes.cpp includes ttmlir/Target/Common/Target.h which pulls in
-# flatbuffers-generated headers (*_generated.h). We don't build flatbuffers;
-# instead we provide minimal stubs with just enough declarations for the
-# upstream code to compile. Methods that depend on flatbuffers at runtime
-# (SystemDescAttr::getFromPath, getFromBuffer) will fail gracefully.
-#
-# Stubs live in cmake/stubs/flatbuffers/ as proper .h files.
-# ---------------------------------------------------------------------------
-file(COPY "${CMAKE_SOURCE_DIR}/cmake/stubs/flatbuffers/"
-     DESTINATION "${CMAKE_BINARY_DIR}/include/ttmlir/Target/Common")
+# Flatbuffers: tt-lang does not use flatbuffers; ensure no tt-mlir code tries to include them
+add_compile_definitions(TTMLIR_NO_FLATBUFFERS)
 
 # ---------------------------------------------------------------------------
 # LLK generated headers (for TTKernelToCpp target translation)

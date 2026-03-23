@@ -34,7 +34,7 @@ def eltwise_pipe(
 
     # Parallelizing by columns here to get reuse on C
     grid_h, grid_w = ttl.grid_size()
-    cols_per_core = math.ceil(col_tiles / (grid_h * grid_w))
+    cols_per_node = math.ceil(col_tiles / (grid_h * grid_w))
     buffer_factor = (
         2  # TODO: Should buffer factor be tunable by the user? Or tuned by kernel?
     )
@@ -54,19 +54,19 @@ def eltwise_pipe(
     )
 
     # Create multicast address for C using 2D coordinates
-    # Source: (0,0) (core 0), Destinations: cores at row 0, columns 1-3
-    # CoreRange format: (row_index, slice(start_col, end_col))
-    # This expands to cores (0,1), (0,2), (0,3)
+    # Source: (0,0) (node 0), Destinations: nodes at row 0, columns 1-3
+    # NodeRange format: (row_index, slice(start_col, end_col))
+    # This expands to nodes (0,1), (0,2), (0,3)
     pipe = ttl.Pipe((0, 0), (0, slice(1, 4)))
     pipe_net = ttl.PipeNet([pipe])
 
     @ttl.compute()
     def compute_func():
-        if not pipe.has_current_core():
-            return  # This core is not participating in C multicast
-        core_num = ttl.core(dims=1)  # linear core index
-        start_col_tile = core_num * cols_per_core
-        end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
+        if not pipe.has_current_node():
+            return  # This node is not participating in C multicast
+        node_num = ttl.node(dims=1)  # linear node index
+        start_col_tile = node_num * cols_per_node
+        end_col_tile = min(start_col_tile + cols_per_node, col_tiles)
 
         c_block = c_in_dfb.wait()  # blocking
 
@@ -75,7 +75,7 @@ def eltwise_pipe(
             # TODO: Perhaps consider making Block pointers that come from wait()/reserve() read/write only respectively?
             for rt_block in range(row_tiles // granularity):
                 print(
-                    "Compute: ", f"core={core_num}", f"column={ct}", f"block={rt_block}"
+                    "Compute: ", f"node={node_num}", f"column={ct}", f"block={rt_block}"
                 )
                 # again, these return Block pointers:
                 a_block = a_in_dfb.wait()  # blocking
@@ -99,16 +99,16 @@ def eltwise_pipe(
 
     @ttl.datamovement()
     def dm0():
-        if not pipe.has_current_core():
-            return  # This core is not participating in C multicast
+        if not pipe.has_current_node():
+            return  # This node is not participating in C multicast
 
-        core_num = ttl.core(dims=1)  # linear core index
+        node_num = ttl.node(dims=1)  # linear node index
 
         # Pipe communication setup - must happen before main loop
         with c_in_dfb.reserve() as c_block:
 
             def pipe_src(pipe_id):
-                print(f"dm0 (C multicast SRC): core={core_num}")
+                print(f"dm0 (C multicast SRC): node={node_num}")
                 # C is only 1 tile
                 tx = ttl.copy(c_in[slice(0, 1), slice(0, 1)], c_block)
                 tx.wait()
@@ -116,19 +116,19 @@ def eltwise_pipe(
                 tx2.wait()
 
             def pipe_dst(pipe_id):
-                print(f"dm0 (C multicast DST): core={core_num}")
+                print(f"dm0 (C multicast DST): node={node_num}")
                 tx = ttl.copy(pipe_id, c_block)
                 tx.wait()
 
             pipe_net.if_src(pipe_src)
             pipe_net.if_dst(pipe_dst)
 
-        start_col_tile = core_num * cols_per_core
-        end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
+        start_col_tile = node_num * cols_per_node
+        end_col_tile = min(start_col_tile + cols_per_node, col_tiles)
 
         for ct in range(start_col_tile, end_col_tile):
             for rt_block in range(row_tiles // granularity):
-                print("dm0: ", f"core={core_num}", f"column={ct}", f"block={rt_block}")
+                print("dm0: ", f"node={node_num}", f"column={ct}", f"block={rt_block}")
                 row_slice = slice(rt_block * granularity, (rt_block + 1) * granularity)
                 col_slice = slice(ct, ct + 1)
                 # Write the dfbs just as above
@@ -143,15 +143,15 @@ def eltwise_pipe(
 
     @ttl.datamovement()
     def dm1():
-        if not pipe.has_current_core():
-            return  # This core is not participating in C multicast
-        core_num = ttl.core(dims=1)  # linear core index
-        start_col_tile = core_num * cols_per_core
-        end_col_tile = min(start_col_tile + cols_per_core, col_tiles)
+        if not pipe.has_current_node():
+            return  # This node is not participating in C multicast
+        node_num = ttl.node(dims=1)  # linear node index
+        start_col_tile = node_num * cols_per_node
+        end_col_tile = min(start_col_tile + cols_per_node, col_tiles)
 
         for ct in range(start_col_tile, end_col_tile):
             for rt_block in range(row_tiles // granularity):
-                print("dm1: ", f"core={core_num}", f"column={ct}", f"block={rt_block}")
+                print("dm1: ", f"node={node_num}", f"column={ct}", f"block={rt_block}")
                 row_slice = slice(rt_block * granularity, (rt_block + 1) * granularity)
                 col_slice = slice(ct, ct + 1)
 

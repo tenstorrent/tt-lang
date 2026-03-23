@@ -103,7 +103,7 @@
 // FPU:       for (size_t [[CI:.*]] = [[CZERO]]; [[CI]] < [[CBOUND]]; [[CI]] += [[STEP]]) {
 // FPU-NEXT:    for (size_t [[CJ:.*]] = [[CZERO]]; [[CJ]] < [[CBOUND]]; [[CJ]] += [[STEP]]) {
 // FPU:           tile_regs_acquire();
-// Linear tile index: i * bound + j
+// Linear tile index for add_tiles: i * bound + j
 // FPU:           size_t [[CTILE_Y:v[0-9]+]] = [[CI]] * [[CBOUND]];
 // FPU-NEXT:      size_t [[CTILE_IDX:v[0-9]+]] = [[CTILE_Y]] + [[CJ]];
 // No copy_tile for FPU add -- operands read directly from CB
@@ -114,7 +114,10 @@
 // FPU-NEXT:      exp_tile([[CZERO]]);
 // FPU-NEXT:      tile_regs_commit();
 // FPU-NEXT:      tile_regs_wait();
-// FPU-NEXT:      pack_tile<true>([[CZERO]], get_compile_time_arg_val(2), [[CTILE_IDX]]);
+// Linearized index for pack_tile (from affine.linearize_index, lowered)
+// FPU:           size_t [[PTILE_Y:v[0-9]+]] = [[CI]] * {{.*}};
+// FPU-NEXT:      size_t [[PTILE_IDX:v[0-9]+]] = [[PTILE_Y]] + [[CJ]];
+// FPU-NEXT:      pack_tile<true>([[CZERO]], get_compile_time_arg_val(2), [[PTILE_IDX]]);
 // FPU-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
 // FPU-NEXT:      tile_regs_release();
 
@@ -235,10 +238,10 @@
 
 // SFPU:       for (size_t [[CI:.*]] = [[CZERO]]; [[CI]] < [[CBOUND]]; [[CI]] += [[STEP]]) {
 // SFPU-NEXT:    for (size_t [[CJ:.*]] = [[CZERO]]; [[CJ]] < [[CBOUND]]; [[CJ]] += [[STEP]]) {
-// Linear tile index computed before tile_regs_acquire (for copy_tile CB index)
+// SFPU:           tile_regs_acquire();
+// Linearized index for copy_tile CB index (from affine.linearize_index, lowered)
 // SFPU:           size_t [[CTILE_Y:v[0-9]+]] = [[CI]] * {{.*}};
 // SFPU-NEXT:      size_t [[CTILE_IDX:v[0-9]+]] = [[CTILE_Y]] + [[CJ]];
-// SFPU-NEXT:      tile_regs_acquire();
 // SFPU-NEXT:      copy_tile_init(get_compile_time_arg_val(0));
 // SFPU-NEXT:      copy_tile(get_compile_time_arg_val(0), [[CTILE_IDX]], [[CZERO]]);
 // SFPU-NEXT:      copy_tile_init(get_compile_time_arg_val(1));
@@ -249,10 +252,7 @@
 // SFPU-NEXT:      exp_tile([[CZERO]]);
 // SFPU-NEXT:      tile_regs_commit();
 // SFPU-NEXT:      tile_regs_wait();
-// Linearized index recomputed for pack_tile CB offset
-// SFPU:           size_t [[PTILE_Y:v[0-9]+]] = [[CI]] * [[CBOUND]];
-// SFPU-NEXT:      size_t [[PTILE_IDX:v[0-9]+]] = [[PTILE_Y]] + [[CJ]];
-// SFPU-NEXT:      pack_tile<true>([[CZERO]], get_compile_time_arg_val(2), [[PTILE_IDX]]);
+// SFPU-NEXT:      pack_tile<true>([[CZERO]], get_compile_time_arg_val(2), [[CTILE_IDX]]);
 // SFPU-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
 // SFPU-NEXT:      tile_regs_release();
 
@@ -340,9 +340,11 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %sum : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %exp, %result_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.cb_push %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>

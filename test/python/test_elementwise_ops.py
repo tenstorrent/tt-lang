@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -233,6 +233,9 @@ UNARY_OPS = {
     "sigmoid": (make_unary_kernel("sigmoid", "sigmoid"), torch.sigmoid),
     "floor": (make_unary_kernel("floor", "floor"), torch.floor),
     "recip": (make_unary_kernel("recip", "recip"), torch.reciprocal),
+    "sin": (make_unary_kernel("sin", "sin"), torch.sin),
+    "cos": (make_unary_kernel("cos", "cos"), torch.cos),
+    "tan": (make_unary_kernel("tan", "tan"), torch.tan),
 }
 
 

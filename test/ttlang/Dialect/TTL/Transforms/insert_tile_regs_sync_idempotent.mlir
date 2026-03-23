@@ -12,7 +12,9 @@
 // CHECK:         ttl.compute
 // CHECK:         ^bb0(%[[IN:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT:.*]]: !ttcore.tile<32x32, bf16>):
 // CHECK-NEXT:      ttl.tile_regs_acquire
-// CHECK-NEXT:      %{{.*}}, %[[TILE:.*]] = ttl.copy_tile %[[IN]]
+// CHECK:           ttl.iter_index
+// CHECK:           ttl.iter_index
+// CHECK:           %{{.*}}, %[[TILE:.*]] = ttl.copy_tile %[[IN]]
 // CHECK-NEXT:      ttl.tile_regs_commit
 // CHECK-NEXT:      ttl.tile_regs_wait
 // CHECK-NEXT:      ttl.tile_store
@@ -28,8 +30,10 @@ func.func @idempotent_non_subblocked(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>
   %out_view = ttl.cb_reserve %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %result = ttl.compute ins(%arg_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>) outs(%output_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>) {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} {
     ^bb0(%in: !ttcore.tile<32x32, bf16>, %out: !ttcore.tile<32x32, bf16>):
-      %tok, %tile = ttl.copy_tile %in, %c0, %c0 : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
-      ttl.tile_store %tile, %out_view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %i = ttl.iter_index 0 : index
+      %j = ttl.iter_index 1 : index
+      %tok, %tile = ttl.copy_tile %in[%c0], %c0 : !ttcore.tile<32x32, bf16>, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
+      ttl.tile_store %tile, %out_view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -60,10 +64,12 @@ func.func @idempotent_subblocked(%arg0: tensor<1x8x!ttcore.tile<32x32, f32>>) ->
   %out_view = ttl.cb_reserve %cb1 : <[1, 8], !ttcore.tile<32x32, f32>, 2> -> tensor<1x8x!ttcore.tile<32x32, f32>>
   %result = ttl.compute ins(%arg_cb : tensor<1x8x!ttcore.tile<32x32, f32>>) outs(%out_cb : tensor<1x8x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"], ttl.full_linearization_strides = array<i64: 8, 1>} {
     ^bb0(%in: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
+      %i = ttl.iter_index 0 : index
+      %j = ttl.iter_index 1 : index
       %c0 = arith.constant 0 : index
-      %tok, %tile = ttl.copy_tile %in, %c0, %c0 {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+      %tok, %tile = ttl.copy_tile %in[%c0], %c0 {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>, index -> !ttl.dst, !ttcore.tile<32x32, f32>
       %exp = ttl.tile_exp %tile {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-      ttl.tile_store %exp, %out_view : !ttcore.tile<32x32, f32>, tensor<1x8x!ttcore.tile<32x32, f32>>
+      ttl.tile_store %exp, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x8x!ttcore.tile<32x32, f32>>
       ttl.yield
   } -> tensor<1x8x!ttcore.tile<32x32, f32>>
   func.return %result : tensor<1x8x!ttcore.tile<32x32, f32>>

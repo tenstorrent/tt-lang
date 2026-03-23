@@ -20,6 +20,8 @@
 // CHECK-LABEL: func.func @dst_intermediate_reuse_unary_chain
 // CHECK:           ttl.compute
 // CHECK-NEXT:      ^bb0(%[[A:.*]]: !ttcore.tile<32x32, bf16>, %[[B:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT:.*]]: !ttcore.tile<32x32, bf16>):
+// CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
+// CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary mul: both operands are block args -> DST[0]
 // CHECK-NEXT:      %[[X:.*]] = ttl.tile_mul %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary} : !ttcore.tile<32x32, bf16>
 // copy_dst preserves x in DST[1] before destructive abs
@@ -30,7 +32,7 @@
 // CHECK-NEXT:      %[[RSQRT:.*]] = ttl.tile_rsqrt %[[ABS]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, bf16>
 // SFPU binary mul: x at DST[0], rsqrt at DST[1] -> DST[0]
 // CHECK-NEXT:      %[[RESULT:.*]] = ttl.tile_mul %[[X]], %[[RSQRT]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>
-// CHECK:           ttl.tile_store
+// CHECK:           ttl.tile_store %[[RESULT]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
@@ -58,6 +60,8 @@ func.func @dst_intermediate_reuse_unary_chain(
   ^bb0(%a_tile: !ttcore.tile<32x32, bf16>,
        %b_tile: !ttcore.tile<32x32, bf16>,
        %out_tile: !ttcore.tile<32x32, bf16>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
 
     // x = a * b (FPU binary, result is DST intermediate)
     %x = ttl.tile_mul %a_tile, %b_tile : !ttcore.tile<32x32, bf16>
@@ -66,7 +70,7 @@ func.func @dst_intermediate_reuse_unary_chain(
     %rsqrt_x = ttl.tile_rsqrt %abs_x : !ttcore.tile<32x32, bf16>
     // Final SFPU binary consuming original x and chain result
     %final = ttl.tile_mul %x, %rsqrt_x : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %final, %out_view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %final, %out_view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
 
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>

@@ -16,15 +16,13 @@ if [ -n "${TTLANG_ENV_ACTIVATED}" ]; then
 fi
 
 # Activate the Python venv (provides correct Python version + packages).
-# Let the venv activate normally, then fix the double-wrapped PS1 by
-# overwriting PS1 and _OLD_VIRTUAL_PS1 (which deactivate restores).
+# Prompt customization is handled by ttlang_prompt_utils.sh, sourced after
+# the venv so it can wrap deactivate and cooperate with zsh themes.
 if [ -f "@TTLANG_PYTHON_VENV@/bin/activate" ]; then
-  _TTLANG_PRE_PS1="${PS1:-}"
+  VIRTUAL_ENV_DISABLE_PROMPT=1
   source "@TTLANG_PYTHON_VENV@/bin/activate"
-  PS1="(ᴛᴛʟᴀɴɢ) ${_TTLANG_PRE_PS1}"
-  export PS1
-  _OLD_VIRTUAL_PS1="${_TTLANG_PRE_PS1}"
-  unset _TTLANG_PRE_PS1
+  unset VIRTUAL_ENV_DISABLE_PROMPT
+  source "@TT_LANG_HOME@/env/ttlang_prompt_utils.sh"
 fi
 
 # Set tt-lang home directory.

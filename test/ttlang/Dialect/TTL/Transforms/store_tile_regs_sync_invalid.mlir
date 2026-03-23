@@ -12,9 +12,11 @@ func.func @view_not_from_reserve(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>, %
   %init_cb = ttl.attach_cb %init, %cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %result = ttl.compute ins(%arg_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>) outs(%init_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>) {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} {
     ^bb0(%in: !ttcore.tile<32x32, bf16>, %out: !ttcore.tile<32x32, bf16>):
-      %tok, %tile = ttl.copy_tile %in, %c0, %c0 : !ttcore.tile<32x32, bf16>, index, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
+      %i = ttl.iter_index 0 : index
+      %j = ttl.iter_index 1 : index
+      %tok, %tile = ttl.copy_tile %in[%c0], %c0 : !ttcore.tile<32x32, bf16>, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
       // expected-error @below {{'ttl.tile_store' op view must be produced by ttl.cb_reserve}}
-      ttl.tile_store %tile, %view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.tile_store %tile, %view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>

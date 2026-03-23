@@ -55,8 +55,8 @@ struct ComputeStoreInfo {
 
 /// Check if an scf.for is a user loop (not a tile loop or subblock loop).
 static bool isUserLoop(scf::ForOp forOp) {
-  return !forOp->hasAttr(kTileLoopAttrName) &&
-         !forOp->hasAttr(kSubblockStrideAttrName);
+  return !forOp->hasAttr(kTileLoopStrideAttrName) &&
+         !forOp->hasAttr(kSubblockLoopStrideAttrName);
 }
 
 /// Find the top-level ancestor of an operation in the given block.

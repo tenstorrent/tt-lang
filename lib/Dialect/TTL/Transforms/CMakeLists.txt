@@ -9,6 +9,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLDumpCBFlowGraph.cpp
   TTLFormAccumulationGroups.cpp
   TTLInsertTileRegsSync.cpp
+  TTLLowerMatmulBlock.cpp
   TTLAssignDST.cpp
   TTLScheduleOperations.cpp
   TTLSetComputeKernelConfig.cpp

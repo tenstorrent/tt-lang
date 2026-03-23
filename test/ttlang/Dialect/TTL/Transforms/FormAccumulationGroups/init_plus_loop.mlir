@@ -41,7 +41,9 @@ func.func @init_plus_loop(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
-    ttl.tile_store %a_tile, %out_view {acc = false} : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    %i0 = ttl.iter_index 0 : index
+    %j0 = ttl.iter_index 1 : index
+    ttl.tile_store %a_tile, %out_view[%i0, %j0] {acc = false} : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
@@ -57,7 +59,9 @@ func.func @init_plus_loop(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
          iterator_types = ["parallel", "parallel"]} {
     ^bb0(%b_tile: !ttcore.tile<32x32, f32>,
          %out_tile: !ttcore.tile<32x32, f32>):
-      ttl.tile_store %b_tile, %out_view {acc = true} : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+      %i1 = ttl.iter_index 0 : index
+      %j1 = ttl.iter_index 1 : index
+      ttl.tile_store %b_tile, %out_view[%i1, %j1] {acc = true} : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
       ttl.yield
     } -> tensor<1x1x!ttcore.tile<32x32, f32>>
     scf.yield %r2 : tensor<1x1x!ttcore.tile<32x32, f32>>

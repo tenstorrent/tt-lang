@@ -14,9 +14,7 @@ from typing import Any, Callable, Union, cast
 
 from .blockstate import ThreadType
 from .typedefs import Shape
-
-# Default grid size when grid='auto' is specified
-_default_auto_grid: Shape = (8, 8)
+from .context import get_context
 
 
 def set_default_grid(grid: Shape) -> None:
@@ -28,8 +26,7 @@ def set_default_grid(grid: Shape) -> None:
     Example:
         set_default_grid((4, 4))  # Use 4x4 grid for 'auto'
     """
-    global _default_auto_grid
-    _default_auto_grid = grid
+    get_context().config.default_auto_grid = grid
 
 
 def get_default_grid() -> Shape:
@@ -38,7 +35,7 @@ def get_default_grid() -> Shape:
     Returns:
         Tuple of (rows, cols) specifying the default grid size
     """
-    return _default_auto_grid
+    return get_context().config.default_auto_grid
 
 
 def kernel(
@@ -65,7 +62,9 @@ def kernel(
         # This is achieved by modifying the function's globals to include this variable
 
         # Set grid to default if 'auto'
-        actual_grid: Shape = cast(Shape, _default_auto_grid if grid == "auto" else grid)
+        actual_grid: Shape = cast(
+            Shape, get_context().config.default_auto_grid if grid == "auto" else grid
+        )
 
         # Create new globals dict that includes grid
         new_globals = func.__globals__.copy()

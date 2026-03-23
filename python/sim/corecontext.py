@@ -141,7 +141,7 @@ def grid_size(dims: Size = 2) -> Union[Size, Shape]:
         return result
 
 
-def core(dims: Size = 2) -> CoreCoord:
+def node(dims: Size = 2) -> CoreCoord:
     """Get the current core coordinates from injected context.
 
     Args:

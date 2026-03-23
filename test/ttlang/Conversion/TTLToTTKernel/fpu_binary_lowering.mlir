@@ -101,8 +101,10 @@ func.func @fpu_add_2x2()
   ^bb0(%lhs_tile: !ttcore.tile<32x32, bf16>,
        %rhs_tile: !ttcore.tile<32x32, bf16>,
        %out_tile: !ttcore.tile<32x32, bf16>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %sum = ttl.tile_add %lhs_tile, %rhs_tile : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %sum, %out_view : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %sum, %out_view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %cb1 : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
@@ -179,8 +181,10 @@ func.func @fpu_sub_1x1()
   ^bb0(%lhs_tile: !ttcore.tile<32x32, bf16>,
        %rhs_tile: !ttcore.tile<32x32, bf16>,
        %out_tile: !ttcore.tile<32x32, bf16>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %diff = ttl.tile_sub %lhs_tile, %rhs_tile : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %diff, %out_view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %diff, %out_view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -257,8 +261,10 @@ func.func @fpu_mul_1x1()
   ^bb0(%lhs_tile: !ttcore.tile<32x32, bf16>,
        %rhs_tile: !ttcore.tile<32x32, bf16>,
        %out_tile: !ttcore.tile<32x32, bf16>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %prod = ttl.tile_mul %lhs_tile, %rhs_tile : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %prod, %out_view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %prod, %out_view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -308,11 +314,14 @@ func.func @fpu_mul_1x1()
 // FPU:       ttkernel.tanh_tile(%[[C2]])
 // FPU:       ttkernel.tile_regs_commit
 // FPU:       ttkernel.tile_regs_wait
-// FPU:       ttkernel.pack_tile(%[[C0]], %[[CB1]], %[[ROWOFF]], true)
-// FPU:       ttkernel.pack_tile(%[[C1]], %[[CB1]], %[[IDX1]], true)
-// FPU:       ttkernel.pack_tile(%[[C2]], %[[CB1]], %[[IDX2]], true)
+// FPU:       %[[PIDX0:.*]] = affine.linearize_index [%[[IV]], %[[C0]]] by (2, 3)
+// FPU:       ttkernel.pack_tile(%[[C0]], %[[CB1]], %[[PIDX0]], true)
+// FPU:       %[[PIDX1:.*]] = affine.linearize_index [%[[IV]], %[[C1]]] by (2, 3)
+// FPU:       ttkernel.pack_tile(%[[C1]], %[[CB1]], %[[PIDX1]], true)
+// FPU:       %[[PIDX2:.*]] = affine.linearize_index [%[[IV]], %[[C2]]] by (2, 3)
+// FPU:       ttkernel.pack_tile(%[[C2]], %[[CB1]], %[[PIDX2]], true)
 // FPU:       ttkernel.tile_regs_release
-// FPU:     }
+// FPU:     } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 3 : index}
 // FPU:     ttkernel.cb_push_back(%[[CB1]], %[[C6I]])
 // FPU-NOT: ttkernel.copy_tile
 // FPU-NOT: ttkernel.add_binary_tile
@@ -330,19 +339,26 @@ func.func @fpu_mul_1x1()
 // SFPU:     ttkernel.cb_wait_front(%[[CB2]], %[[C6I]])
 // SFPU:     ttkernel.cb_reserve_back(%[[CB1]], %[[C6I]])
 // SFPU:     ttkernel.init_sfpu(%[[CB0]], %[[CB1]])
-// SFPU:     scf.for
+// SFPU:     scf.for %[[IV:.*]] = %[[C0]] to %[[C3]] step %[[C1]]
 // SFPU:       ttkernel.tile_regs_acquire
 // SFPU:       ttkernel.copy_tile_init(%[[CB0]])
-// SFPU:       ttkernel.copy_tile(%[[CB0]], {{.*}}, %[[C0]])
+// SFPU:       ttkernel.copy_tile(%[[CB0]], %[[IV]], %[[C0]])
+// SFPU:       ttkernel.copy_tile(%[[CB0]], {{.*}}, %[[C2]])
 // SFPU:       ttkernel.copy_tile_init(%[[CB2]])
-// SFPU:       ttkernel.copy_tile(%[[CB2]], {{.*}}, %[[C1]])
+// SFPU:       ttkernel.copy_tile(%[[CB2]], %[[IV]], %[[C1]])
+// SFPU:       ttkernel.copy_tile(%[[CB2]], {{.*}}, %[[C3]])
 // SFPU:       ttkernel.add_binary_tile_init
 // SFPU:       ttkernel.add_binary_tile(%[[C0]], %[[C1]], %[[C0]])
+// SFPU:       ttkernel.add_binary_tile(%[[C2]], %[[C3]], %[[C2]])
 // SFPU:       ttkernel.tanh_tile_init
 // SFPU:       ttkernel.tanh_tile(%[[C0]])
+// SFPU:       ttkernel.tanh_tile(%[[C2]])
 // SFPU:       ttkernel.tile_regs_commit
-// SFPU:       ttkernel.pack_tile(%[[C0]], %[[CB1]], {{.*}}, true)
-// SFPU:     }
+// SFPU:       ttkernel.tile_regs_wait
+// SFPU:       ttkernel.pack_tile(%[[C0]], %[[CB1]], %[[IV]], true)
+// SFPU:       ttkernel.pack_tile(%[[C2]], %[[CB1]], {{.*}}, true)
+// SFPU:       ttkernel.tile_regs_release
+// SFPU:     } {ttl.subblock_dim = 1 : index, ttl.subblock_loop_stride = 1 : index}
 // SFPU:     ttkernel.cb_push_back(%[[CB1]], %[[C6I]])
 // SFPU-NOT: ttkernel.add_tiles
 
@@ -371,9 +387,11 @@ func.func @fpu_add_tanh_f32()
   ^bb0(%lhs_tile: !ttcore.tile<32x32, f32>,
        %rhs_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %sum = ttl.tile_add %lhs_tile, %rhs_tile : !ttcore.tile<32x32, f32>
     %tanh = ttl.tile_tanh %sum : !ttcore.tile<32x32, f32>
-    ttl.tile_store %tanh, %out_view : !ttcore.tile<32x32, f32>, tensor<2x3x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %tanh, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x3x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x3x!ttcore.tile<32x32, f32>>
   ttl.cb_push %cb1 : <[2, 3], !ttcore.tile<32x32, f32>, 2>

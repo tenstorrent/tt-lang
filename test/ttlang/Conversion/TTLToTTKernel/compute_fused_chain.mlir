@@ -32,16 +32,16 @@
 // FPU:       ttkernel.binary_op_init_common(%[[CB0]], %[[CB1]], %[[CB2]])
 // FPU:       scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
 // FPU:         scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
-// FPU:           %[[AFFINEIDX:.*]] = affine.apply #{{.*}}(%[[I]], %[[J]])
 // FPU:           ttkernel.tile_regs_acquire
-// Linearized CB index: i * 2 + j
+// Linearized CB index for FPU add: i * 2 + j
 // FPU:           %[[MULI:.*]] = arith.muli %[[I]], %[[C2]]
 // FPU:           %[[LINIDX:.*]] = arith.addi %[[MULI]], %[[J]]
 // FPU:           ttkernel.add_tiles_init(%[[CB0]], %[[CB1]])
 // add_tiles reads lhs and rhs from CB at linearized index, writes DST[0]
 // FPU:           ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[LINIDX]], %[[LINIDX]], %[[C0]])
 // FPU-NOT:       ttkernel.add_binary_tile
-// mul's rhs needs copy_tile (from CB1 to DST[1])
+// mul's rhs needs copy_tile (from CB1 to DST[1]), using affine.linearize_index
+// FPU:           %[[AFFINEIDX:.*]] = affine.linearize_index [%[[I]], %[[J]]] by (2, 2)
 // FPU:           ttkernel.copy_tile_init(%[[CB1]])
 // FPU:           ttkernel.copy_tile(%[[CB1]], %[[AFFINEIDX]], %[[C1]])
 // FPU:           ttkernel.mul_binary_tile_init
@@ -50,7 +50,7 @@
 // FPU:           ttkernel.exp_tile(%[[C0]])
 // FPU:           ttkernel.tile_regs_commit
 // FPU:           ttkernel.tile_regs_wait
-// FPU:           ttkernel.pack_tile(%[[C0]], %[[CB2]], %[[LINIDX]], true)
+// FPU:           ttkernel.pack_tile(%[[C0]], %[[CB2]], %[[AFFINEIDX]], true)
 // FPU:           ttkernel.cb_push_back(%[[CB2]], %[[C4]])
 // FPU:           ttkernel.tile_regs_release
 // FPU:         }
@@ -79,8 +79,9 @@
 // SFPU:       ttkernel.init_sfpu(%[[CB0]], %[[CB2]])
 // SFPU:       scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
 // SFPU:         scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
-// SFPU:           %[[LINIDX:.*]] = affine.apply #{{.*}}(%[[I]], %[[J]])
 // SFPU:           ttkernel.tile_regs_acquire
+// Linearized CB index via affine.linearize_index
+// SFPU:           %[[LINIDX:.*]] = affine.linearize_index [%[[I]], %[[J]]] by (2, 2)
 // Copies at first use (add): CB0 first, then CB1
 // SFPU:           ttkernel.copy_tile_init(%[[CB0]])
 // SFPU:           ttkernel.copy_tile(%[[CB0]], %[[LINIDX]], %[[C0]])
@@ -94,10 +95,8 @@
 // SFPU:           ttkernel.exp_tile(%[[C0]])
 // SFPU:           ttkernel.tile_regs_commit
 // SFPU:           ttkernel.tile_regs_wait
-// Linearized CB index for pack: i * 2 + j
-// SFPU:           %[[SMULI:.*]] = arith.muli %[[I]], %[[C2]]
-// SFPU:           %[[SLINIDX:.*]] = arith.addi %[[SMULI]], %[[J]]
-// SFPU:           ttkernel.pack_tile(%[[C0]], %[[CB2]], %[[SLINIDX]], true)
+// pack_tile uses same linearized index
+// SFPU:           ttkernel.pack_tile(%[[C0]], %[[CB2]], %[[LINIDX]], true)
 // SFPU:           ttkernel.cb_push_back(%[[CB2]], %[[C4]])
 // SFPU:           ttkernel.tile_regs_release
 // SFPU:         }
@@ -133,10 +132,12 @@ func.func @fused_chain_lowering(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %mul = ttl.tile_mul %sum, %b_tile : !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %mul : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %exp, %result_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.cb_push %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>

@@ -41,8 +41,10 @@ func.func @no_tiling_when_all_fit(%a: tensor<1x8x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [#map, #map],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %reserve : !ttcore.tile<32x32, f32>, tensor<1x8x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %exp, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x8x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x8x!ttcore.tile<32x32, f32>>
 
@@ -88,8 +90,10 @@ func.func @tile_binary_1x8(
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %reserve : !ttcore.tile<32x32, f32>, tensor<1x8x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sum, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x8x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x8x!ttcore.tile<32x32, f32>>
 
@@ -118,15 +122,15 @@ func.func @tile_binary_1x8(
 // TILED-NEXT:     {{.*}} = ttl.compute
 // TILED-SAME:     tensor<1x8x!ttcore.tile<32x32, f32>>
 // TILED-SAME:     ttl.full_linearization_strides
-// TILED:            ttl.linearized_index
-// Stride 8 for dim 0: arith.muli(iv, 8) then arith.addi.
-// TILED:            arith.muli %[[IV]],
-// TILED-NEXT:       arith.addi
+// TILED:            %[[I_DIM0_A:.*]] = ttl.iter_index 0 : index
+// TILED:            %[[I_DIM0_A_OFFSETTED:.*]] = arith.addi %[[I_DIM0_A]], %[[IV]]
+// TILED:            %[[I_DIM1_A:.*]] = ttl.iter_index 1 : index
+// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_A_OFFSETTED]], %[[I_DIM1_A]]], %{{.*}}
 // TILED:            ttl.tile_exp
-// TILED-NEXT:       ttl.tile_store
+// TILED:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_A_OFFSETTED]], %[[I_DIM1_A]]]
 // TILED-NEXT:       ttl.yield
 // TILED-NEXT:     } -> tensor<1x8x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:   }
+// TILED-NEXT:   } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 8 : index}
 func.func @tile_multidim_2x8(%a: tensor<2x8x!ttcore.tile<32x32, f32>>)
     -> tensor<2x8x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x8x!ttcore.tile<32x32, f32>>
@@ -145,8 +149,10 @@ func.func @tile_multidim_2x8(%a: tensor<2x8x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [#map, #map],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %reserve : !ttcore.tile<32x32, f32>, tensor<2x8x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %exp, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x8x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x8x!ttcore.tile<32x32, f32>>
 
@@ -187,8 +193,10 @@ func.func @no_subblocking_multidim(%a: tensor<2x4x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [#map, #map],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %reserve : !ttcore.tile<32x32, f32>, tensor<2x4x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %exp, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x4x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x4x!ttcore.tile<32x32, f32>>
 
@@ -217,15 +225,15 @@ func.func @no_subblocking_multidim(%a: tensor<2x4x!ttcore.tile<32x32, f32>>)
 // TILED-NEXT:     {{.*}} = ttl.compute
 // TILED-SAME:     tensor<2x4x!ttcore.tile<32x32, f32>>
 // TILED-SAME:     ttl.full_linearization_strides
-// TILED:            ttl.linearized_index
-// Stride 4 for dim 0: arith.muli(iv, 4) then arith.addi.
-// TILED:            arith.muli %[[IV]],
-// TILED-NEXT:       arith.addi
+// TILED:            %[[I_DIM0_B:.*]] = ttl.iter_index 0 : index
+// TILED:            %[[I_DIM0_B_OFFSETTED:.*]] = arith.addi %[[I_DIM0_B]], %[[IV]]
+// TILED:            %[[I_DIM1_B:.*]] = ttl.iter_index 1 : index
+// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_B_OFFSETTED]], %[[I_DIM1_B]]], %{{.*}}
 // TILED:            ttl.tile_exp
-// TILED-NEXT:       ttl.tile_store
+// TILED:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_B_OFFSETTED]], %[[I_DIM1_B]]]
 // TILED-NEXT:       ttl.yield
 // TILED-NEXT:     } -> tensor<2x4x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:   }
+// TILED-NEXT:   } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 4 : index}
 func.func @subblock_multidim_4x4(%a: tensor<4x4x!ttcore.tile<32x32, f32>>)
     -> tensor<4x4x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -244,8 +252,10 @@ func.func @subblock_multidim_4x4(%a: tensor<4x4x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [#map, #map],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %reserve : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %exp, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<4x4x!ttcore.tile<32x32, f32>>
 
@@ -291,8 +301,10 @@ func.func @no_subblocking_binary(
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %reserve : !ttcore.tile<32x32, f32>, tensor<2x4x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sum, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x4x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x4x!ttcore.tile<32x32, f32>>
 
@@ -321,15 +333,15 @@ func.func @no_subblocking_binary(
 // TILED-NEXT:     {{.*}} = ttl.compute
 // TILED-SAME:     tensor<1x3x!ttcore.tile<32x32, f32>>
 // TILED-SAME:     ttl.full_linearization_strides
-// TILED:            ttl.linearized_index
-// Stride 3 for dim 0: arith.muli(iv, 3) then arith.addi.
-// TILED:            arith.muli %[[IV]],
-// TILED-NEXT:       arith.addi
+// TILED:            %[[I_DIM0_C:.*]] = ttl.iter_index 0 : index
+// TILED:            %[[I_DIM0_C_OFFSETTED:.*]] = arith.addi %[[I_DIM0_C]], %[[IV]]
+// TILED:            %[[I_DIM1_C:.*]] = ttl.iter_index 1 : index
+// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_C_OFFSETTED]], %[[I_DIM1_C]]], %{{.*}}
 // TILED:            ttl.tile_exp
-// TILED-NEXT:       ttl.tile_store
+// TILED:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_C_OFFSETTED]], %[[I_DIM1_C]]]
 // TILED-NEXT:       ttl.yield
 // TILED-NEXT:     } -> tensor<1x3x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:   }
+// TILED-NEXT:   } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 3 : index}
 func.func @tile_multidim_remainder_3x3(%a: tensor<3x3x!ttcore.tile<32x32, f32>>)
     -> tensor<3x3x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<3x3x!ttcore.tile<32x32, f32>>
@@ -348,8 +360,10 @@ func.func @tile_multidim_remainder_3x3(%a: tensor<3x3x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [#map, #map],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %reserve : !ttcore.tile<32x32, f32>, tensor<3x3x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %exp, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<3x3x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<3x3x!ttcore.tile<32x32, f32>>
 
@@ -392,12 +406,20 @@ func.func @tile_multidim_remainder_3x3(%a: tensor<3x3x!ttcore.tile<32x32, f32>>)
 // BCAST-TILED-SAME:       tensor<1x2x!ttcore.tile<32x32, f32>>
 // BCAST-TILED-SAME:       tensor<1x1x!ttcore.tile<32x32, f32>>
 // BCAST-TILED-SAME:       ttl.full_linearization_strides
+// BCAST-TILED:              %[[I_DIM0:.*]] = ttl.iter_index 0 : index
+// BCAST-TILED:              %[[I_DIM0_OFFSETTED:.*]] = arith.addi %[[I_DIM0]], %[[IV0]]
+// BCAST-TILED:              %[[I_DIM1:.*]] = ttl.iter_index 1 : index
+// BCAST-TILED:              %[[I_DIM1_OFFSETTED:.*]] = arith.addi %[[I_DIM1]], %[[IV1]]
+// Identity-map input: both dims with offset.
+// BCAST-TILED:              ttl.copy_tile %{{.*}}[%[[I_DIM0_OFFSETTED]], %[[I_DIM1_OFFSETTED]]], %{{.*}}
+// Col-broadcast input (map (d0,d1)->(d0,0)): d0 with offset, d1 constant 0.
+// BCAST-TILED:              ttl.copy_tile %{{.*}}[%[[I_DIM0_OFFSETTED]], %{{.*}}], %{{.*}}
 // BCAST-TILED:              ttl.tile_add
-// BCAST-TILED-NEXT:         ttl.tile_store
+// BCAST-TILED:              ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_OFFSETTED]], %[[I_DIM1_OFFSETTED]]]
 // BCAST-TILED-NEXT:         ttl.yield
 // BCAST-TILED-NEXT:       } -> tensor<1x2x!ttcore.tile<32x32, f32>>
-// BCAST-TILED:          } {ttl.subblock_stride
-// BCAST-TILED:        } {ttl.subblock_stride
+// BCAST-TILED:          } {ttl.subblock_dim = 1 : index, ttl.subblock_loop_stride
+// BCAST-TILED:        } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride
 func.func @subblock_broadcast_col(
     %a: tensor<4x4x!ttcore.tile<32x32, f32>>,
     %b: tensor<4x1x!ttcore.tile<32x32, f32>>)
@@ -421,8 +443,10 @@ func.func @subblock_broadcast_col(
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %reserve : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sum, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<4x4x!ttcore.tile<32x32, f32>>
 

@@ -120,9 +120,10 @@ def bcast_multitile_kernel(
 # CHECK-NEXT:             add_binary_tile([[V6]], [[V5]], [[V6]]);
 # CHECK-NEXT:             tile_regs_commit();
 # CHECK-NEXT:             tile_regs_wait();
-# CHECK-NEXT:             size_t [[V12:.*]] = [[K]] * [[V4]];
-# CHECK-NEXT:             size_t [[V13:.*]] = [[V12]] + [[L]];
-# CHECK-NEXT:             pack_tile<true>([[V6]], get_compile_time_arg_val(3), [[V13]]);
+# CHECK-NEXT:             size_t [[V12:.*]] = 4;
+# CHECK-NEXT:             size_t [[V13:.*]] = [[K]] * [[V12]];
+# CHECK-NEXT:             size_t [[V14:.*]] = [[V13]] + [[L]];
+# CHECK-NEXT:             pack_tile<true>([[V6]], get_compile_time_arg_val(3), [[V14]]);
 # CHECK-NEXT:             tile_regs_release();
 # CHECK-NEXT:           }
 # CHECK-NEXT:         }

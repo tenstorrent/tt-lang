@@ -36,7 +36,9 @@ func.func @nested_loops(%a: tensor<1x1x!ttcore.tile<32x32, f32>>)
            iterator_types = ["parallel", "parallel"]} {
       ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
            %out_tile: !ttcore.tile<32x32, f32>):
-        ttl.tile_store %a_tile, %out_view {acc = true} : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+        %ii = ttl.iter_index 0 : index
+        %jj = ttl.iter_index 1 : index
+        ttl.tile_store %a_tile, %out_view[%ii, %jj] {acc = true} : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
         ttl.yield
       } -> tensor<1x1x!ttcore.tile<32x32, f32>>
       scf.yield %r2 : tensor<1x1x!ttcore.tile<32x32, f32>>

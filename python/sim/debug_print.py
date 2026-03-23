@@ -8,17 +8,19 @@ Implements the debug printing functionality specified in TTLang spec section 10.
 allowing users to print tensors, blocks, and dataflow buffers with custom formatting.
 """
 
-from typing import Any
+from typing import Any, Union
 import builtins
 
+from .context import get_context
 from .ttnnsim import Tensor
 from .dfb import Block, DataflowBuffer
 from .blockstate import AccessState, BlockAcquisition, ThreadType
 from .diagnostics import warn_once_per_location
+from .greenlet_scheduler import get_current_core_id
 
 
-# Track block print warnings by (filename, line) -> set of core_ids
-_block_print_warnings: dict[tuple[str, int], set[str]] = {}
+# Type alias for TT-Lang printable objects
+TTLangObject = Union[Tensor, Block, DataflowBuffer]
 
 
 def _format_tensor(tensor: Tensor, num_pages: int = 1) -> str:
@@ -54,8 +56,9 @@ def _warn_block_in_illegal_state(block: Block, message: str) -> None:
         message: The warning message to display
     """
     warn_once_per_location(
-        _block_print_warnings,
+        get_context().warnings.block_print_warnings,
         message,
+        get_current_core_id(),
     )
 
 
@@ -117,10 +120,10 @@ def _format_dfb(dfb: DataflowBuffer) -> str:
     lines.append(f"  likeness_tensor: {dfb.likeness_tensor}")
     lines.append(f"  buffer_factor: {dfb.buffer_factor}")
     lines.append(f"  capacity: {dfb.capacity_tiles} tiles")
-    lines.append(f"  rd_ptr (head): {dfb._state.head}")
-    lines.append(f"  visible: {dfb._state.visible} operations")
-    lines.append(f"  reserved: {dfb._state.reserved} operations")
-    lines.append(f"  free: {dfb._state.free()} operations")
+    lines.append(f"  rd_ptr (head): {dfb.head}")
+    lines.append(f"  visible: {dfb.visible} operations")
+    lines.append(f"  reserved: {dfb.reserved} operations")
+    lines.append(f"  free: {dfb.free} operations")
 
     return "\n".join(lines)
 
@@ -143,8 +146,8 @@ def ttlang_print(*args: Any, **kwargs: Any) -> None:
         print(c_dfb)
     """
     # Separate TT-Lang objects from regular args
-    ttlang_objects = []
-    regular_args = []
+    ttlang_objects: list[TTLangObject] = []
+    regular_args: list[Any] = []
 
     for arg in args:
         if isinstance(arg, (Tensor, Block, DataflowBuffer)):
@@ -174,10 +177,9 @@ def ttlang_print(*args: Any, **kwargs: Any) -> None:
         formatted = _format_tensor(obj, num_pages=num_pages)
     elif isinstance(obj, Block):
         formatted = _format_block(obj)
-    elif isinstance(obj, DataflowBuffer):
-        formatted = _format_dfb(obj)
     else:
-        formatted = str(obj)
+        # Must be DataflowBuffer (only remaining type in TTLangObject)
+        formatted = _format_dfb(obj)
 
     # Print regular args followed by formatted object
     if regular_args:

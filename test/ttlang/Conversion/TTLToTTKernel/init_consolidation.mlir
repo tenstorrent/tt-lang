@@ -209,7 +209,7 @@ func.func @two_sync_regions_two_inits() {
   func.return
 }
 
-// Test 9: Compiler-generated loop (ttl.tile_loop) -> common init hoisted above
+// Test 9: Compiler-generated loop (ttl.tile_loop_stride) -> common init hoisted above
 // COMMON-LABEL: func.func @common_init_hoisted_above_compiler_loop
 // COMMON-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
 // COMMON-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
@@ -230,7 +230,7 @@ func.func @common_init_hoisted_above_compiler_loop() {
     ttkernel.exp_tile(%c0) : (index) -> ()
     ttkernel.pack_tile(%c0, %cb2, %i, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index) -> ()
     ttkernel.tile_regs_release() : () -> ()
-  } {ttl.tile_loop = 1 : index}
+  } {ttl.tile_loop_stride = 1 : index}
   func.return
 }
 
@@ -283,8 +283,8 @@ func.func @common_init_hoisted_above_nested_compiler_loops() {
       ttkernel.exp_tile(%c0) : (index) -> ()
       ttkernel.pack_tile(%c0, %cb2, %j, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index) -> ()
       ttkernel.tile_regs_release() : () -> ()
-    } {ttl.subblock_stride = 1 : index}
-  } {ttl.tile_loop = 1 : index}
+    } {ttl.subblock_loop_stride = 1 : index}
+  } {ttl.tile_loop_stride = 1 : index}
   func.return
 }
 

@@ -23,10 +23,12 @@
 // CHECK:           %[[RES:.*]] = ttl.compute
 // CHECK:           ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[O:.*]]: !ttcore.tile<32x32, f32>):
 // CHECK:             ttl.tile_regs_acquire
+// CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
+// CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary add: both operands are block args, no copy_tile needed
 // CHECK-NEXT:        %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary}
 // Copy B for sub/mul (SFPU operand needs copy_tile)
-// CHECK:             %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[B]], %{{.*}}, %{{.*}} {dst_idx = 1 : i32}
+// CHECK:             %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]], %{{.*}} {dst_idx = 1 : i32}
 // CHECK-NEXT:        %[[SUB:.*]] = ttl.tile_sub %[[ADD]], %[[DTILE]] {dst_idx = 0 : i32}
 // CHECK-NEXT:        %[[MUL:.*]] = ttl.tile_mul %[[SUB]], %[[DTILE]] {dst_idx = 0 : i32}
 // CHECK-NEXT:        %[[EXP:.*]] = ttl.tile_exp %[[MUL]] {dst_idx = 0 : i32}
@@ -55,13 +57,13 @@
 // SFPU:             %[[SQRTS:.*]] = ttl.tile_sqrt {{.*}} {dst_idx = 0 : i32}
 // SFPU:             ttl.tile_regs_commit
 // SFPU-NEXT:        ttl.tile_regs_wait
-// SFPU:             ttl.tile_store %[[SQRTS]]
+// SFPU:             ttl.tile_store %[[SQRTS]], %{{.*}}[%{{.*}}, %{{.*}}]
 // SFPU-NEXT:        ttl.tile_regs_release
 // SFPU-NEXT:        ttl.yield
 //
 // CHECK-NEXT:        ttl.tile_regs_commit
 // CHECK-NEXT:        ttl.tile_regs_wait
-// CHECK-NEXT:        ttl.tile_store %[[SQRT]]
+// CHECK-NEXT:        ttl.tile_store %[[SQRT]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        ttl.yield
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -89,6 +91,8 @@ func.func @seven_op_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     // Seven-operation fused chain - each must appear in output with dst_idx
     %add = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     %sub = ttl.tile_sub %add, %b_tile : !ttcore.tile<32x32, f32>
@@ -97,7 +101,7 @@ func.func @seven_op_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %log = ttl.tile_log %exp : !ttcore.tile<32x32, f32>
     %neg = ttl.tile_neg %log : !ttcore.tile<32x32, f32>
     %sqrt = ttl.tile_sqrt %neg : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sqrt, %result_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sqrt, %result_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

@@ -48,8 +48,10 @@ func.func @reduction_fits_in_dst(
        iterator_types = ["parallel", "reduction"],
        ttl.unroll_factor = 6 : i64} {
   ^bb0(%in: !ttcore.tile<32x32, f32>, %acc: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %add = ttl.tile_add %in, %acc : !ttcore.tile<32x32, f32>
-    ttl.tile_store %add, %reserve : !ttcore.tile<32x32, f32>, tensor<2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %add, %reserve[%i] : !ttcore.tile<32x32, f32>, tensor<2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x!ttcore.tile<32x32, f32>>
 
@@ -93,8 +95,8 @@ func.func @reduction_fits_in_dst(
 // SUBBLOCK:           ttl.yield
 // No second loop -- reduction dim is NOT subblocked.
 // SUBBLOCK-NOT:     scf.for
-// Loop annotated with subblock_stride.
-// SUBBLOCK:       } {ttl.subblock_stride = 3 : index}
+// Loop annotated with subblock dim and stride.
+// SUBBLOCK:       } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 3 : index}
 func.func @reduction_subblock_parallel_only(
     %a: tensor<8x3x!ttcore.tile<32x32, f32>>)
     -> tensor<8x!ttcore.tile<32x32, f32>> {
@@ -115,8 +117,10 @@ func.func @reduction_subblock_parallel_only(
        iterator_types = ["parallel", "reduction"],
        ttl.unroll_factor = 8 : i64} {
   ^bb0(%in: !ttcore.tile<32x32, f32>, %acc: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %add = ttl.tile_add %in, %acc : !ttcore.tile<32x32, f32>
-    ttl.tile_store %add, %reserve2 : !ttcore.tile<32x32, f32>, tensor<8x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %add, %reserve2[%i] : !ttcore.tile<32x32, f32>, tensor<8x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<8x!ttcore.tile<32x32, f32>>
 
@@ -166,8 +170,10 @@ func.func @reduction_exceeds_dst_budget(
        iterator_types = ["parallel", "reduction"],
        ttl.unroll_factor = 8 : i64} {
   ^bb0(%in: !ttcore.tile<32x32, f32>, %acc: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %add = ttl.tile_add %in, %acc : !ttcore.tile<32x32, f32>
-    ttl.tile_store %add, %reserve3 : !ttcore.tile<32x32, f32>, tensor<2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %add, %reserve3[%i] : !ttcore.tile<32x32, f32>, tensor<2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x!ttcore.tile<32x32, f32>>
 

@@ -12,19 +12,11 @@ per-core execution contexts.
 
 import types
 from types import CellType, FunctionType
-from typing import Any, Callable, Dict, List, Protocol
+from typing import Any, Callable, Dict, List
 
 from .blockstate import ThreadType
-
-
-class BindableTemplate(Protocol):
-    """Protocol for templates that can be bound to a specific execution context."""
-
-    __name__: str
-
-    def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
-        """Bind the template to a specific execution context."""
-        ...
+from .context import get_context
+from .typedefs import BindableTemplate
 
 
 def _make_cell(value: Any) -> CellType:
@@ -68,24 +60,21 @@ def rebind_func_with_ctx(func: FunctionType, ctx: Dict[str, Any]) -> FunctionTyp
     return new_func
 
 
-# Thread registry for automatic collection of @compute and @datamovement threads
-_thread_registry: List[BindableTemplate] = []
-
-
 def _register_thread(thread_template: BindableTemplate) -> None:
     """Register a thread template during decoration."""
-    _thread_registry.append(thread_template)
+    get_context().thread_registry.append(thread_template)
 
 
 def clear_thread_registry() -> None:
     """Clear the thread registry before kernel execution."""
-    _thread_registry.clear()
+    get_context().thread_registry.clear()
 
 
 def get_registered_threads() -> List[BindableTemplate]:
     """Get all registered threads and clear the registry."""
-    threads = list(_thread_registry)
-    _thread_registry.clear()
+    registry = get_context().thread_registry
+    threads = list(registry)
+    registry.clear()
     return threads
 
 

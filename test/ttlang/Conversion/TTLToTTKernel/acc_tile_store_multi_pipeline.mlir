@@ -54,9 +54,11 @@ func.func @acc_multi_store_pipeline(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     // Two acc stores to the same view — triggers multi-store accumulation.
-    ttl.tile_store %a_tile, %out_view {acc = true} : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
-    ttl.tile_store %b_tile, %out_view {acc = true} : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %a_tile, %out_view[%i, %j] {acc = true} : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %b_tile, %out_view[%i, %j] {acc = true} : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

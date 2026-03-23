@@ -6,6 +6,7 @@
 
 #include "ttlang/Dialect/TTKernel/Transforms/TTKernelCleanupPatterns.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -511,17 +512,21 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
         }
         rewriter.setInsertionPointAfter(insertPt);
 
-        // The CB tile index was computed at the tile_store location (inside
+        // The DFB tile index was computed at the tile_store location (inside
         // tile loops). If the pack is placed outside those loops (cross-
-        // compute accumulation), the loop IVs don't dominate. Recompute the
-        // index at the pack insertion point. For 1x1 computes the tile loops
-        // have trip count 1, so the index is always 0.
+        // compute accumulation), the loop IVs don't dominate. Recompute
+        // the index at the pack insertion point using enclosing loop
+        // structure and an identity indexing map (output operand).
         Value packCbTileIndex = cbTileIndex;
         if (!cbTileIndex.getParentBlock()->findAncestorOpInBlock(
                 *rewriter.getInsertionPoint())) {
           auto viewTy = mlir::cast<RankedTensorType>(op.getView().getType());
-          auto recomputedIdx = utils::computeCBTileIndexFromLoops(
-              insertPt, rewriter, viewTy.getRank());
+          auto viewShape = viewTy.getShape();
+          AffineMap identity = AffineMap::getMultiDimIdentityMap(
+              viewTy.getRank(), rewriter.getContext());
+          auto recomputedIdx = utils::computeCBTileIndex(
+              insertPt, rewriter, identity, viewShape, viewShape,
+              viewTy.getRank());
           if (succeeded(recomputedIdx)) {
             packCbTileIndex = *recomputedIdx;
           } else {
@@ -553,39 +558,46 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
           op, "view must come from ttl.cb_reserve (unrealized cast from CB)");
     }
 
+    // Linearize multi-dimensional CB indices to a flat tile index.
     auto viewTy = mlir::cast<RankedTensorType>(op.getView().getType());
-    size_t cbShapeRank = viewTy.getRank();
-    auto cbTileIndex =
-        utils::computeCBTileIndexFromLoops(op, rewriter, cbShapeRank);
-    if (failed(cbTileIndex)) {
-      return failure();
-    }
+    ValueRange indices = adaptor.getIndices();
+    Value cbTileIndex = affine::AffineLinearizeIndexOp::create(
+        rewriter, loc, indices, viewTy.getShape());
 
     // Accumulating store (identified by acc_dst_idx from DST assignment):
     // emit add_binary_tile + zero-init + deferred pack.
     if (isAccumulatingStore(op)) {
-      return lowerAccumulatingStore(op, adaptor, rewriter, *cb, *cbTileIndex);
+      return lowerAccumulatingStore(op, adaptor, rewriter, *cb, cbTileIndex);
     }
 
-    // Normal store: emit pack_tile.
+    // Determine DST index. Priority:
+    // 1. tile_store's own dst_idx (set by lower-matmul-block for per-tile pack)
+    // 2. Source op's dst_idx (tile compute ops, copy_dst)
+    // 3. copy_tile's dst_index operand
+    // 4. CB tile index (CB-reading ops like bcast, reduce)
     Value dstIndex;
-    auto tileValue = adaptor.getTile();
-    if (auto defOp = tileValue.getDefiningOp()) {
-      if (auto dstIdxAttr =
-              defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-        dstIndex =
-            arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
-      } else if (auto copyTile = dyn_cast<CopyTileOp>(defOp)) {
-        dstIndex = copyTile.getDstIndex();
-      } else {
-        return rewriter.notifyMatchFailure(
-            op, "tile_store source op lacks dst_idx attribute");
-      }
+    if (auto storeIdx = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
+      dstIndex =
+          arith::ConstantIndexOp::create(rewriter, loc, storeIdx.getInt());
     } else {
-      dstIndex = *cbTileIndex;
+      auto tileValue = adaptor.getTile();
+      if (auto defOp = tileValue.getDefiningOp()) {
+        if (auto dstIdxAttr =
+                defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
+          dstIndex = arith::ConstantIndexOp::create(rewriter, loc,
+                                                    dstIdxAttr.getInt());
+        } else if (auto copyTile = dyn_cast<CopyTileOp>(defOp)) {
+          dstIndex = copyTile.getDstIndex();
+        } else {
+          return op.emitError("tile_store source op lacks dst_idx attribute: ")
+                 << defOp->getName();
+        }
+      } else {
+        dstIndex = cbTileIndex;
+      }
     }
 
-    ttk::PackTileOp::create(rewriter, loc, dstIndex, *cb, *cbTileIndex,
+    ttk::PackTileOp::create(rewriter, loc, dstIndex, *cb, cbTileIndex,
                             /*out_of_order=*/true);
 
     rewriter.eraseOp(op);
@@ -1086,9 +1098,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                       StringRef passName) {
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
-  target.addLegalDialect<arith::ArithDialect, BuiltinDialect, scf::SCFDialect,
-                         func::FuncDialect, tensor::TensorDialect,
-                         ttkernel::TTKernelDialect>();
+  target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
+                         BuiltinDialect, scf::SCFDialect, func::FuncDialect,
+                         tensor::TensorDialect, ttkernel::TTKernelDialect>();
 
   // Structural ops remain legal (converted elsewhere or kept as-is).
   target.addLegalOp<ComputeOp, YieldOp, AttachCBOp>();
@@ -1154,10 +1166,8 @@ static LogicalResult
 lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                        TTLToTTKernelTypeConverter &typeConverter) {
   ConversionTarget computeTarget(ctx);
-  // TTKernel ops are legal (target dialect)
   computeTarget.addLegalDialect<ttkernel::TTKernelDialect>();
-  // Arith ops are legal (used for index constants)
-  computeTarget.addLegalDialect<arith::ArithDialect>();
+  computeTarget.addLegalDialect<affine::AffineDialect, arith::ArithDialect>();
   // Keep compute ops legal (tile-only lowering here).
   computeTarget.addLegalOp<ComputeOp, YieldOp>();
 

@@ -140,7 +140,7 @@ class TestBasicExecution:
         tt_testing.assert_close(out.to_torch()[0:64, 0:32], expected.to_torch())
 
 
-class TestMultiCore:
+class TestMultinode:
     """Test multi-core execution."""
 
     def test_two_core_execution(self) -> None:
@@ -156,7 +156,7 @@ class TestMultiCore:
 
             @ttl.compute()
             def compute():
-                core_id = cast(int, ttl.core(dims=1))
+                core_id = cast(int, ttl.node(dims=1))
                 block = a_dfb.wait()
                 out_block = out_dfb.reserve()
                 # All cores just do block + block (multiplies by 2)
@@ -167,7 +167,7 @@ class TestMultiCore:
 
             @ttl.datamovement()
             def dm0():
-                core_id = cast(int, ttl.core(dims=1))
+                core_id = cast(int, ttl.node(dims=1))
                 block = a_dfb.reserve()
                 # Each core reads its own tile
                 tx = copy(a[core_id : core_id + 1, 0:1], block)
@@ -176,7 +176,7 @@ class TestMultiCore:
 
             @ttl.datamovement()
             def dm1():
-                core_id = cast(int, ttl.core(dims=1))
+                core_id = cast(int, ttl.node(dims=1))
                 block = out_dfb.wait()
                 # Each core writes its own tile
                 tx = copy(block, out[core_id : core_id + 1, 0:1])
@@ -204,7 +204,7 @@ class TestMultiCore:
 
             @ttl.compute()
             def compute():
-                core_y, core_x = cast(tuple[int, int], ttl.core(dims=2))
+                core_y, core_x = cast(tuple[int, int], ttl.node(dims=2))
                 out_block = out_dfb.reserve()
                 # Each core writes its coordinates
                 out_block.store(
@@ -218,7 +218,7 @@ class TestMultiCore:
 
             @ttl.datamovement()
             def dm1():
-                core_y, core_x = cast(tuple[int, int], ttl.core(dims=2))
+                core_y, core_x = cast(tuple[int, int], ttl.node(dims=2))
                 block = out_dfb.wait()
                 tx = copy(
                     block,
@@ -256,7 +256,7 @@ class TestContextIsolation:
 
             @ttl.compute()
             def compute():
-                core_id = cast(int, ttl.core(dims=1))
+                core_id = cast(int, ttl.node(dims=1))
                 # Each core reserves/pushes independently
                 block = dfb.reserve()
                 block.store(
@@ -270,7 +270,7 @@ class TestContextIsolation:
 
             @ttl.datamovement()
             def dm1():
-                core_id = cast(int, ttl.core(dims=1))
+                core_id = cast(int, ttl.node(dims=1))
                 # Each core waits/pops its own DFB
                 block = dfb.wait()
                 tx = copy(block, out[core_id : core_id + 1, 0:1])
@@ -302,7 +302,7 @@ class TestContextIsolation:
             @ttl.compute()
             def compute():
                 # Compute thread reads shared tensor and stores to DFB
-                core_id = cast(int, ttl.core(dims=1))
+                core_id = cast(int, ttl.node(dims=1))
                 block = dfb.reserve()
                 # Read from shared tensor and store (not copy)
                 # Add core_id to distinguish which core wrote
@@ -317,7 +317,7 @@ class TestContextIsolation:
             @ttl.datamovement()
             def dm1():
                 # DM thread copies from DFB to output
-                core_id = cast(int, ttl.core(dims=1))
+                core_id = cast(int, ttl.node(dims=1))
                 block = dfb.wait()
                 tx = copy(block, out[core_id : core_id + 1, 0:1])
                 tx.wait()
@@ -1021,7 +1021,7 @@ if __name__ == "__main__":
     test_basic.test_cooperative_mode_basic()
     test_basic.test_multi_tile_computation()
 
-    test_multi = TestMultiCore()
+    test_multi = TestMultinode()
     test_multi.test_two_core_execution()
     test_multi.test_four_core_2d_grid()
 

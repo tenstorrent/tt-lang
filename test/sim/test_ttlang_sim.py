@@ -521,7 +521,7 @@ class TestTensorStatsOption:
                 "-m",
                 "sim.ttlang_sim",
                 "--show-stats",
-                "examples/singlecore_matmul.py",
+                "examples/single_node_matmul.py",
             ],
             cwd=Path(__file__).parent.parent.parent,
             env={"PYTHONPATH": "python"},
@@ -543,7 +543,7 @@ class TestTensorStatsOption:
                 "-m",
                 "sim.ttlang_sim",
                 "--show-stats",
-                "examples/singlecore_matmul.py",
+                "examples/single_node_matmul.py",
             ],
             cwd=Path(__file__).parent.parent.parent,
             env={"PYTHONPATH": "python"},
@@ -559,7 +559,7 @@ class TestTensorStatsOption:
     def test_tensor_stats_without_flag(self):
         """Test that statistics are not printed without --show-stats flag."""
         result = subprocess.run(
-            [sys.executable, "-m", "sim.ttlang_sim", "examples/singlecore_matmul.py"],
+            [sys.executable, "-m", "sim.ttlang_sim", "examples/single_node_matmul.py"],
             cwd=Path(__file__).parent.parent.parent,
             env={"PYTHONPATH": "python"},
             capture_output=True,

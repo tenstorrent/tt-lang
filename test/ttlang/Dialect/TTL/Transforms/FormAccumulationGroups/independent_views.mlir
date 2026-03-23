@@ -41,7 +41,9 @@ func.func @independent_views(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
       outs(%init_cb1 : tensor<1x1x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} {
   ^bb0(%t0: !ttcore.tile<32x32, f32>, %o0: !ttcore.tile<32x32, f32>):
-    ttl.tile_store %t0, %view1 {acc = true} : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    %i0 = ttl.iter_index 0 : index
+    %j0 = ttl.iter_index 1 : index
+    ttl.tile_store %t0, %view1[%i0, %j0] {acc = true} : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
@@ -50,7 +52,9 @@ func.func @independent_views(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
       outs(%init_cb1 : tensor<1x1x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} {
   ^bb0(%t1: !ttcore.tile<32x32, f32>, %o1: !ttcore.tile<32x32, f32>):
-    ttl.tile_store %t1, %view1 {acc = true} : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    %i1 = ttl.iter_index 0 : index
+    %j1 = ttl.iter_index 1 : index
+    ttl.tile_store %t1, %view1[%i1, %j1] {acc = true} : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
@@ -60,7 +64,9 @@ func.func @independent_views(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
       outs(%init_cb2 : tensor<1x1x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} {
   ^bb0(%t2: !ttcore.tile<32x32, f32>, %o2: !ttcore.tile<32x32, f32>):
-    ttl.tile_store %t2, %view2 {acc = true} : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    %i2 = ttl.iter_index 0 : index
+    %j2 = ttl.iter_index 1 : index
+    ttl.tile_store %t2, %view2[%i2, %j2] {acc = true} : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
@@ -69,7 +75,9 @@ func.func @independent_views(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
       outs(%init_cb2 : tensor<1x1x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} {
   ^bb0(%t3: !ttcore.tile<32x32, f32>, %o3: !ttcore.tile<32x32, f32>):
-    ttl.tile_store %t3, %view2 {acc = true} : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    %i3 = ttl.iter_index 0 : index
+    %j3 = ttl.iter_index 1 : index
+    ttl.tile_store %t3, %view2[%i3, %j3] {acc = true} : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 

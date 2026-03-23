@@ -24,7 +24,7 @@
 // CHECK: Phase 2: Merged
 // CHECK-SAME: tile_mul
 // CHECK-SAME: tile_abs
-// CHECK: Merged set interval: [0, 2] for 2 values
+// CHECK: Merged set interval: [2, 4] for 2 values
 
 // Verify Phase 3 has no allocations (FPU binary block args don't need DST)
 // CHECK: === Phase 3: Linear Scan Allocation ===
@@ -71,11 +71,13 @@ func.func @binary_unary_merged_output(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
        %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     // Binary operation: creates intermediate value (not yielded)
     %mul = ttl.tile_mul %a_tile, %b_tile : !ttcore.tile<32x32, f32>
     // Unary operation: merges with %mul, result IS yielded
     %abs = ttl.tile_abs %mul : !ttcore.tile<32x32, f32>
-    ttl.tile_store %abs, %out_view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %abs, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

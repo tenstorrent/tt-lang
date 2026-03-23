@@ -14,12 +14,12 @@ def remove_leading_ones(grid: Tuple[int, ...]) -> Tuple[int, ...]:
     return tuple(itertools.dropwhile(lambda x: x == 1, grid))
 
 
-def get_number_of_cores(grid: Tuple[int, ...]) -> int:
-    core_count = 1
+def get_number_of_nodes(grid: Tuple[int, ...]) -> int:
+    node_count = 1
     for dim in grid:
         assert dim > 0, "grid dimensions must be positive"
-        core_count *= dim
-    return core_count
+        node_count *= dim
+    return node_count
 
 
 def filter_factor_pairs_by_2d_grid(
@@ -34,19 +34,19 @@ def filter_factor_pairs_by_2d_grid(
     return valid_pairs
 
 
-def num_cores_to_grid_ranges(
+def num_nodes_to_grid_ranges(
     start_coord: Tuple[int, ...],
-    target_num_cores: int,
+    target_num_nodes: int,
     grid_size: Tuple[int, ...],
     row_wise: bool = True,
 ) -> List[Tuple[Tuple[int, ...], Tuple[int, ...]]]:
     """
-    Generate a list of grid ranges covering target_num_cores cores starting from start_coord.
-    Similar to num_cores_to_corerangeset but returns simple tuples.
+    Generate a list of grid ranges covering target_num_nodes nodes starting from start_coord.
+    Similar to num_nodes_to_noderangeset but returns simple tuples.
 
     Args:
         start_coord: The starting coordinate
-        target_num_cores: Number of cores to include
+        target_num_nodes: Number of nodes to include
         grid_size: The dimensions of the grid
         row_wise: If True, fill row-wise, else column-wise
 
@@ -62,54 +62,54 @@ def num_cores_to_grid_ranges(
     assert len(simplified_grid) <= 2, "Only supports 2D grids"
 
     # Get the actual 2D dimensions (last 2 dimensions)
-    num_cores_x = grid_size[-1] if len(grid_size) >= 1 else 1
-    num_cores_y = grid_size[-2] if len(grid_size) >= 2 else 1
+    num_nodes_x = grid_size[-1] if len(grid_size) >= 1 else 1
+    num_nodes_y = grid_size[-2] if len(grid_size) >= 2 else 1
 
     start_x = start_coord[-1] if len(start_coord) >= 1 else 0
     start_y = start_coord[-2] if len(start_coord) >= 2 else 0
 
     assert (
-        start_x < num_cores_x and start_y < num_cores_y
+        start_x < num_nodes_x and start_y < num_nodes_y
     ), "Start coord must be within grid"
 
     if row_wise:
-        # Calculate available cores
-        total_available_cores = (num_cores_y - 1 - start_y) * num_cores_x
-        total_available_cores += num_cores_x - start_x
+        # Calculate available nodes
+        total_available_nodes = (num_nodes_y - 1 - start_y) * num_nodes_x
+        total_available_nodes += num_nodes_x - start_x
     else:
         # Column-wise
-        total_available_cores = (num_cores_x - 1 - start_x) * num_cores_y
-        total_available_cores += num_cores_y - start_y
+        total_available_nodes = (num_nodes_x - 1 - start_x) * num_nodes_y
+        total_available_nodes += num_nodes_y - start_y
 
     assert (
-        target_num_cores <= total_available_cores
-    ), f"Target {target_num_cores} exceeds available {total_available_cores}"
+        target_num_nodes <= total_available_nodes
+    ), f"Target {target_num_nodes} exceeds available {total_available_nodes}"
 
     # Build list of ranges
     all_ranges = []
-    leftover_size = target_num_cores
+    leftover_size = target_num_nodes
     s_x, s_y = start_x, start_y
 
     prefix = tuple(0 for _ in range(len(grid_size) - 2))
 
     if row_wise:
         # Partial row at start
-        if s_x != 0 and leftover_size > num_cores_x - start_x:
+        if s_x != 0 and leftover_size > num_nodes_x - start_x:
             start_c = prefix + (s_y, s_x)
-            end_c = prefix + (s_y, num_cores_x - 1)
+            end_c = prefix + (s_y, num_nodes_x - 1)
             all_ranges.append((start_c, end_c))
-            cores_taken = num_cores_x - s_x
-            leftover_size -= cores_taken
+            nodes_taken = num_nodes_x - s_x
+            leftover_size -= nodes_taken
             s_x = 0
             s_y += 1
 
         # Full rows
-        if leftover_size >= num_cores_x:
-            num_full_rows = leftover_size // num_cores_x
+        if leftover_size >= num_nodes_x:
+            num_full_rows = leftover_size // num_nodes_x
             start_c = prefix + (s_y, s_x)
-            end_c = prefix + (s_y + num_full_rows - 1, num_cores_x - 1)
+            end_c = prefix + (s_y + num_full_rows - 1, num_nodes_x - 1)
             all_ranges.append((start_c, end_c))
-            leftover_size -= num_full_rows * num_cores_x
+            leftover_size -= num_full_rows * num_nodes_x
             s_y += num_full_rows
             s_x = 0
 
@@ -121,22 +121,22 @@ def num_cores_to_grid_ranges(
     else:
         # Column-wise
         # Partial col at start
-        if s_y != 0 and leftover_size > num_cores_y - start_y:
+        if s_y != 0 and leftover_size > num_nodes_y - start_y:
             start_c = prefix + (s_y, s_x)
-            end_c = prefix + (num_cores_y - 1, s_x)
+            end_c = prefix + (num_nodes_y - 1, s_x)
             all_ranges.append((start_c, end_c))
-            cores_taken = num_cores_y - s_y
-            leftover_size -= cores_taken
+            nodes_taken = num_nodes_y - s_y
+            leftover_size -= nodes_taken
             s_y = 0
             s_x += 1
 
         # Full cols
-        if leftover_size >= num_cores_y:
-            num_full_cols = leftover_size // num_cores_y
+        if leftover_size >= num_nodes_y:
+            num_full_cols = leftover_size // num_nodes_y
             start_c = prefix + (s_y, s_x)
-            end_c = prefix + (num_cores_y - 1, s_x + num_full_cols - 1)
+            end_c = prefix + (num_nodes_y - 1, s_x + num_full_cols - 1)
             all_ranges.append((start_c, end_c))
-            leftover_size -= num_full_cols * num_cores_y
+            leftover_size -= num_full_cols * num_nodes_y
             s_x += num_full_cols
             s_y = 0
 
@@ -149,7 +149,7 @@ def num_cores_to_grid_ranges(
     return all_ranges
 
 
-def split_work_to_cores(
+def split_work_to_nodes(
     grid_size: Tuple[int, ...], units_to_divide: int, row_wise: bool = True
 ) -> Tuple[
     int,
@@ -158,35 +158,35 @@ def split_work_to_cores(
     int,
     int,
 ]:
-    """Splits work units among cores in a from a single device grid.
+    """Splits work units among nodes in a from a single device grid.
     currently can produce work splits that cannot map to CoreRanges directly, particlarily in 1-d grids
 
     Args:
-        grid_size: A tuple representing the dimensions of the core grid.
-        units_to_divide: The total number of work units to be divided among the cores.
+        grid_size: A tuple representing the dimensions of the node grid.
+        units_to_divide: The total number of work units to be divided among the nodes.
         row_wise: If True, split work in a row-wise manner; otherwise, column-wise.
 
     Returns: A tuple containing:
-            - total number of cores
-            - core group 1 as a tuple of tuples, start coord to end coord rectangle [inclusive, inclusive]
-            - core group 2 as a tuple of tuples, start coord to end coord rectangle [inclusive, inclusive]
-            - work units per core in group 1
-            - work units per core in group 2
+            - total number of nodes
+            - node group 1 as a tuple of tuples, start coord to end coord rectangle [inclusive, inclusive]
+            - node group 2 as a tuple of tuples, start coord to end coord rectangle [inclusive, inclusive]
+            - work units per node in group 1
+            - work units per node in group 2
     """
     if units_to_divide == 0:
         return (0, (), (), 0, 0)
     simplified_grid_size = remove_leading_ones(grid_size)
     assert len(simplified_grid_size) <= 2, "only supports grids with a single device"
-    total_cores = get_number_of_cores(grid_size)
-    assert total_cores > 0, "grid must have at least one core"
+    total_nodes = get_number_of_nodes(grid_size)
+    assert total_nodes > 0, "grid must have at least one node"
     start_coord = (0,) * len(grid_size)
     if (
-        total_cores >= units_to_divide
-    ):  # more cores than work units, assign 1 unit to first N cores
+        total_nodes >= units_to_divide
+    ):  # more nodes than work units, assign 1 unit to first N nodes
         if len(simplified_grid_size) == 1:
             end_coord = ((0,) * (len(grid_size) - 1)) + (units_to_divide - 1,)
         elif len(simplified_grid_size) == 2:
-            ranges = num_cores_to_grid_ranges(
+            ranges = num_nodes_to_grid_ranges(
                 start_coord, units_to_divide, grid_size, row_wise
             )
             end_coord = ((0,) * (len(grid_size) - 2)) + ranges[-1][
@@ -194,60 +194,60 @@ def split_work_to_cores(
             ]  # Last range's end coordinate
         return (units_to_divide, (start_coord, end_coord), (), 1, 0)
     else:
-        # more work units than cores, divide work as evenly as possible
+        # more work units than nodes, divide work as evenly as possible
         if len(simplified_grid_size) == 1:
-            work_per_core = units_to_divide // total_cores
-            remaining_work = units_to_divide % total_cores
+            work_per_node = units_to_divide // total_nodes
+            remaining_work = units_to_divide % total_nodes
             end_coord_1 = ((0,) * (len(grid_size) - 1)) + (remaining_work,)
             start_coord_2 = ((0,) * (len(grid_size) - 1)) + (remaining_work + 1,)
-            end_coord_2 = ((0,) * (len(grid_size) - 1)) + (total_cores - 1,)
+            end_coord_2 = ((0,) * (len(grid_size) - 1)) + (total_nodes - 1,)
             return (
-                total_cores,
+                total_nodes,
                 ((0,) * len(grid_size), end_coord_1),
                 (start_coord_2, end_coord_2),
-                work_per_core + 1,
-                work_per_core,
+                work_per_node + 1,
+                work_per_node,
             )
 
         elif len(simplified_grid_size) == 2:
             """
-            For 2D grids with more work than cores:
-            - Use all available cores
+            For 2D grids with more work than nodes:
+            - Use all available nodes
             - Distribute work as evenly as possible
-            - Group 1: cores that get (work_per_core + 1) units
-            - Group 2: cores that get work_per_core units
+            - Group 1: nodes that get (work_per_node + 1) units
+            - Group 2: nodes that get work_per_node units
             """
-            work_per_core = units_to_divide // total_cores
-            num_cores_with_more_work = units_to_divide % total_cores
+            work_per_node = units_to_divide // total_nodes
+            num_nodes_with_more_work = units_to_divide % total_nodes
 
-            # Evenly divided - all cores get same amount
-            if num_cores_with_more_work == 0:
-                num_cores_x = grid_size[-1]
-                num_cores_y = grid_size[-2]
+            # Evenly divided - all nodes get same amount
+            if num_nodes_with_more_work == 0:
+                num_nodes_x = grid_size[-1]
+                num_nodes_y = grid_size[-2]
                 prefix = (0,) * (len(grid_size) - 2)
-                end_coord = prefix + (num_cores_y - 1, num_cores_x - 1)
-                return (total_cores, (start_coord, end_coord), (), work_per_core, 0)
+                end_coord = prefix + (num_nodes_y - 1, num_nodes_x - 1)
+                return (total_nodes, (start_coord, end_coord), (), work_per_node, 0)
 
             # Uneven division - need two groups
             else:
-                # Group 1: first num_cores_with_more_work cores get (work_per_core + 1)
-                group1_ranges = num_cores_to_grid_ranges(
-                    (0,) * len(grid_size), num_cores_with_more_work, grid_size, row_wise
+                # Group 1: first num_nodes_with_more_work nodes get (work_per_node + 1)
+                group1_ranges = num_nodes_to_grid_ranges(
+                    (0,) * len(grid_size), num_nodes_with_more_work, grid_size, row_wise
                 )
 
-                # Find the last core of group 1 to determine where group 2 starts
+                # Find the last node of group 1 to determine where group 2 starts
                 last_range_group1 = group1_ranges[-1]
                 last_coord_group1 = last_range_group1[1]  # end coord of last range
 
                 # Calculate starting position for group 2
-                num_cores_x = grid_size[-1]
-                num_cores_y = grid_size[-2]
+                num_nodes_x = grid_size[-1]
+                num_nodes_y = grid_size[-2]
                 last_x = last_coord_group1[-1]
                 last_y = last_coord_group1[-2]
 
                 if row_wise:
                     # Start in the same row if possible
-                    if last_x != num_cores_x - 1:
+                    if last_x != num_nodes_x - 1:
                         start_x_group2 = last_x + 1
                         start_y_group2 = last_y
                     # Otherwise start in the next row
@@ -256,7 +256,7 @@ def split_work_to_cores(
                         start_y_group2 = last_y + 1
                 else:
                     # Column-wise: Start in the same column if possible
-                    if last_y != num_cores_y - 1:
+                    if last_y != num_nodes_y - 1:
                         start_x_group2 = last_x
                         start_y_group2 = last_y + 1
                     # Otherwise start in the next column
@@ -267,9 +267,9 @@ def split_work_to_cores(
                 prefix = (0,) * (len(grid_size) - 2)
                 start_coord_group2 = prefix + (start_y_group2, start_x_group2)
 
-                num_cores_group2 = total_cores - num_cores_with_more_work
-                group2_ranges = num_cores_to_grid_ranges(
-                    start_coord_group2, num_cores_group2, grid_size, row_wise
+                num_nodes_group2 = total_nodes - num_nodes_with_more_work
+                group2_ranges = num_nodes_to_grid_ranges(
+                    start_coord_group2, num_nodes_group2, grid_size, row_wise
                 )
 
                 # For simplified return, we'll return the bounding boxes
@@ -281,11 +281,11 @@ def split_work_to_cores(
                 group2_bbox = (start_coord_group2, last_coord_group2)
 
                 return (
-                    total_cores,
+                    total_nodes,
                     group1_bbox,
                     group2_bbox,
-                    work_per_core + 1,
-                    work_per_core,
+                    work_per_node + 1,
+                    work_per_node,
                 )
 
 
@@ -374,23 +374,23 @@ MatmulParams = namedtuple(
 
 
 def get_large_matmul_params(
-    Mt: int, Nt: int, num_cores_y: int, num_cores_x: int, in0_block_w: int
+    Mt: int, Nt: int, num_nodes_y: int, num_nodes_x: int, in0_block_w: int
 ) -> MatmulParams:
     """
-    Compute optimal matrix multiplication parameters for multi-core execution.
-    This function determines the per-core block sizes (Mpc, Npc) and subblock
+    Compute optimal matrix multiplication parameters for multi-node execution.
+    This function determines the per-node block sizes (Mpc, Npc) and subblock
     dimensions (subblock_h, subblock_w) for distributing a matrix multiplication
-    across multiple cores while respecting memory and compute constraints.
+    across multiple nodes while respecting memory and compute constraints.
     Args:
         Mt: Total number of tiles in M dimension (output rows)
         Nt: Total number of tiles in N dimension (output columns)
-        num_cores_y: Number of available cores in Y dimension
-        num_cores_x: Number of available cores in X dimension
+        num_nodes_y: Number of available nodes in Y dimension
+        num_nodes_x: Number of available nodes in X dimension
         in0_block_w: Inner dimension block width (K dimension in tiles)
     Returns:
         MatmulParams named tuple with fields:
-        - block_h: Number of M tiles per core
-        - block_w: Number of N tiles per core
+        - block_h: Number of M tiles per node
+        - block_w: Number of N tiles per node
         - subblock_h: Subblock height for compute kernel
         - subblock_w: Subblock width for compute kernel
         Returns MatmulParams(0, 0, 0, 0) if no valid configuration is found.
@@ -402,16 +402,16 @@ def get_large_matmul_params(
     Npc_min = 1
     Mpc_min = 1
 
-    # Remove factors larger than available cores from Nt_fac
-    # These must be handled per-core (Npc_min)
-    large_factors_N = [f for f in Nt_fac if f > num_cores_x]
-    Nt_fac = [f for f in Nt_fac if f <= num_cores_x]
+    # Remove factors larger than available nodes from Nt_fac
+    # These must be handled per-node (Npc_min)
+    large_factors_N = [f for f in Nt_fac if f > num_nodes_x]
+    Nt_fac = [f for f in Nt_fac if f <= num_nodes_x]
     Npc_min = math.prod(large_factors_N) if large_factors_N else 1
 
-    # Remove factors larger than available cores from Mt_fac
-    # These must be handled per-core (Mpc_min)
-    large_factors_M = [f for f in Mt_fac if f > num_cores_y]
-    Mt_fac = [f for f in Mt_fac if f <= num_cores_y]
+    # Remove factors larger than available nodes from Mt_fac
+    # These must be handled per-node (Mpc_min)
+    large_factors_M = [f for f in Mt_fac if f > num_nodes_y]
+    Mt_fac = [f for f in Mt_fac if f <= num_nodes_y]
     Mpc_min = math.prod(large_factors_M) if large_factors_M else 1
 
     # Check if minimum Npc violates memory constraints
@@ -433,8 +433,8 @@ def get_large_matmul_params(
             else:
                 break
 
-        # Check if this fits within the core grid
-        if Mt // Mpc > num_cores_y or Nt // Npc > num_cores_x:
+        # Check if this fits within the node grid
+        if Mt // Mpc > num_nodes_y or Nt // Npc > num_nodes_x:
             return MatmulParams(0, 0, 0, 0)
 
         # Find compatible subblock dimensions
@@ -454,8 +454,8 @@ def get_large_matmul_params(
             else:
                 break
 
-        # Check if this fits within the core grid
-        if Mt // Mpc > num_cores_y or Nt // Npc > num_cores_x:
+        # Check if this fits within the node grid
+        if Mt // Mpc > num_nodes_y or Nt // Npc > num_nodes_x:
             return MatmulParams(0, 0, 0, 0)
 
         # Find compatible subblock dimensions
@@ -477,8 +477,8 @@ def get_large_matmul_params(
                 if ele <= Mpc_max:
                     Mpc = ele
 
-            # Check if this configuration fits within the core grid
-            if Mt // Mpc > num_cores_y or Nt // Npc > num_cores_x:
+            # Check if this configuration fits within the node grid
+            if Mt // Mpc > num_nodes_y or Nt // Npc > num_nodes_x:
                 continue
 
             # Find compatible subblock dimensions
