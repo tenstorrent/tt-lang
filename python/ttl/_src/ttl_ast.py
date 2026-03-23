@@ -271,29 +271,40 @@ class TTLGenericCompiler(TTCompilerBase):
 
     def _alloca_scalar(self, init_value):
         """Allocate a memref<1xi32> at function entry and store the initial
-        value at the current insertion point.
+        value there too.
 
-        The alloca is placed at the start of the function entry block so it
-        dominates all uses (including after loops and if-blocks).  The store
-        is emitted at the current insertion point.
+        Both the alloca and the initial store are placed at the start of
+        the function entry block so the variable is properly initialized
+        before any loops or if-blocks that might use it.
 
         Returns the alloca result (Value with MemRefType).
         """
         i32_type = IntegerType.get_signless(32, self.ctx)
         memref_type = MemRefType.get([1], i32_type)
 
-        # Place alloca at the function entry block start. We saved a
-        # reference to the entry block's first op during compiler init.
+        # Place alloca AND zero-init store at the function entry block start.
+        # We always init to 0 here because the original init_value SSA may not
+        # dominate the entry block.  The caller will store the real init value
+        # at the current insertion point afterward if needed.
         if self._func_entry_block is not None:
             first_op = self._func_entry_block.operations[0]
             with InsertionPoint(first_op):
                 alloca = memref.AllocaOp(memref_type, [], []).result
+                zero_idx = arith.ConstantOp(IndexType.get(self.ctx), 0)
+                zero_val = arith.ConstantOp(i32_type, 0)
+                memref.StoreOp(zero_val, alloca, [zero_idx])
         else:
             alloca = memref.AllocaOp(memref_type, [], []).result
+            zero_idx = arith.ConstantOp(IndexType.get(self.ctx), 0)
+            zero_val = arith.ConstantOp(i32_type, 0)
+            memref.StoreOp(zero_val, alloca, [zero_idx])
 
+        # Also store the actual init value at the current insertion point
+        # (this handles cases where init_value != 0).
         idx = arith.ConstantOp(IndexType.get(self.ctx), 0)
         val = self._cast_to_i32(init_value)
         memref.StoreOp(val, alloca, [idx])
+
         return alloca
 
     def _cast_to_i32(self, value):
