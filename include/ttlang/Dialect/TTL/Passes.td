@@ -478,6 +478,18 @@ def TTLLowerDPrintToEmitC
   }];
 }
 
+def TTLLowerElementAccessToEmitC
+    : Pass<"ttl-lower-element-access-to-emitc", "::mlir::ModuleOp"> {
+  let summary = "Lower ttl.element_read/element_write to EmitC for scalar CB access";
+  let description = [{
+    Converts ttl.element_read and ttl.element_write operations to EmitC
+    verbatim code for direct L1 pointer access to individual tile elements.
+    Resolves CB indices, handles face-based tile layout, and emits inline
+    C++ helper functions. Runs before convert-ttl-to-ttkernel (same stage
+    as dprint lowering).
+  }];
+}
+
 def TTLLowerSignpostToEmitC
     : Pass<"ttl-lower-signpost-to-emitc", "::mlir::ModuleOp"> {
   let summary = "Lower ttl.signpost ops to EmitC verbatim for profiling";
