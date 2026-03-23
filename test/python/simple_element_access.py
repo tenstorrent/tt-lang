@@ -77,6 +77,53 @@ def element_copy_kernel(inp, out):
 # CHECK-CPP: _ttl_elem_write_bf16
 
 
+# =============================================================================
+# Second kernel: loop variables, if conditionals, scalar arithmetic
+# =============================================================================
+
+
+@ttl.kernel(grid=(1, 1))
+def element_scan_kernel(inp, out):
+    """Scan a tile column-by-column, compare elements, write computed index."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
+    @ttl.compute()
+    def compute():
+        with inp_dfb.wait() as blk:
+            pass
+        with out_dfb.reserve() as oblk:
+            pass
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as blk:
+            tx = ttl.copy(inp[0, 0], blk)
+            tx.wait()
+            blk.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        with inp_dfb.wait() as rblk:
+            max_val = ttl.element_read(rblk, 0, 0)
+            with out_dfb.reserve() as wblk:
+                for c in range(32):
+                    val = ttl.element_read(rblk, 0, c)
+                    if val == max_val:
+                        ttl.element_write(wblk, 0, 0, c * 32 + 1)
+                tx = ttl.copy(wblk, out[0, 0])
+                tx.wait()
+                wblk.pop()
+            rblk.pop()
+
+
+# Second kernel C++ checks: loop var, if, scalar arithmetic
+# CHECK-CPP: // dm_write
+# CHECK-CPP: _ttl_elem_read_bf16
+# CHECK-CPP: if
+# CHECK-CPP: _ttl_elem_write_bf16
+
+
 if __name__ == "__main__":
     import torch
     from ttlang_test_utils import require_hardware
@@ -110,6 +157,9 @@ if __name__ == "__main__":
 
         print("Compiling element access kernel...")
         element_copy_kernel(inp, out)
+
+        print("Compiling element scan kernel...")
+        element_scan_kernel(inp, out)
 
         print("=== Element Access Test Complete ===")
 
