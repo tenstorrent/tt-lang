@@ -243,6 +243,23 @@ def _to_index(value):
     return arith.IndexCastOp(IndexType.get(), value)
 
 
+def _to_i32(value):
+    """Convert an MLIR value to i32 type if needed."""
+    from ttl.ir import IntegerType
+
+    i32_type = IntegerType.get_signless(32)
+    if hasattr(value, "type"):
+        if hasattr(value.type, "width") and value.type.width == 32:
+            return value
+        if isinstance(value.type, IndexType):
+            return arith.IndexCastOp(i32_type, value)
+        if hasattr(value.type, "width") and value.type.width > 32:
+            return arith.TruncIOp(i32_type, value)
+        if hasattr(value.type, "width") and value.type.width < 32:
+            return arith.ExtUIOp(i32_type, value)
+    return value
+
+
 def _is_block(value) -> bool:
     """Check if a value is a block (result of cb.reserve() or cb.wait()).
 
@@ -693,6 +710,7 @@ def element_write(block, row, col, value):
         )
     row = _to_index(row)
     col = _to_index(col)
+    value = _to_i32(value)
     ttl.element_write(block, row, col, value)
 
 
