@@ -9,7 +9,7 @@ from typing import List, Optional, Set
 
 from ttl.pykernel._src.kernel_ast import TTCompilerBase
 from ttl.pykernel._src.utils import _get_type_str
-from ttl.dialects import arith, func, ttcore, ttkernel
+from ttl.dialects import arith, func, memref, ttcore, ttkernel
 from ttl.ir import *
 
 from ..constants import DEFAULT_TILE_SIZE
@@ -167,12 +167,16 @@ class TTLGenericCompiler(TTCompilerBase):
         for name, val in TTLGenericCompiler._syntax.items():
             self._fn_map[name] = val
 
+<<<<<<< HEAD
         # Map id(PipeNet object) -> Python variable name the user assigned
         # it to. Populated from captures/globals at function entry and
         # from body-local PipeNet assignments. Read by `_emit_pipe_from_capture`
         # to stamp the user's variable name onto each `ttl.create_pipe`
         # so the verifier can name PipeNets by user-facing identifier.
         self._pipe_net_names: dict[int, str] = {}
+
+        # Populated by _emit_entry; used by _alloca_scalar for placement.
+        self._func_entry_block = None
 
     def _set_var(self, var_name, value):
         # Capture PipeNet variable names so the verifier can render
@@ -196,8 +200,51 @@ class TTLGenericCompiler(TTCompilerBase):
         return f"net_{pipenet.pipe_net_id}"
 
     def visit_Assign(self, node):
-        """Handle tuple unpacking for TTL functions like core(dims=2)."""
+        """Handle tuple unpacking and cross-scope scalar variable updates.
+
+        For tuple unpacking (e.g., ``node_y, node_x = ttl.node(dims=2)``),
+        destructures the tuple into individual symbol table entries.
+
+        For scalar assignments inside loop bodies (scf.for), if the target
+        variable already exists in an outer scope, the value is stored into
+        a memref allocated in the outer scope so it survives the loop.  This
+        enables patterns like::
+
+            best_idx = 0xFFFFFFFF
+            for tid in range(chunk):
+                best_idx = new_val    # updates outer-scope memref
+            ttl.element_write(blk, 0, 0, best_idx)  # reads memref
+        """
         if not isinstance(node.targets[0], ast.Tuple):
+            if isinstance(node.targets[0], ast.Name) and self._in_loop_body():
+                var_name = node.targets[0].id
+                value = self.visit(node.value)
+
+                # Skip tensor/CB values — only handle scalars
+                if hasattr(value, "type") and isinstance(
+                    value.type, RankedTensorType
+                ):
+                    self.symbol_tables[-1][var_name] = value
+                    return
+
+                outer_table = self._find_outer_scope(var_name)
+                if outer_table is not None:
+                    existing = outer_table[var_name]
+                    if hasattr(existing, "type") and isinstance(
+                        existing.type, MemRefType
+                    ):
+                        self._store_to_memref(existing, value)
+                    else:
+                        mr = self._alloca_scalar(existing)
+                        outer_table[var_name] = mr
+                        self._store_to_memref(mr, value)
+                else:
+                    # New variable inside loop — allocate memref in the
+                    # enclosing (pre-loop) scope so it survives the loop.
+                    mr = self._alloca_scalar(value)
+                    enclosing = self.symbol_tables[-2] if len(self.symbol_tables) > 1 else self.symbol_tables[-1]
+                    enclosing[var_name] = mr
+                return
             return super().visit_Assign(node)
 
         value = self.visit(node.value)
@@ -214,6 +261,66 @@ class TTLGenericCompiler(TTCompilerBase):
             if not isinstance(elt, ast.Name):
                 raise ValueError("Tuple unpacking requires simple variable names")
             self._set_var(elt.id, val)
+
+    def _in_loop_body(self):
+        """Check if we're inside a loop body (more than one symbol table scope)."""
+        return len(self.symbol_tables) > 1
+
+    def _find_outer_scope(self, var_name):
+        """Find var_name in an outer scope (not the current innermost scope).
+
+        Returns the symbol table dict containing var_name, or None.
+        """
+        # Skip the current (innermost) scope, search outer scopes
+        for sym_table in reversed(self.symbol_tables[:-1]):
+            if var_name in sym_table:
+                return sym_table
+        return None
+
+    def _alloca_scalar(self, init_value):
+        """Allocate a memref<1xi32> at function entry and store the initial
+        value at the current insertion point.
+
+        The alloca is placed at the start of the function entry block so it
+        dominates all uses (including after loops and if-blocks).  The store
+        is emitted at the current insertion point.
+
+        Returns the alloca result (Value with MemRefType).
+        """
+        i32_type = IntegerType.get_signless(32, self.ctx)
+        memref_type = MemRefType.get([1], i32_type)
+
+        # Place alloca at the function entry block start. We saved a
+        # reference to the entry block's first op during compiler init.
+        if self._func_entry_block is not None:
+            first_op = self._func_entry_block.operations[0]
+            with InsertionPoint(first_op):
+                alloca = memref.AllocaOp(memref_type, [], []).result
+        else:
+            alloca = memref.AllocaOp(memref_type, [], []).result
+
+        idx = arith.ConstantOp(IndexType.get(self.ctx), 0)
+        val = self._cast_to_i32(init_value)
+        memref.StoreOp(val, alloca, [idx])
+        return alloca
+
+    def _cast_to_i32(self, value):
+        """Cast a scalar MLIR value to i32 if needed."""
+        i32_type = IntegerType.get_signless(32, self.ctx)
+        val = value
+        if hasattr(val, "type") and isinstance(val.type, IndexType):
+            return arith.IndexCastOp(i32_type, val).result
+        if hasattr(val, "type") and hasattr(val.type, "width") and val.type.width != 32:
+            if val.type.width > 32:
+                return arith.TruncIOp(i32_type, val).result
+            return arith.ExtSIOp(i32_type, val).result
+        return val
+
+    def _store_to_memref(self, mr, value):
+        """Store a scalar value into a memref<1xi32>."""
+        idx = arith.ConstantOp(IndexType.get(self.ctx), 0)
+        val = self._cast_to_i32(value)
+        memref.StoreOp(val, mr, [idx])
 
     def _loc_for_node(self, node):
         """Return file location for node if debug_locations enabled, else name location."""
@@ -808,6 +915,7 @@ class TTLGenericCompiler(TTCompilerBase):
 
         self.symbol_tables.append({})
         func_bb = self.func_entry.add_entry_block()
+        self._func_entry_block = func_bb
 
         # Add ttl module to symbol table.
         self._set_var("ttl", ttl)
