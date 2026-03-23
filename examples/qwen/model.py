@@ -22,10 +22,17 @@ sys.path.insert(0, os.path.dirname(__file__))
 from kernels.linear import linear_kernel, linear_bias_kernel
 from kernels.elementwise import add_kernel, silu_mul_kernel
 from kernels.rope import batch_rope_kernel
-from kernels.rmsnorm import fused_device_rmsnorm, rmsnorm_mul_kernel
+from kernels.rmsnorm import fused_device_rmsnorm, fused_rmsnorm_kernel, rmsnorm_mul_kernel
 from kernels.fused_attn import fused_attn_head_kernel
 from kernels.group_attn import head_attn_kernels
+from kernels.multicore_attn import (
+    partial_attn_kernels, reduce_attn_kernels,
+    parallel_partial_g0, parallel_partial_g1,
+    parallel_reduce_g0, parallel_reduce_g1,
+    TOTAL_PAR_CORES,
+)
 from kernels.kv_cache_update import get_kv_cache_update_kernel
+from kernels.kv_cache_update_traced import kv_cache_update_traced, build_full_masks
 from utils import load_checkpoint
 
 TILE = 32
@@ -63,8 +70,12 @@ class QwenModel:
         self.rope_cos_device = self._to_device(self.ckpt["rope_cos"].bfloat16())
         self.rope_sin_device = self._to_device(self.ckpt["rope_sin"].bfloat16())
 
-        # Embedding weights (host-side for lookup)
+        # Embedding weights (host-side for lookup + device-side for lm_head)
         self.embed_weight = self.ckpt["embed_weight"].float()
+        # lm_head weight = embed_weight^T [hidden_size, vocab_size] on device
+        self.lm_head_weight_device = self._to_device(
+            self.embed_weight[:self.vocab_size].bfloat16().t().contiguous(),
+        )
 
         # Upload layer weights to device + pre-split per-head weights
         print(f"Uploading {self.num_layers} layers to device...")
@@ -153,9 +164,9 @@ class QwenModel:
     # -----------------------------------------------------------------
     # Helpers
     # -----------------------------------------------------------------
-    def _to_device(self, tensor):
+    def _to_device(self, tensor, dtype=None):
         return ttnn.from_torch(
-            tensor, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+            tensor, dtype=dtype or ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
             device=self.device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
 
@@ -559,21 +570,24 @@ class QwenModel:
         # 5. Decode mask (created once per token, shared across all layers)
         decode_mask_dev = self._decode_mask_dev
 
-        # 6. Per-head attention (14 calls) — zero host transfers
-        # Each kernel reads Q at its column offset, writes output at its offset
+        # 6. Parallel attention (4 calls: 2× partial-28-core + 2× reduce-7-core)
         attn_out_device = self._alloc_zeros((TILE, self.hidden_size))
+        part_size = TOTAL_PAR_CORES * TILE  # 28 * 32 = 896
+        part_m = self._alloc_zeros((TILE, part_size))
+        part_d = self._alloc_zeros((TILE, part_size))
+        part_o0 = self._alloc_zeros((TILE, part_size))
+        part_o1 = self._alloc_zeros((TILE, part_size))
 
-        for kv_idx in range(self.num_kv_heads):
-            k_t_dev = self.kv_cache_dev[layer_idx][kv_idx]["k_t"]
-            v_dev_cache = self.kv_cache_dev[layer_idx][kv_idx]["v"]
-
-            for q_local in range(heads_per_group):
-                q_idx = kv_idx * heads_per_group + q_local
-                head_attn_kernels[q_idx](
-                    q_rot, k_t_dev, v_dev_cache,
-                    decode_mask_dev, self.ones_scaler_device,
-                    self.attn_scale_device, attn_out_device,
-                )
+        for kv_idx, (p_kern, r_kern) in enumerate([
+            (parallel_partial_g0, parallel_reduce_g0),
+            (parallel_partial_g1, parallel_reduce_g1),
+        ]):
+            p_kern(q_rot, self.kv_cache_dev[layer_idx][kv_idx]["k_t"],
+                   self.kv_cache_dev[layer_idx][kv_idx]["v"],
+                   decode_mask_dev, self.ones_scaler_device,
+                   self.attn_scale_device,
+                   part_m, part_d, part_o0, part_o1)
+            r_kern(part_m, part_d, part_o0, part_o1, attn_out_device)
 
         # 7. O projection + residual (2 calls)
         proj_out = self._alloc_zeros((TILE, self.hidden_size))
@@ -584,6 +598,196 @@ class QwenModel:
 
         # 8. Fused RMSNorm + MLP (1 + 4 + 1 calls)
         return self._run_mlp(post_attn, layer_idx, TILE, decode=True)
+
+    # -----------------------------------------------------------------
+    # Traced decode (pre-allocated buffers + trace capture/replay)
+    # -----------------------------------------------------------------
+
+    def _init_trace_buffers(self):
+        """Pre-allocate all intermediate tensors for traced decode."""
+        H = self.hidden_size       # 896
+        I = self.intermediate_size  # 4864
+        KV = self.num_kv_heads * self.head_dim  # 128
+
+        self._tb = {
+            "x_a": self._alloc_zeros((TILE, H)),
+            "x_b": self._alloc_zeros((TILE, H)),
+            "normed": self._alloc_zeros((TILE, H)),
+            "q_out": self._alloc_zeros((TILE, H)),
+            "k_out": self._alloc_zeros((TILE, KV)),
+            "v_out": self._alloc_zeros((TILE, KV)),
+            "q_rot": self._alloc_zeros((TILE, H)),
+            "k_rot": self._alloc_zeros((TILE, KV)),
+            "attn_out": self._alloc_zeros((TILE, H)),
+            "part_m": self._alloc_zeros((TILE, TOTAL_PAR_CORES * TILE)),
+            "part_d": self._alloc_zeros((TILE, TOTAL_PAR_CORES * TILE)),
+            "part_o0": self._alloc_zeros((TILE, TOTAL_PAR_CORES * TILE)),
+            "part_o1": self._alloc_zeros((TILE, TOTAL_PAR_CORES * TILE)),
+            "proj_out": self._alloc_zeros((TILE, H)),
+            "post_attn": self._alloc_zeros((TILE, H)),
+            "normed2": self._alloc_zeros((TILE, H)),
+            "gate_out": self._alloc_zeros((TILE, I)),
+            "up_out": self._alloc_zeros((TILE, I)),
+            "mlp_hidden": self._alloc_zeros((TILE, I)),
+            "mlp_out": self._alloc_zeros((TILE, H)),
+            "final_out": self._alloc_zeros((TILE, H)),
+            "cos_dev": self._alloc_zeros((TILE, self.head_dim)),
+            "sin_dev": self._alloc_zeros((TILE, self.head_dim)),
+            "mask_dev": self._alloc_zeros((TILE, self.padded_max_seq)),
+            "logits": self._alloc_zeros((TILE, self.vocab_size)),
+            # KV cache update masks (full-width, updated per token)
+            "kv_row_masks": self._alloc_zeros((TILE, self.padded_max_seq)),
+            "kv_irow_masks": self._to_device(
+                torch.ones(TILE, self.padded_max_seq, dtype=torch.bfloat16)),
+            "kv_col_masks": self._alloc_zeros((TILE, self.padded_max_seq)),
+            "kv_icol_masks": self._to_device(
+                torch.ones(TILE, self.padded_max_seq, dtype=torch.bfloat16)),
+        }
+        # Per-layer k_rot and v_out buffers (for KV cache update after trace)
+        self._tb_k_rot = [self._alloc_zeros((TILE, KV)) for _ in range(self.num_layers)]
+        self._tb_v_out = [self._alloc_zeros((TILE, KV)) for _ in range(self.num_layers)]
+        self._trace_id = None
+        self._trace_kv_ready = False  # Set True after first trace produces k_rot/v_out
+
+    def _traced_decode_layers(self):
+        """Run all 24 decode layers using pre-allocated buffers. No allocations.
+
+        KV cache update is included in the trace — uses a SINGLE kernel variant
+        that always operates on tile [0, col] of small staging tensors.
+        The caller copies the right cache tile to/from staging before/after trace.
+
+        Actually: KV cache is updated using per-layer k_rot/v_out buffers,
+        so each layer writes its projections to a dedicated buffer.
+        Cache update runs after trace replay using these saved buffers.
+        """
+        tb = self._tb
+        heads_per_group = self.num_q_heads // self.num_kv_heads
+
+        cur_in, cur_out = "x_a", "x_b"
+
+        for layer_idx in range(self.num_layers):
+            w = self.layer_weights[layer_idx]
+
+            # 1. RMSNorm
+            fused_rmsnorm_kernel(tb[cur_in], self.mean_scaler_device,
+                                  w["input_layernorm_weight"], tb["normed"])
+
+            # 2. QKV projections (V goes to per-layer buffer for KV cache update)
+            linear_bias_kernel(tb["normed"], w["q_proj_weight"], w["q_proj_bias"], tb["q_out"])
+            linear_bias_kernel(tb["normed"], w["k_proj_weight"], w["k_proj_bias"], tb["k_out"])
+            linear_bias_kernel(tb["normed"], w["v_proj_weight"], w["v_proj_bias"],
+                              self._tb_v_out[layer_idx])
+
+            # 3. Batch RoPE (K goes to per-layer buffer for KV cache update)
+            batch_rope_kernel(tb["q_out"], tb["cos_dev"], tb["sin_dev"], tb["q_rot"])
+            batch_rope_kernel(tb["k_out"], tb["cos_dev"], tb["sin_dev"],
+                              self._tb_k_rot[layer_idx])
+
+            # 4. KV cache update (inside trace — masks encode target position)
+            kv_cache_update_traced(
+                self._tb_k_rot[layer_idx], self._tb_v_out[layer_idx],
+                self.kv_cache_dev[layer_idx][0]["k_t"],
+                self.kv_cache_dev[layer_idx][1]["k_t"],
+                self.kv_cache_dev[layer_idx][0]["v"],
+                self.kv_cache_dev[layer_idx][1]["v"],
+                tb["kv_row_masks"], tb["kv_irow_masks"],
+                tb["kv_col_masks"], tb["kv_icol_masks"],
+            )
+
+            # 5. Parallel attention (28-core partial + 7-core reduce, per KV group)
+            for kv_idx, (p_kern, r_kern) in enumerate([
+                (parallel_partial_g0, parallel_reduce_g0),
+                (parallel_partial_g1, parallel_reduce_g1),
+            ]):
+                p_kern(tb["q_rot"], self.kv_cache_dev[layer_idx][kv_idx]["k_t"],
+                       self.kv_cache_dev[layer_idx][kv_idx]["v"],
+                       tb["mask_dev"], self.ones_scaler_device,
+                       self.attn_scale_device,
+                       tb["part_m"], tb["part_d"], tb["part_o0"], tb["part_o1"])
+                r_kern(tb["part_m"], tb["part_d"], tb["part_o0"], tb["part_o1"],
+                       tb["attn_out"])
+
+            # 6. O projection + residual
+            linear_kernel(tb["attn_out"], w["o_proj_weight"], tb["proj_out"])
+            add_kernel(tb[cur_in], tb["proj_out"], tb["post_attn"])
+
+            # 7. MLP
+            fused_rmsnorm_kernel(tb["post_attn"], self.mean_scaler_device,
+                                  w["post_attention_layernorm_weight"], tb["normed2"])
+            linear_kernel(tb["normed2"], w["gate_proj_weight"], tb["gate_out"])
+            linear_kernel(tb["normed2"], w["up_proj_weight"], tb["up_out"])
+            silu_mul_kernel(tb["gate_out"], tb["up_out"], tb["mlp_hidden"])
+            linear_kernel(tb["mlp_hidden"], w["down_proj_weight"], tb["mlp_out"])
+            add_kernel(tb["post_attn"], tb["mlp_out"], tb[cur_out])
+
+            cur_in, cur_out = cur_out, cur_in
+
+        # Final norm + lm_head
+        fused_rmsnorm_kernel(tb[cur_in], self.mean_scaler_device,
+                              self.final_norm_weight, tb["final_out"])
+        linear_kernel(tb["final_out"], self.lm_head_weight_device, tb["logits"])
+
+    def _capture_decode_trace(self):
+        """Capture the full decode sequence as a trace."""
+        print("  Capturing decode trace (warmup)...", end="", flush=True)
+        self._traced_decode_layers()
+        ttnn.synchronize_device(self.device)
+        print(" compiling...", end="", flush=True)
+
+        self._trace_id = ttnn.begin_trace_capture(self.device, cq_id=0)
+        self._traced_decode_layers()
+        ttnn.end_trace_capture(self.device, self._trace_id, cq_id=0)
+        print(" done.")
+
+    def decode_step_traced(self, token_id, pos=None):
+        """Decode one token using trace replay. Much faster dispatch."""
+        if pos is None:
+            pos = self.cache_pos
+
+        # Prepare inputs on host
+        x = self.embed_weight[token_id:token_id+1]
+        x_padded = torch.zeros(TILE, self.hidden_size, dtype=torch.bfloat16)
+        x_padded[0] = x[0].bfloat16()
+
+        cos_pos = torch.ones(TILE, self.head_dim, dtype=torch.bfloat16)
+        sin_pos = torch.zeros(TILE, self.head_dim, dtype=torch.bfloat16)
+        cos_pos[0] = self.rope_cos[pos].bfloat16()
+        sin_pos[0] = self.rope_sin[pos].bfloat16()
+
+        # Attention mask: attend to 0..pos (KV cache updated inside trace now)
+        mask_t = torch.full((TILE, self.padded_max_seq), float("-inf"), dtype=torch.bfloat16)
+        mask_t[0, :pos + 1] = 0.0
+
+        # KV cache masks: encode target position for traced kernel
+        kv_row_m, kv_irow_m, kv_col_m, kv_icol_m = build_full_masks(pos)
+
+        with self._suppress_output():
+            # Copy all inputs to pre-allocated device tensors
+            ttnn.copy_host_to_device_tensor(
+                ttnn.from_torch(x_padded, layout=ttnn.TILE_LAYOUT), self._tb["x_a"])
+            ttnn.copy_host_to_device_tensor(
+                ttnn.from_torch(cos_pos, layout=ttnn.TILE_LAYOUT), self._tb["cos_dev"])
+            ttnn.copy_host_to_device_tensor(
+                ttnn.from_torch(sin_pos, layout=ttnn.TILE_LAYOUT), self._tb["sin_dev"])
+            ttnn.copy_host_to_device_tensor(
+                ttnn.from_torch(mask_t, layout=ttnn.TILE_LAYOUT), self._tb["mask_dev"])
+            ttnn.copy_host_to_device_tensor(
+                ttnn.from_torch(kv_row_m, layout=ttnn.TILE_LAYOUT), self._tb["kv_row_masks"])
+            ttnn.copy_host_to_device_tensor(
+                ttnn.from_torch(kv_irow_m, layout=ttnn.TILE_LAYOUT), self._tb["kv_irow_masks"])
+            ttnn.copy_host_to_device_tensor(
+                ttnn.from_torch(kv_col_m, layout=ttnn.TILE_LAYOUT), self._tb["kv_col_masks"])
+            ttnn.copy_host_to_device_tensor(
+                ttnn.from_torch(kv_icol_m, layout=ttnn.TILE_LAYOUT), self._tb["kv_icol_masks"])
+
+            # Replay the full 24-layer decode (includes KV cache update + lm_head)
+            ttnn.execute_trace(self.device, self._trace_id, cq_id=0, blocking=True)
+            self._trace_kv_ready = True
+
+            logits_host = ttnn.to_torch(self._tb["logits"]).float()
+
+        self.cache_pos = pos + 1
+        return logits_host[:1]
 
     # -----------------------------------------------------------------
     # Public API
@@ -692,21 +896,22 @@ class QwenModel:
 
             x_device = fused_device_rmsnorm(x_device, self.final_norm_weight,
                                              self.mean_scaler_device, self.device)
-            x_host = ttnn.to_torch(x_device).float()
 
-        # lm_head on host
-        embed_w = self.embed_weight[:self.vocab_size]
-        logits = x_host[:1] @ embed_w.t()
+            # lm_head on device
+            logits_dev = self._alloc_zeros((TILE, self.vocab_size))
+            linear_kernel(x_device, self.lm_head_weight_device, logits_dev)
+            logits_host = ttnn.to_torch(logits_dev).float()
 
-        return logits
+        return logits_host[:1]
 
-    def generate(self, input_ids, max_new_tokens=50, temperature=0.0):
+    def generate(self, input_ids, max_new_tokens=50, temperature=0.0, use_trace=False):
         """Prefill + decode loop. Yields generated token IDs.
 
         Args:
             input_ids: list of prompt token IDs
             max_new_tokens: max tokens to generate
             temperature: 0.0 for greedy, >0 for sampling
+            use_trace: if True, use trace capture/replay for faster decode
         """
         # Prefill
         logits = self.prefill(input_ids)
@@ -720,9 +925,16 @@ class QwenModel:
 
         yield next_token
 
+        # Set up trace if requested
+        if use_trace and not getattr(self, '_trace_id', None):
+            with self._suppress_output():
+                self._init_trace_buffers()
+                self._capture_decode_trace()
+
         # Decode loop
+        decode_fn = self.decode_step_traced if use_trace else self.decode_step
         for _ in range(max_new_tokens - 1):
-            logits = self.decode_step(next_token)
+            logits = decode_fn(next_token)
 
             if temperature == 0.0:
                 next_token = logits[0].argmax().item()

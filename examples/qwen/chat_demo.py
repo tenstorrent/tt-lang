@@ -54,11 +54,13 @@ def chat_single(model, tokenizer, user_message, max_new_tokens=100):
     t0 = time.time()
     generated = []
     first_token_time = None
-    for token_id in model.generate(input_ids, max_new_tokens=max_new_tokens):
+    second_token_time = None
+    for token_id in model.generate(input_ids, max_new_tokens=max_new_tokens, use_trace=True):
         if first_token_time is None:
             first_token_time = time.time()
-            # Print label after prefill completes (all compilation done)
             sys.stdout.write("Assistant: ")
+        elif second_token_time is None:
+            second_token_time = time.time()
         generated.append(token_id)
         if token_id == tokenizer.eos_token_id:
             break
@@ -70,9 +72,16 @@ def chat_single(model, tokenizer, user_message, max_new_tokens=100):
     n = len(generated)
     if n > 0:
         prefill_time = (first_token_time - t0) if first_token_time else elapsed
-        decode_time = elapsed - prefill_time
-        decode_tps = (n - 1) / decode_time if n > 1 and decode_time > 0 else 0
-        print(f"  [{n} tokens | prefill: {prefill_time:.1f}s | decode: {decode_time:.1f}s | {decode_tps:.2f} tok/s]")
+        # Steady-state: measure from 2nd token onward (excludes trace capture)
+        if second_token_time and n > 2:
+            steady_time = elapsed - (second_token_time - t0)
+            steady_tokens = n - 2
+            steady_tps = steady_tokens / steady_time if steady_time > 0 else 0
+        else:
+            steady_time = elapsed - prefill_time
+            steady_tokens = max(n - 1, 1)
+            steady_tps = steady_tokens / steady_time if steady_time > 0 else 0
+        print(f"  [{n} tokens | prefill: {prefill_time:.1f}s | {steady_tps:.2f} tok/s (steady-state)]")
 
     return generated
 
