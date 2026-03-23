@@ -180,111 +180,149 @@ def global_max_reduce_kernel(per_core_max, scaler, global_max):
             tx.wait()
 
 
-class DeviceArgmax:
-    """Persistent device-side argmax with pre-allocated buffers.
+@ttl.kernel(grid=(GRID_Y, GRID_X))
+def parallel_index_find_kernel(logits, global_max, index_out):
+    """Parallel element scan: find the column index of the global max value.
 
-    Uses parallel device kernel + pre-allocated host readback:
-      1. parallel_max_reduce_kernel: 110-core reduce_max (per-core max values)
-      2. global_max_reduce_kernel: single-core reduce to global max
-      3. Host: read per-core maxes via pre-allocated buffer, narrow to winning range
+    Each core scans its chunk of tile columns, comparing row-0 elements
+    against the global max value.  The DM write thread does element-level
+    reads and comparison — no compute thread work needed.
+
+    logits:     [32, V_padded]      — input logits
+    global_max: [32, 32]            — broadcast global max (from kernel 2)
+    index_out:  [32, N_CORES * 32]  — per-core result index
+    """
+    Nt = logits.shape[1] // TILE
+
+    y_size, x_size = ttl.grid_size(dims=2)
+    num_cores = y_size * x_size
+    chunk = (Nt + num_cores - 1) // num_cores
+
+    in_dfb = ttl.make_dataflow_buffer_like(logits, shape=(1, 1), buffer_factor=2)
+    mx_dfb = ttl.make_dataflow_buffer_like(global_max, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(index_out, shape=(1, 1), buffer_factor=2)
+
+    @ttl.datamovement()
+    def read():
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        tile_start = nid * chunk
+
+        with mx_dfb.reserve() as blk:
+            tx = ttl.copy(global_max[0, 0], blk)
+            tx.wait()
+        for tid in range(chunk):
+            col = (tile_start + tid) % Nt
+            with in_dfb.reserve() as blk:
+                tx = ttl.copy(logits[0, col], blk)
+                tx.wait()
+
+    @ttl.compute()
+    def compute():
+        # Pass-through: consume all CBs so DM write can proceed
+        with mx_dfb.wait() as blk:
+            pass
+        for _ in range(chunk):
+            with in_dfb.wait() as blk:
+                pass
+        for _ in range(1):
+            with out_dfb.reserve() as oblk:
+                pass
+
+    @ttl.datamovement()
+    def write():
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        tile_start = nid * chunk
+
+        # Read global max value (scalar from position [0,0])
+        with mx_dfb.wait() as mx_blk:
+            max_val = ttl.element_read(mx_blk, 0, 0)
+
+        # Scan this core's tiles for the max value
+        best_idx = 0
+        for tid in range(chunk):
+            col = (tile_start + tid) % Nt
+            with in_dfb.wait() as blk:
+                for c in range(32):
+                    val = ttl.element_read(blk, 0, c)
+                    if val == max_val:
+                        best_idx = col * 32 + c
+
+        # Write found index to output
+        with out_dfb.reserve() as oblk:
+            ttl.element_write(oblk, 0, 0, best_idx)
+            tx = ttl.copy(oblk, index_out[0, nid])
+            tx.wait()
+            oblk.pop()
+
+
+class DeviceArgmax:
+    """Fully on-device argmax — three kernels, one tiny host readback.
+
+    Pipeline:
+      1. parallel_max_reduce_kernel: 110-core reduce_max → per-core max values
+      2. global_max_reduce_kernel: 1-core reduce → global max + broadcast
+      3. parallel_index_find_kernel: 110-core element scan → per-core found index
+      4. Host: read per-core indices (tiny), pick the valid one
     """
 
     def __init__(self, device, vocab_size=151936):
         self.device = device
         self.vocab_size = vocab_size
         self.vocab_padded = math.ceil(vocab_size / TILE) * TILE
-        self.Nt = self.vocab_padded // TILE  # tile columns
-        self.num_cores = GRID_Y * GRID_X  # 110
+        self.Nt = self.vocab_padded // TILE
+        self.num_cores = GRID_Y * GRID_X
         self.chunk = (self.Nt + self.num_cores - 1) // self.num_cores
 
-        # Pre-allocate scaler (ones tile)
-        scaler_t = torch.ones(TILE, TILE, dtype=torch.bfloat16)
-        self.scaler_dev = ttnn.from_torch(
-            scaler_t,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
+        def _alloc(shape):
+            t = torch.zeros(*shape, dtype=torch.bfloat16)
+            return ttnn.from_torch(t, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+                                   device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
-        # Pre-allocate per-core max output: [32, num_cores * 32]
+        def _host(shape):
+            t = torch.zeros(*shape, dtype=torch.bfloat16)
+            return ttnn.from_torch(t, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
+
         out_cols = self.num_cores * TILE
-        max_out_t = torch.zeros(TILE, out_cols, dtype=torch.bfloat16)
-        self.max_out_dev = ttnn.from_torch(
-            max_out_t,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
+        self.scaler_dev = _alloc((TILE, TILE))
+        # Fill scaler with ones
+        ttnn.copy_host_to_device_tensor(
+            ttnn.from_torch(torch.ones(TILE, TILE, dtype=torch.bfloat16),
+                            layout=ttnn.TILE_LAYOUT),
+            self.scaler_dev)
+        self.max_out_dev = _alloc((TILE, out_cols))
+        self.global_max_dev = _alloc((TILE, TILE))
+        self.index_out_dev = _alloc((TILE, out_cols))
+        self._index_out_host = _host((TILE, out_cols))
 
-        # Pre-allocate global max output: [32, 32]
-        global_max_t = torch.zeros(TILE, TILE, dtype=torch.bfloat16)
-        self.global_max_dev = ttnn.from_torch(
-            global_max_t,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-
-        # Pre-allocate host buffers for readback (avoids alloc overhead per call)
-        self._max_out_host = ttnn.from_torch(
-            max_out_t, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-        )
-        self._global_max_host = ttnn.from_torch(
-            global_max_t, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-        )
-
-        # Warmup: compile both kernels
-        dummy = torch.randn(TILE, self.vocab_padded, dtype=torch.bfloat16)
-        dummy_dev = ttnn.from_torch(
-            dummy,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
+        # Warmup: compile all three kernels
+        dummy_dev = _alloc((TILE, self.vocab_padded))
         parallel_max_reduce_kernel(dummy_dev, self.scaler_dev, self.max_out_dev)
         global_max_reduce_kernel(self.max_out_dev, self.scaler_dev, self.global_max_dev)
+        parallel_index_find_kernel(dummy_dev, self.global_max_dev, self.index_out_dev)
         ttnn.deallocate(dummy_dev)
 
     def __call__(self, logits_dev):
         """Find argmax of row 0 of logits_dev on device.
 
-        Args:
-            logits_dev: [32, vocab_padded] bf16 TILE tensor on device
-
-        Returns:
-            int: token index (argmax of row 0)
+        Returns: int token index
         """
-        # Phase 1: parallel max reduction on device (110 cores)
+        # All three kernels run on device back-to-back
         parallel_max_reduce_kernel(logits_dev, self.scaler_dev, self.max_out_dev)
-
-        # Phase 2: global max reduction on device (1 core) → get the max value
         global_max_reduce_kernel(self.max_out_dev, self.scaler_dev, self.global_max_dev)
+        parallel_index_find_kernel(logits_dev, self.global_max_dev, self.index_out_dev)
 
-        # Phase 3: read global max + per-core maxes via pre-allocated buffers
-        ttnn.copy_device_to_host_tensor(self.global_max_dev, self._global_max_host)
-        global_max_val = self._global_max_host.to_torch()[0, 0].float().item()
-
-        ttnn.copy_device_to_host_tensor(self.max_out_dev, self._max_out_host)
-        core_maxes_t = self._max_out_host.to_torch().float()
-        core_maxes = core_maxes_t[0, ::TILE].numpy()[:self.num_cores]
-        winning_core = int(core_maxes.argmax())
-
-        # Phase 4: read back only the winning core's tile range, find exact index
-        tile_start = winning_core * self.chunk
-        tile_end = min(tile_start + self.chunk, self.Nt)
-        col_start = tile_start * TILE
-        col_end = min(tile_end * TILE, self.vocab_size)
-
-        winning_slice = ttnn.to_torch(
-            logits_dev[0:1, col_start:col_end]
-        ).float()
-        local_idx = winning_slice[0, :col_end - col_start].argmax().item()
-
-        return col_start + local_idx
+        # Tiny readback: per-core indices (bf16-encoded in tile [0,0] positions)
+        ttnn.copy_device_to_host_tensor(self.index_out_dev, self._index_out_host)
+        # element_write stores integer index as raw uint16 bits in bf16 tiles.
+        # to_torch() interprets them as bf16 floats, mangling the values.
+        # Fix: convert back to bf16 and view as int16 to recover raw bits.
+        idx_bf16 = self._index_out_host.to_torch().to(torch.bfloat16)
+        idx_raw = idx_bf16.view(torch.int16).to(torch.int32)
+        core_indices = idx_raw[0, ::TILE].numpy()[:self.num_cores]
+        valid = core_indices[core_indices > 0]
+        return int(valid.min()) if len(valid) > 0 else 0
 
 
 # ---------------------------------------------------------------------------
