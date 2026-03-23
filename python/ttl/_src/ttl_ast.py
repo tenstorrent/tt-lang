@@ -191,10 +191,10 @@ class TTLGenericCompiler(TTCompilerBase):
                 var_name = node.targets[0].id
                 value = self.visit(node.value)
 
-                # Skip tensor/CB values — only handle scalars
-                if hasattr(value, "type") and isinstance(
-                    value.type, RankedTensorType
-                ):
+                # Only use memref for integer scalars (i32, i64, index).
+                # Everything else (transfer handles, tensors, CBs, etc.)
+                # gets normal SSA assignment in the current scope.
+                if not self._is_i32_scalar(value):
                     self.symbol_tables[-1][var_name] = value
                     return
 
@@ -232,6 +232,19 @@ class TTLGenericCompiler(TTCompilerBase):
             if not isinstance(elt, ast.Name):
                 raise ValueError("Tuple unpacking requires simple variable names")
             self._set_var(elt.id, val)
+
+    @staticmethod
+    def _is_i32_scalar(value):
+        """Check if an MLIR value is a 32-bit integer scalar.
+
+        Only i32 values (typically from element_read) get memref treatment
+        for cross-scope survival.  Index values, i64, tensors, transfer
+        handles, and everything else use normal SSA assignment.
+        """
+        if not hasattr(value, "type"):
+            return False
+        ty = value.type
+        return isinstance(ty, IntegerType) and ty.width == 32
 
     def _in_loop_body(self):
         """Check if we're inside a loop body (more than one symbol table scope)."""
