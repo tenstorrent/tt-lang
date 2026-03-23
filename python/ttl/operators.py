@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import List, Tuple, Union
 
 from ttl.dialects import arith
-from ttl.ir import RankedTensorType, Type, FloatAttr, F32Type
+from ttl.ir import RankedTensorType, Type, FloatAttr, F32Type, IndexType
 
 # Re-export generated elementwise operations
 from ._generated_elementwise import *  # noqa: F401,F403
@@ -220,6 +220,13 @@ def _make_tensor_slice(tensor, indices, slice_shape):
         list(slice_shape), tensor_type.element_type, tensor_type.encoding
     )
     return ttl.tensor_slice(result_type, tensor, indices)
+
+
+def _to_index(value):
+    """Convert an MLIR value to Index type if needed."""
+    if hasattr(value, "type") and isinstance(value.type, IndexType):
+        return value
+    return arith.IndexCastOp(IndexType.get(), value)
 
 
 def _is_block(value) -> bool:
@@ -639,6 +646,52 @@ def fill(output: TensorBlock, value) -> TensorBlock:
     return ttl.fill(output.type, value_attr)
 
 
+@syntax("element_read")
+def element_read(block, row, col):
+    """Read a single element from a CB block at tile coordinates (row, col).
+
+    Returns the raw element bits as i32 (bf16 zero-extended, f32 bit-cast).
+    Only valid in datamovement threads.
+
+    Args:
+        block: CB-attached tensor from cb.wait() or cb.reserve()
+        row: Tile row index (0-31)
+        col: Tile column index (0-31)
+
+    Returns:
+        i32 value containing the raw element bits
+    """
+    if not _is_block(block):
+        raise ValueError(
+            "element_read requires a block from cb.wait() or cb.reserve()"
+        )
+    row = _to_index(row)
+    col = _to_index(col)
+    return ttl.element_read(block, row, col)
+
+
+@syntax("element_write")
+def element_write(block, row, col, value):
+    """Write a single element to a CB block at tile coordinates (row, col).
+
+    The value should be i32 containing raw element bits (bf16 zero-extended,
+    f32 bit-cast). Only valid in datamovement threads.
+
+    Args:
+        block: CB-attached tensor from cb.reserve()
+        row: Tile row index (0-31)
+        col: Tile column index (0-31)
+        value: i32 value containing the raw element bits
+    """
+    if not _is_block(block):
+        raise ValueError(
+            "element_write requires a block from cb.reserve()"
+        )
+    row = _to_index(row)
+    col = _to_index(col)
+    ttl.element_write(block, row, col, value)
+
+
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
@@ -647,5 +700,9 @@ __all__ = [
     "grid_size",
     "signpost",
     "fill",
+    "reduce_sum",
+    "reduce_max",
+    "element_read",
+    "element_write",
     *_generated_all,
 ]
