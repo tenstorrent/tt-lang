@@ -354,8 +354,10 @@ func.func @compute_acc_multi_store() attributes {{ttl.base_cta_index = 3 : i32, 
       {{indexing_maps = [#map, #map, #map],
        iterator_types = ["parallel", "parallel"]}} {{
   ^bb0(%a_tile: {tile}, %b_tile: {tile}, %out_tile: {tile}):
-    ttl.tile_store %a_tile, %out_view {{acc = true}} : {tile}, {tt}
-    ttl.tile_store %b_tile, %out_view {{acc = true}} : {tile}, {tt}
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
+    ttl.tile_store %a_tile, %out_view[%i, %j] {{acc = true}} : {tile}, {tt}
+    ttl.tile_store %b_tile, %out_view[%i, %j] {{acc = true}} : {tile}, {tt}
     ttl.yield
   }} -> {tt}
 
