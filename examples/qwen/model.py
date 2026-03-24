@@ -28,6 +28,7 @@ from kernels.linear import (
 from kernels.elementwise import add_kernel, silu_mul_kernel
 from kernels.rope import batch_rope_kernel
 from kernels.rmsnorm import fused_device_rmsnorm, fused_rmsnorm_kernel, rmsnorm_mul_kernel
+from kernels.softmax import device_softmax, device_softmax_multirow
 from kernels.fused_attn import fused_attn_head_kernel
 from kernels.group_attn import head_attn_kernels
 from kernels.multicore_attn import (
@@ -185,6 +186,17 @@ class QwenModel:
         self._compile_log = os.path.join(
             os.path.dirname(__file__), "compile.log"
         )
+
+    def warmup_prefill(self, seq_len=36):
+        """Run a dummy prefill to compile all kernels. Call once after init.
+
+        Kernels are shape-specialized, so this compiles for the same padded_seq
+        that the real prompt will use. Default 36 tokens → padded to 64.
+        """
+        dummy_ids = [0] * seq_len
+        with self._suppress_output():
+            self.prefill(dummy_ids)
+        self.init_kv_cache()
 
     # -----------------------------------------------------------------
     # Helpers
@@ -398,48 +410,70 @@ class QwenModel:
     # -----------------------------------------------------------------
     # Attention
     # -----------------------------------------------------------------
-    def _attention_prefill(self, q_rot, k_rot, v_float, layer_idx, seq_len, causal_mask):
-        """GQA attention for prefill: uses freshly computed K,V and stores to cache."""
-        scale_val = 1.0 / math.sqrt(self.head_dim)
-        heads_per_group = self.num_q_heads // self.num_kv_heads
+    def _attention_prefill_device(self, q_rot, k_rot, v_float, layer_idx,
+                                   seq_len, padded_seq, causal_mask):
+        """GQA attention for prefill — batched per KV group.
 
-        # Store K,V into cache
+        Batches all Q heads per KV group into one larger matmul + softmax.
+        14 per-head iterations → 2 per-group iterations (7× fewer dispatches).
+
+        Q is pre-scaled host tensor. K/V cached on host. All softmax on device.
+        Returns device tensor [padded_seq, hidden_size].
+        """
+        heads_per_group = self.num_q_heads // self.num_kv_heads
+        batch_rows = heads_per_group * padded_seq  # 7 * 64 = 448
+
+        # Store K,V into host cache
         self._update_kv_cache(layer_idx, k_rot, v_float, 0, seq_len)
+
+        # Batched causal mask: repeat mask for each Q head in group
+        # [heads_per_group * padded_seq, padded_max_seq]
+        single_mask = torch.full((padded_seq, self.padded_max_seq), float("-inf"),
+                                  dtype=torch.bfloat16)
+        single_mask[:padded_seq, :padded_seq] = causal_mask[:padded_seq, :padded_seq].bfloat16()
+        batched_mask = single_mask.repeat(heads_per_group, 1)  # [448, 512]
+        batched_mask_dev = self._to_device(batched_mask)
 
         q_heads = q_rot.view(seq_len, self.num_q_heads, self.head_dim)
 
-        outputs = []
+        group_outputs = []
         for kv_idx in range(self.num_kv_heads):
-            # Get cached K^T and V on device (full max_seq_len shape)
             k_t_dev, v_dev = self._get_kv_device(layer_idx, kv_idx)
 
+            # Stack all Q heads for this KV group: [7*padded_seq, head_dim]
+            q_parts = []
             for q_local in range(heads_per_group):
                 q_idx = kv_idx * heads_per_group + q_local
                 q_head = q_heads[:seq_len, q_idx, :].contiguous().bfloat16()
-                # Pad Q to tile boundary
-                padded_seq = ((seq_len + TILE - 1) // TILE) * TILE
                 if padded_seq > seq_len:
                     q_head = torch.nn.functional.pad(q_head, (0, 0, 0, padded_seq - seq_len))
-                q_dev = self._to_device(q_head)
+                q_parts.append(q_head)
+            q_batched = torch.cat(q_parts, dim=0)  # [448, 64]
+            q_dev = self._to_device(q_batched)
 
-                # Scores = Q @ K^T
-                scores_dev = self._alloc_zeros((padded_seq, self.padded_max_seq))
-                linear_kernel(q_dev, k_t_dev, scores_dev)
+            # Batched scores = [448, 64] @ [64, 512] = [448, 512]
+            scores_dev = self._alloc_zeros((batch_rows, self.padded_max_seq))
+            linear_kernel(q_dev, k_t_dev, scores_dev)
 
-                # Host softmax for prefill (device softmax only handles single-row decode)
-                scores = ttnn.to_torch(scores_dev).float()
-                prefill_mask = torch.full((padded_seq, self.padded_max_seq), float("-inf"))
-                prefill_mask[:padded_seq, :padded_seq] = causal_mask
-                scores = scores * scale_val + prefill_mask
-                weights = torch.nn.functional.softmax(scores, dim=-1).bfloat16()
-                weights_dev = self._to_device(weights)
+            # Multi-row device softmax on [448, 512]
+            weights_dev = device_softmax_multirow(
+                scores_dev, batched_mask_dev, self.ones_scaler_device, self.device
+            )
 
-                # Attn output = weights[padded_seq, max_seq] @ V[max_seq, head_dim]
-                head_out_dev = self._alloc_zeros((padded_seq, self.head_dim))
-                linear_kernel(weights_dev, v_dev, head_out_dev)
-                outputs.append(ttnn.to_torch(head_out_dev)[:seq_len])
+            # Batched output = [448, 512] @ [512, 64] = [448, 64]
+            out_dev = self._alloc_zeros((batch_rows, self.head_dim))
+            linear_kernel(weights_dev, v_dev, out_dev)
+            out_host = ttnn.to_torch(out_dev).float()
 
-        return torch.cat(outputs, dim=-1).bfloat16()
+            # Split back into per-head outputs: [padded_seq, head_dim] each
+            for q_local in range(heads_per_group):
+                start = q_local * padded_seq
+                group_outputs.append(out_host[start:start + seq_len])
+
+        attn_combined = torch.cat(group_outputs, dim=-1).bfloat16()
+        if padded_seq > seq_len:
+            attn_combined = torch.nn.functional.pad(attn_combined, (0, 0, 0, padded_seq - seq_len))
+        return self._to_device(attn_combined)
 
     def _attention_decode(self, q_rot, layer_idx, pos):
         """GQA attention for decode: Q is single position, K/V from full cache.
@@ -505,17 +539,12 @@ class QwenModel:
         else:
             normed2 = self._rmsnorm_host(post_attn_device, w["post_attention_layernorm_weight"])
 
-        gate_out = self._alloc_zeros((seq_len, self.intermediate_size))
-        linear_kernel(normed2, w["gate_proj_weight"], gate_out)
-
-        up_out = self._alloc_zeros((seq_len, self.intermediate_size))
-        linear_kernel(normed2, w["up_proj_weight"], up_out)
-
-        hidden = self._alloc_zeros((seq_len, self.intermediate_size))
-        silu_mul_kernel(gate_out, up_out, hidden)
+        # Fused gate+up+silu: 3 kernels → 1
+        mlp_hidden = self._alloc_zeros((seq_len, self.intermediate_size))
+        fused_gate_up_silu_kernel(normed2, w["gate_proj_weight"], w["up_proj_weight"], mlp_hidden)
 
         mlp_out = self._alloc_zeros((seq_len, self.hidden_size))
-        linear_kernel(hidden, w["down_proj_weight"], mlp_out)
+        linear_kernel(mlp_hidden, w["down_proj_weight"], mlp_out)
 
         output = self._alloc_zeros((seq_len, self.hidden_size))
         add_kernel(post_attn_device, mlp_out, output)
@@ -542,24 +571,47 @@ class QwenModel:
         )
 
     def transformer_layer_prefill(self, x_device, layer_idx, seq_len, causal_mask):
-        """Prefill: full sequence attention, populate KV cache."""
+        """Prefill: full sequence attention, populate KV cache.
+
+        Uses fused QKV on device + device RoPE + device softmax.
+        Reads back Q/K/V once in bulk for host KV cache + per-head attention.
+        """
         w = self.layer_weights[layer_idx]
         padded_seq = ((seq_len + TILE - 1) // TILE) * TILE
+        H = self.hidden_size    # 896
+        KV = self.num_kv_heads * self.head_dim  # 128
+        scale_val = 1.0 / math.sqrt(self.head_dim)
 
+        # 1. RMSNorm (host — device version has prefill loop bug)
         normed = self._rmsnorm_host(x_device, w["input_layernorm_weight"])
 
-        q_torch, k_torch, v_torch = self._run_attn_projections(normed, layer_idx, padded_seq)
+        # 2. Fused QKV projection on device (1 kernel vs 3)
+        qkv_out = self._alloc_zeros((padded_seq, H + KV + KV))
+        linear_bias_kernel(normed, w["qkv_weight"], w["qkv_bias"], qkv_out)
 
-        q_rot, k_rot = self._apply_rope_prefill(q_torch[:seq_len], k_torch[:seq_len], seq_len)
-        attn_combined = self._attention_prefill(q_rot, k_rot, v_torch[:seq_len], layer_idx, seq_len, causal_mask)
+        # 3. Device RoPE on Q+K (1 kernel vs host compute)
+        qk_rot = self._alloc_zeros((padded_seq, H + KV))
+        cos_dev = self._to_device(self.rope_cos[:padded_seq].bfloat16())
+        sin_dev = self._to_device(self.rope_sin[:padded_seq].bfloat16())
+        batch_rope_kernel(qkv_out[:, :H + KV], cos_dev, sin_dev, qk_rot)
 
-        # Pad attention output back to tile boundary
-        if padded_seq > seq_len:
-            attn_combined = torch.nn.functional.pad(attn_combined, (0, 0, 0, padded_seq - seq_len))
-        attn_device = self._to_device(attn_combined)
+        # 4. Bulk readback: rotated Q+K and original V
+        qkv_host = ttnn.to_torch(qkv_out).float()
+        qk_host = ttnn.to_torch(qk_rot).float()
 
+        # Pre-scale Q by 1/sqrt(head_dim) on host
+        q_rot = qk_host[:seq_len, :H] * scale_val
+        k_rot = qk_host[:seq_len, H:H + KV]
+        v_float = qkv_host[:seq_len, H + KV:H + KV + KV]
+
+        # 5. Attention with device softmax
+        attn_combined = self._attention_prefill_device(
+            q_rot, k_rot, v_float, layer_idx, seq_len, padded_seq, causal_mask
+        )
+
+        # 6. O projection + residual
         proj_out = self._alloc_zeros((padded_seq, self.hidden_size))
-        linear_kernel(attn_device, w["o_proj_weight"], proj_out)
+        linear_kernel(attn_combined, w["o_proj_weight"], proj_out)
 
         post_attn = self._alloc_zeros((padded_seq, self.hidden_size))
         add_kernel(x_device, proj_out, post_attn)
@@ -959,13 +1011,13 @@ class QwenModel:
                     v_stacked_host, self.kv_cache_stacked[li]["v"])
 
             x_device = self._rmsnorm_host(x_device, self.final_norm_weight)
-            x_host = ttnn.to_torch(x_device).float()
 
-        # lm_head on host
-        embed_w = self.embed_weight[:self.vocab_size]
-        logits = x_host[:seq_len] @ embed_w.t()
+            # lm_head on device
+            logits_dev = self._alloc_zeros((padded_seq, self.vocab_size))
+            linear_kernel(x_device, self.lm_head_weight_device, logits_dev)
+            logits_host = ttnn.to_torch(logits_dev).float()
 
-        return logits
+        return logits_host[:seq_len]
 
     def decode_step(self, token_id, pos=None, greedy=False):
         """Run one decode step: single token through 24 layers.

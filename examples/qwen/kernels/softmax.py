@@ -276,6 +276,244 @@ def device_softmax(scores_dev, mask_dev, scaler_dev, device):
 
 
 # =========================================================================
+# Multi-row softmax (for prefill — all rows matter)
+# =========================================================================
+# Same 3-kernel approach but uses broadcast(dims=[1]) instead of
+# broadcast(dims=[0, 1]) so each row gets its own max/sum broadcast.
+
+
+@ttl.kernel(grid=(1, 1))
+def mr_mask_max_kernel(scores, mask, scaler, masked_out, max_out):
+    """Apply mask and find row-wise max — multi-row version."""
+    Mt = scores.shape[0] // TILE
+    Nt = scores.shape[1] // TILE
+
+    s_dfb = ttl.make_dataflow_buffer_like(scores, shape=(1, 1), buffer_factor=2)
+    m_dfb = ttl.make_dataflow_buffer_like(mask, shape=(1, 1), buffer_factor=2)
+    sc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    o_dfb = ttl.make_dataflow_buffer_like(masked_out, shape=(1, 1), buffer_factor=2)
+    masked_dfb = ttl.make_dataflow_buffer_like(scores, shape=(1, 1), buffer_factor=2)
+    acc_dfb = ttl.make_dataflow_buffer_like(max_out, shape=(1, 1), buffer_factor=2)
+    mx_dfb = ttl.make_dataflow_buffer_like(max_out, shape=(1, 1), buffer_factor=2)
+    tmp_dfb = ttl.make_dataflow_buffer_like(max_out, shape=(1, 1), buffer_factor=2)
+
+    @ttl.datamovement()
+    def read():
+        for row in range(Mt):
+            with sc_dfb.reserve() as blk:
+                tx = ttl.copy(scaler[0, 0], blk)
+                tx.wait()
+            for col in range(Nt):
+                with s_dfb.reserve() as blk:
+                    tx = ttl.copy(scores[row, col], blk)
+                    tx.wait()
+                with m_dfb.reserve() as blk:
+                    tx = ttl.copy(mask[row, col], blk)
+                    tx.wait()
+
+    @ttl.compute()
+    def compute():
+        for _ in range(Mt):
+            with sc_dfb.wait() as sc_blk:
+                with s_dfb.wait() as s, m_dfb.wait() as m:
+                    with o_dfb.reserve() as out:
+                        out.store(s + m)
+                    with masked_dfb.reserve() as msk:
+                        msk.store(s + m)
+                with masked_dfb.wait() as msk_blk:
+                    with tmp_dfb.reserve() as tmp:
+                        tmp.store(ttl.math.reduce_max(msk_blk, sc_blk, tmp, dims=[1]))
+                with tmp_dfb.wait() as reduced:
+                    with acc_dfb.reserve() as acc:
+                        acc.store(reduced)
+
+                for _ in range(Nt - 1):
+                    with s_dfb.wait() as s, m_dfb.wait() as m:
+                        with o_dfb.reserve() as out:
+                            out.store(s + m)
+                        with masked_dfb.reserve() as msk:
+                            msk.store(s + m)
+                    with masked_dfb.wait() as msk_blk:
+                        with tmp_dfb.reserve() as tmp:
+                            tmp.store(ttl.math.reduce_max(msk_blk, sc_blk, tmp, dims=[1]))
+                    with tmp_dfb.wait() as reduced, acc_dfb.wait() as prev:
+                        with acc_dfb.reserve() as acc:
+                            acc.store(ttl.math.max(prev, reduced))
+
+            with acc_dfb.wait() as final_max:
+                with mx_dfb.reserve() as mx:
+                    mx.store(final_max)
+
+    @ttl.datamovement()
+    def write():
+        for row in range(Mt):
+            for col in range(Nt):
+                with o_dfb.wait() as blk:
+                    tx = ttl.copy(blk, masked_out[row, col])
+                    tx.wait()
+            with mx_dfb.wait() as blk:
+                tx = ttl.copy(blk, max_out[row, 0])
+                tx.wait()
+
+
+@ttl.kernel(grid=(1, 1))
+def mr_exp_sum_kernel(masked, row_max, scaler, exp_out, sum_out):
+    """Compute exp(masked - max) and row-wise sum — multi-row version.
+
+    Uses broadcast(dims=[1]) so each row subtracts its own max.
+    """
+    Mt = masked.shape[0] // TILE
+    Nt = masked.shape[1] // TILE
+
+    m_dfb = ttl.make_dataflow_buffer_like(masked, shape=(1, 1), buffer_factor=2)
+    mx_dfb = ttl.make_dataflow_buffer_like(row_max, shape=(1, 1), buffer_factor=2)
+    sc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    e_dfb = ttl.make_dataflow_buffer_like(exp_out, shape=(1, 1), buffer_factor=2)
+    exp_local_dfb = ttl.make_dataflow_buffer_like(exp_out, shape=(1, 1), buffer_factor=2)
+    acc_dfb = ttl.make_dataflow_buffer_like(sum_out, shape=(1, 1), buffer_factor=2)
+    tmp_dfb = ttl.make_dataflow_buffer_like(sum_out, shape=(1, 1), buffer_factor=2)
+    sm_dfb = ttl.make_dataflow_buffer_like(sum_out, shape=(1, 1), buffer_factor=2)
+    mx_bc_dfb = ttl.make_dataflow_buffer_like(row_max, shape=(1, 1), buffer_factor=2)
+
+    @ttl.datamovement()
+    def read():
+        for row in range(Mt):
+            with mx_dfb.reserve() as blk:
+                tx = ttl.copy(row_max[row, 0], blk)
+                tx.wait()
+            with sc_dfb.reserve() as blk:
+                tx = ttl.copy(scaler[0, 0], blk)
+                tx.wait()
+            for col in range(Nt):
+                with m_dfb.reserve() as blk:
+                    tx = ttl.copy(masked[row, col], blk)
+                    tx.wait()
+
+    @ttl.compute()
+    def compute():
+        for _ in range(Mt):
+            with mx_dfb.wait() as max_blk, sc_dfb.wait() as sc_blk:
+                # Column broadcast: each row keeps its own max
+                with mx_bc_dfb.reserve() as mx_bc:
+                    mx_bc.store(ttl.math.broadcast(max_blk, mx_bc, dims=[1]))
+
+                with mx_bc_dfb.wait() as max_bc:
+                    with m_dfb.wait() as masked_blk:
+                        with e_dfb.reserve() as exp_tile:
+                            exp_tile.store(ttl.math.exp(masked_blk - max_bc))
+                        with exp_local_dfb.reserve() as el:
+                            el.store(ttl.math.exp(masked_blk - max_bc))
+                    with exp_local_dfb.wait() as el_blk:
+                        with tmp_dfb.reserve() as tmp:
+                            tmp.store(ttl.math.reduce_sum(el_blk, sc_blk, tmp, dims=[1]))
+                    with tmp_dfb.wait() as reduced:
+                        with acc_dfb.reserve() as acc:
+                            acc.store(reduced)
+
+                    for _ in range(Nt - 1):
+                        with m_dfb.wait() as masked_blk:
+                            with e_dfb.reserve() as exp_tile:
+                                exp_tile.store(ttl.math.exp(masked_blk - max_bc))
+                            with exp_local_dfb.reserve() as el:
+                                el.store(ttl.math.exp(masked_blk - max_bc))
+                        with exp_local_dfb.wait() as el_blk:
+                            with tmp_dfb.reserve() as tmp:
+                                tmp.store(ttl.math.reduce_sum(el_blk, sc_blk, tmp, dims=[1]))
+                        with tmp_dfb.wait() as reduced, acc_dfb.wait() as prev:
+                            with acc_dfb.reserve() as acc:
+                                acc.store(prev + reduced)
+
+            with acc_dfb.wait() as final_sum:
+                with sm_dfb.reserve() as sm:
+                    sm.store(final_sum)
+
+    @ttl.datamovement()
+    def write():
+        for row in range(Mt):
+            for col in range(Nt):
+                with e_dfb.wait() as blk:
+                    tx = ttl.copy(blk, exp_out[row, col])
+                    tx.wait()
+            with sm_dfb.wait() as blk:
+                tx = ttl.copy(blk, sum_out[row, 0])
+                tx.wait()
+
+
+@ttl.kernel(grid=(1, 1))
+def mr_normalize_kernel(exp_scores, row_sum, Y):
+    """Y = exp_scores * recip(row_sum) — multi-row version.
+
+    Uses broadcast(dims=[1]) so each row divides by its own sum.
+    """
+    Mt = exp_scores.shape[0] // TILE
+    Nt = exp_scores.shape[1] // TILE
+
+    e_dfb = ttl.make_dataflow_buffer_like(exp_scores, shape=(1, 1), buffer_factor=2)
+    s_dfb = ttl.make_dataflow_buffer_like(row_sum, shape=(1, 1), buffer_factor=2)
+    s_bc_dfb = ttl.make_dataflow_buffer_like(row_sum, shape=(1, 1), buffer_factor=2)
+    y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1), buffer_factor=2)
+
+    @ttl.datamovement()
+    def read():
+        for row in range(Mt):
+            with s_dfb.reserve() as blk:
+                tx = ttl.copy(row_sum[row, 0], blk)
+                tx.wait()
+            for col in range(Nt):
+                with e_dfb.reserve() as blk:
+                    tx = ttl.copy(exp_scores[row, col], blk)
+                    tx.wait()
+
+    @ttl.compute()
+    def compute():
+        for _ in range(Mt):
+            with s_dfb.wait() as sum_blk:
+                with s_bc_dfb.reserve() as s_bc:
+                    s_bc.store(ttl.math.broadcast(sum_blk, s_bc, dims=[1]))
+            with s_bc_dfb.wait() as sum_bc:
+                for _ in range(Nt):
+                    with e_dfb.wait() as exp_blk, y_dfb.reserve() as out:
+                        out.store(exp_blk * ttl.math.recip(sum_bc))
+
+    @ttl.datamovement()
+    def write():
+        for row in range(Mt):
+            for col in range(Nt):
+                with y_dfb.wait() as blk:
+                    tx = ttl.copy(blk, Y[row, col])
+                    tx.wait()
+
+
+def device_softmax_multirow(scores_dev, mask_dev, scaler_dev, device):
+    """Multi-row device softmax for prefill. All rows get correct softmax.
+
+    Same 3-kernel pipeline as device_softmax but uses column broadcast
+    (dims=[1]) so each row independently gets its own max/sum.
+    """
+    rows = scores_dev.shape[0]
+    cols = scores_dev.shape[1]
+
+    def alloc(shape):
+        return ttnn.from_torch(
+            torch.zeros(shape, dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+            device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+
+    masked = alloc((rows, cols))
+    row_max = alloc((rows, TILE))
+    exp_out = alloc((rows, cols))
+    row_sum = alloc((rows, TILE))
+    weights = alloc((rows, cols))
+
+    mr_mask_max_kernel(scores_dev, mask_dev, scaler_dev, masked, row_max)
+    mr_exp_sum_kernel(masked, row_max, scaler_dev, exp_out, row_sum)
+    mr_normalize_kernel(exp_out, row_sum, weights)
+
+    return weights
+
+
+# =========================================================================
 # Test
 # =========================================================================
 def _to_device(tensor, device):

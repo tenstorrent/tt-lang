@@ -131,6 +131,10 @@ def main():
         model = QwenModel(device)
 
         model.quiet = True
+        print(f"Compiling kernels (one-time)...", end="", flush=True)
+        t_warmup = time.time()
+        model.warmup_prefill()
+        print(f" done ({time.time() - t_warmup:.1f}s)")
         print(f"(Compilation output → {model._compile_log})\n")
 
         if args.prompt:
