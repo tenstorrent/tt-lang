@@ -201,6 +201,9 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
         auto store = TileStoreOp::create(rewriter, loc, placeholder, outView,
                                          ValueRange{mIdx, nIdx});
         store->setAttr(kDstIdxAttrName, rewriter.getI32IntegerAttr(m * N + n));
+        if (stores[0].getAcc()) {
+          store.setAcc(true);
+        }
       }
     }
 

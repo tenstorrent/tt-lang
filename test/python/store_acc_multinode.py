@@ -42,12 +42,8 @@ def col_accumulate_kernel(inp: ttnn.Tensor, out: ttnn.Tensor):
     grid_cols, grid_rows = ttl.grid_size(dims=2)
     rows_per_node = -(-total_rows // grid_rows)
 
-    inp_dfb = ttl.make_dataflow_buffer_like(
-        inp, shape=(DFB_ROWS, 1), buffer_factor=2
-    )
-    out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(DFB_ROWS, 1), buffer_factor=2
-    )
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(DFB_ROWS, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(DFB_ROWS, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():

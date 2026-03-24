@@ -178,14 +178,18 @@ struct TTLFormAccumulationGroupsPass
         continue;
       }
 
-      // Multi-tile multi-compute accumulation uses L1 accumulation.
-      // DST grouping only works for 1x1 because each compute's
-      // subblock creates independent sync regions that re-initialize
-      // the accumulator.
+      // Use L1 accumulation for multi-tile outputs and matmul computes.
+      // DST grouping requires a single shared sync region, which is not
+      // compatible with per-subblock or per-matmul sync.
+      // TODO(bnorris): #421 — matmul K-accumulation via DST when M*N
+      // fits in DST capacity.
       auto viewTy = mlir::cast<RankedTensorType>(view.getType());
       bool isSingleTile =
           llvm::all_of(viewTy.getShape(), [](int64_t d) { return d == 1; });
-      if (!isSingleTile) {
+      bool hasMatmul = llvm::any_of(computeInfos, [](ComputeStoreInfo &info) {
+        return info.compute.containsOp<TileMatmulBlockOp>();
+      });
+      if (!isSingleTile || hasMatmul) {
         bool groupInLoop = isInsideUserLoop(computeInfos[0].compute, &funcBody);
         if (groupInLoop) {
           Operation *ancestor = computeInfos[0].topLevelAncestor;
