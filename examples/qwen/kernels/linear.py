@@ -182,6 +182,108 @@ def linear_bias_kernel(X, W, bias, Y):
 # K-split down_proj: parallelize across K dimension
 # =========================================================================
 
+# =========================================================================
+# Fused gate_proj + up_proj + silu_mul
+# =========================================================================
+
+
+@ttl.kernel(grid=(GRID_Y, GRID_X))
+def fused_gate_up_silu_kernel(X, W_gate, W_up, Y):
+    """Y = silu(X @ W_gate) * (X @ W_up). Fuses gate+up projections + SwiGLU.
+
+    Reads X once per output tile, computes both gate and up projections,
+    applies silu activation, and multiplies. Eliminates gate_out and up_out
+    intermediate buffers, saves 2 kernel dispatches.
+
+    X:      [Mt, Kt] — normed input
+    W_gate: [Kt, Nt] — gate projection weight
+    W_up:   [Kt, Nt] — up projection weight
+    Y:      [Mt, Nt] — output = silu(X @ W_gate) * (X @ W_up)
+    """
+    Mt = X.shape[0] // TILE
+    Kt = X.shape[1] // TILE
+    Nt = W_gate.shape[1] // TILE
+    num_output_tiles = Mt * Nt
+
+    # CBs for reading input and two weight sets
+    x_dfb = ttl.make_dataflow_buffer_like(X, shape=(1, 1), buffer_factor=2)
+    wg_dfb = ttl.make_dataflow_buffer_like(W_gate, shape=(1, 1), buffer_factor=2)
+    wu_dfb = ttl.make_dataflow_buffer_like(W_up, shape=(1, 1), buffer_factor=2)
+    # Compute-local accumulators for gate and up projections
+    gate_acc = ttl.make_dataflow_buffer_like(Y, shape=(1, 1), buffer_factor=2)
+    up_acc = ttl.make_dataflow_buffer_like(Y, shape=(1, 1), buffer_factor=2)
+    # Output CB
+    y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1), buffer_factor=2)
+
+    y_size, x_size = ttl.grid_size(dims=2)
+    num_cores = y_size * x_size
+    chunk = (num_output_tiles + num_cores - 1) // num_cores
+
+    @ttl.datamovement()
+    def read():
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        tile_start = nid * chunk
+        for tid in range(chunk):
+            out_idx = (tile_start + tid) % num_output_tiles
+            m = out_idx // Nt
+            n = out_idx % Nt
+            # Read X + W_gate for gate projection, then X + W_up for up projection
+            for k in range(Kt):
+                with x_dfb.reserve() as blk:
+                    tx = ttl.copy(X[m, k], blk)
+                    tx.wait()
+                with wg_dfb.reserve() as blk:
+                    tx = ttl.copy(W_gate[k, n], blk)
+                    tx.wait()
+            for k in range(Kt):
+                with x_dfb.reserve() as blk:
+                    tx = ttl.copy(X[m, k], blk)
+                    tx.wait()
+                with wu_dfb.reserve() as blk:
+                    tx = ttl.copy(W_up[k, n], blk)
+                    tx.wait()
+
+    @ttl.compute()
+    def compute():
+        for _ in range(chunk):
+            # Gate projection: accumulate X @ W_gate over K tiles
+            with x_dfb.wait() as x_blk, wg_dfb.wait() as wg_blk:
+                with gate_acc.reserve() as acc:
+                    acc.store(x_blk @ wg_blk)
+            for _ in range(Kt - 1):
+                with x_dfb.wait() as x_blk, wg_dfb.wait() as wg_blk, gate_acc.wait() as prev:
+                    with gate_acc.reserve() as acc:
+                        acc.store(prev + x_blk @ wg_blk)
+
+            # Up projection: accumulate X @ W_up over K tiles
+            with x_dfb.wait() as x_blk, wu_dfb.wait() as wu_blk:
+                with up_acc.reserve() as acc:
+                    acc.store(x_blk @ wu_blk)
+            for _ in range(Kt - 1):
+                with x_dfb.wait() as x_blk, wu_dfb.wait() as wu_blk, up_acc.wait() as prev:
+                    with up_acc.reserve() as acc:
+                        acc.store(prev + x_blk @ wu_blk)
+
+            # SwiGLU: silu(gate) * up = gate * sigmoid(gate) * up
+            with gate_acc.wait() as gate_val, up_acc.wait() as up_val:
+                with y_dfb.reserve() as y_blk:
+                    y_blk.store(gate_val * ttl.math.sigmoid(gate_val) * up_val)
+
+    @ttl.datamovement()
+    def write():
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        tile_start = nid * chunk
+        for tid in range(chunk):
+            out_idx = (tile_start + tid) % num_output_tiles
+            m = out_idx // Nt
+            n = out_idx % Nt
+            with y_dfb.wait() as blk:
+                tx = ttl.copy(blk, Y[m, n])
+                tx.wait()
+
+
 DOWN_K_SPLITS = 4
 
 
@@ -380,6 +482,34 @@ def test_linear_bias(device):
     print(" PASS")
 
 
+def test_fused_gate_up_silu(device):
+    """Test fused gate+up+silu vs separate kernels."""
+    M, K, N = 32, 896, 4864
+    print(f"  fused_gate_up_silu [{M}x{K}] → [{M}x{N}] (gate+up+silu)...", end="", flush=True)
+
+    X_t = torch.randn(M, K, dtype=torch.bfloat16) * 0.1
+    Wg_t = torch.randn(K, N, dtype=torch.bfloat16) * 0.02
+    Wu_t = torch.randn(K, N, dtype=torch.bfloat16) * 0.02
+
+    X = _to_device(X_t, device)
+    Wg = _to_device(Wg_t, device)
+    Wu = _to_device(Wu_t, device)
+    Y = _to_device(torch.zeros(M, N, dtype=torch.bfloat16), device)
+
+    fused_gate_up_silu_kernel(X, Wg, Wu, Y)
+
+    result = ttnn.to_torch(Y)
+    gate_ref = (X_t.float() @ Wg_t.float())
+    up_ref = (X_t.float() @ Wu_t.float())
+    expected = (gate_ref * torch.sigmoid(gate_ref) * up_ref).bfloat16()
+    score = torch.corrcoef(
+        torch.stack([result.float().flatten(), expected.float().flatten()])
+    )[0, 1].item()
+    print(f" PCC={score:.6f}", end="")
+    assert score > 0.99, f" FAIL"
+    print(" PASS")
+
+
 def test_down_proj_ksplit(device):
     """Test K-split down_proj: partial + reduce matches linear_kernel."""
     M, K, N = 32, 4864, 896
@@ -414,6 +544,7 @@ if __name__ == "__main__":
         print("Linear layer tests (multi-core):")
         test_linear(device)
         test_linear_bias(device)
+        test_fused_gate_up_silu(device)
         test_down_proj_ksplit(device)
         print("All linear tests passed!")
     finally:

@@ -21,6 +21,7 @@ import ttnn
 sys.path.insert(0, os.path.dirname(__file__))
 from kernels.linear import (
     linear_kernel, linear_bias_kernel,
+    fused_gate_up_silu_kernel,
     down_proj_partial_kernel, down_proj_reduce_kernel, DOWN_K_SPLITS,
 )
 from kernels.elementwise import add_kernel, silu_mul_kernel
@@ -651,8 +652,7 @@ class QwenModel:
             "proj_out": self._alloc_zeros((TILE, H), l1=True),
             "post_attn": self._alloc_zeros((TILE, H), l1=True),
             "normed2": self._alloc_zeros((TILE, H), l1=True),
-            "gate_out": self._alloc_zeros((TILE, I), l1=True),
-            "up_out": self._alloc_zeros((TILE, I), l1=True),
+            # gate_out / up_out eliminated by fused_gate_up_silu_kernel
             "mlp_hidden": self._alloc_zeros((TILE, I), l1=True),
             "mlp_out": self._alloc_zeros((TILE, H), l1=True),
             "final_out": self._alloc_zeros((TILE, H), l1=True),
@@ -750,9 +750,8 @@ class QwenModel:
             # 7. MLP
             fused_rmsnorm_kernel(tb["post_attn"], self.mean_scaler_device,
                                   w["post_attention_layernorm_weight"], tb["normed2"])
-            linear_kernel(tb["normed2"], w["gate_proj_weight"], tb["gate_out"])
-            linear_kernel(tb["normed2"], w["up_proj_weight"], tb["up_out"])
-            silu_mul_kernel(tb["gate_out"], tb["up_out"], tb["mlp_hidden"])
+            fused_gate_up_silu_kernel(
+                tb["normed2"], w["gate_proj_weight"], w["up_proj_weight"], tb["mlp_hidden"])
             down_proj_partial_kernel(
                 tb["mlp_hidden"], w["down_proj_weight"], tb["down_proj_partial"])
             down_proj_reduce_kernel(tb["down_proj_partial"], tb["mlp_out"])
