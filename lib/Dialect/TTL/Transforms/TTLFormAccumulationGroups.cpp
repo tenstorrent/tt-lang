@@ -125,18 +125,11 @@ struct TTLFormAccumulationGroupsPass
     int64_t nextGroupId = 0;
 
     for (auto &[view, computeInfos] : viewToComputes) {
-      bool hasAccStore = false;
-      for (auto &info : computeInfos) {
-        for (TileStoreOp store : info.stores) {
-          if (store.getAcc()) {
-            hasAccStore = true;
-            break;
-          }
-        }
-        if (hasAccStore) {
-          break;
-        }
-      }
+      bool hasAccStore =
+          llvm::any_of(computeInfos, [](const ComputeStoreInfo &info) {
+            return llvm::any_of(info.stores,
+                                [](TileStoreOp s) { return s.getAcc(); });
+          });
 
       if (!hasAccStore) {
         continue; // No acc stores for this view, nothing to do.
@@ -219,17 +212,18 @@ struct TTLFormAccumulationGroupsPass
             OpBuilder builder(userLoop);
             IRMapping mapping;
             mapping.map(userLoop.getInductionVar(), userLoop.getLowerBound());
-            bool firstStore = true;
             for (auto &op : userLoop.getBody()->without_terminator()) {
               Operation *cloned = builder.clone(op, mapping);
-              if (firstStore) {
-                cloned->walk([&firstStore](TileStoreOp store) {
-                  if (store.getAcc() && firstStore) {
-                    store.setAcc(false);
-                    firstStore = false;
-                  }
-                });
-              }
+              // Strip acc on stores targeting this view so the peeled
+              // iteration overwrites. Other views' stores are left
+              // untouched — they will be processed in their own
+              // iteration of the outer view loop.
+              Value targetView = view;
+              cloned->walk([targetView](TileStoreOp store) {
+                if (store.getAcc() && store.getView() == targetView) {
+                  store.setAcc(false);
+                }
+              });
             }
             Value newLB = arith::AddIOp::create(builder, userLoop.getLoc(),
                                                 userLoop.getLowerBound(),

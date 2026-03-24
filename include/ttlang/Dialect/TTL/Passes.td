@@ -100,10 +100,6 @@ def TTLFormAccumulationGroups
       user scf.for (not a tile loop or subblock loop).
     - Single acc store with no siblings or loop: acc is stripped (no-op).
 
-    Two accumulation mechanisms:
-
-    Two paths for multi-compute accumulation:
-
     DST grouping (1x1 output): computes are marked with a shared
     `ttl.acc_group` ID so downstream passes (AssignDST, InsertTileRegsSync)
     allocate a shared DST accumulator register and group-level sync region.

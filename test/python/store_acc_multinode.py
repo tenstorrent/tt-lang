@@ -96,8 +96,10 @@ col_accumulate_kernel(
 )
 
 # The accumulating stores use L1 accumulation (pack_reconfig_l1_acc).
+# Overwriting store: pack_tile_block without l1_acc.
 # CHECK: // compute
+# CHECK: pack_tile_block(
+# Accumulating store: l1_acc wraps each pack_tile.
+# CHECK: llk_pack_reconfig_l1_acc(
 # CHECK: pack_tile<true>(
 # CHECK: llk_pack_reconfig_l1_acc(
-# CHECK-NEXT: pack_tile<true>(
-# CHECK-NEXT: llk_pack_reconfig_l1_acc(

@@ -1337,6 +1337,9 @@ struct TTLConvertTTLToTTKernelPass
 
     // Phase 4: Clean up tensor dataflow ops in compute kernels.
     cleanupComputeKernels(mod, ctx);
+
+    // Remove marker attributes left by lowerAccumulatingStore.
+    mod.walk([](Operation *op) { op->removeAttr(kAccInitEmittedAttrName); });
   }
 };
 
