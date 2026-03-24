@@ -19,7 +19,10 @@ import torch
 import ttnn
 
 sys.path.insert(0, os.path.dirname(__file__))
-from kernels.linear import linear_kernel, linear_bias_kernel
+from kernels.linear import (
+    linear_kernel, linear_bias_kernel,
+    down_proj_partial_kernel, down_proj_reduce_kernel, DOWN_K_SPLITS,
+)
 from kernels.elementwise import add_kernel, silu_mul_kernel
 from kernels.rope import batch_rope_kernel
 from kernels.rmsnorm import fused_device_rmsnorm, fused_rmsnorm_kernel, rmsnorm_mul_kernel
@@ -643,6 +646,10 @@ class QwenModel:
             "mask_dev": self._alloc_zeros((TILE, self.padded_max_seq)),
             "logits": self._alloc_zeros((TILE, self.vocab_size)),
             # Argmax pipeline buffers (included in trace for zero dispatch overhead)
+            # K-split down_proj partial buffer
+            "down_proj_partial": self._alloc_zeros(
+                (TILE, (self.hidden_size // TILE) * DOWN_K_SPLITS * TILE)),
+            # Argmax pipeline buffers (included in trace for zero dispatch overhead)
             "argmax_scaler": self._to_device(
                 torch.ones(TILE, TILE, dtype=torch.bfloat16)),
             "argmax_max_out": self._alloc_zeros(
@@ -732,7 +739,9 @@ class QwenModel:
             linear_kernel(tb["normed2"], w["gate_proj_weight"], tb["gate_out"])
             linear_kernel(tb["normed2"], w["up_proj_weight"], tb["up_out"])
             silu_mul_kernel(tb["gate_out"], tb["up_out"], tb["mlp_hidden"])
-            linear_kernel(tb["mlp_hidden"], w["down_proj_weight"], tb["mlp_out"])
+            down_proj_partial_kernel(
+                tb["mlp_hidden"], w["down_proj_weight"], tb["down_proj_partial"])
+            down_proj_reduce_kernel(tb["down_proj_partial"], tb["mlp_out"])
             add_kernel(tb["post_attn"], tb["mlp_out"], tb[cur_out])
 
             cur_in, cur_out = cur_out, cur_in
