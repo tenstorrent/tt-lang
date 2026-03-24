@@ -204,7 +204,7 @@ struct TTLFormAccumulationGroupsPass
           break;
         }
       }
-      
+
       if (!isSingleTile) {
         // L1 accumulation for multi-tile domains. acc=true tile_stores
         // emit pack_reconfig_l1_acc(1) during TTKernel lowering. The
@@ -214,37 +214,43 @@ struct TTLFormAccumulationGroupsPass
         // Single-compute in loop: peel the first iteration so the
         // peeled copy stores with acc=false and the loop body retains
         // acc=true.
-        if (computeInfos.size() > 1) {
-          computeInfos[0].stores[0].setAcc(false);
-        } else {
-          // Peel first iteration of the enclosing user loop.
+        // Check if the group is inside a user loop.
+        bool groupInLoop = isInsideUserLoop(
+            computeInfos[0].compute, &funcBody);
+
+        if (groupInLoop) {
+          // Peel the first loop iteration: clone the loop body before
+          // the loop with acc=false, then advance the loop lower bound.
           Operation *ancestor = computeInfos[0].topLevelAncestor;
           auto userLoop = dyn_cast<scf::ForOp>(ancestor);
           if (userLoop) {
             OpBuilder builder(userLoop);
-            // Clone the loop body before the loop as the peeled iteration.
             IRMapping mapping;
             mapping.map(userLoop.getInductionVar(),
                         userLoop.getLowerBound());
+            bool firstStore = true;
             for (auto &op : userLoop.getBody()->without_terminator()) {
               Operation *cloned = builder.clone(op, mapping);
-              // The peeled iteration overwrites: set acc=false.
-              cloned->walk([](TileStoreOp store) {
-                if (store.getAcc()) {
-                  store.setAcc(false);
-                }
-              });
+              if (firstStore) {
+                cloned->walk([&firstStore](TileStoreOp store) {
+                  if (store.getAcc() && firstStore) {
+                    store.setAcc(false);
+                    firstStore = false;
+                  }
+                });
+              }
             }
-            // Advance the loop lower bound by one step.
             Value newLB = arith::AddIOp::create(
                 builder, userLoop.getLoc(), userLoop.getLowerBound(),
                 userLoop.getStep());
             userLoop.setLowerBound(newLB);
           }
+        } else {
+          // No loop: first store overwrites, rest accumulate.
+          computeInfos[0].stores[0].setAcc(false);
         }
-        LLVM_DEBUG(llvm::dbgs()
-                   << "Phase A: Multi-tile group for view " << view
-                   << " uses L1 accumulation\n");
+        LLVM_DEBUG(llvm::dbgs() << "Phase A: Multi-tile group for view " << view
+                                << " uses L1 accumulation\n");
         continue;
       }
 

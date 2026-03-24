@@ -524,9 +524,9 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
           auto viewShape = viewTy.getShape();
           AffineMap identity = AffineMap::getMultiDimIdentityMap(
               viewTy.getRank(), rewriter.getContext());
-          auto recomputedIdx = utils::computeCBTileIndex(
-              insertPt, rewriter, identity, viewShape, viewShape,
-              viewTy.getRank());
+          auto recomputedIdx =
+              utils::computeCBTileIndex(insertPt, rewriter, identity, viewShape,
+                                        viewShape, viewTy.getRank());
           if (succeeded(recomputedIdx)) {
             packCbTileIndex = *recomputedIdx;
           } else {
