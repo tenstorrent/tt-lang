@@ -183,6 +183,220 @@ def linear_bias_kernel(X, W, bias, Y):
 # =========================================================================
 
 # =========================================================================
+# Fused RMSNorm-multiply + matmul: Y = (X * scale * gamma) @ W + bias
+# =========================================================================
+
+
+@ttl.kernel(grid=(GRID_Y, GRID_X))
+def linear_bias_normed_kernel(X, scale, gamma, W, bias, Y):
+    """Y = (X * scale * gamma) @ W + bias.
+
+    Fuses the RMSNorm multiply into the matmul K-loop. Each K iteration
+    reads X[m,k], scale (broadcast scalar), gamma[k], and W[k,n], then
+    computes normed_k = X * scale * gamma, acc += normed_k @ W.
+
+    Eliminates the 'normed' intermediate buffer and 1 kernel dispatch.
+    """
+    Mt = X.shape[0] // TILE
+    Kt = X.shape[1] // TILE
+    Nt = W.shape[1] // TILE
+    num_output_tiles = Mt * Nt
+
+    x_dfb = ttl.make_dataflow_buffer_like(X, shape=(1, 1), buffer_factor=2)
+    s_dfb = ttl.make_dataflow_buffer_like(scale, shape=(1, 1), buffer_factor=2)
+    g_dfb = ttl.make_dataflow_buffer_like(gamma, shape=(1, 1), buffer_factor=2)
+    w_dfb = ttl.make_dataflow_buffer_like(W, shape=(1, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(bias, shape=(1, 1), buffer_factor=2)
+    # Compute-local
+    normed_dfb = ttl.make_dataflow_buffer_like(X, shape=(1, 1), buffer_factor=2)
+    acc_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1), buffer_factor=2)
+    y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1), buffer_factor=2)
+
+    y_size, x_size = ttl.grid_size(dims=2)
+    num_cores = y_size * x_size
+    chunk = (num_output_tiles + num_cores - 1) // num_cores
+
+    @ttl.datamovement()
+    def read():
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        tile_start = nid * chunk
+        for tid in range(chunk):
+            out_idx = (tile_start + tid) % num_output_tiles
+            m = out_idx // Nt
+            n = out_idx % Nt
+            # Scale (broadcast scalar) — read once per output tile
+            with s_dfb.reserve() as blk:
+                tx = ttl.copy(scale[m, 0], blk)
+                tx.wait()
+            # Bias — read once per output tile
+            with b_dfb.reserve() as blk:
+                tx = ttl.copy(bias[0, n], blk)
+                tx.wait()
+            # K-loop: X + gamma + W per iteration
+            for k in range(Kt):
+                with x_dfb.reserve() as blk:
+                    tx = ttl.copy(X[m, k], blk)
+                    tx.wait()
+                with g_dfb.reserve() as blk:
+                    tx = ttl.copy(gamma[0, k], blk)
+                    tx.wait()
+                with w_dfb.reserve() as blk:
+                    tx = ttl.copy(W[k, n], blk)
+                    tx.wait()
+
+    @ttl.compute()
+    def compute():
+        for _ in range(chunk):
+            with s_dfb.wait() as scale_blk, b_dfb.wait() as bias_blk:
+                # First K: init acc = normed @ W
+                with x_dfb.wait() as x_blk, g_dfb.wait() as g_blk, w_dfb.wait() as w_blk:
+                    with normed_dfb.reserve() as nm:
+                        nm.store(x_blk * scale_blk * g_blk)
+                    with normed_dfb.wait() as normed_blk:
+                        with acc_dfb.reserve() as acc:
+                            acc.store(normed_blk @ w_blk)
+                # Remaining K: acc += normed @ W
+                for _ in range(Kt - 1):
+                    with x_dfb.wait() as x_blk, g_dfb.wait() as g_blk, w_dfb.wait() as w_blk:
+                        with normed_dfb.reserve() as nm:
+                            nm.store(x_blk * scale_blk * g_blk)
+                        with normed_dfb.wait() as normed_blk, acc_dfb.wait() as prev:
+                            with acc_dfb.reserve() as acc:
+                                acc.store(prev + normed_blk @ w_blk)
+                # Add bias
+                with acc_dfb.wait() as result:
+                    with y_dfb.reserve() as y_blk:
+                        y_blk.store(result + bias_blk)
+
+    @ttl.datamovement()
+    def write():
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        tile_start = nid * chunk
+        for tid in range(chunk):
+            out_idx = (tile_start + tid) % num_output_tiles
+            m = out_idx // Nt
+            n = out_idx % Nt
+            with y_dfb.wait() as blk:
+                tx = ttl.copy(blk, Y[m, n])
+                tx.wait()
+
+
+@ttl.kernel(grid=(GRID_Y, GRID_X))
+def fused_gate_up_silu_normed_kernel(X, scale, gamma, W_gate, W_up, Y):
+    """Y = silu((X*scale*gamma) @ W_gate) * ((X*scale*gamma) @ W_up).
+
+    Fuses RMSNorm multiply + gate + up projections + SwiGLU.
+    """
+    Mt = X.shape[0] // TILE
+    Kt = X.shape[1] // TILE
+    Nt = W_gate.shape[1] // TILE
+    num_output_tiles = Mt * Nt
+
+    x_dfb = ttl.make_dataflow_buffer_like(X, shape=(1, 1), buffer_factor=2)
+    s_dfb = ttl.make_dataflow_buffer_like(scale, shape=(1, 1), buffer_factor=2)
+    g_dfb = ttl.make_dataflow_buffer_like(gamma, shape=(1, 1), buffer_factor=2)
+    wg_dfb = ttl.make_dataflow_buffer_like(W_gate, shape=(1, 1), buffer_factor=2)
+    wu_dfb = ttl.make_dataflow_buffer_like(W_up, shape=(1, 1), buffer_factor=2)
+    normed_dfb = ttl.make_dataflow_buffer_like(X, shape=(1, 1), buffer_factor=2)
+    gate_acc = ttl.make_dataflow_buffer_like(Y, shape=(1, 1), buffer_factor=2)
+    up_acc = ttl.make_dataflow_buffer_like(Y, shape=(1, 1), buffer_factor=2)
+    y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1), buffer_factor=2)
+
+    y_size, x_size = ttl.grid_size(dims=2)
+    num_cores = y_size * x_size
+    chunk = (num_output_tiles + num_cores - 1) // num_cores
+
+    @ttl.datamovement()
+    def read():
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        tile_start = nid * chunk
+        for tid in range(chunk):
+            out_idx = (tile_start + tid) % num_output_tiles
+            m = out_idx // Nt
+            n = out_idx % Nt
+            with s_dfb.reserve() as blk:
+                tx = ttl.copy(scale[m, 0], blk)
+                tx.wait()
+            # Gate projection: X + gamma + W_gate
+            for k in range(Kt):
+                with x_dfb.reserve() as blk:
+                    tx = ttl.copy(X[m, k], blk)
+                    tx.wait()
+                with g_dfb.reserve() as blk:
+                    tx = ttl.copy(gamma[0, k], blk)
+                    tx.wait()
+                with wg_dfb.reserve() as blk:
+                    tx = ttl.copy(W_gate[k, n], blk)
+                    tx.wait()
+            # Up projection: X + gamma + W_up
+            for k in range(Kt):
+                with x_dfb.reserve() as blk:
+                    tx = ttl.copy(X[m, k], blk)
+                    tx.wait()
+                with g_dfb.reserve() as blk:
+                    tx = ttl.copy(gamma[0, k], blk)
+                    tx.wait()
+                with wu_dfb.reserve() as blk:
+                    tx = ttl.copy(W_up[k, n], blk)
+                    tx.wait()
+
+    @ttl.compute()
+    def compute():
+        for _ in range(chunk):
+            with s_dfb.wait() as scale_blk:
+                # Gate: normed @ W_gate
+                with x_dfb.wait() as x_blk, g_dfb.wait() as g_blk, wg_dfb.wait() as wg_blk:
+                    with normed_dfb.reserve() as nm:
+                        nm.store(x_blk * scale_blk * g_blk)
+                    with normed_dfb.wait() as normed_blk:
+                        with gate_acc.reserve() as acc:
+                            acc.store(normed_blk @ wg_blk)
+                for _ in range(Kt - 1):
+                    with x_dfb.wait() as x_blk, g_dfb.wait() as g_blk, wg_dfb.wait() as wg_blk:
+                        with normed_dfb.reserve() as nm:
+                            nm.store(x_blk * scale_blk * g_blk)
+                        with normed_dfb.wait() as normed_blk, gate_acc.wait() as prev:
+                            with gate_acc.reserve() as acc:
+                                acc.store(prev + normed_blk @ wg_blk)
+
+                # Up: normed @ W_up
+                with x_dfb.wait() as x_blk, g_dfb.wait() as g_blk, wu_dfb.wait() as wu_blk:
+                    with normed_dfb.reserve() as nm:
+                        nm.store(x_blk * scale_blk * g_blk)
+                    with normed_dfb.wait() as normed_blk:
+                        with up_acc.reserve() as acc:
+                            acc.store(normed_blk @ wu_blk)
+                for _ in range(Kt - 1):
+                    with x_dfb.wait() as x_blk, g_dfb.wait() as g_blk, wu_dfb.wait() as wu_blk:
+                        with normed_dfb.reserve() as nm:
+                            nm.store(x_blk * scale_blk * g_blk)
+                        with normed_dfb.wait() as normed_blk, up_acc.wait() as prev:
+                            with up_acc.reserve() as acc:
+                                acc.store(prev + normed_blk @ wu_blk)
+
+            # SwiGLU
+            with gate_acc.wait() as gate_val, up_acc.wait() as up_val:
+                with y_dfb.reserve() as y_blk:
+                    y_blk.store(gate_val * ttl.math.sigmoid(gate_val) * up_val)
+
+    @ttl.datamovement()
+    def write():
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        tile_start = nid * chunk
+        for tid in range(chunk):
+            out_idx = (tile_start + tid) % num_output_tiles
+            m = out_idx // Nt
+            n = out_idx % Nt
+            with y_dfb.wait() as blk:
+                tx = ttl.copy(blk, Y[m, n])
+                tx.wait()
+
+
+# =========================================================================
 # Fused gate_proj + up_proj + silu_mul
 # =========================================================================
 
