@@ -142,9 +142,7 @@ x, y = ttl.node(dims = 2)
 x, y, z = ttl.node(dims = 3)
 ```
 
-<a id="dataflow-buffer"></a>
-
-## `4.` Dataflow buffer
+## <small>4.</small> Dataflow buffer
 
 A *dataflow buffer* is a communication primitive for synchronizing the passing of data between thread functions within one node. A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing TT-NN tensor, *shape* and *buffer factor*.
 
