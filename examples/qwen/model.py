@@ -934,10 +934,9 @@ class QwenModel:
 
             self.cache_pos = seq_len
 
-            # Sync host KV cache to stacked device tensors for decode
+            # Sync host KV cache to device tensors for decode
             hd, ms = self.head_dim, self.max_seq_len
             for li in range(self.num_layers):
-                # Build stacked tensors from host cache
                 kt_parts = []
                 v_parts = []
                 for kv_idx in range(self.num_kv_heads):
@@ -948,11 +947,16 @@ class QwenModel:
                     # Keep per-group for non-traced path
                     self.kv_cache_dev[li][kv_idx]["k_t"] = self._to_device(k_t)
                     self.kv_cache_dev[li][kv_idx]["v"] = self._to_device(v)
-                # Upload stacked versions for traced path
-                kt_stacked = torch.cat(kt_parts, dim=0)  # [128, 512]
-                v_stacked = torch.cat(v_parts, dim=0)     # [1024, 64]
-                self.kv_cache_stacked[li]["k_t"] = self._to_device(kt_stacked)
-                self.kv_cache_stacked[li]["v"] = self._to_device(v_stacked)
+                # Copy stacked versions INTO existing buffers (don't reallocate —
+                # trace captured their addresses)
+                kt_stacked_host = ttnn.from_torch(
+                    torch.cat(kt_parts, dim=0), layout=ttnn.TILE_LAYOUT)
+                v_stacked_host = ttnn.from_torch(
+                    torch.cat(v_parts, dim=0), layout=ttnn.TILE_LAYOUT)
+                ttnn.copy_host_to_device_tensor(
+                    kt_stacked_host, self.kv_cache_stacked[li]["k_t"])
+                ttnn.copy_host_to_device_tensor(
+                    v_stacked_host, self.kv_cache_stacked[li]["v"])
 
             x_device = self._rmsnorm_host(x_device, self.final_norm_weight)
             x_host = ttnn.to_torch(x_device).float()
