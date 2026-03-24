@@ -34,7 +34,8 @@ from kernels.multicore_attn import (
     partial_attn_kernels, reduce_attn_kernels,
     parallel_partial_g0, parallel_partial_g1,
     parallel_reduce_g0, parallel_reduce_g1,
-    TOTAL_PAR_CORES,
+    fused_partial_both, fused_reduce_both,
+    TOTAL_PAR_CORES, CORES_PER_GROUP,
 )
 from kernels.kv_cache_update import get_kv_cache_update_kernel
 from kernels.kv_cache_update_traced import kv_cache_update_traced, build_full_masks
@@ -325,6 +326,17 @@ class QwenModel:
                 })
             self.kv_cache.append(layer_cache)
             self.kv_cache_dev.append(layer_cache_dev)
+
+        # Stacked KV caches for fused attention (both groups concatenated)
+        # K_T_both[layer]: [head_dim*2, max_seq] = g0 rows then g1 rows
+        # V_both[layer]: [max_seq*2, head_dim] = g0 rows then g1 rows
+        self.kv_cache_stacked = []
+        hd, ms = self.head_dim, self.max_seq_len
+        for li in range(self.num_layers):
+            kt_stacked = self._to_device(torch.zeros(hd * 2, ms, dtype=torch.bfloat16))
+            v_stacked = self._to_device(torch.zeros(ms * 2, hd, dtype=torch.bfloat16))
+            self.kv_cache_stacked.append({"k_t": kt_stacked, "v": v_stacked})
+
         self.cache_pos = 0
 
         # Pre-compute row/column masks for on-device KV cache updates
@@ -718,7 +730,7 @@ class QwenModel:
             batch_rope_kernel(tb["qkv_out"][:, :H+KV], tb["cos_dev"], tb["sin_dev"],
                               tb["qk_rot"])
 
-            # 4. KV cache update (K from qk_rot slice, V from QKV output slice)
+            # 4. KV cache update (writes to per-group caches AND stacked cache)
             kv_cache_update_traced(
                 tb["qk_rot"][:, H:H+KV], tb["qkv_out"][:, H+KV:H+KV+KV],
                 self.kv_cache_dev[layer_idx][0]["k_t"],

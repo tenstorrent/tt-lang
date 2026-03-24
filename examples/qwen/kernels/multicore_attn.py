@@ -769,11 +769,380 @@ def _make_parallel_reduce_kernel(out_col_base):
     return parallel_reduce_kernel
 
 
-# Two group variants (one per KV group)
+# Two group variants (one per KV group) — kept for non-fused path
 parallel_partial_g0 = _make_parallel_partial_kernel(q_col_base=0)
 parallel_partial_g1 = _make_parallel_partial_kernel(q_col_base=14)
 parallel_reduce_g0 = _make_parallel_reduce_kernel(out_col_base=0)
 parallel_reduce_g1 = _make_parallel_reduce_kernel(out_col_base=14)
+
+
+# =========================================================================
+# Fused both-groups variants: 2 dispatches instead of 4
+# =========================================================================
+
+FUSED_PARTIAL_GRID_Y = 8  # 56 = 8 × 7
+FUSED_PARTIAL_GRID_X = 7
+FUSED_REDUCE_GRID_Y = 2   # 14 = 2 × 7
+FUSED_REDUCE_GRID_X = 7
+CORES_PER_GROUP = HEADS_PER_GROUP * TILES_PER_CORE  # 28
+KT_ROWS = 2  # K_T tile rows per group (head_dim/TILE = 64/32 = 2)
+V_ROWS = 16  # V tile rows per group (seq_tiles = 512/32 = 16)
+
+
+@ttl.kernel(grid=(FUSED_PARTIAL_GRID_Y, FUSED_PARTIAL_GRID_X))
+def fused_partial_both(Q_rot, K_T_both, V_both, mask, scaler, attn_scale,
+                        part_m, part_d, part_o0, part_o1):
+    """56-core fused partial attention for both KV groups.
+
+    Cores 0-27: KV group 0 (Q cols 0-13)
+    Cores 28-55: KV group 1 (Q cols 14-27)
+
+    K_T_both: [KT_ROWS*2, seq_tiles] — stacked K_T for both groups
+    V_both:   [V_ROWS*2, KT_ROWS]    — stacked V for both groups
+    part_*:   [1, 56] tiles           — output partials for all 56 cores
+    """
+    Kt_q = 2
+    Nt_per_core = TILES_PER_CORE  # 4
+
+    q_dfb = ttl.make_dataflow_buffer_like(Q_rot, shape=(1, 1), buffer_factor=2)
+    k_dfb = ttl.make_dataflow_buffer_like(K_T_both, shape=(1, 1), buffer_factor=2)
+    m_dfb = ttl.make_dataflow_buffer_like(mask, shape=(1, 1), buffer_factor=2)
+    v_dfb = ttl.make_dataflow_buffer_like(V_both, shape=(1, 1), buffer_factor=2)
+    sc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    asc_dfb = ttl.make_dataflow_buffer_like(attn_scale, shape=(1, 1), buffer_factor=2)
+    acc_dfb = ttl.make_dataflow_buffer_like(mask, shape=(1, 1), buffer_factor=2)
+    scaled_dfb = ttl.make_dataflow_buffer_like(mask, shape=(1, 1), buffer_factor=2)
+    masked_a_dfb = ttl.make_dataflow_buffer_like(mask, shape=(1, 1), buffer_factor=2)
+    masked_b_dfb = ttl.make_dataflow_buffer_like(mask, shape=(1, 1), buffer_factor=2)
+    tmp_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    p_dfb = ttl.make_dataflow_buffer_like(mask, shape=(1, 1), buffer_factor=2)
+    m_save_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    m_old_copy_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    m_bc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    alpha_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    alpha_bc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    d_save_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    d_scaled_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    o0_save_dfb = ttl.make_dataflow_buffer_like(V_both, shape=(1, 1), buffer_factor=2)
+    o1_save_dfb = ttl.make_dataflow_buffer_like(V_both, shape=(1, 1), buffer_factor=2)
+    o0_tmp_dfb = ttl.make_dataflow_buffer_like(V_both, shape=(1, 1), buffer_factor=2)
+    o1_tmp_dfb = ttl.make_dataflow_buffer_like(V_both, shape=(1, 1), buffer_factor=2)
+    out_m_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    out_d_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    out_o0_dfb = ttl.make_dataflow_buffer_like(V_both, shape=(1, 1), buffer_factor=2)
+    out_o1_dfb = ttl.make_dataflow_buffer_like(V_both, shape=(1, 1), buffer_factor=2)
+
+    y_size, x_size = ttl.grid_size(dims=2)
+
+    @ttl.datamovement()
+    def read():
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        # Group routing: cores 0-27 = group 0, cores 28-55 = group 1
+        group = nid // CORES_PER_GROUP
+        local_nid = nid % CORES_PER_GROUP
+        head_local = local_nid // Nt_per_core
+        tile_group = local_nid % Nt_per_core
+        # Q column: group offset + head offset
+        q_col = group * HEADS_PER_GROUP * Kt_q + head_local * Kt_q
+        kt_start = tile_group * Nt_per_core
+        # KV cache row offsets for stacked tensors
+        kt_row_off = group * KT_ROWS
+        v_row_off = group * V_ROWS
+
+        with sc_dfb.reserve() as blk:
+            tx = ttl.copy(scaler[0, 0], blk)
+            tx.wait()
+        with asc_dfb.reserve() as blk:
+            tx = ttl.copy(attn_scale[0, 0], blk)
+            tx.wait()
+        for kt_local in range(Nt_per_core):
+            kt = kt_start + kt_local
+            for ki in range(Kt_q):
+                with q_dfb.reserve() as blk:
+                    tx = ttl.copy(Q_rot[0, q_col + ki], blk)
+                    tx.wait()
+                with k_dfb.reserve() as blk:
+                    tx = ttl.copy(K_T_both[kt_row_off + ki, kt], blk)
+                    tx.wait()
+            with m_dfb.reserve() as blk:
+                tx = ttl.copy(mask[0, kt], blk)
+                tx.wait()
+            for vi in range(Kt_q):
+                with v_dfb.reserve() as blk:
+                    tx = ttl.copy(V_both[v_row_off + kt, vi], blk)
+                    tx.wait()
+
+    @ttl.compute()
+    def compute():
+        # Identical to single-group kernel — the reader already routed data
+        with sc_dfb.wait() as sc_blk, asc_dfb.wait() as attn_sc:
+            # First tile
+            with q_dfb.wait() as q0, k_dfb.wait() as k0:
+                with acc_dfb.reserve() as acc:
+                    acc.store(q0 @ k0)
+            with q_dfb.wait() as q1, k_dfb.wait() as k1, acc_dfb.wait() as prev:
+                with acc_dfb.reserve() as acc:
+                    acc.store(prev + q1 @ k1)
+            with acc_dfb.wait() as score:
+                with scaled_dfb.reserve() as s:
+                    s.store(score * attn_sc)
+            with scaled_dfb.wait() as score, m_dfb.wait() as msk:
+                with masked_a_dfb.reserve() as ma:
+                    ma.store(score + msk)
+                with masked_b_dfb.reserve() as mb:
+                    mb.store(score + msk)
+            with masked_a_dfb.wait() as msk_blk:
+                with tmp_dfb.reserve() as tmp:
+                    tmp.store(ttl.math.reduce_max(msk_blk, sc_blk, tmp, dims=[1]))
+            with tmp_dfb.wait() as local_m:
+                with m_save_dfb.reserve() as ms:
+                    ms.store(local_m)
+                with m_bc_dfb.reserve() as mbc:
+                    mbc.store(ttl.math.broadcast(local_m, mbc, dims=[0, 1]))
+            with masked_b_dfb.wait() as msk_blk, m_bc_dfb.wait() as mbc:
+                with p_dfb.reserve() as p:
+                    p.store(ttl.math.exp(msk_blk - mbc))
+            with p_dfb.wait() as p_blk:
+                with tmp_dfb.reserve() as tmp:
+                    tmp.store(ttl.math.reduce_sum(p_blk, sc_blk, tmp, dims=[1]))
+                with o0_save_dfb.reserve() as o0s:
+                    with v_dfb.wait() as v0:
+                        o0s.store(p_blk @ v0)
+                with o1_save_dfb.reserve() as o1s:
+                    with v_dfb.wait() as v1:
+                        o1s.store(p_blk @ v1)
+            with tmp_dfb.wait() as local_d:
+                with d_save_dfb.reserve() as ds:
+                    ds.store(local_d)
+
+            # Remaining tiles
+            for _ in range(Nt_per_core - 1):
+                with q_dfb.wait() as q0, k_dfb.wait() as k0:
+                    with acc_dfb.reserve() as acc:
+                        acc.store(q0 @ k0)
+                with q_dfb.wait() as q1, k_dfb.wait() as k1, acc_dfb.wait() as prev:
+                    with acc_dfb.reserve() as acc:
+                        acc.store(prev + q1 @ k1)
+                with acc_dfb.wait() as score:
+                    with scaled_dfb.reserve() as s:
+                        s.store(score * attn_sc)
+                with scaled_dfb.wait() as score, m_dfb.wait() as msk:
+                    with masked_a_dfb.reserve() as ma:
+                        ma.store(score + msk)
+                    with masked_b_dfb.reserve() as mb:
+                        mb.store(score + msk)
+                with masked_a_dfb.wait() as msk_blk:
+                    with tmp_dfb.reserve() as tmp:
+                        tmp.store(ttl.math.reduce_max(msk_blk, sc_blk, tmp, dims=[1]))
+                # Online softmax merge
+                with tmp_dfb.wait() as new_m, m_save_dfb.wait() as old_m:
+                    with m_save_dfb.reserve() as ms:
+                        ms.store(ttl.math.max(old_m, new_m))
+                    with m_old_copy_dfb.reserve() as moc:
+                        moc.store(old_m)
+                with m_save_dfb.wait() as m_new:
+                    with m_bc_dfb.reserve() as mbc:
+                        mbc.store(ttl.math.broadcast(m_new, mbc, dims=[0, 1]))
+                    with m_save_dfb.reserve() as ms2:
+                        ms2.store(m_new)
+                with masked_b_dfb.wait() as msk_blk, m_bc_dfb.wait() as mbc:
+                    with p_dfb.reserve() as p:
+                        p.store(ttl.math.exp(msk_blk - mbc))
+                with m_old_copy_dfb.wait() as m_old, m_save_dfb.wait() as m_new2:
+                    with alpha_dfb.reserve() as alpha:
+                        alpha.store(ttl.math.exp(m_old - m_new2))
+                    with m_save_dfb.reserve() as ms3:
+                        ms3.store(m_new2)
+                with alpha_dfb.wait() as alpha_val:
+                    with alpha_bc_dfb.reserve() as abc:
+                        abc.store(ttl.math.broadcast(alpha_val, abc, dims=[0, 1]))
+                with alpha_bc_dfb.wait() as alpha_bc:
+                    with d_save_dfb.wait() as d_old:
+                        with d_scaled_dfb.reserve() as ds:
+                            ds.store(d_old * alpha_bc)
+                    with o0_save_dfb.wait() as o0_old:
+                        with o0_tmp_dfb.reserve() as o0t:
+                            o0t.store(o0_old * alpha_bc)
+                    with o1_save_dfb.wait() as o1_old:
+                        with o1_tmp_dfb.reserve() as o1t:
+                            o1t.store(o1_old * alpha_bc)
+                with p_dfb.wait() as p_blk:
+                    with tmp_dfb.reserve() as tmp:
+                        tmp.store(ttl.math.reduce_sum(p_blk, sc_blk, tmp, dims=[1]))
+                    with v_dfb.wait() as v0, o0_tmp_dfb.wait() as o0_scaled:
+                        with o0_save_dfb.reserve() as o0s:
+                            o0s.store(o0_scaled + p_blk @ v0)
+                    with v_dfb.wait() as v1, o1_tmp_dfb.wait() as o1_scaled:
+                        with o1_save_dfb.reserve() as o1s:
+                            o1s.store(o1_scaled + p_blk @ v1)
+                with tmp_dfb.wait() as new_d, d_scaled_dfb.wait() as d_scaled:
+                    with d_save_dfb.reserve() as ds:
+                        ds.store(d_scaled + new_d)
+
+        # Write partials — core nid writes to position nid (0-55)
+        with m_save_dfb.wait() as final_m:
+            with out_m_dfb.reserve() as om:
+                om.store(final_m)
+        with d_save_dfb.wait() as final_d:
+            with out_d_dfb.reserve() as od:
+                od.store(final_d)
+        with o0_save_dfb.wait() as final_o0:
+            with out_o0_dfb.reserve() as oo0:
+                oo0.store(final_o0)
+        with o1_save_dfb.wait() as final_o1:
+            with out_o1_dfb.reserve() as oo1:
+                oo1.store(final_o1)
+
+    @ttl.datamovement()
+    def write():
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        with out_m_dfb.wait() as blk:
+            tx = ttl.copy(blk, part_m[0, nid])
+            tx.wait()
+        with out_d_dfb.wait() as blk:
+            tx = ttl.copy(blk, part_d[0, nid])
+            tx.wait()
+        with out_o0_dfb.wait() as blk:
+            tx = ttl.copy(blk, part_o0[0, nid])
+            tx.wait()
+        with out_o1_dfb.wait() as blk:
+            tx = ttl.copy(blk, part_o1[0, nid])
+            tx.wait()
+
+
+@ttl.kernel(grid=(FUSED_REDUCE_GRID_Y, FUSED_REDUCE_GRID_X))
+def fused_reduce_both(part_m, part_d, part_o0, part_o1, attn_out):
+    """14-core fused reduce for both KV groups.
+
+    Cores 0-6: group 0, cores 7-13: group 1.
+    Each core reduces 4 partials for one head.
+    """
+    Nt_per_core = TILES_PER_CORE  # 4 partials per head
+    Kt_q = 2
+
+    pm_dfb = ttl.make_dataflow_buffer_like(part_m, shape=(1, 1), buffer_factor=2)
+    pd_dfb = ttl.make_dataflow_buffer_like(part_d, shape=(1, 1), buffer_factor=2)
+    po0_dfb = ttl.make_dataflow_buffer_like(part_o0, shape=(1, 1), buffer_factor=2)
+    po1_dfb = ttl.make_dataflow_buffer_like(part_o1, shape=(1, 1), buffer_factor=2)
+    m_save_dfb = ttl.make_dataflow_buffer_like(part_m, shape=(1, 1), buffer_factor=2)
+    m_old_copy_dfb = ttl.make_dataflow_buffer_like(part_m, shape=(1, 1), buffer_factor=2)
+    alpha_dfb = ttl.make_dataflow_buffer_like(part_m, shape=(1, 1), buffer_factor=2)
+    alpha_bc_dfb = ttl.make_dataflow_buffer_like(part_m, shape=(1, 1), buffer_factor=2)
+    d_save_dfb = ttl.make_dataflow_buffer_like(part_d, shape=(1, 1), buffer_factor=2)
+    d_scaled_dfb = ttl.make_dataflow_buffer_like(part_d, shape=(1, 1), buffer_factor=2)
+    o0_save_dfb = ttl.make_dataflow_buffer_like(part_o0, shape=(1, 1), buffer_factor=2)
+    o1_save_dfb = ttl.make_dataflow_buffer_like(part_o1, shape=(1, 1), buffer_factor=2)
+    o0_tmp_dfb = ttl.make_dataflow_buffer_like(part_o0, shape=(1, 1), buffer_factor=2)
+    o1_tmp_dfb = ttl.make_dataflow_buffer_like(part_o1, shape=(1, 1), buffer_factor=2)
+    d_bc_dfb = ttl.make_dataflow_buffer_like(part_d, shape=(1, 1), buffer_factor=2)
+    o0_out_dfb = ttl.make_dataflow_buffer_like(attn_out, shape=(1, 1), buffer_factor=2)
+    o1_out_dfb = ttl.make_dataflow_buffer_like(attn_out, shape=(1, 1), buffer_factor=2)
+
+    y_size, x_size = ttl.grid_size(dims=2)
+
+    @ttl.datamovement()
+    def read():
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        group = nid // HEADS_PER_GROUP  # 0 or 1
+        head = nid % HEADS_PER_GROUP     # 0-6
+        part_base = group * CORES_PER_GROUP + head * Nt_per_core
+        for i in range(Nt_per_core):
+            with pm_dfb.reserve() as blk:
+                tx = ttl.copy(part_m[0, part_base + i], blk)
+                tx.wait()
+            with pd_dfb.reserve() as blk:
+                tx = ttl.copy(part_d[0, part_base + i], blk)
+                tx.wait()
+            with po0_dfb.reserve() as blk:
+                tx = ttl.copy(part_o0[0, part_base + i], blk)
+                tx.wait()
+            with po1_dfb.reserve() as blk:
+                tx = ttl.copy(part_o1[0, part_base + i], blk)
+                tx.wait()
+
+    @ttl.compute()
+    def compute():
+        # Init from first partial
+        with pm_dfb.wait() as pm0:
+            with m_save_dfb.reserve() as ms:
+                ms.store(pm0)
+        with pd_dfb.wait() as pd0:
+            with d_save_dfb.reserve() as ds:
+                ds.store(pd0)
+        with po0_dfb.wait() as p00:
+            with o0_save_dfb.reserve() as o0s:
+                o0s.store(p00)
+        with po1_dfb.wait() as p01:
+            with o1_save_dfb.reserve() as o1s:
+                o1s.store(p01)
+
+        # Merge remaining partials
+        for _ in range(Nt_per_core - 1):
+            with pm_dfb.wait() as new_m, m_save_dfb.wait() as old_m:
+                with m_save_dfb.reserve() as ms:
+                    ms.store(ttl.math.max(old_m, new_m))
+                with m_old_copy_dfb.reserve() as moc:
+                    moc.store(old_m)
+            with m_save_dfb.wait() as m_merged:
+                with m_save_dfb.reserve() as ms2:
+                    ms2.store(m_merged)
+                with m_old_copy_dfb.wait() as m_old2:
+                    with alpha_dfb.reserve() as alpha:
+                        alpha.store(ttl.math.exp(m_old2 - m_merged))
+            with alpha_dfb.wait() as alpha_val:
+                with alpha_bc_dfb.reserve() as abc:
+                    abc.store(ttl.math.broadcast(alpha_val, abc, dims=[0, 1]))
+            with alpha_bc_dfb.wait() as alpha_bc:
+                with d_save_dfb.wait() as d_old:
+                    with d_scaled_dfb.reserve() as ds:
+                        ds.store(d_old * alpha_bc)
+                with o0_save_dfb.wait() as o0_old:
+                    with o0_tmp_dfb.reserve() as o0t:
+                        o0t.store(o0_old * alpha_bc)
+                with o1_save_dfb.wait() as o1_old:
+                    with o1_tmp_dfb.reserve() as o1t:
+                        o1t.store(o1_old * alpha_bc)
+            with pd_dfb.wait() as new_d, d_scaled_dfb.wait() as d_scaled:
+                with d_save_dfb.reserve() as ds2:
+                    ds2.store(d_scaled + new_d)
+            with po0_dfb.wait() as new_o0, o0_tmp_dfb.wait() as o0_scaled:
+                with o0_save_dfb.reserve() as o0s2:
+                    o0s2.store(o0_scaled + new_o0)
+            with po1_dfb.wait() as new_o1, o1_tmp_dfb.wait() as o1_scaled:
+                with o1_save_dfb.reserve() as o1s2:
+                    o1s2.store(o1_scaled + new_o1)
+
+        # Final normalize: o / d (separate recip and broadcast per compiler rules)
+        with d_save_dfb.wait() as d_final:
+            with d_scaled_dfb.reserve() as dr:
+                dr.store(ttl.math.recip(d_final))
+        with d_scaled_dfb.wait() as d_recip:
+            with d_bc_dfb.reserve() as dbc:
+                dbc.store(ttl.math.broadcast(d_recip, dbc, dims=[0, 1]))
+        with d_bc_dfb.wait() as d_inv:
+            with o0_save_dfb.wait() as o0_final:
+                with o0_out_dfb.reserve() as o0o:
+                    o0o.store(o0_final * d_inv)
+            with o1_save_dfb.wait() as o1_final:
+                with o1_out_dfb.reserve() as o1o:
+                    o1o.store(o1_final * d_inv)
+
+    @ttl.datamovement()
+    def write():
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        group = nid // HEADS_PER_GROUP
+        head = nid % HEADS_PER_GROUP
+        out_col = group * HEADS_PER_GROUP * Kt_q + head * Kt_q
+        with o0_out_dfb.wait() as blk:
+            tx = ttl.copy(blk, attn_out[0, out_col])
+            tx.wait()
+        with o1_out_dfb.wait() as blk:
+            tx = ttl.copy(blk, attn_out[0, out_col + 1])
+            tx.wait()
 
 
 if __name__ == "__main__":
