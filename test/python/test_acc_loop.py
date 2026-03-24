@@ -42,10 +42,14 @@ from utils.correctness import assert_allclose, assert_with_ulp
 
 TILE_SIZE = 32
 
-# Cross-compute accumulation currently only supports 1x1 tile domains.
-# Multi-tile requires Phase 2 (outer tile loop) of the accumulation plan.
 TILE_SHAPE_PARAMS = [
     pytest.param((1, 1), id="1x1tiles"),
+    pytest.param((2, 2), id="2x2tiles"),
+    pytest.param((1, 4), id="1x4tiles"),
+    pytest.param((4, 1), id="4x1tiles"),
+    pytest.param((2, 4), id="2x4tiles"),
+    pytest.param((4, 2), id="4x2tiles"),
+    pytest.param((4, 4), id="4x4tiles"),
 ]
 
 DTYPE_PARAMS = [

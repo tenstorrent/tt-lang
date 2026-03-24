@@ -10,8 +10,9 @@
 // No accumulation group should be formed.
 // CHECK: ttl.compute
 // CHECK-NOT: ttl.acc_group
+// acc is stripped (single store, no-op accumulation).
 // CHECK: ttl.tile_store
-// CHECK-SAME: acc = true
+// CHECK-NOT: acc = true
 // CHECK: ttl.yield
 
 func.func @single_acc_no_loop(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,

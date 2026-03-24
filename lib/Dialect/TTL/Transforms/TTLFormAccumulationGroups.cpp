@@ -180,25 +180,71 @@ struct TTLFormAccumulationGroupsPass
       }
 
       if (!needsGroup) {
+        // Single acc store with no loop or siblings: acc is a no-op.
+        // Strip it so downstream passes don't trigger L1 accumulation.
+        for (auto &info : computeInfos) {
+          for (TileStoreOp store : info.stores) {
+            if (store.getAcc()) {
+              store.setAcc(false);
+            }
+          }
+        }
         continue;
       }
 
-      // Phase 1 restriction: only form groups for 1x1 tile domains.
-      // Multi-tile domains require an outer tile loop (Phase 2) to process
-      // one tile at a time; without it, all tiles mix in a single DST
-      // accumulator.
+      // When multiple computes accumulate to the same multi-tile output,
+      // each compute packs independently using L1 accumulation mode
+      // (pack_reconfig_l1_acc). The first store overwrites, subsequent
+      // stores add to the existing L1 value. No DST grouping is formed.
       auto viewTy = mlir::cast<RankedTensorType>(view.getType());
       bool isSingleTile = true;
-      for (int64_t dim = 0; dim < viewTy.getRank() - 1; ++dim) {
+      for (int64_t dim = 0; dim < viewTy.getRank(); ++dim) {
         if (viewTy.getDimSize(dim) != 1) {
           isSingleTile = false;
           break;
         }
       }
+      
       if (!isSingleTile) {
+        // L1 accumulation for multi-tile domains. acc=true tile_stores
+        // emit pack_reconfig_l1_acc(1) during TTKernel lowering. The
+        // first pack to the output DFB must overwrite (acc=false).
+        //
+        // Multi-compute: set the first store to acc=false.
+        // Single-compute in loop: peel the first iteration so the
+        // peeled copy stores with acc=false and the loop body retains
+        // acc=true.
+        if (computeInfos.size() > 1) {
+          computeInfos[0].stores[0].setAcc(false);
+        } else {
+          // Peel first iteration of the enclosing user loop.
+          Operation *ancestor = computeInfos[0].topLevelAncestor;
+          auto userLoop = dyn_cast<scf::ForOp>(ancestor);
+          if (userLoop) {
+            OpBuilder builder(userLoop);
+            // Clone the loop body before the loop as the peeled iteration.
+            IRMapping mapping;
+            mapping.map(userLoop.getInductionVar(),
+                        userLoop.getLowerBound());
+            for (auto &op : userLoop.getBody()->without_terminator()) {
+              Operation *cloned = builder.clone(op, mapping);
+              // The peeled iteration overwrites: set acc=false.
+              cloned->walk([](TileStoreOp store) {
+                if (store.getAcc()) {
+                  store.setAcc(false);
+                }
+              });
+            }
+            // Advance the loop lower bound by one step.
+            Value newLB = arith::AddIOp::create(
+                builder, userLoop.getLoc(), userLoop.getLowerBound(),
+                userLoop.getStep());
+            userLoop.setLowerBound(newLB);
+          }
+        }
         LLVM_DEBUG(llvm::dbgs()
-                   << "Phase A: Skipping multi-tile group for view " << view
-                   << " (requires Phase 2 outer tile loop)\n");
+                   << "Phase A: Multi-tile group for view " << view
+                   << " uses L1 accumulation\n");
         continue;
       }
 

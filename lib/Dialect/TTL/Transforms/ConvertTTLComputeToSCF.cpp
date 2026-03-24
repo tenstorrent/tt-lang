@@ -117,12 +117,10 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
     }
 
     Operation *cloned = b.clone(bodyOp, mapping);
-    // Strip the acc attribute: it was consumed by DST assignment (to force
-    // separate output region) and sync insertion (to place commit/wait after
-    // the store). The acc_dst_idx attribute survives and drives
-    // add_binary_tile emission in ConvertTTLToTTKernel.
+    // Strip acc when the DST accumulation path consumed it (acc_dst_idx
+    // present). Preserve acc for the L1 accumulation path.
     if (auto tileStore = dyn_cast<TileStoreOp>(cloned)) {
-      if (tileStore.getAcc()) {
+      if (tileStore.getAcc() && isAccumulatingStore(tileStore)) {
         tileStore.setAcc(false);
       }
     }

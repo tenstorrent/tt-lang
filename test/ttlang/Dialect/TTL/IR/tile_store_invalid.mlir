@@ -65,12 +65,4 @@ func.func @tile_store_empty_indices_in_compute(
 
 // -----
 
-// Accumulating tile_store must be inside a ttl.compute body.
-func.func @tile_store_acc_outside_compute(
-    %tile: !ttcore.tile<32x32, f32>) {
-  %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2], !ttcore.tile<32x32, f32>, 2>
-  %view = ttl.cb_reserve %cb : <[2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{'ttl.tile_store' op accumulating tile_store (acc = true) must be inside a ttl.compute body}}
-  ttl.tile_store %tile, %view[] {acc = true} : !ttcore.tile<32x32, f32>, tensor<2x!ttcore.tile<32x32, f32>>
-  func.return
-}
+// acc=true is valid outside compute bodies (L1 accumulation path).

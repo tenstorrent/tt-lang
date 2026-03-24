@@ -51,11 +51,7 @@ TILE_SHAPE_PARAMS = [
     pytest.param((4, 4), id="4x4tiles"),  # 16 tiles — triggers both bf16 and f32
 ]
 
-# Cross-compute accumulation currently only supports 1x1 tile domains.
-# Multi-tile requires Phase 2 (outer tile loop) of the accumulation plan.
-SINGLE_TILE_PARAMS = [
-    pytest.param((1, 1), id="1x1tiles"),
-]
+CROSS_COMPUTE_TILE_PARAMS = TILE_SHAPE_PARAMS
 
 DTYPE_PARAMS = [
     pytest.param(torch.bfloat16, id="bf16"),
@@ -445,7 +441,7 @@ class TestAccTwoStores(AccTestBase):
     template = ACC_TWO_STORES_TEMPLATE
     f32_accumulation = True
 
-    @pytest.fixture(params=SINGLE_TILE_PARAMS)
+    @pytest.fixture(params=CROSS_COMPUTE_TILE_PARAMS)
     def tile_shape(self, request):
         return request.param
 
@@ -460,7 +456,7 @@ class TestAccThreeStores(AccTestBase):
     num_inputs = 3
     f32_accumulation = True
 
-    @pytest.fixture(params=SINGLE_TILE_PARAMS)
+    @pytest.fixture(params=CROSS_COMPUTE_TILE_PARAMS)
     def tile_shape(self, request):
         return request.param
 
@@ -493,7 +489,7 @@ class TestAccBinaryOps(AccTestBase):
     template = ACC_BINARY_OPS_TEMPLATE
     f32_accumulation = True
 
-    @pytest.fixture(params=SINGLE_TILE_PARAMS)
+    @pytest.fixture(params=CROSS_COMPUTE_TILE_PARAMS)
     def tile_shape(self, request):
         return request.param
 

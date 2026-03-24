@@ -597,8 +597,23 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
       }
     }
 
+    // L1 accumulation: acc=true stores that were not claimed by the DST
+    // path (no acc_dst_idx). The packer adds to the existing L1 value.
+    // FormAccumulationGroups ensures the first store to each output is
+    // acc=false (overwrite).
+    bool useL1Acc = op.getAcc() && !isAccumulatingStore(op);
+    if (useL1Acc) {
+      Value one = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
+      ttk::PackReconfigL1AccOp::create(rewriter, loc, one);
+    }
+
     ttk::PackTileOp::create(rewriter, loc, dstIndex, *cb, cbTileIndex,
                             /*out_of_order=*/true);
+
+    if (useL1Acc) {
+      Value zero = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
+      ttk::PackReconfigL1AccOp::create(rewriter, loc, zero);
+    }
 
     rewriter.eraseOp(op);
     return success();
