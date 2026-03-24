@@ -284,6 +284,83 @@ def fused_gate_up_silu_kernel(X, W_gate, W_up, Y):
                 tx.wait()
 
 
+# =========================================================================
+# Fused linear + residual add: Y = X @ W + residual
+# =========================================================================
+
+
+@ttl.kernel(grid=(GRID_Y, GRID_X))
+def linear_residual_kernel(X, W, residual, Y):
+    """Y = X @ W + residual. Fuses projection + residual add.
+
+    Saves one kernel dispatch + eliminates the projection intermediate.
+    """
+    Mt = X.shape[0] // TILE
+    Kt = X.shape[1] // TILE
+    Nt = W.shape[1] // TILE
+    num_output_tiles = Mt * Nt
+
+    x_dfb = ttl.make_dataflow_buffer_like(X, shape=(1, 1), buffer_factor=2)
+    w_dfb = ttl.make_dataflow_buffer_like(W, shape=(1, 1), buffer_factor=2)
+    r_dfb = ttl.make_dataflow_buffer_like(residual, shape=(1, 1), buffer_factor=2)
+    acc_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1), buffer_factor=2)
+    y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1), buffer_factor=2)
+
+    y_size, x_size = ttl.grid_size(dims=2)
+    num_cores = y_size * x_size
+    chunk = (num_output_tiles + num_cores - 1) // num_cores
+
+    @ttl.datamovement()
+    def read():
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        tile_start = nid * chunk
+        for tid in range(chunk):
+            out_idx = (tile_start + tid) % num_output_tiles
+            m = out_idx // Nt
+            n = out_idx % Nt
+            for k in range(Kt):
+                with x_dfb.reserve() as blk:
+                    tx = ttl.copy(X[m, k], blk)
+                    tx.wait()
+                with w_dfb.reserve() as blk:
+                    tx = ttl.copy(W[k, n], blk)
+                    tx.wait()
+            # Read residual tile for this output position
+            with r_dfb.reserve() as blk:
+                tx = ttl.copy(residual[m, n], blk)
+                tx.wait()
+
+    @ttl.compute()
+    def compute():
+        for _ in range(chunk):
+            # Matmul accumulation
+            with x_dfb.wait() as x_blk, w_dfb.wait() as w_blk:
+                with acc_dfb.reserve() as acc:
+                    acc.store(x_blk @ w_blk)
+            for _ in range(Kt - 1):
+                with x_dfb.wait() as x_blk, w_dfb.wait() as w_blk, acc_dfb.wait() as prev:
+                    with acc_dfb.reserve() as acc:
+                        acc.store(prev + x_blk @ w_blk)
+            # Add residual
+            with acc_dfb.wait() as proj, r_dfb.wait() as res:
+                with y_dfb.reserve() as y_blk:
+                    y_blk.store(proj + res)
+
+    @ttl.datamovement()
+    def write():
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        tile_start = nid * chunk
+        for tid in range(chunk):
+            out_idx = (tile_start + tid) % num_output_tiles
+            m = out_idx // Nt
+            n = out_idx % Nt
+            with y_dfb.wait() as blk:
+                tx = ttl.copy(blk, Y[m, n])
+                tx.wait()
+
+
 DOWN_K_SPLITS = 4
 
 
@@ -398,19 +475,76 @@ def down_proj_reduce_kernel(partial_out, Y):
     @ttl.compute()
     def compute():
         for _ in range(chunk):
-            # First partial: init accumulator
             with p_dfb.wait() as p_blk:
                 with acc_dfb.reserve() as acc:
                     acc.store(p_blk)
-            # Remaining partials: add
             for _ in range(DOWN_K_SPLITS - 1):
                 with p_dfb.wait() as p_blk, acc_dfb.wait() as prev:
                     with acc_dfb.reserve() as acc:
                         acc.store(prev + p_blk)
-            # Move to output
             with acc_dfb.wait() as result:
                 with y_dfb.reserve() as y_blk:
                     y_blk.store(result)
+
+    @ttl.datamovement()
+    def write():
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        tile_start = nid * chunk
+        for tid in range(chunk):
+            n = (tile_start + tid) % Nt
+            with y_dfb.wait() as y_blk:
+                tx = ttl.copy(y_blk, Y[0, n])
+                tx.wait()
+
+
+@ttl.kernel(grid=(7, 4))
+def down_proj_reduce_residual_kernel(partial_out, residual, Y):
+    """Sum K_SPLITS partial tiles + add residual per output tile.
+
+    Fuses down_proj reduce + residual add into one kernel.
+    """
+    Nt = Y.shape[1] // TILE
+
+    p_dfb = ttl.make_dataflow_buffer_like(partial_out, shape=(1, 1), buffer_factor=2)
+    r_dfb = ttl.make_dataflow_buffer_like(residual, shape=(1, 1), buffer_factor=2)
+    acc_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1), buffer_factor=2)
+    y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1), buffer_factor=2)
+
+    y_size, x_size = ttl.grid_size(dims=2)
+    num_cores = y_size * x_size
+    chunk = (Nt + num_cores - 1) // num_cores
+
+    @ttl.datamovement()
+    def read():
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        tile_start = nid * chunk
+        for tid in range(chunk):
+            n = (tile_start + tid) % Nt
+            for ks in range(DOWN_K_SPLITS):
+                with p_dfb.reserve() as blk:
+                    tx = ttl.copy(partial_out[0, n * DOWN_K_SPLITS + ks], blk)
+                    tx.wait()
+            with r_dfb.reserve() as blk:
+                tx = ttl.copy(residual[0, n], blk)
+                tx.wait()
+
+    @ttl.compute()
+    def compute():
+        for _ in range(chunk):
+            # Sum partials
+            with p_dfb.wait() as p_blk:
+                with acc_dfb.reserve() as acc:
+                    acc.store(p_blk)
+            for _ in range(DOWN_K_SPLITS - 1):
+                with p_dfb.wait() as p_blk, acc_dfb.wait() as prev:
+                    with acc_dfb.reserve() as acc:
+                        acc.store(prev + p_blk)
+            # Add residual
+            with acc_dfb.wait() as proj, r_dfb.wait() as res:
+                with y_dfb.reserve() as y_blk:
+                    y_blk.store(proj + res)
 
     @ttl.datamovement()
     def write():

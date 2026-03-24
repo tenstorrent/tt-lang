@@ -21,8 +21,9 @@ import ttnn
 sys.path.insert(0, os.path.dirname(__file__))
 from kernels.linear import (
     linear_kernel, linear_bias_kernel,
-    fused_gate_up_silu_kernel,
-    down_proj_partial_kernel, down_proj_reduce_kernel, DOWN_K_SPLITS,
+    linear_residual_kernel, fused_gate_up_silu_kernel,
+    down_proj_partial_kernel, down_proj_reduce_kernel,
+    down_proj_reduce_residual_kernel, DOWN_K_SPLITS,
 )
 from kernels.elementwise import add_kernel, silu_mul_kernel
 from kernels.rope import batch_rope_kernel
@@ -642,19 +643,18 @@ class QwenModel:
             "x_b": self._alloc_zeros((TILE, H), l1=True),
             "normed": self._alloc_zeros((TILE, H), l1=True),
             "qkv_out": self._alloc_zeros((TILE, H + KV + KV), l1=True),  # [32, 1152]
-            "q_rot": self._alloc_zeros((TILE, H), l1=True),
-            "k_rot": self._alloc_zeros((TILE, KV), l1=True),
+            "qk_rot": self._alloc_zeros((TILE, H + KV), l1=True),  # Q+K RoPE combined
             "attn_out": self._alloc_zeros((TILE, H), l1=True),
             "part_m": self._alloc_zeros((TILE, TOTAL_PAR_CORES * TILE), l1=True),
             "part_d": self._alloc_zeros((TILE, TOTAL_PAR_CORES * TILE), l1=True),
             "part_o0": self._alloc_zeros((TILE, TOTAL_PAR_CORES * TILE), l1=True),
             "part_o1": self._alloc_zeros((TILE, TOTAL_PAR_CORES * TILE), l1=True),
-            "proj_out": self._alloc_zeros((TILE, H), l1=True),
+            # proj_out eliminated by linear_residual_kernel (O proj + residual fused)
             "post_attn": self._alloc_zeros((TILE, H), l1=True),
             "normed2": self._alloc_zeros((TILE, H), l1=True),
             # gate_out / up_out eliminated by fused_gate_up_silu_kernel
             "mlp_hidden": self._alloc_zeros((TILE, I), l1=True),
-            "mlp_out": self._alloc_zeros((TILE, H), l1=True),
+            # mlp_out eliminated by down_proj_reduce_residual_kernel
             "final_out": self._alloc_zeros((TILE, H), l1=True),
             "cos_dev": self._alloc_zeros((TILE, self.head_dim)),
             "sin_dev": self._alloc_zeros((TILE, self.head_dim)),
@@ -668,10 +668,10 @@ class QwenModel:
             "argmax_scaler": self._to_device(
                 torch.ones(TILE, TILE, dtype=torch.bfloat16)),
             "argmax_max_out": self._alloc_zeros(
-                (TILE, ARGMAX_GRID_Y * ARGMAX_GRID_X * TILE)),
-            "argmax_global_max": self._alloc_zeros((TILE, TILE)),
+                (TILE, ARGMAX_GRID_Y * ARGMAX_GRID_X * TILE), l1=True),
+            "argmax_global_max": self._alloc_zeros((TILE, TILE), l1=True),
             "argmax_index_out": self._alloc_zeros(
-                (TILE, ARGMAX_GRID_Y * ARGMAX_GRID_X * TILE)),
+                (TILE, ARGMAX_GRID_Y * ARGMAX_GRID_X * TILE), l1=True),
             # KV cache update masks (full-width, updated per token)
             "kv_row_masks": self._alloc_zeros((TILE, self.padded_max_seq)),
             "kv_irow_masks": self._to_device(
@@ -714,14 +714,13 @@ class QwenModel:
             KV = self.num_kv_heads * self.head_dim  # 128
             linear_bias_kernel(tb["normed"], w["qkv_weight"], w["qkv_bias"], tb["qkv_out"])
 
-            # 3. Batch RoPE on Q and K slices from fused output
-            batch_rope_kernel(tb["qkv_out"][:, :H], tb["cos_dev"], tb["sin_dev"], tb["q_rot"])
-            batch_rope_kernel(tb["qkv_out"][:, H:H+KV], tb["cos_dev"], tb["sin_dev"],
-                              self._tb_k_rot[layer_idx])
+            # 3. Batch RoPE on Q+K combined (16 head pairs in one call)
+            batch_rope_kernel(tb["qkv_out"][:, :H+KV], tb["cos_dev"], tb["sin_dev"],
+                              tb["qk_rot"])
 
-            # 4. KV cache update (V from fused QKV output slice)
+            # 4. KV cache update (K from qk_rot slice, V from QKV output slice)
             kv_cache_update_traced(
-                self._tb_k_rot[layer_idx], tb["qkv_out"][:, H+KV:H+KV+KV],
+                tb["qk_rot"][:, H:H+KV], tb["qkv_out"][:, H+KV:H+KV+KV],
                 self.kv_cache_dev[layer_idx][0]["k_t"],
                 self.kv_cache_dev[layer_idx][1]["k_t"],
                 self.kv_cache_dev[layer_idx][0]["v"],
@@ -735,7 +734,7 @@ class QwenModel:
                 (parallel_partial_g0, parallel_reduce_g0),
                 (parallel_partial_g1, parallel_reduce_g1),
             ]):
-                p_kern(tb["q_rot"], self.kv_cache_dev[layer_idx][kv_idx]["k_t"],
+                p_kern(tb["qk_rot"][:, :H], self.kv_cache_dev[layer_idx][kv_idx]["k_t"],
                        self.kv_cache_dev[layer_idx][kv_idx]["v"],
                        tb["mask_dev"], self.ones_scaler_device,
                        self.attn_scale_device,
@@ -743,9 +742,9 @@ class QwenModel:
                 r_kern(tb["part_m"], tb["part_d"], tb["part_o0"], tb["part_o1"],
                        tb["attn_out"])
 
-            # 6. O projection + residual
-            linear_kernel(tb["attn_out"], w["o_proj_weight"], tb["proj_out"])
-            add_kernel(tb[cur_in], tb["proj_out"], tb["post_attn"])
+            # 6. O projection + residual (fused)
+            linear_residual_kernel(
+                tb["attn_out"], w["o_proj_weight"], tb[cur_in], tb["post_attn"])
 
             # 7. MLP
             fused_rmsnorm_kernel(tb["post_attn"], self.mean_scaler_device,
@@ -754,8 +753,8 @@ class QwenModel:
                 tb["normed2"], w["gate_proj_weight"], w["up_proj_weight"], tb["mlp_hidden"])
             down_proj_partial_kernel(
                 tb["mlp_hidden"], w["down_proj_weight"], tb["down_proj_partial"])
-            down_proj_reduce_kernel(tb["down_proj_partial"], tb["mlp_out"])
-            add_kernel(tb["post_attn"], tb["mlp_out"], tb[cur_out])
+            down_proj_reduce_residual_kernel(
+                tb["down_proj_partial"], tb["post_attn"], tb[cur_out])
 
             cur_in, cur_out = cur_out, cur_in
 
