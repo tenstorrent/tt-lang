@@ -33,7 +33,10 @@ from kernels.multicore_attn import (
 )
 from kernels.kv_cache_update import get_kv_cache_update_kernel
 from kernels.kv_cache_update_traced import kv_cache_update_traced, build_full_masks
-from kernels.argmax import DeviceArgmax
+from kernels.argmax import (
+    DeviceArgmax, parallel_max_reduce_kernel, global_max_reduce_kernel,
+    parallel_index_find_kernel, GRID_Y as ARGMAX_GRID_Y, GRID_X as ARGMAX_GRID_X,
+)
 from utils import load_checkpoint
 
 TILE = 32
@@ -639,6 +642,14 @@ class QwenModel:
             "sin_dev": self._alloc_zeros((TILE, self.head_dim)),
             "mask_dev": self._alloc_zeros((TILE, self.padded_max_seq)),
             "logits": self._alloc_zeros((TILE, self.vocab_size)),
+            # Argmax pipeline buffers (included in trace for zero dispatch overhead)
+            "argmax_scaler": self._to_device(
+                torch.ones(TILE, TILE, dtype=torch.bfloat16)),
+            "argmax_max_out": self._alloc_zeros(
+                (TILE, ARGMAX_GRID_Y * ARGMAX_GRID_X * TILE)),
+            "argmax_global_max": self._alloc_zeros((TILE, TILE)),
+            "argmax_index_out": self._alloc_zeros(
+                (TILE, ARGMAX_GRID_Y * ARGMAX_GRID_X * TILE)),
             # KV cache update masks (full-width, updated per token)
             "kv_row_masks": self._alloc_zeros((TILE, self.padded_max_seq)),
             "kv_irow_masks": self._to_device(
@@ -731,6 +742,40 @@ class QwenModel:
                               self.final_norm_weight, tb["final_out"])
         linear_kernel(tb["final_out"], self.lm_head_weight_device, tb["logits"])
 
+        # Argmax pipeline (inside trace — zero dispatch overhead)
+        parallel_max_reduce_kernel(
+            tb["logits"], tb["argmax_scaler"], tb["argmax_max_out"])
+        global_max_reduce_kernel(
+            tb["argmax_max_out"], tb["argmax_scaler"], tb["argmax_global_max"])
+        parallel_index_find_kernel(
+            tb["logits"], tb["argmax_global_max"], tb["argmax_index_out"])
+
+    def _read_traced_argmax(self):
+        """Read the argmax result from the trace buffer (tiny readback).
+
+        The argmax_index_out tensor has per-core results with tile_col at
+        [0,1] and local_col at [0,0] for each core's tile.
+        """
+        num_cores = ARGMAX_GRID_Y * ARGMAX_GRID_X
+        # Pre-allocate host buffer on first call
+        if not hasattr(self, '_argmax_host_buf'):
+            out_cols = num_cores * TILE
+            self._argmax_host_buf = ttnn.from_torch(
+                torch.zeros(TILE, out_cols, dtype=torch.bfloat16),
+                dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+            )
+        ttnn.copy_device_to_host_tensor(
+            self._tb["argmax_index_out"], self._argmax_host_buf)
+        idx_bf16 = self._argmax_host_buf.to_torch().to(torch.bfloat16)
+        idx_raw = idx_bf16.view(torch.int16).to(torch.int64)
+        local_cols = idx_raw[0, ::TILE].numpy()[:num_cores] & 0xFFFF
+        tile_cols = idx_raw[0, 1::TILE].numpy()[:num_cores] & 0xFFFF
+        core_indices = tile_cols * TILE + local_cols
+        valid_mask = (tile_cols > 0) | (local_cols > 0)
+        if valid_mask.any():
+            return int(core_indices[valid_mask].min())
+        return 0
+
     def _capture_decode_trace(self):
         """Capture the full decode sequence as a trace."""
         print("  Capturing decode trace (warmup)...", end="", flush=True)
@@ -794,12 +839,13 @@ class QwenModel:
             ttnn.copy_host_to_device_tensor(
                 ttnn.from_torch(kv_icol_m, layout=ttnn.TILE_LAYOUT), self._tb["kv_icol_masks"])
 
-            # Replay the full 24-layer decode (includes KV cache update + lm_head)
+            # Replay the full decode (24 layers + lm_head + argmax pipeline)
             ttnn.execute_trace(self.device, self._trace_id, cq_id=0, blocking=True)
             self._trace_kv_ready = True
 
             if greedy:
-                result = self.device_argmax(self._tb["logits"])
+                # Argmax result is already in the trace buffer — tiny readback
+                result = self._read_traced_argmax()
             else:
                 logits_host = ttnn.to_torch(self._tb["logits"]).float()
                 result = logits_host[:1]
