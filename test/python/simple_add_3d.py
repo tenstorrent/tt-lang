@@ -6,7 +6,9 @@
 # RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
-# RUN: env TTLANG_COMPILE_ONLY=1 %python %s > %t.fpu.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s > %t.fpu.block.output 2>&1
+# RUN: FileCheck %s --check-prefix=CHECK-CPP-FPU-BLOCK < %t.fpu.block.output
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s --no-ttl-combine-pack-tiles > %t.fpu.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-CPP-FPU < %t.fpu.output
 
 """
@@ -164,9 +166,15 @@ def add_3d_kernel(lhs, rhs, out):
 # CHECK-CPP-FPU: tile_regs_wait();
 # CHECK-CPP-FPU: pack_tile<true>(
 # CHECK-CPP-FPU: tile_regs_release();
-# CHECK-CPP-FPU: cb_pop_front(get_compile_time_arg_val(0),
-# CHECK-CPP-FPU: cb_pop_front(get_compile_time_arg_val(1),
 # CHECK-CPP-FPU: cb_push_back(get_compile_time_arg_val(2),
+# CHECK-CPP-FPU-NOT: pack_tile_block(
+
+# Default (combine-pack-tiles enabled): individual pack_tile ops combined.
+# CHECK-CPP-FPU-BLOCK: tile_regs_wait();
+# CHECK-CPP-FPU-BLOCK: pack_tile_block(
+# CHECK-CPP-FPU-BLOCK: tile_regs_release();
+# CHECK-CPP-FPU-BLOCK: cb_push_back(get_compile_time_arg_val(2),
+# CHECK-CPP-FPU-BLOCK-NOT: pack_tile<true>(
 
 
 if __name__ == "__main__":
