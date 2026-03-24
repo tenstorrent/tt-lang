@@ -1149,5 +1149,4 @@ def matmul_read():
 | Tile size in scalars | 32, 32 | 32, 32 |
 | Maximum single chip grid size (unharvested) | 8, 9 | 13, 10 |
 | Size of L1 memory (KB) | 1464 | 1464 |
-| Maximum size of program binaries (KB) | 128 | 128 |
 | Maximum number of dataflow buffers | 32 | 32 |
