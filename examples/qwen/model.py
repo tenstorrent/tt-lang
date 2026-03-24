@@ -96,10 +96,20 @@ class QwenModel:
                 k: self._to_device(v) for k, v in layer_data.items()
             }
 
-            # Pre-split Q/K/V weights per head for decode (avoids host reshape)
-            # Q: [896, 896] → 14 × [896, 64]
+            # Fused QKV weight: concatenate Q, K, V weights and biases
+            # [896, 896+128+128] = [896, 1152] and [32, 1152]
             q_w = layer_data["q_proj_weight"]  # [896, 896]
             q_b = layer_data["q_proj_bias"]    # [32, 896]
+            k_w = layer_data["k_proj_weight"]  # [896, 128]
+            k_b = layer_data["k_proj_bias"]    # [32, 128]
+            v_w = layer_data["v_proj_weight"]  # [896, 128]
+            v_b = layer_data["v_proj_bias"]    # [32, 128]
+            qkv_w = torch.cat([q_w, k_w, v_w], dim=1)  # [896, 1152]
+            qkv_b = torch.cat([q_b, k_b, v_b], dim=1)  # [32, 1152]
+            layer_on_device["qkv_weight"] = self._to_device(qkv_w)
+            layer_on_device["qkv_bias"] = self._to_device(qkv_b)
+
+            # Pre-split Q/K/V weights per head for decode (avoids host reshape)
             # Pre-scale Q weights by 1/sqrt(head_dim) so decode never needs runtime scaling
             attn_scale = 1.0 / math.sqrt(self.head_dim)
             layer_on_device["q_head_weights"] = []
@@ -630,9 +640,7 @@ class QwenModel:
             "x_a": self._alloc_zeros((TILE, H), l1=True),
             "x_b": self._alloc_zeros((TILE, H), l1=True),
             "normed": self._alloc_zeros((TILE, H), l1=True),
-            "q_out": self._alloc_zeros((TILE, H), l1=True),
-            "k_out": self._alloc_zeros((TILE, KV), l1=True),
-            "v_out": self._alloc_zeros((TILE, KV), l1=True),
+            "qkv_out": self._alloc_zeros((TILE, H + KV + KV), l1=True),  # [32, 1152]
             "q_rot": self._alloc_zeros((TILE, H), l1=True),
             "k_rot": self._alloc_zeros((TILE, KV), l1=True),
             "attn_out": self._alloc_zeros((TILE, H), l1=True),
@@ -701,20 +709,19 @@ class QwenModel:
             fused_rmsnorm_kernel(tb[cur_in], self.mean_scaler_device,
                                   w["input_layernorm_weight"], tb["normed"])
 
-            # 2. QKV projections (V goes to per-layer buffer for KV cache update)
-            linear_bias_kernel(tb["normed"], w["q_proj_weight"], w["q_proj_bias"], tb["q_out"])
-            linear_bias_kernel(tb["normed"], w["k_proj_weight"], w["k_proj_bias"], tb["k_out"])
-            linear_bias_kernel(tb["normed"], w["v_proj_weight"], w["v_proj_bias"],
-                              self._tb_v_out[layer_idx])
+            # 2. Fused QKV projection — single matmul for Q+K+V
+            H = self.hidden_size   # 896
+            KV = self.num_kv_heads * self.head_dim  # 128
+            linear_bias_kernel(tb["normed"], w["qkv_weight"], w["qkv_bias"], tb["qkv_out"])
 
-            # 3. Batch RoPE (K goes to per-layer buffer for KV cache update)
-            batch_rope_kernel(tb["q_out"], tb["cos_dev"], tb["sin_dev"], tb["q_rot"])
-            batch_rope_kernel(tb["k_out"], tb["cos_dev"], tb["sin_dev"],
+            # 3. Batch RoPE on Q and K slices from fused output
+            batch_rope_kernel(tb["qkv_out"][:, :H], tb["cos_dev"], tb["sin_dev"], tb["q_rot"])
+            batch_rope_kernel(tb["qkv_out"][:, H:H+KV], tb["cos_dev"], tb["sin_dev"],
                               self._tb_k_rot[layer_idx])
 
-            # 4. KV cache update (inside trace — masks encode target position)
+            # 4. KV cache update (V from fused QKV output slice)
             kv_cache_update_traced(
-                self._tb_k_rot[layer_idx], self._tb_v_out[layer_idx],
+                self._tb_k_rot[layer_idx], tb["qkv_out"][:, H+KV:H+KV+KV],
                 self.kv_cache_dev[layer_idx][0]["k_t"],
                 self.kv_cache_dev[layer_idx][1]["k_t"],
                 self.kv_cache_dev[layer_idx][0]["v"],
