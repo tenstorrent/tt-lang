@@ -86,23 +86,80 @@ def TTLAssignDST
 
 def TTLFormAccumulationGroups
     : Pass<"ttl-form-accumulation-groups", "::mlir::func::FuncOp"> {
-  let summary = "Detect and mark cross-compute accumulation groups";
+  let summary = "Handle accumulation across multiple stores to the same output";
   let description = [{
-    Detects computes that store to the same output view with acc=true and
-    marks them with a shared `ttl.acc_group` ID attribute. This enables
-    downstream passes (AssignDST, InsertTileRegsSync) to allocate a shared
-    accumulator register and place sync ops spanning the entire group.
+    Handles accumulation across multiple stores to the same output DFB,
+    including stores in separate compute ops and stores across user loop
+    iterations. (Accumulation within a single compute body is handled by
+    AssignDST, not this pass.)
 
-    Group detection rules:
+    Group detection:
     - Multi-compute: two or more computes store to the same view, at least
       one with acc=true.
     - Single-compute in loop: one compute with acc=true nested inside a
       user scf.for (not a tile loop or subblock loop).
+    - Single acc store with no siblings or loop: acc is stripped (no-op).
 
-    For the initializer store (first store in program order, acc=false), the
-    pass converts it to acc=true so that it accumulates into the shared
-    DST register (zero-init + add) instead of packing directly.
+    Two accumulation paths:
+
+    DST grouping (maximize-dst enabled): computes are marked with a shared
+    `ttl.acc_group` ID so downstream passes (AssignDST, InsertTileRegsSync)
+    allocate a shared DST accumulator register and group-level sync region.
+    The initializer store is converted to acc=true so it accumulates into
+    the shared register (zero-init + add). Subblocking ensures each tile
+    gets its own accumulator register for multi-tile domains.
+
+    L1 accumulation (maximize-dst disabled): each compute packs
+    independently with pack_reconfig_l1_acc. The first store overwrites
+    (acc=false); subsequent stores accumulate in L1. For loop-only patterns
+    the first iteration is peeled to provide the overwrite.
+
+    Example -- DST grouping (1x1, two consecutive acc stores):
+    ```mlir
+    // Before: two computes, both acc=true, 1x1 output
+    ttl.compute ins(%a) outs(%init) ... {
+      ttl.tile_store %a_tile, %view[%i, %j] {acc = true}
+    }
+    ttl.compute ins(%b) outs(%init) ... {
+      ttl.tile_store %b_tile, %view[%i, %j] {acc = true}
+    }
+
+    // After: both marked with acc_group, init converted to acc=true
+    ttl.compute ... {ttl.acc_group = 0} {
+      ttl.tile_store %a_tile, %view[%i, %j] {acc = true}
+    }
+    ttl.compute ... {ttl.acc_group = 0} {
+      ttl.tile_store %b_tile, %view[%i, %j] {acc = true}
+    }
+    ```
+
+    Example -- L1 accumulation (2x2, loop-only):
+    ```mlir
+    // Before: single compute in loop, acc=true, multi-tile output
+    scf.for %iv = %c0 to %c4 step %c1 {
+      ttl.compute ins(%r) outs(%init) ... {
+        ttl.tile_store %r_tile, %view[%i, %j] {acc = true}
+      }
+    }
+
+    // After: first iteration peeled with acc=false, loop LB advanced
+    ttl.compute ins(%r) outs(%init) ... {
+      ttl.tile_store %r_tile, %view[%i, %j]  // acc stripped (overwrite)
+    }
+    scf.for %iv = %c1 to %c4 step %c1 {
+      ttl.compute ins(%r) outs(%init) ... {
+        ttl.tile_store %r_tile, %view[%i, %j] {acc = true}  // L1 acc
+      }
+    }
+    ```
   }];
+
+  let options = [
+    Option<"maximizeDST", "maximize-dst",
+           "bool", /*default=*/"true",
+           "Use DST grouping (requires subblocking). When false, "
+           "multi-tile groups use L1 accumulation instead.">
+  ];
 
   let dependentDialects = [
     "::mlir::scf::SCFDialect"

@@ -1150,7 +1150,7 @@ def _compile_kernel(
 
         pipeline_passes = [
             "func.func(convert-ttl-to-compute)",
-            "func.func(ttl-form-accumulation-groups)",
+            f"func.func(ttl-form-accumulation-groups{{maximize-dst={int(compiler_options.maximize_dst)}}})",
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",
         ]
