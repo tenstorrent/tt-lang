@@ -358,7 +358,7 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
     }
 
     // Single-compute sync regions have a fixed set of input CBs.
-    // Cross-compute accumulation groups may span multiple computes with
+    // Multi-compute accumulation groups may span multiple computes with
     // different input CBs; analyzeSyncRegion promotes these to
     // binary_op_init_common.
 

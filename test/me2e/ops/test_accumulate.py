@@ -10,7 +10,7 @@ Validates the full accumulation pipeline on hardware:
 
 Each test stores an expression with acc=true. The accumulator is
 zero-initialized, so the result is 0 + expr = expr. This verifies
-the accumulation lowering path (DST assignment, sync placement,
+the accumulation lowering (DST assignment, sync placement,
 TTKernel emission) produces correct results without corrupting data.
 """
 
@@ -122,7 +122,7 @@ class TestAccAddBinary(AccumulateTestBase):
     Pattern: y.store(a + b, acc=True)
     Expected: 0 + (a + b) = a + b
 
-    Validates that the accumulation path (fill_tile -> add_binary_tile ->
+    Validates that DST accumulation (fill_tile -> add_binary_tile ->
     pack_tile) produces the same result as a direct add.
     """
 
@@ -250,7 +250,7 @@ class TestAccPassthrough(AccumulateTestBase):
     Pattern: y.store(a, acc=True)
     Expected: 0 + a = a
 
-    Tests the passthrough path (LowerStoreToCompute) with accumulation.
+    Tests passthrough lowering (LowerStoreToCompute) with accumulation.
     The compute body contains only a copy_tile + acc tile_store.
     """
 

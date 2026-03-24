@@ -117,8 +117,8 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
     }
 
     Operation *cloned = b.clone(bodyOp, mapping);
-    // Strip acc when the DST accumulation path consumed it (acc_dst_idx
-    // present). Preserve acc for the L1 accumulation path.
+    // Strip acc when DST accumulation consumed it (acc_dst_idx present).
+    // Preserve acc for L1 accumulation.
     if (auto tileStore = dyn_cast<TileStoreOp>(cloned)) {
       if (tileStore.getAcc() && isAccumulatingStore(tileStore)) {
         tileStore.setAcc(false);

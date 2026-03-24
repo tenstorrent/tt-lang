@@ -178,7 +178,7 @@ struct TTLFormAccumulationGroupsPass
         continue;
       }
 
-      // Multi-tile cross-compute accumulation uses L1 accumulation.
+      // Multi-tile multi-compute accumulation uses L1 accumulation.
       // DST grouping only works for 1x1 because each compute's
       // subblock creates independent sync regions that re-initialize
       // the accumulator.
@@ -230,7 +230,7 @@ struct TTLFormAccumulationGroupsPass
                                 << " on compute " << info.compute << "\n");
 
         // Convert any non-acc store to acc=true. The initializer becomes
-        // zero-init + add via the accumulation lowering path.
+        // zero-init + add via DST accumulation.
         for (TileStoreOp store : info.stores) {
           if (!store.getAcc()) {
             store.setAcc(true);

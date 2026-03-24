@@ -10,6 +10,7 @@
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // CHECK-LABEL: func.func @acc_init_loop
+// CHECK-NOT: ttkernel.pack_reconfig_l1_acc
 // CHECK-DAG:   %[[C0:.*]] = arith.constant 0 : index
 // CHECK-DAG:   %[[C1:.*]] = arith.constant 1 : index
 // CHECK-DAG:   %[[ZERO:.*]] = arith.constant 0.000000e+00 : f32

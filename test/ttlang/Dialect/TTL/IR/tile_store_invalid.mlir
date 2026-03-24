@@ -65,4 +65,4 @@ func.func @tile_store_empty_indices_in_compute(
 
 // -----
 
-// acc=true is valid outside compute bodies (L1 accumulation path).
+// acc=true is valid outside compute bodies (used by L1 accumulation).

@@ -562,7 +562,7 @@ static FailureOr<std::uint32_t> linearScanAllocateFiltered(
 struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
   using Base::Base;
 
-  /// Phase 5b: Allocate shared accumulator registers across computes in
+  /// Phase 5b: Allocate shared accumulator registers amulti-computes in
   /// the same accumulation group. Runs after the per-compute walk.
   void assignCrossComputeAccumulators(func::FuncOp funcOp) {
     // Collect computes with acc_group_id, grouped by group ID.
@@ -793,7 +793,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
           // is semantically identical to a normal store (the zero-init +
           // add pattern is unnecessary and can cause first-run
           // unreliability with fill_tile on SFPU). Single acc stores fall
-          // through to the normal pack_tile path in ConvertTTLToTTKernel.
+          // through to normal pack_tile in ConvertTTLToTTKernel.
           SmallVector<TileStoreOp> multiAccStores;
           for (TileStoreOp store : accStores) {
             if (viewStoreCount[store.getView()] > 1) {
@@ -1096,7 +1096,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       }
     });
 
-    //=== Phase 5b: Cross-compute accumulator allocation ===
+    //=== Phase 5b: Multi-compute accumulator allocation ===
     assignCrossComputeAccumulators(funcOp);
   }
 };

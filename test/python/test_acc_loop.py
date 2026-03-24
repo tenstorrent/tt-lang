@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for cross-compute loop accumulation.
+"""Tests for multi-compute loop accumulation.
 
 Validates the accumulation pipeline for patterns where acc=True stores appear
 inside Python loops. ConvertTTLToCompute creates one ttl.compute per store,
-FormAccumulationGroups detects accumulation chains across computes, AssignDST
+FormAccumulationGroups detects accumulation chains amulti-computes, AssignDST
 allocates shared accumulator registers, and InsertSync places group-level sync.
 
 Groups:
@@ -290,7 +290,7 @@ def make_inputs(n, shape, dtype, seed=42):
 
 
 def check_result(result, expected, dtype):
-    # Cross-compute accumulation happens at f32 precision in DST registers,
+    # Multi-compute accumulation happens at f32 precision in DST registers,
     # so even bf16 results may differ from torch bf16 golden. Use allclose
     # with tolerances appropriate for bf16 truncation.
     assert_allclose(result, expected, atol=0.05, rtol=0.05)

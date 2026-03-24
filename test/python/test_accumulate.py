@@ -397,7 +397,7 @@ class AccTestBase:
 
         result = ttnn.to_torch(dev_out)
         if self.f32_accumulation:
-            # Cross-compute accumulation operates at f32 precision in DST
+            # Multi-compute accumulation operates at f32 precision in DST
             # registers while torch golden uses bf16 arithmetic. The
             # precision difference can cause up to ~0.03 absolute error for
             # bf16 values near rounding boundaries.
@@ -483,7 +483,7 @@ class TestAccBinaryOps(AccTestBase):
 
     Each store computes a different expression. After ConvertTTLToCompute,
     each becomes a separate ttl.compute with its own expression graph.
-    FormAccumulationGroups groups them for cross-compute accumulation.
+    FormAccumulationGroups groups them for multi-compute accumulation.
     """
 
     template = ACC_BINARY_OPS_TEMPLATE

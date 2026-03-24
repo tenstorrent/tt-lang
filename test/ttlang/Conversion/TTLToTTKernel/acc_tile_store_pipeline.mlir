@@ -9,6 +9,7 @@
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // CHECK-LABEL: func.func @acc_store_pipeline
+// CHECK-NOT: ttkernel.pack_reconfig_l1_acc
 // CHECK-DAG:   %[[C0:.*]] = arith.constant 0 : index
 // Single acc store: no fill_tile, no add_binary_tile — just normal pack.
 // CHECK:       ttkernel.tile_regs_acquire
