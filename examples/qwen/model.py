@@ -180,8 +180,13 @@ class QwenModel:
             device=self.device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
 
-    def _alloc_zeros(self, shape):
-        return self._to_device(torch.zeros(shape, dtype=torch.bfloat16))
+    def _alloc_zeros(self, shape, l1=False):
+        t = torch.zeros(shape, dtype=torch.bfloat16)
+        mem_cfg = ttnn.L1_MEMORY_CONFIG if l1 else ttnn.DRAM_MEMORY_CONFIG
+        return ttnn.from_torch(
+            t, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+            device=self.device, memory_config=mem_cfg,
+        )
 
     @contextlib.contextmanager
     def _suppress_output(self):
@@ -620,27 +625,29 @@ class QwenModel:
         KV = self.num_kv_heads * self.head_dim  # 128
 
         self._tb = {
-            "x_a": self._alloc_zeros((TILE, H)),
-            "x_b": self._alloc_zeros((TILE, H)),
-            "normed": self._alloc_zeros((TILE, H)),
-            "q_out": self._alloc_zeros((TILE, H)),
-            "k_out": self._alloc_zeros((TILE, KV)),
-            "v_out": self._alloc_zeros((TILE, KV)),
-            "q_rot": self._alloc_zeros((TILE, H)),
-            "k_rot": self._alloc_zeros((TILE, KV)),
-            "attn_out": self._alloc_zeros((TILE, H)),
-            "part_m": self._alloc_zeros((TILE, TOTAL_PAR_CORES * TILE)),
-            "part_d": self._alloc_zeros((TILE, TOTAL_PAR_CORES * TILE)),
-            "part_o0": self._alloc_zeros((TILE, TOTAL_PAR_CORES * TILE)),
-            "part_o1": self._alloc_zeros((TILE, TOTAL_PAR_CORES * TILE)),
-            "proj_out": self._alloc_zeros((TILE, H)),
-            "post_attn": self._alloc_zeros((TILE, H)),
-            "normed2": self._alloc_zeros((TILE, H)),
-            "gate_out": self._alloc_zeros((TILE, I)),
-            "up_out": self._alloc_zeros((TILE, I)),
-            "mlp_hidden": self._alloc_zeros((TILE, I)),
-            "mlp_out": self._alloc_zeros((TILE, H)),
-            "final_out": self._alloc_zeros((TILE, H)),
+            # All intermediates in L1 — avoids DRAM round-trips between kernels.
+            # Total ~40KB/core, well within 1.5MB L1 budget.
+            "x_a": self._alloc_zeros((TILE, H), l1=True),
+            "x_b": self._alloc_zeros((TILE, H), l1=True),
+            "normed": self._alloc_zeros((TILE, H), l1=True),
+            "q_out": self._alloc_zeros((TILE, H), l1=True),
+            "k_out": self._alloc_zeros((TILE, KV), l1=True),
+            "v_out": self._alloc_zeros((TILE, KV), l1=True),
+            "q_rot": self._alloc_zeros((TILE, H), l1=True),
+            "k_rot": self._alloc_zeros((TILE, KV), l1=True),
+            "attn_out": self._alloc_zeros((TILE, H), l1=True),
+            "part_m": self._alloc_zeros((TILE, TOTAL_PAR_CORES * TILE), l1=True),
+            "part_d": self._alloc_zeros((TILE, TOTAL_PAR_CORES * TILE), l1=True),
+            "part_o0": self._alloc_zeros((TILE, TOTAL_PAR_CORES * TILE), l1=True),
+            "part_o1": self._alloc_zeros((TILE, TOTAL_PAR_CORES * TILE), l1=True),
+            "proj_out": self._alloc_zeros((TILE, H), l1=True),
+            "post_attn": self._alloc_zeros((TILE, H), l1=True),
+            "normed2": self._alloc_zeros((TILE, H), l1=True),
+            "gate_out": self._alloc_zeros((TILE, I), l1=True),
+            "up_out": self._alloc_zeros((TILE, I), l1=True),
+            "mlp_hidden": self._alloc_zeros((TILE, I), l1=True),
+            "mlp_out": self._alloc_zeros((TILE, H), l1=True),
+            "final_out": self._alloc_zeros((TILE, H), l1=True),
             "cos_dev": self._alloc_zeros((TILE, self.head_dim)),
             "sin_dev": self._alloc_zeros((TILE, self.head_dim)),
             "mask_dev": self._alloc_zeros((TILE, self.padded_max_seq)),
@@ -648,7 +655,7 @@ class QwenModel:
             # Argmax pipeline buffers (included in trace for zero dispatch overhead)
             # K-split down_proj partial buffer
             "down_proj_partial": self._alloc_zeros(
-                (TILE, (self.hidden_size // TILE) * DOWN_K_SPLITS * TILE)),
+                (TILE, (self.hidden_size // TILE) * DOWN_K_SPLITS * TILE), l1=True),
             # Argmax pipeline buffers (included in trace for zero dispatch overhead)
             "argmax_scaler": self._to_device(
                 torch.ones(TILE, TILE, dtype=torch.bfloat16)),
