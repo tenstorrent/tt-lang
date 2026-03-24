@@ -48,6 +48,36 @@ def get_max_dfbs() -> int:
     return get_context().config.max_dfbs
 
 
+def set_max_l1_bytes(limit: int) -> None:
+    """Set the maximum L1 memory per core (in bytes).
+
+    The L1 memory used by a core is the sum of capacity_bytes across all of its
+    DataflowBuffers. When this limit is set, kernel execution will raise a
+    RuntimeError if the total CB capacity on any core exceeds it.
+
+    Args:
+        limit: Maximum L1 bytes per core (must be positive)
+
+    Raises:
+        ValueError: If limit is not positive
+
+    Example:
+        set_max_l1_bytes(1_572_864)  # 1.5 MB
+    """
+    if limit <= 0:
+        raise ValueError(f"max_l1_bytes must be positive, got {limit}")
+    get_context().config.max_l1_bytes = limit
+
+
+def get_max_l1_bytes() -> int | None:
+    """Get the current L1 memory limit per core (in bytes), or None if unlimited.
+
+    Returns:
+        Current L1 limit in bytes, or None if no limit is configured
+    """
+    return get_context().config.max_l1_bytes
+
+
 def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
     """Program class that combines compute and data movement functions.
 
@@ -112,6 +142,7 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
 
             Raises:
                 RuntimeError: If the number of DataflowBuffers exceeds the configured limit
+                RuntimeError: If total CB capacity exceeds the configured L1 limit
             """
             # Enforce per-core DataflowBuffer limit before allocating.
             dfb_count = sum(
@@ -123,6 +154,20 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                     f"Number of DataflowBuffers per core ({dfb_count}) exceeds "
                     f"the hardware limit of {max_dfbs}."
                 )
+
+            # Enforce per-core L1 memory limit before allocating.
+            max_l1 = get_max_l1_bytes()
+            if max_l1 is not None:
+                total_l1_bytes = sum(
+                    v.capacity_bytes
+                    for v in self.context.values()
+                    if isinstance(v, DataflowBuffer)
+                )
+                if total_l1_bytes > max_l1:
+                    raise RuntimeError(
+                        f"Total DataflowBuffer capacity per core ({total_l1_bytes} bytes) "
+                        f"exceeds the L1 memory limit of {max_l1} bytes."
+                    )
 
             memo: Dict[int, Any] = {}
             core_context: Dict[str, Any] = {}

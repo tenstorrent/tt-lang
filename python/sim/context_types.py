@@ -26,6 +26,7 @@ class SimulatorConfig:
     max_dfbs: int = 32
     scheduler_algorithm: str = "fair"
     default_auto_grid: Shape = (8, 8)
+    max_l1_bytes: Optional[int] = None
 
 
 @dataclass
