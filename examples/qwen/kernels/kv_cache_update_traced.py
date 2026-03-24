@@ -184,6 +184,168 @@ def kv_cache_update_traced(
                     tx.wait()
 
 
+@ttl.kernel(grid=(1, NUM_UPDATE_CORES))
+def kv_cache_update_stacked(
+    k_rot,           # [TILE, 128] — new K
+    v_out,           # [TILE, 128] — new V
+    kt_stacked,      # [128, 512] — K^T both heads stacked (head0 rows 0-63, head1 rows 64-127)
+    v_stacked,       # [1024, 64] — V both heads stacked (head0 rows 0-511, head1 rows 512-1023)
+    row_masks_full,  # [TILE, 512]
+    irow_masks_full, # [TILE, 512]
+    col_masks_full,  # [TILE, 512]
+    icol_masks_full, # [TILE, 512]
+):
+    """KV cache update for stacked (both-heads) tensors."""
+    Nt = 2  # head_dim / TILE
+    V_TILE_ROWS = CACHE_TILES  # 16 tile rows per V head
+
+    new_dfb = ttl.make_dataflow_buffer_like(k_rot, shape=(1, 1), buffer_factor=2)
+    old_dfb = ttl.make_dataflow_buffer_like(k_rot, shape=(1, 1), buffer_factor=2)
+    rm_dfb = ttl.make_dataflow_buffer_like(row_masks_full, shape=(1, 1), buffer_factor=2)
+    irm_dfb = ttl.make_dataflow_buffer_like(irow_masks_full, shape=(1, 1), buffer_factor=2)
+    trans_dfb = ttl.make_dataflow_buffer_like(k_rot, shape=(1, 1), buffer_factor=2)
+    bcast_dfb = ttl.make_dataflow_buffer_like(k_rot, shape=(1, 1), buffer_factor=2)
+    masked_new_dfb = ttl.make_dataflow_buffer_like(k_rot, shape=(1, 1), buffer_factor=2)
+    zeroed_old_dfb = ttl.make_dataflow_buffer_like(k_rot, shape=(1, 1), buffer_factor=2)
+    result_dfb = ttl.make_dataflow_buffer_like(k_rot, shape=(1, 1), buffer_factor=2)
+
+    y_size, x_size = ttl.grid_size(dims=2)
+
+    @ttl.datamovement()
+    def read():
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        slot_start = nid * SLOTS_PER_CORE
+
+        for slot_local in range(SLOTS_PER_CORE):
+            ts = slot_start + slot_local
+
+            # K^T head 0: rows 0..Nt-1 of kt_stacked
+            for dim_row in range(Nt):
+                with new_dfb.reserve() as blk:
+                    tx = ttl.copy(k_rot[0, dim_row], blk)
+                    tx.wait()
+                with old_dfb.reserve() as blk:
+                    tx = ttl.copy(kt_stacked[dim_row, ts], blk)
+                    tx.wait()
+                with rm_dfb.reserve() as blk:
+                    tx = ttl.copy(col_masks_full[0, ts], blk)
+                    tx.wait()
+                with irm_dfb.reserve() as blk:
+                    tx = ttl.copy(icol_masks_full[0, ts], blk)
+                    tx.wait()
+
+            # K^T head 1: rows Nt..2*Nt-1 of kt_stacked
+            for dim_row in range(Nt):
+                with new_dfb.reserve() as blk:
+                    tx = ttl.copy(k_rot[0, Nt + dim_row], blk)
+                    tx.wait()
+                with old_dfb.reserve() as blk:
+                    tx = ttl.copy(kt_stacked[Nt + dim_row, ts], blk)
+                    tx.wait()
+                with rm_dfb.reserve() as blk:
+                    tx = ttl.copy(col_masks_full[0, ts], blk)
+                    tx.wait()
+                with irm_dfb.reserve() as blk:
+                    tx = ttl.copy(icol_masks_full[0, ts], blk)
+                    tx.wait()
+
+            # V head 0: rows 0..V_TILE_ROWS-1 of v_stacked
+            for dim_col in range(Nt):
+                with new_dfb.reserve() as blk:
+                    tx = ttl.copy(v_out[0, dim_col], blk)
+                    tx.wait()
+                with old_dfb.reserve() as blk:
+                    tx = ttl.copy(v_stacked[ts, dim_col], blk)
+                    tx.wait()
+                with rm_dfb.reserve() as blk:
+                    tx = ttl.copy(row_masks_full[0, ts], blk)
+                    tx.wait()
+                with irm_dfb.reserve() as blk:
+                    tx = ttl.copy(irow_masks_full[0, ts], blk)
+                    tx.wait()
+
+            # V head 1: rows V_TILE_ROWS..2*V_TILE_ROWS-1 of v_stacked
+            for dim_col in range(Nt):
+                with new_dfb.reserve() as blk:
+                    tx = ttl.copy(v_out[0, Nt + dim_col], blk)
+                    tx.wait()
+                with old_dfb.reserve() as blk:
+                    tx = ttl.copy(v_stacked[V_TILE_ROWS + ts, dim_col], blk)
+                    tx.wait()
+                with rm_dfb.reserve() as blk:
+                    tx = ttl.copy(row_masks_full[0, ts], blk)
+                    tx.wait()
+                with irm_dfb.reserve() as blk:
+                    tx = ttl.copy(irow_masks_full[0, ts], blk)
+                    tx.wait()
+
+    @ttl.compute()
+    def compute():
+        for _ in range(SLOTS_PER_CORE):
+            # K^T: 4 tiles (transpose + col broadcast + mask)
+            for _ in range(4):
+                with new_dfb.wait() as new_val, old_dfb.wait() as old_val:
+                    with rm_dfb.wait() as cm, irm_dfb.wait() as icm:
+                        with trans_dfb.reserve() as tr:
+                            tr.store(ttl.math.transpose(new_val, tr))
+                        with trans_dfb.wait() as t_val:
+                            with bcast_dfb.reserve() as bc:
+                                bc.store(ttl.math.broadcast(t_val, bc, dims=[1]))
+                        with bcast_dfb.wait() as bc_val:
+                            with masked_new_dfb.reserve() as mn:
+                                mn.store(bc_val * cm)
+                        with zeroed_old_dfb.reserve() as zo:
+                            zo.store(old_val * icm)
+                        with zeroed_old_dfb.wait() as zo, masked_new_dfb.wait() as mn:
+                            with result_dfb.reserve() as res:
+                                res.store(zo + mn)
+
+            # V: 4 tiles (row broadcast + mask)
+            for _ in range(4):
+                with new_dfb.wait() as new_val, old_dfb.wait() as old_val:
+                    with rm_dfb.wait() as rm, irm_dfb.wait() as irm:
+                        with bcast_dfb.reserve() as bc:
+                            bc.store(ttl.math.broadcast(new_val, bc, dims=[0]))
+                        with bcast_dfb.wait() as bc_val:
+                            with masked_new_dfb.reserve() as mn:
+                                mn.store(bc_val * rm)
+                        with zeroed_old_dfb.reserve() as zo:
+                            zo.store(old_val * irm)
+                        with zeroed_old_dfb.wait() as zo, masked_new_dfb.wait() as mn:
+                            with result_dfb.reserve() as res:
+                                res.store(zo + mn)
+
+    @ttl.datamovement()
+    def write():
+        node_y, node_x = ttl.node(dims=2)
+        nid = node_y * x_size + node_x
+        slot_start = nid * SLOTS_PER_CORE
+
+        for slot_local in range(SLOTS_PER_CORE):
+            ts = slot_start + slot_local
+            # K^T head 0
+            for dim_row in range(Nt):
+                with result_dfb.wait() as blk:
+                    tx = ttl.copy(blk, kt_stacked[dim_row, ts])
+                    tx.wait()
+            # K^T head 1
+            for dim_row in range(Nt):
+                with result_dfb.wait() as blk:
+                    tx = ttl.copy(blk, kt_stacked[Nt + dim_row, ts])
+                    tx.wait()
+            # V head 0
+            for dim_col in range(Nt):
+                with result_dfb.wait() as blk:
+                    tx = ttl.copy(blk, v_stacked[ts, dim_col])
+                    tx.wait()
+            # V head 1
+            for dim_col in range(Nt):
+                with result_dfb.wait() as blk:
+                    tx = ttl.copy(blk, v_stacked[V_TILE_ROWS + ts, dim_col])
+                    tx.wait()
+
+
 def build_full_masks(pos):
     """Build [TILE, 512] mask tensors for a given position."""
     tile_slot = pos // TILE

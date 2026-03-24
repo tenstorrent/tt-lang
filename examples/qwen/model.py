@@ -38,7 +38,9 @@ from kernels.multicore_attn import (
     TOTAL_PAR_CORES, CORES_PER_GROUP,
 )
 from kernels.kv_cache_update import get_kv_cache_update_kernel
-from kernels.kv_cache_update_traced import kv_cache_update_traced, build_full_masks
+from kernels.kv_cache_update_traced import (
+    kv_cache_update_traced, kv_cache_update_stacked, build_full_masks,
+)
 from kernels.argmax import (
     DeviceArgmax, parallel_max_reduce_kernel, global_max_reduce_kernel,
     parallel_index_find_kernel, GRID_Y as ARGMAX_GRID_Y, GRID_X as ARGMAX_GRID_X,
@@ -312,30 +314,34 @@ class QwenModel:
         """
         self.kv_cache = []
         self.kv_cache_dev = []
-        for _ in range(self.num_layers):
-            layer_cache = []
-            layer_cache_dev = []
-            for _ in range(self.num_kv_heads):
-                layer_cache.append({
-                    "k": torch.zeros(self.max_seq_len, self.head_dim, dtype=torch.float32),
-                    "v": torch.zeros(self.max_seq_len, self.head_dim, dtype=torch.float32),
-                })
-                layer_cache_dev.append({
-                    "k_t": self._to_device(torch.zeros(self.head_dim, self.max_seq_len, dtype=torch.bfloat16)),
-                    "v": self._to_device(torch.zeros(self.max_seq_len, self.head_dim, dtype=torch.bfloat16)),
-                })
-            self.kv_cache.append(layer_cache)
-            self.kv_cache_dev.append(layer_cache_dev)
-
-        # Stacked KV caches for fused attention (both groups concatenated)
-        # K_T_both[layer]: [head_dim*2, max_seq] = g0 rows then g1 rows
-        # V_both[layer]: [max_seq*2, head_dim] = g0 rows then g1 rows
         self.kv_cache_stacked = []
         hd, ms = self.head_dim, self.max_seq_len
-        for li in range(self.num_layers):
+        for _ in range(self.num_layers):
+            # Host mirrors (per-group, for prefill and non-traced path)
+            layer_cache = []
+            for _ in range(self.num_kv_heads):
+                layer_cache.append({
+                    "k": torch.zeros(ms, hd, dtype=torch.float32),
+                    "v": torch.zeros(ms, hd, dtype=torch.float32),
+                })
+            self.kv_cache.append(layer_cache)
+
+            # Device: stacked tensors (both groups concatenated)
+            # K^T: [head_dim*2, max_seq] = [128, 512]
+            # V:   [max_seq*2, head_dim] = [1024, 64]
             kt_stacked = self._to_device(torch.zeros(hd * 2, ms, dtype=torch.bfloat16))
             v_stacked = self._to_device(torch.zeros(ms * 2, hd, dtype=torch.bfloat16))
             self.kv_cache_stacked.append({"k_t": kt_stacked, "v": v_stacked})
+
+            # Per-group device references (for non-traced path backward compat)
+            # These are SEPARATE tensors (not slices), synced manually during prefill
+            layer_cache_dev = []
+            for kv_h in range(self.num_kv_heads):
+                layer_cache_dev.append({
+                    "k_t": self._to_device(torch.zeros(hd, ms, dtype=torch.bfloat16)),
+                    "v": self._to_device(torch.zeros(ms, hd, dtype=torch.bfloat16)),
+                })
+            self.kv_cache_dev.append(layer_cache_dev)
 
         self.cache_pos = 0
 
@@ -730,7 +736,7 @@ class QwenModel:
             batch_rope_kernel(tb["qkv_out"][:, :H+KV], tb["cos_dev"], tb["sin_dev"],
                               tb["qk_rot"])
 
-            # 4. KV cache update (writes to per-group caches AND stacked cache)
+            # 4. KV cache update
             kv_cache_update_traced(
                 tb["qk_rot"][:, H:H+KV], tb["qkv_out"][:, H+KV:H+KV+KV],
                 self.kv_cache_dev[layer_idx][0]["k_t"],
@@ -741,7 +747,7 @@ class QwenModel:
                 tb["kv_col_masks"], tb["kv_icol_masks"],
             )
 
-            # 5. Parallel attention (28-core partial + 7-core reduce, per KV group)
+            # 5. Parallel attention (per KV group)
             for kv_idx, (p_kern, r_kern) in enumerate([
                 (parallel_partial_g0, parallel_reduce_g0),
                 (parallel_partial_g1, parallel_reduce_g1),
@@ -928,13 +934,25 @@ class QwenModel:
 
             self.cache_pos = seq_len
 
-            # Sync host KV cache to device-resident tensors for decode
+            # Sync host KV cache to stacked device tensors for decode
+            hd, ms = self.head_dim, self.max_seq_len
             for li in range(self.num_layers):
+                # Build stacked tensors from host cache
+                kt_parts = []
+                v_parts = []
                 for kv_idx in range(self.num_kv_heads):
-                    k_t = self.kv_cache[li][kv_idx]["k"][:self.max_seq_len].bfloat16().t().contiguous()
-                    v = self.kv_cache[li][kv_idx]["v"][:self.max_seq_len].bfloat16().contiguous()
+                    k_t = self.kv_cache[li][kv_idx]["k"][:ms].bfloat16().t().contiguous()
+                    v = self.kv_cache[li][kv_idx]["v"][:ms].bfloat16().contiguous()
+                    kt_parts.append(k_t)
+                    v_parts.append(v)
+                    # Keep per-group for non-traced path
                     self.kv_cache_dev[li][kv_idx]["k_t"] = self._to_device(k_t)
                     self.kv_cache_dev[li][kv_idx]["v"] = self._to_device(v)
+                # Upload stacked versions for traced path
+                kt_stacked = torch.cat(kt_parts, dim=0)  # [128, 512]
+                v_stacked = torch.cat(v_parts, dim=0)     # [1024, 64]
+                self.kv_cache_stacked[li]["k_t"] = self._to_device(kt_stacked)
+                self.kv_cache_stacked[li]["v"] = self._to_device(v_stacked)
 
             x_device = self._rmsnorm_host(x_device, self.final_norm_weight)
             x_host = ttnn.to_torch(x_device).float()
