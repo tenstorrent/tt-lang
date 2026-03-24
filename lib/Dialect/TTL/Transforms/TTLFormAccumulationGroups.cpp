@@ -178,49 +178,45 @@ struct TTLFormAccumulationGroupsPass
         continue;
       }
 
-      // Without subblocking, multi-tile DST grouping would produce incorrect
-      // results (tiles share one accumulator in the tile loop). Fall back
-      // to L1 accumulation: preserve acc=true for pack_reconfig_l1_acc,
-      // ensure the first store overwrites.
-      if (!maximizeDST) {
-        auto viewTy = mlir::cast<RankedTensorType>(view.getType());
-        bool isSingleTile =
-            llvm::all_of(viewTy.getShape(), [](int64_t d) { return d == 1; });
-        if (!isSingleTile) {
-          bool groupInLoop =
-              isInsideUserLoop(computeInfos[0].compute, &funcBody);
-          if (groupInLoop) {
-            Operation *ancestor = computeInfos[0].topLevelAncestor;
-            auto userLoop = dyn_cast<scf::ForOp>(ancestor);
-            if (userLoop) {
-              OpBuilder builder(userLoop);
-              IRMapping mapping;
-              mapping.map(userLoop.getInductionVar(), userLoop.getLowerBound());
-              bool firstStore = true;
-              for (auto &op : userLoop.getBody()->without_terminator()) {
-                Operation *cloned = builder.clone(op, mapping);
-                if (firstStore) {
-                  cloned->walk([&firstStore](TileStoreOp store) {
-                    if (store.getAcc() && firstStore) {
-                      store.setAcc(false);
-                      firstStore = false;
-                    }
-                  });
-                }
+      // Multi-tile cross-compute accumulation uses L1 accumulation.
+      // DST grouping only works for 1x1 because each compute's
+      // subblock creates independent sync regions that re-initialize
+      // the accumulator.
+      auto viewTy = mlir::cast<RankedTensorType>(view.getType());
+      bool isSingleTile =
+          llvm::all_of(viewTy.getShape(), [](int64_t d) { return d == 1; });
+      if (!isSingleTile) {
+        bool groupInLoop = isInsideUserLoop(computeInfos[0].compute, &funcBody);
+        if (groupInLoop) {
+          Operation *ancestor = computeInfos[0].topLevelAncestor;
+          auto userLoop = dyn_cast<scf::ForOp>(ancestor);
+          if (userLoop) {
+            OpBuilder builder(userLoop);
+            IRMapping mapping;
+            mapping.map(userLoop.getInductionVar(), userLoop.getLowerBound());
+            bool firstStore = true;
+            for (auto &op : userLoop.getBody()->without_terminator()) {
+              Operation *cloned = builder.clone(op, mapping);
+              if (firstStore) {
+                cloned->walk([&firstStore](TileStoreOp store) {
+                  if (store.getAcc() && firstStore) {
+                    store.setAcc(false);
+                    firstStore = false;
+                  }
+                });
               }
-              Value newLB = arith::AddIOp::create(builder, userLoop.getLoc(),
-                                                  userLoop.getLowerBound(),
-                                                  userLoop.getStep());
-              userLoop.setLowerBound(newLB);
             }
-          } else {
-            computeInfos[0].stores[0].setAcc(false);
+            Value newLB = arith::AddIOp::create(builder, userLoop.getLoc(),
+                                                userLoop.getLowerBound(),
+                                                userLoop.getStep());
+            userLoop.setLowerBound(newLB);
           }
-          LLVM_DEBUG(llvm::dbgs()
-                     << "Phase A: Multi-tile group for view " << view
-                     << " uses L1 accumulation (maximize-dst disabled)\n");
-          continue;
+        } else {
+          computeInfos[0].stores[0].setAcc(false);
         }
+        LLVM_DEBUG(llvm::dbgs() << "Phase A: Multi-tile group for view " << view
+                                << " uses L1 accumulation\n");
+        continue;
       }
 
       //=== Phase C: Attribute Assignment ===

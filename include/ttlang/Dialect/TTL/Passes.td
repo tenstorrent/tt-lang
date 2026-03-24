@@ -86,12 +86,12 @@ def TTLAssignDST
 
 def TTLFormAccumulationGroups
     : Pass<"ttl-form-accumulation-groups", "::mlir::func::FuncOp"> {
-  let summary = "Handle accumulation across multiple stores to the same output";
+  let summary = "Handle accumulation across separate compute ops and user loops";
   let description = [{
-    Handles accumulation across multiple stores to the same output DFB,
-    including stores in separate compute ops and stores across user loop
-    iterations. (Accumulation within a single compute body is handled by
-    AssignDST, not this pass.)
+    Handles accumulation when multiple compute ops (or a single compute
+    inside a user loop) store to the same output DFB with acc=true.
+    Accumulation within a single compute body (multiple acc stores in one
+    body) is handled by AssignDST, not this pass.
 
     Group detection:
     - Multi-compute: two or more computes store to the same view, at least
@@ -102,17 +102,21 @@ def TTLFormAccumulationGroups
 
     Two accumulation paths:
 
-    DST grouping (maximize-dst enabled): computes are marked with a shared
+    Two paths for cross-compute accumulation:
+
+    DST grouping (1x1 output): computes are marked with a shared
     `ttl.acc_group` ID so downstream passes (AssignDST, InsertTileRegsSync)
     allocate a shared DST accumulator register and group-level sync region.
     The initializer store is converted to acc=true so it accumulates into
-    the shared register (zero-init + add). Subblocking ensures each tile
-    gets its own accumulator register for multi-tile domains.
+    the shared register (zero-init + add).
 
-    L1 accumulation (maximize-dst disabled): each compute packs
-    independently with pack_reconfig_l1_acc. The first store overwrites
-    (acc=false); subsequent stores accumulate in L1. For loop-only patterns
-    the first iteration is peeled to provide the overwrite.
+    L1 accumulation (multi-tile output): each compute packs independently
+    with pack_reconfig_l1_acc. The first store overwrites (acc=false);
+    subsequent stores accumulate in L1. For loop-only patterns the first
+    iteration is peeled to provide the overwrite.
+
+    Single-compute accumulation (any block size) is handled by AssignDST
+    Phase 5, not this pass.
 
     Example -- DST grouping (1x1, two consecutive acc stores):
     ```mlir
