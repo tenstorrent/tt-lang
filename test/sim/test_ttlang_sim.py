@@ -386,7 +386,7 @@ if __name__ == "__main__":
             )
             assert result.returncode != 0, "Expected failure with --max-dfbs 2"
             assert (
-                "exceeds the hardware limit of 2" in result.stderr
+                "hardware limit is 2" in result.stderr
             ), f"Expected CB limit error in stderr, got: {result.stderr}"
         finally:
             script.unlink()
@@ -505,7 +505,7 @@ if __name__ == "__main__":
             assert (
                 result.returncode != 0
             ), "Expected failure with --max-dfbs 0 when using CBs"
-            assert "exceeds the hardware limit of 0" in result.stderr
+            assert "hardware limit is 0" in result.stderr
         finally:
             script.unlink()
 

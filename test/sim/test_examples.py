@@ -326,6 +326,20 @@ def test_eltwise_add_deadlock_detection() -> None:
 
 
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])
+def test_max_dfbs_error_fails_with_expected_error(scheduler: str) -> None:
+    """Test that max_dfbs_error.py fails when the kernel defines more CBs than the hardware limit.
+
+    This example allocates 36 DataflowBuffers, exceeding the default limit of 32.
+    The error should be raised at kernel definition time, before any thread execution.
+    """
+    code, out = run_script_in_process(EXAMPLES_DIR / "max_dfbs_error.py", scheduler)
+    assert code != 0, f"Expected max_dfbs_error.py to fail, but it exited with code 0"
+    assert (
+        "Kernel defines 36 dataflow buffers, but the hardware limit is 32" in out
+    ), f"Expected DFB limit error message not found in output:\n{out}"
+
+
+@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
 def test_eltwise_1d_broadcast_warning(scheduler: str) -> None:
     """Test that eltwise_1d_broadcast.py displays 1D broadcast hardware warning.
 

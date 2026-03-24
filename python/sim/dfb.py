@@ -1232,6 +1232,9 @@ def make_dataflow_buffer_like(
         x = ttnn.zeros((64, 64), dtype=ttnn.float32)
         x_dfb = make_dataflow_buffer_like(x, shape=(2, 2), buffer_factor=2)
     """
+    from .context import get_context
+
+    get_context().kernel_dfb_count += 1
     return DataflowBuffer(
         likeness_tensor=likeness_tensor, shape=shape, buffer_factor=buffer_factor
     )

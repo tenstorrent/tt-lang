@@ -141,9 +141,6 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
 
             Returns:
                 Dictionary containing per-core context with fresh DataflowBuffers
-
-            Raises:
-                RuntimeError: If the number of DataflowBuffers exceeds the configured limit
             """
             # Enforce per-core DataflowBuffer limit before allocating.
             dfb_count = sum(
