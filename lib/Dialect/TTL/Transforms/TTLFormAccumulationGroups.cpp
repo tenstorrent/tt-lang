@@ -215,8 +215,7 @@ struct TTLFormAccumulationGroupsPass
         // peeled copy stores with acc=false and the loop body retains
         // acc=true.
         // Check if the group is inside a user loop.
-        bool groupInLoop = isInsideUserLoop(
-            computeInfos[0].compute, &funcBody);
+        bool groupInLoop = isInsideUserLoop(computeInfos[0].compute, &funcBody);
 
         if (groupInLoop) {
           // Peel the first loop iteration: clone the loop body before
@@ -226,8 +225,7 @@ struct TTLFormAccumulationGroupsPass
           if (userLoop) {
             OpBuilder builder(userLoop);
             IRMapping mapping;
-            mapping.map(userLoop.getInductionVar(),
-                        userLoop.getLowerBound());
+            mapping.map(userLoop.getInductionVar(), userLoop.getLowerBound());
             bool firstStore = true;
             for (auto &op : userLoop.getBody()->without_terminator()) {
               Operation *cloned = builder.clone(op, mapping);
@@ -240,9 +238,9 @@ struct TTLFormAccumulationGroupsPass
                 });
               }
             }
-            Value newLB = arith::AddIOp::create(
-                builder, userLoop.getLoc(), userLoop.getLowerBound(),
-                userLoop.getStep());
+            Value newLB = arith::AddIOp::create(builder, userLoop.getLoc(),
+                                                userLoop.getLowerBound(),
+                                                userLoop.getStep());
             userLoop.setLowerBound(newLB);
           }
         } else {
