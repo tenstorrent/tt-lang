@@ -173,8 +173,8 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
     // Sync acquire.
     TileRegsAcquireOp::create(rewriter, loc);
 
-    // Single matmul_block call. The accumulator (if present) is passed as
-    // the 3rd operand; TTKernel lowering emits rt*ct copy_tile ops for it.
+    // Matmul_block with optional accumulator. TTKernel lowering emits
+    // individual copy_tile ops for the accumulator load.
     auto mmResult = TileMatmulBlockOp::create(rewriter, loc, tileType,
                                               lhsTensor, rhsTensor, accTensor);
     mmResult->setAttr(kDstIdxAttrName, rewriter.getI32IntegerAttr(0));
@@ -187,13 +187,12 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
       emitPerTileUnaryOps(rewriter, loc, unaryOp, placeholder, M, N);
     }
 
-    // Sync commit + wait (math → pack boundary).
+    // Sync commit + wait (math -> pack boundary).
     TileRegsCommitOp::create(rewriter, loc);
     TileRegsWaitOp::create(rewriter, loc);
 
-    // M*N tile_stores.
-    // TODO: Replace with pack_tile_block(0, out_cb, M*N) once a proper
-    // TTKernel op exists. See copy_block_matmul_partials TODO above.
+    // M*N individual tile_store ops. The combine-pack-tiles pass can
+    // optionally consolidate these into pack_tile_block downstream.
     for (int64_t m = 0; m < M; ++m) {
       for (int64_t n = 0; n < N; ++n) {
         Value mIdx = arith::ConstantIndexOp::create(rewriter, loc, m);
