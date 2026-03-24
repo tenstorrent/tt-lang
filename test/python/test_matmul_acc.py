@@ -157,7 +157,7 @@ SHAPE_PARAMS = [
 SHAPE_IDS = [f"{m}x{k}x{n}" for m, k, n in SHAPE_PARAMS]
 
 
-def _run_matmul_acc(kernel_fn, Mt, Kt, Nt, device):
+def _run_matmul_acc(kernel_fn, Mt, Kt, Nt, device, options=None):
     """Shared test harness: run kernel, compare against torch golden."""
     M, K, N = Mt * TILE, Kt * TILE, Nt * TILE
 
@@ -168,7 +168,8 @@ def _run_matmul_acc(kernel_fn, Mt, Kt, Nt, device):
     b = to_dram(b_torch, device)
     out = to_dram(torch.zeros(M, N, dtype=torch.bfloat16), device)
 
-    kernel_fn(a, b, out)
+    kwargs = {"options": options} if options else {}
+    kernel_fn(a, b, out, **kwargs)
 
     result = ttnn.to_torch(out)
     golden = a_torch @ b_torch
@@ -190,10 +191,15 @@ def test_matmul_accumulate_explicit(Mt, Kt, Nt, device):
 
 
 @pytest.mark.parametrize("Mt,Kt,Nt", SHAPE_PARAMS, ids=SHAPE_IDS)
+@pytest.mark.parametrize(
+    "pack_opts",
+    [None, "--ttl-combine-pack-tiles"],
+    ids=["pack_tile", "pack_tile_block"],
+)
 @pytest.mark.requires_device
-def test_matmul_accumulate_fused(Mt, Kt, Nt, device):
+def test_matmul_accumulate_fused(Mt, Kt, Nt, pack_opts, device):
     """Fused accumulation: prev + a @ b compiles to copy_tile + matmul_block."""
-    _run_matmul_acc(matmul_fused_acc_kernel, Mt, Kt, Nt, device)
+    _run_matmul_acc(matmul_fused_acc_kernel, Mt, Kt, Nt, device, options=pack_opts)
 
 
 # =============================================================================
@@ -420,10 +426,17 @@ BLOCKED_IDS = [f"{m}x{k}x{n}_blocked" for m, k, n in BLOCKED_PARAMS]
 
 
 @pytest.mark.parametrize("Mt,Kt,Nt", BLOCKED_PARAMS, ids=BLOCKED_IDS)
+@pytest.mark.parametrize(
+    "pack_opts",
+    [None, "--ttl-combine-pack-tiles"],
+    ids=["pack_tile", "pack_tile_block"],
+)
 @pytest.mark.requires_device
-def test_matmul_fused_acc_blocked(Mt, Kt, Nt, device):
+def test_matmul_fused_acc_blocked(Mt, Kt, Nt, pack_opts, device):
     """Fused accumulation with outer block loop (1x1 blocks)."""
-    _run_matmul_acc(matmul_fused_acc_blocked_kernel, Mt, Kt, Nt, device)
+    _run_matmul_acc(
+        matmul_fused_acc_blocked_kernel, Mt, Kt, Nt, device, options=pack_opts
+    )
 
 
 # =============================================================================
@@ -494,8 +507,13 @@ def matmul_relu_kernel(a, b, out):
     ],
     ids=[f"{m}x{k}x{n}" for m, k, n in [(1, 1, 1), (2, 2, 2), (1, 4, 2)]],
 )
+@pytest.mark.parametrize(
+    "pack_opts",
+    [None, "--ttl-combine-pack-tiles"],
+    ids=["pack_tile", "pack_tile_block"],
+)
 @pytest.mark.requires_device
-def test_matmul_relu(Mt, Kt, Nt, device):
+def test_matmul_relu(Mt, Kt, Nt, pack_opts, device):
     """relu(A @ B): relu applied after full K-accumulation."""
     M, K, N = Mt * TILE, Kt * TILE, Nt * TILE
 
@@ -506,7 +524,8 @@ def test_matmul_relu(Mt, Kt, Nt, device):
     b = to_dram(b_torch, device)
     out = to_dram(torch.zeros(M, N, dtype=torch.bfloat16), device)
 
-    matmul_relu_kernel(a, b, out)
+    kwargs = {"options": pack_opts} if pack_opts else {}
+    matmul_relu_kernel(a, b, out, **kwargs)
 
     result = ttnn.to_torch(out)
     golden = torch.relu(a_torch @ b_torch)
@@ -572,8 +591,13 @@ def matmul_add_relu_kernel(a, b, c, out):
     [(1, 1), (2, 2), (1, 4)],
     ids=[f"{m}x{n}" for m, n in [(1, 1), (2, 2), (1, 4)]],
 )
+@pytest.mark.parametrize(
+    "pack_opts",
+    [None, "--ttl-combine-pack-tiles"],
+    ids=["pack_tile", "pack_tile_block"],
+)
 @pytest.mark.requires_device
-def test_matmul_add_relu(Mt, Nt, device):
+def test_matmul_add_relu(Mt, Nt, pack_opts, device):
     """relu((A @ B) + C): add folded + relu in-place, single fused compute."""
     M, K, N = Mt * TILE, TILE, Nt * TILE
 
@@ -586,7 +610,8 @@ def test_matmul_add_relu(Mt, Nt, device):
     c = to_dram(c_torch, device)
     out = to_dram(torch.zeros(M, N, dtype=torch.bfloat16), device)
 
-    matmul_add_relu_kernel(a, b, c, out)
+    kwargs = {"options": pack_opts} if pack_opts else {}
+    matmul_add_relu_kernel(a, b, c, out, **kwargs)
 
     result = ttnn.to_torch(out)
     golden = torch.relu(a_torch @ b_torch + c_torch)

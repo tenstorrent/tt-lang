@@ -30,6 +30,10 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::desc("Lower matmul to block-level hardware calls "
                      "(experimental::matmul_block) instead of per-tile loops."),
       llvm::cl::init(true)};
+  Option<bool> combinePackTiles{
+      *this, "combine-pack-tiles",
+      llvm::cl::desc("Combine consecutive pack_tile ops into pack_tile_block."),
+      llvm::cl::init(true)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,

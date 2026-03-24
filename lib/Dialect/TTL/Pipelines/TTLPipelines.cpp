@@ -39,6 +39,9 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addPass(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLConvertTTLToTTKernel());
   pm.addPass(createTTKernelInsertInits());
+  if (options.combinePackTiles) {
+    pm.addNestedPass<func::FuncOp>(createTTKernelCombinePackTiles());
+  }
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
   if (options.lowerToEmitC) {

@@ -271,16 +271,22 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
           inputCB = bcast.getInCb();
         }
       }
-      if (auto pack = dyn_cast<ttk::PackTileOp>(inner)) {
+      // Collect output CB from pack ops (both single-tile and block variants).
+      auto collectOutputCB = [&](Value packCB, Operation *packOp) {
         if (!outputCB) {
-          outputCB = pack.getOutCb();
-        } else if (outputCB != pack.getOutCb() &&
-                   outputCB.getType() != pack.getOutCb().getType()) {
-          pack->emitOpError(
+          outputCB = packCB;
+        } else if (outputCB != packCB &&
+                   outputCB.getType() != packCB.getType()) {
+          packOp->emitOpError(
               "sync region packs to output CBs with different data formats; "
               "common init cannot configure multiple PACK formats");
           hadError = true;
         }
+      };
+      if (auto pack = dyn_cast<ttk::PackTileOp>(inner)) {
+        collectOutputCB(pack.getOutCb(), pack);
+      } else if (auto packBlock = dyn_cast<ttk::PackTileBlockOp>(inner)) {
+        collectOutputCB(packBlock.getOutCb(), packBlock);
       }
     });
   }
