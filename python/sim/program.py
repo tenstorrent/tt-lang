@@ -11,6 +11,7 @@ functions across multiple cores with proper context binding and error handling.
 import copy
 import inspect
 import types
+import warnings
 from typing import Any, Dict, List
 
 from .dfb import DataflowBuffer
@@ -52,8 +53,8 @@ def set_max_l1_bytes(limit: int) -> None:
     """Set the maximum L1 memory per core (in bytes).
 
     The L1 memory used by a core is the sum of capacity_bytes across all of its
-    DataflowBuffers. When this limit is set, kernel execution will raise a
-    RuntimeError if the total CB capacity on any core exceeds it.
+    DataflowBuffers. When this limit is set, kernel execution will issue a
+    warning if the total CB capacity on any core exceeds it.
 
     Args:
         limit: Maximum L1 bytes per core (must be positive)
@@ -142,7 +143,6 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
 
             Raises:
                 RuntimeError: If the number of DataflowBuffers exceeds the configured limit
-                RuntimeError: If total CB capacity exceeds the configured L1 limit
             """
             # Enforce per-core DataflowBuffer limit before allocating.
             dfb_count = sum(
@@ -155,7 +155,7 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                     f"the hardware limit of {max_dfbs}."
                 )
 
-            # Enforce per-core L1 memory limit before allocating.
+            # Warn if total CB capacity exceeds the configured L1 limit.
             max_l1 = get_max_l1_bytes()
             if max_l1 is not None:
                 total_l1_bytes = sum(
@@ -164,9 +164,10 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                     if isinstance(v, DataflowBuffer)
                 )
                 if total_l1_bytes > max_l1:
-                    raise RuntimeError(
+                    warnings.warn(
                         f"Total DataflowBuffer capacity per core ({total_l1_bytes} bytes) "
-                        f"exceeds the L1 memory limit of {max_l1} bytes."
+                        f"exceeds the L1 memory limit of {max_l1} bytes.",
+                        stacklevel=2,
                     )
 
             memo: Dict[int, Any] = {}

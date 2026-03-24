@@ -516,6 +516,8 @@ class TestMaxL1CommandLineOption:
     Each CB uses shape=(1,1), buffer_factor=2, bfloat16:
       capacity_bytes = 2 (slots) * 32*32 (elements/slot) * 2 (bytes/element) = 4096
     Three CBs total: 3 * 4096 = 12288 bytes.
+
+    Exceeding the limit issues a warning but does not abort execution.
     """
 
     # Bytes used by the three CBs in create_test_script(3).
@@ -579,31 +581,34 @@ if __name__ == "__main__":
         finally:
             script.unlink()
 
-    def test_max_l1_below_limit_fails(self):
-        """--max-l1 one byte below total CB capacity should fail."""
+    def test_max_l1_below_limit_warns_and_continues(self):
+        """--max-l1 one byte below total CB capacity should warn but still succeed."""
         result = self._run("--max-l1", str(self._TOTAL_BYTES - 1))
         assert (
-            result.returncode != 0
-        ), "Expected failure when limit is below total CB capacity"
+            result.returncode == 0
+        ), f"Expected success (warning only), got stderr: {result.stderr}"
+        assert "SUCCESS" in result.stdout
         assert (
             "exceeds the L1 memory limit" in result.stderr
-        ), f"Expected L1 limit error in stderr, got: {result.stderr}"
+        ), f"Expected L1 warning in stderr, got: {result.stderr}"
 
     def test_max_l1_at_limit_succeeds(self):
-        """--max-l1 equal to total CB capacity should succeed."""
+        """--max-l1 equal to total CB capacity should succeed without warning."""
         result = self._run("--max-l1", str(self._TOTAL_BYTES))
         assert (
             result.returncode == 0
         ), f"Expected success at exact limit, got stderr: {result.stderr}"
         assert "SUCCESS" in result.stdout
+        assert "exceeds the L1 memory limit" not in result.stderr
 
     def test_max_l1_above_limit_succeeds(self):
-        """--max-l1 above total CB capacity should succeed."""
+        """--max-l1 above total CB capacity should succeed without warning."""
         result = self._run("--max-l1", str(self._TOTAL_BYTES + 1))
         assert (
             result.returncode == 0
         ), f"Expected success above limit, got stderr: {result.stderr}"
         assert "SUCCESS" in result.stdout
+        assert "exceeds the L1 memory limit" not in result.stderr
 
     def test_max_l1_zero_is_rejected(self):
         """--max-l1 0 should be rejected as invalid."""
