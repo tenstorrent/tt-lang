@@ -618,13 +618,14 @@ if __name__ == "__main__":
             "must be positive" in result.stderr
         ), f"Expected validation error in stderr, got: {result.stderr}"
 
-    def test_max_l1_no_flag_applies_no_limit(self):
-        """Without --max-l1, execution should succeed regardless of CB size."""
+    def test_max_l1_no_flag_uses_default_limit(self):
+        """Without --max-l1, the default limit (1336 KiB) applies; small CBs should not warn."""
         result = self._run()
         assert (
             result.returncode == 0
-        ), f"Expected success with no L1 limit, got stderr: {result.stderr}"
+        ), f"Expected success under default L1 limit, got stderr: {result.stderr}"
         assert "SUCCESS" in result.stdout
+        assert "exceeds the L1 memory limit" not in result.stderr
 
 
 class TestTensorStatsOption:

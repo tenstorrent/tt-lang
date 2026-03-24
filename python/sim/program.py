@@ -53,8 +53,9 @@ def set_max_l1_bytes(limit: int) -> None:
     """Set the maximum L1 memory per core (in bytes).
 
     The L1 memory used by a core is the sum of capacity_bytes across all of its
-    DataflowBuffers. When this limit is set, kernel execution will issue a
-    warning if the total CB capacity on any core exceeds it.
+    DataflowBuffers. Kernel execution issues a warning if the total CB capacity
+    on any core exceeds this limit. Defaults to 1336 KiB (Blackhole/Wormhole
+    L1 size minus reserved program space).
 
     Args:
         limit: Maximum L1 bytes per core (must be positive)
@@ -70,11 +71,11 @@ def set_max_l1_bytes(limit: int) -> None:
     get_context().config.max_l1_bytes = limit
 
 
-def get_max_l1_bytes() -> int | None:
-    """Get the current L1 memory limit per core (in bytes), or None if unlimited.
+def get_max_l1_bytes() -> int:
+    """Get the current L1 memory limit per core in bytes.
 
     Returns:
-        Current L1 limit in bytes, or None if no limit is configured
+        Current L1 limit in bytes
     """
     return get_context().config.max_l1_bytes
 
@@ -157,18 +158,17 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
 
             # Warn if total CB capacity exceeds the configured L1 limit.
             max_l1 = get_max_l1_bytes()
-            if max_l1 is not None:
-                total_l1_bytes = sum(
-                    v.capacity_bytes
-                    for v in self.context.values()
-                    if isinstance(v, DataflowBuffer)
+            total_l1_bytes = sum(
+                v.capacity_bytes
+                for v in self.context.values()
+                if isinstance(v, DataflowBuffer)
+            )
+            if total_l1_bytes > max_l1:
+                warnings.warn(
+                    f"Total DataflowBuffer capacity per core ({total_l1_bytes} bytes) "
+                    f"exceeds the L1 memory limit of {max_l1} bytes.",
+                    stacklevel=2,
                 )
-                if total_l1_bytes > max_l1:
-                    warnings.warn(
-                        f"Total DataflowBuffer capacity per core ({total_l1_bytes} bytes) "
-                        f"exceeds the L1 memory limit of {max_l1} bytes.",
-                        stacklevel=2,
-                    )
 
             memo: Dict[int, Any] = {}
             core_context: Dict[str, Any] = {}

@@ -251,7 +251,7 @@ def main() -> None:
         type=int,
         metavar="BYTES",
         dest="max_l1",
-        help="Maximum L1 memory per core in bytes; warns if total CB capacity exceeds this",
+        help="Maximum L1 memory per core in bytes; warns if total CB capacity exceeds this (default: 1336 KiB)",
     )
 
     parser.add_argument(
