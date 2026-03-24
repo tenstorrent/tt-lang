@@ -42,7 +42,7 @@ def compile_ttl_to_ttkernel(
     # Build per-function passes.
     func_passes = [
         "convert-ttl-to-compute",
-        f"ttl-form-accumulation-groups{{maximize-dst={int(maximize_dst)}}}",
+        "ttl-form-accumulation-groups",
         "ttl-set-compute-kernel-config",
         assign_dst_pass,
     ]

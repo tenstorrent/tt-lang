@@ -154,13 +154,6 @@ def TTLFormAccumulationGroups
     ```
   }];
 
-  let options = [
-    Option<"maximizeDST", "maximize-dst",
-           "bool", /*default=*/"true",
-           "Use DST grouping (requires subblocking). When false, "
-           "multi-tile groups use L1 accumulation instead.">
-  ];
-
   let dependentDialects = [
     "::mlir::scf::SCFDialect"
   ];

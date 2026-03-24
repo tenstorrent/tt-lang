@@ -2,7 +2,7 @@
 // Multi-tile domains skip DST grouping; the first store is set to acc=false
 // (overwrite) and the second retains acc=true (L1 accumulation).
 //
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-form-accumulation-groups{maximize-dst=0}))' | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-form-accumulation-groups))' | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 

@@ -19,11 +19,7 @@ namespace mlir::tt::ttl {
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   pm.addPass(createTTLConvertTTLToCompute());
-  {
-    TTLFormAccumulationGroupsOptions accGroupOpts;
-    accGroupOpts.maximizeDST = options.maximizeDST;
-    pm.addPass(createTTLFormAccumulationGroups(accGroupOpts));
-  }
+  pm.addPass(createTTLFormAccumulationGroups());
   pm.addPass(createTTLSetComputeKernelConfig());
   {
     TTLAssignDSTOptions assignDstOpts;

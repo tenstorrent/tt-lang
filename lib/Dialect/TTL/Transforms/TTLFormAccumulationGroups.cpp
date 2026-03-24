@@ -212,16 +212,19 @@ struct TTLFormAccumulationGroupsPass
             OpBuilder builder(userLoop);
             IRMapping mapping;
             mapping.map(userLoop.getInductionVar(), userLoop.getLowerBound());
+            Value targetView = view;
+            bool stripped = false;
             for (auto &op : userLoop.getBody()->without_terminator()) {
               Operation *cloned = builder.clone(op, mapping);
-              // Strip acc on stores targeting this view so the peeled
-              // iteration overwrites. Other views' stores are left
-              // untouched — they will be processed in their own
-              // iteration of the outer view loop.
-              Value targetView = view;
-              cloned->walk([targetView](TileStoreOp store) {
-                if (store.getAcc() && store.getView() == targetView) {
+              // Strip acc on the first store targeting this view so the
+              // peeled iteration overwrites. Subsequent stores to the
+              // same view keep acc=true (L1 accumulation). Other views'
+              // stores are untouched.
+              cloned->walk([targetView, &stripped](TileStoreOp store) {
+                if (!stripped && store.getAcc() &&
+                    store.getView() == targetView) {
                   store.setAcc(false);
+                  stripped = true;
                 }
               });
             }
@@ -231,7 +234,9 @@ struct TTLFormAccumulationGroupsPass
             userLoop.setLowerBound(newLB);
           }
         } else {
-          computeInfos[0].stores[0].setAcc(false);
+          for (TileStoreOp store : computeInfos[0].stores) {
+            store.setAcc(false);
+          }
         }
         LLVM_DEBUG(llvm::dbgs() << "Phase A: Multi-tile group for view " << view
                                 << " uses L1 accumulation\n");
