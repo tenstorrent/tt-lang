@@ -61,6 +61,8 @@ def compile_ttl_to_ttkernel(
     # Build per-function passes.
     func_passes = [
         "convert-ttl-to-compute",
+        "ttl-form-accumulation-groups",
+        "ttl-set-compute-kernel-config",
         assign_dst_pass,
     ]
     if maximize_dst:

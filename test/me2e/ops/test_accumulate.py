@@ -128,6 +128,7 @@ class TestAccAddBinary(AccumulateTestBase):
 
     OP_NAME = "acc_add"
     ARITY = 2
+    PCC_THRESHOLD = 0.999
 
     def torch_reference(self, a: Tensor, b: Tensor) -> Tensor:
         return a + b
@@ -193,6 +194,7 @@ class TestAccExpUnary(AccumulateTestBase):
     OP_NAME = "acc_exp"
     ARITY = 1
     INPUT_RANGE = (-2.0, 2.0)
+    PCC_THRESHOLD = 0.999
 
     def torch_reference(self, a: Tensor) -> Tensor:
         return torch.exp(a)
@@ -254,6 +256,7 @@ class TestAccPassthrough(AccumulateTestBase):
 
     OP_NAME = "acc_passthrough"
     ARITY = 1
+    PCC_THRESHOLD = 0.999
 
     def torch_reference(self, a: Tensor) -> Tensor:
         return a
@@ -344,22 +347,10 @@ func.func @compute_acc_multi_store() attributes {{ttl.base_cta_index = 3 : i32, 
   %b = ttl.cb_wait %cb1 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> {tt}
   %b_attached = ttl.attach_cb %b, %cb1 : ({tt}, {cb}) -> {tt}
 
-  %init = tensor.empty() : {tt}
-  %init_attached = ttl.attach_cb %init, %cb_out : ({tt}, {cb}) -> {tt}
   %out_view = ttl.cb_reserve %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> {tt}
 
-  %result = ttl.compute
-      ins(%a_attached, %b_attached : {tt}, {tt})
-      outs(%init_attached : {tt})
-      {{indexing_maps = [#map, #map, #map],
-       iterator_types = ["parallel", "parallel"]}} {{
-  ^bb0(%a_tile: {tile}, %b_tile: {tile}, %out_tile: {tile}):
-    %i = ttl.iter_index 0 : index
-    %j = ttl.iter_index 1 : index
-    ttl.tile_store %a_tile, %out_view[%i, %j] {{acc = true}} : {tile}, {tt}
-    ttl.tile_store %b_tile, %out_view[%i, %j] {{acc = true}} : {tile}, {tt}
-    ttl.yield
-  }} -> {tt}
+  ttl.store %a_attached, %out_view {{acc = true}} : {tt}, {tt}
+  ttl.store %b_attached, %out_view {{acc = true}} : {tt}, {tt}
 
   ttl.cb_push %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
   ttl.cb_pop %cb1 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
