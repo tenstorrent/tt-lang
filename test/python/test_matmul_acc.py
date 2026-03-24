@@ -598,3 +598,64 @@ def test_matmul_add_relu(Mt, Nt, device):
         f"PCC {pcc:.6f} < 0.99 for {Mt}x1x{Nt} matmul+add+relu. "
         f"Max diff: {(result - golden).abs().max().item()}"
     )
+
+
+# =============================================================================
+# Matmul K-accumulation via acc=True: L1 accumulation
+# =============================================================================
+
+
+@ttl.kernel(grid=(1, 1))
+def matmul_l1_acc_kernel(a, b, out):
+    """K-accumulation via acc=True: first iteration overwrites, rest accumulate
+    in L1 via pack_reconfig_l1_acc."""
+    Mt = a.shape[0] // TILE
+    Kt = a.shape[1] // TILE
+    Nt = b.shape[1] // TILE
+
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(Mt, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, Nt), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), buffer_factor=2)
+
+    @ttl.compute()
+    def mm_compute():
+        with out_dfb.reserve() as o:
+            with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
+                o.store(a_blk @ b_blk)
+            for _ in range(Kt - 1):
+                with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
+                    o.store(a_blk @ b_blk, acc=True)
+
+    @ttl.datamovement()
+    def dm_read():
+        for kt in range(Kt):
+            with a_dfb.reserve() as blk:
+                tx = ttl.copy(a[0:Mt, kt : kt + 1], blk)
+                tx.wait()
+            with b_dfb.reserve() as blk:
+                tx = ttl.copy(b[kt : kt + 1, 0:Nt], blk)
+                tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as blk:
+            tx = ttl.copy(blk, out[0:Mt, 0:Nt])
+            tx.wait()
+
+
+L1_ACC_PARAMS = [
+    (1, 2, 1),
+    (1, 4, 1),
+    (2, 2, 2),
+    (1, 3, 1),
+    (2, 8, 2),
+]
+
+L1_ACC_IDS = [f"{m}x{k}x{n}_l1acc" for m, k, n in L1_ACC_PARAMS]
+
+
+@pytest.mark.parametrize("Mt,Kt,Nt", L1_ACC_PARAMS, ids=L1_ACC_IDS)
+@pytest.mark.requires_device
+def test_matmul_l1_accumulate(Mt, Kt, Nt, device):
+    """Matmul K-accumulation via acc=True (L1 accumulation)."""
+    _run_matmul_acc(matmul_l1_acc_kernel, Mt, Kt, Nt, device)

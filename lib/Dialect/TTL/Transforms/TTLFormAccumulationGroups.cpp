@@ -189,11 +189,32 @@ struct TTLFormAccumulationGroupsPass
       bool hasMatmul = llvm::any_of(computeInfos, [](ComputeStoreInfo &info) {
         return info.compute.containsOp<TileMatmulBlockOp>();
       });
-      if (!isSingleTile || hasMatmul) {
+      // When the output DFB is reserved inside a user loop, each
+      // iteration produces an independent output. DST grouping would
+      // span all iterations with a single sync region, but the deferred
+      // pack writes only once — after all iterations have completed and
+      // the DFB has been recycled.
+      bool viewInLoop = false;
+      if (Operation *viewDef = view.getDefiningOp()) {
+        viewInLoop = isInsideUserLoop(viewDef, &funcBody);
+      }
+      if (!isSingleTile || hasMatmul || viewInLoop) {
         bool groupInLoop = isInsideUserLoop(computeInfos[0].compute, &funcBody);
         if (groupInLoop) {
-          Operation *ancestor = computeInfos[0].topLevelAncestor;
-          auto userLoop = dyn_cast<scf::ForOp>(ancestor);
+          // Find the innermost user loop containing the compute.
+          // Peeling must happen at this level so each iteration of
+          // outer loops gets its own overwrite on the first inner
+          // iteration.
+          scf::ForOp userLoop = nullptr;
+          for (Operation *parent = computeInfos[0].compute->getParentOp();
+               parent; parent = parent->getParentOp()) {
+            if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+              if (isUserLoop(forOp)) {
+                userLoop = forOp;
+                break;
+              }
+            }
+          }
           if (userLoop) {
             OpBuilder builder(userLoop);
             IRMapping mapping;

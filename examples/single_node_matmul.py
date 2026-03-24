@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # type: ignore
 
+import torch
 import ttl
 import ttnn
 from utils.correctness import assert_with_ulp
@@ -70,22 +71,40 @@ def tt_lang_singlenode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) 
 
 
 def main() -> None:
-    # Test with reasonably sized matrices that are multiples of tile size
-    M, K, N = 128, 256, 64
-    a = ttnn.rand((M, K), dtype=ttnn.float32)
-    b = ttnn.rand((K, N), dtype=ttnn.float32)
-    out = ttnn.empty((M, N), dtype=ttnn.float32)
+    device = ttnn.open_device(device_id=0)
+    try:
+        M, K, N = 128, 256, 64
 
-    print(f"Matrix multiplication: ({M}, {K}) @ ({K}, {N}) = ({M}, {N})")
-    print(f"Tiles: A={M//32}x{K//32}, B={K//32}x{N//32}, Out={M//32}x{N//32}")
+        a_torch = torch.randn((M, K), dtype=torch.bfloat16)
+        b_torch = torch.randn((K, N), dtype=torch.bfloat16)
 
-    tt_lang_singlenode_matmul(a, b, out)
+        to_dev = lambda t: ttnn.from_torch(
+            t,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+        a, b = to_dev(a_torch), to_dev(b_torch)
+        out = to_dev(torch.zeros((M, N), dtype=torch.bfloat16))
 
-    # Compute golden result
-    golden = a @ b
+        print(f"Matrix multiplication: ({M}, {K}) @ ({K}, {N}) = ({M}, {N})")
+        print(
+            f"Tiles: A={M // 32}x{K // 32}, B={K // 32}x{N // 32}, "
+            f"Out={M // 32}x{N // 32}"
+        )
 
-    # Verify correctness with relaxed tolerance for matmul
-    assert_with_ulp(ttnn.to_torch(golden), ttnn.to_torch(out), ulp_threshold=1000)
+        tt_lang_singlenode_matmul(a, b, out)
+
+        result = ttnn.to_torch(out)
+        golden = a_torch @ b_torch
+        pcc = torch.corrcoef(
+            torch.stack([result.flatten().float(), golden.flatten().float()])
+        )[0, 1].item()
+        assert pcc > 0.999, f"PCC {pcc:.6f} < 0.999"
+        print(f"PASSED! (PCC: {pcc:.6f})")
+    finally:
+        ttnn.close_device(device)
 
 
 if __name__ == "__main__":

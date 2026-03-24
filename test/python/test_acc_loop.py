@@ -250,6 +250,44 @@ def kernel(l, a, b, out):
 """
 
 
+# D1: Nested outer loop with inner K accumulation — out = K * r per iteration.
+# Models tiled matmul where each outer iteration produces a fresh output and
+# the inner K loop accumulates into it.
+ACC_NESTED_LOOP_TEMPLATE = """\
+import ttl
+
+@ttl.kernel(grid=(1, 1))
+def kernel(r, out):
+    r_dfb = ttl.make_dataflow_buffer_like(r, shape=({R}, {C}), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({R}, {C}), buffer_factor=2)
+
+    @ttl.compute()
+    def compute():
+        for outer in range(3):
+            with out_dfb.reserve() as o:
+                with r_dfb.wait() as rv:
+                    o.store(rv)
+                for k in range({K} - 1):
+                    with r_dfb.wait() as rv:
+                        o.store(rv, acc=True)
+
+    @ttl.datamovement()
+    def dm_read():
+        for outer in range(3):
+            for k in range({K}):
+                with r_dfb.reserve() as blk:
+                    tx = ttl.copy(r[{S}], blk)
+                    tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        for outer in range(3):
+            with out_dfb.wait() as blk:
+                tx = ttl.copy(blk, out[{S}])
+                tx.wait()
+"""
+
+
 # =============================================================================
 # Kernel factory
 # =============================================================================
@@ -415,3 +453,23 @@ class TestAccInitExprLoop(AccLoopTestBase):
 
     def golden(self, l, a, b):
         return l + self.loop_count * (a + b)
+
+
+# =============================================================================
+# Group 6: Nested outer + inner K loop (D1)
+# =============================================================================
+
+
+class TestAccNestedLoop(AccLoopTestBase):
+    """out = K*r per outer iteration (3 outer iters, last result kept).
+
+    Models tiled matmul: each outer iteration produces a fresh output via
+    reserve/push, and the inner K loop accumulates into it.
+    """
+
+    template = ACC_NESTED_LOOP_TEMPLATE
+    num_inputs = 1
+    loop_count = 4
+
+    def golden(self, r):
+        return self.loop_count * r
