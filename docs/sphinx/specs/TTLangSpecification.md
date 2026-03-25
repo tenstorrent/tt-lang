@@ -22,6 +22,7 @@
 * [Block operators and math functions](#appendix-b-block-operators-and-math-functions)
 * [Naming guidelines](#appendix-c-naming-guidelines)
 * [Functionality matrix](#appendix-d-functionality-matrix)
+* [Platform limitations](#appendix-e-platform-limitations)
 
 
 ## Specification Versions
@@ -1141,3 +1142,12 @@ def matmul_read():
 
 * N/S - Not Supported
 * N/A - Not Applicable
+
+## Appendix E. Platform limitations
+
+| Description | Wormhole | Blackhole |
+| :---- | :---- | :---- |
+| Tile size in scalars | 32, 32 | 32, 32 |
+| Maximum single chip grid size (unharvested) | 8, 9 | 13, 10 |
+| Size of L1 memory (KB) | 1464 | 1464 |
+| Maximum number of dataflow buffers | 32 | 32 |
