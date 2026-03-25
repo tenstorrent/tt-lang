@@ -118,7 +118,7 @@ jobs:
 
       - name: Hardware compiler example scripts
         run: |
-          set -euo pipefail
+          set -eo pipefail
           source build/env/activate
           bash .github/scripts/compile-and-run-examples.sh
 
