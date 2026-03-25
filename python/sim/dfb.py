@@ -1096,6 +1096,19 @@ class DataflowBuffer:
         return self._state.cap * math.prod(self._state.shape)
 
     @property
+    def capacity_bytes(self) -> int:
+        """Get the total L1 memory used by this buffer in bytes.
+
+        Computed as: buffer_factor * elements_per_operation * bytes_per_element,
+        where elements_per_operation is the product of the element shape dimensions.
+        """
+        return (
+            self._buffer_factor
+            * math.prod(self._element_shape)
+            * self.likeness_tensor.element_size
+        )
+
+    @property
     def buffer_factor(self) -> Size:
         """Get the buffer factor (capacity multiplier)."""
         return self._buffer_factor

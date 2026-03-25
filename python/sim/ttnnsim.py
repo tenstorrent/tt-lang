@@ -255,6 +255,11 @@ class Tensor:
     def dtype(self) -> torch.dtype:
         return self._tensor.dtype
 
+    @property
+    def element_size(self) -> int:
+        """Number of bytes per element for this tensor's dtype."""
+        return self._tensor.element_size()
+
     def _validate_tile_alignment(self) -> None:
         """Validate that this tensor supports tile-style indexing.
 

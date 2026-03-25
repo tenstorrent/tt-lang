@@ -510,6 +510,124 @@ if __name__ == "__main__":
             script.unlink()
 
 
+class TestMaxL1CommandLineOption:
+    """Test --max-l1 command-line option in ttlang-sim.
+
+    Each CB uses shape=(1,1), buffer_factor=2, bfloat16:
+      capacity_bytes = 2 (slots) * 32*32 (elements/slot) * 2 (bytes/element) = 4096
+    Three CBs total: 3 * 4096 = 12288 bytes.
+
+    Exceeding the limit issues a warning but does not abort execution.
+    """
+
+    # Bytes used by the three CBs in create_test_script(3).
+    _TOTAL_BYTES = 12288
+
+    @staticmethod
+    def create_test_script() -> Path:
+        """Create a temporary test script that uses 3 CBs of known size."""
+        content = """
+import ttl
+import ttnn
+import torch
+
+@ttl.kernel(grid=(1, 1))
+def test_kernel(a: ttnn.Tensor):
+    cb0 = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    cb1 = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    cb2 = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+
+    @ttl.compute()
+    def compute():
+        with cb0.reserve() as blk:
+            blk.store(ttl.math.fill(blk, 1.0))
+        with cb0.wait() as inp, cb1.reserve() as o:
+            o.store(inp)
+        with cb1.wait() as inp, cb2.reserve() as o:
+            o.store(inp)
+
+    @ttl.datamovement()
+    def dm0():
+        pass
+
+    @ttl.datamovement()
+    def dm1():
+        pass
+
+if __name__ == "__main__":
+    device = ttnn.open_device(device_id=0)
+    a = torch.zeros(32, 32)
+    a_tt = ttnn.from_torch(a, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+                           device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+    test_kernel(a_tt)
+    ttnn.close_device(device)
+    print("SUCCESS")
+"""
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)
+        tmp.write(content)
+        tmp.close()
+        return Path(tmp.name)
+
+    def _run(self, *extra_args: str) -> subprocess.CompletedProcess[str]:
+        script = self.create_test_script()
+        try:
+            return subprocess.run(
+                [sys.executable, "-m", "sim.ttlang_sim", *extra_args, str(script)],
+                cwd=Path(__file__).parent.parent.parent,
+                env={"PYTHONPATH": "python"},
+                capture_output=True,
+                text=True,
+            )
+        finally:
+            script.unlink()
+
+    def test_max_l1_below_limit_warns_and_continues(self):
+        """--max-l1 one byte below total CB capacity should warn but still succeed."""
+        result = self._run("--max-l1", str(self._TOTAL_BYTES - 1))
+        assert (
+            result.returncode == 0
+        ), f"Expected success (warning only), got stderr: {result.stderr}"
+        assert "SUCCESS" in result.stdout
+        assert (
+            "exceeds the L1 memory limit" in result.stderr
+        ), f"Expected L1 warning in stderr, got: {result.stderr}"
+
+    def test_max_l1_at_limit_succeeds(self):
+        """--max-l1 equal to total CB capacity should succeed without warning."""
+        result = self._run("--max-l1", str(self._TOTAL_BYTES))
+        assert (
+            result.returncode == 0
+        ), f"Expected success at exact limit, got stderr: {result.stderr}"
+        assert "SUCCESS" in result.stdout
+        assert "exceeds the L1 memory limit" not in result.stderr
+
+    def test_max_l1_above_limit_succeeds(self):
+        """--max-l1 above total CB capacity should succeed without warning."""
+        result = self._run("--max-l1", str(self._TOTAL_BYTES + 1))
+        assert (
+            result.returncode == 0
+        ), f"Expected success above limit, got stderr: {result.stderr}"
+        assert "SUCCESS" in result.stdout
+        assert "exceeds the L1 memory limit" not in result.stderr
+
+    def test_max_l1_zero_is_rejected(self):
+        """--max-l1 0 should be rejected as invalid."""
+        result = self._run("--max-l1", "0")
+        assert result.returncode != 0, "Expected failure with --max-l1 0"
+        assert (
+            "must be positive" in result.stderr
+        ), f"Expected validation error in stderr, got: {result.stderr}"
+
+    def test_max_l1_no_flag_uses_default_limit(self):
+        """Without --max-l1, the default limit (1336 KiB) applies; small CBs should not warn."""
+        result = self._run()
+        assert (
+            result.returncode == 0
+        ), f"Expected success under default L1 limit, got stderr: {result.stderr}"
+        assert "SUCCESS" in result.stdout
+        assert "exceeds the L1 memory limit" not in result.stderr
+
+
 class TestTensorStatsOption:
     """Test --show-stats command-line option."""
 

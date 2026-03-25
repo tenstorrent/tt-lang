@@ -41,6 +41,7 @@
 | 0.9 | 03/06/2026 | Add `ttl.signpost` |
 | 0.10 | 03/06/2026 | Add debug printing |
 | 0.11 | 03/19/2026 | Rename `ttl.core` to `ttl.node` |
+| 0.12 | 03/24/2026 | Remove `store(..., acc=True)` |
 
 ## 1. Introduction
 
@@ -180,7 +181,7 @@ def some_compute():
 
 ## 5. Block
 
-A *block* represents memory acquired from a dataflow buffer. Block size is determined by the shape of a dataflow buffer and its memory is allocated when a dataflow buffer is created. Inside of a compute thread a block can participate in a *block expression* with built-in Python operators and TT-Lang math functions as an operand. A block can also be a storage for the result of block expression by using store function. When the store function is invoked multiple times for the same block with the `acc = True` parameter, TT-Lang will generate accumulation through summation for all calls after the first one. When `acc = False`, all stores simply store (no accumulation). Inside of data movement threads a block can participate in `ttl.copy` as a source or a destination.
+A *block* represents memory acquired from a dataflow buffer. Block size is determined by the shape of a dataflow buffer and its memory is allocated when a dataflow buffer is created. Inside of a compute thread a block can participate in a *block expression* with built-in Python operators and TT-Lang math functions as an operand. A block can also be a storage for the result of block expression by using `store` function. Inside of data movement threads a block can participate in `ttl.copy` as a source or a destination.
 
 #### Element-wise with broadcast example
 
@@ -337,13 +338,7 @@ def matmul_compute():
 
                     # acquire c_blk from c_dfb:
 
-                    with c_dfb.wait() as c_blk:
-
-                        # then compute: y = c:
-
-                        y_blk.store(c_blk, acc=True)
-
-                        # release c_blk
+                    y = ttl.math.fill(0)
 
                     for _ in range(KT):
 
@@ -353,11 +348,18 @@ def matmul_compute():
                             a_dfb.wait() as a_blk,
                             b_dfb.wait() as b_blk,
                         ):
-                            # then compute y += a @ b:
 
-                            y_blk.store(a_blk @ b_blk, acc=True)
+                            y += a_blk @ b_blk
 
                             # release a_blk and b_blk
+
+                    with c_dfb.wait() as c_blk:
+
+                        y = y + c_blk
+
+                        # release c_blk
+
+                    y_blk.store(y)
 
                     # release y_blk
 
@@ -381,10 +383,13 @@ def matmul_write():
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.Block.store(self, expr: ttl.BlockExpr, acc: Boolean = False)` | This function materializes the result of a *block expression* and stores it in the block. When `acc` is set to `True` store with accumulation is allowed. Block expression uses Python builtin math operators and `ttl.math.xxx` functions on block expression. **This function is blocking** so that block is safe to use immediately after the call. |
+| `ttl.Block.store(self, expr: ttl.BlockExpr)` | This function materializes the result of a *block expression* and stores it in the block. Block expression uses Python builtin math operators and `ttl.math.xxx` functions on block expression. **This function is blocking** so that block is safe to use immediately after the call. |
 | `ttl.BlockExpr.__pow__(self, exponent: ttl.PositiveInt) -> ttl.BlockExpr` | Example of Python built-in operator. See full list in [Appendix B. Block operators and math functions](#appendix-b-block-operators-and-math-functions). |
-| `ttl.BlockExpr.__add__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | Example of Python built-in operator. See full list in [Appendix B. Block operators and math functions](#appendix-b-block-operators-and-math-functions). |
-| `ttl.math.sqrt(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Example of TT-Lang math function. See full list in [Appendix B. Block operators and math functions](#appendix-b-block-operators-and-math-functions). |
+| `ttl.BlockExpr.__add__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | 〃 |
+| `ttl.BlockExpr.__iadd__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | 〃 |
+| `ttl.math.sqrt(expr: ttl.BlockExpr) -> ttl.BlockExpr` | 〃 |
+| `ttl.math.fill(value: float) -> ttl.BlockExpr` | 〃 |
+| `ttl.BlockExpr.__matmul__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | 〃 |
 
 ![ttl.Block diagram](ttl-block.png)
 
@@ -397,7 +402,6 @@ Blocks have a life cycle that starts with acquisition by using dataflow buffer's
 | **MW** | **Must be Written**: the block was reserved and contains garbage data and therefore must be written to. |
 | **MR** | **Must be Read**: the block was waited on or written to and never read and therefore must be read from or pushed. |
 | **RW** | **Read-Write**: the block was waited on or written to (MR) and then read from and therefore can be either read from more times or overwritten. |
-| **A** | **Accumulate**: the block has been accumulated to and can be either continued to be accumulated to or must be read or pushed. |
 | **ROR(N)** | **Read Only while Reading**: the block is being asynchronously read from by **N** `ttl.copy`s. |
 | **NAW** | **No Access while Writing**: the block is being asynchronously written to. |
 | **OS** | **Out of Scope**: the block was pushed or popped. |
@@ -980,6 +984,11 @@ def matmul_read():
 | `ttl.math.max(a: ttl.BlockExpr, b: ttl.BlockExpr) -> ttl.BlockExpr` | Element-wise maximum |
 | `ttl.math.min(a: ttl.BlockExpr, b: ttl.BlockExpr) -> ttl.BlockExpr` | Element-wise minimum |
 
+### In-place operators
+
+| Function | Description |
+| `ttl.BlockExpr.__iadd__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | Add two blocks element-wise and replace first one with the result. Example: `a += b`. |
+
 ### Basic unary math functions
 
 | Function | Description |
@@ -1060,7 +1069,7 @@ def matmul_read():
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.math.fill(expr: ttl.BlockExpr, value: float) -> ttl.BlockExpr` | Fill a block with specified `value` |
+| `ttl.math.fill(value: float) -> ttl.BlockExpr` | Fill a block with specified `value` |
 | `ttl.math.mask(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with 0. |
 | `ttl.math.mask_posinf(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with positive infinity. |
 | `ttl.math.where(condition: ttl.BlockExpr, true_value: ttl.BlockExpr, false_value: ttl.BlockExpr) -> ttl.BlockExpr` | For each element in specified condition block return the corresponding element from `true_value` if true (condition element equals to 1) or the element from `false_value` if false (condition element equals to 0) |
@@ -1087,8 +1096,8 @@ def matmul_read():
 | `ttl.make_dataflow_buffer_like` with any `shape` | 0.1.7 | N/S |
 | `ttl.make_dataflow_buffer_like` for tilized tensors | 0.1.7 | 0.1.7 |
 | `ttl.make_dataflow_buffer_like` for row-major tensors | N/S | N/S |
-| `ttl.Block.store` with `acc = False` | 0.1.7 | 0.1.7 |
-| `ttl.Block.store` with `acc = True` | 0.1.7 | N/S |
+| `ttl.Block.store` | 0.1.7 | 0.1.7 |
+| Overwriting and accumulation through summation (`+=`) for block expressions | 0.1.7 | N/S |
 | `ttl.copy` and `ttl.Transfer` | 0.1.7 | 0.1.7 |
 | `ttl.GroupTransfer` | N/S | N/S |
 | `ttl.Semaphore` on 2D grid | N/S | N/S |
