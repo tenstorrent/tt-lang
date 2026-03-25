@@ -89,6 +89,8 @@ struct TTLInsertTileRegsSyncPass
         if (!commonBlock) {
           commonBlock = ancestor->getBlock();
         }
+        assert(ancestor->getBlock() == commonBlock &&
+               "all acc group computes must share the same ancestor block");
         ancestors.push_back(ancestor);
       }
 

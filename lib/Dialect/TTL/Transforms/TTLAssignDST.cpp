@@ -559,11 +559,23 @@ static FailureOr<std::uint32_t> linearScanAllocateFiltered(
 // Main Pass Implementation
 //===----------------------------------------------------------------------===//
 
+// Auto-detect capacity from element types rather than using the pass option.
+constexpr std::uint32_t kAutoDetectCapacity = 0;
+
 struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
   using Base::Base;
 
-  /// Phase 5b: Allocate shared accumulator registers amulti-computes in
-  /// the same accumulation group. Runs after the per-compute walk.
+  /// Resolve DST capacity for a compute: auto-detect from element types
+  /// unless the pass option overrides it.
+  FailureOr<std::uint32_t> resolveCapacity(ComputeOp computeOp) {
+    if (dstCapacity != kAutoDetectCapacity) {
+      return static_cast<std::uint32_t>(dstCapacity);
+    }
+    return computeDSTCapacity(computeOp);
+  }
+
+  /// Phase 5b: Allocate shared accumulator registers across multiple computes
+  /// in the same accumulation group. Runs after the per-compute walk.
   void assignCrossComputeAccumulators(func::FuncOp funcOp) {
     // Collect computes with acc_group_id, grouped by group ID.
     DenseMap<int64_t, SmallVector<ComputeOp>> groups;
@@ -596,17 +608,39 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       // The accumulator register is the first free slot above all
       // temporaries.
       std::uint32_t accReg = maxFootprint;
+
+      for (ComputeOp compute : computes) {
+        auto capacityOrErr = resolveCapacity(compute);
+        if (failed(capacityOrErr)) {
+          return signalPassFailure();
+        }
+        if (accReg >= *capacityOrErr) {
+          compute.emitOpError()
+              << "insufficient DST registers for cross-compute accumulator: "
+              << "accumulator requires register index " << accReg
+              << " but only " << *capacityOrErr
+              << " registers are available (indices 0.." << (*capacityOrErr - 1)
+              << ")";
+          return signalPassFailure();
+        }
+      }
+
       LLVM_DEBUG(llvm::dbgs() << "Phase 5b: Group " << groupId
                               << " maxFootprint=" << maxFootprint
                               << " accReg=DST[" << accReg << "]\n");
 
       // Set acc_dst_idx on all acc tile_stores in all computes of the group.
+      // FormAccumulationGroups guarantees one target view per group.
       OpBuilder builder(funcOp.getContext());
+      Value groupView;
       for (ComputeOp compute : computes) {
         Block &body = compute.getRegion().front();
         for (Operation &op : body) {
           if (auto tileStore = dyn_cast<TileStoreOp>(&op)) {
             if (tileStore.getAcc()) {
+              assert((!groupView || groupView == tileStore.getView()) &&
+                     "acc group must target a single view");
+              groupView = tileStore.getView();
               tileStore->setAttr(
                   kAccDstIdxAttrName,
                   builder.getI32IntegerAttr(static_cast<int32_t>(accReg)));
@@ -626,15 +660,12 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
     funcOp.walk([&](ComputeOp computeOp) {
       Block *body = &computeOp.getRegion().front();
 
-      std::uint32_t capacity = dstCapacity;
-      if (capacity == 0) {
-        auto computed = computeDSTCapacity(computeOp);
-        if (failed(computed)) {
-          signalPassFailure();
-          return;
-        }
-        capacity = *computed;
+      auto capacityOrErr = resolveCapacity(computeOp);
+      if (failed(capacityOrErr)) {
+        signalPassFailure();
+        return;
       }
+      std::uint32_t capacity = *capacityOrErr;
 
       OpBuilder builder(body, body->begin());
 

@@ -95,16 +95,6 @@ class AccumulateTestBase(ME2ETestBase):
         torch.save(golden, self.output_file("golden.pt"))
 
 
-def _compute_header(rows, cols, dtype, bf, num_cbs):
-    """Generate CB bindings and input wait/attach for a compute function."""
-    cbs = "\n".join(
-        f"  %cb{i} = ttl.bind_cb {{cb_index = {i}, buffer_factor = {bf}}} "
-        f": !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>"
-        for i in range(num_cbs)
-    )
-    return cbs
-
-
 def _tt(rows, cols, dtype):
     """Tile tensor type string."""
     return f"tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>"

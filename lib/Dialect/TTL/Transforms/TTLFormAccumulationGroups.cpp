@@ -33,27 +33,12 @@ namespace {
 struct ComputeStoreInfo {
   ComputeOp compute;
   SmallVector<TileStoreOp> stores;
-  /// The top-level ancestor op in the function body block.
-  /// For a compute inside an scf.for, this is the scf.for.
-  /// For a compute directly in the function body, this is the compute itself.
-  Operation *topLevelAncestor = nullptr;
 };
 
 /// Check if an scf.for is a user loop (not a tile loop or subblock loop).
 static bool isUserLoop(scf::ForOp forOp) {
   return !forOp->hasAttr(kTileLoopStrideAttrName) &&
          !forOp->hasAttr(kSubblockLoopStrideAttrName);
-}
-
-/// Find the top-level ancestor of an operation in the given block.
-/// Walks up through parent operations until reaching an op whose parent
-/// block is the target block.
-static Operation *findTopLevelAncestor(Operation *op, Block *targetBlock) {
-  Operation *current = op;
-  while (current && current->getBlock() != targetBlock) {
-    current = current->getParentOp();
-  }
-  return current;
 }
 
 /// Check if an operation is nested inside a user scf.for loop.
@@ -104,8 +89,6 @@ struct TTLFormAccumulationGroupsPass
         return;
       }
 
-      Operation *ancestor = findTopLevelAncestor(computeOp, &funcBody);
-
       // Group by target view.
       DenseMap<Value, SmallVector<TileStoreOp>> storesByView;
       for (TileStoreOp store : stores) {
@@ -116,7 +99,6 @@ struct TTLFormAccumulationGroupsPass
         ComputeStoreInfo info;
         info.compute = computeOp;
         info.stores = viewStores;
-        info.topLevelAncestor = ancestor;
         viewToComputes[view].push_back(info);
       }
     });

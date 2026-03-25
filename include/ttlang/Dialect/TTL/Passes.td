@@ -155,6 +155,7 @@ def TTLFormAccumulationGroups
   }];
 
   let dependentDialects = [
+    "::mlir::arith::ArithDialect",
     "::mlir::scf::SCFDialect"
   ];
 }
