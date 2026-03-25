@@ -19,6 +19,7 @@ ttlang_set_version("${TTLANG_VERSION}")
 
 option(CODE_COVERAGE "Enable coverage reporting" OFF)
 option(TTLANG_ENABLE_DOCS "Enable Sphinx documentation build" OFF)
+option(TTLANG_SIM_ONLY "Set up Python environment for simulator only (skip compiler build)" OFF)
 
 if(CODE_COVERAGE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --coverage")
@@ -54,6 +55,63 @@ endif()
 # resolves against the venv, not a system Python).
 # ---------------------------------------------------------------------------
 include(TTLangPython)
+
+# ---------------------------------------------------------------------------
+# Simulator-only mode: create venv, install requirements, generate activate
+# script, then stop.  No compiler, LLVM, or tt-metal build.
+# ---------------------------------------------------------------------------
+if(TTLANG_SIM_ONLY)
+  # Create venv if it doesn't exist
+  _ttlang_find_venv_python("${TTLANG_PYTHON_VENV}" _VENV_PYTHON)
+  if(NOT _VENV_PYTHON)
+    message(STATUS "Creating Python venv at ${TTLANG_PYTHON_VENV}...")
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    execute_process(
+      COMMAND ${Python3_EXECUTABLE} -m venv --prompt ttlang "${TTLANG_PYTHON_VENV}"
+      RESULT_VARIABLE _VENV_RESULT
+    )
+    if(NOT _VENV_RESULT EQUAL 0)
+      message(FATAL_ERROR "Failed to create Python venv")
+    endif()
+    _ttlang_find_venv_python("${TTLANG_PYTHON_VENV}" _VENV_PYTHON)
+    _ttlang_activate_venv("${TTLANG_PYTHON_VENV}")
+    execute_process(
+      COMMAND "${_VENV_PYTHON}" -m pip install --upgrade pip --quiet
+    )
+  endif()
+  set(Python3_EXECUTABLE "${_VENV_PYTHON}")
+
+  # Install runtime requirements (torch, greenlet, pydantic, etc.)
+  ttlang_pip_install_requirements("${_VENV_PYTHON}"
+    "${CMAKE_SOURCE_DIR}/requirements.txt" FATAL)
+
+  # Set variables needed by env/activate.in to harmless defaults
+  set(TT_LANG_HOME "${CMAKE_CURRENT_LIST_DIR}")
+  set(TTLANG_HAS_DEVICE_INT 0)
+  set(LLVM_INSTALL_DIR "")
+  set(TT_METAL_HOME "")
+  set(TT_METAL_PYTHON_PATH "")
+  set(TT_METAL_LIB_PATH "")
+
+  configure_file(
+    "${PROJECT_SOURCE_DIR}/env/activate.in"
+    "${PROJECT_BINARY_DIR}/env/activate"
+    @ONLY
+  )
+
+  message(STATUS "")
+  message(STATUS "=== Simulator-only mode ===")
+  message(STATUS "  Python venv:  ${TTLANG_PYTHON_VENV}")
+  message(STATUS "  Activate:     source ${PROJECT_BINARY_DIR}/env/activate")
+  message(STATUS "  Run:          ./bin/ttlang-sim examples/eltwise_add.py")
+  message(STATUS "===")
+
+  if(TTLANG_ENABLE_DOCS)
+    add_subdirectory(docs/sphinx)
+  endif()
+
+  return()
+endif()
 
 # ---------------------------------------------------------------------------
 # LLVM/MLIR dependency (pre-built or from submodule)

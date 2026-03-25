@@ -4,7 +4,7 @@ TT-Lang provides built-in performance analysis tools for profiling kernels on Te
 
 ## Using Claude for Performance Analysis
 
-The `/ttl-profile` and `/ttl-optimize` [Claude Code](https://claude.com/claude-code) skills are designed to work with these tools. Claude knows about all of the performance tools documented here and can walk you through adding signposts, running the profiler, interpreting perf dumps, and optimizing your kernels. See the [Claude Skills](../README.md#claude-skills) section in the README for setup instructions.
+The `/ttl-profile` and `/ttl-optimize` [Claude Code](https://claude.com/claude-code) skills are designed to work with these tools. Claude knows about all of the performance tools documented here and can walk you through adding signposts, running the profiler, interpreting perf dumps, and optimizing your kernels. See the [Claude Skills](../claude-skills.md) page for setup instructions.
 
 ## Environment Variables
 
@@ -123,7 +123,7 @@ LINE   %TIME   CYCLES     SOURCE
                                                                    ╰─ 7,906 cb_push (implicit) (x384)
 ```
 
-See [auto-profiler-examples/](https://github.com/tenstorrent/tt-lang/tree/main/docs/auto-profiler-examples) for more complete sample outputs.
+See [auto-profiler-examples/](auto-profiler-examples/) for more complete sample outputs.
 
 > **Warning:** Each node supports only 125 signposts. Kernels with many operations in tight loops may overflow this buffer, causing later signposts to be silently dropped and mismatched cycle counts. See [#268](https://github.com/tenstorrent/tt-lang/issues/268) for details.
 

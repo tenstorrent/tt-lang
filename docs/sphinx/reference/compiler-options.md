@@ -1,0 +1,170 @@
+# Compiler Options
+
+## Code Generation Options
+
+These flags control how tt-lang compiles kernels. Pass them on the command line,
+or print the list with `--ttl-help`:
+
+```bash
+python my_kernel.py --ttl-help
+python my_kernel.py --no-ttl-maximize-dst
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--ttl-maximize-dst` / `--no-ttl-maximize-dst` | enabled | Partition compute iteration spaces into subblocks that maximize DST register utilization, and reorder tile operations within sync regions to group by kind. Disabling falls back to per-tile synchronization. |
+| `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | enabled | Emit FPU binary elementwise ops (`add_tiles`, `sub_tiles`, `mul_tiles`) when both operands come from circular buffers. When disabled, binary ops use the SFPU path. |
+| `--ttl-block-matmul` / `--no-ttl-block-matmul` | enabled | Emit `matmul_block` (processes the full tile block atomically) instead of per-tile matmul loops. Disabling this option is not yet supported. |
+
+### Other Ways to Set These
+
+Besides the command line, the same flags can be set through three other
+mechanisms. When the same flag is set in multiple places, higher-priority sources
+win and unmentioned flags fall through from lower levels:
+
+| Priority | Mechanism | Example |
+|---|---|---|
+| 1 (lowest) | `CompilerOptions` class defaults | — |
+| 2 | `@ttl.kernel` decorator `options=` parameter | `@ttl.kernel(grid=(2,2), options="--no-ttl-maximize-dst")` |
+| 3 | `TTLANG_COMPILER_OPTIONS` environment variable | `export TTLANG_COMPILER_OPTIONS="--no-ttl-fpu-binary-ops"` |
+| 4 (highest) | Command-line arguments (`sys.argv`) | `python my_kernel.py --no-ttl-maximize-dst` |
+
+The `options` keyword can also be passed at call time to override the decorator
+for a single invocation:
+
+```python
+my_kernel(tensor_a, tensor_b, options="--no-ttl-fpu-binary-ops")
+```
+
+## Compute Configuration
+
+These two parameters are set on the `@ttl.kernel` decorator (not via command-line
+flags) and control the TTNN compute kernel hardware configuration:
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `fp32_dest_acc_en` | `bool` or `None` | `None` | Enable f32 accumulation in the DST register file. When `None`, auto-detected from input tensor dtypes (enabled when any input is f32). |
+| `dst_full_sync_en` | `bool` or `None` | `None` | Enable full DST synchronization (single-buffering mode). Doubles DST capacity (f32: 8, f16/bf16: 16) at the cost of a full sync between math and pack threads. |
+
+```python
+@ttl.kernel(grid=(2, 2), fp32_dest_acc_en=True, dst_full_sync_en=False)
+def my_kernel(a, b): ...
+```
+
+## Environment Variables
+
+These environment variables control compilation behavior and diagnostic output.
+They are independent of the code generation flags above.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `TTLANG_COMPILE_ONLY` | `0`/`1` | `0` | Compile kernels but do not execute on hardware. |
+| `TTLANG_INITIAL_MLIR` | file path | (unset) | Write the pre-optimization MLIR module to this file. |
+| `TTLANG_FINAL_MLIR` | file path | (unset) | Write the post-optimization MLIR module to this file. |
+| `TTLANG_VERBOSE_PASSES` | any value | (unset) | Print the IR after every pass in the pipeline. Output is very large; redirect to a file. |
+| `TTLANG_DEBUG_LOCATIONS` | `0`/`1` | `0` | Include source locations in printed MLIR (locations are always tracked internally for error messages). |
+| `TTLANG_VERBOSE_ERRORS` | `0`/`1` | `0` | Include raw MLIR diagnostics in error output. |
+
+Profiling-related environment variables (`TTLANG_AUTO_PROFILE`,
+`TTLANG_PERF_DUMP`, `TTLANG_PERF_SERV`, `TTLANG_SIGNPOST_PROFILE`,
+`TTLANG_PROFILE_CSV`) are documented in the
+[Performance Tools](performance-tools.md) reference.
+
+## Other Decorator Parameters
+
+The `@ttl.kernel` decorator also accepts these parameters for kernel structure
+and layout:
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `grid` | `tuple` or `Callable` | (required) | Compute grid dimensions, e.g., `(2, 2)` |
+| `indexing_maps` | `list[Callable]` | `None` | Lambda functions for tile indexing |
+| `iterator_types` | `list[str]` | `None` | `"parallel"` or `"reduction"` per dimension |
+| `num_outs` | `int` | `1` | Number of output tensor arguments |
+| `memory_space` | `str` | `"L1"` | Memory space for circular buffers: `"L1"` or `"DRAM"` |
+| `tiled` | `bool` | `True` | Use tiled tensor layout |
+
+---
+
+## `ttlang-opt` Pass Reference
+
+`ttlang-opt` is the standalone MLIR optimizer driver for the TTL dialect, used
+primarily for compiler development and testing. It accepts all standard
+`mlir-opt` flags (run `ttlang-opt --help` for the full list) plus the
+TTL-specific passes and pipeline documented below.
+
+### Pipeline: `ttl-to-ttkernel-pipeline`
+
+The main compilation pipeline, equivalent to what the Python API runs internally.
+
+```bash
+ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-emitc=true}'
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `maximize-dst` | bool | `true` | Enable DST maximization via subblock compute and scheduling. |
+| `enable-fpu-binary-ops` | bool | `true` | Use FPU for binary add/sub/mul. |
+| `use-block-matmul` | bool | `true` | Lower matmul to block-level hardware calls (`experimental::matmul_block`). |
+| `lower-to-emitc` | bool | `false` | Run the TTKernel-to-EmitC backend (produces C++ source). |
+
+The pipeline runs these passes in order:
+
+1. `convert-ttl-to-compute` — lower TTL elementwise tensor ops to `ttl.compute` with tile ops
+2. `ttl-set-compute-kernel-config` — set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
+3. `ttl-assign-dst` — DST register allocation (linear scan with copy insertion)
+4. `ttl-subblock-compute-for-dst` — tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*
+5. `ttl-insert-tile-regs-sync` — insert math/pack thread synchronization
+6. `ttl-lower-matmul-block` — mark block-matmul computes and expand stores *(only if `use-block-matmul=true`)*
+7. `ttl-lower-to-loops` — lower `ttl.compute` to `scf.for` loops
+8. `ttl-schedule-operations` — reorder tile ops by dependency depth and kind *(only if `maximize-dst=true`)*
+9. `ttl-annotate-cb-associations` — annotate block args with CB indices
+10. `convert-ttl-to-ttkernel` — lower TTL DMA ops to TTKernel
+11. `ttkernel-insert-inits` — insert hardware init ops before compute ops
+12. Canonicalization and CSE cleanup
+13. *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
+
+### Individual Pass Options
+
+Each pass can also be run standalone for testing. Only passes with configurable
+options are listed; the remaining passes have no options.
+
+#### `ttl-set-compute-kernel-config`
+
+Set default compute kernel configuration attributes on `ttl.compute` ops.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `fp32-dest-acc-en` | bool | `false` | Default `fp32_dest_acc_en` when not already configured. |
+| `dst-full-sync-en` | bool | `false` | Default `dst_full_sync_en` when not already configured. |
+
+```bash
+ttlang-opt input.mlir -p 'func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=1})'
+```
+
+#### `ttl-assign-dst`
+
+DST register allocator using linear scan allocation with in-place operation
+merging.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `dst-capacity` | uint32_t | `0` (auto) | Override DST register capacity. Auto-computed from `fp32_dest_acc_en` and `dst_full_sync_en` by default. Single-buffering (`dst_full_sync_en=true`): f32=8, f16/bf16=16. Double-buffering (default): f32=4, f16/bf16=8. |
+| `separate-output-region` | bool | `false` | Allocate outputs in a separate DST region (needed for reductions and some loop optimizations). |
+| `enable-fpu-binary-ops` | bool | `true` | Use FPU for binary add/sub/mul when both operands come from CBs. When disabled, binary ops use the SFPU path. |
+
+```bash
+ttlang-opt input.mlir -p 'func.func(ttl-assign-dst{dst-capacity=16 enable-fpu-binary-ops=0})'
+```
+
+#### `ttl-dump-cb-flow-graph`
+
+Analyze circular buffer producer/consumer relationships and dump the flow graph.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `output` | string | `""` | Path to write JSON output. Empty string prints to stderr only. |
+
+```bash
+ttlang-opt input.mlir -p 'ttl-dump-cb-flow-graph{output="/tmp/cb_graph.json"}'
+```

@@ -1,31 +1,30 @@
-# TT-Lang
+# TT-Lang Specification
 
-# Language Specification
+* [Specification Versions](#specification-versions)
+* [Introduction](#introduction)
+* [Kernel program](#kernel-program)
+* [Grid](#grid)
+    * [Grid size function](#grid-size-function)
+    * [Node function](#node-function)
+* [Dataflow buffer](#dataflow-buffer)
+* [Block](#block)
+    * [Block states](#block-states)
+* [Pipe](#pipe)
+    * [Pipe net](#pipe-net)
+* [Tensor slice](#tensor-slice)
+* [Copy](#copy)
+    * [Group transfer](#group-transfer)
+* [Semaphore](#semaphore)
+* [Performance and debugging](#performance-and-debugging)
+    * [Profiling signpost](#profiling-signpost)
+    * [Debug printing](#debug-printing)
+* [Glossary](#appendix-a-glossary)
+* [Block operators and math functions](#appendix-b-block-operators-and-math-functions)
+* [Naming guidelines](#appendix-c-naming-guidelines)
+* [Functionality matrix](#appendix-d-functionality-matrix)
 
-* [0. Versions](#0-versions)
-* [1. Introduction](#1-introduction)
-* [2. Kernel program](#2-kernel-program)
-* [3. Grid](#3-grid)
-    * [3.1. Grid size function](#31-grid-size-function)
-    * [3.2. Node function](#32-node-function)
-* [4. Dataflow buffer](#4-dataflow-buffer)
-* [5. Block](#5-block)
-    * [5.1. Block states](#51-block-states)
-* [6. Pipe](#6-pipe)
-    * [6.1. Pipe net](#61-pipe-net)
-* [7. Tensor slice](#7-tensor-slice)
-* [8. Copy](#8-copy)
-    * [8.1. Group transfer](#81-group-transfer)
-* [9. Semaphore](#9-semaphore)
-* [10. Performance and debugging](#10-performance-and-debugging)
-    * [10.1. Profiling signpost](#101-profiling-signpost)
-    * [10.2. Debug printing](#102-debug-printing)
-* [Appendix A. Glossary](#appendix-a-glossary)
-* [Appendix B. Block operators and math functions](#appendix-b-block-operators-and-math-functions)
-* [Appendix C. Naming guidelines](#appendix-c-naming-guidelines)
-* [Appendix D. Functionality matrix](#appendix-D-functionality-matrix)
 
-## 0. Versions
+## Specification Versions
 
 | *Version* | *Date* | *Description of changes* |
 | :---- | :---- | :---- |
@@ -43,13 +42,15 @@
 | 0.11 | 03/19/2026 | Rename `ttl.core` to `ttl.node` |
 | 0.12 | 03/24/2026 | Remove `store(..., acc=True)` |
 
-## 1. Introduction
+
+## Introduction
 
 TT-Lang is a Python based *domain specific language (DSL)* designed to express kernel programs for TT hardware. While based on Python the language maintains a number of constraints to what parts of Python can be used in what context, hence the DSL nature of it. TT-Lang is tightly integrated with [TT-NN](https://docs.tenstorrent.com/tt-metal/latest/ttnn/index.html) to provide seamless experience of mixing existing TT-NN operations and user-defined kernel programs.
 
 The programming model of TT-Lang is centered around explicit specification of data movement and compute threads and explicit synchronization between them. This allows the user to have fine grained control of the execution schedule and its performance implications. TT-Lang offers abstractions familiar to TT-Metalium users such as *dataflow buffers* and *semaphores*. TT-Lang also offers new, higher level abstractions, such as *tensor slices*, *blocks* and *pipes* that wrap the complexity of dealing with tensor memory layout, compute API and node-to-node communication correspondingly.
 
-## 2. Kernel program
+
+## Kernel program
 
 *Kernel function* is a Python function with `ttl.kernel` decorator. This function takes input and output [*TT-NN tensors*](https://docs.tenstorrent.com/tt-metal/latest/ttnn/ttnn/tensor.html) as arguments and returns `None`. A kernel function contains definitions of thread functions as well as objects shared by thread functions. A thread function is a Python function with no arguments and returning `None` that is annotated by `ttl.compute` or `ttl.datamovement` decorators.
 
@@ -81,11 +82,13 @@ y = ttnn.zeros(shape, layout=ttnn.TILE_LAYOUT)
 foo(x, y)
 ```
 
-## 3. Grid
+
+## Grid
 
 A *grid* defines a space of nodes to which the kernel is submitted for execution. A node corresponds to a single Tensix Core and is a minimal unit capable of executing a TT-Lang program. In a single-chip case where node-to-node communication is conducted over Network-on-Chip (NoC), the grid is two dimensional. In a multi-chip case where chip-to-chip communication is conduced over TT-Fabric, the grid has additional mesh dimensions representing different levels of connectivity (same card, same host, same rack etc). There is also Single-Program-Multiple-Data (SPMD) mode in which the grid remains two dimensional while kernel is submitted for execution on multiple chips. In SPMD mode kernel instances have the same behaviour on different chips while working on different partitions of data, which significantly simplifies reasoning about it.
 
-### 3.1. Grid size function
+
+### Grid size function
 
 The `ttl.grid_size` function returns the size of the grid. The function takes an argument that specifies how many dimensions to return. If requested dimensions are smaller than grid dimensions, the highest rank dimension is flattened. If requested dimensions are greater than grid dimensions, highest rank dimensions are padded with a value of one. The `ttl.grid_size` can be used inside a kernel function as well as inside thread functions.
 
@@ -109,7 +112,8 @@ x_size, y_size = ttl.grid_size(dims = 2)
 x_size, y_size, z_size = ttl.grid_size(dims = 3)
 ```
 
-### 3.2. Node function
+
+### Node function
 
 The `ttl.node` function returns *node coordinates* of the current node. Node coordinates are zero based and contiguous, which corresponds to a logical indexing scheme. The function takes an argument that specifies how many dimensions to return. If requested dimensions are smaller than grid dimensions, the highest rank dimension is flattened. If requested dimensions are greater than grid dimensions, highest rank dimensions are padded with a value of zero. The `ttl.node` can be used inside a kernel function as well as inside thread functions.
 
@@ -133,7 +137,8 @@ x, y = ttl.node(dims = 2)
 x, y, z = ttl.node(dims = 3)
 ```
 
-## 4. Dataflow buffer
+
+## Dataflow buffer
 
 A *dataflow buffer* is a communication primitive for synchronizing the passing of data between thread functions within one node. A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing TT-NN tensor, *shape* and *buffer factor*.
 
@@ -179,7 +184,8 @@ def some_compute():
 | `ttl.DataflowBuffer.wait(self) -> ttl.Block` | Wait for and return a block from a dataflow buffer. **This function is blocking** and will wait until a block filled with data is available. A filled block is typically used by a consumer to read data from. |
 | `ttl.Block.pop(self)` | Pop a block from a dataflow buffer. This function is called by the consumer to signal the producer that block is free and available. **This function is non-blocking.** |
 
-## 5. Block
+
+## Block
 
 A *block* represents memory acquired from a dataflow buffer. Block size is determined by the shape of a dataflow buffer and its memory is allocated when a dataflow buffer is created. Inside of a compute thread a block can participate in a *block expression* with built-in Python operators and TT-Lang math functions as an operand. A block can also be a storage for the result of block expression by using `store` function. Inside of data movement threads a block can participate in `ttl.copy` as a source or a destination.
 
@@ -393,7 +399,8 @@ def matmul_write():
 
 ![ttl.Block diagram](ttl-block.png)
 
-## 5.1. Block states
+
+## Block states
 
 Blocks have a life cycle that starts with acquisition by using dataflow buffer's `reserve` or `wait` functions and ends with release by block's `push` and `pop` functions correspondingly. During this life cycle there are restrictions on what operations and in what sequences a block can participate in. These restrictions are formalized by the table below, which summarizes the states, and the accompanying diagrams, which illustrate the legal transitions.
 
@@ -414,7 +421,8 @@ Blocks have a life cycle that starts with acquisition by using dataflow buffer's
 
 ![Datamovement Thread wait-pop](dm-wait-pop.png)
 
-## 6. Pipe
+
+## Pipe
 
 A *pipe* is a communication primitive for organizing the passing of data between data movement threads on different nodes. A pipe is used as a source or a destination in the `ttl.copy`. The pipe is constructed with source node coordinate (`src`) and destination (`dst`), which is either a single node coordinate for unicast or *node range* for multicast. The node range uses a combination of dimension slices and values to describe a contiguous hypercube. The node range dimensions’ aspects will match the corresponding aspects returned by the `grid_size` function for the same number of dimensions.
 
@@ -423,7 +431,8 @@ A *pipe* is a communication primitive for organizing the passing of data between
 | `ttl.NodeRange = Tuple[ttl.Index \| slice, ...]` | A node range. |
 | `ttl.Pipe[DstT](src: ttl.NodeCoord, dst: DstT) -> ttl.Pipe[DstT]` | Constructs pipe description to be used to construct pipe net. The `dst` argument is of `DstT` type, which can be either `ttl.NodeCoord` or `ttl.NodeRange`. |
 
-### 6.1. Pipe net
+
+### Pipe net
 
 A *pipe net* is a communication primitive that groups pipes into a network. A pipe net is constructed from a list of pipes and encapsulates all necessary information to determine if a given node is source, destination or both and where and from which node or nodes the corresponding transfers will occur. Pipe net object has two functions: `if_src` and `if_dst`. Both functions have a single argument: *condition body function*.
 
@@ -647,7 +656,8 @@ def dm():
         net.if_dst(pipe_dst)
 ```
 
-## 7. Tensor slice
+
+## Tensor slice
 
 A *tensor slice* is a view into a TT-NN tensor defined in terms of a dimension slice or value for each of the tensor's dimensions. A tensor slice can participate in `ttl.copy` as a source or a destination with the corresponding destination and source being a block. Tensor slice can only be used in the scope of a data movement thread function.
 
@@ -687,11 +697,13 @@ def dm():
                 a_xf.wait()
 ```
 
-## 8. Copy
+
+## Copy
 
 The `ttl.copy` function expresses a variety of data movements that always have two arguments: source and destination. `ttl.copy` returns a *transfer handle* object. A transfer handle has a `wait` function that serves as a barrier. When the `wait` returns the transfer is complete and data in the destination is safe to use.  The `ttl.copy` can only be used inside of a data movement thread function.
 
-### 8.1. Group transfer
+
+### Group transfer
 
 When `ttl.copy` function is called multiple times, instead of waiting on each transfer handle, it is possible to group handles and wait on all handles at once. This is done by instantiating `ttl.GroupTransfer` object and then adding handles with its `add` function. Once all handles are added `wait_all` function is called to wait for all transfers to complete.
 
@@ -756,7 +768,8 @@ def writer():
 | `ttl.GroupTransfer.add(xf: ttl.Transfer)` | Add transfer handle to a group. This function cannot be called after `ttl.GroupTransfer.wait_all` was called. |
 | `ttl.GroupTransfer.wait_all()` | Wait for all data transfers in group to complete. Group transfer cannot be used after this function is called. **This function is blocking.** |
 
-## 9. Semaphore
+
+## Semaphore
 
 A *semaphore* is a communication primitive for general synchronization between data movement threads on different nodes. Each semaphore has an associated 32-bit unsigned integer *semaphore value* for each node. This value can be changed (set or incremented) by a data movement thread on the local or a remote node. When changing semaphore value remotely a single node coordinate for unicast change or a node range for multicast change is specified. Only setting the semaphore value is supported as a multicast change. A data movement thread can wait on a semaphore until its value satisfies a condition. It is possible to specify either a condition with exact value or a condition with minimum value. Only local data movement threads can wait on a semaphore.
 
@@ -815,11 +828,13 @@ def dm():
 | `ttl.UnicastRemoteSemaphore.inc(self, value: ttl.Count)` | Increment remote unicast semaphore value by specified value. **This function is non-blocking.** Can be used only in the scope of a data movement thread function. |
 | `ttl.MulticastRemoteSemaphore.set(self, value: ttl.Count)` | Set remote multicast semaphore value to specified value. **This function is non-blocking.** Can be used only in the scope of a data movement thread function. |
 
-## 10. Performance and debugging
+
+## Performance and debugging
 
 TT-Lang provides a range for facilities to aid performance analisys and debugging. Generally, the description of these tools is outside of the scope of this specification with the exception of language extensions that are needed to support them.
 
-### 10.1. Profiling signpost
+
+### Profiling signpost
 
 Profiling signpost is a language construct that allows the user to specify a block of code that will be measured for performance during the program execution. This is achieved by using Python `with` statement in conjunction with `ttl.signpost` function. This function takes a string argument for a signpost name. This way the signpost will be identified in the profiling tool's user interface.
 
@@ -871,7 +886,8 @@ def matmul_read():
 | :---- | :---- |
 | `ttl.signpost(str: name)` | Declare as signpost. Can be used only with the `with` statement. |
 
-### 10.2. Debug printing
+
+### Debug printing
 
 TT-Lang includes ability to print information to the standard output for debugging purpose. This is achieved by using the standard Python `print` function. In TT-Lang this function can be used with string constants, scalar variables, such as loop indexes or calculated slice bounds, as well as with TT-Lang specific objects, such as tensors and blocks. When `print` is used with TT-Lang objects there are additional attribute arguments, which enabling better control of the output content. Beacause of this, `print` is limited to only one TT-Lang object to be printed in conjunction any number of string and scalar variables.
 
@@ -941,6 +957,7 @@ def matmul_read():
 | `ttl.Block` | Print the content of a block. For example, `print(bias_blk)`. |
 | `ttl.DataflowBuffer` | Print the state of a dataflow buffer, which includes metadata such as `size`, `page_size` etc, as well as current value of its pointers: `rd_ptr`, `wr_ptr` and `wr_tile_ptr`. For example, `print(bias_dfb)`. |
 
+
 ## Appendix A. Glossary
 
 | Term | Description |
@@ -969,6 +986,7 @@ def matmul_read():
 | *Transfer handle* | A handle to an asynchronous copy operation. A transfer handle is used as a barrier to ensure that operation is finished and the corresponding source or destination block is safe to use. |
 | *Semaphore* | A communication primitive for general synchronization between data movement threads on different nodes. |
 | *Semaphore value* | A 32-bit unsigned integer value associated with a semaphore on each node. This value can be set or incremented by a data movement thread on the local or a remote node. |
+
 
 ## Appendix B. Block operators and math functions
 
@@ -1074,6 +1092,7 @@ def matmul_read():
 | `ttl.math.mask_posinf(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with positive infinity. |
 | `ttl.math.where(condition: ttl.BlockExpr, true_value: ttl.BlockExpr, false_value: ttl.BlockExpr) -> ttl.BlockExpr` | For each element in specified condition block return the corresponding element from `true_value` if true (condition element equals to 1) or the element from `false_value` if false (condition element equals to 0) |
 
+
 ## Appendix C. Naming guidelines
 
 | Object | Guideline |
@@ -1083,6 +1102,7 @@ def matmul_read():
 | Block | Snake case with `blk` suffix. Example `attention_mask_blk`, `bias_blk2` |
 | Transfer handle | Snake case with `xf` suffix. Example `attention_mask_xf`, `bias_xf2` |
 | Pipe net | Snake case with `net` suffix. Example `mcast_attention_mask_net`, `bias_net2` |
+
 
 ## Appendix D. Functionality matrix
 
