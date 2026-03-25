@@ -7,14 +7,14 @@ or print the list with `--ttl-help`:
 
 ```bash
 python my_kernel.py --ttl-help
-python my_kernel.py --no-ttl-maximize-dst --no-ttl-block-matmul
+python my_kernel.py --no-ttl-maximize-dst
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `--ttl-maximize-dst` / `--no-ttl-maximize-dst` | enabled | Partition compute iteration spaces into subblocks that maximize DST register utilization, and reorder tile operations within sync regions to group by kind. Disabling falls back to per-tile synchronization. |
 | `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | enabled | Emit FPU binary elementwise ops (`add_tiles`, `sub_tiles`, `mul_tiles`) when both operands come from circular buffers. When disabled, binary ops use the SFPU path. |
-| `--ttl-block-matmul` / `--no-ttl-block-matmul` | enabled | Emit `matmul_block` (processes the full tile block atomically) instead of per-tile matmul loops. |
+| `--ttl-block-matmul` / `--no-ttl-block-matmul` | enabled | Emit `matmul_block` (processes the full tile block atomically) instead of per-tile matmul loops. Disabling this option is not yet supported. |
 
 ### Other Ways to Set These
 
@@ -33,7 +33,7 @@ The `options` keyword can also be passed at call time to override the decorator
 for a single invocation:
 
 ```python
-my_kernel(tensor_a, tensor_b, options="--no-ttl-block-matmul")
+my_kernel(tensor_a, tensor_b, options="--no-ttl-fpu-binary-ops")
 ```
 
 ## Compute Configuration
