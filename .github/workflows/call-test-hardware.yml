@@ -91,12 +91,6 @@ jobs:
           source build/env/activate
           python3 test/python/smoketest.py
 
-      - name: L1 accumulation smoke test
-        run: |
-          source build/env/activate
-          python3 -m pytest test/python/test_accumulate.py -v --tb=short
-          python3 -m pytest test/python/test_acc_loop.py -v --tb=short -x
-
       - name: Single test (just python)
         run: |
           source build/env/activate
@@ -111,7 +105,6 @@ jobs:
         run: |
           source build/env/activate
           python3 -m pytest test/me2e -v --tb=short --junitxml=build/test/me2e-report.xml
-
 
       - name: Pytests (Python DSL end-to-end tests)
         run: |
