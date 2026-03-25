@@ -62,7 +62,3 @@ func.func @tile_store_empty_indices_in_compute(
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return
 }
-
-// -----
-
-// acc=true is valid outside compute bodies (used by L1 accumulation).

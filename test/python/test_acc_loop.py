@@ -6,7 +6,7 @@
 
 Validates the accumulation pipeline for patterns where acc=True stores appear
 inside Python loops. ConvertTTLToCompute creates one ttl.compute per store,
-FormAccumulationGroups detects accumulation chains amulti-computes, AssignDST
+FormAccumulationGroups detects accumulation chains across multiple computes, AssignDST
 allocates shared accumulator registers, and InsertSync places group-level sync.
 
 Groups:

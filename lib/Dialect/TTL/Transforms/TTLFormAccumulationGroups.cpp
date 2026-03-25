@@ -70,7 +70,7 @@ struct TTLFormAccumulationGroupsPass
     func::FuncOp funcOp = getOperation();
     Block &funcBody = funcOp.getBody().front();
 
-    //=== Phase A: Group Detection ===
+    //=== Phase 1: Group Detection ===
 
     // Step 1: Collect all computes and their store targets.
     // Map: view (cb_reserve result) -> list of compute+store info.
@@ -123,7 +123,7 @@ struct TTLFormAccumulationGroupsPass
         // Multi-compute case: at least 2 computes store to the same view.
         needsGroup = true;
         LLVM_DEBUG(llvm::dbgs()
-                   << "Phase A: Multi-compute group for view " << view << " ("
+                   << "Phase 1: Multi-compute group for view " << view << " ("
                    << computeInfos.size() << " computes)\n");
       } else if (computeInfos.size() == 1) {
         // Single compute: only needs a group if inside a user loop.
@@ -131,11 +131,11 @@ struct TTLFormAccumulationGroupsPass
         if (isInsideUserLoop(compute, &funcBody)) {
           needsGroup = true;
           LLVM_DEBUG(llvm::dbgs()
-                     << "Phase A: Single-compute-in-loop group for view "
+                     << "Phase 1: Single-compute-in-loop group for view "
                      << view << "\n");
         } else {
           LLVM_DEBUG(llvm::dbgs()
-                     << "Phase A: Skipping single acc store (no loop) for view "
+                     << "Phase 1: Skipping single acc store (no loop) for view "
                      << view << "\n");
         }
       }
@@ -220,19 +220,19 @@ struct TTLFormAccumulationGroupsPass
             store.setAcc(false);
           }
         }
-        LLVM_DEBUG(llvm::dbgs() << "Phase A: Multi-tile group for view " << view
+        LLVM_DEBUG(llvm::dbgs() << "Phase 1: Multi-tile group for view " << view
                                 << " uses L1 accumulation\n");
         continue;
       }
 
-      //=== Phase C: Attribute Assignment ===
+      //=== Phase 2: Attribute Assignment ===
       int64_t groupId = nextGroupId++;
       OpBuilder builder(funcOp.getContext());
 
       for (auto &info : computeInfos) {
         info.compute->setAttr(kAccGroupIdAttrName,
                               builder.getI64IntegerAttr(groupId));
-        LLVM_DEBUG(llvm::dbgs() << "Phase C: Set acc_group=" << groupId
+        LLVM_DEBUG(llvm::dbgs() << "Phase 2: Set acc_group=" << groupId
                                 << " on compute " << info.compute << "\n");
 
         // Convert any non-acc store to acc=true. The initializer becomes
@@ -241,7 +241,7 @@ struct TTLFormAccumulationGroupsPass
           if (!store.getAcc()) {
             store.setAcc(true);
             LLVM_DEBUG(llvm::dbgs()
-                       << "Phase C: Converted non-acc store to acc=true in "
+                       << "Phase 2: Converted non-acc store to acc=true in "
                           "group "
                        << groupId << "\n");
           }

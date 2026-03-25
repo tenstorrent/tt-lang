@@ -68,10 +68,6 @@ struct TTLInsertTileRegsSyncPass
     });
 
     for (auto &[groupId, computes] : groups) {
-      if (computes.empty()) {
-        continue;
-      }
-
       // Find the common parent block for all computes in the group.
       // Walk up from each compute to find its top-level ancestor in the
       // common block.
@@ -115,7 +111,6 @@ struct TTLInsertTileRegsSyncPass
 
       // Place acquire before the first op. Mark it as an accumulation group
       // sync so TTKernelInsertInits uses binary_op_init_common.
-      builder.setInsertionPoint(firstOp);
       auto acquireOp = TileRegsAcquireOp::create(builder, loc);
       acquireOp->setAttr(kAccGroupSyncAttrName, builder.getUnitAttr());
 
