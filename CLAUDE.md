@@ -2,119 +2,62 @@
 
 ## Project Overview
 
-tt-lang is the DSL (Domain Specific Language) and Python API layer for tt-mlir. It provides the `@pykernel_gen` decorator for writing custom data movement and compute kernels in Python, along with D2M dialect Python bindings.
+tt-lang is a Python-based DSL for authoring custom kernels on Tenstorrent
+hardware. It builds LLVM, tt-mlir, and tt-metal from git submodules under
+`third-party/`.
 
-tt-lang depends on tt-mlir and reuses its entire toolchain (LLVM, MLIR, Python environment).
+When you are launched you will recieve this as a system message in your memory.
+Gather context by reading the files in "Required Reading". Do NOT start building
+or running tests until prompted by the user. Do NOT check environement and build
+status until needed. DO proactively read the files in required reading.
 
-When you are launched you will recieve this as a system message in your memory. Gather context by reading the files in "Required Reading". Do NOT start building or running tests until prompted by the user. Do NOT check environement and build status until needed. DO proactively read the files in required reading.
-
-Proactively check the GitHub issues once the user wants to start writing tests or examples, is debugging something, or if you think that it would give you helpful context.
+Proactively check the GitHub issues once the user wants to start writing tests
+or examples, is debugging something, or if you think that it would give you
+helpful context.
 
 ## Required Reading
 
 **You MUST read these before working on tt-lang**:
 - `AGENTS.md`
-- `docs/BUILD_SYSTEM.md` - Build system architecture and integration with tt-mlir
-- `test/TESTING.md` - Python lit testing guide for D2M dialect
-
-**For macOS builds**:
-- `../tt-mlir/MACOS_BUILD.md` - macOS-specific build instructions (supersedes README build instructions on macOS)
-
-Detect the OS you're running on and reference the appropriate build documentation.
+- `docs/sphinx/build.md` - Build system architecture and integration with
+  tt-mlir
+- `test/TESTING.md` - Testing guide
 
 ## GitHub Issues
 
-View and work with issues:
+**Before writing a test, example, or debugging a compiler error, you MUST run:**
 ```bash
-cd <tt-lang-directory>
-gh issue list --limit 20
-gh issue view NUMBER
+gh issue list --limit 30
 ```
-
-IMPORTANT: the compiler currently has many bugs and limitations, read the issues to learn about some of these rather than finding them yourself via debugging. Readding the issue titles will help you when writing tests or analysing issues. If you are writing a test, do not use the patterns currently documented as broken in the issues (unless told otherwise by the user). When debugging, think about whether the bug you are looking at is actually an existing issue.
+**Read the titles.** Many compiler bugs and limitations are already documented.
+If an issue title looks relevant to your task, run `gh issue view <number>` to
+read the details. This prevents you from:
+- Writing tests that hit known broken patterns
+- Spending time debugging issues that are already filed
+- Proposing fixes that duplicate in-progress work
 
 ## Environment Setup and Building
 
-### Detecting Repository Layout
+See `docs/sphinx/build.md` for build modes, CMake options, and troubleshooting.
+See `test/TESTING.md` for testing. Always `source build/env/activate` before
+running commands.
 
-Before building, determine where tt-lang and tt-mlir are located relative to each other:
-```bash
-# From tt-lang directory
-pwd                          # Get tt-lang path
-ls -d ../tt-mlir 2>/dev/null # Check if tt-mlir is sibling directory
-echo $TT_MLIR_HOME          # Check if user has set this
-```
+## Docs Validation
 
-If tt-mlir is not in the default sibling location, the user will need to set `TT_MLIR_HOME` before activating the environment.
+When adding features or changing behavior, check that docs stay in sync. Walk
+through user scenarios to catch broken links, stale instructions, and dead ends:
 
-### Building tt-mlir (Prerequisite)
-
-**tt-lang requires a working tt-mlir build.** You must ensure tt-mlir is built before building tt-lang:
-
-```bash
-cd <tt-mlir-directory>
-source build/env/activate
-
-# Configure and build tt-mlir
-# Follow instructions in MACOS_BUILD.md (macOS) or README.md (Linux)
-cmake -G Ninja -B build <options>
-cmake --build build
-```
-
-**tt-mlir Build Issues**: tt-mlir builds can be non-deterministic, specifically around **nanobind** Python bindings. If you see:
-- Compiler errors mentioning `nanobind`
-- Something that seems totally unrelated to your change
-
-Then retry the build 2-3 times. This is a known issue with nanobind and parallel builds.
-
-### Activating tt-lang Environment
-
-```bash
-# Navigate to tt-lang root
-cd <tt-lang-directory>
-
-# Activate environment
-source build/env/activate
-
-### Building tt-lang
-
-See `docs/BUILD_SYSTEM.md` for detailed build instructions and options.
-
-```bash
-cd <tt-lang-directory>
-source env/activate
-
-# Configure
-cmake -G Ninja -B build .
-
-# Build
-cmake --build build
-
-# Rebuild after code changes
-cmake --build build
-```
-
-tt-lang builds are generally reliable. If builds fail, check that tt-mlir built successfully first.
-
-## Testing
-
-See `docs/TESTING.md` for complete testing documentation including:
-- Running lit tests
-- Test output locations
-- Writing new tests
-- FileCheck patterns
-
-**Quick reference**:
-```bash
-cd <tt-lang-directory>
-source env/activate
-
-# Run all tests
-llvm-lit -sv test/python/
-
-# Run example
-python example/custom_dm_matmul.py # optionally specify initial and final MLIR dump locations
-```
+1. **Link check**: grep for `../` links in `docs/sphinx/` — any pointing outside
+   the Sphinx tree will break in rendered HTML. Design docs under
+   `docs/development/` should use absolute GitHub URLs.
+2. **Getting-started path**: trace README Quick Start → getting-started.md →
+   tutorial → programming guide. Verify each link resolves and the instructions
+   are current.
+3. **Contributor path**: trace contributor-guide.md → build.md → testing.md.
+   Verify build commands and test targets match the current CMake targets.
+4. **Reference consistency**: `check-ttlang-all` does not include
+   `python -m pytest test/sim`; any page mentioning it should note this. Verify CMake
+   syntax is consistent (`-G Ninja`, no trailing `.`).
 
 ## MLIR Generation and Debugging
 
@@ -143,7 +86,8 @@ export TTLANG_FINAL_MLIR=/tmp/verbose_final.mlir
 python examples/custom_dm_matmul.py 2>&1 | tee /tmp/full_pipeline.log
 ```
 
-This produces ~50 pass IR dumps showing transformations. The output is VERY LARGE (thousands of lines). Use grep/tail to navigate:
+This produces ~50 pass IR dumps showing transformations. The output is VERY
+LARGE (thousands of lines). Use grep/tail to navigate:
 ```bash
 # See which passes ran
 grep "^// -----// IR Dump" /tmp/full_pipeline.log
@@ -159,7 +103,8 @@ Located in `python/ttl/ttl_api.py` lines 302-332:
 - `TTLANG_INITIAL_MLIR` - Save initial IR (line 296)
 - `TTLANG_FINAL_MLIR` - Save final IR (line 334)
 - `use_tile_matmul` - Use tile-level matmul (line 304, currently True)
-- Pipeline string (line 305): `d2m-generic-replace-globals,ttir-to-ttmetal-pipeline{use-tile-matmul=1}`
+- Pipeline string (line 305):
+  `d2m-generic-replace-globals,ttir-to-ttmetal-pipeline{use-tile-matmul=1}`
 
 Key passes in order:
 1. `ttcore-register-device` - Register device configuration
@@ -175,16 +120,21 @@ Key passes in order:
 
 ### Workflow 1: Trace Issue Through Pass Pipeline
 
-**When to use**: Compilation error, assertion failure, or unexpected behavior in pipeline.
+**When to use**: Compilation error, assertion failure, or unexpected behavior in
+pipeline.
 
-**If the user asks you to trace the MLIR pass pipeline for an error**, follow this workflow and provide a response structured like the example below.
+**If the user asks you to trace the MLIR pass pipeline for an error**, follow
+this workflow and provide a response structured like the example below.
 
 **Approach**:
 1. Run with verbose passes to capture all IR
 2. Identify the failing pass from error message
-3. Use an **Explore agent** to search the verbose output for the error and extract relevant passes
-4. Use a **general-purpose agent** to analyze the IR transformation before/after the problem
-5. Provide a succinct summary of each pass where important ops change, are converted, or transformed
+3. Use an **Explore agent** to search the verbose output for the error and
+   extract relevant passes
+4. Use a **general-purpose agent** to analyze the IR transformation before/after
+   the problem
+5. Provide a succinct summary of each pass where important ops change, are
+   converted, or transformed
 6. Provide context around important operands and instructions
 7. Highlight where these change throughout the passes
 8. Highlight the error
@@ -192,9 +142,10 @@ Key passes in order:
 
 **Example Response Format**:
 
-Notice how in the example below there are snippets of MLIR, several key passes that transform or convert MLIR, and relevant context (such as ops outside of the block for context). Also the error clearly highlighted at the end. The snippets with a few context operations around them are EXTRMELY HELPFUL.
-
----
+Notice how in the example below there are snippets of MLIR, several key passes
+that transform or convert MLIR, and relevant context (such as ops outside of the
+block for context). Also the error clearly highlighted at the end. The snippets
+with a few context operations around them are EXTREMELY HELPFUL.
 
 I traced the compilation error through the pass pipeline. Here's what I found:
 
@@ -260,15 +211,19 @@ note: "affine.store"(%7, %4, %3, %arg6, %arg7) :
       f16 tile                   f32 memref - TYPE MISMATCH
 ```
 
-**Root Cause**: The `D2MInsertDstRegisterAccess` pass inserted destination register operations (acquire_dst, affine.load, affine.store) but failed to account for intermediate typecast operations. It stored an f16 tile into an f32 memref.
+**Root Cause**: The `D2MInsertDstRegisterAccess` pass inserted destination
+register operations (acquire_dst, affine.load, affine.store) but failed to
+account for intermediate typecast operations. It stored an f16 tile into an f32
+memref.
 
 **What went wrong**:
-1. Pass acquired dst register as f32: `memref<4x1x1x!ttcore.tile<32x32, f32>, #dst>`
+1. Pass acquired dst register as f32:
+   `memref<4x1x1x!ttcore.tile<32x32, f32>, #dst>`
 2. Pass loaded f32 tile from dst register
 3. Pass applied typecast to f16
 4. Pass tried to store f16 result back to f32 dst register → TYPE MISMATCH
 
----
+
 
 **Key commands for manual debugging**:
 ```bash
@@ -285,11 +240,14 @@ grep -A 200 "Before NEXT_PASS" /tmp/pipeline_error.log > /tmp/after_pass.mlir
 
 ### Workflow 2: Highlight Relevant Snippets for Single Op/Error
 
-**When to use**: Tracking how a specific operation transforms, or finding all instances of an error pattern.
+**When to use**: Tracking how a specific operation transforms, or finding all
+instances of an error pattern.
 
 **Approach**:
-1. Identify the operation/pattern to track (e.g., `d2m.dma`, `tile_matmul`, or error message)
-2. Use an **Explore agent** to search through MLIR dumps and extract all occurrences
+1. Identify the operation/pattern to track (e.g., `d2m.dma`, `tile_matmul`, or
+   error message)
+2. Use an **Explore agent** to search through MLIR dumps and extract all
+   occurrences
 3. Show transformation progression through the pipeline
 
 **Example workflow**:
@@ -325,12 +283,16 @@ grep -n "d2m.dma" /tmp/pipeline.log > /tmp/ops.txt
 ### Workflow 3: Compare MLIR Dumps Through Pipeline
 
 **When to use**:
-- **Comparing across branches**: Build one branch and save output, build another and compare
-- **Comparing similar tests**: One test fails, one succeeds - compare their MLIR to identify differences
-- **Testing targeted compiler changes**: Make a change to a pass, compare MLIR before/after to verify impact
+- **Comparing across branches**: Build one branch and save output, build another
+  and compare
+- **Comparing similar tests**: One test fails, one succeeds - compare their MLIR
+  to identify differences
+- **Testing targeted compiler changes**: Make a change to a pass, compare MLIR
+  before/after to verify impact
 
 **Approach**:
-1. Generate MLIR dumps for both scenarios (branches, tests, or before/after change)
+1. Generate MLIR dumps for both scenarios (branches, tests, or before/after
+   change)
 2. Use a **general-purpose agent** to run diffs and analyze changes
 3. Identify what ops were added, removed, or modified
 
@@ -403,25 +365,20 @@ sed -n '/After D2MAllocate/,/^\/\/ -----\/\/ IR Dump Before/p' /tmp/full_pipelin
 ## Key Files and Locations
 
 ### Related tt-mlir Files
-- `../tt-mlir/lib/Dialect/D2M/` - D2M dialect implementation
-- `../tt-mlir/lib/Dialect/TTKernel/` - TTKernel dialect
-- `../tt-mlir/lib/Conversion/` - Conversion passes (D2M→TTKernel, etc)
-- `../tt-mlir/test/ttmlir/Dialect/D2M/` - MLIR lit tests for D2M dialect
+- `third-party/tt-mlir/include/ttmlir/Dialect/TTKernel/` - TTKernel dialect
+- `third-party/tt-mlir/lib/Dialect/TTKernel/` - TTKernel dialect implementation
 
 ## Tips for Claude
 
-### D2M Integration
-- **Essential update**: the d2m dependency has been COMPLETELY CUT. Some out dated docs may reference d2m dialect but this project currently DOES NOT lower to d2m dialect, use any d2m instruction, or any d2m passes. The ONLY dialect that is used from tt-mlir is ttkernel. This project mostly goes from python -> ttl -> ttkernel (in addition to some upstream mlir dialects).
+### Dialect Usage
+- tt-lang does **not** use the D2M dialect. The pipeline goes python → ttl →
+  ttkernel (plus upstream MLIR dialects). Some outdated docs may still reference
+  D2M — ignore those references.
 
 ### Environment Management
-- Always source `env/activate` before running commands
+- Always source `build/env/activate` before running commands
 - Check `$TTLANG_ENV_ACTIVATED` to verify environment is active
 - Detect OS and reference appropriate build docs (MACOS_BUILD.md for macOS)
-
-### Build Issues
-- **tt-mlir** builds can fail randomly due to **nanobind** - retry 2-3 times if you see nanobind/Python binding errors
-- **tt-lang** builds are generally reliable - if they fail, check tt-mlir built successfully first
-- If CMake can't find tt-mlir, check `$TT_MLIR_HOME` or verify tt-mlir is in sibling directory
 
 ### Test Output Management
 - Test output is VERY LARGE - use `tail -200` to see relevant parts

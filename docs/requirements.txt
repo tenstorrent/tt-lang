@@ -1,0 +1,4 @@
+furo
+myst-parser
+sphinx
+sphinxcontrib-mermaid
