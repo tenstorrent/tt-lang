@@ -204,7 +204,8 @@ def main() -> None:
         epilog="Examples:\n"
         "  ttlang-sim examples/eltwise_add.py\n"
         "  ttlang-sim examples/single_node_matmul.py --show-stats\n"
-        "  ttlang-sim examples/tutorial/multinode.py --grid 4,4",
+        "  ttlang-sim examples/tutorial/multinode.py --grid 4,4\n"
+        "  ttlang-sim examples/eltwise_add.py --max-l1 1572864",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
@@ -246,6 +247,14 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--max-l1",
+        type=int,
+        metavar="BYTES",
+        dest="max_l1",
+        help="Maximum L1 memory per core in bytes; warns if total CB capacity exceeds this (default: 1336 KiB)",
+    )
+
+    parser.add_argument(
         "script_args",
         nargs=argparse.REMAINDER,
         help="Arguments to pass to the script",
@@ -266,6 +275,16 @@ def main() -> None:
             from .program import set_max_dfbs
 
             set_max_dfbs(args.max_dfbs)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    # Configure L1 memory limit if specified
+    if args.max_l1 is not None:
+        try:
+            from .program import set_max_l1_bytes
+
+            set_max_l1_bytes(args.max_l1)
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)

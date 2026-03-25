@@ -147,7 +147,7 @@ def add_multitile_kernel(lhs, rhs, out):
 # CHECK-CPP-FPU: add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
 # CHECK-CPP-FPU: tile_regs_commit();
 # CHECK-CPP-FPU: tile_regs_wait();
-# CHECK-CPP-FPU: pack_tile<true>(
+# CHECK-CPP-FPU: pack_tile_block(
 # CHECK-CPP-FPU: tile_regs_release();
 # CHECK-CPP-FPU: cb_pop_front(get_compile_time_arg_val(0),
 # CHECK-CPP-FPU: cb_pop_front(get_compile_time_arg_val(1),

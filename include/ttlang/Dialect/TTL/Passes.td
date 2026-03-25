@@ -435,4 +435,37 @@ def TTKernelInsertInits
   ];
 }
 
+def TTKernelCombinePackTiles
+    : Pass<"ttkernel-combine-pack-tiles", "::mlir::func::FuncOp"> {
+  let summary = "Combine consecutive pack_tile ops into pack_tile_block";
+  let description = [{
+    Scans for consecutive `ttkernel.pack_tile` ops targeting the same dataflow
+    buffer with contiguous DST and CB tile indices, and replaces each run with
+    a single `ttkernel.pack_tile_block`. This reduces the number of hardware
+    pack operations after loop unrolling.
+
+    Only combines runs where both DST indices and CB tile indices step by 1,
+    and the first CB tile index is 0 (pack_tile_block always writes to the CB
+    starting from index 0, per the op definition). Runs are broken by different
+    CBs, non-contiguous indices, non-constant indices, or intervening
+    non-constant ops. Runs of length 1 are skipped.
+
+    Example:
+    ```mlir
+    // Before:
+    ttkernel.pack_tile(%c0, %cb, %c0, true)
+    ttkernel.pack_tile(%c1, %cb, %c1, true)
+    ttkernel.pack_tile(%c2, %cb, %c2, true)
+    ttkernel.pack_tile(%c3, %cb, %c3, true)
+
+    // After:
+    ttkernel.pack_tile_block(%c0, %cb, %c4)
+    ```
+  }];
+
+  let dependentDialects = [
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
 #endif // TTLANG_DIALECT_TTL_PASSES_TD

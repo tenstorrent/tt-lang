@@ -616,7 +616,7 @@ def test_print_dm_wait_block_naw_state_warns(capsys):
 
         @ttl.datamovement()
         def dm_write():
-            # First: copy out to make wait block transition MR -> NAR -> RW
+            # First: copy out to make wait block transition MR -> ROR -> RW
             with out_dfb.wait() as out_blk:
                 tx1 = ttl.copy(out_blk, out[0, 0])
                 tx1.wait()

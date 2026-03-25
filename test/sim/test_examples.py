@@ -26,6 +26,7 @@ except ImportError:
 # Import simulator modules
 from python.sim.context import reset_context
 from python.sim.greenlet_scheduler import set_scheduler_algorithm
+from python.sim.program import set_max_l1_bytes
 from python.sim.stats import reset_stats
 from python.sim.ttlang_sim import execute_script_with_simulator
 from python import sim
@@ -51,19 +52,32 @@ def reset_simulator_context():
     yield
 
 
+# Per-script L1 overrides for examples that legitimately exceed the default
+# limit (e.g. due to large 3D block shapes). Values are in bytes.
+_L1_OVERRIDES: dict[str, int] = {
+    "eltwise_add_3d.py": 1_572_864,  # 3 x shape=(2,2,1) x bfloat16 CBs
+}
+
+
 def run_script_in_process(
-    script_path: Path, scheduler: str = "fair"
+    script_path: Path,
+    scheduler: str = "fair",
+    max_l1_bytes: int | None = None,
 ) -> tuple[int, str]:
     """Run a script in-process with simulator backend.
 
     Args:
         script_path: Path to the Python file to execute
         scheduler: Scheduler algorithm ('greedy' or 'fair')
+        max_l1_bytes: Optional L1 memory limit override in bytes; uses the
+            simulator default when None
 
     Returns:
         (exit_code, output) tuple where exit_code is 0 on success, 1 on error
     """
     set_scheduler_algorithm(scheduler)
+    if max_l1_bytes is not None:
+        set_max_l1_bytes(max_l1_bytes)
 
     # Shadow sys.modules locally (same as ttlang_sim.setup_simulator_imports())
     # Done here so it doesn't interfere with other tests in parallel execution
@@ -145,7 +159,11 @@ def test_example_cli(script_name: str, scheduler: str) -> None:
             "matmul_1d_mcast.py times out with fair scheduler (TODO: investigate)"
         )
 
-    code, out = run_script_in_process(EXAMPLES_DIR / script_name, scheduler)
+    code, out = run_script_in_process(
+        EXAMPLES_DIR / script_name,
+        scheduler,
+        max_l1_bytes=_L1_OVERRIDES.get(script_name),
+    )
     assert code == 0, f"Script failed with code {code}. Output:\n{out}"
 
 

@@ -159,7 +159,7 @@ class TestCopySourceLocking:
         # But more fundamentally, wait() blocks don't support store() - they expect POP
         with pytest.raises(
             RuntimeError,
-            match="Cannot write to Block.*has no access.*NAR state",
+            match="Cannot write to Block.*has no access.*ROR state",
         ):
             source_block.store(Block.from_tensor(make_rand_tensor(64, 32)))
 
@@ -258,7 +258,7 @@ class TestMultipleCopyOperations:
         # wait() DM blocks cannot be used as copy destinations per state machine
         with pytest.raises(
             RuntimeError,
-            match="Expected one of \\[TX_WAIT\\], but got copy \\(as destination\\)",
+            match="Expected one of \\[COPY_SRC, TX_WAIT\\], but got copy \\(as destination\\)",
         ):
             copy(tensor2, block)
 

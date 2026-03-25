@@ -1182,6 +1182,10 @@ def _compile_kernel(
             "ttl-lower-dprint-to-emitc",
             "convert-ttl-to-ttkernel",
             "ttkernel-insert-inits",
+        ]
+        if compiler_options.combine_pack_tiles:
+            pipeline_passes.append("func.func(ttkernel-combine-pack-tiles)")
+        pipeline_passes += [
             "canonicalize",
             "cse",
             "lower-affine",
