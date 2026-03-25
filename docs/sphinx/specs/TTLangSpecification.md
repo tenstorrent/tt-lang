@@ -1070,8 +1070,6 @@ def matmul_read():
 | `ttl.math.broadcast(expr: ttl.BlockExpr, out_blk: ttl.Block, dims: List[int]) -> ttl.BlockExpr` | Broadcast a block over specified dimensions. Produces block with shape expanded to be compatible with `out_blk`[^1].<br><br>Example for broadcast over dimension -1  (innermost): `y.store(ttl.math.broadcast(a, y, dims=[-1]))`. Here the `store` is the outer expression and therefore if `y` has shape of `(N, M)` then `a` must have shape of `(N, 1)`, and if `y` has shape of `(I, N, M)` then `a` must have shape of `(I, N, 1)`, and so on.<br><br>Example for broadcast over dimension 1 (next to outermost): `y.store(b * ttl.math.broadcast(a, y, dims=[1]))`. Here the `*` is the outer expression and therefore if `b` has shape of `(N, M)` then `a` must have shape of `(N, 1)`, and if `b` has shape of `(I, N, M)` then `a` must have shape of `(I, 1, M)`, and so on.<br><br>Example for broadcast over two innermost dimensions: `y.store(b + ttl.math.broadcast(a, y, dims=[-1, -2]))`. Here the `+` is the outer expression, but because the broadcast is on `dims=[-1, -2]` if `b` has shape of `(N, M)` then `a` must have shape of `(1, 1)`, and if `b` has shape of `(I, N, M)` then `a` must have shape of `(I, 1, 1)`, and so on. |
 | `ttl.math.transpose(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Transpose a block. For argument block of shape `(M, N)` produces resulting block with shape `(N, M)`. Supported only for 2-dimensional blocks. |
 
-[^1]: This is temporary requirement that will be removed in future versions.
-
 ### Rounding functions
 
 | Function | Description |
@@ -1090,12 +1088,10 @@ def matmul_read():
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.math.fill(out_blk: ttl.Block, value: float) -> ttl.BlockExpr` | Fill a block with shape expanded to be compatible with `out_blk`[^2] with specified `value`. |
+| `ttl.math.fill(out_blk: ttl.Block, value: float) -> ttl.BlockExpr` | Fill a block with shape expanded to be compatible with `out_blk`[^1] with specified `value`. |
 | `ttl.math.mask(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with 0. |
 | `ttl.math.mask_posinf(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with positive infinity. |
 | `ttl.math.where(condition: ttl.BlockExpr, true_value: ttl.BlockExpr, false_value: ttl.BlockExpr) -> ttl.BlockExpr` | For each element in specified condition block return the corresponding element from `true_value` if true (condition element equals to 1) or the element from `false_value` if false (condition element equals to 0) |
-
-[^2]: This is temporary requirement that will be removed in future versions.
 
 ## Appendix C. Naming guidelines
 
@@ -1154,3 +1150,5 @@ def matmul_read():
 | Maximum single chip grid size (unharvested) | 8, 9 | 13, 10 |
 | Size of L1 memory (KB) | 1464 | 1464 |
 | Maximum number of dataflow buffers | 32 | 32 |
+
+[^1]: This is temporary requirement that will be removed in future versions. When removed the shape will be inferred by walking the operation graph connecting the result of `ttl.math.fill` or `ttl.math.broadcast` to the corresponding `store`.
