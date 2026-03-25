@@ -1,84 +1,64 @@
 # Compiler Options
 
-TT-Lang exposes compiler options at two levels: the Python API (for kernel
-authors) and `ttlang-opt` (for compiler developers working directly with MLIR).
+## Code Generation Options
 
-## Python API
-
-### Kernel Decorator Parameters
-
-The `@ttl.kernel` decorator accepts parameters that control compilation and
-runtime behavior:
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `grid` | `tuple` or `Callable` | (required) | Compute grid dimensions, e.g., `(2, 2)` |
-| `indexing_maps` | `list[Callable]` | `None` | Lambda functions for tile indexing |
-| `iterator_types` | `list[str]` | `None` | `"parallel"` or `"reduction"` per dimension |
-| `num_outs` | `int` | `1` | Number of output tensor arguments |
-| `memory_space` | `str` | `"L1"` | Memory space for circular buffers: `"L1"` or `"DRAM"` |
-| `tiled` | `bool` | `True` | Use tiled tensor layout |
-| `fp32_dest_acc_en` | `bool` or `None` | `None` | Enable f32 accumulation in the DST register file. When `None`, auto-detected from input tensor dtypes (enabled when any input is f32). Maps to TTNN `ComputeConfigDescriptor.fp32_dest_acc_en` and the `ttl-set-compute-kernel-config{fp32-dest-acc-en=1}` MLIR pass option. |
-| `dst_full_sync_en` | `bool` or `None` | `None` | Enable full DST synchronization (single-buffering mode). When enabled, DST capacity doubles (f32: 8, f16/bf16: 16) at the cost of requiring a full sync between math and pack threads. Maps to TTNN `ComputeConfigDescriptor.dst_full_sync_en` and the `ttl-set-compute-kernel-config{dst-full-sync-en=1}` MLIR pass option. |
-| `options` | `str` or `None` | `None` | Compiler option string, e.g., `"--no-ttl-maximize-dst"` |
-
-### Compiler Options (`CompilerOptions`)
-
-Three boolean flags control the MLIR pass pipeline. These are the options
-printed by `--ttl-help`:
-
-| CLI Flag | Python field | Default | Description |
-|---|---|---|---|
-| `--ttl-maximize-dst` / `--no-ttl-maximize-dst` | `maximize_dst` | `True` | Partition `ttl.compute` iteration spaces into subblocks that maximize DST register utilization (`ttl-subblock-compute-for-dst` pass), and reorder tile operations within sync regions to group by operation kind (`ttl-schedule-operations` pass). Disabling this falls back to per-tile synchronization. |
-| `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | `enable_fpu_binary_ops` | `True` | Emit FPU binary elementwise ops (`add_tiles`, `sub_tiles`, `mul_tiles`) when both operands come from circular buffers. When disabled, binary ops use the SFPU path instead. Passed through to `ttl-assign-dst{enable-fpu-binary-ops=...}`. |
-| `--ttl-block-matmul` / `--no-ttl-block-matmul` | `use_block_matmul` | `True` | Emit `matmul_block` (which processes the full block atomically) instead of per-tile matmul loops. The `ttl-lower-matmul-block` pass collapses the iteration domain to a single point and expands the output stores to cover all M×N DST registers. |
-
-### How to Pass Options
-
-Options can be specified in four ways, listed from lowest to highest priority:
-
-1. **Class defaults** — the values in the `CompilerOptions` dataclass.
-2. **Decorator `options=` parameter** — parsed from a string:
-   ```python
-   @ttl.kernel(grid=(2, 2), options="--no-ttl-maximize-dst")
-   def my_kernel(a, b): ...
-   ```
-3. **`TTLANG_COMPILER_OPTIONS` environment variable** — merged on top of the
-   decorator string:
-   ```bash
-   export TTLANG_COMPILER_OPTIONS="--no-ttl-fpu-binary-ops"
-   python my_kernel.py
-   ```
-4. **Command-line arguments** (`sys.argv`) — highest priority, overrides
-   everything:
-   ```bash
-   python my_kernel.py --no-ttl-maximize-dst --no-ttl-block-matmul
-   ```
-
-Only explicitly-set fields override; unmentioned flags fall through from lower
-priority levels. Use `--ttl-help` to print the available options:
+These flags control how tt-lang compiles kernels. Pass them on the command line,
+or print the list with `--ttl-help`:
 
 ```bash
-python examples/tutorial/multicore_grid_auto.py --ttl-help
+python my_kernel.py --ttl-help
+python my_kernel.py --no-ttl-maximize-dst --no-ttl-block-matmul
 ```
 
-### Runtime Overrides
+| Flag | Default | Description |
+|---|---|---|
+| `--ttl-maximize-dst` / `--no-ttl-maximize-dst` | enabled | Partition compute iteration spaces into subblocks that maximize DST register utilization, and reorder tile operations within sync regions to group by kind. Disabling falls back to per-tile synchronization. |
+| `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | enabled | Emit FPU binary elementwise ops (`add_tiles`, `sub_tiles`, `mul_tiles`) when both operands come from circular buffers. When disabled, binary ops use the SFPU path. |
+| `--ttl-block-matmul` / `--no-ttl-block-matmul` | enabled | Emit `matmul_block` (processes the full tile block atomically) instead of per-tile matmul loops. |
 
-The `options` keyword argument can also be passed at call time to override the
-decorator value for a single invocation:
+### Other Ways to Set These
+
+Besides the command line, the same flags can be set through three other
+mechanisms. When the same flag is set in multiple places, higher-priority sources
+win and unmentioned flags fall through from lower levels:
+
+| Priority | Mechanism | Example |
+|---|---|---|
+| 1 (lowest) | `CompilerOptions` class defaults | — |
+| 2 | `@ttl.kernel` decorator `options=` parameter | `@ttl.kernel(grid=(2,2), options="--no-ttl-maximize-dst")` |
+| 3 | `TTLANG_COMPILER_OPTIONS` environment variable | `export TTLANG_COMPILER_OPTIONS="--no-ttl-fpu-binary-ops"` |
+| 4 (highest) | Command-line arguments (`sys.argv`) | `python my_kernel.py --no-ttl-maximize-dst` |
+
+The `options` keyword can also be passed at call time to override the decorator
+for a single invocation:
 
 ```python
 my_kernel(tensor_a, tensor_b, options="--no-ttl-block-matmul")
 ```
 
-### Environment Variables
+## Compute Configuration
 
-These environment variables control compilation and diagnostic output. They are
-independent of the `CompilerOptions` flags above.
+These two parameters are set on the `@ttl.kernel` decorator (not via command-line
+flags) and control the TTNN compute kernel hardware configuration:
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `fp32_dest_acc_en` | `bool` or `None` | `None` | Enable f32 accumulation in the DST register file. When `None`, auto-detected from input tensor dtypes (enabled when any input is f32). |
+| `dst_full_sync_en` | `bool` or `None` | `None` | Enable full DST synchronization (single-buffering mode). Doubles DST capacity (f32: 8, f16/bf16: 16) at the cost of a full sync between math and pack threads. |
+
+```python
+@ttl.kernel(grid=(2, 2), fp32_dest_acc_en=True, dst_full_sync_en=False)
+def my_kernel(a, b): ...
+```
+
+## Environment Variables
+
+These environment variables control compilation behavior and diagnostic output.
+They are independent of the code generation flags above.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
-| `TTLANG_COMPILE_ONLY` | `0`/`1` | `0` | Compile kernels but do not execute them on hardware. |
+| `TTLANG_COMPILE_ONLY` | `0`/`1` | `0` | Compile kernels but do not execute on hardware. |
 | `TTLANG_INITIAL_MLIR` | file path | (unset) | Write the pre-optimization MLIR module to this file. |
 | `TTLANG_FINAL_MLIR` | file path | (unset) | Write the post-optimization MLIR module to this file. |
 | `TTLANG_VERBOSE_PASSES` | any value | (unset) | Print the IR after every pass in the pipeline. Output is very large; redirect to a file. |
@@ -90,18 +70,32 @@ Profiling-related environment variables (`TTLANG_AUTO_PROFILE`,
 `TTLANG_PROFILE_CSV`) are documented in the
 [Performance Tools](performance-tools.md) reference.
 
-## `ttlang-opt`
+## Other Decorator Parameters
 
-`ttlang-opt` is the MLIR optimizer driver for the TTL dialect. It is used
-primarily for compiler development and testing — most kernel authors interact
-with the compiler through the Python API. It accepts all standard `mlir-opt`
-flags (run `ttlang-opt --help` for the full list) plus the TTL-specific passes
-and pipelines below.
+The `@ttl.kernel` decorator also accepts these parameters for kernel structure
+and layout:
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `grid` | `tuple` or `Callable` | (required) | Compute grid dimensions, e.g., `(2, 2)` |
+| `indexing_maps` | `list[Callable]` | `None` | Lambda functions for tile indexing |
+| `iterator_types` | `list[str]` | `None` | `"parallel"` or `"reduction"` per dimension |
+| `num_outs` | `int` | `1` | Number of output tensor arguments |
+| `memory_space` | `str` | `"L1"` | Memory space for circular buffers: `"L1"` or `"DRAM"` |
+| `tiled` | `bool` | `True` | Use tiled tensor layout |
+
+---
+
+## `ttlang-opt` Pass Reference
+
+`ttlang-opt` is the standalone MLIR optimizer driver for the TTL dialect, used
+primarily for compiler development and testing. It accepts all standard
+`mlir-opt` flags (run `ttlang-opt --help` for the full list) plus the
+TTL-specific passes and pipeline documented below.
 
 ### Pipeline: `ttl-to-ttkernel-pipeline`
 
 The main compilation pipeline, equivalent to what the Python API runs internally.
-Invoke it with:
 
 ```bash
 ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-emitc=true}'
@@ -111,8 +105,8 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 |---|---|---|---|
 | `maximize-dst` | bool | `true` | Enable DST maximization via subblock compute and scheduling. |
 | `enable-fpu-binary-ops` | bool | `true` | Use FPU for binary add/sub/mul. |
-| `use-block-matmul` | bool | `true` | Lower matmul to block-level hardware calls (`experimental::matmul_block`) instead of per-tile loops. |
-| `lower-to-emitc` | bool | `false` | Run the TTKernel-to-EmitC backend after the TTL lowering (produces C++ source). |
+| `use-block-matmul` | bool | `true` | Lower matmul to block-level hardware calls (`experimental::matmul_block`). |
+| `lower-to-emitc` | bool | `false` | Run the TTKernel-to-EmitC backend (produces C++ source). |
 
 The pipeline runs these passes in order:
 
@@ -132,8 +126,8 @@ The pipeline runs these passes in order:
 
 ### Individual Pass Options
 
-Each pass can be run standalone for testing. Only passes with configurable
-options are listed here; the remaining passes have no options.
+Each pass can also be run standalone for testing. Only passes with configurable
+options are listed; the remaining passes have no options.
 
 #### `ttl-set-compute-kernel-config`
 
@@ -141,8 +135,8 @@ Set default compute kernel configuration attributes on `ttl.compute` ops.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `fp32-dest-acc-en` | bool | `false` | Default `fp32_dest_acc_en` for compute ops that do not already have it configured. |
-| `dst-full-sync-en` | bool | `false` | Default `dst_full_sync_en` for compute ops that do not already have it configured. |
+| `fp32-dest-acc-en` | bool | `false` | Default `fp32_dest_acc_en` when not already configured. |
+| `dst-full-sync-en` | bool | `false` | Default `dst_full_sync_en` when not already configured. |
 
 ```bash
 ttlang-opt input.mlir -p 'func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=1})'
@@ -155,7 +149,7 @@ merging.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `dst-capacity` | uint32_t | `0` (auto) | Override DST register capacity. Auto-computed from `fp32_dest_acc_en` and `dst_full_sync_en` by default. For single-buffering (`dst_full_sync_en=true`): f32=8, f16/bf16=16. For double-buffering (default): f32=4, f16/bf16=8. |
+| `dst-capacity` | uint32_t | `0` (auto) | Override DST register capacity. Auto-computed from `fp32_dest_acc_en` and `dst_full_sync_en` by default. Single-buffering (`dst_full_sync_en=true`): f32=8, f16/bf16=16. Double-buffering (default): f32=4, f16/bf16=8. |
 | `separate-output-region` | bool | `false` | Allocate outputs in a separate DST region (needed for reductions and some loop optimizations). |
 | `enable-fpu-binary-ops` | bool | `true` | Use FPU for binary add/sub/mul when both operands come from CBs. When disabled, binary ops use the SFPU path. |
 
