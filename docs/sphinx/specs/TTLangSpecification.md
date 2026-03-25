@@ -24,6 +24,7 @@
 * [Functionality matrix](#appendix-d-functionality-matrix)
 * [Platform limitations](#appendix-e-platform-limitations)
 
+
 ## Specification Versions
 
 | *Version* | *Date* | *Description of changes* |
