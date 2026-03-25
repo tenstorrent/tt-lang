@@ -14,7 +14,7 @@ python examples/tutorial/multicore_grid_auto.py --ttl-help
 python examples/tutorial/multicore_grid_auto.py --no-ttl-maximize-dst
 ```
 
-See `python/ttl/compiler_options.py` for details on priority ordering and the merge protocol.
+See the [full compiler options reference](reference/compiler-options.md) for all decorator parameters, `CompilerOptions` flags with their MLIR pass mappings, environment variables, and `ttlang-opt` pass options.
 
 ## Print Debugging
 

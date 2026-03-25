@@ -19,6 +19,7 @@ TTL Documentation
    :caption: Reference
 
    TT-Lang Spec <specs/TTLangSpecification>
+   reference/compiler-options
    reference/print-debugging
    reference/performance-tools
 
