@@ -1340,6 +1340,23 @@ struct TTLConvertTTLToTTKernelPass
 
     // Remove marker attributes left by lowerAccumulatingStore.
     mod.walk([](Operation *op) { op->removeAttr(kAccInitEmittedAttrName); });
+
+    // Disable L1 accumulation before return in any function that uses it.
+    // Packer config state persists across program launches; without this,
+    // a subsequent kernel launch would start with L1 acc enabled.
+    mod.walk([&](func::FuncOp funcOp) {
+      bool hasL1Acc = false;
+      funcOp.walk([&](ttk::PackReconfigL1AccOp) { hasL1Acc = true; });
+      if (!hasL1Acc) {
+        return;
+      }
+      funcOp.walk([&](func::ReturnOp returnOp) {
+        OpBuilder builder(returnOp);
+        Value zero =
+            arith::ConstantIntOp::create(builder, returnOp.getLoc(), 0, 32);
+        ttk::PackReconfigL1AccOp::create(builder, returnOp.getLoc(), zero);
+      });
+    });
   }
 };
 
