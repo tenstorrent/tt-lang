@@ -142,17 +142,6 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             Returns:
                 Dictionary containing per-core context with fresh DataflowBuffers
             """
-            # Enforce per-core DataflowBuffer limit before allocating.
-            dfb_count = sum(
-                1 for v in self.context.values() if isinstance(v, DataflowBuffer)
-            )
-            max_dfbs = get_max_dfbs()
-            if dfb_count > max_dfbs:
-                raise RuntimeError(
-                    f"Number of DataflowBuffers per core ({dfb_count}) exceeds "
-                    f"the hardware limit of {max_dfbs}."
-                )
-
             # Warn if total CB capacity exceeds the configured L1 limit.
             max_l1 = get_max_l1_bytes()
             total_l1_bytes = sum(
@@ -211,6 +200,17 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             dm1_tmpl: BindableTemplate,
         ) -> None:
             """Cooperative scheduling execution mode using greenlets."""
+
+            # Warn if the number of DataflowBuffers exceeds the hardware limit.
+            dfb_count = get_context().kernel_dfb_count
+            max_dfbs = get_max_dfbs()
+            if dfb_count > max_dfbs:
+                warnings.warn(
+                    f"Kernel defines {dfb_count} dataflow buffers, "
+                    f"but the hardware limit is {max_dfbs}. "
+                    f"Reduce the number of ttl.make_dataflow_buffer_like() calls.",
+                    stacklevel=2,
+                )
 
             # Create scheduler
             scheduler = GreenletScheduler()

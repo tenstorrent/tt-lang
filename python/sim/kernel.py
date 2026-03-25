@@ -115,15 +115,6 @@ def kernel(
             # This executes the kernel body which defines and registers threads
             modified_func(*args, **kwargs)
 
-            # Enforce hardware DFB limit (checked before threads run so the
-            # error is raised at definition time, not mid-execution)
-            if get_context().kernel_dfb_count > get_context().config.max_dfbs:
-                raise ValueError(
-                    f"Kernel defines {get_context().kernel_dfb_count} dataflow buffers, "
-                    f"but the hardware limit is {get_context().config.max_dfbs}. "
-                    f"Reduce the number of ttl.make_dataflow_buffer_like() calls."
-                )
-
             # Get registered threads
             threads = get_registered_threads()
 

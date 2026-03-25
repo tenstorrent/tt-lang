@@ -938,7 +938,7 @@ def test_dfb_pages_nonblocking(configured_dfb8: DataflowBuffer) -> None:
 
 
 def test_per_core_dfb_limit_exceeds_max() -> None:
-    """Test that exceeding the DFB limit via make_dataflow_buffer_like raises at definition time."""
+    """Test that exceeding the DFB limit emits a warning at definition time without aborting."""
     from python.sim import ttl
     from python.sim.program import set_max_dfbs
 
@@ -964,7 +964,7 @@ def test_per_core_dfb_limit_exceeds_max() -> None:
         def noop_dm1():
             pass
 
-    with pytest.raises(ValueError, match="hardware limit"):
+    with pytest.warns(UserWarning, match="hardware limit"):
         test_kernel(element)
 
 
