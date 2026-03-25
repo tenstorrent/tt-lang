@@ -30,7 +30,7 @@ from ttl.ttl_api import MeshTensorProxy
 TILE = 32
 N_DEVICES = 4
 LOGICAL_ROWS = TILE * N_DEVICES  # 128
-LOGICAL_COLS = TILE              # 32
+LOGICAL_COLS = TILE  # 32
 SHARD_ROWS = LOGICAL_ROWS // N_DEVICES  # 32
 
 
@@ -73,8 +73,10 @@ b_torch = torch.full((SHARD_ROWS, LOGICAL_COLS), 3.0, dtype=torch.bfloat16)
 expected = a_torch + b_torch
 
 if n_available >= N_DEVICES:
-    print("Multi-card path: sharding [%d, %d] across %d devices" % (
-        LOGICAL_ROWS, LOGICAL_COLS, N_DEVICES))
+    print(
+        "Multi-card path: sharding [%d, %d] across %d devices"
+        % (LOGICAL_ROWS, LOGICAL_COLS, N_DEVICES)
+    )
 
     ttnn.set_fabric_config(ttnn.FabricConfig.FABRIC_1D)
     mesh_device = ttnn.open_mesh_device(ttnn.MeshShape(1, N_DEVICES))
@@ -84,34 +86,47 @@ if n_available >= N_DEVICES:
     out_logical = torch.zeros(LOGICAL_ROWS, LOGICAL_COLS, dtype=torch.bfloat16)
 
     a = ttnn.from_torch(
-        a_logical, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-        device=mesh_device, memory_config=ttnn.L1_MEMORY_CONFIG,
+        a_logical,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=mesh_device,
+        memory_config=ttnn.L1_MEMORY_CONFIG,
         mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
     )
     b = ttnn.from_torch(
-        b_logical, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-        device=mesh_device, memory_config=ttnn.L1_MEMORY_CONFIG,
+        b_logical,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=mesh_device,
+        memory_config=ttnn.L1_MEMORY_CONFIG,
         mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
     )
     out = ttnn.from_torch(
-        out_logical, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-        device=mesh_device, memory_config=ttnn.L1_MEMORY_CONFIG,
+        out_logical,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=mesh_device,
+        memory_config=ttnn.L1_MEMORY_CONFIG,
         mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
     )
 
     add_kernel(a, b, out)
 
     result = ttnn.to_torch(
-        out, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0),
+        out,
+        mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0),
     )
     # Each device should have computed 2+3=5 on its 32x32 shard.
     # Without proper sharding the kernel would only write the first tile,
     # leaving the rest as zeros.
     for i in range(N_DEVICES):
-        shard = result[i * SHARD_ROWS:(i + 1) * SHARD_ROWS]
-        assert torch.allclose(shard.float(), expected.float(), rtol=1e-2), (
-            "Device %d shard incorrect: max error %.4f" % (
-                i, (shard.float() - expected.float()).abs().max().item()))
+        shard = result[i * SHARD_ROWS : (i + 1) * SHARD_ROWS]
+        assert torch.allclose(
+            shard.float(), expected.float(), rtol=1e-2
+        ), "Device %d shard incorrect: max error %.4f" % (
+            i,
+            (shard.float() - expected.float()).abs().max().item(),
+        )
     # CHECK: PASS
     print("PASS: all %d shards correct (2 + 3 = 5)" % N_DEVICES)
 
@@ -131,9 +146,11 @@ else:
     add_kernel(a, b, out)
 
     result = ttnn.to_torch(out._tensor)
-    assert torch.allclose(result.float(), expected.float(), rtol=1e-2), (
-        "Single-device shard incorrect: max error %.4f" % (
-            (result.float() - expected.float()).abs().max().item()))
+    assert torch.allclose(
+        result.float(), expected.float(), rtol=1e-2
+    ), "Single-device shard incorrect: max error %.4f" % (
+        (result.float() - expected.float()).abs().max().item()
+    )
     # CHECK: PASS
     print("PASS: single-device shard correct (2 + 3 = 5)")
 

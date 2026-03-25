@@ -346,6 +346,7 @@ def _is_mesh_tensor(tensor) -> bool:
     if shape is None:
         return False
     from math import prod
+
     return prod(shape) > 1
 
 
@@ -1074,9 +1075,11 @@ def _compile_kernel(
     is_mesh = has_ttnn_tensors and any(_is_mesh_tensor(arg) for arg in args)
     if is_mesh:
         compile_args = tuple(
-            MeshTensorProxy(arg, _get_shard_shape(arg))
-            if is_ttnn_tensor(arg) and _is_mesh_tensor(arg)
-            else arg
+            (
+                MeshTensorProxy(arg, _get_shard_shape(arg))
+                if is_ttnn_tensor(arg) and _is_mesh_tensor(arg)
+                else arg
+            )
             for arg in args
         )
     else:
