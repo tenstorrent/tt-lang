@@ -1093,6 +1093,7 @@ def matmul_read():
 | `ttl.math.mask_posinf(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with positive infinity. |
 | `ttl.math.where(condition: ttl.BlockExpr, true_value: ttl.BlockExpr, false_value: ttl.BlockExpr) -> ttl.BlockExpr` | For each element in specified condition block return the corresponding element from `true_value` if true (condition element equals to 1) or the element from `false_value` if false (condition element equals to 0) |
 
+
 ## Appendix C. Naming guidelines
 
 | Object | Guideline |
@@ -1142,6 +1143,7 @@ def matmul_read():
 * N/S - Not Supported
 * N/A - Not Applicable
 
+
 ## Appendix E. Platform limitations
 
 | Description | Wormhole | Blackhole |
@@ -1150,5 +1152,6 @@ def matmul_read():
 | Maximum single chip grid size (unharvested) | 8, 9 | 13, 10 |
 | Size of L1 memory (KB) | 1464 | 1464 |
 | Maximum number of dataflow buffers | 32 | 32 |
+
 
 [^1]: This is temporary requirement that will be removed in future versions. When removed the shape will be inferred by walking the operation graph connecting the result of `ttl.math.fill` or `ttl.math.broadcast` with the corresponding `store`.
