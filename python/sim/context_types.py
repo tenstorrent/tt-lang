@@ -18,6 +18,10 @@ from .ttnnsim import Tensor
 from .typedefs import Count, Shape, BindableTemplate
 from .blockstate import ThreadType
 
+# Default L1 memory limit per core: Blackhole/Wormhole L1 (1464K) minus
+# large-program reserved space (128K).
+DEFAULT_MAX_L1_BYTES: int = (1464 - 128) * 1024  # 1336 KiB = 1_368_064 bytes
+
 
 @dataclass
 class SimulatorConfig:
@@ -26,6 +30,7 @@ class SimulatorConfig:
     max_dfbs: int = 32
     scheduler_algorithm: str = "fair"
     default_auto_grid: Shape = (8, 8)
+    max_l1_bytes: int = DEFAULT_MAX_L1_BYTES
 
 
 @dataclass
@@ -96,3 +101,7 @@ class SimulatorContext:
     thread_registry: list[BindableTemplate] = field(
         default_factory=list[BindableTemplate]
     )  # pyright: ignore[reportUnknownVariableType]
+    kernel_dfb_count: int = 0  # DFBs created in the current kernel body
+    kernel_l1_bytes: int = (
+        0  # Total L1 capacity of DFBs created in the current kernel body
+    )

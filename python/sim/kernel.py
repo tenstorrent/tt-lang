@@ -107,8 +107,10 @@ def kernel(
                         case _:
                             pass
 
-            # Clear thread registry before kernel execution
+            # Clear thread registry and resource counters before kernel execution
             clear_thread_registry()
+            get_context().kernel_dfb_count = 0
+            get_context().kernel_l1_bytes = 0
 
             # Call the modified function (grid is already in globals)
             # This executes the kernel body which defines and registers threads

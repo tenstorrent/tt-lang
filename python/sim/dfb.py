@@ -1170,6 +1170,19 @@ class DataflowBuffer:
         return self._state.cap * math.prod(self._state.shape)
 
     @property
+    def capacity_bytes(self) -> int:
+        """Get the total L1 memory used by this buffer in bytes.
+
+        Computed as: buffer_factor * elements_per_operation * bytes_per_element,
+        where elements_per_operation is the product of the element shape dimensions.
+        """
+        return (
+            self._buffer_factor
+            * math.prod(self._element_shape)
+            * self.likeness_tensor.element_size
+        )
+
+    @property
     def buffer_factor(self) -> Size:
         """Get the buffer factor (capacity multiplier)."""
         return self._buffer_factor
@@ -1293,9 +1306,15 @@ def make_dataflow_buffer_like(
         x = ttnn.zeros((64, 64), dtype=ttnn.float32)
         x_dfb = make_dataflow_buffer_like(x, shape=(2, 2), buffer_factor=2)
     """
-    return DataflowBuffer(
+    from .context import get_context
+
+    dfb = DataflowBuffer(
         likeness_tensor=likeness_tensor, shape=shape, buffer_factor=buffer_factor
     )
+    ctx = get_context()
+    ctx.kernel_dfb_count += 1
+    ctx.kernel_l1_bytes += dfb.capacity_bytes
+    return dfb
 
 
 def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
