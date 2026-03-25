@@ -14,6 +14,11 @@ negative ``dims`` (e.g. ``[-2]``, ``[-1]``, ``[-2, -1]``).
 # UNSUPPORTED: system-darwin
 # RUN: %python -m pytest %s -v
 
+import os
+import subprocess
+import sys
+import tempfile
+
 import pytest
 import torch
 
@@ -976,6 +981,75 @@ class TestBcastCompositionMultitile:
         )
 
         assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+
+
+def _bcast_validation_kernel(dims_literal):
+    """Compile a broadcast kernel with the given dims and return stderr on failure."""
+    src = f"""\
+import os
+os.environ["TTLANG_COMPILE_ONLY"] = "1"
+import ttl, torch
+
+@ttl.kernel(grid=(1, 1))
+def kern(inp, out):
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    @ttl.compute()
+    def compute_fn():
+        with inp_dfb.wait() as i, out_dfb.reserve() as o:
+            result = ttl.math.broadcast(i, o, dims={dims_literal!r})
+            o.store(result)
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as blk:
+            ttl.copy(inp[0:32, 0:32], blk).wait()
+            blk.push()
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as blk:
+            ttl.copy(blk, out[0:32, 0:32]).wait()
+
+inp = torch.ones((32, 32), dtype=torch.bfloat16)
+out = torch.zeros((32, 32), dtype=torch.bfloat16)
+kern(inp, out)
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+        f.write(src)
+        tmp_path = f.name
+    try:
+        result = subprocess.run(
+            [sys.executable, tmp_path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    finally:
+        os.unlink(tmp_path)
+    if result.returncode == 0:
+        raise AssertionError(
+            f"Expected compilation to fail for dims={dims_literal!r}, but it succeeded"
+        )
+    return result.stderr
+
+
+class TestBcastDimsValidation:
+    """Test that out-of-range dims are rejected at compile time."""
+
+    def test_out_of_range_positive(self):
+        stderr = _bcast_validation_kernel([2])
+        assert "Invalid broadcast dimension 2" in stderr
+
+    def test_out_of_range_negative(self):
+        stderr = _bcast_validation_kernel([-3])
+        assert "Invalid broadcast dimension -3" in stderr
+
+    def test_out_of_range_large_positive(self):
+        stderr = _bcast_validation_kernel([10])
+        assert "Invalid broadcast dimension 10" in stderr
+
+    def test_out_of_range_large_negative(self):
+        stderr = _bcast_validation_kernel([-10])
+        assert "Invalid broadcast dimension -10" in stderr
 
 
 if __name__ == "__main__":

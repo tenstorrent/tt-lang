@@ -439,7 +439,7 @@ def broadcast(
     allowed (e.g. ``[0, -2]`` is row broadcast).
 
     When ``output`` is omitted the output dataflow buffer is resolved
-    automatically by the ``ttl-annotate-cb-associations`` pass.
+    automatically during compilation.
 
     Args:
         input: Input tensor (CB-attached)
