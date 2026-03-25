@@ -13,6 +13,7 @@
 import torch
 import ttnn
 import ttl
+from utils.correctness import assert_allclose
 
 
 @ttl.kernel(grid=(1, 1))
@@ -97,12 +98,9 @@ try:
 
     # bfp8 has lower precision, use relaxed tolerance
     expected = lhs_torch + rhs_torch
-    if torch.allclose(result.float(), expected.float(), rtol=0.1, atol=0.5):
-        print("\nPASS: BFP8 DRAM interleaved add works!")
-        # CHECK: PASS
-    else:
-        max_diff = (result.float() - expected.float()).abs().max().item()
-        print(f"\nFAIL: max difference = {max_diff}")
+    assert_allclose(result.float(), expected.float(), rtol=0.1, atol=0.5)
+    print("\nPASS: BFP8 DRAM interleaved add works!")
+    # CHECK: PASS
 
 finally:
     ttnn.close_device(device)
