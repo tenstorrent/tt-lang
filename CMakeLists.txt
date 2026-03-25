@@ -103,7 +103,7 @@ if(TTLANG_SIM_ONLY)
   message(STATUS "=== Simulator-only mode ===")
   message(STATUS "  Python venv:  ${TTLANG_PYTHON_VENV}")
   message(STATUS "  Activate:     source ${PROJECT_BINARY_DIR}/env/activate")
-  message(STATUS "  Run:          ./bin/ttlang-sim examples/eltwise_add.py")
+  message(STATUS "  Run:          ttlang-sim examples/eltwise_add.py")
   message(STATUS "===")
 
   if(TTLANG_ENABLE_DOCS)
