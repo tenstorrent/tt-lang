@@ -527,20 +527,24 @@ class TTLGenericCompiler(TTCompilerBase):
             idx = self._to_index_value(node.slice)
             return memref.LoadOp(var, [idx]).result
 
-        # Handle Python list subscript with runtime index: emit select chain
-        # MY_LIST[idx] where MY_LIST is a Python list of ints
+        # Handle Python list subscript: MY_LIST[idx]
+        # If idx is a constant, resolve at compile time. Otherwise use select chain.
         if isinstance(var, list) and all(isinstance(v, int) for v in var):
+            # Check if the index is a constant (most common case)
+            if isinstance(node.slice, ast.Constant):
+                # Resolve at compile time — just emit the constant value
+                idx = node.slice.value
+                val = var[idx]
+                return arith.ConstantOp(IndexType.get(self.ctx), val)
+            # Runtime index: emit a select chain
             idx_val = self.visit(node.slice)
             if not isinstance(idx_val.type, IndexType):
                 idx_val = arith.IndexCastOp(IndexType.get(self.ctx), idx_val)
-            # Build a select chain: if idx==0 then list[0] elif idx==1 then list[1] ...
             i64_type = IntegerType.get_signless(64, self.ctx)
-            result = arith.ConstantOp(i64_type, var[-1])  # default: last element
+            result = arith.ConstantOp(i64_type, var[-1])
             for i in range(len(var) - 2, -1, -1):
                 cmp_val = arith.ConstantOp(IndexType.get(self.ctx), i)
-                cond = arith.CmpIOp(
-                    arith.CmpIPredicate.eq, idx_val, cmp_val
-                )
+                cond = arith.CmpIOp(arith.CmpIPredicate.eq, idx_val, cmp_val)
                 true_val = arith.ConstantOp(i64_type, var[i])
                 result = arith.SelectOp(cond, true_val, result)
             return result.result if hasattr(result, 'result') else result
