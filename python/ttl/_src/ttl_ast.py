@@ -209,30 +209,12 @@ class TTLGenericCompiler(TTCompilerBase):
                 self.symbol_tables[-1][var_name] = value
                 return
             # Check for constant list assignment: MY_LIST = [3, 7, 15, ...]
-            # Creates a stack-allocated memref so the list can be indexed with
-            # loop variables in the kernel (e.g., state[bt, MY_LIST[src_idx]]).
+            # Store as plain Python list — subscript access generates select chain
             if isinstance(node.value, ast.List):
                 elts = node.value.elts
                 if all(isinstance(e, ast.Constant) and isinstance(e.value, int) for e in elts):
                     var_name = node.targets[0].id
-                    n = len(elts)
-                    i64_type = IntegerType.get_signless(64, self.ctx)
-                    memref_type = MemRefType.get([n], i64_type)
-                    if self._func_entry_block is not None:
-                        first_op = self._func_entry_block.operations[0]
-                        with InsertionPoint(first_op):
-                            alloca = memref.AllocaOp(memref_type, [], []).result
-                            for i, elt in enumerate(elts):
-                                idx = arith.ConstantOp(IndexType.get(self.ctx), i)
-                                val = arith.ConstantOp(i64_type, elt.value)
-                                memref.StoreOp(val, alloca, [idx])
-                    else:
-                        alloca = memref.AllocaOp(memref_type, [], []).result
-                        for i, elt in enumerate(elts):
-                            idx = arith.ConstantOp(IndexType.get(self.ctx), i)
-                            val = arith.ConstantOp(i64_type, elt.value)
-                            memref.StoreOp(val, alloca, [idx])
-                    self.symbol_tables[-1][var_name] = alloca
+                    self.symbol_tables[-1][var_name] = [e.value for e in elts]
                     return
 
             return super().visit_Assign(node)
@@ -544,6 +526,24 @@ class TTLGenericCompiler(TTCompilerBase):
         if hasattr(var, "type") and isinstance(var.type, MemRefType):
             idx = self._to_index_value(node.slice)
             return memref.LoadOp(var, [idx]).result
+
+        # Handle Python list subscript with runtime index: emit select chain
+        # MY_LIST[idx] where MY_LIST is a Python list of ints
+        if isinstance(var, list) and all(isinstance(v, int) for v in var):
+            idx_val = self.visit(node.slice)
+            if not isinstance(idx_val.type, IndexType):
+                idx_val = arith.IndexCastOp(IndexType.get(self.ctx), idx_val)
+            # Build a select chain: if idx==0 then list[0] elif idx==1 then list[1] ...
+            i64_type = IntegerType.get_signless(64, self.ctx)
+            result = arith.ConstantOp(i64_type, var[-1])  # default: last element
+            for i in range(len(var) - 2, -1, -1):
+                cmp_val = arith.ConstantOp(IndexType.get(self.ctx), i)
+                cond = arith.CmpIOp(
+                    arith.CmpIPredicate.eq, idx_val, cmp_val
+                )
+                true_val = arith.ConstantOp(i64_type, var[i])
+                result = arith.SelectOp(cond, true_val, result)
+            return result.result if hasattr(result, 'result') else result
 
         tensor = var
         if not isinstance(getattr(tensor, "type", None), RankedTensorType):
