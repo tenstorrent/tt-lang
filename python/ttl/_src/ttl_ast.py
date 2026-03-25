@@ -208,6 +208,33 @@ class TTLGenericCompiler(TTCompilerBase):
                 # Everything else: normal SSA assignment
                 self.symbol_tables[-1][var_name] = value
                 return
+            # Check for constant list assignment: MY_LIST = [3, 7, 15, ...]
+            # Creates a stack-allocated memref so the list can be indexed with
+            # loop variables in the kernel (e.g., state[bt, MY_LIST[src_idx]]).
+            if isinstance(node.value, ast.List):
+                elts = node.value.elts
+                if all(isinstance(e, ast.Constant) and isinstance(e.value, int) for e in elts):
+                    var_name = node.targets[0].id
+                    n = len(elts)
+                    i64_type = IntegerType.get_signless(64, self.ctx)
+                    memref_type = MemRefType.get([n], i64_type)
+                    if self._func_entry_block is not None:
+                        first_op = self._func_entry_block.operations[0]
+                        with InsertionPoint(first_op):
+                            alloca = memref.AllocaOp(memref_type, [], []).result
+                            for i, elt in enumerate(elts):
+                                idx = arith.ConstantOp(IndexType.get(self.ctx), i)
+                                val = arith.ConstantOp(i64_type, elt.value)
+                                memref.StoreOp(val, alloca, [idx])
+                    else:
+                        alloca = memref.AllocaOp(memref_type, [], []).result
+                        for i, elt in enumerate(elts):
+                            idx = arith.ConstantOp(IndexType.get(self.ctx), i)
+                            val = arith.ConstantOp(i64_type, elt.value)
+                            memref.StoreOp(val, alloca, [idx])
+                    self.symbol_tables[-1][var_name] = alloca
+                    return
+
             return super().visit_Assign(node)
 
         value = self.visit(node.value)
@@ -506,14 +533,21 @@ class TTLGenericCompiler(TTCompilerBase):
                 self._raise_error(node, str(e))
 
     def visit_Subscript(self, node):
-        """Handle tensor[row, col] or tensor[r0:r1, c0:c1] indexing."""
+        """Handle tensor[row, col], tensor[r0:r1, c0:c1], or array[idx] indexing."""
         tbl = self._var_exists(node.value.id)
         if not tbl:
             self._raise_error(node, f"Unknown variable: {node.value.id}")
 
-        tensor = tbl[node.value.id]
+        var = tbl[node.value.id]
+
+        # Handle memref subscript (constant array indexing, e.g., MY_LIST[idx])
+        if hasattr(var, "type") and isinstance(var.type, MemRefType):
+            idx = self._to_index_value(node.slice)
+            return memref.LoadOp(var, [idx]).result
+
+        tensor = var
         if not isinstance(getattr(tensor, "type", None), RankedTensorType):
-            self._raise_error(node, "TTL only supports subscripting tensors")
+            self._raise_error(node, "TTL only supports subscripting tensors or memref arrays")
 
         if isinstance(node.slice, ast.Tuple):
             indices = [self._build_index_or_range(elt) for elt in node.slice.elts]
