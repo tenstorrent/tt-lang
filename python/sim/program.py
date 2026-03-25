@@ -142,20 +142,6 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             Returns:
                 Dictionary containing per-core context with fresh DataflowBuffers
             """
-            # Warn if total CB capacity exceeds the configured L1 limit.
-            max_l1 = get_max_l1_bytes()
-            total_l1_bytes = sum(
-                v.capacity_bytes
-                for v in self.context.values()
-                if isinstance(v, DataflowBuffer)
-            )
-            if total_l1_bytes > max_l1:
-                warnings.warn(
-                    f"Total DataflowBuffer capacity per core ({total_l1_bytes} bytes) "
-                    f"exceeds the L1 memory limit of {max_l1} bytes.",
-                    stacklevel=2,
-                )
-
             memo: Dict[int, Any] = {}
             core_context: Dict[str, Any] = {}
 
@@ -209,6 +195,16 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                     f"Kernel defines {dfb_count} dataflow buffers, "
                     f"but the hardware limit is {max_dfbs}. "
                     f"Reduce the number of ttl.make_dataflow_buffer_like() calls.",
+                    stacklevel=2,
+                )
+
+            # Warn if total L1 capacity exceeds the configured limit.
+            total_l1_bytes = get_context().kernel_l1_bytes
+            max_l1 = get_max_l1_bytes()
+            if total_l1_bytes > max_l1:
+                warnings.warn(
+                    f"Total DataflowBuffer capacity per core ({total_l1_bytes} bytes) "
+                    f"exceeds the L1 memory limit of {max_l1} bytes.",
                     stacklevel=2,
                 )
 

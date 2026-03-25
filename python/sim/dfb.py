@@ -1234,10 +1234,13 @@ def make_dataflow_buffer_like(
     """
     from .context import get_context
 
-    get_context().kernel_dfb_count += 1
-    return DataflowBuffer(
+    dfb = DataflowBuffer(
         likeness_tensor=likeness_tensor, shape=shape, buffer_factor=buffer_factor
     )
+    ctx = get_context()
+    ctx.kernel_dfb_count += 1
+    ctx.kernel_l1_bytes += dfb.capacity_bytes
+    return dfb
 
 
 def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
