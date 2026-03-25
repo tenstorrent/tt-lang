@@ -33,6 +33,7 @@
 // CHECK:       ttkernel.copy_tile
 // CHECK:       ttkernel.tile_regs_commit
 // CHECK-NEXT:  ttkernel.tile_regs_wait
+// CHECK-NEXT:  ttkernel.pack_reconfig_data_format(
 // CHECK-NEXT:  ttkernel.pack_reconfig_l1_acc(%[[C1_I32]])
 // CHECK-NEXT:  ttkernel.pack_tile(%[[C0]],
 // CHECK-NEXT:  ttkernel.pack_reconfig_l1_acc(%[[C0_I32]])

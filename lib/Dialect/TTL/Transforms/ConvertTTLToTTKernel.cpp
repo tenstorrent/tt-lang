@@ -603,6 +603,7 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
     // acc=false (overwrite).
     bool useL1Acc = op.getAcc() && !isAccumulatingStore(op);
     if (useL1Acc) {
+      ttk::PackReconfigDataFormatOp::create(rewriter, loc, *cb);
       Value one = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
       ttk::PackReconfigL1AccOp::create(rewriter, loc, one);
     }
