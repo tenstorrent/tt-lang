@@ -725,7 +725,7 @@ struct TTLTileMatmulToTTKernel : OpConversionPattern<TileMatmulOp> {
       return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
     int64_t dstIdxVal = dstIdxAttr.getInt();
-    Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstIdxVal);
+    Value dstIdx = arith::ConstantIndexOp::create(rewriter, loc, dstIdxVal);
 
     // Get CB shapes to determine K dimension.
     // A has shape [M, K], B has shape [K, N].
@@ -747,7 +747,7 @@ struct TTLTileMatmulToTTKernel : OpConversionPattern<TileMatmulOp> {
 
     // Get M, N indices from enclosing loops.
     SmallVector<scf::ForOp> loops = utils::collectEnclosingLoops(op);
-    Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value mIdx = zero;
     Value nIdx = zero;
 
@@ -759,31 +759,31 @@ struct TTLTileMatmulToTTKernel : OpConversionPattern<TileMatmulOp> {
     }
 
     Value transpose =
-        rewriter.create<arith::ConstantOp>(loc, rewriter.getI32IntegerAttr(0));
-    rewriter.create<ttk::MatmulInitOp>(loc, *aCB, *bCB, *outCB, transpose);
+        arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(0));
+    ttk::MatmulInitOp::create(rewriter, loc, *aCB, *bCB, *outCB, transpose);
 
     if (kDim > 1) {
-      Value kEnd = rewriter.create<arith::ConstantIndexOp>(loc, kDim);
-      Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      Value kEnd = arith::ConstantIndexOp::create(rewriter, loc, kDim);
+      Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
 
-      auto kLoop = rewriter.create<scf::ForOp>(loc, zero, kEnd, one);
+      auto kLoop = scf::ForOp::create(rewriter, loc, zero, kEnd, one);
       rewriter.setInsertionPointToStart(kLoop.getBody());
       Value kIdx = kLoop.getInductionVar();
 
       // A index = m * K + k
-      Value aKVal = rewriter.create<arith::ConstantIndexOp>(loc, kDim);
-      Value aIdxMulK = rewriter.create<arith::MulIOp>(loc, mIdx, aKVal);
-      Value aIdx = rewriter.create<arith::AddIOp>(loc, aIdxMulK, kIdx);
+      Value aKVal = arith::ConstantIndexOp::create(rewriter, loc, kDim);
+      Value aIdxMulK = arith::MulIOp::create(rewriter, loc, mIdx, aKVal);
+      Value aIdx = arith::AddIOp::create(rewriter, loc, aIdxMulK, kIdx);
 
       // B index = k * N + n
-      Value bNVal = rewriter.create<arith::ConstantIndexOp>(loc, bN);
-      Value bIdxMulN = rewriter.create<arith::MulIOp>(loc, kIdx, bNVal);
-      Value bIdx = rewriter.create<arith::AddIOp>(loc, bIdxMulN, nIdx);
+      Value bNVal = arith::ConstantIndexOp::create(rewriter, loc, bN);
+      Value bIdxMulN = arith::MulIOp::create(rewriter, loc, kIdx, bNVal);
+      Value bIdx = arith::AddIOp::create(rewriter, loc, bIdxMulN, nIdx);
 
-      rewriter.create<ttk::MatmulTilesOp>(loc, *aCB, *bCB, aIdx, bIdx, dstIdx);
+      ttk::MatmulTilesOp::create(rewriter, loc, *aCB, *bCB, aIdx, bIdx, dstIdx);
       rewriter.setInsertionPointAfter(kLoop);
     } else {
-      rewriter.create<ttk::MatmulTilesOp>(loc, *aCB, *bCB, mIdx, nIdx, dstIdx);
+      ttk::MatmulTilesOp::create(rewriter, loc, *aCB, *bCB, mIdx, nIdx, dstIdx);
     }
 
     rewriter.replaceOp(op, adaptor.getA());
@@ -854,7 +854,7 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
       return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
     int64_t dstIdxVal = dstIdxAttr.getInt();
-    Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstIdxVal);
+    Value dstIdx = arith::ConstantIndexOp::create(rewriter, loc, dstIdxVal);
 
     auto inShape = getCBTileGridShape(op.getInput(), funcOp);
     if (!inShape) {
@@ -863,7 +863,7 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
     int64_t inRows = inShape->first;
     int64_t inCols = inShape->second;
 
-    Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
 
     SmallVector<scf::ForOp> loops = utils::collectEnclosingLoops(op);
     Value mIdx = zero;
@@ -878,85 +878,85 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
     auto ttkReduceType = convertReduceType(op.getReduceType());
     auto ttkReduceDim = convertReduceDim(op.getReduceDim());
 
-    rewriter.create<ttk::ComputeKernelHWStartupOp>(loc, *inCB, *scalerCB,
+    ttk::ComputeKernelHWStartupOp::create(rewriter, loc, *inCB, *scalerCB,
                                                     *outCB);
-    rewriter.create<ttk::ReduceInitOp>(loc, *inCB, *scalerCB, *outCB,
+    ttk::ReduceInitOp::create(rewriter, loc, *inCB, *scalerCB, *outCB,
                                        ttkReduceType, ttkReduceDim);
 
     auto reduceDim = op.getReduceDim();
-    Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
 
     if (reduceDim == ttl::ReduceDim::Scalar) {
       if (inRows > 1 || inCols > 1) {
-        Value rowEnd = rewriter.create<arith::ConstantIndexOp>(loc, inRows);
-        Value colEnd = rewriter.create<arith::ConstantIndexOp>(loc, inCols);
+        Value rowEnd = arith::ConstantIndexOp::create(rewriter, loc, inRows);
+        Value colEnd = arith::ConstantIndexOp::create(rewriter, loc, inCols);
 
-        auto rowLoop = rewriter.create<scf::ForOp>(loc, zero, rowEnd, one);
+        auto rowLoop = scf::ForOp::create(rewriter, loc, zero, rowEnd, one);
         rewriter.setInsertionPointToStart(rowLoop.getBody());
         Value rowIdx = rowLoop.getInductionVar();
 
-        auto colLoop = rewriter.create<scf::ForOp>(loc, zero, colEnd, one);
+        auto colLoop = scf::ForOp::create(rewriter, loc, zero, colEnd, one);
         rewriter.setInsertionPointToStart(colLoop.getBody());
         Value colIdx = colLoop.getInductionVar();
 
-        Value inColsVal = rewriter.create<arith::ConstantIndexOp>(loc, inCols);
+        Value inColsVal = arith::ConstantIndexOp::create(rewriter, loc, inCols);
         Value rowMulCols =
-            rewriter.create<arith::MulIOp>(loc, rowIdx, inColsVal);
+            arith::MulIOp::create(rewriter, loc, rowIdx, inColsVal);
         Value inCBIdx =
-            rewriter.create<arith::AddIOp>(loc, rowMulCols, colIdx);
+            arith::AddIOp::create(rewriter, loc, rowMulCols, colIdx);
 
-        rewriter.create<ttk::ReduceTileOp>(loc, *inCB, *scalerCB, inCBIdx,
+        ttk::ReduceTileOp::create(rewriter, loc, *inCB, *scalerCB, inCBIdx,
                                            zero, dstIdx, ttkReduceType,
                                            ttkReduceDim);
         rewriter.setInsertionPointAfter(rowLoop);
       } else {
-        rewriter.create<ttk::ReduceTileOp>(loc, *inCB, *scalerCB, zero, zero,
+        ttk::ReduceTileOp::create(rewriter, loc, *inCB, *scalerCB, zero, zero,
                                            dstIdx, ttkReduceType,
                                            ttkReduceDim);
       }
     } else if (reduceDim == ttl::ReduceDim::Row) {
       if (inCols > 1) {
-        Value colEnd = rewriter.create<arith::ConstantIndexOp>(loc, inCols);
+        Value colEnd = arith::ConstantIndexOp::create(rewriter, loc, inCols);
 
-        auto colLoop = rewriter.create<scf::ForOp>(loc, zero, colEnd, one);
+        auto colLoop = scf::ForOp::create(rewriter, loc, zero, colEnd, one);
         rewriter.setInsertionPointToStart(colLoop.getBody());
         Value colIdx = colLoop.getInductionVar();
 
-        Value inColsVal = rewriter.create<arith::ConstantIndexOp>(loc, inCols);
+        Value inColsVal = arith::ConstantIndexOp::create(rewriter, loc, inCols);
         Value rowMulCols =
-            rewriter.create<arith::MulIOp>(loc, mIdx, inColsVal);
+            arith::MulIOp::create(rewriter, loc, mIdx, inColsVal);
         Value inCBIdx =
-            rewriter.create<arith::AddIOp>(loc, rowMulCols, colIdx);
+            arith::AddIOp::create(rewriter, loc, rowMulCols, colIdx);
 
-        rewriter.create<ttk::ReduceTileOp>(loc, *inCB, *scalerCB, inCBIdx,
+        ttk::ReduceTileOp::create(rewriter, loc, *inCB, *scalerCB, inCBIdx,
                                            zero, dstIdx, ttkReduceType,
                                            ttkReduceDim);
         rewriter.setInsertionPointAfter(colLoop);
       } else {
-        rewriter.create<ttk::ReduceTileOp>(loc, *inCB, *scalerCB, mIdx, zero,
+        ttk::ReduceTileOp::create(rewriter, loc, *inCB, *scalerCB, mIdx, zero,
                                            dstIdx, ttkReduceType,
                                            ttkReduceDim);
       }
     } else if (reduceDim == ttl::ReduceDim::Col) {
       if (inRows > 1) {
-        Value rowEnd = rewriter.create<arith::ConstantIndexOp>(loc, inRows);
+        Value rowEnd = arith::ConstantIndexOp::create(rewriter, loc, inRows);
 
-        auto rowLoop = rewriter.create<scf::ForOp>(loc, zero, rowEnd, one);
+        auto rowLoop = scf::ForOp::create(rewriter, loc, zero, rowEnd, one);
         rewriter.setInsertionPointToStart(rowLoop.getBody());
         Value rowIdx = rowLoop.getInductionVar();
 
-        Value inColsVal = rewriter.create<arith::ConstantIndexOp>(loc, inCols);
+        Value inColsVal = arith::ConstantIndexOp::create(rewriter, loc, inCols);
         Value rowMulCols =
-            rewriter.create<arith::MulIOp>(loc, rowIdx, inColsVal);
+            arith::MulIOp::create(rewriter, loc, rowIdx, inColsVal);
         Value inCBIdx =
-            rewriter.create<arith::AddIOp>(loc, rowMulCols, nIdx);
+            arith::AddIOp::create(rewriter, loc, rowMulCols, nIdx);
 
-        rewriter.create<ttk::ReduceTileOp>(loc, *inCB, *scalerCB, inCBIdx,
+        ttk::ReduceTileOp::create(rewriter, loc, *inCB, *scalerCB, inCBIdx,
                                            zero, dstIdx, ttkReduceType,
                                            ttkReduceDim);
         rewriter.setInsertionPointAfter(rowLoop);
       } else {
-        rewriter.create<ttk::ReduceTileOp>(loc, *inCB, *scalerCB, nIdx, zero,
+        ttk::ReduceTileOp::create(rewriter, loc, *inCB, *scalerCB, nIdx, zero,
                                            dstIdx, ttkReduceType,
                                            ttkReduceDim);
       }
@@ -1002,7 +1002,7 @@ struct TTLTileTransposeToTTKernel : OpConversionPattern<TileTransposeOp> {
       return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
     int64_t dstIdxVal = dstIdxAttr.getInt();
-    Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstIdxVal);
+    Value dstIdx = arith::ConstantIndexOp::create(rewriter, loc, dstIdxVal);
 
     // Get input CB shape to compute transposed index.
     auto inShape = getCBTileGridShape(op.getInput(), funcOp);
@@ -1016,21 +1016,21 @@ struct TTLTileTransposeToTTKernel : OpConversionPattern<TileTransposeOp> {
     // we read from input position (j, i).
     // Input CB index = j * inCols + i (linearized for input shape [M, N]).
     SmallVector<scf::ForOp> loops = utils::collectEnclosingLoops(op);
-    Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value inCBIdx = zero;
 
     if (loops.size() >= 2) {
       Value colIdx = loops[0].getInductionVar();
       Value rowIdx = loops[1].getInductionVar();
-      Value inColsVal = rewriter.create<arith::ConstantIndexOp>(loc, inCols);
-      Value colMulN = rewriter.create<arith::MulIOp>(loc, colIdx, inColsVal);
-      inCBIdx = rewriter.create<arith::AddIOp>(loc, colMulN, rowIdx);
+      Value inColsVal = arith::ConstantIndexOp::create(rewriter, loc, inCols);
+      Value colMulN = arith::MulIOp::create(rewriter, loc, colIdx, inColsVal);
+      inCBIdx = arith::AddIOp::create(rewriter, loc, colMulN, rowIdx);
     } else if (loops.size() == 1) {
       inCBIdx = loops[0].getInductionVar();
     }
 
-    rewriter.create<ttk::TransposeInitOp>(loc, *inCB, *outCB);
-    rewriter.create<ttk::TransposeTileOp>(loc, *inCB, inCBIdx, dstIdx);
+    ttk::TransposeInitOp::create(rewriter, loc, *inCB, *outCB);
+    ttk::TransposeTileOp::create(rewriter, loc, *inCB, inCBIdx, dstIdx);
 
     rewriter.replaceOp(op, adaptor.getInput());
     return success();
@@ -1054,13 +1054,13 @@ struct TTLTilePowerToTTKernel : OpConversionPattern<TilePowerOp> {
       return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
     int64_t dstIdx = dstIdxAttr.getInt();
-    Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
+    Value dstIdxVal = arith::ConstantIndexOp::create(rewriter, loc, dstIdx);
 
-    Value exponent = rewriter.create<arith::ConstantOp>(
-        loc, rewriter.getI32IntegerAttr(op.getExponent()));
+    Value exponent = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getI32IntegerAttr(op.getExponent()));
 
-    rewriter.create<ttk::PowerTileInitOp>(loc);
-    rewriter.create<ttk::PowUnaryTileOp>(loc, dstIdxVal, exponent);
+    ttk::PowerTileInitOp::create(rewriter, loc);
+    ttk::PowUnaryTileOp::create(rewriter, loc, dstIdxVal, exponent);
 
     rewriter.replaceOp(op, adaptor.getInput());
     return success();
@@ -1084,17 +1084,17 @@ struct TTLTileFillToTTKernel : OpConversionPattern<TileFillOp> {
       return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
     int64_t dstIdx = dstIdxAttr.getInt();
-    Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
+    Value dstIdxVal = arith::ConstantIndexOp::create(rewriter, loc, dstIdx);
 
-    Value fillValue = rewriter.create<arith::ConstantOp>(
-        loc, rewriter.getF32FloatAttr(op.getValue().convertToFloat()));
+    Value fillValue = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getF32FloatAttr(op.getValue().convertToFloat()));
 
-    rewriter.create<ttk::FillTileInitOp>(loc);
-    rewriter.create<ttk::FillTileOp>(loc, dstIdxVal, fillValue);
+    ttk::FillTileInitOp::create(rewriter, loc);
+    ttk::FillTileOp::create(rewriter, loc, dstIdxVal, fillValue);
 
     // Replace with an unrealized cast carrying dst_idx for tile_store.
-    auto cast = rewriter.create<mlir::UnrealizedConversionCastOp>(
-        loc, TypeRange{op.getResult().getType()}, ValueRange{dstIdxVal});
+    auto cast = mlir::UnrealizedConversionCastOp::create(
+        rewriter, loc, TypeRange{op.getResult().getType()}, ValueRange{dstIdxVal});
     cast->setAttr(kDstIdxAttrName, dstIdxAttr);
     rewriter.replaceOp(op, cast.getResult(0));
     return success();
@@ -1136,14 +1136,14 @@ struct TTLTileWhereToTTKernel : OpConversionPattern<TileWhereOp> {
           op, "failed to extract dst_idx from false_value operand");
     }
 
-    Value condIdx = rewriter.create<arith::ConstantIndexOp>(loc, *condIdxOpt);
-    Value trueIdx = rewriter.create<arith::ConstantIndexOp>(loc, *trueIdxOpt);
+    Value condIdx = arith::ConstantIndexOp::create(rewriter, loc, *condIdxOpt);
+    Value trueIdx = arith::ConstantIndexOp::create(rewriter, loc, *trueIdxOpt);
     Value falseIdx =
-        rewriter.create<arith::ConstantIndexOp>(loc, *falseIdxOpt);
-    Value odst = rewriter.create<arith::ConstantIndexOp>(loc, odstIdx);
+        arith::ConstantIndexOp::create(rewriter, loc, *falseIdxOpt);
+    Value odst = arith::ConstantIndexOp::create(rewriter, loc, odstIdx);
 
-    rewriter.create<ttk::WhereTileInitOp>(loc);
-    rewriter.create<ttk::WhereTileOp>(loc, condIdx, trueIdx, falseIdx, odst);
+    ttk::WhereTileInitOp::create(rewriter, loc);
+    ttk::WhereTileOp::create(rewriter, loc, condIdx, trueIdx, falseIdx, odst);
 
     rewriter.replaceOp(op, adaptor.getCondition());
     return success();

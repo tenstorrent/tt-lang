@@ -121,7 +121,7 @@ static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *elementwiseOp,
 
   // FillOp: no tile operands, just a value attribute.
   if (auto fillOp = dyn_cast<FillOp>(elementwiseOp))
-    return b.create<TileFillOp>(loc, tileType, fillOp.getValueAttr());
+    return TileFillOp::create(b, loc, tileType, fillOp.getValueAttr());
 
   return nullptr;
 }
@@ -280,9 +280,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // chains with no root inputs, use tensor.empty directly (static shapes).
   Value init =
       trace.rootInputs.empty()
-          ? rewriter
-                .create<tensor::EmptyOp>(loc, type.getShape(),
-                                          type.getElementType())
+          ? tensor::EmptyOp::create(rewriter, loc, type.getShape(),
+                                      type.getElementType())
                 .getResult()
           : buildInitTensor(rewriter, loc, type, trace.rootInputs[0]);
   Value initAttached =
@@ -842,12 +841,12 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
 
     Value init = buildInitTensor(rewriter, loc, outputType, op.getA());
     Value initAttached =
-        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
 
-    auto computeOp = rewriter.create<ComputeOp>(
-        loc, TypeRange{outputType}, ValueRange{op.getA(), op.getB()},
-        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
-        rewriter.getArrayAttr(iterTypes));
+    auto computeOp = ComputeOp::create(
+        rewriter, loc, TypeRange{outputType},
+        ValueRange{op.getA(), op.getB()}, ValueRange{initAttached},
+        rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
     Type scalarType = outputType.getElementType();
@@ -857,11 +856,11 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
     body->addArgument(tileType, loc); // output tile
 
     rewriter.setInsertionPointToStart(body);
-    Value result = rewriter.create<TileMatmulOp>(
-        loc, tileType, body->getArgument(0), body->getArgument(1),
-        body->getArgument(2));
+    Value result = TileMatmulOp::create(
+        rewriter, loc, tileType, body->getArgument(0),
+        body->getArgument(1), body->getArgument(2));
     emitTileStores(rewriter, loc, result, op);
-    rewriter.create<YieldOp>(loc);
+    YieldOp::create(rewriter, loc);
     rewriter.replaceOp(op, computeOp.getResult(0));
     return success();
   }
@@ -964,10 +963,10 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
     Value init =
         buildInitTensor(rewriter, loc, iterOutputType, op.getInput());
     Value initAttached =
-        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
 
-    auto computeOp = rewriter.create<ComputeOp>(
-        loc, TypeRange{iterOutputType},
+    auto computeOp = ComputeOp::create(
+        rewriter, loc, TypeRange{iterOutputType},
         ValueRange{op.getInput(), op.getScaler()},
         ValueRange{initAttached}, rewriter.getArrayAttr(maps),
         rewriter.getArrayAttr(iterTypes));
@@ -987,12 +986,11 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
 
     rewriter.setInsertionPointToStart(body);
     Value reduceResult =
-        rewriter.create<TileReduceOp>(loc, tileType, body->getArgument(0),
-                                      body->getArgument(1),
-                                      body->getArgument(2),
-                                      op.getReduceType(), op.getReduceDim());
+        TileReduceOp::create(rewriter, loc, tileType, body->getArgument(0),
+                             body->getArgument(1), body->getArgument(2),
+                             op.getReduceType(), op.getReduceDim());
     emitTileStores(rewriter, loc, reduceResult, op);
-    rewriter.create<YieldOp>(loc);
+    YieldOp::create(rewriter, loc);
 
     rewriter.replaceOp(op, computeOp.getResult(0));
     return success();
@@ -1051,10 +1049,10 @@ struct LowerTransposeToCompute : OpRewritePattern<TransposeOp> {
 
     Value init = buildInitTensor(rewriter, loc, outputType, op.getInput());
     Value initAttached =
-        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
 
-    auto computeOp = rewriter.create<ComputeOp>(
-        loc, TypeRange{outputType}, ValueRange{op.getInput()},
+    auto computeOp = ComputeOp::create(
+        rewriter, loc, TypeRange{outputType}, ValueRange{op.getInput()},
         ValueRange{initAttached}, rewriter.getArrayAttr(maps),
         rewriter.getArrayAttr(iterTypes));
 
@@ -1065,10 +1063,11 @@ struct LowerTransposeToCompute : OpRewritePattern<TransposeOp> {
     body->addArgument(tileType, loc); // output tile
 
     rewriter.setInsertionPointToStart(body);
-    Value result = rewriter.create<TileTransposeOp>(
-        loc, tileType, body->getArgument(0), body->getArgument(1));
+    Value result = TileTransposeOp::create(
+        rewriter, loc, tileType, body->getArgument(0),
+        body->getArgument(1));
     emitTileStores(rewriter, loc, result, op);
-    rewriter.create<YieldOp>(loc);
+    YieldOp::create(rewriter, loc);
 
     rewriter.replaceOp(op, computeOp.getResult(0));
     return success();
@@ -1115,10 +1114,10 @@ struct LowerPowerToCompute : OpRewritePattern<PowerOp> {
 
     Value init = buildInitTensor(rewriter, loc, type, op.getInput());
     Value initAttached =
-        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
 
-    auto computeOp = rewriter.create<ComputeOp>(
-        loc, TypeRange{type}, ValueRange{op.getInput()},
+    auto computeOp = ComputeOp::create(
+        rewriter, loc, TypeRange{type}, ValueRange{op.getInput()},
         ValueRange{initAttached}, rewriter.getArrayAttr(maps),
         rewriter.getArrayAttr(iterTypes));
 
@@ -1129,11 +1128,11 @@ struct LowerPowerToCompute : OpRewritePattern<PowerOp> {
     body->addArgument(tileType, loc); // output tile
 
     rewriter.setInsertionPointToStart(body);
-    Value result = rewriter.create<TilePowerOp>(loc, tileType,
-                                                 body->getArgument(0),
-                                                 op.getExponentAttr());
+    Value result = TilePowerOp::create(rewriter, loc, tileType,
+                                       body->getArgument(0),
+                                       op.getExponentAttr());
     emitTileStores(rewriter, loc, result, op);
-    rewriter.create<YieldOp>(loc);
+    YieldOp::create(rewriter, loc);
     rewriter.replaceOp(op, computeOp.getResult(0));
     return success();
   }
@@ -1172,14 +1171,15 @@ struct LowerFillToCompute : OpRewritePattern<FillOp> {
     insertAtLastStore(rewriter, op);
 
     // Static shapes only for fill (no exemplar needed for dynamic dims).
-    Value init = rewriter.create<tensor::EmptyOp>(loc, type.getShape(),
-                                                   type.getElementType());
+    Value init = tensor::EmptyOp::create(rewriter, loc, type.getShape(),
+                                          type.getElementType());
     Value initAttached =
-        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
 
-    auto computeOp = rewriter.create<ComputeOp>(
-        loc, TypeRange{type}, ValueRange{}, ValueRange{initAttached},
-        rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+    auto computeOp = ComputeOp::create(
+        rewriter, loc, TypeRange{type}, ValueRange{},
+        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+        rewriter.getArrayAttr(iterTypes));
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
     Type scalarType = type.getElementType();
@@ -1188,9 +1188,9 @@ struct LowerFillToCompute : OpRewritePattern<FillOp> {
 
     rewriter.setInsertionPointToStart(body);
     Value result =
-        rewriter.create<TileFillOp>(loc, tileType, op.getValueAttr());
+        TileFillOp::create(rewriter, loc, tileType, op.getValueAttr());
     emitTileStores(rewriter, loc, result, op);
-    rewriter.create<YieldOp>(loc);
+    YieldOp::create(rewriter, loc);
     rewriter.replaceOp(op, computeOp.getResult(0));
     return success();
   }
@@ -1246,10 +1246,10 @@ struct LowerWhereToCompute : OpRewritePattern<WhereOp> {
 
     Value init = buildInitTensor(rewriter, loc, type, op.getCondition());
     Value initAttached =
-        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
 
-    auto computeOp = rewriter.create<ComputeOp>(
-        loc, TypeRange{type},
+    auto computeOp = ComputeOp::create(
+        rewriter, loc, TypeRange{type},
         ValueRange{op.getCondition(), op.getTrueValue(), op.getFalseValue()},
         ValueRange{initAttached}, rewriter.getArrayAttr(maps),
         rewriter.getArrayAttr(iterTypes));
@@ -1263,12 +1263,12 @@ struct LowerWhereToCompute : OpRewritePattern<WhereOp> {
     body->addArgument(tileType, loc); // output tile
 
     rewriter.setInsertionPointToStart(body);
-    Value result = rewriter.create<TileWhereOp>(loc, tileType,
-                                                 body->getArgument(0),
-                                                 body->getArgument(1),
-                                                 body->getArgument(2));
+    Value result = TileWhereOp::create(rewriter, loc, tileType,
+                                       body->getArgument(0),
+                                       body->getArgument(1),
+                                       body->getArgument(2));
     emitTileStores(rewriter, loc, result, op);
-    rewriter.create<YieldOp>(loc);
+    YieldOp::create(rewriter, loc);
     rewriter.replaceOp(op, computeOp.getResult(0));
     return success();
   }

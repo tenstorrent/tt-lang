@@ -961,9 +961,9 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   auto indexTy = rewriter.getIndexType();
   auto i32Ty = rewriter.getI32Type();
 
-  auto cbReadPtr = rewriter.create<ttk::GetReadPtrOp>(loc, *cbConverted);
+  auto cbReadPtr = ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted);
   auto cbReadPtrIdx =
-      rewriter.create<arith::IndexCastOp>(loc, indexTy, cbReadPtr);
+      arith::IndexCastOp::create(rewriter, loc, indexTy, cbReadPtr);
 
   // Resolve the destination L1 base address. When the receiver uses a
   // different CB than the sender, we look up the receiver's CB read pointer
@@ -984,39 +984,39 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     }
     if (senderCBIndex >= 0 && senderCBIndex != receiverInfo->cbIndex) {
       auto srcCBType = llvm::dyn_cast<ttk::CBType>(cbConverted->getType());
-      auto recvCB = rewriter.create<ttk::GetCompileArgValOp>(
-          loc, srcCBType, static_cast<int32_t>(receiverInfo->cbIndex));
-      auto recvReadPtr = rewriter.create<ttk::GetReadPtrOp>(loc, recvCB);
+      auto recvCB = ttk::GetCompileArgValOp::create(
+          rewriter, loc, srcCBType, static_cast<int32_t>(receiverInfo->cbIndex));
+      auto recvReadPtr = ttk::GetReadPtrOp::create(rewriter, loc, recvCB);
       dstBaseIdx =
-          rewriter.create<arith::IndexCastOp>(loc, indexTy, recvReadPtr);
+          arith::IndexCastOp::create(rewriter, loc, indexTy, recvReadPtr);
     }
   }
 
   auto pageSizeIdx =
-      rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
+      arith::ConstantIndexOp::create(rewriter, loc, pageSizeBytes);
 
   // Destination coordinates for multicast - convert logical to virtual coords
   auto dstStartXLogical =
-      rewriter.create<arith::ConstantIndexOp>(loc, dstStartX);
+      arith::ConstantIndexOp::create(rewriter, loc, dstStartX);
   auto dstStartYLogical =
-      rewriter.create<arith::ConstantIndexOp>(loc, dstStartY);
-  auto dstEndXLogical = rewriter.create<arith::ConstantIndexOp>(loc, dstEndX);
-  auto dstEndYLogical = rewriter.create<arith::ConstantIndexOp>(loc, dstEndY);
+      arith::ConstantIndexOp::create(rewriter, loc, dstStartY);
+  auto dstEndXLogical = arith::ConstantIndexOp::create(rewriter, loc, dstEndX);
+  auto dstEndYLogical = arith::ConstantIndexOp::create(rewriter, loc, dstEndY);
 
   // NOC operations require virtual/translated coordinates
-  auto dstStartXVal = rewriter.create<ttk::ConvertLogicalXToTranslatedOp>(
-      loc, indexTy, dstStartXLogical);
-  auto dstStartYVal = rewriter.create<ttk::ConvertLogicalYToTranslatedOp>(
-      loc, indexTy, dstStartYLogical);
-  auto dstEndXVal = rewriter.create<ttk::ConvertLogicalXToTranslatedOp>(
-      loc, indexTy, dstEndXLogical);
-  auto dstEndYVal = rewriter.create<ttk::ConvertLogicalYToTranslatedOp>(
-      loc, indexTy, dstEndYLogical);
+  auto dstStartXVal = ttk::ConvertLogicalXToTranslatedOp::create(
+      rewriter, loc, indexTy, dstStartXLogical);
+  auto dstStartYVal = ttk::ConvertLogicalYToTranslatedOp::create(
+      rewriter, loc, indexTy, dstStartYLogical);
+  auto dstEndXVal = ttk::ConvertLogicalXToTranslatedOp::create(
+      rewriter, loc, indexTy, dstEndXLogical);
+  auto dstEndYVal = ttk::ConvertLogicalYToTranslatedOp::create(
+      rewriter, loc, indexTy, dstEndYLogical);
 
-  auto numDestsVal = rewriter.create<arith::ConstantOp>(
-      loc, i32Ty, rewriter.getI32IntegerAttr(numDests));
-  auto pageSizeVal = rewriter.create<arith::ConstantOp>(
-      loc, i32Ty, rewriter.getI32IntegerAttr(pageSizeBytes));
+  auto numDestsVal = arith::ConstantOp::create(
+      rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(numDests));
+  auto pageSizeVal = arith::ConstantOp::create(
+      rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(pageSizeBytes));
 
   SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
 
@@ -1078,44 +1078,44 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 
   // Wait for all async writes to complete before signaling the semaphore.
   // Without this barrier, the receiver may wake up before all data arrives.
-  rewriter.create<ttk::NocAsyncWriteBarrierOp>(loc);
+  ttk::NocAsyncWriteBarrierOp::create(rewriter, loc);
 
   // Signal destinations that data has arrived.
   // For point-to-point pipes, use atomic increment to support gather pattern
   // (multiple sources to one destination). For multicast, use set+multicast.
   int64_t semIdxVal = getPipeSemaphoreIndex(pipeType);
-  auto semIdx = rewriter.create<arith::ConstantIndexOp>(loc, semIdxVal);
-  auto semAddr = rewriter.create<ttk::GetSemaphoreOp>(loc, semIdx);
+  auto semIdx = arith::ConstantIndexOp::create(rewriter, loc, semIdxVal);
+  auto semAddr = ttk::GetSemaphoreOp::create(rewriter, loc, semIdx);
 
   if (pipeType.isUnicast()) {
     // Point-to-point: atomically increment destination's semaphore.
     // This supports gather patterns where multiple sources signal one dest.
-    auto incrVal = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    auto incrVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
 
     // Get NOC address of destination's semaphore for atomic increment.
-    auto dstSemNocAddr = rewriter.create<ttk::GetNocAddrOp>(
-        loc, dstStartXVal, dstStartYVal, semAddr);
+    auto dstSemNocAddr = ttk::GetNocAddrOp::create(
+        rewriter, loc, dstStartXVal, dstStartYVal, semAddr);
 
-    rewriter.create<ttk::NocSemaphoreIncOp>(loc, dstSemNocAddr.getResult(),
-                                            incrVal, /*noc_id=*/Value());
+    ttk::NocSemaphoreIncOp::create(rewriter, loc, dstSemNocAddr.getResult(),
+                                   incrVal, /*noc_id=*/Value());
   } else {
     // Multicast: set local semaphore and multicast to all destinations.
-    auto semPtr = rewriter.create<ttk::CastToL1PtrOp>(loc, semAddr);
-    auto validVal = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    rewriter.create<ttk::NocSemaphoreSetOp>(loc, semPtr, validVal);
+    auto semPtr = ttk::CastToL1PtrOp::create(rewriter, loc, semAddr);
+    auto validVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    ttk::NocSemaphoreSetOp::create(rewriter, loc, semPtr, validVal);
 
-    auto semMcastAddr = rewriter.create<ttk::GetNocMulticastAddrOp>(
-        loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal, semAddr,
+    auto semMcastAddr = ttk::GetNocMulticastAddrOp::create(
+        rewriter, loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal, semAddr,
         /*noc=*/Value());
 
     if (pipeType.srcInDstRange()) {
       auto falseBoolAttr = rewriter.getBoolAttr(false);
-      rewriter.create<ttk::NocSemaphoreSetMulticastLoopbackOp>(
-          loc, semAddr, semMcastAddr.getResult(), numDestsVal,
+      ttk::NocSemaphoreSetMulticastLoopbackOp::create(
+          rewriter, loc, semAddr, semMcastAddr.getResult(), numDestsVal,
           /*linked=*/falseBoolAttr, /*multicast_path_reserve=*/falseBoolAttr);
     } else {
-      rewriter.create<ttk::NocSemaphoreSetMulticastOp>(
-          loc, semAddr, semMcastAddr.getResult(), numDestsVal,
+      ttk::NocSemaphoreSetMulticastOp::create(
+          rewriter, loc, semAddr, semMcastAddr.getResult(), numDestsVal,
           /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr);
     }
   }
@@ -1135,19 +1135,19 @@ static LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
   // Use semaphore index derived from pipe's source coordinates.
   // This ensures each source->dest pipe has a unique semaphore.
   int64_t semIdxVal = getPipeSemaphoreIndex(pipeType);
-  auto semIdx = rewriter.create<arith::ConstantIndexOp>(loc, semIdxVal);
-  auto semAddr = rewriter.create<ttk::GetSemaphoreOp>(loc, semIdx);
-  auto semPtr = rewriter.create<ttk::CastToL1PtrOp>(loc, semAddr);
+  auto semIdx = arith::ConstantIndexOp::create(rewriter, loc, semIdxVal);
+  auto semAddr = ttk::GetSemaphoreOp::create(rewriter, loc, semIdx);
+  auto semPtr = ttk::CastToL1PtrOp::create(rewriter, loc, semAddr);
 
   // Wait for semaphore to reach at least 1.
   // For point-to-point, source uses atomic inc; for multicast, source uses set.
-  auto oneVal = rewriter.create<arith::ConstantOp>(
-      loc, rewriter.getI32Type(), rewriter.getI32IntegerAttr(1));
-  rewriter.create<ttk::NocSemaphoreWaitMinOp>(loc, semPtr, oneVal);
+  auto oneVal = arith::ConstantOp::create(
+      rewriter, loc, rewriter.getI32Type(), rewriter.getI32IntegerAttr(1));
+  ttk::NocSemaphoreWaitMinOp::create(rewriter, loc, semPtr, oneVal);
 
   // Reset semaphore for next use
-  auto zeroVal = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-  rewriter.create<ttk::NocSemaphoreSetOp>(loc, semPtr, zeroVal);
+  auto zeroVal = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  ttk::NocSemaphoreSetOp::create(rewriter, loc, semPtr, zeroVal);
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
   return success();
@@ -1303,26 +1303,26 @@ struct IfSrcLowering : OpConversionPattern<IfSrcOp> {
 
     // Get current core coordinates.
     auto coreX =
-        rewriter.create<ttk::MyLogicalXOp>(loc, rewriter.getIndexType());
+        ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
     auto coreY =
-        rewriter.create<ttk::MyLogicalYOp>(loc, rewriter.getIndexType());
+        ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
 
     // Get source coordinates from pipe type.
     auto srcXConst =
-        rewriter.create<arith::ConstantIndexOp>(loc, pipeType.getSrcX());
+        arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcX());
     auto srcYConst =
-        rewriter.create<arith::ConstantIndexOp>(loc, pipeType.getSrcY());
+        arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcY());
 
     // Check if current core matches source coordinates.
-    auto matchX = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
-                                                 coreX, srcXConst);
-    auto matchY = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
-                                                 coreY, srcYConst);
-    auto isSrc = rewriter.create<arith::AndIOp>(loc, matchX, matchY);
+    auto matchX = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
+                                        coreX, srcXConst);
+    auto matchY = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
+                                        coreY, srcYConst);
+    auto isSrc = arith::AndIOp::create(rewriter, loc, matchX, matchY);
 
     // Create scf.if with empty body (the builder adds a yield for us).
     auto ifOp =
-        rewriter.create<scf::IfOp>(loc, isSrc, /*withElseRegion=*/false);
+        scf::IfOp::create(rewriter, loc, isSrc, /*withElseRegion=*/false);
 
     // Move ops from the original body into the then block (before the yield).
     // Using inlineBlockBefore moves rather than clones, preserving SSA.
@@ -1346,9 +1346,9 @@ struct IfDstLowering : OpConversionPattern<IfDstOp> {
 
     // Get current core coordinates.
     auto coreX =
-        rewriter.create<ttk::MyLogicalXOp>(loc, rewriter.getIndexType());
+        ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
     auto coreY =
-        rewriter.create<ttk::MyLogicalYOp>(loc, rewriter.getIndexType());
+        ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
 
     // Get destination range from pipe type.
     int64_t dstMinX = std::min(pipeType.getDstStartX(), pipeType.getDstEndX());
@@ -1356,29 +1356,29 @@ struct IfDstLowering : OpConversionPattern<IfDstOp> {
     int64_t dstMinY = std::min(pipeType.getDstStartY(), pipeType.getDstEndY());
     int64_t dstMaxY = std::max(pipeType.getDstStartY(), pipeType.getDstEndY());
 
-    auto minXConst = rewriter.create<arith::ConstantIndexOp>(loc, dstMinX);
-    auto maxXConst = rewriter.create<arith::ConstantIndexOp>(loc, dstMaxX);
-    auto minYConst = rewriter.create<arith::ConstantIndexOp>(loc, dstMinY);
-    auto maxYConst = rewriter.create<arith::ConstantIndexOp>(loc, dstMaxY);
+    auto minXConst = arith::ConstantIndexOp::create(rewriter, loc, dstMinX);
+    auto maxXConst = arith::ConstantIndexOp::create(rewriter, loc, dstMaxX);
+    auto minYConst = arith::ConstantIndexOp::create(rewriter, loc, dstMinY);
+    auto maxYConst = arith::ConstantIndexOp::create(rewriter, loc, dstMaxY);
 
     // Check if current core is within destination range.
     // coreX >= minX && coreX <= maxX && coreY >= minY && coreY <= maxY
-    auto geMinX = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge,
-                                                 coreX, minXConst);
-    auto leMaxX = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sle,
-                                                 coreX, maxXConst);
-    auto geMinY = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge,
-                                                 coreY, minYConst);
-    auto leMaxY = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sle,
-                                                 coreY, maxYConst);
+    auto geMinX = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::sge,
+                                        coreX, minXConst);
+    auto leMaxX = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::sle,
+                                        coreX, maxXConst);
+    auto geMinY = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::sge,
+                                        coreY, minYConst);
+    auto leMaxY = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::sle,
+                                        coreY, maxYConst);
 
-    auto inRangeX = rewriter.create<arith::AndIOp>(loc, geMinX, leMaxX);
-    auto inRangeY = rewriter.create<arith::AndIOp>(loc, geMinY, leMaxY);
-    auto isDst = rewriter.create<arith::AndIOp>(loc, inRangeX, inRangeY);
+    auto inRangeX = arith::AndIOp::create(rewriter, loc, geMinX, leMaxX);
+    auto inRangeY = arith::AndIOp::create(rewriter, loc, geMinY, leMaxY);
+    auto isDst = arith::AndIOp::create(rewriter, loc, inRangeX, inRangeY);
 
     // Create scf.if with empty body (the builder adds a yield for us).
     auto ifOp =
-        rewriter.create<scf::IfOp>(loc, isDst, /*withElseRegion=*/false);
+        scf::IfOp::create(rewriter, loc, isDst, /*withElseRegion=*/false);
 
     // Move ops from the original body into the then block (before the yield).
     // Using inlineBlockBefore moves rather than clones, preserving SSA.
@@ -1405,8 +1405,8 @@ struct CreatePipeLowering : OpConversionPattern<CreatePipeOp> {
     // Always replace with an unrealized cast to handle uses in nested regions
     // (like if_src/if_dst bodies) that may be processed in a different order.
     // The unrealized cast preserves the type for downstream patterns.
-    auto cast = rewriter.create<UnrealizedConversionCastOp>(
-        op.getLoc(), op.getResult().getType(), ValueRange{});
+    auto cast = UnrealizedConversionCastOp::create(
+        rewriter, op.getLoc(), op.getResult().getType(), ValueRange{});
     rewriter.replaceOp(op, cast.getResult(0));
     return success();
   }
