@@ -334,9 +334,7 @@ def test_max_dfbs_warning_warns_at_limit(scheduler: str) -> None:
     The warning is issued at kernel definition time before any thread execution.
     """
     with pytest.warns(UserWarning, match="hardware limit is 32"):
-        code, out = run_script_in_process(
-            EXAMPLES_DIR / "max_dfbs_warning.py", scheduler
-        )
+        code, out = run_script_in_process(ERRORS_DIR / "max_dfbs_warning.py", scheduler)
     assert (
         code == 0
     ), f"Expected max_dfbs_warning.py to succeed, but it exited with code {code}:\n{out}"
