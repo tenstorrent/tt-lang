@@ -258,7 +258,7 @@ def run_kernel_on_device(
         cbs=cb_descriptors,
         semaphores=[],
     )
-    if program_hash is not None:
+    if program_hash is not None and hasattr(program, 'custom_program_hash'):
         program.custom_program_hash = program_hash & 0xFFFFFFFFFFFFFFFF
 
     return ttnn.generic_op(list(tensors), program)

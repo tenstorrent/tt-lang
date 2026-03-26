@@ -128,9 +128,7 @@ def main():
 
     device = ttnn.open_device(device_id=0)
     try:
-        model = QwenModel(device)
-
-        model.quiet = True
+        model = QwenModel(device, quiet=True)
         print(f"Compiling kernels (one-time)...", end="", flush=True)
         t_warmup = time.time()
         model.warmup_prefill()

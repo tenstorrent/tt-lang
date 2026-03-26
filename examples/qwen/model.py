@@ -54,8 +54,14 @@ TILE = 32
 class QwenModel:
     """Qwen 2.5 0.5B-Instruct running on Tenstorrent Blackhole via tt-lang."""
 
-    def __init__(self, device, checkpoint_path=None):
+    def __init__(self, device, checkpoint_path=None, quiet=False):
         self.device = device
+
+        # Quiet mode: suppress compilation output
+        self.quiet = quiet
+        self._compile_log = os.path.join(
+            os.path.dirname(__file__), "compile.log"
+        )
 
         # Load checkpoint
         if checkpoint_path is None:
@@ -179,13 +185,8 @@ class QwenModel:
         self.cache_pos = 0  # number of positions filled
 
         # Device-side argmax for greedy decode (avoids 9.7MB logits readback)
-        self.device_argmax = DeviceArgmax(device, vocab_size=self.vocab_size)
-
-        # Quiet mode: suppress compilation output
-        self.quiet = False
-        self._compile_log = os.path.join(
-            os.path.dirname(__file__), "compile.log"
-        )
+        with self._suppress_output():
+            self.device_argmax = DeviceArgmax(device, vocab_size=self.vocab_size)
 
     def warmup_prefill(self, seq_len=36):
         """Run a dummy prefill to compile all kernels. Call once after init.
