@@ -234,9 +234,14 @@ static CircularBufferType getTTLCBType(Value cb) {
   return nullptr;
 }
 
-// num_pages = product of CB shape dimensions (elements per block).
-static Value computeNumPages(Value cb, ConversionPatternRewriter &rewriter,
+// Tile count: use the `num_tiles` attribute if present (per-subblock
+// reserve/push), otherwise derive from the CB type shape (full block).
+static Value computeNumPages(Operation *sourceOp, Value cb,
+                             ConversionPatternRewriter &rewriter,
                              Location loc) {
+  if (auto attr = sourceOp->getAttrOfType<IntegerAttr>("num_tiles")) {
+    return arith::ConstantIntOp::create(rewriter, loc, attr.getInt(), 32);
+  }
   auto ttlCbTy = getTTLCBType(cb);
   int64_t numPages = ttlCbTy ? ttlCbTy.getElementsPerBlock() : 1;
   return arith::ConstantIntOp::create(rewriter, loc, numPages, 32);
@@ -262,7 +267,7 @@ struct CBOpLowering : OpConversionPattern<SourceOp> {
       return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
     }
 
-    Value numPages = computeNumPages(originalCb, rewriter, loc);
+    Value numPages = computeNumPages(op, originalCb, rewriter, loc);
     TargetOp::create(rewriter, loc, *convertedCb, numPages);
 
     if constexpr (HasResult) {

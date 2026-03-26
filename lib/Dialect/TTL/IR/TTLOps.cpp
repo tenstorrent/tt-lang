@@ -914,6 +914,29 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::CBReserveOp::verify() {
   auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
   auto resultTy = mlir::cast<RankedTensorType>(getResult().getType());
+
+  // When `num_tiles` is present, the result shape is a subblock of the CB.
+  // Verify element type match and that tile count is consistent.
+  if (getNumTiles()) {
+    auto cbElemTy = cbTy.getElementType();
+    if (cbElemTy != resultTy.getElementType()) {
+      return emitOpError()
+             << "result element type (" << resultTy.getElementType()
+             << ") must match CB element type (" << cbElemTy << ")";
+    }
+    int64_t resultTiles = 1;
+    for (int64_t d : resultTy.getShape()) {
+      resultTiles *= d;
+    }
+    if (resultTiles != static_cast<int64_t>(getNumTiles().value())) {
+      return emitOpError()
+             << "result tensor has " << resultTiles
+             << " tiles but num_tiles attribute is "
+             << getNumTiles().value();
+    }
+    return mlir::success();
+  }
+
   return verifyCBOpWithResult(getOperation(), cbTy, resultTy);
 }
 

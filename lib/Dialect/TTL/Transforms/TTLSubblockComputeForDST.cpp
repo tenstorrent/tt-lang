@@ -14,6 +14,7 @@
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -273,6 +274,98 @@ private:
           b.getIndexAttr(blockStrides[subblockedDims[i]]));
       loopNest.loops[i]->setAttr(kSubblockDimAttrName,
                                  b.getIndexAttr(subblockedDims[i]));
+    }
+
+    // Split output CB reserve/push into per-subblock operations inside the
+    // loop when the subblock tiles are contiguous in row-major order. This
+    // enables pack_tile_block downstream. Tiles are contiguous when
+    // subblocking only affects outermost dimensions (all inner dimensions
+    // are fully included in each subblock).
+    // Subblock tiles are contiguous in row-major CB layout only when
+    // subblocking is restricted to the outermost dimension(s). If any
+    // inner dimension is subblocked, the tiles are interleaved.
+    bool subblockedTilesContiguous = true;
+    for (int64_t d = 1; d < rank; ++d) {
+      if (iterTypes[d] == utils::IteratorType::parallel &&
+          subblockSizes[d] < dimSizes[d]) {
+        subblockedTilesContiguous = false;
+        break;
+      }
+    }
+
+    scf::ForOp innermostLoop = loopNest.loops.back();
+    for (Value output : computeOp.getOutputs()) {
+      if (!subblockedTilesContiguous) {
+        continue;
+      }
+      Value outputCB = getAttachedCB(output);
+      if (!outputCB) {
+        continue;
+      }
+
+      // Find the cb_reserve and cb_push for this output CB.
+      CBReserveOp reserveOp;
+      CBPushOp pushOp;
+      for (Operation *user : outputCB.getUsers()) {
+        if (auto r = dyn_cast<CBReserveOp>(user)) {
+          reserveOp = r;
+        }
+        if (auto p = dyn_cast<CBPushOp>(user)) {
+          pushOp = p;
+        }
+      }
+      if (!reserveOp || !pushOp) {
+        continue;
+      }
+
+      // Compute the output subblock shape by extracting the parallel
+      // dimensions from subblockSizes via the output indexing map.
+      size_t outputIdx = llvm::find(computeOp.getOutputs(), output) -
+                         computeOp.getOutputs().begin();
+      AffineMap outputMap =
+          computeOp.getIndexingMapsArray()[computeOp.getNumInputs() + outputIdx];
+      SmallVector<int64_t> outputSubblockShape;
+      for (AffineExpr expr : outputMap.getResults()) {
+        auto dimExpr = cast<AffineDimExpr>(expr);
+        outputSubblockShape.push_back(subblockSizes[dimExpr.getPosition()]);
+      }
+
+      // Create per-subblock cb_reserve at the top of the innermost loop body.
+      int64_t outputSubblockTiles = 1;
+      for (int64_t d : outputSubblockShape) {
+        outputSubblockTiles *= d;
+      }
+      auto resultType = RankedTensorType::get(
+          outputSubblockShape,
+          reserveOp.getResult().getType().getElementType());
+      OpBuilder reserveBuilder(innermostLoop.getBody(),
+                               innermostLoop.getBody()->begin());
+      auto numTilesAttr = b.getI64IntegerAttr(outputSubblockTiles);
+      auto newReserve = CBReserveOp::create(reserveBuilder, loc, resultType,
+                                            outputCB, numTilesAttr);
+
+      // Create per-subblock cb_push at the end of the innermost loop body
+      // (before the yield).
+      OpBuilder pushBuilder(innermostLoop.getBody(),
+                            std::prev(innermostLoop.getBody()->end()));
+      CBPushOp::create(pushBuilder, loc, outputCB, numTilesAttr);
+
+      // Replace tile_store views in the inner compute: swap the
+      // extract_slice(attached) view (from getTiledImplementation) with the
+      // per-subblock cb_reserve result. This makes tile_store indices local
+      // to the subblock, avoiding addSliceOffset for the output CB.
+      innermostLoop.getBody()->walk([&](TileStoreOp store) {
+        Value viewCB = getAttachedCB(store.getView());
+        if (viewCB == outputCB) {
+          store.getViewMutable().assign(newReserve.getResult());
+        }
+      });
+
+      // Erase the original reserve/push (outside the loop).
+      if (reserveOp.getResult().use_empty()) {
+        reserveOp.erase();
+      }
+      pushOp.erase();
     }
 
     // Replace the original compute op with its output operands.

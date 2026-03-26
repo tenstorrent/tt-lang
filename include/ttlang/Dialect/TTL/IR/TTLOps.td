@@ -783,15 +783,18 @@ def TTL_CBReserveOp : TTL_Op<"cb_reserve",
     reading from DRAM) to acquire space in the CB before writing data.
 
     The result tensor has shape matching the CB's block shape and element type.
-    The number of pages is derived from the CB's shape (elements per block).
+    The number of pages defaults to the CB's elements per block, but can be
+    overridden via the optional `num_tiles` attribute for per-subblock reservation.
 
     Example:
     ```mlir
     %view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %sub = ttl.cb_reserve %cb {num_tiles = 3 : i64} : <[3, 3], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x3x!ttcore.tile<32x32, bf16>>
     ```
   }];
   let arguments = (ins
-    TTL_CircularBuffer:$cb
+    TTL_CircularBuffer:$cb,
+    OptionalAttr<I64Attr>:$num_tiles
   );
   let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = "$cb attr-dict `:` type($cb) `->` type($result)";
@@ -807,15 +810,18 @@ def TTL_CBPushOp : TTL_Op<"cb_push", [MemoryEffects<[MemWrite]>]> {
     This operation must be called after writing data to pages acquired via
     `ttl.cb_reserve`. It increments the CB's producer pointer.
 
-    The number of pages is derived from the CB's shape (elements per block).
+    The number of pages defaults to the CB's elements per block, but can be
+    overridden via the optional `num_tiles` attribute for per-subblock pushing.
 
     Example:
     ```mlir
     ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.cb_push %cb {num_tiles = 3 : i64} : <[3, 3], !ttcore.tile<32x32, bf16>, 2>
     ```
   }];
   let arguments = (ins
-    TTL_CircularBuffer:$cb
+    TTL_CircularBuffer:$cb,
+    OptionalAttr<I64Attr>:$num_tiles
   );
   let assemblyFormat = "$cb attr-dict `:` type($cb)";
   let hasVerifier = 1;
