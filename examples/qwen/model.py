@@ -41,6 +41,7 @@ from kernels.multicore_attn import (
 from kernels.kv_cache_update import get_kv_cache_update_kernel
 from kernels.kv_cache_update_traced import (
     kv_cache_update_traced, kv_cache_update_stacked, build_full_masks,
+    kv_cache_update_sdpa, build_row_masks,
 )
 from kernels.argmax import (
     DeviceArgmax, parallel_max_reduce_kernel, global_max_reduce_kernel,
@@ -370,6 +371,7 @@ class QwenModel:
                 layer_cache_dev.append({
                     "k_t": self._to_device(torch.zeros(hd, ms, dtype=torch.bfloat16)),
                     "v": self._to_device(torch.zeros(ms, hd, dtype=torch.bfloat16)),
+                    "k": self._to_device(torch.zeros(ms, hd, dtype=torch.bfloat16)),  # SDPA-format K
                 })
             self.kv_cache_dev.append(layer_cache_dev)
 
@@ -771,6 +773,11 @@ class QwenModel:
                 torch.ones(TILE, self.padded_max_seq, dtype=torch.bfloat16),
                 dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
                 device=self.device, memory_config=ttnn.L1_MEMORY_CONFIG),
+            # SDPA cur_pos tensor
+            "cur_pos": ttnn.from_torch(
+                torch.tensor([0], dtype=torch.int32), dtype=ttnn.uint32,
+                layout=ttnn.ROW_MAJOR_LAYOUT,
+                device=self.device, memory_config=ttnn.DRAM_MEMORY_CONFIG),
         }
         # Per-layer k_rot and v_out buffers (for KV cache update after trace)
         self._tb_k_rot = [self._alloc_zeros((TILE, KV)) for _ in range(self.num_layers)]
@@ -815,29 +822,36 @@ class QwenModel:
             batch_rope_kernel(tb["qkv_out"][:, :H+KV], tb["cos_dev"], tb["sin_dev"],
                               tb["qk_rot"])
 
-            # 4. KV cache update
-            kv_cache_update_traced(
+            # 4. KV cache update (SDPA format: K non-transposed)
+            kv_cache_update_sdpa(
                 tb["qk_rot"][:, H:H+KV], tb["qkv_out"][:, H+KV:H+KV+KV],
-                self.kv_cache_dev[layer_idx][0]["k_t"],
-                self.kv_cache_dev[layer_idx][1]["k_t"],
+                self.kv_cache_dev[layer_idx][0]["k"],
+                self.kv_cache_dev[layer_idx][1]["k"],
                 self.kv_cache_dev[layer_idx][0]["v"],
                 self.kv_cache_dev[layer_idx][1]["v"],
                 tb["kv_row_masks"], tb["kv_irow_masks"],
-                tb["kv_col_masks"], tb["kv_icol_masks"],
             )
 
-            # 5. Parallel attention (per KV group)
-            for kv_idx, (p_kern, r_kern) in enumerate([
-                (parallel_partial_g0, parallel_reduce_g0),
-                (parallel_partial_g1, parallel_reduce_g1),
-            ]):
-                p_kern(tb["qk_rot"][:, :H], self.kv_cache_dev[layer_idx][kv_idx]["k_t"],
-                       self.kv_cache_dev[layer_idx][kv_idx]["v"],
-                       tb["mask_dev"], self.ones_scaler_device,
-                       self.attn_scale_device,
-                       tb["part_m"], tb["part_d"], tb["part_o0"], tb["part_o1"])
-                r_kern(tb["part_m"], tb["part_d"], tb["part_o0"], tb["part_o1"],
-                       tb["attn_out"])
+            # 5. SDPA decode (1 native op, no transpose needed)
+            attn_scale = 1.0 / (self.head_dim ** 0.5)
+            q_sdpa = ttnn.reshape(tb["qk_rot"][:1, :H], [1, 1, self.num_q_heads, self.head_dim])
+            q_sdpa = ttnn.to_memory_config(q_sdpa, ttnn.DRAM_MEMORY_CONFIG)
+            k0 = ttnn.reshape(self.kv_cache_dev[layer_idx][0]["k"],
+                              [1, 1, self.max_seq_len, self.head_dim])
+            k1 = ttnn.reshape(self.kv_cache_dev[layer_idx][1]["k"],
+                              [1, 1, self.max_seq_len, self.head_dim])
+            k_sdpa = ttnn.concat([k0, k1], dim=1)
+            v0 = ttnn.reshape(self.kv_cache_dev[layer_idx][0]["v"],
+                              [1, 1, self.max_seq_len, self.head_dim])
+            v1 = ttnn.reshape(self.kv_cache_dev[layer_idx][1]["v"],
+                              [1, 1, self.max_seq_len, self.head_dim])
+            v_sdpa = ttnn.concat([v0, v1], dim=1)
+            attn_sdpa = ttnn.transformer.scaled_dot_product_attention_decode(
+                q_sdpa, k_sdpa, v_sdpa,
+                cur_pos_tensor=tb["cur_pos"], scale=attn_scale)
+            attn_flat = ttnn.reshape(attn_sdpa, [1, H])
+            tb["attn_out"] = ttnn.pad(attn_flat, padding=((0, TILE - 1), (0, 0)), value=0)
+            tb["attn_out"] = ttnn.to_memory_config(tb["attn_out"], ttnn.L1_MEMORY_CONFIG)
 
             # 6. O projection + residual (fused: Y = attn_out @ W + residual)
             ttnn.addmm(tb[cur_in], tb["attn_out"], w["o_proj_weight"],
@@ -932,7 +946,7 @@ class QwenModel:
         # Use pre-cached position tensors if available, else build fresh
         cached = getattr(self, '_next_pos_cache', None)
         if cached is not None and getattr(self, '_next_pos_cache_pos', -1) == pos:
-            cos_h, sin_h, mask_h, kv_r, kv_ir, kv_c, kv_ic = cached
+            cos_h, sin_h, mask_h, kv_r, kv_ir = cached
         else:
             cos_pos = torch.ones(TILE, self.head_dim, dtype=torch.bfloat16)
             sin_pos = torch.zeros(TILE, self.head_dim, dtype=torch.bfloat16)
@@ -940,14 +954,12 @@ class QwenModel:
             sin_pos[0] = self.rope_sin[pos].bfloat16()
             mask_t = torch.full((TILE, self.padded_max_seq), float("-inf"), dtype=torch.bfloat16)
             mask_t[0, :pos + 1] = 0.0
-            kv_row_m, kv_irow_m, kv_col_m, kv_icol_m = build_full_masks(pos)
+            kv_row_m, kv_irow_m = build_row_masks(pos)
             cos_h = ttnn.from_torch(cos_pos, layout=ttnn.TILE_LAYOUT)
             sin_h = ttnn.from_torch(sin_pos, layout=ttnn.TILE_LAYOUT)
             mask_h = ttnn.from_torch(mask_t, layout=ttnn.TILE_LAYOUT)
             kv_r = ttnn.from_torch(kv_row_m, layout=ttnn.TILE_LAYOUT)
             kv_ir = ttnn.from_torch(kv_irow_m, layout=ttnn.TILE_LAYOUT)
-            kv_c = ttnn.from_torch(kv_col_m, layout=ttnn.TILE_LAYOUT)
-            kv_ic = ttnn.from_torch(kv_icol_m, layout=ttnn.TILE_LAYOUT)
 
         # Copy to device
         ttnn.copy_host_to_device_tensor(
@@ -957,8 +969,10 @@ class QwenModel:
         ttnn.copy_host_to_device_tensor(mask_h, self._tb["mask_dev"])
         ttnn.copy_host_to_device_tensor(kv_r, self._tb["kv_row_masks"])
         ttnn.copy_host_to_device_tensor(kv_ir, self._tb["kv_irow_masks"])
-        ttnn.copy_host_to_device_tensor(kv_c, self._tb["kv_col_masks"])
-        ttnn.copy_host_to_device_tensor(kv_ic, self._tb["kv_icol_masks"])
+        ttnn.copy_host_to_device_tensor(
+            ttnn.from_torch(torch.tensor([pos], dtype=torch.int32),
+                            dtype=ttnn.uint32, layout=ttnn.ROW_MAJOR_LAYOUT),
+            self._tb["cur_pos"])
 
         # Replay the full decode (24 layers + lm_head + argmax pipeline)
         # Non-blocking: overlap next position's tensor prep with device execution
@@ -974,15 +988,13 @@ class QwenModel:
             nsin[0] = self.rope_sin[next_pos].bfloat16()
             nmask = torch.full((TILE, self.padded_max_seq), float("-inf"), dtype=torch.bfloat16)
             nmask[0, :next_pos + 1] = 0.0
-            nkv = build_full_masks(next_pos)
+            nkv_r, nkv_ir = build_row_masks(next_pos)
             self._next_pos_cache = (
                 ttnn.from_torch(ncos, layout=ttnn.TILE_LAYOUT),
                 ttnn.from_torch(nsin, layout=ttnn.TILE_LAYOUT),
                 ttnn.from_torch(nmask, layout=ttnn.TILE_LAYOUT),
-                ttnn.from_torch(nkv[0], layout=ttnn.TILE_LAYOUT),
-                ttnn.from_torch(nkv[1], layout=ttnn.TILE_LAYOUT),
-                ttnn.from_torch(nkv[2], layout=ttnn.TILE_LAYOUT),
-                ttnn.from_torch(nkv[3], layout=ttnn.TILE_LAYOUT),
+                ttnn.from_torch(nkv_r, layout=ttnn.TILE_LAYOUT),
+                ttnn.from_torch(nkv_ir, layout=ttnn.TILE_LAYOUT),
             )
             self._next_pos_cache_pos = next_pos
 
@@ -1053,6 +1065,9 @@ class QwenModel:
                     # Keep per-group for non-traced path
                     self.kv_cache_dev[li][kv_idx]["k_t"] = self._to_device(k_t)
                     self.kv_cache_dev[li][kv_idx]["v"] = self._to_device(v)
+                    # SDPA-format K (non-transposed)
+                    k_nt = self.kv_cache[li][kv_idx]["k"][:ms].bfloat16().contiguous()
+                    self.kv_cache_dev[li][kv_idx]["k"] = self._to_device(k_nt)
                 # Copy stacked versions INTO existing buffers (don't reallocate —
                 # trace captured their addresses)
                 kt_stacked_host = ttnn.from_torch(
