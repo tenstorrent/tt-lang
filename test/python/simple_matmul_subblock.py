@@ -25,28 +25,21 @@ import ttl
 # CHECK: Compiled kernel ready
 
 # Verify subblock loop structure: 8 iterations, each computing one row
-# of the 8x8 output via matmul_block and packing 8 tiles.
+# of the 8x8 output via matmul_block and packing 8 tiles with
+# pack_tile_block (enabled by per-subblock cb_reserve_back/cb_push_back).
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),
-# CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
 # CHECK-CPP: mm_block_init(
 # CHECK-CPP: for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
+# CHECK-CPP:   cb_reserve_back(get_compile_time_arg_val(2),
 # CHECK-CPP:   tile_regs_acquire();
 # CHECK-CPP:   experimental::matmul_block(
 # CHECK-CPP:   tile_regs_commit();
 # CHECK-CPP:   tile_regs_wait();
-# For subblocked matmul, pack_tile_block cannot be used because it uses computed DST indices
-# and non-zero DFB offsets, but pack_tile_block requires a 0 DFB offset and constant DST indices.
-# CHECK-CPP:   pack_tile<true>(
-# CHECK-CPP:   pack_tile<true>(
-# CHECK-CPP:   pack_tile<true>(
-# CHECK-CPP:   pack_tile<true>(
-# CHECK-CPP:   pack_tile<true>(
-# CHECK-CPP:   pack_tile<true>(
-# CHECK-CPP:   pack_tile<true>(
-# CHECK-CPP:   pack_tile<true>(
+# CHECK-CPP:   pack_tile_block(
 # CHECK-CPP:   tile_regs_release();
+# CHECK-CPP:   cb_push_back(get_compile_time_arg_val(2),
 
 
 @ttl.kernel(grid=(1, 1))

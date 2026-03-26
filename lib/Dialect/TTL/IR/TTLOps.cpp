@@ -920,19 +920,19 @@ mlir::LogicalResult mlir::tt::ttl::CBReserveOp::verify() {
   if (getNumTiles()) {
     auto cbElemTy = cbTy.getElementType();
     if (cbElemTy != resultTy.getElementType()) {
-      return emitOpError()
-             << "result element type (" << resultTy.getElementType()
-             << ") must match CB element type (" << cbElemTy << ")";
+      return emitOpError() << "result element type ("
+                           << resultTy.getElementType()
+                           << ") must match CB element type (" << cbElemTy
+                           << ")";
     }
     int64_t resultTiles = 1;
     for (int64_t d : resultTy.getShape()) {
       resultTiles *= d;
     }
     if (resultTiles != static_cast<int64_t>(getNumTiles().value())) {
-      return emitOpError()
-             << "result tensor has " << resultTiles
-             << " tiles but num_tiles attribute is "
-             << getNumTiles().value();
+      return emitOpError() << "result tensor has " << resultTiles
+                           << " tiles but num_tiles attribute is "
+                           << getNumTiles().value();
     }
     return mlir::success();
   }

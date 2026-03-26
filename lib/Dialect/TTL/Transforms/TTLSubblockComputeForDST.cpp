@@ -323,7 +323,8 @@ private:
       size_t outputIdx = llvm::find(computeOp.getOutputs(), output) -
                          computeOp.getOutputs().begin();
       AffineMap outputMap =
-          computeOp.getIndexingMapsArray()[computeOp.getNumInputs() + outputIdx];
+          computeOp
+              .getIndexingMapsArray()[computeOp.getNumInputs() + outputIdx];
       SmallVector<int64_t> outputSubblockShape;
       for (AffineExpr expr : outputMap.getResults()) {
         auto dimExpr = cast<AffineDimExpr>(expr);
