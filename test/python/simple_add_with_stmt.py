@@ -87,7 +87,7 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK: %[[O:.+]] = ttl.cb_reserve %[[CB2]]
 
 # Add operation
-# CHECK: ttl.add
+# CHECK: ttl.block_expr.add
 
 # store() emits explicit store
 # CHECK: ttl.store

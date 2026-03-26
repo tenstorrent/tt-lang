@@ -62,34 +62,26 @@ class TensorBlock:
         self.dtype = dtype
 
     def __add__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        """
-        Element-wise addition using ttl.add.
-
-        Args:
-            rhs: Right operand tensor. Must have the same shape as self.
-
-        Returns:
-            Result tensor with the same shape as inputs.
-        """
-        return ttl.add(ast_self.type, ast_self, rhs)
+        """Lazy element-wise addition (block expression)."""
+        return ttl.block_expr_add(ast_self.type, ast_self, rhs)
 
     def __sub__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        """Element-wise subtraction using ttl.sub."""
-        return ttl.sub(ast_self.type, ast_self, rhs)
+        """Lazy element-wise subtraction (block expression)."""
+        return ttl.block_expr_sub(ast_self.type, ast_self, rhs)
 
     def __mul__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        """Element-wise multiplication using ttl.mul."""
-        return ttl.mul(ast_self.type, ast_self, rhs)
+        """Lazy element-wise multiplication (block expression)."""
+        return ttl.block_expr_mul(ast_self.type, ast_self, rhs)
 
     def __truediv__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        """Element-wise division using ttl.div."""
-        return ttl.div(ast_self.type, ast_self, rhs)
+        """Lazy element-wise division (block expression)."""
+        return ttl.block_expr_div(ast_self.type, ast_self, rhs)
 
     def __matmul__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        """Matrix multiplication using ttl.matmul.
+        """Lazy matrix multiplication (block expression).
 
         Computes C[M,N] = A[M,K] * B[K,N]. Both operands must be
-        CB-attached tensors of tiles.
+        DFB-attached tensors of tiles.
         """
         lhs_type = ast_self.type
         rhs_type = rhs.type
@@ -99,7 +91,7 @@ class TensorBlock:
         result_type = RankedTensorType.get(
             result_shape, lhs_type.element_type, lhs_type.encoding
         )
-        return ttl.matmul(result_type, ast_self, rhs)
+        return ttl.block_expr_matmul(result_type, ast_self, rhs)
 
     def store(ast_self: TensorBlock, rhs: TensorBlock) -> None:
         """Store result tensor to the output CB reserve view.
@@ -460,7 +452,7 @@ def broadcast(input: TensorBlock, output: TensorBlock, dims: List[int]) -> Tenso
     ctx = input.type.context
     i32_type = IntegerType.get_signless(32, ctx)
     bcast_attr = IntegerAttr.get(i32_type, bcast_val)
-    return ttl.bcast(output.type, input, output, bcast_attr)
+    return ttl.block_expr_bcast(output.type, input, output, bcast_attr)
 
 
 __all__ = [

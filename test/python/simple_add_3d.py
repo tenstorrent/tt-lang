@@ -84,7 +84,7 @@ def add_3d_kernel(lhs, rhs, out):
 # CHECK: ttl.cb_reserve %{{.*}} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x2x!ttcore.tile<32x32, bf16>>
 
 # 3D eltwise add and store
-# CHECK: ttl.add
+# CHECK: ttl.block_expr.add
 # CHECK: ttl.store
 
 # =============================================================================

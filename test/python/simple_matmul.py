@@ -66,7 +66,7 @@ def matmul_kernel(a, b, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @mm_compute
-# CHECK: ttl.matmul
+# CHECK: ttl.block_expr.matmul
 # CHECK: ttl.store
 
 

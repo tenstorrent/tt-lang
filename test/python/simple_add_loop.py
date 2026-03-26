@@ -83,7 +83,7 @@ def add_loop_kernel(lhs, rhs, out):
 # CHECK: scf.for
 # CHECK: ttl.cb_wait %[[CB2]]
 # CHECK: ttl.cb_reserve %[[CB2]]
-# CHECK: ttl.add
+# CHECK: ttl.block_expr.add
 # CHECK: ttl.store
 # CHECK: ttl.cb_push %[[CB2]]
 # CHECK: ttl.cb_pop %[[CB2]]

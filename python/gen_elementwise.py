@@ -43,16 +43,16 @@ if TYPE_CHECKING:
 BINARY_OP_TEMPLATE = '''\
 @syntax("{name}")
 def {name}(lhs: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
-    """Element-wise {name} operation."""
-    return ttl.{name}(lhs.type, lhs, rhs)
+    """Lazy element-wise {name} block expression."""
+    return ttl.block_expr_{name}(lhs.type, lhs, rhs)
 
 '''
 
 UNARY_OP_TEMPLATE = '''\
 @syntax("{name}")
 def {name}(input: "TensorBlock") -> "TensorBlock":
-    """Element-wise {name} operation."""
-    return ttl.{name}(input.type, input)
+    """Lazy element-wise {name} block expression."""
+    return ttl.block_expr_{name}(input.type, input)
 
 '''
 

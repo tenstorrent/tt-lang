@@ -79,9 +79,9 @@ def matmul_fusion_kernel(a, b, c, out):
 # CHECK:         %[[A:.*]] = ttl.attach_cb
 # CHECK:         %[[B:.*]] = ttl.attach_cb
 # CHECK:         %[[C:.*]] = ttl.attach_cb
-# CHECK:         %[[MM:.*]] = ttl.matmul %[[A]], %[[B]]
+# CHECK:         %[[MM:.*]] = ttl.block_expr.matmul %[[A]], %[[B]]
 # CHECK-SAME:      tensor<1x1x!ttcore.tile<32x32, bf16>>
-# CHECK:         %[[SUM:.*]] = ttl.add %[[MM]], %[[C]]
+# CHECK:         %[[SUM:.*]] = ttl.block_expr.add %[[MM]], %[[C]]
 # CHECK:         ttl.store %[[SUM]]
 
 

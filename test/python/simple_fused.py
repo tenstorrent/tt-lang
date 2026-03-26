@@ -79,9 +79,9 @@ def fused_kernel(inp, bias, out):
 # CHECK: ttl.cb_reserve
 
 # Fused operations: exp, sqrt, add
-# CHECK: ttl.exp
-# CHECK: ttl.sqrt
-# CHECK: ttl.add
+# CHECK: ttl.block_expr.exp
+# CHECK: ttl.block_expr.sqrt
+# CHECK: ttl.block_expr.add
 
 # Finalize
 # CHECK: ttl.cb_pop

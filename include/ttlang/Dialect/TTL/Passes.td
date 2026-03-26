@@ -37,6 +37,29 @@ def TTLConvertTTLToCompute
   ];
 }
 
+def TTLMaterializeBlockExprs
+    : Pass<"ttl-materialize-block-exprs", "::mlir::func::FuncOp"> {
+  let summary = "Materialize block expressions into ttl.compute ops at store sites";
+  let description = [{
+    Replaces `convert-ttl-to-compute`. For each `ttl.store`, traces the
+    store's tensor operand backward through `ttl.block_expr.*` ops to find
+    DFB-attached root inputs, then creates a `ttl.compute` at the store's
+    position with tile ops matching the expression DAG.
+
+    Fusion is structural: the block expression DAG rooted at the store IS
+    the fusion graph. No separate fusion analysis is needed.
+
+    Matmul+add fold: when the expression tree contains
+    `block_expr.add(block_expr.matmul(a, b), acc)`, the materializer
+    emits a 3-operand `tile_matmul_block(a, b, acc)`.
+  }];
+
+  let dependentDialects = [
+    "::mlir::func::FuncDialect",
+    "::mlir::tensor::TensorDialect"
+  ];
+}
+
 def TTLAssignDST
     : Pass<"ttl-assign-dst", "::mlir::func::FuncOp"> {
   let summary = "DST allocation with copy insertion, interval analysis, and linear scan";

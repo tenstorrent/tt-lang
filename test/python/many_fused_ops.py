@@ -110,12 +110,12 @@ def fused_chain_kernel(a, b, c, out):
 # CHECK: ttl.cb_reserve
 
 # Verify key ops appear (20-op chain with diverse ops)
-# CHECK-DAG: ttl.sigmoid
-# CHECK-DAG: ttl.tanh
-# CHECK-DAG: ttl.abs
-# CHECK-DAG: ttl.neg
-# CHECK-DAG: ttl.relu
-# CHECK-DAG: ttl.add
+# CHECK-DAG: ttl.block_expr.sigmoid
+# CHECK-DAG: ttl.block_expr.tanh
+# CHECK-DAG: ttl.block_expr.abs
+# CHECK-DAG: ttl.block_expr.neg
+# CHECK-DAG: ttl.block_expr.relu
+# CHECK-DAG: ttl.block_expr.add
 
 # Finalize
 # CHECK: ttl.cb_pop

@@ -8,6 +8,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLAnnotateCBAssociations.cpp
   TTLDumpCBFlowGraph.cpp
   TTLInsertTileRegsSync.cpp
+  TTLMaterializeBlockExprs.cpp
   TTLLowerMatmulBlock.cpp
   TTLAssignDST.cpp
   TTLScheduleOperations.cpp

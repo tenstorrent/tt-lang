@@ -81,7 +81,7 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK: ttl.cb_reserve %[[CB2]]
 
 # Add operation
-# CHECK: ttl.add
+# CHECK: ttl.block_expr.add
 
 # CHECK: ttl.cb_pop %[[CB0]]
 # CHECK: ttl.cb_pop %[[CB1]]

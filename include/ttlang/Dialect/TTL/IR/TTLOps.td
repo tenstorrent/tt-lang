@@ -216,6 +216,24 @@ class TTL_ElementWiseUnary<string mnemonic, list<Trait> traits = []>
       "$input attr-dict `:` type($input) `->` type($result)";
 }
 
+// Block expression ops: lazy, pure expression nodes. The materializer converts
+// these to ttl.compute with tile ops at store sites.
+class TTL_BlockExprBinary<string mnemonic>
+    : TTL_ElementWiseBase<"block_expr."#mnemonic, [Pure]> {
+  let summary = "Lazy binary block expression ("#mnemonic#")";
+  let arguments = (ins AnyType:$lhs, AnyType:$rhs);
+  let assemblyFormat =
+      "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
+}
+
+class TTL_BlockExprUnary<string mnemonic>
+    : TTL_ElementWiseBase<"block_expr."#mnemonic, [Pure]> {
+  let summary = "Lazy unary block expression ("#mnemonic#")";
+  let arguments = (ins AnyType:$input);
+  let assemblyFormat =
+      "$input attr-dict `:` type($input) `->` type($result)";
+}
+
 // Tensor and tile elementwise ops are defined together using multiclass below
 
 //===----------------------------------------------------------------------===//
@@ -633,7 +651,7 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
 // Binary Elementwise Operations (Tensor + Tile Ops)
 //===----------------------------------------------------------------------===//
 
-// Multiclass for defining paired tensor + tile binary ops
+// Multiclass for defining paired tensor + tile + block_expr binary ops
 multiclass TTL_BinaryElementwisePair<string mnemonic, string kernelOp,
                                      list<Trait> extraTraits = []> {
   // Tensor-level op (operates on full tensors)
@@ -644,6 +662,8 @@ multiclass TTL_BinaryElementwisePair<string mnemonic, string kernelOp,
   def TileOp : TTL_TileBinaryOp<"tile_"#mnemonic, extraTraits> {
     let description = "Tile-level "#mnemonic#". Maps to ttkernel."#kernelOp#".";
   }
+  // Block expression op (lazy, materialized at store sites)
+  def BlockExprOp : TTL_BlockExprBinary<mnemonic>;
 }
 
 // Define all binary elementwise ops using the multiclass
@@ -661,7 +681,7 @@ defm TTL_Min : TTL_BinaryElementwisePair<"min", "binary_min_tile",
 // Unary Elementwise Operations (Tensor + Tile Ops)
 //===----------------------------------------------------------------------===//
 
-// Multiclass for defining paired tensor + tile unary ops
+// Multiclass for defining paired tensor + tile + block_expr unary ops
 multiclass TTL_UnaryElementwisePair<string mnemonic, string kernelOp> {
   // Tensor-level op (operates on full tensors)
   def Op : TTL_ElementWiseUnary<mnemonic> {
@@ -671,6 +691,8 @@ multiclass TTL_UnaryElementwisePair<string mnemonic, string kernelOp> {
   def TileOp : TTL_TileUnaryOp<"tile_"#mnemonic> {
     let description = "Tile-level "#mnemonic#". Maps to ttkernel."#kernelOp#".";
   }
+  // Block expression op (lazy, materialized at store sites)
+  def BlockExprOp : TTL_BlockExprUnary<mnemonic>;
 }
 
 // Define all unary elementwise ops using the multiclass
@@ -692,6 +714,18 @@ defm TTL_Tan : TTL_UnaryElementwisePair<"tan", "tan_tile">;
 //===----------------------------------------------------------------------===//
 // Broadcast Operation
 //===----------------------------------------------------------------------===//
+
+def TTL_BlockExprBcastOp : TTL_Op<"block_expr.bcast", [Pure]> {
+  let summary = "Lazy broadcast block expression";
+  let description = [{
+    Lazy broadcast expression. The block argument provides the output
+    shape/dtype. Materialized to ttl.compute with ttl.tile_bcast at
+    store sites.
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$output, TTL_BcastTypeAttr:$bcast_type);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $output $bcast_type attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
+}
 
 def TTL_BcastOp : TTL_Op<"bcast", []> {
   let summary = "Broadcast a row/column/scalar tensor to full tiles";
@@ -726,6 +760,20 @@ def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait]> {
 //===----------------------------------------------------------------------===//
 // Matrix Multiplication
 //===----------------------------------------------------------------------===//
+
+def TTL_BlockExprMatmulOp : TTL_Op<"block_expr.matmul", [Pure]> {
+  let summary = "Lazy matmul block expression";
+  let description = [{
+    Lazy matrix multiply expression. Materialized to ttl.compute with
+    ttl.tile_matmul_block at store sites. The materializer detects
+    block_expr.add(block_expr.matmul(a, b), acc) and emits 3-operand
+    tile_matmul_block(a, b, acc).
+  }];
+  let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs);
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat =
+      "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
+}
 
 def TTL_MatmulOp : TTL_Op<"matmul", [Pure]> {
   let summary = "Matrix multiply two tensors of tiles";

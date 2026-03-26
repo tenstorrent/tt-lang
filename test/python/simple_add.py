@@ -84,7 +84,7 @@ def add_kernel(lhs, rhs, out):
 # CHECK: ttl.cb_reserve %[[CB2]]
 
 # Add operation (from l + r dunder method)
-# CHECK: ttl.add
+# CHECK: ttl.block_expr.add
 
 # Store result to output DFB (explicit from Python)
 # CHECK: ttl.store

@@ -82,7 +82,7 @@ def add_multitile_kernel(lhs, rhs, out):
 # CHECK: ttl.cb_reserve %[[CB2]]
 
 # Add operation
-# CHECK: ttl.add
+# CHECK: ttl.block_expr.add
 
 # Pop/push operations
 # CHECK-DAG: ttl.cb_pop %[[CB0]]
