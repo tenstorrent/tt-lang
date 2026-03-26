@@ -756,6 +756,8 @@ class QwenModel:
         self._tb_v_out = [self._alloc_zeros((TILE, KV)) for _ in range(self.num_layers)]
         self._trace_id = None
         self._trace_kv_ready = False  # Set True after first trace produces k_rot/v_out
+        self._next_pos_cache = None
+        self._next_pos_cache_pos = -1
 
     def _traced_decode_layers(self):
         """Run all 24 decode layers using pre-allocated buffers. No allocations.
@@ -896,45 +898,69 @@ class QwenModel:
         if pos is None:
             pos = self.cache_pos
 
-        # Prepare inputs on host
-        x = self.embed_weight[token_id:token_id+1]
+        # Prepare embedding (token-dependent, can't be pre-cached)
         x_padded = torch.zeros(TILE, self.hidden_size, dtype=torch.bfloat16)
-        x_padded[0] = x[0].bfloat16()
+        x_padded[0] = self.embed_weight[token_id].bfloat16()
 
-        cos_pos = torch.ones(TILE, self.head_dim, dtype=torch.bfloat16)
-        sin_pos = torch.zeros(TILE, self.head_dim, dtype=torch.bfloat16)
-        cos_pos[0] = self.rope_cos[pos].bfloat16()
-        sin_pos[0] = self.rope_sin[pos].bfloat16()
+        # Use pre-cached position tensors if available, else build fresh
+        cached = getattr(self, '_next_pos_cache', None)
+        if cached is not None and getattr(self, '_next_pos_cache_pos', -1) == pos:
+            cos_h, sin_h, mask_h, kv_r, kv_ir, kv_c, kv_ic = cached
+        else:
+            cos_pos = torch.ones(TILE, self.head_dim, dtype=torch.bfloat16)
+            sin_pos = torch.zeros(TILE, self.head_dim, dtype=torch.bfloat16)
+            cos_pos[0] = self.rope_cos[pos].bfloat16()
+            sin_pos[0] = self.rope_sin[pos].bfloat16()
+            mask_t = torch.full((TILE, self.padded_max_seq), float("-inf"), dtype=torch.bfloat16)
+            mask_t[0, :pos + 1] = 0.0
+            kv_row_m, kv_irow_m, kv_col_m, kv_icol_m = build_full_masks(pos)
+            cos_h = ttnn.from_torch(cos_pos, layout=ttnn.TILE_LAYOUT)
+            sin_h = ttnn.from_torch(sin_pos, layout=ttnn.TILE_LAYOUT)
+            mask_h = ttnn.from_torch(mask_t, layout=ttnn.TILE_LAYOUT)
+            kv_r = ttnn.from_torch(kv_row_m, layout=ttnn.TILE_LAYOUT)
+            kv_ir = ttnn.from_torch(kv_irow_m, layout=ttnn.TILE_LAYOUT)
+            kv_c = ttnn.from_torch(kv_col_m, layout=ttnn.TILE_LAYOUT)
+            kv_ic = ttnn.from_torch(kv_icol_m, layout=ttnn.TILE_LAYOUT)
 
-        # Attention mask: attend to 0..pos (KV cache updated inside trace now)
-        mask_t = torch.full((TILE, self.padded_max_seq), float("-inf"), dtype=torch.bfloat16)
-        mask_t[0, :pos + 1] = 0.0
-
-        # KV cache masks: encode target position for traced kernel
-        kv_row_m, kv_irow_m, kv_col_m, kv_icol_m = build_full_masks(pos)
-
-        # No _suppress_output here — trace replay doesn't print, and the fd
-        # dup/dup2 syscalls add measurable overhead per token.
+        # Copy to device
         ttnn.copy_host_to_device_tensor(
             ttnn.from_torch(x_padded, layout=ttnn.TILE_LAYOUT), self._tb["x_a"])
-        ttnn.copy_host_to_device_tensor(
-            ttnn.from_torch(cos_pos, layout=ttnn.TILE_LAYOUT), self._tb["cos_dev"])
-        ttnn.copy_host_to_device_tensor(
-            ttnn.from_torch(sin_pos, layout=ttnn.TILE_LAYOUT), self._tb["sin_dev"])
-        ttnn.copy_host_to_device_tensor(
-            ttnn.from_torch(mask_t, layout=ttnn.TILE_LAYOUT), self._tb["mask_dev"])
-        ttnn.copy_host_to_device_tensor(
-            ttnn.from_torch(kv_row_m, layout=ttnn.TILE_LAYOUT), self._tb["kv_row_masks"])
-        ttnn.copy_host_to_device_tensor(
-            ttnn.from_torch(kv_irow_m, layout=ttnn.TILE_LAYOUT), self._tb["kv_irow_masks"])
-        ttnn.copy_host_to_device_tensor(
-            ttnn.from_torch(kv_col_m, layout=ttnn.TILE_LAYOUT), self._tb["kv_col_masks"])
-        ttnn.copy_host_to_device_tensor(
-            ttnn.from_torch(kv_icol_m, layout=ttnn.TILE_LAYOUT), self._tb["kv_icol_masks"])
+        ttnn.copy_host_to_device_tensor(cos_h, self._tb["cos_dev"])
+        ttnn.copy_host_to_device_tensor(sin_h, self._tb["sin_dev"])
+        ttnn.copy_host_to_device_tensor(mask_h, self._tb["mask_dev"])
+        ttnn.copy_host_to_device_tensor(kv_r, self._tb["kv_row_masks"])
+        ttnn.copy_host_to_device_tensor(kv_ir, self._tb["kv_irow_masks"])
+        ttnn.copy_host_to_device_tensor(kv_c, self._tb["kv_col_masks"])
+        ttnn.copy_host_to_device_tensor(kv_ic, self._tb["kv_icol_masks"])
 
         # Replay the full decode (24 layers + lm_head + argmax pipeline)
-        ttnn.execute_trace(self.device, self._trace_id, cq_id=0, blocking=True)
+        # Non-blocking: overlap next position's tensor prep with device execution
+        ttnn.execute_trace(self.device, self._trace_id, cq_id=0, blocking=False)
         self._trace_kv_ready = True
+
+        # While trace runs on device, prepare NEXT position's host tensors
+        next_pos = pos + 1
+        if next_pos < self.max_seq_len:
+            ncos = torch.ones(TILE, self.head_dim, dtype=torch.bfloat16)
+            nsin = torch.zeros(TILE, self.head_dim, dtype=torch.bfloat16)
+            ncos[0] = self.rope_cos[next_pos].bfloat16()
+            nsin[0] = self.rope_sin[next_pos].bfloat16()
+            nmask = torch.full((TILE, self.padded_max_seq), float("-inf"), dtype=torch.bfloat16)
+            nmask[0, :next_pos + 1] = 0.0
+            nkv = build_full_masks(next_pos)
+            self._next_pos_cache = (
+                ttnn.from_torch(ncos, layout=ttnn.TILE_LAYOUT),
+                ttnn.from_torch(nsin, layout=ttnn.TILE_LAYOUT),
+                ttnn.from_torch(nmask, layout=ttnn.TILE_LAYOUT),
+                ttnn.from_torch(nkv[0], layout=ttnn.TILE_LAYOUT),
+                ttnn.from_torch(nkv[1], layout=ttnn.TILE_LAYOUT),
+                ttnn.from_torch(nkv[2], layout=ttnn.TILE_LAYOUT),
+                ttnn.from_torch(nkv[3], layout=ttnn.TILE_LAYOUT),
+            )
+            self._next_pos_cache_pos = next_pos
+
+        # Wait for trace to complete
+        ttnn.synchronize_device(self.device)
 
         if greedy:
             result = self._read_traced_argmax()
