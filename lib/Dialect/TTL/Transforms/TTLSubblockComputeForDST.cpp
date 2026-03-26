@@ -106,7 +106,8 @@ struct TTLSubblockComputeForDSTPass
     funcOp.walk([&](ComputeOp computeOp) {
       auto unrollAttr =
           computeOp->getAttrOfType<IntegerAttr>(kUnrollFactorAttrName);
-      if (unrollAttr && unrollAttr.getInt() > 1) {
+      if (unrollAttr && unrollAttr.getInt() > 1 &&
+          !computeOp.containsOp<TileMatmulBlockOp>()) {
         opsToSubblock.push_back(computeOp);
       }
     });
