@@ -729,8 +729,8 @@ class QwenModel:
             "mlp_hidden": self._alloc_zeros((TILE, I), l1=True),
             # mlp_out eliminated by down_proj_reduce_residual_kernel
             "final_out": self._alloc_zeros((TILE, H), l1=True),
-            "cos_dev": self._alloc_zeros((TILE, self.head_dim)),
-            "sin_dev": self._alloc_zeros((TILE, self.head_dim)),
+            "cos_dev": self._alloc_zeros((TILE, self.head_dim), l1=True),
+            "sin_dev": self._alloc_zeros((TILE, self.head_dim), l1=True),
             "mask_dev": self._alloc_zeros((TILE, self.padded_max_seq), l1=True),
             "logits": self._alloc_zeros((TILE, self.vocab_size)),
             # Argmax pipeline buffers (included in trace for zero dispatch overhead)
