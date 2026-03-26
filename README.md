@@ -27,7 +27,7 @@ git clone https://github.com/tenstorrent/tt-lang.git
 cd tt-lang
 cmake -G Ninja -B build -DTTLANG_SIM_ONLY=ON
 source build/env/activate
-./bin/ttlang-sim examples/eltwise_add.py
+ttlang-sim examples/eltwise_add.py
 ```
 
 To compile and run kernels on Tenstorrent hardware, use a pre-built Docker image. Two images are available:
@@ -129,7 +129,7 @@ To map a different TT device, change the `--device` argument (e.g., `--device=/d
 tt-lang includes a functional simulator that runs kernels as pure Python, without requiring Tenstorrent hardware or the full compiler stack. Use it to validate kernel logic and debug with any Python debugger:
 
 ```bash
-./bin/ttlang-sim examples/eltwise_add.py
+ttlang-sim examples/eltwise_add.py
 ```
 
 The simulator typically supports more language features than the compiler at any given point — see the [functionality matrix](docs/sphinx/specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current coverage. See the [programming guide](docs/sphinx/simulator.md) for debugger setup and details.
