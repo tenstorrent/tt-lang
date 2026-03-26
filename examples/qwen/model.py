@@ -786,7 +786,8 @@ class QwenModel:
             # 2. Fused QKV projection — single matmul for Q+K+V
             H = self.hidden_size   # 896
             KV = self.num_kv_heads * self.head_dim  # 128
-            linear_bias_kernel(normed, w["qkv_weight"], w["qkv_bias"], tb["qkv_out"])
+            ttnn.addmm(w["qkv_bias"], normed, w["qkv_weight"],
+                       optional_output_tensor=tb["qkv_out"])
 
             # 3. Batch RoPE on Q+K combined (16 head pairs in one call)
             batch_rope_kernel(tb["qkv_out"][:, :H+KV], tb["cos_dev"], tb["sin_dev"],
