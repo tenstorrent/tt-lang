@@ -744,12 +744,16 @@ class QwenModel:
             "argmax_index_out": self._alloc_zeros(
                 (TILE, ARGMAX_GRID_Y * ARGMAX_GRID_X * TILE), l1=True),
             # KV cache update masks (full-width, updated per token)
-            "kv_row_masks": self._alloc_zeros((TILE, self.padded_max_seq)),
-            "kv_irow_masks": self._to_device(
-                torch.ones(TILE, self.padded_max_seq, dtype=torch.bfloat16)),
-            "kv_col_masks": self._alloc_zeros((TILE, self.padded_max_seq)),
-            "kv_icol_masks": self._to_device(
-                torch.ones(TILE, self.padded_max_seq, dtype=torch.bfloat16)),
+            "kv_row_masks": self._alloc_zeros((TILE, self.padded_max_seq), l1=True),
+            "kv_irow_masks": ttnn.from_torch(
+                torch.ones(TILE, self.padded_max_seq, dtype=torch.bfloat16),
+                dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+                device=self.device, memory_config=ttnn.L1_MEMORY_CONFIG),
+            "kv_col_masks": self._alloc_zeros((TILE, self.padded_max_seq), l1=True),
+            "kv_icol_masks": ttnn.from_torch(
+                torch.ones(TILE, self.padded_max_seq, dtype=torch.bfloat16),
+                dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+                device=self.device, memory_config=ttnn.L1_MEMORY_CONFIG),
         }
         # Per-layer k_rot and v_out buffers (for KV cache update after trace)
         self._tb_k_rot = [self._alloc_zeros((TILE, KV)) for _ in range(self.num_layers)]
