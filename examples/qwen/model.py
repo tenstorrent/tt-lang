@@ -712,7 +712,7 @@ class QwenModel:
             # Total ~40KB/core, well within 1.5MB L1 budget.
             "x_a": self._alloc_zeros((TILE, H), l1=True),
             "x_b": self._alloc_zeros((TILE, H), l1=True),
-            "normed": self._alloc_zeros((TILE, H), l1=True),
+            # "normed" removed — ttnn.rms_norm allocates its own output
             "qkv_out": self._alloc_zeros((TILE, H + KV + KV), l1=True),  # [32, 1152]
             "qk_rot": self._alloc_zeros((TILE, H + KV), l1=True),  # Q+K RoPE combined
             "attn_out": self._alloc_zeros((TILE, H), l1=True),
@@ -722,7 +722,7 @@ class QwenModel:
             "part_o1": self._alloc_zeros((TILE, TOTAL_PAR_CORES * TILE), l1=True),
             # proj_out eliminated by linear_residual_kernel (O proj + residual fused)
             "post_attn": self._alloc_zeros((TILE, H), l1=True),
-            "normed2": self._alloc_zeros((TILE, H), l1=True),
+            # "normed2" removed — ttnn.rms_norm allocates its own output
             # gate_out / up_out eliminated by fused_gate_up_silu_kernel
             "mlp_hidden": self._alloc_zeros((TILE, I), l1=True),
             # mlp_out eliminated by down_proj_reduce_residual_kernel
