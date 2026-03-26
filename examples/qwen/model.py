@@ -809,6 +809,7 @@ class QwenModel:
             KV = self.num_kv_heads * self.head_dim  # 128
             ttnn.addmm(w["qkv_bias"], normed, w["qkv_weight"],
                        optional_output_tensor=tb["qkv_out"])
+            ttnn.deallocate(normed)
 
             # 3. Batch RoPE on Q+K combined (16 head pairs in one call)
             batch_rope_kernel(tb["qkv_out"][:, :H+KV], tb["cos_dev"], tb["sin_dev"],
@@ -850,7 +851,10 @@ class QwenModel:
                               activation='silu', memory_config=ttnn.L1_MEMORY_CONFIG)
             up = ttnn.matmul(normed2, w["up_proj_weight"],
                              memory_config=ttnn.L1_MEMORY_CONFIG)
+            ttnn.deallocate(normed2)  # Free L1 before mul
             ttnn.mul(gate, up, output_tensor=tb["mlp_hidden"])
+            ttnn.deallocate(gate)
+            ttnn.deallocate(up)
             ttnn.addmm(tb["post_attn"], tb["mlp_hidden"], w["down_proj_weight"],
                         optional_output_tensor=tb[cur_out])
 
