@@ -101,3 +101,7 @@ class SimulatorContext:
     thread_registry: list[BindableTemplate] = field(
         default_factory=list[BindableTemplate]
     )  # pyright: ignore[reportUnknownVariableType]
+    kernel_dfb_count: int = 0  # DFBs created in the current kernel body
+    kernel_l1_bytes: int = (
+        0  # Total L1 capacity of DFBs created in the current kernel body
+    )

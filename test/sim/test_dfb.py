@@ -938,31 +938,72 @@ def test_dfb_pages_nonblocking(configured_dfb8: DataflowBuffer) -> None:
 
 
 def test_per_core_dfb_limit_exceeds_max() -> None:
-    """Test that Program raises when a kernel's DataflowBuffer count exceeds the configured limit."""
-    from python.sim.program import get_max_dfbs, Program
+    """Test that exceeding the DFB limit emits a warning at definition time without aborting."""
     from python.sim import ttl
+    from python.sim.program import set_max_dfbs
 
-    max_dfbs = get_max_dfbs()
-    assert max_dfbs == 32
+    set_max_dfbs(2)
 
     element = make_ones_tile()
 
-    @ttl.compute()
-    def noop_compute():
-        pass
+    @ttl.kernel(grid=(1,))
+    def test_kernel(a):
+        _dfb0 = ttl.make_dataflow_buffer_like(a, shape=(1, 1))
+        _dfb1 = ttl.make_dataflow_buffer_like(a, shape=(1, 1))
+        _dfb2 = ttl.make_dataflow_buffer_like(a, shape=(1, 1))  # 3rd exceeds limit of 2
 
-    @ttl.datamovement()
-    def noop_dm():
-        pass
+        @ttl.compute()
+        def noop_compute():
+            pass
 
-    prog = Program(noop_compute, noop_dm, noop_dm, grid=(1,))
+        @ttl.datamovement()
+        def noop_dm0():
+            pass
 
-    # Inject max_dfbs + 1 DataflowBuffers into the context.
-    for i in range(max_dfbs + 1):
-        prog.context[f"dfb_{i}"] = DataflowBuffer(likeness_tensor=element, shape=(1, 1))
+        @ttl.datamovement()
+        def noop_dm1():
+            pass
 
-    with pytest.raises(RuntimeError, match="exceeds the hardware limit"):
-        prog()
+    with pytest.warns(UserWarning, match="hardware limit"):
+        test_kernel(element)
+
+
+def test_l1_limit_counts_unreferenced_dfbs() -> None:
+    """Test that the L1 limit warning counts DFBs not referenced by any thread.
+
+    With shape=(1,1), buffer_factor=2, bfloat16 each DFB uses 4096 bytes.
+    Setting max_l1 to 4096 allows exactly one DFB. Defining two unreferenced
+    DFBs (8192 bytes total) must still trigger the warning even though neither
+    appears in any thread closure and would be invisible to self.context counting.
+    """
+    from python.sim import ttl
+    from python.sim.program import set_max_l1_bytes
+
+    set_max_l1_bytes(4096)  # Allows exactly one 4096-byte DFB
+
+    element = make_ones_tile()
+
+    @ttl.kernel(grid=(1,))
+    def test_kernel(a):
+        _unreferenced0 = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+        _unreferenced1 = ttl.make_dataflow_buffer_like(
+            a, shape=(1, 1), buffer_factor=2
+        )  # pushes to 8192
+
+        @ttl.compute()
+        def noop_compute():
+            pass
+
+        @ttl.datamovement()
+        def noop_dm0():
+            pass
+
+        @ttl.datamovement()
+        def noop_dm1():
+            pass
+
+    with pytest.warns(UserWarning, match="exceeds the L1 memory limit"):
+        test_kernel(element)
 
 
 def test_heterogeneous_dfbs_independent() -> None:

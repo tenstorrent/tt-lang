@@ -367,7 +367,7 @@ if __name__ == "__main__":
         return Path(tmp.name)
 
     def test_max_dfbs_option_below_limit(self):
-        """Test that --max-dfbs below actual usage fails."""
+        """Test that --max-dfbs below actual usage emits a warning but still succeeds."""
         script = self.create_test_script(3)  # Script uses 3 CBs
         try:
             result = subprocess.run(
@@ -384,10 +384,12 @@ if __name__ == "__main__":
                 capture_output=True,
                 text=True,
             )
-            assert result.returncode != 0, "Expected failure with --max-dfbs 2"
             assert (
-                "exceeds the hardware limit of 2" in result.stderr
-            ), f"Expected CB limit error in stderr, got: {result.stderr}"
+                result.returncode == 0
+            ), f"Expected success with --max-dfbs 2, got stderr: {result.stderr}"
+            assert (
+                "hardware limit is 2" in result.stderr
+            ), f"Expected DFB limit warning in stderr, got: {result.stderr}"
         finally:
             script.unlink()
 
@@ -485,7 +487,7 @@ if __name__ == "__main__":
             script.unlink()
 
     def test_max_dfbs_option_zero(self):
-        """Test that --max-dfbs 0 is accepted but causes failure if CBs are used."""
+        """Test that --max-dfbs 0 emits a warning but still succeeds when CBs are used."""
         script = self.create_test_script(1)  # Script uses 1 CB
         try:
             result = subprocess.run(
@@ -503,9 +505,9 @@ if __name__ == "__main__":
                 text=True,
             )
             assert (
-                result.returncode != 0
-            ), "Expected failure with --max-dfbs 0 when using CBs"
-            assert "exceeds the hardware limit of 0" in result.stderr
+                result.returncode == 0
+            ), f"Expected success with --max-dfbs 0, got stderr: {result.stderr}"
+            assert "hardware limit is 0" in result.stderr
         finally:
             script.unlink()
 

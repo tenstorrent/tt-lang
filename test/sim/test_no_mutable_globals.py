@@ -24,7 +24,7 @@ def is_acceptable_module_attribute(name: str, obj: Any) -> tuple[bool, str]:
         (is_acceptable, reason) - True if acceptable with reason, False otherwise
     """
     # Python metadata dicts are acceptable
-    if name in ("__annotations__", "__builtins__"):
+    if name in ("__annotations__", "__builtins__", "__warningregistry__"):
         return True, "Python metadata"
 
     # Python module metadata strings (provided by runtime)
