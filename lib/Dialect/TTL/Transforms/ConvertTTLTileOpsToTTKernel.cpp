@@ -1142,8 +1142,13 @@ struct TTLTileWhereToTTKernel : OpConversionPattern<TileWhereOp> {
         arith::ConstantIndexOp::create(rewriter, loc, *falseIdxOpt);
     Value odst = arith::ConstantIndexOp::create(rewriter, loc, odstIdx);
 
+    auto tileType = mlir::cast<ttcore::TileType>(op.getResult().getType());
+    auto dtype =
+        ttcore::elementTypeToDataType(tileType.getScalarType());
+
     ttk::WhereTileInitOp::create(rewriter, loc);
-    ttk::WhereTileOp::create(rewriter, loc, condIdx, trueIdx, falseIdx, odst);
+    ttk::WhereTileOp::create(rewriter, loc, condIdx, trueIdx, falseIdx, odst,
+                              dtype);
 
     rewriter.replaceOp(op, adaptor.getCondition());
     return success();

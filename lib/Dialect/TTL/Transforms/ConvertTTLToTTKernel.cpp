@@ -1034,42 +1034,42 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
       [&](OpBuilder &b, Location bodyLoc, ValueRange cbIVs) {
         Value cbTileIdx = linearizeNDIndex(b, bodyLoc, cbIVs, cbBounds);
         Value byteOffset =
-            b.create<arith::MulIOp>(bodyLoc, cbTileIdx, pageSizeIdx);
+            arith::MulIOp::create(b, bodyLoc, cbTileIdx, pageSizeIdx);
         Value srcAddrIdx =
-            b.create<arith::AddIOp>(bodyLoc, cbReadPtrIdx, byteOffset);
+            arith::AddIOp::create(b, bodyLoc, cbReadPtrIdx, byteOffset);
         Value srcAddr =
-            b.create<arith::IndexCastOp>(bodyLoc, i32Ty, srcAddrIdx);
+            arith::IndexCastOp::create(b, bodyLoc, i32Ty, srcAddrIdx);
 
         // Compute destination address using the receiver's CB base address.
         // Add slot offset for gather patterns (multiple sources to one dest).
         Value dstAddrIdx =
-            b.create<arith::AddIOp>(bodyLoc, dstBaseIdx, byteOffset);
+            arith::AddIOp::create(b, bodyLoc, dstBaseIdx, byteOffset);
         if (slotByteOffset > 0) {
           auto slotOffsetIdx =
-              b.create<arith::ConstantIndexOp>(bodyLoc, slotByteOffset);
+              arith::ConstantIndexOp::create(b, bodyLoc, slotByteOffset);
           dstAddrIdx =
-              b.create<arith::AddIOp>(bodyLoc, dstAddrIdx, slotOffsetIdx);
+              arith::AddIOp::create(b, bodyLoc, dstAddrIdx, slotOffsetIdx);
         }
         Value dstAddr =
-            b.create<arith::IndexCastOp>(bodyLoc, i32Ty, dstAddrIdx);
+            arith::IndexCastOp::create(b, bodyLoc, i32Ty, dstAddrIdx);
 
         if (pipeType.isUnicast()) {
-          auto nocAddr = b.create<ttk::GetNocAddrOp>(
-              bodyLoc, dstStartXVal, dstStartYVal, dstAddr);
-          b.create<ttk::NocAsyncWriteOp>(
-              bodyLoc, srcAddr, nocAddr.getResult(), pageSizeVal);
+          auto nocAddr = ttk::GetNocAddrOp::create(
+              b, bodyLoc, dstStartXVal, dstStartYVal, dstAddr);
+          ttk::NocAsyncWriteOp::create(
+              b, bodyLoc, srcAddr, nocAddr.getResult(), pageSizeVal);
         } else {
-          auto mcastAddr = b.create<ttk::GetNocMulticastAddrOp>(
-              bodyLoc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
+          auto mcastAddr = ttk::GetNocMulticastAddrOp::create(
+              b, bodyLoc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
               dstAddr, /*noc=*/Value());
           if (pipeType.srcInDstRange()) {
-            b.create<ttk::NocAsyncWriteMulticastLoopbackSrcOp>(
-                bodyLoc, srcAddr, mcastAddr.getResult(), pageSizeVal,
+            ttk::NocAsyncWriteMulticastLoopbackSrcOp::create(
+                b, bodyLoc, srcAddr, mcastAddr.getResult(), pageSizeVal,
                 numDestsVal, /*linked=*/nullptr,
                 /*multicast_path_reserve=*/nullptr, /*noc=*/Value());
           } else {
-            b.create<ttk::NocAsyncWriteMulticastOp>(
-                bodyLoc, srcAddr, mcastAddr.getResult(), pageSizeVal,
+            ttk::NocAsyncWriteMulticastOp::create(
+                b, bodyLoc, srcAddr, mcastAddr.getResult(), pageSizeVal,
                 numDestsVal, /*linked=*/nullptr,
                 /*multicast_path_reserve=*/nullptr, /*noc=*/Value());
           }
