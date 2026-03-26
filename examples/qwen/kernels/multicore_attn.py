@@ -20,7 +20,7 @@ import ttnn
 
 TILE = 32
 NUM_CORES = 4
-TILES_PER_CORE = 4  # 16 cache tiles / 4 cores
+TILES_PER_CORE = 2  # 8 cache tiles / 4 cores (max_seq=256)
 
 
 def _make_partial_attn_kernel(q_col):
@@ -435,9 +435,9 @@ def test_multicore_attn(device):
 # Parallel-group variants: all 7 heads on 28 cores (1 launch per KV group)
 # =========================================================================
 HEADS_PER_GROUP = 7
-GRID_Y_PAR = 4  # 28 = 4 × 7
+GRID_Y_PAR = 2  # 14 = 2 × 7 (was 4×7=28 with TILES_PER_CORE=4)
 GRID_X_PAR = 7
-TOTAL_PAR_CORES = HEADS_PER_GROUP * TILES_PER_CORE  # 28
+TOTAL_PAR_CORES = HEADS_PER_GROUP * TILES_PER_CORE  # 14
 
 
 def _make_parallel_partial_kernel(q_col_base):

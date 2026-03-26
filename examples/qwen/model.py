@@ -80,8 +80,8 @@ class QwenModel:
         self.intermediate_size = self.config["intermediate_size"]  # 4864
         self.vocab_size = self.config["vocab_size"]          # 151936
         self.rms_norm_eps = self.config["rms_norm_eps"]      # 1e-6
-        self.max_seq_len = self.config["max_seq_len"]        # 512
-        self.padded_max_seq = ((self.max_seq_len + TILE - 1) // TILE) * TILE  # 512
+        self.max_seq_len = 256  # Reduced: halves KV cache + attention DRAM reads
+        self.padded_max_seq = ((self.max_seq_len + TILE - 1) // TILE) * TILE  # 256
 
         # RoPE tables — host copies for reference + device copies for kernel
         self.rope_cos = self.ckpt["rope_cos"].float()
