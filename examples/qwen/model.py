@@ -837,7 +837,8 @@ class QwenModel:
         final_normed = ttnn.rms_norm(tb[cur_in], weight=self.final_norm_weight,
                                       epsilon=self.rms_norm_eps,
                                       memory_config=ttnn.L1_MEMORY_CONFIG)
-        linear_kernel(final_normed, self.lm_head_weight_device, tb["logits"])
+        ttnn.matmul(final_normed, self.lm_head_weight_device,
+                    optional_output_tensor=tb["logits"])
 
         # Argmax pipeline (inside trace — zero dispatch overhead)
         parallel_max_reduce_kernel(
