@@ -3,7 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: tt-device
-# RUN: %python %s 2>&1 | FileCheck %s
+# RUN: %python %s > %t.output 2>&1
+# RUN: FileCheck %s < %t.output
+# RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
 """
 Compile test: 8x8 matmul (64 output tiles) auto-subblocked for DST.
@@ -21,6 +23,32 @@ import ttl
 
 
 # CHECK: Compiled kernel ready
+
+# Verify subblock loop structure: 8 iterations, each computing one row
+# of the 8x8 output via matmul_block and packing 8 tiles.
+# CHECK-CPP: void kernel_main()
+# CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
+# CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),
+# CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
+# CHECK-CPP: mm_block_init(
+# CHECK-CPP: for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
+# CHECK-CPP:   tile_regs_acquire();
+# CHECK-CPP:   experimental::matmul_block(
+# CHECK-CPP:   tile_regs_commit();
+# CHECK-CPP:   tile_regs_wait();
+# For subblocked matmul, pack_tile_block cannot be used because it uses computed DST indices
+# and non-zero DFB offsets, but pack_tile_block requires a 0 DFB offset and constant DST indices.
+# CHECK-CPP:   pack_tile<true>(
+# CHECK-CPP:   pack_tile<true>(
+# CHECK-CPP:   pack_tile<true>(
+# CHECK-CPP:   pack_tile<true>(
+# CHECK-CPP:   pack_tile<true>(
+# CHECK-CPP:   pack_tile<true>(
+# CHECK-CPP:   pack_tile<true>(
+# CHECK-CPP:   pack_tile<true>(
+# CHECK-CPP:   tile_regs_release();
+
+
 @ttl.kernel(grid=(1, 1))
 def matmul_8x8(a, b, y):
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(8, 1), buffer_factor=2)
