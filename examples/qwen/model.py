@@ -166,7 +166,10 @@ class QwenModel:
         print(f"  All layers uploaded in {time.time() - t0:.1f}s")
 
         # Final norm weight
-        self.final_norm_weight = self._to_device(self.ckpt["final_norm_weight"])
+        self.final_norm_weight = ttnn.from_torch(
+            self.ckpt["final_norm_weight"], dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT, device=self.device,
+            memory_config=ttnn.L1_MEMORY_CONFIG)
 
         # Pre-computed scalers for device-side reduce ops
         self.mean_scaler_device = self._to_device(
