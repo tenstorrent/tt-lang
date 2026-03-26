@@ -172,13 +172,15 @@ class QwenModel:
         self.mean_scaler_device = self._to_device(
             torch.full((TILE, TILE), 1.0 / self.hidden_size, dtype=torch.bfloat16)
         )
-        self.ones_scaler_device = self._to_device(
-            torch.ones(TILE, TILE, dtype=torch.bfloat16)
-        )
-        # Attention scale: 1/sqrt(head_dim), pre-applied to Q before matmul
-        self.attn_scale_device = self._to_device(
-            torch.full((TILE, TILE), 1.0 / math.sqrt(self.head_dim), dtype=torch.bfloat16)
-        )
+        self.ones_scaler_device = self._alloc_zeros((TILE, TILE), l1=True)
+        ttnn.copy_host_to_device_tensor(
+            ttnn.from_torch(torch.ones(TILE, TILE, dtype=torch.bfloat16), layout=ttnn.TILE_LAYOUT),
+            self.ones_scaler_device)
+        # Attention scale in L1 for faster access
+        self.attn_scale_device = self._alloc_zeros((TILE, TILE), l1=True)
+        ttnn.copy_host_to_device_tensor(
+            ttnn.from_torch(torch.full((TILE, TILE), 1.0 / math.sqrt(self.head_dim), dtype=torch.bfloat16), layout=ttnn.TILE_LAYOUT),
+            self.attn_scale_device)
 
         # KV cache (initialized on first prefill)
         self.kv_cache = None
