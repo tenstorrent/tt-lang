@@ -1112,11 +1112,11 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
       auto falseBoolAttr = rewriter.getBoolAttr(false);
       ttk::NocSemaphoreSetMulticastLoopbackOp::create(
           rewriter, loc, semAddr, semMcastAddr.getResult(), numDestsVal,
-          /*linked=*/falseBoolAttr, /*multicast_path_reserve=*/falseBoolAttr);
+          /*linked=*/falseBoolAttr);
     } else {
       ttk::NocSemaphoreSetMulticastOp::create(
           rewriter, loc, semAddr, semMcastAddr.getResult(), numDestsVal,
-          /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr);
+          /*linked=*/nullptr);
     }
   }
 
