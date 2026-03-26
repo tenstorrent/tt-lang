@@ -106,8 +106,7 @@ struct TTLSubblockComputeForDSTPass
     funcOp.walk([&](ComputeOp computeOp) {
       auto unrollAttr =
           computeOp->getAttrOfType<IntegerAttr>(kUnrollFactorAttrName);
-      if (unrollAttr && unrollAttr.getInt() > 1 &&
-          !computeOp.containsOp<TileMatmulBlockOp>()) {
+      if (unrollAttr && unrollAttr.getInt() > 1) {
         opsToSubblock.push_back(computeOp);
       }
     });
@@ -246,36 +245,16 @@ private:
           }
 
           // Remove the unroll_factor attribute from the subblocked inner
-          // compute, set full linearization strides, and offset linearized
-          // indices.
+          // compute and set full linearization strides.
+          //
+          // iter_index ops are NOT adjusted to global coordinates here.
+          // They produce local (subblock) coordinates. Global CB offsets
+          // are computed downstream by addSliceOffset, which adds the
+          // extract_slice offset from getTiledImplementation.
           for (Operation *tiledOp : tiledResult->tiledOps) {
             tiledOp->removeAttr(kUnrollFactorAttrName);
             tiledOp->setAttr(kFullLinStridesAttrName,
                              nestedBuilder.getDenseI64ArrayAttr(blockStrides));
-
-            if (auto innerCompute = dyn_cast<ComputeOp>(tiledOp)) {
-              // Add subblock IV offset to iter_index results for subblocked
-              // dimensions (local -> global coordinates for CB indexing).
-              // Same pattern as linalg.index adjustment during tiling.
-              SmallVector<IterIndexOp> iterIdxOps;
-              innerCompute.getBody().front().walk(
-                  [&](IterIndexOp op) { iterIdxOps.push_back(op); });
-              for (IterIndexOp iterIdx : iterIdxOps) {
-                int64_t dim = iterIdx.getDim();
-                // Find if this dimension is being subblocked.
-                for (size_t i = 0; i < subblockedDims.size(); ++i) {
-                  if (static_cast<int64_t>(subblockedDims[i]) == dim) {
-                    OpBuilder::InsertionGuard guard(nestedBuilder);
-                    nestedBuilder.setInsertionPointAfter(iterIdx);
-                    Value adjusted = arith::AddIOp::create(
-                        nestedBuilder, nestedLoc, iterIdx.getResult(), ivs[i]);
-                    iterIdx.getResult().replaceAllUsesExcept(
-                        adjusted, adjusted.getDefiningOp());
-                    break;
-                  }
-                }
-              }
-            }
           }
           // The loops have no iter_args (results use tile_store)
           return {};

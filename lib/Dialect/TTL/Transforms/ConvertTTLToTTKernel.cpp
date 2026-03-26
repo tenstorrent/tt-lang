@@ -8,6 +8,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
@@ -314,6 +315,18 @@ static FailureOr<Value> getCBFromView(Value v) {
       continue;
     }
 
+    // Trace through tensor.extract_slice (from compute subblocking).
+    if (auto slice = llvm::dyn_cast<tensor::ExtractSliceOp>(def)) {
+      v = slice.getSource();
+      continue;
+    }
+
+    // Trace through ttl.attach_cb to get the CB operand.
+    if (auto attach = llvm::dyn_cast<AttachCBOp>(def)) {
+      v = attach.getCb();
+      continue;
+    }
+
     break;
   }
   return failure();
@@ -346,8 +359,20 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
 
     auto cb = getCBFromView(adaptor.getView());
     if (failed(cb)) {
-      return rewriter.notifyMatchFailure(
-          op, "view must come from ttl.cb_reserve (unrealized cast from CB)");
+      // Adapted view may have lost the CB chain (e.g., attach_cb already
+      // converted). Fall back to tracing the original (unconverted) view
+      // and converting the CB type.
+      Value origCB = getAttachedCB(op.getView());
+      if (!origCB) {
+        return rewriter.notifyMatchFailure(
+            op, "view not associated with a circular buffer");
+      }
+      cb = utils::convertTTLCBToTTKernel(origCB, rewriter, loc,
+                                          this->getTypeConverter());
+      if (failed(cb)) {
+        return rewriter.notifyMatchFailure(
+            op, "could not convert circular buffer type");
+      }
     }
 
     // Linearize multi-dimensional CB indices to a flat tile index.
@@ -355,6 +380,11 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
     ValueRange indices = adaptor.getIndices();
     Value cbTileIndex = affine::AffineLinearizeIndexOp::create(
         rewriter, loc, indices, viewTy.getShape());
+
+    // If the view is a subblock slice, add the slice offset to produce
+    // the global CB tile index.
+    cbTileIndex =
+        utils::addSliceOffset(op.getView(), cbTileIndex, rewriter, loc);
 
     // Determine DST index. Priority:
     // 1. tile_store's own dst_idx (set by lower-matmul-block for per-tile pack)

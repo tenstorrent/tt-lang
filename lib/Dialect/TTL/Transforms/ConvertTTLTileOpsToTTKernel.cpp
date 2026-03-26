@@ -100,17 +100,17 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
   return Value();
 }
 
-/// Trace a tile-level op operand back through tensor.extract, extract_slice,
-/// and unrealized casts to find the source tensor's shape.
+/// Trace a tile-level op operand back through tensor.extract and unrealized
+/// casts to find the immediate tensor's shape. Does NOT trace through
+/// extract_slice: for subblocked computes, the operand's shape is the subblock
+/// shape, and callers must add the slice offset separately to produce global
+/// CB indices.
 /// Returns std::nullopt if a ranked tensor cannot be reached.
 static std::optional<SmallVector<int64_t>>
 getOperandTensorShape(Value operand) {
   Value tensor = operand;
   if (auto extract = operand.getDefiningOp<tensor::ExtractOp>()) {
     tensor = extract.getTensor();
-  }
-  while (auto slice = tensor.getDefiningOp<tensor::ExtractSliceOp>()) {
-    tensor = slice.getSource();
   }
   while (auto cast = tensor.getDefiningOp<UnrealizedConversionCastOp>()) {
     // Stop if we already have a tensor type -- don't follow casts past it.
@@ -457,6 +457,10 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
     }
     Value flatSrcIndex = affine::AffineLinearizeIndexOp::create(
         rewriter, loc, srcIndices, *srcShape);
+
+    // If the source is a subblock slice, add the slice offset.
+    flatSrcIndex =
+        utils::addSliceOffset(op.getSrc(), flatSrcIndex, rewriter, loc);
 
     // Emit the copy from CB[flat_index] to DST[dst_index]
     // (init inserted by ttkernel-insert-inits pass).
@@ -837,10 +841,14 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
     // laid out row-major, one K-step moves past N columns, so nt == ct.
     int32_t nt = ct;
 
-    // CB tile indices are always 0: the CB is popped and refilled each
-    // K-step, so the read pointer resets. kt_dim=1 (one K-step per call,
-    // matching the proven tt-metal pattern).
+    // CB tile indices. For non-subblocked computes, the CB is popped and
+    // refilled each K-step, so the starting index is 0. For subblocked
+    // computes, the operand is a slice of the full CB block, and the
+    // starting index is the slice offset.
     Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value in0TileIndex = utils::addSliceOffset(op.getLhs(), zero, rewriter, loc);
+    Value in1TileIndex =
+        utils::addSliceOffset(op.getRhs(), zero, rewriter, loc);
 
     Value transpose =
         arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(0));
@@ -863,18 +871,21 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
             op, "cannot find/convert accumulator DFB for matmul_block");
       }
 
+      Value accSliceBase =
+          utils::addSliceOffset(op.getAccumulator(), zero, rewriter, loc);
       int32_t ntiles = rt * ct;
       for (int32_t i = 0; i < ntiles; ++i) {
-        Value cbIdx = arith::ConstantIndexOp::create(rewriter, loc, i);
+        Value localIdx = arith::ConstantIndexOp::create(rewriter, loc, i);
+        Value cbIdx = arith::AddIOp::create(rewriter, loc, accSliceBase, localIdx);
         Value dstTileIdx = arith::ConstantIndexOp::create(rewriter, loc, i);
         ttk::CopyTileOp::create(rewriter, loc, *accDFB, cbIdx, dstTileIdx);
       }
     }
 
     // Emit matmul_block with kt_dim=1 (init inserted by ttkernel-insert-inits).
-    ttk::ExperimentalMatmulBlockOp::create(rewriter, loc, *lhsCB, *rhsCB, zero,
-                                           zero, dstIdx, transpose, ctVal,
-                                           rtVal, ktVal, ntVal);
+    ttk::ExperimentalMatmulBlockOp::create(
+        rewriter, loc, *lhsCB, *rhsCB, in0TileIndex, in1TileIndex, dstIdx,
+        transpose, ctVal, rtVal, ktVal, ntVal);
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();

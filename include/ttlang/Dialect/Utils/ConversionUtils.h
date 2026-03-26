@@ -21,6 +21,29 @@
 
 namespace mlir::tt::ttl::utils {
 
+/// If `operand` is produced by a tensor.extract_slice, compute the linearized
+/// offset of the slice within its source tensor and add it to `localIndex`.
+/// Returns `localIndex` unchanged if `operand` is not an extract_slice.
+///
+/// This converts a local CB index (within a subblock) to a global CB index
+/// (within the full block). Used uniformly by tile_store, copy_tile, and any
+/// other op that needs global CB indices from subblocked operands.
+inline Value addSliceOffset(Value operand, Value localIndex, OpBuilder &builder,
+                            Location loc) {
+  auto slice = operand.getDefiningOp<mlir::tensor::ExtractSliceOp>();
+  if (!slice) {
+    return localIndex;
+  }
+  auto sourceType = mlir::cast<RankedTensorType>(slice.getSource().getType());
+  SmallVector<Value> sliceOffsets;
+  for (OpFoldResult ofr : slice.getMixedOffsets()) {
+    sliceOffsets.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
+  }
+  Value sliceOffset = affine::AffineLinearizeIndexOp::create(
+      builder, loc, sliceOffsets, sourceType.getShape());
+  return arith::AddIOp::create(builder, loc, localIndex, sliceOffset);
+}
+
 /// Element-wise scale: values[d] *= scales[d].
 inline void scaleByBlockDims(MutableArrayRef<int64_t> values,
                              ArrayRef<int64_t> scales) {
