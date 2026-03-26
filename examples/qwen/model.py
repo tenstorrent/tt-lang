@@ -830,10 +830,8 @@ class QwenModel:
             up = ttnn.matmul(normed2, w["up_proj_weight"],
                              memory_config=ttnn.L1_MEMORY_CONFIG)
             ttnn.mul(gate, up, output_tensor=tb["mlp_hidden"])
-            down_proj_partial_kernel(
-                tb["mlp_hidden"], w["down_proj_weight"], tb["down_proj_partial"])
-            down_proj_reduce_residual_kernel(
-                tb["down_proj_partial"], tb["post_attn"], tb[cur_out])
+            ttnn.addmm(tb["post_attn"], tb["mlp_hidden"], w["down_proj_weight"],
+                        optional_output_tensor=tb[cur_out])
 
             cur_in, cur_out = cur_out, cur_in
 
