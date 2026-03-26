@@ -732,9 +732,7 @@ class QwenModel:
             "mask_dev": self._alloc_zeros((TILE, self.padded_max_seq)),
             "logits": self._alloc_zeros((TILE, self.vocab_size)),
             # Argmax pipeline buffers (included in trace for zero dispatch overhead)
-            # K-split down_proj partial buffer
-            "down_proj_partial": self._alloc_zeros(
-                (TILE, (self.hidden_size // TILE) * DOWN_K_SPLITS * TILE), l1=True),
+            # down_proj_partial removed — replaced by ttnn.addmm
             # Argmax pipeline buffers (included in trace for zero dispatch overhead)
             "argmax_scaler": self._to_device(
                 torch.ones(TILE, TILE, dtype=torch.bfloat16)),
