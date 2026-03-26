@@ -1172,4 +1172,4 @@ Example for broadcast over two innermost dimensions: `y.store(b + ttl.math.broad
 | Maximum number of dataflow buffers | 32 | 32 |
 
 
-[^1]: This is temporary requirement that will be removed in future versions. When removed the shape will be inferred by walking the operation graph connecting the result of `ttl.math.fill` or `ttl.math.broadcast` with the corresponding `store`.
+[^1]: This is temporary requirement that will be removed in future versions. When removed the shape will be inferred.
