@@ -825,8 +825,11 @@ class QwenModel:
             normed2 = ttnn.rms_norm(tb["post_attn"], weight=w["post_attention_layernorm_weight"],
                                      epsilon=self.rms_norm_eps,
                                      memory_config=ttnn.L1_MEMORY_CONFIG)
-            fused_gate_up_silu_kernel(
-                normed2, w["gate_proj_weight"], w["up_proj_weight"], tb["mlp_hidden"])
+            gate = ttnn.matmul(normed2, w["gate_proj_weight"],
+                              activation='silu', memory_config=ttnn.L1_MEMORY_CONFIG)
+            up = ttnn.matmul(normed2, w["up_proj_weight"],
+                             memory_config=ttnn.L1_MEMORY_CONFIG)
+            ttnn.mul(gate, up, output_tensor=tb["mlp_hidden"])
             down_proj_partial_kernel(
                 tb["mlp_hidden"], w["down_proj_weight"], tb["down_proj_partial"])
             down_proj_reduce_residual_kernel(
