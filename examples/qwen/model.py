@@ -778,14 +778,15 @@ class QwenModel:
         for layer_idx in range(self.num_layers):
             w = self.layer_weights[layer_idx]
 
-            # 1. RMSNorm
-            fused_rmsnorm_kernel(tb[cur_in], self.mean_scaler_device,
-                                  w["input_layernorm_weight"], tb["normed"])
+            # 1. RMSNorm (ttnn native — 5× faster than custom kernel)
+            normed = ttnn.rms_norm(tb[cur_in], weight=w["input_layernorm_weight"],
+                                   epsilon=self.rms_norm_eps,
+                                   memory_config=ttnn.L1_MEMORY_CONFIG)
 
             # 2. Fused QKV projection — single matmul for Q+K+V
             H = self.hidden_size   # 896
             KV = self.num_kv_heads * self.head_dim  # 128
-            linear_bias_kernel(tb["normed"], w["qkv_weight"], w["qkv_bias"], tb["qkv_out"])
+            linear_bias_kernel(normed, w["qkv_weight"], w["qkv_bias"], tb["qkv_out"])
 
             # 3. Batch RoPE on Q+K combined (16 head pairs in one call)
             batch_rope_kernel(tb["qkv_out"][:, :H+KV], tb["cos_dev"], tb["sin_dev"],
@@ -820,10 +821,11 @@ class QwenModel:
                 tb["attn_out"], w["o_proj_weight"], tb[cur_in], tb["post_attn"])
 
             # 7. MLP
-            fused_rmsnorm_kernel(tb["post_attn"], self.mean_scaler_device,
-                                  w["post_attention_layernorm_weight"], tb["normed2"])
+            normed2 = ttnn.rms_norm(tb["post_attn"], weight=w["post_attention_layernorm_weight"],
+                                     epsilon=self.rms_norm_eps,
+                                     memory_config=ttnn.L1_MEMORY_CONFIG)
             fused_gate_up_silu_kernel(
-                tb["normed2"], w["gate_proj_weight"], w["up_proj_weight"], tb["mlp_hidden"])
+                normed2, w["gate_proj_weight"], w["up_proj_weight"], tb["mlp_hidden"])
             down_proj_partial_kernel(
                 tb["mlp_hidden"], w["down_proj_weight"], tb["down_proj_partial"])
             down_proj_reduce_residual_kernel(
@@ -832,9 +834,10 @@ class QwenModel:
             cur_in, cur_out = cur_out, cur_in
 
         # Final norm + lm_head
-        fused_rmsnorm_kernel(tb[cur_in], self.mean_scaler_device,
-                              self.final_norm_weight, tb["final_out"])
-        linear_kernel(tb["final_out"], self.lm_head_weight_device, tb["logits"])
+        final_normed = ttnn.rms_norm(tb[cur_in], weight=self.final_norm_weight,
+                                      epsilon=self.rms_norm_eps,
+                                      memory_config=ttnn.L1_MEMORY_CONFIG)
+        linear_kernel(final_normed, self.lm_head_weight_device, tb["logits"])
 
         # Argmax pipeline (inside trace — zero dispatch overhead)
         parallel_max_reduce_kernel(
