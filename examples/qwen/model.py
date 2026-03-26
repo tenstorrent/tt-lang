@@ -102,11 +102,21 @@ class QwenModel:
         self.layer_weights = []
         heads_per_group = self.num_q_heads // self.num_kv_heads  # 7
 
+        # Small tensors (norms, biases) go to L1 for faster access
+        _l1_keys = {
+            "input_layernorm_weight", "post_attention_layernorm_weight",
+            "q_proj_bias", "k_proj_bias", "v_proj_bias",
+        }
         for i in range(self.num_layers):
             layer_data = self.ckpt["layers"][i]
-            layer_on_device = {
-                k: self._to_device(v) for k, v in layer_data.items()
-            }
+            layer_on_device = {}
+            for k, v in layer_data.items():
+                if k in _l1_keys:
+                    layer_on_device[k] = ttnn.from_torch(
+                        v, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+                        device=self.device, memory_config=ttnn.L1_MEMORY_CONFIG)
+                else:
+                    layer_on_device[k] = self._to_device(v)
 
             # Fused QKV weight: concatenate Q, K, V weights and biases
             # [896, 896+128+128] = [896, 1152] and [32, 1152]
@@ -119,7 +129,9 @@ class QwenModel:
             qkv_w = torch.cat([q_w, k_w, v_w], dim=1)  # [896, 1152]
             qkv_b = torch.cat([q_b, k_b, v_b], dim=1)  # [32, 1152]
             layer_on_device["qkv_weight"] = self._to_device(qkv_w)
-            layer_on_device["qkv_bias"] = self._to_device(qkv_b)
+            layer_on_device["qkv_bias"] = ttnn.from_torch(
+                qkv_b, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+                device=self.device, memory_config=ttnn.L1_MEMORY_CONFIG)
 
             # Pre-split Q/K/V weights per head for decode (avoids host reshape)
             # Pre-scale Q weights by 1/sqrt(head_dim) so decode never needs runtime scaling
