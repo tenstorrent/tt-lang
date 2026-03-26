@@ -731,7 +731,7 @@ class QwenModel:
             "final_out": self._alloc_zeros((TILE, H), l1=True),
             "cos_dev": self._alloc_zeros((TILE, self.head_dim)),
             "sin_dev": self._alloc_zeros((TILE, self.head_dim)),
-            "mask_dev": self._alloc_zeros((TILE, self.padded_max_seq)),
+            "mask_dev": self._alloc_zeros((TILE, self.padded_max_seq), l1=True),
             "logits": self._alloc_zeros((TILE, self.vocab_size)),
             # Argmax pipeline buffers (included in trace for zero dispatch overhead)
             # down_proj_partial removed — replaced by ttnn.addmm
