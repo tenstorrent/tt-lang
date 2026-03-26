@@ -817,9 +817,9 @@ class QwenModel:
                 r_kern(tb["part_m"], tb["part_d"], tb["part_o0"], tb["part_o1"],
                        tb["attn_out"])
 
-            # 6. O projection + residual (fused)
-            linear_residual_kernel(
-                tb["attn_out"], w["o_proj_weight"], tb[cur_in], tb["post_attn"])
+            # 6. O projection + residual (fused: Y = attn_out @ W + residual)
+            ttnn.addmm(tb[cur_in], tb["attn_out"], w["o_proj_weight"],
+                        optional_output_tensor=tb["post_attn"])
 
             # 7. MLP
             normed2 = ttnn.rms_norm(tb["post_attn"], weight=w["post_attention_layernorm_weight"],
