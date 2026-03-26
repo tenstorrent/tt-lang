@@ -736,8 +736,10 @@ class QwenModel:
             # Argmax pipeline buffers (included in trace for zero dispatch overhead)
             # down_proj_partial removed — replaced by ttnn.addmm
             # Argmax pipeline buffers (included in trace for zero dispatch overhead)
-            "argmax_scaler": self._to_device(
-                torch.ones(TILE, TILE, dtype=torch.bfloat16)),
+            "argmax_scaler": ttnn.from_torch(
+                torch.ones(TILE, TILE, dtype=torch.bfloat16),
+                dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+                device=self.device, memory_config=ttnn.L1_MEMORY_CONFIG),
             "argmax_max_out": self._alloc_zeros(
                 (TILE, ARGMAX_GRID_Y * ARGMAX_GRID_X * TILE), l1=True),
             "argmax_global_max": self._alloc_zeros((TILE, TILE), l1=True),
