@@ -1116,7 +1116,7 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     } else {
       ttk::NocSemaphoreSetMulticastOp::create(
           rewriter, loc, semAddr, semMcastAddr.getResult(), numDestsVal,
-          /*linked=*/nullptr);
+          /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr);
     }
   }
 
