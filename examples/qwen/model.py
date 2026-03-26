@@ -849,11 +849,8 @@ class QwenModel:
             tb["logits"], tb["argmax_global_max"], tb["argmax_index_out"])
 
     def _read_traced_argmax(self):
-        """Read the argmax result from the trace buffer (tiny readback).
-
-        The argmax_index_out tensor has per-core results with tile_col at
-        [0,1] and local_col at [0,0] for each core's tile.
-        """
+        """Read the argmax result from the trace buffer (tiny readback)."""
+        import numpy as np
         num_cores = ARGMAX_GRID_Y * ARGMAX_GRID_X
         if not hasattr(self, '_argmax_host_buf'):
             out_cols = num_cores * TILE
@@ -861,18 +858,17 @@ class QwenModel:
                 torch.zeros(TILE, out_cols, dtype=torch.bfloat16),
                 dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
             )
-            # Pre-compute slice indices for fast extraction
-            self._argmax_lo_idx = torch.arange(0, out_cols, TILE)[:num_cores]
-            self._argmax_hi_idx = torch.arange(1, out_cols, TILE)[:num_cores]
+            self._argmax_lo_idx = np.arange(0, out_cols, TILE, dtype=np.intp)[:num_cores]
+            self._argmax_hi_idx = np.arange(1, out_cols, TILE, dtype=np.intp)[:num_cores]
         ttnn.copy_device_to_host_tensor(
             self._tb["argmax_index_out"], self._argmax_host_buf)
-        idx_raw = self._argmax_host_buf.to_torch().view(torch.int16)[0]
-        lo = idx_raw[self._argmax_lo_idx].to(torch.int32) & 0xFFFF
-        hi = idx_raw[self._argmax_hi_idx].to(torch.int32) & 0xFFFF
+        raw = self._argmax_host_buf.to_torch().view(torch.int16)[0].numpy()
+        lo = raw[self._argmax_lo_idx].astype(np.int32) & 0xFFFF
+        hi = raw[self._argmax_hi_idx].astype(np.int32) & 0xFFFF
         indices = hi * TILE + lo
         valid = (hi > 0) | (lo > 0)
         if valid.any():
-            return int(indices[valid].min().item())
+            return int(indices[valid].min())
         return 0
 
     def _capture_decode_trace(self):
