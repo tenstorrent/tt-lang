@@ -121,10 +121,13 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
     int64_t M = outType.getDimSize(0);
     int64_t N = outType.getDimSize(1);
 
-    // Use the compute's output operand as the store view. For non-subblocked
-    // computes, this is the attach_cb result (same underlying CB as the body's
-    // cb_reserve view). For subblocked computes, this is an extract_slice of
-    // the attach_cb result, carrying the correct subblock offset.
+    // Use the compute's output operand as the store view. The ComputeOp
+    // verifier guarantees that every tile_store CB matches a formal output
+    // CB (via getAttachedCB), so the output operand references the same
+    // underlying CB as the body's cb_reserve view. For non-subblocked
+    // computes, this is the attach_cb result directly. For subblocked
+    // computes, this is an extract_slice of the attach_cb result, carrying
+    // the correct subblock offset for downstream CB index computation.
     Value outView = computeOp.getOutputs()[0];
 
     // Collect in-place unary ops between matmul and store for M*N expansion.

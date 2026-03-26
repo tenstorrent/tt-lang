@@ -21,27 +21,47 @@
 
 namespace mlir::tt::ttl::utils {
 
-/// If `operand` is produced by a tensor.extract_slice, compute the linearized
-/// offset of the slice within its source tensor and add it to `localIndex`.
-/// Returns `localIndex` unchanged if `operand` is not an extract_slice.
+/// Convert a local CB index (within a subblock) to a global CB index (within
+/// the full block) when `operand` traces to a tensor.extract_slice.
 ///
-/// This converts a local CB index (within a subblock) to a global CB index
-/// (within the full block). Used uniformly by tile_store, copy_tile, and any
-/// other op that needs global CB indices from subblocked operands.
+/// Delinearizes the local index into per-dimension coordinates using the
+/// slice shape, adds the slice offsets per-dimension, and relinearizes
+/// against the source (full) shape. This is correct regardless of which
+/// dimensions are subblocked.
+///
+/// Returns `localIndex` unchanged if no extract_slice is found.
 inline Value addSliceOffset(Value operand, Value localIndex, OpBuilder &builder,
                             Location loc) {
-  auto slice = operand.getDefiningOp<mlir::tensor::ExtractSliceOp>();
+  // Trace through tensor.extract (tile extraction from lower-to-loops).
+  Value tensor = operand;
+  if (auto extract = tensor.getDefiningOp<mlir::tensor::ExtractOp>()) {
+    tensor = extract.getTensor();
+  }
+  auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>();
   if (!slice) {
     return localIndex;
   }
+  auto sliceType = mlir::cast<RankedTensorType>(slice.getResult().getType());
   auto sourceType = mlir::cast<RankedTensorType>(slice.getSource().getType());
-  SmallVector<Value> sliceOffsets;
-  for (OpFoldResult ofr : slice.getMixedOffsets()) {
-    sliceOffsets.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
+
+  // Delinearize local index into per-dimension coordinates within the slice.
+  auto delinearized = affine::AffineDelinearizeIndexOp::create(
+      builder, loc, localIndex, sliceType.getShape());
+
+  // Add slice offsets per-dimension to produce global coordinates.
+  SmallVector<Value> globalCoords;
+  auto mixedOffsets = slice.getMixedOffsets();
+  for (size_t d = 0; d < mixedOffsets.size(); ++d) {
+    Value offset =
+        getValueOrCreateConstantIndexOp(builder, loc, mixedOffsets[d]);
+    Value global =
+        arith::AddIOp::create(builder, loc, delinearized.getResult(d), offset);
+    globalCoords.push_back(global);
   }
-  Value sliceOffset = affine::AffineLinearizeIndexOp::create(
-      builder, loc, sliceOffsets, sourceType.getShape());
-  return arith::AddIOp::create(builder, loc, localIndex, sliceOffset);
+
+  // Relinearize against the full source shape.
+  return affine::AffineLinearizeIndexOp::create(builder, loc, globalCoords,
+                                                sourceType.getShape());
 }
 
 /// Element-wise scale: values[d] *= scales[d].

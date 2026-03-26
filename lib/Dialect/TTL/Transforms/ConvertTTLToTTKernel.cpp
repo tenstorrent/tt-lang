@@ -368,7 +368,7 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
             op, "view not associated with a circular buffer");
       }
       cb = utils::convertTTLCBToTTKernel(origCB, rewriter, loc,
-                                          this->getTypeConverter());
+                                         this->getTypeConverter());
       if (failed(cb)) {
         return rewriter.notifyMatchFailure(
             op, "could not convert circular buffer type");

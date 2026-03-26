@@ -888,7 +888,7 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     hasTileStore = true;
     Value viewCB = getAttachedCB(store.getView());
     if (!viewCB) {
-      return store.emitOpError() << "view must trace to a circular buffer";
+      return store.emitOpError() << "view must trace to a dataflow buffer";
     }
     if (!outputCBs.contains(viewCB)) {
       return store.emitOpError()

@@ -100,17 +100,17 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
   return Value();
 }
 
-/// Trace a tile-level op operand back through tensor.extract and unrealized
-/// casts to find the immediate tensor's shape. Does NOT trace through
-/// extract_slice: for subblocked computes, the operand's shape is the subblock
-/// shape, and callers must add the slice offset separately to produce global
-/// CB indices.
+/// Trace a tile-level op operand back through tensor.extract, extract_slice,
+/// and unrealized casts to find the root tensor's shape.
 /// Returns std::nullopt if a ranked tensor cannot be reached.
 static std::optional<SmallVector<int64_t>>
 getOperandTensorShape(Value operand) {
   Value tensor = operand;
   if (auto extract = operand.getDefiningOp<tensor::ExtractOp>()) {
     tensor = extract.getTensor();
+  }
+  while (auto slice = tensor.getDefiningOp<tensor::ExtractSliceOp>()) {
+    tensor = slice.getSource();
   }
   while (auto cast = tensor.getDefiningOp<UnrealizedConversionCastOp>()) {
     // Stop if we already have a tensor type -- don't follow casts past it.
@@ -445,20 +445,26 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
     Value cb = *cbResult;
 
     // Linearize multi-dimensional src_indices to a flat CB tile index.
+    // Use the immediate tensor shape (which may be a subblock slice), not
+    // the full root shape. addSliceOffset converts from local to global.
     ValueRange srcIndices = adaptor.getSrcIndices();
     if (srcIndices.empty()) {
       return op.emitError("copy_tile has no src_indices; "
                           "ttl-lower-to-loops must run first");
     }
-    auto srcShape = getOperandTensorShape(op.getSrc());
-    if (!srcShape) {
+    Value srcTensor = op.getSrc();
+    if (auto extract = srcTensor.getDefiningOp<tensor::ExtractOp>()) {
+      srcTensor = extract.getTensor();
+    }
+    auto srcTensorTy = mlir::dyn_cast<RankedTensorType>(srcTensor.getType());
+    if (!srcTensorTy) {
       return rewriter.notifyMatchFailure(
           op, "cannot determine source tensor shape for linearization");
     }
     Value flatSrcIndex = affine::AffineLinearizeIndexOp::create(
-        rewriter, loc, srcIndices, *srcShape);
+        rewriter, loc, srcIndices, srcTensorTy.getShape());
 
-    // If the source is a subblock slice, add the slice offset.
+    // If the source is a subblock slice, convert local to global CB index.
     flatSrcIndex =
         utils::addSliceOffset(op.getSrc(), flatSrcIndex, rewriter, loc);
 
@@ -559,11 +565,16 @@ getCBTileGridShape(Value operand, func::FuncOp funcOp) {
     }
   }
 
-  // If that fails, try to extract shape from the tensor type.
-  // After loop lowering, the operand comes from tensor.extract.
+  // Fallback: trace through tensor.extract, extract_slice, and unrealized
+  // casts to find the root tensor shape. This recovers the full CB tile grid
+  // shape even when the operand is a subblock slice (the CB allocation is
+  // always the full block size).
   Value tensor = operand;
   if (auto extract = operand.getDefiningOp<tensor::ExtractOp>()) {
     tensor = extract.getTensor();
+  }
+  while (auto slice = tensor.getDefiningOp<tensor::ExtractSliceOp>()) {
+    tensor = slice.getSource();
   }
 
   // Trace through unrealized conversion casts.
@@ -825,17 +836,19 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
     Value dstIdx =
         arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
 
-    // Derive block dimensions from operand shapes.
-    auto lhsShape = getOperandTensorShape(op.getLhs());
-    auto rhsShape = getOperandTensorShape(op.getRhs());
-    if (!lhsShape || !rhsShape) {
+    // Derive block dimensions from the immediate operand shapes. For
+    // subblocked computes, these are the subblock dimensions (e.g., 1x1
+    // for a subblocked 3x1 lhs), not the full block dimensions.
+    auto lhsTy = mlir::dyn_cast<RankedTensorType>(op.getLhs().getType());
+    auto rhsTy = mlir::dyn_cast<RankedTensorType>(op.getRhs().getType());
+    if (!lhsTy || !rhsTy) {
       return rewriter.notifyMatchFailure(
           op, "cannot determine operand tensor shapes for block dimensions");
     }
     // lhs is [M, K] per K-step (K=1 for block matmul pattern).
     // rhs is [K, N] per K-step (K=1 for block matmul pattern).
-    int32_t rt = (*lhsShape)[0]; // M (A row count in tiles)
-    int32_t ct = (*rhsShape)[1]; // N (B column count in tiles)
+    int32_t rt = lhsTy.getDimSize(0); // M (A row count in tiles)
+    int32_t ct = rhsTy.getDimSize(1); // N (B column count in tiles)
     // nt_dim is the B column stride: the experimental::matmul_block wrapper
     // advances in1_tile_index by nt_dim per K-step. For non-transposed B
     // laid out row-major, one K-step moves past N columns, so nt == ct.
@@ -846,7 +859,8 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
     // computes, the operand is a slice of the full CB block, and the
     // starting index is the slice offset.
     Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
-    Value in0TileIndex = utils::addSliceOffset(op.getLhs(), zero, rewriter, loc);
+    Value in0TileIndex =
+        utils::addSliceOffset(op.getLhs(), zero, rewriter, loc);
     Value in1TileIndex =
         utils::addSliceOffset(op.getRhs(), zero, rewriter, loc);
 
@@ -876,7 +890,8 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
       int32_t ntiles = rt * ct;
       for (int32_t i = 0; i < ntiles; ++i) {
         Value localIdx = arith::ConstantIndexOp::create(rewriter, loc, i);
-        Value cbIdx = arith::AddIOp::create(rewriter, loc, accSliceBase, localIdx);
+        Value cbIdx =
+            arith::AddIOp::create(rewriter, loc, accSliceBase, localIdx);
         Value dstTileIdx = arith::ConstantIndexOp::create(rewriter, loc, i);
         ttk::CopyTileOp::create(rewriter, loc, *accDFB, cbIdx, dstTileIdx);
       }
