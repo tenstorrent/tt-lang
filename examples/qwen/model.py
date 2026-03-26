@@ -912,35 +912,34 @@ class QwenModel:
         # KV cache masks: encode target position for traced kernel
         kv_row_m, kv_irow_m, kv_col_m, kv_icol_m = build_full_masks(pos)
 
-        with self._suppress_output():
-            # Copy all inputs to pre-allocated device tensors
-            ttnn.copy_host_to_device_tensor(
-                ttnn.from_torch(x_padded, layout=ttnn.TILE_LAYOUT), self._tb["x_a"])
-            ttnn.copy_host_to_device_tensor(
-                ttnn.from_torch(cos_pos, layout=ttnn.TILE_LAYOUT), self._tb["cos_dev"])
-            ttnn.copy_host_to_device_tensor(
-                ttnn.from_torch(sin_pos, layout=ttnn.TILE_LAYOUT), self._tb["sin_dev"])
-            ttnn.copy_host_to_device_tensor(
-                ttnn.from_torch(mask_t, layout=ttnn.TILE_LAYOUT), self._tb["mask_dev"])
-            ttnn.copy_host_to_device_tensor(
-                ttnn.from_torch(kv_row_m, layout=ttnn.TILE_LAYOUT), self._tb["kv_row_masks"])
-            ttnn.copy_host_to_device_tensor(
-                ttnn.from_torch(kv_irow_m, layout=ttnn.TILE_LAYOUT), self._tb["kv_irow_masks"])
-            ttnn.copy_host_to_device_tensor(
-                ttnn.from_torch(kv_col_m, layout=ttnn.TILE_LAYOUT), self._tb["kv_col_masks"])
-            ttnn.copy_host_to_device_tensor(
-                ttnn.from_torch(kv_icol_m, layout=ttnn.TILE_LAYOUT), self._tb["kv_icol_masks"])
+        # No _suppress_output here — trace replay doesn't print, and the fd
+        # dup/dup2 syscalls add measurable overhead per token.
+        ttnn.copy_host_to_device_tensor(
+            ttnn.from_torch(x_padded, layout=ttnn.TILE_LAYOUT), self._tb["x_a"])
+        ttnn.copy_host_to_device_tensor(
+            ttnn.from_torch(cos_pos, layout=ttnn.TILE_LAYOUT), self._tb["cos_dev"])
+        ttnn.copy_host_to_device_tensor(
+            ttnn.from_torch(sin_pos, layout=ttnn.TILE_LAYOUT), self._tb["sin_dev"])
+        ttnn.copy_host_to_device_tensor(
+            ttnn.from_torch(mask_t, layout=ttnn.TILE_LAYOUT), self._tb["mask_dev"])
+        ttnn.copy_host_to_device_tensor(
+            ttnn.from_torch(kv_row_m, layout=ttnn.TILE_LAYOUT), self._tb["kv_row_masks"])
+        ttnn.copy_host_to_device_tensor(
+            ttnn.from_torch(kv_irow_m, layout=ttnn.TILE_LAYOUT), self._tb["kv_irow_masks"])
+        ttnn.copy_host_to_device_tensor(
+            ttnn.from_torch(kv_col_m, layout=ttnn.TILE_LAYOUT), self._tb["kv_col_masks"])
+        ttnn.copy_host_to_device_tensor(
+            ttnn.from_torch(kv_icol_m, layout=ttnn.TILE_LAYOUT), self._tb["kv_icol_masks"])
 
-            # Replay the full decode (24 layers + lm_head + argmax pipeline)
-            ttnn.execute_trace(self.device, self._trace_id, cq_id=0, blocking=True)
-            self._trace_kv_ready = True
+        # Replay the full decode (24 layers + lm_head + argmax pipeline)
+        ttnn.execute_trace(self.device, self._trace_id, cq_id=0, blocking=True)
+        self._trace_kv_ready = True
 
-            if greedy:
-                # Argmax result is already in the trace buffer — tiny readback
-                result = self._read_traced_argmax()
-            else:
-                logits_host = ttnn.to_torch(self._tb["logits"]).float()
-                result = logits_host[:1]
+        if greedy:
+            result = self._read_traced_argmax()
+        else:
+            logits_host = ttnn.to_torch(self._tb["logits"]).float()
+            result = logits_host[:1]
 
         self.cache_pos = pos + 1
         return result
