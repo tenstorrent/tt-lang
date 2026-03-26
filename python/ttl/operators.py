@@ -426,7 +426,7 @@ def signpost(name: str):
 
 @syntax("broadcast")
 def broadcast(
-    input: TensorBlock, output: TensorBlock = None, *, dims: List[int]
+    input: TensorBlock, output: TensorBlock, *, dims: List[int]
 ) -> TensorBlock:
     """
     Broadcast over specified dimensions.
@@ -438,13 +438,9 @@ def broadcast(
     innermost is ``1`` or ``-1``). Duplicate indices after normalization are
     allowed (e.g. ``[0, -2]`` is row broadcast).
 
-    When ``output`` is omitted the output dataflow buffer is resolved
-    automatically during compilation.
-
     Args:
         input: Input tensor (CB-attached)
-        output: Output tensor (CB-attached, used for output CB tracking).
-            Optional; omit for expression-style usage.
+        output: Output tensor (CB-attached, used for output CB tracking)
         dims: Dimensions to broadcast over
 
     Returns:
@@ -482,9 +478,6 @@ def broadcast(
             f"Invalid dims: {dims}. After normalization, expect row [0]/[-2], "
             f"col [1]/[-1], or both for scalar broadcast (e.g. [0,1] or [-2,-1])"
         )
-
-    if output is None:
-        output = input
 
     ctx = input.type.context
     i32_type = IntegerType.get_signless(32, ctx)

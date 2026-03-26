@@ -79,7 +79,7 @@ def elementwise_with_broadcast(
                 b_squared = b_blk**2
 
                 # Broadcast b_squared along dimension 0 (outermost/rows) to match a_squared
-                y = a_squared + ttl.math.broadcast(b_squared, dims=[0])
+                y = a_squared + ttl.math.broadcast(b_squared, y_blk, dims=[0])
                 y_blk.store(y)
 
                 # Release a_blk, b_blk and y_blk
