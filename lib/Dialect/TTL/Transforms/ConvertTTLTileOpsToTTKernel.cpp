@@ -565,10 +565,8 @@ getCBTileGridShape(Value operand, func::FuncOp funcOp) {
     }
   }
 
-  // Fallback: trace through tensor.extract, extract_slice, and unrealized
-  // casts to find the root tensor shape. This recovers the full CB tile grid
-  // shape even when the operand is a subblock slice (the CB allocation is
-  // always the full block size).
+  // Trace through extract/slice/cast ops to the root tensor, whose shape
+  // matches the full DFB tile grid (independent of subblocking).
   Value tensor = operand;
   if (auto extract = operand.getDefiningOp<tensor::ExtractOp>()) {
     tensor = extract.getTensor();
@@ -845,19 +843,17 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
       return rewriter.notifyMatchFailure(
           op, "cannot determine operand tensor shapes for block dimensions");
     }
-    // lhs is [M, K] per K-step (K=1 for block matmul pattern).
-    // rhs is [K, N] per K-step (K=1 for block matmul pattern).
-    int32_t rt = lhsTy.getDimSize(0); // M (A row count in tiles)
-    int32_t ct = rhsTy.getDimSize(1); // N (B column count in tiles)
-    // nt_dim is the B column stride: the experimental::matmul_block wrapper
-    // advances in1_tile_index by nt_dim per K-step. For non-transposed B
-    // laid out row-major, one K-step moves past N columns, so nt == ct.
+    // Assumes non-transposed: lhs is [M, K], rhs is [K, N].
+    // TODO(#420): support transpose. When B is transposed, rhs is [N, K]:
+    //   ct = rhsTy.getDimSize(0), and nt_dim changes from N to 1 (the
+    //   matmul_block wrapper advances in1_tile_index by nt_dim per K-step;
+    //   transposed B has stride 1 along K instead of N).
+    int32_t rt = lhsTy.getDimSize(0); // M
+    int32_t ct = rhsTy.getDimSize(1); // N
     int32_t nt = ct;
 
-    // CB tile indices. For non-subblocked computes, the CB is popped and
-    // refilled each K-step, so the starting index is 0. For subblocked
-    // computes, the operand is a slice of the full CB block, and the
-    // starting index is the slice offset.
+    // Starting DFB tile index: 0 when not subblocked (DFB refilled each
+    // K-step), or the slice offset when subblocked.
     Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value in0TileIndex =
         utils::addSliceOffset(op.getLhs(), zero, rewriter, loc);
@@ -885,11 +881,8 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
             op, "cannot find/convert accumulator DFB for matmul_block");
       }
 
-      // Load each accumulator tile from DFB to DST. For subblocked
-      // computes, addSliceOffset converts the flat local index i to a
-      // global DFB index: delinearize i into (row, col) within [rt, ct],
-      // add the per-dimension slice offset, relinearize against the full
-      // accumulator shape.
+      // Load accumulator tiles from DFB to DST. addSliceOffset converts
+      // each local tile index to the global DFB position.
       int32_t ntiles = rt * ct;
       for (int32_t i = 0; i < ntiles; ++i) {
         Value localIdx = arith::ConstantIndexOp::create(rewriter, loc, i);

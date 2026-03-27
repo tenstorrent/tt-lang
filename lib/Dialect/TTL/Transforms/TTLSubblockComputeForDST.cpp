@@ -245,13 +245,6 @@ private:
             return {};
           }
 
-          // Remove the unroll_factor attribute from the subblocked inner
-          // compute and set full linearization strides.
-          //
-          // iter_index ops are NOT adjusted to global coordinates here.
-          // They produce local (subblock) coordinates. Global CB offsets
-          // are computed downstream by addSliceOffset, which adds the
-          // extract_slice offset from getTiledImplementation.
           for (Operation *tiledOp : tiledResult->tiledOps) {
             tiledOp->removeAttr(kUnrollFactorAttrName);
             tiledOp->setAttr(kFullLinStridesAttrName,
@@ -276,23 +269,42 @@ private:
                                  b.getIndexAttr(subblockedDims[i]));
     }
 
-    // Subblock tiles are contiguous in the DFB when only outermost parallel
-    // dimensions are subblocked.
-    bool subblockedTilesContiguous = true;
-    for (int64_t d = 1; d < rank; ++d) {
-      if (iterTypes[d] == utils::IteratorType::parallel &&
-          subblockSizes[d] < dimSizes[d]) {
-        subblockedTilesContiguous = false;
-        break;
+    // Precompute per-output subblock info: shape, tile count, and whether
+    // tiles are DFB-contiguous (enables per-subblock reserve/push).
+    struct OutputSubblockInfo {
+      SmallVector<int64_t> shape;
+      int64_t numTiles;
+      bool contiguous;
+    };
+    SmallVector<OutputSubblockInfo> outputInfos;
+    auto indexingMaps = computeOp.getIndexingMapsArray();
+    for (size_t i = 0; i < computeOp.getNumOutputs(); ++i) {
+      AffineMap map = indexingMaps[computeOp.getNumInputs() + i];
+      OutputSubblockInfo info;
+      info.contiguous = true;
+      info.numTiles = 1;
+      auto results = map.getResults();
+      for (size_t r = 0; r < results.size(); ++r) {
+        auto dimExpr = cast<AffineDimExpr>(results[r]);
+        int64_t d = dimExpr.getPosition();
+        int64_t s = subblockSizes[d];
+        info.shape.push_back(s);
+        info.numTiles *= s;
+        // Inner result dimensions that are subblocked break contiguity.
+        if (r > 0 && s < dimSizes[d]) {
+          info.contiguous = false;
+        }
       }
+      outputInfos.push_back(std::move(info));
     }
 
-    // When contiguous, split output DFB reserve/push into per-subblock
-    // operations inside the loop. This enables pack_tile_block downstream.
+    // When DFB-contiguous, split output reserve/push into per-subblock
+    // operations inside the loop. This enables pack_tile_block.
     scf::ForOp innermostLoop = loopNest.loops.back();
-    for (Value output : computeOp.getOutputs()) {
-      if (!subblockedTilesContiguous) {
-        break;
+    for (auto [outputIdx, output] : llvm::enumerate(computeOp.getOutputs())) {
+      auto &info = outputInfos[outputIdx];
+      if (!info.contiguous) {
+        continue;
       }
       Value outputCB = getAttachedCB(output);
       if (!outputCB) {
@@ -314,43 +326,22 @@ private:
         continue;
       }
 
-      // Compute the output subblock shape by extracting the parallel
-      // dimensions from subblockSizes via the output indexing map.
-      size_t outputIdx = llvm::find(computeOp.getOutputs(), output) -
-                         computeOp.getOutputs().begin();
-      AffineMap outputMap =
-          computeOp
-              .getIndexingMapsArray()[computeOp.getNumInputs() + outputIdx];
-      SmallVector<int64_t> outputSubblockShape;
-      for (AffineExpr expr : outputMap.getResults()) {
-        auto dimExpr = cast<AffineDimExpr>(expr);
-        outputSubblockShape.push_back(subblockSizes[dimExpr.getPosition()]);
-      }
-
       // Create per-subblock cb_reserve at the top of the innermost loop body.
-      int64_t outputSubblockTiles = 1;
-      for (int64_t d : outputSubblockShape) {
-        outputSubblockTiles *= d;
-      }
       auto resultType = RankedTensorType::get(
-          outputSubblockShape,
-          reserveOp.getResult().getType().getElementType());
+          info.shape, reserveOp.getResult().getType().getElementType());
       OpBuilder reserveBuilder(innermostLoop.getBody(),
                                innermostLoop.getBody()->begin());
-      auto numTilesAttr = b.getI64IntegerAttr(outputSubblockTiles);
+      auto numTilesAttr = b.getI64IntegerAttr(info.numTiles);
       auto newReserve = CBReserveOp::create(reserveBuilder, loc, resultType,
                                             outputCB, numTilesAttr);
 
-      // Create per-subblock cb_push at the end of the innermost loop body
-      // (before the yield).
+      // Create per-subblock cb_push at the end of the loop body.
       OpBuilder pushBuilder(innermostLoop.getBody(),
                             std::prev(innermostLoop.getBody()->end()));
       CBPushOp::create(pushBuilder, loc, outputCB, numTilesAttr);
 
-      // Replace tile_store views in the inner compute: swap the
-      // extract_slice(attached) view (from getTiledImplementation) with the
-      // per-subblock cb_reserve result. This makes tile_store indices local
-      // to the subblock, avoiding addSliceOffset for the output CB.
+      // Replace tile_store views with the per-subblock cb_reserve result
+      // so that tile indices remain local to the subblock.
       innermostLoop.getBody()->walk([&](TileStoreOp store) {
         Value viewCB = getAttachedCB(store.getView());
         if (viewCB == outputCB) {
