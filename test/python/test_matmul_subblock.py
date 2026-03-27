@@ -174,7 +174,7 @@ class TestMatmulSubblock:
     )
     def test_bf16(self, device, m, n, desc):
         """bf16 matmul exceeding DST capacity of 8 tiles."""
-        torch.manual_seed(42)
+
         M, K, N = m * TILE, TILE, n * TILE
         a_t = torch.randn(M, K, dtype=torch.bfloat16)
         b_t = torch.randn(K, N, dtype=torch.bfloat16)
@@ -203,7 +203,7 @@ class TestMatmulSubblock:
     )
     def test_f32(self, device, m, n, desc):
         """f32 matmul exceeding DST capacity of 4 tiles."""
-        torch.manual_seed(42)
+
         M, K, N = m * TILE, TILE, n * TILE
         a_t = torch.randn(M, K, dtype=torch.float32)
         b_t = torch.randn(K, N, dtype=torch.float32)
@@ -225,7 +225,7 @@ class TestMatmulSubblockExactFit:
 
     def test_2x4_bf16(self, device):
         """2x4=8 tiles = bf16 DST capacity. Must NOT subblock."""
-        torch.manual_seed(42)
+
         M, K, N = 2 * TILE, TILE, 4 * TILE
         a_t = torch.randn(M, K, dtype=torch.bfloat16)
         b_t = torch.randn(K, N, dtype=torch.bfloat16)
@@ -243,7 +243,7 @@ class TestMatmulSubblockExactFit:
 
     def test_2x2_f32(self, device):
         """2x2=4 tiles = f32 DST capacity. Must NOT subblock."""
-        torch.manual_seed(42)
+
         M, K, N = 2 * TILE, TILE, 2 * TILE
         a_t = torch.randn(M, K, dtype=torch.float32)
         b_t = torch.randn(K, N, dtype=torch.float32)
@@ -265,7 +265,7 @@ class TestMatmulFusedSubblock:
 
     def test_matmul_bias_3x3(self, device):
         """(a @ b) + c with 3x3=9 > 8 DST tiles."""
-        torch.manual_seed(42)
+
         M, K, N = 3 * TILE, TILE, 3 * TILE
         a_t = torch.randn(M, K, dtype=torch.bfloat16)
         b_t = torch.randn(K, N, dtype=torch.bfloat16)
@@ -285,7 +285,7 @@ class TestMatmulFusedSubblock:
 
     def test_matmul_relu_3x3(self, device):
         """relu(a @ b) with 3x3=9 > 8 DST tiles."""
-        torch.manual_seed(42)
+
         M, K, N = 3 * TILE, TILE, 3 * TILE
         a_t = torch.randn(M, K, dtype=torch.bfloat16)
         b_t = torch.randn(K, N, dtype=torch.bfloat16)
@@ -301,12 +301,9 @@ class TestMatmulFusedSubblock:
 
         assert_pcc(expected, result)
 
-    @pytest.mark.xfail(
-        reason="f32 matmul+bias subblocking: PCC ~0.977, needs investigation"
-    )
     def test_matmul_bias_4x3_f32(self, device):
         """(a @ b) + c with 4x3=12 > 4 DST tiles (f32)."""
-        torch.manual_seed(42)
+
         M, K, N = 4 * TILE, TILE, 3 * TILE
         a_t = torch.randn(M, K, dtype=torch.float32)
         b_t = torch.randn(K, N, dtype=torch.float32)

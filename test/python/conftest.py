@@ -101,6 +101,14 @@ def ttnn_device():
     ttnn.close_device(device)
 
 
+@pytest.fixture(autouse=True)
+def seed_rng():
+    """Set deterministic seed for all tests."""
+    import torch
+
+    torch.manual_seed(42)
+
+
 # Alias for convenience - most tests use 'device' as the fixture name
 @pytest.fixture
 def device(ttnn_device):

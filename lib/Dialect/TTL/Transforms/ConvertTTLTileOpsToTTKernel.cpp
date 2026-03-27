@@ -885,13 +885,16 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
             op, "cannot find/convert accumulator DFB for matmul_block");
       }
 
-      Value accSliceBase =
-          utils::addSliceOffset(op.getAccumulator(), zero, rewriter, loc);
+      // Load each accumulator tile from DFB to DST. For subblocked
+      // computes, addSliceOffset converts the flat local index i to a
+      // global DFB index: delinearize i into (row, col) within [rt, ct],
+      // add the per-dimension slice offset, relinearize against the full
+      // accumulator shape.
       int32_t ntiles = rt * ct;
       for (int32_t i = 0; i < ntiles; ++i) {
         Value localIdx = arith::ConstantIndexOp::create(rewriter, loc, i);
         Value cbIdx =
-            arith::AddIOp::create(rewriter, loc, accSliceBase, localIdx);
+            utils::addSliceOffset(op.getAccumulator(), localIdx, rewriter, loc);
         Value dstTileIdx = arith::ConstantIndexOp::create(rewriter, loc, i);
         ttk::CopyTileOp::create(rewriter, loc, *accDFB, cbIdx, dstTileIdx);
       }
