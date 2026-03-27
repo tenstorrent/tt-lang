@@ -80,7 +80,7 @@ class CompilerOptions:
     """
 
     maximize_dst: bool = True
-    enable_fpu_binary_ops: bool = True
+    enable_fpu_binary_ops: bool = False
 
     # Fields that were explicitly provided (not defaulted). Excluded from
     # equality and hashing so two instances with the same bool values are
