@@ -13,7 +13,7 @@ Most examples can be run with the tt-lang simulator, which doesn't require hardw
 source build/env/activate
 
 # Run any example with the simulator
-python -m sim.ttlang_sim examples/<example_name>.py
+ttlang-sim examples/<example_name>.py
 ```
 
 ### On Hardware
