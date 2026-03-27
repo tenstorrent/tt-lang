@@ -1528,8 +1528,21 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // Tile compute ops and data movement ops (copy_tile, copy_dst) remain legal
   // until the tile ops lowering phase.
   target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>([](Operation *op) {
-    // Tile compute ops stay legal until tile ops lowering phase.
-    return tt::ttl::isTileComputeOp(op);
+    // Tile compute ops and data movement ops (copy_tile, copy_dst) stay legal
+    // until the tile ops lowering phase.
+    if (tt::ttl::isTileComputeOp(op)) {
+      return true;
+    }
+    if (op->hasTrait<TTLDataMovementOpTrait>()) {
+      return true;
+    }
+    // CopyOp with pipe operands stays legal until pipe lowering.
+    if (auto copyOp = llvm::dyn_cast<CopyOp>(op)) {
+      auto srcIsPipe = llvm::isa<PipeType>(copyOp.getSrc().getType());
+      auto dstIsPipe = llvm::isa<PipeType>(copyOp.getDst().getType());
+      return srcIsPipe || dstIsPipe;
+    }
+    return false;
   });
 
   // TensorSliceOp is legal while it has users (CopyLowering will consume them).
