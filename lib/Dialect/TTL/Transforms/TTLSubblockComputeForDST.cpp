@@ -276,14 +276,8 @@ private:
                                  b.getIndexAttr(subblockedDims[i]));
     }
 
-    // Split output CB reserve/push into per-subblock operations inside the
-    // loop when the subblock tiles are contiguous in row-major order. This
-    // enables pack_tile_block downstream. Tiles are contiguous when
-    // subblocking only affects outermost dimensions (all inner dimensions
-    // are fully included in each subblock).
-    // Subblock tiles are contiguous in row-major CB layout only when
-    // subblocking is restricted to the outermost dimension(s). If any
-    // inner dimension is subblocked, the tiles are interleaved.
+    // Subblock tiles are contiguous in the DFB when only outermost parallel
+    // dimensions are subblocked.
     bool subblockedTilesContiguous = true;
     for (int64_t d = 1; d < rank; ++d) {
       if (iterTypes[d] == utils::IteratorType::parallel &&
@@ -293,10 +287,12 @@ private:
       }
     }
 
+    // When contiguous, split output DFB reserve/push into per-subblock
+    // operations inside the loop. This enables pack_tile_block downstream.
     scf::ForOp innermostLoop = loopNest.loops.back();
     for (Value output : computeOp.getOutputs()) {
       if (!subblockedTilesContiguous) {
-        continue;
+        break;
       }
       Value outputCB = getAttachedCB(output);
       if (!outputCB) {

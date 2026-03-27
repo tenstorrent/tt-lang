@@ -934,6 +934,11 @@ mlir::LogicalResult mlir::tt::ttl::CBReserveOp::verify() {
                            << " tiles but num_tiles attribute is "
                            << getNumTiles().value();
     }
+    int64_t cbCapacity = cbTy.getElementsPerBlock();
+    if (resultTiles > cbCapacity) {
+      return emitOpError() << "num_tiles (" << resultTiles
+                           << ") exceeds CB capacity (" << cbCapacity << ")";
+    }
     return mlir::success();
   }
 

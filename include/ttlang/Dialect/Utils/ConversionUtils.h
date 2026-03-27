@@ -21,13 +21,16 @@
 
 namespace mlir::tt::ttl::utils {
 
-/// Convert a local CB index (within a subblock) to a global CB index (within
+/// Convert a local DFB index (within a subblock) to a global DFB index (within
 /// the full block) when `operand` traces to a tensor.extract_slice.
 ///
 /// Delinearizes the local index into per-dimension coordinates using the
 /// slice shape, adds the slice offsets per-dimension, and relinearizes
-/// against the source (full) shape. This is correct regardless of which
-/// dimensions are subblocked.
+/// against the source (full) shape.
+///
+/// Example: local index 5 in a [3,2] slice at offset [0,2] of a [3,4] tensor:
+///   delinearize(5, [3,2]) -> (2,1), add [0,2] -> (2,3),
+///   linearize((2,3), [3,4]) -> 11.
 ///
 /// Returns `localIndex` unchanged if no extract_slice is found.
 inline Value addSliceOffset(Value operand, Value localIndex, OpBuilder &builder,
