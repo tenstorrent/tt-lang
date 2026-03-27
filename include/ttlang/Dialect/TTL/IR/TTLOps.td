@@ -774,7 +774,7 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
 
 def TTL_CBReserveOp : TTL_Op<"cb_reserve",
     [MemoryEffects<[MemWrite]>, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
-  let summary = "Reserve pages in a circular buffer for writing";
+  let summary = "Reserve tiles in a dataflow buffer for writing";
   let description = [{
     `ttl.cb_reserve` blocks until pages are available in the circular buffer
     for writing. Returns a tensor view of the reserved pages.
@@ -802,7 +802,7 @@ def TTL_CBReserveOp : TTL_Op<"cb_reserve",
 }
 
 def TTL_CBPushOp : TTL_Op<"cb_push", [MemoryEffects<[MemWrite]>]> {
-  let summary = "Signal that pages have been written to the circular buffer";
+  let summary = "Signal that tiles have been written to the dataflow buffer";
   let description = [{
     `ttl.cb_push` signals that pages have been written to the circular buffer
     and are ready for consumer threads to read.

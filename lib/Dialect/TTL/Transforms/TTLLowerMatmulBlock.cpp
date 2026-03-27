@@ -65,7 +65,7 @@ static LogicalResult validateMatmulDSTCapacity(func::FuncOp func) {
       computeOp.emitOpError()
           << "matmul output " << M << "x" << N << " = " << M * N
           << " tiles exceeds DST capacity of " << dstCapacity
-          << "; automatic subblocking is not yet implemented";
+          << "; enable maximize_dst to auto-subblock";
       hadError = true;
     }
   });
