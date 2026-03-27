@@ -549,7 +549,7 @@ def transpose(input: TensorBlock) -> TensorBlock:
     Reads from the input CB, writes result to DST.
     The output CB is determined by the ttl.store on this op's result.
     """
-    from ttmlir.ir import RankedTensorType
+    from ttl.ir import RankedTensorType
 
     input_type = input.type
     shape = list(input_type.shape)
@@ -572,7 +572,7 @@ def reduce_sum(
         dims: Dimensions to collapse (PyTorch convention) -
               [0] collapses rows, [1] collapses columns, [0, 1] for scalar
     """
-    from ttmlir.ir import IntegerAttr, IntegerType, RankedTensorType
+    from ttl.ir import IntegerAttr, IntegerType, RankedTensorType
 
     dims_set = set(dims)
     if dims_set == {0}:
@@ -617,7 +617,7 @@ def reduce_max(
         dims: Dimensions to collapse (PyTorch convention) -
               [0] collapses rows, [1] collapses columns, [0, 1] for scalar
     """
-    from ttmlir.ir import IntegerAttr, IntegerType, RankedTensorType
+    from ttl.ir import IntegerAttr, IntegerType, RankedTensorType
 
     dims_set = set(dims)
     if dims_set == {0}:
@@ -653,7 +653,7 @@ def reduce_max(
 @syntax("power")
 def power(input: TensorBlock, exponent) -> TensorBlock:
     """Raise tensor elements to an integer power."""
-    from ttmlir.ir import IntegerAttr, IntegerType
+    from ttl.ir import IntegerAttr, IntegerType
 
     exp_val = _get_constant_int(exponent)
     ctx = input.type.context
@@ -665,7 +665,7 @@ def power(input: TensorBlock, exponent) -> TensorBlock:
 @syntax("fill")
 def fill(output: TensorBlock, value) -> TensorBlock:
     """Fill a tensor with a constant f32 value."""
-    from ttmlir.ir import FloatAttr, F32Type
+    from ttl.ir import FloatAttr, F32Type
 
     fill_val = _get_constant_float(value)
     ctx = output.type.context

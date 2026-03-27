@@ -534,7 +534,7 @@ class TTLGenericCompiler(TTCompilerBase):
         elif isinstance(node.value, int):
             return op_constructor(IntegerType.get_signless(64, self.ctx), node.value)
         elif isinstance(node.value, float):
-            from ttmlir.ir import F32Type, FloatAttr
+            from ttl.ir import F32Type, FloatAttr
 
             f32 = F32Type.get(self.ctx)
             if as_attr:
