@@ -1,12 +1,9 @@
+// Matmul outputs exceeding DST capacity are rejected when the subblock pass
+// is not in the pipeline. With subblocking enabled, these cases compile
+// successfully (tested by simple_matmul_subblock.py).
 // RUN: not ttlang-opt %s \
 // RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-insert-tile-regs-sync, ttl-lower-matmul-block))' \
 // RUN:   --split-input-file 2>&1 | FileCheck %s
-
-// With the subblock pass, oversized matmul outputs are auto-subblocked and
-// compilation succeeds (no error expected).
-// RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-subblock-compute-for-dst, ttl-insert-tile-regs-sync, ttl-lower-matmul-block))' \
-// RUN:   --split-input-file > /dev/null
 
 // bf16 DST capacity exceeded.
 // CHECK: matmul output 3x3 = 9 tiles exceeds DST capacity of 8
