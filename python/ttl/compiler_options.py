@@ -108,7 +108,7 @@ class CompilerOptions:
     """
 
     maximize_dst: bool = True
-    enable_fpu_binary_ops: bool = True
+    enable_fpu_binary_ops: bool = False
     use_block_matmul: bool = True
     auto_sync: bool = False
     combine_pack_tiles: bool = True
