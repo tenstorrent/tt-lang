@@ -91,9 +91,7 @@ def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Te
         for row in range(rows):
             for col in range(cols):
                 with (
-
                     # reserve() blocks until the compute thread has freed a slot.
-
                     a_dfb.reserve() as a_blk,
                     b_dfb.reserve() as b_blk,
                     c_dfb.reserve() as c_blk,
