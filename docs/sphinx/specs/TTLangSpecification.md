@@ -314,7 +314,7 @@ def elwise_write():
 # Tensor   Torch shape   Note
 # a        I, M, K       Batched A matrix (e.g. input activations)
 # b        K, N          Non-batched B matrix (e.g. weights)
-# c        M, N.         Bias matrix C
+# c        M, N          Bias matrix C
 # y        I, M, N       Batched Y matrix (e.g. output activations)
 #
 # All tensors have tiled layout
