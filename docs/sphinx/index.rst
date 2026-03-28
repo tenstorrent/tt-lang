@@ -9,6 +9,7 @@ TTL Documentation
    simulator
    getting-started
    ttl-tutorial/index
+   elementwise-tutorial/index
    programming-guide
    claude-skills
    testing
