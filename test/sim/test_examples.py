@@ -235,7 +235,7 @@ def test_copy_lock_error_fails_with_expected_error(scheduler: str) -> None:
         "Cannot write to Block: Block is locked as copy destination until tx.wait() completes (copy lock error)"
         in out
     ), f"Expected error message not found in output:\n{out}"
-    # Verify source location is shown (line 88 where we attempt to write to a_block)
+    # Verify source location is shown (line 90 where we attempt to write to a_block)
     assert (
         "examples/errors/copy_lock_error.py:90" in out
     ), f"Expected source location not found in output:\n{out}"
