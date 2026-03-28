@@ -58,7 +58,7 @@ In addition to kernels, TT-Lang offers other abstractions familiar to [TT-Metali
 
 *Operation function* is a Python function with `ttl.operation` decorator. This function takes input and output [*TT-NN tensors*](https://docs.tenstorrent.com/tt-metal/latest/ttnn/ttnn/tensor.html) as arguments and returns `None`. An operation function contains definitions of *kernel functions* as well as objects shared by all kernel functions. A kernel function is a Python function with no arguments and returning `None` that is annotated by `ttl.compute` or `ttl.datamovement` decorators. The user can call TT-Lang operation function from a TT-NN program and is free to mix it with calling any of the built-in TT-NN operations.
 
-### Example
+#### Program example
 
 ```py
 @ttl.operation()
@@ -110,7 +110,7 @@ The `ttl.grid_size` function returns the size of the grid. The function takes an
 | `ttl.Shape = ttl.Size \| Tuple[ttl.Size, ...]` | A shape type. `ttl.Size` for 1D and tuple of `ttl.Size` otherwise. |
 | `ttl.grid_size(dims: ttl.Size) -> ttl.Shape` | Return grid size in specified dimensionality. Returns `ttl.Size` for `dims = 1` and a tuple of `ttl.Size` for other values of dims. |
 
-#### Example
+#### Grid size example
 
 ```py
 # for (8, 8) single chip or SPMD grid gets x_size = 64
@@ -135,7 +135,7 @@ The `ttl.node` function returns *node coordinates* of the current node. Node coo
 | `ttl.NodeCoord = ttl.Index \| Tuple[ttl.Index, ...]` | Node coordinates. `ttl.Index` for 1D and tuple of `ttl.Index` otherwise. |
 | `ttl.node(dims: ttl.Index) -> ttl.NodeCoord` | Return node coordinates in specified dimensionality. Returns `ttl.Index` for `dims = 1` and a tuple of `ttl.Index` for other values of dims. |
 
-#### Example
+#### Node example
 
 ```py
 # for (8, 8) single chip or SPMD grid gets x = [0, 64)
@@ -159,7 +159,7 @@ Shape determines the shape of a *block* returned by one of the *acquisition func
 
 There are two acquisition functions on a dataflow buffer object: `wait` and `reserve`. A dataflow buffer is constructed in the scope of an operation function but its object functions can only be used inside of kernel functions. Acquisition functions can be used with Python `with` statement, which will automatically release acquired blocks at the end of the `with` scope. Alternatively, if acquisition functions are used without the `with` the user must explicitly call a corresponding release function on the acquired block: `pop` for `wait` and `push` for `reserve`.
 
-#### Basic Example
+#### Dataflow buffer example
 
 ```py
 x_dfb = ttl.make_dataflow_buffer_like(x,
@@ -168,23 +168,23 @@ x_dfb = ttl.make_dataflow_buffer_like(x,
 
 @ttl.datamovement()
 def some_read():
-    # acquire x_blk from x_dfb
+    # Reserve x_blk from x_dfb
     with x_dfb.reserve() as x_blk:
 
-        # produce data into x_blk
+        # Load data into x_blk
         # ...
 
-        # release x_blk implicitly by x_blk.push() at the end of the "with" scope
+        # Push x_blk implicitly at the end of the "with" scope
 
 @ttl.compute()
 def some_compute():
-    # acquire x_blk from x_dfb
+    # Wait for x_blk from x_dfb
     x_blk = x_dfb.wait()
 
-    # consume data in x_blk
+    # Consume data in x_blk
     # ...
 
-    x_blk.pop() # release x_blk explicitly
+    x_blk.pop() # Pop x_blk explicitly
 ```
 
 | Type alias/Function | Description |
@@ -714,7 +714,7 @@ A *tensor slice* is a view into a TT-NN tensor defined in terms of a dimension s
 | :---- | :---- |
 | `ttnn.Tensor.__getitem__(self, *index: ttl.Index \| slice) -> ttl.TensorSlice` | Get a tensor slice from a TT-NN tensor. |
 
-#### Example
+#### Tensor slice example
 
 ```py
 g = 2 # granularity
@@ -756,7 +756,7 @@ The `ttl.copy` function expresses a variety of data movements that always have t
 
 When `ttl.copy` function is called multiple times, instead of waiting on each transfer handle, it is possible to group handles and wait on all handles at once. This is done by instantiating `ttl.GroupTransfer` object and then adding handles with its `add` function. Once all handles are added `wait_all` function is called to wait for all transfers to complete.
 
-#### Example
+#### Group transfer example
 
 ```py
 # ---------------------
@@ -766,8 +766,10 @@ When `ttl.copy` function is called multiple times, instead of waiting on each tr
 # input_images        N, HI, WI, C
 # output_images       N, HO, WO, C
 #
-# HO = HI * scale_factor[0]
-# WO = WI * scale_factor[1]
+# All tensors have row-major layout
+
+HO = HI * scale_factor[0]
+WO = WI * scale_factor[1]
 
 io_dfb = ttl.make_dataflow_buffer_like(
     input_images, shape=(C,), block_count=2
@@ -780,7 +782,7 @@ def reader():
             for wi in range(WI):
                 with io_dfb.reserve() as io_blk:
 
-                    # Copy input pixel channels
+                    # Load input pixel channels
 
                     xf = ttl.copy(input_t[n, hi, wi, :], io_blk)
 
@@ -887,7 +889,7 @@ TT-Lang provides a range for facilities to aid performance analisys and debuggin
 
 Profiling signpost is a language construct that allows the user to specify a block of code that will be measured for performance during the program execution. This is achieved by using Python `with` statement in conjunction with `ttl.signpost` function. This function takes a string argument for a signpost name. This way the signpost will be identified in the profiling tool's user interface.
 
-#### Example
+#### Signpost example
 
 ```py
 @ttl.datamovement()
@@ -940,7 +942,7 @@ def matmul_read():
 
 TT-Lang includes ability to print information to the standard output for debugging purpose. This is achieved by using the standard Python `print` function. In TT-Lang this function can be used with string constants, scalar variables, such as loop indexes or calculated slice bounds, as well as with TT-Lang specific objects, such as tensors and blocks. When `print` is used with TT-Lang objects there are additional attribute arguments, which enabling better control of the output content. Beacause of this, `print` is limited to only one TT-Lang object to be printed in conjunction any number of string and scalar variables.
 
-#### Example
+#### Debug printing example
 
 ```py
 @ttl.datamovement()
