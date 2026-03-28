@@ -768,8 +768,8 @@ When `ttl.copy` function is called multiple times, instead of waiting on each tr
 #
 # All tensors have row-major layout
 
-HO = HI * scale_factor[0]
-WO = WI * scale_factor[1]
+HO = HI * H_SCALE_FACTOR
+WO = WI * W_SCALE_FACTOR
 
 io_dfb = ttl.make_dataflow_buffer_like(
     input_images, shape=(C,), block_count=2
@@ -796,12 +796,12 @@ def writer():
                 with io_dfb.wait() as io_blk:
                     gxf = ttl.GroupTransfer()
 
-                    for h_sf in range(scale_factor[0]):
-                        for w_sf in range(scale_factor[1]):
+                    for h_scale_index in range(H_SCALE_FACTOR):
+                        for w_scale_index in range(W_SCALE_FACTOR):
 
                             # Copy output pixel channels
 
-                            xf = ttl.copy(io_blk, output[n, hi * scale_factor[0] + h_sf, wi * scale_factor[1] + w_sf, :])
+                            xf = ttl.copy(io_blk, output[n, hi * H_SCALE_FACTOR + h_scale_index, wi * W_SCALE_FACTOR + w_scale_index, :])
 
                             # Add transfer handle to a group
 
