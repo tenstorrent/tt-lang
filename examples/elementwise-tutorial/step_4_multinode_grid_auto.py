@@ -9,9 +9,8 @@
 # dimensions that are not evenly divisible by the grid.
 #
 # New concepts introduced:
-#   - grid="auto"     — the compiler picks the largest grid available in the 
-#                       hardware; the kernel must not assume any specific grid
-#                       dimensions
+#   - grid="auto"     — the compiler picks the largest grid available in the;
+#                       the kernel must not assume any specific grid dimensions
 #   - ceiling division — ensures every block is assigned to a node even when
 #                        the block count doesn't divide evenly across the grid
 #   - bounds checking — nodes at the trailing edge of the grid may have fewer
@@ -44,6 +43,7 @@ GRANULARITY = 4
 # grid="auto" asks the compiler to select the grid at compile time based on
 # available hardware resources.  The kernel body must work correctly for any
 # grid the compiler may choose.
+
 
 @ttl.kernel(grid="auto")
 def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):

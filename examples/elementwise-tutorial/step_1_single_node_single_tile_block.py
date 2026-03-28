@@ -43,6 +43,7 @@ TILE_SIZE = 32
 # The function signature lists the tensors the kernel reads and writes;
 # these live in DRAM and are passed by the host at call time.
 
+
 @ttl.kernel(grid=(1, 1))
 def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
 
@@ -70,14 +71,11 @@ def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Te
             for _ in range(cols):
                 with (
                     # wait() blocks until the DM reader has pushed a filled tile.
-
                     a_dfb.wait() as a_blk,
                     b_dfb.wait() as b_blk,
                     c_dfb.wait() as c_blk,
-
                     # reserve() blocks until the DM writer has popped the previous
                     # output tile, freeing a slot for the next result.
-
                     y_dfb.reserve() as y_blk,
                 ):
                     # Fused elementwise operation: a * b + c, written to y.
@@ -133,9 +131,7 @@ def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Te
         for row in range(rows):
             for col in range(cols):
                 with y_dfb.wait() as y_blk:
-
                     # Copy the computed tile from L1 to the output DRAM tensor.
-
                     tx = ttl.copy(
                         y_blk,
                         y[row, col],
