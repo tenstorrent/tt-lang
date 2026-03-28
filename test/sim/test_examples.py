@@ -121,23 +121,23 @@ def run_script_in_process(
         "matmul_1d_mcast.py",
         "eltwise_1d_broadcast.py",
         pytest.param(
-            "tutorial/ttnn_base.py",
+            "elementwise-tutorial/step_0_ttnn_base.py",
             marks=requires_ttnn,
         ),
         pytest.param(
-            "tutorial/single_node_single_tile_block.py",
+            "elementwise-tutorial/step_1_single_node_single_tile_block.py",
             marks=requires_ttnn,
         ),
         pytest.param(
-            "tutorial/single_node_multitile_block.py",
+            "elementwise-tutorial/step_2_single_node_multitile_block.py",
             marks=requires_ttnn,
         ),
         pytest.param(
-            "tutorial/multinode.py",
+            "elementwise-tutorial/step_3_multinode.py",
             marks=requires_ttnn,
         ),
         pytest.param(
-            "tutorial/multinode_grid_auto.py",
+            "elementwise-tutorial/step_4_multinode_grid_auto.py",
             marks=requires_ttnn,
         ),
         pytest.param(
