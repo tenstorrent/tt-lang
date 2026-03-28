@@ -114,6 +114,7 @@ set(LLK_HEADERS
   "${LLK_SOURCE_DIR}/experimental_fabric_1d_routing.h"
   "${LLK_SOURCE_DIR}/experimental_fabric_2d_routing.h"
   "${LLK_SOURCE_DIR}/experimental_fabric_api.h"
+  "${LLK_SOURCE_DIR}/experimental_reg_api.h"
 )
 
 set(GENERATED_LLK_HEADERS)
