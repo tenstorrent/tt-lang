@@ -2,6 +2,12 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+#
+# Simulator-backed (`from sim import ttl`). Run via pytest test/sim, not the
+# hardware compiler example step.
+#
+# TTLANG_HARDWARE_CI: skip-compiler
+
 """
 Example demonstrating ttl.math.broadcast function.
 
@@ -73,7 +79,7 @@ def elementwise_with_broadcast(
                 b_squared = b_blk**2
 
                 # Broadcast b_squared along dimension 0 (outermost/rows) to match a_squared
-                y = a_squared + ttl.math.broadcast(b_squared, dims=[0])
+                y = a_squared + ttl.math.broadcast(b_squared, y_blk, dims=[0])
                 y_blk.store(y)
 
                 # Release a_blk, b_blk and y_blk

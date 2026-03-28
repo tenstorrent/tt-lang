@@ -425,11 +425,18 @@ def signpost(name: str):
 
 
 @syntax("broadcast")
-def broadcast(input: TensorBlock, output: TensorBlock, dims: List[int]) -> TensorBlock:
+def broadcast(
+    input: TensorBlock, output: TensorBlock, *, dims: List[int]
+) -> TensorBlock:
     """
     Broadcast over specified dimensions.
 
     Only 2D tensors are supported for broadcast (hardware constraint).
+
+    ``dims`` uses the same indexing as PyTorch ``dim`` arguments: each index must
+    lie in ``[-ndim, ndim - 1]`` for ``ndim == 2`` (outermost is ``0`` or ``-2``,
+    innermost is ``1`` or ``-1``). Duplicate indices after normalization are
+    allowed (e.g. ``[0, -2]`` is row broadcast).
 
     Args:
         input: Input tensor (CB-attached)
@@ -447,7 +454,19 @@ def broadcast(input: TensorBlock, output: TensorBlock, dims: List[int]) -> Tenso
             "Use 2D tensors for broadcast operations."
         )
 
-    dims_set = set(dims)
+    rank = 2
+    if not dims:
+        raise ValueError("dims must be a non-empty list of dimension indices")
+
+    for d in dims:
+        if d < -rank or d >= rank:
+            raise ValueError(
+                f"Invalid broadcast dimension {d}: for rank-{rank} tensors, "
+                f"each index must satisfy {-rank} <= dim <= {rank - 1} "
+                "(PyTorch-style dim indexing)"
+            )
+
+    dims_set = {d % rank for d in dims}
     if dims_set == {0}:
         bcast_val = 2  # Row
     elif dims_set == {1}:
@@ -455,7 +474,10 @@ def broadcast(input: TensorBlock, output: TensorBlock, dims: List[int]) -> Tenso
     elif dims_set == {0, 1}:
         bcast_val = 3  # Scalar
     else:
-        raise ValueError(f"Invalid dims: {dims}. Must be [0], [1], or [0, 1]")
+        raise ValueError(
+            f"Invalid dims: {dims}. After normalization, expect row [0]/[-2], "
+            f"col [1]/[-1], or both for scalar broadcast (e.g. [0,1] or [-2,-1])"
+        )
 
     ctx = input.type.context
     i32_type = IntegerType.get_signless(32, ctx)

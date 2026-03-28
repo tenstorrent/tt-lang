@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+#
+# TTLANG_HARDWARE_CI: skip-compiler
 """Test: how many CBs can we allocate?"""
 import torch
 import numpy as np

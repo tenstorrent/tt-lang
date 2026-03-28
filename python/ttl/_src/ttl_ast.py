@@ -419,13 +419,31 @@ class TTLGenericCompiler(TTCompilerBase):
                 node, f"constant type {type(node.value).__name__} not implemented"
             )
 
+    def _signed_int_literal(self, elt: ast.AST) -> Optional[int]:
+        """Fold a signed integer literal (e.g. ``-1`` in ``dims=[-1]``).
+
+        ``dims=[-1]`` parses as ``UnaryOp(USub, Constant(1))``, not ``Constant(-1)``.
+        Uses structural pattern matching so nested unary (e.g. ``-(-1)``) folds too.
+        """
+        match elt:
+            case ast.Constant(value=v) if type(v) is int:
+                return v
+            case ast.UnaryOp(op=ast.USub(), operand=inner):
+                n = self._signed_int_literal(inner)
+                return None if n is None else -n
+            case ast.UnaryOp(op=ast.UAdd(), operand=inner):
+                return self._signed_int_literal(inner)
+            case _:
+                return None
+
     def visit_List(self, node):
         """Parse a list of constants. Returns a Python list, not MLIR values."""
         result = []
         for elt in node.elts:
-            if not isinstance(elt, ast.Constant):
-                self._raise_error(node, "list elements must be constants")
-            result.append(elt.value)
+            v = self._signed_int_literal(elt)
+            if v is None:
+                self._raise_error(elt, "list elements must be constants")
+            result.append(v)
         return result
 
     def _emit_cb_from_capture(self, cb):

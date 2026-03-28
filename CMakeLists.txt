@@ -207,6 +207,13 @@ install(PROGRAMS "${CMAKE_SOURCE_DIR}/.github/containers/activate-install.sh"
         DESTINATION env
         RENAME activate)
 
+# Version file for greeting in installed env/activate (activate-install.sh).
+file(WRITE "${CMAKE_BINARY_DIR}/env/install-ttlang-version.txt"
+     "${TTLANG_VERSION}\n")
+install(FILES "${CMAKE_BINARY_DIR}/env/install-ttlang-version.txt"
+        DESTINATION env
+        RENAME version.txt)
+
 # Install pure Python packages (sim, pykernel) - simple copy
 install(DIRECTORY python/sim python/pykernel DESTINATION python_packages
         FILES_MATCHING PATTERN "*.py"

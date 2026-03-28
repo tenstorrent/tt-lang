@@ -197,6 +197,16 @@ def _print_filtered_traceback(exc: Exception, user_file: Path) -> None:
     print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
 
 
+def _get_version() -> str:
+    """Return the tt-lang version string for ttlang-sim --version."""
+    try:
+        from ttl.version import __version__
+
+        return __version__
+    except ImportError:
+        return "unknown"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="ttlang-sim",
@@ -207,6 +217,12 @@ def main() -> None:
         "  ttlang-sim examples/tutorial/multinode.py --grid 4,4\n"
         "  ttlang-sim examples/eltwise_add.py --max-l1 1572864",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"ttlang-sim {_get_version()}",
     )
 
     parser.add_argument(
