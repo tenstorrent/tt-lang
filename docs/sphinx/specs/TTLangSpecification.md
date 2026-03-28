@@ -153,7 +153,7 @@ x, y, z = ttl.node(dims = 3)
 
 A *dataflow buffer* is a communication primitive for synchronizing the passing of data between kernel functions running on the same node. A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing TT-NN tensor, *shape* and *block count*.
 
-The shape is expressed as a tuple with outermost dimension first and innermost dimension last. For `ttl.math` functions that take dimension indexes, the outermost dimension is indexed as 0, next to outermost as 1. It is possible to use negative dimension indexes to index from innermost dimension. This way the innermost dimension is indexed as -1, next to innermost as -2. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. The shape unit affects two innermost dimensions and is a whole tile (32 by 32 scalars) if the tensor has a tiled layout. For example, if a TT-NN tensor is of tiled layout and has shape of `(2, 128, 32)`, the corresponding block that fits this entire tensor will have shape of `(2, 4, 1)`. If tensor has a row-major layout the shape unit is an scalar. For the TT-NN tensor in the above example the corresponding block that fits this entire tensor will have shape of `(2, 128, 32)`.
+The shape is expressed as a tuple with outermost dimension first and innermost dimension last. For `ttl.math` functions that take dimension indexes, the outermost dimension is indexed as 0, next to outermost as 1. It is possible to use negative dimension indexes to index from innermost dimension. This way the innermost dimension is indexed as -1, next to innermost as -2. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. The shape unit affects two innermost dimensions and is a whole tile (32 by 32 scalar elements) if the tensor has a tiled layout. For example, if a TT-NN tensor is of tiled layout and has shape of `(2, 128, 32)`, the corresponding block that fits this entire tensor will have shape of `(2, 4, 1)`. If tensor has a row-major layout the shape unit is a scalar element. For the TT-NN tensor in the above example the corresponding block that fits this entire tensor will have shape of `(2, 128, 32)`.
 
 Shape determines the shape of a *block* returned by one of the *acquisition functions*. The size of a block in L1 memory is determined by shape, shape unit and data type. For example, for a block with shape `(2, 4, 1)`, shape unit of a tile and BF16 data type, its size in L1 will be `2 * 4 * 32 * 1 * 32 * 2 = 16384` bytes. The block count determines the total size of L1 memory allocated for a dataflow buffer. This size as a product of a block size and block count. For the most common case block count defaults to 2 to support double buffering. With double buffered dataflow buffer one kernel can write to a block while another is reading from a block thus enabling enabling the pipelining. For the example above, this means there will be a total of 32768 bytes of L1 memory allocated for the dataflow buffer.
 
@@ -1022,8 +1022,8 @@ def matmul_read():
 | *Node coordinates* | Coordinates of a given node within a grid. Each dimension is zero based and contiguous, which corresponds to logical indexing. |
 | *Dataflow buffer* | A communication primitive for synchronizing the passing of data between kernels on the same node. Maintains memory space that is written by a producer and read by a consumer as well as synchronization mechanism necessary to communicate between producer and consumer to avoid data races. |
 | *Dataflow buffer’s shape* | A shape of a block of memory acquired from a dataflow buffer to be either written by the producer or read by the consumer. |
-| *Dataflow buffer’s shape unit* | A unit in which dataflow buffer shape is expressed. When a dataflow buffer is created in likeness of tiled TT-NN Tensor the unit is a tile. If it is created in likeness of row-major TT-NN the unit is a scalar. |
-| *Dataflow buffer’s block count* | A block count determines how many block sized pages are allocated by the dataflow buffer. In the most case it is 2 pages to allow double buffering so that both consumer and producer can make progress by having one acquired block each to work with. |
+| *Dataflow buffer’s shape unit* | A unit in which dataflow buffer shape is expressed. When a dataflow buffer is created in likeness of tiled TT-NN Tensor the unit is a tile. If it is created in likeness of row-major TT-NN the unit is a scalar element. |
+| *Dataflow buffer’s block count* | A block count determines how many blocks are allocated by the dataflow buffer. In the most common case it is 2 blocks to allow double buffering so that both consumer and producer can make progress by having one acquired block each to work with. |
 | *Dataflow buffer’s acquisition function* | A blocking function that keeps a kernel waiting until a block becomes available in the dataflow buffer. |
 | *Dataflow buffer’s release function* | A non-blocking function that releases a block back to the dataflow buffer to make it available to other kernels. |
 | *Block* | A block of memory acquired from a dataflow buffer. In a compute kernel a block can participate in an expression as input, and also be used to store the expression's result. In a data movement kernel a block can participate in copy operation as a source or destination. |
@@ -1201,7 +1201,7 @@ def matmul_read():
 
 | Description | Wormhole | Blackhole |
 | :---- | :---- | :---- |
-| Tile size in scalars | 32, 32 | 32, 32 |
+| Tile size in scalar elements | 32, 32 | 32, 32 |
 | Maximum single chip grid size (unharvested) | 8, 9 | 13, 10 |
 | Size of L1 memory (KB) | 1464 | 1464 |
 | Maximum number of dataflow buffers | 32 | 32 |
