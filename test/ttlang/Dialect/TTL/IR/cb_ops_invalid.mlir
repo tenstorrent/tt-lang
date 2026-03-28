@@ -92,7 +92,7 @@ module {
 // cb_reserve with num_tiles: element type mismatch.
 module {
   func.func @cb_reserve_num_tiles_element_mismatch(%cb: !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x3x!ttcore.tile<32x32, f32>> attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    // expected-error @below {{result element type ('!ttcore.tile<32x32, f32>') must match CB element type ('!ttcore.tile<32x32, bf16>')}}
+    // expected-error @below {{result element type ('!ttcore.tile<32x32, f32>') must match DFB element type ('!ttcore.tile<32x32, bf16>')}}
     %view = ttl.cb_reserve %cb {num_tiles = 3 : i64} : <[3, 3], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x3x!ttcore.tile<32x32, f32>>
     func.return %view : tensor<1x3x!ttcore.tile<32x32, f32>>
   }
@@ -114,7 +114,7 @@ module {
 // cb_reserve with num_tiles exceeding CB capacity.
 module {
   func.func @cb_reserve_num_tiles_exceeds_capacity(%cb: !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 2>) -> tensor<5x3x!ttcore.tile<32x32, bf16>> attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    // expected-error @below {{num_tiles (15) exceeds CB capacity (9)}}
+    // expected-error @below {{num_tiles (15) exceeds DFB capacity (9)}}
     %view = ttl.cb_reserve %cb {num_tiles = 15 : i64} : <[3, 3], !ttcore.tile<32x32, bf16>, 2> -> tensor<5x3x!ttcore.tile<32x32, bf16>>
     func.return %view : tensor<5x3x!ttcore.tile<32x32, bf16>>
   }

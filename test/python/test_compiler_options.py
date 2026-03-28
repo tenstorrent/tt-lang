@@ -18,6 +18,7 @@ class TestDefaults:
         opts = CompilerOptions()
         assert opts.maximize_dst is True
         assert opts.enable_fpu_binary_ops is True
+        assert opts.auto_sync is False
         assert opts._explicit == frozenset()
 
     def test_frozen(self):
@@ -45,6 +46,11 @@ class TestFromString:
         opts = CompilerOptions.from_string("--no-ttl-fpu-binary-ops")
         assert opts.enable_fpu_binary_ops is False
         assert "enable_fpu_binary_ops" in opts._explicit
+
+    def test_enable_auto_sync(self):
+        opts = CompilerOptions.from_string("--ttl-auto-sync")
+        assert opts.auto_sync is True
+        assert "auto_sync" in opts._explicit
 
     def test_enable_flags_explicitly(self):
         opts = CompilerOptions.from_string("--ttl-maximize-dst --ttl-fpu-binary-ops")

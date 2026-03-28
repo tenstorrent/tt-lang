@@ -138,7 +138,6 @@ def bcast_multitile_kernel(
 # CHECK-FPU-NOT:  DeviceZoneScopedN(
 # CHECK-FPU:      init_sfpu(
 # CHECK-FPU:      for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
-# CHECK-FPU-NEXT:   cb_reserve_back(get_compile_time_arg_val(3), {{.*}});
 # CHECK-FPU-NEXT:   tile_regs_acquire();
 # CHECK-FPU-NEXT:   {
 # CHECK-FPU-NEXT:   DeviceZoneScopedN("ttl_compute");
@@ -195,7 +194,6 @@ def bcast_multitile_kernel(
 # CHECK-FPU:        pack_tile<true>(
 # CHECK-FPU:        pack_tile<true>(
 # CHECK-FPU-NEXT:   tile_regs_release();
-# CHECK-FPU-NEXT:   cb_push_back(get_compile_time_arg_val(3), {{.*}});
 # CHECK-FPU-NEXT: }
 # CHECK-FPU-NOT:  DeviceZoneScopedN(
 

@@ -1147,7 +1147,10 @@ def _compile_kernel(
             f"func.func({assign_dst_pass})",
         ]
         if compiler_options.maximize_dst:
-            pipeline_passes.append("func.func(ttl-subblock-compute-for-dst)")
+            subblock_sync = "true" if compiler_options.auto_sync else "false"
+            pipeline_passes.append(
+                f"func.func(ttl-subblock-compute-for-dst{{subblock-sync={subblock_sync}}})"
+            )
         pipeline_passes.append("func.func(ttl-insert-tile-regs-sync)")
         if compiler_options.use_block_matmul:
             pipeline_passes.append("func.func(ttl-lower-matmul-block)")

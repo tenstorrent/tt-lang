@@ -476,7 +476,7 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
   // Clone the body, remapping captured view references to tiled outputs.
   // The body's tile_store ops capture the cb_reserve view from outside the
   // compute. When tiling, these must reference the sliced output instead so
-  // that downstream lowering can compute the correct global CB offset from
+  // that downstream lowering can compute the correct global DFB offset from
   // the extract_slice. This applies uniformly to all computes (elementwise,
   // matmul, reduce, etc.): iter_index produces local (subblock) coordinates,
   // and addSliceOffset adds the global offset during TTL-to-TTKernel
@@ -922,7 +922,7 @@ mlir::LogicalResult mlir::tt::ttl::CBReserveOp::verify() {
     if (cbElemTy != resultTy.getElementType()) {
       return emitOpError() << "result element type ("
                            << resultTy.getElementType()
-                           << ") must match CB element type (" << cbElemTy
+                           << ") must match DFB element type (" << cbElemTy
                            << ")";
     }
     int64_t resultTiles = 1;
@@ -937,7 +937,7 @@ mlir::LogicalResult mlir::tt::ttl::CBReserveOp::verify() {
     int64_t cbCapacity = cbTy.getElementsPerBlock();
     if (resultTiles > cbCapacity) {
       return emitOpError() << "num_tiles (" << resultTiles
-                           << ") exceeds CB capacity (" << cbCapacity << ")";
+                           << ") exceeds DFB capacity (" << cbCapacity << ")";
     }
     return mlir::success();
   }

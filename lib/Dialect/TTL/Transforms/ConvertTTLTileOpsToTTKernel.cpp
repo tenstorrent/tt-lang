@@ -464,7 +464,7 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
     Value flatSrcIndex = affine::AffineLinearizeIndexOp::create(
         rewriter, loc, srcIndices, srcTensorTy.getShape());
 
-    // If the source is a subblock slice, convert local to global CB index.
+    // If the source is a subblock slice, convert local to global DFB index.
     flatSrcIndex =
         utils::addSliceOffset(op.getSrc(), flatSrcIndex, rewriter, loc);
 

@@ -1,14 +1,19 @@
 // FPU path (default): add uses add_tiles (0 DST input slots), dstPerIteration=1 (tanh only).
 // unrollFactor = min(4, 6) = 4. Subblock [1, 3] = 3 tiles fits in f32 capacity.
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-subblock-compute-for-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-subblock-compute-for-dst{subblock-sync=true}, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   | FileCheck %s --check-prefix=FPU
 
 // SFPU path: add uses copy_tile + add_binary_tile (2 DST input slots), dstPerIteration=2.
 // unrollFactor = min(2, 6) = 2. Subblock [2, 1] = 2 tiles.
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-subblock-compute-for-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-subblock-compute-for-dst{subblock-sync=true}, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   | FileCheck %s --check-prefix=SFPU
+
+// auto-sync disabled: reserve/push stays at outer level.
+// RUN: ttlang-opt %s \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-subblock-compute-for-dst{subblock-sync=false}, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
+// RUN:   | FileCheck %s --check-prefix=MANUAL
 
 // =============================================================================
 // FPU path: 3 tiles per subblock, outer loop over 2 rows.
@@ -84,6 +89,19 @@
 // SFPU-NEXT:  ttkernel.tile_regs_commit
 // SFPU:   } {ttl.subblock_dim = 1 : index, ttl.subblock_loop_stride = 1 : index}
 // SFPU-NOT:   ttkernel.add_tiles
+
+// =============================================================================
+// Manual sync: reserve/push at outer level, not per-subblock.
+// =============================================================================
+// MANUAL-LABEL: func.func @f32_subblock_scheduling
+// MANUAL-DAG: %[[MC6:.*]] = arith.constant 6 : i32
+// MANUAL: ttkernel.cb_reserve_back(%{{.*}}, %[[MC6]])
+// MANUAL: scf.for
+// MANUAL-NOT: ttkernel.cb_reserve_back
+// MANUAL-NOT: ttkernel.cb_push_back
+// MANUAL: ttkernel.tile_regs_release
+// MANUAL: }
+// MANUAL: ttkernel.cb_push_back(%{{.*}}, %[[MC6]])
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 func.func @f32_subblock_scheduling()

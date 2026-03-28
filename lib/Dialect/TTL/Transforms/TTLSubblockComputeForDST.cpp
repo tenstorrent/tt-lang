@@ -298,62 +298,73 @@ private:
       outputInfos.push_back(std::move(info));
     }
 
-    // When DFB-contiguous, split output reserve/push into per-subblock
-    // operations inside the loop. This enables pack_tile_block.
+    // When auto-sync is enabled, refine reserve/push to per-subblock
+    // granularity for contiguous outputs, enabling pack_tile_block.
+    // L1 allocation is unchanged: CB size is fixed at program creation;
+    // reserve/push only synchronize access within that region.
+    //
+    // Validity: a single reserve(N) + push(N) is equivalent to K calls
+    // of reserve(N/K) + push(N/K) when the subblock tiles are contiguous
+    // in the CB — both advance the write pointer by the same total amount
+    // and signal the same total number of tiles to the consumer. The
+    // contiguity check (above) ensures subblock tiles map to consecutive
+    // CB pages, so the per-subblock writes don't create gaps.
     scf::ForOp innermostLoop = loopNest.loops.back();
-    for (auto [outputIdx, output] : llvm::enumerate(computeOp.getOutputs())) {
-      auto &info = outputInfos[outputIdx];
-      if (!info.contiguous) {
-        continue;
-      }
-      Value outputCB = getAttachedCB(output);
-      if (!outputCB) {
-        continue;
-      }
-
-      // Find the cb_reserve and cb_push for this output CB.
-      CBReserveOp reserveOp;
-      CBPushOp pushOp;
-      for (Operation *user : outputCB.getUsers()) {
-        if (auto r = dyn_cast<CBReserveOp>(user)) {
-          reserveOp = r;
+    if (subblockSync) {
+      for (auto [outputIdx, output] : llvm::enumerate(computeOp.getOutputs())) {
+        auto &info = outputInfos[outputIdx];
+        if (!info.contiguous) {
+          continue;
         }
-        if (auto p = dyn_cast<CBPushOp>(user)) {
-          pushOp = p;
+        Value outputCB = getAttachedCB(output);
+        if (!outputCB) {
+          continue;
         }
-      }
-      if (!reserveOp || !pushOp) {
-        continue;
-      }
 
-      // Create per-subblock cb_reserve at the top of the innermost loop body.
-      auto resultType = RankedTensorType::get(
-          info.shape, reserveOp.getResult().getType().getElementType());
-      OpBuilder reserveBuilder(innermostLoop.getBody(),
-                               innermostLoop.getBody()->begin());
-      auto numTilesAttr = b.getI64IntegerAttr(info.numTiles);
-      auto newReserve = CBReserveOp::create(reserveBuilder, loc, resultType,
-                                            outputCB, numTilesAttr);
-
-      // Create per-subblock cb_push at the end of the loop body.
-      OpBuilder pushBuilder(innermostLoop.getBody(),
-                            std::prev(innermostLoop.getBody()->end()));
-      CBPushOp::create(pushBuilder, loc, outputCB, numTilesAttr);
-
-      // Replace tile_store views with the per-subblock cb_reserve result
-      // so that tile indices remain local to the subblock.
-      innermostLoop.getBody()->walk([&](TileStoreOp store) {
-        Value viewCB = getAttachedCB(store.getView());
-        if (viewCB == outputCB) {
-          store.getViewMutable().assign(newReserve.getResult());
+        // Find the cb_reserve and cb_push for this output CB.
+        CBReserveOp reserveOp;
+        CBPushOp pushOp;
+        for (Operation *user : outputCB.getUsers()) {
+          if (auto r = dyn_cast<CBReserveOp>(user)) {
+            reserveOp = r;
+          }
+          if (auto p = dyn_cast<CBPushOp>(user)) {
+            pushOp = p;
+          }
         }
-      });
+        if (!reserveOp || !pushOp) {
+          continue;
+        }
 
-      // Erase the original reserve/push (outside the loop).
-      if (reserveOp.getResult().use_empty()) {
-        reserveOp.erase();
+        // Create per-subblock cb_reserve at the top of the innermost loop body.
+        auto resultType = RankedTensorType::get(
+            info.shape, reserveOp.getResult().getType().getElementType());
+        OpBuilder reserveBuilder(innermostLoop.getBody(),
+                                 innermostLoop.getBody()->begin());
+        auto numTilesAttr = b.getI64IntegerAttr(info.numTiles);
+        auto newReserve = CBReserveOp::create(reserveBuilder, loc, resultType,
+                                              outputCB, numTilesAttr);
+
+        // Create per-subblock cb_push at the end of the loop body.
+        OpBuilder pushBuilder(innermostLoop.getBody(),
+                              std::prev(innermostLoop.getBody()->end()));
+        CBPushOp::create(pushBuilder, loc, outputCB, numTilesAttr);
+
+        // Replace tile_store views with the per-subblock cb_reserve result
+        // so that tile indices remain local to the subblock.
+        innermostLoop.getBody()->walk([&](TileStoreOp store) {
+          Value viewCB = getAttachedCB(store.getView());
+          if (viewCB == outputCB) {
+            store.getViewMutable().assign(newReserve.getResult());
+          }
+        });
+
+        // Erase the original reserve/push (outside the loop).
+        if (reserveOp.getResult().use_empty()) {
+          reserveOp.erase();
+        }
+        pushOp.erase();
       }
-      pushOp.erase();
     }
 
     // Replace the original compute op with its output operands.

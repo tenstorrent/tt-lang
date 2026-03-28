@@ -235,7 +235,7 @@ static CircularBufferType getTTLCBType(Value cb) {
 }
 
 // Tile count: use the `num_tiles` attribute if present (per-subblock
-// reserve/push), otherwise derive from the CB type shape (full block).
+// reserve/push), otherwise derive from the DFB type shape (full block).
 static Value computeNumTiles(Operation *sourceOp, Value cb,
                              ConversionPatternRewriter &rewriter,
                              Location loc) {
@@ -326,7 +326,7 @@ static FailureOr<Value> getCBFromView(Value v) {
       continue;
     }
 
-    // Trace through ttl.attach_cb to get the CB operand.
+    // Trace through ttl.attach_cb to get the DFB operand.
     if (auto attach = llvm::dyn_cast<AttachCBOp>(def)) {
       v = attach.getCb();
       continue;
@@ -364,9 +364,8 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
 
     auto cb = getCBFromView(adaptor.getView());
     if (failed(cb)) {
-      // Adapted view may have lost the CB chain (e.g., attach_cb already
-      // converted). Fall back to tracing the original (unconverted) view
-      // and converting the CB type.
+      // Adapted view may have lost the DFB chain (e.g., attach_cb already
+      // converted). Trace the original (unconverted) view instead.
       Value origCB = getAttachedCB(op.getView());
       if (!origCB) {
         return rewriter.notifyMatchFailure(
@@ -387,7 +386,7 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
         rewriter, loc, indices, viewTy.getShape());
 
     // If the view is a subblock slice, add the slice offset to produce
-    // the global CB tile index.
+    // the global DFB tile index.
     cbTileIndex =
         utils::addSliceOffset(op.getView(), cbTileIndex, rewriter, loc);
 

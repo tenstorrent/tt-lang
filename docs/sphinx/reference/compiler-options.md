@@ -15,6 +15,8 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-maximize-dst` / `--no-ttl-maximize-dst` | enabled | Partition compute iteration spaces into subblocks that maximize DST register utilization, and reorder tile operations within sync regions to group by kind. Disabling falls back to per-tile synchronization. |
 | `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | enabled | Emit FPU binary elementwise ops (`add_tiles`, `sub_tiles`, `mul_tiles`) when both operands come from circular buffers. When disabled, binary ops use the SFPU path. |
 | `--ttl-block-matmul` / `--no-ttl-block-matmul` | enabled | Emit `matmul_block` (processes the full tile block atomically) instead of per-tile matmul loops. Disabling this option is not yet supported. |
+| `--ttl-auto-sync` / `--no-ttl-auto-sync` | disabled | Let the compiler insert and move DFB synchronization ops. When enabled, reserve/push may be refined to per-subblock granularity. When disabled, user-placed reserve/push is preserved as written. |
+| `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | enabled | Combine consecutive `pack_tile` ops on the same CB with contiguous DST and CB indices into a single `pack_tile_block` call. |
 
 ### Other Ways to Set These
 
@@ -106,6 +108,8 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `maximize-dst` | bool | `true` | Enable DST maximization via subblock compute and scheduling. |
 | `enable-fpu-binary-ops` | bool | `true` | Use FPU for binary add/sub/mul. |
 | `use-block-matmul` | bool | `true` | Lower matmul to block-level hardware calls (`experimental::matmul_block`). |
+| `auto-sync` | bool | `false` | Let the compiler insert and move DFB synchronization ops. |
+| `combine-pack-tiles` | bool | `true` | Combine consecutive `pack_tile` ops into `pack_tile_block`. |
 | `lower-to-emitc` | bool | `false` | Run the TTKernel-to-EmitC backend (produces C++ source). |
 
 The pipeline runs these passes in order:
@@ -113,7 +117,7 @@ The pipeline runs these passes in order:
 1. `convert-ttl-to-compute` — lower TTL elementwise tensor ops to `ttl.compute` with tile ops
 2. `ttl-set-compute-kernel-config` — set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
 3. `ttl-assign-dst` — DST register allocation (linear scan with copy insertion)
-4. `ttl-subblock-compute-for-dst` — tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*
+4. `ttl-subblock-compute-for-dst` — tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `auto-sync=true`)*
 5. `ttl-insert-tile-regs-sync` — insert math/pack thread synchronization
 6. `ttl-lower-matmul-block` — mark block-matmul computes and expand stores *(only if `use-block-matmul=true`)*
 7. `ttl-lower-to-loops` — lower `ttl.compute` to `scf.for` loops
@@ -121,8 +125,9 @@ The pipeline runs these passes in order:
 9. `ttl-annotate-cb-associations` — annotate block args with CB indices
 10. `convert-ttl-to-ttkernel` — lower TTL DMA ops to TTKernel
 11. `ttkernel-insert-inits` — insert hardware init ops before compute ops
-12. Canonicalization and CSE cleanup
-13. *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
+12. `ttkernel-combine-pack-tiles` — combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
+13. Canonicalization and CSE cleanup
+14. *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
 
 ### Individual Pass Options
 
@@ -155,6 +160,18 @@ merging.
 
 ```bash
 ttlang-opt input.mlir -p 'func.func(ttl-assign-dst{dst-capacity=16 enable-fpu-binary-ops=0})'
+```
+
+#### `ttl-subblock-compute-for-dst`
+
+Partition `ttl.compute` into DST-sized subblocks.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `subblock-sync` | bool | `false` | Refine DFB reserve/push to per-subblock granularity, enabling `pack_tile_block` for contiguous subblocks. When disabled, user-placed reserve/push is preserved. |
+
+```bash
+ttlang-opt input.mlir -p 'func.func(ttl-subblock-compute-for-dst{subblock-sync=true})'
 ```
 
 #### `ttl-dump-cb-flow-graph`

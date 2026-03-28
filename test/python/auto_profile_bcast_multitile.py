@@ -182,7 +182,6 @@ def bcast_multitile_kernel(
 
 # Single subblock loop (4 tiles per subblock)
 # CHECK-FPU-NEXT:         for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
-# CHECK-FPU-NEXT:           cb_reserve_back(get_compile_time_arg_val(3), {{.*}});
 # CHECK-FPU-NEXT:           tile_regs_acquire();
 
 # Grouped COL broadcasts (4 tiles)
@@ -228,8 +227,11 @@ def bcast_multitile_kernel(
 # CHECK-FPU:                pack_tile<true>(
 # CHECK-FPU:                pack_tile<true>(
 # CHECK-FPU-NEXT:           tile_regs_release();
-# CHECK-FPU-NEXT:           cb_push_back(get_compile_time_arg_val(3), {{.*}});
 # CHECK-FPU-NEXT:         }
+# CHECK-FPU-NEXT:         }
+# CHECK-FPU-NEXT:         {
+# CHECK-FPU-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_implicit_cb_push");
+# CHECK-FPU-NEXT:         cb_push_back(get_compile_time_arg_val(3), {{.*}});
 # CHECK-FPU-NEXT:         }
 # CHECK-FPU-NEXT:         {
 # CHECK-FPU-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_implicit_cb_pop");
