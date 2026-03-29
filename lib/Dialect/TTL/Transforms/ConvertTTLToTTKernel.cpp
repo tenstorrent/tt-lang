@@ -984,7 +984,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
 /// (ttl-lower-to-loops).
 static LogicalResult
 lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
-                       TTLToTTKernelTypeConverter &typeConverter) {
+                       TTLToTTKernelTypeConverter &typeConverter,
+                       bool reduceFullFp32) {
   ConversionTarget computeTarget(ctx);
   computeTarget.addLegalDialect<ttkernel::TTKernelDialect>();
   computeTarget.addLegalDialect<affine::AffineDialect, arith::ArithDialect>();
@@ -1017,7 +1018,8 @@ lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
       });
 
   RewritePatternSet computePatterns(&ctx);
-  populateTTLTileOpsToTTKernelPatterns(&typeConverter, computePatterns);
+  populateTTLTileOpsToTTKernelPatterns(&typeConverter, computePatterns,
+                                       reduceFullFp32);
   return applyPartialConversion(mod, computeTarget, std::move(computePatterns));
 }
 
@@ -1117,6 +1119,8 @@ static void cleanupComputeKernels(ModuleOp mod, MLIRContext &ctx) {
 
 struct TTLConvertTTLToTTKernelPass
     : impl::TTLConvertTTLToTTKernelBase<TTLConvertTTLToTTKernelPass> {
+  using TTLConvertTTLToTTKernelBase::TTLConvertTTLToTTKernelBase;
+
   void runOnOperation() override {
     MLIRContext &ctx = getContext();
     ModuleOp mod = getOperation();
@@ -1129,7 +1133,8 @@ struct TTLConvertTTLToTTKernelPass
     }
 
     // Phase 2: Lower tile compute ops to TTKernel (tile_add, tile_mul, ...)
-    if (failed(lowerTileOpsToTTKernel(mod, ctx, typeConverter))) {
+    if (failed(
+            lowerTileOpsToTTKernel(mod, ctx, typeConverter, reduceFullFp32))) {
       signalPassFailure();
       return;
     }

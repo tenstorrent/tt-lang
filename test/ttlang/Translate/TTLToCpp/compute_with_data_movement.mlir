@@ -103,8 +103,9 @@
 // FPU:       for (size_t [[CI:.*]] = [[CZERO]]; [[CI]] < [[CBOUND]]; [[CI]] += [[STEP]]) {
 // FPU-NEXT:    for (size_t [[CJ:.*]] = [[CZERO]]; [[CJ]] < [[CBOUND]]; [[CJ]] += [[STEP]]) {
 // FPU:           tile_regs_acquire();
-// Linear tile index for add_tiles: i * bound + j
-// FPU:           size_t [[CTILE_Y:v[0-9]+]] = [[CI]] * [[CBOUND]];
+// Linearized CB index for add_tiles: i * 2 + j (2 cols per row)
+// FPU:           size_t [[CSTRIDE:v[0-9]+]] = 2;
+// FPU-NEXT:      size_t [[CTILE_Y:v[0-9]+]] = [[CI]] * [[CSTRIDE]];
 // FPU-NEXT:      size_t [[CTILE_IDX:v[0-9]+]] = [[CTILE_Y]] + [[CJ]];
 // No copy_tile for FPU add -- operands read directly from CB
 // FPU-NOT:       copy_tile
@@ -114,10 +115,8 @@
 // FPU-NEXT:      exp_tile([[CZERO]]);
 // FPU-NEXT:      tile_regs_commit();
 // FPU-NEXT:      tile_regs_wait();
-// Linearized index for pack_tile (from affine.linearize_index, lowered)
-// FPU:           size_t [[PTILE_Y:v[0-9]+]] = [[CI]] * {{.*}};
-// FPU-NEXT:      size_t [[PTILE_IDX:v[0-9]+]] = [[PTILE_Y]] + [[CJ]];
-// FPU-NEXT:      pack_tile<true>([[CZERO]], get_compile_time_arg_val(2), [[PTILE_IDX]]);
+// pack_tile reuses the same linearized CB index as add_tiles.
+// FPU:           pack_tile<true>([[CZERO]], get_compile_time_arg_val(2), [[CTILE_IDX]]);
 // FPU-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
 // FPU-NEXT:      tile_regs_release();
 

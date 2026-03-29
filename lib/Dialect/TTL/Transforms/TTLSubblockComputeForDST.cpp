@@ -103,12 +103,24 @@ struct TTLSubblockComputeForDSTPass
     func::FuncOp funcOp = getOperation();
 
     // Collect compute ops to subblock (avoid modifying while walking).
+    // Skip accumulating computes -- subblocking would break reduction
+    // accumulation by splitting the reduction loop across subblocks.
     SmallVector<ComputeOp> opsToSubblock;
     funcOp.walk([&](ComputeOp computeOp) {
       auto unrollAttr =
           computeOp->getAttrOfType<IntegerAttr>(kUnrollFactorAttrName);
       if (unrollAttr && unrollAttr.getInt() > 1) {
-        opsToSubblock.push_back(computeOp);
+        bool hasAccumulating = false;
+        computeOp.getBody().walk([&](Operation *op) {
+          if (op->hasTrait<TTLAccumulatingOpTrait>()) {
+            hasAccumulating = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        });
+        if (!hasAccumulating) {
+          opsToSubblock.push_back(computeOp);
+        }
       }
     });
 

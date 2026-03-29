@@ -14,8 +14,33 @@ def TTLConvertTTLToTTKernel
     Issue: #77 (umbrella issue with subtasks #78-#89).
   }];
 
+  let options = [
+    Option<"reduceFullFp32", "reduce-full-fp32", "bool", "true",
+           "Enable FP32 accumulation for reduce operations.">
+  ];
+
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
+def TTKernelInsertL1Accumulation
+    : Pass<"ttkernel-insert-l1-accumulation", "::mlir::ModuleOp"> {
+  let summary = "Insert L1 accumulation guards for reduction loops";
+  let description = [{
+    Inserts `pack_reconfig_l1_acc` guards inside reduction loops so that
+    pack operations accumulate into L1 instead of overwriting. On the first
+    iteration of a reduction loop, pack writes normally. On subsequent
+    iterations, the packer is reconfigured to add to the existing L1 value.
+
+    Reduction loops are identified by the `ttl.reduction_loop` attribute
+    on `scf.for` ops.
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
@@ -97,7 +122,10 @@ def TTLSetComputeKernelConfig
     Option<"fp32DestAccEn", "fp32-dest-acc-en", "bool", "false",
            "Set default fp32_dest_acc_en when not already configured.">,
     Option<"dstFullSyncEn", "dst-full-sync-en", "bool", "false",
-           "Set default dst_full_sync_en when not already configured.">
+           "Set default dst_full_sync_en when not already configured.">,
+    Option<"reduceFullFp32", "reduce-full-fp32", "bool", "true",
+           "Enable FP32 accumulation for reduce operations. "
+           "Implies fp32_dest_acc_en on compute ops containing reduce.">
   ];
 
   let dependentDialects = [

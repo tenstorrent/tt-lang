@@ -286,7 +286,6 @@ func.func @fpu_mul_1x1()
 // FPU-LABEL: func.func @fpu_add_tanh_f32
 // FPU-DAG: %[[C6I:.*]] = arith.constant 6 : i32
 // FPU-DAG: %[[C3I:.*]] = arith.constant 3 : i32
-// FPU-DAG: %[[C3:.*]] = arith.constant 3 : index
 // FPU-DAG: %[[C0:.*]] = arith.constant 0 : index
 // FPU-DAG: %[[C1:.*]] = arith.constant 1 : index
 // FPU-DAG: %[[C2:.*]] = arith.constant 2 : index
@@ -302,14 +301,14 @@ func.func @fpu_mul_1x1()
 // FPU:     scf.for %[[IV:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
 // FPU:       ttkernel.cb_reserve_back(%[[CB1]], %[[C3I]])
 // FPU:       ttkernel.tile_regs_acquire
-// Row offset: iv * 3 (3 columns per row).
-// FPU:       %[[ROWOFF:.*]] = arith.muli %[[IV]], %[[C3]]
+// CB indices via affine.linearize_index [iv, col] by (2, 3) for 2x3 grid.
+// FPU:       %[[IDX0:.*]] = affine.linearize_index [%[[IV]], %[[C0]]] by (2, 3)
 // FPU:       ttkernel.add_tiles_init(%[[CB0]], %[[CB2]])
-// 3 add_tiles per iteration (one per column), CB index = rowoff + col.
-// FPU:       ttkernel.add_tiles(%[[CB0]], %[[CB2]], %[[ROWOFF]], %[[ROWOFF]], %[[C0]])
-// FPU:       %[[IDX1:.*]] = arith.addi %[[ROWOFF]], %[[C1]]
+// 3 add_tiles per iteration (one per column).
+// FPU:       ttkernel.add_tiles(%[[CB0]], %[[CB2]], %[[IDX0]], %[[IDX0]], %[[C0]])
+// FPU:       %[[IDX1:.*]] = affine.linearize_index [%[[IV]], %[[C1]]] by (2, 3)
 // FPU:       ttkernel.add_tiles(%[[CB0]], %[[CB2]], %[[IDX1]], %[[IDX1]], %[[C1]])
-// FPU:       %[[IDX2:.*]] = arith.addi %[[ROWOFF]], %[[C2]]
+// FPU:       %[[IDX2:.*]] = affine.linearize_index [%[[IV]], %[[C2]]] by (2, 3)
 // FPU:       ttkernel.add_tiles(%[[CB0]], %[[CB2]], %[[IDX2]], %[[IDX2]], %[[C2]])
 // FPU:       ttkernel.tanh_tile_init
 // FPU:       ttkernel.tanh_tile(%[[C0]])

@@ -71,5 +71,6 @@ def TTL_DSTRegister : TTL_Type<"DSTRegister", "dst"> {
 //===----------------------------------------------------------------------===//
 
 def TTL_BcastTypeAttr : EnumAttr<TTL_Dialect, TTL_BcastType, "bcast_type">;
+def TTL_ReduceTypeAttr : EnumAttr<TTL_Dialect, TTL_ReduceType, "reduce_type">;
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSTYPES_TD

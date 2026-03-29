@@ -188,10 +188,18 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       }
       domainStrides = computeStrides(domainSizes);
     }
+    SmallVector<StringAttr> iterTypes;
+    for (Attribute attr : op.getIteratorTypes()) {
+      iterTypes.push_back(mlir::cast<StringAttr>(attr));
+    }
+
     for (auto [idx, loop] : llvm::enumerate(loopNest.loops)) {
       int64_t stride =
           fullStridesAttr ? fullStridesAttr[idx] : domainStrides[idx];
       loop->setAttr(kTileLoopStrideAttrName, rewriter.getIndexAttr(stride));
+      if (iterTypes[idx].getValue() == "reduction") {
+        loop->setAttr(kReductionLoopAttrName, rewriter.getUnitAttr());
+      }
     }
 
     // Record the outermost tile loop for unrolling if the compute was
@@ -350,10 +358,6 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
     // register position within the subblock.
     int64_t tileIdx = linearize(dimIndices, localStrides);
 
-    // tileOffset: linearized using full block strides — determines CB tile
-    // position within the entire block, used by computeCBTileIndex.
-    int64_t tileOffset = linearize(dimIndices, fullStrides);
-
     int64_t dstBase = tileIdx * dstPerIteration;
 
     // Offset dst_idx so each unrolled tile occupies a unique DST register.
@@ -376,17 +380,6 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
         Value newDstIndex = arith::AddIOp::create(
             b, copyTile.getLoc(), copyTile.getDstIndex(), offsetVal);
         copyTile.getDstIndexMutable().assign(newDstIndex);
-      }
-    }
-
-    // Set tile_offset on TTL ops for CB index computation. The attribute is
-    // consumed by computeCBTileIndex during TTL-to-TTKernel
-    // conversion.
-    if (auto *dialect = op->getDialect()) {
-      if (dialect->getNamespace() == "ttl") {
-        op->setAttr(
-            kTileOffsetAttrName,
-            IntegerAttr::get(IndexType::get(op->getContext()), tileOffset));
       }
     }
 

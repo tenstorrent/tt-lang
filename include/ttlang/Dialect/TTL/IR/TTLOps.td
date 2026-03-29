@@ -8,6 +8,7 @@
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsTypes.td"
 include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.td"
+include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
@@ -721,6 +722,85 @@ def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait]> {
   let arguments = (ins AnyType:$input, AnyType:$output, TTL_BcastTypeAttr:$bcast_type);
   let results = (outs AnyType:$result);
   let assemblyFormat = "$input `,` $output $bcast_type attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// Reduce Operation
+//===----------------------------------------------------------------------===//
+
+def TTL_ReduceOp : TTL_Op<"reduce", [Pure]> {
+  let summary = "Reduce a tensor along specified dimensions with a scaling factor";
+  let description = [{
+    Performs a scaled reduction (sum or max) along the specified dimensions.
+    The result tensor has the reduced dimensions collapsed to size 1.
+    The scaler tensor is multiplied into every result tile.
+
+    `dims` specifies which dimensions to reduce, using Python-style indexing
+    (negative values count from the end). For a rank-2 input:
+    - dims=[-2] or dims=[0]: reduce rows
+    - dims=[-1] or dims=[1]: reduce columns
+    - dims=[-2,-1] or dims=[0,1]: reduce both
+
+    Both input and scaler must be CB-attached rank-2 tensors.
+  }];
+  let arguments = (ins AnyRankedTensor:$input,
+                       AnyRankedTensor:$scaler,
+                       TTL_ReduceTypeAttr:$reduce_type,
+                       DenseI64ArrayAttr:$dims);
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat = [{
+    $input `,` $scaler $reduce_type $dims attr-dict `:`
+    `(` type($input) `,` type($scaler) `)` `->` type($result)
+  }];
+  let hasVerifier = 1;
+}
+
+def TTL_TileReduceOp : TTL_TileOp<"tile_reduce",
+    [TTL_CBInputTileOpTrait, TTL_AccumulatingOpTrait]> {
+  let summary = "Tile-level reduction with scaling";
+  let description = [{
+    Reduces a tile from the input dataflow buffer using the specified
+    reduction function (sum or max), scaled by a tile from the scaler
+    dataflow buffer, and writes the result to DST.
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$scaler, AnyType:$output,
+                       TTL_ReduceTypeAttr:$reduce_type,
+                       TTKernel_ReduceDimAttr:$reduce_dim);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = [{
+    $input `,` $scaler `,` $output $reduce_type $reduce_dim attr-dict `:`
+    `(` type($input) `,` type($scaler) `,` type($output) `)` `->` type($result)
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// Transpose Operation
+//===----------------------------------------------------------------------===//
+
+def TTL_TransposeOp : TTL_Op<"transpose", [Pure]> {
+  let summary = "Transpose a 2D tensor of tiles";
+  let description = [{
+    Transposes a rank-2 tensor: shape (M, N) becomes (N, M).
+    Both the tile grid and individual 32x32 tiles are transposed.
+    Input must be a CB-attached rank-2 tensor.
+  }];
+  let arguments = (ins AnyRankedTensor:$input);
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat = "$input attr-dict `:` type($input) `->` type($result)";
+  let hasVerifier = 1;
+}
+
+def TTL_TileTransposeOp : TTL_TileOp<"tile_transpose", [TTL_CBInputTileOpTrait]> {
+  let summary = "Tile-level 32x32 transpose (dataflow buffer input, DST output)";
+  let description = [{
+    Transposes a 32x32 tile from a dataflow buffer and writes the result
+    to a DST register.
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$output);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = [{
+    $input `,` $output attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)
+  }];
 }
 
 //===----------------------------------------------------------------------===//

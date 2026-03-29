@@ -64,9 +64,18 @@ struct TTLSetComputeKernelConfigPass
 
     for (ComputeOp computeOp : funcOp.getOps<ComputeOp>()) {
 
-      // Set fp32_dest_acc_en if any tile arg is f32
+      // Set fp32_dest_acc_en if any tile arg is f32, or if reduce_full_fp32
+      // is enabled and the compute op contains a reduce tile op.
       setBoolAttrIf(computeOp, kFp32DestAccEnAttrName, true, [&](ComputeOp op) {
-        return fp32DestAccEn || hasF32TileArgs(op);
+        if (fp32DestAccEn || hasF32TileArgs(op)) {
+          return true;
+        }
+        if (reduceFullFp32) {
+          bool hasReduce = false;
+          op->walk([&](TileReduceOp) { hasReduce = true; });
+          return hasReduce;
+        }
+        return false;
       });
 
       // Set dst_full_sync_en if not already set

@@ -22,7 +22,6 @@
 // FPU-LABEL: func.func @f32_subblock_scheduling
 // FPU-DAG:       %[[C6_I32:.*]] = arith.constant 6 : i32
 // FPU-DAG:       %[[C3_I32:.*]] = arith.constant 3 : i32
-// FPU-DAG:       %[[C3:.*]] = arith.constant 3 : index
 // FPU-DAG:       %[[C1:.*]] = arith.constant 1 : index
 // FPU-DAG:       %[[C2:.*]] = arith.constant 2 : index
 // FPU-DAG:       %[[C0:.*]] = arith.constant 0 : index
@@ -37,12 +36,12 @@
 // Per-subblock cb_reserve inside loop (outermost dim subblocked).
 // FPU-NEXT:        ttkernel.cb_reserve_back(%[[CB_OUT]], %[[C3_I32]])
 // FPU-NEXT:        ttkernel.tile_regs_acquire()
-// FPU-NEXT:        %[[BASE:.*]] = arith.muli %[[IV]], %[[C3]]
+// FPU-NEXT:        %[[IDX0:.*]] = affine.linearize_index [%[[IV]], %[[C0]]] by (2, 3)
 // FPU-NEXT:        ttkernel.add_tiles_init(%[[CB0]], %[[CB1]])
-// FPU-NEXT:        ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[BASE]], %[[BASE]], %[[C0]])
-// FPU-NEXT:        %[[IDX1:.*]] = arith.addi %[[BASE]], %[[C1]]
+// FPU-NEXT:        ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[IDX0]], %[[IDX0]], %[[C0]])
+// FPU-NEXT:        %[[IDX1:.*]] = affine.linearize_index [%[[IV]], %[[C1]]] by (2, 3)
 // FPU-NEXT:        ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[IDX1]], %[[IDX1]], %[[C1]])
-// FPU-NEXT:        %[[IDX2:.*]] = arith.addi %[[BASE]], %[[C2]]
+// FPU-NEXT:        %[[IDX2:.*]] = affine.linearize_index [%[[IV]], %[[C2]]] by (2, 3)
 // FPU-NEXT:        ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[IDX2]], %[[IDX2]], %[[C2]])
 // FPU-NEXT:        ttkernel.tanh_tile_init()
 // FPU-NEXT:        ttkernel.tanh_tile(%[[C0]])
