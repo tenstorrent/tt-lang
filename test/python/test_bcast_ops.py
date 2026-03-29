@@ -6,12 +6,18 @@
 Tests for TTL broadcast operations.
 
 Tests the tile_bcast op which broadcasts a row/col/scalar tile to a full tile.
-Also tests composition patterns like (a * b) + bcast(c).
+Also tests composition patterns like (a * b) + bcast(c), and PyTorch-style
+negative ``dims`` (e.g. ``[-2]``, ``[-1]``, ``[-2, -1]``).
 """
 
 # REQUIRES: ttnn
 # UNSUPPORTED: system-darwin
 # RUN: %python -m pytest %s -v
+
+import os
+import subprocess
+import sys
+import tempfile
 
 import pytest
 import torch
@@ -140,6 +146,87 @@ def bcast_scalar_kernel(inp, out):
         out_blk.pop()
 
 
+@ttl.kernel(grid=(1, 1))
+def bcast_row_neg_dim_kernel(inp, out):
+    """Row broadcast, ``dims=[-2]``, 2x2 tile grid (same as multitile row + ``[0]``)."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+
+    @ttl.compute()
+    def compute_fn():
+        with inp_dfb.wait() as i, out_dfb.reserve() as o:
+            result = ttl.math.broadcast(i, o, dims=[-2])
+            o.store(result)
+
+    @ttl.datamovement()
+    def dm_read():
+        inp_blk = inp_dfb.reserve()
+        tx = ttl.copy(inp[0:2, 0:2], inp_blk)
+        tx.wait()
+        inp_blk.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        out_blk = out_dfb.wait()
+        tx = ttl.copy(out_blk, out[0:2, 0:2])
+        tx.wait()
+        out_blk.pop()
+
+
+@ttl.kernel(grid=(1, 1))
+def bcast_col_neg_dim_kernel(inp, out):
+    """Column broadcast, ``dims=[-1]``, 1x2 tile grid (32x64)."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 2), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 2), buffer_factor=2)
+
+    @ttl.compute()
+    def compute_fn():
+        with inp_dfb.wait() as i, out_dfb.reserve() as o:
+            result = ttl.math.broadcast(i, o, dims=[-1])
+            o.store(result)
+
+    @ttl.datamovement()
+    def dm_read():
+        inp_blk = inp_dfb.reserve()
+        tx = ttl.copy(inp[0:1, 0:2], inp_blk)
+        tx.wait()
+        inp_blk.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        out_blk = out_dfb.wait()
+        tx = ttl.copy(out_blk, out[0:1, 0:2])
+        tx.wait()
+        out_blk.pop()
+
+
+@ttl.kernel(grid=(1, 1))
+def bcast_scalar_neg_dim_kernel(inp, out):
+    """Scalar broadcast, ``dims=[-2, -1]``, 2x1 tile grid (64x32)."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 1), buffer_factor=2)
+
+    @ttl.compute()
+    def compute_fn():
+        with inp_dfb.wait() as i, out_dfb.reserve() as o:
+            result = ttl.math.broadcast(i, o, dims=[-2, -1])
+            o.store(result)
+
+    @ttl.datamovement()
+    def dm_read():
+        inp_blk = inp_dfb.reserve()
+        tx = ttl.copy(inp[0:2, 0:1], inp_blk)
+        tx.wait()
+        inp_blk.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        out_blk = out_dfb.wait()
+        tx = ttl.copy(out_blk, out[0:2, 0:1])
+        tx.wait()
+        out_blk.pop()
+
+
 # =============================================================================
 # Composition Pattern: (a * b) + bcast(c)
 # Tests bcast as first op with subsequent DST operations
@@ -256,6 +343,38 @@ def expected_multitile_bcast_result(values, dtype=torch.bfloat16):
     t[0:32, 32:64] = values[1]  # Tile (0,1)
     t[32:64, 0:32] = values[2]  # Tile (1,0)
     t[32:64, 32:64] = values[3]  # Tile (1,1)
+    return t
+
+
+def create_1x2_col_bcast_input(values, dtype=torch.bfloat16):
+    """32x64 tensor (1x2 tiles): first column of each tile filled."""
+    t = torch.zeros((32, 64), dtype=dtype)
+    t[0:32, 0] = values[0]
+    t[0:32, 32] = values[1]
+    return t
+
+
+def expected_1x2_full_tile(values, dtype=torch.bfloat16):
+    """Expected 32x64: each tile uniformly filled."""
+    t = torch.zeros((32, 64), dtype=dtype)
+    t[0:32, 0:32] = values[0]
+    t[0:32, 32:64] = values[1]
+    return t
+
+
+def create_2x1_scalar_bcast_input(values, dtype=torch.bfloat16):
+    """64x32 tensor (2x1 tiles): top-left element of each tile filled."""
+    t = torch.zeros((64, 32), dtype=dtype)
+    t[0, 0] = values[0]
+    t[32, 0] = values[1]
+    return t
+
+
+def expected_2x1_full_tile(values, dtype=torch.bfloat16):
+    """Expected 64x32: each tile uniformly filled."""
+    t = torch.zeros((64, 32), dtype=dtype)
+    t[0:32, :] = values[0]
+    t[32:64, :] = values[1]
     return t
 
 
@@ -392,6 +511,21 @@ class TestBcastRow:
 
         assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
+    def test_bcast_row_negative_dim_index(self, device):
+        """Row broadcast with ``dims=[-2]`` on a 2x2 tile CB (64x64)."""
+        values = [1.0, 2.0, 3.0, 4.0]
+        inp_torch = create_multitile_row_bcast_input(values)
+        out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
+        expected = expected_multitile_bcast_result(values)
+
+        inp = to_l1(inp_torch, device)
+        out = to_l1(out_torch, device)
+
+        bcast_row_neg_dim_kernel(inp, out)
+        result = ttnn.to_torch(out)
+
+        assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+
     def test_bcast_row_small(self, device):
         """Test row broadcast with small value."""
         value = 0.125
@@ -441,6 +575,21 @@ class TestBcastCol:
 
         assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
+    def test_bcast_col_negative_dim_index(self, device):
+        """Column broadcast with ``dims=[-1]`` on a 1x2 tile CB (32x64)."""
+        values = [5.0, 6.0]
+        inp_torch = create_1x2_col_bcast_input(values)
+        out_torch = torch.zeros((32, 64), dtype=torch.bfloat16)
+        expected = expected_1x2_full_tile(values)
+
+        inp = to_l1(inp_torch, device)
+        out = to_l1(out_torch, device)
+
+        bcast_col_neg_dim_kernel(inp, out)
+        result = ttnn.to_torch(out)
+
+        assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+
     def test_bcast_col_large(self, device):
         """Test col broadcast with larger value."""
         value = 100.0
@@ -471,6 +620,21 @@ class TestBcastScalar:
         out = to_l1(out_torch, device)
 
         bcast_scalar_kernel(inp, out)
+        result = ttnn.to_torch(out)
+
+        assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+
+    def test_bcast_scalar_negative_dim_indices(self, device):
+        """Scalar broadcast with ``dims=[-2, -1]`` on a 2x1 tile CB (64x32)."""
+        values = [4.0, 9.0]
+        inp_torch = create_2x1_scalar_bcast_input(values)
+        out_torch = torch.zeros((64, 32), dtype=torch.bfloat16)
+        expected = expected_2x1_full_tile(values)
+
+        inp = to_l1(inp_torch, device)
+        out = to_l1(out_torch, device)
+
+        bcast_scalar_neg_dim_kernel(inp, out)
         result = ttnn.to_torch(out)
 
         assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
@@ -817,6 +981,75 @@ class TestBcastCompositionMultitile:
         )
 
         assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+
+
+def _bcast_validation_kernel(dims_literal):
+    """Compile a broadcast kernel with the given dims and return stderr on failure."""
+    src = f"""\
+import os
+os.environ["TTLANG_COMPILE_ONLY"] = "1"
+import ttl, torch
+
+@ttl.kernel(grid=(1, 1))
+def kern(inp, out):
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    @ttl.compute()
+    def compute_fn():
+        with inp_dfb.wait() as i, out_dfb.reserve() as o:
+            result = ttl.math.broadcast(i, o, dims={dims_literal!r})
+            o.store(result)
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as blk:
+            ttl.copy(inp[0:32, 0:32], blk).wait()
+            blk.push()
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as blk:
+            ttl.copy(blk, out[0:32, 0:32]).wait()
+
+inp = torch.ones((32, 32), dtype=torch.bfloat16)
+out = torch.zeros((32, 32), dtype=torch.bfloat16)
+kern(inp, out)
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+        f.write(src)
+        tmp_path = f.name
+    try:
+        result = subprocess.run(
+            [sys.executable, tmp_path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    finally:
+        os.unlink(tmp_path)
+    if result.returncode == 0:
+        raise AssertionError(
+            f"Expected compilation to fail for dims={dims_literal!r}, but it succeeded"
+        )
+    return result.stderr
+
+
+class TestBcastDimsValidation:
+    """Test that out-of-range dims are rejected at compile time."""
+
+    def test_out_of_range_positive(self):
+        stderr = _bcast_validation_kernel([2])
+        assert "Invalid broadcast dimension 2" in stderr
+
+    def test_out_of_range_negative(self):
+        stderr = _bcast_validation_kernel([-3])
+        assert "Invalid broadcast dimension -3" in stderr
+
+    def test_out_of_range_large_positive(self):
+        stderr = _bcast_validation_kernel([10])
+        assert "Invalid broadcast dimension 10" in stderr
+
+    def test_out_of_range_large_negative(self):
+        stderr = _bcast_validation_kernel([-10])
+        assert "Invalid broadcast dimension -10" in stderr
 
 
 if __name__ == "__main__":

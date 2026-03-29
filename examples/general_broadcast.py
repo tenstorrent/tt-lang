@@ -1,6 +1,11 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+#
+# TTLANG_HARDWARE_CI: skip-compiler
+#
+# Standalone example: real `import ttl`, ttnn device (not python/sim).
+
 import torch
 import ttnn
 
@@ -65,19 +70,21 @@ def __demo_kernel(a, b, c, y):
 
                     # Check if b needs broadcasting
                     if b_row_tiles == 1 and row_tiles_per_block > 1:
-                        b_expr = ttl.math.broadcast(b_blk, dims=[0])
+                        b_expr = ttl.math.broadcast(b_blk, y_blk, dims=[0])
                     if b_col_tiles == 1 and col_tiles_per_block > 1:
                         b_expr = ttl.math.broadcast(
                             b_expr if b_expr != b_blk else b_blk,
+                            y_blk,
                             dims=[-1] if b_row_tiles > 1 else [0, 1],
                         )
 
                     # Check if c needs broadcasting
                     if c_row_tiles == 1 and row_tiles_per_block > 1:
-                        c_expr = ttl.math.broadcast(c_blk, dims=[0])
+                        c_expr = ttl.math.broadcast(c_blk, y_blk, dims=[0])
                     if c_col_tiles == 1 and col_tiles_per_block > 1:
                         c_expr = ttl.math.broadcast(
                             c_expr if c_expr != c_blk else c_blk,
+                            y_blk,
                             dims=[-1] if c_row_tiles > 1 else [0, 1],
                         )
 

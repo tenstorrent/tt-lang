@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include "ttlang/Config.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 
 #include "mlir/IR/MLIRContext.h"
@@ -17,8 +18,13 @@
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/Dialect/TTKernel/Transforms/Passes.h"
 #include "ttmlir/Dialect/TTMetal/IR/TTMetal.h"
+#include "llvm/Support/CommandLine.h"
 
 int main(int argc, char **argv) {
+  llvm::cl::AddExtraVersionPrinter([](llvm::raw_ostream &os) {
+    os << "ttlang-opt version " << TTLANG_VERSION << "\n";
+  });
+
   // Register upstream MLIR passes
   mlir::registerAllPasses();
 
