@@ -347,6 +347,174 @@ inline FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
   return getDstCapacity(isFloat32, fullSyncEn);
 }
 
+//===----------------------------------------------------------------------===//
+// Interleaved side-effect ops (signposts, dprints) for compute body emission
+//===----------------------------------------------------------------------===//
+
+/// Check if an op is a signpost or tile-level dprint that belongs inside
+/// a compute body.
+inline bool isSideEffectOpForCompute(mlir::Operation *op) {
+  if (auto sp = mlir::dyn_cast<SignpostOp>(op)) {
+    return sp.getName().starts_with("ttl_");
+  }
+  if (auto dp = mlir::dyn_cast<DPrintOp>(op)) {
+    StringRef mode = dp.getMode();
+    return mode == "dst" || mode == "tile";
+  }
+  return false;
+}
+
+/// Collects signpost/dprint ops interleaved with a set of traced ops in a
+/// block, and emits them into a compute body at the correct relative
+/// positions. Handles leading ops (before all traced ops), interleaved
+/// ops (between traced ops), and trailing ops (after the last traced op).
+///
+/// Usage:
+///   auto sideEffects = InterleavedSideEffects::collect(tracedOps, anchor);
+///   // ... set up compute body, builder at start of body ...
+///   sideEffects.emitLeading(builder);
+///   for (Operation *op : tracedOps) {
+///     sideEffects.emitBefore(op, builder);
+///     // ... emit tile op for `op` ...
+///   }
+///   sideEffects.emitTrailingBeforeStore(builder);
+///   // ... emit tile_store ...
+///   sideEffects.emitTrailingAfterStore(builder);
+///   // ... after compute is built ...
+///   sideEffects.eraseOriginals();
+struct InterleavedSideEffects {
+  /// Leading ops: before all traced ops.
+  SmallVector<Operation *> leading;
+  /// Map: traced op -> side-effect ops to emit before it.
+  DenseMap<Operation *, SmallVector<Operation *>> before;
+  /// Trailing ops before the store (begin signposts and dprints).
+  SmallVector<Operation *> trailingBeforeStore;
+  /// Trailing ops after the store (end signposts).
+  SmallVector<Operation *> trailingAfterStore;
+  /// All collected ops (for erasure).
+  SmallVector<Operation *> allOps;
+
+  /// Collect side-effect ops interleaved with `tracedOps` in the same
+  /// block. `anchor` is the terminating op (e.g., the store) that bounds
+  /// the trailing region.
+  static InterleavedSideEffects
+  collect(const llvm::SmallSetVector<Operation *, 8> &tracedOps,
+          Operation *anchor) {
+    InterleavedSideEffects result;
+    DenseSet<Operation *> tracedSet(tracedOps.begin(), tracedOps.end());
+
+    // Find first and last traced ops in block order.
+    Operation *first = nullptr;
+    Operation *last = nullptr;
+    for (auto &op : *anchor->getBlock()) {
+      if (tracedSet.contains(&op)) {
+        if (!first)
+          first = &op;
+        last = &op;
+      }
+    }
+    if (!first)
+      return result;
+
+    // Leading: walk backwards from first traced op.
+    SmallVector<Operation *> leadingReversed;
+    for (auto *op = first->getPrevNode(); op; op = op->getPrevNode()) {
+      if (isSideEffectOpForCompute(op))
+        leadingReversed.push_back(op);
+      else
+        break;
+    }
+    for (auto it = leadingReversed.rbegin(); it != leadingReversed.rend(); ++it)
+      result.leading.push_back(*it);
+    result.allOps.append(result.leading);
+
+    // Interleaved: walk from first to last traced op.
+    Operation *prevTraced = nullptr;
+    for (auto *op = first; op && op != last->getNextNode();
+         op = op->getNextNode()) {
+      if (tracedSet.contains(op)) {
+        prevTraced = op;
+      } else if (isSideEffectOpForCompute(op)) {
+        // Attach to the next traced op after prevTraced.
+        bool found = false;
+        for (size_t i = 0; i < tracedOps.size(); ++i) {
+          if (tracedOps[i] == prevTraced && i + 1 < tracedOps.size()) {
+            result.before[tracedOps[i + 1]].push_back(op);
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          result.trailingBeforeStore.push_back(op);
+        }
+        result.allOps.push_back(op);
+      }
+    }
+
+    // Trailing: walk from last traced op past the anchor (store) to
+    // cb_push/cb_pop. End signposts may be positioned after the store.
+    SmallVector<Operation *> trailing;
+    for (auto *op = last->getNextNode(); op; op = op->getNextNode()) {
+      if (isSideEffectOpForCompute(op)) {
+        trailing.push_back(op);
+        result.allOps.push_back(op);
+      } else if (isa<CBPushOp>(op) || isa<CBPopOp>(op)) {
+        break;
+      }
+    }
+
+    // Split trailing into before-store (begin signposts, dprints) and
+    // after-store (end signposts).
+    auto isEndSignpost = [](Operation *op) {
+      auto sp = dyn_cast<SignpostOp>(op);
+      return sp && sp.getIsEnd();
+    };
+    auto firstEnd = llvm::find_if(trailing, isEndSignpost);
+    result.trailingBeforeStore.append(trailing.begin(), firstEnd);
+    result.trailingAfterStore.append(firstEnd, trailing.end());
+
+    return result;
+  }
+
+  void emitLeading(OpBuilder &builder) const {
+    for (auto *op : leading)
+      emitOne(op, builder);
+  }
+
+  void emitBefore(Operation *tracedOp, OpBuilder &builder) const {
+    auto it = before.find(tracedOp);
+    if (it != before.end()) {
+      for (auto *op : it->second)
+        emitOne(op, builder);
+    }
+  }
+
+  void emitTrailingBeforeStore(OpBuilder &builder) const {
+    for (auto *op : trailingBeforeStore)
+      emitOne(op, builder);
+  }
+
+  void emitTrailingAfterStore(OpBuilder &builder) const {
+    for (auto *op : trailingAfterStore)
+      emitOne(op, builder);
+  }
+
+  void eraseOriginals() const {
+    for (auto *op : allOps)
+      op->erase();
+  }
+
+private:
+  static void emitOne(Operation *op, OpBuilder &builder) {
+    if (auto sp = dyn_cast<SignpostOp>(op)) {
+      SignpostOp::create(builder, sp.getLoc(), sp.getNameAttr(),
+                         sp.getIsEndAttr());
+    } else {
+      builder.clone(*op);
+    }
+  }
+};
+
 } // namespace mlir::tt::ttl
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSUTILS_H

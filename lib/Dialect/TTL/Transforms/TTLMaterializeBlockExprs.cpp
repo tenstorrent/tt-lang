@@ -147,11 +147,25 @@ static LogicalResult materializeStore(StoreOp storeOp, OpBuilder &builder) {
   // If the expression is not a block_expr (passthrough store), leave it
   // for ConvertTTLToCompute or handle directly.
   if (trace.opsInOrder.empty()) {
-    // Passthrough: the store input is directly DFB-attached.
-    // This is handled by the existing ConvertTTLToCompute passthrough
-    // logic. Leave the store as-is for now.
     return success();
   }
+
+  // Validate bcast inputs: bcast reads directly from DFB, so its input
+  // must be DFB-attached (not an intermediate block_expr result).
+  for (Operation *op : trace.opsInOrder) {
+    if (auto bcastOp = dyn_cast<BlockExprBcastOp>(op)) {
+      Value input = bcastOp.getInput();
+      if (input.getDefiningOp() && isBlockExprOp(input.getDefiningOp())) {
+        return bcastOp.emitError(
+            "broadcast input must come directly from a circular buffer "
+            "(DFB-attached value), not from an intermediate expression");
+      }
+    }
+  }
+
+  // Collect signpost/dprint ops before they get orphaned by materialization.
+  auto sideEffects =
+      InterleavedSideEffects::collect(trace.opsInOrder, storeOp);
 
   MLIRContext *ctx = builder.getContext();
 
@@ -229,12 +243,15 @@ static LogicalResult materializeStore(StoreOp storeOp, OpBuilder &builder) {
     tensorToTile[trace.rootInputs[i]] = body->getArgument(i);
   }
 
+  sideEffects.emitLeading(builder);
+
   // Matmul+add deferred emission map.
   DenseMap<Value, std::pair<Value, Value>> deferredMatmul;
 
-  // Emit tile ops in topological order.
+  // Emit tile ops in topological order with interleaved side-effect ops.
   Value finalResult;
   for (Operation *op : trace.opsInOrder) {
+    sideEffects.emitBefore(op, builder);
     Value tileResult;
 
     if (auto bcastOp = dyn_cast<BlockExprBcastOp>(op)) {
@@ -327,28 +344,31 @@ static LogicalResult materializeStore(StoreOp storeOp, OpBuilder &builder) {
     }
   }
 
-  // Emit tile_store and yield.
+  sideEffects.emitTrailingBeforeStore(builder);
+
+  // Emit tile_store.
   SmallVector<Value> iterIndices = getOrCreateIterIndices(builder, computeOp);
   auto indexingMaps = computeOp.getIndexingMapsArray();
   AffineMap outputMap = indexingMaps.back();
   SmallVector<Value> indices =
       applyIndexingMapToIterIndices(builder, loc, outputMap, iterIndices);
-
   TileStoreOp::create(builder, loc, finalResult, view, indices);
+
+  sideEffects.emitTrailingAfterStore(builder);
   YieldOp::create(builder, loc);
 
-  // Replace the store's result usage and erase it.
+  // Erase the store.
   storeOp.erase();
 
   // Erase block_expr ops in reverse topological order.
   for (auto it = trace.opsInOrder.rbegin(); it != trace.opsInOrder.rend();
        ++it) {
-    Operation *op = *it;
-    if (op->use_empty()) {
-      op->erase();
+    if ((*it)->use_empty()) {
+      (*it)->erase();
     }
   }
 
+  sideEffects.eraseOriginals();
   return success();
 }
 

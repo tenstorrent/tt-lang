@@ -192,21 +192,6 @@ static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *sourceOp,
 // Fused compute building
 //===----------------------------------------------------------------------===//
 
-/// Check if an op is a user signpost or a tile-level dprint that should
-/// be pulled into the compute body alongside fused tile ops. Only DST and
-/// tile mode dprints need tile-level context; scalar and CB prints stay
-/// outside the loop.
-static bool isSideEffectOpForCompute(Operation *op) {
-  if (auto sp = dyn_cast<SignpostOp>(op)) {
-    return sp.getName().starts_with("ttl_");
-  }
-  if (auto dp = dyn_cast<DPrintOp>(op)) {
-    StringRef mode = dp.getMode();
-    return mode == "dst" || mode == "tile";
-  }
-  return false;
-}
-
 /// Collect signpost and dprint ops interleaved with fused ops so they can
 /// be moved into the compute body. Walks backwards from the first fused op
 /// for leading ops, between fused ops for interleaved ones, and forward
