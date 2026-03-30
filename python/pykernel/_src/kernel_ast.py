@@ -639,18 +639,20 @@ class TTCompilerBase(PyKernelAstBase):
                     f"Compare operator {type(node.ops).__name__} not implemented"
                 )
 
-    def visit_Attribute(self, node, func_args=[], kwargs={}):
-        # Resolve the receiver: either a named variable or an expression
-        # (e.g., ttl.copy(...).wait() where the receiver is a Call).
-        if isinstance(node.value, ast.Name):
-            mlir_value = self._var_exists(node.value.id)[node.value.id]
-        else:
-            mlir_value = self.visit(node.value)
-            if mlir_value is None:
-                raise ValueError(
-                    f"Chained method call on .{node.attr} failed: "
-                    "receiver expression produced no value"
-                )
+    def visit_Attribute(self, node, func_args=None, kwargs=None):
+        if func_args is None:
+            func_args = []
+        if kwargs is None:
+            kwargs = {}
+        # Resolve the receiver: a named variable, a chained call result
+        # (e.g., ttl.copy(...).wait()), or any other expression.
+        mlir_value = self.visit(node.value)
+        if mlir_value is None:
+            receiver_src = ast.unparse(node.value)
+            raise ValueError(
+                f"cannot call .{node.attr}() on '{receiver_src}': "
+                "expression does not produce a value"
+            )
 
         # type name should be !ttkernel.* if it has attributes
         mlir_type = _get_type_str(mlir_value.type)
