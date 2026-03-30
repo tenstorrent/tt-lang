@@ -5,11 +5,11 @@
 #
 # Tutorial Step 2: Single Node, Multi-Tile Block
 # ===============================================
-# Builds on Step 1 by processing multiple tiles per dataflow buffer slot
+# Builds on Step 1 by processing multiple tiles per dataflow buffer entry
 # instead of one tile at a time.
 #
 # New concept introduced:
-#   - Multi-tile blocks: each DFB slot holds a GRANULARITY×GRANULARITY patch
+#   - Multi-tile blocks: each DFB entry holds a GRANULARITY×GRANULARITY patch
 #     of tiles.  Fewer, larger memory transfers reduce per-transfer overhead and
 #     give the compute thread more work per synchronization round-trip.
 #
@@ -50,7 +50,7 @@ def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Te
     rows = a.shape[0] // TILE_SIZE // row_tiles_per_block
     cols = a.shape[1] // TILE_SIZE // col_tiles_per_block
 
-    # shape=(row_tiles_per_block, col_tiles_per_block) makes each DFB slot
+    # shape=(row_tiles_per_block, col_tiles_per_block) makes each DFB entry
     # large enough to hold the entire multi-tile block.
 
     a_dfb = ttl.make_dataflow_buffer_like(

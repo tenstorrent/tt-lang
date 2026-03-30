@@ -53,9 +53,9 @@ def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Te
     cols = a.shape[1] // TILE_SIZE
 
     # Dataflow buffers (DFBs) are L1 buffers shared between threads.
-    # shape=(1, 1) means each slot holds exactly one 32×32 tile.
-    # buffer_factor=2 allocates two slots, enabling double-buffering: while the
-    # compute thread processes one slot, the DM thread can fill the other.
+    # shape=(1, 1) means each entry holds exactly one 32×32 tile.
+    # buffer_factor=2 allocates two entries, enabling double-buffering: while the
+    # compute thread processes one entry, the DM thread can fill the other.
 
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
@@ -75,7 +75,7 @@ def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Te
                     b_dfb.wait() as b_blk,
                     c_dfb.wait() as c_blk,
                     # reserve() blocks until the DM writer has popped the previous
-                    # output tile, freeing a slot for the next result.
+                    # output tile, freeing an entry for the next result.
                     y_dfb.reserve() as y_blk,
                 ):
                     # Fused elementwise operation: a * b + c, written to y.
@@ -91,7 +91,7 @@ def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Te
         for row in range(rows):
             for col in range(cols):
                 with (
-                    # reserve() blocks until the compute thread has freed a slot.
+                    # reserve() blocks until the compute thread has freed an entry.
                     a_dfb.reserve() as a_blk,
                     b_dfb.reserve() as b_blk,
                     c_dfb.reserve() as c_blk,
