@@ -245,61 +245,22 @@ static void scheduleOpsInRegion(ArrayRef<Operation *> tileOps) {
 struct TTLScheduleOperationsPass
     : public impl::TTLScheduleOperationsBase<TTLScheduleOperationsPass> {
 
-  /// Collect schedulable tile ops from a DstSectionOp body. The math phase
-  /// is everything before the first TileStoreOp (stores are the pack phase).
-  static void scheduleDstSection(DstSectionOp dstSection) {
-    SmallVector<Operation *, 16> mathOps;
-    for (Operation &op : dstSection.getBody().front().without_terminator()) {
-      if (isa<TileStoreOp>(op)) {
-        break;
-      }
-      TileOpCategory cat = classifyTileOp(&op);
-      if (cat != TileOpCategory::Unknown) {
-        mathOps.push_back(&op);
-      }
-    }
-    if (!mathOps.empty()) {
-      scheduleOpsInRegion(mathOps);
-    }
-  }
-
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
 
-    // Schedule tile ops within DstSectionOp bodies (non-matmul computes).
-    funcOp.walk(
-        [](DstSectionOp dstSection) { scheduleDstSection(dstSection); });
-
-    // Schedule tile ops within acquire..commit regions (matmul computes,
-    // which still use the four TTL sync ops directly).
-    funcOp.walk([](Block *block) {
-      SmallVector<Operation *, 16> currentRegionOps;
-      bool inSyncRegion = false;
-
-      for (Operation &op : *block) {
-        if (isa<TileRegsAcquireOp>(op)) {
-          inSyncRegion = true;
-          currentRegionOps.clear();
-          continue;
+    funcOp.walk([](DstSectionOp dstSection) {
+      SmallVector<Operation *, 16> mathOps;
+      for (Operation &op : dstSection.getBody().front().without_terminator()) {
+        if (isa<TileStoreOp>(op)) {
+          break;
         }
-
-        if (isa<TileRegsCommitOp>(op)) {
-          if (inSyncRegion) {
-            scheduleOpsInRegion(currentRegionOps);
-          }
-          inSyncRegion = false;
-          currentRegionOps.clear();
-          continue;
-        }
-
-        if (!inSyncRegion) {
-          continue;
-        }
-
         TileOpCategory cat = classifyTileOp(&op);
         if (cat != TileOpCategory::Unknown) {
-          currentRegionOps.push_back(&op);
+          mathOps.push_back(&op);
         }
+      }
+      if (!mathOps.empty()) {
+        scheduleOpsInRegion(mathOps);
       }
     });
   }
