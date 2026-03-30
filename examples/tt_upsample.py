@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-# up to tt-lang spec, not intended to compile or run currently
+# TTLANG_HARDWARE_CI: xfail-compiler
 import pytest
 import torch
 
