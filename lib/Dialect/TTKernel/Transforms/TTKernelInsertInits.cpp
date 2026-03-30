@@ -48,13 +48,29 @@ namespace {
 // Compute-to-Init mapping
 //===----------------------------------------------------------------------===//
 
+/// Resolve an output CB Value from a CB index attribute on a compute op.
+/// Looks up the ttkernel.get_compile_time_arg_val with the matching index.
+static Value resolveOutputCB(Operation *computeOp, StringRef attrName) {
+  auto cbIdxAttr = computeOp->getAttrOfType<IntegerAttr>(attrName);
+  if (!cbIdxAttr) {
+    return Value();
+  }
+  int64_t cbIdx = cbIdxAttr.getInt();
+  auto funcOp = computeOp->getParentOfType<func::FuncOp>();
+  Value result;
+  funcOp->walk([&](ttk::GetCompileArgValOp argOp) {
+    if (static_cast<int64_t>(argOp.getArgIndex()) == cbIdx) {
+      result = argOp.getResult();
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return result;
+}
+
 /// Information about how to create an init op for a given compute op.
 struct InitOpInfo {
-  /// Creates the init op before the given compute op.
-  /// The compute op is passed so operands (e.g., CBs) can be extracted.
-  /// outputCB is the output CB for the sync region (from pack ops).
-  std::function<void(OpBuilder &, Location, Operation *, Value outputCB)>
-      createInit;
+  std::function<void(OpBuilder &, Location, Operation *)> createInit;
 };
 
 /// Build a static map from TTKernel compute op TypeID to init creation info.
@@ -65,7 +81,7 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
   // Unary SFPU ops: init takes no arguments.
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
   map[mlir::TypeID::get<ttk::TTK_COMPUTE>()] = {                               \
-      [](OpBuilder &b, Location l, Operation *, Value) {                       \
+      [](OpBuilder &b, Location l, Operation *) {                              \
         ttk::TTK_INIT::create(b, l);                                           \
       }};
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
@@ -73,7 +89,7 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
   // Binary SFPU ops: init takes no arguments.
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
   map[mlir::TypeID::get<ttk::TTK_COMPUTE>()] = {                               \
-      [](OpBuilder &b, Location l, Operation *, Value) {                       \
+      [](OpBuilder &b, Location l, Operation *) {                              \
         ttk::TTK_INIT::create(b, l);                                           \
       }};
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
@@ -81,35 +97,35 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
   // MinMax ops: init takes no arguments.
 #define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   map[mlir::TypeID::get<ttk::TTK_COMPUTE>()] = {                               \
-      [](OpBuilder &b, Location l, Operation *, Value) {                       \
+      [](OpBuilder &b, Location l, Operation *) {                              \
         ttk::TTK_INIT::create(b, l);                                           \
       }};
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-  // FPU binary ops: init takes 2 CB arguments (in0_cb, in1_cb).
+  // FPU binary ops: init takes 2 CB arguments.
 #define TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)         \
   map[mlir::TypeID::get<ttk::TTK_COMPUTE>()] = {                               \
-      [](OpBuilder &b, Location l, Operation *computeOp, Value) {              \
+      [](OpBuilder &b, Location l, Operation *computeOp) {                     \
         ttk::TTK_INIT::create(b, l, computeOp->getOperand(0),                  \
                               computeOp->getOperand(1));                       \
       }};
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-  // CopyTile: init takes 1 CB argument (cb0, the first operand).
+  // CopyTile: init takes 1 CB argument.
   map[mlir::TypeID::get<ttk::CopyTileOp>()] = {
-      [](OpBuilder &b, Location l, Operation *computeOp, Value) {
+      [](OpBuilder &b, Location l, Operation *computeOp) {
         ttk::CopyTileInitOp::create(b, l, computeOp->getOperand(0));
       }};
 
   // CopyDestValues: init takes no arguments.
   map[mlir::TypeID::get<ttk::CopyDestValuesOp>()] = {
-      [](OpBuilder &b, Location l, Operation *, Value) {
+      [](OpBuilder &b, Location l, Operation *) {
         ttk::CopyDestValuesInitOp::create(b, l);
       }};
 
-  // MatmulBlock: per-op init is mm_block_init_short (reconfigures UNPACK+MATH).
+  // MatmulBlock: reconfigures UNPACK+MATH.
   map[mlir::TypeID::get<ttk::ExperimentalMatmulBlockOp>()] = {
-      [](OpBuilder &b, Location l, Operation *computeOp, Value) {
+      [](OpBuilder &b, Location l, Operation *computeOp) {
         auto matmul = cast<ttk::ExperimentalMatmulBlockOp>(computeOp);
         ttk::MatmulBlockInitShortOp::create(
             b, l, matmul.getIn0CbId(), matmul.getIn1CbId(),
@@ -117,33 +133,37 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
             matmul.getKtDim());
       }};
 
-  // UnaryBcast: init takes in_cb + output CB + bcast_type.
+  // UnaryBcast: resolves output CB from annotated attribute.
   map[mlir::TypeID::get<ttk::UnaryBcastTileOp>()] = {
-      [](OpBuilder &b, Location l, Operation *computeOp, Value outputCB) {
+      [](OpBuilder &b, Location l, Operation *computeOp) {
         auto bcastOp = cast<ttk::UnaryBcastTileOp>(computeOp);
+        Value outputCB =
+            resolveOutputCB(computeOp, kBcastOutputCBIndexAttrName);
         assert(outputCB && "output CB required for unary_bcast_init");
         ttk::UnaryBcastInitOp::create(b, l, bcastOp.getInCb(), outputCB,
                                       bcastOp.getBcastTypeAttr());
       }};
 
-  // Reduce: init takes in_cb + scaling_cb + output CB + reduce_type + dim +
-  // optional full_fp32.
-  map[mlir::TypeID::get<ttk::ReduceTileOp>()] = {
-      [](OpBuilder &b, Location l, Operation *computeOp, Value outputCB) {
-        auto reduceOp = cast<ttk::ReduceTileOp>(computeOp);
-        assert(outputCB && "output CB required for reduce_init");
-        auto initOp = ttk::ReduceInitOp::create(
-            b, l, reduceOp.getInCb(), reduceOp.getScalingCb(), outputCB,
-            reduceOp.getReduceTypeAttr(), reduceOp.getReduceDimAttr());
-        if (reduceOp.getFullFp32()) {
-          initOp.setFullFp32(true);
-        }
-      }};
+  // Reduce: resolves output CB from annotated attribute.
+  map[mlir::TypeID::get<ttk::ReduceTileOp>()] = {[](OpBuilder &b, Location l,
+                                                    Operation *computeOp) {
+    auto reduceOp = cast<ttk::ReduceTileOp>(computeOp);
+    Value outputCB = resolveOutputCB(computeOp, kReduceOutputCBIndexAttrName);
+    assert(outputCB && "output CB required for reduce_init");
+    auto initOp = ttk::ReduceInitOp::create(
+        b, l, reduceOp.getInCb(), reduceOp.getScalingCb(), outputCB,
+        reduceOp.getReduceTypeAttr(), reduceOp.getReduceDimAttr());
+    if (reduceOp.getFullFp32()) {
+      initOp.setFullFp32(true);
+    }
+  }};
 
-  // Transpose: init takes in_cb + output CB.
+  // Transpose: resolves output CB from annotated attribute.
   map[mlir::TypeID::get<ttk::TransposeTileOp>()] = {
-      [](OpBuilder &b, Location l, Operation *computeOp, Value outputCB) {
+      [](OpBuilder &b, Location l, Operation *computeOp) {
         auto transposeOp = cast<ttk::TransposeTileOp>(computeOp);
+        Value outputCB =
+            resolveOutputCB(computeOp, kTransposeOutputCBIndexAttrName);
         assert(outputCB && "output CB required for transpose_wh_init");
         ttk::TransposeInitOp::create(b, l, transposeOp.getIcb(), outputCB);
       }};
@@ -403,74 +423,84 @@ struct TTKernelInsertInitsPass
     }
 
     // Phase 2: Insert per-op inits for compute ops.
-    // The output CB for init ops that need it (bcast, reduce, transpose) is
-    // derived from pack ops in the same sync region.
+    // Two targeted walks: (1) sync regions via TileRegsAcquireOp,
+    // (2) unwrapped compute ops via func::FuncOp.
     auto computeToInit = buildComputeToInitMap();
-    moduleOp->walk([&](Block *block) {
-      std::optional<InitKey> prevKey;
-      Value syncRegionOutputCB;
+    constexpr llvm::StringLiteral kInitInserted("ttk.init_inserted");
 
-      for (Operation &op : *block) {
-        // At sync region start, scan forward for the output CB from pack ops.
-        if (isa<ttk::TileRegsAcquireOp>(&op)) {
-          prevKey = std::nullopt;
-          syncRegionOutputCB = Value();
-          for (auto it = std::next(op.getIterator()); it != block->end();
-               ++it) {
-            if (isa<ttk::TileRegsReleaseOp>(&*it)) {
-              break;
-            }
-            // Walk nested regions (e.g., scf.for bodies) for pack ops.
-            (&*it)->walk([&](Operation *inner) {
-              if (!syncRegionOutputCB) {
-                if (auto pack = dyn_cast<ttk::PackTileOp>(inner)) {
-                  syncRegionOutputCB = pack.getOutCb();
-                } else if (auto packBlock =
-                               dyn_cast<ttk::PackTileBlockOp>(inner)) {
-                  syncRegionOutputCB = packBlock.getOutCb();
-                }
-              }
-            });
-          }
-          continue;
+    // Helper: process a top-level op in a sync region or function body.
+    // Discovers the first compute op (possibly nested in scf.for) and
+    // inserts init before the top-level op if the init key changed.
+    auto processOp = [&](Operation &topOp, std::optional<InitKey> &prevKey) {
+      if (isSyncBoundary(&topOp)) {
+        if (prevKey &&
+            prevKey->typeId == mlir::TypeID::get<ttk::ReduceTileOp>()) {
+          OpBuilder builder(&topOp);
+          ttk::ReduceUninitOp::create(builder, topOp.getLoc());
         }
+        prevKey = std::nullopt;
+        return;
+      }
 
-        if (isSyncBoundary(&op)) {
-          // Emit reduce_uninit when leaving a sync region with active reduce.
-          if (prevKey &&
-              prevKey->typeId == mlir::TypeID::get<ttk::ReduceTileOp>()) {
-            OpBuilder builder(&op);
-            ttk::ReduceUninitOp::create(builder, op.getLoc());
-          }
-          prevKey = std::nullopt;
-          continue;
+      topOp.walk([&](Operation *inner) {
+        auto mapIt = computeToInit.find(inner->getName().getTypeID());
+        if (mapIt == computeToInit.end()) {
+          return WalkResult::advance();
         }
-
-        // Look up this op in the compute-to-init map.
-        auto it = computeToInit.find(op.getName().getTypeID());
-        if (it == computeToInit.end()) {
-          continue;
-        }
-
-        // Compute init key for this op.
-        InitKey key = computeInitKey(&op);
-
-        // Insert init if key changed from previous compute op.
+        InitKey key = computeInitKey(inner);
         if (!prevKey || *prevKey != key) {
-          // Emit reduce_uninit when switching away from reduce.
           if (prevKey &&
               prevKey->typeId == mlir::TypeID::get<ttk::ReduceTileOp>() &&
               key.typeId != mlir::TypeID::get<ttk::ReduceTileOp>()) {
-            OpBuilder builder(&op);
-            ttk::ReduceUninitOp::create(builder, op.getLoc());
+            OpBuilder builder(&topOp);
+            ttk::ReduceUninitOp::create(builder, topOp.getLoc());
           }
-          OpBuilder builder(&op);
-          it->second.createInit(builder, op.getLoc(), &op, syncRegionOutputCB);
+          Operation *insertPt = hoistAboveCompilerLoops(&topOp);
+          OpBuilder builder(insertPt);
+          mapIt->second.createInit(builder, inner->getLoc(), inner);
         }
-
         prevKey = key;
+        inner->setAttr(kInitInserted, UnitAttr::get(inner->getContext()));
+        return WalkResult::interrupt();
+      });
+    };
+
+    // Walk 1: sync regions. For each acquire, iterate ops to release.
+    moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
+      Block *block = acquireOp->getBlock();
+      std::optional<InitKey> prevKey;
+      for (auto it = std::next(acquireOp->getIterator()); it != block->end();
+           ++it) {
+        if (isa<ttk::TileRegsReleaseOp>(&*it)) {
+          break;
+        }
+        processOp(*it, prevKey);
       }
     });
+
+    // Walk 2: unwrapped compute ops (unit tests without sync wrapping).
+    moduleOp->walk([&](func::FuncOp funcOp) {
+      std::optional<InitKey> prevKey;
+      funcOp.walk([&](Operation *op) {
+        if (op->hasAttr(kInitInserted)) {
+          return WalkResult::advance();
+        }
+        auto mapIt = computeToInit.find(op->getName().getTypeID());
+        if (mapIt == computeToInit.end()) {
+          return WalkResult::advance();
+        }
+        InitKey key = computeInitKey(op);
+        if (!prevKey || *prevKey != key) {
+          OpBuilder builder(op);
+          mapIt->second.createInit(builder, op->getLoc(), op);
+        }
+        prevKey = key;
+        return WalkResult::advance();
+      });
+    });
+
+    // Clean up marker attributes.
+    moduleOp->walk([&](Operation *op) { op->removeAttr(kInitInserted); });
   }
 };
 

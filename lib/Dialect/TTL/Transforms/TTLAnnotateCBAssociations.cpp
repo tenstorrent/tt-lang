@@ -94,6 +94,34 @@ struct TTLAnnotateCBAssociationsPass
 
       bcast->setAttr(kBcastOutputCBIndexAttrName, bindOp.getCbIndexAttr());
     });
+
+    // Annotate tile_reduce and tile_transpose with output CB index.
+    auto annotateOutputCB = [&](Operation *tileOp, Value output,
+                                StringRef attrName) {
+      Value cb = getAttachedCB(output);
+      if (!cb) {
+        tileOp->emitError("output does not have an attached dataflow buffer");
+        signalPassFailure();
+        return;
+      }
+      auto bindOp = cb.getDefiningOp<BindCBOp>();
+      if (!bindOp) {
+        tileOp->emitError("output dataflow buffer is not from ttl.bind_cb");
+        signalPassFailure();
+        return;
+      }
+      tileOp->setAttr(attrName, bindOp.getCbIndexAttr());
+    };
+
+    func.walk([&](TileReduceOp reduce) {
+      annotateOutputCB(reduce, reduce.getOutput(),
+                       kReduceOutputCBIndexAttrName);
+    });
+
+    func.walk([&](TileTransposeOp transpose) {
+      annotateOutputCB(transpose, transpose.getOutput(),
+                       kTransposeOutputCBIndexAttrName);
+    });
   }
 };
 

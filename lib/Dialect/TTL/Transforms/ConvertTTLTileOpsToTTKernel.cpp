@@ -621,8 +621,14 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
     auto ttkAttr = convertBcastType(op.getBcastType());
 
     // Emit compute op (init inserted by ttkernel-insert-inits pass).
-    ttk::UnaryBcastTileOp::create(rewriter, loc, *inCB, inCBIdx, dstIdx,
-                                  ttkAttr);
+    auto bcastOp = ttk::UnaryBcastTileOp::create(rewriter, loc, *inCB, inCBIdx,
+                                                 dstIdx, ttkAttr);
+
+    // Propagate output CB index for per-op init insertion.
+    if (auto cbIdxAttr =
+            op->getAttrOfType<IntegerAttr>(kBcastOutputCBIndexAttrName)) {
+      bcastOp->setAttr(kBcastOutputCBIndexAttrName, cbIdxAttr);
+    }
 
     rewriter.replaceOp(op, adaptor.getInput());
     return success();
@@ -726,6 +732,12 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
       reduceOp->setAttr("full_fp32", rewriter.getUnitAttr());
     }
 
+    // Propagate output CB index for per-op init insertion.
+    if (auto cbIdxAttr =
+            op->getAttrOfType<IntegerAttr>(kReduceOutputCBIndexAttrName)) {
+      reduceOp->setAttr(kReduceOutputCBIndexAttrName, cbIdxAttr);
+    }
+
     rewriter.replaceOp(op, adaptor.getInput());
     return success();
   }
@@ -748,8 +760,14 @@ struct TTLTileTransposeToTTKernel : OpConversionPattern<TileTransposeOp> {
       return failure();
     }
 
-    ttk::TransposeTileOp::create(rewriter, op.getLoc(), setup->inCB,
-                                 setup->inCBIdx, setup->dstIdx);
+    auto transposeOp = ttk::TransposeTileOp::create(
+        rewriter, op.getLoc(), setup->inCB, setup->inCBIdx, setup->dstIdx);
+
+    // Propagate output CB index for per-op init insertion.
+    if (auto cbIdxAttr =
+            op->getAttrOfType<IntegerAttr>(kTransposeOutputCBIndexAttrName)) {
+      transposeOp->setAttr(kTransposeOutputCBIndexAttrName, cbIdxAttr);
+    }
 
     rewriter.replaceOp(op, adaptor.getInput());
     return success();

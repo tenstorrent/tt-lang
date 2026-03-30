@@ -453,10 +453,26 @@ MULTI_TILE_CONFIGS = [
     (
         "reduce_max",
         (2, 2),
+        [0],
+        lambda: torch.rand(64, 64, dtype=torch.bfloat16),
+        1.0,
+        "max_2x2_dim0_random",
+    ),
+    (
+        "reduce_max",
+        (2, 2),
         [1],
         lambda: torch.rand(64, 64, dtype=torch.bfloat16),
         1.0,
         "max_2x2_dim1_random",
+    ),
+    (
+        "reduce_max",
+        (2, 2),
+        [0, 1],
+        lambda: torch.rand(64, 64, dtype=torch.bfloat16),
+        1.0,
+        "max_2x2_both_random",
     ),
     # Large block (4x4).
     (
@@ -478,10 +494,26 @@ MULTI_TILE_CONFIGS = [
     (
         "reduce_max",
         (4, 4),
+        [0],
+        lambda: torch.rand(128, 128, dtype=torch.bfloat16),
+        1.0,
+        "max_4x4_dim0_random",
+    ),
+    (
+        "reduce_max",
+        (4, 4),
         [1],
         lambda: torch.rand(128, 128, dtype=torch.bfloat16),
         1.0,
         "max_4x4_dim1_random",
+    ),
+    (
+        "reduce_max",
+        (4, 4),
+        [0, 1],
+        lambda: torch.rand(128, 128, dtype=torch.bfloat16),
+        1.0,
+        "max_4x4_both_random",
     ),
     (
         "reduce_sum",
@@ -578,8 +610,15 @@ def test_reduce_multi_tile(
     [
         (2, 2, "reduce_sum", [0, 1], "sum_scalar_2x2"),
         (2, 2, "reduce_max", [0, 1], "max_scalar_2x2"),
+        (2, 2, "reduce_sum", [0, 1], "sum_scalar_2x2_random"),
+        (2, 2, "reduce_max", [0, 1], "max_scalar_2x2_random"),
     ],
-    ids=["sum_scalar_2x2", "max_scalar_2x2"],
+    ids=[
+        "sum_scalar_2x2",
+        "max_scalar_2x2",
+        "sum_scalar_2x2_random",
+        "max_scalar_2x2_random",
+    ],
 )
 def test_reduce_multicore(device, grid_rows, grid_cols, reduce_fn, dims, test_id):
     """Each core in the grid independently reduces its own tile."""
@@ -587,7 +626,10 @@ def test_reduce_multicore(device, grid_rows, grid_cols, reduce_fn, dims, test_id
 
     tensor_rows = grid_rows * TILE
     tensor_cols = grid_cols * TILE
-    inp_torch = torch.ones(tensor_rows, tensor_cols, dtype=torch.bfloat16)
+    if "random" in test_id:
+        inp_torch = torch.randn(tensor_rows, tensor_cols, dtype=torch.bfloat16)
+    else:
+        inp_torch = torch.ones(tensor_rows, tensor_cols, dtype=torch.bfloat16)
     scaler_torch = create_scaler_tile(1.0)
     out_torch = torch.zeros(tensor_rows, tensor_cols, dtype=torch.bfloat16)
 
@@ -598,12 +640,18 @@ def test_reduce_multicore(device, grid_rows, grid_cols, reduce_fn, dims, test_id
     kernel(inp, scaler, out)
     result = ttnn.to_torch(out)
 
-    # Each core reduces a single 32x32 all-ones tile. Scalar reduction
-    # (dims=[0,1]) gives 1024.0. The result is placed at [0,0] of each
-    # core's output tile.
-    expected_val = float(TILE * TILE)
     for tile_row in range(grid_rows):
         for tile_col in range(grid_cols):
+            # Extract this core's input tile and compute expected value.
+            tile_inp = inp_torch[
+                tile_row * TILE : (tile_row + 1) * TILE,
+                tile_col * TILE : (tile_col + 1) * TILE,
+            ]
+            if reduce_fn == "reduce_sum":
+                expected_val = tile_inp.float().sum().item()
+            else:
+                expected_val = tile_inp.float().max().item()
+
             actual = result[tile_row * TILE, tile_col * TILE].float().item()
             assert actual == pytest.approx(
                 expected_val, rel=0.05

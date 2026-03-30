@@ -17,6 +17,7 @@
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
+#include "mlir/IR/BuiltinOps.h"
 
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -122,6 +123,210 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
   return success();
 }
 
+/// Generate parallel-outer / reduction-inner loop structure for accumulating
+/// computes. DstSectionOp wraps the reduction loop + stores so DST persists
+/// across reduction iterations.
+///
+/// Structure:
+///   for each parallel dim:
+///     dst_section {
+///       for each reduction dim:
+///         <tile ops from body>
+///       <stores with placeholder tile + explicit dst_idx>
+///     }
+static scf::LoopNest generateAccumulatingLoops(
+    PatternRewriter &rewriter, Location loc, ComputeOp op,
+    ArrayRef<Range> iterDomain, ArrayRef<AffineMap> indexingMaps,
+    ArrayRef<StringAttr> iterTypes, ArrayRef<Value> lowerBounds,
+    ArrayRef<Value> upperBounds, ArrayRef<Value> steps,
+    bool &processingFailed) {
+
+  // Separate parallel and reduction dim indices.
+  SmallVector<unsigned> parallelDims, reductionDims;
+  for (auto [idx, iterType] : llvm::enumerate(iterTypes)) {
+    if (iterType.getValue() == "reduction") {
+      reductionDims.push_back(idx);
+    } else {
+      parallelDims.push_back(idx);
+    }
+  }
+  assert(!reductionDims.empty() && "accumulating compute must have reductions");
+
+  // Build bounds for parallel and reduction loops separately.
+  auto gatherBounds = [&](ArrayRef<unsigned> dims) {
+    SmallVector<Value> lbs, ubs, sts;
+    for (unsigned dim : dims) {
+      lbs.push_back(lowerBounds[dim]);
+      ubs.push_back(upperBounds[dim]);
+      sts.push_back(steps[dim]);
+    }
+    return std::make_tuple(lbs, ubs, sts);
+  };
+
+  SmallVector<Value> parLBs, parUBs, parSteps;
+  std::tie(parLBs, parUBs, parSteps) = gatherBounds(parallelDims);
+  SmallVector<Value> redLBs, redUBs, redSteps;
+  std::tie(redLBs, redUBs, redSteps) = gatherBounds(reductionDims);
+
+  // Compute linearization strides from the full iteration domain.
+  SmallVector<int64_t> domainSizes;
+  for (auto &range : iterDomain) {
+    auto size = getConstantIntValue(range.size);
+    assert(size && "iteration domain must have static sizes");
+    domainSizes.push_back(*size);
+  }
+  SmallVector<int64_t> domainStrides = computeStrides(domainSizes);
+
+  // Collect store ops and their dst_idx from the compute body.
+  Block &bodyBlock = op.getBody().front();
+  SmallVector<std::pair<TileStoreOp, int32_t>> storeInfos;
+  for (Operation &bodyOp : bodyBlock.without_terminator()) {
+    if (auto store = dyn_cast<TileStoreOp>(&bodyOp)) {
+      auto dstAttr = store->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+      int32_t dstIdx = dstAttr ? dstAttr.getInt() : 0;
+      storeInfos.emplace_back(store, dstIdx);
+    }
+  }
+
+  size_t numDims = iterTypes.size();
+
+  // Build the full IV vector from parallel + reduction IVs, placed at
+  // their original dimension positions.
+  auto buildFullIVs = [&](ValueRange parallelIVs,
+                          ValueRange reductionIVs) -> SmallVector<Value> {
+    SmallVector<Value> fullIVs(numDims);
+    for (auto [idx, dim] : llvm::enumerate(parallelDims)) {
+      fullIVs[dim] = parallelIVs[idx];
+    }
+    for (auto [idx, dim] : llvm::enumerate(reductionDims)) {
+      fullIVs[dim] = reductionIVs[idx];
+    }
+    return fullIVs;
+  };
+
+  // Generate tile ops (excluding stores) inside the reduction loop body.
+  auto generateTileOpsOnly = [&](OpBuilder &builder, Location bodyLoc,
+                                 ValueRange fullIVs) {
+    SmallVector<Value> extractedInputs;
+    for (auto [idx, input] : llvm::enumerate(op.getInputs())) {
+      SmallVector<Value> indices =
+          applyIndexingMap(builder, bodyLoc, indexingMaps[idx], fullIVs);
+      Value tile = tensor::ExtractOp::create(builder, bodyLoc, input, indices);
+      extractedInputs.push_back(tile);
+    }
+
+    SmallVector<Value> extractedOutputs;
+    size_t numInputs = op.getInputs().size();
+    for (auto [idx, output] : llvm::enumerate(op.getOutputs())) {
+      SmallVector<Value> indices = applyIndexingMap(
+          builder, bodyLoc, indexingMaps[numInputs + idx], fullIVs);
+      Value tile = tensor::ExtractOp::create(builder, bodyLoc, output, indices);
+      extractedOutputs.push_back(tile);
+    }
+
+    IRMapping mapping;
+    for (auto [idx, arg] : llvm::enumerate(op.getInputs())) {
+      mapping.map(bodyBlock.getArgument(idx), extractedInputs[idx]);
+    }
+    for (auto [idx, arg] : llvm::enumerate(op.getOutputs())) {
+      mapping.map(bodyBlock.getArgument(numInputs + idx),
+                  extractedOutputs[idx]);
+    }
+
+    for (Operation &bodyOp : bodyBlock.without_terminator()) {
+      if (auto iterIdx = dyn_cast<IterIndexOp>(&bodyOp)) {
+        mapping.map(iterIdx.getResult(), fullIVs[iterIdx.getDim()]);
+      }
+    }
+
+    for (Operation &bodyOp : bodyBlock.without_terminator()) {
+      if (isa<IterIndexOp, TileStoreOp>(&bodyOp)) {
+        continue;
+      }
+      builder.clone(bodyOp, mapping);
+    }
+  };
+
+  // Outer: parallel loops.
+  scf::LoopNest outerNest = scf::buildLoopNest(
+      rewriter, loc, parLBs, parUBs, parSteps, ValueRange{},
+      [&](OpBuilder &parBuilder, Location parLoc, ValueRange parallelIVs,
+          ValueRange) -> scf::ValueVector {
+        // DstSectionOp wraps reduction loop + stores.
+        auto dstSection = DstSectionOp::create(parBuilder, parLoc);
+        Block &sectionBody = dstSection.getBody().front();
+        OpBuilder secBuilder(&sectionBody,
+                             Block::iterator(sectionBody.getTerminator()));
+
+        // Inner: reduction loops.
+        scf::LoopNest redNest = scf::buildLoopNest(
+            secBuilder, parLoc, redLBs, redUBs, redSteps, ValueRange{},
+            [&](OpBuilder &redBuilder, Location redLoc, ValueRange reductionIVs,
+                ValueRange) -> scf::ValueVector {
+              SmallVector<Value> fullIVs =
+                  buildFullIVs(parallelIVs, reductionIVs);
+              generateTileOpsOnly(redBuilder, redLoc, fullIVs);
+              return {};
+            });
+
+        // Annotate reduction loops.
+        for (auto [idx, loop] : llvm::enumerate(redNest.loops)) {
+          unsigned origDim = reductionDims[idx];
+          loop->setAttr(kTileLoopStrideAttrName,
+                        parBuilder.getIndexAttr(domainStrides[origDim]));
+          loop->setAttr(kReductionLoopAttrName, parBuilder.getUnitAttr());
+        }
+
+        // Stores after the reduction loop, inside the DstSectionOp.
+        // Use placeholder tile value + explicit dst_idx (same as matmul).
+        OpBuilder storeBuilder(&sectionBody,
+                               Block::iterator(sectionBody.getTerminator()));
+        for (auto &[origStore, dstIdx] : storeInfos) {
+          // Get the output tile type for the placeholder.
+          Type tileType = origStore.getTile().getType();
+          Value placeholder = UnrealizedConversionCastOp::create(
+                                  storeBuilder, parLoc, tileType, ValueRange{})
+                                  .getResult(0);
+
+          // Compute store indices from parallel IVs using the output map.
+          // Reduction dims in the output map are constants (e.g., 0),
+          // so we need the full IV vector. Use constant 0 for reduction IVs.
+          SmallVector<Value> fullIVs(numDims);
+          for (auto [idx, dim] : llvm::enumerate(parallelDims)) {
+            fullIVs[dim] = parallelIVs[idx];
+          }
+          Value zeroIdx =
+              arith::ConstantIndexOp::create(storeBuilder, parLoc, 0);
+          for (unsigned dim : reductionDims) {
+            fullIVs[dim] = zeroIdx;
+          }
+
+          size_t numInputs = op.getInputs().size();
+          size_t outputIdx = 0; // TODO: multi-output stores
+          SmallVector<Value> storeIndices =
+              applyIndexingMap(storeBuilder, parLoc,
+                               indexingMaps[numInputs + outputIdx], fullIVs);
+
+          auto newStore =
+              TileStoreOp::create(storeBuilder, parLoc, placeholder,
+                                  origStore.getView(), storeIndices);
+          newStore->setAttr(kDstIdxAttrName,
+                            storeBuilder.getI32IntegerAttr(dstIdx));
+        }
+
+        return {};
+      });
+
+  // Annotate parallel loops with strides.
+  for (auto [idx, loop] : llvm::enumerate(outerNest.loops)) {
+    unsigned origDim = parallelDims[idx];
+    loop->setAttr(kTileLoopStrideAttrName,
+                  rewriter.getIndexAttr(domainStrides[origDim]));
+  }
+
+  return outerNest;
+}
+
 struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
   using OpRewritePattern<ComputeOp>::OpRewritePattern;
 
@@ -157,6 +362,21 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     }
 
     bool isSubblocked = op->hasAttr(kFullLinStridesAttrName);
+    bool isAccumulating = op.getBody()
+                              .walk([](Operation *inner) {
+                                return inner->hasTrait<TTLAccumulatingOpTrait>()
+                                           ? WalkResult::interrupt()
+                                           : WalkResult::advance();
+                              })
+                              .wasInterrupted();
+
+    assert(!(isSubblocked && isAccumulating) &&
+           "SubblockComputeForDST must skip accumulating computes");
+
+    SmallVector<StringAttr> iterTypes;
+    for (Attribute attr : op.getIteratorTypes()) {
+      iterTypes.push_back(mlir::cast<StringAttr>(attr));
+    }
 
     // Side-effect-only loops: no iter_args, no tensor.insert, no scf.yield
     // with tensor values. Stores are explicit side effects (tile_store).
@@ -179,6 +399,15 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
               }
               return {};
             });
+      }
+
+      if (isAccumulating) {
+        // Accumulating: parallel dims outer, reduction dims inner, with
+        // DstSectionOp wrapping the reduction loop + stores. DST persists
+        // across reduction iterations.
+        return generateAccumulatingLoops(rewriter, loc, op, iterDomain,
+                                         indexingMaps, iterTypes, lowerBounds,
+                                         upperBounds, steps, processingFailed);
       }
 
       // Non-subblocked: DstSectionOp inside each loop iteration. Each
@@ -218,19 +447,20 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       }
       domainStrides = computeStrides(domainSizes);
     }
-    SmallVector<StringAttr> iterTypes;
-    for (Attribute attr : op.getIteratorTypes()) {
-      iterTypes.push_back(mlir::cast<StringAttr>(attr));
-    }
-
-    for (auto [idx, loop] : llvm::enumerate(loopNest.loops)) {
-      int64_t stride =
-          fullStridesAttr ? fullStridesAttr[idx] : domainStrides[idx];
-      loop->setAttr(kTileLoopStrideAttrName, rewriter.getIndexAttr(stride));
-      if (iterTypes[idx].getValue() == "reduction") {
-        loop->setAttr(kReductionLoopAttrName, rewriter.getUnitAttr());
+    if (!isAccumulating) {
+      // Non-accumulating: loops are in declaration order, matching iterTypes.
+      for (auto [idx, loop] : llvm::enumerate(loopNest.loops)) {
+        int64_t stride =
+            fullStridesAttr ? fullStridesAttr[idx] : domainStrides[idx];
+        loop->setAttr(kTileLoopStrideAttrName, rewriter.getIndexAttr(stride));
+        if (iterTypes[idx].getValue() == "reduction") {
+          loop->setAttr(kReductionLoopAttrName, rewriter.getUnitAttr());
+        }
       }
     }
+    // Accumulating computes: loop annotation is handled inside
+    // generateAccumulatingLoops (parallel and reduction loops are separate
+    // nests with different dim orderings).
 
     // Record the outermost tile loop for unrolling if the compute was
     // subblocked (has full linearization strides). Non-subblocked computes
