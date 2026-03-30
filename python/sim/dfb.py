@@ -39,8 +39,8 @@ from .dfbstate import DFBState
 from .constants import TILE_SHAPE
 from .errors import DFBContractError
 from .stats import record_dfb_reserve, record_dfb_wait
-from .ttnnsim import Tensor, tile_count_from_tensor
-from .typedefs import Index, PositiveInt, Shape, Size
+from .ttnnsim import ROW_MAJOR_LAYOUT, TILE_LAYOUT, Tensor, tile_count_from_tensor
+from .typedefs import Index, IndexType, PositiveInt, Shape, Size
 
 
 class Block:
@@ -320,15 +320,31 @@ class Block:
         )
 
     def to_list(self) -> List[Tensor]:
-        """Split the backing Tensor into individual tiles.
+        """Split the backing Tensor into logical units.
 
-        Returns tiles in row-major order across self._shape.  Each tile is a
-        slice of the backing tensor — no tile-alignment constraints are imposed
-        so non-standard tile sizes (e.g. in tests) are supported.
+        For TILE_LAYOUT blocks: returns one Tensor per tile in row-major order
+        across self._shape.  No tile-alignment constraints are imposed so
+        non-standard tile sizes (e.g. in tests) are supported.
+
+        For ROW_MAJOR_LAYOUT blocks: returns one Tensor per row, where a row
+        is a slice along the last dimension.  A 1-D block of shape (N,) returns
+        one tensor of shape (N,); a block of shape (A, B, N) returns A*B
+        tensors each of shape (N,).
         """
         buf = self._buf.to_torch()
         shape = self._shape
 
+        if self.layout == ROW_MAJOR_LAYOUT:
+            if len(shape) == 1:
+                # 1-D: the entire buffer is a single row.
+                return [Tensor(buf, ROW_MAJOR_LAYOUT)]
+            # ND: iterate over all leading dimensions, yield one row per combination.
+            rows: List[Tensor] = []
+            for coords in _product(*[range(d) for d in shape[:-1]]):
+                rows.append(Tensor(buf[coords], ROW_MAJOR_LAYOUT))
+            return rows
+
+        # TILE_LAYOUT path
         if len(shape) == 1:
             # 1-D: single tile-grid dimension, no batch dims.
             tk = shape[0]
@@ -364,12 +380,38 @@ class Block:
         tensors: List[Tensor],
         shape: Shape,
     ) -> "Block":
-        """Create a temporary Block by assembling a list of tiles into a Tensor.
+        """Create a temporary Block by assembling a list of logical units.
 
-        Tiles must be in row-major order across shape.  The resulting Block
-        owns a freshly assembled multi-tile Tensor with element shape derived
-        from the individual tile sizes.
+        For TILE_LAYOUT tensors: tiles must be in row-major order across shape.
+        The resulting Block owns a freshly assembled multi-tile Tensor with
+        element shape derived from the individual tile sizes.
+
+        For ROW_MAJOR_LAYOUT tensors: rows must be in row-major order across
+        shape[:-1].  Each tensor must have shape (shape[-1],).  A 1-D shape
+        (N,) expects a single tensor of shape (N,); an ND shape (A, B, N)
+        expects A*B tensors each of shape (N,).
         """
+        layout = tensors[0].layout if tensors else TILE_LAYOUT
+
+        if layout == ROW_MAJOR_LAYOUT:
+            if len(shape) == 1:
+                # 1-D: single row, use it directly.
+                elem_tensor = tensors[0].to_torch()
+            else:
+                # ND: stack rows and reshape to (*shape).
+                elem_tensor = torch.stack([t.to_torch() for t in tensors]).reshape(
+                    *shape
+                )
+            block = cls(
+                tensor=Tensor(elem_tensor, ROW_MAJOR_LAYOUT),
+                shape=shape,
+                acquisition=BlockAcquisition.RESERVE,
+                thread_type=ThreadType.COMPUTE,
+                is_temporary=True,
+            )
+            return block
+
+        # TILE_LAYOUT path
         if len(shape) == 1:
             # 1-D: tiles are contiguous vectors; just concatenate along dim 0.
             elem_tensor = torch.cat([t.to_torch() for t in tensors], dim=0)
@@ -401,9 +443,12 @@ class Block:
     def from_tensor(cls, t: Tensor) -> "Block":
         """Create a temporary Block wrapping a ttnnsim.Tensor.
 
-        Infers the tile-grid shape from the tensor's element dimensions.
-        The last two element dimensions must be multiples of TILE_SHAPE (or
+        For TILE_LAYOUT tensors the tile-grid shape is inferred from the
+        element dimensions (last two must be multiples of TILE_SHAPE or
         exactly 1 for degenerate tiles).
+
+        For ROW_MAJOR_LAYOUT tensors the tensor shape is used directly as
+        the block shape (each dimension is already in scalar units).
 
         Args:
             t: Source tensor.
@@ -412,8 +457,17 @@ class Block:
             A temporary Block backed directly by t (no copy).
 
         Raises:
-            ValueError: If the tensor dimensions are not tile-aligned.
+            ValueError: If a TILE_LAYOUT tensor's dimensions are not tile-aligned.
         """
+        if t.layout == ROW_MAJOR_LAYOUT:
+            return cls(
+                tensor=t,
+                shape=t.shape,
+                acquisition=BlockAcquisition.RESERVE,
+                thread_type=ThreadType.COMPUTE,
+                is_temporary=True,
+            )
+
         elem_shape = t.shape
         if len(elem_shape) == 1:
             w = elem_shape[0]
@@ -462,15 +516,23 @@ class Block:
         Raises:
             ValueError: If tensor tile count does not match this block's shape.
         """
-        # Validate tile count compatibility: same number of tiles, same ndim
-        src_tile_count = tile_count_from_tensor(tensor)
-        dst_tile_count = math.prod(self._shape)
-        if src_tile_count != dst_tile_count:
+        # Layouts must match - cannot copy between tiled and row-major endpoints.
+        if tensor.layout != self.layout:
             raise ValueError(
-                f"Shape mismatch in copy_as_dest(): "
-                f"source tensor {tensor.shape} has {src_tile_count} tiles, "
-                f"but block {self._shape} expects {dst_tile_count} tiles"
+                f"Layout mismatch in copy_as_dest(): "
+                f"source tensor has layout {tensor.layout.name}, "
+                f"but block has layout {self.layout.name}"
             )
+
+        from .ttnnsim import check_count_match
+
+        check_count_match(
+            tile_count_from_tensor(tensor),
+            math.prod(self._shape),
+            self.layout,
+            f"source tensor {tensor.shape}",
+            f"block {self._shape}",
+        )
 
         if tensor.shape == self._buf.shape:
             # Fast path: same element shape — copy data in-place
@@ -798,6 +860,11 @@ class Block:
         """Get the shape (rows, cols in tiles) of this block from its associated DFB."""
         return self._shape
 
+    @property
+    def layout(self) -> IndexType:
+        """Get the layout of the backing tensor (TILE_LAYOUT or ROW_MAJOR_LAYOUT)."""
+        return self._buf.layout
+
 
 class DFBStats(NamedTuple):
     """Statistics for a dataflow buffer.
@@ -863,53 +930,59 @@ class DataflowBuffer:
         if buffer_factor <= 0:
             raise ValueError(f"buffer_factor must be positive, got {buffer_factor}")
 
-        # Validate element shape matches tile shape
-        if len(likeness_tensor.shape) != len(shape):
-            raise ValueError(
-                f"Element shape dimensionality {len(likeness_tensor.shape)} does not match "
-                f"tile shape dimensionality {len(shape)}. Element shape: {likeness_tensor.shape}, "
-                f"tile shape: {shape}"
-            )
-
-        TILE_SIZE = TILE_SHAPE[0]  # 32
-        ndims = len(shape)
-        for i, (edim, tdim) in enumerate(zip(likeness_tensor.shape, shape)):
-            if edim == 1:
-                # Degenerate dimension: tile dimension must also be 1
-                if tdim != 1:
-                    raise ValueError(
-                        f"Element shape dimension {i} is degenerate (size 1), but tile dimension is {tdim} (expected 1). "
-                        f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
-                    )
-            elif i == ndims - 1 or i == ndims - 2:
-                # Last two dimensions are tile dimensions
-                if edim % TILE_SIZE != 0:
-                    raise ValueError(
-                        f"Element shape dimension {i} has size {edim}, which is not a multiple of TILE_SIZE ({TILE_SIZE}). "
-                        f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
-                    )
-                if edim // TILE_SIZE < tdim:
-                    raise ValueError(
-                        f"Element shape dimension {i} has {edim // TILE_SIZE} tiles, but tile shape requires at least {tdim} tiles. "
-                        f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
-                    )
-            else:
-                # Batch/other dimensions
-                if edim < tdim:
-                    raise ValueError(
-                        f"Element shape dimension {i} has size {edim}, but tile shape requires at least {tdim}. "
-                        f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
-                    )
-
         self.likeness_tensor = likeness_tensor
         self._shape = shape
         self._buffer_factor = buffer_factor
 
-        # Compute element shape from element dimensions and tile shape
-        self._element_shape = tuple(
-            1 if edim == 1 else tdim * TILE_SIZE
-            for edim, tdim in zip(likeness_tensor.shape, shape)
-        )
+        if likeness_tensor.layout == ROW_MAJOR_LAYOUT:
+            # Row-major: shape is in scalar units. No tile alignment required.
+            # The likeness tensor supplies only dtype; its rank may differ from
+            # shape (e.g. a full (N, H, W, C) tensor used as likeness for a
+            # per-pixel block of shape (C,)).
+            self._element_shape = shape
+        else:
+            # Tiled: validate tile alignment and derive element shape.
+            if len(likeness_tensor.shape) != len(shape):
+                raise ValueError(
+                    f"Element shape dimensionality {len(likeness_tensor.shape)} does not match "
+                    f"tile shape dimensionality {len(shape)}. Element shape: {likeness_tensor.shape}, "
+                    f"tile shape: {shape}"
+                )
+
+            TILE_SIZE = TILE_SHAPE[0]  # 32
+            ndims = len(shape)
+            for i, (edim, tdim) in enumerate(zip(likeness_tensor.shape, shape)):
+                if edim == 1:
+                    # Degenerate dimension: tile dimension must also be 1
+                    if tdim != 1:
+                        raise ValueError(
+                            f"Element shape dimension {i} is degenerate (size 1), but tile dimension is {tdim} (expected 1). "
+                            f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
+                        )
+                elif i == ndims - 1 or i == ndims - 2:
+                    # Last two dimensions are tile dimensions
+                    if edim % TILE_SIZE != 0:
+                        raise ValueError(
+                            f"Element shape dimension {i} has size {edim}, which is not a multiple of TILE_SIZE ({TILE_SIZE}). "
+                            f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
+                        )
+                    if edim // TILE_SIZE < tdim:
+                        raise ValueError(
+                            f"Element shape dimension {i} has {edim // TILE_SIZE} tiles, but tile shape requires at least {tdim} tiles. "
+                            f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
+                        )
+                else:
+                    # Batch/other dimensions
+                    if edim < tdim:
+                        raise ValueError(
+                            f"Element shape dimension {i} has size {edim}, but tile shape requires at least {tdim}. "
+                            f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
+                        )
+
+            self._element_shape = tuple(
+                1 if edim == 1 else tdim * TILE_SIZE
+                for edim, tdim in zip(likeness_tensor.shape, shape)
+            )
 
         self._pending_reserved_block: Optional[Block] = None
         self._pending_waited_block: Optional[Block] = None
@@ -1016,9 +1089,10 @@ class DataflowBuffer:
             "block_if_needed() should have been called first."
         )
         slot_idx = state.back_slot()
-        # Create tensor with the DFB's element shape
+        # Create tensor with the DFB's element shape and layout
         slot = Tensor(
-            torch.zeros(self._element_shape, dtype=self.likeness_tensor.dtype)
+            torch.zeros(self._element_shape, dtype=self.likeness_tensor.dtype),
+            self.likeness_tensor.layout,
         )
         state.buf[slot_idx] = slot
         state.reserved += 1

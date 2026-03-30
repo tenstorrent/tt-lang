@@ -11,6 +11,7 @@ using proper reserve()/wait() patterns conforming to the state machine.
 from typing import TYPE_CHECKING
 
 import pytest
+import torch
 from test_utils import (
     make_element_for_buffer_shape,
     make_full_tile,
@@ -23,6 +24,7 @@ from test_utils import (
 from python.sim import ttnn
 from python.sim.blockstate import ThreadType
 from python.sim.context import set_current_thread_type
+from python.sim.copy import copy
 from python.sim.dfb import Block, DataflowBuffer
 from python.sim.copyhandlers import (
     BlockToPipeHandler,
@@ -32,6 +34,7 @@ from python.sim.copyhandlers import (
     HANDLER_REGISTRY,
 )
 from python.sim.pipe import Pipe
+from python.sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor
 
 if TYPE_CHECKING:
     pass
@@ -70,8 +73,6 @@ class TestCopyValidationErrors:
 
     def test_nd_tensor_tile_count_mismatch_to_block_fails(self) -> None:
         """Test that an N-D tensor with mismatched total tile count raises ValueError."""
-        import torch
-        from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -89,7 +90,6 @@ class TestCopyValidationErrors:
 
     def test_tile_count_mismatch_tensor_to_block(self) -> None:
         """Test that tile count mismatch raises ValueError (Tensor -> Block)."""
-        from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -113,7 +113,6 @@ class TestPipeErrorHandling:
 
     def test_pipe_receive_timeout_no_sender(self) -> None:
         """Test that receiving from pipe with no sender is detected as deadlock."""
-        from python.sim.copy import copy
         from python.sim.greenlet_scheduler import GreenletScheduler, set_scheduler
 
         # Create a minimal scheduler context for this test
@@ -145,7 +144,6 @@ class TestPipeErrorHandling:
 
     def test_pipe_length_mismatch(self) -> None:
         """Test that pipe receive fails when Block length doesn't match sent data."""
-        from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -185,7 +183,6 @@ class TestPipeMulticast:
 
     def test_pipe_multiple_receivers(self) -> None:
         """Test that pipe correctly handles multiple receivers."""
-        from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
         grid = (100, 100)  # Set grid context for pipe operations
@@ -239,7 +236,6 @@ class TestContextManagerHandlers:
 
     def test_tensor_to_reserve_context(self) -> None:
         """Test Tensor → ReserveContext handler delegation."""
-        from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -262,7 +258,6 @@ class TestContextManagerHandlers:
 
     def test_wait_context_to_tensor(self) -> None:
         """Test WaitContext → Tensor handler delegation."""
-        from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -286,7 +281,6 @@ class TestContextManagerHandlers:
 
     def test_pipe_to_reserve_context(self) -> None:
         """Test Pipe → ReserveContext handler delegation."""
-        from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -322,7 +316,6 @@ class TestContextManagerHandlers:
 
     def test_wait_context_to_pipe(self) -> None:
         """Test WaitContext → Pipe handler delegation."""
-        from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -358,7 +351,6 @@ class TestContextManagerHandlers:
 
     def test_reserve_context_to_pipe(self) -> None:
         """Test ReserveContext → Pipe handler delegation."""
-        from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -400,7 +392,6 @@ class TestPipeCoreRangeTypes:
 
     def test_pipe_single_node_int(self) -> None:
         """Test pipe with single 1D core (int)."""
-        from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -438,7 +429,6 @@ class TestPipeCoreRangeTypes:
 
     def test_pipe_single_node_tuple(self) -> None:
         """Test pipe with single multi-dimensional core (tuple)."""
-        from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -478,7 +468,6 @@ class TestPipeCoreRangeTypes:
 
     def test_pipe_core_range(self) -> None:
         """Test pipe with core range (2x2 = 4 receivers)."""
-        from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
         grid = (100, 100)  # Set grid context for pipe operations
@@ -523,7 +512,6 @@ class TestCanWaitBehavior:
 
     def test_tensor_to_block_can_wait_immediate(self) -> None:
         """Test that Tensor → Block copy can_wait returns True immediately."""
-        from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -540,7 +528,6 @@ class TestCanWaitBehavior:
 
     def test_block_to_tensor_can_wait_immediate(self) -> None:
         """Test that Block → Tensor copy can_wait returns True immediately."""
-        from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -564,7 +551,6 @@ class TestCanWaitBehavior:
 
     def test_block_to_pipe_can_wait_immediate(self) -> None:
         """Test that Block → Pipe copy can_wait returns True immediately."""
-        from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -588,7 +574,6 @@ class TestCanWaitBehavior:
 
     def test_pipe_to_block_can_wait_blocks_until_data(self) -> None:
         """Test that Pipe → Block copy can_wait blocks until data is available."""
-        from python.sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -619,6 +604,86 @@ class TestCanWaitBehavior:
             # Now can_wait should return True
             assert tx_recv.can_wait() is True
             tx_recv.wait()
+
+
+class TestRowMajorCopyValidation:
+    """Tests for layout compatibility checks in copy handlers (Step 4)."""
+
+    def test_tensor_to_block_layout_mismatch_raises(self) -> None:
+        """Copying a tiled tensor into a row-major block raises ValueError."""
+
+        tiled_src = Tensor(torch.zeros(32, 32, dtype=torch.float32))
+        rm_dfb = DataflowBuffer(
+            likeness_tensor=Tensor(
+                torch.zeros(32, 32, dtype=torch.float32), ROW_MAJOR_LAYOUT
+            ),
+            shape=(32, 32),
+            buffer_factor=2,
+        )
+        blk = rm_dfb.reserve()
+        with pytest.raises(ValueError, match="Layout mismatch"):
+            copy(tiled_src, blk)
+
+    def test_block_to_tensor_layout_mismatch_raises(self) -> None:
+        """Copying a row-major block into a tiled tensor raises ValueError."""
+
+        tiled_dst = Tensor(torch.zeros(32, 32, dtype=torch.float32))
+        rm_dfb = DataflowBuffer(
+            likeness_tensor=Tensor(
+                torch.zeros(32, 32, dtype=torch.float32), ROW_MAJOR_LAYOUT
+            ),
+            shape=(32, 32),
+            buffer_factor=2,
+        )
+        blk = rm_dfb.reserve()
+        handler = BlockToTensorHandler()
+        with pytest.raises(ValueError, match="Layout mismatch"):
+            handler.validate(blk, tiled_dst)
+
+    def test_tensor_to_block_row_major_count_mismatch_raises(self) -> None:
+        """Row-major copy with mismatched element counts raises ValueError."""
+
+        src = Tensor(torch.zeros(5, dtype=torch.float32), ROW_MAJOR_LAYOUT)
+        rm_dfb = DataflowBuffer(
+            likeness_tensor=Tensor(
+                torch.zeros(8, dtype=torch.float32), ROW_MAJOR_LAYOUT
+            ),
+            shape=(8,),
+            buffer_factor=2,
+        )
+        blk = rm_dfb.reserve()
+        with pytest.raises(ValueError, match="element counts"):
+            copy(src, blk)
+
+    def test_tensor_to_block_row_major_matching_count_succeeds(self) -> None:
+        """Row-major copy with matching element counts succeeds."""
+
+        src = Tensor(torch.arange(8, dtype=torch.float32), ROW_MAJOR_LAYOUT)
+        rm_dfb = DataflowBuffer(
+            likeness_tensor=Tensor(
+                torch.zeros(8, dtype=torch.float32), ROW_MAJOR_LAYOUT
+            ),
+            shape=(8,),
+            buffer_factor=2,
+        )
+        blk = rm_dfb.reserve()
+        tx = copy(src, blk)
+        tx.wait()
+        assert blk.raw_tensor.to_torch().tolist() == list(range(8))
+
+    def test_tiled_copy_still_uses_tile_counts_in_error(self) -> None:
+        """Regression: tiled copy error message still mentions 'tile counts'."""
+
+        src = Tensor(torch.zeros(32, 32, dtype=torch.float32))
+        dfb = DataflowBuffer(
+            likeness_tensor=Tensor(torch.zeros(64, 64, dtype=torch.float32)),
+            shape=(2, 2),
+            buffer_factor=2,
+        )
+        blk = dfb.reserve()
+        handler = TensorToBlockHandler()
+        with pytest.raises(ValueError, match="tile counts"):
+            handler.validate(src, blk)
 
 
 if __name__ == "__main__":

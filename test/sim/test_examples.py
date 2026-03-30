@@ -149,6 +149,10 @@ def run_script_in_process(
             "tutorial/single_node_broadcast_multitile_blocks.py",
             marks=requires_ttnn,
         ),
+        pytest.param(
+            "tt_upsample.py",
+            marks=requires_ttnn,
+        ),
     ],
 )
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])

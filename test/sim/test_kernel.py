@@ -998,3 +998,150 @@ class TestThreadOrderIndependence:
         Y_torch = Y.to_torch()
         expected = torch.ones((32, 32), dtype=torch.float32) * 3
         assert torch.allclose(Y_torch, expected)
+
+
+class TestRowMajorKernel:
+    """End-to-end tests for row-major layout through the full DM->compute->DM pipeline.
+
+    These tests verify that row-major tensors and DFBs work correctly across
+    the full kernel execution flow: copy into DFB, compute on blocks, copy out.
+    """
+
+    def test_row_major_double_rows(self):
+        """Single-core kernel doubles each row of a row-major tensor via DFB.
+
+        DM reader copies one row at a time into the input DFB.
+        Compute doubles each row via block addition (in_blk + in_blk).
+        DM writer copies each result row back to the output tensor.
+        Verifies that layout is preserved end-to-end.
+        """
+        from python.sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor as SimTensor
+
+        N, C = 4, 8
+        input_data = torch.arange(N * C, dtype=torch.float32).reshape(N, C)
+        output_data = torch.zeros(N, C, dtype=torch.float32)
+
+        input_tensor = SimTensor(input_data.clone(), ROW_MAJOR_LAYOUT)
+        output_tensor = SimTensor(output_data, ROW_MAJOR_LAYOUT)
+
+        likeness = SimTensor(torch.zeros(1, C, dtype=torch.float32), ROW_MAJOR_LAYOUT)
+
+        @ttl.kernel(grid=(1, 1))
+        def double_rows(
+            inp: ttnn.Tensor,
+            out: ttnn.Tensor,
+        ) -> None:
+            in_dfb = ttl.make_dataflow_buffer_like(likeness, shape=(1, C))
+            out_dfb = ttl.make_dataflow_buffer_like(likeness, shape=(1, C))
+
+            @ttl.compute()
+            def compute() -> None:
+                for _ in range(N):
+                    with in_dfb.wait() as in_blk, out_dfb.reserve() as out_blk:
+                        result = in_blk + in_blk
+                        out_blk.store(result)
+
+            @ttl.datamovement()
+            def dm_read() -> None:
+                for i in range(N):
+                    with in_dfb.reserve() as in_blk:
+                        ttl.copy(input_tensor[i, :], in_blk).wait()
+
+            @ttl.datamovement()
+            def dm_write() -> None:
+                for i in range(N):
+                    with out_dfb.wait() as out_blk:
+                        ttl.copy(out_blk, output_tensor[i, :]).wait()
+
+        double_rows(input_tensor, output_tensor)
+
+        assert torch.allclose(
+            output_data, input_data * 2
+        ), f"Expected input*2, got {output_data}"
+
+    def test_row_major_single_row_passthrough(self):
+        """Single-row kernel: copy in, double via addition, copy out.
+
+        Verifies a minimal one-row DM->compute->DM pipeline with row-major layout.
+        Distinct from test_row_major_double_rows by using a non-tile-aligned
+        column count (C=6) and a single row.
+        """
+        from python.sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor as SimTensor
+
+        C = 6
+        input_data = torch.ones(1, C, dtype=torch.float32) * 3.0
+        output_data = torch.zeros(1, C, dtype=torch.float32)
+
+        inp_t = SimTensor(input_data.clone(), ROW_MAJOR_LAYOUT)
+        out_t = SimTensor(output_data, ROW_MAJOR_LAYOUT)
+        likeness = SimTensor(torch.zeros(1, C, dtype=torch.float32), ROW_MAJOR_LAYOUT)
+
+        @ttl.kernel(grid=(1, 1))
+        def passthrough(inp: ttnn.Tensor, out: ttnn.Tensor) -> None:
+            in_dfb = ttl.make_dataflow_buffer_like(likeness, shape=(1, C))
+            out_dfb = ttl.make_dataflow_buffer_like(likeness, shape=(1, C))
+
+            @ttl.compute()
+            def compute() -> None:
+                with in_dfb.wait() as in_blk, out_dfb.reserve() as out_blk:
+                    result = in_blk + in_blk
+                    out_blk.store(result)
+
+            @ttl.datamovement()
+            def dm_read() -> None:
+                with in_dfb.reserve() as in_blk:
+                    ttl.copy(inp_t[0, :], in_blk).wait()
+
+            @ttl.datamovement()
+            def dm_write() -> None:
+                with out_dfb.wait() as out_blk:
+                    ttl.copy(out_blk, out_t[0, :]).wait()
+
+        passthrough(inp_t, out_t)
+
+        assert torch.allclose(
+            output_data, input_data * 2
+        ), f"Expected {input_data * 2}, got {output_data}"
+
+    def test_row_major_multirow_unary(self):
+        """Row-major kernel using a unary math op (exp) preserves layout and values."""
+        from python.sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor as SimTensor
+
+        N, C = 3, 5
+        input_data = torch.tensor([[0.0, 1.0, 2.0, 3.0, 4.0]] * N, dtype=torch.float32)
+        output_data = torch.zeros(N, C, dtype=torch.float32)
+
+        inp_t = SimTensor(input_data.clone(), ROW_MAJOR_LAYOUT)
+        out_t = SimTensor(output_data, ROW_MAJOR_LAYOUT)
+        likeness = SimTensor(torch.zeros(1, C, dtype=torch.float32), ROW_MAJOR_LAYOUT)
+
+        @ttl.kernel(grid=(1, 1))
+        def exp_rows(inp: ttnn.Tensor, out: ttnn.Tensor) -> None:
+            in_dfb = ttl.make_dataflow_buffer_like(likeness, shape=(1, C))
+            out_dfb = ttl.make_dataflow_buffer_like(likeness, shape=(1, C))
+
+            @ttl.compute()
+            def compute() -> None:
+                for _ in range(N):
+                    with in_dfb.wait() as in_blk, out_dfb.reserve() as out_blk:
+                        result = ttl.math.exp(in_blk)
+                        out_blk.store(result)
+
+            @ttl.datamovement()
+            def dm_read() -> None:
+                for i in range(N):
+                    with in_dfb.reserve() as in_blk:
+                        ttl.copy(inp_t[i, :], in_blk).wait()
+
+            @ttl.datamovement()
+            def dm_write() -> None:
+                for i in range(N):
+                    with out_dfb.wait() as out_blk:
+                        ttl.copy(out_blk, out_t[i, :]).wait()
+
+        exp_rows(inp_t, out_t)
+
+        expected = torch.exp(input_data)
+        assert torch.allclose(
+            output_data, expected, atol=1e-5
+        ), f"Expected exp(input), got {output_data}"
