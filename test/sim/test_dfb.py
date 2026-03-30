@@ -1678,3 +1678,31 @@ class TestRowMajorBlockGuards:
         t = Tensor(torch.zeros(64, 64, dtype=torch.float32))
         blk = Block.from_tensor(t)
         assert blk.shape == (2, 2)
+
+    # --- copy_as_dest ---
+
+    def test_copy_as_dest_layout_mismatch_raises(self) -> None:
+        """copy_as_dest() raises ValueError when tensor and block layouts differ."""
+        rm_dfb = DataflowBuffer(
+            likeness_tensor=Tensor(
+                torch.zeros(8, dtype=torch.float32), ROW_MAJOR_LAYOUT
+            ),
+            shape=(8,),
+            buffer_factor=2,
+        )
+        blk = rm_dfb.reserve()
+        tiled_tensor = Tensor(torch.zeros(32, 32, dtype=torch.float32))
+        with pytest.raises(ValueError, match="Layout mismatch in copy_as_dest"):
+            blk.copy_as_dest(tiled_tensor)
+
+    def test_copy_as_dest_tiled_block_rejects_row_major_tensor(self) -> None:
+        """copy_as_dest() raises ValueError when a tiled block receives a row-major tensor."""
+        tiled_dfb = DataflowBuffer(
+            likeness_tensor=Tensor(torch.zeros(32, 32, dtype=torch.float32)),
+            shape=(1, 1),
+            buffer_factor=2,
+        )
+        blk = tiled_dfb.reserve()
+        rm_tensor = Tensor(torch.zeros(32, 32, dtype=torch.float32), ROW_MAJOR_LAYOUT)
+        with pytest.raises(ValueError, match="Layout mismatch in copy_as_dest"):
+            blk.copy_as_dest(rm_tensor)
