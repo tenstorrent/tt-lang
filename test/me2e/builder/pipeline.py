@@ -45,7 +45,6 @@ def compile_ttl_to_ttkernel(
     ]
     if maximize_dst:
         func_passes.append("ttl-subblock-compute-for-dst")
-    func_passes.append("ttl-insert-tile-regs-sync")
     func_passes.append("ttl-lower-to-loops")
     if maximize_dst:
         func_passes.append("ttl-schedule-operations")

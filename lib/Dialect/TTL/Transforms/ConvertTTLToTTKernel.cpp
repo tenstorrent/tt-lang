@@ -1114,6 +1114,76 @@ static void cleanupComputeKernels(ModuleOp mod, MLIRContext &ctx) {
 }
 
 //===----------------------------------------------------------------------===//
+// DstSectionOp expansion
+//===----------------------------------------------------------------------===//
+
+/// Expand a single DstSectionOp into four TTL sync ops and inline the body.
+/// Stores are reordered to the end of the body before inserting sync ops so
+/// that the math phase (tile compute ops) and pack phase (stores) are cleanly
+/// separated:
+///   acquire -> [tile ops] -> commit -> wait -> [stores] -> release
+static void expandDstSection(DstSectionOp dstSection) {
+  Block &body = dstSection.getBody().front();
+  Block *parentBlock = dstSection->getBlock();
+  Location loc = dstSection.getLoc();
+
+  // Collect stores and non-store/non-terminator ops.
+  SmallVector<TileStoreOp> stores;
+  for (Operation &op : body.without_terminator()) {
+    if (auto store = dyn_cast<TileStoreOp>(&op)) {
+      stores.push_back(store);
+    }
+  }
+
+  // Move all stores to the end of the body (before yield), preserving
+  // their relative order. This separates tile compute ops from pack ops.
+  if (!stores.empty()) {
+    Operation *yield = body.getTerminator();
+    for (TileStoreOp store : stores) {
+      store->moveBefore(yield);
+    }
+  }
+
+  // Insert sync ops within the body at the correct positions.
+  OpBuilder builder(dstSection->getContext());
+
+  // Acquire at the start of the body.
+  builder.setInsertionPointToStart(&body);
+  TileRegsAcquireOp::create(builder, loc);
+
+  // Commit + wait before the first store (or before yield if no stores).
+  if (!stores.empty()) {
+    builder.setInsertionPoint(stores.front());
+  } else {
+    builder.setInsertionPoint(body.getTerminator());
+  }
+  TileRegsCommitOp::create(builder, loc);
+  TileRegsWaitOp::create(builder, loc);
+
+  // Release before the yield.
+  builder.setInsertionPoint(body.getTerminator());
+  TileRegsReleaseOp::create(builder, loc);
+
+  // Erase the yield terminator -- the body will be inlined into the parent.
+  body.getTerminator()->erase();
+
+  // Inline the body into the parent block, replacing the DstSectionOp.
+  parentBlock->getOperations().splice(Block::iterator(dstSection),
+                                      body.getOperations());
+  dstSection->erase();
+}
+
+/// Expand all DstSectionOps in the module to four TTL sync ops.
+/// Runs as a pre-processing step before dialect conversion.
+static void expandDstSections(ModuleOp mod) {
+  SmallVector<DstSectionOp> sections;
+  mod.walk([&](DstSectionOp op) { sections.push_back(op); });
+  for (DstSectionOp section : sections) {
+    expandDstSection(section);
+  }
+}
+
+//===----------------------------------------------------------------------===//
 // TTLConvertTTLToTTKernelPass
 //===----------------------------------------------------------------------===//
 
@@ -1125,6 +1195,11 @@ struct TTLConvertTTLToTTKernelPass
     MLIRContext &ctx = getContext();
     ModuleOp mod = getOperation();
     TTLToTTKernelTypeConverter typeConverter;
+
+    // Phase 0: Expand DstSectionOp into four TTL sync ops. This inlines the
+    // DstSectionOp body and inserts acquire/commit/wait/release around it,
+    // with stores reordered to the pack phase (after wait).
+    expandDstSections(mod);
 
     // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)
     if (failed(lowerTTLOpsToTTKernel(mod, ctx, typeConverter, getName()))) {

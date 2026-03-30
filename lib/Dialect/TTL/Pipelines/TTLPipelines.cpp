@@ -34,7 +34,6 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     subblockOpts.subblockSync = options.autoSync;
     pm.addPass(createTTLSubblockComputeForDST(subblockOpts));
   }
-  pm.addPass(createTTLInsertTileRegsSync());
   if (options.useBlockMatmul) {
     pm.addPass(createTTLLowerMatmulBlock());
   }

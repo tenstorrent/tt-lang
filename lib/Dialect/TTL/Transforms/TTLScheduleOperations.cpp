@@ -245,22 +245,45 @@ static void scheduleOpsInRegion(ArrayRef<Operation *> tileOps) {
 struct TTLScheduleOperationsPass
     : public impl::TTLScheduleOperationsBase<TTLScheduleOperationsPass> {
 
+  /// Collect schedulable tile ops from a DstSectionOp body. The math phase
+  /// is everything before the first TileStoreOp (stores are the pack phase).
+  static void scheduleDstSection(DstSectionOp dstSection) {
+    SmallVector<Operation *, 16> mathOps;
+    for (Operation &op : dstSection.getBody().front().without_terminator()) {
+      if (isa<TileStoreOp>(op)) {
+        break;
+      }
+      TileOpCategory cat = classifyTileOp(&op);
+      if (cat != TileOpCategory::Unknown) {
+        mathOps.push_back(&op);
+      }
+    }
+    if (!mathOps.empty()) {
+      scheduleOpsInRegion(mathOps);
+    }
+  }
+
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
 
+    // Schedule tile ops within DstSectionOp bodies (non-matmul computes).
+    funcOp.walk([](DstSectionOp dstSection) {
+      scheduleDstSection(dstSection);
+    });
+
+    // Schedule tile ops within acquire..commit regions (matmul computes,
+    // which still use the four TTL sync ops directly).
     funcOp.walk([](Block *block) {
-      llvm::SmallVector<Operation *, 16> currentRegionOps;
+      SmallVector<Operation *, 16> currentRegionOps;
       bool inSyncRegion = false;
 
       for (Operation &op : *block) {
-        // Detect acquire (start of sync region).
         if (isa<TileRegsAcquireOp>(op)) {
           inSyncRegion = true;
           currentRegionOps.clear();
           continue;
         }
 
-        // Detect commit (end of sync region) - schedule collected ops.
         if (isa<TileRegsCommitOp>(op)) {
           if (inSyncRegion) {
             scheduleOpsInRegion(currentRegionOps);
@@ -274,7 +297,6 @@ struct TTLScheduleOperationsPass
           continue;
         }
 
-        // Collect tile ops (classified ops only).
         TileOpCategory cat = classifyTileOp(&op);
         if (cat != TileOpCategory::Unknown) {
           currentRegionOps.push_back(&op);

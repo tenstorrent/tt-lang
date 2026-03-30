@@ -316,14 +316,61 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 }
 
 def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
-    ParentOneOf<["ComputeOp"]>]> {
-  let summary = "Terminate ttl.compute region";
+    ParentOneOf<["ComputeOp", "DstSectionOp"]>]> {
+  let summary = "Terminate a ttl.compute or ttl.dst_section region";
   let description = [{
-    `ttl.yield` terminates the body of `ttl.compute`. Output is produced by
-    `ttl.tile_store` within the compute body, not by yielding values.
+    `ttl.yield` terminates the body of `ttl.compute` or `ttl.dst_section`.
   }];
   let assemblyFormat = "attr-dict";
   let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
+}
+
+//===----------------------------------------------------------------------===//
+// DST register section
+//===----------------------------------------------------------------------===//
+
+def TTL_DstSectionOp : TTL_Op<"dst_section", [
+    SingleBlockImplicitTerminator<"YieldOp">,
+    RecursiveMemoryEffects,
+    NoRegionArguments
+  ]> {
+  let summary = "DST register acquisition scope";
+  let description = [{
+    Demarcates a hardware DST register section. All tile compute operations
+    and stores within the body share a single DST register acquisition.
+
+    When lowered, the body is split into a math phase (tile compute ops) and
+    a pack phase (tile stores), separated by the MATH/PACK thread
+    synchronization protocol:
+
+      tile_regs_acquire -> [math ops] -> tile_regs_commit ->
+      tile_regs_wait -> [pack ops] -> tile_regs_release
+
+    Tile stores within the body are reordered to follow all tile compute ops
+    during lowering. This allows the body to contain interleaved compute and
+    store ops (natural for loop-generated code) while producing correct
+    hardware ordering.
+
+    For non-accumulating computes, one `dst_section` wraps each tile loop
+    iteration. For subblocked computes, one `dst_section` wraps the entire
+    unrolled tile sequence. For accumulating computes (e.g., reduction), one
+    `dst_section` wraps the reduction loop and the subsequent stores, so DST
+    registers persist across reduction iterations.
+  }];
+
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "$body attr-dict";
+
+  let builders = [
+    OpBuilder<(ins), [{
+      Region *bodyRegion = $_state.addRegion();
+      Block *block = new Block();
+      bodyRegion->push_back(block);
+      OpBuilder::InsertionGuard guard($_builder);
+      $_builder.setInsertionPointToEnd(block);
+      YieldOp::create($_builder, $_state.location);
+    }]>
+  ];
 }
 
 //===----------------------------------------------------------------------===//

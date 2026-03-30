@@ -156,18 +156,49 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       steps.push_back(step);
     }
 
+    bool isSubblocked = op->hasAttr(kFullLinStridesAttrName);
+
     // Side-effect-only loops: no iter_args, no tensor.insert, no scf.yield
     // with tensor values. Stores are explicit side effects (tile_store).
     bool processingFailed = false;
-    scf::LoopNest loopNest = scf::buildLoopNest(
-        rewriter, loc, lowerBounds, upperBounds, steps, ValueRange{},
-        [&](OpBuilder &b, Location loc, ValueRange ivs,
-            ValueRange /*iterArgs*/) -> scf::ValueVector {
-          if (failed(generateTileProcessing(b, loc, op, indexingMaps, ivs))) {
-            processingFailed = true;
-          }
-          return {};
-        });
+    scf::LoopNest loopNest = [&]() {
+      if (isSubblocked) {
+        // Subblocked: DstSectionOp wraps the entire loop nest. After
+        // unrolling, all tile ops share one DST register section.
+        auto dstSection = DstSectionOp::create(rewriter, loc);
+        Block &sectionBody = dstSection.getBody().front();
+        OpBuilder sectionBuilder(&sectionBody,
+                                 Block::iterator(sectionBody.getTerminator()));
+        return scf::buildLoopNest(
+            sectionBuilder, loc, lowerBounds, upperBounds, steps, ValueRange{},
+            [&](OpBuilder &nested, Location nestedLoc, ValueRange ivs,
+                ValueRange) -> scf::ValueVector {
+              if (failed(generateTileProcessing(nested, nestedLoc, op,
+                                                indexingMaps, ivs))) {
+                processingFailed = true;
+              }
+              return {};
+            });
+      }
+
+      // Non-subblocked: DstSectionOp inside each loop iteration. Each
+      // iteration gets its own DST register section.
+      return scf::buildLoopNest(
+          rewriter, loc, lowerBounds, upperBounds, steps, ValueRange{},
+          [&](OpBuilder &nested, Location nestedLoc, ValueRange ivs,
+              ValueRange) -> scf::ValueVector {
+            auto dstSection = DstSectionOp::create(nested, nestedLoc);
+            Block &sectionBody = dstSection.getBody().front();
+            OpBuilder bodyBuilder(
+                &sectionBody,
+                Block::iterator(sectionBody.getTerminator()));
+            if (failed(generateTileProcessing(bodyBuilder, nestedLoc, op,
+                                              indexingMaps, ivs))) {
+              processingFailed = true;
+            }
+            return {};
+          });
+    }();
 
     // Annotate tile loops with linearization strides for CB indexing.
     // If the compute was subblocked, use the full block strides (which
@@ -420,41 +451,6 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
   return success();
 }
 
-/// Reorder tile_store ops within a sync region to satisfy the hardware DST
-/// protocol. Scans a block for the pattern:
-///   acquire -> [stores interleaved with compute] -> commit -> wait -> release
-/// and moves any tile_store ops found between acquire and commit to after
-/// wait, preserving their relative order. This separates the math phase
-/// (acquire->commit) from the pack phase (wait->release).
-static void reorderStoresAfterSync(Block *block) {
-  // Copy the ops to avoid iterator invalidation during moves.
-  SmallVector<Operation *> ops = llvm::to_vector(
-      llvm::map_range(*block, [](Operation &op) { return &op; }));
-
-  SmallVector<TileStoreOp> storesToHoist;
-  bool inComputeRegion = false;
-
-  for (Operation *op : ops) {
-    if (isa<TileRegsAcquireOp>(op)) {
-      inComputeRegion = true;
-      storesToHoist.clear();
-    } else if (isa<TileRegsCommitOp>(op)) {
-      inComputeRegion = false;
-    } else if (auto w = dyn_cast<TileRegsWaitOp>(op)) {
-      // Move all stores collected from the compute region to after wait,
-      // preserving their relative order.
-      Operation *insertAfter = w;
-      for (TileStoreOp store : storesToHoist) {
-        store->moveAfter(insertAfter);
-        insertAfter = store;
-      }
-      storesToHoist.clear();
-    } else if (inComputeRegion && isa<TileStoreOp>(op)) {
-      storesToHoist.push_back(cast<TileStoreOp>(op));
-    }
-  }
-}
-
 struct TTLLowerToLoopsPass
     : public tt::ttl::impl::TTLLowerToLoopsBase<TTLLowerToLoopsPass> {
   using tt::ttl::impl::TTLLowerToLoopsBase<
@@ -529,9 +525,6 @@ struct TTLLowerToLoopsPass
                "temporary _uiter_ attribute not cleaned up after unrolling");
       }
     }));
-
-    // Step 3: Reorder tile_store ops to be after DST wait barriers.
-    func.walk([](Block *block) { reorderStoresAfterSync(block); });
   }
 };
 
