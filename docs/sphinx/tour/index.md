@@ -14,7 +14,7 @@ TT-Lang provides an expressive middle ground between TT-NN's high-level operatio
 - **Blocks**: Memory acquired from dataflow buffers, used in compute expressions or copy operations.
 - **Grid**: Defines the space of nodes for kernel execution.
 
-## Tutorial Sections
+## Tour
 
 ```{toctree}
 :maxdepth: 2
