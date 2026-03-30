@@ -206,8 +206,8 @@ for local_col in range(cols_per_node):
     ...
 ```
 
-The compute thread is unaware of node coordinates — it simply processes all
-blocks that the DM threads deliver to it.
+In this specific example, the compute thread is unaware of node coordinates — it
+simply processes all blocks that the DM threads deliver to it.
 
 This version requires the tensor dimensions to be evenly divisible by the grid.
 See Step 4 for a version that handles arbitrary sizes.
