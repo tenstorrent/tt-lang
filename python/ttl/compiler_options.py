@@ -132,6 +132,11 @@ class CompilerOptions:
         if _argv_result is not None:
             return _argv_result
 
+        if "--ttl-version" in sys.argv[1:]:
+            from ttl.version import __version__
+
+            print(f"ttlang {__version__}")
+            sys.exit(0)
         if "--ttl-help" in sys.argv[1:]:
             print("TTL compiler options:\n")
             print(CompilerOptions.usage())

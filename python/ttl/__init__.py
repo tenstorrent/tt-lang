@@ -4,7 +4,7 @@
 
 # TT-Lang Python Package
 
-__version__ = "0.1.0"
+from ttl.version import __version__
 
 # Export TTL DSL API directly at package level so `import ttl; ttl.kernel` works
 from ttl.ttl import (

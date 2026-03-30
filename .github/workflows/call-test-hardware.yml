@@ -116,6 +116,12 @@ jobs:
           source build/env/activate
           python3 -m pytest test/sim -v -n auto --tb=short --junitxml=build/test/sim-report.xml
 
+      - name: Hardware compiler example scripts
+        run: |
+          set -eo pipefail
+          source build/env/activate
+          bash .github/scripts/compile-and-run-examples.sh
+
       - name: Upload test reports
         uses: actions/upload-artifact@v5
         if: always()

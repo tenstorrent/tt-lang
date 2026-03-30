@@ -41,6 +41,7 @@ requires_ttnn = pytest.mark.skipif(
 THIS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = THIS_DIR.parent.parent
 EXAMPLES_DIR = REPO_ROOT / "examples"
+ERRORS_DIR = REPO_ROOT / "examples" / "errors"
 EXAMPLES_METAL_DIR = REPO_ROOT / "examples" / "metal_examples"
 
 
@@ -189,7 +190,7 @@ def test_eltwise_add2_fails_with_expected_error(scheduler: str) -> None:
     block that expects multiple tiles. The error message should clearly indicate
     the mismatch and point to the exact line where the error occurs.
     """
-    code, out = run_script_in_process(EXAMPLES_DIR / "eltwise_add_error.py", scheduler)
+    code, out = run_script_in_process(ERRORS_DIR / "eltwise_add_error.py", scheduler)
     assert (
         code != 0
     ), f"Expected eltwise_add_error.py to fail, but it exited with code 0"
@@ -203,11 +204,11 @@ def test_eltwise_add2_fails_with_expected_error(scheduler: str) -> None:
     import re
 
     error_line_number = int(
-        re.findall(r"examples/eltwise_add_error.py:(\d+)", out)[0]
+        re.findall(r"examples/errors/eltwise_add_error.py:(\d+)", out)[0]
     )  # 1-indexed
 
     # Verify the reported line number is correct by checking the actual source
-    source_file = EXAMPLES_DIR / "eltwise_add_error.py"
+    source_file = ERRORS_DIR / "eltwise_add_error.py"
     with open(source_file) as f:
         lines = f.readlines()
         error_line = lines[error_line_number - 1].strip()  # 0-indexed
@@ -227,26 +228,26 @@ def test_copy_lock_error_fails_with_expected_error(scheduler: str) -> None:
     attempting to write to a block destination before wait() completes. The error
     message should clearly indicate the access violation.
     """
-    code, out = run_script_in_process(EXAMPLES_DIR / "copy_lock_error.py", scheduler)
+    code, out = run_script_in_process(ERRORS_DIR / "copy_lock_error.py", scheduler)
     assert code != 0, f"Expected copy_lock_error.py to fail, but it exited with code 0"
     # Check for the core error message (copy access violation)
     assert (
         "Cannot write to Block: Block is locked as copy destination until tx.wait() completes (copy lock error)"
         in out
     ), f"Expected error message not found in output:\n{out}"
-    # Verify source location is shown (line 88 where we attempt to write to a_block)
+    # Verify source location is shown (line 90 where we attempt to write to a_block)
     assert (
-        "examples/copy_lock_error.py:88" in out
+        "examples/errors/copy_lock_error.py:90" in out
     ), f"Expected source location not found in output:\n{out}"
 
     # Verify the reported line number is correct by checking the actual source
-    source_file = EXAMPLES_DIR / "copy_lock_error.py"
+    source_file = ERRORS_DIR / "copy_lock_error.py"
     with open(source_file) as f:
         lines = f.readlines()
-        # Line 88 (1-indexed) should contain the problematic write
-        error_line = lines[87].strip()  # 0-indexed
+        # Line 90 (1-indexed) should contain the problematic write
+        error_line = lines[89].strip()  # 0-indexed
         assert "a_block.store" in error_line, (
-            f"Line 88 in copy_lock_error.py does not contain expected write.\n"
+            f"Line 90 in copy_lock_error.py does not contain expected write.\n"
             f"Expected: 'a_block.store'\n"
             f"Got: {error_line}"
         )
@@ -333,9 +334,7 @@ def test_max_dfbs_warning_warns_at_limit(scheduler: str) -> None:
     The warning is issued at kernel definition time before any thread execution.
     """
     with pytest.warns(UserWarning, match="hardware limit is 32"):
-        code, out = run_script_in_process(
-            EXAMPLES_DIR / "max_dfbs_warning.py", scheduler
-        )
+        code, out = run_script_in_process(ERRORS_DIR / "max_dfbs_warning.py", scheduler)
     assert (
         code == 0
     ), f"Expected max_dfbs_warning.py to succeed, but it exited with code {code}:\n{out}"

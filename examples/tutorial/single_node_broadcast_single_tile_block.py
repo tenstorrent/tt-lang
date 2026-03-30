@@ -2,6 +2,9 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+#
+# Standalone tutorial: real `import ttl`, ttnn device (not python/sim).
+
 import ttnn
 import torch
 

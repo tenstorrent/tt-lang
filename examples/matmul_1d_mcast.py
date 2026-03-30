@@ -1,6 +1,11 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+#
+# 1D matmul multicast example; not run in the hardware CI compiler example script step.
+#
+# TTLANG_HARDWARE_CI: skip-compiler
+
 import torch
 import ttnn
 from utils import assert_with_ulp

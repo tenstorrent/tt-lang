@@ -7,5 +7,6 @@
 
 // CMake-configured build settings.
 #define TTLANG_HAS_DEVICE @TTLANG_HAS_DEVICE_INT@
+#define TTLANG_VERSION "@TTLANG_VERSION@"
 
 #endif // TTLANG_CONFIG_H

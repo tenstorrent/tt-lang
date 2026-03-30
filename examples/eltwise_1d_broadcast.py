@@ -92,8 +92,12 @@ def eltwise_1d_broadcast(
                 b_squared = b_blk**2
 
                 # Broadcast b_squared from element_shape=(1,) to match a_squared's element_shape=(32,)
-                y = ttl.math.sqrt(a_squared + ttl.math.broadcast(b_squared, dims=[0]))
-                z = ttl.math.sqrt(a_squared - ttl.math.broadcast(b_squared, dims=[0]))
+                y = ttl.math.sqrt(
+                    a_squared + ttl.math.broadcast(b_squared, y_blk, dims=[0])
+                )
+                z = ttl.math.sqrt(
+                    a_squared - ttl.math.broadcast(b_squared, z_blk, dims=[0])
+                )
 
                 y_blk.store(y)
                 z_blk.store(z)

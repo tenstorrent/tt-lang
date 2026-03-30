@@ -35,6 +35,14 @@ export TT_METAL_HOME="$TT_METAL_RUNTIME_ROOT"
 
 export TTLANG_ENV_ACTIVATED=1
 
+# Written by cmake --install (see top-level CMakeLists.txt).
+TTLANG_INSTALL_VERSION="unknown"
+_ttlang_ver_file="${INSTALL_PREFIX}/env/version.txt"
+if [ -r "${_ttlang_ver_file}" ]; then
+  IFS= read -r TTLANG_INSTALL_VERSION < "${_ttlang_ver_file}" || TTLANG_INSTALL_VERSION="unknown"
+fi
+unset _ttlang_ver_file
+
 cat << 'EOF'
 
 ████████╗████████╗       ██╗      █████╗  ███╗   ██╗  ██████╗
@@ -45,6 +53,7 @@ cat << 'EOF'
    ╚═╝      ╚═╝          ╚══════╝╚═╝  ╚═╝ ╚═╝  ╚═══╝  ╚═════╝
 EOF
 echo ""
+echo "  Version:   ${TTLANG_INSTALL_VERSION}"
 echo "  Toolchain: ${TTLANG_TOOLCHAIN_DIR}"
 echo "  Examples:  ${TTLANG_TOOLCHAIN_DIR}/examples"
 echo ""
