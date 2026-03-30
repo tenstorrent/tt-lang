@@ -6,11 +6,12 @@ script.
 
 ## The Goal
 
-We want to compute `y = (a * b + c) * d` on 2048×2048 bfloat16 tensors. The
+We want to compute `y = (a * b + c) * d` on 2048×2048 `bfloat16` tensors. The
 inner expression `a * b + c` is the target for kernel fusion: instead of
 dispatching three separate TT-NN operations that each read and write DRAM, a
 custom TT-Lang kernel reads each input once, computes the result in L1, and writes
-output once.
+output once. It is possible to vary the expression as well as the size of
+tensors and the data type, for example `float32`. We ecougarge the user to do this.
 
 ## Step 0 — TT-NN Baseline
 
@@ -59,9 +60,9 @@ and a block shape:
 a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
 ```
 
-`shape=(1, 1)` means each buffer slot holds one 32×32 tile. `buffer_factor=2`
-allocates two slots so that the reader and compute threads can work
-concurrently — while compute processes one slot, the reader fills the other
+`shape=(1, 1)` means each buffer entry holds one 32×32 tile. `buffer_factor=2`
+allocates two entries in L1 so that the reader and compute threads can work
+concurrently — while compute processes one entry, the reader fills the other
 (double-buffering).
 
 ### Thread functions
@@ -93,7 +94,7 @@ with (
 ```
 
 `wait()` blocks until the reader has pushed a filled tile. `reserve()` blocks
-until the writer has freed a slot. The `with` block automatically calls `pop()`
+until the writer has freed an entry. The `with` block automatically calls `pop()`
 on inputs and `push()` on the output when the scope exits.
 
 **Reader DM thread** — copies tiles from DRAM into the input DFBs:
@@ -127,9 +128,9 @@ with y_dfb.wait() as y_blk:
 
 **Script**: [`examples/elementwise-tutorial/step_2_single_node_multitile_block.py`](https://github.com/tenstorrent/tt-lang/blob/main/examples/elementwise-tutorial/step_2_single_node_multitile_block.py)
 
-Processing one tile at a time incurs a synchronization round-trip per tile.
-This step groups tiles into larger blocks so that each transfer and compute
-iteration covers a `GRANULARITY × GRANULARITY` patch of tiles.
+Processing one tile at a time incurs a synchronization (via dataflow buffers)
+round-trip per tile. This step groups tiles into larger blocks so that each
+transfer and compute iteration covers a `GRANULARITY × GRANULARITY` patch of tiles.
 
 ```python
 GRANULARITY = 4  # each block is a 4×4 patch of 32×32 tiles = 128×128 elements
@@ -162,8 +163,10 @@ unchanged from Step 1.
 
 **Script**: [`examples/elementwise-tutorial/step_3_multinode.py`](https://github.com/tenstorrent/tt-lang/blob/main/examples/elementwise-tutorial/step_3_multinode.py)
 
-This step parallelises the kernel across a 4×4 grid of nodes. Each node
-processes an independent rectangular region of the tensor.
+This step parallelizes the kernel across a 4×4 grid of nodes. Each node
+processes an independent rectangular region of the tensor. To familiarize
+the user with Tenstorrent hardware architecture we recommend reading
+[TT Architecture and Metalium Guide](https://github.com/tenstorrent/tt-metal/blob/main/METALIUM_GUIDE.md).
 
 ### Declaring a multi-node grid
 
@@ -173,7 +176,7 @@ def __tutorial_kernel(...):
 ```
 
 All nodes execute the same kernel body. They differentiate their work using
-their coordinates in the grid.
+their coordinates in the grid as explained in the next sections.
 
 ### Querying grid size and node position
 
@@ -224,7 +227,7 @@ the requirement for even divisibility.
 
 `grid="auto"` lets the compiler select the largest grid that fits available
 hardware resources. The kernel must work correctly for any grid the compiler may
-choose.
+choose as elaborated next.
 
 ### Ceiling division
 
