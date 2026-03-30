@@ -483,7 +483,6 @@ static FailureOr<int32_t> computeCTAIndex(unsigned argIdx, Operation *op) {
 }
 
 /// Validate TTLLayoutAttr encoding on a tensor and return the page size.
-/// Rejects sharded (#118) layouts with diagnostics.
 static FailureOr<int64_t> getValidatedPageSize(Value tensor, Operation *op) {
   auto tensorTy = llvm::dyn_cast<RankedTensorType>(tensor.getType());
   if (!tensorTy) {
@@ -496,13 +495,6 @@ static FailureOr<int64_t> getValidatedPageSize(Value tensor, Operation *op) {
     return op->emitError(
         "tensor must have ttl.layout encoding for accessor "
         "materialization; Python layer should reject tensors without layout");
-  }
-
-  auto memLayout = layoutAttr.getMemoryLayout();
-  if (memLayout != tt::ttl::TensorMemoryLayout::Interleaved &&
-      memLayout != tt::ttl::TensorMemoryLayout::SingleBank) {
-    return op->emitError("sharded memory layout not yet supported for tensor "
-                         "accessor; see GH issue #118");
   }
 
   // TTL layouts are always tiled. Compute page size from tile element type.

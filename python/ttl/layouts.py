@@ -15,11 +15,12 @@ from .dtype_utils import tensor_dtype_to_ttcore_datatype
 
 @dataclass(frozen=True)
 class LayoutConfig:
-    """Configuration for TTL layout creation. Supports L1/DRAM interleaved tiled layouts."""
+    """Configuration for TTL layout creation."""
 
     logical_shape: List[int]
     grid: List[int]
     dtype: str
+    memory_layout: int = 0  # Default: TENSOR_MEMORY_LAYOUT_INTERLEAVED
 
 
 # BufferType enum values (match TTLOpsEnums.td)
@@ -27,17 +28,39 @@ BUFFER_TYPE_L1 = 1
 
 # TensorMemoryLayout enum values (match TTLOpsEnums.td)
 TENSOR_MEMORY_LAYOUT_INTERLEAVED = 0
+TENSOR_MEMORY_LAYOUT_SINGLE_BANK = 1
+TENSOR_MEMORY_LAYOUT_HEIGHT_SHARDED = 2
+TENSOR_MEMORY_LAYOUT_WIDTH_SHARDED = 3
+TENSOR_MEMORY_LAYOUT_BLOCK_SHARDED = 4
+
+# Map from TTNN memory layout string representations to our enum values.
+_TTNN_MEMORY_LAYOUT_MAP = {
+    "INTERLEAVED": TENSOR_MEMORY_LAYOUT_INTERLEAVED,
+    "SINGLE_BANK": TENSOR_MEMORY_LAYOUT_SINGLE_BANK,
+    "HEIGHT_SHARDED": TENSOR_MEMORY_LAYOUT_HEIGHT_SHARDED,
+    "WIDTH_SHARDED": TENSOR_MEMORY_LAYOUT_WIDTH_SHARDED,
+    "BLOCK_SHARDED": TENSOR_MEMORY_LAYOUT_BLOCK_SHARDED,
+}
+
+
+def detect_memory_layout(tensor) -> int:
+    """Detect TensorMemoryLayout enum value from a TTNN tensor."""
+    mem_config = tensor.memory_config()
+    if hasattr(mem_config, "memory_layout"):
+        layout_str = str(mem_config.memory_layout)
+        for key, value in _TTNN_MEMORY_LAYOUT_MAP.items():
+            if key in layout_str:
+                return value
+    return TENSOR_MEMORY_LAYOUT_INTERLEAVED
 
 
 def create_layout(ctx, config: LayoutConfig):
     """
-    Create a TTLLayoutAttr for L1 interleaved tiled tensors.
-
-    Supports: L1/DRAM memory, Interleaved layout, tiled (32x32 tiles).
+    Create a TTLLayoutAttr for tiled tensors.
 
     Args:
         ctx: MLIR context
-        config: Configuration with logical_shape, grid, and dtype
+        config: Configuration with logical_shape, grid, dtype, and memory_layout
 
     Returns:
         LayoutAttr
@@ -71,5 +94,5 @@ def create_layout(ctx, config: LayoutConfig):
         element_type,
         BUFFER_TYPE_L1,
         mlir_grid,
-        TENSOR_MEMORY_LAYOUT_INTERLEAVED,
+        config.memory_layout,
     )
