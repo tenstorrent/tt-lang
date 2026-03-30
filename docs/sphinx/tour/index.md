@@ -1,4 +1,4 @@
-# TT-Lang Tutorial
+# Tour of TT-Lang
 
 TT-Lang is a Python-based domain-specific language for authoring high-performance custom kernels on Tenstorrent hardware.
 

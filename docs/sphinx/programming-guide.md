@@ -73,4 +73,4 @@ See the `examples/` and `test/` directories for complete working examples, inclu
 - `test/python/simple_add.py`
 - `test/python/simple_fused.py`
 
-The [tutorial](ttl-tutorial/index.md) provides step-by-step examples from single-tile to multinode kernels.
+The [tour](tour/index.md) provides an introduction to TT-Lang features.

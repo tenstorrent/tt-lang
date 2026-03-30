@@ -36,5 +36,5 @@ This project is under active development. See the
 [functionality matrix](specs/TTLangSpecification.md#appendix-d-functionality-matrix)
 in the language specification for current simulator and compiler support.
 
-To get started, see [Getting Started](getting-started.md). For a hands-on
-introduction, work through the [tutorial](ttl-tutorial/index.md).
+To get started, see [Getting Started](getting-started.md). For an
+introduction, take a [tour](tour/index.md).
