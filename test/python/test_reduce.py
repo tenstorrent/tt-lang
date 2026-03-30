@@ -642,7 +642,6 @@ def test_reduce_multicore(device, grid_rows, grid_cols, reduce_fn, dims, test_id
 
     for tile_row in range(grid_rows):
         for tile_col in range(grid_cols):
-            # Extract this core's input tile and compute expected value.
             tile_inp = inp_torch[
                 tile_row * TILE : (tile_row + 1) * TILE,
                 tile_col * TILE : (tile_col + 1) * TILE,
@@ -656,3 +655,151 @@ def test_reduce_multicore(device, grid_rows, grid_cols, reduce_fn, dims, test_id
             assert actual == pytest.approx(
                 expected_val, rel=0.05
             ), f"core ({tile_row},{tile_col}): got {actual}, expected {expected_val}"
+
+
+# =============================================================================
+# L1 accumulation tests: multi-tile reduce_sum with maximize_dst=false.
+# Verifies per-tile L1 accumulation (pack_reconfig_l1_acc) works correctly
+# when DST accumulation is disabled.
+# =============================================================================
+
+# Separate kernel factory to avoid cache collision with DST-accumulation kernels.
+_l1_kernel_cache: dict[tuple, Callable] = {}
+
+L1_ACC_TEMPLATE = '''
+import ttl
+
+@ttl.kernel(grid=(1, 1), options="--no-ttl-maximize-dst")
+def reduce_kernel(inp, scaler, out):
+    """Reduce {reduce_fn} dims={dims} with L1 accumulation."""
+    inp_dfb = ttl.make_dataflow_buffer_like(
+        inp, shape=({inp_rows}, {inp_cols}), buffer_factor=2
+    )
+    scaler_dfb = ttl.make_dataflow_buffer_like(
+        scaler, shape=(1, 1), buffer_factor=2
+    )
+    out_dfb = ttl.make_dataflow_buffer_like(
+        out, shape=({out_rows}, {out_cols}), buffer_factor=2
+    )
+
+    @ttl.compute()
+    def compute_fn():
+        with inp_dfb.wait() as inp_blk, scaler_dfb.wait() as scaler_blk, out_dfb.reserve() as out_blk:
+            result = ttl.math.{reduce_fn}(inp_blk, scaler_blk, dims={dims})
+            out_blk.store(result)
+
+    @ttl.datamovement()
+    def dm_read():
+        inp_blk = inp_dfb.reserve()
+        tx_inp = ttl.copy(inp[{inp_slice}], inp_blk)
+        tx_inp.wait()
+        inp_blk.push()
+        scaler_blk = scaler_dfb.reserve()
+        tx_scaler = ttl.copy(scaler[0, 0], scaler_blk)
+        tx_scaler.wait()
+        scaler_blk.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        out_blk = out_dfb.wait()
+        tx_out = ttl.copy(out_blk, out[{out_slice}])
+        tx_out.wait()
+        out_blk.pop()
+'''
+
+
+def _make_l1_acc_kernel(
+    reduce_fn: str, inp_rows: int, inp_cols: int, dims: List[int]
+) -> Callable:
+    out_rows, out_cols = _compute_out_shape(inp_rows, inp_cols, dims)
+    cache_key = (reduce_fn, inp_rows, inp_cols, tuple(dims))
+    if cache_key in _l1_kernel_cache:
+        return _l1_kernel_cache[cache_key]
+
+    code = L1_ACC_TEMPLATE.format(
+        reduce_fn=reduce_fn,
+        inp_rows=inp_rows,
+        inp_cols=inp_cols,
+        out_rows=out_rows,
+        out_cols=out_cols,
+        dims=dims,
+        inp_slice=_slice_syntax(inp_rows, inp_cols),
+        out_slice=_slice_syntax(out_rows, out_cols),
+    )
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, prefix=f"l1acc_{reduce_fn}_"
+    ) as tmp:
+        tmp.write(code)
+        temp_path = tmp.name
+
+    _temp_files.append(temp_path)
+    spec = importlib.util.spec_from_file_location("l1_kernel_module", temp_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    kernel = module.reduce_kernel
+    _l1_kernel_cache[cache_key] = kernel
+    return kernel
+
+
+@pytest.mark.parametrize(
+    "reduce_fn, inp_shape, dims, inp_factory, scaler_val, test_id",
+    [
+        (
+            "reduce_sum",
+            (2, 2),
+            [0],
+            lambda: torch.rand(64, 64, dtype=torch.bfloat16),
+            1.0,
+            "l1_sum_2x2_dim0",
+        ),
+        (
+            "reduce_sum",
+            (2, 2),
+            [1],
+            lambda: torch.rand(64, 64, dtype=torch.bfloat16),
+            1.0,
+            "l1_sum_2x2_dim1",
+        ),
+        (
+            "reduce_sum",
+            (2, 2),
+            [0, 1],
+            lambda: torch.rand(64, 64, dtype=torch.bfloat16),
+            1.0,
+            "l1_sum_2x2_both",
+        ),
+        (
+            "reduce_sum",
+            (4, 4),
+            [0],
+            lambda: torch.rand(128, 128, dtype=torch.bfloat16),
+            1.0,
+            "l1_sum_4x4_dim0",
+        ),
+    ],
+    ids=["l1_sum_2x2_dim0", "l1_sum_2x2_dim1", "l1_sum_2x2_both", "l1_sum_4x4_dim0"],
+)
+def test_reduce_l1_accumulation(
+    device, reduce_fn, inp_shape, dims, inp_factory, scaler_val, test_id
+):
+    """Multi-tile reduce_sum with L1 accumulation (maximize_dst=false)."""
+    inp_rows, inp_cols = inp_shape
+    out_rows, out_cols = _compute_out_shape(inp_rows, inp_cols, dims)
+    kernel = _make_l1_acc_kernel(reduce_fn, inp_rows, inp_cols, dims)
+
+    inp_torch = inp_factory()
+    scaler_torch = create_scaler_tile(scaler_val)
+    out_shape = (out_rows * TILE, out_cols * TILE)
+    out_torch = torch.zeros(*out_shape, dtype=torch.bfloat16)
+
+    inp = to_l1(inp_torch, device)
+    scaler = to_l1(scaler_torch, device)
+    out = to_l1(out_torch, device)
+
+    kernel(inp, scaler, out)
+    result = ttnn.to_torch(out)
+
+    expected_val = _expected_reduce_value(inp_torch, reduce_fn, dims, scaler_val)
+    assert result[0, 0].float().item() == pytest.approx(expected_val, rel=0.05, abs=1.0)

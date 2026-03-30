@@ -37,7 +37,11 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   if (options.useBlockMatmul) {
     pm.addPass(createTTLLowerMatmulBlock());
   }
-  pm.addPass(createTTLLowerToLoops());
+  {
+    TTLLowerToLoopsOptions loopOpts;
+    loopOpts.dstAccumulation = options.maximizeDST;
+    pm.addPass(createTTLLowerToLoops(loopOpts));
+  }
   if (options.maximizeDST) {
     pm.addPass(createTTLScheduleOperations());
   }

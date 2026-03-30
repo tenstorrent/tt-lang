@@ -1160,7 +1160,10 @@ def _compile_kernel(
             )
         if compiler_options.use_block_matmul:
             pipeline_passes.append("func.func(ttl-lower-matmul-block)")
-        pipeline_passes.append("func.func(ttl-lower-to-loops)")
+        dst_acc_str = "true" if compiler_options.maximize_dst else "false"
+        pipeline_passes.append(
+            f"func.func(ttl-lower-to-loops{{dst-accumulation={dst_acc_str}}})"
+        )
         if compiler_options.maximize_dst:
             pipeline_passes.append("func.func(ttl-schedule-operations)")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")

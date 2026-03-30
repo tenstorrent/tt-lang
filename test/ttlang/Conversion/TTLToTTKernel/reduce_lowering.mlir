@@ -31,11 +31,12 @@
 // FP32: ttkernel.init_sfpu(%[[CB0]], %[[CB2]])
 // FP32: ttkernel.tile_regs_acquire
 // FP32: ttkernel.reduce_init(%[[CB0]], %[[CB1]], %[[CB2]], <reduce_sum>, <reduce_dim_col>) {full_fp32}
-// FP32-NEXT: ttkernel.reduce_tile(%[[CB0]], %[[CB1]], %[[C0]], %[[C0]], %[[C0]], <reduce_sum>, <reduce_dim_col>) {full_fp32}
-// FP32-NEXT: ttkernel.reduce_uninit
+// FP32-NEXT: ttkernel.reduce_tile(%[[CB0]], %[[CB1]], %[[C0]], %[[C0]], %[[C0]], <reduce_sum>, <reduce_dim_col>) {full_fp32
+// FP32: ttkernel.reduce_uninit
 // FP32: ttkernel.pack_tile(%[[C0]], %[[CB2]], %[[C0]], true)
 //
 // NOFP32-LABEL: func.func @reduce_sum_dim0_1x1
+// NOFP32: ttkernel.tile_regs_acquire
 // NOFP32: ttkernel.reduce_init({{.*}}<reduce_sum>, <reduce_dim_col>)
 // NOFP32-NOT: full_fp32
 // NOFP32: ttkernel.reduce_tile({{.*}}<reduce_sum>, <reduce_dim_col>)
@@ -60,7 +61,7 @@ func.func @reduce_sum_dim0_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.c
       %sc_tile = tensor.extract %scaler_cb[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, bf16>>
       %out_tile = tensor.extract %out_cb[%c0, %iv1] : tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.tile_regs_acquire
-      %red = ttl.tile_reduce %in_tile, %sc_tile, %out_tile 0 : i32 <reduce_dim_col> {dst_idx = 0 : i32} : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>) -> !ttcore.tile<32x32, bf16>
+      %red = ttl.tile_reduce %in_tile, %sc_tile, %out_tile 0 : i32 <reduce_dim_col> {dst_idx = 0 : i32, ttl.reduce_output_cb_index = 2 : index} : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>) -> !ttcore.tile<32x32, bf16>
       ttl.tile_regs_commit
       ttl.tile_regs_wait
       ttl.tile_store %red, %reserve[%c0, %iv1] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -87,13 +88,13 @@ func.func @reduce_sum_dim0_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.c
 // FP32: scf.for %[[IV:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
 // FP32-NEXT:   ttkernel.tile_regs_acquire
 // L1 accumulation guard: enable from second iteration.
-// FP32-NEXT:   %[[NOT_FIRST:.*]] = arith.cmpi ne, %[[IV]], %[[C0]]
+// FP32:   %[[NOT_FIRST:.*]] = arith.cmpi ne, %[[IV]], %[[C0]]
 // FP32-NEXT:   scf.if %[[NOT_FIRST]]
 // FP32-NEXT:     ttkernel.pack_reconfig_l1_acc(%[[C1I]])
 // FP32:        }
 // FP32:   ttkernel.reduce_init({{.*}}<reduce_sum>, <reduce_dim_col>) {full_fp32}
-// FP32-NEXT:   ttkernel.reduce_tile({{.*}}<reduce_sum>, <reduce_dim_col>) {full_fp32}
-// FP32-NEXT:   ttkernel.reduce_uninit
+// FP32:   ttkernel.reduce_tile({{.*}}<reduce_sum>, <reduce_dim_col>) {full_fp32
+// FP32:   ttkernel.reduce_uninit
 // FP32:   ttkernel.pack_tile(%[[C0]], %[[CB2]], %[[C0]], true)
 // FP32:   ttkernel.tile_regs_release
 // FP32: } {ttl.reduction_loop
@@ -117,7 +118,7 @@ func.func @reduce_2x1_l1_acc() attributes {ttl.base_cta_index = 3 : i32, ttl.crt
       %sc_tile = tensor.extract %scaler_cb[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, bf16>>
       %out_tile = tensor.extract %out_cb[%c0, %iv1] : tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.tile_regs_acquire
-      %red = ttl.tile_reduce %in_tile, %sc_tile, %out_tile 0 : i32 <reduce_dim_col> {dst_idx = 0 : i32} : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>) -> !ttcore.tile<32x32, bf16>
+      %red = ttl.tile_reduce %in_tile, %sc_tile, %out_tile 0 : i32 <reduce_dim_col> {dst_idx = 0 : i32, ttl.reduce_output_cb_index = 2 : index} : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>) -> !ttcore.tile<32x32, bf16>
       ttl.tile_regs_commit
       ttl.tile_regs_wait
       ttl.tile_store %red, %reserve[%c0, %iv1] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>

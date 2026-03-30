@@ -247,6 +247,14 @@ def TTLLowerToLoops
     ```
   }];
 
+  let options = [
+    Option<"dstAccumulation", "dst-accumulation", "bool", "false",
+           "Use DST register accumulation for reduction loops. Reorders "
+           "loops (parallel-outer, reduction-inner) so DST persists across "
+           "reduction iterations. When disabled, uses per-tile L1 "
+           "accumulation. reduce_max always uses DST accumulation.">
+  ];
+
   let dependentDialects = [
     "::mlir::affine::AffineDialect",
     "::mlir::arith::ArithDialect",

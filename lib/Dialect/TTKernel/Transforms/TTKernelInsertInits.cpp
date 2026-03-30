@@ -416,13 +416,13 @@ struct TTKernelInsertInitsPass
   void runOnOperation() override {
     auto moduleOp = getOperation();
 
-    // Phase 1: Insert common inits (init_sfpu / binary_op_init_common).
+    // Insert common inits (init_sfpu / binary_op_init_common).
     if (failed(insertCommonInits(moduleOp))) {
       signalPassFailure();
       return;
     }
 
-    // Phase 2: Insert per-op inits for compute ops.
+    // Insert per-op inits for compute ops.
     // Two targeted walks: (1) sync regions via TileRegsAcquireOp,
     // (2) unwrapped compute ops via func::FuncOp.
     auto computeToInit = buildComputeToInitMap();
@@ -455,8 +455,7 @@ struct TTKernelInsertInitsPass
             OpBuilder builder(&topOp);
             ttk::ReduceUninitOp::create(builder, topOp.getLoc());
           }
-          Operation *insertPt = hoistAboveCompilerLoops(&topOp);
-          OpBuilder builder(insertPt);
+          OpBuilder builder(&topOp);
           mapIt->second.createInit(builder, inner->getLoc(), inner);
         }
         prevKey = key;

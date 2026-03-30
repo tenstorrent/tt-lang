@@ -33,13 +33,10 @@
 // FPU:       scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
 // FPU:         scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
 // FPU:           ttkernel.tile_regs_acquire
-// Linearized CB index: affine.linearize_index [i, j] by (2, 2)
 // FPU:           %[[LINIDX:.*]] = affine.linearize_index [%[[I]], %[[J]]] by (2, 2)
 // FPU:           ttkernel.add_tiles_init(%[[CB0]], %[[CB1]])
-// add_tiles reads lhs and rhs from CB at linearized index, writes DST[0]
 // FPU:           ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[LINIDX]], %[[LINIDX]], %[[C0]])
 // FPU-NOT:       ttkernel.add_binary_tile
-// mul's rhs needs copy_tile (from CB1 to DST[1]), same linearized index
 // FPU:           ttkernel.copy_tile_init(%[[CB1]])
 // FPU:           ttkernel.copy_tile(%[[CB1]], %[[LINIDX]], %[[C1]])
 // FPU:           ttkernel.mul_binary_tile_init

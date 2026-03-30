@@ -333,9 +333,12 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
   /// Outermost tile loops from subblocked computes that need unrolling.
   /// Populated during pattern application, consumed by runOnOperation.
   SmallVector<scf::ForOp> &loopsToUnroll;
+  bool dstAccumulation;
 
-  LowerComputeToLoops(MLIRContext *ctx, SmallVector<scf::ForOp> &loopsToUnroll)
-      : OpRewritePattern<ComputeOp>(ctx), loopsToUnroll(loopsToUnroll) {}
+  LowerComputeToLoops(MLIRContext *ctx, SmallVector<scf::ForOp> &loopsToUnroll,
+                      bool dstAccumulation)
+      : OpRewritePattern<ComputeOp>(ctx), loopsToUnroll(loopsToUnroll),
+        dstAccumulation(dstAccumulation) {}
 
   LogicalResult matchAndRewrite(ComputeOp op,
                                 PatternRewriter &rewriter) const override {
@@ -381,6 +384,7 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     // Side-effect-only loops: no iter_args, no tensor.insert, no scf.yield
     // with tensor values. Stores are explicit side effects (tile_store).
     bool processingFailed = false;
+    bool usedDstAccumulation = false;
     scf::LoopNest loopNest = [&]() {
       if (isSubblocked) {
         // Subblocked: DstSectionOp wraps the entire loop nest. After
@@ -401,13 +405,27 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
             });
       }
 
+      // DST accumulation: reorder loops (parallel-outer, reduction-inner)
+      // so DST persists across reduction iterations. Required for
+      // reduce_max because L1 accumulation (pack_reconfig_l1_acc)
+      // accumulates via addition, which is only correct for sum.
+      // TODO: reduce_max without dst-accumulation could use a compiler-
+      // introduced intermediate DFB for L1-based max accumulation.
       if (isAccumulating) {
-        // Accumulating: parallel dims outer, reduction dims inner, with
-        // DstSectionOp wrapping the reduction loop + stores. DST persists
-        // across reduction iterations.
-        return generateAccumulatingLoops(rewriter, loc, op, iterDomain,
-                                         indexingMaps, iterTypes, lowerBounds,
-                                         upperBounds, steps, processingFailed);
+        bool hasReduceMax =
+            op.getBody()
+                .walk([](TileReduceOp reduce) {
+                  return reduce.getReduceType() == ReduceType::Max
+                             ? WalkResult::interrupt()
+                             : WalkResult::advance();
+                })
+                .wasInterrupted();
+        if (dstAccumulation || hasReduceMax) {
+          usedDstAccumulation = true;
+          return generateAccumulatingLoops(
+              rewriter, loc, op, iterDomain, indexingMaps, iterTypes,
+              lowerBounds, upperBounds, steps, processingFailed);
+        }
       }
 
       // Non-subblocked: DstSectionOp inside each loop iteration. Each
@@ -447,8 +465,8 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       }
       domainStrides = computeStrides(domainSizes);
     }
-    if (!isAccumulating) {
-      // Non-accumulating: loops are in declaration order, matching iterTypes.
+    if (!usedDstAccumulation) {
+      // Loops are in declaration order, matching iterTypes.
       for (auto [idx, loop] : llvm::enumerate(loopNest.loops)) {
         int64_t stride =
             fullStridesAttr ? fullStridesAttr[idx] : domainStrides[idx];
@@ -458,9 +476,6 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
         }
       }
     }
-    // Accumulating computes: loop annotation is handled inside
-    // generateAccumulatingLoops (parallel and reduction loops are separate
-    // nests with different dim orderings).
 
     // Record the outermost tile loop for unrolling if the compute was
     // subblocked (has full linearization strides). Non-subblocked computes
@@ -698,7 +713,8 @@ struct TTLLowerToLoopsPass
     // into loopsToUnroll for step 2.
     SmallVector<scf::ForOp> loopsToUnroll;
     RewritePatternSet patterns(func.getContext());
-    patterns.add<LowerComputeToLoops>(func.getContext(), loopsToUnroll);
+    patterns.add<LowerComputeToLoops>(func.getContext(), loopsToUnroll,
+                                      dstAccumulation);
     FrozenRewritePatternSet frozen(std::move(patterns));
     if (failed(applyPatternsGreedily(func, frozen))) {
       return signalPassFailure();

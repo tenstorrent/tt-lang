@@ -18,7 +18,7 @@ func.func @bcast_only() {
   %out_cb = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
   %c0 = arith.constant 0 : index
   ttkernel.tile_regs_acquire() : () -> ()
-  ttkernel.unary_bcast(%in_cb, %c0, %c0, <col>) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  ttkernel.unary_bcast(%in_cb, %c0, %c0, <col>) {ttl.bcast_output_cb_index = 1 : index} : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
   ttkernel.tile_regs_commit() : () -> ()
   ttkernel.tile_regs_wait() : () -> ()
   ttkernel.pack_tile(%c0, %out_cb, %c0, false) : (index, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index) -> ()
