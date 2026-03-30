@@ -189,9 +189,8 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
               ValueRange) -> scf::ValueVector {
             auto dstSection = DstSectionOp::create(nested, nestedLoc);
             Block &sectionBody = dstSection.getBody().front();
-            OpBuilder bodyBuilder(
-                &sectionBody,
-                Block::iterator(sectionBody.getTerminator()));
+            OpBuilder bodyBuilder(&sectionBody,
+                                  Block::iterator(sectionBody.getTerminator()));
             if (failed(generateTileProcessing(bodyBuilder, nestedLoc, op,
                                               indexingMaps, ivs))) {
               processingFailed = true;
@@ -516,6 +515,43 @@ struct TTLLowerToLoopsPass
       if (failed(unrollTileLoopNestAndAssignDST(nest))) {
         return signalPassFailure();
       }
+    }
+
+    // Step 3: After subblock unrolling, group pack-phase ops at the end
+    // of each DstSectionOp body. Only needed when unrolling produced
+    // interleaved tile ops and stores. Safe because DST allocation
+    // assigns distinct registers to each output tile.
+    if (!loopsToUnroll.empty()) {
+      func.walk([](DstSectionOp dstSection) {
+        Block &body = dstSection.getBody().front();
+        SmallVector<Operation *> packOps;
+        for (Operation &op : body.without_terminator()) {
+          if (isa<TileStoreOp, CBPushOp>(&op)) {
+            packOps.push_back(&op);
+          }
+        }
+        // Skip bodies with 0-1 stores (no interleaving to fix).
+        int64_t storeCount = llvm::count_if(
+            packOps, [](Operation *op) { return isa<TileStoreOp>(op); });
+        if (storeCount <= 1) {
+          return;
+        }
+
+        // Verify DST allocation assigned distinct indices.
+        llvm::SmallDenseSet<int32_t> dstIndices;
+        for (Operation *op : packOps) {
+          if (auto attr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
+            assert(dstIndices.insert(attr.getInt()).second &&
+                   "duplicate dst_idx in subblocked DstSectionOp body; "
+                   "reordering requires distinct DST slots per output tile");
+          }
+        }
+
+        Operation *yield = body.getTerminator();
+        for (Operation *packOp : packOps) {
+          packOp->moveBefore(yield);
+        }
+      });
     }
 
     // Verify no temporary unroll iteration attributes leaked past this pass.

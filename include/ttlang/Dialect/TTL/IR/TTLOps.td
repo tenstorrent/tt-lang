@@ -336,26 +336,18 @@ def TTL_DstSectionOp : TTL_Op<"dst_section", [
   ]> {
   let summary = "DST register acquisition scope";
   let description = [{
-    Demarcates a hardware DST register section. All tile compute operations
-    and stores within the body share a single DST register acquisition.
+    Demarcates a DST register section: all tile compute ops and stores in
+    the body share one acquire/release cycle. Lowered to:
 
-    When lowered, the body is split into a math phase (tile compute ops) and
-    a pack phase (tile stores), separated by the MATH/PACK thread
-    synchronization protocol:
+      acquire -> [math ops] -> commit -> wait -> [pack ops] -> release
 
-      tile_regs_acquire -> [math ops] -> tile_regs_commit ->
-      tile_regs_wait -> [pack ops] -> tile_regs_release
+    The body must have math-phase ops before pack-phase ops (stores,
+    cb_push). `ttl-lower-to-loops` enforces this ordering, including after
+    subblock unrolling.
 
-    Tile stores within the body are reordered to follow all tile compute ops
-    during lowering. This allows the body to contain interleaved compute and
-    store ops (natural for loop-generated code) while producing correct
-    hardware ordering.
-
-    For non-accumulating computes, one `dst_section` wraps each tile loop
-    iteration. For subblocked computes, one `dst_section` wraps the entire
-    unrolled tile sequence. For accumulating computes (e.g., reduction), one
-    `dst_section` wraps the reduction loop and the subsequent stores, so DST
-    registers persist across reduction iterations.
+    Granularity: one per tile loop iteration (non-subblocked), one per
+    unrolled subblock, or one per parallel iteration with the reduction
+    loop inside (accumulating computes).
   }];
 
   let regions = (region SizedRegion<1>:$body);

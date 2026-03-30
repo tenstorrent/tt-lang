@@ -267,9 +267,8 @@ struct TTLScheduleOperationsPass
     func::FuncOp funcOp = getOperation();
 
     // Schedule tile ops within DstSectionOp bodies (non-matmul computes).
-    funcOp.walk([](DstSectionOp dstSection) {
-      scheduleDstSection(dstSection);
-    });
+    funcOp.walk(
+        [](DstSectionOp dstSection) { scheduleDstSection(dstSection); });
 
     // Schedule tile ops within acquire..commit regions (matmul computes,
     // which still use the four TTL sync ops directly).

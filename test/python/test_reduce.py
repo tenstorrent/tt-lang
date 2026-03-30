@@ -192,7 +192,9 @@ def make_multicore_reduce_kernel(
     )
 
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False,
+        mode="w",
+        suffix=".py",
+        delete=False,
         prefix=f"mc_reduce_{grid_rows}x{grid_cols}_",
     ) as tmp:
         tmp.write(code)
@@ -603,6 +605,6 @@ def test_reduce_multicore(device, grid_rows, grid_cols, reduce_fn, dims, test_id
     for tile_row in range(grid_rows):
         for tile_col in range(grid_cols):
             actual = result[tile_row * TILE, tile_col * TILE].float().item()
-            assert actual == pytest.approx(expected_val, rel=0.05), (
-                f"core ({tile_row},{tile_col}): got {actual}, expected {expected_val}"
-            )
+            assert actual == pytest.approx(
+                expected_val, rel=0.05
+            ), f"core ({tile_row},{tile_col}): got {actual}, expected {expected_val}"

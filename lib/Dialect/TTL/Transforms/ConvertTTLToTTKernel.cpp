@@ -1117,30 +1117,20 @@ static void cleanupComputeKernels(ModuleOp mod, MLIRContext &ctx) {
 // DstSectionOp expansion
 //===----------------------------------------------------------------------===//
 
-/// Expand a single DstSectionOp into four TTL sync ops and inline the body.
-/// Stores are reordered to the end of the body before inserting sync ops so
-/// that the math phase (tile compute ops) and pack phase (stores) are cleanly
-/// separated:
-///   acquire -> [tile ops] -> commit -> wait -> [stores] -> release
+/// Expand DstSectionOp: insert sync ops at the math/pack boundary (first
+/// TileStoreOp), then inline the body. LowerToLoops ensures pack-phase ops
+/// are already grouped at the end.
 static void expandDstSection(DstSectionOp dstSection) {
   Block &body = dstSection.getBody().front();
   Block *parentBlock = dstSection->getBlock();
   Location loc = dstSection.getLoc();
 
-  // Collect stores and non-store/non-terminator ops.
-  SmallVector<TileStoreOp> stores;
+  // Find the first TileStoreOp -- this is the math/pack boundary.
+  Operation *firstStore = nullptr;
   for (Operation &op : body.without_terminator()) {
-    if (auto store = dyn_cast<TileStoreOp>(&op)) {
-      stores.push_back(store);
-    }
-  }
-
-  // Move all stores to the end of the body (before yield), preserving
-  // their relative order. This separates tile compute ops from pack ops.
-  if (!stores.empty()) {
-    Operation *yield = body.getTerminator();
-    for (TileStoreOp store : stores) {
-      store->moveBefore(yield);
+    if (isa<TileStoreOp>(&op)) {
+      firstStore = &op;
+      break;
     }
   }
 
@@ -1152,8 +1142,8 @@ static void expandDstSection(DstSectionOp dstSection) {
   TileRegsAcquireOp::create(builder, loc);
 
   // Commit + wait before the first store (or before yield if no stores).
-  if (!stores.empty()) {
-    builder.setInsertionPoint(stores.front());
+  if (firstStore) {
+    builder.setInsertionPoint(firstStore);
   } else {
     builder.setInsertionPoint(body.getTerminator());
   }

@@ -36,6 +36,7 @@
 // Per-subblock cb_reserve inside loop (outermost dim subblocked).
 // FPU-NEXT:        ttkernel.cb_reserve_back(%[[CB_OUT]], %[[C3_I32]])
 // FPU-NEXT:        ttkernel.tile_regs_acquire()
+// Grouped within subblock: all add_tiles, then all tanh_tiles
 // FPU-NEXT:        %[[IDX0:.*]] = affine.linearize_index [%[[IV]], %[[C0]]] by (2, 3)
 // FPU-NEXT:        ttkernel.add_tiles_init(%[[CB0]], %[[CB1]])
 // FPU-NEXT:        ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[IDX0]], %[[IDX0]], %[[C0]])
@@ -49,7 +50,7 @@
 // FPU-NEXT:        ttkernel.tanh_tile(%[[C2]])
 // FPU-NEXT:        ttkernel.tile_regs_commit()
 // FPU-NEXT:        ttkernel.tile_regs_wait()
-// pack_tile uses local subblock indices (per-subblock CB view).
+// Pack phase: pack_tile after wait, using local subblock indices.
 // FPU-NEXT:        ttkernel.pack_tile(%[[C0]], %[[CB_OUT]], %[[C0]], true)
 // FPU-NEXT:        ttkernel.pack_tile(%[[C1]], %[[CB_OUT]], %[[C1]], true)
 // FPU-NEXT:        ttkernel.pack_tile(%[[C2]], %[[CB_OUT]], %[[C2]], true)
@@ -73,19 +74,26 @@
 // SFPU: ttkernel.init_sfpu
 // SFPU: scf.for %[[IV:.*]] = %[[SC0]] to %[[SC3]] step %[[SC1]]
 // SFPU:   ttkernel.tile_regs_acquire
+// Grouped within subblock: copies from CB0 for both tiles, copies from CB1,
+// then adds, then tanhs
 // SFPU:       ttkernel.copy_tile_init(
 // SFPU-NEXT:  ttkernel.copy_tile(
 // SFPU:       ttkernel.copy_tile(
-// SFPU-NEXT:  ttkernel.copy_tile_init(
+// SFPU:       ttkernel.copy_tile_init(
 // SFPU-NEXT:  ttkernel.copy_tile(
 // SFPU:       ttkernel.copy_tile(
-// SFPU-NEXT:  ttkernel.add_binary_tile_init
+// SFPU:       ttkernel.add_binary_tile_init
 // SFPU-NEXT:  ttkernel.add_binary_tile(
 // SFPU-NEXT:  ttkernel.add_binary_tile(
 // SFPU-NEXT:  ttkernel.tanh_tile_init
 // SFPU-NEXT:  ttkernel.tanh_tile(
 // SFPU-NEXT:  ttkernel.tanh_tile(
+// Pack phase
 // SFPU-NEXT:  ttkernel.tile_regs_commit
+// SFPU-NEXT:  ttkernel.tile_regs_wait
+// SFPU:       ttkernel.pack_tile(
+// SFPU:       ttkernel.pack_tile(
+// SFPU:       ttkernel.tile_regs_release
 // SFPU:   } {ttl.subblock_dim = 1 : index, ttl.subblock_loop_stride = 1 : index}
 // SFPU-NOT:   ttkernel.add_tiles
 
@@ -96,10 +104,16 @@
 // MANUAL-DAG: %[[MC6:.*]] = arith.constant 6 : i32
 // MANUAL: ttkernel.cb_reserve_back(%{{.*}}, %[[MC6]])
 // MANUAL: scf.for
+// No per-subblock reserve/push inside the loop:
 // MANUAL-NOT: ttkernel.cb_reserve_back
 // MANUAL-NOT: ttkernel.cb_push_back
+// Pack phase inside loop: pack after wait, release at end
+// MANUAL: ttkernel.tile_regs_wait
+// MANUAL: ttkernel.pack_tile
+// MANUAL: ttkernel.pack_tile
 // MANUAL: ttkernel.tile_regs_release
 // MANUAL: }
+// Push with full block count after the loop:
 // MANUAL: ttkernel.cb_push_back(%{{.*}}, %[[MC6]])
 
 #map = affine_map<(d0, d1) -> (d0, d1)>

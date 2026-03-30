@@ -22,9 +22,7 @@ import ttl
 @ttl.kernel(grid=(1, 1))
 def reduce_kernel(inp, scaler, out):
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    scaler_dfb = ttl.make_dataflow_buffer_like(
-        scaler, shape=(1, 1), buffer_factor=2
-    )
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
