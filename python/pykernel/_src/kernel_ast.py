@@ -640,16 +640,30 @@ class TTCompilerBase(PyKernelAstBase):
                 )
 
     def visit_Attribute(self, node, func_args=[], kwargs={}):
+        # Resolve the receiver: either a named variable or an expression
+        # (e.g., ttl.copy(...).wait() where the receiver is a Call).
+        if isinstance(node.value, ast.Name):
+            mlir_value = self._var_exists(node.value.id)[node.value.id]
+        else:
+            mlir_value = self.visit(node.value)
+            if mlir_value is None:
+                raise ValueError(
+                    f"Chained method call on .{node.attr} failed: "
+                    "receiver expression produced no value"
+                )
+
         # type name should be !ttkernel.* if it has attributes
-        mlir_value = self._var_exists(node.value.id)[node.value.id]
         mlir_type = _get_type_str(mlir_value.type)
         qualified_object_syntax = f"{mlir_type}.{node.attr}"
         fn = self._fn_map.get(qualified_object_syntax, None)
         if fn is not None:
             return fn(mlir_value, *func_args, **kwargs)
         elif not mlir_type.startswith("!ttkernel."):
+            receiver_name = (
+                node.value.id if isinstance(node.value, ast.Name) else "<expr>"
+            )
             raise ValueError(
-                f"{node.value.id} is not a ttkernel type, thus can not have attributes."
+                f"{receiver_name} is not a ttkernel type, thus can not have attributes."
             )
         # ignore the '!' at the start of the type name
         type_name = mlir_type[1:]
@@ -660,8 +674,11 @@ class TTCompilerBase(PyKernelAstBase):
             attr_class = ClassRegistry.get(type_name)()
             attr_class.emit_mlir(node.attr, func_args)
         else:
+            receiver_name = (
+                node.value.id if isinstance(node.value, ast.Name) else "<expr>"
+            )
             raise ValueError(
-                f"{node.value.id} has no attributes. Did you define a PyKernelAttributesBase subclass?"
+                f"{receiver_name} has no attributes. Did you define a PyKernelAttributesBase subclass?"
             )
         return
 
