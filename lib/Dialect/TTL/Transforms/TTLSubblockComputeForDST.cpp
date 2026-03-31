@@ -165,7 +165,10 @@ private:
     // If reduction dims alone exceed the DST capacity, no subblocking is
     // possible with this pass.
     if (reductionProduct > unrollFactor) {
-      return success();
+      return computeOp.emitOpError()
+             << "reduction dimensions require " << reductionProduct
+             << " DST tiles per iteration but only " << unrollFactor
+             << " are available; cannot subblock";
     }
 
     // Budget remaining for parallel dimensions after accounting for reductions.
