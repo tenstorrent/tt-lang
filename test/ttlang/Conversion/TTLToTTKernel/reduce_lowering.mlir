@@ -98,6 +98,8 @@ func.func @reduce_sum_dim0_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.c
 // FP32:   ttkernel.pack_tile(%[[C0]], %[[CB2]], %[[C0]], true)
 // FP32:   ttkernel.tile_regs_release
 // FP32: } {ttl.reduction_loop
+// Disable L1 accumulation after reduction loop.
+// FP32: ttkernel.pack_reconfig_l1_acc({{.*}}0{{.*}})
 func.func @reduce_2x1_l1_acc() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
   %c2 = arith.constant 2 : index
   %c1 = arith.constant 1 : index

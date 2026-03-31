@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: tt-device
 # RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
@@ -89,20 +90,30 @@ def transpose_kernel(inp, out):
 # CHECK-CPP: cb_pop_front(get_compile_time_arg_val(0),
 
 
-device = ttnn.open_device(device_id=0)
-a = ttnn.from_torch(
-    __import__("torch").randn(32, 32, dtype=__import__("torch").bfloat16),
-    dtype=ttnn.bfloat16,
-    layout=ttnn.TILE_LAYOUT,
-    device=device,
-    memory_config=ttnn.L1_MEMORY_CONFIG,
-)
-b = ttnn.from_torch(
-    __import__("torch").zeros(32, 32, dtype=__import__("torch").bfloat16),
-    dtype=ttnn.bfloat16,
-    layout=ttnn.TILE_LAYOUT,
-    device=device,
-    memory_config=ttnn.L1_MEMORY_CONFIG,
-)
-transpose_kernel(a, b)
-ttnn.close_device(device)
+if __name__ == "__main__":
+    import torch
+    from ttlang_test_utils import require_hardware
+
+    require_hardware()
+
+    device = ttnn.open_device(device_id=0)
+
+    try:
+        inp = ttnn.from_torch(
+            torch.randn(32, 32, dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.L1_MEMORY_CONFIG,
+        )
+        out = ttnn.from_torch(
+            torch.zeros(32, 32, dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.L1_MEMORY_CONFIG,
+        )
+        transpose_kernel(inp, out)
+
+    finally:
+        ttnn.close_device(device)

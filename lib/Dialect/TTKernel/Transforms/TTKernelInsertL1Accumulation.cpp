@@ -36,7 +36,7 @@ namespace ttk = mlir::tt::ttkernel;
 namespace {
 
 /// Find the innermost enclosing reduction loop for an operation.
-static scf::ForOp findEnclosingReductionLoop(Operation *op) {
+static scf::ForOp findInnermostReductionLoop(Operation *op) {
   for (Operation *parent = op->getParentOp(); parent;
        parent = parent->getParentOp()) {
     if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
@@ -46,6 +46,20 @@ static scf::ForOp findEnclosingReductionLoop(Operation *op) {
     }
   }
   return nullptr;
+}
+
+/// Find the outermost enclosing reduction loop for an operation.
+static scf::ForOp findOutermostReductionLoop(Operation *op) {
+  scf::ForOp outermost;
+  for (Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+      if (forOp->hasAttr(kReductionLoopAttrName)) {
+        outermost = forOp;
+      }
+    }
+  }
+  return outermost;
 }
 
 struct TTKernelInsertL1AccumulationPass
@@ -58,7 +72,7 @@ struct TTKernelInsertL1AccumulationPass
     // avoids invalidation issues from modifying IR during iteration.
     SmallVector<std::pair<ttk::TileRegsAcquireOp, scf::ForOp>> targets;
     moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
-      auto reductionLoop = findEnclosingReductionLoop(acquireOp);
+      auto reductionLoop = findInnermostReductionLoop(acquireOp);
       if (!reductionLoop) {
         return;
       }
@@ -76,6 +90,7 @@ struct TTKernelInsertL1AccumulationPass
       }
     });
 
+    llvm::SmallDenseSet<Operation *> disabledLoops;
     for (auto [acquireOp, reductionLoop] : targets) {
       OpBuilder builder(acquireOp->getContext());
       builder.setInsertionPointAfter(acquireOp);
@@ -91,6 +106,15 @@ struct TTKernelInsertL1AccumulationPass
       Value enableFlag = arith::ConstantOp::create(
           builder, loc, builder.getI32Type(), builder.getI32IntegerAttr(1));
       ttk::PackReconfigL1AccOp::create(builder, loc, enableFlag);
+
+      // Disable L1 accumulation after the outermost reduction loop.
+      auto outermostLoop = findOutermostReductionLoop(acquireOp);
+      if (disabledLoops.insert(outermostLoop).second) {
+        builder.setInsertionPointAfter(outermostLoop);
+        Value disableFlag = arith::ConstantOp::create(
+            builder, loc, builder.getI32Type(), builder.getI32IntegerAttr(0));
+        ttk::PackReconfigL1AccOp::create(builder, loc, disableFlag);
+      }
     }
   }
 };
