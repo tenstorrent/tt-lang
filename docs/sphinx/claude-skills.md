@@ -34,7 +34,7 @@ Run `/ttl-help` in Claude Code to see all available commands. Here is a summary:
     on testing until the translated kernel matches the original behavior.
 
 /ttl-export <kernel>
-    Export a TT-Lang operation to TT-Metal C++ code. Runs the compiler pipeline,
+    Export a TT-Lang kernel to TT-Metal C++ code. Runs the compiler pipeline,
     extracts the generated C++, and beautifies it by improving variable names
     and removing unnecessary casts for readable, production-ready output.
 

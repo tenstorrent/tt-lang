@@ -6,7 +6,7 @@
 # Tutorial Step 0: TT-NN Baseline
 # ================================
 # This is the starting point: a fused elementwise computation expressed entirely
-# in TT-NN.  No TT-Lang operation is involved. TT-NN dispatches each op separately.
+# in TT-NN.  No custom kernel is involved. TT-NN dispatches each op separately.
 #
 # The operation: y = (a * b + c) * d
 #
@@ -51,7 +51,7 @@ try:
     d = from_torch(d)
 
     # TT-NN dispatches three separate operations: multiply, add, multiply.
-    # With a TT-Lang operation we can fuse a * b + c into a single
+    # With a custom TT-Lang kernel we can fuse a * b + c into a single
     # operation, reducing DRAM traffic and operation-launch overhead.
 
     y = ttnn.multiply(ttnn.add(ttnn.multiply(a, b), c), d)
