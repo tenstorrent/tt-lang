@@ -24,7 +24,9 @@ import torch
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import assert_allclose, to_l1
+from ttlang_test_utils import assert_allclose, to_l1, to_dram
+
+import ttl
 
 TILE = 32
 
@@ -515,6 +517,39 @@ MULTI_TILE_CONFIGS = [
         1.0,
         "max_4x4_both_random",
     ),
+    # Non-square multi-tile.
+    (
+        "reduce_sum",
+        (2, 1),
+        [0],
+        lambda: torch.rand(64, 32, dtype=torch.bfloat16),
+        1.0,
+        "sum_2x1_dim0_random",
+    ),
+    (
+        "reduce_sum",
+        (1, 2),
+        [1],
+        lambda: torch.rand(32, 64, dtype=torch.bfloat16),
+        1.0,
+        "sum_1x2_dim1_random",
+    ),
+    (
+        "reduce_max",
+        (2, 1),
+        [0],
+        lambda: torch.rand(64, 32, dtype=torch.bfloat16),
+        1.0,
+        "max_2x1_dim0_random",
+    ),
+    (
+        "reduce_max",
+        (1, 2),
+        [1],
+        lambda: torch.rand(32, 64, dtype=torch.bfloat16),
+        1.0,
+        "max_1x2_dim1_random",
+    ),
     (
         "reduce_sum",
         (4, 4),
@@ -803,3 +838,696 @@ def test_reduce_l1_accumulation(
 
     expected_val = _expected_reduce_value(inp_torch, reduce_fn, dims, scaler_val)
     assert result[0, 0].float().item() == pytest.approx(expected_val, rel=0.05, abs=1.0)
+
+
+# =============================================================================
+# Reduce → broadcast chaining tests.
+# =============================================================================
+
+REDUCE_BCAST_TEMPLATE = """
+import ttl
+
+@ttl.kernel(grid=(1, 1))
+def reduce_bcast_kernel(inp, scaler, out):
+    inp_dfb = ttl.make_dataflow_buffer_like(
+        inp, shape=({inp_rows}, {inp_cols}), buffer_factor=2
+    )
+    scaler_dfb = ttl.make_dataflow_buffer_like(
+        scaler, shape=(1, 1), buffer_factor=2
+    )
+    reduced_dfb = ttl.make_dataflow_buffer_like(
+        scaler, shape=({red_rows}, {red_cols}), buffer_factor=2
+    )
+    out_dfb = ttl.make_dataflow_buffer_like(
+        out, shape=({inp_rows}, {inp_cols}), buffer_factor=2
+    )
+
+    @ttl.compute()
+    def compute_fn():
+        with inp_dfb.wait() as x, scaler_dfb.wait() as s:
+            with reduced_dfb.reserve() as r:
+                r.store(ttl.math.{reduce_fn}(x, s, dims={dims}))
+            with reduced_dfb.wait() as r, out_dfb.reserve() as o:
+                o.store(ttl.math.broadcast(r, o, dims={dims}))
+
+    @ttl.datamovement()
+    def dm_read():
+        blk = inp_dfb.reserve()
+        ttl.copy(inp[{inp_slice}], blk).wait()
+        blk.push()
+        sblk = scaler_dfb.reserve()
+        ttl.copy(scaler[0, 0], sblk).wait()
+        sblk.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        blk = out_dfb.wait()
+        ttl.copy(blk, out[{out_slice}]).wait()
+        blk.pop()
+"""
+
+_reduce_bcast_cache: dict[tuple, Callable] = {}
+
+
+def _make_reduce_bcast_kernel(
+    reduce_fn: str, inp_rows: int, inp_cols: int, dims: List[int]
+) -> Callable:
+    red_rows = 1 if 0 in dims else inp_rows
+    red_cols = 1 if 1 in dims else inp_cols
+    cache_key = ("reduce_bcast", reduce_fn, inp_rows, inp_cols, tuple(dims))
+    if cache_key in _reduce_bcast_cache:
+        return _reduce_bcast_cache[cache_key]
+
+    code = REDUCE_BCAST_TEMPLATE.format(
+        reduce_fn=reduce_fn,
+        inp_rows=inp_rows,
+        inp_cols=inp_cols,
+        red_rows=red_rows,
+        red_cols=red_cols,
+        dims=dims,
+        inp_slice=_slice_syntax(inp_rows, inp_cols),
+        out_slice=_slice_syntax(inp_rows, inp_cols),
+    )
+
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".py",
+        delete=False,
+        prefix=f"reduce_bcast_{reduce_fn}_",
+    ) as tmp:
+        tmp.write(code)
+        temp_path = tmp.name
+
+    _temp_files.append(temp_path)
+    spec = importlib.util.spec_from_file_location("reduce_bcast_module", temp_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    kernel = module.reduce_bcast_kernel
+    _reduce_bcast_cache[cache_key] = kernel
+    return kernel
+
+
+@pytest.mark.parametrize(
+    "reduce_fn, inp_shape, dims, test_id",
+    [
+        ("reduce_sum", (2, 2), [0, 1], "sum_2x2_scalar"),
+        ("reduce_sum", (2, 2), [0], "sum_2x2_dim0"),
+        ("reduce_sum", (2, 2), [1], "sum_2x2_dim1"),
+        ("reduce_max", (2, 2), [0, 1], "max_2x2_scalar"),
+        ("reduce_max", (2, 2), [0], "max_2x2_dim0"),
+        ("reduce_max", (2, 2), [1], "max_2x2_dim1"),
+        ("reduce_sum", (4, 4), [0], "sum_4x4_dim0"),
+        ("reduce_sum", (4, 4), [1], "sum_4x4_dim1"),
+    ],
+    ids=[
+        "sum_2x2_scalar",
+        "sum_2x2_dim0",
+        "sum_2x2_dim1",
+        "max_2x2_scalar",
+        "max_2x2_dim0",
+        "max_2x2_dim1",
+        "sum_4x4_dim0",
+        "sum_4x4_dim1",
+    ],
+)
+def test_reduce_broadcast_chain(device, reduce_fn, inp_shape, dims, test_id):
+    """Reduce then broadcast back to original shape."""
+    inp_rows, inp_cols = inp_shape
+    kernel = _make_reduce_bcast_kernel(reduce_fn, inp_rows, inp_cols, dims)
+
+    inp_torch = torch.rand(inp_rows * TILE, inp_cols * TILE, dtype=torch.bfloat16)
+    scaler_torch = create_scaler_tile(1.0)
+    out_torch = torch.zeros(inp_rows * TILE, inp_cols * TILE, dtype=torch.bfloat16)
+
+    inp = to_l1(inp_torch, device)
+    scaler = to_l1(scaler_torch, device)
+    out = to_l1(out_torch, device)
+
+    kernel(inp, scaler, out)
+    result = ttnn.to_torch(out)
+
+    inp_f = inp_torch.float()
+    if reduce_fn == "reduce_sum":
+        reduced = inp_f.sum(dim=dims, keepdim=True)
+    else:
+        reduced = inp_f.amax(dim=dims, keepdim=True)
+    expected = reduced.expand_as(inp_f)
+
+    from utils.correctness import assert_allclose
+
+    assert_allclose(result.float(), expected, rtol=0.1, atol=1.0)
+
+
+# =============================================================================
+# DRAM memory config tests.
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "reduce_fn, dims, test_id",
+    [
+        ("reduce_sum", [0, 1], "sum_dram"),
+        ("reduce_max", [0, 1], "max_dram"),
+    ],
+    ids=["sum_dram", "max_dram"],
+)
+def test_reduce_dram(device, reduce_fn, dims, test_id):
+    """Single-tile reduce with DRAM-interleaved tensors."""
+    kernel = make_reduce_kernel(reduce_fn, 1, 1, dims)
+
+    inp_torch = torch.rand(TILE, TILE, dtype=torch.bfloat16)
+    scaler_torch = create_scaler_tile(1.0)
+    out_torch = torch.zeros(TILE, TILE, dtype=torch.bfloat16)
+
+    inp = to_dram(inp_torch, device)
+    scaler = to_dram(scaler_torch, device)
+    out = to_dram(out_torch, device)
+
+    kernel(inp, scaler, out)
+    result = ttnn.to_torch(out)
+
+    expected_val = _expected_reduce_value(inp_torch, reduce_fn, dims, 1.0)
+    assert result[0, 0].float().item() == pytest.approx(expected_val, rel=0.05, abs=1.0)
+
+
+# =============================================================================
+# Multicore row/col reduce tests.
+# =============================================================================
+
+MULTICORE_ROW_COL_TEMPLATE = '''
+import ttl
+
+@ttl.kernel(grid=({grid_rows}, {grid_cols}))
+def reduce_kernel(inp, scaler, out):
+    inp_dfb = ttl.make_dataflow_buffer_like(
+        inp, shape=(1, {inp_cols}), buffer_factor=2
+    )
+    scaler_dfb = ttl.make_dataflow_buffer_like(
+        scaler, shape=(1, 1), buffer_factor=2
+    )
+    out_dfb = ttl.make_dataflow_buffer_like(
+        out, shape=(1, {out_cols}), buffer_factor=2
+    )
+
+    @ttl.compute()
+    def compute_fn():
+        with inp_dfb.wait() as inp_blk, scaler_dfb.wait() as scaler_blk:
+            with out_dfb.reserve() as out_blk:
+                result = ttl.math.{reduce_fn}(inp_blk, scaler_blk, dims={dims})
+                out_blk.store(result)
+
+    @ttl.datamovement()
+    def dm_read():
+        x, y = ttl.node(dims=2)
+        inp_blk = inp_dfb.reserve()
+        ttl.copy(inp[y, x * {inp_cols} : x * {inp_cols} + {inp_cols}], inp_blk).wait()
+        inp_blk.push()
+        sblk = scaler_dfb.reserve()
+        ttl.copy(scaler[0, 0], sblk).wait()
+        sblk.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        x, y = ttl.node(dims=2)
+        blk = out_dfb.wait()
+        ttl.copy(blk, out[y, x * {out_cols} : x * {out_cols} + {out_cols}]).wait()
+        blk.pop()
+'''
+
+_multicore_rc_cache: dict[tuple, Callable] = {}
+
+
+def _make_multicore_row_col_kernel(
+    reduce_fn: str, grid_rows: int, grid_cols: int,
+    inp_cols: int, out_cols: int, dims: List[int]
+) -> Callable:
+    cache_key = ("mc_rc", reduce_fn, grid_rows, grid_cols, inp_cols, out_cols, tuple(dims))
+    if cache_key in _multicore_rc_cache:
+        return _multicore_rc_cache[cache_key]
+
+    code = MULTICORE_ROW_COL_TEMPLATE.format(
+        reduce_fn=reduce_fn,
+        grid_rows=grid_rows,
+        grid_cols=grid_cols,
+        inp_cols=inp_cols,
+        out_cols=out_cols,
+        dims=dims,
+    )
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False,
+        prefix=f"mc_rc_{reduce_fn}_",
+    ) as tmp:
+        tmp.write(code)
+        temp_path = tmp.name
+
+    _temp_files.append(temp_path)
+    spec = importlib.util.spec_from_file_location("mc_rc_module", temp_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    kernel = module.reduce_kernel
+    _multicore_rc_cache[cache_key] = kernel
+    return kernel
+
+
+@pytest.mark.parametrize(
+    "reduce_fn, grid_rows, grid_cols, inp_cols, dims, test_id",
+    [
+        ("reduce_sum", 1, 2, 2, [1], "sum_col_1x2"),
+        ("reduce_sum", 2, 1, 1, [0, 1], "sum_scalar_multicore_distinct"),
+    ],
+    ids=["sum_col_1x2", "sum_scalar_multicore_distinct"],
+)
+def test_reduce_multicore_row_col(
+    device, reduce_fn, grid_rows, grid_cols, inp_cols, dims, test_id
+):
+    """Multicore reduce with row/col dimensions."""
+    out_cols = 1 if 1 in dims else inp_cols
+    kernel = _make_multicore_row_col_kernel(
+        reduce_fn, grid_rows, grid_cols, inp_cols, out_cols, dims
+    )
+
+    total_rows = grid_rows * TILE
+    total_cols = grid_cols * inp_cols * TILE
+    inp_torch = torch.rand(total_rows, total_cols, dtype=torch.bfloat16)
+    scaler_torch = create_scaler_tile(1.0)
+    out_total_cols = grid_cols * out_cols * TILE
+    out_torch = torch.zeros(total_rows, out_total_cols, dtype=torch.bfloat16)
+
+    inp = to_l1(inp_torch, device)
+    scaler = to_l1(scaler_torch, device)
+    out = to_l1(out_torch, device)
+
+    kernel(inp, scaler, out)
+    result = ttnn.to_torch(out)
+
+    # Verify first core's output.
+    from utils.correctness import assert_allclose
+    core_inp = inp_torch[:TILE, :inp_cols * TILE].float()
+    if reduce_fn == "reduce_sum":
+        expected = core_inp.sum(dim=dims, keepdim=True)
+    else:
+        expected = core_inp.amax(dim=dims, keepdim=True)
+    actual = result[:TILE, :out_cols * TILE].float()
+    assert_allclose(actual[0, 0], expected.flatten()[0], rtol=0.05, atol=1.0)
+
+
+# =============================================================================
+# Multicore + multitile tests.
+# =============================================================================
+
+MULTICORE_MULTITILE_TEMPLATE = '''
+import ttl
+
+@ttl.kernel(grid=({grid_rows}, {grid_cols}))
+def reduce_kernel(inp, scaler, out):
+    inp_dfb = ttl.make_dataflow_buffer_like(
+        inp, shape=({tile_rows}, {tile_cols}), buffer_factor=2
+    )
+    scaler_dfb = ttl.make_dataflow_buffer_like(
+        scaler, shape=(1, 1), buffer_factor=2
+    )
+    out_dfb = ttl.make_dataflow_buffer_like(
+        out, shape=({out_tile_rows}, {out_tile_cols}), buffer_factor=2
+    )
+
+    @ttl.compute()
+    def compute_fn():
+        with inp_dfb.wait() as inp_blk, scaler_dfb.wait() as scaler_blk:
+            with out_dfb.reserve() as out_blk:
+                out_blk.store(ttl.math.{reduce_fn}(inp_blk, scaler_blk, dims={dims}))
+
+    @ttl.datamovement()
+    def dm_read():
+        x, y = ttl.node(dims=2)
+        inp_blk = inp_dfb.reserve()
+        ttl.copy(inp[y * {tile_rows} : y * {tile_rows} + {tile_rows},
+                     x * {tile_cols} : x * {tile_cols} + {tile_cols}], inp_blk).wait()
+        inp_blk.push()
+        sblk = scaler_dfb.reserve()
+        ttl.copy(scaler[0, 0], sblk).wait()
+        sblk.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        x, y = ttl.node(dims=2)
+        blk = out_dfb.wait()
+        ttl.copy(blk, out[y * {out_tile_rows} : y * {out_tile_rows} + {out_tile_rows},
+                         x * {out_tile_cols} : x * {out_tile_cols} + {out_tile_cols}]).wait()
+        blk.pop()
+'''
+
+_mc_mt_cache: dict[tuple, Callable] = {}
+
+
+def _make_mc_mt_kernel(
+    reduce_fn: str, grid_rows: int, grid_cols: int,
+    tile_rows: int, tile_cols: int, dims: List[int]
+) -> Callable:
+    out_tile_rows = 1 if 0 in dims else tile_rows
+    out_tile_cols = 1 if 1 in dims else tile_cols
+    cache_key = ("mc_mt", reduce_fn, grid_rows, grid_cols,
+                 tile_rows, tile_cols, tuple(dims))
+    if cache_key in _mc_mt_cache:
+        return _mc_mt_cache[cache_key]
+
+    code = MULTICORE_MULTITILE_TEMPLATE.format(
+        reduce_fn=reduce_fn,
+        grid_rows=grid_rows,
+        grid_cols=grid_cols,
+        tile_rows=tile_rows,
+        tile_cols=tile_cols,
+        out_tile_rows=out_tile_rows,
+        out_tile_cols=out_tile_cols,
+        dims=dims,
+    )
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False,
+        prefix=f"mc_mt_{reduce_fn}_",
+    ) as tmp:
+        tmp.write(code)
+        temp_path = tmp.name
+
+    _temp_files.append(temp_path)
+    spec = importlib.util.spec_from_file_location("mc_mt_module", temp_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    kernel = module.reduce_kernel
+    _mc_mt_cache[cache_key] = kernel
+    return kernel
+
+
+@pytest.mark.parametrize(
+    "reduce_fn, grid, tiles, dims, test_id",
+    [
+        ("reduce_sum", (2, 2), (2, 2), [0, 1], "sum_2x2_grid_2x2_tiles_scalar"),
+        ("reduce_sum", (2, 2), (2, 2), [0], "sum_2x2_grid_2x2_tiles_dim0"),
+        ("reduce_max", (2, 2), (2, 2), [0, 1], "max_2x2_grid_2x2_tiles_scalar"),
+    ],
+    ids=[
+        "sum_2x2_grid_2x2_tiles_scalar",
+        "sum_2x2_grid_2x2_tiles_dim0",
+        "max_2x2_grid_2x2_tiles_scalar",
+    ],
+)
+def test_reduce_multicore_multitile(device, reduce_fn, grid, tiles, dims, test_id):
+    """Multicore with multi-tile blocks per core."""
+    grid_rows, grid_cols = grid
+    tile_rows, tile_cols = tiles
+    kernel = _make_mc_mt_kernel(reduce_fn, grid_rows, grid_cols,
+                                tile_rows, tile_cols, dims)
+
+    total_rows = grid_rows * tile_rows * TILE
+    total_cols = grid_cols * tile_cols * TILE
+    inp_torch = torch.rand(total_rows, total_cols, dtype=torch.bfloat16)
+    scaler_torch = create_scaler_tile(1.0)
+
+    out_tile_rows = 1 if 0 in dims else tile_rows
+    out_tile_cols = 1 if 1 in dims else tile_cols
+    out_rows = grid_rows * out_tile_rows * TILE
+    out_cols = grid_cols * out_tile_cols * TILE
+    out_torch = torch.zeros(out_rows, out_cols, dtype=torch.bfloat16)
+
+    inp = to_l1(inp_torch, device)
+    scaler = to_l1(scaler_torch, device)
+    out = to_l1(out_torch, device)
+
+    kernel(inp, scaler, out)
+    result = ttnn.to_torch(out)
+
+    # Check first core's output.
+    core_inp = inp_torch[:tile_rows * TILE, :tile_cols * TILE].float()
+    if reduce_fn == "reduce_sum":
+        expected = core_inp.sum(dim=dims, keepdim=True)
+    else:
+        expected = core_inp.amax(dim=dims, keepdim=True)
+
+    from utils.correctness import assert_allclose
+    assert_allclose(
+        result[0, 0].float(), expected.flatten()[0], rtol=0.05, atol=1.0
+    )
+
+
+# =============================================================================
+# Composition: broadcast → reduce (multicore multitile).
+# =============================================================================
+
+BCAST_REDUCE_TEMPLATE = '''
+import ttl
+
+@ttl.kernel(grid=({grid_rows}, {grid_cols}))
+def bcast_reduce_kernel(inp, bcast_in, scaler, out):
+    inp_dfb = ttl.make_dataflow_buffer_like(
+        inp, shape=({tile_rows}, {tile_cols}), buffer_factor=2
+    )
+    bcast_dfb = ttl.make_dataflow_buffer_like(
+        bcast_in, shape=(1, 1), buffer_factor=2
+    )
+    bcast_out_dfb = ttl.make_dataflow_buffer_like(
+        inp, shape=({tile_rows}, {tile_cols}), buffer_factor=2
+    )
+    scaler_dfb = ttl.make_dataflow_buffer_like(
+        scaler, shape=(1, 1), buffer_factor=2
+    )
+    add_out_dfb = ttl.make_dataflow_buffer_like(
+        inp, shape=({tile_rows}, {tile_cols}), buffer_factor=2
+    )
+    out_dfb = ttl.make_dataflow_buffer_like(
+        out, shape=(1, 1), buffer_factor=2
+    )
+
+    @ttl.compute()
+    def compute_fn():
+        with bcast_dfb.wait() as b, bcast_out_dfb.reserve() as bo:
+            bo.store(ttl.math.broadcast(b, bo, dims=[0, 1]))
+
+        with inp_dfb.wait() as x, bcast_out_dfb.wait() as bv, add_out_dfb.reserve() as ao:
+            ao.store(x + bv)
+
+        with add_out_dfb.wait() as av, scaler_dfb.wait() as s, out_dfb.reserve() as o:
+            o.store(ttl.math.reduce_sum(av, s, dims=[0, 1]))
+
+    @ttl.datamovement()
+    def dm_read():
+        x, y = ttl.node(dims=2)
+        blk = inp_dfb.reserve()
+        ttl.copy(inp[y * {tile_rows} : y * {tile_rows} + {tile_rows},
+                     x * {tile_cols} : x * {tile_cols} + {tile_cols}], blk).wait()
+        blk.push()
+        bblk = bcast_dfb.reserve()
+        ttl.copy(bcast_in[0, 0], bblk).wait()
+        bblk.push()
+        sblk = scaler_dfb.reserve()
+        ttl.copy(scaler[0, 0], sblk).wait()
+        sblk.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        x, y = ttl.node(dims=2)
+        blk = out_dfb.wait()
+        ttl.copy(blk, out[y, x]).wait()
+        blk.pop()
+'''
+
+
+def test_bcast_then_reduce_multicore_multitile(device):
+    """Broadcast scalar, add to input, then reduce. 2x2 grid, 2x2 tiles each."""
+    grid_rows, grid_cols = 2, 2
+    tile_rows, tile_cols = 2, 2
+
+    code = BCAST_REDUCE_TEMPLATE.format(
+        grid_rows=grid_rows, grid_cols=grid_cols,
+        tile_rows=tile_rows, tile_cols=tile_cols,
+    )
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, prefix="bcast_reduce_"
+    ) as tmp:
+        tmp.write(code)
+        temp_path = tmp.name
+    _temp_files.append(temp_path)
+    spec = importlib.util.spec_from_file_location("bcast_reduce_mod", temp_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    kernel = module.bcast_reduce_kernel
+
+    total_rows = grid_rows * tile_rows * TILE
+    total_cols = grid_cols * tile_cols * TILE
+    inp_torch = torch.ones(total_rows, total_cols, dtype=torch.bfloat16)
+    bcast_torch = torch.zeros(TILE, TILE, dtype=torch.bfloat16)
+    bcast_torch[0, 0] = 2.0
+    bcast_torch[16, 0] = 2.0
+    scaler_torch = create_scaler_tile(1.0)
+    out_torch = torch.zeros(grid_rows * TILE, grid_cols * TILE, dtype=torch.bfloat16)
+
+    inp = to_l1(inp_torch, device)
+    bcast_in = to_l1(bcast_torch, device)
+    scaler = to_l1(scaler_torch, device)
+    out = to_l1(out_torch, device)
+
+    kernel(inp, bcast_in, scaler, out)
+    result = ttnn.to_torch(out)
+
+    # Each core: sum((1.0 + 2.0) * 2*2 tiles * 32*32 elements) = 3.0 * 4096 = 12288
+    expected_val = 3.0 * tile_rows * tile_cols * TILE * TILE
+    actual = result[0, 0].float().item()
+    assert actual == pytest.approx(expected_val, rel=0.05), (
+        f"core (0,0): got {actual}, expected {expected_val}"
+    )
+
+
+# =============================================================================
+# Composition: matmul → reduce, reduce → bcast → matmul.
+# =============================================================================
+
+
+@ttl.kernel(grid=(1, 1))
+def matmul_then_reduce_kernel(mat_a, mat_b, scaler, out):
+    a_dfb = ttl.make_dataflow_buffer_like(mat_a, shape=(1, 1), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(mat_b, shape=(1, 1), buffer_factor=2)
+    mm_dfb = ttl.make_dataflow_buffer_like(mat_a, shape=(1, 1), buffer_factor=2)
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
+    @ttl.compute()
+    def compute_fn():
+        with a_dfb.wait() as a, b_dfb.wait() as b, mm_dfb.reserve() as mm:
+            mm.store(a @ b)
+        with mm_dfb.wait() as mm, scaler_dfb.wait() as s, out_dfb.reserve() as o:
+            o.store(ttl.math.reduce_sum(mm, s, dims=[0, 1]))
+
+    @ttl.datamovement()
+    def dm_read():
+        ablk = a_dfb.reserve()
+        ttl.copy(mat_a[0, 0], ablk).wait()
+        ablk.push()
+        bblk = b_dfb.reserve()
+        ttl.copy(mat_b[0, 0], bblk).wait()
+        bblk.push()
+        sblk = scaler_dfb.reserve()
+        ttl.copy(scaler[0, 0], sblk).wait()
+        sblk.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        blk = out_dfb.wait()
+        ttl.copy(blk, out[0, 0]).wait()
+        blk.pop()
+
+
+def test_matmul_then_reduce(device):
+    """matmul(A, B) → reduce_sum: single tile."""
+    a_torch = torch.rand(TILE, TILE, dtype=torch.bfloat16)
+    b_torch = torch.rand(TILE, TILE, dtype=torch.bfloat16)
+    scaler_torch = create_scaler_tile(1.0)
+    out_torch = torch.zeros(TILE, TILE, dtype=torch.bfloat16)
+
+    a = to_l1(a_torch, device)
+    b = to_l1(b_torch, device)
+    scaler = to_l1(scaler_torch, device)
+    out = to_l1(out_torch, device)
+
+    matmul_then_reduce_kernel(a, b, scaler, out)
+    result = ttnn.to_torch(out)
+
+    expected = (a_torch.float() @ b_torch.float()).sum().item()
+    actual = result[0, 0].float().item()
+    assert actual == pytest.approx(expected, rel=0.1, abs=10.0), (
+        f"got {actual}, expected {expected}"
+    )
+
+
+# =============================================================================
+# Composition: reduce → broadcast → matmul (adapted from PR 370).
+# =============================================================================
+
+
+# =============================================================================
+# Composition: reduce → broadcast → matmul.
+# =============================================================================
+
+REDUCE_BCAST_MATMUL_TEMPLATE = '''
+import ttl
+
+@ttl.kernel(grid=(1, 1))
+def reduce_bcast_matmul_kernel(reduce_in, bcast_ref, mat_b, scaler, out):
+    reduce_dfb = ttl.make_dataflow_buffer_like(reduce_in, shape=({t}, {t}), buffer_factor=2)
+    sc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    red_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    bcast_dfb = ttl.make_dataflow_buffer_like(bcast_ref, shape=({t}, {t}), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(mat_b, shape=({t}, {t}), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({t}, {t}), buffer_factor=2)
+
+    @ttl.compute()
+    def compute_fn():
+        with reduce_dfb.wait() as r_in, sc_dfb.wait() as s:
+            with red_dfb.reserve() as r_out:
+                r_out.store(ttl.math.reduce_sum(r_in, s, dims=[0, 1]))
+        with red_dfb.wait() as r_val, bcast_dfb.reserve() as b_out:
+            b_out.store(ttl.math.broadcast(r_val, b_out, dims=[0, 1]))
+        with bcast_dfb.wait() as a, b_dfb.wait() as b, out_dfb.reserve() as c:
+            c.store(a @ b)
+
+    @ttl.datamovement()
+    def dm_read():
+        rblk = reduce_dfb.reserve()
+        ttl.copy(reduce_in[0:{t}, 0:{t}], rblk).wait()
+        rblk.push()
+        sblk = sc_dfb.reserve()
+        ttl.copy(scaler[0, 0], sblk).wait()
+        sblk.push()
+        bblk = b_dfb.reserve()
+        ttl.copy(mat_b[0:{t}, 0:{t}], bblk).wait()
+        bblk.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        blk = out_dfb.wait()
+        ttl.copy(blk, out[0:{t}, 0:{t}]).wait()
+        blk.pop()
+'''
+
+
+def test_reduce_bcast_matmul_pcc(device):
+    """reduce_sum → broadcast → matmul: 2x2 tiles, random, PCC."""
+    tiles = 2
+    size = tiles * TILE
+
+    code = REDUCE_BCAST_MATMUL_TEMPLATE.format(t=tiles)
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, prefix="rbm_"
+    ) as tmp:
+        tmp.write(code)
+        temp_path = tmp.name
+    _temp_files.append(temp_path)
+    spec = importlib.util.spec_from_file_location("rbm_mod", temp_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    kernel = module.reduce_bcast_matmul_kernel
+
+    torch.manual_seed(12345)
+    r_torch = torch.randn(size, size, dtype=torch.bfloat16)
+    b_torch = torch.randn(size, size, dtype=torch.bfloat16)
+    bcast_ref = torch.zeros(size, size, dtype=torch.bfloat16)
+    scaler_torch = create_scaler_tile(1.0)
+    out_torch = torch.zeros(size, size, dtype=torch.bfloat16)
+
+    r = to_l1(r_torch, device)
+    bref = to_l1(bcast_ref, device)
+    b = to_l1(b_torch, device)
+    scaler = to_l1(scaler_torch, device)
+    out = to_l1(out_torch, device)
+
+    kernel(r, bref, b, scaler, out)
+    result = ttnn.to_torch(out)
+
+    scalar_val = r_torch.float().sum().item()
+    bcast_mat = torch.full((size, size), scalar_val, dtype=torch.float32)
+    expected = bcast_mat @ b_torch.float()
+
+    from utils.correctness import assert_pcc
+    assert_pcc(expected, result.float(), threshold=0.99)

@@ -7,8 +7,9 @@
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
 """
-Simple transpose kernel -- verifies transpose lowers to correct TTL ops
-and generates correct C++ (transpose_wh_init, transpose_wh_tile).
+Simple transpose kernel - verifies transpose lowers to correct TTL ops and C++ code.
+
+Tests single-tile transpose.
 """
 
 import os
@@ -25,43 +26,83 @@ def transpose_kernel(inp, out):
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
-    def compute_fn():
-        with inp_dfb.wait() as inp_blk, out_dfb.reserve() as out_blk:
-            result = ttl.math.transpose(inp_blk)
-            out_blk.store(result)
+    def transpose_compute():
+        with inp_dfb.wait() as inp, out_dfb.reserve() as out:
+            out.store(ttl.math.transpose(inp))
 
     @ttl.datamovement()
     def dm_read():
-        inp_blk = inp_dfb.reserve()
-        tx_inp = ttl.copy(inp[0, 0], inp_blk)
-        tx_inp.wait()
-        inp_blk.push()
+        with inp_dfb.reserve() as blk:
+            tx = ttl.copy(inp[0, 0], blk)
+            tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        out_blk = out_dfb.wait()
-        tx_out = ttl.copy(out_blk, out[0, 0])
-        tx_out.wait()
-        out_blk.pop()
+        with out_dfb.wait() as blk:
+            tx = ttl.copy(blk, out[0, 0])
+            tx.wait()
 
 
-# Initial MLIR: verify transpose op is present.
+# =============================================================================
+# Initial IR Checks - Verify TTL dialect ops (compute kernel)
+# =============================================================================
+
+# CHECK-LABEL: func.func @transpose_compute
+# CHECK-SAME: attributes {{{.*}}ttl.kernel_thread = #ttkernel.thread<compute>}
+
+# CHECK: %[[IN_CB:.+]] = ttl.bind_cb{cb_index = 0
+# CHECK: %[[OUT_CB:.+]] = ttl.bind_cb{cb_index = 1
+
+# CHECK: ttl.cb_wait %[[IN_CB]]
+# CHECK: ttl.cb_reserve %[[OUT_CB]]
+
 # CHECK: ttl.transpose
 
-# Generated C++: verify transpose_wh_init and transpose_wh_tile.
-# CHECK-CPP: transpose_wh_init
-# CHECK-CPP: transpose_wh_tile
+# CHECK: ttl.store
 
-if __name__ == "__main__":
-    import torch
-    from ttlang_test_utils import to_l1
+# CHECK: ttl.cb_push %[[OUT_CB]]
+# CHECK: ttl.cb_pop %[[IN_CB]]
 
-    device = ttnn.open_device(device_id=0)
+# =============================================================================
+# C++ Kernel Checks - Verify generated compute kernel
+# =============================================================================
 
-    try:
-        inp = to_l1(torch.ones(32, 32, dtype=torch.bfloat16), device)
-        out = to_l1(torch.zeros(32, 32, dtype=torch.bfloat16), device)
+# CHECK-CPP: // transpose_compute
+# CHECK-CPP: void kernel_main()
 
-        transpose_kernel(inp, out)
-    finally:
-        ttnn.close_device(device)
+# CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
+# CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(1),
+
+# CHECK-CPP: tile_regs_acquire();
+
+# CHECK-CPP: transpose_wh_init(
+# CHECK-CPP: transpose_wh_tile(
+
+# CHECK-CPP: tile_regs_commit();
+# CHECK-CPP: tile_regs_wait();
+
+# CHECK-CPP: pack_tile<true>(
+
+# CHECK-CPP: tile_regs_release();
+
+# CHECK-CPP: cb_push_back(get_compile_time_arg_val(1),
+# CHECK-CPP: cb_pop_front(get_compile_time_arg_val(0),
+
+
+device = ttnn.open_device(device_id=0)
+a = ttnn.from_torch(
+    __import__("torch").randn(32, 32, dtype=__import__("torch").bfloat16),
+    dtype=ttnn.bfloat16,
+    layout=ttnn.TILE_LAYOUT,
+    device=device,
+    memory_config=ttnn.L1_MEMORY_CONFIG,
+)
+b = ttnn.from_torch(
+    __import__("torch").zeros(32, 32, dtype=__import__("torch").bfloat16),
+    dtype=ttnn.bfloat16,
+    layout=ttnn.TILE_LAYOUT,
+    device=device,
+    memory_config=ttnn.L1_MEMORY_CONFIG,
+)
+transpose_kernel(a, b)
+ttnn.close_device(device)

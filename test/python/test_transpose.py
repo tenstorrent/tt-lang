@@ -257,6 +257,23 @@ TRANSPOSE_CONFIGS = [
         ),
         "3x1_unique",
     ),
+    # More non-square shapes.
+    (
+        4,
+        2,
+        lambda r, c: torch.arange(r * c * TILE * TILE, dtype=torch.bfloat16).reshape(
+            r * TILE, c * TILE
+        ),
+        "4x2_unique",
+    ),
+    (
+        2,
+        4,
+        lambda r, c: torch.arange(r * c * TILE * TILE, dtype=torch.bfloat16).reshape(
+            r * TILE, c * TILE
+        ),
+        "2x4_unique",
+    ),
     # Random data.
     (
         1,
@@ -269,6 +286,18 @@ TRANSPOSE_CONFIGS = [
         3,
         lambda r, c: torch.rand(r * TILE, c * TILE, dtype=torch.bfloat16),
         "2x3_random",
+    ),
+    (
+        3,
+        2,
+        lambda r, c: torch.rand(r * TILE, c * TILE, dtype=torch.bfloat16),
+        "3x2_random",
+    ),
+    (
+        4,
+        2,
+        lambda r, c: torch.rand(r * TILE, c * TILE, dtype=torch.bfloat16),
+        "4x2_random",
     ),
 ]
 
