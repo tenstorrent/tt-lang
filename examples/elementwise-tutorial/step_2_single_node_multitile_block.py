@@ -1,6 +1,21 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+
+#
+# Tutorial Step 2: Single Node, Multi-Tile Block
+# ===============================================
+# Builds on Step 1 by processing multiple tiles per dataflow buffer entry
+# instead of one tile at a time.
+#
+# New concept introduced:
+#   - Multi-tile blocks: each DFB entry holds a GRANULARITY×GRANULARITY patch
+#     of tiles.  Fewer, larger memory transfers reduce per-transfer overhead and
+#     give the compute thread more work per synchronization round-trip.
+#
+# Everything else (single node, same kernel structure, same three-thread model)
+# is identical to Step 1.
+
 import ttnn
 import torch
 
@@ -18,16 +33,25 @@ def from_torch(tensor: torch.Tensor):
 import ttl
 
 TILE_SIZE = 32
+
+# GRANULARITY controls how many tiles fit along each dimension of one block.
+# With GRANULARITY=4 each block is a 4×4 patch of 32×32 tiles = 128×128 elements.
+
 GRANULARITY = 4
 
 
 @ttl.kernel(grid=(1, 1))
-def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
+def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY
 
+    # rows/cols now count blocks, not individual tiles.
+
     rows = a.shape[0] // TILE_SIZE // row_tiles_per_block
     cols = a.shape[1] // TILE_SIZE // col_tiles_per_block
+
+    # shape=(row_tiles_per_block, col_tiles_per_block) makes each DFB entry
+    # large enough to hold the entire multi-tile block.
 
     a_dfb = ttl.make_dataflow_buffer_like(
         a, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
@@ -42,8 +66,12 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
         y, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
     )
 
+    # The compute thread is unchanged in structure: it still iterates over
+    # blocks and applies the fused operation.  The hardware now operates on
+    # a full multi-tile block per iteration rather than a single tile.
+
     @ttl.compute()
-    def demo_compute():
+    def tutorial_compute():
         for _ in range(rows):
             for _ in range(cols):
                 with (
@@ -55,8 +83,11 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
                     y_blk.store(a_blk * b_blk + c_blk)
 
     @ttl.datamovement()
-    def demo_read():
+    def tutorial_read():
         for row in range(rows):
+
+            # Convert block index to tile index range for the tensor slice.
+
             start_row_tile = row * row_tiles_per_block
             end_row_tile = (row + 1) * row_tiles_per_block
 
@@ -69,6 +100,8 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
                     b_dfb.reserve() as b_blk,
                     c_dfb.reserve() as c_blk,
                 ):
+                    # Slice with a range to copy the entire block in one transfer.
+
                     tx_a = ttl.copy(
                         a[
                             start_row_tile:end_row_tile,
@@ -96,7 +129,7 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
                     tx_c.wait()
 
     @ttl.datamovement()
-    def demo_write():
+    def tutorial_write():
         for row in range(rows):
             start_row_tile = row * row_tiles_per_block
             end_row_tile = (row + 1) * row_tiles_per_block
@@ -116,9 +149,9 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
                     tx.wait()
 
 
-def demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
+def tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
     y = from_torch(torch.zeros((a.shape[0], a.shape[1]), dtype=torch.bfloat16))
-    __demo_kernel(a, b, c, y)
+    __tutorial_kernel(a, b, c, y)
     return y
 
 
@@ -141,7 +174,7 @@ try:
     c = from_torch(c)
     d = from_torch(d)
 
-    y = ttnn.multiply(demo_kernel(a, b, c), d)
+    y = ttnn.multiply(tutorial_kernel(a, b, c), d)
 
     y = ttnn.to_torch(y)
     print(y)

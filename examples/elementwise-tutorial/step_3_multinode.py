@@ -1,6 +1,22 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+
+#
+# Tutorial Step 3: Multi-Node, Fixed Grid
+# ========================================
+# Extends Step 2 by running the kernel across a grid of nodes in parallel.
+#
+# New concepts introduced:
+#   - grid=(4, 4)          — run the kernel on a 4×4 grid of nodes (16 cores)
+#   - ttl.grid_size(dims=2) — query the grid dimensions at runtime
+#   - ttl.node(dims=2)     — query this node's (col, row) position in the grid
+#
+# Each node processes an independent rectangular region of the output tensor.
+# The partition is computed from the node's coordinates so that all nodes cover
+# the full tensor without overlap.  This requires the tensor dimensions to be
+# evenly divisible by the grid (see Step 4 for a version that handles remainders).
+
 import ttnn
 import torch
 
@@ -21,12 +37,22 @@ TILE_SIZE = 32
 GRANULARITY = 4
 
 
+# grid=(4, 4) launches the kernel body on every node of a 4-column × 4-row grid.
+# All nodes execute the same code; they differentiate their work via ttl.node().
+
+
 @ttl.kernel(grid=(4, 4))
-def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
+def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY
 
+    # ttl.grid_size returns the number of nodes along each grid dimension.
+    # dims=2 returns (cols, rows) matching the (col, row) convention of ttl.node.
+
     grid_cols, grid_rows = ttl.grid_size(dims=2)
+
+    # Divide the total block count evenly across the grid.
+    # Assumes the tensor is evenly divisible by the grid size.
 
     rows_per_node = a.shape[0] // TILE_SIZE // row_tiles_per_block // grid_rows
     cols_per_node = a.shape[1] // TILE_SIZE // col_tiles_per_block // grid_rows
@@ -44,8 +70,11 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
         y, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
     )
 
+    # The compute thread is unaware of node coordinates; it simply processes
+    # all blocks assigned to this node by the DM threads.
+
     @ttl.compute()
-    def demo_compute():
+    def tutorial_compute():
         for _ in range(rows_per_node):
             for _ in range(cols_per_node):
                 with (
@@ -57,10 +86,17 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
                     y_blk.store(a_blk * b_blk + c_blk)
 
     @ttl.datamovement()
-    def demo_read():
+    def tutorial_read():
+
+        # ttl.node() returns the zero-based coordinates of this specific node.
+        # node_col and node_row are used to offset into the global tensor.
+
         node_col, node_row = ttl.node(dims=2)
 
         for local_row in range(rows_per_node):
+
+            # Map local block index to global block index.
+
             row = node_row * rows_per_node + local_row
             start_row_tile = row * row_tiles_per_block
             end_row_tile = (row + 1) * row_tiles_per_block
@@ -102,7 +138,7 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
                     tx_c.wait()
 
     @ttl.datamovement()
-    def demo_write():
+    def tutorial_write():
         node_col, node_row = ttl.node(dims=2)
 
         for local_row in range(rows_per_node):
@@ -126,9 +162,9 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
                     tx.wait()
 
 
-def demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
+def tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
     y = from_torch(torch.zeros((a.shape[0], a.shape[1]), dtype=torch.bfloat16))
-    __demo_kernel(a, b, c, y)
+    __tutorial_kernel(a, b, c, y)
     return y
 
 
@@ -151,7 +187,7 @@ try:
     c = from_torch(c)
     d = from_torch(d)
 
-    y = ttnn.multiply(demo_kernel(a, b, c), d)
+    y = ttnn.multiply(tutorial_kernel(a, b, c), d)
 
     y = ttnn.to_torch(y)
     print(y)

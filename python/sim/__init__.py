@@ -16,7 +16,7 @@ from .corecontext import node
 from .kernel import kernel
 from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
 from .program import Program
-from .ttnnsim import TTNN_AVAILABLE
+from .ttnnsim import TTNN_AVAILABLE, ROW_MAJOR_LAYOUT, TILE_LAYOUT
 from .typedefs import CoreCoord, CoreRange, Shape
 
 
@@ -94,6 +94,8 @@ class _TTLNamespace:
         self.Size = Size
         self.Shape = Shape
         self.TILE_SHAPE = TILE_SHAPE
+        self.TILE_LAYOUT = TILE_LAYOUT
+        self.ROW_MAJOR_LAYOUT = ROW_MAJOR_LAYOUT
         self.Program = Program
         self.math = _TTLMathNamespace()
 
@@ -126,4 +128,6 @@ __all__ = [
     "ttl",
     "ttnn",
     "TTNN_AVAILABLE",
+    "TILE_LAYOUT",
+    "ROW_MAJOR_LAYOUT",
 ]

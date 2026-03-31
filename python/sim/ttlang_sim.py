@@ -214,7 +214,7 @@ def main() -> None:
         epilog="Examples:\n"
         "  ttlang-sim examples/eltwise_add.py\n"
         "  ttlang-sim examples/single_node_matmul.py --show-stats\n"
-        "  ttlang-sim examples/tutorial/multinode.py --grid 4,4\n"
+        "  ttlang-sim examples/elementwise-tutorial/step_3_multinode.py --grid 4,4\n"
         "  ttlang-sim examples/eltwise_add.py --max-l1 1572864",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

@@ -5,7 +5,7 @@ Welcome to the tt-lang containerized environment! The environment is automatical
 ## Quick Start
 
 ```bash
-python $TTLANG_TOOLCHAIN_DIR/examples/tutorial/multinode_grid_auto.py
+python $TTLANG_TOOLCHAIN_DIR/examples/elementwise-tutorial/step_4_multinode_grid_auto.py
 ```
 
 ## Installed Locations
