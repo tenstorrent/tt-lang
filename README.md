@@ -65,7 +65,7 @@ docker exec -it $USER-dist /bin/bash
 
 The environment activates automatically on login. Run an example immediately:
 ```bash
-python /opt/ttlang-toolchain/examples/tutorial/multicore_grid_auto.py
+python /opt/ttlang-toolchain/examples/elementwise-tutorial/step_4_multinode_grid_auto.py
 ```
 
 To learn more, work through the [tutorial](docs/sphinx/ttl-tutorial/index.md), explore the [programming guide](docs/sphinx/programming-guide.md) for compiler options, debugging, and performance tools, or use [Claude Code](https://claude.com/claude-code) with the built-in [slash commands](docs/sphinx/claude-skills.md) to translate kernels, profile, and optimize.
@@ -109,7 +109,7 @@ ninja -C build check-ttlang-all
 
 Run an example:
 ```bash
-python examples/tutorial/multicore_grid_auto.py
+python examples/elementwise-tutorial/step_4_multinode_grid_auto.py
 ```
 
 The `-DTTLANG_USE_TOOLCHAIN=ON` flag tells CMake to use the pre-built LLVM and tt-metal from `/opt/ttlang-toolchain` instead of building them from source, which saves significant build time.

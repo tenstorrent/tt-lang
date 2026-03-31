@@ -8,10 +8,10 @@ Kernels accept compiler options that control code generation (e.g., `--no-ttl-ma
 
 ```bash
 # List available options
-python examples/tutorial/multicore_grid_auto.py --ttl-help
+python examples/elementwise-tutorial/step_4_multinode_grid_auto.py --ttl-help
 
 # Run a kernel with options
-python examples/tutorial/multicore_grid_auto.py --no-ttl-maximize-dst
+python examples/elementwise-tutorial/step_4_multinode_grid_auto.py --no-ttl-maximize-dst
 ```
 
 See the [full compiler options reference](reference/compiler-options.md) for all decorator parameters, `CompilerOptions` flags with their MLIR pass mappings, environment variables, and `ttlang-opt` pass options.

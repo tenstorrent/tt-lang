@@ -73,12 +73,12 @@ echo ""
 # Run tutorial examples
 echo "=== Running tutorial examples ==="
 TUTORIALS=(
-    examples/tutorial/single_node_single_tile_block.py
-    examples/tutorial/single_node_multitile_block.py
+    examples/elementwise-tutorial/step_1_single_node_single_tile_block.py
+    examples/elementwise-tutorial/step_2_single_node_multitile_block.py
     examples/tutorial/single_node_broadcast_single_tile_block.py
     examples/tutorial/single_node_broadcast_multitile_blocks.py
-    examples/tutorial/multinode.py
-    examples/tutorial/multinode_grid_auto.py
+    examples/elementwise-tutorial/step_3_multinode.py
+    examples/elementwise-tutorial/step_4_multinode_grid_auto.py
 )
 
 PASSED=0
@@ -137,7 +137,7 @@ DOCKER_ARGS=(
 
 if [ "$SHELL_MODE" = true ]; then
     echo "Dropping into shell. Environment is auto-activated."
-    echo "Try: python3 examples/tutorial/single_node_single_tile_block.py"
+    echo "Try: python3 examples/elementwise-tutorial/step_1_single_node_single_tile_block.py"
     echo ""
     sudo docker run -it "${DOCKER_ARGS[@]}" "$IMAGE" bash
 else

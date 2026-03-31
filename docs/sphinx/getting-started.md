@@ -42,7 +42,7 @@ docker exec -it $USER-dist /bin/bash
 The environment activates automatically on login. Run an example immediately:
 
 ```bash
-python /opt/ttlang-toolchain/examples/tutorial/multicore_grid_auto.py
+python /opt/ttlang-toolchain/examples/elementwise-tutorial/step_4_multinode_grid_auto.py
 ```
 
 ### Building from source (ird image)
@@ -77,7 +77,7 @@ Verify the build and run an example:
 
 ```bash
 ninja -C build check-ttlang-all
-python examples/tutorial/multicore_grid_auto.py
+python examples/elementwise-tutorial/step_4_multinode_grid_auto.py
 ```
 
 ## Building without Docker
