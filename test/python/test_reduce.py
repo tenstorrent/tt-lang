@@ -1641,26 +1641,8 @@ def reduce_bcast_type_kernel(inp, scaler, out):
         ((1, 1), [0, 1], (1, 2), "scalar_1x1_to_1x2"),
         ((2, 2), [0, 1], (2, 1), "scalar_2x2_to_2x1"),
         ((2, 2), [0, 1], (1, 2), "scalar_2x2_to_1x2"),
-        # ROW/COL bcast on reduce output: the packed reduce tile has valid
-        # data only at face-specific positions that ROW/COL bcast doesn't read.
-        pytest.param(
-            (2, 2),
-            [0],
-            (2, 1),
-            "row_reduce_2x2_to_2x1",
-            marks=pytest.mark.xfail(
-                reason="ROW bcast on REDUCE_COL output: face-layout mismatch (#444)"
-            ),
-        ),
-        pytest.param(
-            (2, 2),
-            [1],
-            (1, 2),
-            "col_reduce_2x2_to_1x2",
-            marks=pytest.mark.xfail(
-                reason="COL bcast on REDUCE_ROW output: face-layout mismatch (#444)"
-            ),
-        ),
+        ((2, 2), [0], (2, 1), "row_reduce_2x2_to_2x1"),
+        ((2, 2), [1], (1, 2), "col_reduce_2x2_to_1x2"),
     ],
     ids=[
         "scalar_1x1_to_1x1",

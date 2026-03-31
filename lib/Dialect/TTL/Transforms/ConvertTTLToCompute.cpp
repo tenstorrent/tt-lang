@@ -789,6 +789,69 @@ static AffineMap buildBcastInputMap(MLIRContext *ctx, bool expandRows,
   return AffineMap::getMultiDimIdentityMap(2, ctx);
 }
 
+static ttkernel::ReduceDim computeReduceDim(ArrayRef<int64_t> dims,
+                                            int64_t rank);
+
+/// Trace whether the value feeding a broadcast came from a reduction through
+/// a CB push/wait cycle, and if so return which reduce dimension was used.
+///
+/// Follows the chain:
+///   bcast input → attach_cb → cb_wait [CB] ← cb_push ← store ← reduce
+/// and returns the ReduceDim of the producing reduce.  Returns failure when
+/// the chain cannot be traced (CB not found, multiple stores to the CB, the
+/// stored value is not from a ReduceOp, etc.).
+///
+/// This is used to select the correct hardware BroadcastType, because each
+/// reduce dimension leaves valid data at different positions within the
+/// 32x32 tile (tt-metal llk_unpack_AB.h L72-114):
+///   REDUCE_SCALAR → element [0,0]
+///   REDUCE_COL    → row 0 (all 32 element-columns)
+///   REDUCE_ROW    → column 0 (all 32 element-rows)
+/// The broadcast type must match: SCALAR bcast reads [0,0], ROW bcast reads
+/// row 0, COL bcast reads column 0.  A mismatch replicates garbage (#444).
+/// https://github.com/tenstorrent/tt-metal/blob/beccdb232e/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/llk_lib/llk_unpack_AB.h#L72-L114
+///
+/// TODO: this tracing is robust, but definitely not a great long-term solution.
+/// We should look for a better way to manage this.
+static FailureOr<ttkernel::ReduceDim> getInputReduceDim(Value bcastInput) {
+  Value cb = getAttachedCB(bcastInput);
+  if (!cb) {
+    return failure();
+  }
+
+  // Find the unique store to this CB in the enclosing block.
+  StoreOp foundStore;
+  auto *parentBlock = bcastInput.getDefiningOp()->getBlock();
+  for (auto &parentOp : *parentBlock) {
+    auto storeOp = dyn_cast<StoreOp>(&parentOp);
+    if (!storeOp) {
+      continue;
+    }
+    if (getAttachedCB(storeOp.getView()) != cb) {
+      continue;
+    }
+    if (foundStore) {
+      return failure(); // Multiple stores to same CB — ambiguous.
+    }
+    foundStore = storeOp;
+  }
+  if (!foundStore) {
+    return failure();
+  }
+
+  auto reduceOp = foundStore.getTensor().getDefiningOp<ReduceOp>();
+  if (!reduceOp) {
+    return failure();
+  }
+
+  auto inputType = getTensorType(reduceOp.getInput());
+  if (!inputType) {
+    return failure();
+  }
+
+  return computeReduceDim(reduceOp.getDims(), inputType.getRank());
+}
+
 /// Validate that shape expansion is compatible with bcast type.
 /// Uses emitError (not notifyMatchFailure) because these are user-facing
 /// errors with no alternative pattern to try. TODO: move to BcastOp verifier.
@@ -894,9 +957,26 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     body->addArgument(tileType, loc);
 
     rewriter.setInsertionPointToStart(body);
+    // Override the user-specified broadcast type when the input came from a
+    // reduce, to match the tile-level data layout left by the reduction.
+    auto bcastType = op.getBcastType();
+    auto inputReduceDim = getInputReduceDim(op.getInput());
+    if (succeeded(inputReduceDim)) {
+      switch (*inputReduceDim) {
+      case ttkernel::ReduceDim::Scalar:
+        bcastType = BcastType::Scalar;
+        break;
+      case ttkernel::ReduceDim::Col:
+        bcastType = BcastType::Row;
+        break;
+      case ttkernel::ReduceDim::Row:
+        bcastType = BcastType::Col;
+        break;
+      }
+    }
     Value result =
         TileBcastOp::create(rewriter, loc, tileType, body->getArgument(0),
-                            body->getArgument(1), op.getBcastType());
+                            body->getArgument(1), bcastType);
     emitTileStores(rewriter, loc, result, op.getOperation());
     YieldOp::create(rewriter, loc);
     rewriter.replaceOp(op, computeOp.getResult(0));
@@ -1107,8 +1187,6 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
     auto reduceDim = computeReduceDim(op.getDims(), inputType.getRank());
 
     AffineMap inputMap = AffineMap::getMultiDimIdentityMap(2, ctx);
-    // Scaler is always a single tile: constant (0, 0) indexing.
-    AffineMap scalerMap = AffineMap::get(2, 0, {c0, c0}, ctx);
     AffineMap outputMap;
     SmallVector<Attribute> iterTypes;
 
@@ -1132,8 +1210,9 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
       break;
     }
 
+    // Scaler shape matches output shape; same indexing map.
     SmallVector<Attribute> inputMaps = {AffineMapAttr::get(inputMap),
-                                        AffineMapAttr::get(scalerMap)};
+                                        AffineMapAttr::get(outputMap)};
 
     auto reduceType = op.getReduceType();
     return buildComputeFromInputs(

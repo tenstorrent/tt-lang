@@ -58,7 +58,8 @@ def TTLConvertTTLToCompute
 
   let dependentDialects = [
     "::mlir::func::FuncDialect",
-    "::mlir::tensor::TensorDialect"
+    "::mlir::tensor::TensorDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
 

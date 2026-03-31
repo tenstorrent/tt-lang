@@ -69,6 +69,17 @@ func.func @reduce_duplicate_dims(
 
 // -----
 
+// Scaler must be (1, 1)
+func.func @reduce_scaler_wrong_shape(
+    %a: tensor<2x2x!ttcore.tile<32x32, bf16>>,
+    %s: tensor<3x3x!ttcore.tile<32x32, bf16>>) -> tensor<1x2x!ttcore.tile<32x32, bf16>> {
+  // expected-error @below {{scaler dim 0 is 3 but must be 1}}
+  %r = ttl.reduce %a, %s 0 : i32 [0] : (tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<3x3x!ttcore.tile<32x32, bf16>>) -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+  return %r : tensor<1x2x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
 // Scaler must be rank 2
 func.func @reduce_scaler_rank1(
     %a: tensor<2x2x!ttcore.tile<32x32, bf16>>,
