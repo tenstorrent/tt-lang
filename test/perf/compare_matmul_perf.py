@@ -143,10 +143,10 @@ def _print_comparison(
 # ---------------------------------------------------------------------------
 
 
-def run_singlecore_comparison(M: int, K: int, N: int) -> None:
-    """Run singlecore matmul on both metal and ttlang, compare perf."""
-    from examples.metal_examples.singlecore_matmul.metal.singlecore_matmul import (
-        run_singlecore_matmul,
+def run_single_node_comparison(M: int, K: int, N: int) -> None:
+    """Run single-node matmul on both metal and ttlang, compare perf."""
+    from examples.metal_examples.single_node_matmul.metal.single_node_matmul import (
+        run_single_node_matmul,
     )
 
     logs_path = _check_profiler_env()
@@ -173,15 +173,15 @@ def run_singlecore_comparison(M: int, K: int, N: int) -> None:
 
     # -- Metal kernel -------------------------------------------------------
     print(f"\n{'='*60}")
-    print(f"METAL singlecore_matmul  M={M} K={K} N={N}")
+    print(f"METAL single_node_matmul  M={M} K={K} N={N}")
     print(f"{'='*60}")
 
     flush_profiler(device)
     clear_profiler_logs(logs_path)
-    metal_output = run_singlecore_matmul(device, a_tensor, b_tensor, output_tensor)
+    metal_output = run_single_node_matmul(device, a_tensor, b_tensor, output_tensor)
     flush_profiler(device)
 
-    metal_perf = perf_summary_run(logs_path, names=["singlecore_matmul"])
+    metal_perf = perf_summary_run(logs_path, names=["single_node_matmul"])
     _, freq_mhz, metal_summaries = collect_summaries(logs_path)
     print(metal_perf or "No profiler data found")
 
@@ -194,11 +194,11 @@ def run_singlecore_comparison(M: int, K: int, N: int) -> None:
 
     # -- TTLang kernel ------------------------------------------------------
     print(f"\n{'='*60}")
-    print(f"TTLANG singlecore_matmul  M={M} K={K} N={N}")
+    print(f"TTLANG single_node_matmul  M={M} K={K} N={N}")
     print(f"{'='*60}")
     try:
-        from examples.metal_examples.singlecore_matmul.ttlang.singlecore_matmul import (
-            tt_lang_singlecore_matmul,
+        from examples.metal_examples.single_node_matmul.ttlang.single_node_matmul import (
+            tt_lang_singlenode_matmul,
         )
 
         c_ttl = ttnn.empty(
@@ -208,10 +208,10 @@ def run_singlecore_comparison(M: int, K: int, N: int) -> None:
 
         flush_profiler(device)
         clear_profiler_logs(logs_path)
-        tt_lang_singlecore_matmul(a_tensor, b_tensor, c_ttl)
+        tt_lang_singlenode_matmul(a_tensor, b_tensor, c_ttl)
         flush_profiler(device)
 
-        ttlang_perf = perf_summary_run(logs_path, names=["tt_lang_singlecore_matmul"])
+        ttlang_perf = perf_summary_run(logs_path, names=["tt_lang_singlenode_matmul"])
         _, _, ttlang_summaries = collect_summaries(logs_path)
         print(ttlang_perf or "No profiler data found")
 
@@ -228,10 +228,10 @@ def run_singlecore_comparison(M: int, K: int, N: int) -> None:
     ttnn.close_device(device)
 
 
-def run_multicore_comparison(M: int, K: int, N: int) -> None:
-    """Run multicore matmul on metal, profile it."""
-    from examples.metal_examples.multicore_matmul.metal.multicore_matmul import (
-        run_multicore_matmul,
+def run_multinode_comparison(M: int, K: int, N: int) -> None:
+    """Run multinode matmul on metal and ttlang, compare perf."""
+    from examples.metal_examples.multinode_matmul.metal.multinode_matmul import (
+        run_multinode_matmul,
     )
 
     logs_path = _check_profiler_env()
@@ -240,12 +240,12 @@ def run_multicore_comparison(M: int, K: int, N: int) -> None:
     dram = ttnn.DRAM_MEMORY_CONFIG
 
     num_output_tiles = (M * N) // (ttnn.TILE_SIZE * ttnn.TILE_SIZE)
-    device_core_size = device.compute_with_storage_grid_size()
-    upper = ttnn.CoreCoord(device_core_size.x - 1, device_core_size.y - 1)
-    device_grid = ttnn.CoreRangeSet(
-        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), upper)]
+    device_node_size = device.compute_with_storage_grid_size()
+    upper = ttnn.CoreCoord(device_node_size.x - 1, device_node_size.y - 1)
+    device_grid = ttnn.NodeRangeSet(
+        [ttnn.NodeRange(ttnn.CoreCoord(0, 0), upper)]
     )
-    (_, all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
+    (_, all_nodes, node_group_1, node_group_2, work_per_node1, work_per_node2) = (
         ttnn.split_work_to_cores(device_grid, num_output_tiles, row_wise=True)
     )
 
@@ -268,19 +268,19 @@ def run_multicore_comparison(M: int, K: int, N: int) -> None:
 
     # -- Metal kernel -------------------------------------------------------
     print(f"\n{'='*60}")
-    print(f"METAL multicore_matmul  M={M} K={K} N={N}")
+    print(f"METAL multinode_matmul  M={M} K={K} N={N}")
     print(f"{'='*60}")
 
     flush_profiler(device)
     clear_profiler_logs(logs_path)
-    metal_output = run_multicore_matmul(
+    metal_output = run_multinode_matmul(
         device, a_tensor, b_tensor, output_tensor,
-        all_cores, core_group_1, core_group_2,
-        work_per_core1, work_per_core2,
+        all_nodes, node_group_1, node_group_2,
+        work_per_node1, work_per_node2,
     )
     flush_profiler(device)
 
-    metal_perf = perf_summary_run(logs_path, names=["multicore_matmul"])
+    metal_perf = perf_summary_run(logs_path, names=["multinode_matmul"])
     _, freq_mhz, metal_summaries = collect_summaries(logs_path)
     print(metal_perf or "No profiler data found")
 
@@ -293,25 +293,25 @@ def run_multicore_comparison(M: int, K: int, N: int) -> None:
 
     # -- TTLang kernel ------------------------------------------------------
     print(f"\n{'='*60}")
-    print(f"TTLANG multicore_matmul  M={M} K={K} N={N}")
+    print(f"TTLANG multinode_matmul  M={M} K={K} N={N}")
     print(f"{'='*60}")
     try:
-        from examples.metal_examples.multicore_matmul.ttlang.multicore_matmul import (
-            tt_lang_multicore_matmul,
+        from examples.metal_examples.multinode_matmul.ttlang.multinode_matmul import (
+            tt_lang_multinode_matmul,
         )
 
         output_tensor = ttnn.empty(
-        (M, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-        device=device, memory_config=dram,
+            (M, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+            device=device, memory_config=dram,
         )
 
         flush_profiler(device)
         clear_profiler_logs(logs_path)
-        tt_lang_multicore_matmul(a_tensor, b_tensor, output_tensor)
+        tt_lang_multinode_matmul(a_tensor, b_tensor, output_tensor)
         flush_profiler(device)
 
         ttlang_perf = perf_summary_run(
-            logs_path, names=["tt_lang_multicore_matmul"],
+            logs_path, names=["tt_lang_multinode_matmul"],
         )
         _, _, ttlang_summaries = collect_summaries(logs_path)
         print(ttlang_perf or "No profiler data found")
@@ -328,10 +328,10 @@ def run_multicore_comparison(M: int, K: int, N: int) -> None:
     ttnn.close_device(device)
 
 
-def run_multicore_reuse_comparison(M: int, K: int, N: int) -> None:
-    """Run multicore reuse matmul on metal, profile it."""
-    from examples.metal_examples.multicore_reuse_matmul.metal.multicore_reuse_matmul import (
-        run_multicore_reuse_matmul,
+def run_multinode_reuse_comparison(M: int, K: int, N: int) -> None:
+    """Run multinode reuse matmul on metal and ttlang, compare perf."""
+    from examples.metal_examples.multinode_reuse_matmul.metal.multinode_reuse_matmul import (
+        run_multinode_reuse_matmul,
     )
     from utils.block_allocation import get_large_matmul_params
 
@@ -344,9 +344,9 @@ def run_multicore_reuse_comparison(M: int, K: int, N: int) -> None:
     Nt = N // ttnn.TILE_SIZE
     K_block_size = 2
 
-    device_core_size = device.compute_with_storage_grid_size()
+    device_node_size = device.compute_with_storage_grid_size()
     block_params = get_large_matmul_params(
-        Mt, Nt, device_core_size.y, device_core_size.x, K_block_size,
+        Mt, Nt, device_node_size.y, device_node_size.x, K_block_size,
     )
     assert block_params.block_h != 0, (
         f"get_large_matmul_params found no solution for M={M} K={K} N={N}"
@@ -371,19 +371,19 @@ def run_multicore_reuse_comparison(M: int, K: int, N: int) -> None:
 
     # -- Metal kernel -------------------------------------------------------
     print(f"\n{'='*60}")
-    print(f"METAL multicore_reuse_matmul  M={M} K={K} N={N}")
+    print(f"METAL multinode_reuse_matmul  M={M} K={K} N={N}")
     print(f"{'='*60}")
 
     flush_profiler(device)
     clear_profiler_logs(logs_path)
-    metal_output = run_multicore_reuse_matmul(
+    metal_output = run_multinode_reuse_matmul(
         device, a_tensor, b_tensor, output_tensor,
         K_block_size, block_params.block_h, block_params.block_w,
         block_params.subblock_h, block_params.subblock_w,
     )
     flush_profiler(device)
 
-    metal_perf = perf_summary_run(logs_path, names=["multicore_reuse_matmul"])
+    metal_perf = perf_summary_run(logs_path, names=["multinode_reuse_matmul"])
     _, freq_mhz, metal_summaries = collect_summaries(logs_path)
     print(metal_perf or "No profiler data found")
 
@@ -396,11 +396,11 @@ def run_multicore_reuse_comparison(M: int, K: int, N: int) -> None:
 
     # -- TTLang kernel ------------------------------------------------------
     print(f"\n{'='*60}")
-    print(f"TTLANG multicore_reuse_matmul  M={M} K={K} N={N}")
+    print(f"TTLANG multinode_reuse_matmul  M={M} K={K} N={N}")
     print(f"{'='*60}")
     try:
-        from examples.metal_examples.multicore_reuse_matmul.ttlang.multicore_reuse_matmul import (
-            tt_lang_multicore_reuse_matmul,
+        from examples.metal_examples.multinode_reuse_matmul.ttlang.multinode_reuse_matmul import (
+            tt_lang_multinode_reuse_matmul,
         )
 
         a_host = ttnn.from_device(a_tensor)
@@ -412,14 +412,14 @@ def run_multicore_reuse_comparison(M: int, K: int, N: int) -> None:
 
         flush_profiler(device)
         clear_profiler_logs(logs_path)
-        tt_lang_multicore_reuse_matmul(
+        tt_lang_multinode_reuse_matmul(
             a_host, b_host, c_ttl,
             K_block_size, block_params.block_h, block_params.block_w,
         )
         flush_profiler(device)
 
         ttlang_perf = perf_summary_run(
-            logs_path, names=["tt_lang_multicore_reuse_matmul"],
+            logs_path, names=["tt_lang_multinode_reuse_matmul"],
         )
         _, _, ttlang_summaries = collect_summaries(logs_path)
         print(ttlang_perf or "No profiler data found")
@@ -439,9 +439,9 @@ def run_multicore_reuse_comparison(M: int, K: int, N: int) -> None:
 def run_1d_mcast_comparison(M: int, K: int, N: int) -> None:
     """Run 1D multicast matmul on metal, profile it.
 
-    Uses fixed blocking parameters chosen for the default (128, 16384, 256)
-    problem size: block_m=4, block_n=4, block_k=2, n_blocks_per_core=2,
-    subblock 2x2.  (64 cores with 2 N-blocks each.)
+    Uses fixed blocking parameters chosen for the default (512, 512, 61440)
+    problem size: block_m=8, block_n=8, block_k=16, n_blocks_per_node=2,
+    subblock 4x2.
     """
     import importlib
 
@@ -456,7 +456,7 @@ def run_1d_mcast_comparison(M: int, K: int, N: int) -> None:
     dram = ttnn.DRAM_MEMORY_CONFIG
 
     block_m, block_n, block_k = 8, 8, 16
-    n_blocks_per_core = 2
+    n_blocks_per_node = 2
     subblock_h, subblock_w = 4, 2
 
     a_tensor = ttnn.rand(
@@ -485,7 +485,7 @@ def run_1d_mcast_comparison(M: int, K: int, N: int) -> None:
     clear_profiler_logs(logs_path)
     metal_output = run_1d_matmul(
         device, a_tensor, b_tensor, output_tensor,
-        block_m, block_n, block_k, n_blocks_per_core,
+        block_m, block_n, block_k, n_blocks_per_node,
         subblock_h, subblock_w,
     )
     flush_profiler(device)
@@ -515,9 +515,9 @@ def run_1d_mcast_comparison(M: int, K: int, N: int) -> None:
 # ---------------------------------------------------------------------------
 
 _KERNEL_RUNNERS = {
-    "singlecore": (run_singlecore_comparison, (640, 640, 640)),
-    "multicore": (run_multicore_comparison, (640, 640, 640)),
-    "multicore_reuse": (run_multicore_reuse_comparison, (640, 640, 640)),
+    "single_node": (run_single_node_comparison, (640, 640, 640)),
+    "multinode": (run_multinode_comparison, (640, 640, 640)),
+    "multinode_reuse": (run_multinode_reuse_comparison, (640, 640, 640)),
     "1d_mcast": (run_1d_mcast_comparison, (512, 512, 61440)),
 }
 

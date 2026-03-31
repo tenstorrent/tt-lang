@@ -8,64 +8,24 @@ from utils.correctness import assert_with_ulp
 import ttnn
 
 
-# (M * N) % (32 *32) == 0 for this implemention
-@pytest.mark.parametrize(
-    "M,K,N",
-    [
-        (640, 640, 640),
-    ],
-)
-def test_multinode_matmul(M, K, N):
-    # might be some l1 config stuff
-    device = ttnn.open_device(device_id=0)
-    assert (M * N) % (
-        ttnn.TILE_SIZE * ttnn.TILE_SIZE
-    ) == 0, "M*N must be multiple of TILE_SIZE*TILE_SIZE"
+def run_multinode_matmul(
+    device,
+    a_tensor,
+    b_tensor,
+    output_tensor,
+    all_nodes,
+    node_group_1,
+    node_group_2,
+    work_per_node1,
+    work_per_node2,
+):
+    """Execute multinode matmul metal kernel. Returns output tensor."""
+    M, K = a_tensor.shape
+    N = b_tensor.shape[1]
     Mt = M // ttnn.TILE_SIZE
     Kt = K // ttnn.TILE_SIZE
     Nt = N // ttnn.TILE_SIZE
-    num_output_tiles_total = (M * N) // (ttnn.TILE_SIZE * ttnn.TILE_SIZE)
 
-    device_node_size = device.compute_with_storage_grid_size()
-    upper_bound_node = ttnn.CoreCoord(device_node_size.x - 1, device_node_size.y - 1)
-    device_node_grid = ttnn.NodeRangeSet(
-        [ttnn.NodeRange(ttnn.CoreCoord(0, 0), upper_bound_node)]
-    )
-    print(
-        f"node_grid: {device_node_grid}, num_output_tiles_total: {num_output_tiles_total}"
-    )
-    (_, all_nodes, node_group_1, node_group_2, work_per_node1, work_per_node2) = (
-        ttnn.split_work_to_cores(
-            device_node_grid, num_output_tiles_total, row_wise=True
-        )
-    )
-    print(
-        f"all_nodes: {all_nodes}, node_group_1: {node_group_1}, node_group_2: {node_group_2}, work_per_node1: {work_per_node1}, work_per_node2: {work_per_node2}"
-    )
-
-    # allocate a, b and output tensors for matmul on device dram
-    dram_memory_config = ttnn.DRAM_MEMORY_CONFIG
-    a_tensor = ttnn.rand(
-        (M, K),
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=dram_memory_config,
-    )
-    b_tensor = ttnn.rand(
-        (K, N),
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=dram_memory_config,
-    )
-    output_tensor = ttnn.empty(
-        (M, N),
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=dram_memory_config,
-    )
     dtype_size = 2  # bfloat16
     buffer_factor = 2
     cb_page_size = dtype_size * ttnn.TILE_SIZE * ttnn.TILE_SIZE
@@ -106,7 +66,6 @@ def test_multinode_matmul(M, K, N):
         format_descriptors=[out_cb_format],
     )
 
-    # TODO inconsistent metal access patterns for compile/runtime args
     reader_compile_time_args = ttnn.TensorAccessorArgs(a_tensor).get_compile_time_args()
     reader_compile_time_args.extend(
         ttnn.TensorAccessorArgs(b_tensor).get_compile_time_args()
@@ -115,12 +74,9 @@ def test_multinode_matmul(M, K, N):
         output_tensor
     ).get_compile_time_args()
 
-    # iterate over nodes and assign work via runtime args
-    # Both node groups should only be one node_range, but handling more just in case
-    # will always be a smaller node grid than input grid, setting up runtime list
-    # as the larger one to enable indexing in
-    num_x_nodes = upper_bound_node.x + 1
-    num_y_nodes = upper_bound_node.y + 1
+    device_node_size = device.compute_with_storage_grid_size()
+    num_x_nodes = device_node_size.x
+    num_y_nodes = device_node_size.y
     reader_rt_args = [[[] for _ in range(num_y_nodes)] for _ in range(num_x_nodes)]
     writer_rt_args = [[[] for _ in range(num_y_nodes)] for _ in range(num_x_nodes)]
     compute_rt_args = [[[] for _ in range(num_y_nodes)] for _ in range(num_x_nodes)]
@@ -128,9 +84,6 @@ def test_multinode_matmul(M, K, N):
     for node_range in node_group_1.ranges():
         for x in range(node_range.start.x, node_range.end.x + 1):
             for y in range(node_range.start.y, node_range.end.y + 1):
-                print(
-                    f"Assigning node ({x},{y}) tile {current_tile} work_per_node1 {work_per_node1}"
-                )
                 reader_rt_args[x][y] = [
                     a_tensor.buffer_address(),
                     b_tensor.buffer_address(),
@@ -151,9 +104,6 @@ def test_multinode_matmul(M, K, N):
     for node_range in node_group_2.ranges():
         for x in range(node_range.start.x, node_range.end.x + 1):
             for y in range(node_range.start.y, node_range.end.y + 1):
-                print(
-                    f"Assigning node ({x},{y}) tile {current_tile} work_per_node2 {work_per_node2}"
-                )
                 reader_rt_args[x][y] = [
                     a_tensor.buffer_address(),
                     b_tensor.buffer_address(),
@@ -171,7 +121,6 @@ def test_multinode_matmul(M, K, N):
                 compute_rt_args[x][y] = [work_per_node2, Kt]
                 current_tile += work_per_node2
 
-    # Compute config init can't handle options, set here
     computeConfig = ttnn.ComputeConfigDescriptor()
     computeConfig.math_fidelity = ttnn.MathFidelity.HiFi4
     computeConfig.fp32_dest_acc_en = True
@@ -212,16 +161,72 @@ def test_multinode_matmul(M, K, N):
         cbs=[a_cb_descriptor, b_cb_descriptor, out_cb_descriptor],
     )
 
-    print("Launching generic_op...")
-    output = ttnn.generic_op([a_tensor, b_tensor, output_tensor], program_descriptor)
-    print("Completed generic_op.")
+    return ttnn.generic_op([a_tensor, b_tensor, output_tensor], program_descriptor)
+
+
+@pytest.mark.parametrize(
+    "M,K,N",
+    [
+        (640, 640, 640),
+    ],
+)
+def test_multinode_matmul(M, K, N):
+    device = ttnn.open_device(device_id=0)
+    assert (M * N) % (
+        ttnn.TILE_SIZE * ttnn.TILE_SIZE
+    ) == 0, "M*N must be multiple of TILE_SIZE*TILE_SIZE"
+
+    num_output_tiles_total = (M * N) // (ttnn.TILE_SIZE * ttnn.TILE_SIZE)
+    device_node_size = device.compute_with_storage_grid_size()
+    upper_bound_node = ttnn.CoreCoord(device_node_size.x - 1, device_node_size.y - 1)
+    device_node_grid = ttnn.NodeRangeSet(
+        [ttnn.NodeRange(ttnn.CoreCoord(0, 0), upper_bound_node)]
+    )
+    (_, all_nodes, node_group_1, node_group_2, work_per_node1, work_per_node2) = (
+        ttnn.split_work_to_cores(
+            device_node_grid, num_output_tiles_total, row_wise=True
+        )
+    )
+
+    dram_memory_config = ttnn.DRAM_MEMORY_CONFIG
+    a_tensor = ttnn.rand(
+        (M, K),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=dram_memory_config,
+    )
+    b_tensor = ttnn.rand(
+        (K, N),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=dram_memory_config,
+    )
+    output_tensor = ttnn.empty(
+        (M, N),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=dram_memory_config,
+    )
+
+    output = run_multinode_matmul(
+        device,
+        a_tensor,
+        b_tensor,
+        output_tensor,
+        all_nodes,
+        node_group_1,
+        node_group_2,
+        work_per_node1,
+        work_per_node2,
+    )
     metal_output = ttnn.to_torch(output).to(torch.bfloat16)
-    print(f"metal_output: {metal_output}")
 
     a_tensor_torch = ttnn.to_torch(a_tensor).to(torch.bfloat16)
     b_tensor_torch = ttnn.to_torch(b_tensor).to(torch.bfloat16)
     torch_output = torch.matmul(a_tensor_torch, b_tensor_torch)
-    print(f"torch_output: {torch_output}")
 
     assert_with_ulp(torch_output, metal_output)
 
