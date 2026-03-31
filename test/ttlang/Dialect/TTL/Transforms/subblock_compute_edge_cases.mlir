@@ -45,8 +45,10 @@ func.func @subblock_2d_6x6(%a: tensor<6x6x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [#map, #map],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %reserve : !ttcore.tile<32x32, f32>, tensor<6x6x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %exp, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<6x6x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<6x6x!ttcore.tile<32x32, f32>>
 
@@ -108,8 +110,10 @@ func.func @consecutive_computes(
       {indexing_maps = [#map, #map],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %o0: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %r0 : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %exp, %r0[%i, %j] : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<4x4x!ttcore.tile<32x32, f32>>
 
@@ -120,8 +124,10 @@ func.func @consecutive_computes(
       {indexing_maps = [#map, #map],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%b_tile: !ttcore.tile<32x32, f32>, %o1: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %log = ttl.tile_log %b_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %log, %r1 : !ttcore.tile<32x32, f32>, tensor<1x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %log, %r1[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x2x!ttcore.tile<32x32, f32>>
 
@@ -139,22 +145,24 @@ func.func @consecutive_computes(
 // Exercises mapOffsetsAndSizes where the FIRST result is a constant (0) and
 // the second is a dim expression. The col broadcast test in the main file
 // covers the reverse case (first dim, second constant).
-// DST capacity=4, FPU binary (tile_add both block args) dstPerIteration=1.
-// unroll_factor = min(4/1, 36) = 4. subblock = [2,2].
-// Both dims tiled: dim0 0..6 step 2, dim1 0..6 step 2.
+// Inputs have different indexing maps (identity vs row broadcast), so FPU
+// binary detection is skipped. SFPU path: dstPerIteration=2.
+// DST capacity=4 (f32), dstPerIteration=2, totalTiles=36.
+// unroll_factor = min(4/2, 36) = 2. subblock = [1,2].
+// Both dims tiled: dim0 0..6 step 1, dim1 0..6 step 2.
 // B (1x6 row bcast): dim0 constant -> offset=0, size=1; dim1 mapped -> offset=%j, size=2.
 
 // TILED-LABEL: func.func @subblock_row_broadcast
 // TILED:        scf.for %[[I:.*]] =
 // TILED:          scf.for %[[J:.*]] =
 // A (identity): subblock slice
-// TILED:            tensor.extract_slice {{.*}}[%[[I]], %[[J]]] [2, 2] [1, 1] : tensor<6x6x!ttcore.tile<32x32, f32>>
+// TILED:            tensor.extract_slice {{.*}}[%[[I]], %[[J]]] [1, 2] [1, 1] : tensor<6x6x!ttcore.tile<32x32, f32>>
 // B (row bcast): dim0 always 0 with original size 1, dim1 varies with subblock
 // TILED:            tensor.extract_slice {{.*}}[0, %[[J]]] [1, 2] [1, 1] : tensor<1x6x!ttcore.tile<32x32, f32>>
 // Output (identity): subblock slice
-// TILED:            tensor.extract_slice {{.*}}[%[[I]], %[[J]]] [2, 2] [1, 1] : tensor<6x6x!ttcore.tile<32x32, f32>>
+// TILED:            tensor.extract_slice {{.*}}[%[[I]], %[[J]]] [1, 2] [1, 1] : tensor<6x6x!ttcore.tile<32x32, f32>>
 // TILED:            ttl.compute
-// TILED-SAME:       tensor<2x2x!ttcore.tile<32x32, f32>>
+// TILED-SAME:       tensor<1x2x!ttcore.tile<32x32, f32>>
 // TILED-SAME:       tensor<1x2x!ttcore.tile<32x32, f32>>
 
 func.func @subblock_row_broadcast(
@@ -180,8 +188,10 @@ func.func @subblock_row_broadcast(
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %b_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %reserve : !ttcore.tile<32x32, f32>, tensor<6x6x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sum, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<6x6x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<6x6x!ttcore.tile<32x32, f32>>
 
@@ -200,19 +210,21 @@ func.func @subblock_row_broadcast(
 // broadcast input (1x1) should always extract the full tensor regardless
 // of loop IVs. With 2D subblocking, neither outer loop variable appears
 // in the broadcast input's extract_slice.
-// DST capacity=4, FPU binary dstPerIteration=1. subblock=[2,2].
+// Inputs have different indexing maps (identity vs scalar broadcast), so FPU
+// binary detection is skipped. SFPU path: dstPerIteration=2.
+// DST capacity=4 (f32), dstPerIteration=2. subblock=[1,2].
 
 // TILED-LABEL: func.func @subblock_scalar_broadcast
 // TILED:        scf.for %[[I:.*]] =
 // TILED:          scf.for %[[J:.*]] =
 // A (identity): varies with both loop IVs
-// TILED:            tensor.extract_slice {{.*}}[%[[I]], %[[J]]] [2, 2] [1, 1] : tensor<6x6x!ttcore.tile<32x32, f32>>
+// TILED:            tensor.extract_slice {{.*}}[%[[I]], %[[J]]] [1, 2] [1, 1] : tensor<6x6x!ttcore.tile<32x32, f32>>
 // C (scalar bcast): always the full 1x1 tensor, no loop IV dependency
 // TILED:            tensor.extract_slice {{.*}}[0, 0] [1, 1] [1, 1] : tensor<1x1x!ttcore.tile<32x32, f32>>
 // Output (identity): varies with both loop IVs
-// TILED:            tensor.extract_slice {{.*}}[%[[I]], %[[J]]] [2, 2] [1, 1] : tensor<6x6x!ttcore.tile<32x32, f32>>
+// TILED:            tensor.extract_slice {{.*}}[%[[I]], %[[J]]] [1, 2] [1, 1] : tensor<6x6x!ttcore.tile<32x32, f32>>
 // TILED:            ttl.compute
-// TILED-SAME:       tensor<2x2x!ttcore.tile<32x32, f32>>
+// TILED-SAME:       tensor<1x2x!ttcore.tile<32x32, f32>>
 // TILED-SAME:       tensor<1x1x!ttcore.tile<32x32, f32>>
 
 func.func @subblock_scalar_broadcast(
@@ -238,8 +250,10 @@ func.func @subblock_scalar_broadcast(
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %c_tile: !ttcore.tile<32x32, f32>,
        %out_tile: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %sum = ttl.tile_add %a_tile, %c_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %reserve : !ttcore.tile<32x32, f32>, tensor<6x6x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sum, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<6x6x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<6x6x!ttcore.tile<32x32, f32>>
 

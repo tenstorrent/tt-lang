@@ -6,15 +6,29 @@ TTL Documentation
    :caption: User Guide
 
    overview
+   simulator
    getting-started
    ttl-tutorial/index
+   elementwise-tutorial/index
+   programming-guide
+   claude-skills
    testing
    tools
 
 .. toctree::
-   :maxdepth: 1
+   :maxdepth: 2
+   :caption: Reference
+
+   TT-Lang Spec <specs/TTLangSpecification>
+   reference/compiler-options
+   reference/print-debugging
+   reference/performance-tools
+
+.. toctree::
+   :maxdepth: 2
    :caption: Contributor Guide
 
    build
    guidelines
    contributor-guide
+   implementation

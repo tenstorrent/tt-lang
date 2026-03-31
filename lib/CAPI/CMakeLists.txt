@@ -14,4 +14,5 @@ add_mlir_library(TTLangCAPI
   MLIRSupport
   MLIRFuncDialect
   MLIRTTLDialect
+  TTLangTTLTransforms
 )

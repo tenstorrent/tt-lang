@@ -485,7 +485,8 @@ func.func @compute_dynamic_output(
 
 // Test: More iterator dimensions than any tensor rank (catches malformed IR
 // where iteration domain doesn't correspond to any actual tensor).
-func.func @compute_iterator_exceeds_tensor_rank(
+// Iterator count below max tensor rank (1 < 2).
+func.func @compute_iterator_below_tensor_rank(
     %a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %cba: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
     %cbout: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
@@ -497,13 +498,13 @@ func.func @compute_iterator_exceeds_tensor_rank(
   %init_att = ttl.attach_cb %init, %cbout
       : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
         -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{iterator_types count (3) must match maximum tensor rank (2)}}
+  // expected-error @below {{iterator_types count (1) must be >= maximum tensor rank (2)}}
   %0 = ttl.compute
       ins(%a_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
       outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
-      {indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1)>,
-                        affine_map<(d0, d1, d2) -> (d0, d1)>],
-       iterator_types = ["parallel", "parallel", "parallel"]} {
+      {indexing_maps = [affine_map<(d0) -> (d0, d0)>,
+                        affine_map<(d0) -> (d0, d0)>],
+       iterator_types = ["parallel"]} {
     ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
       ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -534,8 +535,10 @@ func.func @compute_result_count_mismatch(
                         affine_map<(d0, d1) -> (d0, d1)>],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %sum = ttl.tile_add %arg0, %arg1 : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %out_view : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sum, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> (tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
   func.return %0, %1 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -564,9 +567,11 @@ func.func @compute_tile_store_view_not_from_reserve(
                         affine_map<(d0, d1) -> (d0, d1)>],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
     %exp = ttl.tile_exp %arg0 : !ttcore.tile<32x32, f32>
-    // expected-error @below {{'ttl.tile_store' op view must be produced by ttl.cb_reserve}}
-    ttl.tile_store %exp, %view : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    // expected-error @below {{'ttl.tile_store' op view must trace to a dataflow buffer}}
+    ttl.tile_store %exp, %view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -596,7 +601,85 @@ func.func @compute_block_arg_type_mismatch(
                         affine_map<(d0, d1) -> (d0, d1)>],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%arg0: !ttcore.tile<32x32, bf16>, %arg1: !ttcore.tile<32x32, f32>):
-    ttl.tile_store %arg0, %out_view : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
+    ttl.tile_store %arg0, %out_view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.yield
+  } -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
+// Test: formal output CB has no tile_store in the body (multi-output, one missing)
+func.func @compute_output_cb_missing_store(
+    %a: tensor<2x2x!ttcore.tile<32x32, f32>>,
+    %cba: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+    %cbout0: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+    %cbout1: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+    -> (tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>) {
+  %init0 = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init1 = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %a_att = ttl.attach_cb %a, %cba
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init0_att = ttl.attach_cb %init0, %cbout0
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init1_att = ttl.attach_cb %init1, %cbout1
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %out_view0 = ttl.cb_reserve %cbout0 : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{formal output CB has no tile_store in the body}}
+  %0, %1 = ttl.compute
+      ins(%a_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      outs(%init0_att, %init1_att : tensor<2x2x!ttcore.tile<32x32, f32>>,
+                                    tensor<2x2x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>, %arg2: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
+    %exp = ttl.tile_exp %arg0 : !ttcore.tile<32x32, f32>
+    // Only store to cbout0, missing store to cbout1
+    ttl.tile_store %exp, %out_view0[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.yield
+  } -> (tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>)
+  func.return %0, %1 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
+// Test: tile_store targets a CB not in the compute's formal outputs (#396)
+func.func @compute_tile_store_cb_not_output(
+    %a: tensor<2x2x!ttcore.tile<32x32, f32>>,
+    %cba: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+    %cbout: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+    %cb_extra: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+    -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %a_att = ttl.attach_cb %a, %cba
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init_att = ttl.attach_cb %init, %cbout
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %out_view = ttl.cb_reserve %cbout : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %extra_view = ttl.cb_reserve %cb_extra : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %0 = ttl.compute
+      ins(%a_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
+    ttl.tile_store %arg0, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    // expected-error @below {{stores to CB that is not a formal output of the compute}}
+    ttl.tile_store %arg0, %extra_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>

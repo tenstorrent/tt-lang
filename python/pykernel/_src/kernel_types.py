@@ -5,7 +5,7 @@
 # NOTE: This file was copied from tt-mlir/tools/pykernel/_src/kernel_types.py
 # and cleaned up to remove unused code.
 
-from ttmlir.dialects import ttkernel
+from ttl.dialects import ttkernel
 
 
 class ClassRegistry:

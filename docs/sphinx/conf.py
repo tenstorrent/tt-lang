@@ -5,7 +5,7 @@ from typing import Any
 project = "tt-lang"
 copyright = "2025 Tenstorrent AI ULC"
 author = "TT-Lang Team"
-release = "0.1"
+release = ""
 
 extensions = [
     "myst_parser",
@@ -43,7 +43,14 @@ autosummary_generate = True
 
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
-html_theme = "sphinx_rtd_theme"
+html_theme = "furo"
+html_theme_options = {
+    "announcement": (
+        "This project is under active development. See the "
+        '<a href="specs/TTLangSpecification.html#appendix-d-functionality-matrix">'
+        "functionality matrix</a> for current simulator and compiler support."
+    ),
+}
 templates_path = ["_templates"]
 html_static_path = ["_static"]
 html_favicon = "_static/favicon.svg"
@@ -55,6 +62,9 @@ def autodoc_skip_member(
     if hasattr(obj, "__autodoc_skip__") and obj.__autodoc_skip__:
         return True
     return skip
+
+
+html_css_files = ["custom.css"]
 
 
 def setup(app: Any) -> None:

@@ -44,7 +44,7 @@ void kernel_main() {
         cb_reserve_back(cb_id_in0, in0_block_num_tiles);
         // Set in0 semaphore value to INVALID
         noc_semaphore_set(in0_mcast_receiver_semaphore_addr_ptr, INVALID);
-        // Atomic increment source core counter
+        // Atomic increment source node counter
         noc_semaphore_inc(in0_mcast_sender_semaphore_noc_addr, 1);
         // wait on in0 semaphore value to become VALID (set by mcast sender
         // after it multicasts data)

@@ -48,7 +48,7 @@ void kernel_main() {
   uint32_t in0_mcast_receiver_semaphore_addr =
       get_semaphore(get_compile_time_arg_val(11));
   constexpr uint32_t in0_mcast_num_dests = get_compile_time_arg_val(12);
-  constexpr uint32_t in0_mcast_num_cores = get_compile_time_arg_val(13);
+  constexpr uint32_t in0_mcast_num_nodes = get_compile_time_arg_val(13);
 
   constexpr auto in0_args = TensorAccessorArgs<14>();
 
@@ -127,7 +127,7 @@ void kernel_main() {
 
         noc_async_write_multicast_loopback_src(
             in0_start_address, in0_multicast_data_addr, in0_block_size_bytes,
-            in0_mcast_num_cores, true);
+            in0_mcast_num_nodes, true);
         // might not be needed for wh
         noc_async_writes_flushed();
         // We should also multicast the flag to destinations
@@ -135,7 +135,7 @@ void kernel_main() {
         // local copy!
         noc_semaphore_set_multicast(in0_mcast_receiver_semaphore_addr,
                                     in0_mcast_receiver_semaphore_noc_addr,
-                                    in0_mcast_num_cores);
+                                    in0_mcast_num_nodes);
         // Common for sharded and interleaved paths
         cb_push_back(cb_id_in0, in0_block_num_tiles);
       }

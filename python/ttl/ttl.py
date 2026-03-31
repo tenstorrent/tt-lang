@@ -13,7 +13,7 @@ Decorators:
 Functions:
     ttl.make_dataflow_buffer_like() - Create a circular buffer
     ttl.copy() - Asynchronous data transfer
-    ttl.core(dims=2) - Get current core's coordinates as (x, y) tuple
+    ttl.node(dims=2) - Get current core's coordinates as (x, y) tuple
     ttl.grid_size(dims=2) - Get grid size as (x_size, y_size) tuple
 
 Math operations:
@@ -22,7 +22,7 @@ Math operations:
 
 from .ttl_api import pykernel_gen as kernel, compute, datamovement, Program
 from .circular_buffer import make_dataflow_buffer_like
-from .operators import copy, core, grid_size
+from .operators import copy, node, grid_size
 
 # Math operations namespace
 from . import ttl_math as math
@@ -34,7 +34,7 @@ __all__ = [
     "Program",
     "make_dataflow_buffer_like",
     "copy",
-    "core",
+    "node",
     "grid_size",
     "math",
 ]

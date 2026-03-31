@@ -4,7 +4,7 @@ project(ttlang_docs NONE)
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 execute_process(
-  COMMAND ${Python3_EXECUTABLE} -m pip install sphinx myst-parser sphinx-rtd-theme sphinxcontrib-mermaid
+  COMMAND ${Python3_EXECUTABLE} -m pip install -r ${CMAKE_CURRENT_SOURCE_DIR}/../requirements.txt
   RESULT_VARIABLE _sphinx_pip_result
 )
 

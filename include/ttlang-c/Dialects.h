@@ -25,6 +25,9 @@ MLIR_CAPI_EXPORTED void ttlangRegisterTTLDialect(MlirDialectRegistry registry);
 /// Load the TTL dialect into the given MlirContext.
 MLIR_CAPI_EXPORTED MlirDialectHandle ttlangGetTTLDialectHandle(void);
 
+/// Register TTL dialect passes.
+MLIR_CAPI_EXPORTED void ttlangRegisterPasses(void);
+
 #ifdef __cplusplus
 }
 #endif

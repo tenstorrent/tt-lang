@@ -3,29 +3,35 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-sim package: simulation components for TT-Lang including circular buffers, tensors, and copy operations.
+sim package: simulation components for TT-Lang including dataflow buffers, tensors, and copy operations.
 """
-
+from typing import Any
+import types
 from . import ttnnsim as ttnn
-from .dfb import DFBAPI, DFBStats
-from .constants import MAX_DFBS, TILE_SHAPE
+from .dfb import DFBStats
+from .constants import TILE_SHAPE
 from .copy import CopyTransaction, copy
 from .decorators import compute, datamovement
-from .corecontext import core
+from .corecontext import node
 from .kernel import kernel
 from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
 from .program import Program
-from .ttnnsim import TTNN_AVAILABLE
+from .ttnnsim import TTNN_AVAILABLE, ROW_MAJOR_LAYOUT, TILE_LAYOUT
 from .typedefs import CoreCoord, CoreRange, Shape
 
 
 class _SignpostContextManager:
     """No-op context manager for ttl.signpost stub."""
 
-    def __enter__(self):
+    def __enter__(self) -> "_SignpostContextManager":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: types.TracebackType | None,
+    ) -> None:
         return None
 
 
@@ -63,7 +69,7 @@ class _TTLNamespace:
         from .constants import TILE_SHAPE
         from .copy import copy
         from .decorators import compute, datamovement
-        from .corecontext import core, grid_size
+        from .corecontext import node, grid_size
         from .kernel import kernel
         from . import math as math_module
         from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
@@ -75,7 +81,7 @@ class _TTLNamespace:
         self.make_dataflow_buffer_like = make_dataflow_buffer_like
         self.compute = compute
         self.datamovement = datamovement
-        self.core = core
+        self.node = node
         self.copy = copy
         self.transpose = math_module.transpose
         self.Pipe = Pipe
@@ -88,11 +94,13 @@ class _TTLNamespace:
         self.Size = Size
         self.Shape = Shape
         self.TILE_SHAPE = TILE_SHAPE
+        self.TILE_LAYOUT = TILE_LAYOUT
+        self.ROW_MAJOR_LAYOUT = ROW_MAJOR_LAYOUT
         self.Program = Program
         self.math = _TTLMathNamespace()
 
     @staticmethod
-    def signpost(*args, **kwargs):
+    def signpost(*args: Any, **kwargs: Any) -> _SignpostContextManager:
         """Signpost stub for simulator. Returns a no-op context manager."""
         return _SignpostContextManager()
 
@@ -100,7 +108,6 @@ class _TTLNamespace:
 ttl = _TTLNamespace()
 
 __all__ = [
-    "DFBAPI",
     "DFBStats",
     "CoreCoord",
     "CoreRange",
@@ -111,15 +118,16 @@ __all__ = [
     "SrcPipeIdentity",
     "DstPipeIdentity",
     "TILE_SHAPE",
-    "MAX_DFBS",
     "copy",
     "CopyTransaction",
     "Program",
-    "core",
+    "node",
     "compute",
     "datamovement",
     "kernel",
     "ttl",
     "ttnn",
     "TTNN_AVAILABLE",
+    "TILE_LAYOUT",
+    "ROW_MAJOR_LAYOUT",
 ]

@@ -2,12 +2,13 @@
 
 ## Workflow
 - Branch from `main` and keep changes focused.
-- Reconfigure after rebases: `cmake -GNinja -B build .`.
+- Reconfigure after rebases: `cmake -G Ninja -B build`.
 - Build and lint before review: `cmake --build build` and `pre-commit run --all-files`.
 
 ## Validation
-- Compiler tests: `cmake --build build --target check-ttlang`.
-- Simulator tests: `pytest test/sim`.
+- Quick check (MLIR + bindings): `ninja -C build check-ttlang`.
+- Full compiler suite: `ninja -C build check-ttlang-all`.
+- Simulator tests: `python -m pytest test/sim` (not included in `check-ttlang-all`).
 - Targeted MLIR coverage: `llvm-lit test/ttlang/<path>.mlir`.
 
 ## Documentation
@@ -29,9 +30,6 @@ TTL_BINARY_TILE_OP(NewOp, NewOpTileOp, NewOpBinaryTilesInitOp, NewOpBinaryTilesO
 
 // Unary op (in-place form: DST[dst_idx] = op(DST[dst_idx]))
 TTL_UNARY_TILE_OP(NewOp, NewOpTileOp, NewOpTileInitOp, NewOpTileOp)
-
-// Special binary op (2-arg in-place form, like Max)
-TTL_BINARY_TILE_OP_SPECIAL(NewOp, NewOpTileOp, NewOpTilesInitOp, NewOpTilesOp)
 ```
 
 This automatically generates:

@@ -32,14 +32,14 @@ def auto_grid_kernel(a, out):
 
     @ttl.datamovement()
     def dm_read():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
         with a_dfb.reserve() as a_blk:
             tx = ttl.copy(a[y, x], a_blk)
             tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
         with out_dfb.wait() as out_blk:
             tx = ttl.copy(out_blk, out[y, x])
             tx.wait()

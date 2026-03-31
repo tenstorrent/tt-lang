@@ -16,7 +16,7 @@ Two modes:
 from typing import Callable, List
 
 import torch
-from ttmlir.ir import (
+from ttl.ir import (
     Context,
     Location,
     Module,
@@ -25,8 +25,8 @@ from ttmlir.ir import (
     RankedTensorType,
     Type as MLIRType,
 )
-from ttmlir.dialects import func
-from ttmlir.dialects import ttcore
+from ttl.dialects import func
+from ttl.dialects import ttcore
 
 import ttl.dialects.ttl as ttl
 

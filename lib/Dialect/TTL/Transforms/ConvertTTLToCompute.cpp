@@ -2,12 +2,15 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
@@ -24,31 +27,57 @@ static RankedTensorType getTensorType(Value v) {
   return dyn_cast<RankedTensorType>(v.getType());
 }
 
+/// Check if `input` is broadcast-compatible with `output`: for each dimension,
+/// either the sizes match or the input size is 1.
+static bool isBroadcastCompatible(RankedTensorType input,
+                                  RankedTensorType output) {
+  if (input.getRank() != output.getRank()) {
+    return false;
+  }
+  for (int64_t d = 0; d < output.getRank(); ++d) {
+    int64_t inDim = input.getDimSize(d);
+    int64_t outDim = output.getDimSize(d);
+    if (inDim != outDim && inDim != 1) {
+      return false;
+    }
+  }
+  return true;
+}
+
 static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
                              Value exemplar) {
   SmallVector<Value> dynDims;
   for (auto dim : llvm::enumerate(type.getShape())) {
     if (dim.value() == ShapedType::kDynamic) {
-      dynDims.push_back(b.create<tensor::DimOp>(loc, exemplar, dim.index()));
+      dynDims.push_back(tensor::DimOp::create(b, loc, exemplar, dim.index()));
     }
   }
-  return b.create<tensor::EmptyOp>(loc, type.getShape(), type.getElementType(),
-                                   dynDims);
+  return tensor::EmptyOp::create(b, loc, type.getShape(), type.getElementType(),
+                                 dynDims);
 }
 
-/// Find the output CB for an elementwise op by looking at its store users.
-/// Returns nullptr when no store exists or its view is not from cb_reserve.
-/// Callers handle nullptr via notifyMatchFailure.
-static Value findOutputCB(Operation *op) {
-  assert(op->getNumResults() > 0 && "findOutputCB requires op with results");
+/// Collect all unique output CBs from store users of an op's result.
+/// Preserves first-seen order and deduplicates (same CB stored to twice
+/// produces one output). Returns empty if no stores exist or if any
+/// store's view is not from cb_reserve.
+static SmallVector<Value> collectOutputCBs(Operation *op) {
+  assert(op->getNumResults() > 0 &&
+         "collectOutputCBs requires op with results");
+  SmallVector<Value> result;
+  DenseSet<Value> seen;
   for (OpOperand &use : op->getResult(0).getUses()) {
     if (auto storeOp = dyn_cast<StoreOp>(use.getOwner())) {
-      if (auto reserve = storeOp.getView().getDefiningOp<CBReserveOp>()) {
-        return reserve.getCb();
+      auto reserve = storeOp.getView().getDefiningOp<CBReserveOp>();
+      if (!reserve) {
+        return {};
+      }
+      Value cb = reserve.getCb();
+      if (seen.insert(cb).second) {
+        result.push_back(cb);
       }
     }
   }
-  return nullptr;
+  return result;
 }
 
 /// Find the last block-level store that uses this op's result.
@@ -74,26 +103,63 @@ static StoreOp findLastStore(Operation *op) {
 static void insertAtLastStore(PatternRewriter &rewriter, Operation *op) {
   StoreOp lastStore = findLastStore(op);
   assert(lastStore && "insertAtLastStore called but op has no store users; "
-                      "callers must verify via findOutputCB first");
+                      "callers must verify via collectOutputCBs first");
   rewriter.setInsertionPoint(lastStore);
 }
 
 /// Create tile_store(s) in the compute body for the given tile result and
-/// erase the corresponding block-level stores. Handles multiple stores
-/// (e.g., same result stored to two outputs).
+/// erase the corresponding block-level stores. Populates tile_store indices
+/// from iter_index ops and the output indexing map.
 static void emitTileStores(PatternRewriter &rewriter, Location loc,
-                           Value tileResult, Operation *elementwiseOp) {
-  // Collect-then-erase: we cannot erase stores while iterating getUses()
-  // because erasing invalidates the use-list iterator.
-  assert(elementwiseOp->getNumResults() > 0 &&
+                           Value tileResult, Operation *sourceOp) {
+  assert(sourceOp->getNumResults() > 0 &&
          "emitTileStores requires op with results");
+
+  // Find the parent ComputeOp from the current insertion point.
+  auto *insertBlock = rewriter.getInsertionBlock();
+  auto computeOp = dyn_cast<ComputeOp>(insertBlock->getParentOp());
+  assert(computeOp && "emitTileStores must be called inside a compute body");
+
+  SmallVector<Value> iterIndices = getOrCreateIterIndices(rewriter, computeOp);
+  auto indexingMaps = computeOp.getIndexingMapsArray();
+  size_t numInputs = computeOp.getNumInputs();
+
+  // Build CB -> output index mapping for multi-output disambiguation.
+  size_t numOutputs = computeOp.getNumOutputs();
+  DenseMap<Value, size_t> cbToOutputIdx;
+  if (numOutputs > 1) {
+    for (auto [idx, output] : llvm::enumerate(computeOp.getOutputs())) {
+      Value cb = getAttachedCB(output);
+      if (cb) {
+        cbToOutputIdx[cb] = idx;
+      }
+    }
+  }
+
+  // Collect-then-erase: cannot erase stores while iterating getUses().
   SmallVector<StoreOp> storesToErase;
-  for (OpOperand &use : elementwiseOp->getResult(0).getUses()) {
+  for (OpOperand &use : sourceOp->getResult(0).getUses()) {
     auto storeOp = dyn_cast<StoreOp>(use.getOwner());
     if (!storeOp) {
       continue;
     }
-    rewriter.create<TileStoreOp>(loc, tileResult, storeOp.getView());
+
+    // Determine output index for this store's view CB.
+    size_t outputIdx = 0;
+    if (numOutputs > 1) {
+      Value viewCB = getAttachedCB(storeOp.getView());
+      if (viewCB) {
+        auto it = cbToOutputIdx.find(viewCB);
+        if (it != cbToOutputIdx.end()) {
+          outputIdx = it->second;
+        }
+      }
+    }
+    AffineMap outputMap = indexingMaps[numInputs + outputIdx];
+    SmallVector<Value> indices =
+        applyIndexingMapToIterIndices(rewriter, loc, outputMap, iterIndices);
+
+    TileStoreOp::create(rewriter, loc, tileResult, storeOp.getView(), indices);
     storesToErase.push_back(storeOp);
   }
   for (StoreOp s : storesToErase) {
@@ -107,14 +173,14 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
 
 /// Emit the tile-level op corresponding to a block-level elementwise op.
 /// Returns the result Value, or null on failure.
-static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *elementwiseOp,
+static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *sourceOp,
                            ValueRange tileOperands, Type tileType) {
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
-  if (isa<TTL_OP##Op>(elementwiseOp))                                          \
-    return b.create<TILE_OP>(loc, tileType, tileOperands[0]);
+  if (isa<TTL_OP##Op>(sourceOp))                                               \
+    return TILE_OP::create(b, loc, tileType, tileOperands[0]);
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
-  if (isa<TTL_OP##Op>(elementwiseOp))                                          \
-    return b.create<TILE_OP>(loc, tileType, tileOperands[0], tileOperands[1]);
+  if (isa<TTL_OP##Op>(sourceOp))                                               \
+    return TILE_OP::create(b, loc, tileType, tileOperands[0], tileOperands[1]);
 #define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
@@ -126,13 +192,28 @@ static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *elementwiseOp,
 // Fused compute building
 //===----------------------------------------------------------------------===//
 
-/// Collect signpost ops interleaved with fused ops so they can be moved into
-/// the compute body. Walks backwards from the first fused op for leading
-/// signposts, between fused ops for interleaved ones, and forward from the
-/// last fused op for trailing ones (stopping at cb_push/cb_pop).
+/// Check if an op is a user signpost or a tile-level dprint that should
+/// be pulled into the compute body alongside fused tile ops. Only DST and
+/// tile mode dprints need tile-level context; scalar and CB prints stay
+/// outside the loop.
+static bool isSideEffectOpForCompute(Operation *op) {
+  if (auto sp = dyn_cast<SignpostOp>(op)) {
+    return sp.getName().starts_with("ttl_");
+  }
+  if (auto dp = dyn_cast<DPrintOp>(op)) {
+    StringRef mode = dp.getMode();
+    return mode == "dst" || mode == "tile";
+  }
+  return false;
+}
+
+/// Collect signpost and dprint ops interleaved with fused ops so they can
+/// be moved into the compute body. Walks backwards from the first fused op
+/// for leading ops, between fused ops for interleaved ones, and forward
+/// from the last fused op for trailing ones (stopping at cb_push/cb_pop).
 static SmallVector<std::pair<Operation *, Operation *>>
-collectInterleavedSignposts(const ElementwiseTraceResult &trace,
-                            Operation *sinkOp) {
+collectInterleavedSideEffectOps(const FusionTraceResult &trace,
+                                Operation *sinkOp) {
   DenseSet<Operation *> fusedSet(trace.opsInOrder.begin(),
                                  trace.opsInOrder.end());
 
@@ -151,19 +232,14 @@ collectInterleavedSignposts(const ElementwiseTraceResult &trace,
     return {};
   }
 
-  // Result: pairs of (signpost, insertAfterThisFusedOp). nullptr means
-  // the signpost is leading (before all fused ops).
+  // Result: pairs of (op, insertAfterThisFusedOp). nullptr means
+  // the op is leading (before all fused ops).
   SmallVector<std::pair<Operation *, Operation *>> result;
 
-  auto isUserSignpost = [](Operation *op) {
-    auto sp = dyn_cast<SignpostOp>(op);
-    return sp && sp.getName().starts_with("ttl_");
-  };
-
-  // Leading signposts: walk backwards from first fused op.
+  // Leading ops: walk backwards from first fused op.
   SmallVector<Operation *> leading;
   for (auto *op = firstFused->getPrevNode(); op; op = op->getPrevNode()) {
-    if (isUserSignpost(op)) {
+    if (isSideEffectOpForCompute(op)) {
       leading.push_back(op);
     } else {
       break;
@@ -173,21 +249,21 @@ collectInterleavedSignposts(const ElementwiseTraceResult &trace,
     result.push_back({*it, nullptr});
   }
 
-  // Interleaved signposts: walk from first to last fused op.
+  // Interleaved ops: walk from first to last fused op.
   Operation *prevFused = nullptr;
   for (auto *op = firstFused; op && op != lastFused->getNextNode();
        op = op->getNextNode()) {
     if (fusedSet.contains(op)) {
       prevFused = op;
-    } else if (isUserSignpost(op)) {
+    } else if (isSideEffectOpForCompute(op)) {
       result.push_back({op, prevFused});
     }
   }
 
-  // Trailing signposts: walk forward from last fused op, skipping
-  // non-signpost ops (store, attach_cb) until cb_push/cb_pop.
+  // Trailing ops: walk forward from last fused op, skipping
+  // non-side-effect ops (store, attach_cb) until cb_push/cb_pop.
   for (auto *op = lastFused->getNextNode(); op; op = op->getNextNode()) {
-    if (isUserSignpost(op)) {
+    if (isSideEffectOpForCompute(op)) {
       result.push_back({op, lastFused});
     } else if (isa<CBPushOp>(op) || isa<CBPopOp>(op)) {
       break;
@@ -197,29 +273,44 @@ collectInterleavedSignposts(const ElementwiseTraceResult &trace,
   return result;
 }
 
-/// Build a fused ttl.compute from traced elementwise chain.
+/// Build a fused ttl.compute from traced fusable chain.
 /// The trace result contains CB-attached root inputs and ops to fuse.
 static LogicalResult buildFusedCompute(Operation *sinkOp,
                                        PatternRewriter &rewriter,
-                                       const ElementwiseTraceResult &trace) {
+                                       const FusionTraceResult &trace) {
   auto type = getTensorType(sinkOp->getResult(0));
   if (!type) {
     return failure();
   }
 
-  // Find output CB via the store on the sink op's result.
-  Value outCb = findOutputCB(sinkOp);
-  if (!outCb) {
+  // Find all output CBs via stores on the sink op's result.
+  SmallVector<Value> outCbs = collectOutputCBs(sinkOp);
+  if (outCbs.empty()) {
     return rewriter.notifyMatchFailure(
         sinkOp, "no output CB found (missing ttl.store or view not from "
                 "ttl.cb_reserve)");
   }
 
-  // Collect signpost ops before they get orphaned by fusion.
-  auto signpostPairs = collectInterleavedSignposts(trace, sinkOp);
+  // Collect signpost and dprint ops before they get orphaned by fusion.
+  auto sideEffectPairs = collectInterleavedSideEffectOps(trace, sinkOp);
 
   Location loc = sinkOp->getLoc();
   MLIRContext *ctx = rewriter.getContext();
+
+  // Validate broadcast compatibility: each root input dimension must either
+  // match the output or be 1 (broadcast). Any other mismatch means the
+  // identity-or-broadcast indexing map heuristic would produce incorrect maps.
+  for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
+    auto inputType = getTensorType(trace.rootInputs[i]);
+    if (!inputType) {
+      continue;
+    }
+    if (!isBroadcastCompatible(inputType, type)) {
+      return rewriter.notifyMatchFailure(
+          sinkOp, "fusion failed: input " + Twine(i) +
+                      " is not broadcast-compatible with output");
+    }
+  }
 
   // Build indexing maps: broadcast-aware for inputs, identity for output.
   // When an input has size 1 in a dimension but the output doesn't, that
@@ -252,7 +343,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       maps.push_back(AffineMapAttr::get(identityMap));
     }
   }
-  maps.push_back(AffineMapAttr::get(identityMap)); // output
+  for (size_t i = 0; i < outCbs.size(); ++i) {
+    maps.push_back(AffineMapAttr::get(identityMap));
+  }
 
   // Build iterator types: all parallel
   SmallVector<Attribute> iterTypes(type.getRank(),
@@ -261,15 +354,21 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // Position compute after all reserves by inserting before the last store.
   insertAtLastStore(rewriter, sinkOp);
 
-  // Create init tensor and attach to output CB
-  Value init = buildInitTensor(rewriter, loc, type, trace.rootInputs[0]);
-  Value initAttached =
-      rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+  // Create init tensors and attach to output CBs.
+  SmallVector<Value> allInitAttached;
+  SmallVector<Type> resultTypes;
+  for (Value outCb : outCbs) {
+    Value init = buildInitTensor(rewriter, loc, type, trace.rootInputs[0]);
+    Value initAttached =
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
+    allInitAttached.push_back(initAttached);
+    resultTypes.push_back(type);
+  }
 
   // Create ttl.compute op
-  auto computeOp = rewriter.create<ComputeOp>(
-      loc, TypeRange{type}, trace.rootInputs.getArrayRef(),
-      ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+  auto computeOp = ComputeOp::create(
+      rewriter, loc, TypeRange(resultTypes), trace.rootInputs.getArrayRef(),
+      ValueRange(allInitAttached), rewriter.getArrayAttr(maps),
       rewriter.getArrayAttr(iterTypes));
 
   // Build the body region
@@ -284,7 +383,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
     body->addArgument(tileType, loc);
   }
-  body->addArgument(tileType, loc); // output tile
+  for (size_t i = 0; i < outCbs.size(); ++i) {
+    body->addArgument(tileType, loc);
+  }
 
   rewriter.setInsertionPointToStart(body);
 
@@ -294,95 +395,186 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     tensorToTile[trace.rootInputs[i]] = body->getArgument(i);
   }
 
-  // Build a map from fused op -> index in signpostPairs for quick lookup
-  // of which signposts precede each fused op.
+  // Categorize collected side-effect ops by position relative to fused ops.
   assert(!trace.opsInOrder.empty() &&
          "buildFusedCompute requires non-empty opsInOrder");
-  DenseMap<Operation *, SmallVector<SignpostOp>> signpostsBefore;
-  SmallVector<SignpostOp> leadingSignposts;
-  SmallVector<SignpostOp> trailingSignposts;
+  DenseMap<Operation *, SmallVector<Operation *>> opsBefore;
+  SmallVector<Operation *> leadingOps;
+  SmallVector<Operation *> trailingOps;
 
   Operation *lastFusedOp = trace.opsInOrder.back();
-  for (auto &[signpostOp, afterFused] : signpostPairs) {
-    auto sp = cast<SignpostOp>(signpostOp);
+  for (auto &[sideEffectOp, afterFused] : sideEffectPairs) {
     if (!afterFused) {
-      leadingSignposts.push_back(sp);
+      leadingOps.push_back(sideEffectOp);
     } else if (afterFused == lastFusedOp) {
-      trailingSignposts.push_back(sp);
+      trailingOps.push_back(sideEffectOp);
     } else {
-      // Find the next fused op after afterFused to attach this signpost to.
+      // Attach to the next fused op after afterFused.
       bool found = false;
       for (size_t i = 0; i < trace.opsInOrder.size(); ++i) {
         if (trace.opsInOrder[i] == afterFused &&
             i + 1 < trace.opsInOrder.size()) {
-          signpostsBefore[trace.opsInOrder[i + 1]].push_back(sp);
+          opsBefore[trace.opsInOrder[i + 1]].push_back(sideEffectOp);
           found = true;
           break;
         }
       }
       if (!found) {
-        trailingSignposts.push_back(sp);
+        trailingOps.push_back(sideEffectOp);
       }
     }
   }
 
-  // Emit leading signposts
-  for (auto sp : leadingSignposts) {
-    rewriter.create<SignpostOp>(sp.getLoc(), sp.getNameAttr(),
-                                sp.getIsEndAttr());
+  // Helper: clone a signpost or dprint op into the compute body.
+  auto emitSideEffectOp = [&](Operation *op) {
+    if (auto sp = dyn_cast<SignpostOp>(op)) {
+      SignpostOp::create(rewriter, sp.getLoc(), sp.getNameAttr(),
+                         sp.getIsEndAttr());
+    } else {
+      rewriter.clone(*op);
+    }
+  };
+
+  // Emit leading side-effect ops
+  for (auto *op : leadingOps) {
+    emitSideEffectOp(op);
   }
 
-  // Emit tile ops in topological order, with interleaved signposts
+  // Emit tile ops in topological order with interleaved side-effect ops.
+  //
+  // Matmul+add fold: when a MatmulOp result feeds into an AddOp in the
+  // chain, both are replaced by a single 3-operand TileMatmulBlockOp
+  // (lhs, rhs, accumulator). matmul_block accumulates (DST += A*B), so
+  // pre-loading the accumulator into DST yields accumulator + A*B without
+  // an explicit tile_add.
+  //
+  // The matmul is emitted before the add in topological order. When the
+  // matmul's sole user is an add in the chain, emission is deferred: the
+  // tile operands are stashed and the 3-operand form is emitted at the add.
+  DenseMap<Value, std::pair<Value, Value>> deferredMatmul;
+
   Value finalResult;
   for (Operation *op : trace.opsInOrder) {
-    // Emit signposts that precede this fused op
-    auto it = signpostsBefore.find(op);
-    if (it != signpostsBefore.end()) {
-      for (auto sp : it->second) {
-        rewriter.create<SignpostOp>(sp.getLoc(), sp.getNameAttr(),
-                                    sp.getIsEndAttr());
+    auto it = opsBefore.find(op);
+    if (it != opsBefore.end()) {
+      for (auto *seOp : it->second) {
+        emitSideEffectOp(seOp);
       }
     }
 
     Value tileResult;
 
-    // Elementwise ops
-    SmallVector<Value, 2> tileOperands;
-    for (Value operand : getElementwiseOperands(op)) {
-      auto it2 = tensorToTile.find(operand);
-      if (it2 == tensorToTile.end()) {
-        return op->emitError(
-            "fusion failed: operand not mapped to tile value");
+    // BcastOp reads from CB and writes to DST; emits TileBcastOp.
+    if (auto bcastOp = dyn_cast<BcastOp>(op)) {
+      Value inputTile = tensorToTile[bcastOp.getInput()];
+      Value outputTile = body->getArguments().back(); // output block arg
+      tileResult = TileBcastOp::create(rewriter, loc, tileType, inputTile,
+                                       outputTile, bcastOp.getBcastTypeAttr());
+    } else if (auto matmulOp = dyn_cast<MatmulOp>(op)) {
+      Value lhsTile = tensorToTile[matmulOp.getLhs()];
+      Value rhsTile = tensorToTile[matmulOp.getRhs()];
+
+      // Defer emission if the sole user is an AddOp in this chain.
+      bool deferred = false;
+      if (matmulOp.getResult().hasOneUse()) {
+        Operation *user = *matmulOp.getResult().getUsers().begin();
+        if (isa<AddOp>(user) && trace.opsInOrder.contains(user)) {
+          deferredMatmul[matmulOp.getResult()] = {lhsTile, rhsTile};
+          deferred = true;
+        }
       }
-      tileOperands.push_back(it2->second);
+      if (!deferred) {
+        tileResult = TileMatmulBlockOp::create(rewriter, loc, tileType, lhsTile,
+                                               rhsTile, Value());
+      }
+    } else {
+      // Check for matmul+add fold before falling through to elementwise.
+      if (isa<AddOp>(op)) {
+        auto operands = getElementwiseOperands(op);
+        auto tryFold = [&](Value tensorA, Value tensorB) -> Value {
+          auto dfIt = deferredMatmul.find(tensorA);
+          if (dfIt == deferredMatmul.end()) {
+            return nullptr;
+          }
+          auto [mmLhs, mmRhs] = dfIt->second;
+          Value accTile = tensorToTile.lookup(tensorB);
+          if (!accTile) {
+            return nullptr;
+          }
+          deferredMatmul.erase(dfIt);
+          return TileMatmulBlockOp::create(rewriter, loc, tileType, mmLhs,
+                                           mmRhs, accTile);
+        };
+        Value folded = tryFold(operands[0], operands[1]);
+        if (!folded) {
+          folded = tryFold(operands[1], operands[0]);
+        }
+        if (folded) {
+          tileResult = folded;
+          // Proceeds to the common tensorToTile/finalResult assignment below.
+        }
+      }
+
+      // If the matmul+add fold did not apply (e.g., matmul+sub, or both
+      // operands are matmul results), emit deferred matmuls as 2-operand
+      // tile_matmul_block so the elementwise path can resolve them.
+      if (!tileResult) {
+        for (Value operand : getElementwiseOperands(op)) {
+          auto dfIt = deferredMatmul.find(operand);
+          if (dfIt != deferredMatmul.end()) {
+            auto [mmLhs, mmRhs] = dfIt->second;
+            Value mmTile = TileMatmulBlockOp::create(rewriter, loc, tileType,
+                                                     mmLhs, mmRhs, Value());
+            tensorToTile[operand] = mmTile;
+            deferredMatmul.erase(dfIt);
+          }
+        }
+      }
+
+      // Elementwise ops (skipped if matmul+add fold already produced a result).
+      if (!tileResult) {
+        SmallVector<Value, 2> tileOperands;
+        for (Value operand : getElementwiseOperands(op)) {
+          auto it2 = tensorToTile.find(operand);
+          if (it2 == tensorToTile.end()) {
+            return rewriter.notifyMatchFailure(
+                op, "fusion failed: operand not mapped to tile value");
+          }
+          tileOperands.push_back(it2->second);
+        }
+
+        tileResult = emitTileOpFor(rewriter, loc, op, tileOperands, tileType);
+        if (!tileResult) {
+          return rewriter.notifyMatchFailure(
+              op, "fusion failed: unsupported op type");
+        }
+      }
     }
 
-    tileResult = emitTileOpFor(rewriter, loc, op, tileOperands, tileType);
-    if (!tileResult) {
-      return op->emitError("fusion failed: unsupported op type");
+    if (tileResult) {
+      tensorToTile[op->getResult(0)] = tileResult;
+      finalResult = tileResult;
     }
-
-    tensorToTile[op->getResult(0)] = tileResult;
-    finalResult = tileResult;
   }
 
-  // Emit trailing begin signposts, then tile stores, then end signposts.
-  // This places tile_store inside the innermost signpost scope.
-  auto firstEndIt = llvm::find_if(trailingSignposts,
-                                  [](SignpostOp sp) { return sp.getIsEnd(); });
-  for (auto it = trailingSignposts.begin(); it != firstEndIt; ++it) {
-    rewriter.create<SignpostOp>(it->getLoc(), it->getNameAttr(),
-                                it->getIsEndAttr());
+  // Emit trailing begin signposts and dprints, then tile stores, then end
+  // signposts. This places tile_store inside the innermost signpost scope.
+  auto isEndSignpost = [](Operation *op) {
+    auto sp = dyn_cast<SignpostOp>(op);
+    return sp && sp.getIsEnd();
+  };
+  auto firstEndIt = llvm::find_if(trailingOps, isEndSignpost);
+  for (auto it = trailingOps.begin(); it != firstEndIt; ++it) {
+    emitSideEffectOp(*it);
   }
 
   emitTileStores(rewriter, loc, finalResult, sinkOp);
 
-  for (auto it = firstEndIt; it != trailingSignposts.end(); ++it) {
-    rewriter.create<SignpostOp>(it->getLoc(), it->getNameAttr(),
-                                it->getIsEndAttr());
+  for (auto it = firstEndIt; it != trailingOps.end(); ++it) {
+    emitSideEffectOp(*it);
   }
 
-  rewriter.create<YieldOp>(loc);
+  YieldOp::create(rewriter, loc);
   rewriter.replaceOp(sinkOp, computeOp.getResult(0));
 
   // Erase the fused ops in reverse topological order (sink to roots).
@@ -395,9 +587,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     }
   }
 
-  // Erase the original signpost ops (now cloned into compute body).
-  for (auto &[signpostOp, _] : signpostPairs) {
-    rewriter.eraseOp(signpostOp);
+  // Erase the original side-effect ops (now cloned into compute body).
+  for (auto &[op, _] : sideEffectPairs) {
+    rewriter.eraseOp(op);
   }
 
   return success();
@@ -407,9 +599,80 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 // Lowering to ttl.compute with tile ops
 //===----------------------------------------------------------------------===//
 
+/// Build a ttl.compute from pre-validated inputs. Handles output CB collection,
+/// init tensor creation, ComputeOp + body construction, and tile store
+/// emission. inputMaps are the indexing maps for the input operands; outputMap
+/// is replicated once per output CB. The emitTileOp callback receives (builder,
+/// loc, tileType, body) and returns the tile result value.
+static LogicalResult buildComputeFromInputs(
+    Operation *op, PatternRewriter &rewriter, ValueRange inputs,
+    RankedTensorType outputType, ArrayRef<Attribute> inputMaps,
+    AffineMap outputMap, ArrayRef<Attribute> iterTypes,
+    llvm::function_ref<Value(OpBuilder &, Location, Type, Block *)>
+        emitTileOp) {
+  SmallVector<Value> outCbs = collectOutputCBs(op);
+  if (outCbs.empty()) {
+    return rewriter.notifyMatchFailure(
+        op, "no output CB found (missing ttl.store, view not from "
+            "ttl.cb_reserve, or intermediate value handled by fusion)");
+  }
+
+  Location loc = op->getLoc();
+
+  SmallVector<Attribute> maps(inputMaps);
+  for (size_t i = 0; i < outCbs.size(); ++i) {
+    maps.push_back(AffineMapAttr::get(outputMap));
+  }
+
+  insertAtLastStore(rewriter, op);
+
+  SmallVector<Value> allInitAttached;
+  SmallVector<Type> resultTypes;
+  for (Value outCb : outCbs) {
+    Value init = buildInitTensor(rewriter, loc, outputType, inputs[0]);
+    Value initAttached =
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
+    allInitAttached.push_back(initAttached);
+    resultTypes.push_back(outputType);
+  }
+
+  auto computeOp = ComputeOp::create(rewriter, loc, TypeRange(resultTypes),
+                                     inputs, ValueRange(allInitAttached),
+                                     rewriter.getArrayAttr(maps),
+                                     rewriter.getArrayAttr(iterTypes));
+
+  Block *body = rewriter.createBlock(&computeOp.getBody());
+  Type tileType = ttcore::TileType::get(outputType.getElementType());
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    body->addArgument(tileType, loc);
+  }
+  for (size_t i = 0; i < outCbs.size(); ++i) {
+    body->addArgument(tileType, loc);
+  }
+
+  rewriter.setInsertionPointToStart(body);
+  Value result = emitTileOp(rewriter, loc, tileType, body);
+  emitTileStores(rewriter, loc, result, op);
+  YieldOp::create(rewriter, loc);
+  rewriter.replaceOp(op, computeOp.getResult(0));
+  return success();
+}
+
+/// Try fusion for an op whose inputs are not all CB-attached.
+/// Returns success if fusion was performed, failure otherwise.
+static LogicalResult tryFusion(Operation *op, PatternRewriter &rewriter) {
+  auto traceResult = traceFusionToRoots(op->getResult(0));
+  if (traceResult.failureReason == TraceFailureReason::Success &&
+      !traceResult.opsInOrder.empty()) {
+    return buildFusedCompute(op, rewriter, traceResult);
+  }
+  return rewriter.notifyMatchFailure(
+      op, "fusion failed: " + describeTraceFailure(traceResult.failureReason));
+}
+
 /// Build a ttl.compute op with a single binary tile operation in the body.
 /// Inputs must already be attached to CBs via ttl.attach_cb.
-/// The output CB is identified via ttl.store on the op's result.
+/// Output CBs are the reserved CBs to which the op's result is stored.
 template <typename TileOp>
 static LogicalResult buildBinaryCompute(Operation *op,
                                         PatternRewriter &rewriter, Value lhs,
@@ -419,76 +682,28 @@ static LogicalResult buildBinaryCompute(Operation *op,
     return failure();
   }
 
-  // Try direct CB attachment first
-  Value lhsCb = getAttachedCB(lhs);
-  Value rhsCb = getAttachedCB(rhs);
-
-  // If inputs aren't CB-attached, try fusion
-  if (!lhsCb || !rhsCb) {
-    auto traceResult = traceElementwiseToRoots(op->getResult(0));
-    if (traceResult.failureReason == TraceFailureReason::Success &&
-        !traceResult.opsInOrder.empty()) {
-      return buildFusedCompute(op, rewriter, traceResult);
-    }
-    emitFusionFailureDiagnostics(op, traceResult);
-    return failure();
+  if (!getAttachedCB(lhs) || !getAttachedCB(rhs)) {
+    return tryFusion(op, rewriter);
   }
 
-  // Find output CB via the store on this op's result.
-  Value outCb = findOutputCB(op);
-  if (!outCb) {
-    return rewriter.notifyMatchFailure(
-        op, "no output CB found (missing ttl.store, view not from "
-            "ttl.cb_reserve, or intermediate value handled by fusion)");
-  }
-
-  Location loc = op->getLoc();
   MLIRContext *ctx = rewriter.getContext();
-
-  // Build identity indexing maps: (d0, d1, ...) -> (d0, d1, ...)
   AffineMap identityMap =
       AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
-  SmallVector<Attribute> maps(3, AffineMapAttr::get(identityMap));
-
-  // Build iterator types: all parallel
+  SmallVector<Attribute> inputMaps(2, AffineMapAttr::get(identityMap));
   SmallVector<Attribute> iterTypes(type.getRank(),
                                    rewriter.getStringAttr("parallel"));
 
-  // Position compute after all reserves by inserting before the last store.
-  insertAtLastStore(rewriter, op);
-
-  // Create init tensor and attach to output CB.
-  Value init = buildInitTensor(rewriter, loc, type, lhs);
-  Value initAttached =
-      rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
-
-  // Inputs are already attached, use them directly.
-  // Create ttl.compute op
-  auto computeOp = rewriter.create<ComputeOp>(
-      loc, TypeRange{type}, ValueRange{lhs, rhs}, ValueRange{initAttached},
-      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
-
-  // Build the body region with tile type block arguments
-  Block *body = rewriter.createBlock(&computeOp.getBody());
-  Type scalarType = type.getElementType();
-  // Create tile type: !ttcore.tile<32x32, dtype>
-  Type tileType = ttcore::TileType::get(scalarType);
-  body->addArgument(tileType, loc); // lhs tile
-  body->addArgument(tileType, loc); // rhs tile
-  body->addArgument(tileType, loc); // output tile
-
-  rewriter.setInsertionPointToStart(body);
-  Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0),
-                                         body->getArgument(1));
-  emitTileStores(rewriter, loc, result, op);
-  rewriter.create<YieldOp>(loc);
-  rewriter.replaceOp(op, computeOp.getResult(0));
-  return success();
+  return buildComputeFromInputs(
+      op, rewriter, ValueRange{lhs, rhs}, type, inputMaps, identityMap,
+      iterTypes, [](OpBuilder &b, Location loc, Type tileType, Block *body) {
+        return TileOp::create(b, loc, tileType, body->getArgument(0),
+                              body->getArgument(1));
+      });
 }
 
 /// Build a ttl.compute op with a single unary tile operation in the body.
 /// Input must already be attached to a CB via ttl.attach_cb.
-/// The output CB is identified via ttl.store on the op's result.
+/// Output CBs are the reserved CBs to which the op's result is stored.
 template <typename TileOp>
 static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
                                        Value input) {
@@ -497,68 +712,22 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
     return failure();
   }
 
-  // Try direct CB attachment first
-  Value inputCb = getAttachedCB(input);
-
-  // If input isn't CB-attached, try fusion
-  if (!inputCb) {
-    auto traceResult = traceElementwiseToRoots(op->getResult(0));
-    if (traceResult.failureReason == TraceFailureReason::Success &&
-        !traceResult.opsInOrder.empty()) {
-      return buildFusedCompute(op, rewriter, traceResult);
-    }
-    emitFusionFailureDiagnostics(op, traceResult);
-    return failure();
+  if (!getAttachedCB(input)) {
+    return tryFusion(op, rewriter);
   }
 
-  // Find output CB via the store on this op's result.
-  Value outCb = findOutputCB(op);
-  if (!outCb) {
-    return rewriter.notifyMatchFailure(
-        op, "no output CB found (missing ttl.store, view not from "
-            "ttl.cb_reserve, or intermediate value handled by fusion)");
-  }
-
-  Location loc = op->getLoc();
   MLIRContext *ctx = rewriter.getContext();
-
-  // Build identity indexing maps: (d0, d1, ...) -> (d0, d1, ...)
   AffineMap identityMap =
       AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
-  SmallVector<Attribute> maps(2, AffineMapAttr::get(identityMap));
-
-  // Build iterator types: all parallel for now
+  SmallVector<Attribute> inputMaps(1, AffineMapAttr::get(identityMap));
   SmallVector<Attribute> iterTypes(type.getRank(),
                                    rewriter.getStringAttr("parallel"));
 
-  // Position compute after all reserves by inserting before the last store.
-  insertAtLastStore(rewriter, op);
-
-  // Create init tensor and attach to output CB.
-  Value init = buildInitTensor(rewriter, loc, type, input);
-  Value initAttached =
-      rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
-
-  // Input is already attached, use it directly.
-  // Create ttl.compute op
-  auto computeOp = rewriter.create<ComputeOp>(
-      loc, TypeRange{type}, ValueRange{input}, ValueRange{initAttached},
-      rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
-
-  // Build the body region with tile type block arguments
-  Block *body = rewriter.createBlock(&computeOp.getBody());
-  Type scalarType = type.getElementType();
-  // Create tile type: !ttcore.tile<32x32, dtype>
-  Type tileType = ttcore::TileType::get(scalarType);
-  body->addArgument(tileType, loc); // input tile
-  body->addArgument(tileType, loc); // output tile
-
-  rewriter.setInsertionPointToStart(body);
-  Value result = rewriter.create<TileOp>(loc, tileType, body->getArgument(0));
-  emitTileStores(rewriter, loc, result, op);
-  rewriter.create<YieldOp>(loc);
-  rewriter.replaceOp(op, computeOp.getResult(0));
-  return success();
+  return buildComputeFromInputs(
+      op, rewriter, ValueRange{input}, type, inputMaps, identityMap, iterTypes,
+      [](OpBuilder &b, Location loc, Type tileType, Block *body) {
+        return TileOp::create(b, loc, tileType, body->getArgument(0));
+      });
 }
 
 namespace {
@@ -620,6 +789,8 @@ static AffineMap buildBcastInputMap(MLIRContext *ctx, bool expandRows,
 }
 
 /// Validate that shape expansion is compatible with bcast type.
+/// Uses emitError (not notifyMatchFailure) because these are user-facing
+/// errors with no alternative pattern to try. TODO: move to BcastOp verifier.
 static LogicalResult validateBcastExpansion(BcastOp op, bool expandRows,
                                             bool expandCols) {
   auto bcastType = op.getBcastType();
@@ -639,47 +810,32 @@ static LogicalResult validateBcastExpansion(BcastOp op, bool expandRows,
   return success();
 }
 
-/// Find the output tensor type from the store on an op's result.
-static RankedTensorType findOutputTypeFromStore(Operation *op) {
-  assert(op->getNumResults() > 0 && "expected op with results");
-  for (OpOperand &use : op->getResult(0).getUses()) {
-    if (auto storeOp = dyn_cast<StoreOp>(use.getOwner())) {
-      return getTensorType(storeOp.getView());
-    }
-  }
-  return {};
-}
-
 /// Pattern for bcast op: TTL tensor op -> ttl.compute with tile_bcast.
 /// Supports shape expansion where input CB can be smaller than output CB.
-/// Output CB is found via the store chain (like matmul/reduce).
 struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
   using OpRewritePattern<BcastOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(BcastOp op,
                                 PatternRewriter &rewriter) const override {
+    auto outputType = getTensorType(op.getResult());
     auto inputType = getTensorType(op.getInput());
-    if (!inputType) {
+    if (!outputType || !inputType) {
       return failure();
     }
 
     Value inputCb = getAttachedCB(op.getInput());
+    Value outCb = getAttachedCB(op.getOutput());
+    // Bcast validation uses emitError (not notifyMatchFailure) because these
+    // are user-facing errors with no alternative pattern. TODO: move to
+    // verifier.
     if (!inputCb) {
       return op.emitError(
-          "broadcast input must come directly from a circular buffer");
+          "broadcast input must come directly from a circular buffer, not from "
+          "an elementwise result; move the broadcast to its own compute block "
+          "or make it the first operation in a fused sequence");
     }
-
-    Value outCb = findOutputCB(op);
     if (!outCb) {
-      return rewriter.notifyMatchFailure(
-          op, "broadcast requires a store to determine output CB");
-    }
-
-    // Get output type from the store view (handles shape expansion).
-    auto outputType = findOutputTypeFromStore(op);
-    if (!outputType) {
-      return rewriter.notifyMatchFailure(
-          op, "cannot determine output type from store");
+      return op.emitError("bcast output must be attached to a circular buffer");
     }
 
     if (inputType.getRank() != 2 || outputType.getRank() != 2) {
@@ -709,475 +865,107 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     AffineMap inputMap = buildBcastInputMap(ctx, expandRows, expandCols);
 
     SmallVector<Attribute> maps = {AffineMapAttr::get(inputMap),
+                                   AffineMapAttr::get(outputMap),
                                    AffineMapAttr::get(outputMap)};
 
     SmallVector<Attribute> iterTypes(outputType.getRank(),
                                      rewriter.getStringAttr("parallel"));
 
-    insertAtLastStore(rewriter, op);
+    // Position compute after all reserves by inserting before the last store.
+    if (findLastStore(op)) {
+      insertAtLastStore(rewriter, op);
+    }
 
-    Value init = buildInitTensor(rewriter, loc, outputType, op.getInput());
+    Value init = buildInitTensor(rewriter, loc, outputType, op.getOutput());
     Value initAttached =
-        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
 
-    auto computeOp = rewriter.create<ComputeOp>(
-        loc, TypeRange{outputType}, ValueRange{op.getInput()},
-        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
-        rewriter.getArrayAttr(iterTypes));
+    auto computeOp = ComputeOp::create(
+        rewriter, loc, TypeRange{outputType},
+        ValueRange{op.getInput(), op.getOutput()}, ValueRange{initAttached},
+        rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
     Type scalarType = outputType.getElementType();
     Type tileType = ttcore::TileType::get(scalarType);
-    body->addArgument(tileType, loc); // input tile
-    body->addArgument(tileType, loc); // output tile
+    body->addArgument(tileType, loc);
+    body->addArgument(tileType, loc);
+    body->addArgument(tileType, loc);
 
     rewriter.setInsertionPointToStart(body);
     Value result =
-        rewriter.create<TileBcastOp>(loc, tileType, body->getArgument(0),
-                                     body->getArgument(1), op.getBcastType());
+        TileBcastOp::create(rewriter, loc, tileType, body->getArgument(0),
+                            body->getArgument(1), op.getBcastType());
     emitTileStores(rewriter, loc, result, op.getOperation());
-    rewriter.create<YieldOp>(loc);
+    YieldOp::create(rewriter, loc);
     rewriter.replaceOp(op, computeOp.getResult(0));
     return success();
   }
 };
 
 //===----------------------------------------------------------------------===//
-// Matmul Lowering Pattern
+// Matmul Lowering
 //===----------------------------------------------------------------------===//
 
-/// Pattern for matmul op: TTL tensor op -> ttl.compute with tile_matmul.
-/// Matmul reads A and B from CBs, output CB found via store chain.
-/// Uses 2D iteration over the output tile grid. K-dimension accumulation
-/// is handled by the TileMatmulOp lowering to TTKernel.
+/// Lowers ttl.matmul to ttl.compute with ttl.tile_matmul_block in the body.
+/// The iteration space is 3D [M, N, K] at tile granularity with matmul
+/// indexing maps. Downstream passes choose the lowering strategy:
+/// ttl-lower-matmul-block emits a single hardware call; ttl-lower-to-loops
+/// would emit per-tile loops (future).
 struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
   using OpRewritePattern<MatmulOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(MatmulOp op,
                                 PatternRewriter &rewriter) const override {
-    auto aType = getTensorType(op.getA());
-    auto bType = getTensorType(op.getB());
-    if (!aType || !bType) {
-      return failure();
+    Value lhs = op.getLhs();
+    Value rhs = op.getRhs();
+
+    if (!getAttachedCB(lhs) || !getAttachedCB(rhs)) {
+      return rewriter.notifyMatchFailure(op,
+                                         "matmul inputs must be CB-attached");
     }
 
-    Value aCb = getAttachedCB(op.getA());
-    Value bCb = getAttachedCB(op.getB());
-    if (!aCb) {
-      return op.emitError(
-          "matmul input A must be attached to a circular buffer");
-    }
-    if (!bCb) {
-      return op.emitError(
-          "matmul input B must be attached to a circular buffer");
-    }
+    auto lhsType = getTensorType(lhs);
+    auto rhsType = getTensorType(rhs);
+    auto resultType = getTensorType(op.getResult());
 
-    if (aType.getRank() != 2 || bType.getRank() != 2) {
-      return op.emitError("matmul requires rank-2 tensors");
-    }
-
-    Value outCb = findOutputCB(op);
-    if (!outCb) {
-      return rewriter.notifyMatchFailure(
-          op, "matmul requires a store to determine output CB");
+    // Defer to fusion when the matmul result feeds into a single elementwise
+    // op and the matmul inputs are broadcast-compatible with the user's output
+    // shape. Without the broadcast check, fusion would reject and the greedy
+    // rewriter would cycle.
+    if (op.getResult().hasOneUse()) {
+      Operation *user = *op.getResult().getUsers().begin();
+      if (isElementwiseOp(user)) {
+        auto userOutType = getTensorType(user->getResult(0));
+        if (isBroadcastCompatible(lhsType, userOutType) &&
+            isBroadcastCompatible(rhsType, userOutType)) {
+          return rewriter.notifyMatchFailure(op, "deferring matmul to fusion");
+        }
+      }
     }
 
-    // Output shape: [M, N] where M = A.shape[0], N = B.shape[1]
-    auto outputType = RankedTensorType::get(
-        {aType.getDimSize(0), bType.getDimSize(1)}, aType.getElementType());
-
-    Location loc = op.getLoc();
     MLIRContext *ctx = rewriter.getContext();
 
-    // Iteration space is [m, n] (output tile grid).
-    // A map: (m, n) -> (m, 0) - reads row m (K handled in TTKernel lowering)
-    // B map: (m, n) -> (0, n) - reads col n (K handled in TTKernel lowering)
-    // Out map: (m, n) -> (m, n) - identity
-    auto d0 = getAffineDimExpr(0, ctx);
-    auto d1 = getAffineDimExpr(1, ctx);
-    auto c0 = getAffineConstantExpr(0, ctx);
-
-    AffineMap aMap = AffineMap::get(2, 0, {d0, c0}, ctx);
-    AffineMap bMap = AffineMap::get(2, 0, {c0, d1}, ctx);
-    AffineMap outMap = AffineMap::getMultiDimIdentityMap(2, ctx);
-
-    SmallVector<Attribute> maps = {AffineMapAttr::get(aMap),
-                                   AffineMapAttr::get(bMap),
-                                   AffineMapAttr::get(outMap)};
-
+    // 3D iteration space [M, N, K] with matmul indexing maps.
+    auto d0 = getAffineDimExpr(0, ctx); // m
+    auto d1 = getAffineDimExpr(1, ctx); // n
+    auto d2 = getAffineDimExpr(2, ctx); // k
+    AffineMap lhsMap = AffineMap::get(3, 0, {d0, d2}, ctx);
+    AffineMap rhsMap = AffineMap::get(3, 0, {d2, d1}, ctx);
+    AffineMap outMap = AffineMap::get(3, 0, {d0, d1}, ctx);
+    SmallVector<Attribute> inputMaps = {AffineMapAttr::get(lhsMap),
+                                        AffineMapAttr::get(rhsMap)};
     SmallVector<Attribute> iterTypes = {rewriter.getStringAttr("parallel"),
-                                        rewriter.getStringAttr("parallel")};
-
-    insertAtLastStore(rewriter, op);
-
-    Value init = buildInitTensor(rewriter, loc, outputType, op.getA());
-    Value initAttached =
-        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
-
-    auto computeOp = rewriter.create<ComputeOp>(
-        loc, TypeRange{outputType}, ValueRange{op.getA(), op.getB()},
-        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
-        rewriter.getArrayAttr(iterTypes));
-
-    Block *body = rewriter.createBlock(&computeOp.getBody());
-    Type scalarType = outputType.getElementType();
-    Type tileType = ttcore::TileType::get(scalarType);
-    body->addArgument(tileType, loc); // A tile
-    body->addArgument(tileType, loc); // B tile
-    body->addArgument(tileType, loc); // output tile
-
-    rewriter.setInsertionPointToStart(body);
-    Value result = rewriter.create<TileMatmulOp>(
-        loc, tileType, body->getArgument(0), body->getArgument(1),
-        body->getArgument(2));
-    emitTileStores(rewriter, loc, result, op);
-    rewriter.create<YieldOp>(loc);
-    rewriter.replaceOp(op, computeOp.getResult(0));
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// Reduce Lowering Helpers
-//===----------------------------------------------------------------------===//
-
-/// Build affine map for reduce input based on reduce dimension.
-/// For scalar: (i,j) -> (0,0) - all iterations read from same position
-/// For row: (i,j) -> (i,0) - each row reads its row
-/// For col: (i,j) -> (0,j) - each col reads its col
-static AffineMap buildReduceInputMap(MLIRContext *ctx, ReduceDim dim) {
-  auto c0 = getAffineConstantExpr(0, ctx);
-  auto d0 = getAffineDimExpr(0, ctx);
-  auto d1 = getAffineDimExpr(1, ctx);
-
-  switch (dim) {
-  case ReduceDim::Scalar:
-    return AffineMap::get(2, 0, {c0, c0}, ctx);
-  case ReduceDim::Row:
-    return AffineMap::get(2, 0, {d0, c0}, ctx);
-  case ReduceDim::Col:
-    return AffineMap::get(2, 0, {c0, d1}, ctx);
-  }
-  llvm_unreachable("unknown ReduceDim");
-}
-
-/// Compute the output iteration shape for a reduce operation.
-/// Scalar: [1, 1], Row: [M, 1], Col: [1, N]
-static SmallVector<int64_t>
-getReduceOutputIterShape(ArrayRef<int64_t> inShape, ReduceDim dim) {
-  switch (dim) {
-  case ReduceDim::Scalar:
-    return {1, 1};
-  case ReduceDim::Row:
-    return {inShape[0], 1};
-  case ReduceDim::Col:
-    return {1, inShape[1]};
-  }
-  llvm_unreachable("unknown ReduceDim");
-}
-
-//===----------------------------------------------------------------------===//
-// Reduce Lowering Pattern
-//===----------------------------------------------------------------------===//
-
-struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
-  using OpRewritePattern<ReduceOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(ReduceOp op,
-                                PatternRewriter &rewriter) const override {
-    auto inputType = getTensorType(op.getInput());
-    auto outputType = getTensorType(op.getResult());
-    if (!inputType || !outputType) {
-      return failure();
-    }
-
-    Value inputCb = getAttachedCB(op.getInput());
-    Value scalerCb = getAttachedCB(op.getScaler());
-    if (!inputCb) {
-      return op.emitError("reduce input must be attached to a circular buffer");
-    }
-    if (!scalerCb) {
-      return op.emitError(
-          "reduce scaler must be attached to a circular buffer");
-    }
-
-    Value outCb = findOutputCB(op);
-    if (!outCb) {
-      return rewriter.notifyMatchFailure(
-          op, "reduce requires a store to determine output CB");
-    }
-
-    if (inputType.getRank() != 2 || outputType.getRank() != 2) {
-      return op.emitError("reduce requires rank-2 tensors");
-    }
-
-    Location loc = op.getLoc();
-    MLIRContext *ctx = rewriter.getContext();
-
-    auto reduceDim = op.getReduceDim();
-    auto inShape = inputType.getShape();
-    auto outIterShape = getReduceOutputIterShape(inShape, reduceDim);
-    auto iterOutputType = RankedTensorType::get(
-        outIterShape, outputType.getElementType(), outputType.getEncoding());
-
-    AffineMap inputMap = buildReduceInputMap(ctx, reduceDim);
-    AffineMap identityMap = AffineMap::getMultiDimIdentityMap(2, ctx);
-
-    SmallVector<Attribute> maps = {AffineMapAttr::get(inputMap),
-                                   AffineMapAttr::get(identityMap),
-                                   AffineMapAttr::get(identityMap)};
-
-    SmallVector<Attribute> iterTypes(2, rewriter.getStringAttr("parallel"));
-
-    insertAtLastStore(rewriter, op);
-
-    Value init =
-        buildInitTensor(rewriter, loc, iterOutputType, op.getInput());
-    Value initAttached =
-        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
-
-    auto computeOp = rewriter.create<ComputeOp>(
-        loc, TypeRange{iterOutputType},
-        ValueRange{op.getInput(), op.getScaler()},
-        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
-        rewriter.getArrayAttr(iterTypes));
-
-    Block *body = rewriter.createBlock(&computeOp.getBody());
-    Type scalarType = outputType.getElementType();
-    Type tileType = ttcore::TileType::get(scalarType);
-    body->addArgument(tileType, loc); // input tile
-    body->addArgument(tileType, loc); // scaler tile
-    body->addArgument(tileType, loc); // output tile
-
-    rewriter.setInsertionPointToStart(body);
-    Value reduceResult =
-        rewriter.create<TileReduceOp>(loc, tileType, body->getArgument(0),
-                                      body->getArgument(1),
-                                      body->getArgument(2),
-                                      op.getReduceType(), op.getReduceDim());
-    emitTileStores(rewriter, loc, reduceResult, op);
-    rewriter.create<YieldOp>(loc);
-
-    rewriter.replaceOp(op, computeOp.getResult(0));
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// Transpose Lowering Pattern
-//===----------------------------------------------------------------------===//
-
-struct LowerTransposeToCompute : OpRewritePattern<TransposeOp> {
-  using OpRewritePattern<TransposeOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(TransposeOp op,
-                                PatternRewriter &rewriter) const override {
-    auto inputType = getTensorType(op.getInput());
-    auto outputType = getTensorType(op.getResult());
-    if (!inputType || !outputType) {
-      return failure();
-    }
-
-    Value inputCb = getAttachedCB(op.getInput());
-    if (!inputCb) {
-      return op.emitError(
-          "transpose input must be attached to a circular buffer");
-    }
-
-    Value outCb = findOutputCB(op);
-    if (!outCb) {
-      return rewriter.notifyMatchFailure(
-          op, "transpose requires a store to determine output CB");
-    }
-
-    if (inputType.getRank() != 2 || outputType.getRank() != 2) {
-      return op.emitError("transpose requires rank-2 tensors");
-    }
-
-    Location loc = op.getLoc();
-    MLIRContext *ctx = rewriter.getContext();
-
-    // For transpose: input [M, N] -> output [N, M].
-    // Iteration is over output shape [N, M].
-    // Input map: (i, j) -> (j, i) to read from transposed position.
-    auto d0 = getAffineDimExpr(0, ctx);
-    auto d1 = getAffineDimExpr(1, ctx);
-    AffineMap inputMap = AffineMap::get(2, 0, {d1, d0}, ctx);
-    AffineMap identityMap = AffineMap::getMultiDimIdentityMap(2, ctx);
-
-    SmallVector<Attribute> maps = {AffineMapAttr::get(inputMap),
-                                   AffineMapAttr::get(identityMap)};
-
-    SmallVector<Attribute> iterTypes(outputType.getRank(),
-                                     rewriter.getStringAttr("parallel"));
-
-    insertAtLastStore(rewriter, op);
-
-    Value init = buildInitTensor(rewriter, loc, outputType, op.getInput());
-    Value initAttached =
-        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
-
-    auto computeOp = rewriter.create<ComputeOp>(
-        loc, TypeRange{outputType}, ValueRange{op.getInput()},
-        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
-        rewriter.getArrayAttr(iterTypes));
-
-    Block *body = rewriter.createBlock(&computeOp.getBody());
-    Type scalarType = outputType.getElementType();
-    Type tileType = ttcore::TileType::get(scalarType);
-    body->addArgument(tileType, loc); // input tile
-    body->addArgument(tileType, loc); // output tile
-
-    rewriter.setInsertionPointToStart(body);
-    Value result = rewriter.create<TileTransposeOp>(
-        loc, tileType, body->getArgument(0), body->getArgument(1));
-    emitTileStores(rewriter, loc, result, op);
-    rewriter.create<YieldOp>(loc);
-
-    rewriter.replaceOp(op, computeOp.getResult(0));
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// Power Lowering Pattern
-//===----------------------------------------------------------------------===//
-
-struct LowerPowerToCompute : OpRewritePattern<PowerOp> {
-  using OpRewritePattern<PowerOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(PowerOp op,
-                                PatternRewriter &rewriter) const override {
-    auto type = getTensorType(op.getResult());
-    if (!type) {
-      return failure();
-    }
-
-    Value inputCb = getAttachedCB(op.getInput());
-    if (!inputCb) {
-      return op.emitError("power input must be attached to a circular buffer");
-    }
-
-    Value outCb = findOutputCB(op);
-    if (!outCb) {
-      return rewriter.notifyMatchFailure(
-          op, "power requires a store to determine output CB");
-    }
-
-    Location loc = op.getLoc();
-    MLIRContext *ctx = rewriter.getContext();
-
-    AffineMap identityMap =
-        AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
-    SmallVector<Attribute> maps = {AffineMapAttr::get(identityMap),
-                                   AffineMapAttr::get(identityMap)};
-
-    SmallVector<Attribute> iterTypes(type.getRank(),
-                                     rewriter.getStringAttr("parallel"));
-
-    insertAtLastStore(rewriter, op);
-
-    Value init = buildInitTensor(rewriter, loc, type, op.getInput());
-    Value initAttached =
-        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
-
-    auto computeOp = rewriter.create<ComputeOp>(
-        loc, TypeRange{type}, ValueRange{op.getInput()},
-        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
-        rewriter.getArrayAttr(iterTypes));
-
-    Block *body = rewriter.createBlock(&computeOp.getBody());
-    Type scalarType = type.getElementType();
-    Type tileType = ttcore::TileType::get(scalarType);
-    body->addArgument(tileType, loc); // input tile
-    body->addArgument(tileType, loc); // output tile
-
-    rewriter.setInsertionPointToStart(body);
-    Value result = rewriter.create<TilePowerOp>(loc, tileType,
-                                                 body->getArgument(0),
-                                                 op.getExponentAttr());
-    emitTileStores(rewriter, loc, result, op);
-    rewriter.create<YieldOp>(loc);
-    rewriter.replaceOp(op, computeOp.getResult(0));
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// Where Lowering Pattern
-//===----------------------------------------------------------------------===//
-
-struct LowerWhereToCompute : OpRewritePattern<WhereOp> {
-  using OpRewritePattern<WhereOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(WhereOp op,
-                                PatternRewriter &rewriter) const override {
-    auto type = getTensorType(op.getResult());
-    if (!type) {
-      return failure();
-    }
-
-    Value condCb = getAttachedCB(op.getCondition());
-    Value trueCb = getAttachedCB(op.getTrueValue());
-    Value falseCb = getAttachedCB(op.getFalseValue());
-    if (!condCb) {
-      return op.emitError(
-          "where condition must be attached to a circular buffer");
-    }
-    if (!trueCb) {
-      return op.emitError(
-          "where true_value must be attached to a circular buffer");
-    }
-    if (!falseCb) {
-      return op.emitError(
-          "where false_value must be attached to a circular buffer");
-    }
-
-    Value outCb = findOutputCB(op);
-    if (!outCb) {
-      return rewriter.notifyMatchFailure(
-          op, "where requires a store to determine output CB");
-    }
-
-    Location loc = op.getLoc();
-    MLIRContext *ctx = rewriter.getContext();
-
-    AffineMap identityMap =
-        AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
-    SmallVector<Attribute> maps(4, AffineMapAttr::get(identityMap));
-
-    SmallVector<Attribute> iterTypes(type.getRank(),
-                                     rewriter.getStringAttr("parallel"));
-
-    insertAtLastStore(rewriter, op);
-
-    Value init = buildInitTensor(rewriter, loc, type, op.getCondition());
-    Value initAttached =
-        rewriter.create<AttachCBOp>(loc, init.getType(), init, outCb);
-
-    auto computeOp = rewriter.create<ComputeOp>(
-        loc, TypeRange{type},
-        ValueRange{op.getCondition(), op.getTrueValue(), op.getFalseValue()},
-        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
-        rewriter.getArrayAttr(iterTypes));
-
-    Block *body = rewriter.createBlock(&computeOp.getBody());
-    Type scalarType = type.getElementType();
-    Type tileType = ttcore::TileType::get(scalarType);
-    body->addArgument(tileType, loc); // condition tile
-    body->addArgument(tileType, loc); // true tile
-    body->addArgument(tileType, loc); // false tile
-    body->addArgument(tileType, loc); // output tile
-
-    rewriter.setInsertionPointToStart(body);
-    Value result = rewriter.create<TileWhereOp>(loc, tileType,
-                                                 body->getArgument(0),
-                                                 body->getArgument(1),
-                                                 body->getArgument(2));
-    emitTileStores(rewriter, loc, result, op);
-    rewriter.create<YieldOp>(loc);
-    rewriter.replaceOp(op, computeOp.getResult(0));
-    return success();
+                                        rewriter.getStringAttr("parallel"),
+                                        rewriter.getStringAttr("reduction")};
+
+    return buildComputeFromInputs(
+        op, rewriter, ValueRange{lhs, rhs}, resultType, inputMaps, outMap,
+        iterTypes, [](OpBuilder &b, Location loc, Type tileType, Block *body) {
+          return TileMatmulBlockOp::create(b, loc, tileType,
+                                           body->getArgument(0),
+                                           body->getArgument(1), Value());
+        });
   }
 };
 
@@ -1225,11 +1013,12 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
 
     Value init = buildInitTensor(rewriter, loc, inputType, input);
     Value initAttached =
-        rewriter.create<AttachCBOp>(loc, init.getType(), init, outputCb);
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outputCb);
 
-    auto computeOp = rewriter.create<ComputeOp>(
-        loc, TypeRange{inputType}, ValueRange{input}, ValueRange{initAttached},
-        rewriter.getArrayAttr(maps), rewriter.getArrayAttr(iterTypes));
+    auto computeOp = ComputeOp::create(
+        rewriter, loc, TypeRange{inputType}, ValueRange{input},
+        ValueRange{initAttached}, rewriter.getArrayAttr(maps),
+        rewriter.getArrayAttr(iterTypes));
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
     Type scalarType = inputType.getElementType();
@@ -1238,8 +1027,13 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
     body->addArgument(tileType, loc);
 
     rewriter.setInsertionPointToEnd(body);
-    rewriter.create<TileStoreOp>(loc, body->getArgument(0), reserveView);
-    rewriter.create<YieldOp>(loc);
+    SmallVector<Value> iterIndices =
+        getOrCreateIterIndices(rewriter, computeOp);
+    SmallVector<Value> storeIndices =
+        applyIndexingMapToIterIndices(rewriter, loc, identityMap, iterIndices);
+    TileStoreOp::create(rewriter, loc, body->getArgument(0), reserveView,
+                        storeIndices);
+    YieldOp::create(rewriter, loc);
 
     // make_early_inc_range: replaceOp erases attachOp, invalidating the
     // use-list iterator.
@@ -1314,10 +1108,6 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
 
   patterns.add<LowerBcastToCompute>(ctx);
   patterns.add<LowerMatmulToCompute>(ctx);
-  patterns.add<LowerReduceToCompute>(ctx);
-  patterns.add<LowerTransposeToCompute>(ctx);
-  patterns.add<LowerPowerToCompute>(ctx);
-  patterns.add<LowerWhereToCompute>(ctx);
   patterns.add<LowerStoreToCompute>(ctx);
 }
 

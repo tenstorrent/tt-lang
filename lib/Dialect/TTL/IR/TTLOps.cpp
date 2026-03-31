@@ -15,11 +15,13 @@
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h" // IWYU pragma: keep
+#include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h" // IWYU pragma: keep
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
-#include "ttmlir/Dialect/TTNN/IR/TTNNOps.h" // IWYU pragma: keep
-#include "llvm/ADT/TypeSwitch.h"            // IWYU pragma: keep
+#include "llvm/ADT/TypeSwitch.h" // IWYU pragma: keep
 #include <cstdint>
+#include <functional>
+#include <numeric>
 
 #define GET_OP_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOps.cpp.inc"
@@ -63,6 +65,32 @@ SliceAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
   return llvm::success();
 }
 
+llvm::LogicalResult
+LayoutAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+                   ArrayRef<int64_t> shape, Type elementType,
+                   BufferType bufferType, ArrayRef<int64_t> grid,
+                   TensorMemoryLayout memoryLayout) {
+  if (shape.empty()) {
+    return emitError() << "layout shape must not be empty";
+  }
+  if (grid.empty()) {
+    return emitError() << "layout grid must not be empty";
+  }
+  for (int64_t dim : shape) {
+    if (dim <= 0) {
+      return emitError() << "layout shape dimensions must be positive, got "
+                         << dim;
+    }
+  }
+  for (int64_t dim : grid) {
+    if (dim <= 0) {
+      return emitError() << "layout grid dimensions must be positive, got "
+                         << dim;
+    }
+  }
+  return llvm::success();
+}
+
 } // namespace mlir::tt::ttl
 
 mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
@@ -99,8 +127,8 @@ mlir::LogicalResult mlir::tt::ttl::AttachCBOp::verify() {
                          << cbTy.getElementType() << ")";
   }
 
-  // TODO: Revisit shape rank validation for TTNN tensors.
-  // TTNN tensors have 4D device shape (grid + shard) while CBs have 2D shard
+  // TODO: Revisit shape rank validation for tensors with TTL layout.
+  // Device tensors have 4D device shape (grid + shard) while CBs have 2D shard
   // shape. For now, only validate element types match. The relationship between
   // tensor shape and CB shape needs further investigation.
 
@@ -175,12 +203,12 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
     }
   }
 
-  // TT-Lang programs operate on TTNN tensors. Require a TTNN layout encoding so
-  // lowering can derive tile/addressing information.
+  // TT-Lang programs require a TTL layout encoding on tensors so lowering
+  // can derive tile/addressing information.
   auto enc = rankedTensorTy.getEncoding();
-  if (!enc || !mlir::isa<tt::ttnn::TTNNLayoutAttr>(enc)) {
+  if (!enc || !mlir::isa<LayoutAttr>(enc)) {
     return emitOpError()
-           << "expects tensor operand to carry TTNNLayout encoding; got "
+           << "expects tensor operand to carry ttl.layout encoding; got "
            << rankedTensorTy;
   }
 
@@ -205,21 +233,22 @@ mlir::LogicalResult mlir::tt::ttl::WaitOp::verify() {
   return success();
 }
 
-mlir::LogicalResult mlir::tt::ttl::LinearizedIndexOp::verify() {
-  AffineMap map = getIndexMap();
+mlir::LogicalResult mlir::tt::ttl::IterIndexOp::verify() {
+  int64_t dim = getDim();
 
-  // Verify that the map has at least one dimension
-  if (map.getNumDims() == 0) {
-    return emitOpError() << "index_map must have at least one dimension";
+  // ParentOneOf<["ComputeOp"]> trait guarantees the parent is a ComputeOp.
+  auto computeOp = (*this)->getParentOfType<ComputeOp>();
+  assert(computeOp && "ParentOneOf trait should enforce ComputeOp parent");
+
+  // Verify dim is within the iteration domain rank.
+  unsigned iterRank = computeOp.getIteratorTypesArray().size();
+  if (static_cast<unsigned>(dim) >= iterRank) {
+    return emitOpError() << "dimension " << dim
+                         << " is out of range for iteration domain of rank "
+                         << iterRank;
   }
 
-  // Verify that the map has exactly one result (the linearized index)
-  if (map.getNumResults() != 1) {
-    return emitOpError() << "index_map must have exactly one result, got "
-                         << map.getNumResults();
-  }
-
-  return mlir::success();
+  return success();
 }
 
 mlir::LogicalResult mlir::tt::ttl::CopyTileOp::verify() {
@@ -233,7 +262,7 @@ mlir::LogicalResult mlir::tt::ttl::CopyTileOp::verify() {
            << dstTileTy << ", src: " << srcTy;
   }
 
-  return mlir::success();
+  return success();
 }
 
 void mlir::tt::ttl::ComputeOp::print(mlir::OpAsmPrinter &p) {
@@ -382,6 +411,26 @@ mlir::tt::ttl::ComputeOp::getIterationDomain(mlir::OpBuilder &b) {
   return domain;
 }
 
+mlir::SmallVector<int64_t>
+mlir::tt::ttl::ComputeOp::getStaticIterationDomainSizes() {
+  mlir::OpBuilder b(getOperation());
+  mlir::SmallVector<mlir::Range> domain = getIterationDomain(b);
+  mlir::SmallVector<int64_t> sizes;
+  sizes.reserve(domain.size());
+  for (auto &range : domain) {
+    auto size = mlir::getConstantIntValue(range.size);
+    assert(size && "ComputeOp verifier guarantees static shapes");
+    sizes.push_back(*size);
+  }
+  return sizes;
+}
+
+int64_t mlir::tt::ttl::ComputeOp::getTotalIterationTiles() {
+  auto sizes = getStaticIterationDomainSizes();
+  return std::accumulate(sizes.begin(), sizes.end(), int64_t{1},
+                         std::multiplies<>());
+}
+
 llvm::FailureOr<mlir::TilingResult>
 mlir::tt::ttl::ComputeOp::getTiledImplementation(
     mlir::OpBuilder &b, llvm::ArrayRef<mlir::OpFoldResult> offsets,
@@ -398,8 +447,8 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
     mapOffsetsAndSizes(b, loc, indexingMaps[idx], input, offsets, sizes,
                        operandOffsets, operandSizes, operandStrides);
 
-    auto slice = b.create<mlir::tensor::ExtractSliceOp>(
-        loc, input, operandOffsets, operandSizes, operandStrides);
+    auto slice = mlir::tensor::ExtractSliceOp::create(
+        b, loc, input, operandOffsets, operandSizes, operandStrides);
     tiledInputs.push_back(slice);
     generatedSlices.push_back(slice);
   }
@@ -413,19 +462,41 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
     mapOffsetsAndSizes(b, loc, indexingMaps[numInputs + idx], output, offsets,
                        sizes, operandOffsets, operandSizes, operandStrides);
 
-    auto slice = b.create<mlir::tensor::ExtractSliceOp>(
-        loc, output, operandOffsets, operandSizes, operandStrides);
+    auto slice = mlir::tensor::ExtractSliceOp::create(
+        b, loc, output, operandOffsets, operandSizes, operandStrides);
     tiledOutputs.push_back(slice);
     generatedSlices.push_back(slice);
   }
 
   // Build the tiled compute op with subblock operands.
-  auto tiledOp = b.create<ComputeOp>(
-      loc, mlir::TypeRange(tiledOutputs), tiledInputs, tiledOutputs,
+  auto tiledOp = ComputeOp::create(
+      b, loc, mlir::TypeRange(tiledOutputs), tiledInputs, tiledOutputs,
       getIndexingMapsAttr(), getIteratorTypesAttr());
 
-  // Clone the body region into the new compute op.
+  // Clone the body, remapping captured view references to tiled outputs.
+  // The body's tile_store ops capture the cb_reserve view from outside the
+  // compute. When tiling, these must reference the sliced output instead so
+  // that downstream lowering can compute the correct global DFB offset from
+  // the extract_slice. This applies uniformly to all computes (elementwise,
+  // matmul, reduce, etc.): iter_index produces local (subblock) coordinates,
+  // and addSliceOffset adds the global offset during TTL-to-TTKernel
+  // conversion.
   mlir::IRMapping mapping;
+  for (size_t i = 0; i < getOutputs().size(); ++i) {
+    mlir::Value origOutput = getOutputs()[i];
+    mlir::Value tiledOut = tiledOutputs[i];
+    getBody().walk([&](TileStoreOp store) {
+      mlir::Value view = store.getView();
+      if (view.getParentRegion() == &getBody()) {
+        return;
+      }
+      mlir::Value viewCB = getAttachedCB(view);
+      mlir::Value outputCB = getAttachedCB(origOutput);
+      if (viewCB && outputCB && viewCB == outputCB) {
+        mapping.map(view, tiledOut);
+      }
+    });
+  }
   getBody().cloneInto(&tiledOp.getBody(), mapping);
 
   mlir::TilingResult result;
@@ -655,18 +726,18 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   auto iteratorCount = getIteratorTypes().size();
   auto maps = mapsAttr;
 
-  // Verify that the iteration domain size (from iterator_types) is correctly
-  // reflected. All indexing maps must have iteratorCount input dimensions.
-  // The iteration domain is derived from the maximum tensor rank, which should
-  // match iteratorCount.
+  // The iteration domain (from iterator_types) must be at least as large as the
+  // maximum operand rank. Extra dimensions are reduction dims that do not
+  // appear in any operand's shape (e.g., the K dimension in matmul: rank-2
+  // operands with a 3D [M, N, K] iteration space).
   int64_t maxTensorRank = 0;
   for (Value operand : llvm::concat<Value>(getInputs(), getOutputs())) {
     auto ty = cast<RankedTensorType>(operand.getType());
     maxTensorRank = std::max(maxTensorRank, ty.getRank());
   }
-  if (static_cast<size_t>(maxTensorRank) != iteratorCount) {
+  if (iteratorCount < static_cast<size_t>(maxTensorRank)) {
     return emitOpError("iterator_types count (")
-           << iteratorCount << ") must match maximum tensor rank ("
+           << iteratorCount << ") must be >= maximum tensor rank ("
            << maxTensorRank << ")";
   }
 
@@ -803,6 +874,16 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   // The body must contain at least one tile_store. tile_store is the hardware
   // write (becomes pack_tile) and is the only mechanism for the compute to
   // produce observable output via pack to the output circular buffer.
+  //
+  // Each tile_store's target CB must match a formal output CB.
+  DenseSet<Value> outputCBs;
+  for (Value output : getOutputs()) {
+    if (Value cb = getAttachedCB(output)) {
+      outputCBs.insert(cb);
+    }
+  }
+
+  DenseSet<Value> storedCBs;
   bool hasTileStore = false;
   for (Operation &op : bodyBlock.without_terminator()) {
     auto store = dyn_cast<TileStoreOp>(&op);
@@ -810,12 +891,26 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
       continue;
     }
     hasTileStore = true;
-    if (!store.getView().getDefiningOp<CBReserveOp>()) {
-      return store.emitOpError() << "view must be produced by ttl.cb_reserve";
+    Value viewCB = getAttachedCB(store.getView());
+    if (!viewCB) {
+      return store.emitOpError() << "view must trace to a dataflow buffer";
     }
+    if (!outputCBs.contains(viewCB)) {
+      return store.emitOpError()
+             << "stores to CB that is not a formal output of the compute";
+    }
+    storedCBs.insert(viewCB);
   }
   if (!hasTileStore) {
     return emitOpError("body must contain at least one ttl.tile_store");
+  }
+
+  for (Value output : getOutputs()) {
+    if (Value cb = getAttachedCB(output)) {
+      if (!storedCBs.contains(cb)) {
+        return emitOpError("formal output CB has no tile_store in the body");
+      }
+    }
   }
 
   return success();
@@ -824,12 +919,47 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::CBReserveOp::verify() {
   auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
   auto resultTy = mlir::cast<RankedTensorType>(getResult().getType());
+
+  // When `num_tiles` is present, the result shape is a subblock of the CB.
+  // Verify element type match and that tile count is consistent.
+  if (getNumTiles()) {
+    auto cbElemTy = cbTy.getElementType();
+    if (cbElemTy != resultTy.getElementType()) {
+      return emitOpError() << "result element type ("
+                           << resultTy.getElementType()
+                           << ") must match DFB element type (" << cbElemTy
+                           << ")";
+    }
+    int64_t resultTiles = 1;
+    for (int64_t d : resultTy.getShape()) {
+      resultTiles *= d;
+    }
+    if (resultTiles != static_cast<int64_t>(getNumTiles().value())) {
+      return emitOpError() << "result tensor has " << resultTiles
+                           << " tiles but num_tiles attribute is "
+                           << getNumTiles().value();
+    }
+    int64_t cbCapacity = cbTy.getElementsPerBlock();
+    if (resultTiles > cbCapacity) {
+      return emitOpError() << "num_tiles (" << resultTiles
+                           << ") exceeds DFB capacity (" << cbCapacity << ")";
+    }
+    return mlir::success();
+  }
+
   return verifyCBOpWithResult(getOperation(), cbTy, resultTy);
 }
 
 mlir::LogicalResult mlir::tt::ttl::CBPushOp::verify() {
-  // cb_push has no result to verify; the CB type is already enforced by
-  // tablegen constraints.
+  if (getNumTiles()) {
+    auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
+    int64_t cbCapacity = cbTy.getElementsPerBlock();
+    int64_t numTiles = static_cast<int64_t>(getNumTiles().value());
+    if (numTiles > cbCapacity) {
+      return emitOpError() << "num_tiles (" << numTiles
+                           << ") exceeds DFB capacity (" << cbCapacity << ")";
+    }
+  }
   return success();
 }
 
@@ -898,6 +1028,83 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
   if (viewElemTy != tileType) {
     return emitOpError() << "view element type (" << viewElemTy
                          << ") must match tile type (" << tileType << ")";
+  }
+
+  // Inside a compute body, indices must match the view rank (populated by
+  // convert-ttl-to-compute or assign-dst). Outside, allow empty indices.
+  size_t numIndices = getIndices().size();
+  bool insideCompute = (*this)->getParentOfType<ComputeOp>() != nullptr;
+  if (insideCompute) {
+    if (numIndices != static_cast<size_t>(viewTy.getRank())) {
+      return emitOpError() << "expected " << viewTy.getRank()
+                           << " indices inside compute body, got "
+                           << numIndices;
+    }
+  } else if (numIndices != 0 &&
+             numIndices != static_cast<size_t>(viewTy.getRank())) {
+    return emitOpError() << "expected 0 or " << viewTy.getRank()
+                         << " indices, got " << numIndices;
+  }
+
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::MatmulOp::verify() {
+  auto lhsType = mlir::cast<RankedTensorType>(getLhs().getType());
+  auto rhsType = mlir::cast<RankedTensorType>(getRhs().getType());
+  auto resultType = mlir::cast<RankedTensorType>(getResult().getType());
+
+  if (lhsType.getRank() != 2) {
+    return emitOpError() << "lhs must be rank 2, got rank "
+                         << lhsType.getRank();
+  }
+  if (rhsType.getRank() != 2) {
+    return emitOpError() << "rhs must be rank 2, got rank "
+                         << rhsType.getRank();
+  }
+  if (resultType.getRank() != 2) {
+    return emitOpError() << "result must be rank 2, got rank "
+                         << resultType.getRank();
+  }
+
+  if (!lhsType.hasStaticShape()) {
+    return emitOpError() << "lhs must have static shape";
+  }
+  if (!rhsType.hasStaticShape()) {
+    return emitOpError() << "rhs must have static shape";
+  }
+  if (!resultType.hasStaticShape()) {
+    return emitOpError() << "result must have static shape";
+  }
+
+  int64_t lhsK = lhsType.getDimSize(1);
+  int64_t rhsK = rhsType.getDimSize(0);
+  if (lhsK != rhsK) {
+    return emitOpError() << "K dimension mismatch: lhs has " << lhsK
+                         << " columns but rhs has " << rhsK << " rows";
+  }
+
+  int64_t expectedM = lhsType.getDimSize(0);
+  int64_t expectedN = rhsType.getDimSize(1);
+  if (resultType.getDimSize(0) != expectedM ||
+      resultType.getDimSize(1) != expectedN) {
+    return emitOpError() << "result shape [" << resultType.getDimSize(0) << ", "
+                         << resultType.getDimSize(1) << "] does not match "
+                         << "expected [" << expectedM << ", " << expectedN
+                         << "]";
+  }
+
+  if (lhsType.getElementType() != rhsType.getElementType()) {
+    return emitOpError() << "element type mismatch: lhs has "
+                         << lhsType.getElementType() << " but rhs has "
+                         << rhsType.getElementType();
+  }
+
+  if (resultType.getElementType() != lhsType.getElementType()) {
+    return emitOpError() << "result element type "
+                         << resultType.getElementType()
+                         << " must match input element type "
+                         << lhsType.getElementType();
   }
 
   return success();

@@ -9,7 +9,7 @@ without requiring any code changes to the kernel files.
 
 Usage:
     ttlang-sim examples/eltwise_add.py
-    ttlang-sim examples/singlecore_matmul.py --show-stats --grid 4,4
+    ttlang-sim examples/single_node_matmul.py --show-stats --grid 4,4
 """
 
 import sys
@@ -37,9 +37,105 @@ def setup_simulator_imports() -> None:
     sys.modules["ttnn"] = ttnn  # type: ignore[assignment]
 
 
+def execute_script_with_simulator(
+    script_path: Path,
+    capture_output: bool = False,
+    argv: list[str] | None = None,
+) -> tuple[int, str]:
+    """
+    Execute a script with simulator backend.
+
+    Args:
+        script_path: Path to the Python file to execute
+        capture_output: If True, capture and return stdout/stderr; if False, print directly
+        argv: Command-line arguments to pass to the script (for sys.argv)
+
+    Returns:
+        (exit_code, output) tuple where exit_code is 0 on success, 1 on error,
+        and output is captured text if capture_output=True, empty string otherwise
+    """
+    import io
+    from contextlib import redirect_stdout, redirect_stderr
+
+    if argv is None:
+        argv = []
+
+    # Set up sys.argv for the executed script
+    original_argv = sys.argv
+    sys.argv = [str(script_path)] + argv
+
+    output_capture = io.StringIO() if capture_output else None
+    exec_globals: dict[str, Any] = {
+        "__name__": "__main__",
+        "__file__": str(script_path),
+        "__builtins__": __builtins__,
+    }
+
+    try:
+        code = compile(script_path.read_text(), str(script_path), "exec")
+
+        if capture_output:
+            assert output_capture is not None  # Guaranteed by capture_output=True
+            with redirect_stdout(output_capture), redirect_stderr(output_capture):  # type: ignore
+                exit_code = _execute_code(
+                    code, exec_globals, script_path, output_capture
+                )
+        else:
+            exit_code = _execute_code(code, exec_globals, script_path, None)
+
+        output = output_capture.getvalue() if capture_output and output_capture else ""
+        return exit_code, output
+
+    finally:
+        sys.argv = original_argv
+
+
+def _execute_code(
+    code: Any,
+    exec_globals: dict[str, Any],
+    script_path: Path,
+    error_output: Any,
+) -> int:
+    """Execute compiled code and return exit code."""
+    import traceback
+
+    try:
+        exec(code, exec_globals)
+        return 0
+    except SystemExit as e:
+        return e.code if isinstance(e.code, int) else int(bool(e.code))
+    except RuntimeError as e:
+        # RuntimeError with __cause__ is from greenlet scheduler (including deadlocks)
+        if e.__cause__ is not None:
+            if error_output:
+                traceback.print_exception(
+                    type(e), e, e.__traceback__, file=error_output
+                )
+            else:
+                traceback.print_exception(type(e), e, e.__traceback__)
+            return 1
+        else:
+            if error_output:
+                print(f"\nError executing {script_path.name}:", file=error_output)
+                traceback.print_exception(
+                    type(e), e, e.__traceback__, file=error_output
+                )
+            else:
+                print(f"\nError executing {script_path.name}:", file=sys.stderr)
+                _print_filtered_traceback(e, script_path)
+            return 1
+    except Exception as e:
+        if error_output:
+            traceback.print_exception(type(e), e, e.__traceback__, file=error_output)
+        else:
+            print(f"\nError executing {script_path.name}:", file=sys.stderr)
+            raise
+        return 1
+
+
 def run_file(filepath: str, argv: list[str]) -> None:
     """
-    Execute a kernel file with simulator backend.
+    Execute a kernel file with simulator backend (CLI wrapper).
 
     Args:
         filepath: Path to the Python file to execute
@@ -50,34 +146,11 @@ def run_file(filepath: str, argv: list[str]) -> None:
         print(f"Error: File not found: {file_path}", file=sys.stderr)
         sys.exit(1)
 
-    # Add script's directory to sys.path to enable relative imports
-    sys.path.insert(0, str(file_path.parent))
-
-    # Set up sys.argv for the executed script
-    sys.argv = [str(file_path)] + argv
-
-    # Read and execute the file
-    with open(file_path) as f:
-        code = compile(f.read(), str(file_path), "exec")
-        # Get the shadowed modules from sys.modules so they're available in exec
-        exec_globals: dict[str, Any] = {
-            "__name__": "__main__",
-            "__file__": str(file_path),
-            "__builtins__": __builtins__,
-        }
-        try:
-            exec(code, exec_globals)
-        except RuntimeError as e:
-            # RuntimeError with __cause__ is from greenlet scheduler exception handling
-            # (including deadlocks) and already has formatted error printed - suppress traceback
-            if e.__cause__ is not None:
-                sys.exit(1)
-            print(f"\nError executing {file_path.name}:", file=sys.stderr)
-            _print_filtered_traceback(e, file_path)
-            sys.exit(1)
-        except Exception:
-            print(f"\nError executing {file_path.name}:", file=sys.stderr)
-            raise
+    exit_code, _ = execute_script_with_simulator(
+        file_path, capture_output=False, argv=argv
+    )
+    if exit_code != 0:
+        sys.exit(exit_code)
 
 
 def _print_filtered_traceback(exc: Exception, user_file: Path) -> None:
@@ -124,15 +197,32 @@ def _print_filtered_traceback(exc: Exception, user_file: Path) -> None:
     print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
 
 
+def _get_version() -> str:
+    """Return the tt-lang version string for ttlang-sim --version."""
+    try:
+        from ttl.version import __version__
+
+        return __version__
+    except ImportError:
+        return "unknown"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="ttlang-sim",
         description="Run tt-lang kernels on the simulator backend",
         epilog="Examples:\n"
         "  ttlang-sim examples/eltwise_add.py\n"
-        "  ttlang-sim examples/singlecore_matmul.py --show-stats\n"
-        "  ttlang-sim examples/tutorial/multicore.py --grid 4,4",
+        "  ttlang-sim examples/single_node_matmul.py --show-stats\n"
+        "  ttlang-sim examples/elementwise-tutorial/step_3_multinode.py --grid 4,4\n"
+        "  ttlang-sim examples/eltwise_add.py --max-l1 1572864",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"ttlang-sim {_get_version()}",
     )
 
     parser.add_argument(
@@ -165,6 +255,22 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--max-dfbs",
+        type=int,
+        metavar="N",
+        dest="max_dfbs",
+        help="Maximum number of DataflowBuffers (CBs) per core (default: 32)",
+    )
+
+    parser.add_argument(
+        "--max-l1",
+        type=int,
+        metavar="BYTES",
+        dest="max_l1",
+        help="Maximum L1 memory per core in bytes; warns if total CB capacity exceeds this (default: 1336 KiB)",
+    )
+
+    parser.add_argument(
         "script_args",
         nargs=argparse.REMAINDER,
         help="Arguments to pass to the script",
@@ -178,6 +284,26 @@ def main() -> None:
 
     # Set up simulator imports before running any code
     setup_simulator_imports()
+
+    # Configure max_dfbs limit if specified
+    if args.max_dfbs is not None:
+        try:
+            from .program import set_max_dfbs
+
+            set_max_dfbs(args.max_dfbs)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    # Configure L1 memory limit if specified
+    if args.max_l1 is not None:
+        try:
+            from .program import set_max_l1_bytes
+
+            set_max_l1_bytes(args.max_l1)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
 
     # Configure scheduler algorithm if specified
     if args.scheduler:

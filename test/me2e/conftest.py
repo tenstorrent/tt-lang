@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from ttlang_test_utils import is_hardware_available, is_ttnn_available
 
 TTNN_AVAILABLE = is_ttnn_available()
+_ttnn_import_failed = False  # Set True after first failed import to prevent nanobind re-registration crash
 
 
 def pytest_configure(config):
@@ -149,14 +150,22 @@ def device():
 
     Matches the pattern from test/python/conftest.py for consistency.
     """
-    if not TTNN_AVAILABLE:
+    global _ttnn_import_failed
+    if not TTNN_AVAILABLE or _ttnn_import_failed:
         pytest.skip("ttnn not available")
 
     if not is_hardware_available():
         pytest.skip("No Tenstorrent device available")
 
-    # Import ttnn here (not at module level)
-    import ttnn
+    # Guard against nanobind re-registration crash: if _ttnn.so partially
+    # initializes (registers nanobind types in C++) then fails, a second
+    # import attempt aborts the process. Let the first attempt raise normally
+    # so the error is visible, but prevent all subsequent attempts.
+    try:
+        import ttnn
+    except Exception as e:
+        _ttnn_import_failed = True
+        raise
 
     dev = ttnn.open_device(device_id=0)
     yield dev

@@ -7,18 +7,18 @@
 //===----------------------------------------------------------------------===//
 //
 // Lowers TTL tile-level operations to TTKernel using DialectConversion.
-// This file covers compute ops (unary SFPU, binary SFPU, broadcast), data
-// movement ops (copy_tile, copy_dst), and DST register lifecycle ops
-// (tile_regs_acquire/commit/wait/release).
+// This file covers compute ops (unary SFPU, binary SFPU, FPU binary,
+// broadcast), data movement ops (copy_tile, copy_dst), and DST register
+// lifecycle ops (tile_regs_acquire/commit/wait/release).
 //
-// Unary and binary compute ops are lowered via generic template patterns
-// instantiated from TTLElementwiseOps.def.
+// Unary, binary SFPU, and FPU binary compute ops are lowered via generic
+// template patterns instantiated from TTLElementwiseOps.def.
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/PatternMatch.h"
@@ -78,6 +78,11 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
     tensor = extract.getTensor();
   }
 
+  // Trace through tensor.extract_slice (from compute subblocking).
+  while (auto slice = tensor.getDefiningOp<tensor::ExtractSliceOp>()) {
+    tensor = slice.getSource();
+  }
+
   // Trace through unrealized conversion casts.
   // After cb_wait lowering, the tensor is an unrealized_cast(ttkernel.cb).
   tensor = traceUnrealizedCasts(tensor);
@@ -93,6 +98,35 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
   }
 
   return Value();
+}
+
+/// Trace a tile-level op operand back through tensor.extract, extract_slice,
+/// and unrealized casts to find the root tensor's shape.
+/// Returns std::nullopt if a ranked tensor cannot be reached.
+static std::optional<SmallVector<int64_t>>
+getOperandTensorShape(Value operand) {
+  Value tensor = operand;
+  if (auto extract = operand.getDefiningOp<tensor::ExtractOp>()) {
+    tensor = extract.getTensor();
+  }
+  while (auto slice = tensor.getDefiningOp<tensor::ExtractSliceOp>()) {
+    tensor = slice.getSource();
+  }
+  while (auto cast = tensor.getDefiningOp<UnrealizedConversionCastOp>()) {
+    // Stop if we already have a tensor type -- don't follow casts past it.
+    if (mlir::isa<RankedTensorType>(tensor.getType())) {
+      break;
+    }
+    if (cast.getInputs().size() == 1) {
+      tensor = cast.getInputs().front();
+    } else {
+      break;
+    }
+  }
+  if (auto tensorTy = mlir::dyn_cast<RankedTensorType>(tensor.getType())) {
+    return SmallVector<int64_t>(tensorTy.getShape());
+  }
+  return std::nullopt;
 }
 
 /// Look up and convert a CB for an operand.
@@ -203,9 +237,9 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
       return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
     int64_t dstIdx = dstIdxAttr.getInt();
-    Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
+    Value dstIdxVal = arith::ConstantIndexOp::create(rewriter, loc, dstIdx);
 
-    rewriter.create<TTKernelComputeOp>(loc, dstIdxVal);
+    TTKernelComputeOp::create(rewriter, loc, dstIdxVal);
 
     // Replace all uses with a placeholder (the value is now in DST register)
     // For tile ops, we pass through the input since the result is implicit
@@ -219,6 +253,7 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
 ///
 /// DST indices are extracted from operand-defining ops (copy_tile or tile ops
 /// with dst_idx attributes). The output index comes from this op's dst_idx.
+/// Ops marked with kFPUBinaryAttrName are skipped (handled by FPU pattern).
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
 struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
   using OpConversionPattern<SourceOp>::OpConversionPattern;
@@ -226,6 +261,11 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    // FPU-marked ops are handled by TTLTileBinaryFPUToTTKernel.
+    if (op->hasAttr(kFPUBinaryAttrName)) {
+      return failure();
+    }
+
     Location loc = op.getLoc();
 
     auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>(kDstIdxAttrName);
@@ -249,11 +289,11 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
     int64_t src0Idx = *src0IdxOpt;
     int64_t src1Idx = *src1IdxOpt;
 
-    Value src0 = rewriter.create<arith::ConstantIndexOp>(loc, src0Idx);
-    Value src1 = rewriter.create<arith::ConstantIndexOp>(loc, src1Idx);
-    Value odst = rewriter.create<arith::ConstantIndexOp>(loc, odstIdx);
+    Value src0 = arith::ConstantIndexOp::create(rewriter, loc, src0Idx);
+    Value src1 = arith::ConstantIndexOp::create(rewriter, loc, src1Idx);
+    Value odst = arith::ConstantIndexOp::create(rewriter, loc, odstIdx);
 
-    rewriter.create<TTKernelComputeOp>(loc, src0, src1, odst);
+    TTKernelComputeOp::create(rewriter, loc, src0, src1, odst);
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
@@ -290,10 +330,91 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
     int64_t dst0Idx = *dst0IdxOpt;
     int64_t dst1Idx = *dst1IdxOpt;
 
-    Value dst0 = rewriter.create<arith::ConstantIndexOp>(loc, dst0Idx);
-    Value dst1 = rewriter.create<arith::ConstantIndexOp>(loc, dst1Idx);
+    Value dst0 = arith::ConstantIndexOp::create(rewriter, loc, dst0Idx);
+    Value dst1 = arith::ConstantIndexOp::create(rewriter, loc, dst1Idx);
 
-    rewriter.create<TTKernelComputeOp>(loc, dst0, dst1, dst0);
+    TTKernelComputeOp::create(rewriter, loc, dst0, dst1, dst0);
+
+    rewriter.replaceOp(op, adaptor.getLhs());
+    return success();
+  }
+};
+
+/// Generic pattern for lowering TTL binary tile ops to TTKernel FPU ops.
+/// FPU binary ops: read both operands from CBs, write result to DST.
+/// add_tiles(in0_cb, in1_cb, in0_tile_index, in1_tile_index, dst_index)
+///
+/// Only matches ops marked with kFPUBinaryAttrName (set by TTLAssignDST).
+template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
+struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
+  using OpConversionPattern<SourceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // Only match FPU-marked ops.
+    if (!op->hasAttr(kFPUBinaryAttrName)) {
+      return failure();
+    }
+
+    Location loc = op.getLoc();
+    auto funcOp = op->template getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "op not in function");
+    }
+    auto *typeConverter = this->getTypeConverter();
+
+    // Look up CBs for lhs and rhs.
+    auto lhsCB =
+        lookupAndConvertCB(op.getLhs(), funcOp, typeConverter, rewriter, loc);
+    auto rhsCB =
+        lookupAndConvertCB(op.getRhs(), funcOp, typeConverter, rewriter, loc);
+    if (failed(lhsCB) || failed(rhsCB)) {
+      return rewriter.notifyMatchFailure(op,
+                                         "cannot find/convert input CBs for "
+                                         "FPU binary");
+    }
+
+    // DST output index from attribute (assigned by TTLAssignDST).
+    auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    Value dstIdx =
+        arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
+
+    // Verify both CBs have the same number of tiles, which is required
+    // for using the same linearized tile index for both operands.
+    auto lhsCBTy = mlir::cast<ttk::CBType>(lhsCB->getType());
+    auto rhsCBTy = mlir::cast<ttk::CBType>(rhsCB->getType());
+    if (lhsCBTy.getNumTiles() != rhsCBTy.getNumTiles()) {
+      return rewriter.notifyMatchFailure(
+          op, llvm::Twine("FPU binary requires CBs with matching tile counts; "
+                          "lhs has ") +
+                  llvm::Twine(lhsCBTy.getNumTiles()) + " tiles, rhs has " +
+                  llvm::Twine(rhsCBTy.getNumTiles()));
+    }
+
+    // CB tile index from enclosing loops. The same index is used for
+    // lhs and rhs because TTLAssignDST only marks ops as FPU-eligible
+    // when both operands have identical indexing maps (identity).
+    auto operandShape = getOperandTensorShape(op.getLhs());
+    if (!operandShape) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot determine operand tensor shape for CB indexing");
+    }
+    AffineMap identity = AffineMap::getMultiDimIdentityMap(
+        operandShape->size(), rewriter.getContext());
+    auto cbIdx =
+        utils::computeCBTileIndex(op, rewriter, identity, *operandShape,
+                                  *operandShape, operandShape->size());
+    if (failed(cbIdx)) {
+      return failure();
+    }
+
+    // Emit compute op (init inserted by ttkernel-insert-inits pass).
+    TTKernelComputeOp::create(rewriter, loc, *lhsCB, *rhsCB, *cbIdx, *cbIdx,
+                              dstIdx);
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
@@ -323,23 +444,45 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
     }
     Value cb = *cbResult;
 
-    // Emit the copy from CB[src_index] to DST[dst_index]
+    // Linearize multi-dimensional src_indices to a flat CB tile index.
+    // Use the immediate tensor shape (which may be a subblock slice), not
+    // the full root shape. addSliceOffset converts from local to global.
+    ValueRange srcIndices = adaptor.getSrcIndices();
+    if (srcIndices.empty()) {
+      return op.emitError("copy_tile has no src_indices; "
+                          "ttl-lower-to-loops must run first");
+    }
+    Value srcTensor = op.getSrc();
+    if (auto extract = srcTensor.getDefiningOp<tensor::ExtractOp>()) {
+      srcTensor = extract.getTensor();
+    }
+    auto srcTensorTy = mlir::dyn_cast<RankedTensorType>(srcTensor.getType());
+    if (!srcTensorTy) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot determine source tensor shape for linearization");
+    }
+    Value flatSrcIndex = affine::AffineLinearizeIndexOp::create(
+        rewriter, loc, srcIndices, srcTensorTy.getShape());
+
+    // If the source is a subblock slice, convert local to global DFB index.
+    flatSrcIndex =
+        utils::addSliceOffset(op.getSrc(), flatSrcIndex, rewriter, loc);
+
+    // Emit the copy from CB[flat_index] to DST[dst_index]
     // (init inserted by ttkernel-insert-inits pass).
-    rewriter.create<ttk::CopyTileOp>(loc, cb, adaptor.getSrcIndex(),
-                                     adaptor.getDstIndex());
+    ttk::CopyTileOp::create(rewriter, loc, cb, flatSrcIndex,
+                            adaptor.getDstIndex());
 
     // Materialize results: dst token from dst_index, and a tile value
     // passthrough (the tile remains the same logical value for downstream tile
     // ops).
-    auto token = rewriter
-                     .create<mlir::UnrealizedConversionCastOp>(
-                         loc, TypeRange{op.getResult(0).getType()},
-                         ValueRange{adaptor.getDstIndex()})
+    auto token = mlir::UnrealizedConversionCastOp::create(
+                     rewriter, loc, TypeRange{op.getResult(0).getType()},
+                     ValueRange{adaptor.getDstIndex()})
                      .getResult(0);
-    auto tile = rewriter
-                    .create<mlir::UnrealizedConversionCastOp>(
-                        loc, TypeRange{op.getResult(1).getType()},
-                        ValueRange{adaptor.getSrc()})
+    auto tile = mlir::UnrealizedConversionCastOp::create(
+                    rewriter, loc, TypeRange{op.getResult(1).getType()},
+                    ValueRange{adaptor.getSrc()})
                     .getResult(0);
     rewriter.replaceOp(op, ValueRange{token, tile});
     return success();
@@ -371,18 +514,17 @@ struct TTLCopyDstToTTKernel : OpConversionPattern<CopyDstOp> {
     int64_t dstDstIdx = dstIdxAttr.getInt();
 
     // Create index constants for src and dst DST registers.
-    Value srcIdx = rewriter.create<arith::ConstantIndexOp>(loc, *srcDstIdx);
-    Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstDstIdx);
+    Value srcIdx = arith::ConstantIndexOp::create(rewriter, loc, *srcDstIdx);
+    Value dstIdx = arith::ConstantIndexOp::create(rewriter, loc, dstDstIdx);
 
     // Emit copy_dest_values(dst0, dst1): copies DST[dst1] → DST[dst0].
-    rewriter.create<ttk::CopyDestValuesOp>(loc, dstIdx, srcIdx);
+    ttk::CopyDestValuesOp::create(rewriter, loc, dstIdx, srcIdx);
 
     // Replace with an unrealized conversion cast to preserve the tile value.
     // The tile is now in DST[dstIdx].
-    auto tile = rewriter
-                    .create<mlir::UnrealizedConversionCastOp>(
-                        loc, TypeRange{op.getResult().getType()},
-                        ValueRange{adaptor.getSrcTile()})
+    auto tile = mlir::UnrealizedConversionCastOp::create(
+                    rewriter, loc, TypeRange{op.getResult().getType()},
+                    ValueRange{adaptor.getSrcTile()})
                     .getResult(0);
     rewriter.replaceOp(op, tile);
     return success();
@@ -423,11 +565,14 @@ getCBTileGridShape(Value operand, func::FuncOp funcOp) {
     }
   }
 
-  // If that fails, try to extract shape from the tensor type.
-  // After loop lowering, the operand comes from tensor.extract.
+  // Trace through extract/slice/cast ops to the root tensor, whose shape
+  // matches the full DFB tile grid (independent of subblocking).
   Value tensor = operand;
   if (auto extract = operand.getDefiningOp<tensor::ExtractOp>()) {
     tensor = extract.getTensor();
+  }
+  while (auto slice = tensor.getDefiningOp<tensor::ExtractSliceOp>()) {
+    tensor = slice.getSource();
   }
 
   // Trace through unrealized conversion casts.
@@ -475,36 +620,51 @@ static bool hasBcastShapeExpansion(Value input, Value output,
 }
 
 /// Compute input CB tile index for broadcast with shape expansion.
-/// Uses computeCBTileIndexFromLoops with a stride transform that extracts
-/// the row or col component at compile time (no runtime divui/remui):
-///   - Col broadcast (Nx1): need row index = stride / numCols per loop
-///   - Row broadcast (1xM): need col index = stride % numCols per loop
-///   - Scalar broadcast: input_idx = 0
+///
+/// Uses computeCBTileIndex with a broadcast-derived indexing map:
+///   - Col broadcast (Nx1 input): map (i,j) -> (i), operand shape [N]
+///   - Row broadcast (1xM input): map (i,j) -> (j), operand shape [M]
+///   - Scalar broadcast: constant 0
+///
+/// The iteration domain is 2D (output tile grid). The indexing map projects
+/// out the broadcast dimension(s). computeCBTileIndex handles tile loops,
+/// subblock loops, and tile offsets.
 static FailureOr<Value> computeBcastShapeExpansionIndex(ttl::TileBcastOp op,
                                                         func::FuncOp funcOp,
                                                         OpBuilder &builder,
                                                         Location loc) {
   auto bcastType = op.getBcastType();
   if (bcastType == ttl::BcastType::Scalar) {
-    return builder.create<arith::ConstantIndexOp>(loc, 0).getResult();
+    return arith::ConstantIndexOp::create(builder, loc, 0).getResult();
   }
 
-  // Get output CB shape to determine numCols for index decomposition.
+  auto inShape = getCBTileGridShape(op.getInput(), funcOp);
   auto outShape = getCBTileGridShape(op.getOutput(), funcOp);
-  assert(outShape && "expected 2D tile grid shape for broadcast output");
+  assert(inShape && outShape &&
+         "expected 2D tile grid shapes for broadcast operands");
 
-  int64_t numCols = outShape->second;
+  SmallVector<int64_t> iterDomain = {outShape->first, outShape->second};
 
-  // Extract row or col component from each stride at compile time.
-  auto extractComponent = [&](int64_t stride) -> int64_t {
-    if (bcastType == ttl::BcastType::Col) {
-      return stride / numCols; // row contribution
-    }
-    return stride % numCols; // col contribution
-  };
+  // Build the broadcast indexing map and 1D operand shape.
+  MLIRContext *ctx = builder.getContext();
+  AffineMap bcastMap;
+  SmallVector<int64_t> operandShape;
+  if (bcastType == ttl::BcastType::Col) {
+    // Input is Nx1: only row dimension varies.
+    bcastMap = AffineMap::get(/*dimCount=*/2, /*symbolCount=*/0,
+                              getAffineDimExpr(0, ctx));
+    operandShape.push_back(inShape->first);
+  } else {
+    assert(bcastType == ttl::BcastType::Row);
+    // Input is 1xM: only col dimension varies.
+    bcastMap = AffineMap::get(/*dimCount=*/2, /*symbolCount=*/0,
+                              getAffineDimExpr(1, ctx));
+    operandShape.push_back(inShape->second);
+  }
 
-  return utils::computeCBTileIndexFromLoops(op, builder, /*cbShapeRank=*/2,
-                                            extractComponent);
+  // Broadcast iteration is always 2D (row x col tile grid).
+  return utils::computeCBTileIndex(op, builder, bcastMap, iterDomain,
+                                   operandShape, /*cbShapeRank=*/2);
 }
 
 /// Lower ttl.tile_bcast to TTKernel unary_bcast_init + unary_bcast.
@@ -559,7 +719,7 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
       return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
     int64_t dstIdxVal = dstIdxAttr.getInt();
-    Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstIdxVal);
+    Value dstIdx = arith::ConstantIndexOp::create(rewriter, loc, dstIdxVal);
 
     // Get input CB tile index.
     // For shape expansion (input CB smaller than output), use broadcast-aware
@@ -574,8 +734,16 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
       }
       inCBIdx = *bcastIdx;
     } else {
+      auto inTensorShape = getOperandTensorShape(op.getInput());
+      if (!inTensorShape) {
+        return rewriter.notifyMatchFailure(
+            op, "cannot determine input tensor shape for CB indexing");
+      }
+      AffineMap identity = AffineMap::getMultiDimIdentityMap(
+          inTensorShape->size(), rewriter.getContext());
       auto cbIdx =
-          utils::computeCBTileIndexFromLoops(op, rewriter, /*cbShapeRank=*/2);
+          utils::computeCBTileIndex(op, rewriter, identity, *inTensorShape,
+                                    *inTensorShape, inTensorShape->size());
       if (failed(cbIdx)) {
         return failure();
       }
@@ -585,8 +753,8 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
     auto ttkAttr = convertBcastType(op.getBcastType());
 
     // Emit compute op (init inserted by ttkernel-insert-inits pass).
-    auto bcastOp = rewriter.create<ttk::UnaryBcastTileOp>(loc, *inCB, inCBIdx,
-                                                          dstIdx, ttkAttr);
+    auto bcastOp = ttk::UnaryBcastTileOp::create(rewriter, loc, *inCB, inCBIdx,
+                                                 dstIdx, ttkAttr);
 
     // Propagate output CB index so ttkernel-insert-inits can derive the
     // output CB for unary_bcast_init without walking the function.
@@ -596,441 +764,6 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
     }
 
     rewriter.replaceOp(op, adaptor.getInput());
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// Matmul Tile Op Lowering
-//===----------------------------------------------------------------------===//
-
-/// Lower ttl.tile_matmul to TTKernel mm_init + matmul_tiles.
-/// Reads A and B from CBs, accumulates into DST.
-/// Handles K-dimension accumulation by emitting a loop over K tiles.
-struct TTLTileMatmulToTTKernel : OpConversionPattern<TileMatmulOp> {
-  using OpConversionPattern<TileMatmulOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(TileMatmulOp op, TileMatmulOp::Adaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-
-    auto funcOp = op->getParentOfType<func::FuncOp>();
-    if (!funcOp) {
-      return rewriter.notifyMatchFailure(op, "op not in function");
-    }
-
-    auto *typeConverter = this->getTypeConverter();
-    auto aCB =
-        lookupAndConvertCB(op.getA(), funcOp, typeConverter, rewriter, loc);
-    if (failed(aCB)) {
-      return rewriter.notifyMatchFailure(op, "cannot find/convert A CB");
-    }
-
-    auto bCB =
-        lookupAndConvertCB(op.getB(), funcOp, typeConverter, rewriter, loc);
-    if (failed(bCB)) {
-      return rewriter.notifyMatchFailure(op, "cannot find/convert B CB");
-    }
-
-    auto outCB = lookupAndConvertCB(op.getOutput(), funcOp, typeConverter,
-                                    rewriter, loc);
-    if (failed(outCB)) {
-      return rewriter.notifyMatchFailure(op, "cannot find/convert output CB");
-    }
-
-    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
-    if (!dstIdxAttr) {
-      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
-    }
-    int64_t dstIdxVal = dstIdxAttr.getInt();
-    Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstIdxVal);
-
-    // Get CB shapes to determine K dimension.
-    // A has shape [M, K], B has shape [K, N].
-    auto aShape = getCBTileGridShape(op.getA(), funcOp);
-    auto bShape = getCBTileGridShape(op.getB(), funcOp);
-    if (!aShape || !bShape) {
-      return rewriter.notifyMatchFailure(op, "cannot determine CB shapes");
-    }
-
-    int64_t aK = aShape->second;
-    int64_t bK = bShape->first;
-    int64_t bN = bShape->second;
-
-    if (aK != bK) {
-      return rewriter.notifyMatchFailure(
-          op, "K dimension mismatch between A and B");
-    }
-    int64_t kDim = aK;
-
-    // Get M, N indices from enclosing loops.
-    SmallVector<scf::ForOp> loops = utils::collectEnclosingLoops(op);
-    Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    Value mIdx = zero;
-    Value nIdx = zero;
-
-    if (loops.size() >= 2) {
-      nIdx = loops[0].getInductionVar();
-      mIdx = loops[1].getInductionVar();
-    } else if (loops.size() == 1) {
-      nIdx = loops[0].getInductionVar();
-    }
-
-    Value transpose =
-        rewriter.create<arith::ConstantOp>(loc, rewriter.getI32IntegerAttr(0));
-    rewriter.create<ttk::MatmulInitOp>(loc, *aCB, *bCB, *outCB, transpose);
-
-    if (kDim > 1) {
-      Value kEnd = rewriter.create<arith::ConstantIndexOp>(loc, kDim);
-      Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-
-      auto kLoop = rewriter.create<scf::ForOp>(loc, zero, kEnd, one);
-      rewriter.setInsertionPointToStart(kLoop.getBody());
-      Value kIdx = kLoop.getInductionVar();
-
-      // A index = m * K + k
-      Value aKVal = rewriter.create<arith::ConstantIndexOp>(loc, kDim);
-      Value aIdxMulK = rewriter.create<arith::MulIOp>(loc, mIdx, aKVal);
-      Value aIdx = rewriter.create<arith::AddIOp>(loc, aIdxMulK, kIdx);
-
-      // B index = k * N + n
-      Value bNVal = rewriter.create<arith::ConstantIndexOp>(loc, bN);
-      Value bIdxMulN = rewriter.create<arith::MulIOp>(loc, kIdx, bNVal);
-      Value bIdx = rewriter.create<arith::AddIOp>(loc, bIdxMulN, nIdx);
-
-      rewriter.create<ttk::MatmulTilesOp>(loc, *aCB, *bCB, aIdx, bIdx, dstIdx);
-      rewriter.setInsertionPointAfter(kLoop);
-    } else {
-      rewriter.create<ttk::MatmulTilesOp>(loc, *aCB, *bCB, mIdx, nIdx, dstIdx);
-    }
-
-    rewriter.replaceOp(op, adaptor.getA());
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// Reduce Tile Op Lowering
-//===----------------------------------------------------------------------===//
-
-static ttk::ReduceType convertReduceType(ttl::ReduceType ttlType) {
-  switch (ttlType) {
-  case ttl::ReduceType::Sum:
-    return ttk::ReduceType::Sum;
-  case ttl::ReduceType::Max:
-    return ttk::ReduceType::Max;
-  }
-  llvm_unreachable("unknown ReduceType");
-}
-
-static ttk::ReduceDim convertReduceDim(ttl::ReduceDim ttlDim) {
-  switch (ttlDim) {
-  case ttl::ReduceDim::Row:
-    return ttk::ReduceDim::Row;
-  case ttl::ReduceDim::Col:
-    return ttk::ReduceDim::Col;
-  case ttl::ReduceDim::Scalar:
-    return ttk::ReduceDim::Scalar;
-  }
-  llvm_unreachable("unknown ReduceDim");
-}
-
-struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
-  using OpConversionPattern<TileReduceOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(TileReduceOp op, TileReduceOp::Adaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-
-    auto funcOp = op->getParentOfType<func::FuncOp>();
-    if (!funcOp) {
-      return rewriter.notifyMatchFailure(op, "op not in function");
-    }
-
-    auto *typeConverter = this->getTypeConverter();
-    auto inCB =
-        lookupAndConvertCB(op.getInput(), funcOp, typeConverter, rewriter, loc);
-    if (failed(inCB)) {
-      return rewriter.notifyMatchFailure(op, "cannot find/convert input CB");
-    }
-
-    auto scalerCB = lookupAndConvertCB(op.getScaler(), funcOp, typeConverter,
-                                       rewriter, loc);
-    if (failed(scalerCB)) {
-      return rewriter.notifyMatchFailure(op, "cannot find/convert scaler CB");
-    }
-
-    auto outCB = lookupAndConvertCB(op.getOutput(), funcOp, typeConverter,
-                                    rewriter, loc);
-    if (failed(outCB)) {
-      return rewriter.notifyMatchFailure(op, "cannot find/convert output CB");
-    }
-
-    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
-    if (!dstIdxAttr) {
-      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
-    }
-    int64_t dstIdxVal = dstIdxAttr.getInt();
-    Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstIdxVal);
-
-    auto inShape = getCBTileGridShape(op.getInput(), funcOp);
-    if (!inShape) {
-      return rewriter.notifyMatchFailure(op, "cannot determine input CB shape");
-    }
-    int64_t inRows = inShape->first;
-    int64_t inCols = inShape->second;
-
-    Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-
-    SmallVector<scf::ForOp> loops = utils::collectEnclosingLoops(op);
-    Value mIdx = zero;
-    Value nIdx = zero;
-    if (loops.size() >= 2) {
-      nIdx = loops[0].getInductionVar();
-      mIdx = loops[1].getInductionVar();
-    } else if (loops.size() == 1) {
-      nIdx = loops[0].getInductionVar();
-    }
-
-    auto ttkReduceType = convertReduceType(op.getReduceType());
-    auto ttkReduceDim = convertReduceDim(op.getReduceDim());
-
-    rewriter.create<ttk::ComputeKernelHWStartupOp>(loc, *inCB, *scalerCB,
-                                                    *outCB);
-    rewriter.create<ttk::ReduceInitOp>(loc, *inCB, *scalerCB, *outCB,
-                                       ttkReduceType, ttkReduceDim);
-
-    auto reduceDim = op.getReduceDim();
-    Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-
-    if (reduceDim == ttl::ReduceDim::Scalar) {
-      if (inRows > 1 || inCols > 1) {
-        Value rowEnd = rewriter.create<arith::ConstantIndexOp>(loc, inRows);
-        Value colEnd = rewriter.create<arith::ConstantIndexOp>(loc, inCols);
-
-        auto rowLoop = rewriter.create<scf::ForOp>(loc, zero, rowEnd, one);
-        rewriter.setInsertionPointToStart(rowLoop.getBody());
-        Value rowIdx = rowLoop.getInductionVar();
-
-        auto colLoop = rewriter.create<scf::ForOp>(loc, zero, colEnd, one);
-        rewriter.setInsertionPointToStart(colLoop.getBody());
-        Value colIdx = colLoop.getInductionVar();
-
-        Value inColsVal = rewriter.create<arith::ConstantIndexOp>(loc, inCols);
-        Value rowMulCols =
-            rewriter.create<arith::MulIOp>(loc, rowIdx, inColsVal);
-        Value inCBIdx =
-            rewriter.create<arith::AddIOp>(loc, rowMulCols, colIdx);
-
-        rewriter.create<ttk::ReduceTileOp>(loc, *inCB, *scalerCB, inCBIdx,
-                                           zero, dstIdx, ttkReduceType,
-                                           ttkReduceDim);
-        rewriter.setInsertionPointAfter(rowLoop);
-      } else {
-        rewriter.create<ttk::ReduceTileOp>(loc, *inCB, *scalerCB, zero, zero,
-                                           dstIdx, ttkReduceType,
-                                           ttkReduceDim);
-      }
-    } else if (reduceDim == ttl::ReduceDim::Row) {
-      if (inCols > 1) {
-        Value colEnd = rewriter.create<arith::ConstantIndexOp>(loc, inCols);
-
-        auto colLoop = rewriter.create<scf::ForOp>(loc, zero, colEnd, one);
-        rewriter.setInsertionPointToStart(colLoop.getBody());
-        Value colIdx = colLoop.getInductionVar();
-
-        Value inColsVal = rewriter.create<arith::ConstantIndexOp>(loc, inCols);
-        Value rowMulCols =
-            rewriter.create<arith::MulIOp>(loc, mIdx, inColsVal);
-        Value inCBIdx =
-            rewriter.create<arith::AddIOp>(loc, rowMulCols, colIdx);
-
-        rewriter.create<ttk::ReduceTileOp>(loc, *inCB, *scalerCB, inCBIdx,
-                                           zero, dstIdx, ttkReduceType,
-                                           ttkReduceDim);
-        rewriter.setInsertionPointAfter(colLoop);
-      } else {
-        rewriter.create<ttk::ReduceTileOp>(loc, *inCB, *scalerCB, mIdx, zero,
-                                           dstIdx, ttkReduceType,
-                                           ttkReduceDim);
-      }
-    } else if (reduceDim == ttl::ReduceDim::Col) {
-      if (inRows > 1) {
-        Value rowEnd = rewriter.create<arith::ConstantIndexOp>(loc, inRows);
-
-        auto rowLoop = rewriter.create<scf::ForOp>(loc, zero, rowEnd, one);
-        rewriter.setInsertionPointToStart(rowLoop.getBody());
-        Value rowIdx = rowLoop.getInductionVar();
-
-        Value inColsVal = rewriter.create<arith::ConstantIndexOp>(loc, inCols);
-        Value rowMulCols =
-            rewriter.create<arith::MulIOp>(loc, rowIdx, inColsVal);
-        Value inCBIdx =
-            rewriter.create<arith::AddIOp>(loc, rowMulCols, nIdx);
-
-        rewriter.create<ttk::ReduceTileOp>(loc, *inCB, *scalerCB, inCBIdx,
-                                           zero, dstIdx, ttkReduceType,
-                                           ttkReduceDim);
-        rewriter.setInsertionPointAfter(rowLoop);
-      } else {
-        rewriter.create<ttk::ReduceTileOp>(loc, *inCB, *scalerCB, nIdx, zero,
-                                           dstIdx, ttkReduceType,
-                                           ttkReduceDim);
-      }
-    }
-
-    rewriter.replaceOp(op, adaptor.getInput());
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// Transpose Tile Op Lowering
-//===----------------------------------------------------------------------===//
-
-struct TTLTileTransposeToTTKernel : OpConversionPattern<TileTransposeOp> {
-  using OpConversionPattern<TileTransposeOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(TileTransposeOp op, TileTransposeOp::Adaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-
-    auto funcOp = op->getParentOfType<func::FuncOp>();
-    if (!funcOp) {
-      return rewriter.notifyMatchFailure(op, "op not in function");
-    }
-
-    auto *typeConverter = this->getTypeConverter();
-    auto inCB =
-        lookupAndConvertCB(op.getInput(), funcOp, typeConverter, rewriter, loc);
-    if (failed(inCB)) {
-      return rewriter.notifyMatchFailure(op, "cannot find/convert input CB");
-    }
-
-    auto outCB = lookupAndConvertCB(op.getOutput(), funcOp, typeConverter,
-                                    rewriter, loc);
-    if (failed(outCB)) {
-      return rewriter.notifyMatchFailure(op, "cannot find/convert output CB");
-    }
-
-    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
-    if (!dstIdxAttr) {
-      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
-    }
-    int64_t dstIdxVal = dstIdxAttr.getInt();
-    Value dstIdx = rewriter.create<arith::ConstantIndexOp>(loc, dstIdxVal);
-
-    // Get input CB shape to compute transposed index.
-    auto inShape = getCBTileGridShape(op.getInput(), funcOp);
-    if (!inShape) {
-      return rewriter.notifyMatchFailure(op, "cannot determine input CB shape");
-    }
-    int64_t inCols = inShape->second;
-
-    // Compute transposed input CB index.
-    // Loop iterates over output shape [N, M]. For output position (i, j),
-    // we read from input position (j, i).
-    // Input CB index = j * inCols + i (linearized for input shape [M, N]).
-    SmallVector<scf::ForOp> loops = utils::collectEnclosingLoops(op);
-    Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    Value inCBIdx = zero;
-
-    if (loops.size() >= 2) {
-      Value colIdx = loops[0].getInductionVar();
-      Value rowIdx = loops[1].getInductionVar();
-      Value inColsVal = rewriter.create<arith::ConstantIndexOp>(loc, inCols);
-      Value colMulN = rewriter.create<arith::MulIOp>(loc, colIdx, inColsVal);
-      inCBIdx = rewriter.create<arith::AddIOp>(loc, colMulN, rowIdx);
-    } else if (loops.size() == 1) {
-      inCBIdx = loops[0].getInductionVar();
-    }
-
-    rewriter.create<ttk::TransposeInitOp>(loc, *inCB, *outCB);
-    rewriter.create<ttk::TransposeTileOp>(loc, *inCB, inCBIdx, dstIdx);
-
-    rewriter.replaceOp(op, adaptor.getInput());
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// Power Tile Op Lowering
-//===----------------------------------------------------------------------===//
-
-struct TTLTilePowerToTTKernel : OpConversionPattern<TilePowerOp> {
-  using OpConversionPattern<TilePowerOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(TilePowerOp op, TilePowerOp::Adaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-
-    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
-    if (!dstIdxAttr) {
-      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
-    }
-    int64_t dstIdx = dstIdxAttr.getInt();
-    Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
-
-    Value exponent = rewriter.create<arith::ConstantOp>(
-        loc, rewriter.getI32IntegerAttr(op.getExponent()));
-
-    rewriter.create<ttk::PowerTileInitOp>(loc);
-    rewriter.create<ttk::PowUnaryTileOp>(loc, dstIdxVal, exponent);
-
-    rewriter.replaceOp(op, adaptor.getInput());
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// Where Tile Op Lowering
-//===----------------------------------------------------------------------===//
-
-struct TTLTileWhereToTTKernel : OpConversionPattern<TileWhereOp> {
-  using OpConversionPattern<TileWhereOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(TileWhereOp op, TileWhereOp::Adaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-
-    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
-    if (!dstIdxAttr) {
-      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
-    }
-    int64_t odstIdx = dstIdxAttr.getInt();
-
-    auto condIdxOpt = getDstIndexFromValue(op.getCondition());
-    auto trueIdxOpt = getDstIndexFromValue(op.getTrueValue());
-    auto falseIdxOpt = getDstIndexFromValue(op.getFalseValue());
-
-    if (!condIdxOpt) {
-      return rewriter.notifyMatchFailure(
-          op, "failed to extract dst_idx from condition operand");
-    }
-    if (!trueIdxOpt) {
-      return rewriter.notifyMatchFailure(
-          op, "failed to extract dst_idx from true_value operand");
-    }
-    if (!falseIdxOpt) {
-      return rewriter.notifyMatchFailure(
-          op, "failed to extract dst_idx from false_value operand");
-    }
-
-    Value condIdx = rewriter.create<arith::ConstantIndexOp>(loc, *condIdxOpt);
-    Value trueIdx = rewriter.create<arith::ConstantIndexOp>(loc, *trueIdxOpt);
-    Value falseIdx =
-        rewriter.create<arith::ConstantIndexOp>(loc, *falseIdxOpt);
-    Value odst = rewriter.create<arith::ConstantIndexOp>(loc, odstIdx);
-
-    rewriter.create<ttk::WhereTileInitOp>(loc);
-    rewriter.create<ttk::WhereTileOp>(loc, condIdx, trueIdx, falseIdx, odst);
-
-    rewriter.replaceOp(op, adaptor.getCondition());
     return success();
   }
 };
@@ -1056,6 +789,119 @@ struct TTLTileWhereToTTKernel : OpConversionPattern<TileWhereOp> {
   using TTL_OP##TileLowering =                                                 \
       TTLTileMaxToTTKernel<TILE_OP, ttk::TTK_INIT, ttk::TTK_COMPUTE>;
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
+// Generate type aliases for FPU binary tile op lowerings
+#define TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)         \
+  using TTL_OP##FPUTileLowering =                                              \
+      TTLTileBinaryFPUToTTKernel<TILE_OP, ttk::TTK_INIT, ttk::TTK_COMPUTE>;
+#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
+//===----------------------------------------------------------------------===//
+// Matmul Block Lowering
+//===----------------------------------------------------------------------===//
+
+/// Lower ttl.tile_matmul_block to ttkernel.experimental::matmul_block.
+/// Block dimensions (rt, ct, kt, nt) are derived from the enclosing
+/// ttl.compute's operand tensor shapes.
+struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileMatmulBlockOp op, TileMatmulBlockOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "op not in function");
+    }
+    auto *typeConverter = this->getTypeConverter();
+
+    // Look up CBs for lhs (A) and rhs (B).
+    auto lhsCB =
+        lookupAndConvertCB(op.getLhs(), funcOp, typeConverter, rewriter, loc);
+    auto rhsCB =
+        lookupAndConvertCB(op.getRhs(), funcOp, typeConverter, rewriter, loc);
+    if (failed(lhsCB) || failed(rhsCB)) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot find/convert input CBs for matmul_block");
+    }
+
+    // DST output index from attribute (assigned by TTLAssignDST).
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    Value dstIdx =
+        arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
+
+    // Derive block dimensions from the immediate operand shapes. For
+    // subblocked computes, these are the subblock dimensions (e.g., 1x1
+    // for a subblocked 3x1 lhs), not the full block dimensions.
+    auto lhsTy = mlir::dyn_cast<RankedTensorType>(op.getLhs().getType());
+    auto rhsTy = mlir::dyn_cast<RankedTensorType>(op.getRhs().getType());
+    if (!lhsTy || !rhsTy) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot determine operand tensor shapes for block dimensions");
+    }
+    // Assumes non-transposed: lhs is [M, K], rhs is [K, N].
+    // TODO(#420): support transpose. When B is transposed, rhs is [N, K]:
+    //   ct = rhsTy.getDimSize(0), and nt_dim changes from N to 1 (the
+    //   matmul_block wrapper advances in1_tile_index by nt_dim per K-step;
+    //   transposed B has stride 1 along K instead of N).
+    int32_t rt = lhsTy.getDimSize(0); // M
+    int32_t ct = rhsTy.getDimSize(1); // N
+    int32_t nt = ct;
+
+    // Starting DFB tile index: 0 when not subblocked (DFB refilled each
+    // K-step), or the slice offset when subblocked.
+    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value in0TileIndex =
+        utils::addSliceOffset(op.getLhs(), zero, rewriter, loc);
+    Value in1TileIndex =
+        utils::addSliceOffset(op.getRhs(), zero, rewriter, loc);
+
+    Value transpose =
+        arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(0));
+    Value ctVal = arith::ConstantOp::create(rewriter, loc,
+                                            rewriter.getI32IntegerAttr(ct));
+    Value rtVal = arith::ConstantOp::create(rewriter, loc,
+                                            rewriter.getI32IntegerAttr(rt));
+    Value ktVal =
+        arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(1));
+    Value ntVal = arith::ConstantOp::create(rewriter, loc,
+                                            rewriter.getI32IntegerAttr(nt));
+
+    // Accumulator: emit individual copy_tile ops to load DST before matmul.
+    // copy_tile_init is inserted later by ttkernel-insert-inits.
+    if (op.getAccumulator()) {
+      auto accDFB = lookupAndConvertCB(op.getAccumulator(), funcOp,
+                                       typeConverter, rewriter, loc);
+      if (failed(accDFB)) {
+        return rewriter.notifyMatchFailure(
+            op, "cannot find/convert accumulator DFB for matmul_block");
+      }
+
+      // Load accumulator tiles from DFB to DST. addSliceOffset converts
+      // each local tile index to the global DFB position.
+      int32_t ntiles = rt * ct;
+      for (int32_t i = 0; i < ntiles; ++i) {
+        Value localIdx = arith::ConstantIndexOp::create(rewriter, loc, i);
+        Value cbIdx =
+            utils::addSliceOffset(op.getAccumulator(), localIdx, rewriter, loc);
+        Value dstTileIdx = arith::ConstantIndexOp::create(rewriter, loc, i);
+        ttk::CopyTileOp::create(rewriter, loc, *accDFB, cbIdx, dstTileIdx);
+      }
+    }
+
+    // Emit matmul_block with kt_dim=1 (init inserted by ttkernel-insert-inits).
+    ttk::ExperimentalMatmulBlockOp::create(
+        rewriter, loc, *lhsCB, *rhsCB, in0TileIndex, in1TileIndex, dstIdx,
+        transpose, ctVal, rtVal, ktVal, ntVal);
+
+    rewriter.replaceOp(op, adaptor.getLhs());
+    return success();
+  }
+};
 
 } // namespace
 
@@ -1087,19 +933,20 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   patterns.add<TTL_OP##TileLowering>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
+  // FPU binary ops (CB -> DST, needs type converter for CB lookup)
+#define TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)         \
+  patterns.add<TTL_OP##FPUTileLowering>(*typeConverter, ctx);
+#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
   // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);
   patterns.add<TTLCopyDstToTTKernel>(ctx);
 
-  // CB -> DST ops with attribute need the type converter.
+  // Bcast ops need the type converter for CB lookup.
   patterns.add<TTLTileBcastToTTKernel>(*typeConverter, ctx);
-  patterns.add<TTLTileMatmulToTTKernel>(*typeConverter, ctx);
-  patterns.add<TTLTileReduceToTTKernel>(*typeConverter, ctx);
-  patterns.add<TTLTileTransposeToTTKernel>(*typeConverter, ctx);
 
-  // DST-based ops (no type converter needed).
-  patterns.add<TTLTilePowerToTTKernel>(ctx);
-  patterns.add<TTLTileWhereToTTKernel>(ctx);
+  // Matmul block needs the type converter for CB lookup.
+  patterns.add<TTLTileMatmulBlockToTTKernel>(*typeConverter, ctx);
 }
 
 } // namespace mlir::tt::ttl

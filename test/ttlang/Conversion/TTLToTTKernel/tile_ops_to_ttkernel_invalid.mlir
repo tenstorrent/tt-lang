@@ -1,5 +1,5 @@
 // RUN: ttlang-opt %s --convert-ttl-to-ttkernel -split-input-file -verify-diagnostics
-// Tests for invalid ttl.tile_* op lowering when dst_idx is missing.
+// Tests for invalid ttl.tile_* op lowering: missing dst_idx, missing CB for FPU.
 
 // Unary tile op missing dst_idx attribute.
 func.func @tile_exp_missing_dst_idx(%a: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
@@ -80,4 +80,19 @@ func.func @tile_max_rhs_missing_dst_idx(%idx: index) -> !ttcore.tile<32x32, f32>
   // expected-error @+1 {{failed to legalize operation 'ttl.tile_max' that was explicitly marked illegal}}
   %max = ttl.tile_max %a_with_idx, %b_tile : !ttcore.tile<32x32, f32>
   func.return %max : !ttcore.tile<32x32, f32>
+}
+
+// -----
+
+// FPU binary op where operands cannot be traced to CBs.
+// The ttl.fpu_binary attribute marks the op for FPU lowering, but the operands
+// are plain function arguments with no CB association. The FPU pattern fails
+// (cannot find CBs), and the SFPU pattern skips FPU-marked ops, so the op
+// becomes illegal.
+func.func @fpu_add_no_cb(%a: !ttcore.tile<32x32, bf16>, %b: !ttcore.tile<32x32, bf16>)
+    -> !ttcore.tile<32x32, bf16>
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  // expected-error @+1 {{failed to legalize operation 'ttl.tile_add' that was explicitly marked illegal}}
+  %sum = ttl.tile_add %a, %b {"ttl.fpu_binary", dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>
+  func.return %sum : !ttcore.tile<32x32, bf16>
 }

@@ -1,6 +1,6 @@
 // Summary: Verify f32 compute ops use reduced DST capacity.
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst),canonicalize,cse)' --split-input-file | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SINGLE-BUFFER
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=OVERRIDE
 
 #idx_map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -34,11 +34,13 @@ func.func @f32_add(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
       {indexing_maps = [#idx_map, #idx_map, #idx_map],
        iterator_types = ["parallel", "parallel"]} {
     ^bb0(%a_arg: !ttcore.tile<32x32, f32>, %b_arg: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
+      %i = ttl.iter_index 0 : index
+      %j = ttl.iter_index 1 : index
       %c0 = arith.constant 0 : index
-      %dtok0, %dtile0 = ttl.copy_tile %a_arg, %c0, %c0 : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-      %dtok1, %dtile1 = ttl.copy_tile %b_arg, %c0, %c0 : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+      %dtok0, %dtile0 = ttl.copy_tile %a_arg[%c0], %c0 : !ttcore.tile<32x32, f32>, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+      %dtok1, %dtile1 = ttl.copy_tile %b_arg[%c0], %c0 : !ttcore.tile<32x32, f32>, index -> !ttl.dst, !ttcore.tile<32x32, f32>
       %add = ttl.tile_add %dtile0, %dtile1 : !ttcore.tile<32x32, f32>
-      ttl.tile_store %add, %out_view : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.tile_store %add, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
@@ -49,10 +51,10 @@ func.func @f32_add(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
 
 #idx_map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: Single-buffer override allows dst_idx in [0-7].
-// SINGLE-BUFFER-LABEL: func.func @f32_single_buffer
-// SINGLE-BUFFER: ttl.tile_add {{.*}} {dst_idx = [[SBIDX0:[0-7]]] : i32}
-func.func @f32_single_buffer(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
+// Purpose: Manual dst-capacity=8 override widens the index range to [0-7].
+// OVERRIDE-LABEL: func.func @f32_capacity_override
+// OVERRIDE: ttl.tile_add {{.*}} {dst_idx = [[OVRIDX0:[0-7]]] : i32}
+func.func @f32_capacity_override(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
                              %b: tensor<1x1x!ttcore.tile<32x32, f32>>)
     -> tensor<1x1x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -79,11 +81,13 @@ func.func @f32_single_buffer(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
       {indexing_maps = [#idx_map, #idx_map, #idx_map],
        iterator_types = ["parallel", "parallel"]} {
     ^bb0(%a_arg: !ttcore.tile<32x32, f32>, %b_arg: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
+      %i = ttl.iter_index 0 : index
+      %j = ttl.iter_index 1 : index
       %c0 = arith.constant 0 : index
-      %dtok0, %dtile0 = ttl.copy_tile %a_arg, %c0, %c0 : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-      %dtok1, %dtile1 = ttl.copy_tile %b_arg, %c0, %c0 : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+      %dtok0, %dtile0 = ttl.copy_tile %a_arg[%c0], %c0 : !ttcore.tile<32x32, f32>, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+      %dtok1, %dtile1 = ttl.copy_tile %b_arg[%c0], %c0 : !ttcore.tile<32x32, f32>, index -> !ttl.dst, !ttcore.tile<32x32, f32>
       %add = ttl.tile_add %dtile0, %dtile1 : !ttcore.tile<32x32, f32>
-      ttl.tile_store %add, %out_view_0 : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.tile_store %add, %out_view_0[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 

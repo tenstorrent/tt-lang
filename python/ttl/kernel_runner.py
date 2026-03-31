@@ -16,10 +16,22 @@ building and execution.
 from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple
 
-try:
-    import ttnn
-except (ModuleNotFoundError, ImportError):
-    ttnn = None
+ttnn = None  # Lazy-loaded via _ensure_ttnn()
+
+
+def _ensure_ttnn():
+    """Lazy import of ttnn."""
+    global ttnn
+    if ttnn is not None:
+        return ttnn
+    try:
+        import ttnn as _ttnn
+
+        ttnn = _ttnn
+    except (ModuleNotFoundError, ImportError):
+        pass
+    return ttnn
+
 
 from .dtype_utils import tile_bytes_from_dtype, torch_dtype_to_ttnn_datatype
 
@@ -54,6 +66,7 @@ def build_tensor_accessor_args(tensors: List[Any]) -> List[int]:
     Returns:
         List of compile-time args (flattened TensorAccessorArgs for all tensors).
     """
+    _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 
@@ -90,6 +103,7 @@ def build_kernel_descriptors(
     Returns:
         List of ttnn.KernelDescriptor objects.
     """
+    _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 
@@ -99,10 +113,6 @@ def build_kernel_descriptors(
     cb_indices = list(range(num_cbs))
 
     for spec in kernel_specs:
-        # runtime_args structure: [x][y][args_per_core].
-        # Each core gets an empty arg list (we use my_x/my_y for indexing).
-        runtime_args = [[[] for _ in range(grid_rows)] for _ in range(grid_cols)]
-
         # Build common_runtime_args using tensor_indices.
         # C++ indexes by function-local position, we provide addresses in that order.
         common_runtime_args = [
@@ -120,7 +130,6 @@ def build_kernel_descriptors(
             kernel_source=spec.path,
             core_ranges=core_ranges,
             compile_time_args=kernel_compile_time_args,
-            runtime_args=runtime_args,
             common_runtime_args=common_runtime_args,
             config=spec.config,
         )
@@ -148,6 +157,7 @@ def build_cb_descriptors(
     Returns:
         List of ttnn.CBDescriptor objects.
     """
+    _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 
@@ -212,6 +222,7 @@ def run_kernel_on_device(
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
     """
+    _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 

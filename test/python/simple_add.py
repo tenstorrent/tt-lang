@@ -6,6 +6,8 @@
 # RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.sfpu.output 2>&1
+# RUN: FileCheck %s --check-prefix=CHECK-CPP-SFPU < %t.sfpu.output
 
 """
 Simple add kernel - verifies Python DSL lowers to correct TTL ops and C++ code.
@@ -61,13 +63,6 @@ def add_kernel(lhs, rhs, out):
 
 
 # =============================================================================
-# Initial IR Checks - TTNN layout attributes
-# =============================================================================
-
-# CHECK: #ttnn.buffer_type<l1>
-# CHECK: #ttnn_layout = #ttnn.ttnn_layout<{{.*}}memref<1x1x!ttcore.tile<32x32, bf16>{{.*}}>
-
-# =============================================================================
 # Initial IR Checks - Verify TTL dialect ops (compute kernel)
 # =============================================================================
 
@@ -104,8 +99,8 @@ def add_kernel(lhs, rhs, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @dm_read
-# CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
-# CHECK-SAME: %arg1: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
+# CHECK-SAME: %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+# CHECK-SAME: %arg1: tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0 : i32, 1 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
 # Bind CBs (alphabetical order: lhs_cb, rhs_cb)
@@ -127,7 +122,7 @@ def add_kernel(lhs, rhs, out):
 # CHECK: ttl.cb_push %[[CB1]]
 
 # CHECK-LABEL: func.func @dm_write
-# CHECK-SAME: %arg0: tensor<{{[^>]+}}!ttcore.tile<32x32, bf16>, #ttnn_layout>
+# CHECK-SAME: %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
 
 # Wait for output DFB, slice, copy to device, pop
@@ -152,18 +147,15 @@ def add_kernel(lhs, rhs, out):
 # Reserve output DFB
 # CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
 
+# FPU binary init
+# CHECK-CPP: binary_op_init_common(get_compile_time_arg_val(0), get_compile_time_arg_val(1), get_compile_time_arg_val(2));
+
 # DST register lifecycle
 # CHECK-CPP: tile_regs_acquire();
 
-# Load tiles into DST (at first use: CB0 then CB1)
-# CHECK-CPP: copy_tile_init(get_compile_time_arg_val(0));
-# CHECK-CPP: copy_tile(get_compile_time_arg_val(0),
-# CHECK-CPP: copy_tile_init(get_compile_time_arg_val(1));
-# CHECK-CPP: copy_tile(get_compile_time_arg_val(1),
-
-# Add operation
-# CHECK-CPP: add_binary_tile_init();
-# CHECK-CPP: add_binary_tile(
+# Add operation (FPU binary reads directly from CBs)
+# CHECK-CPP: add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+# CHECK-CPP: add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
 
 # DST synchronization
 # CHECK-CPP: tile_regs_commit();
@@ -224,6 +216,31 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP: noc_async_write_tile(
 # CHECK-CPP: noc_async_write_barrier();
 # CHECK-CPP: cb_pop_front(get_compile_time_arg_val(2),
+
+
+# =============================================================================
+# SFPU path checks (--no-ttl-maximize-dst --no-ttl-fpu-binary-ops)
+# =============================================================================
+
+# CHECK-CPP-SFPU: // add_compute
+# CHECK-CPP-SFPU: void kernel_main()
+# CHECK-CPP-SFPU: cb_wait_front(get_compile_time_arg_val(0),
+# CHECK-CPP-SFPU: cb_wait_front(get_compile_time_arg_val(1),
+# CHECK-CPP-SFPU: cb_reserve_back(get_compile_time_arg_val(2),
+# CHECK-CPP-SFPU: init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
+# CHECK-CPP-SFPU: tile_regs_acquire();
+# SFPU path loads tiles into DST via copy_tile before computing.
+# CHECK-CPP-SFPU: copy_tile_init(get_compile_time_arg_val(0));
+# CHECK-CPP-SFPU: copy_tile(get_compile_time_arg_val(0),
+# CHECK-CPP-SFPU: add_binary_tile_init();
+# CHECK-CPP-SFPU: add_binary_tile(
+# CHECK-CPP-SFPU: tile_regs_commit();
+# CHECK-CPP-SFPU: tile_regs_wait();
+# CHECK-CPP-SFPU: pack_tile<true>(
+# CHECK-CPP-SFPU: tile_regs_release();
+# CHECK-CPP-SFPU: cb_pop_front(get_compile_time_arg_val(0),
+# CHECK-CPP-SFPU: cb_pop_front(get_compile_time_arg_val(1),
+# CHECK-CPP-SFPU: cb_push_back(get_compile_time_arg_val(2),
 
 
 if __name__ == "__main__":

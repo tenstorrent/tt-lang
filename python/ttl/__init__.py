@@ -4,7 +4,7 @@
 
 # TT-Lang Python Package
 
-__version__ = "0.1.0"
+from ttl.version import __version__
 
 # Export TTL DSL API directly at package level so `import ttl; ttl.kernel` works
 from ttl.ttl import (
@@ -14,7 +14,7 @@ from ttl.ttl import (
     Program,
     make_dataflow_buffer_like,
     copy,
-    core,
+    node,
     grid_size,
     math,
 )
@@ -25,6 +25,7 @@ from ttl._generated_elementwise import __all__ as _elementwise_all
 
 # Export additional TTL DSL API classes
 from ttl.operators import signpost
+from ttl.compiler_options import CompilerOptions
 from ttl.ttl_api import (
     CircularBuffer,
     CopyTransferHandler,
@@ -37,11 +38,12 @@ __all__ = [
     "datamovement",
     "Program",
     "CircularBuffer",
+    "CompilerOptions",
     "TensorBlock",
     "CopyTransferHandler",
     "make_dataflow_buffer_like",
     "copy",
-    "core",
+    "node",
     "grid_size",
     "math",
     "signpost",

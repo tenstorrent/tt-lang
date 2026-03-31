@@ -8,8 +8,8 @@
 import ast
 import inspect
 
-from ttmlir.dialects import arith, emitc, func, memref, scf
-from ttmlir.ir import *
+from ttl.dialects import arith, emitc, func, memref, scf
+from ttl.ir import *
 
 from .base_ast import PyKernelAstBase
 from .kernel_types import ClassRegistry
@@ -86,7 +86,7 @@ class TTCompilerBase(PyKernelAstBase):
 
         self.name = name
         try:
-            from ttmlir.dialects._ods_common import get_default_loc_context
+            from ttl.dialects._ods_common import get_default_loc_context
 
             default_context = get_default_loc_context()
         except ValueError:
@@ -145,7 +145,7 @@ class TTCompilerBase(PyKernelAstBase):
             if_cond = arith.cmpi(
                 arith.CmpIPredicate.ne, if_cond, arith.ConstantOp(cond_type, 0)
             )
-        if_exp = scf.IfOp(cond=if_cond, hasElse=bool(node.orelse))
+        if_exp = scf.IfOp(cond=if_cond, has_else=bool(node.orelse))
 
         self._on_scope_exit()
         with InsertionPoint(if_exp.then_block), Location.unknown():
@@ -414,7 +414,7 @@ class TTCompilerBase(PyKernelAstBase):
 
     def visit_Print(self, node):
         # Import ttkernel here to avoid circular import at module level
-        from ttmlir.dialects import ttkernel
+        from ttl.dialects import ttkernel
 
         fmt = ""
         argv = []
@@ -519,6 +519,18 @@ class TTCompilerBase(PyKernelAstBase):
                 rhs, arith.ConstantOp(IndexType.get(self.ctx), 0)
             ).result
 
+        # Matmul: operands have different shapes (A[M,K] @ B[K,N]), so dispatch
+        # before the elementwise type-matching cast.
+        if isinstance(node.op, ast.MatMult):
+            mlir_type = _get_type_str(lhs.type)
+            fn = self._fn_map.get(
+                f"{mlir_type}.__matmul__",
+                lambda *a, **k: (_ for _ in ()).throw(
+                    NotImplementedError("MatMult not implemented")
+                ),
+            )
+            return fn(lhs, rhs)
+
         if lhs.type != rhs.type:
             rhs = _cast(rhs, lhs.type)
         assert lhs.type == rhs.type, f"{lhs.type} != {rhs.type}"
@@ -541,8 +553,6 @@ class TTCompilerBase(PyKernelAstBase):
                 return qualified_or("__mul__", arith.muli, lhs, rhs)
             case ast.Div():
                 return qualified_or("__truediv__", unimplemented, lhs, rhs)
-            case ast.MatMult():
-                return qualified_or("__matmul__", unimplemented, lhs, rhs)
             case ast.FloorDiv():
                 return qualified_or("__floordiv__", arith.divsi, lhs, rhs)
             case ast.Mod():
@@ -629,17 +639,33 @@ class TTCompilerBase(PyKernelAstBase):
                     f"Compare operator {type(node.ops).__name__} not implemented"
                 )
 
-    def visit_Attribute(self, node, func_args=[], kwargs={}):
+    def visit_Attribute(self, node, func_args=None, kwargs=None):
+        if func_args is None:
+            func_args = []
+        if kwargs is None:
+            kwargs = {}
+        # Resolve the receiver: a named variable, a chained call result
+        # (e.g., ttl.copy(...).wait()), or any other expression.
+        mlir_value = self.visit(node.value)
+        if mlir_value is None:
+            receiver_src = ast.unparse(node.value)
+            raise ValueError(
+                f"cannot call .{node.attr}() on '{receiver_src}': "
+                "expression does not produce a value"
+            )
+
         # type name should be !ttkernel.* if it has attributes
-        mlir_value = self._var_exists(node.value.id)[node.value.id]
         mlir_type = _get_type_str(mlir_value.type)
         qualified_object_syntax = f"{mlir_type}.{node.attr}"
         fn = self._fn_map.get(qualified_object_syntax, None)
         if fn is not None:
             return fn(mlir_value, *func_args, **kwargs)
         elif not mlir_type.startswith("!ttkernel."):
+            receiver_name = (
+                node.value.id if isinstance(node.value, ast.Name) else "<expr>"
+            )
             raise ValueError(
-                f"{node.value.id} is not a ttkernel type, thus can not have attributes."
+                f"{receiver_name} is not a ttkernel type, thus can not have attributes."
             )
         # ignore the '!' at the start of the type name
         type_name = mlir_type[1:]
@@ -650,8 +676,11 @@ class TTCompilerBase(PyKernelAstBase):
             attr_class = ClassRegistry.get(type_name)()
             attr_class.emit_mlir(node.attr, func_args)
         else:
+            receiver_name = (
+                node.value.id if isinstance(node.value, ast.Name) else "<expr>"
+            )
             raise ValueError(
-                f"{node.value.id} has no attributes. Did you define a PyKernelAttributesBase subclass?"
+                f"{receiver_name} has no attributes. Did you define a PyKernelAttributesBase subclass?"
             )
         return
 

@@ -1,5 +1,17 @@
+pybind11>=2.10
 pydantic<3
 torch>=1.9.0
 numpy>=1.20.0
 pytest>=7.0
 greenlet>=3.0.0
+pandas<3
+# MLIR Python bindings dependencies (build + runtime)
+nanobind>=2.9, <3.0
+PyYAML>=5.4.0, <=6.0.1
+typing_extensions>=4.12.2
+ml_dtypes>=0.1.0, <=0.6.0; python_version<"3.13"
+ml_dtypes>=0.5.0, <=0.6.0; python_version>="3.13"
+# tt-metal runtime dependencies (ttnn imports these unconditionally)
+loguru>=0.6.0
+graphviz
+seaborn>=0.13.2

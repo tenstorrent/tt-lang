@@ -14,21 +14,38 @@ import random
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
 
-try:
-    import ttnn
-except (ModuleNotFoundError, ImportError):
-    ttnn = None
+ttnn = None  # Lazy-loaded on first access via _ensure_ttnn()
+
+
+def _ensure_ttnn():
+    """Lazy import of ttnn to avoid triggering heavy dependencies at module load.
+
+    Returns the ttnn module or None if unavailable. Caches the result in the
+    module-level ``ttnn`` variable so existing ``ttnn.Foo`` call sites work
+    unchanged after a single ``ttnn = _ensure_ttnn()`` call.
+    """
+    global ttnn
+    if ttnn is not None:
+        return ttnn
+    try:
+        import ttnn as _ttnn
+
+        ttnn = _ttnn
+    except (ModuleNotFoundError, ImportError):
+        pass
+    return ttnn
+
 
 import ttl._mlir_libs._ttlang  # Register tt-lang passes
 from pykernel._src.utils import _cleanup_source_code
-from ttmlir.dialects import ttkernel
-from ttmlir.ir import *
-from ttmlir.passes import (
+from ttl.dialects import ttkernel
+from ttl.ir import *
+from ttl.passes import (
     get_ttkernel_arg_spec,
     get_ttkernel_names,
     ttkernel_to_cpp_by_name,
 )
-from ttmlir.passmanager import PassManager
+from ttl.passmanager import PassManager
 
 from ._src.auto_profile import (
     build_cb_wait_to_dma_map,
@@ -66,8 +83,8 @@ from .kernel_runner import (
     run_kernel_on_device,
 )
 from .operators import CopyTransferHandler, TensorBlock, copy
+from .compiler_options import CompilerOptions
 from .ttl_utils import get_thread_type_string
-from .config import HAS_TT_DEVICE
 
 # Thread registry for automatic collection of @compute and @datamovement threads
 _thread_registry: List[Callable] = []
@@ -106,12 +123,13 @@ def _make_cache_key(
     args: tuple,
     fp32_dest_acc_en: Optional[bool],
     dst_full_sync_en: Optional[bool],
+    compiler_options: CompilerOptions = CompilerOptions(),
 ) -> tuple:
     """Create cache key from tensor properties and runtime compute config parameters."""
     tensor_key = tuple(
         _get_tensor_cache_info(arg) for arg in args if is_ttnn_tensor(arg)
     )
-    return (tensor_key, fp32_dest_acc_en, dst_full_sync_en)
+    return (tensor_key, fp32_dest_acc_en, dst_full_sync_en, compiler_options)
 
 
 def _should_execute() -> bool:
@@ -138,6 +156,7 @@ def _run_profiling_pipeline(
     if not is_auto_profile_enabled():
         return
 
+    _ensure_ttnn()
     if ttnn is None:
         print("[Auto-profile] ttnn not available, skipping profiling")
         return
@@ -215,6 +234,7 @@ def _run_perf_dump(tensors: tuple, kernel_name: str):
     ttl-dump-cb-flow-graph pass), and pipe graph from
     /tmp/ttlang_pipe_graph.json (copied from compiler temp file).
     """
+    _ensure_ttnn()
     from ._src.perf_summary import run as perf_summary_run
 
     # Flush profiler data from device (requires mid-run dump)
@@ -530,7 +550,6 @@ class CompiledTTNNKernel:
 def _write_kernel_to_tmp(name: str, source: str) -> str:
     """Write kernel source to /tmp and return the file path."""
     import hashlib
-    import re
     import os
 
     content_hash = hashlib.md5(source.encode()).hexdigest()[:8]
@@ -566,7 +585,7 @@ def _compile_ttnn_kernel(
     Builds kernel paths, configs, and CB descriptors from compiled MLIR module.
 
     Args:
-        module: MLIR module after D2M pipeline (with EmitC kernels)
+        module: MLIR module after TTL pipeline (with EmitC kernels)
         args: Input/output tensors (used for shape/dtype info)
         grid: Grid dimensions tuple
         num_outs: Number of output tensors
@@ -632,6 +651,7 @@ def _compile_ttnn_kernel(
         for name, thread_type in kernel_info:
             print(f"  - {name} ({thread_type})")
 
+    _ensure_ttnn()
     if ttnn is None:
         print("\nttnn not available - cannot compile for ttnn.generic_op")
         return None
@@ -933,6 +953,7 @@ def _compile_kernel(
     program_hash: int,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    compiler_options: CompilerOptions = CompilerOptions(),
 ) -> Optional[CompiledTTNNKernel]:
     """
     Compile kernel function to MLIR and return CompiledTTNNKernel.
@@ -950,6 +971,7 @@ def _compile_kernel(
         program_hash: Hash for tt-metal program cache
         fp32_dest_acc_en: Optional override for fp32_dest_acc_en
         dst_full_sync_en: Optional override for dst_full_sync_en
+        compiler_options: Compiler pipeline options
 
     Returns:
         CompiledTTNNKernel ready for execution
@@ -1114,14 +1136,28 @@ def _compile_kernel(
                 + "})"
             )
 
+        # NOTE: Pipeline pass ordering is mirrored in
+        # test/me2e/builder/pipeline.py and lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
+        fpu_flag = int(compiler_options.enable_fpu_binary_ops)
+        assign_dst_pass = f"ttl-assign-dst{{enable-fpu-binary-ops={fpu_flag}}}"
+
         pipeline_passes = [
             "func.func(convert-ttl-to-compute)",
             set_compute_config_pass,
-            "func.func(ttl-assign-dst{enable-fpu-binary-ops=0})",
-            "func.func(ttl-insert-tile-regs-sync)",
-            "func.func(ttl-lower-to-loops)",
-            "func.func(ttl-annotate-cb-associations)",
+            f"func.func({assign_dst_pass})",
         ]
+        if compiler_options.maximize_dst:
+            subblock_sync = "true" if compiler_options.auto_sync else "false"
+            pipeline_passes.append(
+                f"func.func(ttl-subblock-compute-for-dst{{subblock-sync={subblock_sync}}})"
+            )
+        pipeline_passes.append("func.func(ttl-insert-tile-regs-sync)")
+        if compiler_options.use_block_matmul:
+            pipeline_passes.append("func.func(ttl-lower-matmul-block)")
+        pipeline_passes.append("func.func(ttl-lower-to-loops)")
+        if compiler_options.maximize_dst:
+            pipeline_passes.append("func.func(ttl-schedule-operations)")
+        pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
 
         # Add CB flow graph dump if auto-profiling or perf dump is enabled
         perf_dump = os.environ.get("TTLANG_PERF_DUMP") == "1"
@@ -1146,8 +1182,13 @@ def _compile_kernel(
             pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
 
         pipeline_passes += [
+            "ttl-lower-dprint-to-emitc",
             "convert-ttl-to-ttkernel",
             "ttkernel-insert-inits",
+        ]
+        if compiler_options.combine_pack_tiles:
+            pipeline_passes.append("func.func(ttkernel-combine-pack-tiles)")
+        pipeline_passes += [
             "canonicalize",
             "cse",
             "lower-affine",
@@ -1155,9 +1196,6 @@ def _compile_kernel(
             "convert-ttkernel-to-emitc",
             "symbol-dce",
         ]
-
-        if HAS_TT_DEVICE:
-            pipeline_passes.insert(0, "ttcore-register-device")
 
         pipeline = ",".join(pipeline_passes)
 
@@ -1167,7 +1205,7 @@ def _compile_kernel(
         pm.enable_verifier(verify)
 
         try:
-            from ttmlir._mlir_libs._ttmlir import enable_pretty_stack_traces
+            from ttl._mlir_libs._ttmlir import enable_pretty_stack_traces
 
             enable_pretty_stack_traces(pm._CAPIPtr)
         except Exception:
@@ -1175,6 +1213,9 @@ def _compile_kernel(
             pass
 
         if os.environ.get("TTLANG_VERBOSE_PASSES"):
+            from ttl.version import __version__
+
+            print(f"ttlang {__version__}")
             print("Running custom pipeline:", pm)
             ctx.enable_multithreading(False)
             pm.enable_ir_printing(
@@ -1197,7 +1238,9 @@ def _compile_kernel(
                 first_thread = next(iter(all_source_lines.keys()))
                 source_lines = all_source_lines[first_thread]
                 source_file = all_source_files.get(first_thread)
-            formatted = format_mlir_error(error_msg, source_lines, source_file)
+            from ttl.version import __version__
+
+            formatted = f"ttlang {__version__}\n{format_mlir_error(error_msg, source_lines, source_file)}"
             raise RuntimeError(formatted) from None
 
         final_mlir_path = os.environ.get("TTLANG_FINAL_MLIR")
@@ -1243,6 +1286,7 @@ def pykernel_gen(
     tiled: bool = True,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    options: Optional[str] = None,
 ) -> Callable:
     """
     Decorator for generating TTL kernels from Python functions.
@@ -1260,6 +1304,7 @@ def pykernel_gen(
         tiled: Whether to use tiled layout
         fp32_dest_acc_en: Optional override for fp32_dest_acc_en
         dst_full_sync_en: Optional override for dst_full_sync_en
+        options: Compiler option string (e.g., "--no-ttl-maximize-dst")
 
     Returns:
         Decorated function that compiles and executes the kernel
@@ -1307,12 +1352,26 @@ def pykernel_gen(
             fp32_override = fp32_dest_acc_en
             dst_sync_override = dst_full_sync_en
 
+            # Extract runtime options (allow per-call override via kwarg).
+            # Priority: sys.argv > env var > decorator options=
+            # Env var is appended to decorator string (later tokens win),
+            # then sys.argv is merged on top as the highest-priority override.
+            opts_str = kwargs.pop("options", options)
+            env_opts = os.environ.get("TTLANG_COMPILER_OPTIONS")
+            if env_opts:
+                # Env var tokens appended after explicit options.
+                opts_str = f"{opts_str or ''} {env_opts}".strip() or None
+            base = CompilerOptions.from_string(opts_str)
+            argv_overrides = CompilerOptions.from_argv()
+            compiler_options = base.merge(argv_overrides)
+
             # Build cache key from tensor properties
             cache_key = _make_cache_key(
                 args,
                 # Runtime options:
                 fp32_dest_acc_en=fp32_override,
                 dst_full_sync_en=dst_sync_override,
+                compiler_options=compiler_options,
             )
 
             # Check cache for previously compiled kernel
@@ -1336,6 +1395,7 @@ def pykernel_gen(
                     program_hash,
                     fp32_dest_acc_en=fp32_override,
                     dst_full_sync_en=dst_sync_override,
+                    compiler_options=compiler_options,
                 )
 
                 if compiled_kernel is not None:

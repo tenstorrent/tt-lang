@@ -5,9 +5,13 @@
 #ifndef TTLANG_DIALECT_UTILS_CONVERSIONUTILS_H
 #define TTLANG_DIALECT_UTILS_CONVERSIONUTILS_H
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
@@ -17,49 +21,165 @@
 
 namespace mlir::tt::ttl::utils {
 
-/// Collect enclosing tile loops (innermost first) for an operation.
-/// Returns only loops annotated with `kTileLoopAttrName`.
-inline SmallVector<scf::ForOp> collectEnclosingLoops(Operation *op) {
-  SmallVector<scf::ForOp> loops;
-  for (Operation *parent = op->getParentOp(); parent;
-       parent = parent->getParentOp()) {
-    if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-      if (forOp->hasAttr(kTileLoopAttrName)) {
-        loops.push_back(forOp);
-      }
-    }
+/// Convert a local DFB index (within a subblock) to a global DFB index (within
+/// the full block) when `operand` traces to a tensor.extract_slice.
+///
+/// Delinearizes the local index into per-dimension coordinates using the
+/// slice shape, adds the slice offsets per-dimension, and relinearizes
+/// against the source (full) shape.
+///
+/// Example: local index 5 in a [3,2] slice at offset [0,2] of a [3,4] tensor:
+///   delinearize(5, [3,2]) -> (2,1), add [0,2] -> (2,3),
+///   linearize((2,3), [3,4]) -> 11.
+///
+/// Returns `localIndex` unchanged if no extract_slice is found.
+inline Value addSliceOffset(Value operand, Value localIndex, OpBuilder &builder,
+                            Location loc) {
+  // Trace through tensor.extract (tile extraction from lower-to-loops).
+  Value tensor = operand;
+  if (auto extract = tensor.getDefiningOp<mlir::tensor::ExtractOp>()) {
+    tensor = extract.getTensor();
   }
-  return loops;
+  auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>();
+  if (!slice) {
+    return localIndex;
+  }
+  auto sliceType = mlir::cast<RankedTensorType>(slice.getResult().getType());
+  auto sourceType = mlir::cast<RankedTensorType>(slice.getSource().getType());
+
+  // Delinearize local index into per-dimension coordinates within the slice.
+  auto delinearized = affine::AffineDelinearizeIndexOp::create(
+      builder, loc, localIndex, sliceType.getShape());
+
+  // Add slice offsets per-dimension to produce global coordinates.
+  SmallVector<Value> globalCoords;
+  auto mixedOffsets = slice.getMixedOffsets();
+  for (size_t d = 0; d < mixedOffsets.size(); ++d) {
+    Value offset =
+        getValueOrCreateConstantIndexOp(builder, loc, mixedOffsets[d]);
+    Value global =
+        arith::AddIOp::create(builder, loc, delinearized.getResult(d), offset);
+    globalCoords.push_back(global);
+  }
+
+  // Relinearize against the full source shape.
+  return affine::AffineLinearizeIndexOp::create(builder, loc, globalCoords,
+                                                sourceType.getShape());
 }
 
-/// Compute a linearized CB tile index from enclosing loop induction variables.
+/// Element-wise scale: values[d] *= scales[d].
+inline void scaleByBlockDims(MutableArrayRef<int64_t> values,
+                             ArrayRef<int64_t> scales) {
+  assert(scales.size() == values.size() &&
+         "scales and values must have the same size");
+  for (size_t d = 0; d < values.size(); ++d) {
+    values[d] *= scales[d];
+  }
+}
+
+/// Transform a linearized stride from the iteration domain into the operand's
+/// coordinate space via an indexing map (compile-time, no IR emission).
 ///
-/// CB tiles are addressed by a flat index into the CB's tile buffer. The
-/// lower-to-loops and subblock passes create nested scf.for loops whose IVs
-/// correspond to positions in the iteration domain. Each loop carries a
-/// constant stride attribute (row-major stride of that dimension in the full
-/// tensor). The linearized index is:
+/// A stride S encodes how much a linearized CB index advances per unit of a
+/// loop IV. This function decomposes S into per-dimension steps (using the
+/// iteration domain's row-major strides), applies the indexing map to select
+/// the relevant dimensions, optionally scales by blockDims, and re-linearizes
+/// in the operand shape.
 ///
-///   index = sum(IV[d] * stride[d]) + tile_offset
+/// For identity maps with no blockDims this is a no-op (returns S unchanged).
+inline int64_t transformLinearizedStride(
+    int64_t stride, ArrayRef<int64_t> iterDomainShape, AffineMap indexingMap,
+    ArrayRef<int64_t> operandShape,
+    std::optional<ArrayRef<int64_t>> blockDims = std::nullopt) {
+  assert(indexingMap.getNumDims() == iterDomainShape.size() &&
+         "indexing map domain rank must match iteration domain shape rank");
+  assert(indexingMap.getNumResults() == operandShape.size() &&
+         "indexing map result count must match operand shape rank");
+  assert((!blockDims || blockDims->size() == operandShape.size()) &&
+         "blockDims must match operand shape rank when provided");
+
+  // Fast path: identity map with no block scaling is a no-op.
+  if (indexingMap.isIdentity() && !blockDims) {
+    return stride;
+  }
+
+  // Delinearize stride into per-dimension steps using the iteration domain's
+  // row-major strides. For shape [M, N, K] with strides [N*K, K, 1]:
+  //   stride=N*K -> components=[1, 0, 0] (one M-step)
+  //   stride=K   -> components=[0, 1, 0] (one N-step)
+  //   stride=1   -> components=[0, 0, 1] (one K-step)
+  SmallVector<int64_t> domainStrides = computeStrides(iterDomainShape);
+  SmallVector<int64_t> components(iterDomainShape.size());
+  int64_t remaining = stride;
+  for (size_t d = 0; d < iterDomainShape.size(); ++d) {
+    if (domainStrides[d] > 0) {
+      components[d] = remaining / domainStrides[d];
+      remaining = remaining % domainStrides[d];
+    }
+  }
+  assert(remaining == 0 &&
+         "stride is not a multiple of any domain dimension stride");
+
+  // Apply the indexing map: select dimensions referenced by the map.
+  // For projected permutations, each result is an AffineDimExpr.
+  SmallVector<int64_t> mappedComponents;
+  mappedComponents.reserve(indexingMap.getNumResults());
+  for (AffineExpr expr : indexingMap.getResults()) {
+    auto dimExpr = llvm::dyn_cast<AffineDimExpr>(expr);
+    assert(dimExpr && "expected projected permutation (AffineDimExpr results)");
+    mappedComponents.push_back(components[dimExpr.getPosition()]);
+  }
+
+  // Scale by block dimensions to convert block-level steps to tile-level.
+  if (blockDims) {
+    scaleByBlockDims(mappedComponents, *blockDims);
+  }
+
+  // Re-linearize in the operand's row-major layout.
+  SmallVector<int64_t> opStrides = computeStrides(operandShape);
+  int64_t result = 0;
+  for (size_t d = 0; d < mappedComponents.size(); ++d) {
+    result += mappedComponents[d] * opStrides[d];
+  }
+  return result;
+}
+
+/// Emit `IV * stride` (with stride=0 and stride=1 optimizations).
+inline Value emitIVTimesStride(OpBuilder &builder, Location loc, Value iv,
+                               int64_t stride) {
+  if (stride == 1) {
+    return iv;
+  }
+  Value strideVal = arith::ConstantIndexOp::create(builder, loc, stride);
+  return arith::MulIOp::create(builder, loc, iv, strideVal);
+}
+
+/// Compute a CB tile index from enclosing loop structure and an indexing map.
 ///
-/// over all compiler-annotated loops (ttl.tile_loop for tile iteration,
-/// ttl.subblock_stride for subblock iteration). Unmarked loops (user loops,
-/// streaming loops) are ignored because they do not affect intra-CB indexing.
+/// This is the unified mechanism for all CB tile index computation. It
+/// collects tile loops, subblock loops, and tile offsets from the enclosing
+/// IR, transforms each stride through the indexing map (from iteration-domain
+/// space to operand space), and sums the contributions.
 ///
-/// The `strideTransform` callback is applied to each stride at pass execution
-/// time before emitting IR. This lets callers extract per-dimension components
-/// (e.g., stride / numCols for a row index) without emitting runtime division.
+/// For identity maps (elementwise ops), this produces the same result as the
+/// loop strides directly. For non-identity maps (matmul, transpose, reduce,
+/// broadcast), it correctly projects out irrelevant dimensions.
 ///
-/// When `cbShapeRank > 0`, only the innermost cbShapeRank tile loops
-/// contribute, for CBs with lower rank than the iteration domain.
+/// Assumes DMA kernels write tiles into CBs in row-major order (interleaved
+/// layout). Sharded layouts with different CB tile orderings would require
+/// a different linearization scheme.
 ///
-/// Note: this assumes DMA kernels write tiles into CBs in row-major order,
-/// which is the case for all current tt-metal reader kernels. If a future
-/// layout changes the CB tile ordering, the stride computation here would
-/// need to account for it.
-inline FailureOr<Value> computeCBTileIndexFromLoops(
-    Operation *op, OpBuilder &builder, size_t cbShapeRank,
-    llvm::function_ref<int64_t(int64_t)> strideTransform) {
+/// Parameters:
+///   - indexingMap: transforms iteration-domain coordinates to operand space
+///   - iterDomainShape: full output tensor shape (for delinearizing strides)
+///   - operandShape: this operand's tensor shape (for re-linearizing)
+///   - cbShapeRank: retain only innermost N tile loops (0 = use all)
+///   - blockDims: per-operand-dimension block sizes (std::nullopt = unit dims)
+inline FailureOr<Value>
+computeCBTileIndex(Operation *op, OpBuilder &builder, AffineMap indexingMap,
+                   ArrayRef<int64_t> iterDomainShape,
+                   ArrayRef<int64_t> operandShape, size_t cbShapeRank = 0,
+                   std::optional<ArrayRef<int64_t>> blockDims = std::nullopt) {
   // Collect enclosing scf.for loops from innermost to outermost.
   SmallVector<scf::ForOp> allLoops;
   for (Operation *parent = op->getParentOp(); parent;
@@ -73,15 +193,15 @@ inline FailureOr<Value> computeCBTileIndexFromLoops(
   SmallVector<scf::ForOp> tileLoops;
   SmallVector<scf::ForOp> subblockLoops;
   for (scf::ForOp loop : allLoops) {
-    if (loop->hasAttr(kTileLoopAttrName)) {
+    if (loop->hasAttr(kTileLoopStrideAttrName)) {
       tileLoops.push_back(loop);
-    } else if (loop->hasAttr(kSubblockStrideAttrName)) {
+    } else if (loop->hasAttr(kSubblockLoopStrideAttrName)) {
       subblockLoops.push_back(loop);
     }
     // Unmarked loops are ignored (user loops, external loops).
   }
 
-  // Apply cbShapeRank clipping to tile loops only.
+  // Retain only the innermost cbShapeRank tile loops.
   if (cbShapeRank > 0 && tileLoops.size() > cbShapeRank) {
     tileLoops.resize(cbShapeRank);
   }
@@ -99,8 +219,7 @@ inline FailureOr<Value> computeCBTileIndexFromLoops(
              << "enclosing tile loop has non-zero lower bound (" << *lb
              << "); expected lb=0 from tile loops";
     }
-    auto ub = getConstantIntValue(loop.getUpperBound());
-    if (!ub) {
+    if (!getConstantIntValue(loop.getUpperBound())) {
       return op->emitOpError()
              << "enclosing tile loop has dynamic upper bound; "
              << "expected constant bounds from tile loops";
@@ -120,80 +239,66 @@ inline FailureOr<Value> computeCBTileIndexFromLoops(
              << "enclosing subblock loop has non-zero lower bound (" << *lb
              << "); expected lb=0 from subblock loops";
     }
-    auto step = getConstantIntValue(loop.getStep());
-    if (!step) {
+    if (!getConstantIntValue(loop.getStep())) {
       return op->emitOpError() << "enclosing subblock loop has dynamic step; "
                                << "expected constant step from subblock loops";
     }
   }
 
   Location loc = op->getLoc();
+  Value result = arith::ConstantIndexOp::create(builder, loc, 0);
 
-  // Compute index: sum(IV * transform(stride)) + transform(tile_offset).
-  // Tile loops processed outermost first for row-major ordering.
-  Value result = builder.create<arith::ConstantIndexOp>(loc, 0);
+  // Tile loop contributions (outermost first).
   for (scf::ForOp loop : llvm::reverse(tileLoops)) {
-    auto strideAttr = loop->getAttrOfType<IntegerAttr>(kTileLoopAttrName);
+    auto strideAttr = loop->getAttrOfType<IntegerAttr>(kTileLoopStrideAttrName);
     if (!strideAttr) {
       return op->emitOpError() << "enclosing tile loop missing stride value on "
-                               << kTileLoopAttrName << " attribute";
+                               << kTileLoopStrideAttrName << " attribute";
     }
-    int64_t stride = strideTransform(strideAttr.getInt());
+    int64_t stride =
+        transformLinearizedStride(strideAttr.getInt(), iterDomainShape,
+                                  indexingMap, operandShape, blockDims);
     if (stride == 0) {
       continue;
     }
-    Value term;
-    if (stride == 1) {
-      term = loop.getInductionVar();
-    } else {
-      Value strideVal = builder.create<arith::ConstantIndexOp>(loc, stride);
-      term =
-          builder.create<arith::MulIOp>(loc, loop.getInductionVar(), strideVal);
-    }
-    result = builder.create<arith::AddIOp>(loc, result, term);
+    Value term =
+        emitIVTimesStride(builder, loc, loop.getInductionVar(), stride);
+    result = arith::AddIOp::create(builder, loc, result, term);
   }
 
-  // Add subblock offsets: IV * transform(stride) for each subblock loop.
+  // Subblock loop contributions. Order is irrelevant (addition is
+  // commutative); each loop carries its own stride attribute.
   for (scf::ForOp loop : subblockLoops) {
-    auto strideAttr = loop->getAttrOfType<IntegerAttr>(kSubblockStrideAttrName);
+    auto strideAttr =
+        loop->getAttrOfType<IntegerAttr>(kSubblockLoopStrideAttrName);
     if (!strideAttr) {
       return op->emitOpError()
              << "enclosing subblock loop missing stride value on "
-             << kSubblockStrideAttrName << " attribute";
+             << kSubblockLoopStrideAttrName << " attribute";
     }
-    int64_t stride = strideTransform(strideAttr.getInt());
+    int64_t stride =
+        transformLinearizedStride(strideAttr.getInt(), iterDomainShape,
+                                  indexingMap, operandShape, blockDims);
     if (stride == 0) {
       continue;
     }
-    Value offset;
-    if (stride == 1) {
-      offset = loop.getInductionVar();
-    } else {
-      Value strideVal = builder.create<arith::ConstantIndexOp>(loc, stride);
-      offset =
-          builder.create<arith::MulIOp>(loc, loop.getInductionVar(), strideVal);
-    }
-    result = builder.create<arith::AddIOp>(loc, result, offset);
+    Value term =
+        emitIVTimesStride(builder, loc, loop.getInductionVar(), stride);
+    result = arith::AddIOp::create(builder, loc, result, term);
   }
 
-  // Add per-tile offset from unrolled emission.
+  // Per-tile offset from unrolled emission.
   if (auto tileOffset = op->getAttrOfType<IntegerAttr>(kTileOffsetAttrName)) {
-    int64_t offset = strideTransform(tileOffset.getInt());
+    int64_t offset =
+        transformLinearizedStride(tileOffset.getInt(), iterDomainShape,
+                                  indexingMap, operandShape, blockDims);
     if (offset != 0) {
-      Value offsetVal = builder.create<arith::ConstantIndexOp>(loc, offset);
-      result = builder.create<arith::AddIOp>(loc, result, offsetVal);
+      Value offsetVal = arith::ConstantIndexOp::create(builder, loc, offset);
+      result = arith::AddIOp::create(builder, loc, result, offsetVal);
     }
   }
 
   return result;
-}
-
-/// Convenience overload: identity transform (linearized index).
-inline FailureOr<Value> computeCBTileIndexFromLoops(Operation *op,
-                                                    OpBuilder &builder,
-                                                    size_t cbShapeRank = 0) {
-  return computeCBTileIndexFromLoops(op, builder, cbShapeRank,
-                                     [](int64_t s) { return s; });
 }
 
 /// Convert a TTL CircularBufferType value to a TTKernel CBType value.
@@ -231,7 +336,7 @@ convertTTLCBToTTKernel(Value cb, ConversionPatternRewriter &rewriter,
     return result;
   }
 
-  auto cast = rewriter.create<UnrealizedConversionCastOp>(loc, ttkCbTy, cb);
+  auto cast = UnrealizedConversionCastOp::create(rewriter, loc, ttkCbTy, cb);
   return cast.getResult(0);
 }
 

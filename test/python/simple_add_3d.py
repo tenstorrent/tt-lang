@@ -3,9 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn, tt-device
-# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s > %t.fpu.block.output 2>&1
+# RUN: FileCheck %s --check-prefix=CHECK-CPP-FPU-BLOCK < %t.fpu.block.output
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s --no-ttl-combine-pack-tiles > %t.fpu.output 2>&1
+# RUN: FileCheck %s --check-prefix=CHECK-CPP-FPU < %t.fpu.output
 
 """
 3D add kernel with multi-tile CB - verifies ND shape support in TTL ops.
@@ -63,8 +67,6 @@ def add_3d_kernel(lhs, rhs, out):
 # Initial IR Checks - 3D layout
 # =============================================================================
 
-# CHECK: #ttnn_layout = #ttnn.ttnn_layout<{{.*}}>
-
 # =============================================================================
 # Compute kernel: 3D CB types and tensor ops
 # =============================================================================
@@ -90,21 +92,21 @@ def add_3d_kernel(lhs, rhs, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @dm_read
-# CHECK-SAME: %arg0: tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout>
-# CHECK-SAME: %arg1: tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout>
+# CHECK-SAME: %arg0: tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [2, 64, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+# CHECK-SAME: %arg1: tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [2, 64, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
 
 # tensor_slice with 3 indices on first tensor
-# CHECK: ttl.tensor_slice %arg0[%{{.*}}, %{{.*}}, %{{.*}}] : tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout> -> tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout>
+# CHECK: ttl.tensor_slice %arg0[%{{.*}}, %{{.*}}, %{{.*}}] : tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [2, 64, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
 # CHECK: ttl.copy
 
 # tensor_slice with 3 indices on second tensor
-# CHECK: ttl.tensor_slice %arg1[%{{.*}}, %{{.*}}, %{{.*}}] : tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout> -> tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout>
+# CHECK: ttl.tensor_slice %arg1[%{{.*}}, %{{.*}}, %{{.*}}] : tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [2, 64, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
 
 # CHECK-LABEL: func.func @dm_write
-# CHECK-SAME: %arg0: tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout>
+# CHECK-SAME: %arg0: tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [2, 64, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
 
 # tensor_slice with 3 indices on output
-# CHECK: ttl.tensor_slice %arg0[%{{.*}}, %{{.*}}, %{{.*}}] : tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout> -> tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttnn_layout>
+# CHECK: ttl.tensor_slice %arg0[%{{.*}}, %{{.*}}, %{{.*}}] : tensor<2x2x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [2, 64, 64], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
 
 # =============================================================================
 # C++ Kernel Checks - Verify 3D loop nests in generated code
@@ -145,6 +147,34 @@ def add_3d_kernel(lhs, rhs, out):
 # CHECK-CPP:   for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
 # CHECK-CPP:     for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
 # CHECK-CPP:       noc_async_write_tile(
+
+# =============================================================================
+# FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
+# 2x2x2 = 8 tiles fits in DST (bf16), fully unrolled with FPU binary add
+# =============================================================================
+
+# CHECK-CPP-FPU: // add_compute
+# CHECK-CPP-FPU: void kernel_main()
+# CHECK-CPP-FPU: cb_wait_front(get_compile_time_arg_val(0),
+# CHECK-CPP-FPU: cb_wait_front(get_compile_time_arg_val(1),
+# CHECK-CPP-FPU: cb_reserve_back(get_compile_time_arg_val(2),
+# CHECK-CPP-FPU: binary_op_init_common(get_compile_time_arg_val(0), get_compile_time_arg_val(1), get_compile_time_arg_val(2));
+# CHECK-CPP-FPU: tile_regs_acquire();
+# CHECK-CPP-FPU: add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+# CHECK-CPP-FPU: add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
+# CHECK-CPP-FPU: tile_regs_commit();
+# CHECK-CPP-FPU: tile_regs_wait();
+# CHECK-CPP-FPU: pack_tile<true>(
+# CHECK-CPP-FPU: tile_regs_release();
+# CHECK-CPP-FPU: cb_push_back(get_compile_time_arg_val(2),
+# CHECK-CPP-FPU-NOT: pack_tile_block(
+
+# Default (combine-pack-tiles enabled): individual pack_tile ops combined.
+# CHECK-CPP-FPU-BLOCK: tile_regs_wait();
+# CHECK-CPP-FPU-BLOCK: pack_tile_block(
+# CHECK-CPP-FPU-BLOCK: tile_regs_release();
+# CHECK-CPP-FPU-BLOCK: cb_push_back(get_compile_time_arg_val(2),
+# CHECK-CPP-FPU-BLOCK-NOT: pack_tile<true>(
 
 
 if __name__ == "__main__":

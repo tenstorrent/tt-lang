@@ -86,10 +86,10 @@ def fused_kernel(input, bias, out):
 
 Every TT-Lang kernel has exactly three threads that run concurrently:
 1. **Compute thread** (`@ttl.compute()`): Math operations on tiles in L1
-2. **Reader thread** (`@ttl.datamovement()`): Loads data from DRAM to dataflow buffers
-3. **Writer thread** (`@ttl.datamovement()`): Writes data from dataflow buffers to DRAM
+2. **Reader thread** (`@ttl.datamovement()`): Loads data from DRAM to circular buffers
+3. **Writer thread** (`@ttl.datamovement()`): Writes data from circular buffers to DRAM
 
-These threads synchronize via **dataflow buffers** (DFBs).
+These threads synchronize via **circular buffers** (CBs).
 
 ### Basic Kernel Template
 
@@ -147,10 +147,10 @@ def dm_read():
     # push happens automatically
 ```
 
-### Dataflow Buffer API Reference
+### Circular Buffer API Reference
 
 ```python
-# Create a dataflow buffer
+# Create a circular buffer
 dfb = ttl.make_dataflow_buffer_like(
     tensor,           # TTNN tensor to inherit dtype/layout from
     shape=(R, C),     # Block size in tiles (e.g., (2, 2) = 4 tiles per block)
@@ -205,7 +205,7 @@ result = a + b      # Element-wise addition
 result = a - b      # Element-wise subtraction
 result = a * b      # Element-wise multiplication
 result = a / b      # Element-wise division
-result = a @ b      # Matrix multiplication (equivalent to ttl.math.matmul(a, b))
+# NOTE: a @ b does NOT work! Use ttl.math.matmul() instead (see below)
 ```
 
 ### Binary Functions
@@ -231,16 +231,17 @@ result = ttl.math.neg(x)      # Negation (-x)
 result = ttl.math.floor(x)    # Floor
 ```
 
-### Matrix Multiplication
+### Matrix Multiplication (IMPORTANT: Different semantics!)
 
 ```python
-# Two equivalent ways to do matmul:
-result = a @ b                    # @ operator
-result = ttl.math.matmul(a, b)   # function call
+# ttl.math.matmul is ACCUMULATING: C += A @ B
+# The third argument is both the accumulator AND output
+result = ttl.math.matmul(a, b, c)  # c += a @ b, returns updated c
 
 # Example usage:
 with a_dfb.wait() as a_tile, b_dfb.wait() as b_tile, c_dfb.reserve() as c_out:
-    c_out.store(a_tile @ b_tile)
+    result = ttl.math.matmul(a_tile, b_tile, c_out)
+    c_out.store(result)
 ```
 
 **Multi-tile matmul:** When CBs hold multiple tiles (e.g., shape=(2, 2)), the compiler generates loops over K dimension and accumulates automatically. The DST register persists across K iterations, enabling proper accumulation. For example, with A[1,2] @ B[2,1] = C[1,1], the K=2 tiles accumulate correctly.
@@ -257,9 +258,10 @@ result = ttl.power(x, 3)  # x^3
 
 ```python
 # Transpose tiles (top-level, not ttl.math)
-# Takes input block, works with multi-tile CBs
+# Takes input and output blocks, works with multi-tile CBs
 with inp_dfb.wait() as x, out_dfb.reserve() as o:
-    o.store(ttl.transpose(x))
+    result = ttl.transpose(x, o)
+    o.store(result)
 ```
 
 **Non-square example:** For 4x2 tiles → 2x4 tiles:
@@ -279,14 +281,16 @@ scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2
 
 with inp_dfb.wait() as i, scaler_dfb.wait() as s, out_dfb.reserve() as o:
     # Scalar reduction (sum/max entire DFB -> single value in output [0,0])
-    o.store(ttl.math.reduce_sum(i, s, dims=[0, 1]))
-    o.store(ttl.math.reduce_max(i, s, dims=[0, 1]))
+    result = ttl.math.reduce_sum(i, s, o, dims=[0, 1])
+    result = ttl.math.reduce_max(i, s, o, dims=[0, 1])
 
     # Row reduction (reduce across rows)
-    o.store(ttl.math.reduce_sum(i, s, dims=[0]))
+    result = ttl.math.reduce_sum(i, s, o, dims=[0])
 
     # Column reduction (reduce across columns)
-    o.store(ttl.math.reduce_sum(i, s, dims=[1]))
+    result = ttl.math.reduce_sum(i, s, o, dims=[1])
+
+    o.store(result)
 ```
 
 **IMPORTANT - Dimension semantics differ from PyTorch:**
@@ -305,15 +309,18 @@ In PyTorch, `dim=0` means "reduce along dimension 0" (collapse rows). In TT-Lang
 
 with scalar_dfb.wait() as s, out_dfb.reserve() as o:
     # Broadcast 1x1 scalar to fill entire output block
-    o.store(ttl.math.broadcast(s, dims=[0, 1]))
+    result = ttl.math.broadcast(s, o, dims=[0, 1])
+    o.store(result)
 
 with row_dfb.wait() as r, out_dfb.reserve() as o:
     # Broadcast 1xN row across M rows
-    o.store(ttl.math.broadcast(r, dims=[0]))
+    result = ttl.math.broadcast(r, o, dims=[0])
+    o.store(result)
 
 with col_dfb.wait() as c, out_dfb.reserve() as o:
     # Broadcast Mx1 column across N columns
-    o.store(ttl.math.broadcast(c, dims=[1]))
+    result = ttl.math.broadcast(c, o, dims=[1])
+    o.store(result)
 ```
 
 **IMPORTANT - Broadcast dimension semantics:**
@@ -345,19 +352,34 @@ def fused_compute():
         o.store(result)
 ```
 
-**Limitation:** Ops that take DFB arguments (matmul, reduce, transpose, broadcast) cannot be fused with each other. Each must have its own `with` block and store. Broadcast cannot be fused with elementwise ops either.
+**Fusion with broadcast:** Broadcast can be fused as the first operation in a chain:
+```python
+with scalar_dfb.wait() as s, other_dfb.wait() as x, out_dfb.reserve() as o:
+    bcast = ttl.math.broadcast(s, o, dims=[0, 1])  # First op - OK to fuse
+    result = bcast * x + ttl.math.exp(x)           # Continues fusion chain
+    o.store(result)
+```
+
+**Limitation:** Ops that take DFB arguments (matmul, reduce, transpose, broadcast) can only be fused if they are the **first** operation. After any of these, you must store and start a new fusion chain.
 
 **When fusion fails:** Use sequential `with` blocks to break the chain - you do NOT need separate kernels:
 
 ```python
 @ttl.compute()
 def compute():
+    # WRONG: Trying to fuse matmul result into another DFB op
+    # with a_dfb.wait() as a, b_dfb.wait() as b, out_dfb.reserve() as o:
+    #     m = ttl.math.matmul(a, b, o)
+    #     result = ttl.math.reduce_sum(m, ...)  # FAILS - reduce after matmul
+
     # CORRECT: Break into two with blocks (still one kernel!)
     with a_dfb.wait() as a, b_dfb.wait() as b, intermediate_dfb.reserve() as inter:
-        inter.store(a @ b)
+        m = ttl.math.matmul(a, b, inter)
+        inter.store(m)
 
     with intermediate_dfb.wait() as inter, scaler_dfb.wait() as s, out_dfb.reserve() as o:
-        o.store(ttl.math.reduce_sum(inter, s, dims=[0, 1]))
+        result = ttl.math.reduce_sum(inter, s, o, dims=[0, 1])
+        o.store(result)
 ```
 
 The compiler fuses 20+ elementwise ops in a single compute function without issues.
@@ -394,9 +416,9 @@ def fused_kernel(inp, out):
 
 ## Multi-Tile Processing and Streaming
 
-For tensors larger than 32x32, process multiple tiles. **Use multicore and loops:**
+For tensors larger than 32x32, process multiple tiles. **Use multinode and loops:**
 
-- **Multicore is encouraged** - use the whole chip for real workloads. Single-core kernels are fine for incremental development but won't deliver meaningful performance.
+- **multinode is encouraged** - use the whole chip for real workloads. Single-node kernels are fine for incremental development but won't deliver meaningful performance.
 - **Loops are supported** in both compute and datamovement threads - use them to stream large tensors through smaller CBs.
 
 ### IMPORTANT: Match the User's Target Data Size
@@ -407,27 +429,27 @@ For tensors larger than 32x32, process multiple tiles. **Use multicore and loops
 # User wants to process 2048x2048 tensors (64x64 tiles)
 # Don't shrink to 32x32 for testing - make it work at target size!
 
-@ttl.kernel(grid=(8, 8))  # Use multicore
+@ttl.kernel(grid=(8, 8))  # Use multinode
 def large_tensor_kernel(inp, out):
-    # Each core handles 8x8 tiles worth of data
+    # Each node handles 8x8 tiles worth of data
     # But DFB only holds 2x2 tiles at a time - stream through with loops
 
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
-    BLOCKS_PER_CORE = 4  # 8x8 tiles / 2x2 block = 4x4 = 16 blocks... adjust per core
+    BLOCKS_PER_NODE = 4  # 8x8 tiles / 2x2 block = 4x4 = 16 blocks... adjust per node
 
     @ttl.compute()
     def compute():
-        for _ in range(BLOCKS_PER_CORE):
+        for _ in range(BLOCKS_PER_NODE):
             with inp_dfb.wait() as i, out_dfb.reserve() as o:
                 o.store(ttl.math.exp(i))
 
     @ttl.datamovement()
     def dm_read():
-        x, y = ttl.core(dims=2)
-        for block_idx in range(BLOCKS_PER_CORE):
-            # Calculate tile coordinates for this core and block
+        x, y = ttl.node(dims=2)
+        for block_idx in range(BLOCKS_PER_NODE):
+            # Calculate tile coordinates for this node and block
             row = y * 8 + (block_idx // 4) * 2  # Example indexing
             col = x * 8 + (block_idx % 4) * 2
             with inp_dfb.reserve() as blk:
@@ -436,8 +458,8 @@ def large_tensor_kernel(inp, out):
 
     @ttl.datamovement()
     def dm_write():
-        x, y = ttl.core(dims=2)
-        for block_idx in range(BLOCKS_PER_CORE):
+        x, y = ttl.node(dims=2)
+        for block_idx in range(BLOCKS_PER_NODE):
             row = y * 8 + (block_idx // 4) * 2
             col = x * 8 + (block_idx % 4) * 2
             with out_dfb.wait() as blk:
@@ -446,28 +468,28 @@ def large_tensor_kernel(inp, out):
 ```
 
 **Key streaming principles:**
-1. **DFB size is limited by L1** (~1.5MB per core) - you can't fit huge tensors
+1. **DFB size is limited by L1** (~1.5MB per node) - you can't fit huge tensors
 2. **Stream blocks through CBs** - read a block, process it, write it, repeat
 3. **Loop counts must match** - compute iterations = dm_read iterations = dm_write iterations
 4. **DRAM is large but slow** - keep data in L1 as long as possible, stream to avoid DRAM round-trips
 
-## Pipes (Core-to-Core Communication)
+## Pipes (Node-to-Node Communication)
 
-**WARNING: Use pipes sparingly.** Pipes enable communication between cores but are error-prone and a common cause of hangs. Get your kernel working without pipes first, then add them only if needed for performance.
+**WARNING: Use pipes sparingly.** Pipes enable communication between nodes but are error-prone and a common cause of hangs. Get your kernel working without pipes first, then add them only if needed for performance.
 
 **WARNING: pipes do not work in the simulator.** The pipes APIs below are not implemented in the simulator, you may find partial support, but the APIs in the simulator and the compiler are different, and when you go to run on HW, you will hit issues. If you need to use pipes, do it after you have the base program working in sim.
 
 ### Pipe API
 
 ```python
-# Create a pipe: one source core to one destination core
+# Create a pipe: one source node to one destination node
 pipe = ttl.Pipe(src=(source_x, source_y), dst=(dest_x, dest_y))
 
-# Send data through pipe (in dm_write on source core)
+# Send data through pipe (in dm_write on source node)
 tx = ttl.copy(blk, pipe)
 tx.wait()
 
-# Receive data from pipe (in dm_write on destination core)
+# Receive data from pipe (in dm_write on destination node)
 tx = ttl.copy(pipe, blk)
 tx.wait()
 ```
@@ -490,7 +512,7 @@ def gather_kernel(inp, out):
 
     @ttl.compute()
     def compute():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
         if x == 0:
             # Coordinator: accumulate from gather_dfb
             for _ in range(3):
@@ -503,14 +525,14 @@ def gather_kernel(inp, out):
 
     @ttl.datamovement()
     def dm_read():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
         with inp_dfb.reserve() as blk:
             tx = ttl.copy(inp[y, x], blk)
             tx.wait()
 
     @ttl.datamovement()
     def dm_write():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
 
         # Workers send their results via pipes
         if x == 1:
@@ -548,18 +570,18 @@ def gather_kernel(inp, out):
 
 - **Pipes cause hangs** when send/receive don't match - every `ttl.copy(blk, pipe)` needs a corresponding `ttl.copy(pipe, blk)`
 - **IMPORTANT: Set a low timeout** when testing pipes for faster iteration
-- **Start without pipes** - get single-core or independent multi-core working first
+- **Start without pipes** - get single-node or independent multi-node working first
 - **Add pipes incrementally** - test after adding each pipe
 - **Kill zombie processes** if hung: `~/.claude/commands/tools/remote-run.sh pkill -9 python`
 
 ### Hardware Limits
 
-- **32 CBs max** per core
-- **~1.5MB L1** per core
+- **32 CBs max** per node
+- **~1.5MB L1** per node
 - **~100MB total SRAM** across chip - utilize as much as possible for throughput
 - **Tile size**: 32x32 elements = 2KB (bfloat16)
 
-### Option 1: Large DFB Shape (Single Core)
+### Option 1: Large DFB Shape (Single Node)
 
 Larger DFB shapes give better throughput. Aim for 4x4 or 8x8 if L1 allows:
 
@@ -585,12 +607,12 @@ def multitile_kernel(lhs, rhs, out):
         # ... similar for rhs ...
 ```
 
-### Option 2: Multicore (Parallel)
+### Option 2: Multinode (Parallel)
 
 ```python
-# 256x256 tensor across 8x8 grid = 1 tile per core
+# 256x256 tensor across 8x8 grid = 1 tile per node
 @ttl.kernel(grid=(8, 8))
-def multicore_kernel(lhs, rhs, out):
+def multinode_kernel(lhs, rhs, out):
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -604,8 +626,8 @@ def multicore_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_read():
-        # Get this core's coordinates
-        x, y = ttl.core(dims=2)  # x=column, y=row
+        # Get this node's coordinates
+        x, y = ttl.node(dims=2)  # x=column, y=row
 
         with lhs_dfb.reserve() as blk:
             # Tensor indexing is [row, col] = [y, x]
@@ -618,12 +640,12 @@ def multicore_kernel(lhs, rhs, out):
 
     @ttl.datamovement()
     def dm_write():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
         with out_dfb.wait() as blk:
             tx = ttl.copy(blk, out[y, x])
             tx.wait()
 
-# Call: multicore_kernel(lhs, rhs, out)
+# Call: multinode_kernel(lhs, rhs, out)
 ```
 
 ## Tensor Setup
@@ -709,11 +731,11 @@ No `softmax` op? Decompose it: max → shift → exp → sum → divide
 with x_dfb.wait() as x, scaler_dfb.wait() as s:
     # 1. Find max for numerical stability
     with max_dfb.reserve() as mx:
-        mx.store(ttl.math.reduce_max(x, s, dims=[0, 1]))
+        mx.store(ttl.math.reduce_max(x, s, mx, dims=[0, 1]))
 
     # 2. Broadcast max back to full size
     with max_dfb.wait() as mxv, bcast_dfb.reserve() as mxb:
-        mxb.store(ttl.math.broadcast(mxv, dims=[0, 1]))
+        mxb.store(ttl.math.broadcast(mxv, mxb, dims=[0, 1]))
 
     # 3. Compute exp(x - max) and sum
     with bcast_dfb.wait() as max_bcast:
@@ -721,11 +743,11 @@ with x_dfb.wait() as x, scaler_dfb.wait() as s:
         exp_shifted = ttl.math.exp(shifted)
 
         with sum_dfb.reserve() as sm:
-            sm.store(ttl.math.reduce_sum(exp_shifted, s, dims=[0, 1]))
+            sm.store(ttl.math.reduce_sum(exp_shifted, s, sm, dims=[0, 1]))
 
         # 4. Broadcast sum and divide
         with sum_dfb.wait() as sumv, sum_bcast_dfb.reserve() as smb:
-            smb.store(ttl.math.broadcast(sumv, dims=[0, 1]))
+            smb.store(ttl.math.broadcast(sumv, smb, dims=[0, 1]))
 
         with sum_bcast_dfb.wait() as sum_bcast, out_dfb.reserve() as o:
             o.store(ttl.math.exp(x - max_bcast) / sum_bcast)
@@ -757,8 +779,8 @@ if __name__ == "__main__":
 
 | GPU Concept | TT-Lang Equivalent |
 |------------|-------------------|
-| Thread block / workgroup | Grid of Tensix cores (`grid=(rows, cols)`) |
-| Shared memory | L1 via dataflow buffers |
+| Thread block / workgroup | Grid of Tensix nodes (`grid=(rows, cols)`) |
+| Shared memory | L1 via circular buffers |
 | Global memory | DRAM with DMA transfers |
 | Warp/wave operations | Tile-level operations (32x32) |
 | `__syncthreads()` | DFB `wait()`/`push()` synchronization |
@@ -778,7 +800,7 @@ __global__ void add_kernel(float* a, float* b, float* c, int n) {
 
 **TT-Lang equivalent:**
 ```python
-@ttl.kernel(grid=(1, 1))  # Or multicore for large tensors
+@ttl.kernel(grid=(1, 1))  # Or multinode for large tensors
 def add_kernel(a, b, c):
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
@@ -940,7 +962,7 @@ NOTE: it is possible that the sim and hw diverge which may require you to either
 **This is NOT PyTorch.** TT-Lang is a low-level DSL where you directly control memory management and synchronization. Operations may have unexpected semantics:
 
 - Ops might write in place
-- Ops might take dataflow buffers as arguments
+- Ops might take circular buffers as arguments
 - Ops might have different numerical behavior than PyTorch equivalents
 - Memory layouts matter (tilized, interleaved, etc.)
 
@@ -1002,23 +1024,23 @@ print("Expected:", torch.exp(inp_torch))
 
 ### Complete Example: Distributed Reduce-Broadcast-Matmul with Pipes
 
-This is a complete working test from `test/python/test_full_reduce_bcast_matmul.py` showing multicore computation with pipes:
+This is a complete working test from `test/python/test_full_reduce_bcast_matmul.py` showing multinode computation with pipes:
 
 ```python
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Distributed reduce -> bcast -> matmul with multicore communication.
+Distributed reduce -> bcast -> matmul with multinode communication.
 
-Each core independently:
+Each node independently:
 1. Reduces its own A slice to a local scalar
 2. Broadcasts that scalar to 4x4 tiles
 3. Matmuls broadcasted value with B
 
 Then coordinator gathers and sums all partial matmul results.
 
-Grid: 4x1 (4 cores in a row)
+Grid: 4x1 (4 nodes in a row)
 """
 COORDINATOR = 0
 ROWS_PER_CORE = 2
@@ -1057,32 +1079,36 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
 
     @ttl.compute()
     def compute():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
 
-        # === Stage 1: Local reduce of A slices (all cores) ===
+        # === Stage 1: Local reduce of A slices (all nodes) ===
         blocks_per_core = ROWS_PER_CORE * COLS_PER_CORE
 
         with scaler_dfb.wait() as s:
             # First block: reduce and copy to accumulator
             with a_dfb.wait() as a, reduce_out_dfb.reserve() as r:
-                r.store(ttl.math.reduce_sum(a, s, dims=[0, 1]))
+                reduced = ttl.math.reduce_sum(a, s, r, dims=[0, 1])
+                r.store(reduced)
             with reduce_out_dfb.wait() as t, reduce_acc_dfb.reserve() as acc:
                 acc.store(t)
 
             # Additional blocks: reduce and accumulate
             for _ in range(blocks_per_core - 1):
                 with a_dfb.wait() as a, reduce_out_dfb.reserve() as r:
-                    r.store(ttl.math.reduce_sum(a, s, dims=[0, 1]))
+                    reduced = ttl.math.reduce_sum(a, s, r, dims=[0, 1])
+                    r.store(reduced)
                 with reduce_out_dfb.wait() as t, reduce_acc_dfb.wait() as acc, reduce_acc_dfb.reserve() as new_acc:
                     new_acc.store(acc + t)
 
-        # === Stage 2: Broadcast local sum to 4x4 tiles (all cores) ===
+        # === Stage 2: Broadcast local sum to 4x4 tiles (all nodes) ===
         with reduce_acc_dfb.wait() as local_sum, bcast_out_dfb.reserve() as bout:
-            bout.store(ttl.math.broadcast(local_sum, dims=[0, 1]))
+            broadcasted = ttl.math.broadcast(local_sum, bout, dims=[0, 1])
+            bout.store(broadcasted)
 
-        # === Stage 3: Matmul (4x4) @ (4x4) -> (4x4) (all cores) ===
+        # === Stage 3: Matmul (4x4) @ (4x4) -> (4x4) (all nodes) ===
         with bcast_out_dfb.wait() as a_bcast, b_dfb.wait() as b, matmul_out_dfb.reserve() as c:
-            c.store(a_bcast @ b)
+            result = ttl.math.matmul(a_bcast, b, c)
+            c.store(result)
 
         # === Stage 4: Gather and accumulate matmul results ===
         if x == COORDINATOR:
@@ -1101,7 +1127,7 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
 
     @ttl.datamovement()
     def dm_read():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
 
         with scaler_dfb.reserve() as s_blk:
             tx = ttl.copy(scaler[0, 0], s_blk)
@@ -1121,7 +1147,7 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
 
     @ttl.datamovement()
     def dm_write():
-        x, y = ttl.core(dims=2)
+        x, y = ttl.node(dims=2)
 
         # Workers send to coordinator
         if x == 1:
@@ -1182,7 +1208,8 @@ def fused_mlp_kernel(x, w_fc, w_proj, out):
         # Step 1: x @ w_fc -> mlp_hidden
         with x_dfb.wait() as xv, w_fc_dfb.wait() as wfc:
             with mlp_hidden_dfb.reserve() as mh:
-                mh.store(xv @ wfc)
+                result = ttl.math.matmul(xv, wfc, mh)
+                mh.store(result)
 
         # Step 2: relu²(mlp_hidden) -> mlp_act
         with mlp_hidden_dfb.wait() as mhv, mlp_act_dfb.reserve() as ma:
@@ -1192,7 +1219,8 @@ def fused_mlp_kernel(x, w_fc, w_proj, out):
         # Step 3: mlp_act @ w_proj -> out
         with mlp_act_dfb.wait() as mav, w_proj_dfb.wait() as wproj:
             with out_dfb.reserve() as o:
-                o.store(mav @ wproj)
+                result = ttl.math.matmul(mav, wproj, o)
+                o.store(result)
 
     @ttl.datamovement()
     def dm_read():
@@ -1273,7 +1301,8 @@ def fused_block_kernel(attn_concat, x, wo, ln2_w, w_fc, w_proj, scaler, out):
             # Step 1: attn_concat @ Wo -> attn_proj
             with attn_dfb.wait() as attn, wo_dfb.wait() as wo:
                 with act_dfb.reserve() as ap:
-                    ap.store(attn @ wo)
+                    result = ttl.math.matmul(attn, wo, ap)
+                    ap.store(result)
 
             # Step 2: attn_proj + x -> hidden1 (Residual 1)
             with act_dfb.wait() as ap, x_dfb.wait() as xv:
@@ -1286,11 +1315,12 @@ def fused_block_kernel(attn_concat, x, wo, ln2_w, w_fc, w_proj, scaler, out):
                 with act_dfb.reserve() as sq:
                     sq.store(h1v * h1v)
                 with act_dfb.wait() as sqv, reduce_dfb.reserve() as red:
-                    red.store(ttl.math.reduce_sum(sqv, sc, dims=[0, 1]))
+                    total = ttl.math.reduce_sum(sqv, sc, red, dims=[0, 1])
+                    red.store(total)
                 with reduce_dfb.wait() as sumv, reduce_dfb.reserve() as rsq:
                     rsq.store(ttl.math.rsqrt(sumv))
                 with reduce_dfb.wait() as rsqv, bcast_dfb.reserve() as bc:
-                    bc.store(ttl.math.broadcast(rsqv, dims=[0, 1]))
+                    bc.store(ttl.math.broadcast(rsqv, bc, dims=[0, 1]))
                 with bcast_dfb.wait() as rsqrt_bcast, ln2_out_dfb.reserve() as ln2:
                     normalized = h1v * rsqrt_bcast
                     ln2.store(normalized * ln2_wv)
@@ -1299,24 +1329,28 @@ def fused_block_kernel(attn_concat, x, wo, ln2_w, w_fc, w_proj, scaler, out):
                 with ln2_out_dfb.wait() as ln2v:
                     # First chunk
                     with w_fc_chunk_dfb.wait() as wfc, mlp_chunk_dfb.reserve() as mh:
-                        mh.store(ln2v @ wfc)
+                        result = ttl.math.matmul(ln2v, wfc, mh)
+                        mh.store(result)
                     with mlp_chunk_dfb.wait() as mhv, mlp_chunk_dfb.reserve() as ma:
                         relu_x = ttl.math.relu(mhv)
                         ma.store(relu_x * relu_x)
                     with mlp_chunk_dfb.wait() as mav, w_proj_chunk_dfb.wait() as wpr:
                         with mlp_acc_dfb.reserve() as acc:
-                            acc.store(mav @ wpr)
+                            result = ttl.math.matmul(mav, wpr, acc)
+                            acc.store(result)
 
                     # Remaining chunks with accumulation
                     for _ in range(NUM_MLP_CHUNKS - 1):
                         with w_fc_chunk_dfb.wait() as wfc, mlp_chunk_dfb.reserve() as mh:
-                            mh.store(ln2v @ wfc)
+                            result = ttl.math.matmul(ln2v, wfc, mh)
+                            mh.store(result)
                         with mlp_chunk_dfb.wait() as mhv, mlp_chunk_dfb.reserve() as ma:
                             relu_x = ttl.math.relu(mhv)
                             ma.store(relu_x * relu_x)
                         with mlp_chunk_dfb.wait() as mav, w_proj_chunk_dfb.wait() as wpr:
                             with partial_dfb.reserve() as part:
-                                part.store(mav @ wpr)
+                                result = ttl.math.matmul(mav, wpr, part)
+                                part.store(result)
                         with partial_dfb.wait() as partv, mlp_acc_dfb.wait() as acc:
                             with mlp_acc_dfb.reserve() as new_acc:
                                 new_acc.store(acc + partv)
@@ -1401,24 +1435,28 @@ def streaming_mlp_kernel(x, w_fc, w_proj, out):
         with x_dfb.wait() as xv:
             # First chunk - initialize accumulator
             with w_fc_chunk_dfb.wait() as wfc, mlp_chunk_dfb.reserve() as mh:
-                mh.store(xv @ wfc)
+                result = ttl.math.matmul(xv, wfc, mh)
+                mh.store(result)
             with mlp_chunk_dfb.wait() as mhv, mlp_chunk_dfb.reserve() as ma:
                 relu_x = ttl.math.relu(mhv)
                 ma.store(relu_x * relu_x)
             with mlp_chunk_dfb.wait() as mav, w_proj_chunk_dfb.wait() as wpr:
                 with out_acc_dfb.reserve() as acc:
-                    acc.store(mav @ wpr)
+                    result = ttl.math.matmul(mav, wpr, acc)
+                    acc.store(result)
 
             # Remaining chunks - accumulate
             for _ in range(NUM_MLP_CHUNKS - 1):
                 with w_fc_chunk_dfb.wait() as wfc, mlp_chunk_dfb.reserve() as mh:
-                    mh.store(xv @ wfc)
+                    result = ttl.math.matmul(xv, wfc, mh)
+                    mh.store(result)
                 with mlp_chunk_dfb.wait() as mhv, mlp_chunk_dfb.reserve() as ma:
                     relu_x = ttl.math.relu(mhv)
                     ma.store(relu_x * relu_x)
                 with mlp_chunk_dfb.wait() as mav, w_proj_chunk_dfb.wait() as wpr:
                     with partial_dfb.reserve() as part:
-                        part.store(mav @ wpr)
+                        result = ttl.math.matmul(mav, wpr, part)
+                        part.store(result)
                 with partial_dfb.wait() as partv, out_acc_dfb.wait() as acc:
                     with out_acc_dfb.reserve() as new_acc:
                         new_acc.store(acc + partv)
@@ -1481,11 +1519,13 @@ def softmax_kernel(x, scaler, out):
         with x_dfb.wait() as xv, scaler_dfb.wait() as sc:
             # Step 1: Find max
             with max_dfb.reserve() as mx:
-                mx.store(ttl.math.reduce_max(xv, sc, dims=[0, 1]))
+                max_val = ttl.math.reduce_max(xv, sc, mx, dims=[0, 1])
+                mx.store(max_val)
 
             # Step 2: Broadcast max
             with max_dfb.wait() as mxv, max_bcast_dfb.reserve() as mxb:
-                mxb.store(ttl.math.broadcast(mxv, dims=[0, 1]))
+                bcast = ttl.math.broadcast(mxv, mxb, dims=[0, 1])
+                mxb.store(bcast)
 
             # Keep max_bcast in scope for both exp computations
             with max_bcast_dfb.wait() as mxbv:
@@ -1496,11 +1536,13 @@ def softmax_kernel(x, scaler, out):
 
                 # Step 4: Sum
                 with exp_dfb.wait() as exv, sum_dfb.reserve() as sm:
-                    sm.store(ttl.math.reduce_sum(exv, sc, dims=[0, 1]))
+                    sum_val = ttl.math.reduce_sum(exv, sc, sm, dims=[0, 1])
+                    sm.store(sum_val)
 
                 # Step 5: Broadcast sum
                 with sum_dfb.wait() as smv, sum_bcast_dfb.reserve() as smb:
-                    smb.store(ttl.math.broadcast(smv, dims=[0, 1]))
+                    sum_bcast = ttl.math.broadcast(smv, smb, dims=[0, 1])
+                    smb.store(sum_bcast)
 
                 # Step 6: Final softmax = exp(x - max) / sum
                 # xv and mxbv still in scope!
@@ -1553,7 +1595,8 @@ def rmsnorm_kernel(x, weight, scaler, out):
 
             # Reduce to scalar
             with sq_dfb.wait() as sqv, reduce_dfb.reserve() as red:
-                red.store(ttl.math.reduce_sum(sqv, sc, dims=[0, 1]))
+                total = ttl.math.reduce_sum(sqv, sc, red, dims=[0, 1])
+                red.store(total)
 
             # Rsqrt
             with reduce_dfb.wait() as sumv, reduce_dfb.reserve() as rsq:
@@ -1561,7 +1604,7 @@ def rmsnorm_kernel(x, weight, scaler, out):
 
             # Broadcast
             with reduce_dfb.wait() as rsqv, bcast_dfb.reserve() as bc:
-                bc.store(ttl.math.broadcast(rsqv, dims=[0, 1]))
+                bc.store(ttl.math.broadcast(rsqv, bc, dims=[0, 1]))
 
             # Normalize: x * rsqrt * weight
             with bcast_dfb.wait() as rsqrt_bcast, out_dfb.reserve() as o:
@@ -1589,33 +1632,33 @@ def rmsnorm_kernel(x, weight, scaler, out):
 
 ---
 
-## Pattern 7: Multicore Output Partitioning (No Pipes)
+## Pattern 7: Multinode Output Partitioning (No Pipes)
 
-Multiple cores compute independent output columns in parallel. All cores read the same input, but each reads different weight columns and writes different output columns. No inter-core communication needed.
+Multiple nodes compute independent output columns in parallel. All nodes read the same input, but each reads different weight columns and writes different output columns. No inter-node communication needed.
 
 **Key ideas:**
-- `grid=(NUM_CORES, 1)` distributes work across cores
-- All cores read the SAME input tensor (broadcast read)
-- Each core reads DIFFERENT weight/bias slices based on `core_x`
-- Each core writes DIFFERENT output slices based on `core_x`
+- `grid=(NUM_CORES, 1)` distributes work across nodes
+- All nodes read the SAME input tensor (broadcast read)
+- Each node reads DIFFERENT weight/bias slices based on `core_x`
+- Each node writes DIFFERENT output slices based on `core_x`
 - `buffer_factor=1` for data used only once (bias)
 
 ```python
 # MNIST Layer 1: hidden = relu(x @ w1 + bias1)
-# 8 cores compute 8 chunks of the 1024-wide hidden layer in parallel
+# 8 nodes compute 8 chunks of the 1024-wide hidden layer in parallel
 
 BATCH_TILES = 1
 INPUT_TILES = 25   # 800 input features / 32 = 25 tiles
-CHUNK_TILES = 4    # Each core handles 128 hidden units = 4 tiles
-NUM_CHUNKS = 8     # 1024 hidden / 128 per core = 8 cores
+CHUNK_TILES = 4    # Each node handles 128 hidden units = 4 tiles
+NUM_CHUNKS = 8     # 1024 hidden / 128 per node = 8 nodes
 
 
 @ttl.kernel(grid=(NUM_CHUNKS, 1))
 def layer1_kernel(x, w1, bias1, hidden_out):
-    # Input DFB - same data read by all cores
+    # Input DFB - same data read by all nodes
     x_dfb = ttl.make_dataflow_buffer_like(x, shape=(BATCH_TILES, INPUT_TILES), buffer_factor=1)
 
-    # Weight/bias CBs - each core reads different columns
+    # Weight/bias CBs - each node reads different columns
     w1_dfb = ttl.make_dataflow_buffer_like(w1, shape=(INPUT_TILES, CHUNK_TILES), buffer_factor=1)
     bias1_dfb = ttl.make_dataflow_buffer_like(bias1, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=1)
 
@@ -1628,7 +1671,7 @@ def layer1_kernel(x, w1, bias1, hidden_out):
         # Matmul: x @ w1_chunk -> hidden_mm
         with x_dfb.wait() as xv, w1_dfb.wait() as w1v:
             with hidden_mm_dfb.reserve() as hmm:
-                hmm.store(xv @ w1v)
+                hmm.store(ttl.math.matmul(xv, w1v, hmm))
 
         # Bias add + ReLU: relu(hidden_mm + bias) -> hidden
         with hidden_mm_dfb.wait() as hmmv, bias1_dfb.wait() as b1v:
@@ -1637,14 +1680,14 @@ def layer1_kernel(x, w1, bias1, hidden_out):
 
     @ttl.datamovement()
     def dm_read():
-        core_x, _ = ttl.core(dims=2)
+        core_x, _ = ttl.node(dims=2)
 
-        # All cores read the SAME input x
+        # All nodes read the SAME input x
         with x_dfb.reserve() as blk:
             tx = ttl.copy(x[0:BATCH_TILES, 0:INPUT_TILES], blk)
             tx.wait()
 
-        # Each core reads DIFFERENT weight columns based on core_x
+        # Each node reads DIFFERENT weight columns based on core_x
         col_start = core_x * CHUNK_TILES
         col_end = col_start + CHUNK_TILES
 
@@ -1658,9 +1701,9 @@ def layer1_kernel(x, w1, bias1, hidden_out):
 
     @ttl.datamovement()
     def dm_write():
-        core_x, _ = ttl.core(dims=2)
+        core_x, _ = ttl.node(dims=2)
 
-        # Each core writes DIFFERENT output columns
+        # Each node writes DIFFERENT output columns
         col_start = core_x * CHUNK_TILES
         col_end = col_start + CHUNK_TILES
 
@@ -1683,7 +1726,7 @@ Stream weight chunks, accumulate partial matmul results, then apply row-wise sof
 
 ```python
 # MNIST Layer 2: out = softmax(sum_over_chunks(hidden_chunk @ w2_chunk) + bias2)
-# Single core streams 8 chunks and accumulates, then applies row-wise softmax
+# Single node streams 8 chunks and accumulates, then applies row-wise softmax
 
 BATCH_TILES = 1
 CHUNK_TILES = 4    # 128 hidden units per chunk = 4 tiles
@@ -1721,13 +1764,13 @@ def layer2_kernel(hidden, w2, bias2, scaler, out):
         # First chunk - initialize accumulator
         with hidden_dfb.wait() as hc, w2_dfb.wait() as wc:
             with acc_dfb.reserve() as acc:
-                acc.store(hc @ wc)
+                acc.store(ttl.math.matmul(hc, wc, acc))
 
         # Remaining chunks - compute partial and add to accumulator
         for _ in range(NUM_CHUNKS - 1):
             with hidden_dfb.wait() as hc, w2_dfb.wait() as wc:
                 with part_dfb.reserve() as part:
-                    part.store(hc @ wc)
+                    part.store(ttl.math.matmul(hc, wc, part))
             with part_dfb.wait() as pv, acc_dfb.wait() as av:
                 with acc_dfb.reserve() as new_acc:
                     new_acc.store(av + pv)
@@ -1743,11 +1786,11 @@ def layer2_kernel(hidden, w2, bias2, scaler, out):
             # Row-wise max: dims=[0] reduces across columns, keeps rows
             # Output shape: (BATCH_TILES, 1) stored in (1, 1) DFB
             with max_dfb.reserve() as mx:
-                mx.store(ttl.math.reduce_max(lgv, sc, dims=[0]))
+                mx.store(ttl.math.reduce_max(lgv, sc, mx, dims=[0]))
 
             # Broadcast max back: dims=[1] replicates column across all columns
             with max_dfb.wait() as mxv, max_bcast_dfb.reserve() as mxb:
-                mxb.store(ttl.math.broadcast(mxv, dims=[1]))
+                mxb.store(ttl.math.broadcast(mxv, mxb, dims=[1]))
 
             # Compute exp(logits - max) and sum, then final softmax
             with max_bcast_dfb.wait() as mxbv:
@@ -1757,11 +1800,11 @@ def layer2_kernel(hidden, w2, bias2, scaler, out):
 
                 # Row-wise sum of exp values
                 with exp_dfb.wait() as exv, sum_dfb.reserve() as sm:
-                    sm.store(ttl.math.reduce_sum(exv, sc, dims=[0]))
+                    sm.store(ttl.math.reduce_sum(exv, sc, sm, dims=[0]))
 
                 # Broadcast sum back
                 with sum_dfb.wait() as smv, sum_bcast_dfb.reserve() as smb:
-                    smb.store(ttl.math.broadcast(smv, dims=[1]))
+                    smb.store(ttl.math.broadcast(smv, smb, dims=[1]))
 
                 # Final softmax: exp(logits - max) / sum
                 # Note: lgv and mxbv still in scope, recompute exp for numerator

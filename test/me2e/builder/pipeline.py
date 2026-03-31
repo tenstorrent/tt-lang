@@ -11,44 +11,55 @@ Provides compilation from TTL dialect to TTKernel dialect.
 import os
 from typing import Any, Optional
 
-from ttmlir.ir import Module
-from ttmlir.passmanager import PassManager
-
-from .device_arch import get_mock_arch_from_device
+from ttl.ir import Module
+from ttl.passmanager import PassManager
 
 
-def compile_ttl_to_ttkernel(module: Module, device: Optional[Any] = None) -> Module:
+def compile_ttl_to_ttkernel(
+    module: Module,
+    device: Optional[Any] = None,
+    maximize_dst: bool = True,
+    enable_fpu_binary_ops: bool = True,
+) -> Module:
     """
     Run the TTL-to-TTKernel pass pipeline on the module.
 
-    Mirrors the pipeline from TTLPipelines.cpp but with proper nesting.
+    Mirrors the pipeline from TTLPipelines.cpp.
 
     Args:
         module: TTL MLIR module to compile.
-        device: Optional TTNN device for architecture detection.
+        device: Optional TTNN device (unused, kept for API compat).
+        maximize_dst: Enable DST maximization (subblocking + scheduling).
+        enable_fpu_binary_ops: Enable FPU binary op detection (add_tiles, etc).
 
     Returns:
         Compiled module with TTKernel/EmitC ops.
     """
-    # Always use mock architecture detected from device.
-    mock_arch = get_mock_arch_from_device(device)
-    device_pass = f"ttcore-register-device{{mock-system-desc-arch={mock_arch}}}"
+    fpu_flag = int(enable_fpu_binary_ops)
+    assign_dst_pass = f"ttl-assign-dst{{enable-fpu-binary-ops={fpu_flag}}}"
+
+    # Build per-function passes.
+    func_passes = [
+        "convert-ttl-to-compute",
+        assign_dst_pass,
+    ]
+    if maximize_dst:
+        func_passes.append("ttl-subblock-compute-for-dst")
+    func_passes.append("ttl-insert-tile-regs-sync")
+    func_passes.append("ttl-lower-to-loops")
+    if maximize_dst:
+        func_passes.append("ttl-schedule-operations")
+    func_passes.append("ttl-annotate-cb-associations")
+
+    func_pipeline = ",".join(func_passes)
 
     pipeline_str = (
         f"builtin.module("
-        f"{device_pass},"
-        # TTL to compute conversion (runs on each function).
-        f"func.func(convert-ttl-to-compute,"
-        f"ttl-assign-dst{{enable-fpu-binary-ops=0}},"
-        f"ttl-insert-tile-regs-sync,"
-        f"ttl-lower-to-loops,"
-        f"ttl-annotate-cb-associations),"
-        # TTL to TTKernel conversion (module-level pass).
+        f"func.func({func_pipeline}),"
         f"convert-ttl-to-ttkernel,"
         f"ttkernel-insert-inits,"
         f"canonicalize,"
         f"cse,"
-        # Lower to EmitC.
         f"lower-affine,"
         f"convert-ttkernel-to-emitc,"
         f"canonicalize"

@@ -7,9 +7,9 @@
 # calling ensure_dialects_registered explicitly.
 
 from ttl.dialects import ttl
-from ttmlir import ir as tmlir_ir
+from ttl import ir as ttlang_ir
 
-with tmlir_ir.Context() as ctx, tmlir_ir.Location.unknown():
+with ttlang_ir.Context() as ctx, ttlang_ir.Location.unknown():
     ttl.ensure_dialects_registered(ctx)
     s = ttl.SliceAttr.get(ctx, 0, 4, 1)
     # CHECK: #ttl.slice<start = 0, stop = 4, step = 1>

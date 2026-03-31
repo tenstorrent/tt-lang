@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
+#
+# TTLANG_HARDWARE_CI: skip-compiler
 """
 TT-Lang Transformer Block for nanochat.
 
@@ -236,7 +238,7 @@ def attention_kernel(q, k, v, scale, causal_mask, scaler, out):
     k_t_dfb = ttl.make_dataflow_buffer_like(
         k, shape=(EMBD_TILES, SEQ_TILES), buffer_factor=2
     )
-    scores_dfb = ttl.make_dataflow_buffer_like(
+    snodes_dfb = ttl.make_dataflow_buffer_like(
         causal_mask, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2
     )
     scale_bcast_dfb = ttl.make_dataflow_buffer_like(
@@ -266,11 +268,11 @@ def attention_kernel(q, k, v, scale, causal_mask, scaler, out):
             kt.store(ttl.transpose(kv, kt))
 
         with q_dfb.wait() as qv, k_t_dfb.wait() as ktv:
-            with scores_dfb.reserve() as sc:
+            with snodes_dfb.reserve() as sc:
                 sc.store(ttl.math.matmul(qv, ktv, sc))
 
         with (
-            scores_dfb.wait() as scv,
+            snodes_dfb.wait() as scv,
             scale_dfb.wait() as scalev,
             mask_dfb.wait() as maskv,
         ):
@@ -595,9 +597,9 @@ def test_transformer_block(device):
     k_rot_ref = k_ref * cos_torch.float()
 
     # Attention
-    scores = q_rot_ref @ k_rot_ref.T * scale_val
-    scores = scores + causal_mask_torch.float()
-    attn_weights = F.softmax(scores, dim=-1)
+    snodes = q_rot_ref @ k_rot_ref.T * scale_val
+    snodes = snodes + causal_mask_torch.float()
+    attn_weights = F.softmax(snodes, dim=-1)
     attn_out_ref = attn_weights @ v_ref
 
     # Output projection + residual

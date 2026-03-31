@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-to-loops),convert-ttl-to-ttkernel,ttkernel-insert-inits)' | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-to-loops, ttl-annotate-cb-associations),convert-ttl-to-ttkernel,ttkernel-insert-inits)' | FileCheck %s
 
 // Test: ttl.copy_tile inside ttl.compute lowers to ttkernel.copy_tile_init + ttkernel.copy_tile.
 // The lowering traces src back to the attached CB via tensor.extract (post loop-lowering).
@@ -32,9 +32,11 @@ func.func @copy_tile_in_compute(
                         affine_map<(d0, d1) -> (d0, d1)>],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%tile_in: !ttcore.tile<32x32, f32>, %tile_out: !ttcore.tile<32x32, f32>):
-    %dst, %dst_tile = ttl.copy_tile %tile_in, %src_idx, %dst_idx
-        : !ttcore.tile<32x32, f32>, index, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-    ttl.tile_store %dst_tile, %out_view : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
+    %dst, %dst_tile = ttl.copy_tile %tile_in[%i, %j], %dst_idx
+        : !ttcore.tile<32x32, f32>, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+    ttl.tile_store %dst_tile, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 

@@ -1,34 +1,46 @@
 // Tests for ttl-subblock-compute-for-dst with multiple output CBs.
 // Verifies that 3 independent compute chains writing to 3 separate output
 // CBs are each correctly subblocked for DST.
-// Derived from test_comprehensive_multicore (20 fused ops, 3 outputs).
+// Derived from test_comprehensive_multinode (20 fused ops, 3 outputs).
 // Shape: 4x4 bf16 (capacity=8). Multi-dim tiling: tileSizes=[2,4], product=8.
 // Loop on dim 0 (0 to 4 step 2). Stride 4 for dim 0 offset.
 
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttcore-register-device,func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-subblock-compute-for-dst))' | FileCheck %s --check-prefix=SUBBLOCK
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-subblock-compute-for-dst))' | FileCheck %s --check-prefix=SUBBLOCK
 
 // SUBBLOCK-LABEL: func.func @fused_compute
 // Verify three separate scf.for loops with inner ttl.compute ops (one per
-// output chain), each with linearized_index offset by arith.muli + arith.addi.
+// output chain). iter_index ops produce local subblock coordinates directly
+// (no arith.addi offset). tile_store views reference extract_slice of the
+// attach_cb result.
+//
+// Chain 1:
 // SUBBLOCK:        scf.for %[[IV1:.*]] =
 // SUBBLOCK:          ttl.compute
-// SUBBLOCK:            ttl.linearized_index
-// SUBBLOCK:            arith.muli %[[IV1]],
-// SUBBLOCK-NEXT:       arith.addi
+// SUBBLOCK:            %[[I_DIM0_A:.*]] = ttl.iter_index 0 : index
+// SUBBLOCK-NEXT:       %[[I_DIM1_A:.*]] = ttl.iter_index 1 : index
+// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_A]], %[[I_DIM1_A]]], %{{.*}}
+// SUBBLOCK:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_A]], %[[I_DIM1_A]]]
+// SUBBLOCK:        } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 4 : index}
+// Chain 2:
 // SUBBLOCK:        scf.for %[[IV2:.*]] =
 // SUBBLOCK:          ttl.compute
-// SUBBLOCK:            ttl.linearized_index
-// SUBBLOCK:            arith.muli %[[IV2]],
-// SUBBLOCK-NEXT:       arith.addi
+// SUBBLOCK:            %[[I_DIM0_B:.*]] = ttl.iter_index 0 : index
+// SUBBLOCK-NEXT:       %[[I_DIM1_B:.*]] = ttl.iter_index 1 : index
+// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_B]], %[[I_DIM1_B]]], %{{.*}}
+// SUBBLOCK:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_B]], %[[I_DIM1_B]]]
+// SUBBLOCK:        } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 4 : index}
+// Chain 3:
 // SUBBLOCK:        scf.for %[[IV3:.*]] =
 // SUBBLOCK:          ttl.compute
-// SUBBLOCK:            ttl.linearized_index
-// SUBBLOCK:            arith.muli %[[IV3]],
-// SUBBLOCK-NEXT:       arith.addi
+// SUBBLOCK:            %[[I_DIM0_C:.*]] = ttl.iter_index 0 : index
+// SUBBLOCK-NEXT:       %[[I_DIM1_C:.*]] = ttl.iter_index 1 : index
+// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_C]], %[[I_DIM1_C]]], %{{.*}}
+// SUBBLOCK:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_C]], %[[I_DIM1_C]]]
+// SUBBLOCK:        } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 4 : index}
 
 // Verify that lower-to-loops produces an outer subblock scf.for with unrolled
 // inner tile copies (inner tile loops are fully unrolled). Each chain has one
-// scf.for with arith.muli + arith.addi offset pattern and 8 unrolled copies.
+// scf.for with subblock attributes and 4 unrolled copies (1x4 subblock).
 
 // Purpose: Compute function with 3 input CBs, 3 output CBs, and 20 fused ops
 // across 3 store chains. Each chain reads from different input CBs and stores

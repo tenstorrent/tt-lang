@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+// SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -18,6 +18,8 @@
 //   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 //   TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 //   TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
+//   TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
+//   TTL_CB_UNARY_ATTR_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 //
 // Parameters:
 //   TTL_OP     - TTL tensor op name (e.g., Add -> ttl::AddOp)
@@ -28,6 +30,8 @@
 // Usage:
 //   #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE) ...
 //   #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE) ...
+//   #define TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE) ...
+//   #define TTL_CB_UNARY_ATTR_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE) ...
 //   #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 //
 //===----------------------------------------------------------------------===//
@@ -86,6 +90,9 @@ TTL_UNARY_TILE_OP(Relu, ReluTileOp, ReluTileInitOp, ReluTileOp)
 TTL_UNARY_TILE_OP(Sigmoid, SigmoidTileOp, SigmoidTileInitOp, SigmoidTileOp)
 TTL_UNARY_TILE_OP(Floor, FloorTileOp, RoundingTileInitOp, FloorTileOp)
 TTL_UNARY_TILE_OP(Recip, RecipTileOp, RecipTileInitOp, RecipTileOp)
+TTL_UNARY_TILE_OP(Sin, SinTileOp, SinTileInitOp, SinTileOp)
+TTL_UNARY_TILE_OP(Cos, CosTileOp, CosTileInitOp, CosTileOp)
+TTL_UNARY_TILE_OP(Tan, TanTileOp, TanTileInitOp, TanTileOp)
 
 // CB -> DST ops with attribute
 TTL_CB_UNARY_ATTR_OP(Bcast, TileBcastOp, UnaryBcastInitOp, UnaryBcastTileOp)
@@ -97,7 +104,6 @@ TTL_FPU_BINARY_TILE_OP(Mul, MulTileOp, MulTilesInitOp, MulTilesOp)
 
 #undef TTL_BINARY_TILE_OP
 #undef TTL_UNARY_TILE_OP
-#undef TTL_BINARY_TILE_OP_SPECIAL
 #undef TTL_CB_UNARY_ATTR_OP
 #undef TTL_BINARY_TILE_OP_MINMAX
 #undef TTL_FPU_BINARY_TILE_OP

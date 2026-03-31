@@ -13,89 +13,140 @@ system similar to ttnnsim.py. Special functions like broadcast and reductions
 are implemented manually.
 """
 
-from typing import Callable, List, Optional
+import math as _math
+from itertools import product as _iter_product
+from typing import Callable, List, Optional, Set
 
 import torch
 
-from .blockstate import BlockAcquisition, ThreadType
+from .context import get_context
+from .diagnostics import warn_once_per_location
+from .greenlet_scheduler import get_current_core_id
 from .dfb import Block, track_source_blocks, matmul
+from .blockstate import BlockAcquisition, ThreadType
 from .ttnnsim import Tensor
+from .typedefs import PositiveInt
 
 _ = matmul
 
 
+def _warn_1d_broadcast_unsupported() -> None:
+    """Issue a warning that 1D broadcast is not supported on current hardware.
+
+    Tracks which cores hit each source location and only prints once per location,
+    showing the list of cores that encountered the issue.
+    """
+    warn_once_per_location(
+        get_context().warnings.broadcast_1d_warnings,
+        "1D broadcast is not supported on current hardware",
+        get_current_core_id(),
+    )
+
+
 def broadcast(
     block: Block,
-    *,
+    output_hint: Optional[Block] = None,
     dims: Optional[List[int]] = None,
 ) -> Block:
     """Broadcast a block along specified dimensions.
 
-    This function replicates values within each tile along the specified dimensions.
-    After reduce operations store values at specific positions (e.g., reduce_max with
-    dims=[0] stores max per row at column 0), broadcast replicates those values.
+    This function can operate in two modes:
 
-    For dims=[1] (broadcast along columns):
-    - Takes values from column 0 of each row
-    - Replicates them across all columns in that row
+    1. **Eager expansion** (when output_hint is provided):
+       Immediately expands the block to match the output hint's shape and returns
+       a fully materialized Block. This allows multiple broadcasts to be used in
+       the same expression without conflicts.
 
-    For dims=[0] (broadcast along rows):
-    - Takes values from row 0 of each column
-    - Replicates them across all rows in that column
+    2. **Lazy expansion** (when output_hint is None):
+       Marks the block with broadcast metadata. Actual expansion happens later
+       when the block is stored or used in operations.
+
+    Dimension indexing uses standard Python convention: positive dim 0 is the
+    outermost dimension, dim 1 is the next, and so on. Negative indices count
+    from the innermost: dim -1 is the innermost (last) dimension, dim -2 is
+    the next-to-innermost, and so on.
+
+    For a 2-D grid block of shape (N, M):
+    - dims=[0] or dims=[-2] (outermost/rows): Block must have element size 1 in first dimension.
+    - dims=[1] or dims=[-1] (innermost/columns): Block must have element size 1 in last dimension.
 
     Args:
         block: Input block to broadcast
-        dims: List of dimension indices to broadcast along (0-indexed)
+        output_hint: Optional output block providing target shape for eager expansion
+        dims: List of dimension indices to broadcast along (standard Python indexing)
 
     Returns:
-        Block with values replicated along the specified dimensions
+        Block with broadcast applied (either lazy metadata or eagerly expanded)
+
+    Examples:
+        # Eager expansion - immediately materialized
+        # a_blk shape (N, 1): broadcast along innermost (cols) to match y_blk shape (N, M)
+        a_bcast = ttl.math.broadcast(a_blk, y_blk, dims=[-1])
+        # b_blk shape (1, M): broadcast along outermost (rows) to match y_blk shape (N, M)
+        b_bcast = ttl.math.broadcast(b_blk, y_blk, dims=[0])
+        y_blk.store(a_bcast * b_bcast)  # Works - both are materialized
+
+        # Lazy expansion - deferred until use
+        a_bcast = ttl.math.broadcast(a_blk, dims=[-1])
+        y_blk.store(a_bcast * b_blk)  # a_bcast expands during store
     """
     if dims is None:
         raise ValueError("dims parameter is required for broadcast()")
 
-    # Validate that the dimensions being broadcast have size 1 at grid level
+    # Validate that the dimensions being broadcast have element size 1.
+    # dims uses standard Python indexing: positive 0 = outermost, -1 = innermost.
     block_shape = block._shape  # type: ignore[attr-defined]
+    element_shape = block._element_shape  # type: ignore[attr-defined]
+    ndim = len(block_shape)
+
+    # Check if this is a 1D broadcast and issue a warning
+    if ndim == 1:
+        _warn_1d_broadcast_unsupported()
+
     for dim in dims:
-        if dim >= len(block_shape):
+        if dim >= ndim or dim < -ndim:
             raise ValueError(
                 f"Cannot broadcast along dimension {dim}: block has shape {block_shape} "
-                f"with only {len(block_shape)} dimensions"
+                f"with only {ndim} dimensions"
             )
-        if block_shape[dim] != 1:
+        # Standard Python indexing: element_shape[dim] handles both positive and negative.
+        if element_shape[dim] != 1:
             raise ValueError(
-                f"Cannot broadcast along dimension {dim}: dimension must have size 1, "
-                f"but has size {block_shape[dim]}"
+                f"Cannot broadcast along dimension {dim}: dimension must have element size 1, "
+                f"but has element size {element_shape[dim]}"
             )
 
-    # Perform within-tile broadcasting
-    input_tensors = [t.to_torch() for t in block.to_list()]
-    result_tensors: List[Tensor] = []
+    # If output hint is provided, perform eager expansion
+    if output_hint is not None:
+        target_shape = output_hint._shape  # type: ignore[attr-defined]
+        target_element_shape = output_hint._element_shape  # type: ignore[attr-defined]
 
-    for tile in input_tensors:
-        # Create a slice that selects index 0 for each dimension in dims
-        slices = [slice(None)] * tile.ndim
-        for dim in dims:
-            slices[dim] = slice(0, 1)
+        # Validate dimensionality matches
+        if len(target_shape) != len(block_shape):
+            raise ValueError(
+                f"Broadcast output hint has {len(target_shape)} dimensions, "
+                f"but source block has {len(block_shape)} dimensions"
+            )
 
-        # Extract the slice and expand back to original shape
-        result_tile = tile[tuple(slices)].expand(tile.shape).clone()
-        result_tensors.append(Tensor(result_tile))
+        # Use PyTorch broadcasting to expand the tensor
+        src_tensor = block._buf.to_torch()  # type: ignore[attr-defined]
+        expanded_tensor = src_tensor.expand(*target_element_shape)
 
-    result_block = Block.from_list(result_tensors, block_shape)
+        # Create a new materialized block directly with the target shape
+        # Use Block constructor to create a temporary block
+        result_block = Block(
+            tensor=Tensor(expanded_tensor.contiguous()),
+            shape=target_shape,
+            acquisition=BlockAcquisition.RESERVE,
+            thread_type=ThreadType.COMPUTE,
+            is_temporary=True,
+        )
+        track_source_blocks(result_block, block)
+        return result_block
 
-    # Preserve source block tracking for wait() blocks
-    if block._source_blocks:  # type: ignore[attr-defined]
-        result_block._source_blocks = block._source_blocks.copy()  # type: ignore[attr-defined]
-
-    # If block itself is a wait() block, add it to source_blocks
-    if (
-        not block._is_temporary  # type: ignore[attr-defined]
-        and block.acquisition == BlockAcquisition.WAIT
-        and block.thread_type == ThreadType.COMPUTE
-    ):
-        result_block._source_blocks.append(block)  # type: ignore[attr-defined]
-
-    return result_block
+    # No output hint - use lazy expansion with metadata
+    block._broadcast_dims = tuple(dims)  # type: ignore[attr-defined]
+    return block
 
 
 # Helper function to create unary operation wrappers
@@ -114,11 +165,12 @@ def _create_unary_op_wrapper(
 
     def wrapper(block: Block) -> Block:
         # Apply the operation to each tensor in the block
+        layout = block.layout
         result_torch: List[torch.Tensor] = [
             torch_fn(t.to_torch()) for t in block.to_list()
         ]
 
-        result_list: List[Tensor] = [Tensor(t) for t in result_torch]
+        result_list: List[Tensor] = [Tensor(t, layout) for t in result_torch]
         result_block = Block.from_list(result_list, shape=block._shape)  # type: ignore[attr-defined]
         track_source_blocks(result_block, block)
         return result_block
@@ -151,7 +203,6 @@ _TORCH_UNARY_OPS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     "square": torch.square,
     "rsqrt": torch.rsqrt,
     "recip": torch.reciprocal,
-    "floor": torch.floor,
     # Trigonometric unary math functions (from spec)
     "tan": torch.tan,
     "tanh": torch.tanh,
@@ -171,6 +222,13 @@ _TORCH_UNARY_OPS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     "softsign": torch.nn.functional.softsign,  # type: ignore[dict-item]
     "hardsigmoid": torch.nn.functional.hardsigmoid,
     "selu": torch.nn.functional.selu,
+    # Rounding functions (from spec) - simple unary
+    "floor": torch.floor,
+    "ceil": torch.ceil,
+    "frac": torch.frac,
+    "trunc": torch.trunc,
+    "sign": torch.sign,
+    "signbit": torch.signbit,
 }
 
 # Auto-generate all simple unary operation functions
@@ -186,6 +244,9 @@ def _apply_binary_op(
 ) -> Block:
     """Apply a binary operation element-wise to two blocks.
 
+    Both blocks must have the same shape; broadcasting between blocks of different
+    shapes is not supported by this helper (use Block operator overloads instead).
+
     Args:
         a: First input block
         b: Second input block
@@ -193,16 +254,70 @@ def _apply_binary_op(
 
     Returns:
         Block with operation applied element-wise
+
+    Raises:
+        ValueError: If a and b have different shapes.
     """
+    a_shape = a._shape  # type: ignore[attr-defined]
+    b_shape = b._shape  # type: ignore[attr-defined]
+    if a_shape != b_shape:
+        raise ValueError(
+            f"Shape mismatch in binary op: a has shape {a_shape}, b has shape {b_shape}"
+        )
+    layout = a.layout
     a_tensors = [t.to_torch() for t in a.to_list()]
     b_tensors = [t.to_torch() for t in b.to_list()]
     result_torch: List[torch.Tensor] = [
         op(a_t, b_t) for a_t, b_t in zip(a_tensors, b_tensors)
     ]
-    result_list: List[Tensor] = [Tensor(t) for t in result_torch]
+    result_list: List[Tensor] = [Tensor(t, layout) for t in result_torch]
 
-    result_block = Block.from_list(result_list, shape=a._shape)  # type: ignore[attr-defined]
+    result_block = Block.from_list(result_list, shape=a_shape)  # type: ignore[attr-defined]
     track_source_blocks(result_block, a, b)
+    return result_block
+
+
+def _apply_ternary_op(
+    a: Block,
+    b: Block,
+    c: Block,
+    op: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor],
+) -> Block:
+    """Apply a ternary operation element-wise to three blocks.
+
+    All blocks must have the same shape.
+
+    Args:
+        a: First input block
+        b: Second input block
+        c: Third input block
+        op: Ternary operation to apply (takes three torch tensors)
+
+    Returns:
+        Block with operation applied element-wise
+
+    Raises:
+        ValueError: If blocks have different shapes.
+    """
+    a_shape = a._shape  # type: ignore[attr-defined]
+    b_shape = b._shape  # type: ignore[attr-defined]
+    c_shape = c._shape  # type: ignore[attr-defined]
+    if not (a_shape == b_shape == c_shape):
+        raise ValueError(
+            f"Shape mismatch in ternary op: a has shape {a_shape}, "
+            f"b has shape {b_shape}, c has shape {c_shape}"
+        )
+    layout = a.layout
+    a_tensors = [t.to_torch() for t in a.to_list()]
+    b_tensors = [t.to_torch() for t in b.to_list()]
+    c_tensors = [t.to_torch() for t in c.to_list()]
+    result_torch: List[torch.Tensor] = [
+        op(a_t, b_t, c_t) for a_t, b_t, c_t in zip(a_tensors, b_tensors, c_tensors)
+    ]
+    result_list: List[Tensor] = [Tensor(t, layout) for t in result_torch]
+
+    result_block = Block.from_list(result_list, shape=a_shape)  # type: ignore[attr-defined]
+    track_source_blocks(result_block, a, b, c)
     return result_block
 
 
@@ -219,8 +334,9 @@ def _apply_unary_with_params(
     Returns:
         Block with operation applied element-wise
     """
+    layout = block.layout
     result_torch: List[torch.Tensor] = [op(t.to_torch()) for t in block.to_list()]
-    result_list: List[Tensor] = [Tensor(t) for t in result_torch]
+    result_list: List[Tensor] = [Tensor(t, layout) for t in result_torch]
 
     result_block = Block.from_list(result_list, shape=block._shape)  # type: ignore[attr-defined]
     track_source_blocks(result_block, block)
@@ -255,7 +371,7 @@ def min(a: Block, b: Block) -> Block:
 
 
 # Unary operations with scalar parameters
-def rsub(a: Block, b: int) -> Block:
+def rsub(a: Block, b: PositiveInt) -> Block:
     """Subtract a from b where b is scalar unsigned integer (b - a).
 
     Args:
@@ -269,7 +385,7 @@ def rsub(a: Block, b: int) -> Block:
 
 
 # Activation functions with parameters
-def relu_max(expr: Block, upper_limit: int) -> Block:
+def relu_max(expr: Block, upper_limit: PositiveInt) -> Block:
     """ReLU with upper limit.
 
     Equivalent to: ttl.math.relu(ttl.math.min(x, upper_limit))
@@ -288,7 +404,7 @@ def relu_max(expr: Block, upper_limit: int) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
-def relu_min(expr: Block, lower_limit: int) -> Block:
+def relu_min(expr: Block, lower_limit: PositiveInt) -> Block:
     """ReLU with lower limit.
 
     Equivalent to: ttl.math.relu(ttl.math.max(x, lower_limit))
@@ -307,7 +423,7 @@ def relu_min(expr: Block, lower_limit: int) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
-def leaky_relu(expr: Block, slope: float) -> Block:
+def leaky_relu(expr: Block, slope: PositiveInt) -> Block:
     """Leaky ReLU activation.
 
     Args:
@@ -324,7 +440,7 @@ def leaky_relu(expr: Block, slope: float) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
-def elu(expr: Block, alpha: float) -> Block:
+def elu(expr: Block, alpha: PositiveInt) -> Block:
     """ELU activation.
 
     Args:
@@ -341,7 +457,7 @@ def elu(expr: Block, alpha: float) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
-def celu(expr: Block, alpha: float, alpha_recip: float) -> Block:
+def celu(expr: Block, alpha: PositiveInt, alpha_recip: PositiveInt) -> Block:
     """CELU activation.
 
     Args:
@@ -359,7 +475,7 @@ def celu(expr: Block, alpha: float, alpha_recip: float) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
-def prelu(expr: Block, alpha: float) -> Block:
+def prelu(expr: Block, alpha: PositiveInt) -> Block:
     """PReLU activation.
 
     Args:
@@ -378,7 +494,7 @@ def prelu(expr: Block, alpha: float) -> Block:
 
 
 def softplus(
-    expr: Block, beta: float, beta_reciprocal: float, threshold: float
+    expr: Block, beta: PositiveInt, beta_reciprocal: PositiveInt, threshold: PositiveInt
 ) -> Block:
     """Softplus activation.
 
@@ -398,7 +514,7 @@ def softplus(
     return _apply_unary_with_params(expr, _op)
 
 
-def hardtanh(expr: Block, min_val: float, max_val: float) -> Block:
+def hardtanh(expr: Block, min_val: PositiveInt, max_val: PositiveInt) -> Block:
     """Hardtanh activation.
 
     Args:
@@ -416,196 +532,282 @@ def hardtanh(expr: Block, min_val: float, max_val: float) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
+# Rounding functions with parameters
+def round(expr: Block, decimals: PositiveInt = 0) -> Block:
+    """Round to specified number of decimal places.
+
+    Args:
+        expr: Input block
+        decimals: Number of decimal places to round to
+
+    Returns:
+        Block with values rounded to specified decimal places
+    """
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        return torch.round(t, decimals=decimals)
+
+    return _apply_unary_with_params(expr, _op)
+
+
+def clamp(expr: Block, min: PositiveInt, max: PositiveInt) -> Block:
+    """Clamp values to specified min and max.
+
+    Args:
+        expr: Input block
+        min: Minimum value
+        max: Maximum value
+
+    Returns:
+        Block with values clamped to [min, max]
+    """
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        return torch.clamp(t, min=min, max=max)
+
+    return _apply_unary_with_params(expr, _op)
+
+
+def threshold(expr: Block, threshold: PositiveInt, value: PositiveInt) -> Block:
+    """Replace values greater than threshold with specified value.
+
+    Args:
+        expr: Input block
+        threshold: Threshold value
+        value: Replacement value for elements > threshold
+
+    Returns:
+        Block with thresholding applied
+    """
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        # Spec: replace values GREATER THAN threshold (not <= like torch.threshold)
+        return torch.where(t > threshold, torch.tensor(value, dtype=t.dtype), t)
+
+    return _apply_unary_with_params(expr, _op)
+
+
+# Fill, mask and where functions
+def fill(expr: Block, value: float) -> Block:
+    """Fill a block with specified value.
+
+    Args:
+        expr: Input block (shape is preserved)
+        value: Value to fill
+
+    Returns:
+        Block filled with specified value
+    """
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        return torch.full_like(t, value)
+
+    return _apply_unary_with_params(expr, _op)
+
+
+def mask(expr: Block, mask: Block) -> Block:
+    """Mask a block by replacing masked elements with 0.
+
+    Args:
+        expr: Input block
+        mask: Mask block (elements equal to 1 are masked)
+
+    Returns:
+        Block with masked elements replaced by 0
+    """
+
+    def _op(t1: torch.Tensor, t2: torch.Tensor) -> torch.Tensor:
+        # Mask: where mask == 1, replace with 0, else keep original
+        return torch.where(t2 == 1, torch.tensor(0.0, dtype=t1.dtype), t1)
+
+    return _apply_binary_op(expr, mask, _op)
+
+
+def mask_posinf(expr: Block, mask: Block) -> Block:
+    """Mask a block by replacing masked elements with positive infinity.
+
+    Args:
+        expr: Input block
+        mask: Mask block (elements equal to 1 are masked)
+
+    Returns:
+        Block with masked elements replaced by positive infinity
+    """
+
+    def _op(t1: torch.Tensor, t2: torch.Tensor) -> torch.Tensor:
+        # Mask: where mask == 1, replace with +inf, else keep original
+        return torch.where(t2 == 1, torch.tensor(float("inf"), dtype=t1.dtype), t1)
+
+    return _apply_binary_op(expr, mask, _op)
+
+
+def where(condition: Block, true_value: Block, false_value: Block) -> Block:
+    """Conditional element selection.
+
+    Args:
+        condition: Condition block (elements equal to 1 are true, 0 are false)
+        true_value: Block to select from when condition is true
+        false_value: Block to select from when condition is false
+
+    Returns:
+        Block with elements selected based on condition
+    """
+
+    def _op(cond: torch.Tensor, tv: torch.Tensor, fv: torch.Tensor) -> torch.Tensor:
+        return torch.where(cond == 1, tv, fv)
+
+    return _apply_ternary_op(condition, true_value, false_value, _op)
+
+
+def _reduce_impl(
+    block: Block,
+    scaler: Block,
+    dims: List[int],
+    op: str,  # 'sum' or 'max'
+) -> Block:
+    """Shared implementation for reduce_sum and reduce_max over an ND block grid.
+
+    Reduces the block along specified grid dimensions using torch operations.
+    Each reduced dimension collapses to size 1 in the resulting grid.
+
+    Dimension indexing uses standard Python convention: positive dim 0 is the
+    outermost dimension, dim 1 is the next, and so on. Negative dims count from
+    the innermost: dim -1 is the innermost (last) dimension, dim -2 is the
+    next-to-innermost, and so on.
+
+    Args:
+        block: Input block.
+        scaler: Scaler block; its first tile is multiplied into every result tile.
+        dims: Grid dimensions to reduce over (standard Python indexing).
+        op: 'sum' or 'max'.
+
+    Returns:
+        Reduced block with grid shape having each dimension in dims collapsed to 1.
+    """
+    block_shape = block._shape  # type: ignore[attr-defined]
+    ndim = len(block_shape)
+    dims_set: Set[int] = set(dims)
+
+    for d in dims_set:
+        if d >= ndim or d < -ndim:
+            raise ValueError(
+                f"Cannot reduce along dimension {d}: block grid has only {ndim} dimensions"
+            )
+
+    # Translate user-facing dims to internal grid indices using standard Python
+    # indexing: d % ndim maps both positive and negative dims correctly.
+    internal_dims_set = {d % ndim for d in dims_set}
+
+    # Get the scaler
+    scaler_tile = scaler.to_list()[0].to_torch()
+
+    # Compute result grid shape
+    result_shape = tuple(
+        1 if i in internal_dims_set else block_shape[i] for i in range(ndim)
+    )
+
+    # Stack input tiles to reshape for reduction
+    # Each output grid position gets contributions from multiple input positions
+    input_tensors = [t.to_torch() for t in block.to_list()]
+    result_tensors: List[Tensor] = []
+
+    for out_idx in _iter_product(*[range(s) for s in result_shape]):
+        # Collect all input tiles that contribute to this output position
+        in_ranges = [
+            (
+                range(block_shape[i])
+                if i in internal_dims_set
+                else range(out_idx[i], out_idx[i] + 1)
+            )
+            for i in range(ndim)
+        ]
+
+        # Gather contributing tiles
+        contributing_tiles: List[torch.Tensor] = []
+        for in_idx in _iter_product(*in_ranges):
+            flat = sum(
+                in_idx[i] * _math.prod(block_shape[i + 1 :]) for i in range(ndim)
+            )
+            contributing_tiles.append(input_tensors[flat])
+
+        # Reduce across contributing tiles using torch operations
+        if len(contributing_tiles) == 1:
+            result_tile = contributing_tiles[0]
+        else:
+            # Stack and reduce
+            stacked = torch.stack(contributing_tiles, dim=0)
+            if op == "sum":
+                result_tile = stacked.sum(dim=0)
+            else:  # max
+                result_tile = stacked.max(dim=0).values
+
+        # Apply scaler
+        result_tensors.append(Tensor(result_tile * scaler_tile, block.layout))
+
+    result_block = Block.from_list(result_tensors, shape=result_shape)
+    track_source_blocks(result_block, block, scaler)
+    return result_block
+
+
 def reduce_max(
     block: Block,
     scaler: Block,
+    _output_hint: Optional[Block] = None,
     dims: Optional[List[int]] = None,
 ) -> Block:
-    """Scaled maximum reduction.
+    """Scaled maximum reduction over an ND block grid.
 
-    Computes the scaled maximum reduction over specified dimensions.
-    The result is the maximum value along the specified dimensions, scaled by the scaler.
-
-    Reduction operates at two levels:
-    1. Within each tile: reduces along the specified tensor dimensions
-    2. Across tiles: combines tiles in the grid along the specified dimensions
-
-    For dims=[0] (reduce rows):
-    - Within each tile: compute max per row (across columns), store at column 0
-    - Across tiles: combine tiles along grid row dimension
-
-    For dims=[1] (reduce columns):
-    - Within each tile: compute max per column (across rows), store at row 0
-    - Across tiles: combine tiles along grid column dimension
+    See _reduce_impl for full semantics. dims must be non-empty and every
+    element must be a valid grid dimension index.
 
     Args:
-        block: Input block to reduce
-        scaler: Scaler block
-        dims: List of dimension indices to reduce over (0-indexed)
-              Example: [0] for rows, [1] for columns, [0, 1] for all
+        block: Input block.
+        scaler: Scaler block; its first tile is multiplied into every result tile.
+        _output_hint: Unused output block hint (kept for API compatibility).
+        dims: Grid dimensions to reduce over (standard Python indexing).
 
     Returns:
-        Block with reduced dimensions
+        Block with reduced dimensions.
     """
-
     if dims is None or not dims:
         raise ValueError("dims parameter must contain at least one dimension")
-
-    block_shape = block._shape  # type: ignore[attr-defined]
-    M, N = block_shape
-    input_tensors = [t.to_torch() for t in block.to_list()]
-    scaler_tile = scaler.to_list()[0].to_torch()
-
-    for dim in dims:
-        if dim >= 2:
-            raise ValueError(
-                f"Cannot reduce along dimension {dim}: block grid has only 2 dimensions"
-            )
-
-    # Step 1: Within-tile reduction
-    # dims=[0] means reduce across columns within each row -> one value per row at col 0
-    # dims=[1] means reduce across rows within each column -> one value per col at row 0
-    reduced_tiles: List[torch.Tensor] = []
-    for tile in input_tensors:
-        result_tile = torch.zeros_like(tile)
-        if 0 in dims and 1 in dims:
-            # Full reduction: single max value at position (0, 0)
-            max_val = tile.max()
-            result_tile[0, 0] = max_val
-        elif 0 in dims:
-            # Reduce across columns (dim 1) for each row -> store at column 0
-            row_maxes = tile.max(dim=1).values  # shape: (32,)
-            result_tile[:, 0] = row_maxes
-        elif 1 in dims:
-            # Reduce across rows (dim 0) for each column -> store at row 0
-            col_maxes = tile.max(dim=0).values  # shape: (32,)
-            result_tile[0, :] = col_maxes
-        reduced_tiles.append(result_tile)
-
-    # Step 2: Grid-level reduction (combine tiles across specified grid dimensions)
-    result_M = 1 if 0 in dims else M
-    result_N = 1 if 1 in dims else N
-
-    result_tensors: List[Tensor] = []
-    for res_i in range(result_M):
-        for res_j in range(result_N):
-            tiles_to_max: List[torch.Tensor] = []
-            for i in range(M):
-                for j in range(N):
-                    if (0 in dims or i == res_i) and (1 in dims or j == res_j):
-                        tile_idx = i * N + j
-                        tiles_to_max.append(reduced_tiles[tile_idx])
-
-            result_tile = tiles_to_max[0]
-            for tile in tiles_to_max[1:]:
-                result_tile = torch.maximum(result_tile, tile)
-
-            result_tile = result_tile * scaler_tile
-            result_tensors.append(Tensor(result_tile))
-
-    result_block = Block.from_list(result_tensors, shape=(result_M, result_N))
-    track_source_blocks(result_block, block, scaler)
-    return result_block
+    return _reduce_impl(block, scaler, dims, "max")
 
 
 def reduce_sum(
     block: Block,
     scaler: Block,
+    _output_hint: Optional[Block] = None,
     dims: Optional[List[int]] = None,
 ) -> Block:
-    """Scaled sum reduction.
+    """Scaled sum reduction over an ND block grid.
 
-    Computes the scaled sum reduction over specified dimensions.
-    The result is the sum of values along the specified dimensions, scaled by the scaler.
-
-    Reduction operates at two levels:
-    1. Within each tile: reduces along the specified tensor dimensions
-    2. Across tiles: combines tiles in the grid along the specified dimensions
-
-    For dims=[0] (reduce rows):
-    - Within each tile: compute sum per row (across columns), store at column 0
-    - Across tiles: combine tiles along grid row dimension
-
-    For dims=[1] (reduce columns):
-    - Within each tile: compute sum per column (across rows), store at row 0
-    - Across tiles: combine tiles along grid column dimension
+    See _reduce_impl for full semantics. dims must be non-empty and every
+    element must be a valid grid dimension index.
 
     Args:
-        block: Input block to reduce
-        scaler: Scaler block
-        dims: List of dimension indices to reduce over (0-indexed)
-              Example: [0] for rows, [1] for columns, [0, 1] for all
+        block: Input block.
+        scaler: Scaler block; its first tile is multiplied into every result tile.
+        _output_hint: Unused output block hint (kept for API compatibility).
+        dims: Grid dimensions to reduce over (standard Python indexing).
 
     Returns:
-        Block with reduced dimensions
+        Block with reduced dimensions.
     """
-
     if dims is None or not dims:
         raise ValueError("dims parameter must contain at least one dimension")
-
-    block_shape = block._shape  # type: ignore[attr-defined]
-    M, N = block_shape
-    input_tensors = [t.to_torch() for t in block.to_list()]
-    scaler_tile = scaler.to_list()[0].to_torch()
-
-    for dim in dims:
-        if dim >= 2:
-            raise ValueError(
-                f"Cannot reduce along dimension {dim}: block grid has only 2 dimensions"
-            )
-
-    # Step 1: Within-tile reduction
-    # dims=[0] means reduce across columns within each row -> one value per row at col 0
-    # dims=[1] means reduce across rows within each column -> one value per col at row 0
-    reduced_tiles: List[torch.Tensor] = []
-    for tile in input_tensors:
-        result_tile = torch.zeros_like(tile)
-        if 0 in dims and 1 in dims:
-            # Full reduction: single sum value at position (0, 0)
-            sum_val = tile.sum()
-            result_tile[0, 0] = sum_val
-        elif 0 in dims:
-            # Reduce across columns (dim 1) for each row -> store at column 0
-            row_sums = tile.sum(dim=1)  # shape: (32,)
-            result_tile[:, 0] = row_sums
-        elif 1 in dims:
-            # Reduce across rows (dim 0) for each column -> store at row 0
-            col_sums = tile.sum(dim=0)  # shape: (32,)
-            result_tile[0, :] = col_sums
-        reduced_tiles.append(result_tile)
-
-    # Step 2: Grid-level reduction (combine tiles across specified grid dimensions)
-    result_M = 1 if 0 in dims else M
-    result_N = 1 if 1 in dims else N
-
-    result_tensors: List[Tensor] = []
-    for res_i in range(result_M):
-        for res_j in range(result_N):
-            tiles_to_sum: List[torch.Tensor] = []
-            for i in range(M):
-                for j in range(N):
-                    if (0 in dims or i == res_i) and (1 in dims or j == res_j):
-                        tile_idx = i * N + j
-                        tiles_to_sum.append(reduced_tiles[tile_idx])
-
-            result_tile = tiles_to_sum[0].clone()
-            for tile in tiles_to_sum[1:]:
-                result_tile = result_tile + tile
-
-            result_tile = result_tile * scaler_tile
-            result_tensors.append(Tensor(result_tile))
-
-    result_block = Block.from_list(result_tensors, shape=(result_M, result_N))
-    track_source_blocks(result_block, block, scaler)
-    return result_block
+    return _reduce_impl(block, scaler, dims, "sum")
 
 
 # Clean up temporary variables
-for _name in ["_op_name", "_torch_fn"]:
-    globals().pop(_name, None)
+_cleanup_name: Optional[str] = None
+for _cleanup_name in ("_op_name", "_torch_fn"):
+    globals().pop(_cleanup_name, None)
+if _cleanup_name is not None:  # Always true after loop executes
+    del _cleanup_name
 
 
-def transpose(block: Block) -> Block:
+def transpose(block: Block, _output_hint: Optional[Block] = None) -> Block:
     """Transpose a 2D tile tensor (swap width and height).
 
     Performs width-height transpose on input tiles. Each 32x32 tile has its
@@ -615,12 +817,19 @@ def transpose(block: Block) -> Block:
 
     Args:
         block: Input block with shape (M, N)
+        _output_hint: Optional output block hint (unused in simulator)
 
     Returns:
         Block with shape (N, M), where each tile is transposed
     """
+    if len(block._shape) != 2:  # type: ignore[attr-defined]
+        raise ValueError(
+            f"transpose requires a 2-D block grid, got shape {block._shape}"  # type: ignore[attr-defined]
+        )
+
     # Transpose each tile (swap rows/columns within tiles)
-    transposed_tiles = [Tensor(t.to_torch().T) for t in block.to_list()]
+    layout = block.layout
+    transposed_tiles = [Tensor(t.to_torch().T, layout) for t in block.to_list()]
 
     # Also swap the tile grid dimensions: (M, N) -> (N, M)
     M, N = block._shape  # type: ignore[attr-defined]

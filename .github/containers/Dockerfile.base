@@ -1,26 +1,90 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# tt-lang base image: Extends tt-mlir base with tt-lang Python dependencies
+# tt-lang base image: Ubuntu 22.04 with Python 3.12, Clang 18, and system
+# libraries required by tt-lang and tt-metal.
+#
+# Aligned with tt-mlir's Dockerfile.base to maintain compatibility.
 
-ARG MLIR_TAG=latest
-FROM ghcr.io/tenstorrent/tt-mlir/tt-mlir-base-ubuntu-22-04:${MLIR_TAG}
+FROM ubuntu:22.04
 SHELL ["/bin/bash", "-c"]
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# tt-metal commit for install_dependencies.sh (must match the submodule pin)
+ARG TT_METAL_DEPENDENCIES_COMMIT=beccdb232ed7532b0748f8f97aba958ba43ddae1
+
+# System packages (mirrors tt-mlir Dockerfile.base)
+RUN <<EOT
+set -e
+apt-get update -qq
+apt-get install -y -qq software-properties-common
+add-apt-repository ppa:git-core/ppa -y
+echo "deb http://ppa.launchpad.net/ubuntu-toolchain-r/test/ubuntu jammy main" > /etc/apt/sources.list.d/toolchain-test.list
+apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 1E9377A2BA9EF27F 2C277A0A352154E5
+apt-get update -qq
+apt-get install -y -qq \
+    build-essential \
+    git \
+    libhwloc-dev \
+    pandoc \
+    libtbb-dev \
+    libcapstone-dev \
+    pkg-config \
+    linux-tools-generic \
+    ninja-build \
+    wget \
+    libgtest-dev \
+    ccache \
+    doxygen \
+    graphviz \
+    libyaml-cpp-dev \
+    libboost-all-dev \
+    curl \
+    jq \
+    sudo \
+    time \
+    lcov \
+    zstd libzstd-dev \
+    unzip \
+    ca-certificates \
+    gnupg \
+    libstdc++6
+
+# Install Python 3.12 (matches tt-mlir)
+add-apt-repository ppa:deadsnakes/ppa -y
+apt-get update -qq
+apt-get install -y -qq python3.12 python3.12-dev python3.12-venv
+
+# Install tt-metal runtime dependencies (firmware, SFPI, etc.)
+wget -q https://raw.githubusercontent.com/tenstorrent/tt-metal/${TT_METAL_DEPENDENCIES_COMMIT}/{install_dependencies.sh,tt_metal/sfpi-info.sh,tt_metal/sfpi-version}
+chmod u+x sfpi-info.sh
+bash install_dependencies.sh --docker
+EOT
+
+# Install Clang 18
+RUN wget https://apt.llvm.org/llvm.sh && \
+    chmod u+x llvm.sh && \
+    ./llvm.sh 18 && \
+    apt-get install -y libc++-18-dev libc++abi-18-dev && \
+    ln -sf /usr/bin/clang-18 /usr/bin/clang && \
+    ln -sf /usr/bin/clang++-18 /usr/bin/clang++ && \
+    ln -sf /usr/bin/clangd-18 /usr/bin/clangd && \
+    rm -f llvm.sh
+
 # Copy Python requirements
 COPY requirements.txt /tmp/requirements.txt
 
-# Install tt-lang Python dependencies (runtime + pytest for tests)
-# Use Python 3.11 from tt-mlir base image
-# Install PyTorch CPU variant from official index
-RUN python3.11 -m pip install --upgrade pip --no-cache-dir && \
-    python3.11 -m pip install --index-url https://download.pytorch.org/whl/cpu \
-        torch && \
-    python3.11 -m pip install -r /tmp/requirements.txt --no-cache-dir && \
+# Bootstrap pip for Python 3.12 via ensurepip (not the system python3-pip which
+# conflicts with 3.12's removal of distutils), then install dependencies.
+RUN python3.12 -m ensurepip --upgrade && \
+    python3.12 -m pip install --upgrade pip --no-cache-dir && \
+    python3.12 -m pip install cmake==3.28.4 --no-cache-dir && \
+    python3.12 -m pip install --index-url https://download.pytorch.org/whl/cpu \
+        torch --no-cache-dir && \
+    python3.12 -m pip install -r /tmp/requirements.txt --no-cache-dir && \
     rm /tmp/requirements.txt
 
 # Create python symlink for convenience (available in all images)
-RUN ln -sf /usr/bin/python3.11 /usr/local/bin/python && \
-    ln -sf /usr/bin/python3.11 /usr/local/bin/python3
+RUN ln -sf /usr/bin/python3.12 /usr/local/bin/python && \
+    ln -sf /usr/bin/python3.12 /usr/local/bin/python3

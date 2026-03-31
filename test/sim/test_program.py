@@ -19,6 +19,7 @@ import torch.testing as tt_testing
 from test_utils import make_ones_tensor, make_zeros_tensor
 
 from python.sim import TILE_SHAPE, copy, ttl, ttnn
+from python.sim.dfb import Block
 from python.sim.decorators import _make_cell, rebind_func_with_ctx  # type: ignore[reportPrivateUsage]
 from python.sim.program import Program
 
@@ -31,7 +32,7 @@ class TestBasicExecution:
 
         @ttl.kernel(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
-            # Create accessors and circular buffers
+            # Create accessors and dataflow buffers
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
 
@@ -84,7 +85,7 @@ class TestBasicExecution:
             b: ttnn.Tensor,
             out: ttnn.Tensor,
         ):
-            # Create accessors and circular buffers
+            # Create accessors and dataflow buffers
             # a already is ttnn.Tensor
             # b already is ttnn.Tensor
             # out already is ttnn.Tensor
@@ -139,7 +140,7 @@ class TestBasicExecution:
         tt_testing.assert_close(out.to_torch()[0:64, 0:32], expected.to_torch())
 
 
-class TestMultiCore:
+class TestMultinode:
     """Test multi-core execution."""
 
     def test_two_core_execution(self) -> None:
@@ -155,7 +156,7 @@ class TestMultiCore:
 
             @ttl.compute()
             def compute():
-                core_id = cast(int, ttl.core(dims=1))
+                core_id = cast(int, ttl.node(dims=1))
                 block = a_dfb.wait()
                 out_block = out_dfb.reserve()
                 # All cores just do block + block (multiplies by 2)
@@ -166,7 +167,7 @@ class TestMultiCore:
 
             @ttl.datamovement()
             def dm0():
-                core_id = cast(int, ttl.core(dims=1))
+                core_id = cast(int, ttl.node(dims=1))
                 block = a_dfb.reserve()
                 # Each core reads its own tile
                 tx = copy(a[core_id : core_id + 1, 0:1], block)
@@ -175,7 +176,7 @@ class TestMultiCore:
 
             @ttl.datamovement()
             def dm1():
-                core_id = cast(int, ttl.core(dims=1))
+                core_id = cast(int, ttl.node(dims=1))
                 block = out_dfb.wait()
                 # Each core writes its own tile
                 tx = copy(block, out[core_id : core_id + 1, 0:1])
@@ -203,10 +204,12 @@ class TestMultiCore:
 
             @ttl.compute()
             def compute():
-                core_y, core_x = cast(tuple[int, int], ttl.core(dims=2))
+                core_y, core_x = cast(tuple[int, int], ttl.node(dims=2))
                 out_block = out_dfb.reserve()
                 # Each core writes its coordinates
-                out_block.store([make_ones_tensor(32, 32) * (core_y * 10 + core_x)])
+                out_block.store(
+                    Block.from_tensor(make_ones_tensor(32, 32) * (core_y * 10 + core_x))
+                )
                 out_block.push()
 
             @ttl.datamovement()
@@ -215,7 +218,7 @@ class TestMultiCore:
 
             @ttl.datamovement()
             def dm1():
-                core_y, core_x = cast(tuple[int, int], ttl.core(dims=2))
+                core_y, core_x = cast(tuple[int, int], ttl.node(dims=2))
                 block = out_dfb.wait()
                 tx = copy(
                     block,
@@ -242,8 +245,8 @@ class TestMultiCore:
 class TestContextIsolation:
     """Test that per-core contexts are properly isolated."""
 
-    def test_circular_buffers_isolated(self) -> None:
-        """Test that circular buffers are independent per core."""
+    def test_dataflow_buffers_isolated(self) -> None:
+        """Test that dataflow buffers are independent per core."""
 
         @ttl.kernel(grid=(2, 1))
         def test_kernel(out: ttnn.Tensor):
@@ -253,10 +256,12 @@ class TestContextIsolation:
 
             @ttl.compute()
             def compute():
-                core_id = cast(int, ttl.core(dims=1))
+                core_id = cast(int, ttl.node(dims=1))
                 # Each core reserves/pushes independently
                 block = dfb.reserve()
-                block.store([make_ones_tensor(32, 32) * (core_id + 100)])
+                block.store(
+                    Block.from_tensor(make_ones_tensor(32, 32) * (core_id + 100))
+                )
                 block.push()
 
             @ttl.datamovement()
@@ -265,7 +270,7 @@ class TestContextIsolation:
 
             @ttl.datamovement()
             def dm1():
-                core_id = cast(int, ttl.core(dims=1))
+                core_id = cast(int, ttl.node(dims=1))
                 # Each core waits/pops its own DFB
                 block = dfb.wait()
                 tx = copy(block, out[core_id : core_id + 1, 0:1])
@@ -297,12 +302,12 @@ class TestContextIsolation:
             @ttl.compute()
             def compute():
                 # Compute thread reads shared tensor and stores to DFB
-                core_id = cast(int, ttl.core(dims=1))
+                core_id = cast(int, ttl.node(dims=1))
                 block = dfb.reserve()
                 # Read from shared tensor and store (not copy)
                 # Add core_id to distinguish which core wrote
                 data = shared[0:1, 0:1] + core_id
-                block.store([data])
+                block.store(Block.from_tensor(data))
                 block.push()
 
             @ttl.datamovement()
@@ -312,7 +317,7 @@ class TestContextIsolation:
             @ttl.datamovement()
             def dm1():
                 # DM thread copies from DFB to output
-                core_id = cast(int, ttl.core(dims=1))
+                core_id = cast(int, ttl.node(dims=1))
                 block = dfb.wait()
                 tx = copy(block, out[core_id : core_id + 1, 0:1])
                 tx.wait()
@@ -439,7 +444,7 @@ class TestBlockCompletion:
 
         @ttl.kernel(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor):
-            # Create circular buffers
+            # Create dataflow buffers
             element = make_ones_tensor(32, 32)
             in_dfb = ttl.make_dataflow_buffer_like(
                 element, shape=(1, 1), buffer_factor=2
@@ -476,7 +481,7 @@ class TestBlockCompletion:
 
         @ttl.kernel(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor):
-            # Create circular buffers
+            # Create dataflow buffers
             element = make_ones_tensor(32, 32)
             in_dfb = ttl.make_dataflow_buffer_like(
                 element, shape=(1, 1), buffer_factor=2
@@ -517,7 +522,7 @@ class TestBlockCompletion:
 
         @ttl.kernel(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor, output_data: ttnn.Tensor):
-            # Create circular buffers
+            # Create dataflow buffers
             element = make_ones_tensor(32, 32)
             in_dfb = ttl.make_dataflow_buffer_like(
                 element, shape=(1, 1), buffer_factor=2
@@ -563,10 +568,14 @@ class TestBlockCompletion:
         def test_kernel(input_data: ttnn.Tensor):
             from python.sim.dfb import DataflowBuffer
 
-            # Create multiple circular buffers
+            # Create multiple dataflow buffers
             element = make_ones_tensor(32, 32)
-            dfb1 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
-            dfb2 = DataflowBuffer(element=element, shape=(1, 1), buffer_factor=2)
+            dfb1 = DataflowBuffer(
+                likeness_tensor=element, shape=(1, 1), buffer_factor=2
+            )
+            dfb2 = DataflowBuffer(
+                likeness_tensor=element, shape=(1, 1), buffer_factor=2
+            )
 
             @ttl.datamovement()
             def dm0():
@@ -1012,12 +1021,12 @@ if __name__ == "__main__":
     test_basic.test_cooperative_mode_basic()
     test_basic.test_multi_tile_computation()
 
-    test_multi = TestMultiCore()
+    test_multi = TestMultinode()
     test_multi.test_two_core_execution()
     test_multi.test_four_core_2d_grid()
 
     test_ctx = TestContextIsolation()
-    test_ctx.test_circular_buffers_isolated()
+    test_ctx.test_dataflow_buffers_isolated()
     test_ctx.test_tensors_shared_across_cores()
 
     test_err = TestErrorHandling()

@@ -9,8 +9,13 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Utils.h"
+#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/SetVector.h"
+#include <cstdint>
 #include <optional>
 
 namespace mlir::tt::ttl {
@@ -47,12 +52,9 @@ inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
 
 /// Return the circular buffer attached to `tensor`, or null if none/ambiguous.
 ///
-/// Recognized producers:
-/// - `ttl.attach_cb`: explicit association between a tensor SSA value and a CB.
-/// - `ttl.cb_wait`: returns a tensor view backed by the CB's pages.
-/// - `unrealized_conversion_cast`: trace through to find the original producer.
-///
-/// Both operations establish a tensor->CB association for compute/DMA purposes.
+/// Traces through ViewLikeOpInterface (cb_reserve, cb_wait),
+/// tensor.extract_slice, tensor.extract, unrealized_conversion_cast,
+/// and attach_cb to find the underlying CB value.
 inline mlir::Value getAttachedCB(mlir::Value tensor) {
   // Trace through unrealized conversion casts (from dialect conversion).
   tensor = traceUnrealizedCasts(tensor);
@@ -71,9 +73,17 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
   if (auto attach = tensor.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
     return attach.getCb();
   }
-  if (auto wait = tensor.getDefiningOp<mlir::tt::ttl::CBWaitOp>()) {
-    return wait.getCb();
+
+  // Trace through ViewLikeOpInterface: cb_reserve and cb_wait return
+  // the CB directly as their view source.
+  if (auto viewLike = tensor.getDefiningOp<mlir::ViewLikeOpInterface>()) {
+    mlir::Value source = viewLike.getViewSource();
+    if (mlir::isa<CircularBufferType>(source.getType())) {
+      return source;
+    }
+    return getAttachedCB(source);
   }
+
   return mlir::Value();
 }
 
@@ -128,16 +138,15 @@ getElementwiseOperands(mlir::Operation *op) {
   return {};
 }
 
-/// Reason why elementwise tracing failed.
+/// Reason why fusion tracing failed.
 enum class TraceFailureReason {
   Success,
   NotCBAttached,
-  NotElementwiseOp,
-  MultipleUses,
+  NotFusableOp,
 };
 
-/// Result of tracing through elementwise ops to CB-attached roots.
-struct ElementwiseTraceResult {
+/// Result of tracing through fusable ops to CB-attached roots.
+struct FusionTraceResult {
   /// CB-attached input values that form the roots of the chain.
   llvm::SmallSetVector<mlir::Value, 2> rootInputs;
   /// Operations in the chain, topologically ordered (roots first, sink last).
@@ -148,16 +157,38 @@ struct ElementwiseTraceResult {
   mlir::Value failedValue;
 };
 
-/// Trace a value through elementwise ops to find CB-attached roots.
-/// Recursively traces through arbitrary depth elementwise chains.
+/// Trace a value through fusable ops (elementwise, matmul, bcast) to find
+/// CB-attached roots. Recursively traces through arbitrary depth chains.
 ///
 /// On failure, sets failureReason and failedValue in the result.
 /// Check failureReason == TraceFailureReason::Success to determine success.
-ElementwiseTraceResult traceElementwiseToRoots(mlir::Value value);
+FusionTraceResult traceFusionToRoots(mlir::Value value);
 
-/// Emit diagnostics explaining why elementwise fusion failed.
-void emitFusionFailureDiagnostics(mlir::Operation *op,
-                                  const ElementwiseTraceResult &trace);
+/// Return a human-readable description of a trace failure reason.
+llvm::StringRef describeTraceFailure(TraceFailureReason reason);
+
+//===----------------------------------------------------------------------===//
+// Tile operation categories for scheduling and init consolidation
+//===----------------------------------------------------------------------===//
+
+/// Operation categories for scheduling and init consolidation.
+/// Sort order matters: lower values are scheduled first within sync regions.
+/// CB-input ops that configure MATH (bcast, transpose) must precede copy_tile
+/// because their pipeline configuration can be disrupted by intervening ops.
+enum class TileOpCategory : uint8_t {
+  Bcast = 0,      // CB -> DST with PACK config (full init, must be first)
+  Transpose = 1,  // CB -> DST transpose (full init, requires uninit)
+  CopyTile = 2,   // CB -> DST copy (simple passthrough)
+  FPUBinary = 3,  // CB -> DST FPU (UNPACK+MATH init)
+  SFPUUnary = 4,  // DST -> DST in-place (MATH-only init)
+  SFPUBinary = 5, // DST -> DST binary (MATH-only init)
+  CopyDst = 6,    // DST -> DST copy
+  Unknown = 255
+};
+
+/// Classify a TTL tile op into its category.
+/// Uses TTL traits and attributes for O(1) per-call classification.
+TileOpCategory classifyTileOp(mlir::Operation *op);
 
 /// Find the first operation of type OpTy in the block preceding the given
 /// operation. Scans backwards from the operation, stopping at block start or
@@ -187,6 +218,133 @@ inline OpTy findPrecedingOp(mlir::Operation *op, StopPredicate stopAtOp) {
     }
   }
   return nullptr;
+}
+
+//===----------------------------------------------------------------------===//
+// Iter index utilities for CB tile indexing
+//===----------------------------------------------------------------------===//
+
+/// Get or create iter_index ops at the start of a compute body. Returns
+/// one Value per iteration domain dimension. Reuses existing iter_index ops
+/// if present (idempotent across multiple callers).
+inline SmallVector<Value> getOrCreateIterIndices(OpBuilder &builder,
+                                                 ComputeOp computeOp) {
+  Block &body = computeOp.getBody().front();
+  unsigned iterRank = computeOp.getIteratorTypesArray().size();
+
+  SmallVector<Value> existing(iterRank, Value());
+  for (Operation &op : body) {
+    if (auto iterIdx = dyn_cast<IterIndexOp>(&op)) {
+      unsigned dim = static_cast<unsigned>(iterIdx.getDim());
+      if (dim < iterRank && !existing[dim]) {
+        existing[dim] = iterIdx.getResult();
+      }
+    }
+  }
+  if (llvm::none_of(existing, [](Value v) { return !v; })) {
+    return existing;
+  }
+
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(&body);
+  Location loc = computeOp.getLoc();
+  for (unsigned d = 0; d < iterRank; ++d) {
+    if (!existing[d]) {
+      existing[d] = IterIndexOp::create(builder, loc, d);
+    }
+  }
+  return existing;
+}
+
+/// Apply an indexing map to iter_index values to produce operand-space
+/// coordinates. For projected permutations this folds to a subset of
+/// iter_index values with no extra ops.
+inline SmallVector<Value>
+applyIndexingMapToIterIndices(OpBuilder &builder, Location loc, AffineMap map,
+                              ValueRange iterIndices) {
+  SmallVector<OpFoldResult> operands(iterIndices.begin(), iterIndices.end());
+  SmallVector<Value> mapped;
+  mapped.reserve(map.getNumResults());
+  for (AffineExpr expr : map.getResults()) {
+    AffineMap singleMap =
+        AffineMap::get(map.getNumDims(), map.getNumSymbols(), expr);
+    OpFoldResult result = affine::makeComposedFoldedAffineApply(
+        builder, loc, singleMap, operands);
+    mapped.push_back(
+        mlir::getValueOrCreateConstantIndexOp(builder, loc, result));
+  }
+  return mapped;
+}
+
+//===----------------------------------------------------------------------===//
+// DST capacity computation
+//===----------------------------------------------------------------------===//
+
+/// Physical DST register size in tiles (constant across all architectures).
+constexpr std::uint32_t kDstPhysicalSizeTiles = 16;
+
+/// Compute the logical DST capacity based on element types and sync mode.
+///
+/// The DST register file has 16 physical tiles. Logical capacity is derived:
+///   - Default (double-buffered): physical / 2 = 8 tiles
+///   - Full sync (dst_full_sync_en): no halving = 16 tiles
+///   - f32 accumulation: halved again (tiles are 2x wider)
+///
+/// Architecture-independent across Grayskull, Wormhole, and Blackhole.
+inline std::uint32_t getDstCapacity(bool isFloat32, bool fullSyncEn) {
+  std::uint32_t capacity = kDstPhysicalSizeTiles;
+  if (!fullSyncEn) {
+    capacity /= 2; // Double-buffering halves available tiles.
+  }
+  if (isFloat32) {
+    capacity /= 2; // f32 tiles occupy 2x the space.
+  }
+  return capacity;
+}
+
+/// Compute DST capacity for a compute op by inspecting block argument types
+/// and sync-mode attributes.
+/// Returns failure for mixed f32/non-f32 tile arguments.
+inline FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
+  bool fullSyncEn = false;
+  if (auto fullSyncAttr =
+          computeOp->getAttrOfType<mlir::BoolAttr>(kDstFullSyncEnAttrName)) {
+    fullSyncEn = fullSyncAttr.getValue();
+  }
+
+  bool fp32DestAccEn = false;
+  if (auto fp32Attr =
+          computeOp->getAttrOfType<mlir::BoolAttr>(kFp32DestAccEnAttrName)) {
+    fp32DestAccEn = fp32Attr.getValue();
+  }
+
+  bool sawF32 = false;
+  bool sawNonF32 = false;
+  Block &body = computeOp.getRegion().front();
+  for (BlockArgument arg : body.getArguments()) {
+    std::optional<Type> currentType = getTileElementType(arg.getType());
+    if (currentType) {
+      if (currentType->isF32()) {
+        sawF32 = true;
+      } else {
+        sawNonF32 = true;
+      }
+    }
+  }
+
+  if (sawF32) {
+    fp32DestAccEn = true;
+  }
+
+  if (sawF32 && sawNonF32) {
+    return computeOp.emitOpError(
+        "mixed f32 and non-f32 tile arguments; "
+        "DST capacity uses f32 limits (4 tiles) which may produce "
+        "incorrect results");
+  }
+
+  bool isFloat32 = sawF32 || fp32DestAccEn;
+  return getDstCapacity(isFloat32, fullSyncEn);
 }
 
 } // namespace mlir::tt::ttl

@@ -6,16 +6,29 @@
 
 import torch
 
-try:
-    import ttnn
-except (ModuleNotFoundError, ImportError):
-    ttnn = None
+ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
-from ttmlir.dialects import ttcore
+
+def _ensure_ttnn():
+    """Lazy import of ttnn."""
+    global ttnn
+    if ttnn is not None:
+        return ttnn
+    try:
+        import ttnn as _ttnn
+
+        ttnn = _ttnn
+    except (ModuleNotFoundError, ImportError):
+        pass
+    return ttnn
+
+
+from ttl.dialects import ttcore
 
 
 def is_ttnn_tensor(tensor) -> bool:
     """Check if tensor is a ttnn.Tensor."""
+    _ensure_ttnn()
     if ttnn is None:
         return False
     return isinstance(tensor, ttnn.Tensor)
@@ -78,9 +91,9 @@ def ttnn_dtype_to_ttcore_datatype(ttnn_dtype):
         case ttnn.DataType.BFLOAT16:
             return ttcore.DataType.BFloat16
         case ttnn.DataType.BFLOAT8_B:
-            return ttcore.DataType.BFloat16  # Approximate
+            return ttcore.DataType.BFP_BFloat8
         case ttnn.DataType.BFLOAT4_B:
-            return ttcore.DataType.BFloat16  # Approximate
+            return ttcore.DataType.BFP_BFloat4
         case ttnn.DataType.INT32:
             return ttcore.DataType.Int32
         case ttnn.DataType.UINT32:

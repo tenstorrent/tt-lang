@@ -11,14 +11,73 @@ functions across multiple cores with proper context binding and error handling.
 import copy
 import inspect
 import types
+import warnings
 from typing import Any, Dict, List
 
-from .dfb import DFBAPI, DataflowBuffer
-from .decorators import BindableTemplate
+from .dfb import DataflowBuffer
+from .typedefs import BindableTemplate, Shape
 from .blockstate import ThreadType
+from .context import get_context
 from .greenlet_scheduler import GreenletScheduler, set_scheduler
 from .ttnnsim import Tensor
-from .typedefs import Shape
+from .debug_print import ttlang_print
+
+
+def set_max_dfbs(limit: int) -> None:
+    """Set the maximum number of DataflowBuffers per core.
+
+    Args:
+        limit: Maximum number of CBs per core (must be non-negative)
+
+    Raises:
+        ValueError: If limit is negative
+
+    Example:
+        set_max_dfbs(64)  # Allow up to 64 CBs per core
+    """
+    if limit < 0:
+        raise ValueError(f"max_dfbs must be non-negative, got {limit}")
+    get_context().config.max_dfbs = limit
+
+
+def get_max_dfbs() -> int:
+    """Get the current maximum number of DataflowBuffers per core.
+
+    Returns:
+        Current CB limit per core
+    """
+    return get_context().config.max_dfbs
+
+
+def set_max_l1_bytes(limit: int) -> None:
+    """Set the maximum L1 memory per core (in bytes).
+
+    The L1 memory used by a core is the sum of capacity_bytes across all of its
+    DataflowBuffers. Kernel execution issues a warning if the total CB capacity
+    on any core exceeds this limit. Defaults to 1336 KiB (Blackhole/Wormhole
+    L1 size minus reserved program space).
+
+    Args:
+        limit: Maximum L1 bytes per core (must be positive)
+
+    Raises:
+        ValueError: If limit is not positive
+
+    Example:
+        set_max_l1_bytes(1_572_864)  # 1.5 MB
+    """
+    if limit <= 0:
+        raise ValueError(f"max_l1_bytes must be positive, got {limit}")
+    get_context().config.max_l1_bytes = limit
+
+
+def get_max_l1_bytes() -> int:
+    """Get the current L1 memory limit per core in bytes.
+
+    Returns:
+        Current L1 limit in bytes
+    """
+    return get_context().config.max_l1_bytes
 
 
 def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
@@ -75,7 +134,7 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             self._run_cooperative(total_cores, compute_func_tmpl, dm0_tmpl, dm1_tmpl)
 
         def _build_core_context(self, core: int) -> Dict[str, Any]:
-            """Build per-core context with copied circular buffers and other state.
+            """Build per-core context with fresh DataflowBuffers and deep-copied state.
 
             Args:
                 core: Core number to build context for
@@ -85,7 +144,6 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             """
             memo: Dict[int, Any] = {}
             core_context: Dict[str, Any] = {}
-            api = DFBAPI()  # new DFBAPI per core
 
             for key, value in self.context.items():
                 # Skip module objects (e.g., local imports like `from python.sim import ttnn`)
@@ -101,23 +159,22 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                         core_context[key] = value
                         memo[id(value)] = value
                     case DataflowBuffer():
-                        # create a fresh DFB for this core
+                        # Create a fresh DFB for this core.
                         new_dfb = DataflowBuffer(
-                            element=value.element,
+                            likeness_tensor=value.likeness_tensor,
                             shape=value.shape,
                             buffer_factor=value.buffer_factor,
-                            api=api,
                         )
-                        # Store the variable name for debugging
                         setattr(new_dfb, "_name", key)
                         core_context[key] = new_dfb
                     case _:
                         core_context[key] = copy.deepcopy(value, memo)
 
-            # also make the core number visible
             core_context["_core"] = core
-            # Also inject grid into core context for grid_size() function
             core_context["grid"] = self.context.get("grid", (1, 1))
+
+            # Inject custom print function for debug printing
+            core_context["print"] = ttlang_print
 
             return core_context
 
@@ -129,6 +186,27 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             dm1_tmpl: BindableTemplate,
         ) -> None:
             """Cooperative scheduling execution mode using greenlets."""
+
+            # Warn if the number of DataflowBuffers exceeds the hardware limit.
+            dfb_count = get_context().kernel_dfb_count
+            max_dfbs = get_max_dfbs()
+            if dfb_count > max_dfbs:
+                warnings.warn(
+                    f"Kernel defines {dfb_count} dataflow buffers, "
+                    f"but the hardware limit is {max_dfbs}. "
+                    f"Reduce the number of ttl.make_dataflow_buffer_like() calls.",
+                    stacklevel=2,
+                )
+
+            # Warn if total L1 capacity exceeds the configured limit.
+            total_l1_bytes = get_context().kernel_l1_bytes
+            max_l1 = get_max_l1_bytes()
+            if total_l1_bytes > max_l1:
+                warnings.warn(
+                    f"Total DataflowBuffer capacity per core ({total_l1_bytes} bytes) "
+                    f"exceeds the L1 memory limit of {max_l1} bytes.",
+                    stacklevel=2,
+                )
 
             # Create scheduler
             scheduler = GreenletScheduler()
@@ -171,12 +249,12 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                 scheduler.run()
 
                 # Validate all DataflowBuffers have no pending blocks
-                self._validate_circular_buffers(all_core_contexts)
+                self._validate_dataflow_buffers(all_core_contexts)
             finally:
                 # Clear scheduler
                 set_scheduler(None)
 
-        def _validate_circular_buffers(
+        def _validate_dataflow_buffers(
             self, all_core_contexts: List[Dict[str, Any]]
         ) -> None:
             """Validate that all DataflowBuffers have no pending blocks at end of execution.

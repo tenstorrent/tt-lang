@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Clean up unnecessary files from CI runner to free up disk space
-# Removes browsers, unused tools, and caches that aren't needed for Docker builds
+# Removes browsers, unused tools, and caches that aren't needed for builds
 
 set -e
 
@@ -29,21 +29,26 @@ remove_toolcache() {
 
 echo "Cleaning up CI runner space..."
 
-# Remove browsers (not needed for Docker builds)
+# Large preinstalled directories (~21GB total)
+remove_dir "/usr/local/lib/android" "Android SDK"
+remove_dir "/usr/share/dotnet" ".NET SDK"
+remove_dir "/opt/ghc" "GHC"
+remove_dir "/usr/local/share/boost" "Boost"
+
+# Remove browsers (not needed for builds)
 remove_dir "/opt/google/chrome" "Google Chrome"
 remove_dir "/opt/microsoft/msedge" "Microsoft Edge"
 
-# Remove PowerShell (not needed for Docker builds)
+# Remove PowerShell (not needed for builds)
 remove_dir "/opt/microsoft/powershell" "PowerShell"
 
-# Remove Azure CLI (not needed for Docker builds)
+# Remove Azure CLI (not needed for builds)
 remove_dir "/opt/az" "Azure CLI"
 
 # Remove pipx (not needed if not using pipx tools)
 remove_dir "/opt/pipx" "pipx"
 
 # Remove unused hosted toolcache entries
-# Keep Python as it might be needed, but remove others if not used
 if [ -d "/opt/hostedtoolcache" ]; then
     echo "Cleaning up hosted toolcache..."
     remove_toolcache "CodeQL"

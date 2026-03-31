@@ -7,8 +7,8 @@
 
 # Activate tt-lang environment (includes toolchain activation)
 # tt-lang env/activate is installed to the toolchain
-if [ -f "${TTMLIR_TOOLCHAIN_DIR}/env/activate" ]; then
-    source "${TTMLIR_TOOLCHAIN_DIR}/env/activate"
+if [ -f "${TTLANG_TOOLCHAIN_DIR}/env/activate" ]; then
+    source "${TTLANG_TOOLCHAIN_DIR}/env/activate"
 fi
 
 # Execute the command directly (environment is already activated above)

@@ -146,6 +146,13 @@ def TTLSubblockComputeForDST
     ```
   }];
 
+  let options = [
+    Option<"subblockSync", "subblock-sync", "bool", "false",
+           "Refine DFB reserve/push to per-subblock granularity, enabling "
+           "pack_tile_block for contiguous subblocks. When disabled (default), "
+           "user-placed reserve/push is preserved.">
+  ];
+
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
     "::mlir::scf::SCFDialect",
@@ -175,6 +182,29 @@ def TTLInsertTileRegsSync
   }];
 
   let dependentDialects = [
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
+def TTLLowerMatmulBlock
+    : Pass<"ttl-lower-matmul-block", "::mlir::func::FuncOp"> {
+  let summary = "Lower matmul computes to block-level hardware calls";
+  let description = [{
+    Marks `ttl.compute` ops containing `ttl.tile_matmul_block` for block-level
+    lowering by setting the `ttl.block_matmul` attribute. This attribute tells
+    `ttl-lower-to-loops` to collapse the iteration domain to a single point
+    (no per-tile loops), since matmul_block handles the full block atomically.
+
+    The pass also expands the single `tile_store` in the body into M*N stores
+    (one per output tile in the block), since matmul_block writes M*N DST
+    registers that each need to be packed.
+
+    The output must fit in DST (M*N <= capacity). Subblocking for larger
+    outputs is not yet implemented.
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
     "::mlir::tt::ttl::TTLDialect"
   ];
 }
@@ -223,6 +253,55 @@ def TTLLowerToLoops
   ];
 }
 
+def TTLScheduleOperations
+    : Pass<"ttl-schedule-operations", "::mlir::func::FuncOp"> {
+  let summary = "Group tile operations by kind within sync regions";
+  let description = [{
+    Reorders tile operations within sync regions (`tile_regs_acquire` to
+    `tile_regs_commit`) to group by operation kind. After `ttl-lower-to-loops`
+    unrolls a subblocked compute, tile ops from different iterations are
+    interleaved. This pass groups them so `ttkernel-insert-inits` can emit
+    one init per consecutive group of same-type ops.
+
+    Ops are sorted by (dependency depth, category, TypeID, init affinity,
+    dst_idx). Dependency depth considers RAW (SSA def-use), WAW (same DST
+    write index), and WAR (write after prior read of same DST index) hazards.
+    Ops at the same depth are independent and can be reordered.
+
+    Only tile ops between `tile_regs_acquire` and `tile_regs_commit` are
+    scheduled. Store ops (after the commit/wait boundary) are not reordered.
+
+    Category ordering:
+      CopyTile < Bcast < FPUBinary < SFPUUnary < SFPUBinary < CopyDst
+
+    Example:
+    ```mlir
+    // Before (interleaved by tile iteration):
+    ttl.tile_regs_acquire
+    %s0 = ttl.tile_add %a0, %b0 {dst_idx = 0}
+    %e0 = ttl.tile_exp %s0 {dst_idx = 0}
+    %s1 = ttl.tile_add %a1, %b1 {dst_idx = 1}
+    %e1 = ttl.tile_exp %s1 {dst_idx = 1}
+    ttl.tile_regs_commit
+
+    // After (grouped by kind at each dependency depth):
+    ttl.tile_regs_acquire
+    %s0 = ttl.tile_add %a0, %b0 {dst_idx = 0}  // depth 0
+    %s1 = ttl.tile_add %a1, %b1 {dst_idx = 1}  // depth 0
+    %e0 = ttl.tile_exp %s0 {dst_idx = 0}       // depth 1
+    %e1 = ttl.tile_exp %s1 {dst_idx = 1}       // depth 1
+    ttl.tile_regs_commit
+    ```
+
+    References:
+    - Hennessy & Patterson, "Computer Architecture", Ch. 3: RAW/WAR/WAW hazards
+    - Cooper & Torczon, "Engineering a Compiler", Ch. 12: list scheduling with
+      topological depth levels
+  }];
+
+  let dependentDialects = [];
+}
+
 def TTLAnnotateCBAssociations
     : Pass<"ttl-annotate-cb-associations", "::mlir::func::FuncOp"> {
   let summary = "Annotate ttl.compute block args with CB index associations";
@@ -242,6 +321,17 @@ def TTLAnnotateCBAssociations
   }];
 
   let dependentDialects = [];
+}
+
+def TTLLowerDPrintToEmitC
+    : Pass<"ttl-lower-dprint-to-emitc", "::mlir::ModuleOp"> {
+  let summary = "Lower ttl.dprint ops to EmitC verbatim for debug printing";
+  let description = [{
+    Converts ttl.dprint operations to EmitC verbatim code that emits
+    device debug print calls. Resolves CB indices, DST register slots,
+    and data formats from the IR. Runs before convert-ttl-to-ttkernel
+    so that DST assignments and CB annotations are still available.
+  }];
 }
 
 def TTLLowerSignpostToEmitC
@@ -344,6 +434,39 @@ def TTKernelInsertInits
     ttkernel.exp_tile_init       // re-init required (type switched back)
     ttkernel.exp_tile(%c2)
     ttkernel.tile_regs_commit
+    ```
+  }];
+
+  let dependentDialects = [
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
+def TTKernelCombinePackTiles
+    : Pass<"ttkernel-combine-pack-tiles", "::mlir::func::FuncOp"> {
+  let summary = "Combine consecutive pack_tile ops into pack_tile_block";
+  let description = [{
+    Scans for consecutive `ttkernel.pack_tile` ops targeting the same dataflow
+    buffer with contiguous DST and CB tile indices, and replaces each run with
+    a single `ttkernel.pack_tile_block`. This reduces the number of hardware
+    pack operations after loop unrolling.
+
+    Only combines runs where both DST indices and CB tile indices step by 1,
+    and the first CB tile index is 0 (pack_tile_block always writes to the CB
+    starting from index 0, per the op definition). Runs are broken by different
+    CBs, non-contiguous indices, non-constant indices, or intervening
+    non-constant ops. Runs of length 1 are skipped.
+
+    Example:
+    ```mlir
+    // Before:
+    ttkernel.pack_tile(%c0, %cb, %c0, true)
+    ttkernel.pack_tile(%c1, %cb, %c1, true)
+    ttkernel.pack_tile(%c2, %cb, %c2, true)
+    ttkernel.pack_tile(%c3, %cb, %c3, true)
+
+    // After:
+    ttkernel.pack_tile_block(%c0, %cb, %c4)
     ```
   }];
 

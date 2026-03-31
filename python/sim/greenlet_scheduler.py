@@ -14,10 +14,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from greenlet import greenlet
 
 from .blockstate import ThreadType
-
-
-# Global scheduler algorithm selection
-_scheduler_algorithm: str = "fair"
+from .context import get_context, set_current_thread_type, clear_current_thread_type
+from .diagnostics import (
+    print_diagnostic_error,
+    find_user_code_location,
+    is_simulator_frame,
+    format_core_ranges,
+    extract_core_id_from_thread_name,
+)
 
 
 def set_scheduler_algorithm(algorithm: str) -> None:
@@ -26,33 +30,14 @@ def set_scheduler_algorithm(algorithm: str) -> None:
     Args:
         algorithm: Either 'greedy' or 'fair'
     """
-    global _scheduler_algorithm
     if algorithm not in ("greedy", "fair"):
         raise ValueError(f"Invalid scheduler algorithm: {algorithm}")
-    _scheduler_algorithm = algorithm
+    get_context().config.scheduler_algorithm = algorithm
 
 
 def get_scheduler_algorithm() -> str:
     """Get the current scheduling algorithm."""
-    return _scheduler_algorithm
-
-
-def _get_ttlang_compile_error() -> Any:
-    """Lazy import of TTLangCompileError to avoid circular dependency."""
-    import importlib.util
-    import sys
-    from pathlib import Path
-
-    # Direct import of diagnostics module without going through ttl package
-    # This avoids importing the full compiler infrastructure
-    diagnostics_path = Path(__file__).parent.parent / "ttl" / "diagnostics.py"
-    spec = importlib.util.spec_from_file_location("ttl.diagnostics", diagnostics_path)
-    if spec and spec.loader:
-        diagnostics = importlib.util.module_from_spec(spec)
-        sys.modules["ttl.diagnostics"] = diagnostics
-        spec.loader.exec_module(diagnostics)
-        return diagnostics.TTLangCompileError
-    raise ImportError("Could not load ttl.diagnostics")
+    return get_context().config.scheduler_algorithm
 
 
 class GreenletScheduler:
@@ -128,23 +113,9 @@ class GreenletScheduler:
             )
 
         # Capture location where blocking occurred
-        import inspect
-
-        frame = inspect.currentframe()
-        location_str = ""
-        raw_loc: Optional[Tuple[str, int]] = None
-        if frame and frame.f_back:
-            # Walk up the call stack to find user code
-            caller_frame = frame.f_back
-            while caller_frame:
-                filename = caller_frame.f_code.co_filename
-                # Skip simulator internals
-                if "/python/sim/" not in filename and "greenlet" not in filename:
-                    lineno = caller_frame.f_lineno
-                    location_str = f" at {filename}:{lineno}"
-                    raw_loc = (filename, lineno)
-                    break
-                caller_frame = caller_frame.f_back
+        filename, lineno = find_user_code_location()
+        location_str = f" at {filename}:{lineno}"
+        raw_loc: Optional[Tuple[str, int]] = (filename, lineno)
 
         # Update active entry with blocking info and location
         g, _, _, thread_type, _, _ = self._active[self._current_name]
@@ -196,105 +167,13 @@ class GreenletScheduler:
             )
         self._has_made_progress[self._current_name] = True
 
-    def _extract_source_location(
-        self, exception: Exception
-    ) -> Tuple[Optional[str], Optional[int], Optional[int]]:
-        """Extract source location from exception traceback.
+    def get_current_thread_name(self) -> Optional[str]:
+        """Get the name of the currently executing thread.
 
         Returns:
-            Tuple of (source_file, source_line, source_col)
+            Current thread name, or None if no thread is executing
         """
-        import traceback
-
-        tb = traceback.extract_tb(exception.__traceback__)
-        source_file = None
-        source_line = None
-        source_col = None
-
-        for frame in tb:
-            # Skip internal greenlet/scheduler/simulator frames
-            if (
-                "greenlet_scheduler.py" not in frame.filename
-                and "greenlet" not in frame.filename
-                and "/python/sim/" not in frame.filename
-            ):
-                source_file = frame.filename
-                source_line = frame.lineno
-                source_col = getattr(frame, "colno", None) or 1
-                break
-
-        return source_file, source_line, source_col
-
-    def _print_pretty_error(
-        self,
-        name: str,
-        exception: Exception,
-        source_file: str,
-        source_line: int,
-        source_col: Optional[int],
-    ) -> bool:
-        """Print error with pretty formatting using TTLangCompileError.
-
-        Args:
-            name: Thread name
-            exception: The exception that was raised
-            source_file: Path to source file
-            source_line: Line number in source file
-            source_col: Column number in source file (defaults to 1 if None)
-
-        Returns:
-            True if pretty printing succeeded, False if TTLangCompileError not available
-        """
-        try:
-            TTLangCompileError = _get_ttlang_compile_error()
-            compile_error = TTLangCompileError(
-                f"{type(exception).__name__}: {exception}",
-                source_file=source_file,
-                line=source_line,
-                col=source_col or 1,
-            )
-            print(f"\n❌ Error in {name}:")
-            print(compile_error.format())
-            print("-" * 50)
-            return True
-        except ImportError:
-            return False
-
-    def _print_basic_error(
-        self,
-        name: str,
-        exception: Exception,
-        source_file: Optional[str],
-        source_line: Optional[int],
-        include_traceback: bool = False,
-    ) -> None:
-        """Print error with basic formatting.
-
-        Args:
-            name: Thread name
-            exception: The exception that was raised
-            source_file: Path to source file (if available)
-            source_line: Line number in source file (if available)
-            include_traceback: Whether to include full traceback
-        """
-        print(f"\n❌ Error in {name}:")
-        if source_file and source_line:
-            print(f"  File: {source_file}:{source_line}")
-        print(f"  {type(exception).__name__}: {exception}")
-
-        if include_traceback:
-            import traceback
-
-            tb_str = "".join(
-                traceback.format_exception(
-                    type(exception), exception, exception.__traceback__
-                )
-            )
-            print(f"\nFull traceback:")
-            print(tb_str)
-
-        if not include_traceback:
-            print("-" * 50)
+        return self._current_name
 
     def _format_and_raise_thread_error(
         self,
@@ -312,22 +191,36 @@ class GreenletScheduler:
         Raises:
             RuntimeError: Always raises with formatted error message
         """
-        # Extract source location
-        source_file, source_line, source_col = self._extract_source_location(exception)
+        # Extract source location from exception traceback
+        import traceback
 
-        # Try pretty formatting if we have source location
-        if source_file and source_line:
-            pretty_printed = self._print_pretty_error(
-                name, exception, source_file, source_line, source_col
-            )
-            if not pretty_printed:
-                # Fallback if TTLangCompileError is not available
-                self._print_basic_error(
-                    name, exception, source_file, source_line, include_traceback
-                )
-        else:
-            # No source location available
-            self._print_basic_error(name, exception, None, None, include_traceback)
+        tb = traceback.extract_tb(exception.__traceback__)
+        source_file = None
+        source_line = None
+        source_col = None
+
+        for frame in tb:
+            # Skip simulator internal frames
+            if not is_simulator_frame(frame.filename):
+                source_file = frame.filename
+                source_line = frame.lineno
+                source_col = getattr(frame, "colno", None) or 1
+                break
+
+        # Assert we found user code in traceback
+        assert source_file is not None and source_line is not None, (
+            f"No user code found in exception traceback for {name}. "
+            "This indicates a bug in the scheduler or test setup."
+        )
+
+        # Print error with diagnostic formatting
+        print_diagnostic_error(
+            name,
+            f"{type(exception).__name__}: {exception}",
+            source_file,
+            source_line,
+            source_col or 1,
+        )
 
         # Re-raise with thread name included
         error_msg = f"{name}: {type(exception).__name__}: {exception}"
@@ -343,7 +236,6 @@ class GreenletScheduler:
         one block_if_needed check). Threads that blocked on their first check
         keep ts=0, giving them priority in fair scheduling.
         """
-        from .blockstate import set_current_thread_type, clear_current_thread_type
 
         for name in list(self._active.keys()):
             g, blocking_obj, _, thread_type, _, _ = self._active[name]
@@ -457,10 +349,6 @@ class GreenletScheduler:
                 self._current_name = name
 
                 # Run thread until it blocks or completes
-                from .blockstate import (
-                    set_current_thread_type,
-                    clear_current_thread_type,
-                )
 
                 set_current_thread_type(thread_type)
                 try:
@@ -519,9 +407,8 @@ class GreenletScheduler:
                 ) in self._active.items():
                     obj_desc = self._get_obj_description(blocking_obj)
                     key = (op, obj_desc, location)
-                    # Extract core identifier by removing thread type suffix
-                    # e.g., "core0-compute" -> "core0", "core0-dm0" -> "core0"
-                    core_id = name.rsplit("-", 1)[0] if "-" in name else name
+                    # Extract core identifier from thread name
+                    core_id = extract_core_id_from_thread_name(name)
                     blocked_groups[key].append(core_id)
                     if key not in blocked_raw_locs:
                         blocked_raw_locs[key] = raw_loc
@@ -538,19 +425,18 @@ class GreenletScheduler:
                         core_numbers: list[int] = [
                             int(core_id[4:]) for core_id in unique_cores
                         ]
-                        cores_label = f"cores: {self._format_core_ranges(core_numbers)}"
+                        cores_label = f"cores: {format_core_ranges(core_numbers)}"
 
                     raw_loc = blocked_raw_locs.get((op, obj_desc, location))
                     if raw_loc:
                         filename, lineno = raw_loc
-                        TTLangCompileError = _get_ttlang_compile_error()
-                        compile_error = TTLangCompileError(
-                            f"deadlock: blocked on {op}(){obj_desc} ({cores_label})",
-                            source_file=filename,
-                            line=lineno,
-                            col=1,
+                        print_diagnostic_error(
+                            "deadlock",
+                            f"blocked on {op}(){obj_desc} ({cores_label})",
+                            filename,
+                            lineno,
+                            1,
                         )
-                        print(compile_error.format())
                     else:
                         print(
                             f"  blocked on {op}(){obj_desc}{location} ({cores_label})"
@@ -559,45 +445,6 @@ class GreenletScheduler:
                 raise RuntimeError(
                     "Deadlock detected: all generators blocked"
                 ) from RuntimeError("deadlock")
-
-    def _format_core_ranges(self, core_numbers: list[int]) -> str:
-        """Format a list of core numbers as ranges.
-
-        Args:
-            core_numbers: Sorted list of core numbers (e.g., [0, 1, 2, 3, 8, 9, 10, 11])
-
-        Returns:
-            Formatted string with ranges (e.g., "0-3, 8-11")
-        """
-        if not core_numbers:
-            return ""
-
-        # Sort to ensure consecutive numbers are adjacent
-        sorted_cores = sorted(core_numbers)
-        ranges: list[str] = []
-        start = sorted_cores[0]
-        end = sorted_cores[0]
-
-        for i in range(1, len(sorted_cores)):
-            if sorted_cores[i] == end + 1:
-                # Consecutive, extend the range
-                end = sorted_cores[i]
-            else:
-                # Gap found, save the current range and start a new one
-                if start == end:
-                    ranges.append(str(start))
-                else:
-                    ranges.append(f"{start}-{end}")
-                start = sorted_cores[i]
-                end = sorted_cores[i]
-
-        # Add the final range
-        if start == end:
-            ranges.append(str(start))
-        else:
-            ranges.append(f"{start}-{end}")
-
-        return ", ".join(ranges)
 
     def _get_obj_description(self, obj: Any) -> str:
         """Get a brief description of an object for debugging output."""
@@ -621,10 +468,6 @@ class GreenletScheduler:
                 return f" on {class_name}"
 
 
-# Global scheduler instance for the current execution
-_current_scheduler: Optional[GreenletScheduler] = None
-
-
 def get_scheduler() -> GreenletScheduler:
     """Get the current scheduler instance.
 
@@ -634,17 +477,33 @@ def get_scheduler() -> GreenletScheduler:
     Raises:
         RuntimeError: If no scheduler is active
     """
-    if _current_scheduler is None:
+    scheduler = get_context().scheduler
+    if scheduler is None:
         raise RuntimeError(
             "No active scheduler. This should only be called from within a kernel."
         )
-    return _current_scheduler
+    return scheduler
 
 
 def set_scheduler(scheduler: Optional[GreenletScheduler]) -> None:
     """Set the current scheduler instance."""
-    global _current_scheduler
-    _current_scheduler = scheduler
+    get_context().scheduler = scheduler
+
+
+def get_current_core_id() -> str:
+    """Get the current core ID from the active thread.
+
+    Returns:
+        Core ID like "core0", or "unknown" if no scheduler is active
+        (e.g., in unit tests)
+    """
+    try:
+        scheduler = get_scheduler()
+        thread_name = scheduler.get_current_thread_name()
+        return extract_core_id_from_thread_name(thread_name)
+    except RuntimeError:
+        # No active scheduler (e.g., in unit tests)
+        return "unknown"
 
 
 def block_if_needed(obj: Any, operation: str) -> None:

@@ -54,6 +54,24 @@ def make_ones_tensor(rows: Size, cols: Size) -> ttnn.Tensor:
     return t
 
 
+def make_element_for_buffer_shape(shape: Shape) -> ttnn.Tensor:
+    """Create an element tensor with the full buffer element shape.
+
+    Args:
+        shape: Buffer tile grid shape (e.g., (2, 1) for 2x1 tiles)
+
+    Returns:
+        ttnn.Tensor with shape (shape[0]*32, shape[1]*32) filled with ones
+    """
+    if len(shape) == 1:
+        rows = shape[0] * 32
+        cols = 32
+    else:
+        rows = shape[0] * 32
+        cols = shape[1] * 32
+    return make_ones_tensor(rows, cols)
+
+
 def make_full_tensor(rows: Size, cols: Size, value: float) -> ttnn.Tensor:
     """Create a ttnn.Tensor filled with a specific value."""
     t = ttnn.rand((rows, cols))

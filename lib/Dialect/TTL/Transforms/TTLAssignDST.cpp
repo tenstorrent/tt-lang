@@ -41,9 +41,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCoreOps.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
-#include "ttmlir/Dialect/TTCore/IR/Utils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -65,88 +63,10 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Default DST capacity (16-bit, double-buffered).
-constexpr std::uint32_t kDefaultDSTCapacity = 8;
-
 /// Sentinel value for placeholder copy_tile indices. Using max value since
 /// valid indices are small non-negative integers. This is replaced with proper
 /// indices during the copy_tile insertion phase.
 constexpr int64_t kPlaceholderIndex = std::numeric_limits<int64_t>::max();
-
-/// Compute DST capacity based on operation types and device config.
-/// Returns failure for mixed f32/non-f32 tile arguments.
-/// TODO(#264): Support mixed dtypes instead of erroring (e.g. use f32
-/// capacity).
-static FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
-  // Capacity by datatype and buffering mode:
-  //   Double-buffering (default):
-  //     - f16/bf16: 8 tiles
-  //     - f32: 4 tiles
-  //   Single-buffering (dst_full_sync_en=true):
-  //     - f16/bf16: 16 tiles
-  //     - f32: 8 tiles
-  bool fullSyncEn = false;
-  if (auto fullSyncAttr =
-          computeOp->getAttrOfType<mlir::BoolAttr>(kDstFullSyncEnAttrName)) {
-    fullSyncEn = fullSyncAttr.getValue();
-  }
-
-  bool fp32DestAccEn = false;
-  if (auto fp32Attr =
-          computeOp->getAttrOfType<mlir::BoolAttr>(kFp32DestAccEnAttrName)) {
-    fp32DestAccEn = fp32Attr.getValue();
-  }
-
-  Type elementType;
-  bool sawF32 = false;
-  bool sawNonF32 = false;
-  Block &body = computeOp.getRegion().front();
-  for (BlockArgument arg : body.getArguments()) {
-    std::optional<Type> currentType = getTileElementType(arg.getType());
-    if (currentType) {
-      if (!elementType) {
-        elementType = *currentType;
-      }
-      if (currentType->isF32()) {
-        sawF32 = true;
-      } else {
-        sawNonF32 = true;
-      }
-    }
-  }
-
-  if (sawF32) {
-    fp32DestAccEn = true;
-    elementType = mlir::Float32Type::get(computeOp.getContext());
-  }
-
-  if (sawF32 && sawNonF32) {
-    return computeOp.emitOpError(
-        "mixed f32 and non-f32 tile arguments; "
-        "DST capacity uses f32 limits (4 tiles) which may produce "
-        "incorrect results");
-  }
-
-  if (!elementType) {
-    return kDefaultDSTCapacity;
-  }
-
-  if (fp32DestAccEn && !elementType.isF32()) {
-    elementType = mlir::Float32Type::get(computeOp.getContext());
-  }
-
-  if (auto moduleOp = computeOp->getParentOfType<mlir::ModuleOp>()) {
-    bool hasSystemDesc = moduleOp->hasAttr(ttcore::SystemDescAttr::name);
-    bool hasDevice = static_cast<bool>(moduleOp.lookupSymbol<ttcore::DeviceOp>(
-        ttcore::getDefaultDeviceName()));
-    if (hasSystemDesc && hasDevice) {
-      auto chipDesc = ttcore::getOpChipDescAttr(computeOp);
-      return chipDesc.getDstLogicalSizeTiles(elementType, fullSyncEn);
-    }
-  }
-
-  return kDefaultDSTCapacity;
-}
 
 static bool isTileValue(Value v) { return isa<ttcore::TileType>(v.getType()); }
 
@@ -175,34 +95,6 @@ struct Interval {
   Value value;   // SSA value this interval represents
 };
 
-/// Compute the AffineMap for linearizing CB tile indices for a block argument.
-/// Returns failure if the argument is not found in inputs.
-static FailureOr<AffineMapAttr> computeIndexMapAttr(BlockArgument arg,
-                                                    ComputeOp computeOp,
-                                                    OpBuilder &builder) {
-  Block *body = &computeOp.getRegion().front();
-  for (auto [idx, input] : llvm::enumerate(computeOp.getInputs())) {
-    if (arg == body->getArgument(idx)) {
-      auto tensorType = cast<RankedTensorType>(input.getType());
-      int64_t rank = tensorType.getRank();
-
-      SmallVector<int64_t> staticShape(tensorType.getShape().begin(),
-                                       tensorType.getShape().end());
-      SmallVector<int64_t> strides = mlir::computeStrides(staticShape);
-
-      AffineExpr linearExpr = builder.getAffineConstantExpr(0);
-      for (int64_t i = 0; i < rank; ++i) {
-        linearExpr = linearExpr + builder.getAffineDimExpr(i) *
-                                      builder.getAffineConstantExpr(strides[i]);
-      }
-
-      AffineMap indexMap = AffineMap::get(rank, /*numSymbols=*/0, linearExpr);
-      return AffineMapAttr::get(indexMap);
-    }
-  }
-  return failure();
-}
-
 /// Allocate a DST register and create a CopyTileOp for a block argument.
 /// Looks up assignment first; falls back to allocating a free register.
 /// If dstIndexOverride is provided, it takes precedence over the assignment
@@ -228,17 +120,13 @@ static FailureOr<CopyTileOp> createCopyTileForArg(
   inUse.set(assignedDstIndex);
 
   Location loc = builder.getInsertionPoint()->getLoc();
-  auto indexMapAttr = computeIndexMapAttr(arg, computeOp, builder);
-  if (failed(indexMapAttr)) {
-    return computeOp.emitOpError("block argument not found in compute inputs");
-  }
-
-  Value srcIndex = builder.create<LinearizedIndexOp>(loc, *indexMapAttr);
   Value dstIndex =
-      builder.create<arith::ConstantIndexOp>(loc, assignedDstIndex);
-  auto copy = builder.create<CopyTileOp>(
-      loc, TypeRange{DSTRegisterType::get(arg.getContext()), arg.getType()},
-      ValueRange{arg, srcIndex, dstIndex});
+      arith::ConstantIndexOp::create(builder, loc, assignedDstIndex);
+  // src_indices are empty here; populated by the iter_index phase below.
+  auto copy = CopyTileOp::create(
+      builder, loc,
+      TypeRange{DSTRegisterType::get(arg.getContext()), arg.getType()},
+      ValueRange{arg, dstIndex});
   dstIndexForValue[copy.getDstTile()] = assignedDstIndex;
   return copy;
 }
@@ -325,18 +213,17 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
 
       Value copyResult;
       if (isa<BlockArgument>(value)) {
-        // Block argument: insert copy_tile (CB-to-DST)
-        // Use sentinel kPlaceholderIndex for src_index and dst_index - will be
-        // replaced later with proper LinearizedIndexOp and allocated DST index
-        Value srcIndex =
-            builder.create<arith::ConstantIndexOp>(loc, kPlaceholderIndex);
+        // Block argument: insert placeholder copy_tile (CB-to-DST).
+        // Replaced later with proper DST index allocation. Marked with
+        // kPlaceholderCopyAttrName so Phase 2b can identify and replace it.
         Value dstIndex =
-            builder.create<arith::ConstantIndexOp>(loc, kPlaceholderIndex);
-        auto copyOp = builder.create<CopyTileOp>(
-            loc,
+            arith::ConstantIndexOp::create(builder, loc, kPlaceholderIndex);
+        auto copyOp = CopyTileOp::create(
+            builder, loc,
             TypeRange{DSTRegisterType::get(value.getContext()),
                       value.getType()},
-            ValueRange{value, srcIndex, dstIndex});
+            ValueRange{value, dstIndex});
+        copyOp->setAttr(kPlaceholderCopyAttrName, builder.getUnitAttr());
         copyResult = copyOp.getDstTile();
         LLVM_DEBUG({
           llvm::dbgs()
@@ -345,7 +232,7 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
         });
       } else {
         // Operation result: insert copy_dst (DST-to-DST)
-        auto copyOp = builder.create<CopyDstOp>(loc, value.getType(), value);
+        auto copyOp = CopyDstOp::create(builder, loc, value.getType(), value);
         copyResult = copyOp.getResult();
         LLVM_DEBUG({
           llvm::dbgs() << "Phase 1: Inserted copy_dst for consumer " << i
@@ -434,6 +321,34 @@ static void buildLiveIntervals(Block *body,
     });
   }
 
+  // Merge intervals for matmul accumulator and output. The accumulator is
+  // loaded into DST via copy_tile; matmul_block accumulates into the same
+  // register (DST += A*B).
+  for (Operation &op : *body) {
+    auto matmul = dyn_cast<TileMatmulBlockOp>(&op);
+    if (!matmul || !matmul.getAccumulator()) {
+      continue;
+    }
+
+    Value acc = matmul.getAccumulator();
+    Value out = matmul.getResult();
+
+    if (!intervals.contains(acc) || !intervals.contains(out)) {
+      continue;
+    }
+
+    auto itA = merged.findLeader(merged.insert(acc));
+    auto itB = merged.findLeader(merged.insert(out));
+    if (itA != itB) {
+      merged.unionSets(itA, itB);
+    }
+
+    LLVM_DEBUG({
+      llvm::dbgs() << "Phase 2: Merged matmul accumulator " << acc
+                   << " and output " << out << "\n";
+    });
+  }
+
   // Propagate merged intervals: all values in a merged set get the same
   // interval (the union of all their individual intervals).
   DenseSet<Value> processed;
@@ -473,10 +388,9 @@ static void buildLiveIntervals(Block *body,
   // FPU binary ops (add_tiles, mul_tiles, sub_tiles) accumulate into their
   // output DST register: result = old_DST_value + computed_value. If two FPU
   // binary ops share the same DST output index, the second reads the first's
-  // residual and produces a corrupted result. tt-mlir's D2M dialect solves
-  // this by never allowing in-place DST reuse for binary tile-tile ops
-  // (getDstRegInPlace() = false). We achieve the same by extending FPU binary
-  // result intervals so the linear scan allocator assigns distinct registers.
+  // residual and produces a corrupted result. We prevent this by extending
+  // FPU binary result intervals so the linear scan allocator assigns distinct
+  // registers.
   //
   // TODO(#343): This wastes DST capacity. The proper fix is to pass
   // acc_to_dest=false to add_tiles_init/sub_tiles_init/mul_tiles_init in
@@ -484,9 +398,16 @@ static void buildLiveIntervals(Block *body,
   // With explicit overwrite mode, DST reuse between FPU binary ops would be
   // safe and this interval extension could be removed.
   {
+    // Include TileMatmulBlockOp alongside FPU binary ops: matmul_block also
+    // accumulates into DST and its slot must not be reused by another
+    // accumulating op within the same sync region.
+    auto isFPUAccumulatingOp = [](Operation &op) {
+      return op.hasAttr(kFPUBinaryAttrName) || isa<TileMatmulBlockOp>(&op);
+    };
+
     SmallVector<int64_t> fpuBinaryStarts;
     for (Operation &op : *body) {
-      if (op.hasAttr(kFPUBinaryAttrName)) {
+      if (isFPUAccumulatingOp(op)) {
         fpuBinaryStarts.push_back(opIndex[&op]);
       }
     }
@@ -494,7 +415,7 @@ static void buildLiveIntervals(Block *body,
     if (fpuBinaryStarts.size() > 1) {
       int64_t lastFPUStart = *llvm::max_element(fpuBinaryStarts);
       for (Operation &op : *body) {
-        if (!op.hasAttr(kFPUBinaryAttrName)) {
+        if (!isFPUAccumulatingOp(op)) {
           continue;
         }
         for (Value result : op.getResults()) {
@@ -658,9 +579,15 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       // block arguments (CB-backed). FPU reads from CB, needing 0 DST input
       // slots. Output block arguments are excluded because they may represent
       // accumulation patterns that require DST copy_tile.
+      //
+      // TODO: Support mixed operands (one CB, one DST) via
+      // ttkernel.binary_dest_reuse_tiles with DEST_TO_SRCA/DEST_TO_SRCB.
+      // This would allow FPU lowering for patterns like
+      // tile_add %arg0, %computed where one operand is already in DST.
       LLVM_DEBUG(llvm::dbgs() << "=== Phase 0: FPU Binary Detection ===\n");
       if (enableFPUBinaryOps) {
         unsigned numInputs = computeOp.getNumInputs();
+        auto indexingMaps = computeOp.getIndexingMapsArray();
         for (Operation &op : *body) {
           if (!isa<AddTileOp, SubTileOp, MulTileOp>(&op)) {
             continue;
@@ -671,6 +598,21 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
           auto rhsArg = dyn_cast<BlockArgument>(rhs);
           if (lhsArg && rhsArg && lhsArg.getArgNumber() < numInputs &&
               rhsArg.getArgNumber() < numInputs) {
+            // FPU binary ops use a single shared CB tile index for both
+            // operands, so the indexing maps must be identical. This is not
+            // an error — the op is still valid, it just falls back to the
+            // copy_tile + SFPU path which handles each operand independently.
+            AffineMap lhsMap = indexingMaps[lhsArg.getArgNumber()];
+            AffineMap rhsMap = indexingMaps[rhsArg.getArgNumber()];
+            if (lhsMap != rhsMap) {
+              LLVM_DEBUG({
+                llvm::dbgs()
+                    << "Phase 0: Skipping FPU binary (incompatible indexing "
+                       "maps): "
+                    << op.getName() << "\n";
+              });
+              continue;
+            }
             op.setAttr(kFPUBinaryAttrName, builder.getUnitAttr());
             LLVM_DEBUG({
               llvm::dbgs() << "Phase 0: Marked FPU binary: " << op.getName()
@@ -787,13 +729,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         }
       }
 
-      // Helper to check if a copy_tile has placeholder indices
       auto isPlaceholderCopy = [](CopyTileOp copyTile) {
-        if (auto srcConst = copyTile.getSrcIndex()
-                                .getDefiningOp<arith::ConstantIndexOp>()) {
-          return srcConst.value() == kPlaceholderIndex;
-        }
-        return false;
+        return copyTile->hasAttr(kPlaceholderCopyAttrName);
       };
 
       // First: Replace placeholder copy_tile ops with proper copies
@@ -832,12 +769,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         placeholder.getDstTile().replaceAllUsesWith(newCopy->getDstTile());
         placeholder.getDstToken().replaceAllUsesWith(newCopy->getDstToken());
 
-        Operation *srcIndexDef = placeholder.getSrcIndex().getDefiningOp();
         Operation *dstIndexDef = placeholder.getDstIndex().getDefiningOp();
         placeholder.erase();
-        if (srcIndexDef && srcIndexDef->use_empty()) {
-          srcIndexDef->erase();
-        }
         if (dstIndexDef && dstIndexDef->use_empty()) {
           dstIndexDef->erase();
         }
@@ -904,19 +837,78 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       }
 
       //=== Post-pass verification: no placeholder copy_tile ops ===
-      // A placeholder copy_tile has kPlaceholderIndex as src_index or
-      // dst_index. These are inserted in Phase 1 for block args with multiple
-      // consumers and should have been replaced with proper copies.
       for (Operation &op : *body) {
         if (auto copyTile = dyn_cast<CopyTileOp>(&op)) {
           if (isPlaceholderCopy(copyTile)) {
             copyTile.emitOpError()
-                << "placeholder copy_tile not replaced with proper copy "
-                << "(src_index has sentinel value " << kPlaceholderIndex << ")";
+                << "placeholder copy_tile not replaced with proper copy";
             signalPassFailure();
             return;
           }
         }
+      }
+
+      //=== Populate CB indices using iter_index ===
+      // Create iter_index ops and apply per-operand indexing maps to produce
+      // src_indices on copy_tile and indices on tile_store.
+      {
+        auto indexingMaps = computeOp.getIndexingMapsArray();
+        SmallVector<Value> iterIndices =
+            getOrCreateIterIndices(builder, computeOp);
+
+        // Populate copy_tile src_indices.
+        SmallVector<CopyTileOp> copyTiles;
+        for (Operation &op : *body) {
+          if (auto ct = dyn_cast<CopyTileOp>(&op)) {
+            if (ct.getSrcIndices().empty()) {
+              copyTiles.push_back(ct);
+            }
+          }
+        }
+        for (CopyTileOp ct : copyTiles) {
+          // copy_tile sources inside a compute body are always block arguments.
+          auto blockArg = dyn_cast<BlockArgument>(ct.getSrc());
+          assert(blockArg &&
+                 "copy_tile src must be a block argument inside compute body");
+
+          unsigned argIdx = blockArg.getArgNumber();
+          // ComputeOp verifier guarantees block args match indexing maps.
+          assert(argIdx < indexingMaps.size() &&
+                 "block arg index out of range for indexing maps");
+          AffineMap inputMap = indexingMaps[argIdx];
+
+          builder.setInsertionPoint(ct);
+          SmallVector<Value> cbIndices = applyIndexingMapToIterIndices(
+              builder, ct.getLoc(), inputMap, iterIndices);
+
+          auto newCopy = CopyTileOp::create(
+              builder, ct.getLoc(),
+              TypeRange{ct.getDstToken().getType(), ct.getDstTile().getType()},
+              ct.getSrc(), ct.getDstIndex(), cbIndices);
+          for (NamedAttribute attr : ct->getAttrs()) {
+            newCopy->setAttr(attr.getName(), attr.getValue());
+          }
+          ct.getDstToken().replaceAllUsesWith(newCopy.getDstToken());
+          ct.getDstTile().replaceAllUsesWith(newCopy.getDstTile());
+          ct.erase();
+        }
+
+        // All copy_tile ops must have populated src_indices at this point.
+        for (Operation &op : *body) {
+          if (auto ct = dyn_cast<CopyTileOp>(&op)) {
+            if (ct.getSrcIndices().empty()) {
+              ct.emitOpError()
+                  << "copy_tile has empty src_indices after iter_index phase";
+              signalPassFailure();
+              return;
+            }
+          }
+        }
+
+        LLVM_DEBUG({
+          llvm::dbgs() << "=== Populated CB indices using iter_index ("
+                       << iterIndices.size() << "D) ===\n";
+        });
       }
 
       //=== Compute and attach unroll_factor ===
@@ -927,19 +919,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         std::uint32_t dstPerIteration = maxDstUsed + 1;
         std::uint32_t unrollFactor = capacity / dstPerIteration;
 
-        // Compute total tiles from the first output tensor shape.
-        // TODO: For reductions, use the iteration domain (input shape) instead,
-        // since the output has fewer dimensions than the loop nest.
-        int64_t totalTiles = 1;
-        Value firstOutput = computeOp.getOutputs().front();
-        auto outputTy = cast<RankedTensorType>(firstOutput.getType());
-        for (int64_t dim : outputTy.getShape()) {
-          if (dim == ShapedType::kDynamic) {
-            totalTiles = 1;
-            break;
-          }
-          totalTiles *= dim;
-        }
+        int64_t totalTiles = computeOp.getTotalIterationTiles();
 
         unrollFactor =
             std::min(unrollFactor, static_cast<std::uint32_t>(totalTiles));
