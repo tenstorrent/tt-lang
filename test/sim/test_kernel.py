@@ -22,7 +22,7 @@ class TestGridSize:
     def test_grid_size_in_kernel_2d(self):
         """Test grid_size returns correct dimensions in 2D grid."""
 
-        @ttl.kernel(grid=(4, 8))
+        @ttl.operation(grid=(4, 8))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -50,7 +50,7 @@ class TestGridSize:
     def test_grid_size_in_kernel_auto(self):
         """Test grid_size with auto grid (defaults to 8x8)."""
 
-        @ttl.kernel(grid="auto")
+        @ttl.operation(grid="auto")
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -78,7 +78,7 @@ class TestGridSize:
     def test_grid_size_in_kernel_1d(self):
         """Test grid_size with 1D grid."""
 
-        @ttl.kernel(grid=(16,))
+        @ttl.operation(grid=(16,))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -105,7 +105,7 @@ class TestGridSize:
     def test_grid_size_in_kernel_3d(self):
         """Test grid_size with 3D grid."""
 
-        @ttl.kernel(grid=(2, 3, 4))
+        @ttl.operation(grid=(2, 3, 4))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -139,7 +139,7 @@ class TestGridSize:
     def test_grid_size_in_compute_function(self):
         """Test grid_size can be called from within compute/datamovement functions."""
 
-        @ttl.kernel(grid=(3, 5))
+        @ttl.operation(grid=(3, 5))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -169,7 +169,7 @@ class TestGridSize:
     def test_grid_size_unpacking(self):
         """Test various ways to unpack grid_size result."""
 
-        @ttl.kernel(grid=(2, 3))
+        @ttl.operation(grid=(2, 3))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -207,7 +207,7 @@ class TestGridSize:
     def test_grid_size_in_nested_functions(self):
         """Test grid_size works in nested function calls within kernel."""
 
-        @ttl.kernel(grid=(6, 7))
+        @ttl.operation(grid=(6, 7))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -241,7 +241,7 @@ class TestGridSize:
     def test_grid_size_consistent_across_calls(self):
         """Test that grid_size returns consistent values across multiple calls."""
 
-        @ttl.kernel(grid=(5, 9))
+        @ttl.operation(grid=(5, 9))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -276,7 +276,7 @@ class TestCore:
     def test_core_1d_grid_dims_1(self):
         """Test core() returns single Index for 1D grid with dims=1."""
 
-        @ttl.kernel(grid=(8,))
+        @ttl.operation(grid=(8,))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -302,7 +302,7 @@ class TestCore:
     def test_core_2d_grid_dims_1(self):
         """Test core() with dims=1 on 2D grid returns flattened index."""
 
-        @ttl.kernel(grid=(2, 3))
+        @ttl.operation(grid=(2, 3))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -328,7 +328,7 @@ class TestCore:
     def test_core_2d_grid_dims_2(self):
         """Test core() returns 2D coordinates for 2D grid with dims=2."""
 
-        @ttl.kernel(grid=(3, 4))
+        @ttl.operation(grid=(3, 4))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -356,7 +356,7 @@ class TestCore:
     def test_core_3d_grid_dims_1(self):
         """Test core() with dims=1 on 3D grid returns fully flattened index."""
 
-        @ttl.kernel(grid=(2, 3, 4))
+        @ttl.operation(grid=(2, 3, 4))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -382,7 +382,7 @@ class TestCore:
     def test_core_3d_grid_dims_2_flattens_first_dimension(self):
         """Test core() with dims=2 on 3D grid flattens first two dimensions."""
 
-        @ttl.kernel(grid=(2, 3, 5))
+        @ttl.operation(grid=(2, 3, 5))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -412,7 +412,7 @@ class TestCore:
     def test_core_3d_grid_dims_3(self):
         """Test core() returns 3D coordinates for 3D grid with dims=3."""
 
-        @ttl.kernel(grid=(2, 3, 4))
+        @ttl.operation(grid=(2, 3, 4))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -441,7 +441,7 @@ class TestCore:
     def test_core_2d_grid_dims_3_pads_with_zeros(self):
         """Test core() pads with zeros when dims > grid dimensions."""
 
-        @ttl.kernel(grid=(2, 3))
+        @ttl.operation(grid=(2, 3))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -470,7 +470,7 @@ class TestCore:
     def test_core_default_dims_is_2(self):
         """Test that core() defaults to dims=2."""
 
-        @ttl.kernel(grid=(4, 5))
+        @ttl.operation(grid=(4, 5))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -503,7 +503,7 @@ class TestCore:
     def test_core_in_nested_functions(self):
         """Test core() works in nested function calls."""
 
-        @ttl.kernel(grid=(3, 4))
+        @ttl.operation(grid=(3, 4))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -537,7 +537,7 @@ class TestCore:
     def test_core_in_datamovement_functions(self):
         """Test core() can be called from datamovement functions."""
 
-        @ttl.kernel(grid=(2, 3))
+        @ttl.operation(grid=(2, 3))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -568,7 +568,7 @@ class TestCore:
     def test_core_consistent_across_calls(self):
         """Test that core() returns consistent values across multiple calls."""
 
-        @ttl.kernel(grid=(3, 5))
+        @ttl.operation(grid=(3, 5))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -596,7 +596,7 @@ class TestCore:
     def test_core_different_dims_same_core(self):
         """Test that different dims values on same core produce correct transformations."""
 
-        @ttl.kernel(grid=(2, 3, 4))
+        @ttl.operation(grid=(2, 3, 4))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -635,7 +635,7 @@ class TestFlattenCoreCoord:
     def test_flatten_already_linear_coord(self):
         """Test flattening an already linear coordinate returns it unchanged."""
 
-        @ttl.kernel(grid=(8, 8))
+        @ttl.operation(grid=(8, 8))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -661,7 +661,7 @@ class TestFlattenCoreCoord:
     def test_flatten_2d_core_coord(self):
         """Test flattening a 2D core coordinate to linear."""
 
-        @ttl.kernel(grid=(4, 8))
+        @ttl.operation(grid=(4, 8))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -697,7 +697,7 @@ class TestFlattenCoreCoord:
     def test_flatten_3d_core_coord(self):
         """Test flattening a 3D core coordinate to linear."""
 
-        @ttl.kernel(grid=(2, 3, 4))
+        @ttl.operation(grid=(2, 3, 4))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -731,7 +731,7 @@ class TestFlattenCoreCoord:
     def test_flatten_with_core_function(self):
         """Test flattening the result of core() function."""
 
-        @ttl.kernel(grid=(3, 5))
+        @ttl.operation(grid=(3, 5))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -765,7 +765,7 @@ class TestFlattenCoreCoord:
     def test_flatten_idempotent(self):
         """Test that flattening twice gives the same result."""
 
-        @ttl.kernel(grid=(2, 4))
+        @ttl.operation(grid=(2, 4))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -794,7 +794,7 @@ class TestFlattenCoreCoord:
     def test_flatten_different_grid_sizes(self):
         """Test flattening works correctly with different grid dimensions."""
 
-        @ttl.kernel(grid=(10, 5))
+        @ttl.operation(grid=(10, 5))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -825,7 +825,7 @@ class TestFlattenCoreCoord:
     def test_flatten_returns_int_type(self):
         """Test that flatten_core_index always returns an int."""
 
-        @ttl.kernel(grid=(2, 2))
+        @ttl.operation(grid=(2, 2))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
             assert a is not None and b is not None
 
@@ -858,7 +858,7 @@ class TestThreadOrderIndependence:
     def test_thread_order_dm_compute_dm(self):
         """Test kernel with order: DM, compute, DM (like broadcast_demo.py)."""
 
-        @ttl.kernel(grid=(1, 1))
+        @ttl.operation(grid=(1, 1))
         def kernel_dm_compute_dm(
             A: ttnn.Tensor, B: ttnn.Tensor, Y: ttnn.Tensor
         ) -> None:
@@ -906,7 +906,7 @@ class TestThreadOrderIndependence:
     def test_thread_order_compute_dm_dm(self):
         """Test kernel with order: compute, DM, DM (traditional order)."""
 
-        @ttl.kernel(grid=(1, 1))
+        @ttl.operation(grid=(1, 1))
         def kernel_compute_dm_dm(
             A: ttnn.Tensor, B: ttnn.Tensor, Y: ttnn.Tensor
         ) -> None:
@@ -954,7 +954,7 @@ class TestThreadOrderIndependence:
     def test_thread_order_dm_dm_compute(self):
         """Test kernel with order: DM, DM, compute."""
 
-        @ttl.kernel(grid=(1, 1))
+        @ttl.operation(grid=(1, 1))
         def kernel_dm_dm_compute(
             A: ttnn.Tensor, B: ttnn.Tensor, Y: ttnn.Tensor
         ) -> None:
@@ -1026,7 +1026,7 @@ class TestRowMajorKernel:
 
         likeness = SimTensor(torch.zeros(1, C, dtype=torch.float32), ROW_MAJOR_LAYOUT)
 
-        @ttl.kernel(grid=(1, 1))
+        @ttl.operation(grid=(1, 1))
         def double_rows(
             inp: ttnn.Tensor,
             out: ttnn.Tensor,
@@ -1076,7 +1076,7 @@ class TestRowMajorKernel:
         out_t = SimTensor(output_data, ROW_MAJOR_LAYOUT)
         likeness = SimTensor(torch.zeros(1, C, dtype=torch.float32), ROW_MAJOR_LAYOUT)
 
-        @ttl.kernel(grid=(1, 1))
+        @ttl.operation(grid=(1, 1))
         def passthrough(inp: ttnn.Tensor, out: ttnn.Tensor) -> None:
             in_dfb = ttl.make_dataflow_buffer_like(likeness, shape=(1, C))
             out_dfb = ttl.make_dataflow_buffer_like(likeness, shape=(1, C))
@@ -1115,7 +1115,7 @@ class TestRowMajorKernel:
         out_t = SimTensor(output_data, ROW_MAJOR_LAYOUT)
         likeness = SimTensor(torch.zeros(1, C, dtype=torch.float32), ROW_MAJOR_LAYOUT)
 
-        @ttl.kernel(grid=(1, 1))
+        @ttl.operation(grid=(1, 1))
         def exp_rows(inp: ttnn.Tensor, out: ttnn.Tensor) -> None:
             in_dfb = ttl.make_dataflow_buffer_like(likeness, shape=(1, C))
             out_dfb = ttl.make_dataflow_buffer_like(likeness, shape=(1, C))

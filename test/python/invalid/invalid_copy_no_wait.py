@@ -29,7 +29,7 @@ except ImportError:
     exit(0)
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def copy_no_wait_kernel(lhs, out):
     """Kernel that forgets to wait on a copy - should fail MLIR verification."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)

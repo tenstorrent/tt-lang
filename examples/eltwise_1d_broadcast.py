@@ -28,7 +28,7 @@ import torch
 from sim import ttl, ttnn
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def eltwise_1d_broadcast(
     A: ttnn.Tensor,
     B: ttnn.Tensor,

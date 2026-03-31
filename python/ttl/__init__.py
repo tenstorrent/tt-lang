@@ -6,7 +6,7 @@
 
 from ttl.version import __version__
 
-# Export TTL DSL API directly at package level so `import ttl; ttl.kernel` works
+# Export TTL DSL API directly at package level so `import ttl; ttl.operation` works
 from ttl.ttl import (
     kernel,
     compute,

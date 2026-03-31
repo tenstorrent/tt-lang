@@ -34,7 +34,7 @@ import ttnn
 TILE_SIZE = 32
 GRANULARITY = {granularity}
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def max_plus_min_kernel(
     a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor
 ) -> None:

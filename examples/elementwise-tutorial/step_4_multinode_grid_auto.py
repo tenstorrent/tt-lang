@@ -45,7 +45,7 @@ GRANULARITY = 4
 # grid the compiler may choose.
 
 
-@ttl.kernel(grid="auto")
+@ttl.operation(grid="auto")
 def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY

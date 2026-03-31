@@ -16,7 +16,7 @@ import ttl
 from utils.correctness import assert_allclose
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def add_bfp8_dram(lhs, rhs, out):
     """Add kernel that reads bfloat8_b tensors directly from DRAM."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(2, 2), buffer_factor=2)

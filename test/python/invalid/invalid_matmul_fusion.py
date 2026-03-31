@@ -20,7 +20,7 @@ import ttl
 
 
 # CHECK: Compiled kernel ready
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def matmul_fusion(a, b, c, out):
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)

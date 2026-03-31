@@ -21,7 +21,7 @@ import ttl
 
 
 # CHECK: ValueError: TTNN interop requires interleaved tensors
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def invalid_sharded_kernel(lhs, rhs, out):
     """This kernel should fail because sharded tensors are not supported."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)

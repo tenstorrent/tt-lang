@@ -9,7 +9,7 @@ TILE_SIZE = 32
 GRANULARITY = 2
 
 
-@ttl.kernel(grid="auto")
+@ttl.operation(grid="auto")
 def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
     row_tiles = a_in.shape[0] // TILE_SIZE // GRANULARITY
     col_tiles = a_in.shape[1] // TILE_SIZE

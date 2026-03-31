@@ -41,7 +41,7 @@ MULTINODE_LOOP_KERNEL_TEMPLATE = '''
 import ttl
 
 # Grid: {grid_cols} cols x {grid_rows} rows
-@ttl.kernel(grid=({grid_cols}, {grid_rows}))  # (cols, rows)
+@ttl.operation(grid=({grid_cols}, {grid_rows}))  # (cols, rows)
 def multinode_loop(lhs, rhs, out):
     """Multinode kernel: each core loops over 2x2 tiles computing exp(lhs) + sqrt(rhs)."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)

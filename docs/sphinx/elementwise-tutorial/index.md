@@ -9,7 +9,7 @@ script.
 We want to compute `y = (a * b + c) * d` on 2048×2048 `bfloat16` tensors. The
 inner expression `a * b + c` is the target for kernel fusion: instead of
 dispatching three separate TT-NN operations that each read and write DRAM, a
-custom TT-Lang kernel reads each input once, computes the result in L1, and writes
+TT-Lang operation reads each input once, computes the result in L1, and writes
 output once. It is possible to vary the expression as well as the size of
 tensors and the data type, for example `float32`. We ecougarge the user to do this.
 
@@ -37,12 +37,12 @@ node.
 
 ### Kernel function and grid
 
-A kernel is a Python function decorated with `@ttl.kernel()`. The `grid`
+A kernel is a Python function decorated with `@ttl.operation()`. The `grid`
 argument selects how many nodes (Tensix cores) to run on. `grid=(1, 1)` means
 a single node.
 
 ```python
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
     ...
 ```
@@ -171,7 +171,7 @@ the user with Tenstorrent hardware architecture we recommend reading
 ### Declaring a multi-node grid
 
 ```python
-@ttl.kernel(grid=(4, 4))
+@ttl.operation(grid=(4, 4))
 def __tutorial_kernel(...):
 ```
 
@@ -222,7 +222,7 @@ the requirement for even divisibility.
 ### Auto grid
 
 ```python
-@ttl.kernel(grid="auto")
+@ttl.operation(grid="auto")
 ```
 
 `grid="auto"` lets the compiler select the largest grid that fits available

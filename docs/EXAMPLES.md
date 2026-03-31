@@ -22,7 +22,7 @@ sudo docker exec -w /path/to/tt-lang-cursor <container> bash -c \
 
 For pytest against hardware-backed tests, the same pattern applies with `python -m pytest ...` instead of a single example script.
 
-The hardware CI batch (`.github/scripts/compile-and-run-examples.sh`) uses the same idea: `python3` on each script with the compiler stack and device available. It only includes files that contain `@ttl.kernel` under `examples/*.py`, `examples/tutorial/**/*.py`, and `examples/errors/**/*.py`, and that do **not** opt out with `TTLANG_HARDWARE_CI: skip-compiler` in the first 80 lines.
+The hardware CI batch (`.github/scripts/compile-and-run-examples.sh`) uses the same idea: `python3` on each script with the compiler stack and device available. It only includes files that contain `@ttl.operation` under `examples/*.py`, `examples/tutorial/**/*.py`, and `examples/errors/**/*.py`, and that do **not** opt out with `TTLANG_HARDWARE_CI: skip-compiler` in the first 80 lines.
 
 ## Matrix
 
@@ -53,7 +53,7 @@ The hardware CI batch (`.github/scripts/compile-and-run-examples.sh`) uses the s
 | `tutorial/single_core_broadcast_multitile_blocks.py` | real | yes (needs ttnn) | yes | |
 | `tutorial/multicore.py` | real | yes (needs ttnn) | yes | |
 | `tutorial/multicore_grid_auto.py` | real | yes (needs ttnn) | yes | |
-| `tutorial/ttnn_base.py` | real | yes (needs ttnn) | no | No `@ttl.kernel`; not discovered by compile-and-run. |
+| `tutorial/ttnn_base.py` | real | yes (needs ttnn) | no | No `@ttl.operation`; not discovered by compile-and-run. |
 
 `requires_ttnn` in `test_examples.py` skips rows that need a real `ttnn` import for golden checks when `ttnn` is missing from the environment.
 

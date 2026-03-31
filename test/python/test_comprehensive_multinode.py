@@ -31,7 +31,7 @@ CB_COLS = 4
 TENSOR_SHAPE = (GRID_ROWS * CB_ROWS * TILE_SIZE, GRID_COLS * CB_COLS * TILE_SIZE)
 
 
-@ttl.kernel(grid=(GRID_ROWS, GRID_COLS))
+@ttl.operation(grid=(GRID_ROWS, GRID_COLS))
 def comprehensive_kernel(a, b, c, out1, out2, out3):
     """
     Multinode kernel with 20 fused ops across 3 outputs.

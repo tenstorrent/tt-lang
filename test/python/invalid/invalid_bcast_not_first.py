@@ -25,7 +25,7 @@ import ttl
 # CHECK:    |
 # CHECK: [[LINE]] |             result = ttl.math.broadcast(ab, o, dims=[0])
 # CHECK:    |                      ^
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def invalid_bcast_kernel(a, b, out):
     """INVALID: bcast on elementwise result (not DFB-attached)."""
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)

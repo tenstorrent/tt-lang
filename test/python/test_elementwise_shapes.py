@@ -51,7 +51,7 @@ def tiles_to_tensor_shape(tile_rows: int, tile_cols: int) -> tuple[int, int]:
 BINARY_KERNEL_TEMPLATE = '''
 import ttl
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def {name}_kernel(lhs, rhs, out):
     """Binary {name} kernel for {tile_rows}x{tile_cols} tiles."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
@@ -93,7 +93,7 @@ def {name}_kernel(lhs, rhs, out):
 BINARY_FN_KERNEL_TEMPLATE = '''
 import ttl
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def {name}_kernel(lhs, rhs, out):
     """Binary {name} kernel (function call) for {tile_rows}x{tile_cols} tiles."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
@@ -135,7 +135,7 @@ def {name}_kernel(lhs, rhs, out):
 UNARY_KERNEL_TEMPLATE = '''
 import ttl
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def {name}_kernel(inp, out):
     """Unary {name} kernel for {tile_rows}x{tile_cols} tiles."""
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})

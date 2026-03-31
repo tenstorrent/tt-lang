@@ -23,10 +23,10 @@ import ttl
 # CHECK: ValueError: Only tiled tensors supported
 # CHECK-NEXT:   --> {{.*}}invalid_non_tiled.py:[[LINE:[0-9]+]]:1
 # CHECK-NEXT:    |
-# CHECK-NEXT: [[LINE]] | @ttl.kernel(grid=(1, 1), tiled=False)
+# CHECK-NEXT: [[LINE]] | @ttl.operation(grid=(1, 1), tiled=False)
 # CHECK-NEXT:    | ^
 # CHECK-NEXT:    |
-@ttl.kernel(grid=(1, 1), tiled=False)
+@ttl.operation(grid=(1, 1), tiled=False)
 def invalid_non_tiled_kernel(lhs, rhs, out):
     """This kernel should fail because tiled=False is not supported."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)

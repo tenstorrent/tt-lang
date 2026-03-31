@@ -22,7 +22,7 @@ import ttnn
 import ttl
 
 
-@ttl.kernel(grid=(2, 2))
+@ttl.operation(grid=(2, 2))
 def multitile_dst_kernel(inp, inp2, out):
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
     inp2_dfb = ttl.make_dataflow_buffer_like(inp2, shape=(2, 2), buffer_factor=2)

@@ -27,7 +27,7 @@ win and unmentioned flags fall through from lower levels:
 | Priority | Mechanism | Example |
 |---|---|---|
 | 1 (lowest) | `CompilerOptions` class defaults | — |
-| 2 | `@ttl.kernel` decorator `options=` parameter | `@ttl.kernel(grid=(2,2), options="--no-ttl-maximize-dst")` |
+| 2 | `@ttl.operation` decorator `options=` parameter | `@ttl.operation(grid=(2,2), options="--no-ttl-maximize-dst")` |
 | 3 | `TTLANG_COMPILER_OPTIONS` environment variable | `export TTLANG_COMPILER_OPTIONS="--no-ttl-fpu-binary-ops"` |
 | 4 (highest) | Command-line arguments (`sys.argv`) | `python my_kernel.py --no-ttl-maximize-dst` |
 
@@ -40,7 +40,7 @@ my_kernel(tensor_a, tensor_b, options="--no-ttl-fpu-binary-ops")
 
 ## Compute Configuration
 
-These two parameters are set on the `@ttl.kernel` decorator (not via command-line
+These two parameters are set on the `@ttl.operation` decorator (not via command-line
 flags) and control the TTNN compute kernel hardware configuration:
 
 | Parameter | Type | Default | Description |
@@ -49,7 +49,7 @@ flags) and control the TTNN compute kernel hardware configuration:
 | `dst_full_sync_en` | `bool` or `None` | `None` | Enable full DST synchronization (single-buffering mode). Doubles DST capacity (f32: 8, f16/bf16: 16) at the cost of a full sync between math and pack threads. |
 
 ```python
-@ttl.kernel(grid=(2, 2), fp32_dest_acc_en=True, dst_full_sync_en=False)
+@ttl.operation(grid=(2, 2), fp32_dest_acc_en=True, dst_full_sync_en=False)
 def my_kernel(a, b): ...
 ```
 
@@ -74,7 +74,7 @@ Profiling-related environment variables (`TTLANG_AUTO_PROFILE`,
 
 ## Other Decorator Parameters
 
-The `@ttl.kernel` decorator also accepts these parameters for kernel structure
+The `@ttl.operation` decorator also accepts these parameters for kernel structure
 and layout:
 
 | Parameter | Type | Default | Description |

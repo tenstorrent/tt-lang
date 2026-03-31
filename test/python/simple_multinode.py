@@ -23,7 +23,7 @@ import ttnn
 import ttl
 
 
-@ttl.kernel(grid=(8, 8))
+@ttl.operation(grid=(8, 8))
 def multinode_add(lhs, rhs, out):
     """Multinode add kernel - each core processes its own tile."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)

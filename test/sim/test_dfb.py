@@ -944,7 +944,7 @@ def test_per_core_dfb_limit_exceeds_max() -> None:
 
     element = make_ones_tile()
 
-    @ttl.kernel(grid=(1,))
+    @ttl.operation(grid=(1,))
     def test_kernel(a):
         _dfb0 = ttl.make_dataflow_buffer_like(a, shape=(1, 1))
         _dfb1 = ttl.make_dataflow_buffer_like(a, shape=(1, 1))
@@ -981,7 +981,7 @@ def test_l1_limit_counts_unreferenced_dfbs() -> None:
 
     element = make_ones_tile()
 
-    @ttl.kernel(grid=(1,))
+    @ttl.operation(grid=(1,))
     def test_kernel(a):
         _unreferenced0 = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
         _unreferenced1 = ttl.make_dataflow_buffer_like(
