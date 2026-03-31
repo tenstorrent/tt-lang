@@ -795,18 +795,18 @@ static AffineMap buildBcastInputMap(MLIRContext *ctx, bool expandRows,
 static LogicalResult validateBcastExpansion(BcastOp op, bool expandRows,
                                             bool expandCols) {
   auto bcastType = op.getBcastType();
+  // SCALAR is a superset: valid for any expansion direction.
+  if (bcastType == BcastType::Scalar) {
+    return success();
+  }
   if (expandRows && expandCols) {
-    if (bcastType != BcastType::Scalar) {
-      return op.emitError("row+col expansion requires scalar bcast type");
-    }
-  } else if (expandCols) {
-    if (bcastType != BcastType::Col) {
-      return op.emitError("col expansion requires col bcast type");
-    }
-  } else if (expandRows) {
-    if (bcastType != BcastType::Row) {
-      return op.emitError("row expansion requires row bcast type");
-    }
+    return op.emitError("row+col expansion requires scalar bcast type");
+  }
+  if (expandCols && bcastType != BcastType::Col) {
+    return op.emitError("col expansion requires col or scalar bcast type");
+  }
+  if (expandRows && bcastType != BcastType::Row) {
+    return op.emitError("row expansion requires row or scalar bcast type");
   }
   return success();
 }
