@@ -35,7 +35,7 @@ TILE = 32
 def make_matmul_kernel(m_tiles, n_tiles, k_tiles=1, dtype=torch.bfloat16):
     """Create a matmul kernel with the given tile block dimensions."""
 
-    @ttl.kernel(grid=(1, 1))
+    @ttl.operation(grid=(1, 1))
     def kernel(a, b, out):
         a_dfb = ttl.make_dataflow_buffer_like(
             a, shape=(m_tiles, k_tiles), buffer_factor=2
@@ -74,7 +74,7 @@ def make_matmul_kernel(m_tiles, n_tiles, k_tiles=1, dtype=torch.bfloat16):
 def make_matmul_bias_kernel(m_tiles, n_tiles):
     """Create a matmul + bias kernel: out = (a @ b) + c."""
 
-    @ttl.kernel(grid=(1, 1))
+    @ttl.operation(grid=(1, 1))
     def kernel(a, b, c, out):
         a_dfb = ttl.make_dataflow_buffer_like(a, shape=(m_tiles, 1), buffer_factor=2)
         b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, n_tiles), buffer_factor=2)
@@ -119,7 +119,7 @@ def make_matmul_bias_kernel(m_tiles, n_tiles):
 def make_matmul_relu_kernel(m_tiles, n_tiles):
     """Create a matmul + relu kernel: out = relu(a @ b)."""
 
-    @ttl.kernel(grid=(1, 1))
+    @ttl.operation(grid=(1, 1))
     def kernel(a, b, out):
         a_dfb = ttl.make_dataflow_buffer_like(a, shape=(m_tiles, 1), buffer_factor=2)
         b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, n_tiles), buffer_factor=2)
