@@ -25,9 +25,6 @@ class AccessState(Enum):
     RW = (
         auto()
     )  # Read-Write: block was waited on or written to (MR) and then read from, can be read more or overwritten
-    A = (
-        auto()
-    )  # Accumulate: block has been accumulated to, can continue accumulating or must be read or pushed
     ROR = (
         auto()
     )  # Read-Only while Reading: block has N copies in flight; N is tracked separately
@@ -57,12 +54,7 @@ class ExpectedOp(Enum):
     TX_WAIT = auto()  # Expect tx.wait()
     PUSH = auto()  # Expect blk.push()
     POP = auto()  # Expect blk.pop()
-    STORE = (
-        auto()
-    )  # Expect blk.store(...) - block as destination, regular store (acc=False)
-    STORE_ACC = (
-        auto()
-    )  # Expect blk.store(..., acc=True) - block as destination, accumulator store
+    STORE = auto()  # Expect blk.store(...) - block as destination
     STORE_SRC = (
         auto()
     )  # Expect other_blk.store(blk, ...) - block as source/input to store
@@ -139,44 +131,26 @@ STATE_TRANSITIONS: Dict[
     },
     # COMPUTE thread, WAIT acquisition
     (BlockAcquisition.WAIT, ThreadType.COMPUTE): {
-        # Store read complete: MR/RW/A -> RW with store ops + pop
+        # Assign as arithmetic source: MR/RW -> RW; POP now allowed but store
+        # confirmation is deferred and tracked until program termination.
+        ("assign_src", AccessState.MR): (
+            AccessState.RW,
+            {ExpectedOp.STORE_SRC, ExpectedOp.STORE, ExpectedOp.POP},
+        ),
+        ("assign_src", AccessState.RW): (
+            AccessState.RW,
+            {ExpectedOp.STORE_SRC, ExpectedOp.STORE, ExpectedOp.POP},
+        ),
+        # Store read complete: MR/RW -> RW with store ops + pop
         ("store_src", AccessState.MR): (
             AccessState.RW,
-            {
-                ExpectedOp.STORE_SRC,
-                ExpectedOp.STORE,
-                ExpectedOp.STORE_ACC,
-                ExpectedOp.POP,
-            },
+            {ExpectedOp.STORE_SRC, ExpectedOp.STORE, ExpectedOp.POP},
         ),
         ("store_src", AccessState.RW): (
             AccessState.RW,
-            {
-                ExpectedOp.STORE_SRC,
-                ExpectedOp.STORE,
-                ExpectedOp.STORE_ACC,
-                ExpectedOp.POP,
-            },
+            {ExpectedOp.STORE_SRC, ExpectedOp.STORE, ExpectedOp.POP},
         ),
-        ("store_src", AccessState.A): (
-            AccessState.RW,
-            {
-                ExpectedOp.STORE_SRC,
-                ExpectedOp.STORE,
-                ExpectedOp.STORE_ACC,
-                ExpectedOp.POP,
-            },
-        ),
-        # Store accumulate complete: RW/A -> A with store_src + store_acc
-        ("store_dst_acc", AccessState.RW): (
-            AccessState.A,
-            {ExpectedOp.STORE_SRC, ExpectedOp.STORE_ACC},
-        ),
-        ("store_dst_acc", AccessState.A): (
-            AccessState.A,
-            {ExpectedOp.STORE_SRC, ExpectedOp.STORE_ACC},
-        ),
-        # Store regular complete: RW -> MR with store_src only
+        # Store complete: RW -> MR with store_src only
         ("store_dst", AccessState.RW): (
             AccessState.MR,
             {ExpectedOp.STORE_SRC},
@@ -184,48 +158,16 @@ STATE_TRANSITIONS: Dict[
     },
     # COMPUTE thread, RESERVE acquisition
     (BlockAcquisition.RESERVE, ThreadType.COMPUTE): {
-        # Store read complete: MR/RW/A -> RW with store ops + push
+        # Store read complete: MR/RW -> RW with store ops + push
         ("store_src", AccessState.MR): (
             AccessState.RW,
-            {
-                ExpectedOp.STORE_SRC,
-                ExpectedOp.STORE,
-                ExpectedOp.STORE_ACC,
-                ExpectedOp.PUSH,
-            },
+            {ExpectedOp.STORE_SRC, ExpectedOp.STORE, ExpectedOp.PUSH},
         ),
         ("store_src", AccessState.RW): (
             AccessState.RW,
-            {
-                ExpectedOp.STORE_SRC,
-                ExpectedOp.STORE,
-                ExpectedOp.STORE_ACC,
-                ExpectedOp.PUSH,
-            },
+            {ExpectedOp.STORE_SRC, ExpectedOp.STORE, ExpectedOp.PUSH},
         ),
-        ("store_src", AccessState.A): (
-            AccessState.RW,
-            {
-                ExpectedOp.STORE_SRC,
-                ExpectedOp.STORE,
-                ExpectedOp.STORE_ACC,
-                ExpectedOp.PUSH,
-            },
-        ),
-        # Store accumulate complete: MW/RW/A -> A with store_src + store_acc + push
-        ("store_dst_acc", AccessState.MW): (
-            AccessState.A,
-            {ExpectedOp.STORE_SRC, ExpectedOp.STORE_ACC, ExpectedOp.PUSH},
-        ),
-        ("store_dst_acc", AccessState.RW): (
-            AccessState.A,
-            {ExpectedOp.STORE_SRC, ExpectedOp.STORE_ACC, ExpectedOp.PUSH},
-        ),
-        ("store_dst_acc", AccessState.A): (
-            AccessState.A,
-            {ExpectedOp.STORE_SRC, ExpectedOp.STORE_ACC, ExpectedOp.PUSH},
-        ),
-        # Store regular complete: MW/RW -> MR with store_src + push
+        # Store complete: MW/RW -> MR with store_src + push
         ("store_dst", AccessState.MW): (
             AccessState.MR,
             {ExpectedOp.STORE_SRC, ExpectedOp.PUSH},
@@ -300,7 +242,7 @@ class BlockStateMachine:
             if self._thread_type == ThreadType.DM:
                 self._expected_ops = {ExpectedOp.COPY_DST}
             else:
-                self._expected_ops = {ExpectedOp.STORE, ExpectedOp.STORE_ACC}
+                self._expected_ops = {ExpectedOp.STORE}
         elif self._acquisition == BlockAcquisition.WAIT:
             self._access_state = AccessState.MR
             if self._thread_type == ThreadType.DM:
@@ -421,6 +363,17 @@ class BlockStateMachine:
         self._access_state = AccessState.OS
         self._expected_ops = set()
 
+    def transition_assign_src(self) -> None:
+        """Fire the assign_src transition (WAIT/COMPUTE blocks only).
+
+        Called when the block's data is used as an arithmetic operand (assigned
+        to a temporary).  Unlocks POP so the context manager can exit, but
+        registers the block as pending store confirmation: the block's data
+        must eventually reach a store() call, which is validated at program
+        termination via DataflowBuffer.validate_no_pending_blocks().
+        """
+        self.transition("assign_src", "assign_src", ExpectedOp.STORE_SRC)
+
     def transition_pop(self) -> None:
         """Validate and execute the pop() transition (WAIT blocks only).
 
@@ -438,10 +391,10 @@ class BlockStateMachine:
                 f"Current state: Thread={self._thread_type.name}, "
                 f"Access={self._access_state.name}"
             )
-        if self._access_state not in (AccessState.MR, AccessState.RW, AccessState.A):
+        if self._access_state not in (AccessState.MR, AccessState.RW):
             raise RuntimeError(
                 f"Cannot perform pop(): Invalid access state {self._access_state.name}. "
-                f"Expected MR (never used), RW (used as source), or A (accumulated)."
+                f"Expected MR (never used) or RW (used as source)."
             )
         self._access_state = AccessState.OS
         self._expected_ops = set()

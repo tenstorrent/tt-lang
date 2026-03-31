@@ -72,9 +72,11 @@ def matmul_1d(
         for block_m in range(num_blocks_m):
             for block_n in range(blocks_per_node_n):
                 with out_dfb.reserve() as out_blk:
+                    acc = ttl.math.fill(out_blk, 0)
                     for block_k in range(num_blocks_k):
                         with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
-                            out_blk.store(a_blk @ b_blk, acc=True)
+                            acc += a_blk @ b_blk
+                    out_blk.store(acc)
 
     @ttl.datamovement()
     def mm_reader():

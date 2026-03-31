@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# TTLANG_HARDWARE_CI: xfail-compiler
+
 import os
 import sys
 
@@ -90,13 +92,7 @@ def matmul_with_bias(
 
                         # acquire c_blk from c_dfb:
 
-                        with c_dfb.wait() as c_blk:
-
-                            # then compute: y = c:
-
-                            y_blk.store(c_blk, acc=True)
-
-                            # release c_blk
+                        y = ttl.math.fill(y_blk, 0)
 
                         for _ in range(KT):
 
@@ -106,13 +102,18 @@ def matmul_with_bias(
                                 a_dfb.wait() as a_blk,
                                 b_dfb.wait() as b_blk,
                             ):
-                                # then compute y += a @ b:
 
-                                y_blk.store(a_blk @ b_blk, acc=True)
+                                y += a_blk @ b_blk
 
                                 # release a_blk and b_blk
 
-                        # release y_blk
+                        with c_dfb.wait() as c_blk:
+
+                            y = y + ttl.math.broadcast(c_blk, y_blk, dims=[0])
+
+                            # release c_blk
+
+                        y_blk.store(y)
 
     @ttl.datamovement()
     def matmul_write():

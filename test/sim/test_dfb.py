@@ -732,105 +732,142 @@ def test_context_manager_syntax() -> None:
     print("Context manager syntax test passed!")
 
 
-def test_store_accumulate_first_assigns() -> None:
-    """Test that the first store(acc=True) assigns instead of accumulates."""
-    element = make_element_for_buffer_shape((3, 1))
-    dfb = DataflowBuffer(likeness_tensor=element, shape=(3, 1), buffer_factor=2)
-
-    with dfb.reserve() as block:
-        import torch
-        from python.sim import ttnn, TILE_SHAPE
-
-        values1 = Block.from_list(
-            [
-                ttnn.Tensor(torch.full(TILE_SHAPE, 5.0)),
-                ttnn.Tensor(torch.full(TILE_SHAPE, 10.0)),
-                ttnn.Tensor(torch.full(TILE_SHAPE, 15.0)),
-            ],
-            shape=(3, 1),
-        )
-
-        # First store(acc=True) - should assign (y = x), not accumulate (y += x)
-        block.store(values1, acc=True)
-
-        values2 = Block.from_list(
-            [
-                ttnn.Tensor(torch.full(TILE_SHAPE, 3.0)),
-                ttnn.Tensor(torch.full(TILE_SHAPE, 6.0)),
-                ttnn.Tensor(torch.full(TILE_SHAPE, 9.0)),
-            ],
-            shape=(3, 1),
-        )
-
-        # Second store(acc=True) - should accumulate (y += x)
-        block.store(values2, acc=True)
-
-        # Verify results using to_list()
-        result = block.to_list()
-        assert result[0].to_torch()[0, 0].item() == 8.0  # 5 + 3
-        assert result[1].to_torch()[0, 0].item() == 16.0  # 10 + 6
-        assert result[2].to_torch()[0, 0].item() == 24.0  # 15 + 9
-
-    print("Store accumulate first assigns test passed!")
-
-
-def test_store_accumulate_vs_regular_store() -> None:
-    """Test that regular store() and store(acc=True) have different paths."""
-    element = make_element_for_buffer_shape((2, 1))
-    dfb = DataflowBuffer(likeness_tensor=element, shape=(2, 1), buffer_factor=2)
-
+def test_iadd_accumulates_into_temporary() -> None:
+    """Test that += on a temporary block accumulates values across iterations."""
     import torch
     from python.sim import ttnn, TILE_SHAPE
 
-    # Test 1: Regular store() followed by push (cannot use store(acc=True) after)
-    with dfb.reserve() as block1:
-        block1.store(
-            Block.from_list(
-                [
-                    ttnn.Tensor(torch.full(TILE_SHAPE, 7.0)),
-                    ttnn.Tensor(torch.full(TILE_SHAPE, 14.0)),
-                ],
-                shape=(2, 1),
+    element = make_element_for_buffer_shape((3, 1))
+    dfb = DataflowBuffer(likeness_tensor=element, shape=(3, 1), buffer_factor=2)
+
+    values1 = Block.from_list(
+        [
+            ttnn.Tensor(torch.full(TILE_SHAPE, 5.0)),
+            ttnn.Tensor(torch.full(TILE_SHAPE, 10.0)),
+            ttnn.Tensor(torch.full(TILE_SHAPE, 15.0)),
+        ],
+        shape=(3, 1),
+    )
+    values2 = Block.from_list(
+        [
+            ttnn.Tensor(torch.full(TILE_SHAPE, 3.0)),
+            ttnn.Tensor(torch.full(TILE_SHAPE, 6.0)),
+            ttnn.Tensor(torch.full(TILE_SHAPE, 9.0)),
+        ],
+        shape=(3, 1),
+    )
+
+    with dfb.reserve() as block:
+        # Use fill(0) as accumulator seed; += produces a temporary block each time.
+        from python.sim.math import fill
+
+        acc = fill(block, 0)
+        acc += values1
+        acc += values2
+        block.store(acc)
+
+    result = block.to_list()
+    assert result[0].to_torch()[0, 0].item() == 8.0  # 5 + 3
+    assert result[1].to_torch()[0, 0].item() == 16.0  # 10 + 6
+    assert result[2].to_torch()[0, 0].item() == 24.0  # 15 + 9
+
+
+def test_iadd_raises_on_non_temporary() -> None:
+    """Test that += on a reserved (non-temporary) block raises RuntimeError."""
+    import torch
+    from python.sim import ttnn, TILE_SHAPE
+
+    element = make_element_for_buffer_shape((1, 1))
+    dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
+
+    block = dfb.reserve()
+    other = Block.from_tensor(ttnn.Tensor(torch.full(TILE_SHAPE, 1.0)))
+    with pytest.raises(
+        RuntimeError, match="In-place accumulation.*only valid for temporary"
+    ):
+        block += other
+
+    # Store a value and push so the ring buffer is in a consistent state.
+    block.store(other)
+    block.push()
+
+
+# ---------------------------------------------------------------------------
+# assign_src / pending confirmation end-to-end tests
+# ---------------------------------------------------------------------------
+
+
+def test_pending_confirmation_cleared_when_result_is_stored() -> None:
+    """Block used in arithmetic clears its pending confirmation when the result is stored."""
+    from python.sim import ttnn, TILE_SHAPE
+    from python.sim.blockstate import ThreadType
+    from python.sim.context import set_current_thread_type, clear_current_thread_type
+    from python.sim.copy import copy as dm_copy
+
+    element = make_element_for_buffer_shape((1, 1))
+    src_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
+    dst_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
+
+    # DM thread: write a value into src_dfb
+    set_current_thread_type(ThreadType.DM)
+    src_blk = src_dfb.reserve()
+    tx = dm_copy(ttnn.Tensor(torch.full(TILE_SHAPE, 3.0)), src_blk)
+    tx.wait()
+    src_blk.push()
+    clear_current_thread_type()
+
+    # Compute thread: use src_blk in arithmetic, store the result
+    set_current_thread_type(ThreadType.COMPUTE)
+    try:
+        with src_dfb.wait() as c_blk:
+            # arithmetic use registers pending confirmation
+            y = c_blk + Block.from_tensor(ttnn.Tensor(torch.full(TILE_SHAPE, 1.0)))
+            assert c_blk in src_dfb._pending_confirmations
+
+        # c_blk has been popped; confirmation is still pending
+        assert c_blk in src_dfb._pending_confirmations
+
+        # store() clears the confirmation
+        with dst_dfb.reserve() as out_blk:
+            out_blk.store(y)
+
+        assert c_blk not in src_dfb._pending_confirmations
+        src_dfb.validate_no_pending_blocks()
+    finally:
+        clear_current_thread_type()
+
+
+def test_pending_confirmation_raises_at_termination_if_never_stored() -> None:
+    """validate_no_pending_blocks() raises if block data was used in arithmetic but never stored."""
+    from python.sim import ttnn, TILE_SHAPE
+    from python.sim.blockstate import ThreadType
+    from python.sim.context import set_current_thread_type, clear_current_thread_type
+    from python.sim.copy import copy as dm_copy
+
+    element = make_element_for_buffer_shape((1, 1))
+    src_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
+
+    # DM thread: write a value
+    set_current_thread_type(ThreadType.DM)
+    src_blk = src_dfb.reserve()
+    tx = dm_copy(ttnn.Tensor(torch.full(TILE_SHAPE, 1.0)), src_blk)
+    tx.wait()
+    src_blk.push()
+    clear_current_thread_type()
+
+    # Compute thread: use block in arithmetic but discard the result without storing
+    set_current_thread_type(ThreadType.COMPUTE)
+    try:
+        with src_dfb.wait() as c_blk:
+            _unused = c_blk + Block.from_tensor(
+                ttnn.Tensor(torch.full(TILE_SHAPE, 1.0))
             )
-        )  # Regular store
+            # _unused is never stored
 
-    out_dfb = DataflowBuffer(likeness_tensor=element, shape=(2, 1), buffer_factor=2)
-    with dfb.wait() as block_read:
-        # Use waited block as STORE_SRC before context exit
-        out_block = out_dfb.reserve()
-        out_block.store(block_read)
-        out_block.push()
-
-    # Test 2: store(acc=True) path - can be called multiple times
-    with dfb.reserve() as block2:
-        block2.store(
-            Block.from_list(
-                [
-                    ttnn.Tensor(torch.full(TILE_SHAPE, 2.0)),
-                    ttnn.Tensor(torch.full(TILE_SHAPE, 4.0)),
-                ],
-                shape=(2, 1),
-            ),
-            acc=True,
-        )  # First: assigns
-
-        block2.store(
-            Block.from_list(
-                [
-                    ttnn.Tensor(torch.full(TILE_SHAPE, 3.0)),
-                    ttnn.Tensor(torch.full(TILE_SHAPE, 6.0)),
-                ],
-                shape=(2, 1),
-            ),
-            acc=True,
-        )  # Second: accumulates
-
-        # Verify accumulation worked: 2+3=5, 4+6=10
-        result = block2.to_list()
-        assert result[0].to_torch()[0, 0].item() == 5.0
-        assert result[1].to_torch()[0, 0].item() == 10.0
-
-    print("Store accumulate vs regular store test passed!")
+        with pytest.raises(RuntimeError, match="never reached a store"):
+            src_dfb.validate_no_pending_blocks()
+    finally:
+        clear_current_thread_type()
 
 
 # ---------------------------------------------------------------------------
