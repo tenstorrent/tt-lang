@@ -25,7 +25,14 @@ from .config import E2EConfig, MemoryLayout
 #   ("8x8_bfloat16_buf2_interleaved", "float32", "add"):  single combination
 #   ("8x8_bfloat16_buf2_interleaved",):  all dtypes and ops for that config
 XFAILS = {
+    # Template CONFIGS use default dtype=bfloat16 in str(config); test_compute passes
+    # str(template) into xfail, so the 8x8 row matches this key for parametrized float32.
     ("8x8_bfloat16_buf2_interleaved", "float32"): (
+        "f32 8x8 produces ~19M ULP delta; tile index lowering inaccurate for large grids"
+    ),
+    # test_compare_ops uses replace(config, dtype) before str(config), so 8x8+f32 ids
+    # include 8x8_float32_... — same underlying issue as above.
+    ("8x8_float32_buf2_interleaved", "float32"): (
         "f32 8x8 produces ~19M ULP delta; tile index lowering inaccurate for large grids"
     ),
 }

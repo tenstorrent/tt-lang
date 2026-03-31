@@ -195,6 +195,10 @@ BINARY_OPS = {
     "div": (make_binary_kernel("div", "/"), torch.div),
     "max": (make_binary_fn_kernel("max", "max"), torch.maximum),
     "min": (make_binary_fn_kernel("min", "min"), torch.minimum),
+    "gt": (make_binary_fn_kernel("gt", "gt"), torch.gt),
+    "lt": (make_binary_fn_kernel("lt", "lt"), torch.lt),
+    "eq": (make_binary_fn_kernel("eq", "eq"), torch.eq),
+    "ne": (make_binary_fn_kernel("ne", "ne"), torch.ne),
 }
 
 UNARY_OPS = {

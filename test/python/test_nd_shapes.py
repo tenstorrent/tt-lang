@@ -72,6 +72,10 @@ BINARY_OPS = {
 
 BINARY_FN_OPS = {
     "max": ("max", torch.maximum),
+    "gt": ("gt", torch.gt),
+    "lt": ("lt", torch.lt),
+    "eq": ("eq", torch.eq),
+    "ne": ("ne", torch.ne),
 }
 
 UNARY_OPS = {
