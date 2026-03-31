@@ -14,6 +14,7 @@
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -106,8 +107,7 @@ struct TTLSubblockComputeForDSTPass
     funcOp.walk([&](ComputeOp computeOp) {
       auto unrollAttr =
           computeOp->getAttrOfType<IntegerAttr>(kUnrollFactorAttrName);
-      if (unrollAttr && unrollAttr.getInt() > 1 &&
-          !computeOp.containsOp<TileMatmulBlockOp>()) {
+      if (unrollAttr && unrollAttr.getInt() > 1) {
         opsToSubblock.push_back(computeOp);
       }
     });
@@ -165,7 +165,10 @@ private:
     // If reduction dims alone exceed the DST capacity, no subblocking is
     // possible with this pass.
     if (reductionProduct > unrollFactor) {
-      return success();
+      return computeOp.emitOpError()
+             << "reduction dimensions require " << reductionProduct
+             << " DST tiles per iteration but only " << unrollFactor
+             << " are available; cannot subblock";
     }
 
     // Budget remaining for parallel dimensions after accounting for reductions.
@@ -245,37 +248,10 @@ private:
             return {};
           }
 
-          // Remove the unroll_factor attribute from the subblocked inner
-          // compute, set full linearization strides, and offset linearized
-          // indices.
           for (Operation *tiledOp : tiledResult->tiledOps) {
             tiledOp->removeAttr(kUnrollFactorAttrName);
             tiledOp->setAttr(kFullLinStridesAttrName,
                              nestedBuilder.getDenseI64ArrayAttr(blockStrides));
-
-            if (auto innerCompute = dyn_cast<ComputeOp>(tiledOp)) {
-              // Add subblock IV offset to iter_index results for subblocked
-              // dimensions (local -> global coordinates for CB indexing).
-              // Same pattern as linalg.index adjustment during tiling.
-              SmallVector<IterIndexOp> iterIdxOps;
-              innerCompute.getBody().front().walk(
-                  [&](IterIndexOp op) { iterIdxOps.push_back(op); });
-              for (IterIndexOp iterIdx : iterIdxOps) {
-                int64_t dim = iterIdx.getDim();
-                // Find if this dimension is being subblocked.
-                for (size_t i = 0; i < subblockedDims.size(); ++i) {
-                  if (static_cast<int64_t>(subblockedDims[i]) == dim) {
-                    OpBuilder::InsertionGuard guard(nestedBuilder);
-                    nestedBuilder.setInsertionPointAfter(iterIdx);
-                    Value adjusted = arith::AddIOp::create(
-                        nestedBuilder, nestedLoc, iterIdx.getResult(), ivs[i]);
-                    iterIdx.getResult().replaceAllUsesExcept(
-                        adjusted, adjusted.getDefiningOp());
-                    break;
-                  }
-                }
-              }
-            }
           }
           // The loops have no iter_args (results use tile_store)
           return {};
@@ -294,6 +270,110 @@ private:
           b.getIndexAttr(blockStrides[subblockedDims[i]]));
       loopNest.loops[i]->setAttr(kSubblockDimAttrName,
                                  b.getIndexAttr(subblockedDims[i]));
+    }
+
+    // Precompute per-output subblock info: shape, tile count, and whether
+    // tiles are DFB-contiguous (enables per-subblock reserve/push).
+    struct OutputSubblockInfo {
+      SmallVector<int64_t> shape;
+      int64_t numTiles;
+      bool contiguous;
+    };
+    SmallVector<OutputSubblockInfo> outputInfos;
+    auto indexingMaps = computeOp.getIndexingMapsArray();
+    for (size_t i = 0; i < computeOp.getNumOutputs(); ++i) {
+      AffineMap map = indexingMaps[computeOp.getNumInputs() + i];
+      OutputSubblockInfo info;
+      info.contiguous = true;
+      info.numTiles = 1;
+      auto results = map.getResults();
+      for (size_t r = 0; r < results.size(); ++r) {
+        auto dimExpr = cast<AffineDimExpr>(results[r]);
+        int64_t d = dimExpr.getPosition();
+        int64_t s = subblockSizes[d];
+        info.shape.push_back(s);
+        info.numTiles *= s;
+        // Inner result dimensions that are subblocked break contiguity.
+        if (r > 0 && s < dimSizes[d]) {
+          info.contiguous = false;
+        }
+      }
+      outputInfos.push_back(std::move(info));
+    }
+
+    // When auto-sync is enabled, refine reserve/push to per-subblock
+    // granularity for contiguous outputs, enabling pack_tile_block.
+    // L1 allocation is unchanged: CB size is fixed at program creation;
+    // reserve/push only synchronize access within that region.
+    //
+    // Validity: a single reserve(N) + push(N) is equivalent to K calls
+    // of reserve(N/K) + push(N/K) when the subblock tiles are contiguous
+    // in the CB — both advance the write pointer by the same total amount
+    // and signal the same total number of tiles to the consumer. The
+    // contiguity check (above) ensures subblock tiles map to consecutive
+    // CB pages, so the per-subblock writes don't create gaps.
+    scf::ForOp innermostLoop = loopNest.loops.back();
+    if (subblockSync) {
+      for (auto [outputIdx, output] : llvm::enumerate(computeOp.getOutputs())) {
+        auto &info = outputInfos[outputIdx];
+        if (!info.contiguous) {
+          continue;
+        }
+        Value outputCB = getAttachedCB(output);
+        if (!outputCB) {
+          continue;
+        }
+
+        // Find the cb_reserve and cb_push for this output CB.
+        // Per-subblock refactoring requires exactly one of each; skip
+        // this CB otherwise (multiple reserves/pushes can occur in
+        // legitimate IR, but this transformation cannot handle them).
+        CBReserveOp reserveOp;
+        CBPushOp pushOp;
+        unsigned reserveCount = 0, pushCount = 0;
+        for (Operation *user : outputCB.getUsers()) {
+          if (auto reserve = dyn_cast<CBReserveOp>(user)) {
+            reserveOp = reserve;
+            ++reserveCount;
+          }
+          if (auto push = dyn_cast<CBPushOp>(user)) {
+            pushOp = push;
+            ++pushCount;
+          }
+        }
+        if (reserveCount != 1 || pushCount != 1) {
+          continue;
+        }
+
+        // Create per-subblock cb_reserve at the top of the innermost loop body.
+        auto resultType = RankedTensorType::get(
+            info.shape, reserveOp.getResult().getType().getElementType());
+        OpBuilder reserveBuilder(innermostLoop.getBody(),
+                                 innermostLoop.getBody()->begin());
+        auto numTilesAttr = b.getI64IntegerAttr(info.numTiles);
+        auto newReserve = CBReserveOp::create(reserveBuilder, loc, resultType,
+                                              outputCB, numTilesAttr);
+
+        // Create per-subblock cb_push at the end of the loop body.
+        OpBuilder pushBuilder(innermostLoop.getBody(),
+                              std::prev(innermostLoop.getBody()->end()));
+        CBPushOp::create(pushBuilder, loc, outputCB, numTilesAttr);
+
+        // Replace tile_store views with the per-subblock cb_reserve result
+        // so that tile indices remain local to the subblock.
+        innermostLoop.getBody()->walk([&](TileStoreOp store) {
+          Value viewCB = getAttachedCB(store.getView());
+          if (viewCB == outputCB) {
+            store.getViewMutable().assign(newReserve.getResult());
+          }
+        });
+
+        // Erase the original reserve/push (outside the loop).
+        if (reserveOp.getResult().use_empty()) {
+          reserveOp.erase();
+        }
+        pushOp.erase();
+      }
     }
 
     // Replace the original compute op with its output operands.

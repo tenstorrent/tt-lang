@@ -21,6 +21,52 @@
 
 namespace mlir::tt::ttl::utils {
 
+/// Convert a local DFB index (within a subblock) to a global DFB index (within
+/// the full block) when `operand` traces to a tensor.extract_slice.
+///
+/// Delinearizes the local index into per-dimension coordinates using the
+/// slice shape, adds the slice offsets per-dimension, and relinearizes
+/// against the source (full) shape.
+///
+/// Example: local index 5 in a [3,2] slice at offset [0,2] of a [3,4] tensor:
+///   delinearize(5, [3,2]) -> (2,1), add [0,2] -> (2,3),
+///   linearize((2,3), [3,4]) -> 11.
+///
+/// Returns `localIndex` unchanged if no extract_slice is found.
+inline Value addSliceOffset(Value operand, Value localIndex, OpBuilder &builder,
+                            Location loc) {
+  // Trace through tensor.extract (tile extraction from lower-to-loops).
+  Value tensor = operand;
+  if (auto extract = tensor.getDefiningOp<mlir::tensor::ExtractOp>()) {
+    tensor = extract.getTensor();
+  }
+  auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>();
+  if (!slice) {
+    return localIndex;
+  }
+  auto sliceType = mlir::cast<RankedTensorType>(slice.getResult().getType());
+  auto sourceType = mlir::cast<RankedTensorType>(slice.getSource().getType());
+
+  // Delinearize local index into per-dimension coordinates within the slice.
+  auto delinearized = affine::AffineDelinearizeIndexOp::create(
+      builder, loc, localIndex, sliceType.getShape());
+
+  // Add slice offsets per-dimension to produce global coordinates.
+  SmallVector<Value> globalCoords;
+  auto mixedOffsets = slice.getMixedOffsets();
+  for (size_t d = 0; d < mixedOffsets.size(); ++d) {
+    Value offset =
+        getValueOrCreateConstantIndexOp(builder, loc, mixedOffsets[d]);
+    Value global =
+        arith::AddIOp::create(builder, loc, delinearized.getResult(d), offset);
+    globalCoords.push_back(global);
+  }
+
+  // Relinearize against the full source shape.
+  return affine::AffineLinearizeIndexOp::create(builder, loc, globalCoords,
+                                                sourceType.getShape());
+}
+
 /// Element-wise scale: values[d] *= scales[d].
 inline void scaleByBlockDims(MutableArrayRef<int64_t> values,
                              ArrayRef<int64_t> scales) {

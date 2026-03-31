@@ -49,6 +49,13 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Lower matmul to block-level hardware calls (default: enabled).",
     )
     p.add_argument(
+        "--ttl-auto-sync",
+        default=None,
+        dest="auto_sync",
+        action=argparse.BooleanOptionalAction,
+        help="Let the compiler insert and move DFB synchronization ops (default: disabled).",
+    )
+    p.add_argument(
         "--ttl-combine-pack-tiles",
         default=None,
         dest="combine_pack_tiles",
@@ -96,6 +103,7 @@ class CompilerOptions:
     maximize_dst: bool = True
     enable_fpu_binary_ops: bool = True
     use_block_matmul: bool = True
+    auto_sync: bool = False
     combine_pack_tiles: bool = True
 
     # Fields that were explicitly provided (not defaulted). Excluded from
