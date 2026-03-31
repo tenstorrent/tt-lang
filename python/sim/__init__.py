@@ -70,13 +70,13 @@ class _TTLNamespace:
         from .copy import copy
         from .decorators import compute, datamovement
         from .corecontext import node, grid_size
-        from .operation import kernel
+        from .operation import operation
         from . import math as math_module
         from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
         from .program import Program
         from .typedefs import CoreCoord, CoreRange, Shape, Size
 
-        self.operation = kernel
+        self.operation = operation
         self.grid_size = grid_size
         self.make_dataflow_buffer_like = make_dataflow_buffer_like
         self.compute = compute
