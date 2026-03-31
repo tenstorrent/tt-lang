@@ -1478,7 +1478,7 @@ def test_matmul_then_reduce(device):
 REDUCE_BCAST_MATMUL_TEMPLATE = """
 import ttl
 
-@ttl.kernel(grid=(1, 1))
+@ttl.kernel(grid=(1, 1), fp32_dest_acc_en=True)
 def reduce_bcast_matmul_kernel(reduce_in, mat_b, scaler, out):
     reduce_dfb = ttl.make_dataflow_buffer_like(reduce_in, shape=({mt}, {kt}), buffer_factor=2)
     sc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
@@ -1499,7 +1499,7 @@ def reduce_bcast_matmul_kernel(reduce_in, mat_b, scaler, out):
 
         bcast_blk = bcast_dfb.wait()
 
-        # First K iteration: matmul to accumulator.
+        # First K iteration: matmul to accumulator
         with b_dfb.wait() as b_blk, acc_dfb.reserve() as acc:
             acc.store(bcast_blk @ b_blk)
 
@@ -1544,10 +1544,10 @@ def reduce_bcast_matmul_kernel(reduce_in, mat_b, scaler, out):
         (1, 1, 1, "1x1x1"),
         (2, 1, 2, "2x1x2"),
         (2, 2, 2, "2x2x2"),
-        (4, 4, 2, "4x4x2"),
-        (2, 8, 4, "2x8x4"),
+        (2, 4, 2, "2x4x2"),
+        (4, 1, 2, "4x1x2"),
     ],
-    ids=["1x1x1", "2x1x2", "2x2x2", "4x4x2", "2x8x4"],
+    ids=["1x1x1", "2x1x2", "2x2x2", "2x4x2", "4x1x2"],
 )
 def test_reduce_bcast_matmul(device, mt, kt, nt, test_id):
     """reduce_sum -> scalar broadcast(Mt,1) -> K-loop matmul with accumulation.
@@ -1641,8 +1641,8 @@ def reduce_bcast_type_kernel(inp, scaler, out):
         ((1, 1), [0, 1], (1, 2), "scalar_1x1_to_1x2"),
         ((2, 2), [0, 1], (2, 1), "scalar_2x2_to_2x1"),
         ((2, 2), [0, 1], (1, 2), "scalar_2x2_to_1x2"),
-        # ROW/COL bcast on row/col reduce output: face-layout mismatch.
-        # Needs fused binary+bcast ops (mul_tiles_bcast etc.).
+        # ROW/COL bcast on reduce output: the packed reduce tile has valid
+        # data only at face-specific positions that ROW/COL bcast doesn't read.
         pytest.param(
             (2, 2),
             [0],

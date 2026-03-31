@@ -120,4 +120,15 @@ module {
   }
 }
 
+// -----
+
+// cb_push with num_tiles exceeding CB capacity.
+module {
+  func.func @cb_push_num_tiles_exceeds_capacity(%cb: !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 2>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{'ttl.cb_push' op num_tiles (15) exceeds DFB capacity (9)}}
+    ttl.cb_push %cb {num_tiles = 15 : i64} : <[3, 3], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+}
+
 // tile_store tests moved to tile_store_invalid.mlir

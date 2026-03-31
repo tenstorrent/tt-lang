@@ -152,6 +152,8 @@ SHAPE_PARAMS = [
     (2, 2, 4),  # 2x4 output = 8 tiles at max DST, K=2.
     (1, 4, 4),  # Wide output with K accumulation.
     (1, 2, 2),  # Non-square: A[1,2] @ B[2,2] = C[1,2].
+    (4, 8, 2),  # Large K with tall output.
+    (2, 8, 4),  # Large K with wide output.
 ]
 
 SHAPE_IDS = [f"{m}x{k}x{n}" for m, k, n in SHAPE_PARAMS]
