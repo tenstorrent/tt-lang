@@ -21,6 +21,7 @@ from typing import (
     NamedTuple,
     Optional,
     Union,
+    cast,
 )
 
 import torch
@@ -206,7 +207,7 @@ class Block:
         self._sm.transition_assign_src()
         self._store_confirmation_pending = True
         if self.dfb is not None:
-            self.dfb._pending_confirmations.add(self)
+            self.dfb.register_pending_confirmation(self)
 
     def mark_store_read_complete(self) -> None:
         """Mark that this block was used as source (input) in a store operation.
@@ -221,7 +222,7 @@ class Block:
             self._sm.transition("store_src", "store (as source)", ExpectedOp.STORE_SRC)
         self._store_confirmation_pending = False
         if self.dfb is not None:
-            self.dfb._pending_confirmations.discard(self)
+            self.dfb.discard_pending_confirmation(self)
 
     def mark_store_complete(self) -> None:
         """Mark that store() has completed on this block (as destination)."""
@@ -1038,7 +1039,7 @@ class DataflowBuffer:
 
         self._pending_reserved_block: Optional[Block] = None
         self._pending_waited_block: Optional[Block] = None
-        self._pending_confirmations: Set[Block] = set()
+        self._pending_confirmations: set[Block] = set()
 
         # Create and configure the ring-buffer state immediately.
         self._state = DFBState()
@@ -1107,6 +1108,14 @@ class DataflowBuffer:
             True if at least one complete operation slot is ready to consume.
         """
         return self._state.visible >= 1
+
+    def register_pending_confirmation(self, block: Block) -> None:
+        """Register block as pending store confirmation."""
+        self._pending_confirmations.add(block)
+
+    def discard_pending_confirmation(self, block: Block) -> None:
+        """Remove block from pending store confirmation set."""
+        self._pending_confirmations.discard(block)
 
     def reserve(self) -> Block:
         """Reserve one operation slot for writing and return a write view.
@@ -1439,7 +1448,7 @@ def _matmul_tile_shape(a_shape: Shape, b_shape: Shape) -> Shape:
     a_batch = a_shape[:-2]
     b_batch = b_shape[:-2]
     if b_batch:
-        out_batch: Shape = tuple(torch.broadcast_shapes(a_batch, b_batch))
+        out_batch: Shape = cast(Shape, tuple(torch.broadcast_shapes(a_batch, b_batch)))  # type: ignore[misc]
     else:
         out_batch = a_batch
     return out_batch + (a_shape[-2], b_shape[-1])
@@ -1462,7 +1471,7 @@ def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
         Block whose tile shape corresponds to the matmul output shape.
     """
     result_tensor = a.to_tensor() @ b.to_tensor()
-    result_shape = _matmul_tile_shape(a._shape, b._shape)
+    result_shape = _matmul_tile_shape(a.shape, b.shape)
     result_block = Block(
         tensor=result_tensor,
         shape=result_shape,

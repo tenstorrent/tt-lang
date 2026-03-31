@@ -200,9 +200,9 @@ def _print_filtered_traceback(exc: Exception, user_file: Path) -> None:
 def _get_version() -> str:
     """Return the tt-lang version string for ttlang-sim --version."""
     try:
-        from ttl.version import __version__
+        from ttl.version import __version__  # type: ignore[import-untyped]
 
-        return __version__
+        return __version__  # type: ignore[return-value]
     except ImportError:
         return "unknown"
 
