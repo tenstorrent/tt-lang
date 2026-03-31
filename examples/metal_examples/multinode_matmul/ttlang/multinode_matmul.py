@@ -23,7 +23,7 @@ def get_number_of_nodes(grid_range):
     return total_nodes
 
 
-@ttl.kernel(grid=(13, 10))
+@ttl.operation(grid=(13, 10))
 def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."

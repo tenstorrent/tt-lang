@@ -24,7 +24,7 @@ TILE_SIZE = 32
 GRANULARITY = 4
 
 
-@ttl.kernel(grid=(8, 8))
+@ttl.operation(grid=(8, 8))
 def __demo_kernel(a, b, c, y):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY

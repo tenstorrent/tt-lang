@@ -19,7 +19,7 @@ def make_tensor_with_value(rows, cols, value, device):
 def test_print_scalars(capsys):
     """Test printing scalar values and strings."""
 
-    @ttl.kernel(grid=(1, 1))
+    @ttl.operation(grid=(1, 1))
     def test_kernel(a: torch.Tensor):
         @ttl.compute()
         def compute():
@@ -54,7 +54,7 @@ def test_print_scalars(capsys):
 def test_print_dataflow_buffer(capsys):
     """Test printing DataflowBuffer metadata."""
 
-    @ttl.kernel(grid=(1, 1))
+    @ttl.operation(grid=(1, 1))
     def test_kernel(a: torch.Tensor, out: torch.Tensor):
         a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
         out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -103,7 +103,7 @@ def test_print_dataflow_buffer(capsys):
 def test_print_block(capsys):
     """Test printing Block content with known values."""
 
-    @ttl.kernel(grid=(1, 1))
+    @ttl.operation(grid=(1, 1))
     def test_kernel(a: torch.Tensor, out: torch.Tensor):
         a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
         out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -150,7 +150,7 @@ def test_print_block(capsys):
 def test_print_tensor(capsys):
     """Test printing Tensor with num_pages attribute and known values."""
 
-    @ttl.kernel(grid=(1, 1))
+    @ttl.operation(grid=(1, 1))
     def test_kernel(a: torch.Tensor, out: torch.Tensor):
         a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
         out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -195,7 +195,7 @@ def test_print_tensor(capsys):
 def test_print_tensor_multiple_pages(capsys):
     """Test printing Tensor with different num_pages values and verify page counts."""
 
-    @ttl.kernel(grid=(1, 1))
+    @ttl.operation(grid=(1, 1))
     def test_kernel(a: torch.Tensor, out: torch.Tensor):
         a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 1), buffer_factor=2)
         out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 1), buffer_factor=2)
@@ -251,7 +251,7 @@ def test_print_tensor_multiple_pages(capsys):
 def test_print_all_ttlang_objects(capsys):
     """Test printing all TT-Lang object types with known values: Tensor, Block, and DataflowBuffer."""
 
-    @ttl.kernel(grid=(1, 1))
+    @ttl.operation(grid=(1, 1))
     def test_kernel(a: torch.Tensor, b: torch.Tensor, out: torch.Tensor):
         a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 1), buffer_factor=2)
         b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 1), buffer_factor=2)
@@ -357,7 +357,7 @@ def test_print_all_ttlang_objects(capsys):
 def test_print_mixed_args(capsys):
     """Test printing strings, scalars, and TT-Lang object together with known values."""
 
-    @ttl.kernel(grid=(1, 1))
+    @ttl.operation(grid=(1, 1))
     def test_kernel(a: torch.Tensor, out: torch.Tensor):
         a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 1), buffer_factor=2)
         out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 1), buffer_factor=2)
@@ -408,7 +408,7 @@ def test_print_mixed_args(capsys):
 def test_print_tensor_with_known_values(capsys):
     """Test printing Tensor with known values to verify correctness."""
 
-    @ttl.kernel(grid=(1, 1))
+    @ttl.operation(grid=(1, 1))
     def test_kernel(a: torch.Tensor, out: torch.Tensor):
         a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
         out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -473,7 +473,7 @@ def test_print_tensor_with_known_values(capsys):
 def test_print_multiple_ttlang_objects_fails():
     """Test that printing multiple TT-Lang objects raises an error."""
 
-    @ttl.kernel(grid=(1, 1))
+    @ttl.operation(grid=(1, 1))
     def test_kernel(a: torch.Tensor, b: torch.Tensor):
         a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
         b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
@@ -513,7 +513,7 @@ def test_print_multiple_ttlang_objects_fails():
 def test_print_dm_reserve_block_mw_state_warns(capsys):
     """Test that printing a DM reserve block in MW state issues a warning."""
 
-    @ttl.kernel(grid=(1, 1))
+    @ttl.operation(grid=(1, 1))
     def test_kernel(a: torch.Tensor, out: torch.Tensor):
         a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
 
@@ -555,7 +555,7 @@ def test_print_dm_reserve_block_mw_state_warns(capsys):
 def test_print_dm_reserve_block_naw_state_warns(capsys):
     """Test that printing a DM reserve block in NAW state issues a warning."""
 
-    @ttl.kernel(grid=(1, 1))
+    @ttl.operation(grid=(1, 1))
     def test_kernel(a: torch.Tensor, out: torch.Tensor):
         a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
 
@@ -598,7 +598,7 @@ def test_print_dm_reserve_block_naw_state_warns(capsys):
 def test_print_dm_wait_block_naw_state_warns(capsys):
     """Test that printing a DM wait block in NAW state issues a warning."""
 
-    @ttl.kernel(grid=(1, 1))
+    @ttl.operation(grid=(1, 1))
     def test_kernel(a: torch.Tensor, b: torch.Tensor, out: torch.Tensor):
         a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
         out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -653,7 +653,7 @@ def test_print_dm_wait_block_naw_state_warns(capsys):
 def test_print_compute_thread_blocks_succeeds():
     """Test that compute thread blocks can be printed in various states."""
 
-    @ttl.kernel(grid=(1, 1))
+    @ttl.operation(grid=(1, 1))
     def test_kernel(a: torch.Tensor, out: torch.Tensor):
         a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
         out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -695,7 +695,7 @@ def test_print_compute_thread_blocks_succeeds():
 def test_print_dm_block_legal_states_succeeds(capsys):
     """Test that DM blocks can be printed in legal states (MR after tx.wait)."""
 
-    @ttl.kernel(grid=(1, 1))
+    @ttl.operation(grid=(1, 1))
     def test_kernel(a: torch.Tensor, out: torch.Tensor):
         a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
         out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)

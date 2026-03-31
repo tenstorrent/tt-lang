@@ -12,7 +12,7 @@ from utils import assert_with_ulp
 import ttl
 
 
-@ttl.kernel(grid="auto")
+@ttl.operation(grid="auto")
 def matmul_1d(
     a: ttnn.Tensor,
     b: ttnn.Tensor,

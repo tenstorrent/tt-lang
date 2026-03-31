@@ -4,7 +4,7 @@ This page covers compiler options, print debugging, performance tools, the simul
 
 ## Compiler Options
 
-Kernels accept compiler options that control code generation (e.g., `--no-ttl-maximize-dst`, `--no-ttl-fpu-binary-ops`). These can be passed as command-line arguments, via the `@ttl.kernel` decorator's `options=` parameter, or the `TTLANG_COMPILER_OPTIONS` environment variable. Command-line arguments take highest priority.
+Kernels accept compiler options that control code generation (e.g., `--no-ttl-maximize-dst`, `--no-ttl-fpu-binary-ops`). These can be passed as command-line arguments, via the `@ttl.operation` decorator's `options=` parameter, or the `TTLANG_COMPILER_OPTIONS` environment variable. Command-line arguments take highest priority.
 
 ```bash
 # List available options

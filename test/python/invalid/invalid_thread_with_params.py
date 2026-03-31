@@ -27,7 +27,7 @@ import ttl
 # CHECK-NEXT: [[LINE]] |     def add_compute(some_param):
 # CHECK-NEXT:    |     ^
 # CHECK-NEXT:    |
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def invalid_thread_params_kernel(lhs, rhs, out):
     """This kernel should fail because thread functions have parameters."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)

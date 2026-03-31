@@ -32,7 +32,7 @@ from ttlang_test_utils import assert_allclose, to_l1
 BINARY_KERNEL_TEMPLATE = '''
 import ttl
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def {name}_kernel(lhs, rhs, out):
     """Binary {name} kernel."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
@@ -71,7 +71,7 @@ def {name}_kernel(lhs, rhs, out):
 BINARY_FN_KERNEL_TEMPLATE = '''
 import ttl
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def {name}_kernel(lhs, rhs, out):
     """Binary {name} kernel (function call)."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
@@ -110,7 +110,7 @@ def {name}_kernel(lhs, rhs, out):
 UNARY_KERNEL_TEMPLATE = '''
 import ttl
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def {name}_kernel(inp, out):
     """Unary {name} kernel."""
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)

@@ -38,7 +38,7 @@ def get_default_grid() -> Shape:
     return get_context().config.default_auto_grid
 
 
-def kernel(
+def operation(
     grid: Union[str, Shape] = "auto",
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
@@ -51,8 +51,8 @@ def kernel(
         Decorated function with grid configuration
 
     Example:
-        @kernel(grid="auto")
-        def my_kernel(a, b, out):
+        @ttl.operation(grid="auto")
+        def my_operation(a, b, out):
             # grid is available as a variable here
             pass
     """

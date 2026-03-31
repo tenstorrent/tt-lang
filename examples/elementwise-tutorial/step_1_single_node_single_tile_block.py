@@ -6,7 +6,7 @@
 # Tutorial Step 1: Single Node, Single-Tile Block
 # ================================================
 # Introduces the core TT-Lang programming model:
-#   - @ttl.kernel   — declares a kernel and the grid it runs on
+#   - @ttl.operation   — declares a kernel and the grid it runs on
 #   - @ttl.compute  — the compute thread: arithmetic on tiles
 #   - @ttl.datamovement — DM threads: move data between DRAM and L1
 #   - ttl.make_dataflow_buffer_like — creates an in-L1 dataflow buffer (DFB)
@@ -38,13 +38,13 @@ import ttl
 TILE_SIZE = 32
 
 
-# @ttl.kernel marks a Python function as a TT-Lang kernel.
+# @ttl.operation marks a Python function as a TT-Lang operation.
 # grid=(1, 1) means the kernel runs on a single node (one Tensix core).
 # The function signature lists the tensors the kernel reads and writes;
 # these live in DRAM and are passed by the host at call time.
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
 
     # Compute iteration counts in tile coordinates.

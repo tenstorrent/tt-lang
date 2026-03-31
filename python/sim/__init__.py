@@ -13,7 +13,7 @@ from .constants import TILE_SHAPE
 from .copy import CopyTransaction, copy
 from .decorators import compute, datamovement
 from .corecontext import node
-from .kernel import kernel
+from .operation import operation
 from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
 from .program import Program
 from .ttnnsim import TTNN_AVAILABLE, ROW_MAJOR_LAYOUT, TILE_LAYOUT
@@ -70,13 +70,13 @@ class _TTLNamespace:
         from .copy import copy
         from .decorators import compute, datamovement
         from .corecontext import node, grid_size
-        from .kernel import kernel
+        from .operation import operation
         from . import math as math_module
         from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
         from .program import Program
         from .typedefs import CoreCoord, CoreRange, Shape, Size
 
-        self.kernel = kernel
+        self.operation = operation
         self.grid_size = grid_size
         self.make_dataflow_buffer_like = make_dataflow_buffer_like
         self.compute = compute

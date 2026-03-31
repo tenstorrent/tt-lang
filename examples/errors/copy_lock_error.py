@@ -11,7 +11,7 @@ import ttnn
 from utils.correctness import assert_with_ulp
 
 
-@ttl.kernel(
+@ttl.operation(
     grid="auto",  # NOTE: allow compiler to choose grid
 )
 def eltwise_add(

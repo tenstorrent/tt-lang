@@ -12,7 +12,7 @@ Reference test: `test_matmul_add_relu` in [test/python/test_matmul_acc.py](../te
 ## Python Input
 
 ```python
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def matmul_add_relu_kernel(a, b, c, out):
     Mt = a.shape[0] // TILE   # 2
     Nt = b.shape[1] // TILE   # 2

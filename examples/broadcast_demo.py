@@ -27,7 +27,7 @@ BLOCK_SIZE = 128
 # All tensors have row-major layout
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid="auto")
 def eltwise_sqrt_broadcast(
     a: ttnn.Tensor,
     b: ttnn.Tensor,
@@ -144,6 +144,7 @@ def main() -> None:
     y = ttnn.from_torch(y_torch, layout=ttnn.ROW_MAJOR_LAYOUT)
     z = ttnn.from_torch(z_torch, layout=ttnn.ROW_MAJOR_LAYOUT)
 
+    print("Running TT-Lang operation...")
     eltwise_sqrt_broadcast(a, b, y, z)
 
     y_result = ttnn.to_torch(y)

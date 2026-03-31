@@ -31,7 +31,7 @@ TILE_SIZE = 32
 # =============================================================================
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def bcast_col_expand_kernel(inp, out):
     """Col bcast with shape expansion: (2, 1) -> (2, 2)."""
     # Input DFB is (2, 1) - one column of tiles
@@ -61,7 +61,7 @@ def bcast_col_expand_kernel(inp, out):
             tx.wait()
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def bcast_row_expand_kernel(inp, out):
     """Row bcast with shape expansion: (1, 2) -> (2, 2)."""
     # Input DFB is (1, 2) - one row of tiles
@@ -89,7 +89,7 @@ def bcast_row_expand_kernel(inp, out):
             tx.wait()
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def bcast_scalar_expand_kernel(inp, out):
     """Scalar bcast with shape expansion: (1, 1) -> (2, 2)."""
     # Input DFB is (1, 1) - single tile
@@ -117,7 +117,7 @@ def bcast_scalar_expand_kernel(inp, out):
             tx.wait()
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def mul_add_bcast_expand_kernel(a, b, c, out):
     """Compute (a * b) + bcast(c) with c having shape expansion.
 
@@ -320,7 +320,7 @@ class TestBcastShapeExpansion:
 # instead of using broadcast-aware indexing).
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def bcast_col_expand_with_outer_loops_kernel(a, b, c, y):
     """Col bcast with shape expansion and outer tensor loops.
 

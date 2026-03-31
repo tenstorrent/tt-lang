@@ -59,7 +59,7 @@ def tiles_to_shape(tiles_y: int, tiles_x: int) -> tuple[int, int]:
 UNEVEN_GRID_KERNEL_TEMPLATE = '''
 import ttl
 
-@ttl.kernel(grid=({grid_cols}, {grid_rows}))
+@ttl.operation(grid=({grid_cols}, {grid_rows}))
 def uneven_grid_kernel(lhs, rhs, out):
     """Kernel that handles uneven grid distribution."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
@@ -213,7 +213,7 @@ MULTITILE_UNEVEN_CONFIGS = [
 MULTITILE_UNEVEN_KERNEL_TEMPLATE = '''
 import ttl
 
-@ttl.kernel(grid=({grid_cols}, {grid_rows}))
+@ttl.operation(grid=({grid_cols}, {grid_rows}))
 def multitile_uneven_kernel(lhs, rhs, out):
     """Kernel with multitile DFB handling uneven grid distribution."""
     CB_ROWS = {dfb_rows}

@@ -60,7 +60,7 @@ y = ttnn.add(x, bias)
 z = ttnn.relu(y)
 
 # Fused TT-Lang kernel (single kernel, all ops in one compute function)
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def fused_kernel(input, bias, out):
     # ... setup CBs ...
     @ttl.compute()
@@ -96,7 +96,7 @@ These threads synchronize via **circular buffers** (CBs).
 ```python
 import ttl
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def add_kernel(lhs, rhs, out):
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
@@ -394,18 +394,18 @@ The compiler fuses 20+ elementwise ops in a single compute function without issu
 
 ```python
 # BAD: Two kernels = 2x DRAM traffic
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def kernel1(inp, temp):
     # Read inp from DRAM, write temp to DRAM
     ...
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def kernel2(temp, out):
     # Read temp from DRAM, write out to DRAM
     ...
 
 # GOOD: One fused kernel = 1x DRAM traffic
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def fused_kernel(inp, out):
     # Read inp from DRAM once, all compute in L1, write out to DRAM once
     # Use intermediate CBs (L1) instead of intermediate tensors (DRAM)
@@ -429,7 +429,7 @@ For tensors larger than 32x32, process multiple tiles. **Use multinode and loops
 # User wants to process 2048x2048 tensors (64x64 tiles)
 # Don't shrink to 32x32 for testing - make it work at target size!
 
-@ttl.kernel(grid=(8, 8))  # Use multinode
+@ttl.operation(grid=(8, 8))  # Use multinode
 def large_tensor_kernel(inp, out):
     # Each node handles 8x8 tiles worth of data
     # But DFB only holds 2x2 tiles at a time - stream through with loops
@@ -499,7 +499,7 @@ tx.wait()
 This example from `test_full_reduce_bcast_matmul.py` shows workers sending results to a coordinator:
 
 ```python
-@ttl.kernel(grid=(4, 1))
+@ttl.operation(grid=(4, 1))
 def gather_kernel(inp, out):
     # Create one pipe per worker -> coordinator
     pipe1 = ttl.Pipe(src=(1, 0), dst=(0, 0))
@@ -587,7 +587,7 @@ Larger DFB shapes give better throughput. Aim for 4x4 or 8x8 if L1 allows:
 
 ```python
 # 64x64 tensor = 2x2 tiles
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def multitile_kernel(lhs, rhs, out):
     # DFB holds all 4 tiles - larger shapes better for throughput
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(2, 2), buffer_factor=2)
@@ -611,7 +611,7 @@ def multitile_kernel(lhs, rhs, out):
 
 ```python
 # 256x256 tensor across 8x8 grid = 1 tile per node
-@ttl.kernel(grid=(8, 8))
+@ttl.operation(grid=(8, 8))
 def multinode_kernel(lhs, rhs, out):
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
@@ -800,7 +800,7 @@ __global__ void add_kernel(float* a, float* b, float* c, int n) {
 
 **TT-Lang equivalent:**
 ```python
-@ttl.kernel(grid=(1, 1))  # Or multinode for large tensors
+@ttl.operation(grid=(1, 1))  # Or multinode for large tensors
 def add_kernel(a, b, c):
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
@@ -841,7 +841,7 @@ def gelu(x):
 
 **TT-Lang equivalent:**
 ```python
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def gelu_kernel(x, out):
     x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -979,7 +979,7 @@ You cannot print or assert inside kernels. Instead:
 
 ```python
 # Example: Testing an op in isolation
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def test_single_op(inp, out):
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
@@ -1048,7 +1048,7 @@ COLS_PER_CORE = 2
 NUM_WORKERS = 3
 
 
-@ttl.kernel(grid=(4, 1))
+@ttl.operation(grid=(4, 1))
 def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
     # Pipes for matmul result gather (workers -> coordinator)
     matmul_pipe1 = ttl.Pipe(src=(1, 0), dst=(0, 0))
@@ -1184,7 +1184,7 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
 
 ### Full Working Example: Fused MLP
 ```python
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def fused_mlp_kernel(x, w_fc, w_proj, out):
     """
     Fused MLP: out = relu²(x @ w_fc) @ w_proj
@@ -1265,7 +1265,7 @@ def compute():
 
 ### Full Working Example: Post-Attention Block with Residuals
 ```python
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def fused_block_kernel(attn_concat, x, wo, ln2_w, w_fc, w_proj, scaler, out):
     """
     Fused: attn_proj -> residual1 -> RMSNorm -> MLP -> residual2
@@ -1410,7 +1410,7 @@ MLP_TILES = 16           # Full size
 MLP_CHUNK_TILES = 4      # Chunk size
 NUM_MLP_CHUNKS = 4       # 16 / 4 = 4 chunks
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def streaming_mlp_kernel(x, w_fc, w_proj, out):
     """Stream large MLP weights through small CBs."""
     SEQ_TILES, EMBD_TILES = 4, 4
@@ -1498,7 +1498,7 @@ def streaming_mlp_kernel(x, w_fc, w_proj, out):
 Softmax requires: max → shift → exp → sum → divide. Keep input in scope for two exp computations.
 
 ```python
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def softmax_kernel(x, scaler, out):
     """softmax(x) = exp(x - max(x)) / sum(exp(x - max(x)))"""
     SEQ_TILES = 4
@@ -1572,7 +1572,7 @@ def softmax_kernel(x, scaler, out):
 ## Pattern 6: RMSNorm with Reduce/Broadcast
 
 ```python
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def rmsnorm_kernel(x, weight, scaler, out):
     """RMSNorm: out = x * rsqrt(sum(x²)) * weight"""
     SEQ_TILES, EMBD_TILES = 4, 4
@@ -1653,7 +1653,7 @@ CHUNK_TILES = 4    # Each node handles 128 hidden units = 4 tiles
 NUM_CHUNKS = 8     # 1024 hidden / 128 per node = 8 nodes
 
 
-@ttl.kernel(grid=(NUM_CHUNKS, 1))
+@ttl.operation(grid=(NUM_CHUNKS, 1))
 def layer1_kernel(x, w1, bias1, hidden_out):
     # Input DFB - same data read by all nodes
     x_dfb = ttl.make_dataflow_buffer_like(x, shape=(BATCH_TILES, INPUT_TILES), buffer_factor=1)
@@ -1734,7 +1734,7 @@ OUTPUT_TILES = 1   # 32 output classes = 1 tile
 NUM_CHUNKS = 8     # 1024 hidden / 128 per chunk = 8 chunks
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def layer2_kernel(hidden, w2, bias2, scaler, out):
     # Streaming input CBs - buffer_factor=2 for double buffering
     hidden_dfb = ttl.make_dataflow_buffer_like(hidden, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=2)

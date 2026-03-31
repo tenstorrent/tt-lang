@@ -18,7 +18,7 @@ import pytest
 from test_utils import make_zeros_tensor
 
 from python.sim import ttl, ttnn
-from python.sim.kernel import get_default_grid, set_default_grid
+from python.sim.operation import get_default_grid, set_default_grid
 from python.sim.typedefs import Shape
 
 
@@ -56,7 +56,7 @@ class TestDefaultGrid:
             # Set custom default
             set_default_grid((3, 5))
 
-            @ttl.kernel(grid="auto")
+            @ttl.operation(grid="auto")
             def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
                 assert a is not None and b is not None
 
@@ -90,7 +90,7 @@ class TestDefaultGrid:
             # Set custom default
             set_default_grid((4, 4))
 
-            @ttl.kernel(grid=(2, 2))
+            @ttl.operation(grid=(2, 2))
             def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor):
                 assert a is not None and b is not None
 
@@ -129,7 +129,7 @@ import ttl
 import ttnn
 import torch
 
-@ttl.kernel(grid='auto')
+@ttl.operation(grid='auto')
 def test_kernel(a: ttnn.Tensor):
     @ttl.compute()
     def compute():
@@ -331,7 +331,7 @@ import ttl
 import ttnn
 import torch
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def test_kernel(a: ttnn.Tensor):
     {cb_declarations}
 
@@ -533,7 +533,7 @@ import ttl
 import ttnn
 import torch
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def test_kernel(a: ttnn.Tensor):
     cb0 = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
     cb1 = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
@@ -854,7 +854,7 @@ class TestSignpost:
     def test_signpost_in_kernel(self):
         """Test that ttl.signpost can be called inside kernel code."""
 
-        @ttl.kernel(grid=(1, 1))
+        @ttl.operation(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor):
             assert a is not None
 

@@ -26,7 +26,7 @@ import ttl
 # CHECK-NEXT: [[LINE]] |         with l.wait() as data:
 # CHECK-NEXT:    |          ^
 # CHECK-NEXT:    |
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def invalid_with_non_dfb_kernel(lhs, rhs, out):
     """This kernel should fail because 'with' is used on a TensorBlock, not a DFB."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)

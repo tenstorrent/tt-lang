@@ -27,7 +27,7 @@ from ttlang_test_utils import assert_allclose, to_dram, to_l1
 TILE = 32
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def matmul_kernel(a, b, out):
     Mt = a.shape[0] // TILE
     Kt = a.shape[1] // TILE

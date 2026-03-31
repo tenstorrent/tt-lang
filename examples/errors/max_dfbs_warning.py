@@ -12,7 +12,7 @@ import ttl
 TILE = 32
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def test_many_cbs(inp, out):
     cb0 = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
     cb1 = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)

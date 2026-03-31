@@ -27,7 +27,7 @@ $ARGUMENTS
 
 ## Constraint: One Kernel Invocation
 
-The auto-profiler can only profile **one kernel invocation at a time**. Before profiling, read the file and check if there are multiple `@ttl.kernel` calls or if a kernel is called in a loop. If so, comment out extra invocations so only the target kernel runs once. If it's ambiguous which kernel to profile, ask the user.
+The auto-profiler can only profile **one kernel invocation at a time**. Before profiling, read the file and check if there are multiple `@ttl.operation` calls or if a kernel is called in a loop. If so, comment out extra invocations so only the target kernel runs once. If it's ambiguous which kernel to profile, ask the user.
 
 ## Process
 

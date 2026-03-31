@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .stats import enable_stats, print_stats
-from .kernel import set_default_grid
+from .operation import set_default_grid
 from .greenlet_scheduler import set_scheduler_algorithm
 
 

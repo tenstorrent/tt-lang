@@ -1445,12 +1445,12 @@ def pykernel_gen(
 
 
 # Alias for backward compatibility
-kernel = pykernel_gen
+operation = pykernel_gen
 
 
 __all__ = [
     "pykernel_gen",
-    "kernel",
+    "operation",
     "Program",
     "compute",
     "datamovement",
