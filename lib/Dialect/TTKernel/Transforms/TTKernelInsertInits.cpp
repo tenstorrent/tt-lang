@@ -416,6 +416,7 @@ struct TTKernelInsertInitsPass
 
   void runOnOperation() override {
     auto moduleOp = getOperation();
+    constexpr llvm::StringLiteral kInitInserted("ttk.init_inserted");
 
     // Insert common inits (init_sfpu / binary_op_init_common).
     if (failed(insertCommonInits(moduleOp))) {
@@ -423,15 +424,13 @@ struct TTKernelInsertInitsPass
       return;
     }
 
-    // Insert per-op inits for compute ops.
-    // Two targeted walks: (1) sync regions via TileRegsAcquireOp,
-    // (2) unwrapped compute ops via func::FuncOp.
+    // Insert per-op inits for compute ops within sync regions
+    // (tile_regs_acquire → tile_regs_release).
     auto computeToInit = buildComputeToInitMap();
-    constexpr llvm::StringLiteral kInitInserted("ttk.init_inserted");
 
-    // Helper: process a top-level op in a sync region or function body.
-    // Discovers the first compute op (possibly nested in scf.for) and
-    // inserts init before the top-level op if the init key changed.
+    // Helper: process one direct child of the sync region block.
+    // Walks into the op (which may be an scf.for) to find the first
+    // compute op, and inserts an init before the op if the init key changed.
     auto processOp = [&](Operation &topOp, std::optional<InitKey> &prevKey) {
       if (isSyncBoundary(&topOp)) {
         if (prevKey &&
@@ -465,7 +464,8 @@ struct TTKernelInsertInitsPass
       });
     };
 
-    // Walk 1: sync regions. For each acquire, iterate ops to release.
+    // Walk each tile_regs_acquire -> tile_regs_release region and insert
+    // the per-op inits for the compute ops between them.
     moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
       Block *block = acquireOp->getBlock();
       std::optional<InitKey> prevKey;
@@ -476,27 +476,6 @@ struct TTKernelInsertInitsPass
         }
         processOp(*it, prevKey);
       }
-    });
-
-    // Walk 2: unwrapped compute ops (unit tests without sync wrapping).
-    moduleOp->walk([&](func::FuncOp funcOp) {
-      std::optional<InitKey> prevKey;
-      funcOp.walk([&](Operation *op) {
-        if (op->hasAttr(kInitInserted)) {
-          return WalkResult::advance();
-        }
-        auto mapIt = computeToInit.find(op->getName().getTypeID());
-        if (mapIt == computeToInit.end()) {
-          return WalkResult::advance();
-        }
-        InitKey key = computeInitKey(op);
-        if (!prevKey || *prevKey != key) {
-          OpBuilder builder(op);
-          mapIt->second.createInit(builder, op->getLoc(), op);
-        }
-        prevKey = key;
-        return WalkResult::advance();
-      });
     });
 
     // Clean up marker attributes.
