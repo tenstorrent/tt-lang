@@ -146,6 +146,13 @@ def TTLSubblockComputeForDST
     ```
   }];
 
+  let options = [
+    Option<"subblockSync", "subblock-sync", "bool", "false",
+           "Refine DFB reserve/push to per-subblock granularity, enabling "
+           "pack_tile_block for contiguous subblocks. When disabled (default), "
+           "user-placed reserve/push is preserved.">
+  ];
+
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
     "::mlir::scf::SCFDialect",

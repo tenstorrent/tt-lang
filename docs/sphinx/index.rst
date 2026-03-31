@@ -8,7 +8,7 @@ TTL Documentation
    overview
    simulator
    getting-started
-   ttl-tutorial/index
+   tour/index
    elementwise-tutorial/index
    programming-guide
    claude-skills

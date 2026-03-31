@@ -570,7 +570,7 @@ func.func @compute_tile_store_view_not_from_reserve(
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
     %exp = ttl.tile_exp %arg0 : !ttcore.tile<32x32, f32>
-    // expected-error @below {{'ttl.tile_store' op view must be produced by ttl.cb_reserve}}
+    // expected-error @below {{'ttl.tile_store' op view must trace to a dataflow buffer}}
     ttl.tile_store %exp, %view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>

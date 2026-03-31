@@ -9,30 +9,33 @@
 
 // SUBBLOCK-LABEL: func.func @fused_compute
 // Verify three separate scf.for loops with inner ttl.compute ops (one per
-// output chain), each with iter_index ops adjusted by the subblock IV.
+// output chain). iter_index ops produce local subblock coordinates directly
+// (no arith.addi offset). tile_store views reference extract_slice of the
+// attach_cb result.
+//
+// Chain 1:
 // SUBBLOCK:        scf.for %[[IV1:.*]] =
 // SUBBLOCK:          ttl.compute
 // SUBBLOCK:            %[[I_DIM0_A:.*]] = ttl.iter_index 0 : index
-// SUBBLOCK:            %[[I_DIM0_A_OFFSETTED:.*]] = arith.addi %[[I_DIM0_A]], %[[IV1]]
-// SUBBLOCK:            %[[I_DIM1_A:.*]] = ttl.iter_index 1 : index
-// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_A_OFFSETTED]], %[[I_DIM1_A]]], %{{.*}}
-// SUBBLOCK:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_A_OFFSETTED]], %[[I_DIM1_A]]]
+// SUBBLOCK-NEXT:       %[[I_DIM1_A:.*]] = ttl.iter_index 1 : index
+// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_A]], %[[I_DIM1_A]]], %{{.*}}
+// SUBBLOCK:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_A]], %[[I_DIM1_A]]]
 // SUBBLOCK:        } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 4 : index}
+// Chain 2:
 // SUBBLOCK:        scf.for %[[IV2:.*]] =
 // SUBBLOCK:          ttl.compute
 // SUBBLOCK:            %[[I_DIM0_B:.*]] = ttl.iter_index 0 : index
-// SUBBLOCK:            %[[I_DIM0_B_OFFSETTED:.*]] = arith.addi %[[I_DIM0_B]], %[[IV2]]
-// SUBBLOCK:            %[[I_DIM1_B:.*]] = ttl.iter_index 1 : index
-// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_B_OFFSETTED]], %[[I_DIM1_B]]], %{{.*}}
-// SUBBLOCK:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_B_OFFSETTED]], %[[I_DIM1_B]]]
+// SUBBLOCK-NEXT:       %[[I_DIM1_B:.*]] = ttl.iter_index 1 : index
+// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_B]], %[[I_DIM1_B]]], %{{.*}}
+// SUBBLOCK:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_B]], %[[I_DIM1_B]]]
 // SUBBLOCK:        } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 4 : index}
+// Chain 3:
 // SUBBLOCK:        scf.for %[[IV3:.*]] =
 // SUBBLOCK:          ttl.compute
 // SUBBLOCK:            %[[I_DIM0_C:.*]] = ttl.iter_index 0 : index
-// SUBBLOCK:            %[[I_DIM0_C_OFFSETTED:.*]] = arith.addi %[[I_DIM0_C]], %[[IV3]]
-// SUBBLOCK:            %[[I_DIM1_C:.*]] = ttl.iter_index 1 : index
-// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_C_OFFSETTED]], %[[I_DIM1_C]]], %{{.*}}
-// SUBBLOCK:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_C_OFFSETTED]], %[[I_DIM1_C]]]
+// SUBBLOCK-NEXT:       %[[I_DIM1_C:.*]] = ttl.iter_index 1 : index
+// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_C]], %[[I_DIM1_C]]], %{{.*}}
+// SUBBLOCK:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_C]], %[[I_DIM1_C]]]
 // SUBBLOCK:        } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 4 : index}
 
 // Verify that lower-to-loops produces an outer subblock scf.for with unrolled

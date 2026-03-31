@@ -130,7 +130,7 @@ The simulator typically supports more language features than the compiler at any
 
 ## Next steps
 
-- Work through the [tutorial](ttl-tutorial/index.md) for step-by-step examples
+- Take a [tour](tour/index.md) to get an introduction to TT-Lang features
   from single-tile to multinode kernels
 - Read the [programming guide](programming-guide.md) for compiler options, print
   debugging, and performance tools
