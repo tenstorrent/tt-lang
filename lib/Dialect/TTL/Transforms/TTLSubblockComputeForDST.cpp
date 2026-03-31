@@ -322,17 +322,23 @@ private:
         }
 
         // Find the cb_reserve and cb_push for this output CB.
+        // Per-subblock refactoring requires exactly one of each; skip
+        // this CB otherwise (multiple reserves/pushes can occur in
+        // legitimate IR, but this transformation cannot handle them).
         CBReserveOp reserveOp;
         CBPushOp pushOp;
+        unsigned reserveCount = 0, pushCount = 0;
         for (Operation *user : outputCB.getUsers()) {
-          if (auto r = dyn_cast<CBReserveOp>(user)) {
-            reserveOp = r;
+          if (auto reserve = dyn_cast<CBReserveOp>(user)) {
+            reserveOp = reserve;
+            ++reserveCount;
           }
-          if (auto p = dyn_cast<CBPushOp>(user)) {
-            pushOp = p;
+          if (auto push = dyn_cast<CBPushOp>(user)) {
+            pushOp = push;
+            ++pushCount;
           }
         }
-        if (!reserveOp || !pushOp) {
+        if (reserveCount != 1 || pushCount != 1) {
           continue;
         }
 

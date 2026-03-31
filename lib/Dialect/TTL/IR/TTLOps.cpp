@@ -946,8 +946,15 @@ mlir::LogicalResult mlir::tt::ttl::CBReserveOp::verify() {
 }
 
 mlir::LogicalResult mlir::tt::ttl::CBPushOp::verify() {
-  // cb_push has no result to verify; the CB type is already enforced by
-  // tablegen constraints.
+  if (getNumTiles()) {
+    auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
+    int64_t cbCapacity = cbTy.getElementsPerBlock();
+    int64_t numTiles = static_cast<int64_t>(getNumTiles().value());
+    if (numTiles > cbCapacity) {
+      return emitOpError() << "num_tiles (" << numTiles
+                           << ") exceeds DFB capacity (" << cbCapacity << ")";
+    }
+  }
   return success();
 }
 
