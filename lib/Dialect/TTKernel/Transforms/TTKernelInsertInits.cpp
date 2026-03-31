@@ -50,6 +50,7 @@ namespace {
 
 /// Resolve an output CB Value from a CB index attribute on a compute op.
 /// Looks up the ttkernel.get_compile_time_arg_val with the matching index.
+/// TODO: cache the index→Value map per function to avoid O(N) walk per call.
 static Value resolveOutputCB(Operation *computeOp, StringRef attrName) {
   auto cbIdxAttr = computeOp->getAttrOfType<IntegerAttr>(attrName);
   if (!cbIdxAttr) {

@@ -58,6 +58,17 @@ func.func @reduce_element_type_mismatch(
 
 // -----
 
+// Duplicate dims
+func.func @reduce_duplicate_dims(
+    %a: tensor<2x2x!ttcore.tile<32x32, bf16>>,
+    %s: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x2x!ttcore.tile<32x32, bf16>> {
+  // expected-error @below {{duplicate dim 0}}
+  %r = ttl.reduce %a, %s 0 : i32 [0, 0] : (tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+  return %r : tensor<1x2x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
 // Scaler must be rank 2
 func.func @reduce_scaler_rank1(
     %a: tensor<2x2x!ttcore.tile<32x32, bf16>>,

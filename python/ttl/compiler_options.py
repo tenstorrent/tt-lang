@@ -67,7 +67,7 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="reduce_full_fp32",
         action=argparse.BooleanOptionalAction,
-        help="Enable FP32 accumulation for reduce operations (default: disabled).",
+        help="Enable FP32 accumulation for reduce operations (default: enabled).",
     )
     return p
 

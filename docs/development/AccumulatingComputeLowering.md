@@ -86,8 +86,8 @@ Reduction loops are annotated with `ttl.reduction_loop`.
 
 `TTKernelInsertInits` uses two targeted walks instead of a block walk:
 
-1. `walk(TileRegsAcquireOp)`: iterates flat ops between acquire and
-   release. Each flat op may contain compute ops in nested regions
+1. `walk(TileRegsAcquireOp)`: iterates top-level ops between acquire and
+   release. Each top-level op may contain compute ops in nested regions
    (e.g., `reduce_tile` inside a reduction `scf.for`); these are
    discovered via `op.walk()`. Init is inserted before the flat
    container op. Consecutive ops with the same init key share one

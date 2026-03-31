@@ -138,8 +138,7 @@ static scf::LoopNest generateAccumulatingLoops(
     PatternRewriter &rewriter, Location loc, ComputeOp op,
     ArrayRef<Range> iterDomain, ArrayRef<AffineMap> indexingMaps,
     ArrayRef<StringAttr> iterTypes, ArrayRef<Value> lowerBounds,
-    ArrayRef<Value> upperBounds, ArrayRef<Value> steps,
-    bool &processingFailed) {
+    ArrayRef<Value> upperBounds, ArrayRef<Value> steps) {
 
   // Separate parallel and reduction dim indices.
   SmallVector<unsigned> parallelDims, reductionDims;
@@ -422,9 +421,9 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
                 .wasInterrupted();
         if (dstAccumulation || hasReduceMax) {
           usedDstAccumulation = true;
-          return generateAccumulatingLoops(
-              rewriter, loc, op, iterDomain, indexingMaps, iterTypes,
-              lowerBounds, upperBounds, steps, processingFailed);
+          return generateAccumulatingLoops(rewriter, loc, op, iterDomain,
+                                           indexingMaps, iterTypes, lowerBounds,
+                                           upperBounds, steps);
         }
       }
 

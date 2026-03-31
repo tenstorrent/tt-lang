@@ -1141,7 +1141,9 @@ mlir::LogicalResult mlir::tt::ttl::ReduceOp::verify() {
       return emitOpError() << "dim " << d << " is out of range for rank "
                            << rank;
     }
-    normDims.insert(normalized);
+    if (!normDims.insert(normalized).second) {
+      return emitOpError() << "duplicate dim " << d;
+    }
   }
 
   // Verify result shape: reduced dims must be 1, others must match input.
