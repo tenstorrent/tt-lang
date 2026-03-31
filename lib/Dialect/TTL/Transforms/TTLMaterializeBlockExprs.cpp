@@ -26,7 +26,6 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
@@ -104,10 +103,8 @@ static BlockExprTrace traceBlockExprToRoots(Value value) {
   return result;
 }
 
-/// Merge multiple per-store traces into a single trace.  Root inputs are
-/// unioned.  opsInOrder is rebuilt by walking the block in order, which
-/// produces a valid topological ordering because the Python frontend emits
-/// ops in dependency order.
+/// Merge per-store traces into a single trace.  Root inputs are unioned;
+/// opsInOrder is rebuilt in block order (valid topological order).
 static BlockExprTrace
 mergeTraces(const DenseMap<Operation *, BlockExprTrace> &storeTraces,
             SmallVectorImpl<StoreOp> &stores) {
@@ -118,17 +115,20 @@ mergeTraces(const DenseMap<Operation *, BlockExprTrace> &storeTraces,
     auto it = storeTraces.find(store.getOperation());
     assert(it != storeTraces.end());
     const BlockExprTrace &trace = it->second;
-    for (Value root : trace.rootInputs)
+    for (Value root : trace.rootInputs) {
       merged.rootInputs.insert(root);
-    for (Operation *op : trace.opsInOrder)
+    }
+    for (Operation *op : trace.opsInOrder) {
       allOps.insert(op);
+    }
   }
 
   // Walk block to collect ops in block order (valid topological order).
   Block *block = stores.front()->getBlock();
   for (auto &op : *block) {
-    if (allOps.contains(&op))
+    if (allOps.contains(&op)) {
       merged.opsInOrder.insert(&op);
+    }
   }
 
   return merged;
@@ -147,26 +147,24 @@ static bool isSideEffectOpForCompute(Operation *op) {
   return false;
 }
 
-/// Collected signpost/dprint ops categorized by position relative to fused
-/// block_expr ops, supporting multiple stores in the trailing region.
+/// Signpost/dprint ops categorized by position relative to fused block_expr
+/// ops, with per-store trailing partitioning.
 struct InterleavedSideEffects {
   SmallVector<Operation *> leadingOps;
   DenseMap<Operation *, SmallVector<Operation *>> opsBefore;
-  /// Per-store trailing ops.  trailingPerStore[i] holds the signpost ops
-  /// that surround stores[i] (begin signposts before it, end signposts
-  /// after it).
+  /// Per-store trailing ops (begin before store, end after store).
   SmallVector<SmallVector<Operation *>> trailingPerStore;
-  /// All collected side-effect ops, for erasure after materialization.
+  /// All collected ops, for erasure after materialization.
   SmallVector<Operation *> allCollected;
 
-  /// Collect signpost/dprint ops interleaved with block_expr ops and the
-  /// stores.
+  /// Collect interleaved signpost/dprint ops.
   static InterleavedSideEffects
   collect(const llvm::SmallSetVector<Operation *, 8> &opsInOrder,
           SmallVectorImpl<StoreOp> &stores) {
     InterleavedSideEffects result;
-    if (opsInOrder.empty())
+    if (opsInOrder.empty()) {
       return result;
+    }
 
     DenseSet<Operation *> fusedSet(opsInOrder.begin(), opsInOrder.end());
 
@@ -175,13 +173,15 @@ struct InterleavedSideEffects {
     Operation *lastFused = nullptr;
     for (auto &op : *stores.front()->getBlock()) {
       if (fusedSet.contains(&op)) {
-        if (!firstFused)
+        if (!firstFused) {
           firstFused = &op;
+        }
         lastFused = &op;
       }
     }
-    if (!firstFused)
+    if (!firstFused) {
       return result;
+    }
 
     // Leading: walk backwards from first fused op.
     SmallVector<Operation *> leading;
@@ -231,8 +231,9 @@ struct InterleavedSideEffects {
 
     // Trailing: partition side-effect ops around each store.
     DenseSet<Operation *> storeSet;
-    for (StoreOp store : stores)
+    for (StoreOp store : stores) {
       storeSet.insert(store.getOperation());
+    }
 
     for (size_t si = 0; si < stores.size(); ++si) {
       SmallVector<Operation *> perStore;
@@ -242,38 +243,45 @@ struct InterleavedSideEffects {
       // lastFused, or a non-side-effect op.
       SmallVector<Operation *> before;
       for (auto *op = stores[si]->getPrevNode(); op; op = op->getPrevNode()) {
-        if (storeSet.contains(op) || op == lastFused)
+        if (storeSet.contains(op) || op == lastFused) {
           break;
+        }
         if (isSideEffectOpForCompute(op)) {
-          if (auto sp = dyn_cast<SignpostOp>(op); sp && sp.getIsEnd())
+          if (auto sp = dyn_cast<SignpostOp>(op); sp && sp.getIsEnd()) {
             break;
+          }
           before.push_back(op);
         } else {
           break;
         }
       }
-      for (auto it = before.rbegin(); it != before.rend(); ++it)
+      for (auto it = before.rbegin(); it != before.rend(); ++it) {
         perStore.push_back(*it);
+      }
 
       // Forward from store: collect end signposts / dprints.
       // Stop at begin signpost (belongs to next store), another store,
       // cb_push/cb_pop, or a non-side-effect op.
       for (auto *op = stores[si]->getNextNode(); op; op = op->getNextNode()) {
-        if (storeSet.contains(op))
+        if (storeSet.contains(op)) {
           break;
-        if (isa<CBPushOp>(op) || isa<CBPopOp>(op))
+        }
+        if (isa<CBPushOp>(op) || isa<CBPopOp>(op)) {
           break;
+        }
         if (isSideEffectOpForCompute(op)) {
-          if (auto sp = dyn_cast<SignpostOp>(op); sp && !sp.getIsEnd())
+          if (auto sp = dyn_cast<SignpostOp>(op); sp && !sp.getIsEnd()) {
             break;
+          }
           perStore.push_back(op);
         } else {
           break;
         }
       }
 
-      for (auto *op : perStore)
+      for (auto *op : perStore) {
         result.allCollected.push_back(op);
+      }
       result.trailingPerStore.push_back(std::move(perStore));
     }
 
@@ -291,47 +299,54 @@ struct InterleavedSideEffects {
   }
 
   void emitLeading(OpBuilder &builder) const {
-    for (auto *op : leadingOps)
+    for (auto *op : leadingOps) {
       emitOne(op, builder);
+    }
   }
 
   void emitBefore(Operation *traceOp, OpBuilder &builder) const {
     auto it = opsBefore.find(traceOp);
     if (it != opsBefore.end()) {
-      for (auto *seOp : it->second)
+      for (auto *seOp : it->second) {
         emitOne(seOp, builder);
+      }
     }
   }
 
   void emitTrailingBeforeStore(size_t storeIdx, OpBuilder &builder) const {
-    if (storeIdx >= trailingPerStore.size())
+    if (storeIdx >= trailingPerStore.size()) {
       return;
+    }
     auto isEndSignpost = [](Operation *op) {
       auto sp = dyn_cast<SignpostOp>(op);
       return sp && sp.getIsEnd();
     };
     const auto &trailing = trailingPerStore[storeIdx];
     auto firstEndIt = llvm::find_if(trailing, isEndSignpost);
-    for (auto it = trailing.begin(); it != firstEndIt; ++it)
+    for (auto it = trailing.begin(); it != firstEndIt; ++it) {
       emitOne(*it, builder);
+    }
   }
 
   void emitTrailingAfterStore(size_t storeIdx, OpBuilder &builder) const {
-    if (storeIdx >= trailingPerStore.size())
+    if (storeIdx >= trailingPerStore.size()) {
       return;
+    }
     auto isEndSignpost = [](Operation *op) {
       auto sp = dyn_cast<SignpostOp>(op);
       return sp && sp.getIsEnd();
     };
     const auto &trailing = trailingPerStore[storeIdx];
     auto firstEndIt = llvm::find_if(trailing, isEndSignpost);
-    for (auto it = firstEndIt; it != trailing.end(); ++it)
+    for (auto it = firstEndIt; it != trailing.end(); ++it) {
       emitOne(*it, builder);
+    }
   }
 
   void eraseOriginals() {
-    for (auto *op : allCollected)
+    for (auto *op : allCollected) {
       op->erase();
+    }
   }
 };
 
@@ -367,8 +382,9 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
 
   // All stores must have the same output type (same tile domain).
   auto outputType = getTensorType(stores.front().getView());
-  if (!outputType)
+  if (!outputType) {
     return stores.front().emitError("store view must have ranked tensor type");
+  }
   for (size_t i = 1; i < stores.size(); ++i) {
     StoreOp store = stores[i];
     auto storeType = getTensorType(store.getView());
@@ -378,8 +394,9 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
     }
   }
 
-  if (trace.opsInOrder.empty())
+  if (trace.opsInOrder.empty()) {
     return success();
+  }
 
   // Validate bcast inputs.
   for (Operation *op : trace.opsInOrder) {
@@ -394,8 +411,7 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
   }
 
   // Collect signpost/dprint ops before they get orphaned.
-  auto sideEffects =
-      InterleavedSideEffects::collect(trace.opsInOrder, stores);
+  auto sideEffects = InterleavedSideEffects::collect(trace.opsInOrder, stores);
 
   MLIRContext *ctx = builder.getContext();
 
@@ -403,8 +419,9 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
   SmallVector<Value> outCbs;
   for (StoreOp store : stores) {
     auto reserve = store.getView().getDefiningOp<CBReserveOp>();
-    if (!reserve)
+    if (!reserve) {
       return store.emitError("store view not from cb_reserve");
+    }
     outCbs.push_back(reserve.getCb());
   }
 
@@ -436,8 +453,9 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
       maps.push_back(AffineMapAttr::get(identityMap));
     }
   }
-  for (size_t i = 0; i < outCbs.size(); ++i)
+  for (size_t i = 0; i < outCbs.size(); ++i) {
     maps.push_back(AffineMapAttr::get(identityMap));
+  }
 
   SmallVector<Attribute> iterTypes(outputType.getRank(),
                                    builder.getStringAttr("parallel"));
@@ -466,17 +484,20 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
   Block *body = builder.createBlock(&computeOp.getBody());
   Type tileType = ttcore::TileType::get(outputType.getElementType());
 
-  for (size_t i = 0; i < trace.rootInputs.size(); ++i)
+  for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
     body->addArgument(tileType, loc);
-  for (size_t i = 0; i < outCbs.size(); ++i)
+  }
+  for (size_t i = 0; i < outCbs.size(); ++i) {
     body->addArgument(tileType, loc);
+  }
 
   builder.setInsertionPointToStart(body);
 
   // Map tensor values to tile values.
   DenseMap<Value, Value> tensorToTile;
-  for (size_t i = 0; i < trace.rootInputs.size(); ++i)
+  for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
     tensorToTile[trace.rootInputs[i]] = body->getArgument(i);
+  }
 
   sideEffects.emitLeading(builder);
 
@@ -516,21 +537,25 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
         Value rhs = op->getOperand(1);
         auto tryFold = [&](Value tensorA, Value tensorB) -> Value {
           auto dfIt = deferredMatmul.find(tensorA);
-          if (dfIt == deferredMatmul.end())
+          if (dfIt == deferredMatmul.end()) {
             return nullptr;
+          }
           auto [mmLhs, mmRhs] = dfIt->second;
           Value accTile = tensorToTile.lookup(tensorB);
-          if (!accTile)
+          if (!accTile) {
             return nullptr;
+          }
           deferredMatmul.erase(dfIt);
-          return TileMatmulBlockOp::create(builder, loc, tileType, mmLhs,
-                                           mmRhs, accTile);
+          return TileMatmulBlockOp::create(builder, loc, tileType, mmLhs, mmRhs,
+                                           accTile);
         };
         Value folded = tryFold(lhs, rhs);
-        if (!folded)
+        if (!folded) {
           folded = tryFold(rhs, lhs);
-        if (folded)
+        }
+        if (folded) {
           tileResult = folded;
+        }
       }
 
       if (!tileResult) {
@@ -559,8 +584,9 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
 
         tileResult =
             emitTileOpForBlockExpr(builder, loc, op, tileOperands, tileType);
-        if (!tileResult)
+        if (!tileResult) {
           return op->emitError("block_expr materialization: unsupported op");
+        }
       }
     }
 
@@ -578,8 +604,9 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
   // Build CB -> output index mapping for multi-output disambiguation.
   DenseMap<Value, size_t> cbToOutputIdx;
   if (outCbs.size() > 1) {
-    for (auto [idx, outCb] : llvm::enumerate(outCbs))
+    for (auto [idx, outCb] : llvm::enumerate(outCbs)) {
       cbToOutputIdx[outCb] = idx;
+    }
   }
 
   // Emit tile_stores in reverse order to match ConvertTTLToCompute convention
@@ -591,8 +618,9 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
     StoreOp store = stores[si];
     Value storeTensor = store.getTensor();
     Value tileVal = tensorToTile.lookup(storeTensor);
-    if (!tileVal)
+    if (!tileVal) {
       tileVal = finalResult;
+    }
 
     // Determine output index for this store's CB.
     size_t outputIdx = 0;
@@ -600,8 +628,9 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
       Value viewCB = getAttachedCB(store.getView());
       if (viewCB) {
         auto it = cbToOutputIdx.find(viewCB);
-        if (it != cbToOutputIdx.end())
+        if (it != cbToOutputIdx.end()) {
           outputIdx = it->second;
+        }
       }
     }
     AffineMap outputMap = indexingMaps[numInputs + outputIdx];
@@ -616,14 +645,16 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
   YieldOp::create(builder, loc);
 
   // Erase stores.
-  for (StoreOp store : stores)
+  for (StoreOp store : stores) {
     store.erase();
+  }
 
   // Erase block_expr ops in reverse topological order.
   for (auto it = trace.opsInOrder.rbegin(); it != trace.opsInOrder.rend();
        ++it) {
-    if ((*it)->use_empty())
+    if ((*it)->use_empty()) {
       (*it)->erase();
+    }
   }
 
   sideEffects.eraseOriginals();
@@ -636,7 +667,6 @@ struct TTLMaterializeBlockExprsPass
 
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
-
     // Step 1: Trace each store's block_expr DAG.
     SmallVector<StoreOp> blockExprStores;
     DenseMap<Operation *, BlockExprTrace> storeTraces;
@@ -649,58 +679,41 @@ struct TTLMaterializeBlockExprsPass
       }
     });
 
-    if (blockExprStores.empty())
+    if (blockExprStores.empty()) {
       return;
-
-    // Step 2: Union-find grouping.  Stores whose block_expr DAGs share
-    // any block_expr op are placed in the same equivalence class.
-    llvm::EquivalenceClasses<Operation *> storeGroups;
-    DenseMap<Operation *, Operation *> blockExprToStore;
-
-    for (StoreOp store : blockExprStores) {
-      Operation *storePtr = store.getOperation();
-      storeGroups.insert(storePtr);
-      const BlockExprTrace &trace = storeTraces[storePtr];
-      for (Operation *op : trace.opsInOrder) {
-        auto it = blockExprToStore.find(op);
-        if (it != blockExprToStore.end()) {
-          storeGroups.unionSets(storePtr, it->second);
-        } else {
-          blockExprToStore[op] = storePtr;
-        }
-      }
     }
 
-    // Step 3: Collect groups and materialize.
-    // Build groups by leader: map leader -> list of stores.
-    DenseMap<Operation *, SmallVector<StoreOp>> groupMap;
+    // Step 2: Group stores by identical tensor operand.  PACK is
+    // configured for one output CB per init, so only stores consuming the
+    // same value can share a compute.
+    DenseMap<Value, SmallVector<StoreOp>> groupMap;
     for (StoreOp store : blockExprStores) {
-      Operation *leader =
-          storeGroups.getLeaderValue(store.getOperation());
-      groupMap[leader].push_back(store);
+      groupMap[store.getTensor()].push_back(store);
     }
-
-    llvm::errs() << "MaterializeBlockExprs: " << blockExprStores.size()
-                  << " stores in " << groupMap.size() << " groups\n";
-    for (auto &[leader, group] : groupMap)
-      llvm::errs() << "  group size: " << group.size() << "\n";
 
     OpBuilder builder(&getContext());
     for (auto &[leader, groupStores] : groupMap) {
       // Sort by block position for deterministic emission order.
       DenseMap<Operation *, unsigned> blockPos;
       unsigned pos = 0;
-      for (auto &op : *groupStores.front()->getBlock())
+      for (auto &op : *groupStores.front()->getBlock()) {
         blockPos[&op] = pos++;
+      }
       llvm::sort(groupStores, [&](StoreOp lhs, StoreOp rhs) {
         return blockPos[lhs.getOperation()] < blockPos[rhs.getOperation()];
       });
 
-      // Merge traces across the group.
-      BlockExprTrace merged = mergeTraces(storeTraces, groupStores);
+      // For single-store groups, use the original DFS trace directly
+      // (preserves topological order that signpost categorization depends on).
+      // For multi-store groups, merge traces via block-order walk.
+      BlockExprTrace merged =
+          (groupStores.size() == 1)
+              ? storeTraces[groupStores.front().getOperation()]
+              : mergeTraces(storeTraces, groupStores);
 
-      if (failed(materializeStoreGroup(groupStores, merged, builder)))
+      if (failed(materializeStoreGroup(groupStores, merged, builder))) {
         return signalPassFailure();
+      }
     }
   }
 };

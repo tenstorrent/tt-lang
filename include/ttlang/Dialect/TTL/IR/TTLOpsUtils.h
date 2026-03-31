@@ -408,24 +408,29 @@ struct InterleavedSideEffects {
     Operation *last = nullptr;
     for (auto &op : *anchor->getBlock()) {
       if (tracedSet.contains(&op)) {
-        if (!first)
+        if (!first) {
           first = &op;
+        }
         last = &op;
       }
     }
-    if (!first)
+    if (!first) {
       return result;
+    }
 
     // Leading: walk backwards from first traced op.
     SmallVector<Operation *> leadingReversed;
     for (auto *op = first->getPrevNode(); op; op = op->getPrevNode()) {
-      if (isSideEffectOpForCompute(op))
+      if (isSideEffectOpForCompute(op)) {
         leadingReversed.push_back(op);
-      else
+      } else {
         break;
+      }
     }
-    for (auto it = leadingReversed.rbegin(); it != leadingReversed.rend(); ++it)
+    for (auto it = leadingReversed.rbegin(); it != leadingReversed.rend();
+         ++it) {
       result.leading.push_back(*it);
+    }
     result.allOps.append(result.leading);
 
     // Interleaved: walk from first to last traced op.
@@ -477,31 +482,36 @@ struct InterleavedSideEffects {
   }
 
   void emitLeading(OpBuilder &builder) const {
-    for (auto *op : leading)
+    for (auto *op : leading) {
       emitOne(op, builder);
+    }
   }
 
   void emitBefore(Operation *tracedOp, OpBuilder &builder) const {
     auto it = before.find(tracedOp);
     if (it != before.end()) {
-      for (auto *op : it->second)
+      for (auto *op : it->second) {
         emitOne(op, builder);
+      }
     }
   }
 
   void emitTrailingBeforeStore(OpBuilder &builder) const {
-    for (auto *op : trailingBeforeStore)
+    for (auto *op : trailingBeforeStore) {
       emitOne(op, builder);
+    }
   }
 
   void emitTrailingAfterStore(OpBuilder &builder) const {
-    for (auto *op : trailingAfterStore)
+    for (auto *op : trailingAfterStore) {
       emitOne(op, builder);
+    }
   }
 
   void eraseOriginals() const {
-    for (auto *op : allOps)
+    for (auto *op : allOps) {
       op->erase();
+    }
   }
 
 private:
