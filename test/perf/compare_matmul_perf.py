@@ -300,14 +300,14 @@ def run_multicore_comparison(M: int, K: int, N: int) -> None:
             tt_lang_multicore_matmul,
         )
 
-        c_ttl = ttnn.empty(
-            (M, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-            device=device, memory_config=dram,
+        output_tensor = ttnn.empty(
+        (M, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+        device=device, memory_config=dram,
         )
 
         flush_profiler(device)
         clear_profiler_logs(logs_path)
-        tt_lang_multicore_matmul(a_tensor, b_tensor, c_ttl)
+        tt_lang_multicore_matmul(a_tensor, b_tensor, output_tensor)
         flush_profiler(device)
 
         ttlang_perf = perf_summary_run(
@@ -316,7 +316,7 @@ def run_multicore_comparison(M: int, K: int, N: int) -> None:
         _, _, ttlang_summaries = collect_summaries(logs_path)
         print(ttlang_perf or "No profiler data found")
 
-        ttlang_result = ttnn.to_torch(c_ttl).to(torch.bfloat16)
+        ttlang_result = ttnn.to_torch(output_tensor).to(torch.bfloat16)
         assert_with_ulp(golden, ttlang_result)
         print("TTLang correctness: PASS")
     except Exception as e:
@@ -403,18 +403,23 @@ def run_multicore_reuse_comparison(M: int, K: int, N: int) -> None:
             tt_lang_multicore_reuse_matmul,
         )
 
-        c_ttl = ttnn.empty(
-            (M, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-            device=device, memory_config=dram,
+        a_host = ttnn.from_device(a_tensor)
+        b_host = ttnn.from_device(b_tensor)
+        c_ttl = ttnn.from_torch(
+            torch.zeros(M, N, dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
         )
 
         flush_profiler(device)
         clear_profiler_logs(logs_path)
-        tt_lang_multicore_reuse_matmul(a_tensor, b_tensor, c_ttl)
+        tt_lang_multicore_reuse_matmul(
+            a_host, b_host, c_ttl,
+            K_block_size, block_params.block_h, block_params.block_w,
+        )
         flush_profiler(device)
 
         ttlang_perf = perf_summary_run(
-            logs_path, names=["multicore_reuse_matmul"],
+            logs_path, names=["tt_lang_multicore_reuse_matmul"],
         )
         _, _, ttlang_summaries = collect_summaries(logs_path)
         print(ttlang_perf or "No profiler data found")

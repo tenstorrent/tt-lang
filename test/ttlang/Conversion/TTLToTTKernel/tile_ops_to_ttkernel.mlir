@@ -1,11 +1,10 @@
-// RUN: ttlang-opt --convert-ttl-to-ttkernel %s | FileCheck %s
-// Summary: Tests for ttl.tile_* op lowering to TTKernel.
+// RUN: ttlang-opt --convert-ttl-to-ttkernel --ttkernel-insert-inits %s | FileCheck %s
+// Summary: Tests for ttl.tile_* op lowering to TTKernel with init consolidation.
 //
-// This tests the tile op patterns only. The ttl.compute op is NOT lowered by
-// this pass - it will be lowered to scf.for loops by ttl-lower-to-loops first,
-// then this pass converts the remaining ttl.tile_* ops to ttkernel ops.
-//
-// TODO(#124): Add DST lifecycle wrapper tests once full pipeline is integrated.
+// This tests the tile op patterns followed by init consolidation. The
+// convert-ttl-to-ttkernel pass emits compute ops without inits, then
+// ttkernel-insert-inits inserts the minimal set of init ops.
+
 
 // CHECK-LABEL: func.func @tile_exp
 // CHECK: ttkernel.exp_tile_init
@@ -83,11 +82,12 @@ func.func @tile_chain(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32x32, f32>
 // CHECK-DAG: %[[C2:.*]] = arith.constant 2 : index
 // CHECK-DAG: %[[C3:.*]] = arith.constant 3 : index
 // First add: a (arg0) + b (arg1) -> DST[2]
+// Both adds are the same op type so only ONE init should be emitted.
 // CHECK: ttkernel.add_binary_tile_init
 // CHECK-NEXT: ttkernel.add_binary_tile(%[[C0]], %[[C1]], %[[C2]])
-// Second add: sum (DST[2]) + a (arg0, reused) -> DST[3]
-// CHECK: ttkernel.add_binary_tile_init
-// CHECK-NEXT: ttkernel.add_binary_tile(%[[C2]], %[[C0]], %[[C3]])
+// Second add: same type, no re-init needed.
+// CHECK-NOT: ttkernel.add_binary_tile_init
+// CHECK: ttkernel.add_binary_tile(%[[C2]], %[[C0]], %[[C3]])
 func.func @tile_add_block_args(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
   %sum = ttl.tile_add %a, %b {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
   %result = ttl.tile_add %sum, %a {dst_idx = 3 : i32} : !ttcore.tile<32x32, f32>
@@ -101,6 +101,7 @@ func.func @tile_add_block_args(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32
 // instead of the correct mul_binary_tile(2, 3, 1).
 //
 // Block arguments %a, %x, %b, %y map to DST indices 0, 1, 2, 3 respectively.
+// Consolidation: one init for the two muls, then one init for the add.
 // CHECK-LABEL: func.func @tile_axby_pattern
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
@@ -109,12 +110,10 @@ func.func @tile_add_block_args(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32
 // First multiply: a (arg0=DST[0]) * x (arg1=DST[1]) -> DST[0]
 // CHECK: ttkernel.mul_binary_tile_init
 // CHECK-NEXT: ttkernel.mul_binary_tile(%[[C0]], %[[C1]], %[[C0]])
-// Second multiply: b (arg2=DST[2]) * y (arg3=DST[3]) -> DST[1]
-// CRITICAL: This checks that we use indices 2 and 3, not 0 and 1.
-// Before the fix, the adaptor bug caused this to generate (0, 1, 1).
-// CHECK: ttkernel.mul_binary_tile_init
-// CHECK-NEXT: ttkernel.mul_binary_tile(%[[C2]], %[[C3]], %[[C1]])
-// Add: term1 (DST[0]) + term2 (DST[1]) -> DST[2]
+// Second multiply: same type, no re-init needed.
+// CHECK-NOT: ttkernel.mul_binary_tile_init
+// CHECK: ttkernel.mul_binary_tile(%[[C2]], %[[C3]], %[[C1]])
+// Add: different type, new init.
 // CHECK: ttkernel.add_binary_tile_init
 // CHECK-NEXT: ttkernel.add_binary_tile(%[[C0]], %[[C1]], %[[C2]])
 func.func @tile_axby_pattern(%a: !ttcore.tile<32x32, f32>, %x: !ttcore.tile<32x32, f32>,

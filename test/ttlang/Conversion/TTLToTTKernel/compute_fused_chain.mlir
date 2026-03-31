@@ -1,7 +1,7 @@
 // Summary: Fused add->mul->exp lowers through loops to TTKernel ops (with sync).
 // Note: enable-fpu-binary-ops=0 keeps SFPU lowering path (not testing FPU detection).
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   | FileCheck %s
 
 // Purpose: ensure copy_tile + fused math ops lower to ttkernel with no TTL ops left.

@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s --ttl-lower-to-loops --convert-ttl-to-ttkernel | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-to-loops),convert-ttl-to-ttkernel,ttkernel-insert-inits)' | FileCheck %s
 
 // Test: ttl.copy_tile inside ttl.compute lowers to ttkernel.copy_tile_init + ttkernel.copy_tile.
 // The lowering traces src back to the attached CB via tensor.extract (post loop-lowering).

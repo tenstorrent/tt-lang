@@ -117,6 +117,7 @@ Note: this project is currently in early prototype phase, examples are not final
 ## Documentation
 
 - [Build System](docs/BUILD_SYSTEM.md) - Detailed build configuration options and integration scenarios
+- [Performance Tools](docs/performance-tools.md) - Profiling, signposts, and Perfetto trace visualization
 - [Testing Guide](test/TESTING.md) - How to write and run tests using LLVM lit
 - [Sphinx docs](docs/README.md) - How to build, view, and extend the documentation (docs are disabled by default; enable with `-DTTLANG_ENABLE_DOCS=ON` and build with `cmake --build build --target ttlang-docs`)
 
@@ -177,65 +178,16 @@ Run `/ttl-help` in Claude Code to see all available commands. Here is a summary:
     List all available TT-Lang slash commands with descriptions and examples.
 ```
 
-## Perf Summary
+## Performance Tools
 
-Set `TTLANG_PERF_DUMP=1` to print a NOC traffic and per-thread wall time summary after kernel execution.
+TT-Lang includes built-in performance analysis tools for profiling kernels on hardware:
 
-**Required environment variables** (must be exported before running):
-```bash
-export TT_METAL_HOME=/path/to/tt-metal
-export TT_METAL_DEVICE_PROFILER=1
-export TT_METAL_DEVICE_PROFILER_NOC_EVENTS=1
-export TT_METAL_PROFILER_MID_RUN_DUMP=1
-export TTLANG_PERF_DUMP=1
-python path/to/program.py  # just run with python
-```
+- **Perf Summary** (`TTLANG_PERF_DUMP=1`) -- NOC traffic and per-thread wall time breakdown
+- **Auto-Profiling** (`TTLANG_AUTO_PROFILE=1`) -- automatic per-line cycle count instrumentation
+- **User-Defined Signposts** (`TTLANG_SIGNPOST_PROFILE=1`) -- targeted cycle counts for `ttl.signpost()` regions
+- **Perfetto Trace Server** (`TTLANG_PERF_SERV=1`) -- visualize profiler data in the Perfetto UI
 
-**Sample output:**
-```
---- Program 1024 (__demo_kernel) ---
-grid: 1x1 (1 cores)
-duration: 2,225,436 cycles (1.65 ms)
-  DRAM read:          5.4 MB  (2790 transfers)
-  DRAM write:         5.0 MB  (2582 transfers)
-  effective BW:   6.7 GB/s (total payload / duration)
-  transfer size:  2.0 KB (uniform)
-  barriers:       57 read (1 per 49 reads), 161 write (1 per 16 writes)
-  noc reads:      NOC_0=2790
-  noc writes:     NOC_1=2582
-  DRAM channels:  16
-  kernel time:
-    BRISC    2,225,356 cycles (1.65 ms)
-    NCRISC   2,211,871 cycles (1.64 ms)
-    TRISC_0  2,222,025 cycles (1.65 ms)
-    TRISC_1  2,222,876 cycles (1.65 ms)
-    TRISC_2  2,222,358 cycles (1.65 ms)
-```
-
-## Auto-Profiling
-
-TT-Lang includes built-in auto-profiling that instruments kernels with signposts and generates per-line cycle count reports.
-
-**Required environment variables** (must be exported before running):
-```bash
-export TT_METAL_HOME=/path/to/tt-metal
-export TT_METAL_DEVICE_PROFILER=1
-export TT_METAL_PROFILER_MID_RUN_DUMP=1
-export TTLANG_AUTO_PROFILE=1
-```
-
-**Example:**
-```bash
-export TT_METAL_HOME=/workspace/tt-mlir/third_party/tt-metal/src/tt-metal
-export TT_METAL_DEVICE_PROFILER=1
-export TT_METAL_PROFILER_MID_RUN_DUMP=1
-export TTLANG_AUTO_PROFILE=1
-python examples/tutorial/multicore_grid_auto.py
-```
-
-See [docs/auto-profiler-examples/](https://github.com/tenstorrent/tt-lang/tree/main/docs/auto-profiler-examples) for sample profile outputs showing the per-line cycle breakdown format.
-
-> **Warning:** Each core supports only 125 signposts. Kernels with many operations in tight loops may overflow this buffer, causing later signposts to be silently dropped and mismatched cycle counts. See [#268](https://github.com/tenstorrent/tt-lang/issues/268) for details.
+See [docs/performance-tools.md](docs/performance-tools.md) for usage, environment variable reference, and sample output.
 
 ## Docker Containers
 

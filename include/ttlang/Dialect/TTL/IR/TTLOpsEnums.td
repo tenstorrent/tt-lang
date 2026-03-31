@@ -34,4 +34,25 @@ def TTL_BcastType : I32EnumAttr<"BcastType", "TTL broadcast type",
   let cppNamespace = "::mlir::tt::ttl";
 }
 
+//===----------------------------------------------------------------------===//
+// Reduce type and dimension enums (matching TTKernel)
+//===----------------------------------------------------------------------===//
+
+def TTL_ReduceType_Sum : I32EnumAttrCase<"Sum", 0, "sum">;
+def TTL_ReduceType_Max : I32EnumAttrCase<"Max", 1, "max">;
+
+def TTL_ReduceType : I32EnumAttr<"ReduceType", "TTL reduce type",
+    [TTL_ReduceType_Sum, TTL_ReduceType_Max]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
+def TTL_ReduceDim_Row    : I32EnumAttrCase<"Row",    0, "row">;
+def TTL_ReduceDim_Col    : I32EnumAttrCase<"Col",    1, "col">;
+def TTL_ReduceDim_Scalar : I32EnumAttrCase<"Scalar", 2, "scalar">;
+
+def TTL_ReduceDim : I32EnumAttr<"ReduceDim", "TTL reduce dimension",
+    [TTL_ReduceDim_Row, TTL_ReduceDim_Col, TTL_ReduceDim_Scalar]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSENUMS_TD

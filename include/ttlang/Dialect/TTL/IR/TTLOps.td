@@ -604,16 +604,16 @@ def TTL_BcastOp : TTL_Op<"bcast", []> {
   let description = [{
     Broadcasts the input tensor to full tiles based on bcast_type.
     Reads from CB, writes result to DST then packs to output CB.
-    Both input and output must be CB-attached tensors.
+    The output CB is found via the ttl.store on this op's result.
 
     bcast_type specifies the broadcast dimension:
     - Row: broadcast first row to all rows
     - Col: broadcast first column to all columns
     - Scalar: broadcast single value to all elements
   }];
-  let arguments = (ins AnyType:$input, AnyType:$output, TTL_BcastTypeAttr:$bcast_type);
+  let arguments = (ins AnyType:$input, TTL_BcastTypeAttr:$bcast_type);
   let results = (outs AnyType:$result);
-  let assemblyFormat = "$input `,` $output $bcast_type attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
+  let assemblyFormat = "$input $bcast_type attr-dict `:` type($input) `->` type($result)";
 }
 
 def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait]> {
@@ -627,6 +627,173 @@ def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait]> {
   let arguments = (ins AnyType:$input, AnyType:$output, TTL_BcastTypeAttr:$bcast_type);
   let results = (outs AnyType:$result);
   let assemblyFormat = "$input `,` $output $bcast_type attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// Matmul Operation
+//===----------------------------------------------------------------------===//
+
+def TTL_MatmulOp : TTL_Op<"matmul", []> {
+  let summary = "Matrix multiplication of two CB-attached tensors";
+  let description = [{
+    Performs matrix multiplication A * B where A and B are read from circular
+    buffers. The output CB is determined by the ttl.store on this op's result.
+    K-dimension accumulation is implicit in the CB shapes and handled during
+    lowering to TTKernel.
+  }];
+  let arguments = (ins AnyType:$a, AnyType:$b);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$a `,` $b attr-dict `:` `(` type($a) `,` type($b) `)` `->` type($result)";
+}
+
+def TTL_TileMatmulOp : TTL_TileOp<"tile_matmul", [TTL_CBInputTileOpTrait]> {
+  let summary = "Tile-level matrix multiplication";
+  let description = [{
+    Performs tile-sized matrix multiplication. A and B are read directly from
+    circular buffers (not DST), result accumulates into DST.
+    Maps to ttkernel.mm_init + ttkernel.matmul_tiles. The output operand
+    carries the output CB for init-time PACK configuration.
+  }];
+  let arguments = (ins AnyType:$a, AnyType:$b, AnyType:$output);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$a `,` $b `,` $output attr-dict `:` `(` type($a) `,` type($b) `,` type($output) `)` `->` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// Reduce Operations
+//===----------------------------------------------------------------------===//
+
+def TTL_ReduceOp : TTL_Op<"reduce", []> {
+  let summary = "Reduce a tensor along a dimension";
+  let description = [{
+    Reduces the input tensor along the specified dimension using the specified
+    reduce type (sum or max). The scaler tensor provides scaling factors.
+    Reads from CB, writes result to DST. The output CB is determined by the
+    ttl.store on this op's result.
+  }];
+  let arguments = (ins
+    AnyType:$input,
+    AnyType:$scaler,
+    TTL_ReduceTypeAttr:$reduce_type,
+    TTL_ReduceDimAttr:$reduce_dim
+  );
+  let results = (outs AnyType:$result);
+  let assemblyFormat = [{
+    $input `,` $scaler $reduce_type $reduce_dim attr-dict `:`
+    `(` type($input) `,` type($scaler) `)` `->` type($result)
+  }];
+}
+
+def TTL_TileReduceOp : TTL_TileOp<"tile_reduce", [TTL_CBInputTileOpTrait]> {
+  let summary = "Tile-level reduce operation";
+  let description = [{
+    Reduces a tile along the specified dimension.
+    Maps to ttkernel.reduce_init + ttkernel.reduce_tile.
+    Reads directly from circular buffer (not DST), writes to DST.
+  }];
+  let arguments = (ins
+    AnyType:$input,
+    AnyType:$scaler,
+    AnyType:$output,
+    TTL_ReduceTypeAttr:$reduce_type,
+    TTL_ReduceDimAttr:$reduce_dim
+  );
+  let results = (outs AnyType:$result);
+  let assemblyFormat = [{
+    $input `,` $scaler `,` $output $reduce_type $reduce_dim attr-dict `:`
+    `(` type($input) `,` type($scaler) `,` type($output) `)` `->` type($result)
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// Transpose Operation
+//===----------------------------------------------------------------------===//
+
+def TTL_TransposeOp : TTL_Op<"transpose", []> {
+  let summary = "Transpose a 2D tile tensor (swap width and height)";
+  let description = [{
+    Transposes the input tensor by swapping its two dimensions.
+    Input must be a CB-attached tensor. The output CB is determined by the
+    ttl.store on this op's result.
+  }];
+  let arguments = (ins AnyType:$input);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input attr-dict `:` type($input) `->` type($result)";
+}
+
+def TTL_TileTransposeOp : TTL_TileOp<"tile_transpose", [TTL_CBInputTileOpTrait]> {
+  let summary = "Tile-level transpose operation";
+  let description = [{
+    Transposes a single tile (swap width and height).
+    Maps to ttkernel.transpose_wh_init + ttkernel.transpose_wh_tile.
+    Reads from CB, writes to DST.
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$output);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input `,` $output attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// Power Operation
+//===----------------------------------------------------------------------===//
+
+def TTL_PowerOp : TTL_Op<"power", [Pure]> {
+  let summary = "Raise tensor elements to an integer power";
+  let description = [{
+    Raises each element of the input tensor to the given integer exponent.
+    The output CB is determined by the ttl.store on this op's result.
+  }];
+  let arguments = (ins AnyType:$input, I32Attr:$exponent);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input $exponent attr-dict `:` type($input) `->` type($result)";
+}
+
+def TTL_TilePowerOp : TTL_TileOp<"tile_power", [SameOperandsAndResultType,
+                                                  TTL_DSTInputsTrait,
+                                                  TTL_InPlaceOpTrait]> {
+  let summary = "Tile-level power operation";
+  let description = [{
+    Raises each element of a tile to an integer exponent.
+    Maps to ttkernel.power_tile_init + ttkernel.pow_unary_tile.
+    Operates in-place in DST.
+  }];
+  let arguments = (ins AnyType:$input, I32Attr:$exponent);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input $exponent attr-dict `:` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// Where Operation
+//===----------------------------------------------------------------------===//
+
+def TTL_WhereOp : TTL_Op<"where", [Pure]> {
+  let summary = "Element-wise conditional selection";
+  let description = [{
+    Selects elements from true_value or false_value based on the condition.
+    All three operands must be CB-attached tensors with the same shape.
+    The output CB is determined by the ttl.store on this op's result.
+  }];
+  let arguments = (ins AnyType:$condition, AnyType:$true_value, AnyType:$false_value);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = [{
+    $condition `,` $true_value `,` $false_value attr-dict `:`
+    `(` type($condition) `,` type($true_value) `,` type($false_value) `)` `->` type($result)
+  }];
+}
+
+def TTL_TileWhereOp : TTL_TileOp<"tile_where", [TTL_DSTInputsTrait]> {
+  let summary = "Tile-level conditional selection";
+  let description = [{
+    Element-wise conditional: output = cond ? true_val : false_val.
+    Maps to ttkernel.where_tile_init + ttkernel.where_tile.
+    All operands read from DST.
+  }];
+  let arguments = (ins AnyType:$condition, AnyType:$true_value, AnyType:$false_value);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = [{
+    $condition `,` $true_value `,` $false_value attr-dict `:`
+    `(` type($condition) `,` type($true_value) `,` type($false_value) `)` `->` type($result)
+  }];
 }
 
 // Circular buffer synchronization operations

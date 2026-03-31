@@ -687,16 +687,19 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
 
   // Unlike linalg.generic (which allows arbitrary affine maps), ttl.compute
   // requires projected-permutation indexing maps: each result is a unique
-  // dimension or a constant 0 (broadcast). This is sufficient for all spec
-  // operations (element-wise, broadcast, matmul, reductions, transpose) and
-  // enables downstream tiling and loop lowering to assume a direct
-  // iteration-to-element mapping. Constant-0 results encode broadcast and
-  // require the corresponding tensor dimension to be 1.
+  // dimension or a constant 0 (broadcast/accumulation). This is sufficient for
+  // all spec operations (element-wise, broadcast, matmul, reductions,
+  // transpose) and enables downstream tiling and loop lowering to assume a
+  // direct iteration-to-element mapping. Constant-0 results encode either
+  // broadcast (tensor dim == 1) or accumulation (e.g., matmul K dimension).
+  // For outputs, constant-0 dims must be size 1 (broadcast only). For inputs,
+  // constant-0 dims can be larger (accumulated internally by the tile op).
   // Examples of invalid maps: (d0, d1)->(d0 + d1), (d0, d1)->(1),
   // (d0, d1, d2)->(d0, d0), (d0)[s0]->(d0 + s0).
   auto validateMapStructure =
       [&](AffineMap map, RankedTensorType tensorTy, StringRef kind, size_t idx,
-          SmallVectorImpl<bool> *dimsReferenced) -> mlir::LogicalResult {
+          SmallVectorImpl<bool> *dimsReferenced,
+          bool allowNonUnitBroadcast) -> mlir::LogicalResult {
     if (!map.isProjectedPermutation(/*allowZeroInResults=*/true)) {
       return emitOpError() << kind << " " << idx
                            << " indexing map must be a projected permutation"
@@ -709,7 +712,7 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
         }
       } else if (auto cstExpr =
                      mlir::dyn_cast<mlir::AffineConstantExpr>(expr)) {
-        if (tensorTy.getDimSize(resIdx) != 1) {
+        if (!allowNonUnitBroadcast && tensorTy.getDimSize(resIdx) != 1) {
           return emitOpError() << kind << " " << idx << " broadcast dim "
                                << resIdx << " must have size 1";
         }
@@ -745,7 +748,8 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
       return failure();
     }
     if (failed(validateMapStructure(map, tensorTy, "input", i,
-                                    &dimsReferencedByInputs))) {
+                                    &dimsReferencedByInputs,
+                                    /*allowNonUnitBroadcast=*/true))) {
       return failure();
     }
   }
@@ -766,7 +770,8 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
       return failure();
     }
     if (failed(validateMapStructure(map, tensorTy, "output", i,
-                                    /*dimsReferenced=*/nullptr))) {
+                                    /*dimsReferenced=*/nullptr,
+                                    /*allowNonUnitBroadcast=*/false))) {
       return failure();
     }
 
@@ -860,12 +865,17 @@ mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
                          << ")";
   }
 
-  for (int64_t i = 0; i < tensorTy.getRank(); ++i) {
-    if (tensorTy.getDimSize(i) != viewTy.getDimSize(i)) {
-      return emitOpError() << "tensor shape dimension " << i << " ("
-                           << tensorTy.getDimSize(i)
-                           << ") must match view shape dimension ("
-                           << viewTy.getDimSize(i) << ")";
+  // Allow shape mismatch when the stored value is from a bcast op
+  // (broadcast shape expansion: input CB smaller than output CB).
+  bool isBcast = getTensor().getDefiningOp<BcastOp>() != nullptr;
+  if (!isBcast) {
+    for (int64_t i = 0; i < tensorTy.getRank(); ++i) {
+      if (tensorTy.getDimSize(i) != viewTy.getDimSize(i)) {
+        return emitOpError() << "tensor shape dimension " << i << " ("
+                             << tensorTy.getDimSize(i)
+                             << ") must match view shape dimension ("
+                             << viewTy.getDimSize(i) << ")";
+      }
     }
   }
 

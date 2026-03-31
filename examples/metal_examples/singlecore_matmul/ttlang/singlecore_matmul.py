@@ -41,7 +41,7 @@ def tt_lang_singlecore_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
                 with out_dfb.reserve() as out_blk:
                     for _ in range(Kt):
                         with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
-                            out_blk.store(a_blk @ b_blk, acc=True)
+                            out_blk.store(ttl.math.matmul(a_blk, b_blk), acc=True)
 
     @ttl.datamovement()
     def mm_reader():
@@ -67,9 +67,10 @@ def test_singlecore_matmul_tt_lang():
     """Test singlecore matmul kernel."""
     device = ttnn.open_device(device_id=0)
     M, K, N = 256, 256, 256
-    a = ttnn.rand((M, K), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
-    b = ttnn.rand((K, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
-    c = ttnn.empty((M, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
+    dram = ttnn.DRAM_MEMORY_CONFIG
+    a = ttnn.rand((M, K), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device, memory_config=dram)
+    b = ttnn.rand((K, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device, memory_config=dram)
+    c = ttnn.empty((M, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device, memory_config=dram)
 
     tt_lang_singlecore_matmul(a, b, c)
 

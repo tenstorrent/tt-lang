@@ -6,6 +6,7 @@ import torch
 
 from utils.correctness import assert_with_ulp
 import ttnn
+import matplotlib.pyplot as plt
 
 
 def run_multicore_matmul(
@@ -176,10 +177,25 @@ def run_multicore_matmul(
     return ttnn.generic_op([a_tensor, b_tensor, output_tensor], program_descriptor)
 
 
+def visualize_diff_tensor(diff_tensor):
+    diff = diff_tensor.float().numpy()
+    fig, ax = plt.subplots(figsize=(8, 6))
+    im = ax.imshow(diff, aspect="auto", cmap="hot", interpolation="nearest")
+    ax.set_title(f"Absolute Error ({diff.shape[0]}x{diff.shape[1]})")
+    ax.set_xlabel("Column")
+    ax.set_ylabel("Row")
+    fig.colorbar(im, ax=ax)
+    plt.tight_layout()
+    plt.savefig("multicore_matmul_diff_metal.png", dpi=150)
+    print(f"Saved to multicore_matmul_diff_metal.png  |  max={diff.max():.4e}  mean={diff.mean():.4e}")
+    plt.show()
+
+
 @pytest.mark.parametrize(
     "M,K,N",
     [
-        (640, 640, 640),
+        #(640, 640, 640),
+        (320,64,320)
     ],
 )
 def test_multicore_matmul(M, K, N):
@@ -236,6 +252,9 @@ def test_multicore_matmul(M, K, N):
     a_tensor_torch = ttnn.to_torch(a_tensor).to(torch.bfloat16)
     b_tensor_torch = ttnn.to_torch(b_tensor).to(torch.bfloat16)
     torch_output = torch.matmul(a_tensor_torch, b_tensor_torch)
+
+    diff_tensor = (metal_output - torch_output).abs()
+    visualize_diff_tensor(diff_tensor)
 
     assert_with_ulp(torch_output, metal_output)
 

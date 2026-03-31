@@ -66,7 +66,7 @@ Check `PERF SUMMARY` for DRAM read/write volumes and effective bandwidth.
 
 ### 3. Increase DFB Block Size
 
-Larger DFB shapes (block sizes) mean fewer DMA transfers and better throughput. Keep increasing `shape=(R, C)` on circular buffers until you run out of L1 (~1.5MB per core). This is often a big win.
+Larger DFB shapes (block sizes) mean fewer DMA transfers and better throughput. Keep increasing `shape=(R, C)` on dataflow buffers until you run out of L1 (~1.5MB per core). This is often a big win.
 
 ## Iteration Flow
 

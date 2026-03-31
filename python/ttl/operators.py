@@ -86,8 +86,8 @@ class TensorBlock:
         return ttl.div(ast_self.type, ast_self, rhs)
 
     def __matmul__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
-        """Matrix multiplication is not yet supported in TTL mode."""
-        raise NotImplementedError("Matrix multiplication not yet supported in TTL mode")
+        """Matrix multiplication via @ operator. Equivalent to ttl.math.matmul."""
+        return matmul(ast_self, rhs)
 
     def store(ast_self: TensorBlock, rhs: TensorBlock) -> None:
         """Store result tensor to the output CB reserve view.
@@ -413,15 +413,17 @@ def signpost(name: str):
 
 
 @syntax("broadcast")
-def broadcast(input: TensorBlock, output: TensorBlock, dims: List[int]) -> TensorBlock:
+def broadcast(input: TensorBlock, *, dims: List[int]) -> TensorBlock:
     """
     Broadcast over specified dimensions.
 
     Only 2D tensors are supported for broadcast (hardware constraint).
+    The output CB is determined by the ttl.store on this op's result.
+    For shape expansion (output DFB larger than input DFB), the compiler
+    derives the output shape from the store target.
 
     Args:
         input: Input tensor (CB-attached)
-        output: Output tensor (CB-attached, used for output CB tracking)
         dims: Dimensions to broadcast over
 
     Returns:
@@ -448,7 +450,151 @@ def broadcast(input: TensorBlock, output: TensorBlock, dims: List[int]) -> Tenso
     ctx = input.type.context
     i32_type = IntegerType.get_signless(32, ctx)
     bcast_attr = IntegerAttr.get(i32_type, bcast_val)
-    return ttl.bcast(output.type, input, output, bcast_attr)
+    return ttl.bcast(input.type, input, bcast_attr)
+
+
+@syntax("matmul")
+def matmul(a: TensorBlock, b: TensorBlock) -> TensorBlock:
+    """Matrix multiplication A * B. Both operands must be CB-attached."""
+    a_type = a.type
+    b_type = b.type
+    if isinstance(a_type, RankedTensorType) and isinstance(
+        b_type, RankedTensorType
+    ):
+        out_shape = list(a_type.shape)
+        out_shape[-1] = b_type.shape[-1]
+        result_type = RankedTensorType.get(
+            out_shape, a_type.element_type, a_type.encoding
+        )
+    else:
+        result_type = a_type
+    return ttl.matmul(result_type, a, b)
+
+
+@syntax("transpose")
+def transpose(input: TensorBlock) -> TensorBlock:
+    """Transpose a 2D tensor (swap rows and columns).
+
+    Reads from the input CB, writes result to DST.
+    The output CB is determined by the ttl.store on this op's result.
+    """
+    from ttmlir.ir import RankedTensorType
+
+    input_type = input.type
+    shape = list(input_type.shape)
+    shape[0], shape[1] = shape[1], shape[0]
+    result_type = RankedTensorType.get(
+        shape, input_type.element_type, input_type.encoding
+    )
+    return ttl.transpose(result_type, input)
+
+
+@syntax("reduce_sum")
+def reduce_sum(
+    input: TensorBlock, scaler: TensorBlock, dims: List[int]
+) -> TensorBlock:
+    """Reduce tensor by summing along specified dimensions.
+
+    Args:
+        input: Input tensor (CB-attached)
+        scaler: Scaler tensor for reduction (CB-attached)
+        dims: Dimensions to reduce over - [0] for row, [1] for col, [0, 1] for scalar
+    """
+    from ttmlir.ir import IntegerAttr, IntegerType, RankedTensorType
+
+    dims_set = set(dims)
+    if dims_set == {0}:
+        reduce_dim_val = 0  # Row
+    elif dims_set == {1}:
+        reduce_dim_val = 1  # Col
+    elif dims_set == {0, 1}:
+        reduce_dim_val = 2  # Scalar
+    else:
+        raise ValueError(f"Invalid dims: {dims}. Must be [0], [1], or [0, 1]")
+
+    input_type = input.type
+    in_shape = list(input_type.shape)
+    if reduce_dim_val == 0:  # Row
+        out_shape = [in_shape[0], 1]
+    elif reduce_dim_val == 1:  # Col
+        out_shape = [1, in_shape[1]]
+    else:  # Scalar
+        out_shape = [1, 1]
+    result_type = RankedTensorType.get(
+        out_shape, input_type.element_type, input_type.encoding
+    )
+
+    ctx = input.type.context
+    i32_type = IntegerType.get_signless(32, ctx)
+    reduce_type_attr = IntegerAttr.get(i32_type, 0)  # Sum = 0
+    reduce_dim_attr = IntegerAttr.get(i32_type, reduce_dim_val)
+    return ttl.reduce(
+        result_type, input, scaler, reduce_type_attr, reduce_dim_attr
+    )
+
+
+@syntax("reduce_max")
+def reduce_max(
+    input: TensorBlock, scaler: TensorBlock, dims: List[int]
+) -> TensorBlock:
+    """Reduce tensor by taking max along specified dimensions.
+
+    Args:
+        input: Input tensor (CB-attached)
+        scaler: Scaler tensor for reduction (CB-attached)
+        dims: Dimensions to reduce over - [0] for row, [1] for col, [0, 1] for scalar
+    """
+    from ttmlir.ir import IntegerAttr, IntegerType, RankedTensorType
+
+    dims_set = set(dims)
+    if dims_set == {0}:
+        reduce_dim_val = 0  # Row
+    elif dims_set == {1}:
+        reduce_dim_val = 1  # Col
+    elif dims_set == {0, 1}:
+        reduce_dim_val = 2  # Scalar
+    else:
+        raise ValueError(f"Invalid dims: {dims}. Must be [0], [1], or [0, 1]")
+
+    input_type = input.type
+    in_shape = list(input_type.shape)
+    if reduce_dim_val == 0:  # Row
+        out_shape = [in_shape[0], 1]
+    elif reduce_dim_val == 1:  # Col
+        out_shape = [1, in_shape[1]]
+    else:  # Scalar
+        out_shape = [1, 1]
+    result_type = RankedTensorType.get(
+        out_shape, input_type.element_type, input_type.encoding
+    )
+
+    ctx = input.type.context
+    i32_type = IntegerType.get_signless(32, ctx)
+    reduce_type_attr = IntegerAttr.get(i32_type, 1)  # Max = 1
+    reduce_dim_attr = IntegerAttr.get(i32_type, reduce_dim_val)
+    return ttl.reduce(
+        result_type, input, scaler, reduce_type_attr, reduce_dim_attr
+    )
+
+
+@syntax("power")
+def power(input: TensorBlock, exponent) -> TensorBlock:
+    """Raise tensor elements to an integer power."""
+    from ttmlir.ir import IntegerAttr, IntegerType
+
+    exp_val = _get_constant_int(exponent)
+    ctx = input.type.context
+    i32_type = IntegerType.get_signless(32, ctx)
+    exp_attr = IntegerAttr.get(i32_type, exp_val)
+    return ttl.power(input.type, input, exp_attr)
+
+
+@syntax("where")
+def where(
+    condition: TensorBlock, true_value: TensorBlock, false_value: TensorBlock
+) -> TensorBlock:
+    """Element-wise conditional selection: cond ? true_val : false_val."""
+    return ttl.where(true_value.type, condition, true_value, false_value)
 
 
 __all__ = [
@@ -458,5 +604,11 @@ __all__ = [
     "core",
     "grid_size",
     "signpost",
+    "matmul",
+    "transpose",
+    "reduce_sum",
+    "reduce_max",
+    "power",
+    "where",
     *_generated_all,
 ]
