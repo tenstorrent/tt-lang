@@ -20,7 +20,7 @@ If you have already built the full tt-lang compiler (`source build/env/activate`
 ## Running
 
 ```bash
-./bin/ttlang-sim examples/eltwise_add.py
+ttlang-sim examples/eltwise_add.py
 ```
 
 Run the simulator test suite:

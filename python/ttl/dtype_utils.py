@@ -91,9 +91,9 @@ def ttnn_dtype_to_ttcore_datatype(ttnn_dtype):
         case ttnn.DataType.BFLOAT16:
             return ttcore.DataType.BFloat16
         case ttnn.DataType.BFLOAT8_B:
-            return ttcore.DataType.BFloat16  # Approximate
+            return ttcore.DataType.BFP_BFloat8
         case ttnn.DataType.BFLOAT4_B:
-            return ttcore.DataType.BFloat16  # Approximate
+            return ttcore.DataType.BFP_BFloat4
         case ttnn.DataType.INT32:
             return ttcore.DataType.Int32
         case ttnn.DataType.UINT32:

@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+#
+# TTLANG_HARDWARE_CI: skip-compiler
 # type: ignore
 import math
 
@@ -9,7 +11,7 @@ import ttnn
 from utils.correctness import assert_with_ulp
 
 
-@ttl.kernel(
+@ttl.operation(
     grid="auto",  # NOTE: allow compiler to choose grid
 )
 def eltwise_add(

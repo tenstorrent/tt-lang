@@ -1148,7 +1148,10 @@ def _compile_kernel(
             f"func.func({assign_dst_pass})",
         ]
         if compiler_options.maximize_dst:
-            pipeline_passes.append("func.func(ttl-subblock-compute-for-dst)")
+            subblock_sync = "true" if compiler_options.auto_sync else "false"
+            pipeline_passes.append(
+                f"func.func(ttl-subblock-compute-for-dst{{subblock-sync={subblock_sync}}})"
+            )
         pipeline_passes.append("func.func(ttl-insert-tile-regs-sync)")
         if compiler_options.use_block_matmul:
             pipeline_passes.append("func.func(ttl-lower-matmul-block)")
@@ -1211,6 +1214,9 @@ def _compile_kernel(
             pass
 
         if os.environ.get("TTLANG_VERBOSE_PASSES"):
+            from ttl.version import __version__
+
+            print(f"ttlang {__version__}")
             print("Running custom pipeline:", pm)
             ctx.enable_multithreading(False)
             pm.enable_ir_printing(
@@ -1233,7 +1239,9 @@ def _compile_kernel(
                 first_thread = next(iter(all_source_lines.keys()))
                 source_lines = all_source_lines[first_thread]
                 source_file = all_source_files.get(first_thread)
-            formatted = format_mlir_error(error_msg, source_lines, source_file)
+            from ttl.version import __version__
+
+            formatted = f"ttlang {__version__}\n{format_mlir_error(error_msg, source_lines, source_file)}"
             raise RuntimeError(formatted) from None
 
         final_mlir_path = os.environ.get("TTLANG_FINAL_MLIR")
@@ -1438,12 +1446,12 @@ def pykernel_gen(
 
 
 # Alias for backward compatibility
-kernel = pykernel_gen
+operation = pykernel_gen
 
 
 __all__ = [
     "pykernel_gen",
-    "kernel",
+    "operation",
     "Program",
     "compute",
     "datamovement",

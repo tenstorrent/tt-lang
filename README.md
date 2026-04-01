@@ -27,7 +27,7 @@ git clone https://github.com/tenstorrent/tt-lang.git
 cd tt-lang
 cmake -G Ninja -B build -DTTLANG_SIM_ONLY=ON
 source build/env/activate
-./bin/ttlang-sim examples/eltwise_add.py
+ttlang-sim examples/eltwise_add.py
 ```
 
 To compile and run kernels on Tenstorrent hardware, use a pre-built Docker image. Two images are available:
@@ -65,10 +65,10 @@ docker exec -it $USER-dist /bin/bash
 
 The environment activates automatically on login. Run an example immediately:
 ```bash
-python /opt/ttlang-toolchain/examples/tutorial/multicore_grid_auto.py
+python /opt/ttlang-toolchain/examples/elementwise-tutorial/step_4_multinode_grid_auto.py
 ```
 
-To learn more, work through the [tutorial](docs/sphinx/ttl-tutorial/index.md), explore the [programming guide](docs/sphinx/programming-guide.md) for compiler options, debugging, and performance tools, or use [Claude Code](https://claude.com/claude-code) with the built-in [slash commands](docs/sphinx/claude-skills.md) to translate kernels, profile, and optimize.
+To learn more, take a [tour](docs/sphinx/tour/index.md), explore the [programming guide](docs/sphinx/programming-guide.md) for compiler options, debugging, and performance tools, or use [Claude Code](https://claude.com/claude-code) with the built-in [slash commands](docs/sphinx/claude-skills.md) to translate kernels, profile, and optimize.
 
 ### 2.2 ![ird](https://img.shields.io/badge/ird-blueviolet) Development image (for building tt-lang)
 
@@ -109,7 +109,7 @@ ninja -C build check-ttlang-all
 
 Run an example:
 ```bash
-python examples/tutorial/multicore_grid_auto.py
+python examples/elementwise-tutorial/step_4_multinode_grid_auto.py
 ```
 
 The `-DTTLANG_USE_TOOLCHAIN=ON` flag tells CMake to use the pre-built LLVM and tt-metal from `/opt/ttlang-toolchain` instead of building them from source, which saves significant build time.
@@ -129,7 +129,7 @@ To map a different TT device, change the `--device` argument (e.g., `--device=/d
 tt-lang includes a functional simulator that runs kernels as pure Python, without requiring Tenstorrent hardware or the full compiler stack. Use it to validate kernel logic and debug with any Python debugger:
 
 ```bash
-./bin/ttlang-sim examples/eltwise_add.py
+ttlang-sim examples/eltwise_add.py
 ```
 
 The simulator typically supports more language features than the compiler at any given point — see the [functionality matrix](docs/sphinx/specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current coverage. See the [programming guide](docs/sphinx/simulator.md) for debugger setup and details.
@@ -138,7 +138,7 @@ The simulator typically supports more language features than the compiler at any
 
 Full documentation is built with Sphinx. The source lives in [docs/sphinx/](docs/sphinx/) and covers:
 
-- [Tutorial](docs/sphinx/ttl-tutorial/index.md) — step-by-step examples from single-tile to multinode kernels
+- [Tour of TT-Lang](docs/sphinx/tour/index.md) — an introduction to TT-Lang features
 - [Programming Guide](docs/sphinx/programming-guide.md) — compiler options, print debugging, performance tools
 - [Functional Simulator](docs/sphinx/simulator.md) — run kernels without hardware, debugging setup
 - [Claude Skills](docs/sphinx/claude-skills.md) — AI-assisted kernel translation, profiling, and optimization via [Claude Code](https://claude.com/claude-code)

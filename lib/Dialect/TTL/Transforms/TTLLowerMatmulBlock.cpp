@@ -65,7 +65,7 @@ static LogicalResult validateMatmulDSTCapacity(func::FuncOp func) {
       computeOp.emitOpError()
           << "matmul output " << M << "x" << N << " = " << M * N
           << " tiles exceeds DST capacity of " << dstCapacity
-          << "; automatic subblocking is not yet implemented";
+          << "; enable maximize_dst to auto-subblock";
       hadError = true;
     }
   });
@@ -121,7 +121,10 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
     int64_t M = outType.getDimSize(0);
     int64_t N = outType.getDimSize(1);
 
-    // Find the store view for tile_stores.
+    // Get the store view from the body's tile_store. For non-subblocked
+    // computes, this is the cb_reserve result. For subblocked computes,
+    // this is the per-subblock cb_reserve result (inside the subblock
+    // loop), which has the subblock shape for correct local linearization.
     SmallVector<TileStoreOp> stores;
     computeOp.getBody().walk(
         [&](TileStoreOp store) { stores.push_back(store); });

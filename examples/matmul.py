@@ -12,7 +12,7 @@ import torch
 from sim import ttl, ttnn
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def matmul_with_bias(
     A: ttnn.Tensor,
     B: ttnn.Tensor,

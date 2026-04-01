@@ -27,7 +27,7 @@ from ttlang_test_utils import assert_allclose, to_dram
 TILE = 32
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def matmul_acc_kernel(a, b, out):
     Mt = a.shape[0] // TILE
     Kt = a.shape[1] // TILE
@@ -86,7 +86,7 @@ def matmul_acc_kernel(a, b, out):
             tx.wait()
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def matmul_fused_acc_kernel(a, b, out):
     """Fused accumulation: prev + a @ b folds into copy_tile + matmul_block."""
     Mt = a.shape[0] // TILE
@@ -207,7 +207,7 @@ def test_matmul_accumulate_fused(Mt, Kt, Nt, pack_opts, device):
 # =============================================================================
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def matmul_bcast_bias_kernel(a, b, bias, out):
     """Matmul with column-broadcast bias: Y[Mt,Nt] = (A @ B) + bcast(bias[1,Nt])."""
     Mt = a.shape[0] // TILE
@@ -353,7 +353,7 @@ def test_matmul_distinct_tiles(device):
 # =============================================================================
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def matmul_fused_acc_blocked_kernel(a, b, out):
     """Fused accumulation with 1x1 output blocks and outer M/N/K loops."""
     Mt = a.shape[0] // TILE
@@ -444,7 +444,7 @@ def test_matmul_fused_acc_blocked(Mt, Kt, Nt, pack_opts, device):
 # =============================================================================
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def matmul_relu_kernel(a, b, out):
     """Post-matmul relu: relu(a @ b) fuses into matmul_block + relu_tile."""
     Mt = a.shape[0] // TILE
@@ -546,7 +546,7 @@ def test_matmul_relu(Mt, Kt, Nt, pack_opts, device):
 # =============================================================================
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def matmul_add_relu_kernel(a, b, c, out):
     """relu((a @ b) + c) as a single fused expression."""
     Mt = a.shape[0] // TILE

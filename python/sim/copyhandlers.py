@@ -212,15 +212,23 @@ class TensorToBlockHandler:
 
     def validate(self, src: Tensor, dst: Block) -> None:
         from .dfb import tile_count_from_tensor
+        from .ttnnsim import check_count_match
         import math
 
-        src_tiles = tile_count_from_tensor(src)
-        dst_tiles = math.prod(dst.shape)
-        if src_tiles != dst_tiles:
+        if src.layout != dst.layout:
             raise ValueError(
-                f"Tensor shape {src.shape} does not match Block shape {dst.shape} "
-                f"(tile counts: {src_tiles} vs {dst_tiles})"
+                f"Layout mismatch in Tensor -> Block copy: "
+                f"source tensor has layout {src.layout.name}, "
+                f"but block has layout {dst.layout.name}"
             )
+
+        check_count_match(
+            tile_count_from_tensor(src),
+            math.prod(dst.shape),
+            src.layout,
+            f"Tensor shape {src.shape}",
+            f"Block shape {dst.shape}",
+        )
 
     def transfer(self, src: Tensor, dst: Block) -> None:
         """Transfer tensor data into Block."""
@@ -237,15 +245,23 @@ class BlockToTensorHandler:
 
     def validate(self, src: Block, dst: Tensor) -> None:
         from .dfb import tile_count_from_tensor
+        from .ttnnsim import check_count_match
         import math
 
-        src_tiles = math.prod(src.shape)
-        dst_tiles = tile_count_from_tensor(dst)
-        if src_tiles != dst_tiles:
+        if src.layout != dst.layout:
             raise ValueError(
-                f"Block shape {src.shape} does not match Tensor shape {dst.shape} "
-                f"(tile counts: {src_tiles} vs {dst_tiles})"
+                f"Layout mismatch in Block -> Tensor copy: "
+                f"source block has layout {src.layout.name}, "
+                f"but destination tensor has layout {dst.layout.name}"
             )
+
+        check_count_match(
+            math.prod(src.shape),
+            tile_count_from_tensor(dst),
+            src.layout,
+            f"Block shape {src.shape}",
+            f"Tensor shape {dst.shape}",
+        )
 
     def transfer(self, src: Block, dst: Tensor) -> None:
         """Transfer Block data into tensor."""

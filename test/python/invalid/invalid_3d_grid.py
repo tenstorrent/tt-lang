@@ -22,10 +22,10 @@ import ttl
 # CHECK: ValueError: Only 2D grids supported, got grid (1, 1, 1)
 # CHECK-NEXT:   --> {{.*}}invalid_3d_grid.py:[[LINE:[0-9]+]]:1
 # CHECK-NEXT:    |
-# CHECK-NEXT: [[LINE]] | @ttl.kernel(grid=(1, 1, 1))
+# CHECK-NEXT: [[LINE]] | @ttl.operation(grid=(1, 1, 1))
 # CHECK-NEXT:    | ^
 # CHECK-NEXT:    |
-@ttl.kernel(grid=(1, 1, 1))
+@ttl.operation(grid=(1, 1, 1))
 def invalid_3d_grid_kernel(lhs, rhs, out):
     """This kernel should fail because 3D grids are not supported."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)

@@ -24,7 +24,7 @@ import ttnn
 import ttl
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def add_loop_kernel(lhs, rhs, out):
     """Add kernel with loop in compute to accumulate results."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)

@@ -30,7 +30,7 @@ TILE_SIZE = 32
 GRANULARITY = 4
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def bcast_multitile_kernel(
     a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
 ):

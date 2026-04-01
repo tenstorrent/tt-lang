@@ -26,7 +26,7 @@ except ImportError:
     exit(0)
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def fused_chain_kernel(a, b, c, out):
     """Kernel with 20 chained ops - deep fusion test."""
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)

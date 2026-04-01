@@ -118,16 +118,15 @@ func.func @tile_binary_1x8(
 // TILED-NEXT:   %[[C1:.*]] = arith.constant 1 : index
 // TILED-NEXT:   scf.for %[[IV:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
 // TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [1, 8] [1, 1] : tensor<2x8x!ttcore.tile<32x32, f32>> to tensor<1x8x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [1, 8] [1, 1] : tensor<2x8x!ttcore.tile<32x32, f32>> to tensor<1x8x!ttcore.tile<32x32, f32>>
+// TILED-NEXT:     %[[OUT_SLICE_A:.*]] = tensor.extract_slice {{.*}}[%[[IV]], 0] [1, 8] [1, 1] : tensor<2x8x!ttcore.tile<32x32, f32>> to tensor<1x8x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:     {{.*}} = ttl.compute
 // TILED-SAME:     tensor<1x8x!ttcore.tile<32x32, f32>>
 // TILED-SAME:     ttl.full_linearization_strides
 // TILED:            %[[I_DIM0_A:.*]] = ttl.iter_index 0 : index
-// TILED:            %[[I_DIM0_A_OFFSETTED:.*]] = arith.addi %[[I_DIM0_A]], %[[IV]]
 // TILED:            %[[I_DIM1_A:.*]] = ttl.iter_index 1 : index
-// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_A_OFFSETTED]], %[[I_DIM1_A]]], %{{.*}}
+// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_A]], %[[I_DIM1_A]]], %{{.*}}
 // TILED:            ttl.tile_exp
-// TILED:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_A_OFFSETTED]], %[[I_DIM1_A]]]
+// TILED:            ttl.tile_store %{{.*}}, %[[OUT_SLICE_A]][%[[I_DIM0_A]], %[[I_DIM1_A]]]
 // TILED-NEXT:       ttl.yield
 // TILED-NEXT:     } -> tensor<1x8x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:   } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 8 : index}
@@ -221,16 +220,15 @@ func.func @no_subblocking_multidim(%a: tensor<2x4x!ttcore.tile<32x32, f32>>)
 // TILED-NEXT:   %[[C2:.*]] = arith.constant 2 : index
 // TILED-NEXT:   scf.for %[[IV:.*]] = %[[C0]] to %[[C4]] step %[[C2]] {
 // TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [2, 4] [1, 1] : tensor<4x4x!ttcore.tile<32x32, f32>> to tensor<2x4x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [2, 4] [1, 1] : tensor<4x4x!ttcore.tile<32x32, f32>> to tensor<2x4x!ttcore.tile<32x32, f32>>
+// TILED-NEXT:     %[[OUT_SLICE_B:.*]] = tensor.extract_slice {{.*}}[%[[IV]], 0] [2, 4] [1, 1] : tensor<4x4x!ttcore.tile<32x32, f32>> to tensor<2x4x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:     {{.*}} = ttl.compute
 // TILED-SAME:     tensor<2x4x!ttcore.tile<32x32, f32>>
 // TILED-SAME:     ttl.full_linearization_strides
 // TILED:            %[[I_DIM0_B:.*]] = ttl.iter_index 0 : index
-// TILED:            %[[I_DIM0_B_OFFSETTED:.*]] = arith.addi %[[I_DIM0_B]], %[[IV]]
 // TILED:            %[[I_DIM1_B:.*]] = ttl.iter_index 1 : index
-// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_B_OFFSETTED]], %[[I_DIM1_B]]], %{{.*}}
+// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_B]], %[[I_DIM1_B]]], %{{.*}}
 // TILED:            ttl.tile_exp
-// TILED:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_B_OFFSETTED]], %[[I_DIM1_B]]]
+// TILED:            ttl.tile_store %{{.*}}, %[[OUT_SLICE_B]][%[[I_DIM0_B]], %[[I_DIM1_B]]]
 // TILED-NEXT:       ttl.yield
 // TILED-NEXT:     } -> tensor<2x4x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:   } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 4 : index}
@@ -329,16 +327,15 @@ func.func @no_subblocking_binary(
 // TILED-NEXT:   %[[C1:.*]] = arith.constant 1 : index
 // TILED-NEXT:   scf.for %[[IV:.*]] = %[[C0]] to %[[C3]] step %[[C1]] {
 // TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [1, 3] [1, 1] : tensor<3x3x!ttcore.tile<32x32, f32>> to tensor<1x3x!ttcore.tile<32x32, f32>>
-// TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [1, 3] [1, 1] : tensor<3x3x!ttcore.tile<32x32, f32>> to tensor<1x3x!ttcore.tile<32x32, f32>>
+// TILED-NEXT:     %[[OUT_SLICE_C:.*]] = tensor.extract_slice {{.*}}[%[[IV]], 0] [1, 3] [1, 1] : tensor<3x3x!ttcore.tile<32x32, f32>> to tensor<1x3x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:     {{.*}} = ttl.compute
 // TILED-SAME:     tensor<1x3x!ttcore.tile<32x32, f32>>
 // TILED-SAME:     ttl.full_linearization_strides
 // TILED:            %[[I_DIM0_C:.*]] = ttl.iter_index 0 : index
-// TILED:            %[[I_DIM0_C_OFFSETTED:.*]] = arith.addi %[[I_DIM0_C]], %[[IV]]
 // TILED:            %[[I_DIM1_C:.*]] = ttl.iter_index 1 : index
-// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_C_OFFSETTED]], %[[I_DIM1_C]]], %{{.*}}
+// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_C]], %[[I_DIM1_C]]], %{{.*}}
 // TILED:            ttl.tile_exp
-// TILED:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_C_OFFSETTED]], %[[I_DIM1_C]]]
+// TILED:            ttl.tile_store %{{.*}}, %[[OUT_SLICE_C]][%[[I_DIM0_C]], %[[I_DIM1_C]]]
 // TILED-NEXT:       ttl.yield
 // TILED-NEXT:     } -> tensor<1x3x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:   } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 3 : index}
@@ -400,22 +397,20 @@ func.func @tile_multidim_remainder_3x3(%a: tensor<3x3x!ttcore.tile<32x32, f32>>)
 // B: col broadcast map -- broadcast dim (col) keeps original size 1.
 // BCAST-TILED-NEXT:       {{.*}} = tensor.extract_slice {{.*}}[%[[IV0]], 0] [1, 1] [1, 1] : tensor<4x1x!ttcore.tile<32x32, f32>> to tensor<1x1x!ttcore.tile<32x32, f32>>
 // Output: identity map, 1x2 subblock slice.
-// BCAST-TILED-NEXT:       {{.*}} = tensor.extract_slice {{.*}}[%[[IV0]], %[[IV1]]] [1, 2] [1, 1] : tensor<4x4x!ttcore.tile<32x32, f32>> to tensor<1x2x!ttcore.tile<32x32, f32>>
+// BCAST-TILED-NEXT:       %[[OUT_SLICE_BC:.*]] = tensor.extract_slice {{.*}}[%[[IV0]], %[[IV1]]] [1, 2] [1, 1] : tensor<4x4x!ttcore.tile<32x32, f32>> to tensor<1x2x!ttcore.tile<32x32, f32>>
 // Tiled compute has broadcast-aware operand shapes.
 // BCAST-TILED-NEXT:       {{.*}} = ttl.compute
 // BCAST-TILED-SAME:       tensor<1x2x!ttcore.tile<32x32, f32>>
 // BCAST-TILED-SAME:       tensor<1x1x!ttcore.tile<32x32, f32>>
 // BCAST-TILED-SAME:       ttl.full_linearization_strides
 // BCAST-TILED:              %[[I_DIM0:.*]] = ttl.iter_index 0 : index
-// BCAST-TILED:              %[[I_DIM0_OFFSETTED:.*]] = arith.addi %[[I_DIM0]], %[[IV0]]
 // BCAST-TILED:              %[[I_DIM1:.*]] = ttl.iter_index 1 : index
-// BCAST-TILED:              %[[I_DIM1_OFFSETTED:.*]] = arith.addi %[[I_DIM1]], %[[IV1]]
-// Identity-map input: both dims with offset.
-// BCAST-TILED:              ttl.copy_tile %{{.*}}[%[[I_DIM0_OFFSETTED]], %[[I_DIM1_OFFSETTED]]], %{{.*}}
-// Col-broadcast input (map (d0,d1)->(d0,0)): d0 with offset, d1 constant 0.
-// BCAST-TILED:              ttl.copy_tile %{{.*}}[%[[I_DIM0_OFFSETTED]], %{{.*}}], %{{.*}}
+// Identity-map input: both dims with local coordinates.
+// BCAST-TILED:              ttl.copy_tile %{{.*}}[%[[I_DIM0]], %[[I_DIM1]]], %{{.*}}
+// Col-broadcast input (map (d0,d1)->(d0,0)): d0 local, d1 constant 0.
+// BCAST-TILED:              ttl.copy_tile %{{.*}}[%[[I_DIM0]], %{{.*}}], %{{.*}}
 // BCAST-TILED:              ttl.tile_add
-// BCAST-TILED:              ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_OFFSETTED]], %[[I_DIM1_OFFSETTED]]]
+// BCAST-TILED:              ttl.tile_store %{{.*}}, %[[OUT_SLICE_BC]][%[[I_DIM0]], %[[I_DIM1]]]
 // BCAST-TILED-NEXT:         ttl.yield
 // BCAST-TILED-NEXT:       } -> tensor<1x2x!ttcore.tile<32x32, f32>>
 // BCAST-TILED:          } {ttl.subblock_dim = 1 : index, ttl.subblock_loop_stride

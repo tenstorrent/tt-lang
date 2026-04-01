@@ -96,7 +96,7 @@ export TT_METAL_HOME=/workspace/tt-mlir/third_party/tt-metal/src/tt-metal
 export TT_METAL_DEVICE_PROFILER=1
 export TT_METAL_PROFILER_MID_RUN_DUMP=1
 export TTLANG_AUTO_PROFILE=1
-python examples/tutorial/multinode_grid_auto.py
+python examples/elementwise-tutorial/step_4_multinode_grid_auto.py
 ```
 
 **Sample output:**

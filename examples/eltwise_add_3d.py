@@ -10,9 +10,9 @@ GRANULARITY = 2
 BATCH_GRANULARITY = 2  # Number of batch elements per block
 
 
-@ttl.kernel(grid="auto")
+@ttl.operation(grid="auto")
 def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
-    """Element-wise addition kernel for 3D tensors (batch, rows, cols).
+    """Element-wise addition TT-Lang operation for 3D tensors (batch, rows, cols).
 
     Processes tensors with shape (batch_size, height, width) using 3D blocks.
     The batch, row, and column dimensions are all processed in blocks, with

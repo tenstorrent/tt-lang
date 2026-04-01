@@ -7,16 +7,15 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-subblock-compute-for-dst))' | FileCheck %s --check-prefix=SUBBLOCK
 
 // SUBBLOCK-LABEL: func.func @remainder_3x3
-// Verify outer subblock loop. Inner compute has iter_index ops with subblock
-// offset (arith.addi) for the subblocked dimension (d0). The non-subblocked
-// dimension (d1) has a plain iter_index.
+// Verify outer subblock loop. iter_index ops produce local subblock coordinates
+// directly (no arith.addi offset). tile_store views reference extract_slice of
+// the attach_cb result.
 // SUBBLOCK:        scf.for %[[SB_IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}}
 // SUBBLOCK:          ttl.compute
 // SUBBLOCK:            %[[I_DIM0:.*]] = ttl.iter_index 0 : index
-// SUBBLOCK:            %[[I_DIM0_OFFSETTED:.*]] = arith.addi %[[I_DIM0]], %[[SB_IV]] : index
-// SUBBLOCK:            %[[I_DIM1:.*]] = ttl.iter_index 1 : index
-// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_OFFSETTED]], %[[I_DIM1]]], %{{.*}}
-// SUBBLOCK:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_OFFSETTED]], %[[I_DIM1]]]
+// SUBBLOCK-NEXT:       %[[I_DIM1:.*]] = ttl.iter_index 1 : index
+// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0]], %[[I_DIM1]]], %{{.*}}
+// SUBBLOCK:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0]], %[[I_DIM1]]]
 // SUBBLOCK:        } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 3 : index}
 
 module {

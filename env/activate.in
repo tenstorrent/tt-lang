@@ -35,7 +35,7 @@ export LLVM_INSTALL_DIR="@LLVM_INSTALL_DIR@"
 # Add build tools, LLVM tools, and venv to PATH.
 # The venv bin is added explicitly because the venv's own activate script
 # hardcodes the original creation path, which may be stale after relocation.
-export PATH="@CMAKE_BINARY_DIR@/bin:${LLVM_INSTALL_DIR}/bin:@TTLANG_PYTHON_VENV@/bin:$PATH"
+export PATH="@CMAKE_BINARY_DIR@/bin:${TT_LANG_HOME}/bin:${LLVM_INSTALL_DIR}/bin:@TTLANG_PYTHON_VENV@/bin:$PATH"
 
 # Python packages: built MLIR + tt-mlir + ttlang bindings, plus source trees.
 export PYTHONPATH="\

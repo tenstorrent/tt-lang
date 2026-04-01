@@ -36,7 +36,7 @@ def tiles_to_tensor_shape(tile_rows: int, tile_cols: int) -> tuple[int, int]:
 ADD_KERNEL_TEMPLATE = '''
 import ttl
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def tile_loop_kernel(inp, bias, out):
     """Kernel that loops over all tiles, adding bias to each."""
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
@@ -75,7 +75,7 @@ def tile_loop_kernel(inp, bias, out):
 FUSED_KERNEL_TEMPLATE = '''
 import ttl
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def fused_kernel(inp, bias, out):
     """Kernel that computes ttl.math.exp(inp) + ttl.math.sqrt(bias) - fuses 3 ops."""
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)

@@ -30,7 +30,7 @@ except ImportError:
     exit(0)
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def add_with_kernel(lhs, rhs, out):
     """Add kernel using 'with' pattern for automatic DFB lifecycle."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)

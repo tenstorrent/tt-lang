@@ -24,7 +24,7 @@ import ttl
 
 # CHECK: error: push() must be called on a block acquired from reserve(), not a regular tensor
 # CHECK-NEXT:   --> {{.*}}invalid_push_pop_on_tensor.py:41:{{[0-9]+}}
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def invalid_push_kernel(lhs, rhs, out):
     """This kernel should fail because push() is called on a non-block tensor."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)

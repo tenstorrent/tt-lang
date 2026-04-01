@@ -7,7 +7,7 @@ git clone https://github.com/tenstorrent/tt-lang.git
 cd tt-lang
 cmake -G Ninja -B build -DTTLANG_SIM_ONLY=ON
 source build/env/activate
-./bin/ttlang-sim examples/eltwise_add.py
+ttlang-sim examples/eltwise_add.py
 ```
 
 To compile and run kernels on hardware, use a pre-built Docker image or build from source as described below.
@@ -42,7 +42,7 @@ docker exec -it $USER-dist /bin/bash
 The environment activates automatically on login. Run an example immediately:
 
 ```bash
-python /opt/ttlang-toolchain/examples/tutorial/multicore_grid_auto.py
+python /opt/ttlang-toolchain/examples/elementwise-tutorial/step_4_multinode_grid_auto.py
 ```
 
 ### Building from source (ird image)
@@ -77,7 +77,7 @@ Verify the build and run an example:
 
 ```bash
 ninja -C build check-ttlang-all
-python examples/tutorial/multicore_grid_auto.py
+python examples/elementwise-tutorial/step_4_multinode_grid_auto.py
 ```
 
 ## Building without Docker
@@ -114,7 +114,7 @@ CMake options.
 tt-lang includes a functional simulator that runs kernels as pure Python without requiring Tenstorrent hardware or the full compiler stack. Use it to validate kernel logic and debug with any Python debugger:
 
 ```bash
-./bin/ttlang-sim examples/eltwise_add.py
+ttlang-sim examples/eltwise_add.py
 python -m pytest test/sim/
 ```
 
@@ -130,7 +130,7 @@ The simulator typically supports more language features than the compiler at any
 
 ## Next steps
 
-- Work through the [tutorial](ttl-tutorial/index.md) for step-by-step examples
+- Take a [tour](tour/index.md) to get an introduction to TT-Lang features
   from single-tile to multinode kernels
 - Read the [programming guide](programming-guide.md) for compiler options, print
   debugging, and performance tools

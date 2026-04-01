@@ -13,7 +13,7 @@ Most examples can be run with the tt-lang simulator, which doesn't require hardw
 source build/env/activate
 
 # Run any example with the simulator
-python -m sim.ttlang_sim examples/<example_name>.py
+ttlang-sim examples/<example_name>.py
 ```
 
 ### On Hardware
@@ -58,12 +58,12 @@ python examples/<example_name>.py
 
 ### Error Examples (Negative Tests)
 
-These examples intentionally fail to demonstrate error handling:
+The `errors/` subdirectory contains examples with intentionally incorrect code. They demonstrate how the simulator reports common mistakes.
 
 | Example | Description | Expected Error |
 |---------|-------------|----------------|
-| `eltwise_add_error.py` | Shape mismatch in copy operation | "Tensor shape does not match Block shape" |
-| `copy_lock_error.py` | Block access before wait() completes | "Cannot write to Block: Block has no access" |
+| `errors/eltwise_add_error.py` | Shape mismatch in copy operation | "Tensor shape does not match Block shape" |
+| `errors/copy_lock_error.py` | Block access before wait() completes | "Cannot write to Block: Block has no access" |
 
 ## Metal Examples
 

@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+#
+# TTLANG_HARDWARE_CI: skip-compiler
 """Test: how many CBs can we allocate?"""
 import torch
 import numpy as np
@@ -10,7 +12,7 @@ import ttl
 TILE = 32
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def test_many_cbs(inp, out):
     cb0 = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
     cb1 = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
