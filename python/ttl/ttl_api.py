@@ -771,7 +771,7 @@ def _collect_captures(
         return {}
 
     def convert(name, val):
-        if isinstance(val, int):
+        if isinstance(val, (int, float)):
             return val
         elif is_ttnn_tensor(val):
             return val

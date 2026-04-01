@@ -186,6 +186,10 @@ static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *sourceOp,
   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
+  // FillOp: no tile operands, just a value attribute.
+  if (auto fillOp = dyn_cast<FillOp>(sourceOp))
+    return b.create<TileFillOp>(loc, tileType, fillOp.getValueAttr());
+
   return nullptr;
 }
 
@@ -429,10 +433,18 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   insertAtLastStore(rewriter, sinkOp);
 
   // Create init tensors and attach to output CBs.
+  // Use the first root input as exemplar for dynamic dims. For fill-only
+  // chains with no root inputs, use tensor.empty directly (static shapes).
   SmallVector<Value> allInitAttached;
   SmallVector<Type> resultTypes;
   for (Value outCb : outCbs) {
-    Value init = buildInitTensor(rewriter, loc, type, trace.rootInputs[0]);
+    Value init =
+        trace.rootInputs.empty()
+            ? rewriter
+                  .create<tensor::EmptyOp>(loc, type.getShape(),
+                                            type.getElementType())
+                  .getResult()
+            : buildInitTensor(rewriter, loc, type, trace.rootInputs[0]);
     Value initAttached =
         AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
     allInitAttached.push_back(initAttached);
@@ -1341,6 +1353,74 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Fill Lowering
+//===----------------------------------------------------------------------===//
+
+struct LowerFillToCompute : OpRewritePattern<FillOp> {
+  using OpRewritePattern<FillOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(FillOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = getTensorType(op.getResult());
+    if (!type) {
+      return failure();
+    }
+
+    SmallVector<Value> outCbs = collectOutputCBs(op);
+    if (outCbs.empty()) {
+      return rewriter.notifyMatchFailure(
+          op, "fill requires a store to determine output CB");
+    }
+
+    Location loc = op.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    AffineMap identityMap =
+        AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
+    SmallVector<Attribute> maps;
+    for (size_t i = 0; i < outCbs.size(); ++i) {
+      maps.push_back(AffineMapAttr::get(identityMap));
+    }
+
+    SmallVector<Attribute> iterTypes(type.getRank(),
+                                     rewriter.getStringAttr("parallel"));
+
+    insertAtLastStore(rewriter, op);
+
+    // Static shapes only for fill (no exemplar needed for dynamic dims).
+    SmallVector<Value> allInitAttached;
+    SmallVector<Type> resultTypes;
+    for (Value outCb : outCbs) {
+      Value init = rewriter.create<tensor::EmptyOp>(loc, type.getShape(),
+                                                     type.getElementType());
+      Value initAttached =
+          AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
+      allInitAttached.push_back(initAttached);
+      resultTypes.push_back(type);
+    }
+
+    auto computeOp = ComputeOp::create(
+        rewriter, loc, TypeRange(resultTypes), ValueRange{},
+        ValueRange(allInitAttached), rewriter.getArrayAttr(maps),
+        rewriter.getArrayAttr(iterTypes));
+
+    Block *body = rewriter.createBlock(&computeOp.getBody());
+    Type tileType = ttcore::TileType::get(type.getElementType());
+    for (size_t i = 0; i < outCbs.size(); ++i) {
+      body->addArgument(tileType, loc);
+    }
+
+    rewriter.setInsertionPointToStart(body);
+    Value result =
+        rewriter.create<TileFillOp>(loc, tileType, op.getValueAttr());
+    emitTileStores(rewriter, loc, result, op);
+    YieldOp::create(rewriter, loc);
+    rewriter.replaceOp(op, computeOp.getResults());
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Transpose Lowering
 //===----------------------------------------------------------------------===//
 
@@ -1439,6 +1519,7 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
   patterns.add<LowerMatmulToCompute>(ctx);
   patterns.add<LowerReduceToCompute>(ctx);
   patterns.add<LowerTransposeToCompute>(ctx);
+  patterns.add<LowerFillToCompute>(ctx);
   patterns.add<LowerStoreToCompute>(ctx);
 }
 
