@@ -426,6 +426,17 @@ class TTLGenericCompiler(TTCompilerBase):
                 node, f"constant type {type(node.value).__name__} not implemented"
             )
 
+    def visit_UnaryOp(self, node):
+        # Fold -float_literal to a negative float constant instead of emitting
+        # emitc.unary_minus on a positive constant.
+        if isinstance(node.op, ast.USub) and isinstance(node.operand, ast.Constant):
+            if isinstance(node.operand.value, float):
+                neg_node = ast.copy_location(
+                    ast.Constant(value=-node.operand.value), node
+                )
+                return self.visit_Constant(neg_node)
+        return super().visit_UnaryOp(node)
+
     def _signed_int_literal(self, elt: ast.AST) -> Optional[int]:
         """Fold a signed integer literal (e.g. ``-1`` in ``dims=[-1]``).
 
