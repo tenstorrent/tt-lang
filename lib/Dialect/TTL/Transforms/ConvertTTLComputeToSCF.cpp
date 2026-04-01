@@ -301,7 +301,9 @@ static scf::LoopNest generateAccumulatingLoops(
           }
 
           size_t numInputs = op.getInputs().size();
-          size_t outputIdx = 0; // TODO: multi-output stores
+          assert(op.getOutputs().size() == 1 &&
+                 "multi-output accumulating computes not yet supported");
+          size_t outputIdx = 0;
           SmallVector<Value> storeIndices =
               applyIndexingMap(storeBuilder, parLoc,
                                indexingMaps[numInputs + outputIdx], fullIVs);

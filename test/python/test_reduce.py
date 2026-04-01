@@ -1641,8 +1641,8 @@ def reduce_bcast_type_kernel(inp, scaler, out):
         ((1, 1), [0, 1], (1, 2), "scalar_1x1_to_1x2"),
         ((2, 2), [0, 1], (2, 1), "scalar_2x2_to_2x1"),
         ((2, 2), [0, 1], (1, 2), "scalar_2x2_to_1x2"),
-        ((2, 2), [0], (2, 1), "row_reduce_2x2_to_2x1"),
-        ((2, 2), [1], (1, 2), "col_reduce_2x2_to_1x2"),
+        ((2, 2), [0, 1], (2, 1), "scalar_2x2_to_2x1_bcast_row"),
+        ((2, 2), [0, 1], (1, 2), "scalar_2x2_to_1x2_bcast_col"),
     ],
     ids=[
         "scalar_1x1_to_1x1",
@@ -1651,8 +1651,8 @@ def reduce_bcast_type_kernel(inp, scaler, out):
         "scalar_1x1_to_1x2",
         "scalar_2x2_to_2x1",
         "scalar_2x2_to_1x2",
-        "row_reduce_2x2_to_2x1",
-        "col_reduce_2x2_to_1x2",
+        "scalar_2x2_to_2x1_bcast_row",
+        "scalar_2x2_to_1x2_bcast_col",
     ],
 )
 def test_reduce_bcast_type(device, inp_shape, bcast_dims, out_shape, test_id):

@@ -789,67 +789,81 @@ static AffineMap buildBcastInputMap(MLIRContext *ctx, bool expandRows,
   return AffineMap::getMultiDimIdentityMap(2, ctx);
 }
 
-static ttkernel::ReduceDim computeReduceDim(ArrayRef<int64_t> dims,
-                                            int64_t rank);
+static FailureOr<ttkernel::ReduceDim> computeReduceDim(ArrayRef<int64_t> dims,
+                                                       int64_t rank);
 
 /// Trace whether the value feeding a broadcast came from a reduction through
 /// a CB push/wait cycle, and if so return which reduce dimension was used.
 ///
 /// Follows the chain:
-///   bcast input → attach_cb → cb_wait [CB] ← cb_push ← store ← reduce
-/// and returns the ReduceDim of the producing reduce.  Returns failure when
-/// the chain cannot be traced (CB not found, multiple stores to the CB, the
-/// stored value is not from a ReduceOp, etc.).
+///   bcast input -> attach_cb -> cb_wait [CB] <- cb_push <- store <- reduce
+/// and returns the ReduceDim of the producing reduce.
 ///
-/// This is used to select the correct hardware BroadcastType, because each
-/// reduce dimension leaves valid data at different positions within the
-/// 32x32 tile (tt-metal llk_unpack_AB.h L72-114):
-///   REDUCE_SCALAR → element [0,0]
-///   REDUCE_COL    → row 0 (all 32 element-columns)
-///   REDUCE_ROW    → column 0 (all 32 element-rows)
-/// The broadcast type must match: SCALAR bcast reads [0,0], ROW bcast reads
-/// row 0, COL bcast reads column 0.  A mismatch replicates garbage (#444).
-/// https://github.com/tenstorrent/tt-metal/blob/beccdb232e/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/llk_lib/llk_unpack_AB.h#L72-L114
+/// The correct hardware BroadcastType depends on the tile data layout left
+/// by the producing reduce (tt-metal llk_unpack_AB.h L72-114):
+///   REDUCE_SCALAR -> valid data at element [0,0]
+///   REDUCE_COL    -> valid data in row 0
+///   REDUCE_ROW    -> valid data in column 0
+/// The frontend sets BcastType based on broadcast dims alone. This function
+/// provides the reduce dim so the lowering can select the correct hardware
+/// unpack type. A mismatch replicates garbage (#444).
 ///
-/// TODO: this tracing is robust, but definitely not a great long-term solution.
-/// We should look for a better way to manage this.
-static FailureOr<ttkernel::ReduceDim> getInputReduceDim(Value bcastInput) {
+/// TODO(#449): replace this tracing with a structured approach (e.g.,
+/// propagate reduce dim as an attribute during lowering).
+///
+/// Returns:
+///   - std::nullopt: no reduce feeds this broadcast (no adjustment needed)
+///   - ReduceDim value: successfully traced the producing reduce
+///   - failure(): a reduce was found but the tracing is broken (caller
+///     should emit an error)
+static FailureOr<std::optional<ttkernel::ReduceDim>>
+getInputReduceDim(Value bcastInput) {
   Value cb = getAttachedCB(bcastInput);
   if (!cb) {
-    return failure();
+    return std::optional<ttkernel::ReduceDim>(std::nullopt);
   }
 
-  // Find the unique store to this CB in the enclosing block.
+  // Find the unique store to this CB in the enclosing function.  Walking the
+  // function rather than just the immediate block handles cases where the
+  // store is inside a nested region (e.g., nested with-stmt scopes).
   StoreOp foundStore;
-  auto *parentBlock = bcastInput.getDefiningOp()->getBlock();
-  for (auto &parentOp : *parentBlock) {
-    auto storeOp = dyn_cast<StoreOp>(&parentOp);
-    if (!storeOp) {
-      continue;
-    }
-    if (getAttachedCB(storeOp.getView()) != cb) {
-      continue;
+  bool ambiguous = false;
+  auto enclosingFunc =
+      bcastInput.getDefiningOp()->getParentOfType<func::FuncOp>();
+  if (!enclosingFunc) {
+    return std::optional<ttkernel::ReduceDim>(std::nullopt);
+  }
+  enclosingFunc.walk([&](StoreOp storeOp) {
+    if (ambiguous || getAttachedCB(storeOp.getView()) != cb) {
+      return;
     }
     if (foundStore) {
-      return failure(); // Multiple stores to same CB — ambiguous.
+      ambiguous = true;
+      return;
     }
     foundStore = storeOp;
-  }
+  });
   if (!foundStore) {
+    return std::optional<ttkernel::ReduceDim>(std::nullopt);
+  }
+  if (ambiguous) {
     return failure();
   }
 
   auto reduceOp = foundStore.getTensor().getDefiningOp<ReduceOp>();
   if (!reduceOp) {
-    return failure();
+    return std::optional<ttkernel::ReduceDim>(std::nullopt);
   }
 
   auto inputType = getTensorType(reduceOp.getInput());
   if (!inputType) {
     return failure();
   }
-
-  return computeReduceDim(reduceOp.getDims(), inputType.getRank());
+  auto reduceDim = computeReduceDim(reduceOp.getDims(), inputType.getRank());
+  if (failed(reduceDim)) {
+    return failure();
+  }
+  return std::optional<ttkernel::ReduceDim>(*reduceDim);
 }
 
 /// Validate that shape expansion is compatible with bcast type.
@@ -935,6 +949,48 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     SmallVector<Attribute> iterTypes(outputType.getRank(),
                                      rewriter.getStringAttr("parallel"));
 
+    // Validate that the user's broadcast dims are compatible with the input's
+    // tile data layout when the input comes from a reduce.  Each reduce
+    // dimension leaves valid data at a specific position in the 32x32 tile:
+    //   REDUCE_SCALAR -> data at [0,0]     -> requires dims=[0, 1] (Scalar)
+    //   REDUCE_COL    -> data in row 0     -> requires dims=[0]    (Row)
+    //   REDUCE_ROW    -> data in column 0  -> requires dims=[1]    (Col)
+    // A mismatch causes the hardware to read garbage (#444).
+    // This check must happen before any IR mutations.
+    auto bcastType = op.getBcastType();
+    auto inputReduceDim = getInputReduceDim(op.getInput());
+    if (failed(inputReduceDim)) {
+      return op.emitError(
+          "broadcast input traces to a reduce but the reduce dimension "
+          "could not be determined; this is a compiler bug (#449)");
+    }
+    if (auto reduceDim = *inputReduceDim) {
+      BcastType requiredBcastType;
+      StringRef requiredKind, requiredDims;
+      switch (*reduceDim) {
+      case ttkernel::ReduceDim::Scalar:
+        requiredBcastType = BcastType::Scalar;
+        requiredKind = "scalar";
+        requiredDims = "[0, 1]";
+        break;
+      case ttkernel::ReduceDim::Col:
+        requiredBcastType = BcastType::Row;
+        requiredKind = "row";
+        requiredDims = "[0]";
+        break;
+      case ttkernel::ReduceDim::Row:
+        requiredBcastType = BcastType::Col;
+        requiredKind = "column";
+        requiredDims = "[1]";
+        break;
+      }
+      if (bcastType != requiredBcastType) {
+        return op.emitError("broadcast dims are incompatible with the "
+                            "producing reduce; need ")
+               << requiredKind << " broadcast (dims=" << requiredDims << ")";
+      }
+    }
+
     // Position compute after all reserves by inserting before the last store.
     if (findLastStore(op)) {
       insertAtLastStore(rewriter, op);
@@ -957,23 +1013,6 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     body->addArgument(tileType, loc);
 
     rewriter.setInsertionPointToStart(body);
-    // Override the user-specified broadcast type when the input came from a
-    // reduce, to match the tile-level data layout left by the reduction.
-    auto bcastType = op.getBcastType();
-    auto inputReduceDim = getInputReduceDim(op.getInput());
-    if (succeeded(inputReduceDim)) {
-      switch (*inputReduceDim) {
-      case ttkernel::ReduceDim::Scalar:
-        bcastType = BcastType::Scalar;
-        break;
-      case ttkernel::ReduceDim::Col:
-        bcastType = BcastType::Row;
-        break;
-      case ttkernel::ReduceDim::Row:
-        bcastType = BcastType::Col;
-        break;
-      }
-    }
     Value result =
         TileBcastOp::create(rewriter, loc, tileType, body->getArgument(0),
                             body->getArgument(1), bcastType);
@@ -1142,8 +1181,8 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
 ///   ReduceDim::Row   = REDUCE_ROW = reduce width  (dim 1) -> output (M, 1)
 ///   ReduceDim::Col   = REDUCE_COL = reduce height (dim 0) -> output (1, N)
 ///   ReduceDim::Scalar = reduce both dims -> output (1, 1)
-static ttkernel::ReduceDim computeReduceDim(ArrayRef<int64_t> dims,
-                                            int64_t rank) {
+static FailureOr<ttkernel::ReduceDim> computeReduceDim(ArrayRef<int64_t> dims,
+                                                       int64_t rank) {
   llvm::SmallDenseSet<int64_t> normDims;
   for (int64_t d : dims) {
     normDims.insert(d < 0 ? d + rank : d);
@@ -1156,7 +1195,11 @@ static ttkernel::ReduceDim computeReduceDim(ArrayRef<int64_t> dims,
   if (reduceDim0) {
     return ttkernel::ReduceDim::Col;
   }
-  return ttkernel::ReduceDim::Row;
+  if (reduceDim1) {
+    return ttkernel::ReduceDim::Row;
+  }
+
+  return failure();
 }
 
 /// Lowers ttl.reduce to ttl.compute with ttl.tile_reduce in the body.
@@ -1184,7 +1227,15 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
     auto d1 = getAffineDimExpr(1, ctx);
     auto c0 = getAffineConstantExpr(0, ctx);
 
-    auto reduceDim = computeReduceDim(op.getDims(), inputType.getRank());
+    auto reduceDimOrFailure =
+        computeReduceDim(op.getDims(), inputType.getRank());
+
+    if (failed(reduceDimOrFailure)) {
+      return rewriter.notifyMatchFailure(
+          op, "unsupported reduction dimensions: only dim 0, dim 1, or both "
+              "are supported for rank-2 tensors");
+    }
+    auto reduceDim = *reduceDimOrFailure;
 
     AffineMap inputMap = AffineMap::getMultiDimIdentityMap(2, ctx);
     AffineMap outputMap;
