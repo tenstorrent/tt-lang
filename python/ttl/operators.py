@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import List, Tuple, Union
 
 from ttl.dialects import arith
-from ttl.ir import RankedTensorType, Type
+from ttl.ir import RankedTensorType, Type, FloatAttr, F32Type
 
 # Re-export generated elementwise operations
 from ._generated_elementwise import *  # noqa: F401,F403
@@ -563,8 +563,6 @@ def transpose(input: TensorBlock) -> TensorBlock:
 @syntax("fill")
 def fill(output: TensorBlock, value) -> TensorBlock:
     """Fill a tensor with a constant f32 value."""
-    from ttmlir.ir import FloatAttr, F32Type
-
     fill_val = _get_constant_float(value)
     ctx = output.type.context
     value_attr = FloatAttr.get(F32Type.get(ctx), fill_val)
