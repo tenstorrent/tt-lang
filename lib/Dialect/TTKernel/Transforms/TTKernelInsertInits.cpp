@@ -390,6 +390,13 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
     OpBuilder builder(insertBefore);
     Location loc = acquireOp->getLoc();
 
+    // For fill-only regions, no copy_tile or bcast provides an input CB.
+    // Use the output CB for both sides of init_sfpu; the unpacker format
+    // is irrelevant since fill writes a constant directly to DST.
+    if (!inputCB && outputCB) {
+      inputCB = outputCB;
+    }
+
     if (analysis.hasMatmul && in0CB && in1CB) {
       // mm_block_init configures UNPACK + MATH + PACK for matmul_block.
       ttk::MatmulBlockInitOp::create(
