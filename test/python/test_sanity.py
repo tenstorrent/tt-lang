@@ -16,7 +16,7 @@ def test_ttl_api_basic():
     import ttl
 
     # Basic API should be available even without TTNN
-    assert hasattr(ttl, "kernel")
+    assert hasattr(ttl, "operation")
     assert hasattr(ttl, "compute")
     assert hasattr(ttl, "datamovement")
     assert hasattr(ttl, "Program")

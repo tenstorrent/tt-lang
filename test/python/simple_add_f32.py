@@ -21,7 +21,7 @@ except ImportError:
     exit(0)
 
 
-@ttl.kernel(
+@ttl.operation(
     grid=(1, 1),
     fp32_dest_acc_en=True,
     dst_full_sync_en=False,

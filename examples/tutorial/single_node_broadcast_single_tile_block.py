@@ -24,7 +24,7 @@ import ttl
 TILE_SIZE = 32
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
     rows = y.shape[0] // TILE_SIZE
     cols = y.shape[1] // TILE_SIZE

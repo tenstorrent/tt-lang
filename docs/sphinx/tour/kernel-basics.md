@@ -2,10 +2,10 @@
 
 ## Kernel Function
 
-A kernel function is a Python function decorated with `@ttl.kernel()`. Thread functions defined inside are automatically collected and compiled into a program.
+A kernel function is a Python function decorated with `@ttl.operation()`. Thread functions defined inside are automatically collected and compiled into a program.
 
 ```python
-@ttl.kernel()
+@ttl.operation()
 def foo(x: ttnn.Tensor, y: ttnn.Tensor) -> None:
     @ttl.compute()
     def some_compute():

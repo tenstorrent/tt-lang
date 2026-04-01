@@ -25,7 +25,7 @@ import torch
 from sim import ttl, ttnn
 
 
-@ttl.kernel(grid="auto")
+@ttl.operation(grid="auto")
 def elementwise_with_broadcast(
     A: ttnn.Tensor,
     B: ttnn.Tensor,
@@ -120,7 +120,7 @@ def main():
     B = ttnn.from_torch(torch.full((1, TILE_SIZE), 4.0, dtype=torch.float32))
     Y = ttnn.empty((1, N), dtype=torch.float32)
 
-    print("Running kernel...")
+    print("Running TT-Lang operation...")
     elementwise_with_broadcast(A, B, Y)
 
     # Verify result

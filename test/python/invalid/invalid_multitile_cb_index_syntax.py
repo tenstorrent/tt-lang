@@ -21,7 +21,7 @@ import ttl
 
 
 # CHECK: error: CB shape [2, 2] requires range syntax (e.g., tensor[0:2, 0:2]), but got index syntax
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def invalid_multitile_index_kernel(inp, out):
     """This kernel should fail: 2x2 DFB but using index syntax."""
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)

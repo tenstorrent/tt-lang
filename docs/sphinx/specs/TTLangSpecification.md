@@ -53,12 +53,12 @@ The programming model of TT-Lang is centered around explicit specification of da
 
 ## Kernel program
 
-*Kernel function* is a Python function with `ttl.kernel` decorator. This function takes input and output [*TT-NN tensors*](https://docs.tenstorrent.com/tt-metal/latest/ttnn/ttnn/tensor.html) as arguments and returns `None`. A kernel function contains definitions of thread functions as well as objects shared by thread functions. A thread function is a Python function with no arguments and returning `None` that is annotated by `ttl.compute` or `ttl.datamovement` decorators.
+*Kernel function* is a Python function with `ttl.operation` decorator. This function takes input and output [*TT-NN tensors*](https://docs.tenstorrent.com/tt-metal/latest/ttnn/ttnn/tensor.html) as arguments and returns `None`. A kernel function contains definitions of thread functions as well as objects shared by thread functions. A thread function is a Python function with no arguments and returning `None` that is annotated by `ttl.compute` or `ttl.datamovement` decorators.
 
 ### Example
 
 ```py
-@ttl.kernel()
+@ttl.operation()
 def foo(
     x: ttnn.Tensor,
     y: ttnn.Tensor,

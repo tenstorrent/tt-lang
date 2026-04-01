@@ -42,7 +42,7 @@ import ttl
 # CHECK-CPP:   cb_push_back(get_compile_time_arg_val(2),
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def matmul_8x8(a, b, y):
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(8, 1), buffer_factor=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 8), buffer_factor=2)

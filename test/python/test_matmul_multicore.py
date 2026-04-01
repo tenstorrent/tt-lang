@@ -23,7 +23,7 @@ from ttlang_test_utils import to_dram
 TILE = 32
 
 
-@ttl.kernel(grid=(1, 2))
+@ttl.operation(grid=(1, 2))
 def matmul_multinode_2rows(a, b, out):
     """2-core matmul: each core computes one row-block of the output."""
     Nt = b.shape[1] // TILE

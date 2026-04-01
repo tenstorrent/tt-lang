@@ -18,7 +18,7 @@ import ttl
 from ttlang_test_utils import to_dram
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def fused_mul_add_streaming(a, b, c, y):
     """
     Compute y = a * b + c by streaming large DRAM tensors through small CBs.

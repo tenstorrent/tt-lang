@@ -10,7 +10,7 @@ import ttnn
 from utils.correctness import assert_with_ulp
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def tt_lang_singlenode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -> None:
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."

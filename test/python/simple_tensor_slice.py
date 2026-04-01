@@ -27,7 +27,7 @@ except ImportError:
     exit(0)
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def tile_index_kernel(lhs, rhs, out):
     """Kernel that accesses specific tiles via indices."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)

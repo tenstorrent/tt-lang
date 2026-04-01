@@ -8,7 +8,7 @@
 # standalone driver.
 #
 # Discovers candidates under examples/ (top-level *.py only) and
-# examples/tutorial/ (recursive *.py) that contain the substring @ttl.kernel.
+# examples/tutorial/ (recursive *.py) that contain the substring @ttl.operation.
 #
 # Tags (first 80 lines of the file):
 #     # TTLANG_HARDWARE_CI: skip-compiler
@@ -39,7 +39,7 @@ file_has_tag() {
 }
 
 has_ttl_kernel() {
-  grep -Fq "@ttl.kernel" "$1"
+  grep -Fq "@ttl.operation" "$1"
 }
 
 collect_scripts() {
@@ -67,7 +67,7 @@ collect_scripts() {
 mapfile -t SCRIPTS < <(collect_scripts | sort -u)
 
 if [[ ${#SCRIPTS[@]} -eq 0 ]]; then
-  echo "compile-and-run-examples.sh: no examples matched (@ttl.kernel in examples/*.py or examples/tutorial/**/*.py)" >&2
+  echo "compile-and-run-examples.sh: no examples matched (@ttl.operation in examples/*.py or examples/tutorial/**/*.py)" >&2
   exit 1
 fi
 

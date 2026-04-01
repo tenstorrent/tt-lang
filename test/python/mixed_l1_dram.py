@@ -24,7 +24,7 @@ import ttnn
 import ttl
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def add_mixed_memory(lhs, rhs, out):
     """Add kernel with mixed L1 inputs and DRAM output."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)

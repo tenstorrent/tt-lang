@@ -16,7 +16,7 @@ import ttl
 from ttlang_test_utils import to_l1
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def fused_bcast_kernel(a, b, c, out):
     """Compute bcast(c) + (a * b) in a single fused compute block.
 

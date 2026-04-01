@@ -41,7 +41,7 @@ GRANULARITY = 4
 # All nodes execute the same code; they differentiate their work via ttl.node().
 
 
-@ttl.kernel(grid=(4, 4))
+@ttl.operation(grid=(4, 4))
 def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY

@@ -26,7 +26,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 from ttlang_test_utils import assert_allclose, to_dram
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def dst_intermediate_reuse_kernel(a, b, out):
     """x = a*b (DST intermediate), then x * rsqrt(abs(x)).
 

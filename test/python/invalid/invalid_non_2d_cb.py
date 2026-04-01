@@ -21,7 +21,7 @@ import ttl
 
 
 # CHECK: CB shape rank (2) must match tensor rank (3)
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def mismatched_cb_rank_kernel(lhs, rhs, out):
     """This kernel should fail: 3D tensor but 2D CB shape."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)

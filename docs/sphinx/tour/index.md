@@ -8,7 +8,7 @@ TT-Lang provides an expressive middle ground between TT-NN's high-level operatio
 
 ## Key Concepts
 
-- **Kernel function**: Python function decorated with `@ttl.kernel()` that defines thread functions.
+- **Kernel function**: Python function decorated with `@ttl.operation()` that defines thread functions.
 - **Thread functions**: Decorated with `@ttl.compute()` or `@ttl.datamovement()`, these define compute and data movement logic.
 - **Dataflow buffers**: Communication primitives for passing data between threads within a node.
 - **Blocks**: Memory acquired from dataflow buffers, used in compute expressions or copy operations.
