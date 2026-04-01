@@ -37,6 +37,7 @@ TILE = 32
 
 def _make_matmul_k1(k_tiles, block_n):
     """Kt=1 streaming: explicit accumulation via partial + acc DFBs."""
+
     @ttl.operation(grid=(1, 1))
     def kernel(a, w, out):
         Nt = w.shape[1] // TILE
@@ -44,8 +45,12 @@ def _make_matmul_k1(k_tiles, block_n):
         a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
         w_dfb = ttl.make_dataflow_buffer_like(w, shape=(1, block_n), buffer_factor=2)
         mm_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, block_n), buffer_factor=2)
-        acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, block_n), buffer_factor=2)
-        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, block_n), buffer_factor=2)
+        acc_dfb = ttl.make_dataflow_buffer_like(
+            out, shape=(1, block_n), buffer_factor=2
+        )
+        out_dfb = ttl.make_dataflow_buffer_like(
+            out, shape=(1, block_n), buffer_factor=2
+        )
 
         @ttl.compute()
         def compute():
@@ -57,7 +62,11 @@ def _make_matmul_k1(k_tiles, block_n):
                 for _ in range(k_tiles - 1):
                     with a_dfb.wait() as av, w_dfb.wait() as wv, mm_dfb.reserve() as mm:
                         mm.store(av @ wv)
-                    with mm_dfb.wait() as mv, acc_dfb.wait() as old, acc_dfb.reserve() as new:
+                    with (
+                        mm_dfb.wait() as mv,
+                        acc_dfb.wait() as old,
+                        acc_dfb.reserve() as new,
+                    ):
                         new.store(old + mv)
                 with acc_dfb.wait() as final, out_dfb.reserve() as o:
                     o.store(final)
@@ -70,27 +79,32 @@ def _make_matmul_k1(k_tiles, block_n):
                     with a_dfb.reserve() as blk:
                         ttl.copy(a[0, kt], blk).wait()
                     with w_dfb.reserve() as blk:
-                        ttl.copy(w[kt, n_off:n_off + block_n], blk).wait()
+                        ttl.copy(w[kt, n_off : n_off + block_n], blk).wait()
 
         @ttl.datamovement()
         def dm_write():
             for ni in range(Nt // block_n):
                 n_off = ni * block_n
                 with out_dfb.wait() as blk:
-                    ttl.copy(blk, out[0, n_off:n_off + block_n]).wait()
+                    ttl.copy(blk, out[0, n_off : n_off + block_n]).wait()
 
     return kernel
 
 
 def _make_matmul_kn(k_tiles, block_n):
     """Kt>1 single fill: entire K in one DFB, compiler K loop."""
+
     @ttl.operation(grid=(1, 1))
     def kernel(a, w, out):
         Nt = w.shape[1] // TILE
 
         a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, k_tiles), buffer_factor=2)
-        w_dfb = ttl.make_dataflow_buffer_like(w, shape=(k_tiles, block_n), buffer_factor=2)
-        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, block_n), buffer_factor=2)
+        w_dfb = ttl.make_dataflow_buffer_like(
+            w, shape=(k_tiles, block_n), buffer_factor=2
+        )
+        out_dfb = ttl.make_dataflow_buffer_like(
+            out, shape=(1, block_n), buffer_factor=2
+        )
 
         @ttl.compute()
         def compute():
@@ -109,14 +123,14 @@ def _make_matmul_kn(k_tiles, block_n):
                 with a_dfb.reserve() as blk:
                     ttl.copy(a[0, 0:k_tiles], blk).wait()
                 with w_dfb.reserve() as blk:
-                    ttl.copy(w[0:k_tiles, n_off:n_off + block_n], blk).wait()
+                    ttl.copy(w[0:k_tiles, n_off : n_off + block_n], blk).wait()
 
         @ttl.datamovement()
         def dm_write():
             for ni in range(Nt // block_n):
                 n_off = ni * block_n
                 with out_dfb.wait() as blk:
-                    ttl.copy(blk, out[0, n_off:n_off + block_n]).wait()
+                    ttl.copy(blk, out[0, n_off : n_off + block_n]).wait()
 
     return kernel
 
@@ -135,12 +149,12 @@ def _run(make_fn, k_tiles, block_n, device, max_err_limit, mean_err_limit):
     assert_pcc(golden, result, threshold=0.999)
     max_err = (result - golden).abs().max().item()
     mean_err = (result - golden).abs().mean().item()
-    assert max_err < max_err_limit, (
-        f"MaxErr {max_err:.4f} exceeds limit {max_err_limit} at K={k_tiles}"
-    )
-    assert mean_err < mean_err_limit, (
-        f"MeanErr {mean_err:.4f} exceeds limit {mean_err_limit} at K={k_tiles}"
-    )
+    assert (
+        max_err < max_err_limit
+    ), f"MaxErr {max_err:.4f} exceeds limit {max_err_limit} at K={k_tiles}"
+    assert (
+        mean_err < mean_err_limit
+    ), f"MeanErr {mean_err:.4f} exceeds limit {mean_err_limit} at K={k_tiles}"
 
 
 K_TILES = [2, 4, 8, 16, 32]
@@ -153,8 +167,14 @@ BLOCK_NS = [2, 4, 8]  # 2: fits f32 DST; 4: exact f32 DST; 8: requires subblocki
 def test_matmul_k_accumulation_streaming(k_tiles, block_n, device):
     """Kt=1 streaming accumulation: error scales with sqrt(K)."""
     scale = math.sqrt(k_tiles)
-    _run(_make_matmul_k1, k_tiles, block_n, device,
-         max_err_limit=0.5 * scale, mean_err_limit=0.05 * scale)
+    _run(
+        _make_matmul_k1,
+        k_tiles,
+        block_n,
+        device,
+        max_err_limit=0.5 * scale,
+        mean_err_limit=0.05 * scale,
+    )
 
 
 @pytest.mark.parametrize("block_n", BLOCK_NS, ids=[f"N{n}" for n in BLOCK_NS])
@@ -163,5 +183,11 @@ def test_matmul_k_accumulation_streaming(k_tiles, block_n, device):
 def test_matmul_k_accumulation_single_fill(k_tiles, block_n, device):
     """Kt>1 single-fill accumulation: tighter bounds (f32 DST)."""
     scale = math.sqrt(k_tiles)
-    _run(_make_matmul_kn, k_tiles, block_n, device,
-         max_err_limit=0.1 * scale, mean_err_limit=0.01 * scale)
+    _run(
+        _make_matmul_kn,
+        k_tiles,
+        block_n,
+        device,
+        max_err_limit=0.1 * scale,
+        mean_err_limit=0.01 * scale,
+    )
