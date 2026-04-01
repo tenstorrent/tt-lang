@@ -188,7 +188,7 @@ static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *sourceOp,
 
   // FillOp: no tile operands, just a value attribute.
   if (auto fillOp = dyn_cast<FillOp>(sourceOp))
-    return b.create<TileFillOp>(loc, tileType, fillOp.getValueAttr());
+    return TileFillOp::create(b, loc, tileType, fillOp.getValueAttr());
 
   return nullptr;
 }
@@ -440,9 +440,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   for (Value outCb : outCbs) {
     Value init =
         trace.rootInputs.empty()
-            ? rewriter
-                  .create<tensor::EmptyOp>(loc, type.getShape(),
-                                            type.getElementType())
+            ? tensor::EmptyOp::create(rewriter, loc, type.getShape(),
+                                       type.getElementType())
                   .getResult()
             : buildInitTensor(rewriter, loc, type, trace.rootInputs[0]);
     Value initAttached =
@@ -1391,8 +1390,8 @@ struct LowerFillToCompute : OpRewritePattern<FillOp> {
     SmallVector<Value> allInitAttached;
     SmallVector<Type> resultTypes;
     for (Value outCb : outCbs) {
-      Value init = rewriter.create<tensor::EmptyOp>(loc, type.getShape(),
-                                                     type.getElementType());
+      Value init = tensor::EmptyOp::create(rewriter, loc, type.getShape(),
+                                                       type.getElementType());
       Value initAttached =
           AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
       allInitAttached.push_back(initAttached);
@@ -1412,7 +1411,7 @@ struct LowerFillToCompute : OpRewritePattern<FillOp> {
 
     rewriter.setInsertionPointToStart(body);
     Value result =
-        rewriter.create<TileFillOp>(loc, tileType, op.getValueAttr());
+        TileFillOp::create(rewriter, loc, tileType, op.getValueAttr());
     emitTileStores(rewriter, loc, result, op);
     YieldOp::create(rewriter, loc);
     rewriter.replaceOp(op, computeOp.getResults());
