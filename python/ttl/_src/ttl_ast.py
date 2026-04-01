@@ -417,6 +417,13 @@ class TTLGenericCompiler(TTCompilerBase):
             return op_constructor(IntegerType.get_signless(1, self.ctx), node.value)
         elif isinstance(node.value, int):
             return op_constructor(IntegerType.get_signless(64, self.ctx), node.value)
+        elif isinstance(node.value, float):
+            from ttmlir.ir import F32Type, FloatAttr
+
+            f32 = F32Type.get(self.ctx)
+            if as_attr:
+                return FloatAttr.get(f32, node.value)
+            return arith.ConstantOp(f32, node.value)
         elif isinstance(node.value, str):
             return node.value
         else:
@@ -530,6 +537,10 @@ class TTLGenericCompiler(TTCompilerBase):
                 if isinstance(val, int):
                     self.symbol_tables[-1][name] = arith.ConstantOp(
                         IndexType.get(self.ctx), val
+                    )
+                elif isinstance(val, float):
+                    self.symbol_tables[-1][name] = arith.ConstantOp(
+                        F32Type.get(self.ctx), val
                     )
                 elif isinstance(val, CircularBuffer):
                     cb_val = self._emit_cb_from_capture(val)

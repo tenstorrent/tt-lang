@@ -191,7 +191,7 @@ def _create_unary_op_wrapper(
 
 # Mapping of ttl.math unary operations to PyTorch functions
 # Only includes simple unary functions from TTLangSpecification.md
-# Note: abs and neg are operators (__abs__, __neg__), not ttl.math functions
+# Note: abs is an operator (__abs__), not a ttl.math function
 _TORCH_UNARY_OPS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     # Basic unary math functions (from spec)
     "exp": torch.exp,
@@ -203,6 +203,8 @@ _TORCH_UNARY_OPS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     "square": torch.square,
     "rsqrt": torch.rsqrt,
     "recip": torch.reciprocal,
+    "abs": torch.abs,
+    "neg": torch.neg,
     # Trigonometric unary math functions (from spec)
     "tan": torch.tan,
     "tanh": torch.tanh,
@@ -587,22 +589,23 @@ def threshold(expr: Block, threshold: PositiveInt, value: PositiveInt) -> Block:
     return _apply_unary_with_params(expr, _op)
 
 
-# Fill, mask and where functions
-def fill(expr: Block, value: float) -> Block:
-    """Fill a block with specified value.
+def fill(block: Block, value: float) -> Block:
+    """Fill a block with a constant value.
+
+    Creates a new block with the same shape where every element is set to value.
 
     Args:
-        expr: Input block (shape is preserved)
-        value: Value to fill
+        block: Block whose shape and tile dimensions to match
+        value: Constant f32 value to fill with
 
     Returns:
-        Block filled with specified value
+        Block filled with the constant value
     """
-
-    def _op(t: torch.Tensor) -> torch.Tensor:
-        return torch.full_like(t, value)
-
-    return _apply_unary_with_params(expr, _op)
+    tiles = block.to_list()
+    result_tensors: List[Tensor] = [
+        Tensor(torch.full_like(t.to_torch(), value)) for t in tiles
+    ]
+    return Block.from_list(result_tensors, shape=block._shape)  # type: ignore[attr-defined]
 
 
 def mask(expr: Block, mask: Block) -> Block:

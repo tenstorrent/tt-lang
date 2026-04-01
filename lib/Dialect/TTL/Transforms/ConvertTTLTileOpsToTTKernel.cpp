@@ -909,6 +909,40 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
   }
 };
 
+//===----------------------------------------------------------------------===//
+// Fill Tile Op Lowering
+//===----------------------------------------------------------------------===//
+
+struct TTLTileFillToTTKernel : OpConversionPattern<TileFillOp> {
+  using OpConversionPattern<TileFillOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileFillOp op, TileFillOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    int64_t dstIdx = dstIdxAttr.getInt();
+    Value dstIdxVal = rewriter.create<arith::ConstantIndexOp>(loc, dstIdx);
+
+    Value fillValue = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getF32FloatAttr(op.getValue().convertToFloat()));
+
+    rewriter.create<ttk::FillTileInitOp>(loc);
+    rewriter.create<ttk::FillTileOp>(loc, dstIdxVal, fillValue);
+
+    // Replace with an unrealized cast carrying dst_idx for tile_store.
+    auto cast = rewriter.create<mlir::UnrealizedConversionCastOp>(
+        loc, TypeRange{op.getResult().getType()}, ValueRange{dstIdxVal});
+    cast->setAttr(kDstIdxAttrName, dstIdxAttr);
+    rewriter.replaceOp(op, cast.getResult(0));
+    return success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -944,6 +978,9 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 #define TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)         \
   patterns.add<TTL_OP##FPUTileLowering>(*typeConverter, ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
+  // DST-based ops (no type converter needed).
+  patterns.add<TTLTileFillToTTKernel>(ctx);
 
   // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);
