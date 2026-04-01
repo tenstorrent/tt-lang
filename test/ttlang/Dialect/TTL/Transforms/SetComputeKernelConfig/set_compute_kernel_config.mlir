@@ -1,15 +1,16 @@
-// Summary: Verify ttl-set-compute-kernel-config sets and preserves compute attrs.
+// Summary: Verify ttl-set-compute-kernel-config sets kernel config on func.func.
+// Attributes are per-kernel (set on the function, not individual compute ops).
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --split-input-file | FileCheck %s --check-prefix=DEFAULT
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=1 dst-full-sync-en=1}))' --split-input-file | FileCheck %s --check-prefix=OVERRIDE
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: f32 tile args enable fp32_dest_acc_en by default.
+// Purpose: f32 tile args enable fp32_dest_acc_en on the function.
 // DEFAULT-LABEL: func.func @f32_auto_enable
-// DEFAULT: ttl.compute{{.*}}fp32_dest_acc_en = true
+// DEFAULT-SAME: fp32_dest_acc_en = true
 // DEFAULT-NOT: dst_full_sync_en
 // OVERRIDE-LABEL: func.func @f32_auto_enable
-// OVERRIDE: ttl.compute{{.*}}dst_full_sync_en = true
+// OVERRIDE-SAME: dst_full_sync_en = true
 // OVERRIDE-SAME: fp32_dest_acc_en = true
 func.func @f32_auto_enable(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
                            %b: tensor<1x1x!ttcore.tile<32x32, f32>>)
@@ -50,13 +51,15 @@ func.func @f32_auto_enable(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
 
 // --split-input-file
 
-// Purpose: Options enable attrs for bf16 when not already configured.
-// DEFAULT-LABEL: func.func @bf16_enable_options
-// DEFAULT: ttl.compute{{.*}}{
-// OVERRIDE-LABEL: func.func @bf16_enable_options
-// OVERRIDE: ttl.compute{{.*}}dst_full_sync_en = true
+// Purpose: bf16 with no special ops -- no fp32_dest_acc_en by default,
+// but override enables both.
+// DEFAULT-LABEL: func.func @bf16_no_special_ops
+// DEFAULT-NOT: fp32_dest_acc_en
+// DEFAULT-NOT: dst_full_sync_en
+// OVERRIDE-LABEL: func.func @bf16_no_special_ops
+// OVERRIDE-SAME: dst_full_sync_en = true
 // OVERRIDE-SAME: fp32_dest_acc_en = true
-func.func @bf16_enable_options(%a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+func.func @bf16_no_special_ops(%a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
                                %b: tensor<1x1x!ttcore.tile<32x32, bf16>>)
     -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
   %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -94,16 +97,15 @@ func.func @bf16_enable_options(%a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
 
 // --split-input-file
 
-// Purpose: Existing attributes are preserved even when options request enablement.
+// Purpose: Existing func-level attribute is preserved (not overwritten).
 // DEFAULT-LABEL: func.func @preserve_existing
-// DEFAULT: ttl.compute{{.*}}dst_full_sync_en = false
 // DEFAULT-SAME: fp32_dest_acc_en = false
 // OVERRIDE-LABEL: func.func @preserve_existing
-// OVERRIDE: ttl.compute{{.*}}dst_full_sync_en = false
 // OVERRIDE-SAME: fp32_dest_acc_en = false
 func.func @preserve_existing(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
                              %b: tensor<1x1x!ttcore.tile<32x32, f32>>)
-    -> tensor<1x1x!ttcore.tile<32x32, f32>> {
+    -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    attributes {fp32_dest_acc_en = false} {
   %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, f32>>
 
   %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -126,9 +128,7 @@ func.func @preserve_existing(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
                          tensor<1x1x!ttcore.tile<32x32, f32>>)
       outs(%init_cb : tensor<1x1x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [#map, #map, #map],
-       iterator_types = ["parallel", "parallel"],
-       fp32_dest_acc_en = false,
-       dst_full_sync_en = false} {
+       iterator_types = ["parallel", "parallel"]} {
     ^bb0(%a_arg: !ttcore.tile<32x32, f32>, %b_arg: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
       %i = ttl.iter_index 0 : index
       %j = ttl.iter_index 1 : index

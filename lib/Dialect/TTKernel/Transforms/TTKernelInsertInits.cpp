@@ -125,14 +125,13 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
       }};
 
   // MatmulBlock: reconfigures UNPACK+MATH.
-  map[mlir::TypeID::get<ttk::ExperimentalMatmulBlockOp>()] = {
-      [](OpBuilder &b, Location l, Operation *computeOp) {
-        auto matmul = cast<ttk::ExperimentalMatmulBlockOp>(computeOp);
-        ttk::MatmulBlockInitShortOp::create(
-            b, l, matmul.getIn0CbId(), matmul.getIn1CbId(),
-            matmul.getTranspose(), matmul.getCtDim(), matmul.getRtDim(),
-            matmul.getKtDim());
-      }};
+  map[mlir::TypeID::get<ttk::MatmulBlockOp>()] = {[](OpBuilder &b, Location l,
+                                                     Operation *computeOp) {
+    auto matmul = cast<ttk::MatmulBlockOp>(computeOp);
+    ttk::MatmulBlockInitShortOp::create(
+        b, l, matmul.getIn0CbId(), matmul.getIn1CbId(), matmul.getTranspose(),
+        matmul.getCtDim(), matmul.getRtDim(), matmul.getKtDim());
+  }};
 
   // UnaryBcast: resolves output CB from annotated attribute.
   map[mlir::TypeID::get<ttk::UnaryBcastTileOp>()] = {
@@ -198,7 +197,7 @@ static InitKey computeInitKey(Operation *op) {
   }
 
   // For matmul_block: key includes CB operands (first 2 operands).
-  if (isa<ttk::ExperimentalMatmulBlockOp>(op)) {
+  if (isa<ttk::MatmulBlockOp, ttk::ExperimentalMatmulBlockOp>(op)) {
     return {typeId, {op->getOperand(0), op->getOperand(1)}};
   }
 
@@ -286,19 +285,29 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
           in0CB = inner->getOperand(0);
           in1CB = inner->getOperand(1);
         }
-      } else if (auto matmul =
-                     dyn_cast<ttk::ExperimentalMatmulBlockOp>(inner)) {
+      } else if (isa<ttk::MatmulBlockOp, ttk::ExperimentalMatmulBlockOp>(
+                     inner)) {
         result.hasMatmul = true;
         if (!in0CB) {
-          in0CB = matmul.getIn0CbId();
-          in1CB = matmul.getIn1CbId();
+          in0CB = inner->getOperand(0);
+          in1CB = inner->getOperand(1);
         }
         // Capture block dims from first matmul for mm_block_init.
+        // Both MatmulBlockOp and ExperimentalMatmulBlockOp share the
+        // same operand layout for transpose, ct_dim, rt_dim, kt_dim.
         if (!result.matmulTranspose) {
-          result.matmulTranspose = matmul.getTranspose();
-          result.matmulCt = matmul.getCtDim();
-          result.matmulRt = matmul.getRtDim();
-          result.matmulKt = matmul.getKtDim();
+          if (auto matmul = dyn_cast<ttk::MatmulBlockOp>(inner)) {
+            result.matmulTranspose = matmul.getTranspose();
+            result.matmulCt = matmul.getCtDim();
+            result.matmulRt = matmul.getRtDim();
+            result.matmulKt = matmul.getKtDim();
+          } else {
+            auto expMatmul = cast<ttk::ExperimentalMatmulBlockOp>(inner);
+            result.matmulTranspose = expMatmul.getTranspose();
+            result.matmulCt = expMatmul.getCtDim();
+            result.matmulRt = expMatmul.getRtDim();
+            result.matmulKt = expMatmul.getKtDim();
+          }
         }
       } else if (auto bcast = dyn_cast<ttk::UnaryBcastTileOp>(inner)) {
         if (!inputCB) {

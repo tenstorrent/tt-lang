@@ -69,6 +69,13 @@ def _make_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         help="Enable FP32 accumulation for reduce operations (default: enabled).",
     )
+    p.add_argument(
+        "--ttl-matmul-full-fp32",
+        default=None,
+        dest="matmul_full_fp32",
+        action=argparse.BooleanOptionalAction,
+        help="Enable FP32 accumulation for matmul operations (default: enabled).",
+    )
     return p
 
 
@@ -113,6 +120,7 @@ class CompilerOptions:
     auto_sync: bool = False
     combine_pack_tiles: bool = True
     reduce_full_fp32: bool = True
+    matmul_full_fp32: bool = True
 
     # Fields that were explicitly provided (not defaulted). Excluded from
     # equality and hashing so two instances with the same bool values are

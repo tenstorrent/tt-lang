@@ -34,7 +34,7 @@ import ttl
 # CHECK-CPP: for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
 # CHECK-CPP:   cb_reserve_back(get_compile_time_arg_val(2),
 # CHECK-CPP:   tile_regs_acquire();
-# CHECK-CPP:   experimental::matmul_block(
+# CHECK-CPP:   matmul_block(
 # CHECK-CPP:   tile_regs_commit();
 # CHECK-CPP:   tile_regs_wait();
 # CHECK-CPP:   pack_tile_block(

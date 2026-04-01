@@ -3,18 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Standalone matmul tests with varying M and N block sizes (K=1).
+Standalone matmul tests with varying M, N, and K block sizes.
 
-TODO: K>1 requires a user-level K-loop with per-step DFBs and DST
-accumulation (acc=True or explicit temp-CB pattern). The tt-mlir
-experimental::matmul_block wrapper supports kt_dim>1 but only has 1x1
-test coverage; the proven tt-metal pattern uses kt_dim=1 with an external
-K-loop. K>1 tests are deferred until accumulation support lands.
+When Kt > 1 in the DFB block shape, the compiler emits matmul_block with
+kt_dim > 1 so the hardware accumulates across K tiles internally in DST,
+avoiding CB round-trips per K step.
 """
-
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
 
 import pytest
 import torch
@@ -64,20 +58,35 @@ def matmul_kernel(a, b, out):
             tx.wait()
 
 
-@pytest.mark.parametrize(
-    "Mt,Kt,Nt",
-    [
-        (1, 1, 1),  # Minimal: single tile.
-        (2, 1, 2),  # Multi-tile output, K=1 outer product.
-        (2, 1, 3),  # Non-square output, K=1.
-        (1, 1, 4),  # Wide output, K=1.
-        (4, 1, 1),  # Tall output, K=1.
-        (2, 1, 4),  # 2x4 output = 8 tiles, max for bf16 DST.
-        (4, 1, 2),  # 4x2 output = 8 tiles, tall rectangle at max DST.
-        (1, 1, 8),  # 1x8 output = 8 tiles, wide at max DST.
-    ],
-    ids=["1x1x1", "2x1x2", "2x1x3", "1x1x4", "4x1x1", "2x1x4", "4x1x2", "1x1x8"],
-)
+SIMPLE_SHAPES = [
+    # K=1: varying M and N block sizes.
+    (1, 1, 1),  # Minimal: single tile.
+    (2, 1, 2),  # Multi-tile output, K=1 outer product.
+    (2, 1, 3),  # Non-square output, K=1.
+    (1, 1, 4),  # Wide output, K=1.
+    (4, 1, 1),  # Tall output, K=1.
+    (2, 1, 4),  # 2x4 output = 8 tiles, max for bf16 DST.
+    (4, 1, 2),  # 4x2 output = 8 tiles, tall rectangle at max DST.
+    (1, 1, 8),  # 1x8 output = 8 tiles, wide at max DST.
+    # K > 1: hardware accumulates across K tiles in DST.
+    (1, 2, 1),  # Minimal K > 1.
+    (2, 4, 2),  # M*N=4, moderate K.
+    (1, 8, 1),  # Large K, minimal output.
+    (2, 8, 2),  # K > 1 with multi-tile M and N.
+    # M*N > DST capacity with K > 1: auto-subblocked.
+    (4, 4, 4),  # M*N=16 > f32 DST(4), heavy subblocking + K loop.
+    (8, 2, 8),  # M*N=64, 16 subblocks at f32 DST(4), K=2.
+    (1, 4, 8),  # Asymmetric: wide output, subblock ct != fullN.
+    (4, 1, 4),  # K=1 with f32 subblocking regression check.
+    (3, 5, 3),  # Odd dimensions, subblocking falls back to 1x1.
+    # L1 pressure: (8,8,8) = 384 tiles * 2KB = 768 KB (~52% of WH L1).
+    (8, 8, 8),
+]
+
+SIMPLE_IDS = [f"{m}x{k}x{n}" for m, k, n in SIMPLE_SHAPES]
+
+
+@pytest.mark.parametrize("Mt,Kt,Nt", SIMPLE_SHAPES, ids=SIMPLE_IDS)
 @pytest.mark.requires_device
 def test_matmul_block_sizes(Mt, Kt, Nt, device):
     """Standalone matmul with varying block dimensions."""
