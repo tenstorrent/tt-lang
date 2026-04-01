@@ -37,7 +37,7 @@ TILE = 32
 REDUCE_KERNEL_TEMPLATE = '''
 import ttl
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def reduce_kernel(inp, scaler, out):
     """Reduce {reduce_fn} dims={dims} on ({inp_rows},{inp_cols}) grid."""
     inp_dfb = ttl.make_dataflow_buffer_like(
@@ -78,7 +78,7 @@ def reduce_kernel(inp, scaler, out):
 MULTICORE_REDUCE_KERNEL_TEMPLATE = '''
 import ttl
 
-@ttl.kernel(grid=({grid_cols}, {grid_rows}))
+@ttl.operation(grid=({grid_cols}, {grid_rows}))
 def reduce_kernel(inp, scaler, out):
     """Multicore reduce {reduce_fn} dims={dims}, each core reduces its own tile."""
     inp_dfb = ttl.make_dataflow_buffer_like(
@@ -704,7 +704,7 @@ _l1_kernel_cache: dict[tuple, Callable] = {}
 L1_ACC_TEMPLATE = '''
 import ttl
 
-@ttl.kernel(grid=(1, 1), options="--no-ttl-maximize-dst")
+@ttl.operation(grid=(1, 1), options="--no-ttl-maximize-dst")
 def reduce_kernel(inp, scaler, out):
     """Reduce {reduce_fn} dims={dims} with L1 accumulation."""
     inp_dfb = ttl.make_dataflow_buffer_like(
@@ -847,7 +847,7 @@ def test_reduce_l1_accumulation(
 REDUCE_BCAST_TEMPLATE = """
 import ttl
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def reduce_bcast_kernel(inp, scaler, out):
     inp_dfb = ttl.make_dataflow_buffer_like(
         inp, shape=({inp_rows}, {inp_cols}), buffer_factor=2
@@ -1018,7 +1018,7 @@ def test_reduce_dram(device, reduce_fn, dims, test_id):
 MULTICORE_ROW_COL_TEMPLATE = """
 import ttl
 
-@ttl.kernel(grid=({grid_rows}, {grid_cols}))
+@ttl.operation(grid=({grid_rows}, {grid_cols}))
 def reduce_kernel(inp, scaler, out):
     inp_dfb = ttl.make_dataflow_buffer_like(
         inp, shape=(1, {inp_cols}), buffer_factor=2
@@ -1156,7 +1156,7 @@ def test_reduce_multicore_row_col(
 MULTICORE_MULTITILE_TEMPLATE = """
 import ttl
 
-@ttl.kernel(grid=({grid_rows}, {grid_cols}))
+@ttl.operation(grid=({grid_rows}, {grid_cols}))
 def reduce_kernel(inp, scaler, out):
     inp_dfb = ttl.make_dataflow_buffer_like(
         inp, shape=({tile_rows}, {tile_cols}), buffer_factor=2
@@ -1307,7 +1307,7 @@ def test_reduce_multicore_multitile(device, reduce_fn, grid, tiles, dims, test_i
 BCAST_REDUCE_TEMPLATE = """
 import ttl
 
-@ttl.kernel(grid=({grid_rows}, {grid_cols}))
+@ttl.operation(grid=({grid_rows}, {grid_cols}))
 def bcast_reduce_kernel(inp, bcast_in, scaler, out):
     inp_dfb = ttl.make_dataflow_buffer_like(
         inp, shape=({tile_rows}, {tile_cols}), buffer_factor=2
@@ -1415,7 +1415,7 @@ def test_bcast_then_reduce_multicore_multitile(device):
 # =============================================================================
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def matmul_then_reduce_kernel(mat_a, mat_b, scaler, out):
     a_dfb = ttl.make_dataflow_buffer_like(mat_a, shape=(1, 1), buffer_factor=2)
     b_dfb = ttl.make_dataflow_buffer_like(mat_b, shape=(1, 1), buffer_factor=2)
@@ -1478,7 +1478,7 @@ def test_matmul_then_reduce(device):
 REDUCE_BCAST_MATMUL_TEMPLATE = """
 import ttl
 
-@ttl.kernel(grid=(1, 1), fp32_dest_acc_en=True)
+@ttl.operation(grid=(1, 1), fp32_dest_acc_en=True)
 def reduce_bcast_matmul_kernel(reduce_in, mat_b, scaler, out):
     reduce_dfb = ttl.make_dataflow_buffer_like(reduce_in, shape=({mt}, {kt}), buffer_factor=2)
     sc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
@@ -1600,7 +1600,7 @@ def test_reduce_bcast_matmul(device, mt, kt, nt, test_id):
 REDUCE_BCAST_TYPE_TEMPLATE = """
 import ttl
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def reduce_bcast_type_kernel(inp, scaler, out):
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=({inp_rows}, {inp_cols}), buffer_factor=2)
     sc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)

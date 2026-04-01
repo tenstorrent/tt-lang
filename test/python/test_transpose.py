@@ -36,7 +36,7 @@ TILE = 32
 TRANSPOSE_KERNEL_TEMPLATE = '''
 import ttl
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def transpose_kernel(inp, out):
     """Transpose ({inp_rows},{inp_cols}) -> ({out_rows},{out_cols})."""
     inp_dfb = ttl.make_dataflow_buffer_like(
@@ -70,7 +70,7 @@ def transpose_kernel(inp, out):
 DOUBLE_TRANSPOSE_KERNEL_TEMPLATE = '''
 import ttl
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def double_transpose_kernel(inp, out):
     """Transpose twice: ({rows},{cols}) -> ({cols},{rows}) -> ({rows},{cols})."""
     inp_dfb = ttl.make_dataflow_buffer_like(
