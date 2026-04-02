@@ -713,7 +713,8 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   }
 
   // Verify at least one output (required for SFPU packer configuration).
-  // Zero inputs are allowed for ops like fill that produce output without input.
+  // Zero inputs are allowed for ops like fill that produce output without
+  // input.
   if (getOutputs().empty()) {
     return emitOpError(
         "requires at least one output for SFPU packer configuration");

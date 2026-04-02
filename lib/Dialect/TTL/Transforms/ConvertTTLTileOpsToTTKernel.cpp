@@ -969,18 +969,19 @@ struct TTLTileFillToTTKernel : OpConversionPattern<TileFillOp> {
       return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
     }
     int64_t dstIdx = dstIdxAttr.getInt();
-    Value dstIdxVal =
-        arith::ConstantIndexOp::create(rewriter, loc, dstIdx);
+    Value dstIdxVal = arith::ConstantIndexOp::create(rewriter, loc, dstIdx);
 
     Value fillValue = arith::ConstantOp::create(
-        rewriter, loc, rewriter.getF32FloatAttr(op.getValue().convertToFloat()));
+        rewriter, loc,
+        rewriter.getF32FloatAttr(op.getValue().convertToFloat()));
 
     ttk::FillTileInitOp::create(rewriter, loc);
     ttk::FillTileOp::create(rewriter, loc, dstIdxVal, fillValue);
 
     // Replace with an unrealized cast carrying dst_idx for tile_store.
     auto cast = mlir::UnrealizedConversionCastOp::create(
-        rewriter, loc, TypeRange{op.getResult().getType()}, ValueRange{dstIdxVal});
+        rewriter, loc, TypeRange{op.getResult().getType()},
+        ValueRange{dstIdxVal});
     cast->setAttr(kDstIdxAttrName, dstIdxAttr);
     rewriter.replaceOp(op, cast.getResult(0));
     return success();

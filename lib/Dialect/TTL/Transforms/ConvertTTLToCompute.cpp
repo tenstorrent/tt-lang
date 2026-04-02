@@ -187,8 +187,9 @@ static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *sourceOp,
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   // FillOp: no tile operands, just a value attribute.
-  if (auto fillOp = dyn_cast<FillOp>(sourceOp))
+  if (auto fillOp = dyn_cast<FillOp>(sourceOp)) {
     return TileFillOp::create(b, loc, tileType, fillOp.getValueAttr());
+  }
 
   return nullptr;
 }
@@ -441,7 +442,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     Value init =
         trace.rootInputs.empty()
             ? tensor::EmptyOp::create(rewriter, loc, type.getShape(),
-                                       type.getElementType())
+                                      type.getElementType())
                   .getResult()
             : buildInitTensor(rewriter, loc, type, trace.rootInputs[0]);
     Value initAttached =
@@ -1391,7 +1392,7 @@ struct LowerFillToCompute : OpRewritePattern<FillOp> {
     SmallVector<Type> resultTypes;
     for (Value outCb : outCbs) {
       Value init = tensor::EmptyOp::create(rewriter, loc, type.getShape(),
-                                                       type.getElementType());
+                                           type.getElementType());
       Value initAttached =
           AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
       allInitAttached.push_back(initAttached);
