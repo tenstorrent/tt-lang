@@ -18,6 +18,9 @@ Scope:
 
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Any, Callable, List, Optional, Tuple, Union, cast
 
 import torch
@@ -37,6 +40,80 @@ from .typedefs import Count, IndexType, Selector, Shape, TensorKey
 # Public constants (mirror TTL constants)
 TILE_SIZE: int = TILE_SHAPE[0]
 TILE_LAYOUT = IndexType.TILE
+
+
+class ShardingStrategy(Enum):
+    """Tensor memory layout sharding strategy."""
+
+    INTERLEAVED = auto()
+    HEIGHT_SHARDED = auto()
+    WIDTH_SHARDED = auto()
+    BLOCK_SHARDED = auto()
+    ND_SHARDED = auto()
+
+
+class ShardDistributionStrategy(Enum):
+    """How shards are mapped to cores for ND_SHARDED tensors.
+
+    ROUND_ROBIN_1D: shards are numbered row-major and assigned to cores
+        round-robin (shard i goes to core i % num_cores).  shard_grid is
+        N-D and encodes the number of shards in each tensor dimension;
+        math.prod(shard_grid) is the total number of cores.
+    GRID_2D: core at N-D grid position (p0, p1, ...) owns the shard at
+        the same position.  Generalises BLOCK_SHARDED to N dimensions.
+    """
+
+    ROUND_ROBIN_1D = auto()
+    GRID_2D = auto()
+
+
+@dataclass
+class ShardSpec:
+    """Shard grid and per-shard tile shape for 2-D sharding strategies.
+
+    Attributes:
+        shard_grid: Core grid shape.
+            HEIGHT_SHARDED / WIDTH_SHARDED: 1-element tuple (num_cores,).
+            BLOCK_SHARDED: 2-element tuple (num_core_rows, num_core_cols).
+        shard_shape: Tile-grid shape of each individual shard.
+    """
+
+    shard_grid: Shape
+    shard_shape: Shape
+
+
+@dataclass
+class NdShardSpec:
+    """Shard specification for ND_SHARDED tensors.
+
+    Attributes:
+        shard_grid: N-D tuple with one entry per tensor dimension.  For
+            GRID_2D this is the spatial core grid; for ROUND_ROBIN_1D
+            it encodes the number of shards per dimension (total cores =
+            math.prod(shard_grid)).
+        shard_shape: N-D tile-grid shape of each individual shard.
+        distribution: How shards are assigned to cores.
+    """
+
+    shard_grid: Shape
+    shard_shape: Shape
+    distribution: ShardDistributionStrategy = ShardDistributionStrategy.ROUND_ROBIN_1D
+
+
+@dataclass
+class MemoryConfig:
+    """Memory configuration for a tensor.
+
+    Attributes:
+        strategy: Sharding strategy for this tensor.
+        shard_spec: Shard spec for HEIGHT_SHARDED, WIDTH_SHARDED, or
+            BLOCK_SHARDED (None otherwise).
+        nd_shard_spec: Shard spec for ND_SHARDED (None otherwise).
+    """
+
+    strategy: ShardingStrategy
+    shard_spec: Optional[ShardSpec] = None
+    nd_shard_spec: Optional[NdShardSpec] = None
 
 
 def broadcast_tensors(
@@ -93,9 +170,8 @@ def broadcast_tensors(
     return [Tensor(result_flat[i]) for i in range(num_result_tiles)]
 
 
-# Memory config placeholder (no-op in simulator)
-L1_MEMORY_CONFIG = None
-DRAM_MEMORY_CONFIG = None
+DRAM_MEMORY_CONFIG: MemoryConfig = MemoryConfig(strategy=ShardingStrategy.INTERLEAVED)
+L1_MEMORY_CONFIG: MemoryConfig = MemoryConfig(strategy=ShardingStrategy.INTERLEAVED)
 
 # Type aliases for binary operations
 Scalar = Union[float, int]
@@ -212,28 +288,33 @@ def close_device(device: Device) -> None:
     return None
 
 
-def tile_count_from_tensor(t: "Tensor") -> int:
-    """Return the number of tiles a Tensor represents.
+def tile_shape_from_tensor(t: "Tensor") -> Shape:
+    """Return the tile-grid shape of a tensor.
 
     For 2-D+ tensors the last two element dimensions are divided by TILE_SHAPE
     (treating H==1 or W==1 as degenerate single-tile dimensions); leading
-    dimensions are batch dimensions each contributing independently.
-
-    For 1-D tensors the single dimension is divided by TILE_SHAPE[0] (treating
-    size==1 as a degenerate single-tile dimension); there are no batch dims.
+    dimensions are returned as-is.  For 1-D tensors the single element dimension
+    is divided by TILE_SHAPE[0].
     """
-    import math
-
     s = t.shape
     if len(s) == 1:
         w = s[0]
         tk = 1 if w == 1 else w // TILE_SHAPE[0]
-        return tk
+        return (tk,)
     h, w = s[-2], s[-1]
     tm = 1 if h == 1 else h // TILE_SHAPE[0]
     tk = 1 if w == 1 else w // TILE_SHAPE[1]
-    batch = s[:-2]
-    return math.prod((*batch, tm, tk))
+    if len(s) > 2:
+        return (*s[:-2], tm, tk)
+    return (tm, tk)
+
+
+def tile_count_from_tensor(t: "Tensor") -> int:
+    """Return the number of tiles a Tensor represents.
+
+    Delegates to :func:`tile_shape_from_tensor` and multiplies the dimensions.
+    """
+    return math.prod(tile_shape_from_tensor(t))
 
 
 class Tensor:
@@ -242,10 +323,15 @@ class Tensor:
     Exposes `.shape` and keeps underlying storage in `_tensor`.
     """
 
-    def __init__(self, tensor: torch.Tensor) -> None:
+    def __init__(
+        self,
+        tensor: torch.Tensor,
+        memory_config: MemoryConfig = DRAM_MEMORY_CONFIG,
+    ) -> None:
         if tensor.ndim < 1:
             raise ValueError(f"Tensor must have at least 1 dimension, got 0-d scalar")
         self._tensor: torch.Tensor = tensor
+        self.memory_config: MemoryConfig = memory_config
 
     @property
     def shape(self) -> Shape:
@@ -375,10 +461,15 @@ class Tensor:
 
     def __getitem__(self, key: TensorKey) -> "Tensor":
         # Python passes a bare int/slice (not a tuple) for single-element indexing.
-        normalized: Tuple[Selector, ...] = key if isinstance(key, tuple) else (key,)
+        match key:
+            case tuple():
+                normalized: Tuple[Selector, ...] = key
+            case _:
+                normalized = (key,)
         result = Tensor(self._tensor[cast(Any, self._to_element_key(normalized))])
         if hasattr(self, "_name"):
             result._name = self._name  # type: ignore
+        result.memory_config = self.memory_config
         return result
 
     def __setitem__(self, key: TensorKey, value: "Tensor") -> None:
@@ -578,19 +669,20 @@ def from_torch(
     dtype: Optional[torch.dtype] = None,
     layout: Any = None,
     device: Optional[Device] = None,
-    memory_config: Any = None,
+    memory_config: MemoryConfig = DRAM_MEMORY_CONFIG,
 ) -> Tensor:
     """Convert a torch.Tensor to a TTNN simulator Tensor.
 
     Accepts additional keyword arguments for API compatibility with TTNN
-    (layout, device, memory_config), but these are no-ops in the simulator.
+    (layout, device, memory_config), but layout and device are no-ops in the
+    simulator.
 
     Args:
         tensor: Input torch tensor to wrap
         dtype: Optional dtype to convert to (defaults to tensor's dtype)
         layout: Layout parameter (no-op in simulator)
         device: Device parameter (no-op in simulator)
-        memory_config: Memory config parameter (no-op in simulator)
+        memory_config: Optional MemoryConfig to attach to the tensor.
 
     Returns:
         Tensor wrapping the input (potentially converted) torch tensor
@@ -599,7 +691,7 @@ def from_torch(
     if dtype is not None and tensor.dtype != dtype:
         tensor = tensor.to(dtype)
 
-    return Tensor(tensor)
+    return Tensor(tensor, memory_config=memory_config)
 
 
 def multiply(
