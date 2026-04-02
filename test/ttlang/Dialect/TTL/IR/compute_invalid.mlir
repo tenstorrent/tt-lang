@@ -385,7 +385,7 @@ func.func @compute_no_inputs(
   %init_att = ttl.attach_cb %init, %cbout
       : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
         -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{requires at least one input for SFPU unpacker configuration}}
+  // expected-error @below {{body must contain at least one ttl.tile_store}}
   %0 = ttl.compute
       ins()
       outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
