@@ -54,6 +54,7 @@ struct TTLSetComputeKernelConfigPass
     // settings. Set them on the function so all compute ops inherit the
     // same value via getKernelBoolAttr().
     bool needsFp32 = fp32DestAccEn;
+    bool fp32FromMatmul = false;
     if (!needsFp32) {
       funcOp->walk([&](ComputeOp computeOp) {
         if (needsFp32) {
@@ -82,11 +83,25 @@ struct TTLSetComputeKernelConfigPass
           });
           if (hasMatmul) {
             needsFp32 = true;
+            fp32FromMatmul = true;
             return WalkResult::interrupt();
           }
         }
         return WalkResult::advance();
       });
+    }
+
+    // TODO(#454): Remove once tt-llk #1338 is fixed. unary_bcast produces
+    // incorrect results with fp32_dest_acc_en and bf16 CBs.
+    if (fp32FromMatmul) {
+      bool hasBcast = false;
+      funcOp->walk([&](TileBcastOp) -> WalkResult {
+        hasBcast = true;
+        return WalkResult::interrupt();
+      });
+      if (hasBcast) {
+        needsFp32 = false;
+      }
     }
 
     if (needsFp32 && !funcOp->hasAttr(kFp32DestAccEnAttrName)) {

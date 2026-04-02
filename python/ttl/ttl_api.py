@@ -701,7 +701,9 @@ def _compile_ttnn_kernel(
                     config.fp32_dest_acc_en = True
             if fp32_dest_acc_en is None and compiler_options.matmul_full_fp32:
                 if "matmul_block" in cpp_source:
-                    config.fp32_dest_acc_en = True
+                    # TODO(#454): Remove once tt-llk #1338 is fixed.
+                    if "unary_bcast" not in cpp_source:
+                        config.fp32_dest_acc_en = True
             # Compute kernels run on TRISC threads
             thread_to_kernel["TRISC_0"] = name
             thread_to_kernel["TRISC_1"] = name
