@@ -20,14 +20,14 @@ import ttnn
 import ttl
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def fill_kernel(inp, out):
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def fill_compute():
-        with out_dfb.reserve() as out:
+        with inp_dfb.wait() as _in, out_dfb.reserve() as out:
             out.store(ttl.math.fill(out, 1.0))
 
     @ttl.datamovement()
