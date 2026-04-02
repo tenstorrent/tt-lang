@@ -198,13 +198,21 @@ def split_work_to_nodes(
         if len(simplified_grid_size) == 1:
             work_per_node = units_to_divide // total_nodes
             remaining_work = units_to_divide % total_nodes
-            end_coord_1 = ((0,) * (len(grid_size) - 1)) + (remaining_work,)
-            start_coord_2 = ((0,) * (len(grid_size) - 1)) + (remaining_work + 1,)
-            end_coord_2 = ((0,) * (len(grid_size) - 1)) + (total_nodes - 1,)
+            end_coord_all = ((0,) * (len(grid_size) - 1)) + (total_nodes - 1,)
+            if remaining_work == 0:
+                return (
+                    total_nodes,
+                    ((0,) * len(grid_size), end_coord_all),
+                    (),
+                    work_per_node,
+                    0,
+                )
+            end_coord_1 = ((0,) * (len(grid_size) - 1)) + (remaining_work - 1,)
+            start_coord_2 = ((0,) * (len(grid_size) - 1)) + (remaining_work,)
             return (
                 total_nodes,
                 ((0,) * len(grid_size), end_coord_1),
-                (start_coord_2, end_coord_2),
+                (start_coord_2, end_coord_all),
                 work_per_node + 1,
                 work_per_node,
             )

@@ -8,6 +8,7 @@
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsTypes.td"
 include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.td"
+include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
@@ -315,14 +316,53 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 }
 
 def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
-    ParentOneOf<["ComputeOp"]>]> {
-  let summary = "Terminate ttl.compute region";
+    ParentOneOf<["ComputeOp", "DstSectionOp"]>]> {
+  let summary = "Terminate a ttl.compute or ttl.dst_section region";
   let description = [{
-    `ttl.yield` terminates the body of `ttl.compute`. Output is produced by
-    `ttl.tile_store` within the compute body, not by yielding values.
+    `ttl.yield` terminates the body of `ttl.compute` or `ttl.dst_section`.
   }];
   let assemblyFormat = "attr-dict";
   let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
+}
+
+//===----------------------------------------------------------------------===//
+// DST register section
+//===----------------------------------------------------------------------===//
+
+def TTL_DstSectionOp : TTL_Op<"dst_section", [
+    SingleBlockImplicitTerminator<"YieldOp">,
+    RecursiveMemoryEffects,
+    NoRegionArguments
+  ]> {
+  let summary = "DST register acquisition scope";
+  let description = [{
+    Demarcates a DST register section: all tile compute ops and stores in
+    the body share one acquire/release cycle. Lowered to:
+
+      acquire -> [math ops] -> commit -> wait -> [pack ops] -> release
+
+    The body must have math-phase ops before pack-phase ops (stores,
+    cb_push). `ttl-lower-to-loops` enforces this ordering, including after
+    subblock unrolling.
+
+    Granularity: one per tile loop iteration (non-subblocked), one per
+    unrolled subblock, or one per parallel iteration with the reduction
+    loop inside (accumulating computes).
+  }];
+
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "$body attr-dict";
+
+  let builders = [
+    OpBuilder<(ins), [{
+      Region *bodyRegion = $_state.addRegion();
+      Block *block = new Block();
+      bodyRegion->push_back(block);
+      OpBuilder::InsertionGuard guard($_builder);
+      $_builder.setInsertionPointToEnd(block);
+      YieldOp::create($_builder, $_state.location);
+    }]>
+  ];
 }
 
 //===----------------------------------------------------------------------===//
@@ -594,7 +634,7 @@ def TTL_CopyDstOp : TTL_Op<"copy_dst",
     The dst_idx attribute specifies the destination DST register index. The
     source DST register is determined by the src_tile's dst_idx attribute.
 
-    Lowering: ttl.copy_dst -> ttkernel.copy_dest_values(dst_idx, src.dst_idx)
+    Lowering: ttl.copy_dst -> ttkernel.copy_dest_values(src.dst_idx, dst_idx)
 
     Example:
     ```mlir
@@ -724,6 +764,85 @@ def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait]> {
 }
 
 //===----------------------------------------------------------------------===//
+// Reduce Operation
+//===----------------------------------------------------------------------===//
+
+def TTL_ReduceOp : TTL_Op<"reduce", [Pure]> {
+  let summary = "Reduce a tensor along specified dimensions with a scaling factor";
+  let description = [{
+    Performs a scaled reduction (sum or max) along the specified dimensions.
+    The result tensor has the reduced dimensions collapsed to size 1.
+    The scaler tensor is multiplied into every result tile.
+
+    `dims` specifies which dimensions to reduce, using Python-style indexing
+    (negative values count from the end). For a rank-2 input:
+    - dims=[-2] or dims=[0]: reduce rows
+    - dims=[-1] or dims=[1]: reduce columns
+    - dims=[-2,-1] or dims=[0,1]: reduce both
+
+    Both input and scaler must be CB-attached rank-2 tensors.
+  }];
+  let arguments = (ins AnyRankedTensor:$input,
+                       AnyRankedTensor:$scaler,
+                       TTL_ReduceTypeAttr:$reduce_type,
+                       DenseI64ArrayAttr:$dims);
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat = [{
+    $input `,` $scaler $reduce_type $dims attr-dict `:`
+    `(` type($input) `,` type($scaler) `)` `->` type($result)
+  }];
+  let hasVerifier = 1;
+}
+
+def TTL_TileReduceOp : TTL_TileOp<"tile_reduce",
+    [TTL_CBInputTileOpTrait, TTL_AccumulatingOpTrait]> {
+  let summary = "Tile-level reduction with scaling";
+  let description = [{
+    Reduces a tile from the input dataflow buffer using the specified
+    reduction function (sum or max), scaled by a tile from the scaler
+    dataflow buffer, and writes the result to DST.
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$scaler, AnyType:$output,
+                       TTL_ReduceTypeAttr:$reduce_type,
+                       TTKernel_ReduceDimAttr:$reduce_dim);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = [{
+    $input `,` $scaler `,` $output $reduce_type $reduce_dim attr-dict `:`
+    `(` type($input) `,` type($scaler) `,` type($output) `)` `->` type($result)
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// Transpose Operation
+//===----------------------------------------------------------------------===//
+
+def TTL_TransposeOp : TTL_Op<"transpose", [Pure]> {
+  let summary = "Transpose a 2D tensor of tiles";
+  let description = [{
+    Transposes a rank-2 tensor: shape (M, N) becomes (N, M).
+    Both the tile grid and individual 32x32 tiles are transposed.
+    Input must be a CB-attached rank-2 tensor.
+  }];
+  let arguments = (ins AnyRankedTensor:$input);
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat = "$input attr-dict `:` type($input) `->` type($result)";
+  let hasVerifier = 1;
+}
+
+def TTL_TileTransposeOp : TTL_TileOp<"tile_transpose", [TTL_CBInputTileOpTrait]> {
+  let summary = "Tile-level 32x32 transpose (dataflow buffer input, DST output)";
+  let description = [{
+    Transposes a 32x32 tile from a dataflow buffer and writes the result
+    to a DST register.
+  }];
+  let arguments = (ins AnyType:$input, AnyType:$output);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = [{
+    $input `,` $output attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // Matrix Multiplication
 //===----------------------------------------------------------------------===//
 
@@ -774,7 +893,7 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
 
 def TTL_CBReserveOp : TTL_Op<"cb_reserve",
     [MemoryEffects<[MemWrite]>, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
-  let summary = "Reserve pages in a circular buffer for writing";
+  let summary = "Reserve tiles in a dataflow buffer for writing";
   let description = [{
     `ttl.cb_reserve` blocks until pages are available in the circular buffer
     for writing. Returns a tensor view of the reserved pages.
@@ -783,15 +902,18 @@ def TTL_CBReserveOp : TTL_Op<"cb_reserve",
     reading from DRAM) to acquire space in the CB before writing data.
 
     The result tensor has shape matching the CB's block shape and element type.
-    The number of pages is derived from the CB's shape (elements per block).
+    The number of pages defaults to the CB's elements per block, but can be
+    overridden via the optional `num_tiles` attribute for per-subblock reservation.
 
     Example:
     ```mlir
     %view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %sub = ttl.cb_reserve %cb {num_tiles = 3 : i64} : <[3, 3], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x3x!ttcore.tile<32x32, bf16>>
     ```
   }];
   let arguments = (ins
-    TTL_CircularBuffer:$cb
+    TTL_CircularBuffer:$cb,
+    OptionalAttr<I64Attr>:$num_tiles
   );
   let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = "$cb attr-dict `:` type($cb) `->` type($result)";
@@ -799,7 +921,7 @@ def TTL_CBReserveOp : TTL_Op<"cb_reserve",
 }
 
 def TTL_CBPushOp : TTL_Op<"cb_push", [MemoryEffects<[MemWrite]>]> {
-  let summary = "Signal that pages have been written to the circular buffer";
+  let summary = "Signal that tiles have been written to the dataflow buffer";
   let description = [{
     `ttl.cb_push` signals that pages have been written to the circular buffer
     and are ready for consumer threads to read.
@@ -807,15 +929,18 @@ def TTL_CBPushOp : TTL_Op<"cb_push", [MemoryEffects<[MemWrite]>]> {
     This operation must be called after writing data to pages acquired via
     `ttl.cb_reserve`. It increments the CB's producer pointer.
 
-    The number of pages is derived from the CB's shape (elements per block).
+    The number of pages defaults to the CB's elements per block, but can be
+    overridden via the optional `num_tiles` attribute for per-subblock pushing.
 
     Example:
     ```mlir
     ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.cb_push %cb {num_tiles = 3 : i64} : <[3, 3], !ttcore.tile<32x32, bf16>, 2>
     ```
   }];
   let arguments = (ins
-    TTL_CircularBuffer:$cb
+    TTL_CircularBuffer:$cb,
+    OptionalAttr<I64Attr>:$num_tiles
   );
   let assemblyFormat = "$cb attr-dict `:` type($cb)";
   let hasVerifier = 1;

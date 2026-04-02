@@ -16,10 +16,21 @@ def test_ttl_api_basic():
     import ttl
 
     # Basic API should be available even without TTNN
-    assert hasattr(ttl, "kernel")
+    assert hasattr(ttl, "operation")
     assert hasattr(ttl, "compute")
     assert hasattr(ttl, "datamovement")
     assert hasattr(ttl, "Program")
+
+
+def test_ttl_version():
+    """Verify ttl version is available and valid."""
+    import ttl
+
+    assert hasattr(ttl, "__version__")
+    assert isinstance(ttl.__version__, str)
+    assert ttl.__version__ != ""
+    # Should be a real version, not an unsubstituted CMake variable
+    assert not ttl.__version__.startswith("@")
 
 
 def test_python_environment():

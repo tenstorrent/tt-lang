@@ -1,6 +1,9 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+#
+# Standalone tutorial: real `import ttl`, ttnn device (not python/sim).
+
 import ttnn
 import torch
 
@@ -21,7 +24,7 @@ TILE_SIZE = 32
 GRANULARITY = 4
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY

@@ -34,6 +34,18 @@ def TTL_BcastType : I32EnumAttr<"BcastType", "TTL broadcast type",
   let cppNamespace = "::mlir::tt::ttl";
 }
 
+//===----------------------------------------------------------------------===//
+// Reduce enums
+//===----------------------------------------------------------------------===//
+
+def TTL_ReduceType_Sum : I32EnumAttrCase<"Sum", 0, "sum">;
+def TTL_ReduceType_Max : I32EnumAttrCase<"Max", 1, "max">;
+
+def TTL_ReduceType : I32EnumAttr<"ReduceType", "TTL reduction function type",
+    [TTL_ReduceType_Sum, TTL_ReduceType_Max]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
 // Buffer type for tensor memory placement.
 // Values match TTNN BufferType enum for compatibility.
 def TTL_BufferType_DRAM       : I32EnumAttrCase<"DRAM",       0, "dram">;

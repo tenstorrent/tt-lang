@@ -49,11 +49,25 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Lower matmul to block-level hardware calls (default: enabled).",
     )
     p.add_argument(
+        "--ttl-auto-sync",
+        default=None,
+        dest="auto_sync",
+        action=argparse.BooleanOptionalAction,
+        help="Let the compiler insert and move DFB synchronization ops (default: disabled).",
+    )
+    p.add_argument(
         "--ttl-combine-pack-tiles",
         default=None,
         dest="combine_pack_tiles",
         action=argparse.BooleanOptionalAction,
         help="Combine consecutive pack_tile ops into pack_tile_block (default: enabled).",
+    )
+    p.add_argument(
+        "--ttl-reduce-full-fp32",
+        default=None,
+        dest="reduce_full_fp32",
+        action=argparse.BooleanOptionalAction,
+        help="Enable FP32 accumulation for reduce operations (default: enabled).",
     )
     return p
 
@@ -96,7 +110,9 @@ class CompilerOptions:
     maximize_dst: bool = True
     enable_fpu_binary_ops: bool = True
     use_block_matmul: bool = True
+    auto_sync: bool = False
     combine_pack_tiles: bool = True
+    reduce_full_fp32: bool = True
 
     # Fields that were explicitly provided (not defaulted). Excluded from
     # equality and hashing so two instances with the same bool values are
@@ -132,6 +148,11 @@ class CompilerOptions:
         if _argv_result is not None:
             return _argv_result
 
+        if "--ttl-version" in sys.argv[1:]:
+            from ttl.version import __version__
+
+            print(f"ttlang {__version__}")
+            sys.exit(0)
         if "--ttl-help" in sys.argv[1:]:
             print("TTL compiler options:\n")
             print(CompilerOptions.usage())

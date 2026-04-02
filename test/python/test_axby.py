@@ -36,7 +36,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 from ttlang_test_utils import assert_allclose, to_dram
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def axby_fused_kernel(a, x, b, y, out):
     """
     Fused kernel: out = a*x + b*y with 4 separate CBs.

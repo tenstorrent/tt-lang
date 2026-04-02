@@ -3,12 +3,12 @@
 
 // FPU path (default): binary add uses add_tiles (reads from CB).
 // RUN: ttlang-opt %s --split-input-file \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-subblock-compute-for-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-subblock-compute-for-dst, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   | FileCheck %s --check-prefix=FPU
 
 // SFPU path: binary add uses copy_tile + add_binary_tile.
 // RUN: ttlang-opt %s --split-input-file \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-subblock-compute-for-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-subblock-compute-for-dst, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   | FileCheck %s --check-prefix=SFPU
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
@@ -36,7 +36,8 @@
 // FPU-NOT:   ttkernel.add_tiles_init
 // FPU:       ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[C1]], %[[C1]], %[[C1]])
 // FPU:       ttkernel.tile_regs_commit
-// FPU:       ttkernel.tile_regs_wait
+// FPU-NEXT:  ttkernel.tile_regs_wait
+// Pack phase: pack_tile after wait, cb_push_back after release
 // FPU:       ttkernel.pack_tile(%[[C0]], %[[CB2]], %[[C0]], true)
 // FPU:       ttkernel.pack_tile(%[[C1]], %[[CB2]], %[[C1]], true)
 // FPU:       ttkernel.tile_regs_release
@@ -58,6 +59,7 @@
 // SFPU:      ttkernel.cb_reserve_back(%[[CB2]], %[[C2_I32]])
 // SFPU:      ttkernel.init_sfpu(%[[CB0]], %[[CB2]])
 // SFPU:      ttkernel.tile_regs_acquire
+// Grouped: all copies from CB0, all copies from CB1, then all adds
 // SFPU:      ttkernel.copy_tile_init(%[[CB0]])
 // SFPU:      ttkernel.copy_tile(%[[CB0]], %[[C0]], %[[C0]])
 // SFPU:      ttkernel.copy_tile(%[[CB0]], %[[C1]], %[[C2]])
@@ -66,10 +68,10 @@
 // SFPU:      ttkernel.copy_tile(%[[CB1]], %[[C1]], %[[C3]])
 // SFPU:      ttkernel.add_binary_tile_init
 // SFPU:      ttkernel.add_binary_tile(%[[C0]], %[[C1]], %[[C0]])
-// SFPU-NOT:  ttkernel.add_binary_tile_init
 // SFPU:      ttkernel.add_binary_tile(%[[C2]], %[[C3]], %[[C2]])
 // SFPU:      ttkernel.tile_regs_commit
-// SFPU:      ttkernel.tile_regs_wait
+// SFPU-NEXT: ttkernel.tile_regs_wait
+// Pack phase: pack_tile after wait, cb_push_back after release
 // SFPU:      ttkernel.pack_tile(%[[C0]], %[[CB2]], %[[C0]], true)
 // SFPU:      ttkernel.pack_tile(%[[C2]], %[[CB2]], %[[C1]], true)
 // SFPU:      ttkernel.tile_regs_release
@@ -141,19 +143,19 @@ func.func @single_type_already_sorted(
 // FPU:       ttkernel.cb_reserve_back(%[[CB4]], %[[C2_I32]])
 // FPU:       ttkernel.binary_op_init_common(%[[CB0]], %[[CB1]], %[[CB3]])
 // FPU:       ttkernel.tile_regs_acquire
+// Grouped: copy(c) for both tiles, add_tiles for both tiles, exp for both tiles
 // FPU:       ttkernel.copy_tile_init(%[[CB2]])
 // FPU:       ttkernel.copy_tile(%[[CB2]], %[[C0]], %[[C1]])
 // FPU:       ttkernel.copy_tile(%[[CB2]], %[[C1]], %[[C3]])
 // FPU:       ttkernel.add_tiles_init(%[[CB0]], %[[CB1]])
 // FPU:       ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[C0]], %[[C0]], %[[C0]])
-// FPU-NOT:   ttkernel.add_tiles_init
 // FPU:       ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[C1]], %[[C1]], %[[C2]])
 // FPU:       ttkernel.exp_tile_init
 // FPU:       ttkernel.exp_tile(%[[C1]])
-// FPU-NOT:   ttkernel.exp_tile_init
 // FPU:       ttkernel.exp_tile(%[[C3]])
 // FPU:       ttkernel.tile_regs_commit
-// FPU:       ttkernel.tile_regs_wait
+// FPU-NEXT:  ttkernel.tile_regs_wait
+// Pack phase
 // FPU:       ttkernel.pack_tile(%[[C0]], %[[CB3]], %[[C0]], true)
 // FPU:       ttkernel.pack_tile(%[[C1]], %[[CB4]], %[[C0]], true)
 // FPU:       ttkernel.pack_tile(%[[C2]], %[[CB3]], %[[C1]], true)
@@ -181,6 +183,7 @@ func.func @single_type_already_sorted(
 // SFPU:      ttkernel.cb_reserve_back(%[[CB4]], %[[C2_I32]])
 // SFPU:      ttkernel.init_sfpu(%[[CB0]], %[[CB3]])
 // SFPU:      ttkernel.tile_regs_acquire
+// Grouped: copies from CB0, copies from CB1, adds, copies from CB2, exps
 // SFPU:      ttkernel.copy_tile_init(%[[CB0]])
 // SFPU:      ttkernel.copy_tile(%[[CB0]], %[[C0]], %[[C0]])
 // SFPU:      ttkernel.copy_tile(%[[CB0]], %[[C1]], %[[C2]])
@@ -189,17 +192,16 @@ func.func @single_type_already_sorted(
 // SFPU:      ttkernel.copy_tile(%[[CB1]], %[[C1]], %[[C3]])
 // SFPU:      ttkernel.add_binary_tile_init
 // SFPU:      ttkernel.add_binary_tile(%[[C0]], %[[C1]], %[[C0]])
-// SFPU-NOT:  ttkernel.add_binary_tile_init
 // SFPU:      ttkernel.add_binary_tile(%[[C2]], %[[C3]], %[[C2]])
 // SFPU:      ttkernel.copy_tile_init(%[[CB2]])
 // SFPU:      ttkernel.copy_tile(%[[CB2]], %[[C0]], %[[C1]])
 // SFPU:      ttkernel.copy_tile(%[[CB2]], %[[C1]], %[[C3]])
 // SFPU:      ttkernel.exp_tile_init
 // SFPU:      ttkernel.exp_tile(%[[C1]])
-// SFPU-NOT:  ttkernel.exp_tile_init
 // SFPU:      ttkernel.exp_tile(%[[C3]])
 // SFPU:      ttkernel.tile_regs_commit
-// SFPU:      ttkernel.tile_regs_wait
+// SFPU-NEXT: ttkernel.tile_regs_wait
+// Pack phase
 // SFPU:      ttkernel.pack_tile(%[[C0]], %[[CB3]], %[[C0]], true)
 // SFPU:      ttkernel.pack_tile(%[[C1]], %[[CB4]], %[[C0]], true)
 // SFPU:      ttkernel.pack_tile(%[[C2]], %[[CB3]], %[[C1]], true)

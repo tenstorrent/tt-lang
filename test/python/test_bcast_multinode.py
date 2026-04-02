@@ -51,7 +51,7 @@ L1_SHAPE = (
 )
 
 
-@ttl.kernel(grid=(8, 8))
+@ttl.operation(grid=(8, 8))
 def bcast_kernel(a, b, c, out1, out2, out3):
     """
     Multinode kernel with 20 fused ops across 3 outputs.
@@ -255,7 +255,7 @@ def make_bcast_granularity_kernel(granularity: int):
     Uses row broadcast (dims=[0]) pattern.
     """
 
-    @ttl.kernel(grid=(8, 8))
+    @ttl.operation(grid=(8, 8))
     def bcast_granularity_kernel(inp, out):
         """multinode broadcast kernel with parameterized granularity."""
         block_rows = granularity

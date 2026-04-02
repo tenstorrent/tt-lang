@@ -51,7 +51,7 @@ through user scenarios to catch broken links, stale instructions, and dead ends:
    the Sphinx tree will break in rendered HTML. Design docs under
    `docs/development/` should use absolute GitHub URLs.
 2. **Getting-started path**: trace README Quick Start → getting-started.md →
-   tutorial → programming guide. Verify each link resolves and the instructions
+   Tour of TT-Lang → Programming Guide. Verify each link resolves and the instructions
    are current.
 3. **Contributor path**: trace contributor-guide.md → build.md → testing.md.
    Verify build commands and test targets match the current CMake targets.

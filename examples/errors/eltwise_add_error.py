@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+#
+# TTLANG_HARDWARE_CI: skip-compiler
 # type: ignore
 
 import torch
@@ -8,7 +10,7 @@ import ttl
 import ttnn
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def add_with_kernel(a, b, y):
     row_tiles = 2
     col_tiles = 2

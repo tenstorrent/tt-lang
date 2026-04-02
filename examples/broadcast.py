@@ -1,6 +1,9 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+#
+# Standalone example: real `import ttl`, ttnn device (not python/sim).
+
 import torch
 import ttnn
 
@@ -21,7 +24,7 @@ TILE_SIZE = 32
 GRANULARITY = 4
 
 
-@ttl.kernel(grid=(8, 8))
+@ttl.operation(grid=(8, 8))
 def __demo_kernel(a, b, c, y):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY
@@ -52,7 +55,9 @@ def __demo_kernel(a, b, c, y):
                     y_dfb.reserve() as y_blk,
                 ):
                     # c_blk has shape (4, 1), needs to broadcast along dimension -1 (innermost/columns)
-                    y_blk.store(a_blk * b_blk + ttl.math.broadcast(c_blk, dims=[-1]))
+                    y_blk.store(
+                        a_blk * b_blk + ttl.math.broadcast(c_blk, y_blk, dims=[-1])
+                    )
 
     @ttl.datamovement()
     def demo_read():

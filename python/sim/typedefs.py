@@ -16,12 +16,14 @@ from pydantic import Field
 #       https://github.com/tenstorrent/tt-lang/issues/69
 class IndexType(Enum):
     """
-    Enumeration of indexing types for TensorAccessors.
+    Enumeration of tensor layouts.
 
-    Currently only supports tile-based indexing.
+    TILE: shape units are 32x32 tiles; indices are in tile-space.
+    ROW_MAJOR: shape units are scalars; indices are in element-space.
     """
 
     TILE = auto()
+    ROW_MAJOR = auto()
 
 
 PositiveInt = Annotated[int, Field(gt=0)]

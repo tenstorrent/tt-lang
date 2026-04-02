@@ -3,12 +3,12 @@
 
 // FPU path (default): add uses add_tiles (reads from CB), mul uses SFPU (mixed inputs).
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   | FileCheck %s --check-prefix=FPU
 
 // SFPU path: all binary ops use copy_tile + SFPU binary ops.
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   | FileCheck %s --check-prefix=SFPU
 
 // =============================================================================
@@ -33,24 +33,19 @@
 // FPU:       scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
 // FPU:         scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
 // FPU:           ttkernel.tile_regs_acquire
-// Linearized CB index for FPU add: i * 2 + j
-// FPU:           %[[MULI:.*]] = arith.muli %[[I]], %[[C2]]
-// FPU:           %[[LINIDX:.*]] = arith.addi %[[MULI]], %[[J]]
+// FPU:           %[[LINIDX:.*]] = affine.linearize_index [%[[I]], %[[J]]] by (2, 2)
 // FPU:           ttkernel.add_tiles_init(%[[CB0]], %[[CB1]])
-// add_tiles reads lhs and rhs from CB at linearized index, writes DST[0]
 // FPU:           ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[LINIDX]], %[[LINIDX]], %[[C0]])
 // FPU-NOT:       ttkernel.add_binary_tile
-// mul's rhs needs copy_tile (from CB1 to DST[1]), using affine.linearize_index
-// FPU:           %[[AFFINEIDX:.*]] = affine.linearize_index [%[[I]], %[[J]]] by (2, 2)
 // FPU:           ttkernel.copy_tile_init(%[[CB1]])
-// FPU:           ttkernel.copy_tile(%[[CB1]], %[[AFFINEIDX]], %[[C1]])
+// FPU:           ttkernel.copy_tile(%[[CB1]], %[[LINIDX]], %[[C1]])
 // FPU:           ttkernel.mul_binary_tile_init
 // FPU:           ttkernel.mul_binary_tile(%[[C0]], %[[C1]], %[[C0]])
 // FPU:           ttkernel.exp_tile_init
 // FPU:           ttkernel.exp_tile(%[[C0]])
 // FPU:           ttkernel.tile_regs_commit
 // FPU:           ttkernel.tile_regs_wait
-// FPU:           ttkernel.pack_tile(%[[C0]], %[[CB2]], %[[AFFINEIDX]], true)
+// FPU:           ttkernel.pack_tile(%[[C0]], %[[CB2]], %[[LINIDX]], true)
 // FPU:           ttkernel.cb_push_back(%[[CB2]], %[[C4]])
 // FPU:           ttkernel.tile_regs_release
 // FPU:         }

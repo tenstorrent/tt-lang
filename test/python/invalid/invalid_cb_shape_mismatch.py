@@ -21,7 +21,7 @@ import ttl
 
 
 # CHECK: shape mismatch between (2, 2) bf16 tensor and (2, 1) bf16 tensor; note: you can use ttl.math.broadcast() to expand the smaller tensor
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def mismatched_shape_kernel(a, b, out):
     """INVALID: add tensors with mismatched DFB shapes."""
     # a_dfb is (2, 1) - column vector

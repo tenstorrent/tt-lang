@@ -75,7 +75,7 @@ Then run with `TTLANG_EMIT_RUNNER=1` to generate the C++ kernels and Python runn
 ~/.claude/commands/tools/run-test.sh --hw --emit-runner /path/to/kernel.py
 ```
 
-This generates files in `/tmp/$USER/` on the remote (one set per `@ttl.kernel` function):
+This generates files in `/tmp/$USER/` on the remote (one set per `@ttl.operation` function):
 - `ttlang_kernel_compute_<hash>.cpp` - Compute kernel
 - `ttlang_kernel_dm_read_<hash>.cpp` - Data movement reader
 - `ttlang_kernel_dm_write_<hash>.cpp` - Data movement writer

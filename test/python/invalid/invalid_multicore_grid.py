@@ -20,7 +20,7 @@ import ttl
 
 
 # CHECK: core() currently only supports dims=2, got dims=3
-@ttl.kernel(grid=(2, 2))
+@ttl.operation(grid=(2, 2))
 def invalid_core_dims_kernel(lhs, rhs, out):
     """This kernel should fail because core(dims=3) is not supported."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)

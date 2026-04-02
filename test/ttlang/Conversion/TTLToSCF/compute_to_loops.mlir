@@ -24,10 +24,12 @@ func.func @compute_add_2x2(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<
   // CHECK-DAG: %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT]]
   // CHECK: scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
   // CHECK-NEXT: scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
+  // CHECK-NEXT: ttl.dst_section {
   // CHECK-NEXT: %[[EXT_A:.*]] = tensor.extract %[[A_CB]][%[[I]], %[[J]]] : tensor<2x2x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: %[[EXT_B:.*]] = tensor.extract %[[B_CB]][%[[I]], %[[J]]] : tensor<2x2x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: %[[SUM:.*]] = ttl.tile_add %[[EXT_A]], %[[EXT_B]] : !ttcore.tile<32x32, f32>
   // CHECK-NEXT: ttl.tile_store %[[SUM]], %{{.*}}[%[[I]], %[[J]]]
+  // CHECK-NEXT: }
         // CHECK: return
   %out_view = ttl.cb_reserve %cbout : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %0 = ttl.compute ins(%a_att, %b_att : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>) outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} {
@@ -63,9 +65,11 @@ func.func @compute_exp_3x3(%a: tensor<3x3x!ttcore.tile<32x32, f32>>) -> tensor<3
   // CHECK-DAG: %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT]]
   // CHECK: scf.for %[[I:.*]] = %[[C0]] to %[[C3]] step %[[C1]]
   // CHECK-NEXT: scf.for %[[J:.*]] = %[[C0]] to %[[C3]] step %[[C1]]
+  // CHECK-NEXT: ttl.dst_section {
   // CHECK-NEXT: %[[EXT:.*]] = tensor.extract %[[A_CB]][%[[I]], %[[J]]] : tensor<3x3x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: %[[EXP:.*]] = ttl.tile_exp %[[EXT]] : !ttcore.tile<32x32, f32>
   // CHECK-NEXT: ttl.tile_store %[[EXP]], %{{.*}}[%[[I]], %[[J]]]
+  // CHECK-NEXT: }
         // CHECK: return
   %out_view_0 = ttl.cb_reserve %cbout : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %0 = ttl.compute ins(%a_att : tensor<3x3x!ttcore.tile<32x32, f32>>) outs(%init_att : tensor<3x3x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map1, #map1], iterator_types = ["parallel", "parallel"]} {
@@ -100,9 +104,11 @@ func.func @compute_relu_1d(%a: tensor<4x!ttcore.tile<32x32, f32>>) -> tensor<4x!
   // CHECK-DAG: %[[A_CB:.*]] = ttl.attach_cb %[[ARG0]]
   // CHECK-DAG: %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT]]
   // CHECK: scf.for %[[I:.*]] = %[[C0]] to %[[C4]] step %[[C1]]
+  // CHECK-NEXT: ttl.dst_section {
   // CHECK-NEXT: %[[EXT:.*]] = tensor.extract %[[A_CB]][%[[I]]] : tensor<4x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: %[[RELU:.*]] = ttl.tile_relu %[[EXT]] : !ttcore.tile<32x32, f32>
   // CHECK-NEXT: ttl.tile_store %[[RELU]], %{{.*}}[%[[I]]]
+  // CHECK-NEXT: }
       // CHECK: return
   %out_view_1 = ttl.cb_reserve %cbout : <[1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x!ttcore.tile<32x32, f32>>
   %0 = ttl.compute ins(%a_att : tensor<4x!ttcore.tile<32x32, f32>>) outs(%init_att : tensor<4x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map2, #map2], iterator_types = ["parallel"]} {
@@ -136,11 +142,13 @@ func.func @compute_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<2x
   // CHECK-DAG: %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT:.*]]
   // CHECK: scf.for %[[I:.*]] = %[[C0:.*]] to %[[C2:.*]] step %[[C1:.*]]
   // CHECK-NEXT: scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
+  // CHECK-NEXT: ttl.dst_section {
   // CHECK: %[[EXT_A:.*]] = tensor.extract %[[A_CB]][%[[I]], %[[J]]]
   // CHECK: %[[EXT_B:.*]] = tensor.extract %[[B_CB]][%[[I]], %[[J]]]
   // CHECK: %[[ADD:.*]] = ttl.tile_add %[[EXT_A]], %[[EXT_B]] : !ttcore.tile<32x32, f32>
   // CHECK-NEXT: %[[RELU:.*]] = ttl.tile_relu %[[ADD]] : !ttcore.tile<32x32, f32>
   // CHECK-NEXT: ttl.tile_store %[[RELU]], %{{.*}}[%[[I]], %[[J]]]
+  // CHECK-NEXT: }
       %out_view_2 = ttl.cb_reserve %cbout : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
       %0 = ttl.compute ins(%a_att, %b_att : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>) outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map3, #map3, #map3], iterator_types = ["parallel", "parallel"]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>, %arg2: !ttcore.tile<32x32, f32>):
@@ -162,6 +170,7 @@ func.func @compute_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<2x
 #map_id2 = affine_map<(d0, d1) -> (d0, d1)>
 
 // CHECK-LABEL: func.func @compute_permuted_input
+// CHECK: ttl.dst_section {
 // CHECK: tensor.extract %[[ARG0:.*]][%[[J:.*]], %[[I:.*]]]
 // CHECK: tensor.extract %[[ARG1:.*]][%[[I]], %[[J]]]
 func.func @compute_permuted_input(%a: tensor<3x2x!ttcore.tile<32x32, f32>>, %b: tensor<2x3x!ttcore.tile<32x32, f32>>) -> tensor<2x3x!ttcore.tile<32x32, f32>> {
@@ -192,6 +201,7 @@ func.func @compute_permuted_input(%a: tensor<3x2x!ttcore.tile<32x32, f32>>, %b: 
 #map_id3 = affine_map<(d0, d1) -> (d0, d1)>
 
 // CHECK-LABEL: func.func @compute_broadcast_input
+// CHECK: ttl.dst_section {
 // CHECK: tensor.extract %[[ARG0:.*]][%[[J:.*]]]
 func.func @compute_broadcast_input(%a: tensor<3x!ttcore.tile<32x32, f32>>) -> tensor<2x3x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x3x!ttcore.tile<32x32, f32>>
@@ -229,11 +239,13 @@ func.func @compute_broadcast_input(%a: tensor<3x!ttcore.tile<32x32, f32>>) -> te
 // CHECK-DAG: %[[INIT_CB:.*]] = ttl.attach_cb %[[INIT]]
 // CHECK: scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
 // CHECK-NEXT: scf.for %[[J:.*]] = %[[C0]] to %[[C3]] step %[[C1]]
+// CHECK-NEXT: ttl.dst_section {
 // CHECK: %[[EXT_A:.*]] = tensor.extract %[[A_CB]][%[[I]], %[[J]]]
 // CHECK: %[[EXT_ACC:.*]] = tensor.extract %[[INIT_CB]][%[[I]]]
 // CHECK: %[[ADD:.*]] = ttl.tile_add %[[EXT_A]], %[[EXT_ACC]] : !ttcore.tile<32x32, f32>
 // Reduction output map (d0,d1)->(d0): tile_store gets only the parallel dim.
 // CHECK: ttl.tile_store %[[ADD]], %{{.*}}[%[[I]]]
+// CHECK-NEXT: }
 func.func @compute_reduction(%a: tensor<2x3x!ttcore.tile<32x32, f32>>) -> tensor<2x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x!ttcore.tile<32x32, f32>>
   %cba = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -320,10 +332,12 @@ func.func @compute_two_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<
   // First compute: add
   // CHECK: scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
   // CHECK-NEXT: scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
+  // CHECK-NEXT: ttl.dst_section {
   // CHECK-NEXT: %[[EXT_A:.*]] = tensor.extract %[[A_CB]][%[[I]], %[[J]]] : tensor<2x2x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: %[[EXT_B:.*]] = tensor.extract %[[B_CB]][%[[I]], %[[J]]] : tensor<2x2x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: %[[SUM:.*]] = ttl.tile_add %[[EXT_A]], %[[EXT_B]] : !ttcore.tile<32x32, f32>
   // CHECK-NEXT: ttl.tile_store %[[SUM]], %{{.*}}[%[[I]], %[[J]]]
+  // CHECK-NEXT: }
         %out_view_8 = ttl.cb_reserve %cbout0 : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
         %add_result = ttl.compute ins(%a_cb, %b_cb : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>) outs(%init0_cb : tensor<2x2x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map_seq, #map_seq, #map_seq], iterator_types = ["parallel", "parallel"]} {
   ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>, %arg2: !ttcore.tile<32x32, f32>):
@@ -338,9 +352,11 @@ func.func @compute_two_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<
   // CHECK-DAG: %[[ADD_RESULT_CB:.*]] = ttl.attach_cb %[[INIT0_CB]]
   // CHECK: scf.for %[[I2:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
   // CHECK-NEXT: scf.for %[[J2:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
+  // CHECK-NEXT: ttl.dst_section {
   // CHECK-NEXT: %[[EXT_ADD:.*]] = tensor.extract %[[ADD_RESULT_CB]][%[[I2]], %[[J2]]] : tensor<2x2x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: %[[RELU:.*]] = ttl.tile_relu %[[EXT_ADD]] : !ttcore.tile<32x32, f32>
   // CHECK-NEXT: ttl.tile_store %[[RELU]], %{{.*}}[%[[I2]], %[[J2]]]
+  // CHECK-NEXT: }
         // CHECK: return
   %out_view_9 = ttl.cb_reserve %cbout1 : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %relu_result = ttl.compute ins(%add_result_cb : tensor<2x2x!ttcore.tile<32x32, f32>>) outs(%init1_cb : tensor<2x2x!ttcore.tile<32x32, f32>>) {indexing_maps = [#map_seq, #map_seq], iterator_types = ["parallel", "parallel"]} {

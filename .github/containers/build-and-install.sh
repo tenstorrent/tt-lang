@@ -93,8 +93,11 @@ do_configure() {
     fi
 
     local _force_rebuild=OFF
+    local _build_toolchain=OFF
     if [ "$FORCE_REBUILD" = true ]; then
         _force_rebuild=ON
+        _build_toolchain=ON
+        _use_toolchain=OFF
     fi
 
     cmake -G Ninja -B "$CMAKE_BINARY_DIR" \
@@ -103,7 +106,8 @@ do_configure() {
         -DTTLANG_TOOLCHAIN_DIR=$TTLANG_TOOLCHAIN_DIR \
         -DTTLANG_PYTHON_VENV=$TTLANG_TOOLCHAIN_DIR/venv \
         -DTTLANG_ENABLE_PERF_TRACE=ON \
-        -DTTLANG_FORCE_TOOLCHAIN_REBUILD=$_force_rebuild
+        -DTTLANG_FORCE_TOOLCHAIN_REBUILD=$_force_rebuild \
+        -DTTLANG_BUILD_TOOLCHAIN=$_build_toolchain
 
     echo "=== Disk space after configure ==="
     df -BM
@@ -189,7 +193,7 @@ do_test_toolchain() {
     cmake --build "$test_build_dir" --target check-ttlang
 
     source "$test_build_dir/env/activate"
-    python examples/tutorial/multinode_grid_auto.py
+    python examples/elementwise-tutorial/step_4_multinode_grid_auto.py
 
     rm -rf "$test_build_dir"
 }

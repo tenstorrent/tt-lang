@@ -473,8 +473,30 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
       b, loc, mlir::TypeRange(tiledOutputs), tiledInputs, tiledOutputs,
       getIndexingMapsAttr(), getIteratorTypesAttr());
 
-  // Clone the body region into the new compute op.
+  // Clone the body, remapping captured view references to tiled outputs.
+  // The body's tile_store ops capture the cb_reserve view from outside the
+  // compute. When tiling, these must reference the sliced output instead so
+  // that downstream lowering can compute the correct global DFB offset from
+  // the extract_slice. This applies uniformly to all computes (elementwise,
+  // matmul, reduce, etc.): iter_index produces local (subblock) coordinates,
+  // and addSliceOffset adds the global offset during TTL-to-TTKernel
+  // conversion.
   mlir::IRMapping mapping;
+  for (size_t i = 0; i < getOutputs().size(); ++i) {
+    mlir::Value origOutput = getOutputs()[i];
+    mlir::Value tiledOut = tiledOutputs[i];
+    getBody().walk([&](TileStoreOp store) {
+      mlir::Value view = store.getView();
+      if (view.getParentRegion() == &getBody()) {
+        return;
+      }
+      mlir::Value viewCB = getAttachedCB(view);
+      mlir::Value outputCB = getAttachedCB(origOutput);
+      if (viewCB && outputCB && viewCB == outputCB) {
+        mapping.map(view, tiledOut);
+      }
+    });
+  }
   getBody().cloneInto(&tiledOp.getBody(), mapping);
 
   mlir::TilingResult result;
@@ -864,15 +886,15 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
       continue;
     }
     hasTileStore = true;
-    auto reserve = store.getView().getDefiningOp<CBReserveOp>();
-    if (!reserve) {
-      return store.emitOpError() << "view must be produced by ttl.cb_reserve";
+    Value viewCB = getAttachedCB(store.getView());
+    if (!viewCB) {
+      return store.emitOpError() << "view must trace to a dataflow buffer";
     }
-    if (!outputCBs.contains(reserve.getCb())) {
+    if (!outputCBs.contains(viewCB)) {
       return store.emitOpError()
              << "stores to CB that is not a formal output of the compute";
     }
-    storedCBs.insert(reserve.getCb());
+    storedCBs.insert(viewCB);
   }
   if (!hasTileStore) {
     return emitOpError("body must contain at least one ttl.tile_store");
@@ -892,12 +914,47 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::CBReserveOp::verify() {
   auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
   auto resultTy = mlir::cast<RankedTensorType>(getResult().getType());
+
+  // When `num_tiles` is present, the result shape is a subblock of the CB.
+  // Verify element type match and that tile count is consistent.
+  if (getNumTiles()) {
+    auto cbElemTy = cbTy.getElementType();
+    if (cbElemTy != resultTy.getElementType()) {
+      return emitOpError() << "result element type ("
+                           << resultTy.getElementType()
+                           << ") must match DFB element type (" << cbElemTy
+                           << ")";
+    }
+    int64_t resultTiles = 1;
+    for (int64_t d : resultTy.getShape()) {
+      resultTiles *= d;
+    }
+    if (resultTiles != static_cast<int64_t>(getNumTiles().value())) {
+      return emitOpError() << "result tensor has " << resultTiles
+                           << " tiles but num_tiles attribute is "
+                           << getNumTiles().value();
+    }
+    int64_t cbCapacity = cbTy.getElementsPerBlock();
+    if (resultTiles > cbCapacity) {
+      return emitOpError() << "num_tiles (" << resultTiles
+                           << ") exceeds DFB capacity (" << cbCapacity << ")";
+    }
+    return mlir::success();
+  }
+
   return verifyCBOpWithResult(getOperation(), cbTy, resultTy);
 }
 
 mlir::LogicalResult mlir::tt::ttl::CBPushOp::verify() {
-  // cb_push has no result to verify; the CB type is already enforced by
-  // tablegen constraints.
+  if (getNumTiles()) {
+    auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
+    int64_t cbCapacity = cbTy.getElementsPerBlock();
+    int64_t numTiles = static_cast<int64_t>(getNumTiles().value());
+    if (numTiles > cbCapacity) {
+      return emitOpError() << "num_tiles (" << numTiles
+                           << ") exceeds DFB capacity (" << cbCapacity << ")";
+    }
+  }
   return success();
 }
 
@@ -1038,6 +1095,121 @@ mlir::LogicalResult mlir::tt::ttl::MatmulOp::verify() {
                          << resultType.getElementType()
                          << " must match input element type "
                          << lhsType.getElementType();
+  }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// ReduceOp
+//===----------------------------------------------------------------------===//
+
+mlir::LogicalResult mlir::tt::ttl::ReduceOp::verify() {
+  auto inputType = mlir::cast<RankedTensorType>(getInput().getType());
+  auto scalerType = mlir::cast<RankedTensorType>(getScaler().getType());
+  auto resultType = mlir::cast<RankedTensorType>(getResult().getType());
+
+  if (inputType.getRank() != 2) {
+    return emitOpError() << "input must be rank 2, got rank "
+                         << inputType.getRank();
+  }
+  if (scalerType.getRank() != 2) {
+    return emitOpError() << "scaler must be rank 2, got rank "
+                         << scalerType.getRank();
+  }
+  if (resultType.getRank() != 2) {
+    return emitOpError() << "result must be rank 2, got rank "
+                         << resultType.getRank();
+  }
+
+  if (!inputType.hasStaticShape() || !scalerType.hasStaticShape() ||
+      !resultType.hasStaticShape()) {
+    return emitOpError() << "all operands must have static shapes";
+  }
+
+  // Normalize and validate dims.
+  ArrayRef<int64_t> dims = getDims();
+  if (dims.empty()) {
+    return emitOpError() << "dims must be non-empty";
+  }
+
+  int64_t rank = inputType.getRank();
+  llvm::SmallDenseSet<int64_t> normDims;
+  for (int64_t d : dims) {
+    int64_t normalized = d < 0 ? d + rank : d;
+    if (normalized < 0 || normalized >= rank) {
+      return emitOpError() << "dim " << d << " is out of range for rank "
+                           << rank;
+    }
+    if (!normDims.insert(normalized).second) {
+      return emitOpError() << "duplicate dim " << d;
+    }
+  }
+
+  // Verify result shape: reduced dims must be 1, others must match input.
+  for (int64_t i = 0; i < rank; ++i) {
+    int64_t expected = normDims.contains(i) ? 1 : inputType.getDimSize(i);
+    if (resultType.getDimSize(i) != expected) {
+      return emitOpError() << "result dim " << i << " is "
+                           << resultType.getDimSize(i) << " but expected "
+                           << expected;
+    }
+  }
+
+  // Scaler must be a single tile (1, 1): one scaling value applied to every
+  // reduction.  The hardware reduce_tile reads one scaler tile from srcB.
+  for (int64_t i = 0; i < rank; ++i) {
+    if (scalerType.getDimSize(i) != 1) {
+      return emitOpError() << "scaler dim " << i << " is "
+                           << scalerType.getDimSize(i) << " but must be 1";
+    }
+  }
+
+  if (inputType.getElementType() != resultType.getElementType()) {
+    return emitOpError() << "result element type "
+                         << resultType.getElementType()
+                         << " must match input element type "
+                         << inputType.getElementType();
+  }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// TransposeOp
+//===----------------------------------------------------------------------===//
+
+mlir::LogicalResult mlir::tt::ttl::TransposeOp::verify() {
+  auto inputType = mlir::cast<RankedTensorType>(getInput().getType());
+  auto resultType = mlir::cast<RankedTensorType>(getResult().getType());
+
+  if (inputType.getRank() != 2) {
+    return emitOpError() << "input must be rank 2, got rank "
+                         << inputType.getRank();
+  }
+  if (resultType.getRank() != 2) {
+    return emitOpError() << "result must be rank 2, got rank "
+                         << resultType.getRank();
+  }
+
+  if (!inputType.hasStaticShape() || !resultType.hasStaticShape()) {
+    return emitOpError() << "all operands must have static shapes";
+  }
+
+  if (resultType.getDimSize(0) != inputType.getDimSize(1) ||
+      resultType.getDimSize(1) != inputType.getDimSize(0)) {
+    return emitOpError() << "result shape [" << resultType.getDimSize(0) << ", "
+                         << resultType.getDimSize(1)
+                         << "] must be the transpose of input shape ["
+                         << inputType.getDimSize(0) << ", "
+                         << inputType.getDimSize(1) << "]";
+  }
+
+  if (inputType.getElementType() != resultType.getElementType()) {
+    return emitOpError() << "result element type "
+                         << resultType.getElementType()
+                         << " must match input element type "
+                         << inputType.getElementType();
   }
 
   return success();

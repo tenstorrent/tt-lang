@@ -8,6 +8,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
@@ -233,12 +234,17 @@ static CircularBufferType getTTLCBType(Value cb) {
   return nullptr;
 }
 
-// num_pages = product of CB shape dimensions (elements per block).
-static Value computeNumPages(Value cb, ConversionPatternRewriter &rewriter,
+// Tile count: use the `num_tiles` attribute if present (per-subblock
+// reserve/push), otherwise derive from the DFB type shape (full block).
+static Value computeNumTiles(Operation *sourceOp, Value cb,
+                             ConversionPatternRewriter &rewriter,
                              Location loc) {
+  if (auto attr = sourceOp->getAttrOfType<IntegerAttr>("num_tiles")) {
+    return arith::ConstantIntOp::create(rewriter, loc, attr.getInt(), 32);
+  }
   auto ttlCbTy = getTTLCBType(cb);
-  int64_t numPages = ttlCbTy ? ttlCbTy.getElementsPerBlock() : 1;
-  return arith::ConstantIntOp::create(rewriter, loc, numPages, 32);
+  int64_t numTiles = ttlCbTy ? ttlCbTy.getElementsPerBlock() : 1;
+  return arith::ConstantIntOp::create(rewriter, loc, numTiles, 32);
 }
 
 template <typename SourceOp, typename TargetOp, bool HasResult>
@@ -261,8 +267,8 @@ struct CBOpLowering : OpConversionPattern<SourceOp> {
       return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
     }
 
-    Value numPages = computeNumPages(originalCb, rewriter, loc);
-    TargetOp::create(rewriter, loc, *convertedCb, numPages);
+    Value numTiles = computeNumTiles(op, originalCb, rewriter, loc);
+    TargetOp::create(rewriter, loc, *convertedCb, numTiles);
 
     if constexpr (HasResult) {
       auto viewCast = UnrealizedConversionCastOp::create(
@@ -314,6 +320,18 @@ static FailureOr<Value> getCBFromView(Value v) {
       continue;
     }
 
+    // Trace through tensor.extract_slice (from compute subblocking).
+    if (auto slice = llvm::dyn_cast<tensor::ExtractSliceOp>(def)) {
+      v = slice.getSource();
+      continue;
+    }
+
+    // Trace through ttl.attach_cb to get the DFB operand.
+    if (auto attach = llvm::dyn_cast<AttachCBOp>(def)) {
+      v = attach.getCb();
+      continue;
+    }
+
     break;
   }
   return failure();
@@ -346,8 +364,19 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
 
     auto cb = getCBFromView(adaptor.getView());
     if (failed(cb)) {
-      return rewriter.notifyMatchFailure(
-          op, "view must come from ttl.cb_reserve (unrealized cast from CB)");
+      // Adapted view may have lost the DFB chain (e.g., attach_cb already
+      // converted). Trace the original (unconverted) view instead.
+      Value origCB = getAttachedCB(op.getView());
+      if (!origCB) {
+        return rewriter.notifyMatchFailure(
+            op, "view not associated with a dataflow buffer");
+      }
+      cb = utils::convertTTLCBToTTKernel(origCB, rewriter, loc,
+                                         this->getTypeConverter());
+      if (failed(cb)) {
+        return rewriter.notifyMatchFailure(
+            op, "could not convert dataflow buffer type");
+      }
     }
 
     // Linearize multi-dimensional CB indices to a flat tile index.
@@ -355,6 +384,11 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
     ValueRange indices = adaptor.getIndices();
     Value cbTileIndex = affine::AffineLinearizeIndexOp::create(
         rewriter, loc, indices, viewTy.getShape());
+
+    // If the view is a subblock slice, add the slice offset to produce
+    // the global DFB tile index.
+    cbTileIndex =
+        utils::addSliceOffset(op.getView(), cbTileIndex, rewriter, loc);
 
     // Determine DST index. Priority:
     // 1. tile_store's own dst_idx (set by lower-matmul-block for per-tile pack)
@@ -950,7 +984,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
 /// (ttl-lower-to-loops).
 static LogicalResult
 lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
-                       TTLToTTKernelTypeConverter &typeConverter) {
+                       TTLToTTKernelTypeConverter &typeConverter,
+                       bool reduceFullFp32) {
   ConversionTarget computeTarget(ctx);
   computeTarget.addLegalDialect<ttkernel::TTKernelDialect>();
   computeTarget.addLegalDialect<affine::AffineDialect, arith::ArithDialect>();
@@ -983,7 +1018,8 @@ lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
       });
 
   RewritePatternSet computePatterns(&ctx);
-  populateTTLTileOpsToTTKernelPatterns(&typeConverter, computePatterns);
+  populateTTLTileOpsToTTKernelPatterns(&typeConverter, computePatterns,
+                                       reduceFullFp32);
   return applyPartialConversion(mod, computeTarget, std::move(computePatterns));
 }
 
@@ -1078,15 +1114,82 @@ static void cleanupComputeKernels(ModuleOp mod, MLIRContext &ctx) {
 }
 
 //===----------------------------------------------------------------------===//
+// DstSectionOp expansion
+//===----------------------------------------------------------------------===//
+
+/// Expand DstSectionOp: insert sync ops at the math/pack boundary (first
+/// TileStoreOp), then inline the body. LowerToLoops ensures pack-phase ops
+/// are already grouped at the end.
+static void expandDstSection(DstSectionOp dstSection) {
+  Block &body = dstSection.getBody().front();
+  Block *parentBlock = dstSection->getBlock();
+  Location loc = dstSection.getLoc();
+
+  // Find the first TileStoreOp -- this is the math/pack boundary.
+  Operation *firstStore = nullptr;
+  for (Operation &op : body.without_terminator()) {
+    if (isa<TileStoreOp>(&op)) {
+      firstStore = &op;
+      break;
+    }
+  }
+
+  // Insert sync ops within the body at the correct positions.
+  OpBuilder builder(dstSection->getContext());
+
+  // Acquire at the start of the body.
+  builder.setInsertionPointToStart(&body);
+  TileRegsAcquireOp::create(builder, loc);
+
+  // Commit + wait before the first store (or before yield if no stores).
+  if (firstStore) {
+    builder.setInsertionPoint(firstStore);
+  } else {
+    builder.setInsertionPoint(body.getTerminator());
+  }
+  TileRegsCommitOp::create(builder, loc);
+  TileRegsWaitOp::create(builder, loc);
+
+  // Release before the yield.
+  builder.setInsertionPoint(body.getTerminator());
+  TileRegsReleaseOp::create(builder, loc);
+
+  // Erase the yield terminator -- the body will be inlined into the parent.
+  body.getTerminator()->erase();
+
+  // Inline the body into the parent block, replacing the DstSectionOp.
+  parentBlock->getOperations().splice(Block::iterator(dstSection),
+                                      body.getOperations());
+  dstSection->erase();
+}
+
+/// Expand all DstSectionOps in the module to four TTL sync ops.
+/// Runs as a pre-processing step before dialect conversion.
+static void expandDstSections(ModuleOp mod) {
+  SmallVector<DstSectionOp> sections;
+  mod.walk([&](DstSectionOp op) { sections.push_back(op); });
+  for (DstSectionOp section : sections) {
+    expandDstSection(section);
+  }
+}
+
+//===----------------------------------------------------------------------===//
 // TTLConvertTTLToTTKernelPass
 //===----------------------------------------------------------------------===//
 
 struct TTLConvertTTLToTTKernelPass
     : impl::TTLConvertTTLToTTKernelBase<TTLConvertTTLToTTKernelPass> {
+  using TTLConvertTTLToTTKernelBase::TTLConvertTTLToTTKernelBase;
+
   void runOnOperation() override {
     MLIRContext &ctx = getContext();
     ModuleOp mod = getOperation();
     TTLToTTKernelTypeConverter typeConverter;
+
+    // Phase 0: Expand DstSectionOp into four TTL sync ops. This inlines the
+    // DstSectionOp body and inserts acquire/commit/wait/release around it,
+    // with stores reordered to the pack phase (after wait).
+    expandDstSections(mod);
 
     // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)
     if (failed(lowerTTLOpsToTTKernel(mod, ctx, typeConverter, getName()))) {
@@ -1095,7 +1198,8 @@ struct TTLConvertTTLToTTKernelPass
     }
 
     // Phase 2: Lower tile compute ops to TTKernel (tile_add, tile_mul, ...)
-    if (failed(lowerTileOpsToTTKernel(mod, ctx, typeConverter))) {
+    if (failed(
+            lowerTileOpsToTTKernel(mod, ctx, typeConverter, reduceFullFp32))) {
       signalPassFailure();
       return;
     }

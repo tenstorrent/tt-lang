@@ -26,5 +26,5 @@ add_custom_target(ttlang-docs
   COMMAND ${CMAKE_COMMAND} -E make_directory ${SPHINX_BUILD}/html
   COMMAND ${SPHINX_EXECUTABLE} -b html ${SPHINX_SOURCE} ${SPHINX_BUILD}/html
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-  COMMENT "Generating Sphinx documentation for tt-lang"
+  COMMENT "Generating Sphinx documentation for TT-Lang"
 )

@@ -17,7 +17,7 @@ import ttl
 from ttlang_test_utils import to_dram
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def add_dram_direct(lhs, rhs, out):
     """
     Add kernel that reads directly from DRAM interleaved tensors.

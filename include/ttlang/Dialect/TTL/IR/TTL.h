@@ -60,13 +60,18 @@ constexpr llvm::StringLiteral
 /// ordering in the CB (interleaved layout).
 constexpr llvm::StringLiteral kTileLoopStrideAttrName("ttl.tile_loop_stride");
 
-/// Linearized tile offset within a subblock, used for CB index computation
-/// in unrolled (loop-free) bodies.
-constexpr llvm::StringLiteral kTileOffsetAttrName("ttl.tile_offset");
+/// Marks an scf.for loop as iterating over a reduction dimension.
+/// Preserves the reduction semantics from iterator_types after the
+/// ComputeOp is lowered to loops.
+constexpr llvm::StringLiteral kReductionLoopAttrName("ttl.reduction_loop");
 
-/// Output CB index on tile_bcast ops, avoiding SSA tracing during lowering.
+/// Output CB index on tile ops that need it for init insertion.
 constexpr llvm::StringLiteral
     kBcastOutputCBIndexAttrName("ttl.bcast_output_cb_index");
+constexpr llvm::StringLiteral
+    kReduceOutputCBIndexAttrName("ttl.reduce_output_cb_index");
+constexpr llvm::StringLiteral
+    kTransposeOutputCBIndexAttrName("ttl.transpose_output_cb_index");
 
 /// Marks a copy_tile as a placeholder inserted during DST assignment Phase 1.
 /// Replaced with a proper copy in Phase 2b.

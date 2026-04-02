@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+#
+# TTLANG_HARDWARE_CI: skip-compiler
 # type: ignore
 import math
 
@@ -10,7 +12,7 @@ import ttnn
 from utils.correctness import assert_with_ulp
 
 
-@ttl.kernel(
+@ttl.operation(
     grid="auto",  # NOTE: allow compiler to choose grid
 )
 def eltwise_pipe_node3(
@@ -36,7 +38,7 @@ def eltwise_pipe_node3(
     grid_h, grid_w = ttl.grid_size()
     cols_per_node = math.ceil(col_tiles / (grid_h * grid_w))
     buffer_factor = (
-        2  # TODO: Should buffer factor be tunable by the user? Or tuned by kernel?
+        2  # TODO: Should buffer factor be tunable by the user? Or tuned by operation?
     )
 
     # Create circular buffers

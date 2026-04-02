@@ -26,7 +26,7 @@ import ttl
 # CHECK-NEXT: [[LINE]] |         tx = ttl.copy(lhs[0, 0], rhs[0, 0])
 # CHECK-NEXT:    |          ^
 # CHECK-NEXT:    |
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def invalid_copy_no_dfb_kernel(lhs, rhs, out):
     """This kernel should fail because ttl.copy() needs exactly one DFB."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)

@@ -40,6 +40,8 @@ include(TTLangCompilerSetup)
 # Toolchain options (declared early because TTLangPython needs them).
 # ---------------------------------------------------------------------------
 option(TTLANG_USE_TOOLCHAIN "Use pre-built LLVM from ttlang toolchain" OFF)
+option(TTLANG_BUILD_TOOLCHAIN
+  "Build LLVM and tt-metal into a reusable toolchain directory" OFF)
 if(NOT DEFINED TTLANG_TOOLCHAIN_DIR)
   if(DEFINED ENV{TTLANG_TOOLCHAIN_DIR})
     set(TTLANG_TOOLCHAIN_DIR "$ENV{TTLANG_TOOLCHAIN_DIR}" CACHE PATH
@@ -103,7 +105,7 @@ if(TTLANG_SIM_ONLY)
   message(STATUS "=== Simulator-only mode ===")
   message(STATUS "  Python venv:  ${TTLANG_PYTHON_VENV}")
   message(STATUS "  Activate:     source ${PROJECT_BINARY_DIR}/env/activate")
-  message(STATUS "  Run:          ./bin/ttlang-sim examples/eltwise_add.py")
+  message(STATUS "  Run:          ttlang-sim examples/eltwise_add.py")
   message(STATUS "===")
 
   if(TTLANG_ENABLE_DOCS)
@@ -206,6 +208,13 @@ install(DIRECTORY test/ DESTINATION test
 install(PROGRAMS "${CMAKE_SOURCE_DIR}/.github/containers/activate-install.sh"
         DESTINATION env
         RENAME activate)
+
+# Version file for greeting in installed env/activate (activate-install.sh).
+file(WRITE "${CMAKE_BINARY_DIR}/env/install-ttlang-version.txt"
+     "${TTLANG_VERSION}\n")
+install(FILES "${CMAKE_BINARY_DIR}/env/install-ttlang-version.txt"
+        DESTINATION env
+        RENAME version.txt)
 
 # Install pure Python packages (sim, pykernel) - simple copy
 install(DIRECTORY python/sim python/pykernel DESTINATION python_packages

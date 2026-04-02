@@ -26,7 +26,7 @@ from ttlang_test_utils import assert_allclose, to_l1
 pytestmark = pytest.mark.requires_device
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def intermediate_dfb_kernel(x, out):
     """
     Compute exp(relu(x)) using intermediate DFB to break fusion.
