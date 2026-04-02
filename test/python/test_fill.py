@@ -2,18 +2,24 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQUIRES: tt-device
-# RUN: %python %s > %t.output.txt 2>&1
-# RUN: FileCheck %s < %t.output.txt
+"""
+Test for fill operation: fill tiles with a constant value.
 
-# CHECK: PASS
+Tests multi-tile (2x2) fill with a negative constant (-3.0) to exercise
+both the fill lowering and negative float literal folding.
+"""
 
-"""Runtime test for fill: fill 2x2 tiles with a negative constant and verify."""
+# REQUIRES: ttnn
+# UNSUPPORTED: system-darwin
+# RUN: %python -m pytest %s -v
 
+import pytest
 import torch
-import ttnn
 import ttl
-from ttlang_test_utils import to_l1
+
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
+from ttlang_test_utils import assert_allclose, to_l1
 
 
 @ttl.operation(grid=(1, 1))
@@ -39,25 +45,13 @@ def fill_kernel(inp, out):
         out_blk.pop()
 
 
-def main():
-    device = ttnn.open_device(device_id=0)
-
+def test_fill_negative_constant(device):
+    """Test multi-tile fill with negative constant value."""
     inp = to_l1(torch.zeros((64, 64), dtype=torch.bfloat16), device)
     out = to_l1(torch.zeros((64, 64), dtype=torch.bfloat16), device)
 
     fill_kernel(inp, out)
-
     result = ttnn.to_torch(out)
+
     expected = torch.full((64, 64), -3.0, dtype=torch.bfloat16)
-
-    if torch.allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2):
-        print("PASS")
-    else:
-        diff = (result.float() - expected.float()).abs().max().item()
-        print("FAIL: max error %.4f" % diff)
-
-    ttnn.close_device(device)
-
-
-if __name__ == "__main__":
-    main()
+    assert_allclose(result, expected, rtol=1e-2, atol=1e-2)
