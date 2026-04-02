@@ -2,7 +2,7 @@
 
 ## Overview
 
-A dataflow buffer is a communication primitive for synchronizing the passing of data between thread functions within one node. An analogy is a conveyor belt in a factory: the producer (data movement thread) places items onto the belt, and the consumer (compute thread) picks them up. The belt has a fixed number of entries, and when full, the producer must wait for the consumer to free up space.
+A dataflow buffer is a communication primitive for synchronizing the passing of data between kernel functions within one node. An analogy is a conveyor belt in a factory: the producer (data movement kernel) places items onto the belt, and the consumer (compute kernel) picks them up. The belt has a fixed number of entries, and when full, the producer must wait for the consumer to free up space.
 
 A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing a TT-NN tensor, shape, and buffer factor.
 
@@ -10,13 +10,13 @@ The TT-NN tensor determines basic properties (likeness) such as data type and sh
 
 ```{mermaid}
 graph LR
-    DM[Data Movement Thread] -->|reserve/push| DFB[Dataflow Buffer]
-    DFB -->|wait/pop| CT[Compute Thread]
+    DM[Data Movement Kernel] -->|reserve/push| DFB[Dataflow Buffer]
+    DFB -->|wait/pop| CT[Compute Kernel]
 ```
 
 ## Acquisition Functions
 
-There are two acquisition functions on a dataflow buffer object: `wait` and `reserve`. A dataflow buffer is constructed in the scope of the kernel function but its object functions can only be used inside of thread functions.
+There are two acquisition functions on a dataflow buffer object: `wait` and `reserve`. A dataflow buffer is constructed in the scope of the operation function but its object functions can only be used inside of kernel functions.
 
 Acquisition functions can be used with Python `with` statement, which automatically releases acquired blocks at the end of the `with` scope—like checking out a library book that is automatically returned when leaving the reading room. Alternatively, if acquisition functions are used without `with`, a corresponding release function must be called explicitly: `pop` for `wait` and `push` for `reserve`.
 

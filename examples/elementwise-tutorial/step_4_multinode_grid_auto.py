@@ -46,7 +46,7 @@ GRANULARITY = 4
 
 
 @ttl.operation(grid="auto")
-def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
+def __tutorial_operation(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY
 
@@ -174,9 +174,9 @@ def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Te
                             tx.wait()
 
 
-def tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
+def tutorial_operation(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
     y = from_torch(torch.zeros((a.shape[0], a.shape[1]), dtype=torch.bfloat16))
-    __tutorial_kernel(a, b, c, y)
+    __tutorial_operation(a, b, c, y)
     return y
 
 
@@ -199,7 +199,7 @@ try:
     c = from_torch(c)
     d = from_torch(d)
 
-    y = ttnn.multiply(tutorial_kernel(a, b, c), d)
+    y = ttnn.multiply(tutorial_operation(a, b, c), d)
 
     y = ttnn.to_torch(y)
     print(y)

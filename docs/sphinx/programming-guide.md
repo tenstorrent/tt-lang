@@ -1,16 +1,16 @@
 # Programming Guide
 
-This page covers compiler options, print debugging, performance tools, the simulator, and examples for tt-lang kernel development.
+This page covers compiler options, print debugging, performance tools, the simulator, and examples for TT-Lang operation development.
 
 ## Compiler Options
 
-Kernels accept compiler options that control code generation (e.g., `--no-ttl-maximize-dst`, `--no-ttl-fpu-binary-ops`). These can be passed as command-line arguments, via the `@ttl.operation` decorator's `options=` parameter, or the `TTLANG_COMPILER_OPTIONS` environment variable. Command-line arguments take highest priority.
+Operations accept compiler options that control code generation (e.g., `--no-ttl-maximize-dst`, `--no-ttl-fpu-binary-ops`). These can be passed as command-line arguments, via the `@ttl.operation` decorator's `options=` parameter, or the `TTLANG_COMPILER_OPTIONS` environment variable. Command-line arguments take highest priority.
 
 ```bash
 # List available options
 python examples/elementwise-tutorial/step_4_multinode_grid_auto.py --ttl-help
 
-# Run a kernel with options
+# Run an operation with options
 python examples/elementwise-tutorial/step_4_multinode_grid_auto.py --no-ttl-maximize-dst
 ```
 
@@ -52,9 +52,9 @@ See the [full print debugging reference](reference/print-debugging.md) for all s
 
 ## Performance Tools
 
-TT-Lang includes built-in performance analysis tools for profiling kernels on hardware:
+TT-Lang includes built-in performance analysis tools for profiling operations on hardware:
 
-- Perf Summary (`TTLANG_PERF_DUMP=1`) — NOC traffic and per-thread wall time breakdown
+- Perf Summary (`TTLANG_PERF_DUMP=1`) — NOC traffic and per-kernel wall time breakdown
 - Auto-Profiling (`TTLANG_AUTO_PROFILE=1`) — automatic per-line cycle count instrumentation
 - User-Defined Signposts (`TTLANG_SIGNPOST_PROFILE=1`) — targeted cycle counts for `ttl.signpost()` regions
 - Perfetto Trace Server (`TTLANG_PERF_SERV=1`) — visualize profiler data in the Perfetto UI
