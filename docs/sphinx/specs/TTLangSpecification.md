@@ -42,6 +42,8 @@
 | 0.10 | 03/06/2026 | Add debug printing |
 | 0.11 | 03/19/2026 | Rename `ttl.core` to `ttl.node` |
 | 0.12 | 03/24/2026 | Remove `store(..., acc=True)` |
+| 0.13 | 03/31/2026 | Rename `ttl.kernel` to `ttl.operation` |
+| 0.14 | 04/02/2026 | Add `ttl.math.abs`, `ttl.math.neg` and `ttl.math.pow` in addition to Python built-in operators. |
 
 
 ## Introduction
@@ -1025,9 +1027,9 @@ def matmul_read():
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.BlockExpr.__abs__(self) -> ttl.BlockExpr` | Absolute value. Example: `abs(a)`. |
-| `ttl.BlockExpr.__neg__(self) -> ttl.BlockExpr` | Negation. Example: `-a`. |
-| `ttl.BlockExpr.__pow__(self, exponent: ttl.PositiveInt) -> ttl.BlockExpr` | Power with scalar unsigned integer exponent. Example; `a ** 2`. |
+| `ttl.BlockExpr.__abs__(self) -> ttl.BlockExpr`<br><br>`ttl.math.abs(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Absolute value. Example: `abs(a)`, `ttl.math.abs(a)`. |
+| `ttl.BlockExpr.__neg__(self) -> ttl.BlockExpr`<br><br>`ttl.math.neg(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Negation. Example: `-a`, `ttl.math.neg(a)`. |
+| `ttl.BlockExpr.__pow__(self, exponent: ttl.PositiveInt) -> ttl.BlockExpr`<br><br>`ttl.math.pow(expr: ttl.BlockExpr, exponent: ttl.PositiveInt) -> ttl.BlockExpr` | Power with scalar unsigned integer exponent. Example; `a ** 2`, `ttl.math.pow(a, 2)`. |
 | `ttl.math.exp(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Natural base exponential (`e^x`) |
 | `ttl.math.exp2(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Base 2 exponential (`2^x`) |
 | `ttl.math.expm1(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Natural base exponential minus one (`ttl.math.exp(x) - 1`) |
