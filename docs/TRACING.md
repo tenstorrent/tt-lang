@@ -277,6 +277,42 @@ This enables tracing and writes the collected events to `trace.jsonl` on exit, i
 the same way that `--show-stats` enables statistics and prints them. When no
 `--trace` flag is given, `trace()` is a no-op and adds no overhead.
 
+### Filtering
+
+By default all event categories are collected. Two mutually exclusive flags control
+which categories are written to the output file.
+
+**Inclusive filter** -- collect only the listed categories:
+
+```
+ttlang-sim examples/matmul.py --trace trace.jsonl --trace-events dfb,copy
+```
+
+**Exclusive filter** -- collect everything except the listed categories:
+
+```
+ttlang-sim examples/matmul.py --trace trace.jsonl --no-trace-events dfb
+```
+
+Specifying both `--trace-events` and `--no-trace-events` in the same invocation is
+an error. Specifying either without `--trace` is also an error.
+
+The defined categories and the events they cover:
+
+| Category | Events |
+|----------|--------|
+| `operation` | `operation_start`, `operation_end` |
+| `kernel` | `kernel_start`, `kernel_end`, `kernel_block`, `kernel_unblock` |
+| `dfb` | `dfb_reserve_begin`, `dfb_reserve_end`, `dfb_push`, `dfb_wait_begin`, `dfb_wait_end`, `dfb_pop` |
+| `copy` | `copy_start`, `copy_end` |
+
+The special value `all` is equivalent to omitting the filter entirely and is the
+default when `--trace` is given without a filter flag.
+
+Filtering is applied at collection time, not at export. Events in excluded categories
+are never recorded, reducing both memory usage and output file size. Post-processing
+tools can apply further filtering on the already-reduced dataset.
+
 ### Output format
 
 Trace events are written as JSON Lines (JSONL): one JSON object per line, one line
