@@ -42,7 +42,9 @@ GRANULARITY = 4
 
 
 @ttl.operation(grid=(4, 4))
-def __tutorial_operation(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
+def __tutorial_operation(
+    a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
+):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY
 

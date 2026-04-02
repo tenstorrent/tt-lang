@@ -45,7 +45,9 @@ TILE_SIZE = 32
 
 
 @ttl.operation(grid=(1, 1))
-def __tutorial_operation(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
+def __tutorial_operation(
+    a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
+):
 
     # Compute iteration counts in tile coordinates.
 
