@@ -128,7 +128,6 @@ else:
             i,
             (shard.float() - expected.float()).abs().max().item(),
         )
-    # CHECK: PASS
     print("PASS: all %d shards correct (2 + 3 = 5)" % N_DEVICES)
 
     ttnn.close_mesh_device(mesh_device)
