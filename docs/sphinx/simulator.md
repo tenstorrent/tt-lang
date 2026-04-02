@@ -53,7 +53,7 @@ Create a debug configuration in `.vscode/launch.json`:
 }
 ```
 
-1. Open a kernel file in VSCode (e.g., `examples/eltwise_add.py`)
-2. Set breakpoints in your kernel code
+1. Open a TT-NN program file in VSCode (e.g., `examples/eltwise_add.py`)
+2. Set breakpoints in your program code
 3. Press F5 or select "Debug TT-Lang Simulator" from the Run menu
 4. The debugger stops at breakpoints, allowing variable inspection and step-through execution

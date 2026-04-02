@@ -10,7 +10,7 @@ source build/env/activate
 ttlang-sim examples/eltwise_add.py
 ```
 
-To compile and run kernels on hardware, use a pre-built Docker image or build from source as described below.
+To compile and run operations on hardware, use a pre-built Docker image or build from source as described below.
 
 ## Docker quick start
 
