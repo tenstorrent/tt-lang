@@ -15,7 +15,12 @@ from ..constants import DEFAULT_TILE_SIZE
 from ..diagnostics import TTLangCompileError
 from ttl.dialects import ttl
 from ..dtype_utils import is_ttnn_tensor, tensor_dtype_to_ttcore_datatype
-from ..layouts import LayoutConfig, create_layout, detect_memory_layout, TENSOR_MEMORY_LAYOUT_INTERLEAVED
+from ..layouts import (
+    LayoutConfig,
+    create_layout,
+    detect_memory_layout,
+    TENSOR_MEMORY_LAYOUT_INTERLEAVED,
+)
 from ..ttl_utils import get_thread_type_string
 from .auto_profile import (
     get_line_mapper,

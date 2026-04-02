@@ -410,7 +410,6 @@ def _detect_memory_space_from_tensor(tensor, default: str) -> str:
     return default
 
 
-
 def _has_float32_args(args) -> bool:
     """
     Check if any input tensor uses float32 dtype.
