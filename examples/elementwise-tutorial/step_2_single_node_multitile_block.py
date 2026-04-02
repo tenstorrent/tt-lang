@@ -11,9 +11,9 @@
 # New concept introduced:
 #   - Multi-tile blocks: each DFB entry holds a GRANULARITY×GRANULARITY patch
 #     of tiles.  Fewer, larger memory transfers reduce per-transfer overhead and
-#     give the compute thread more work per synchronization round-trip.
+#     give the compute kernel more work per synchronization round-trip.
 #
-# Everything else (single node, same kernel structure, same three-thread model)
+# Everything else (single node, same operation structure, same three-kernel model)
 # is identical to Step 1.
 
 import ttnn
@@ -41,7 +41,9 @@ GRANULARITY = 4
 
 
 @ttl.operation(grid=(1, 1))
-def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
+def __tutorial_operation(
+    a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
+):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY
 
@@ -66,7 +68,7 @@ def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Te
         y, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
     )
 
-    # The compute thread is unchanged in structure: it still iterates over
+    # The compute kernel is unchanged in structure: it still iterates over
     # blocks and applies the fused operation.  The hardware now operates on
     # a full multi-tile block per iteration rather than a single tile.
 
@@ -149,9 +151,9 @@ def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Te
                     tx.wait()
 
 
-def tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
+def tutorial_operation(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
     y = from_torch(torch.zeros((a.shape[0], a.shape[1]), dtype=torch.bfloat16))
-    __tutorial_kernel(a, b, c, y)
+    __tutorial_operation(a, b, c, y)
     return y
 
 
@@ -174,7 +176,7 @@ try:
     c = from_torch(c)
     d = from_torch(d)
 
-    y = ttnn.multiply(tutorial_kernel(a, b, c), d)
+    y = ttnn.multiply(tutorial_operation(a, b, c), d)
 
     y = ttnn.to_torch(y)
     print(y)

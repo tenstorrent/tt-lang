@@ -5,10 +5,10 @@
 #
 # Tutorial Step 3: Multi-Node, Fixed Grid
 # ========================================
-# Extends Step 2 by running the kernel across a grid of nodes in parallel.
+# Extends Step 2 by running the operation across a grid of nodes in parallel.
 #
 # New concepts introduced:
-#   - grid=(4, 4)          — run the kernel on a 4×4 grid of nodes (16 cores)
+#   - grid=(4, 4)          — run the operation on a 4×4 grid of nodes (16 cores)
 #   - ttl.grid_size(dims=2) — query the grid dimensions at runtime
 #   - ttl.node(dims=2)     — query this node's (col, row) position in the grid
 #
@@ -37,12 +37,14 @@ TILE_SIZE = 32
 GRANULARITY = 4
 
 
-# grid=(4, 4) launches the kernel body on every node of a 4-column × 4-row grid.
+# grid=(4, 4) launches the operation body on every node of a 4-column × 4-row grid.
 # All nodes execute the same code; they differentiate their work via ttl.node().
 
 
 @ttl.operation(grid=(4, 4))
-def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
+def __tutorial_operation(
+    a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
+):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY
 
@@ -70,7 +72,7 @@ def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Te
         y, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
     )
 
-    # The compute thread is unaware of node coordinates; it simply processes
+    # The compute kernel is unaware of node coordinates; it simply processes
     # all blocks assigned to this node by the DM threads.
 
     @ttl.compute()
@@ -162,9 +164,9 @@ def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Te
                     tx.wait()
 
 
-def tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
+def tutorial_operation(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
     y = from_torch(torch.zeros((a.shape[0], a.shape[1]), dtype=torch.bfloat16))
-    __tutorial_kernel(a, b, c, y)
+    __tutorial_operation(a, b, c, y)
     return y
 
 
@@ -187,7 +189,7 @@ try:
     c = from_torch(c)
     d = from_torch(d)
 
-    y = ttnn.multiply(tutorial_kernel(a, b, c), d)
+    y = ttnn.multiply(tutorial_operation(a, b, c), d)
 
     y = ttnn.to_torch(y)
     print(y)

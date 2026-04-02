@@ -1,8 +1,8 @@
-# Kernel Basics
+# Operation Basics
 
-## Kernel Function
+## Operation Function
 
-A kernel function is a Python function decorated with `@ttl.operation()`. Thread functions defined inside are automatically collected and compiled into a program.
+An operation function is a Python function decorated with `@ttl.operation()`. Kernel functions defined inside are automatically collected and compiled into a program.
 
 ```python
 @ttl.operation()
@@ -26,22 +26,22 @@ y = ttnn.zeros(shape, layout=ttnn.TILE_LAYOUT)
 foo(x, y)
 ```
 
-## Thread Functions
+## Kernel Functions
 
-Thread functions are Python functions with no arguments, annotated by `@ttl.compute()` or `@ttl.datamovement()`. They are typically defined in the kernel function scope to capture shared objects.
+Kernel functions are Python functions with no arguments, annotated by `@ttl.compute()` or `@ttl.datamovement()`. They are typically defined in the operation function scope to capture shared objects.
 
-**Compute threads** execute compute operations on blocks. **Data movement (DM) threads** handle memory transfers and synchronization. An analogy is a restaurant where the host program is the customer who places an order for a multi-course meal. Inside the kitchen (a node), the first data movement thread acts as a worker fetching ingredients from storage, the compute thread is the cook preparing each course as soon as the ingredients are available, and the second data movement thread is the server that brings each finished course to the customer as soon as it's ready. Multiple courses move through this pipeline at once—while one dish is being plated, another is cooking, and a third is being prepped.
+**Compute kernels** execute compute operations on blocks. **Data movement (DM) kernels** handle memory transfers and synchronization. An analogy is a restaurant where the host program is the customer who places an order for a multi-course meal. Inside the kitchen (a node), the first data movement kernel acts as a worker fetching ingredients from storage, the compute kernel is the cook preparing each course as soon as the ingredients are available, and the second data movement kernel is the server that brings each finished course to the customer as soon as it's ready. Multiple courses move through this pipeline at once—while one dish is being plated, another is cooking, and a third is being prepped.
 
 ```{mermaid}
 graph TB
     Host["Host Program<br/>(🧑 Customer)"] -->|sends input data| DRAM["DRAM/L1<br/>(🍚🐟🥒🥑 Ingredients)"]
 
-    subgraph KernelFunction["Kernel Function on a node (Kitchen)"]
+    subgraph OperationFunction["Operation Function on a node (Kitchen)"]
         subgraph pad[" "]
-            subgraph threads[" "]
-                DM1["DM Thread 1<br/>Reader (🧑🏻 Prep Cook)"]
-                CT["Compute Thread<br/>(👩🏽‍🍳 Cook)"]
-                DM2["DM Thread 2<br/>Writer (👧🏼 Server)"]
+            subgraph kernels[" "]
+                DM1["DM Kernel 1<br/>Reader (🧑🏻 Prep Cook)"]
+                CT["Compute Kernel<br/>(👩🏽‍🍳 Cook)"]
+                DM2["DM Kernel 2<br/>Writer (👧🏼 Server)"]
             end
         end
     end
@@ -92,4 +92,4 @@ x, y = ttl.node(dims=2)  # x in [0, 8), y in [0, 64)
 x, y, z = ttl.node(dims=3)  # x in [0, 8), y in [0, 8), z = 0
 ```
 
-Both functions can be used inside kernel functions and thread functions.
+Both functions can be used inside operation functions and kernel functions.

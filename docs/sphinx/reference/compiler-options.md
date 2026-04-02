@@ -2,7 +2,7 @@
 
 ## Code Generation Options
 
-These flags control how tt-lang compiles kernels. Pass them on the command line,
+These flags control how TT-Lang compiles operations. Pass them on the command line,
 or print the list with `--ttl-help`:
 
 ```bash
@@ -74,7 +74,7 @@ Profiling-related environment variables (`TTLANG_AUTO_PROFILE`,
 
 ## Other Decorator Parameters
 
-The `@ttl.operation` decorator also accepts these parameters for kernel structure
+The `@ttl.operation` decorator also accepts these parameters for operation structure
 and layout:
 
 | Parameter | Type | Default | Description |

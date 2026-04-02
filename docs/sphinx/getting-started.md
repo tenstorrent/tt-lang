@@ -1,6 +1,6 @@
 # Getting Started
 
-The fastest way to get started with tt-lang is with the [functional simulator](simulator.md), which runs kernels as pure Python — no Tenstorrent hardware, no compiler build required:
+The fastest way to get started with TT-Lang is with the [functional simulator](simulator.md), which runs operations as pure Python — no Tenstorrent hardware, no compiler build required:
 
 ```bash
 git clone https://github.com/tenstorrent/tt-lang.git
@@ -10,21 +10,21 @@ source build/env/activate
 ttlang-sim examples/eltwise_add.py
 ```
 
-To compile and run kernels on hardware, use a pre-built Docker image or build from source as described below.
+To compile and run operations on hardware, use a pre-built Docker image or build from source as described below.
 
 ## Docker quick start
 
 Two images are available:
 
-| Image | Purpose | Can run tt-lang programs? | Can build tt-lang? |
+| Image | Purpose | Can run TT-Lang programs? | Can build TT-Lang? |
 |-------|---------|:-------------------------:|:-------------------:|
-| **dist** | Run tt-lang programs | Yes | No |
+| **dist** | Run TT-Lang programs | Yes | No |
 | **ird** | Develop and build from source | Yes | Yes |
 
 ### Running programs (dist image)
 
-The **dist** image contains a fully built tt-lang installation at
-`/opt/ttlang-toolchain`. Use it to compile and run tt-lang programs without
+The **dist** image contains a fully built TT-Lang installation at
+`/opt/ttlang-toolchain`. Use it to compile and run TT-Lang programs without
 building anything.
 
 ```bash
@@ -48,7 +48,7 @@ python /opt/ttlang-toolchain/examples/elementwise-tutorial/step_4_multinode_grid
 ### Building from source (ird image)
 
 The **ird** image has the pre-built toolchain (LLVM, tt-metal, Python venv) but
-does not include tt-lang itself. Clone and build against the toolchain:
+does not include TT-Lang itself. Clone and build against the toolchain:
 
 ```bash
 docker run -d --name $USER-ird \
@@ -111,7 +111,7 @@ CMake options.
 
 ## Functional simulator
 
-tt-lang includes a functional simulator that runs kernels as pure Python without requiring Tenstorrent hardware or the full compiler stack. Use it to validate kernel logic and debug with any Python debugger:
+TT-Lang includes a functional simulator that runs operations as pure Python without requiring Tenstorrent hardware or the full compiler stack. Use it to validate kernel logic and debug with any Python debugger:
 
 ```bash
 ttlang-sim examples/eltwise_add.py
@@ -131,7 +131,7 @@ The simulator typically supports more language features than the compiler at any
 ## Next steps
 
 - Take a [tour](tour/index.md) to get an introduction to TT-Lang features
-  from single-tile to multinode kernels
+  from single-tile to multinode operations
 - Read the [programming guide](programming-guide.md) for compiler options, print
   debugging, and performance tools
 - Use [Claude Code](https://claude.com/claude-code) with the built-in
