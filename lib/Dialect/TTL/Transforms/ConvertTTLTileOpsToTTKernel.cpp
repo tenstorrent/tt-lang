@@ -100,33 +100,45 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
   return Value();
 }
 
-/// Trace a tile-level op operand back through tensor.extract, extract_slice,
-/// and unrealized casts to find the root tensor's shape.
-/// Returns std::nullopt if a ranked tensor cannot be reached.
-static std::optional<SmallVector<int64_t>>
-getOperandTensorShape(Value operand) {
-  Value tensor = operand;
-  if (auto extract = operand.getDefiningOp<tensor::ExtractOp>()) {
-    tensor = extract.getTensor();
+/// Compute the CB tile index for an operand by tracing back to its defining
+/// tensor.extract and linearizing the extract indices in the operand's
+/// row-major layout. The extract indices are the source of truth for CB tile
+/// positions -- they encode the indexing map application performed during
+/// loop lowering (generateTileProcessing), so this works correctly for any
+/// indexing map (identity, transpose, broadcast, reduction) without needing
+/// the map itself.
+///
+/// For unrolled ops, the extract indices are constants and the linearization
+/// folds to a constant. For loop-based ops, the indices are loop IVs and
+/// the result is an arith expression.
+///
+/// Precondition: the operand must trace back to a tensor.extract. This holds
+/// for all CB-input tile ops after loop lowering, since generateTileProcessing
+/// always creates tensor.extract ops for each input. The extract survives
+/// unrolling (clone preserves it) and cannot fold away (the source tensor is
+/// from attach_cb, which is opaque to canonicalization).
+///
+/// Returns failure if the precondition is violated.
+static FailureOr<Value> computeCBTileIndex(Value operand, OpBuilder &builder,
+                                           Location loc) {
+  auto extractOp = operand.getDefiningOp<tensor::ExtractOp>();
+  if (!extractOp) {
+    return failure();
   }
-  while (auto slice = tensor.getDefiningOp<tensor::ExtractSliceOp>()) {
-    tensor = slice.getSource();
+
+  auto tensorTy =
+      mlir::dyn_cast<RankedTensorType>(extractOp.getTensor().getType());
+  if (!tensorTy) {
+    return failure();
   }
-  while (auto cast = tensor.getDefiningOp<UnrealizedConversionCastOp>()) {
-    // Stop if we already have a tensor type -- don't follow casts past it.
-    if (mlir::isa<RankedTensorType>(tensor.getType())) {
-      break;
-    }
-    if (cast.getInputs().size() == 1) {
-      tensor = cast.getInputs().front();
-    } else {
-      break;
-    }
-  }
-  if (auto tensorTy = mlir::dyn_cast<RankedTensorType>(tensor.getType())) {
-    return SmallVector<int64_t>(tensorTy.getShape());
-  }
-  return std::nullopt;
+
+  // Linearize the extract indices within the immediate tensor's shape.
+  Value localIndex = affine::AffineLinearizeIndexOp::create(
+      builder, loc, extractOp.getIndices(), tensorTy.getShape());
+
+  // If the tensor comes from an extract_slice (subblocking), convert
+  // the local index to a global CB index by adding the slice offset.
+  return utils::addSliceOffset(extractOp.getTensor(), localIndex, builder, loc);
 }
 
 /// Look up and convert a CB for an operand.
@@ -395,21 +407,13 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
                   llvm::Twine(rhsCBTy.getNumTiles()));
     }
 
-    // CB tile index from enclosing loops. The same index is used for
-    // lhs and rhs because TTLAssignDST only marks ops as FPU-eligible
-    // when both operands have identical indexing maps (identity).
-    auto operandShape = getOperandTensorShape(op.getLhs());
-    if (!operandShape) {
-      return rewriter.notifyMatchFailure(
-          op, "cannot determine operand tensor shape for CB indexing");
-    }
-    AffineMap identity = AffineMap::getMultiDimIdentityMap(
-        operandShape->size(), rewriter.getContext());
-    auto cbIdx =
-        utils::computeCBTileIndex(op, rewriter, identity, *operandShape,
-                                  *operandShape, operandShape->size());
+    // CB tile index: both operands share the same index because
+    // TTLAssignDST only marks ops as FPU-eligible when both have
+    // identical indexing maps.
+    auto cbIdx = computeCBTileIndex(op.getLhs(), rewriter, loc);
     if (failed(cbIdx)) {
-      return failure();
+      return rewriter.notifyMatchFailure(
+          op, "cannot compute CB tile index from tensor.extract");
     }
 
     // Emit compute op (init inserted by ttkernel-insert-inits pass).
@@ -548,125 +552,6 @@ static ttk::BcastType convertBcastType(ttl::BcastType ttlType) {
   llvm_unreachable("unknown BcastType");
 }
 
-/// Get the CB tile grid shape from an operand by tracing to the tensor type.
-/// After loop lowering, operands come from tensor.extract, so we trace back
-/// to find the tensor and extract its shape (in tiles).
-/// Returns std::nullopt if the shape cannot be determined.
-static std::optional<std::pair<int64_t, int64_t>>
-getCBTileGridShape(Value operand, func::FuncOp funcOp) {
-  // First, try to get shape from TTL CB type.
-  Value cb = lookupCBByIndex(operand, funcOp);
-  if (cb) {
-    if (auto ttlCb = mlir::dyn_cast<CircularBufferType>(cb.getType())) {
-      auto shape = ttlCb.getShape();
-      if (shape.size() == 2) {
-        return std::make_pair(shape[0], shape[1]);
-      }
-    }
-  }
-
-  // Trace through extract/slice/cast ops to the root tensor, whose shape
-  // matches the full DFB tile grid (independent of subblocking).
-  Value tensor = operand;
-  if (auto extract = operand.getDefiningOp<tensor::ExtractOp>()) {
-    tensor = extract.getTensor();
-  }
-  while (auto slice = tensor.getDefiningOp<tensor::ExtractSliceOp>()) {
-    tensor = slice.getSource();
-  }
-
-  // Trace through unrealized conversion casts.
-  tensor = traceUnrealizedCasts(tensor);
-
-  // Check if we have a ranked tensor with a 2D tile shape.
-  if (auto tensorTy = mlir::dyn_cast<RankedTensorType>(tensor.getType())) {
-    if (tensorTy.getRank() == 2) {
-      return std::make_pair(tensorTy.getDimSize(0), tensorTy.getDimSize(1));
-    }
-  }
-
-  return std::nullopt;
-}
-
-/// Check if broadcast has shape expansion (input CB smaller than output CB).
-/// Returns true if the input CB is reduced on the broadcast dimension(s).
-static bool hasBcastShapeExpansion(Value input, Value output,
-                                   ttl::BcastType bcastType,
-                                   func::FuncOp funcOp) {
-  // TTLAnnotateCBAssociations guarantees bcast operands have attached CBs
-  // with 2D tile grid shapes.
-  auto inShape = getCBTileGridShape(input, funcOp);
-  auto outShape = getCBTileGridShape(output, funcOp);
-  assert(inShape && outShape &&
-         "expected 2D tile grid shapes for broadcast operands");
-
-  int64_t inRows = inShape->first;
-  int64_t inCols = inShape->second;
-  int64_t outRows = outShape->first;
-  int64_t outCols = outShape->second;
-
-  switch (bcastType) {
-  case ttl::BcastType::Col:
-    // Col broadcast: input has fewer cols than output.
-    return inCols < outCols;
-  case ttl::BcastType::Row:
-    // Row broadcast: input has fewer rows than output.
-    return inRows < outRows;
-  case ttl::BcastType::Scalar:
-    // Scalar broadcast: input is smaller in both dimensions.
-    return (inRows < outRows) || (inCols < outCols);
-  }
-  return false;
-}
-
-/// Compute input CB tile index for broadcast with shape expansion.
-///
-/// Uses computeCBTileIndex with a broadcast-derived indexing map:
-///   - Col broadcast (Nx1 input): map (i,j) -> (i), operand shape [N]
-///   - Row broadcast (1xM input): map (i,j) -> (j), operand shape [M]
-///   - Scalar broadcast: constant 0
-///
-/// The iteration domain is 2D (output tile grid). The indexing map projects
-/// out the broadcast dimension(s). computeCBTileIndex handles tile loops,
-/// subblock loops, and tile offsets.
-static FailureOr<Value> computeBcastShapeExpansionIndex(ttl::TileBcastOp op,
-                                                        func::FuncOp funcOp,
-                                                        OpBuilder &builder,
-                                                        Location loc) {
-  auto bcastType = op.getBcastType();
-  if (bcastType == ttl::BcastType::Scalar) {
-    return arith::ConstantIndexOp::create(builder, loc, 0).getResult();
-  }
-
-  auto inShape = getCBTileGridShape(op.getInput(), funcOp);
-  auto outShape = getCBTileGridShape(op.getOutput(), funcOp);
-  assert(inShape && outShape &&
-         "expected 2D tile grid shapes for broadcast operands");
-
-  SmallVector<int64_t> iterDomain = {outShape->first, outShape->second};
-
-  // Build the broadcast indexing map and 1D operand shape.
-  MLIRContext *ctx = builder.getContext();
-  AffineMap bcastMap;
-  SmallVector<int64_t> operandShape;
-  if (bcastType == ttl::BcastType::Col) {
-    // Input is Nx1: only row dimension varies.
-    bcastMap = AffineMap::get(/*dimCount=*/2, /*symbolCount=*/0,
-                              getAffineDimExpr(0, ctx));
-    operandShape.push_back(inShape->first);
-  } else {
-    assert(bcastType == ttl::BcastType::Row);
-    // Input is 1xM: only col dimension varies.
-    bcastMap = AffineMap::get(/*dimCount=*/2, /*symbolCount=*/0,
-                              getAffineDimExpr(1, ctx));
-    operandShape.push_back(inShape->second);
-  }
-
-  // Broadcast iteration is always 2D (row x col tile grid).
-  return utils::computeCBTileIndex(op, builder, bcastMap, iterDomain,
-                                   operandShape, /*cbShapeRank=*/2);
-}
-
 /// Lower ttl.tile_bcast to TTKernel unary_bcast_init + unary_bcast.
 /// Supports shape expansion where input CB has different shape than output CB.
 struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
@@ -723,32 +608,15 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
 
     // Get input CB tile index.
     // For shape expansion (input CB smaller than output), use broadcast-aware
-    // indexing. Otherwise, use linearized index for same-shape CB iteration.
-    Value inCBIdx;
-    if (hasBcastShapeExpansion(op.getInput(), op.getOutput(), op.getBcastType(),
-                               funcOp)) {
-      auto bcastIdx =
-          computeBcastShapeExpansionIndex(op, funcOp, rewriter, loc);
-      if (failed(bcastIdx)) {
-        return failure();
-      }
-      inCBIdx = *bcastIdx;
-    } else {
-      auto inTensorShape = getOperandTensorShape(op.getInput());
-      if (!inTensorShape) {
-        return rewriter.notifyMatchFailure(
-            op, "cannot determine input tensor shape for CB indexing");
-      }
-      AffineMap identity = AffineMap::getMultiDimIdentityMap(
-          inTensorShape->size(), rewriter.getContext());
-      auto cbIdx =
-          utils::computeCBTileIndex(op, rewriter, identity, *inTensorShape,
-                                    *inTensorShape, inTensorShape->size());
-      if (failed(cbIdx)) {
-        return failure();
-      }
-      inCBIdx = *cbIdx;
+    // CB tile index from the tensor.extract that produced this operand.
+    // Works for both shape-expansion and same-shape bcast -- the extract
+    // indices encode the bcast map application from loop lowering.
+    auto inCBIdxResult = computeCBTileIndex(op.getInput(), rewriter, loc);
+    if (failed(inCBIdxResult)) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot compute input CB tile index from tensor.extract");
     }
+    Value inCBIdx = *inCBIdxResult;
 
     auto ttkAttr = convertBcastType(op.getBcastType());
 
@@ -756,11 +624,149 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
     auto bcastOp = ttk::UnaryBcastTileOp::create(rewriter, loc, *inCB, inCBIdx,
                                                  dstIdx, ttkAttr);
 
-    // Propagate output CB index so ttkernel-insert-inits can derive the
-    // output CB for unary_bcast_init without walking the function.
-    if (auto cbIdx =
+    // Propagate output CB index for per-op init insertion.
+    if (auto cbIdxAttr =
             op->getAttrOfType<IntegerAttr>(kBcastOutputCBIndexAttrName)) {
-      bcastOp->setAttr(kBcastOutputCBIndexAttrName, cbIdx);
+      bcastOp->setAttr(kBcastOutputCBIndexAttrName, cbIdxAttr);
+    }
+
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// CB-input tile op lowering helper
+//===----------------------------------------------------------------------===//
+
+/// Common setup for tile ops that read from a CB: resolves the function,
+/// input CB, DST index, and CB tile index. Returns failure if any step fails.
+struct CBInputTileOpSetup {
+  Value inCB;
+  Value dstIdx;
+  Value inCBIdx;
+
+  static FailureOr<CBInputTileOpSetup>
+  create(Operation *op, Value input, ConversionPatternRewriter &rewriter,
+         const TypeConverter *typeConverter) {
+    Location loc = op->getLoc();
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "op not in function");
+    }
+
+    auto cb = lookupAndConvertCB(input, funcOp, typeConverter, rewriter, loc);
+    if (failed(cb)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert input CB");
+    }
+
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    Value dstIdx =
+        arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
+
+    // Compute CB tile index by tracing back to the tensor.extract that
+    // produced this operand. The extract indices encode the indexing map
+    // application from loop lowering -- no map annotations needed.
+    auto cbIdx = computeCBTileIndex(input, rewriter, loc);
+    if (failed(cbIdx)) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot compute CB tile index: operand does not trace to "
+              "tensor.extract (loop lowering must run first)");
+    }
+
+    return CBInputTileOpSetup{*cb, dstIdx, *cbIdx};
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Reduce Tile Lowering
+//===----------------------------------------------------------------------===//
+
+/// Lower ttl.tile_reduce to ttkernel.reduce_tile.
+struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
+  bool fullFp32;
+
+  TTLTileReduceToTTKernel(TypeConverter &converter, MLIRContext *ctx,
+                          bool fullFp32)
+      : OpConversionPattern<TileReduceOp>(converter, ctx), fullFp32(fullFp32) {}
+
+  LogicalResult
+  matchAndRewrite(TileReduceOp op, TileReduceOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto setup = CBInputTileOpSetup::create(op, op.getInput(), rewriter,
+                                            this->getTypeConverter());
+    if (failed(setup)) {
+      return failure();
+    }
+
+    // Scaler CB lookup.
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    auto scalerCB =
+        lookupAndConvertCB(op.getScaler(), funcOp, this->getTypeConverter(),
+                           rewriter, op.getLoc());
+    if (failed(scalerCB)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert scaler CB");
+    }
+
+    // Scaler tile index is always 0.
+    // TODO: Support scalar constants via fill in a follow-up PR.
+    Value scalerIdx = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 0);
+
+    // TTL and TTKernel ReduceType share the same underlying values.
+    auto ttkReduceType =
+        static_cast<ttk::ReduceType>(static_cast<uint32_t>(op.getReduceType()));
+    static_assert(static_cast<int>(ttl::ReduceType::Sum) ==
+                          static_cast<int>(ttk::ReduceType::Sum) &&
+                      static_cast<int>(ttl::ReduceType::Max) ==
+                          static_cast<int>(ttk::ReduceType::Max),
+                  "TTL and TTKernel ReduceType enum values must match");
+    auto reduceOp = ttk::ReduceTileOp::create(
+        rewriter, op.getLoc(), setup->inCB, *scalerCB, setup->inCBIdx,
+        scalerIdx, setup->dstIdx,
+        ttk::ReduceTypeAttr::get(op.getContext(), ttkReduceType),
+        ttk::ReduceDimAttr::get(op.getContext(), op.getReduceDim()));
+    if (fullFp32) {
+      reduceOp->setAttr("full_fp32", rewriter.getUnitAttr());
+    }
+
+    // Propagate output CB index for per-op init insertion.
+    if (auto cbIdxAttr =
+            op->getAttrOfType<IntegerAttr>(kReduceOutputCBIndexAttrName)) {
+      reduceOp->setAttr(kReduceOutputCBIndexAttrName, cbIdxAttr);
+    }
+
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Transpose Tile Lowering
+//===----------------------------------------------------------------------===//
+
+/// Lower ttl.tile_transpose to ttkernel.transpose_wh_tile.
+struct TTLTileTransposeToTTKernel : OpConversionPattern<TileTransposeOp> {
+  using OpConversionPattern<TileTransposeOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileTransposeOp op, TileTransposeOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto setup = CBInputTileOpSetup::create(op, op.getInput(), rewriter,
+                                            this->getTypeConverter());
+    if (failed(setup)) {
+      return failure();
+    }
+
+    auto transposeOp = ttk::TransposeTileOp::create(
+        rewriter, op.getLoc(), setup->inCB, setup->inCBIdx, setup->dstIdx);
+
+    // Propagate output CB index for per-op init insertion.
+    if (auto cbIdxAttr =
+            op->getAttrOfType<IntegerAttr>(kTransposeOutputCBIndexAttrName)) {
+      transposeOp->setAttr(kTransposeOutputCBIndexAttrName, cbIdxAttr);
     }
 
     rewriter.replaceOp(op, adaptor.getInput());
@@ -910,7 +916,8 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
 //===----------------------------------------------------------------------===//
 
 void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
-                                          RewritePatternSet &patterns) {
+                                          RewritePatternSet &patterns,
+                                          bool reduceFullFp32) {
   MLIRContext *ctx = patterns.getContext();
 
   // DST lifecycle ops (1:1 conversion, no operands/results).
@@ -944,6 +951,10 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // Bcast ops need the type converter for CB lookup.
   patterns.add<TTLTileBcastToTTKernel>(*typeConverter, ctx);
+
+  // Reduce and transpose ops need the type converter for CB lookup.
+  patterns.add<TTLTileReduceToTTKernel>(*typeConverter, ctx, reduceFullFp32);
+  patterns.add<TTLTileTransposeToTTKernel>(*typeConverter, ctx);
 
   // Matmul block needs the type converter for CB lookup.
   patterns.add<TTLTileMatmulBlockToTTKernel>(*typeConverter, ctx);

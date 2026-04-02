@@ -17,6 +17,7 @@
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
+#include "mlir/IR/BuiltinOps.h"
 
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -122,15 +123,223 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
   return success();
 }
 
+/// Generate parallel-outer / reduction-inner loop structure for accumulating
+/// computes. DstSectionOp wraps the reduction loop + stores so DST persists
+/// across reduction iterations.
+///
+/// Structure:
+///   for each parallel dim:
+///     dst_section {
+///       for each reduction dim:
+///         <tile ops from body>
+///       <stores with placeholder tile + explicit dst_idx>
+///     }
+static scf::LoopNest generateAccumulatingLoops(
+    PatternRewriter &rewriter, Location loc, ComputeOp op,
+    ArrayRef<Range> iterDomain, ArrayRef<AffineMap> indexingMaps,
+    ArrayRef<StringAttr> iterTypes, ArrayRef<Value> lowerBounds,
+    ArrayRef<Value> upperBounds, ArrayRef<Value> steps) {
+
+  // Separate parallel and reduction dim indices.
+  SmallVector<unsigned> parallelDims, reductionDims;
+  for (auto [idx, iterType] : llvm::enumerate(iterTypes)) {
+    if (iterType.getValue() == "reduction") {
+      reductionDims.push_back(idx);
+    } else {
+      parallelDims.push_back(idx);
+    }
+  }
+  assert(!reductionDims.empty() && "accumulating compute must have reductions");
+
+  // Build bounds for parallel and reduction loops separately.
+  auto gatherBounds = [&](ArrayRef<unsigned> dims) {
+    SmallVector<Value> lbs, ubs, sts;
+    for (unsigned dim : dims) {
+      lbs.push_back(lowerBounds[dim]);
+      ubs.push_back(upperBounds[dim]);
+      sts.push_back(steps[dim]);
+    }
+    return std::make_tuple(lbs, ubs, sts);
+  };
+
+  SmallVector<Value> parLBs, parUBs, parSteps;
+  std::tie(parLBs, parUBs, parSteps) = gatherBounds(parallelDims);
+  SmallVector<Value> redLBs, redUBs, redSteps;
+  std::tie(redLBs, redUBs, redSteps) = gatherBounds(reductionDims);
+
+  // Compute linearization strides from the full iteration domain.
+  SmallVector<int64_t> domainSizes;
+  for (auto &range : iterDomain) {
+    auto size = getConstantIntValue(range.size);
+    assert(size && "iteration domain must have static sizes");
+    domainSizes.push_back(*size);
+  }
+  SmallVector<int64_t> domainStrides = computeStrides(domainSizes);
+
+  // Collect store ops and their dst_idx from the compute body.
+  Block &bodyBlock = op.getBody().front();
+  SmallVector<std::pair<TileStoreOp, int32_t>> storeInfos;
+  for (Operation &bodyOp : bodyBlock.without_terminator()) {
+    if (auto store = dyn_cast<TileStoreOp>(&bodyOp)) {
+      auto dstAttr = store->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+      int32_t dstIdx = dstAttr ? dstAttr.getInt() : 0;
+      storeInfos.emplace_back(store, dstIdx);
+    }
+  }
+
+  size_t numDims = iterTypes.size();
+
+  // Build the full IV vector from parallel + reduction IVs, placed at
+  // their original dimension positions.
+  auto buildFullIVs = [&](ValueRange parallelIVs,
+                          ValueRange reductionIVs) -> SmallVector<Value> {
+    SmallVector<Value> fullIVs(numDims);
+    for (auto [idx, dim] : llvm::enumerate(parallelDims)) {
+      fullIVs[dim] = parallelIVs[idx];
+    }
+    for (auto [idx, dim] : llvm::enumerate(reductionDims)) {
+      fullIVs[dim] = reductionIVs[idx];
+    }
+    return fullIVs;
+  };
+
+  // Generate tile ops (excluding stores) inside the reduction loop body.
+  auto generateTileOpsOnly = [&](OpBuilder &builder, Location bodyLoc,
+                                 ValueRange fullIVs) {
+    SmallVector<Value> extractedInputs;
+    for (auto [idx, input] : llvm::enumerate(op.getInputs())) {
+      SmallVector<Value> indices =
+          applyIndexingMap(builder, bodyLoc, indexingMaps[idx], fullIVs);
+      Value tile = tensor::ExtractOp::create(builder, bodyLoc, input, indices);
+      extractedInputs.push_back(tile);
+    }
+
+    SmallVector<Value> extractedOutputs;
+    size_t numInputs = op.getInputs().size();
+    for (auto [idx, output] : llvm::enumerate(op.getOutputs())) {
+      SmallVector<Value> indices = applyIndexingMap(
+          builder, bodyLoc, indexingMaps[numInputs + idx], fullIVs);
+      Value tile = tensor::ExtractOp::create(builder, bodyLoc, output, indices);
+      extractedOutputs.push_back(tile);
+    }
+
+    IRMapping mapping;
+    for (auto [idx, arg] : llvm::enumerate(op.getInputs())) {
+      mapping.map(bodyBlock.getArgument(idx), extractedInputs[idx]);
+    }
+    for (auto [idx, arg] : llvm::enumerate(op.getOutputs())) {
+      mapping.map(bodyBlock.getArgument(numInputs + idx),
+                  extractedOutputs[idx]);
+    }
+
+    for (Operation &bodyOp : bodyBlock.without_terminator()) {
+      if (auto iterIdx = dyn_cast<IterIndexOp>(&bodyOp)) {
+        mapping.map(iterIdx.getResult(), fullIVs[iterIdx.getDim()]);
+      }
+    }
+
+    for (Operation &bodyOp : bodyBlock.without_terminator()) {
+      if (isa<IterIndexOp, TileStoreOp>(&bodyOp)) {
+        continue;
+      }
+      builder.clone(bodyOp, mapping);
+    }
+  };
+
+  // Outer: parallel loops.
+  scf::LoopNest outerNest = scf::buildLoopNest(
+      rewriter, loc, parLBs, parUBs, parSteps, ValueRange{},
+      [&](OpBuilder &parBuilder, Location parLoc, ValueRange parallelIVs,
+          ValueRange) -> scf::ValueVector {
+        // DstSectionOp wraps reduction loop + stores.
+        auto dstSection = DstSectionOp::create(parBuilder, parLoc);
+        Block &sectionBody = dstSection.getBody().front();
+        OpBuilder secBuilder(&sectionBody,
+                             Block::iterator(sectionBody.getTerminator()));
+
+        // Inner: reduction loops.
+        scf::LoopNest redNest = scf::buildLoopNest(
+            secBuilder, parLoc, redLBs, redUBs, redSteps, ValueRange{},
+            [&](OpBuilder &redBuilder, Location redLoc, ValueRange reductionIVs,
+                ValueRange) -> scf::ValueVector {
+              SmallVector<Value> fullIVs =
+                  buildFullIVs(parallelIVs, reductionIVs);
+              generateTileOpsOnly(redBuilder, redLoc, fullIVs);
+              return {};
+            });
+
+        // Annotate reduction loops.
+        for (auto [idx, loop] : llvm::enumerate(redNest.loops)) {
+          unsigned origDim = reductionDims[idx];
+          loop->setAttr(kTileLoopStrideAttrName,
+                        parBuilder.getIndexAttr(domainStrides[origDim]));
+          loop->setAttr(kReductionLoopAttrName, parBuilder.getUnitAttr());
+        }
+
+        // Stores after the reduction loop, inside the DstSectionOp.
+        // Use placeholder tile value + explicit dst_idx (same as matmul).
+        OpBuilder storeBuilder(&sectionBody,
+                               Block::iterator(sectionBody.getTerminator()));
+        for (auto &[origStore, dstIdx] : storeInfos) {
+          // Get the output tile type for the placeholder.
+          Type tileType = origStore.getTile().getType();
+          Value placeholder = UnrealizedConversionCastOp::create(
+                                  storeBuilder, parLoc, tileType, ValueRange{})
+                                  .getResult(0);
+
+          // Compute store indices from parallel IVs using the output map.
+          // Reduction dims in the output map are constants (e.g., 0),
+          // so we need the full IV vector. Use constant 0 for reduction IVs.
+          SmallVector<Value> fullIVs(numDims);
+          for (auto [idx, dim] : llvm::enumerate(parallelDims)) {
+            fullIVs[dim] = parallelIVs[idx];
+          }
+          Value zeroIdx =
+              arith::ConstantIndexOp::create(storeBuilder, parLoc, 0);
+          for (unsigned dim : reductionDims) {
+            fullIVs[dim] = zeroIdx;
+          }
+
+          size_t numInputs = op.getInputs().size();
+          assert(op.getOutputs().size() == 1 &&
+                 "multi-output accumulating computes not yet supported");
+          size_t outputIdx = 0;
+          SmallVector<Value> storeIndices =
+              applyIndexingMap(storeBuilder, parLoc,
+                               indexingMaps[numInputs + outputIdx], fullIVs);
+
+          auto newStore =
+              TileStoreOp::create(storeBuilder, parLoc, placeholder,
+                                  origStore.getView(), storeIndices);
+          newStore->setAttr(kDstIdxAttrName,
+                            storeBuilder.getI32IntegerAttr(dstIdx));
+        }
+
+        return {};
+      });
+
+  // Annotate parallel loops with strides.
+  for (auto [idx, loop] : llvm::enumerate(outerNest.loops)) {
+    unsigned origDim = parallelDims[idx];
+    loop->setAttr(kTileLoopStrideAttrName,
+                  rewriter.getIndexAttr(domainStrides[origDim]));
+  }
+
+  return outerNest;
+}
+
 struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
   using OpRewritePattern<ComputeOp>::OpRewritePattern;
 
   /// Outermost tile loops from subblocked computes that need unrolling.
   /// Populated during pattern application, consumed by runOnOperation.
   SmallVector<scf::ForOp> &loopsToUnroll;
+  bool dstAccumulation;
 
-  LowerComputeToLoops(MLIRContext *ctx, SmallVector<scf::ForOp> &loopsToUnroll)
-      : OpRewritePattern<ComputeOp>(ctx), loopsToUnroll(loopsToUnroll) {}
+  LowerComputeToLoops(MLIRContext *ctx, SmallVector<scf::ForOp> &loopsToUnroll,
+                      bool dstAccumulation)
+      : OpRewritePattern<ComputeOp>(ctx), loopsToUnroll(loopsToUnroll),
+        dstAccumulation(dstAccumulation) {}
 
   LogicalResult matchAndRewrite(ComputeOp op,
                                 PatternRewriter &rewriter) const override {
@@ -156,18 +365,87 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       steps.push_back(step);
     }
 
+    bool isSubblocked = op->hasAttr(kFullLinStridesAttrName);
+    bool isAccumulating = op.getBody()
+                              .walk([](Operation *inner) {
+                                return inner->hasTrait<TTLAccumulatingOpTrait>()
+                                           ? WalkResult::interrupt()
+                                           : WalkResult::advance();
+                              })
+                              .wasInterrupted();
+
+    assert(!(isSubblocked && isAccumulating) &&
+           "SubblockComputeForDST must skip accumulating computes");
+
+    SmallVector<StringAttr> iterTypes;
+    for (Attribute attr : op.getIteratorTypes()) {
+      iterTypes.push_back(mlir::cast<StringAttr>(attr));
+    }
+
     // Side-effect-only loops: no iter_args, no tensor.insert, no scf.yield
     // with tensor values. Stores are explicit side effects (tile_store).
     bool processingFailed = false;
-    scf::LoopNest loopNest = scf::buildLoopNest(
-        rewriter, loc, lowerBounds, upperBounds, steps, ValueRange{},
-        [&](OpBuilder &b, Location loc, ValueRange ivs,
-            ValueRange /*iterArgs*/) -> scf::ValueVector {
-          if (failed(generateTileProcessing(b, loc, op, indexingMaps, ivs))) {
-            processingFailed = true;
-          }
-          return {};
-        });
+    bool usedDstAccumulation = false;
+    scf::LoopNest loopNest = [&]() {
+      if (isSubblocked) {
+        // Subblocked: DstSectionOp wraps the entire loop nest. After
+        // unrolling, all tile ops share one DST register section.
+        auto dstSection = DstSectionOp::create(rewriter, loc);
+        Block &sectionBody = dstSection.getBody().front();
+        OpBuilder sectionBuilder(&sectionBody,
+                                 Block::iterator(sectionBody.getTerminator()));
+        return scf::buildLoopNest(
+            sectionBuilder, loc, lowerBounds, upperBounds, steps, ValueRange{},
+            [&](OpBuilder &nested, Location nestedLoc, ValueRange ivs,
+                ValueRange) -> scf::ValueVector {
+              if (failed(generateTileProcessing(nested, nestedLoc, op,
+                                                indexingMaps, ivs))) {
+                processingFailed = true;
+              }
+              return {};
+            });
+      }
+
+      // DST accumulation: reorder loops (parallel-outer, reduction-inner)
+      // so DST persists across reduction iterations. Required for
+      // reduce_max because L1 accumulation (pack_reconfig_l1_acc)
+      // accumulates via addition, which is only correct for sum.
+      // TODO: reduce_max without dst-accumulation could use a compiler-
+      // introduced intermediate DFB for L1-based max accumulation.
+      if (isAccumulating) {
+        bool hasReduceMax =
+            op.getBody()
+                .walk([](TileReduceOp reduce) {
+                  return reduce.getReduceType() == ReduceType::Max
+                             ? WalkResult::interrupt()
+                             : WalkResult::advance();
+                })
+                .wasInterrupted();
+        if (dstAccumulation || hasReduceMax) {
+          usedDstAccumulation = true;
+          return generateAccumulatingLoops(rewriter, loc, op, iterDomain,
+                                           indexingMaps, iterTypes, lowerBounds,
+                                           upperBounds, steps);
+        }
+      }
+
+      // Non-subblocked: DstSectionOp inside each loop iteration. Each
+      // iteration gets its own DST register section.
+      return scf::buildLoopNest(
+          rewriter, loc, lowerBounds, upperBounds, steps, ValueRange{},
+          [&](OpBuilder &nested, Location nestedLoc, ValueRange ivs,
+              ValueRange) -> scf::ValueVector {
+            auto dstSection = DstSectionOp::create(nested, nestedLoc);
+            Block &sectionBody = dstSection.getBody().front();
+            OpBuilder bodyBuilder(&sectionBody,
+                                  Block::iterator(sectionBody.getTerminator()));
+            if (failed(generateTileProcessing(bodyBuilder, nestedLoc, op,
+                                              indexingMaps, ivs))) {
+              processingFailed = true;
+            }
+            return {};
+          });
+    }();
 
     // Annotate tile loops with linearization strides for CB indexing.
     // If the compute was subblocked, use the full block strides (which
@@ -188,10 +466,16 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       }
       domainStrides = computeStrides(domainSizes);
     }
-    for (auto [idx, loop] : llvm::enumerate(loopNest.loops)) {
-      int64_t stride =
-          fullStridesAttr ? fullStridesAttr[idx] : domainStrides[idx];
-      loop->setAttr(kTileLoopStrideAttrName, rewriter.getIndexAttr(stride));
+    if (!usedDstAccumulation) {
+      // Loops are in declaration order, matching iterTypes.
+      for (auto [idx, loop] : llvm::enumerate(loopNest.loops)) {
+        int64_t stride =
+            fullStridesAttr ? fullStridesAttr[idx] : domainStrides[idx];
+        loop->setAttr(kTileLoopStrideAttrName, rewriter.getIndexAttr(stride));
+        if (iterTypes[idx].getValue() == "reduction") {
+          loop->setAttr(kReductionLoopAttrName, rewriter.getUnitAttr());
+        }
+      }
     }
 
     // Record the outermost tile loop for unrolling if the compute was
@@ -350,10 +634,6 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
     // register position within the subblock.
     int64_t tileIdx = linearize(dimIndices, localStrides);
 
-    // tileOffset: linearized using full block strides — determines CB tile
-    // position within the entire block, used by computeCBTileIndex.
-    int64_t tileOffset = linearize(dimIndices, fullStrides);
-
     int64_t dstBase = tileIdx * dstPerIteration;
 
     // Offset dst_idx so each unrolled tile occupies a unique DST register.
@@ -376,17 +656,6 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
         Value newDstIndex = arith::AddIOp::create(
             b, copyTile.getLoc(), copyTile.getDstIndex(), offsetVal);
         copyTile.getDstIndexMutable().assign(newDstIndex);
-      }
-    }
-
-    // Set tile_offset on TTL ops for CB index computation. The attribute is
-    // consumed by computeCBTileIndex during TTL-to-TTKernel
-    // conversion.
-    if (auto *dialect = op->getDialect()) {
-      if (dialect->getNamespace() == "ttl") {
-        op->setAttr(
-            kTileOffsetAttrName,
-            IntegerAttr::get(IndexType::get(op->getContext()), tileOffset));
       }
     }
 
@@ -427,41 +696,6 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
   return success();
 }
 
-/// Reorder tile_store ops within a sync region to satisfy the hardware DST
-/// protocol. Scans a block for the pattern:
-///   acquire -> [stores interleaved with compute] -> commit -> wait -> release
-/// and moves any tile_store ops found between acquire and commit to after
-/// wait, preserving their relative order. This separates the math phase
-/// (acquire->commit) from the pack phase (wait->release).
-static void reorderStoresAfterSync(Block *block) {
-  // Copy the ops to avoid iterator invalidation during moves.
-  SmallVector<Operation *> ops = llvm::to_vector(
-      llvm::map_range(*block, [](Operation &op) { return &op; }));
-
-  SmallVector<TileStoreOp> storesToHoist;
-  bool inComputeRegion = false;
-
-  for (Operation *op : ops) {
-    if (isa<TileRegsAcquireOp>(op)) {
-      inComputeRegion = true;
-      storesToHoist.clear();
-    } else if (isa<TileRegsCommitOp>(op)) {
-      inComputeRegion = false;
-    } else if (auto w = dyn_cast<TileRegsWaitOp>(op)) {
-      // Move all stores collected from the compute region to after wait,
-      // preserving their relative order.
-      Operation *insertAfter = w;
-      for (TileStoreOp store : storesToHoist) {
-        store->moveAfter(insertAfter);
-        insertAfter = store;
-      }
-      storesToHoist.clear();
-    } else if (inComputeRegion && isa<TileStoreOp>(op)) {
-      storesToHoist.push_back(cast<TileStoreOp>(op));
-    }
-  }
-}
-
 struct TTLLowerToLoopsPass
     : public tt::ttl::impl::TTLLowerToLoopsBase<TTLLowerToLoopsPass> {
   using tt::ttl::impl::TTLLowerToLoopsBase<
@@ -480,7 +714,8 @@ struct TTLLowerToLoopsPass
     // into loopsToUnroll for step 2.
     SmallVector<scf::ForOp> loopsToUnroll;
     RewritePatternSet patterns(func.getContext());
-    patterns.add<LowerComputeToLoops>(func.getContext(), loopsToUnroll);
+    patterns.add<LowerComputeToLoops>(func.getContext(), loopsToUnroll,
+                                      dstAccumulation);
     FrozenRewritePatternSet frozen(std::move(patterns));
     if (failed(applyPatternsGreedily(func, frozen))) {
       return signalPassFailure();
@@ -529,6 +764,43 @@ struct TTLLowerToLoopsPass
       }
     }
 
+    // Step 3: After subblock unrolling, group pack-phase ops at the end
+    // of each DstSectionOp body. Only needed when unrolling produced
+    // interleaved tile ops and stores. Safe because DST allocation
+    // assigns distinct registers to each output tile.
+    if (!loopsToUnroll.empty()) {
+      func.walk([](DstSectionOp dstSection) {
+        Block &body = dstSection.getBody().front();
+        SmallVector<Operation *> packOps;
+        for (Operation &op : body.without_terminator()) {
+          if (isa<TileStoreOp, CBPushOp>(&op)) {
+            packOps.push_back(&op);
+          }
+        }
+        // Skip bodies with 0-1 stores (no interleaving to fix).
+        int64_t storeCount = llvm::count_if(
+            packOps, [](Operation *op) { return isa<TileStoreOp>(op); });
+        if (storeCount <= 1) {
+          return;
+        }
+
+        // Verify DST allocation assigned distinct indices.
+        llvm::SmallDenseSet<int32_t> dstIndices;
+        for (Operation *op : packOps) {
+          if (auto attr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
+            assert(dstIndices.insert(attr.getInt()).second &&
+                   "duplicate dst_idx in subblocked DstSectionOp body; "
+                   "reordering requires distinct DST slots per output tile");
+          }
+        }
+
+        Operation *yield = body.getTerminator();
+        for (Operation *packOp : packOps) {
+          packOp->moveBefore(yield);
+        }
+      });
+    }
+
     // Verify no temporary unroll iteration attributes leaked past this pass.
     LLVM_DEBUG(func.walk([](Operation *op) {
       for (auto attr : op->getAttrs()) {
@@ -536,9 +808,6 @@ struct TTLLowerToLoopsPass
                "temporary _uiter_ attribute not cleaned up after unrolling");
       }
     }));
-
-    // Step 3: Reorder tile_store ops to be after DST wait barriers.
-    func.walk([](Block *block) { reorderStoresAfterSync(block); });
   }
 };
 

@@ -40,6 +40,10 @@ struct TTLToTTKernelPipelineOptions
       *this, "combine-pack-tiles",
       llvm::cl::desc("Combine consecutive pack_tile ops into pack_tile_block."),
       llvm::cl::init(true)};
+  Option<bool> reduceFullFp32{
+      *this, "reduce-full-fp32",
+      llvm::cl::desc("Enable FP32 accumulation for reduce operations."),
+      llvm::cl::init(true)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,

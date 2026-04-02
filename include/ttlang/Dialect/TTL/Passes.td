@@ -14,8 +14,33 @@ def TTLConvertTTLToTTKernel
     Issue: #77 (umbrella issue with subtasks #78-#89).
   }];
 
+  let options = [
+    Option<"reduceFullFp32", "reduce-full-fp32", "bool", "true",
+           "Enable FP32 accumulation for reduce operations.">
+  ];
+
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
+def TTKernelInsertL1Accumulation
+    : Pass<"ttkernel-insert-l1-accumulation", "::mlir::ModuleOp"> {
+  let summary = "Insert L1 accumulation guards for reduction loops";
+  let description = [{
+    Inserts `pack_reconfig_l1_acc` guards inside reduction loops so that
+    pack operations accumulate into L1 instead of overwriting. On the first
+    iteration of a reduction loop, pack writes normally. On subsequent
+    iterations, the packer is reconfigured to add to the existing L1 value.
+
+    Reduction loops are identified by the `ttl.reduction_loop` attribute
+    on `scf.for` ops.
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
@@ -33,7 +58,8 @@ def TTLConvertTTLToCompute
 
   let dependentDialects = [
     "::mlir::func::FuncDialect",
-    "::mlir::tensor::TensorDialect"
+    "::mlir::tensor::TensorDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
 
@@ -97,7 +123,10 @@ def TTLSetComputeKernelConfig
     Option<"fp32DestAccEn", "fp32-dest-acc-en", "bool", "false",
            "Set default fp32_dest_acc_en when not already configured.">,
     Option<"dstFullSyncEn", "dst-full-sync-en", "bool", "false",
-           "Set default dst_full_sync_en when not already configured.">
+           "Set default dst_full_sync_en when not already configured.">,
+    Option<"reduceFullFp32", "reduce-full-fp32", "bool", "true",
+           "Enable FP32 accumulation for reduce operations. "
+           "Implies fp32_dest_acc_en on compute ops containing reduce.">
   ];
 
   let dependentDialects = [
@@ -160,32 +189,6 @@ def TTLSubblockComputeForDST
   ];
 }
 
-def TTLInsertTileRegsSync
-    : Pass<"ttl-insert-tile-regs-sync", "::mlir::func::FuncOp"> {
-  let summary = "Insert tile_regs_* synchronization ops around ttl.compute";
-  let description = [{
-    Inserts DST register synchronization ops around `ttl.compute` to enforce
-    the MATH/PACK thread synchronization protocol required by the hardware.
-
-    Two placement modes based on whether the compute was subblocked:
-
-    Subblocked (has `ttl.full_linearization_strides`): the subblock is
-    guaranteed to fit in DST by construction (`ttl-subblock-compute-for-dst`
-    tiles to DST capacity), so sync ops wrap the compute from outside. One
-    acquire/commit/wait/release cycle covers all tiles in the subblock:
-      acquire -> [compute over N tiles] -> commit -> wait -> [N stores] -> release
-
-    Non-subblocked: sync ops are placed inside the compute body for per-tile
-    synchronization. `tile_regs_commit` and `tile_regs_wait` are inserted
-    before the first `ttl.tile_store`, and `tile_regs_release` before yield:
-      acquire -> [compute 1 tile] -> commit -> wait -> [1 store] -> release
-  }];
-
-  let dependentDialects = [
-    "::mlir::tt::ttl::TTLDialect"
-  ];
-}
-
 def TTLLowerMatmulBlock
     : Pass<"ttl-lower-matmul-block", "::mlir::func::FuncOp"> {
   let summary = "Lower matmul computes to block-level hardware calls";
@@ -244,6 +247,14 @@ def TTLLowerToLoops
     } -> tensor<2x2x!ttcore.tile<32x32, f32>>
     ```
   }];
+
+  let options = [
+    Option<"dstAccumulation", "dst-accumulation", "bool", "false",
+           "Use DST register accumulation for reduction loops. Reorders "
+           "loops (parallel-outer, reduction-inner) so DST persists across "
+           "reduction iterations. When disabled, uses per-tile L1 "
+           "accumulation. reduce_max always uses DST accumulation.">
+  ];
 
   let dependentDialects = [
     "::mlir::affine::AffineDialect",

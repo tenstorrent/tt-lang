@@ -1099,3 +1099,118 @@ mlir::LogicalResult mlir::tt::ttl::MatmulOp::verify() {
 
   return success();
 }
+
+//===----------------------------------------------------------------------===//
+// ReduceOp
+//===----------------------------------------------------------------------===//
+
+mlir::LogicalResult mlir::tt::ttl::ReduceOp::verify() {
+  auto inputType = mlir::cast<RankedTensorType>(getInput().getType());
+  auto scalerType = mlir::cast<RankedTensorType>(getScaler().getType());
+  auto resultType = mlir::cast<RankedTensorType>(getResult().getType());
+
+  if (inputType.getRank() != 2) {
+    return emitOpError() << "input must be rank 2, got rank "
+                         << inputType.getRank();
+  }
+  if (scalerType.getRank() != 2) {
+    return emitOpError() << "scaler must be rank 2, got rank "
+                         << scalerType.getRank();
+  }
+  if (resultType.getRank() != 2) {
+    return emitOpError() << "result must be rank 2, got rank "
+                         << resultType.getRank();
+  }
+
+  if (!inputType.hasStaticShape() || !scalerType.hasStaticShape() ||
+      !resultType.hasStaticShape()) {
+    return emitOpError() << "all operands must have static shapes";
+  }
+
+  // Normalize and validate dims.
+  ArrayRef<int64_t> dims = getDims();
+  if (dims.empty()) {
+    return emitOpError() << "dims must be non-empty";
+  }
+
+  int64_t rank = inputType.getRank();
+  llvm::SmallDenseSet<int64_t> normDims;
+  for (int64_t d : dims) {
+    int64_t normalized = d < 0 ? d + rank : d;
+    if (normalized < 0 || normalized >= rank) {
+      return emitOpError() << "dim " << d << " is out of range for rank "
+                           << rank;
+    }
+    if (!normDims.insert(normalized).second) {
+      return emitOpError() << "duplicate dim " << d;
+    }
+  }
+
+  // Verify result shape: reduced dims must be 1, others must match input.
+  for (int64_t i = 0; i < rank; ++i) {
+    int64_t expected = normDims.contains(i) ? 1 : inputType.getDimSize(i);
+    if (resultType.getDimSize(i) != expected) {
+      return emitOpError() << "result dim " << i << " is "
+                           << resultType.getDimSize(i) << " but expected "
+                           << expected;
+    }
+  }
+
+  // Scaler must be a single tile (1, 1): one scaling value applied to every
+  // reduction.  The hardware reduce_tile reads one scaler tile from srcB.
+  for (int64_t i = 0; i < rank; ++i) {
+    if (scalerType.getDimSize(i) != 1) {
+      return emitOpError() << "scaler dim " << i << " is "
+                           << scalerType.getDimSize(i) << " but must be 1";
+    }
+  }
+
+  if (inputType.getElementType() != resultType.getElementType()) {
+    return emitOpError() << "result element type "
+                         << resultType.getElementType()
+                         << " must match input element type "
+                         << inputType.getElementType();
+  }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// TransposeOp
+//===----------------------------------------------------------------------===//
+
+mlir::LogicalResult mlir::tt::ttl::TransposeOp::verify() {
+  auto inputType = mlir::cast<RankedTensorType>(getInput().getType());
+  auto resultType = mlir::cast<RankedTensorType>(getResult().getType());
+
+  if (inputType.getRank() != 2) {
+    return emitOpError() << "input must be rank 2, got rank "
+                         << inputType.getRank();
+  }
+  if (resultType.getRank() != 2) {
+    return emitOpError() << "result must be rank 2, got rank "
+                         << resultType.getRank();
+  }
+
+  if (!inputType.hasStaticShape() || !resultType.hasStaticShape()) {
+    return emitOpError() << "all operands must have static shapes";
+  }
+
+  if (resultType.getDimSize(0) != inputType.getDimSize(1) ||
+      resultType.getDimSize(1) != inputType.getDimSize(0)) {
+    return emitOpError() << "result shape [" << resultType.getDimSize(0) << ", "
+                         << resultType.getDimSize(1)
+                         << "] must be the transpose of input shape ["
+                         << inputType.getDimSize(0) << ", "
+                         << inputType.getDimSize(1) << "]";
+  }
+
+  if (inputType.getElementType() != resultType.getElementType()) {
+    return emitOpError() << "result element type "
+                         << resultType.getElementType()
+                         << " must match input element type "
+                         << inputType.getElementType();
+  }
+
+  return success();
+}

@@ -4,7 +4,7 @@
 
 // Identity map test: full pipeline.
 // RUN: ttlang-opt %s --split-input-file \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse)' \
 // RUN:   | FileCheck %s
 
 // 2x3 output with tile loops (not unrolled): pack_tile receives
