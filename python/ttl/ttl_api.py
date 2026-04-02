@@ -81,6 +81,7 @@ from .dtype_utils import (
 from .kernel_runner import (
     KernelSpec,
     run_kernel_on_device,
+    emit_runner_file,
 )
 from .operators import CopyTransferHandler, TensorBlock, copy
 from .compiler_options import CompilerOptions
@@ -757,6 +758,35 @@ def _compile_ttnn_kernel(
     if verbose:
         print(f"\nCompiled kernel ready (compiled {len(kernel_paths)} threads)")
         print("=" * 60)
+
+    emit_runner_path = os.environ.get("TTLANG_EMIT_RUNNER")
+    if emit_runner_path:
+        kernel_specs_for_emit = []
+        for kernel_idx, (kernel_path, thread_type) in enumerate(kernel_paths):
+            tensor_indices = thread_tensor_indices[kernel_idx]
+            spec = KernelSpec(
+                path=kernel_path,
+                thread_type=thread_type,
+                tensor_indices=tensor_indices,
+                config=kernel_configs[kernel_idx],
+            )
+            kernel_specs_for_emit.append(spec)
+
+        if emit_runner_path == "1":
+            first_kernel_path = kernel_paths[0][0]
+            runner_path = first_kernel_path.replace(".cpp", "_runner.py")
+        else:
+            runner_path = emit_runner_path
+
+        emit_runner_file(
+            kernel_specs=kernel_specs_for_emit,
+            cb_configs=cb_configs,
+            grid_cols=grid_cols,
+            grid_rows=grid_rows,
+            num_tensors=len(args),
+            output_path=runner_path,
+            kernel_name="ttlang_kernel",
+        )
 
     return compiled_kernel
 
