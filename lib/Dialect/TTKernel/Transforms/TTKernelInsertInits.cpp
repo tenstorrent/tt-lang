@@ -158,6 +158,12 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
     }
   }};
 
+  // Fill: init takes no arguments.
+  map[mlir::TypeID::get<ttk::FillTileOp>()] = {
+      [](OpBuilder &b, Location l, Operation *) {
+        ttk::FillTileInitOp::create(b, l);
+      }};
+
   // Transpose: resolves output CB from annotated attribute.
   map[mlir::TypeID::get<ttk::TransposeTileOp>()] = {
       [](OpBuilder &b, Location l, Operation *computeOp) {

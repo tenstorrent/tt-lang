@@ -975,7 +975,6 @@ struct TTLTileFillToTTKernel : OpConversionPattern<TileFillOp> {
         rewriter, loc,
         rewriter.getF32FloatAttr(op.getValue().convertToFloat()));
 
-    ttk::FillTileInitOp::create(rewriter, loc);
     ttk::FillTileOp::create(rewriter, loc, dstIdxVal, fillValue);
 
     // Replace with an unrealized cast carrying dst_idx for tile_store.
