@@ -71,6 +71,38 @@ def fill_add_kernel(inp, out):
             tx.wait()
 
 
+@ttl.kernel(grid=(1, 1))
+def fill_only_kernel(out):
+    """Fill with no input tensor -- dm_read is a no-op."""
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
+    @ttl.compute()
+    def compute_fn():
+        with out_dfb.reserve() as o:
+            o.store(ttl.math.fill(o, 42.0))
+
+    @ttl.datamovement()
+    def dm_read():
+        pass
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as blk:
+            tx = ttl.copy(blk, out[0, 0])
+            tx.wait()
+
+
+def test_fill_no_input(device):
+    """Test fill with no input tensor (dm_read is a no-op)."""
+    out = to_l1(torch.zeros((32, 32), dtype=torch.bfloat16), device)
+
+    fill_only_kernel(out)
+    result = ttnn.to_torch(out)
+
+    expected = torch.full((32, 32), 42.0, dtype=torch.bfloat16)
+    assert_allclose(result, expected, rtol=1e-2, atol=1e-2)
+
+
 def test_fill_negative_constant(device):
     """Test multi-tile fill with negative constant value."""
     inp = to_l1(torch.zeros((64, 64), dtype=torch.bfloat16), device)
