@@ -9,16 +9,17 @@
 # dimensions that are not evenly divisible by the grid.
 #
 # New concepts introduced:
-#   - grid="auto"     — the compiler picks the largest grid available in the;
-#                       the kernel must not assume any specific grid dimensions
+#   - grid="auto"     — the compiler picks the largest grid available in the
+#                       hardware; the operation must not assume any specific
+#                       grid dimensions
 #   - ceiling division — ensures every block is assigned to a node even when
 #                        the block count doesn't divide evenly across the grid
 #   - bounds checking — nodes at the trailing edge of the grid may have fewer
 #                       blocks to process; guard all per-block work with
 #                       `if row < rows` / `if col < cols`
 #
-# Because compute and DM threads must agree on which blocks to process, the
-# bounds check appears in all three thread functions.
+# Because compute and DM kernels must agree on which blocks to process, the
+# bounds check appears in all three kernel functions.
 
 import torch
 import ttnn
@@ -41,7 +42,7 @@ GRANULARITY = 4
 
 
 # grid="auto" asks the compiler to select the grid at compile time based on
-# available hardware resources.  The kernel body must work correctly for any
+# available hardware resources.  The operation body must work correctly for any
 # grid the compiler may choose.
 
 
