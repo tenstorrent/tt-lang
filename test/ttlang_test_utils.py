@@ -276,9 +276,7 @@ def to_l1_sharded(torch_tensor, device):
     dram_tensor = to_dram(torch_tensor, device)
     rows, cols = torch_tensor.shape[-2], torch_tensor.shape[-1]
     shard_spec = ttnn.ShardSpec(
-        ttnn.CoreRangeSet(
-            {ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}
-        ),
+        ttnn.CoreRangeSet({ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}),
         (rows, cols),
         ttnn.ShardOrientation.ROW_MAJOR,
     )
