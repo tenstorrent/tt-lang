@@ -87,7 +87,9 @@ def bcast_multitile_kernel(
 # CHECK: // demo_compute
 # CHECK: void kernel_main()
 
-# No signpost scopes outside the inner tile loops
+# Signpost scopes inside inner tile loops, reflecting Python source nesting.
+# Sync ops (commit, wait) stay inside the enclosing user scope since they
+# implement the store.  Only tile_regs_release is outside all scopes.
 # CHECK-NOT:  DeviceZoneScopedN(
 # CHECK:      init_sfpu(
 # CHECK:      for (size_t [[K:.*]] = [[V6:.*]]; [[K]] < [[V4:.*]]; [[K]] += [[V5:.*]]) {
@@ -101,18 +103,21 @@ def bcast_multitile_kernel(
 # CHECK-NEXT:     unary_bcast<BroadcastType::COL>(get_compile_time_arg_val(0), [[K]], [[V6]]);
 # CHECK-NEXT:     unary_bcast_init<BroadcastType::ROW>(get_compile_time_arg_val(1), get_compile_time_arg_val(3));
 # CHECK-NEXT:     unary_bcast<BroadcastType::ROW>(get_compile_time_arg_val(1), [[L]], [[V5]]);
+# CHECK-NEXT:     {
+# CHECK-NEXT:     DeviceZoneScopedN("ttl_math");
 # CHECK-NEXT:     mul_binary_tile_init();
 # CHECK-NEXT:     mul_binary_tile([[V6]], [[V5]], [[V6]]);
+# CHECK-NEXT:     }
 # CHECK-NEXT:     unary_bcast_init<BroadcastType::SCALAR>(get_compile_time_arg_val(2), get_compile_time_arg_val(3));
 # CHECK-NEXT:     unary_bcast<BroadcastType::SCALAR>(get_compile_time_arg_val(2), [[V6]], [[V5]]);
 # CHECK-NEXT:     {
 # CHECK-NEXT:     DeviceZoneScopedN("ttl_math");
 # CHECK-NEXT:     add_binary_tile_init();
 # CHECK-NEXT:     add_binary_tile([[V6]], [[V5]], [[V6]]);
-# CHECK-NEXT:     {
-# CHECK-NEXT:     DeviceZoneScopedN("ttl_store");
 # CHECK-NEXT:     tile_regs_commit();
 # CHECK-NEXT:     tile_regs_wait();
+# CHECK-NEXT:     {
+# CHECK-NEXT:     DeviceZoneScopedN("ttl_store");
 # CHECK-NEXT:     size_t [[V12:.*]] = 4;
 # CHECK-NEXT:     size_t [[V13:.*]] = [[K]] * [[V12]];
 # CHECK-NEXT:     size_t [[V14:.*]] = [[V13]] + [[L]];
@@ -134,7 +139,8 @@ def bcast_multitile_kernel(
 # CHECK-FPU: // demo_compute
 # CHECK-FPU: void kernel_main()
 
-# No signpost scopes outside the inner subblock loop
+# Signpost scopes inside inner subblock loop.
+# Sync ops (commit, wait) inside enclosing scope. Store scope contiguous.
 # CHECK-FPU-NOT:  DeviceZoneScopedN(
 # CHECK-FPU:      init_sfpu(
 # CHECK-FPU:      for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
@@ -143,56 +149,48 @@ def bcast_multitile_kernel(
 # CHECK-FPU-NEXT:   DeviceZoneScopedN("ttl_compute");
 # CHECK-FPU-NEXT:   {
 # CHECK-FPU-NEXT:   DeviceZoneScopedN("ttl_broadcast");
-# CHECK-FPU-NEXT:   {
-# CHECK-FPU-NEXT:   DeviceZoneScopedN("ttl_math");
-
-# Grouped COL broadcasts (4 tiles)
 # CHECK-FPU-NEXT:   unary_bcast_init<BroadcastType::COL>(
 # CHECK-FPU-NEXT:   unary_bcast<BroadcastType::COL>(
 # CHECK-FPU-NEXT:   unary_bcast<BroadcastType::COL>(
 # CHECK-FPU-NEXT:   unary_bcast<BroadcastType::COL>(
 # CHECK-FPU-NEXT:   unary_bcast<BroadcastType::COL>(
-
-# Grouped ROW broadcasts (4 tiles)
 # CHECK-FPU-NEXT:   unary_bcast_init<BroadcastType::ROW>(
 # CHECK-FPU-NEXT:   unary_bcast<BroadcastType::ROW>(
 # CHECK-FPU-NEXT:   unary_bcast<BroadcastType::ROW>(
 # CHECK-FPU-NEXT:   unary_bcast<BroadcastType::ROW>(
 # CHECK-FPU-NEXT:   unary_bcast<BroadcastType::ROW>(
-
-# Grouped mul (4 tiles)
+# CHECK-FPU-NEXT:   {
+# CHECK-FPU-NEXT:   DeviceZoneScopedN("ttl_math");
 # CHECK-FPU-NEXT:   mul_binary_tile_init();
 # CHECK-FPU-NEXT:   mul_binary_tile(
 # CHECK-FPU-NEXT:   mul_binary_tile(
 # CHECK-FPU-NEXT:   mul_binary_tile(
 # CHECK-FPU-NEXT:   mul_binary_tile(
-
-# Grouped SCALAR broadcasts (4 tiles)
+# CHECK-FPU-NEXT:   }
 # CHECK-FPU-NEXT:   unary_bcast_init<BroadcastType::SCALAR>(
 # CHECK-FPU-NEXT:   unary_bcast<BroadcastType::SCALAR>(
 # CHECK-FPU-NEXT:   unary_bcast<BroadcastType::SCALAR>(
 # CHECK-FPU-NEXT:   unary_bcast<BroadcastType::SCALAR>(
 # CHECK-FPU-NEXT:   unary_bcast<BroadcastType::SCALAR>(
-
-# Grouped add (4 tiles, SFPU: inputs from DST)
+# CHECK-FPU-NEXT:   {
+# CHECK-FPU-NEXT:   DeviceZoneScopedN("ttl_math");
 # CHECK-FPU-NEXT:   add_binary_tile_init();
 # CHECK-FPU-NEXT:   add_binary_tile(
 # CHECK-FPU-NEXT:   add_binary_tile(
 # CHECK-FPU-NEXT:   add_binary_tile(
 # CHECK-FPU-NEXT:   add_binary_tile(
-
-# Close signpost scopes
-# CHECK-FPU-NEXT:   }
-# CHECK-FPU-NEXT:   }
-# CHECK-FPU-NEXT:   }
-
-# Sync and pack (4 tiles, non-constant CB indices prevent combining)
 # CHECK-FPU-NEXT:   tile_regs_commit();
 # CHECK-FPU-NEXT:   tile_regs_wait();
+# CHECK-FPU-NEXT:   {
+# CHECK-FPU-NEXT:   DeviceZoneScopedN("ttl_store");
 # CHECK-FPU:        pack_tile<true>(
 # CHECK-FPU:        pack_tile<true>(
 # CHECK-FPU:        pack_tile<true>(
 # CHECK-FPU:        pack_tile<true>(
+# CHECK-FPU-NEXT:   }
+# CHECK-FPU-NEXT:   }
+# CHECK-FPU-NEXT:   }
+# CHECK-FPU-NEXT:   }
 # CHECK-FPU-NEXT:   tile_regs_release();
 # CHECK-FPU-NEXT: }
 # CHECK-FPU-NOT:  DeviceZoneScopedN(

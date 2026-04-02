@@ -903,6 +903,32 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
   }
 };
 
+/// Lower ttl.tile_fill to ttkernel.fill_tile.
+struct TTLTileFillToTTKernel : OpConversionPattern<TileFillOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileFillOp op, TileFillOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr)
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+
+    Value dstIdxVal =
+        arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
+    Value fillVal = arith::ConstantOp::create(rewriter, loc, op.getValueAttr());
+
+    ttk::FillTileOp::create(rewriter, loc, dstIdxVal, fillVal);
+
+    // Fill produces a DST value; replace uses with a placeholder index.
+    rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(op,
+                                                        dstIdxAttr.getInt());
+    return success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -947,6 +973,9 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // Matmul block needs the type converter for CB lookup.
   patterns.add<TTLTileMatmulBlockToTTKernel>(*typeConverter, ctx);
+
+  // Fill: constant value to DST.
+  patterns.add<TTLTileFillToTTKernel>(ctx);
 }
 
 } // namespace mlir::tt::ttl

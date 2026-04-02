@@ -10,6 +10,8 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLInsertTileRegsSync.cpp
   TTLMaterializeBlockExprs.cpp
   TTLLowerMatmulBlock.cpp
+  TTLAttachSignpostScopes.cpp
+  TTLEmitSignpostScopes.cpp
   TTLAssignDST.cpp
   TTLScheduleOperations.cpp
   TTLSetComputeKernelConfig.cpp

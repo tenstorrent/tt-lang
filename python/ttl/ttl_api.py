@@ -1142,8 +1142,8 @@ def _compile_kernel(
         assign_dst_pass = f"ttl-assign-dst{{enable-fpu-binary-ops={fpu_flag}}}"
 
         pipeline_passes = [
+            "func.func(ttl-attach-signpost-scopes)",
             "func.func(ttl-materialize-block-exprs)",
-            "func.func(convert-ttl-to-compute)",
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",
         ]
@@ -1184,6 +1184,7 @@ def _compile_kernel(
 
         pipeline_passes += [
             "ttl-lower-dprint-to-emitc",
+            "func.func(ttl-emit-signpost-scopes)",
             "convert-ttl-to-ttkernel",
             "ttkernel-insert-inits",
         ]

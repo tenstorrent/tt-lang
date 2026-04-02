@@ -477,6 +477,24 @@ def broadcast(
     return ttl.block_expr_bcast(output.type, input, output, bcast_attr)
 
 
+@syntax("fill")
+def fill(out_block: TensorBlock, value: float) -> TensorBlock:
+    """Fill a block with a constant value.
+
+    Args:
+        out_block: Output block providing shape and dtype for the result.
+        value: Scalar value to fill with.
+
+    Returns:
+        Block expression that produces a tensor filled with the value.
+    """
+    from ttl.ir import FloatAttr, F32Type
+
+    ctx = out_block.type.context
+    f32_attr = FloatAttr.get(F32Type.get(ctx), value)
+    return ttl.block_expr_fill(out_block.type, out_block, f32_attr)
+
+
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
@@ -484,5 +502,6 @@ __all__ = [
     "core",
     "grid_size",
     "signpost",
+    "fill",
     *_generated_all,
 ]

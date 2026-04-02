@@ -18,8 +18,8 @@ namespace mlir::tt::ttl {
 
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
+  pm.addPass(createTTLAttachSignpostScopes());
   pm.addPass(createTTLMaterializeBlockExprs());
-  pm.addPass(createTTLConvertTTLToCompute());
   pm.addPass(createTTLSetComputeKernelConfig());
   {
     TTLAssignDSTOptions assignDstOpts;
@@ -40,6 +40,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addPass(createTTLScheduleOperations());
   }
   pm.addPass(createTTLAnnotateCBAssociations());
+  pm.addPass(createTTLEmitSignpostScopes());
   pm.addPass(createTTLConvertTTLToTTKernel());
   pm.addPass(createTTKernelInsertInits());
   if (options.combinePackTiles) {

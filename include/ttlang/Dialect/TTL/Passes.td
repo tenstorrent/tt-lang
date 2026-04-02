@@ -357,6 +357,27 @@ def TTLLowerDPrintToEmitC
   }];
 }
 
+def TTLAttachSignpostScopes
+    : Pass<"ttl-attach-signpost-scopes", "::mlir::func::FuncOp"> {
+  let summary = "Convert signpost ops to scope attributes on bracketed ops";
+  let description = [{
+    Walks each block, maintains a signpost scope stack, and attaches a
+    `signpost_scopes` ArrayAttr to every non-signpost op reflecting the
+    active scopes at that position. Erases all signpost ops. This
+    decouples signpost placement from fusion/materialization passes.
+  }];
+}
+
+def TTLEmitSignpostScopes
+    : Pass<"ttl-emit-signpost-scopes", "::mlir::func::FuncOp"> {
+  let summary = "Reconstruct signpost ops from scope attributes";
+  let description = [{
+    Walks each block (including nested regions) and uses scope-prefix
+    diffing to emit signpost begin/end ops at scope transitions. Removes
+    the `signpost_scopes` attributes after reconstruction.
+  }];
+}
+
 def TTLLowerSignpostToEmitC
     : Pass<"ttl-lower-signpost-to-emitc", "::mlir::ModuleOp"> {
   let summary = "Lower ttl.signpost ops to EmitC verbatim for profiling";

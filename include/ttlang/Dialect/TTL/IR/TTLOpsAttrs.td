@@ -59,4 +59,19 @@ def TTL_LayoutAttr : TTL_Attr<"Layout", "layout"> {
   let genVerifyDecl = 1;
 }
 
+def TTL_SignpostScopeAttr : TTL_Attr<"SignpostScope", "signpost_scope"> {
+  let summary = "Signpost profiling scope stack carried via FusedLoc metadata";
+  let description = [{
+    Encodes the active signpost scope stack at an operation's source
+    position.  Attached as FusedLoc metadata by `ttl-attach-signpost-scopes`
+    and extracted by `ttl-emit-signpost-scopes` to reconstruct signpost
+    begin/end ops.  Survives all MLIR transformations automatically via
+    location propagation.  Compiler-inserted ops that inherit FusedLoc
+    from cloning will not have this specific attribute type, so the emit
+    pass ignores them.
+  }];
+  let parameters = (ins ArrayRefParameter<"StringAttr">:$scopes);
+  let assemblyFormat = "`<` `[` $scopes `]` `>`";
+}
+
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSATTRS_TD

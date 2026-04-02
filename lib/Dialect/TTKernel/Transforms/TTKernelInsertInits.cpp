@@ -147,6 +147,12 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
                                       bcastOp.getBcastTypeAttr());
       }};
 
+  // FillTile: init takes no arguments.
+  map[mlir::TypeID::get<ttk::FillTileOp>()] = {
+      [](OpBuilder &b, Location l, Operation *) {
+        ttk::FillTileInitOp::create(b, l);
+      }};
+
   return map;
 }
 

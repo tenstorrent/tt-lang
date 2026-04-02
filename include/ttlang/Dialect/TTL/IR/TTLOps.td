@@ -712,6 +712,35 @@ defm TTL_Cos : TTL_UnaryElementwisePair<"cos", "cos_tile">;
 defm TTL_Tan : TTL_UnaryElementwisePair<"tan", "tan_tile">;
 
 //===----------------------------------------------------------------------===//
+// Fill Operation
+//===----------------------------------------------------------------------===//
+
+def TTL_BlockExprFillOp : TTL_Op<"block_expr.fill", [Pure]> {
+  let summary = "Lazy fill block expression";
+  let description = [{
+    Lazy fill expression. Produces a tensor of tiles initialized to a
+    constant scalar value. The output block argument provides the result
+    shape and dtype. Materialized to ttl.tile_fill inside ttl.compute
+    at store sites.
+  }];
+  let arguments = (ins AnyRankedTensor:$out_block, F32Attr:$value);
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat =
+      "$out_block attr-dict `:` type($out_block) `->` type($result)";
+}
+
+def TTL_TileFillOp : TTL_TileOp<"tile_fill", []> {
+  let summary = "Fill a DST tile with a constant value";
+  let description = [{
+    Fills a tile in the DST register with a constant f32 value.
+    Maps to ttkernel.fill_tile_init + ttkernel.fill_tile.
+  }];
+  let arguments = (ins F32Attr:$value);
+  let results = (outs TTL_TileType:$result);
+  let assemblyFormat = "attr-dict `:` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
 // Broadcast Operation
 //===----------------------------------------------------------------------===//
 
