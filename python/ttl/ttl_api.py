@@ -702,6 +702,8 @@ def _compile_ttnn_kernel(
             if fp32_dest_acc_en is None and compiler_options.matmul_full_fp32:
                 if "matmul_block" in cpp_source:
                     # TODO(#454): Remove once tt-llk #1338 is fixed.
+                    # Suppress for any unary_bcast; f32 bcast kernels are
+                    # already covered by the has_f32 check above.
                     if "unary_bcast" not in cpp_source:
                         config.fp32_dest_acc_en = True
             # Compute kernels run on TRISC threads

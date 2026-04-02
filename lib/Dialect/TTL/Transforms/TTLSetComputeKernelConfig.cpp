@@ -94,12 +94,16 @@ struct TTLSetComputeKernelConfigPass
     // TODO(#454): Remove once tt-llk #1338 is fixed. unary_bcast produces
     // incorrect results with fp32_dest_acc_en and bf16 CBs.
     if (fp32FromMatmul) {
-      bool hasBcast = false;
-      funcOp->walk([&](TileBcastOp) -> WalkResult {
-        hasBcast = true;
-        return WalkResult::interrupt();
+      bool hasBf16Bcast = false;
+      funcOp->walk([&](TileBcastOp bcastOp) -> WalkResult {
+        auto elemType = getTileElementType(bcastOp.getInput().getType());
+        if (elemType && !elemType->isF32()) {
+          hasBf16Bcast = true;
+          return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
       });
-      if (hasBcast) {
+      if (hasBf16Bcast) {
         needsFp32 = false;
       }
     }
