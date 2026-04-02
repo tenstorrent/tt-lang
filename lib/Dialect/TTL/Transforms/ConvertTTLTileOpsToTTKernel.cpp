@@ -395,16 +395,23 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
     Value dstIdx =
         arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
 
-    // Verify both CBs have the same number of tiles, which is required
-    // for using the same linearized tile index for both operands.
-    auto lhsCBTy = mlir::cast<ttk::CBType>(lhsCB->getType());
-    auto rhsCBTy = mlir::cast<ttk::CBType>(rhsCB->getType());
-    if (lhsCBTy.getNumTiles() != rhsCBTy.getNumTiles()) {
+    // Verify matching per-block tile counts (via tensor shape, not
+    // ttk::CBType::getNumTiles() which includes buffer_factor).
+    auto lhsExtract = op.getLhs().template getDefiningOp<tensor::ExtractOp>();
+    auto rhsExtract = op.getRhs().template getDefiningOp<tensor::ExtractOp>();
+    assert(lhsExtract && rhsExtract &&
+           "FPU binary operands must originate from tensor.extract");
+    auto lhsTensorTy =
+        mlir::cast<RankedTensorType>(lhsExtract.getTensor().getType());
+    auto rhsTensorTy =
+        mlir::cast<RankedTensorType>(rhsExtract.getTensor().getType());
+    if (lhsTensorTy.getShape() != rhsTensorTy.getShape()) {
       return rewriter.notifyMatchFailure(
-          op, llvm::Twine("FPU binary requires CBs with matching tile counts; "
-                          "lhs has ") +
-                  llvm::Twine(lhsCBTy.getNumTiles()) + " tiles, rhs has " +
-                  llvm::Twine(rhsCBTy.getNumTiles()));
+          op,
+          llvm::Twine("FPU binary requires operands with matching per-block "
+                      "shapes; lhs has ") +
+              llvm::Twine(lhsTensorTy.getNumElements()) + " tiles, rhs has " +
+              llvm::Twine(rhsTensorTy.getNumElements()));
     }
 
     // CB tile index: both operands share the same index because
