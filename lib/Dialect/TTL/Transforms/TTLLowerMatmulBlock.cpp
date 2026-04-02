@@ -173,41 +173,35 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
 
     rewriter.setInsertionPoint(computeOp);
 
-    // Sync acquire.
-    TileRegsAcquireOp::create(rewriter, loc);
+    auto dstSection = DstSectionOp::create(rewriter, loc);
+    Block &sectionBody = dstSection.getBody().front();
+    OpBuilder secBuilder(&sectionBody,
+                         Block::iterator(sectionBody.getTerminator()));
 
-    // Matmul_block with optional accumulator. TTKernel lowering emits
-    // individual copy_tile ops for the accumulator load.
-    auto mmResult = TileMatmulBlockOp::create(rewriter, loc, tileType,
+    // Matmul_block with optional accumulator.
+    auto mmResult = TileMatmulBlockOp::create(secBuilder, loc, tileType,
                                               lhsTensor, rhsTensor, accTensor);
-    mmResult->setAttr(kDstIdxAttrName, rewriter.getI32IntegerAttr(0));
+    mmResult->setAttr(kDstIdxAttrName, secBuilder.getI32IntegerAttr(0));
 
     // Per-tile unary post-ops (relu, exp, etc.).
     Value placeholder = UnrealizedConversionCastOp::create(
-                            rewriter, loc, tileType, ValueRange{})
+                            secBuilder, loc, tileType, ValueRange{})
                             .getResult(0);
     for (Operation *unaryOp : postMatmulUnaryOps) {
-      emitPerTileUnaryOps(rewriter, loc, unaryOp, placeholder, M, N);
+      emitPerTileUnaryOps(secBuilder, loc, unaryOp, placeholder, M, N);
     }
 
-    // Sync commit + wait (math -> pack boundary).
-    TileRegsCommitOp::create(rewriter, loc);
-    TileRegsWaitOp::create(rewriter, loc);
-
-    // M*N individual tile_store ops. The combine-pack-tiles pass can
-    // optionally consolidate these into pack_tile_block downstream.
+    // M*N individual tile_store ops.
     for (int64_t m = 0; m < M; ++m) {
       for (int64_t n = 0; n < N; ++n) {
-        Value mIdx = arith::ConstantIndexOp::create(rewriter, loc, m);
-        Value nIdx = arith::ConstantIndexOp::create(rewriter, loc, n);
-        auto store = TileStoreOp::create(rewriter, loc, placeholder, outView,
+        Value mIdx = arith::ConstantIndexOp::create(secBuilder, loc, m);
+        Value nIdx = arith::ConstantIndexOp::create(secBuilder, loc, n);
+        auto store = TileStoreOp::create(secBuilder, loc, placeholder, outView,
                                          ValueRange{mIdx, nIdx});
-        store->setAttr(kDstIdxAttrName, rewriter.getI32IntegerAttr(m * N + n));
+        store->setAttr(kDstIdxAttrName,
+                       secBuilder.getI32IntegerAttr(m * N + n));
       }
     }
-
-    // Sync release.
-    TileRegsReleaseOp::create(rewriter, loc);
 
     // Replace compute with placeholder tensor.
     Value emptyTensor = tensor::EmptyOp::create(

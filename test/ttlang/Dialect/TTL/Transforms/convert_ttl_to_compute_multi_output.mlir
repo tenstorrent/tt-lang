@@ -30,9 +30,11 @@
 // COMPUTE:      -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>)
 
 // DST-LABEL: func.func @binary_two_outputs
-// DST: ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
+// DST: ttl.dst_section {
+// DST:   ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
+// DST:   ttl.tile_store
 // DST-NEXT: ttl.tile_store
-// DST-NEXT: ttl.tile_store
+// DST: }
 module {
   func.func @binary_two_outputs() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
     %cb0 = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -76,8 +78,9 @@ module {
 // COMPUTE:      -> (tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>>)
 
 // DST-LABEL: func.func @unary_two_outputs
-// DST: ttl.tile_exp %{{.*}} {dst_idx = 0 : i32
-// DST: ttl.tile_store
+// DST: ttl.dst_section {
+// DST:   ttl.tile_exp {{.*}} {dst_idx = 0 : i32
+// DST:   ttl.tile_store
 // DST-NEXT: ttl.tile_store
 module {
   func.func @unary_two_outputs() attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
@@ -118,9 +121,10 @@ module {
 // COMPUTE:      -> (tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>>)
 
 // DST-LABEL: func.func @fused_two_outputs
-// DST: ttl.tile_exp
-// DST: ttl.tile_add
-// DST: ttl.tile_store
+// DST: ttl.dst_section {
+// DST:   ttl.tile_exp
+// DST:   ttl.tile_add
+// DST:   ttl.tile_store
 // DST-NEXT: ttl.tile_store
 module {
   func.func @fused_two_outputs() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
@@ -165,10 +169,12 @@ module {
 // COMPUTE:      -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>)
 
 // DST-LABEL: func.func @three_outputs
-// DST: ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
+// DST: ttl.dst_section {
+// DST:   ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
+// DST:   ttl.tile_store
 // DST-NEXT: ttl.tile_store
 // DST-NEXT: ttl.tile_store
-// DST-NEXT: ttl.tile_store
+// DST: }
 module {
   func.func @three_outputs() attributes {ttl.base_cta_index = 5 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
     %cb0 = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -213,12 +219,12 @@ module {
 
 // DST-LABEL: func.func @multi_output_4x4
 // DST:       scf.for
-// DST:         ttl.tile_add {{.*}} {dst_idx = 0 : i32
-// DST:         ttl.tile_store
-// DST-NEXT:    ttl.tile_store
-// DST:         ttl.tile_add {{.*}} {dst_idx = 7 : i32
-// DST:         ttl.tile_store
-// DST-NEXT:    ttl.tile_store
+// DST:         ttl.dst_section {
+// DST:           ttl.tile_add {{.*}} {dst_idx = 0 : i32
+// DST:           ttl.tile_add {{.*}} {dst_idx = 7 : i32
+// DST:           ttl.tile_store
+// DST:           ttl.tile_store
+// DST:         }
 module {
   func.func @multi_output_4x4() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
     %cb0 = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>

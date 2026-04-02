@@ -1,5 +1,5 @@
 // RUN: ttlang-opt %s --split-input-file \
-// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-set-compute-kernel-config, ttl-assign-dst, ttl-subblock-compute-for-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-set-compute-kernel-config, ttl-assign-dst, ttl-subblock-compute-for-dst, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   | FileCheck %s
 
 // Purpose: Test that the scheduler groups bcast ops by type (COL/ROW/SCALAR)
@@ -17,42 +17,49 @@
 // CHECK-LABEL: func.func @bcast_init_grouping
 // CHECK:       ttkernel.tile_regs_acquire
 //
-// Group 1: COL bcasts - one init, then all 4 COL bcast ops
+// Grouped scheduling: all col bcasts, then all row bcasts, then all muls,
+// then all scalar bcasts, then all adds. One init per group.
+//
+// Col bcast group: 4 tiles from CB0
 // CHECK:       ttkernel.unary_bcast_init({{.*}}, <col>)
 // CHECK-NEXT:  ttkernel.unary_bcast({{.*}}, <col>)
 // CHECK-NEXT:  ttkernel.unary_bcast({{.*}}, <col>)
 // CHECK-NEXT:  ttkernel.unary_bcast({{.*}}, <col>)
 // CHECK-NEXT:  ttkernel.unary_bcast({{.*}}, <col>)
-//
-// Group 2: ROW bcasts - one init, then all 4 ROW bcast ops
+// Row bcast group: 4 tiles from CB1
 // CHECK-NEXT:  ttkernel.unary_bcast_init({{.*}}, <row>)
 // CHECK-NEXT:  ttkernel.unary_bcast({{.*}}, <row>)
 // CHECK-NEXT:  ttkernel.unary_bcast({{.*}}, <row>)
 // CHECK-NEXT:  ttkernel.unary_bcast({{.*}}, <row>)
 // CHECK-NEXT:  ttkernel.unary_bcast({{.*}}, <row>)
-//
-// Group 3: MUL - one init, then all 4 mul ops
+// Mul group: 4 tiles
 // CHECK-NEXT:  ttkernel.mul_binary_tile_init
 // CHECK-NEXT:  ttkernel.mul_binary_tile
 // CHECK-NEXT:  ttkernel.mul_binary_tile
 // CHECK-NEXT:  ttkernel.mul_binary_tile
 // CHECK-NEXT:  ttkernel.mul_binary_tile
-//
-// Group 4: SCALAR bcasts - one init, then all 4 scalar bcast ops
+// Scalar bcast group: 4 tiles from CB2
 // CHECK-NEXT:  ttkernel.unary_bcast_init({{.*}}, <scalar>)
 // CHECK-NEXT:  ttkernel.unary_bcast({{.*}}, <scalar>)
 // CHECK-NEXT:  ttkernel.unary_bcast({{.*}}, <scalar>)
 // CHECK-NEXT:  ttkernel.unary_bcast({{.*}}, <scalar>)
 // CHECK-NEXT:  ttkernel.unary_bcast({{.*}}, <scalar>)
-//
-// Group 5: ADD - one init, then all 4 add ops
+// Add group: 4 tiles
 // CHECK-NEXT:  ttkernel.add_binary_tile_init
 // CHECK-NEXT:  ttkernel.add_binary_tile
 // CHECK-NEXT:  ttkernel.add_binary_tile
 // CHECK-NEXT:  ttkernel.add_binary_tile
 // CHECK-NEXT:  ttkernel.add_binary_tile
 //
-// CHECK:       ttkernel.tile_regs_commit
+// CHECK-NEXT:  ttkernel.tile_regs_commit
+// CHECK-NEXT:  ttkernel.tile_regs_wait
+// Pack phase: pack_tile ops after wait, before release
+// CHECK:       ttkernel.pack_tile
+// CHECK:       ttkernel.pack_tile
+// CHECK:       ttkernel.pack_tile
+// CHECK:       ttkernel.pack_tile
+// CHECK:       ttkernel.tile_regs_release
+// CHECK:       ttkernel.cb_push_back
 func.func @bcast_init_grouping()
     attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [],
                 ttl.kernel_thread = #ttkernel.thread<compute>} {

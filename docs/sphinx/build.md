@@ -32,16 +32,26 @@ dialects compile inline. The result is cached — subsequent configures skip the
 LLVM build if `build/llvm-install/lib/cmake/mlir/MLIRConfig.cmake` already
 exists.
 
-### Build with reusable toolchain
+### Build a reusable toolchain
 
 ```bash
-cmake -G Ninja -B build -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
+cmake -G Ninja -B build -DTTLANG_BUILD_TOOLCHAIN=ON -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
 source build/env/activate
 cmake --build build
 ```
 
-Same as above, but LLVM, tt-metal, and the Python venv are installed into the
-given prefix so they can be reused by other builds.
+Builds LLVM/MLIR and tt-metal from submodules and installs them into the given
+prefix so they can be reused by other builds. Any existing installation at the
+target directory is cleaned automatically to prevent stale libraries from being
+linked. If `TTLANG_TOOLCHAIN_DIR` is omitted, defaults to
+`build/toolchain-install/`.
+
+The convenience script `_scripts/rebuild-toolchain.sh` automates this with a
+temporary build directory that is removed after a successful build and test.
+
+> **Note:** Setting only `-DTTLANG_TOOLCHAIN_DIR=...` (without
+> `TTLANG_BUILD_TOOLCHAIN`) will reuse an existing installation if one is found
+> at that directory. Use `TTLANG_BUILD_TOOLCHAIN=ON` to guarantee a fresh build.
 
 ### Use a pre-built toolchain
 
@@ -121,6 +131,7 @@ mismatch.
 | `LLVM_BUILD_TYPE` | `Release` | LLVM build type (independent of project build type) |
 | `TTLANG_TOOLCHAIN_DIR` | — | Toolchain prefix for LLVM, tt-metal, and venv |
 | `TTLANG_USE_TOOLCHAIN` | `OFF` | Use pre-built toolchain at `TTLANG_TOOLCHAIN_DIR` |
+| `TTLANG_BUILD_TOOLCHAIN` | `OFF` | Build LLVM and tt-metal into a reusable toolchain directory (cleans stale artifacts) |
 | `MLIR_PREFIX` | — | Path to pre-built LLVM/MLIR install |
 | `TTLANG_ACCEPT_LLVM_MISMATCH` | `OFF` | Allow LLVM SHA mismatch with pre-built installs |
 | `TTLANG_ACCEPT_TTMETAL_MISMATCH` | `OFF` | Allow tt-metal SHA mismatch with pre-built installs |
