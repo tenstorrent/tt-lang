@@ -1,6 +1,6 @@
 # Examples: simulator, pytest, and hardware
 
-This document lists operation examples under `examples/` and `examples/tutorial/`, how they are exercised, and why some are excluded from the default hardware compile-and-run step.
+This document lists operation examples under `examples/`, how they are exercised, and why some are excluded from the default hardware compile-and-run step.
 
 ## How to run
 
