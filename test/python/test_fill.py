@@ -23,7 +23,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 from ttlang_test_utils import assert_allclose, to_l1
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def fill_kernel(inp, out):
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
@@ -46,7 +46,7 @@ def fill_kernel(inp, out):
         out_blk.pop()
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def fill_add_kernel(inp, out):
     """Fill with 1.0 then add to input: out = inp + 1.0."""
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
@@ -71,7 +71,7 @@ def fill_add_kernel(inp, out):
             tx.wait()
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def fill_only_kernel(out):
     """Fill with no input tensor -- dm_read is a no-op."""
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
