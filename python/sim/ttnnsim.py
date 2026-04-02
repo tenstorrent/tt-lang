@@ -876,6 +876,35 @@ def create_sharded_memory_config(
     return MemoryConfig(strategy=sharding_strategy, shard_spec=spec)
 
 
+def is_sharded(tensor: Tensor) -> bool:
+    """Return True if the tensor's memory config describes a sharded layout.
+
+    Mirrors ttnn.is_sharded.
+    """
+    return tensor.memory_config.strategy not in (ShardingStrategy.INTERLEAVED,)
+
+
+def get_memory_config(tensor: Tensor) -> MemoryConfig:
+    """Return the MemoryConfig attached to a tensor.
+
+    Mirrors ttnn.get_memory_config.
+    """
+    return tensor.memory_config
+
+
+def to_memory_config(tensor: Tensor, memory_config: MemoryConfig) -> Tensor:
+    """Return a view of tensor with memory_config replaced.
+
+    Mirrors ttnn.to_memory_config.  The simulator does not move data between
+    memory banks; it only updates the MemoryConfig metadata so that subsequent
+    statistics collection uses the new layout.
+    """
+    result = Tensor(tensor.to_torch(), tensor.layout, memory_config)
+    if hasattr(tensor, "_name"):
+        result._name = tensor._name  # type: ignore[attr-defined]
+    return result
+
+
 def multiply(
     a: Union[Tensor, torch.Tensor],
     b: Union[Tensor, torch.Tensor],

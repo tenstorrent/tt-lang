@@ -1280,7 +1280,78 @@ class TestCreateShardedMemoryConfig:
         assert mc.shard_spec.shard_shape == (2, 2)
 
 
-# ---- Row-major layout tests ----
+class TestShardingHelpers:
+    """Tests for is_sharded, get_memory_config, and to_memory_config."""
+
+    def test_is_sharded_interleaved_returns_false(self) -> None:
+        """Interleaved tensors are not sharded."""
+        t = ttnn.from_torch(torch.zeros(64, 64))
+        assert not ttnn.is_sharded(t)
+
+    def test_is_sharded_height_sharded_returns_true(self) -> None:
+        """Height-sharded tensors are considered sharded."""
+        mc = MemoryConfig(
+            strategy=ShardingStrategy.HEIGHT_SHARDED,
+            shard_spec=ShardSpec(shard_grid=(4,), shard_shape=(1, 2)),
+        )
+        t = ttnn.from_torch(torch.zeros(128, 64), memory_config=mc)
+        assert ttnn.is_sharded(t)
+
+    def test_is_sharded_block_sharded_returns_true(self) -> None:
+        """Block-sharded tensors are considered sharded."""
+        mc = MemoryConfig(
+            strategy=ShardingStrategy.BLOCK_SHARDED,
+            shard_spec=ShardSpec(shard_grid=(2, 2), shard_shape=(1, 1)),
+        )
+        t = ttnn.from_torch(torch.zeros(64, 64), memory_config=mc)
+        assert ttnn.is_sharded(t)
+
+    def test_get_memory_config_returns_attached_config(self) -> None:
+        """get_memory_config returns the MemoryConfig stored on the tensor."""
+        mc = MemoryConfig(
+            strategy=ShardingStrategy.HEIGHT_SHARDED,
+            shard_spec=ShardSpec(shard_grid=(4,), shard_shape=(1, 2)),
+        )
+        t = ttnn.from_torch(torch.zeros(128, 64), memory_config=mc)
+        assert ttnn.get_memory_config(t) is mc
+
+    def test_get_memory_config_default_is_dram(self) -> None:
+        """get_memory_config on a plain tensor returns DRAM_MEMORY_CONFIG."""
+        t = ttnn.from_torch(torch.zeros(64, 64))
+        assert ttnn.get_memory_config(t) == ttnn.DRAM_MEMORY_CONFIG
+
+    def test_to_memory_config_updates_config(self) -> None:
+        """to_memory_config returns a tensor with the new MemoryConfig."""
+        raw = torch.arange(64 * 64, dtype=torch.float32).reshape(64, 64)
+        src = ttnn.from_torch(raw)
+        mc = MemoryConfig(
+            strategy=ShardingStrategy.HEIGHT_SHARDED,
+            shard_spec=ShardSpec(shard_grid=(4,), shard_shape=(1, 2)),
+        )
+        dst = ttnn.to_memory_config(src, mc)
+        assert ttnn.get_memory_config(dst) == mc
+
+    def test_to_memory_config_preserves_data(self) -> None:
+        """to_memory_config does not alter tensor values."""
+        raw = torch.arange(64 * 64, dtype=torch.float32).reshape(64, 64)
+        src = ttnn.from_torch(raw)
+        mc = MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED)
+        dst = ttnn.to_memory_config(src, mc)
+        assert torch.equal(dst.to_torch(), raw)
+
+    def test_to_memory_config_does_not_mutate_source(self) -> None:
+        """to_memory_config leaves the original tensor's MemoryConfig unchanged."""
+        t = ttnn.from_torch(torch.zeros(64, 64))
+        original_mc = ttnn.get_memory_config(t)
+        ttnn.to_memory_config(t, MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED))
+        assert ttnn.get_memory_config(t) is original_mc
+
+    def test_to_memory_config_preserves_layout(self) -> None:
+        """to_memory_config propagates the source tensor's layout."""
+        raw = torch.zeros(5, 9)
+        src = ttnn.from_torch(raw, layout=ttnn.ROW_MAJOR_LAYOUT)
+        dst = ttnn.to_memory_config(src, ttnn.DRAM_MEMORY_CONFIG)
+        assert dst.layout == ttnn.ROW_MAJOR_LAYOUT
 
 
 class TestRowMajorLayout:
