@@ -16,9 +16,6 @@ from CBs with different total tile counts but identical per-block shapes.
 Expected computation: out = cv * bv = 5.0 * 3.0 = 15.0
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
 
 import pytest
 import torch
@@ -80,4 +77,4 @@ def test_mul_mismatched_buffer_factor(device):
     )
     result = ttnn.to_torch(out_t)
 
-    assert_allclose(result, expected, rtol=0.01, atol=0.5)
+    assert_allclose(result, expected, rtol=0.01, atol=0.1)
