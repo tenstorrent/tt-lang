@@ -395,16 +395,27 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
     Value dstIdx =
         arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
 
-    // Verify both CBs have the same number of tiles, which is required
-    // for using the same linearized tile index for both operands.
-    auto lhsCBTy = mlir::cast<ttk::CBType>(lhsCB->getType());
-    auto rhsCBTy = mlir::cast<ttk::CBType>(rhsCB->getType());
-    if (lhsCBTy.getNumTiles() != rhsCBTy.getNumTiles()) {
-      return rewriter.notifyMatchFailure(
-          op, llvm::Twine("FPU binary requires CBs with matching tile counts; "
-                          "lhs has ") +
-                  llvm::Twine(lhsCBTy.getNumTiles()) + " tiles, rhs has " +
-                  llvm::Twine(rhsCBTy.getNumTiles()));
+    // Verify both operands have the same per-block tile count, which is
+    // required for using the same linearized tile index for both operands.
+    // Compare tensor shapes from the tensor.extract operands rather than
+    // ttk::CBType::getNumTiles(), because the latter includes the
+    // buffer_factor (used for double-buffering) which does not affect the
+    // tile index range within a single page.
+    auto lhsExtract = op.getLhs().template getDefiningOp<tensor::ExtractOp>();
+    auto rhsExtract = op.getRhs().template getDefiningOp<tensor::ExtractOp>();
+    if (lhsExtract && rhsExtract) {
+      auto lhsTensorTy =
+          mlir::cast<RankedTensorType>(lhsExtract.getTensor().getType());
+      auto rhsTensorTy =
+          mlir::cast<RankedTensorType>(rhsExtract.getTensor().getType());
+      if (lhsTensorTy.getNumElements() != rhsTensorTy.getNumElements()) {
+        return rewriter.notifyMatchFailure(
+            op,
+            llvm::Twine("FPU binary requires operands with matching per-block "
+                        "tile counts; lhs has ") +
+                llvm::Twine(lhsTensorTy.getNumElements()) + " tiles, rhs has " +
+                llvm::Twine(rhsTensorTy.getNumElements()));
+      }
     }
 
     // CB tile index: both operands share the same index because

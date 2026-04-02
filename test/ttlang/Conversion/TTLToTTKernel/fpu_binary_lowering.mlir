@@ -422,3 +422,68 @@ func.func @fpu_add_tanh_f32()
   ttl.cb_push %cb1 : <[2, 3], !ttcore.tile<32x32, f32>, 2>
   return
 }
+
+// -----
+
+// =============================================================================
+// Test 5: FPU binary mul with mismatched buffer_factors (issue #438)
+// =============================================================================
+// Verifies that FPU binary lowering works when input CBs have different
+// buffer_factors. The per-block shape [1,1] is the same for both operands;
+// only the buffer_factor differs (1 vs 2). The buffer_factor controls
+// double-buffering and does not affect the tile index range.
+
+// FPU-LABEL: func.func @fpu_mul_mismatched_buffer_factor
+// FPU-DAG: %[[C1I:.*]] = arith.constant 1 : i32
+// FPU-DAG: %[[C0:.*]] = arith.constant 0 : index
+// FPU:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// FPU:     %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// FPU:     %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// FPU:     ttkernel.binary_op_init_common(%[[CB0]], %[[CB2]], %[[CB1]])
+// FPU:     ttkernel.tile_regs_acquire
+// FPU-NOT: ttkernel.copy_tile
+// FPU:     ttkernel.mul_tiles_init(%[[CB0]], %[[CB2]])
+// FPU:     ttkernel.mul_tiles(%[[CB0]], %[[CB2]], %[[C0]], %[[C0]], %[[C0]])
+// FPU:     ttkernel.tile_regs_commit
+// FPU:     ttkernel.tile_regs_wait
+// FPU:     ttkernel.pack_tile(%[[C0]], %[[CB1]], %[[C0]], true)
+// FPU:     ttkernel.tile_regs_release
+// FPU:     ttkernel.cb_push_back(%[[CB1]], %[[C1I]])
+
+// SFPU-LABEL: func.func @fpu_mul_mismatched_buffer_factor
+// SFPU:     ttkernel.mul_binary_tile
+// SFPU-NOT: ttkernel.mul_tiles
+
+#map_bf = affine_map<(d0, d1) -> (d0, d1)>
+func.func @fpu_mul_mismatched_buffer_factor()
+    attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [],
+                ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %lhs_ready = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %lhs = ttl.attach_cb %lhs_ready, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %rhs_ready = ttl.cb_wait %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %rhs = ttl.attach_cb %rhs_ready, %cb2 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out_view = ttl.cb_reserve %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out = ttl.attach_cb %out_view, %cb1 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %empty = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out_cb = ttl.attach_cb %empty, %cb1 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %result = ttl.compute
+      ins(%lhs, %rhs : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                        tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      outs(%out_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      {indexing_maps = [#map_bf, #map_bf, #map_bf],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%lhs_tile: !ttcore.tile<32x32, bf16>,
+       %rhs_tile: !ttcore.tile<32x32, bf16>,
+       %out_tile: !ttcore.tile<32x32, bf16>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
+    %prod = ttl.tile_mul %lhs_tile, %rhs_tile : !ttcore.tile<32x32, bf16>
+    ttl.tile_store %prod, %out_view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.yield
+  } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
