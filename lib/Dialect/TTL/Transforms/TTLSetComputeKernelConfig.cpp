@@ -65,7 +65,10 @@ struct TTLSetComputeKernelConfigPass
         }
         if (reduceFullFp32) {
           bool hasReduce = false;
-          computeOp->walk([&](TileReduceOp) { hasReduce = true; });
+          computeOp->walk([&](TileReduceOp) -> WalkResult {
+            hasReduce = true;
+            return WalkResult::interrupt();
+          });
           if (hasReduce) {
             needsFp32 = true;
             return WalkResult::interrupt();
@@ -73,7 +76,10 @@ struct TTLSetComputeKernelConfigPass
         }
         if (matmulFullFp32) {
           bool hasMatmul = false;
-          computeOp->walk([&](TileMatmulBlockOp) { hasMatmul = true; });
+          computeOp->walk([&](TileMatmulBlockOp) -> WalkResult {
+            hasMatmul = true;
+            return WalkResult::interrupt();
+          });
           if (hasMatmul) {
             needsFp32 = true;
             return WalkResult::interrupt();

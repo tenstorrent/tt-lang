@@ -27,6 +27,10 @@ import ttl
 # Verify subblock loop structure: nested M/N subblock loops, each computing
 # a subblock of the 8x8 output via matmul_block. With matmul_full_fp32
 # (f32 DST capacity=4), subblocks are 1x4 tiles.
+# Individual pack_tile<true> (L1 accumulation) instead of pack_tile_block
+# because the subblock reserve/push is at full-block granularity (not
+# per-subblock), so pack_tile_block's contiguous-from-0 requirement is
+# not met for subblocks after the first.
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),

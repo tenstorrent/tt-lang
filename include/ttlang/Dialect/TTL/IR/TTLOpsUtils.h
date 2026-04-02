@@ -305,11 +305,12 @@ inline std::uint32_t getDstCapacity(bool isFloat32, bool fullSyncEn) {
 /// Read a per-kernel bool attribute from the enclosing func.func.
 /// These are set by TTLSetComputeKernelConfig on the function (not on
 /// individual compute ops) because they are per-kernel compile-time settings.
+/// Returns false when the attribute is absent or the op has no enclosing func.
 inline bool getKernelBoolAttr(mlir::Operation *op, llvm::StringRef attrName) {
-  if (auto funcOp = op->getParentOfType<mlir::func::FuncOp>()) {
-    if (auto attr = funcOp->getAttrOfType<mlir::BoolAttr>(attrName)) {
-      return attr.getValue();
-    }
+  auto funcOp = op->getParentOfType<mlir::func::FuncOp>();
+  assert(funcOp && "getKernelBoolAttr called on op outside of func.func");
+  if (auto attr = funcOp->getAttrOfType<mlir::BoolAttr>(attrName)) {
+    return attr.getValue();
   }
   return false;
 }

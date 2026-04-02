@@ -906,28 +906,30 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
     // B stride per K step is the full CB N dimension (not subblock ct).
     // B is [K, N] row-major in the CB; stride between K rows is N.
     int32_t fullN = ct; // default when not subblocked
-    if (Value rhsCBVal = lookupCBByIndex(op.getRhs(), funcOp)) {
-      if (auto ttlCb = mlir::dyn_cast<CircularBufferType>(rhsCBVal.getType())) {
-        auto cbShape = ttlCb.getShape();
-        if (cbShape.size() == 2) {
-          fullN = cbShape[1];
-        }
+    Value rhsCBVal = lookupCBByIndex(op.getRhs(), funcOp);
+    assert(rhsCBVal && "rhs CB lookup failed after prior successful lookup");
+    if (auto ttlCb = mlir::dyn_cast<CircularBufferType>(rhsCBVal.getType())) {
+      auto cbShape = ttlCb.getShape();
+      if (cbShape.size() == 2) {
+        fullN = cbShape[1];
       }
     }
 
-    // Emit matmul_block K loop. The standard matmul_block processes one K
-    // step per call; the caller iterates over K. Each step advances A's tile
-    // index by 1 (row-major [M,K]) and B's by fullN (row-major [K,N]).
+    // Emit matmul_block K loop. Each matmul_block call processes one K step;
+    // the caller iterates over K. kt_dim is a configuration parameter that
+    // tells the hardware the full K dimension (used by init for stride
+    // setup), not the number of tiles processed per call. Each step advances
+    // A's tile index by 1 (row-major [M,K]) and B's by fullN (row-major
+    // [K,N]).
     if (kt == 1) {
       ttk::MatmulBlockOp::create(rewriter, loc, *lhsCB, *rhsCB, in0TileIndex,
                                  in1TileIndex, dstIdx, transpose, ctVal, rtVal,
                                  ktVal);
     } else {
-      Value lb = arith::ConstantIndexOp::create(rewriter, loc, 0);
       Value ub = arith::ConstantIndexOp::create(rewriter, loc, kt);
       Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
       Value fullNIndex = arith::ConstantIndexOp::create(rewriter, loc, fullN);
-      auto forOp = scf::ForOp::create(rewriter, loc, lb, ub, step);
+      auto forOp = scf::ForOp::create(rewriter, loc, zero, ub, step);
       {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(forOp.getBody());

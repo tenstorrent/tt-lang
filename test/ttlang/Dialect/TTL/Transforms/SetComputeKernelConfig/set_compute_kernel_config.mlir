@@ -97,15 +97,17 @@ func.func @bf16_no_special_ops(%a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
 
 // --split-input-file
 
-// Purpose: Existing func-level attribute is preserved (not overwritten).
+// Purpose: Existing func-level attributes are preserved (not overwritten).
 // DEFAULT-LABEL: func.func @preserve_existing
+// DEFAULT-SAME: dst_full_sync_en = false
 // DEFAULT-SAME: fp32_dest_acc_en = false
 // OVERRIDE-LABEL: func.func @preserve_existing
+// OVERRIDE-SAME: dst_full_sync_en = false
 // OVERRIDE-SAME: fp32_dest_acc_en = false
 func.func @preserve_existing(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
                              %b: tensor<1x1x!ttcore.tile<32x32, f32>>)
     -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    attributes {fp32_dest_acc_en = false} {
+    attributes {dst_full_sync_en = false, fp32_dest_acc_en = false} {
   %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, f32>>
 
   %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>

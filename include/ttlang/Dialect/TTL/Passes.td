@@ -115,9 +115,10 @@ def TTLSetComputeKernelConfig
     : Pass<"ttl-set-compute-kernel-config", "::mlir::func::FuncOp"> {
   let summary = "Set ttl.compute kernel configuration attributes";
   let description = [{
-    Sets fp32_dest_acc_en and dst_full_sync_en attributes on ttl.compute
-    operations when they are not already configured. This allows downstream
-    passes to use consistent compute kernel configuration decisions.
+    Sets fp32_dest_acc_en and dst_full_sync_en attributes on the enclosing
+    func.func when they are not already configured. These are per-kernel
+    compile-time settings; all compute ops in the function inherit them
+    via getKernelBoolAttr().
   }];
 
   let options = [
