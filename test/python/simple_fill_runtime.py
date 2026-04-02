@@ -8,7 +8,7 @@
 
 # CHECK: PASS
 
-"""Runtime test for fill: fill a tile with a constant and verify on host."""
+"""Runtime test for fill: fill 2x2 tiles with a negative constant and verify."""
 
 import torch
 import ttnn
@@ -18,8 +18,8 @@ from ttlang_test_utils import to_l1
 
 @ttl.operation(grid=(1, 1))
 def fill_kernel(inp, out):
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
 
     @ttl.compute()
     def compute_fn():
@@ -29,26 +29,26 @@ def fill_kernel(inp, out):
     @ttl.datamovement()
     def dm_read():
         inp_blk = inp_dfb.reserve()
-        ttl.copy(inp[0, 0], inp_blk).wait()
+        ttl.copy(inp[0:2, 0:2], inp_blk).wait()
         inp_blk.push()
 
     @ttl.datamovement()
     def dm_write():
         out_blk = out_dfb.wait()
-        ttl.copy(out_blk, out[0, 0]).wait()
+        ttl.copy(out_blk, out[0:2, 0:2]).wait()
         out_blk.pop()
 
 
 def main():
     device = ttnn.open_device(device_id=0)
 
-    inp = to_l1(torch.zeros((32, 32), dtype=torch.bfloat16), device)
-    out = to_l1(torch.zeros((32, 32), dtype=torch.bfloat16), device)
+    inp = to_l1(torch.zeros((64, 64), dtype=torch.bfloat16), device)
+    out = to_l1(torch.zeros((64, 64), dtype=torch.bfloat16), device)
 
     fill_kernel(inp, out)
 
     result = ttnn.to_torch(out)
-    expected = torch.full((32, 32), -3.0, dtype=torch.bfloat16)
+    expected = torch.full((64, 64), -3.0, dtype=torch.bfloat16)
 
     if torch.allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2):
         print("PASS")
