@@ -2,8 +2,8 @@
 
 ## Overview
 
-tt-lang uses a CMake-based build system that compiles LLVM/MLIR, a minimal
-tt-mlir subset, tt-metal, and tt-lang's own dialects and tools from pinned git
+TT-Lang uses a CMake-based build system that compiles LLVM/MLIR, a minimal
+tt-mlir subset, tt-metal, and TT-Lang's own dialects and tools from pinned git
 submodules. A single `cmake -G Ninja -B build && cmake --build build` invocation
 produces a fully working environment.
 
@@ -75,7 +75,7 @@ cmake --build build
 ```
 
 Point directly at an LLVM/MLIR install prefix. tt-metal still builds from
-submodule. tt-lang may not build successfully if the pre-built LLVM is a
+submodule. TT-Lang may not build successfully if the pre-built LLVM is a
 significantly different version than what tt-mlir expects.
 
 ## Installing
@@ -88,10 +88,10 @@ Docker images). It is not needed for development — just use
 cmake --install build --prefix /opt/ttlang-toolchain
 ```
 
-This copies tt-lang binaries, Python packages, examples, tests, and the
+This copies TT-Lang binaries, Python packages, examples, tests, and the
 environment activation script into the given prefix. When `TTLANG_TOOLCHAIN_DIR`
 was set during configure, LLVM, tt-metal, and the Python venv are already there;
-the install step adds only tt-lang's own artifacts.
+the install step adds only TT-Lang's own artifacts.
 
 ## Building Documentation
 

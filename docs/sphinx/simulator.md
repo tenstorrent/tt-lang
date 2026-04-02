@@ -1,6 +1,6 @@
 # Functional Simulator
 
-tt-lang includes a functional simulator that runs kernels as pure Python, without requiring Tenstorrent hardware or the full compiler stack. Use it to validate kernel logic and iterate quickly during development.
+TT-Lang includes a functional simulator that runs operations as pure Python, without requiring Tenstorrent hardware or the full compiler stack. Use it to validate kernel logic and iterate quickly during development.
 
 The simulator typically supports more language features than the compiler at any given point — see the [functionality matrix](specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current coverage.
 
@@ -15,7 +15,7 @@ source build/env/activate
 
 This skips the LLVM, tt-mlir, and tt-metal builds entirely and only sets up the Python venv with runtime dependencies.
 
-If you have already built the full tt-lang compiler (`source build/env/activate`), the simulator works without any additional setup.
+If you have already built the full TT-Lang compiler (`source build/env/activate`), the simulator works without any additional setup.
 
 ## Running
 
@@ -39,7 +39,7 @@ Create a debug configuration in `.vscode/launch.json`:
 
 ```json
 {
-  "name": "Debug TTL Simulator",
+  "name": "Debug TT-Lang Simulator",
   "type": "debugpy",
   "request": "launch",
   "module": "sim.ttlang_sim",
@@ -53,7 +53,7 @@ Create a debug configuration in `.vscode/launch.json`:
 }
 ```
 
-1. Open a kernel file in VSCode (e.g., `examples/eltwise_add.py`)
-2. Set breakpoints in your kernel code
-3. Press F5 or select "Debug TTL Simulator" from the Run menu
+1. Open a TT-NN program file in VSCode (e.g., `examples/eltwise_add.py`)
+2. Set breakpoints in your program code
+3. Press F5 or select "Debug TT-Lang Simulator" from the Run menu
 4. The debugger stops at breakpoints, allowing variable inspection and step-through execution

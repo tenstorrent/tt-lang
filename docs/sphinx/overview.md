@@ -1,6 +1,6 @@
 # Introduction
 
-TT-Lang is a Python-based domain-specific language for writing custom kernels on
+TT-Lang is a Python-based domain-specific language for writing custom operations on
 Tenstorrent hardware. It provides an expressive middle ground between
 [TT-NN](https://docs.tenstorrent.com/tt-metal/latest/ttnn/index.html)'s
 high-level operations and
@@ -15,11 +15,11 @@ explicit data movement with high-level compute specification, validate
 correctness through simulation, and integrate the result as a drop-in
 replacement in a TT-NN graph.
 
-The language is built around explicit data movement and compute threads with
+The language is built around explicit data movement and compute kernels with
 synchronization primitives familiar to TT-Metalium users (dataflow buffers,
 semaphores), alongside higher-level constructs (tensor slices, blocks, pipes)
 that handle memory layout, compute APIs, and inter-core communication. Simple
-kernels require minimal specification — the compiler infers compute API
+operations require minimal specification — the compiler infers compute API
 operations, NOC addressing, and DST register allocation from high-level Python
 syntax. Developers have control over all aspects of multi-node communication
 through the pipe and pipe-net abstractions and completely control all aspects of

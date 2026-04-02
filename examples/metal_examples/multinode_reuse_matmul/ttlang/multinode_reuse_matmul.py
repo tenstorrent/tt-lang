@@ -108,7 +108,7 @@ def tt_lang_multinode_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
 
 @pytest.mark.parametrize("M,K,N", [(640, 640, 640)])
 def test_multinode_reuse_matmul_tt_lang(M, K, N):
-    """Test multinode matmul kernel."""
+    """Test multinode matmul operation."""
     device = ttnn.open_device(device_id=0)
     a = ttnn.rand((M, K), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
     b = ttnn.rand((K, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
