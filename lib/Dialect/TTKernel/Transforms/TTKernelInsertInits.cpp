@@ -125,14 +125,13 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
       }};
 
   // MatmulBlock: reconfigures UNPACK+MATH.
-  map[mlir::TypeID::get<ttk::ExperimentalMatmulBlockOp>()] = {
-      [](OpBuilder &b, Location l, Operation *computeOp) {
-        auto matmul = cast<ttk::ExperimentalMatmulBlockOp>(computeOp);
-        ttk::MatmulBlockInitShortOp::create(
-            b, l, matmul.getIn0CbId(), matmul.getIn1CbId(),
-            matmul.getTranspose(), matmul.getCtDim(), matmul.getRtDim(),
-            matmul.getKtDim());
-      }};
+  map[mlir::TypeID::get<ttk::MatmulBlockOp>()] = {[](OpBuilder &b, Location l,
+                                                     Operation *computeOp) {
+    auto matmul = cast<ttk::MatmulBlockOp>(computeOp);
+    ttk::MatmulBlockInitShortOp::create(
+        b, l, matmul.getIn0CbId(), matmul.getIn1CbId(), matmul.getTranspose(),
+        matmul.getCtDim(), matmul.getRtDim(), matmul.getKtDim());
+  }};
 
   // UnaryBcast: resolves output CB from annotated attribute.
   map[mlir::TypeID::get<ttk::UnaryBcastTileOp>()] = {
@@ -198,7 +197,7 @@ static InitKey computeInitKey(Operation *op) {
   }
 
   // For matmul_block: key includes CB operands (first 2 operands).
-  if (isa<ttk::ExperimentalMatmulBlockOp>(op)) {
+  if (isa<ttk::MatmulBlockOp>(op)) {
     return {typeId, {op->getOperand(0), op->getOperand(1)}};
   }
 
@@ -286,14 +285,12 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
           in0CB = inner->getOperand(0);
           in1CB = inner->getOperand(1);
         }
-      } else if (auto matmul =
-                     dyn_cast<ttk::ExperimentalMatmulBlockOp>(inner)) {
+      } else if (auto matmul = dyn_cast<ttk::MatmulBlockOp>(inner)) {
         result.hasMatmul = true;
         if (!in0CB) {
           in0CB = matmul.getIn0CbId();
           in1CB = matmul.getIn1CbId();
         }
-        // Capture block dims from first matmul for mm_block_init.
         if (!result.matmulTranspose) {
           result.matmulTranspose = matmul.getTranspose();
           result.matmulCt = matmul.getCtDim();

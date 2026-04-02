@@ -10,7 +10,7 @@
 
 """
 Standalone matmul: single 1x1 tile multiply through the full pipeline.
-Verifies ttl.matmul in initial IR and experimental::matmul_block in C++ output.
+Verifies ttl.matmul in initial IR and matmul_block in C++ output.
 """
 
 import ttl
@@ -75,7 +75,7 @@ def matmul_kernel(a, b, out):
 # =============================================================================
 
 # CHECK-CPP: mm_block_init(
-# CHECK-CPP: experimental::matmul_block(
+# CHECK-CPP: matmul_block(
 # CHECK-CPP: pack_tile
 
 # CHECK-RESULT: PASS
