@@ -521,8 +521,9 @@ struct TTLCopyDstToTTKernel : OpConversionPattern<CopyDstOp> {
     Value srcIdx = arith::ConstantIndexOp::create(rewriter, loc, *srcDstIdx);
     Value dstIdx = arith::ConstantIndexOp::create(rewriter, loc, dstDstIdx);
 
-    // Emit copy_dest_values(dst0, dst1): copies DST[dst1] → DST[dst0].
-    ttk::CopyDestValuesOp::create(rewriter, loc, dstIdx, srcIdx);
+    // Emit copy_dest_values(idst_in, idst_out): copies DST[idst_in] ->
+    // DST[idst_out].
+    ttk::CopyDestValuesOp::create(rewriter, loc, srcIdx, dstIdx);
 
     // Replace with an unrealized conversion cast to preserve the tile value.
     // The tile is now in DST[dstIdx].
