@@ -52,6 +52,27 @@ class ShardingStrategy(Enum):
     ND_SHARDED = auto()
 
 
+class ShardStrategy(Enum):
+    """Sharding strategy passed to create_sharded_memory_config.
+
+    Mirrors ttnn.ShardStrategy.  Maps to ShardingStrategy internally.
+    """
+
+    HEIGHT = auto()
+    WIDTH = auto()
+    BLOCK = auto()
+
+
+class ShardOrientation(Enum):
+    """Order in which cores are traversed when reading/writing shards.
+
+    Mirrors ttnn.ShardOrientation.
+    """
+
+    ROW_MAJOR = auto()
+    COL_MAJOR = auto()
+
+
 class ShardDistributionStrategy(Enum):
     """How shards are mapped to cores for ND_SHARDED tensors.
 
@@ -76,10 +97,13 @@ class ShardSpec:
             HEIGHT_SHARDED / WIDTH_SHARDED: 1-element tuple (num_cores,).
             BLOCK_SHARDED: 2-element tuple (num_core_rows, num_core_cols).
         shard_shape: Tile-grid shape of each individual shard.
+        orientation: Core traversal order (stored for metadata; currently
+            unused by the functional simulator).
     """
 
     shard_grid: Shape
     shard_shape: Shape
+    orientation: ShardOrientation = ShardOrientation.ROW_MAJOR
 
 
 @dataclass
@@ -114,6 +138,23 @@ class MemoryConfig:
     strategy: ShardingStrategy
     shard_spec: Optional[ShardSpec] = None
     nd_shard_spec: Optional[NdShardSpec] = None
+
+
+@dataclass
+class CoreGrid:
+    """2-D core grid.  Mirrors ttnn.CoreGrid.
+
+    Attributes:
+        y: Number of core rows.
+        x: Number of core columns.
+    """
+
+    y: int
+    x: int
+
+    @property
+    def num_cores(self) -> int:
+        return self.y * self.x
 
 
 def broadcast_tensors(
@@ -692,6 +733,83 @@ def from_torch(
         tensor = tensor.to(dtype)
 
     return Tensor(tensor, memory_config=memory_config)
+
+
+# Strategy-to-ShardingStrategy mapping for create_sharded_memory_config.
+_SHARD_STRATEGY_MAP: dict[ShardStrategy, ShardingStrategy] = {
+    ShardStrategy.HEIGHT: ShardingStrategy.HEIGHT_SHARDED,
+    ShardStrategy.WIDTH: ShardingStrategy.WIDTH_SHARDED,
+    ShardStrategy.BLOCK: ShardingStrategy.BLOCK_SHARDED,
+}
+
+
+def create_sharded_memory_config(
+    shape: Union[Tuple[int, ...], List[int]],
+    core_grid: CoreGrid,
+    strategy: ShardStrategy,
+    orientation: Optional[ShardOrientation] = None,
+    use_height_and_width_as_shard_shape: bool = False,
+) -> MemoryConfig:
+    """Create a MemoryConfig for a sharded tensor.
+
+    Mirrors ttnn.create_sharded_memory_config.  The simulator does not execute
+    sharding mechanics, but stores the resulting MemoryConfig on tensors so that
+    statistics collection can classify local vs. remote L1 accesses.
+
+    Args:
+        shape: Tensor element shape.  When use_height_and_width_as_shard_shape
+            is False this is the full tensor shape; when True, only the last
+            two dimensions are used and they specify the shard dimensions.
+        core_grid: 2-D core grid describing the cores to shard across.
+        strategy: Sharding strategy (HEIGHT, WIDTH, or BLOCK).
+        orientation: Core traversal order (default ROW_MAJOR).
+        use_height_and_width_as_shard_shape: When True, shape[-2] and shape[-1]
+            are the shard height and width in elements.  When False (default),
+            the shard dimensions are derived from shape and core_grid.
+
+    Returns:
+        MemoryConfig with ShardSpec computed from the arguments.
+    """
+    shape_t = tuple(shape)
+    shard_orient = (
+        orientation if orientation is not None else ShardOrientation.ROW_MAJOR
+    )
+
+    def _to_tile(n: int, tile_dim: int) -> int:
+        return 1 if n == 1 else n // tile_dim
+
+    if use_height_and_width_as_shard_shape:
+        shard_h = _to_tile(shape_t[-2], TILE_SHAPE[0])
+        shard_w = _to_tile(shape_t[-1], TILE_SHAPE[1])
+    else:
+        total_h = math.prod(shape_t[:-1])
+        total_w = shape_t[-1]
+        total_h_tiles = _to_tile(total_h, TILE_SHAPE[0])
+        total_w_tiles = _to_tile(total_w, TILE_SHAPE[1])
+        match strategy:
+            case ShardStrategy.HEIGHT:
+                shard_h = total_h_tiles // core_grid.num_cores
+                shard_w = total_w_tiles
+            case ShardStrategy.WIDTH:
+                shard_h = total_h_tiles
+                shard_w = total_w_tiles // core_grid.num_cores
+            case ShardStrategy.BLOCK:
+                shard_h = total_h_tiles // core_grid.y
+                shard_w = total_w_tiles // core_grid.x
+
+    match strategy:
+        case ShardStrategy.HEIGHT | ShardStrategy.WIDTH:
+            shard_grid: Shape = (core_grid.num_cores,)
+        case ShardStrategy.BLOCK:
+            shard_grid = (core_grid.y, core_grid.x)
+
+    sharding_strategy = _SHARD_STRATEGY_MAP[strategy]
+    spec = ShardSpec(
+        shard_grid=shard_grid,
+        shard_shape=(shard_h, shard_w),
+        orientation=shard_orient,
+    )
+    return MemoryConfig(strategy=sharding_strategy, shard_spec=spec)
 
 
 def multiply(

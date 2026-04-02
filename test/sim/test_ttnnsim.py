@@ -8,10 +8,13 @@ import torch
 
 from sim import ttnn, TTNN_AVAILABLE
 from sim.ttnnsim import (
+    CoreGrid,
     MemoryConfig,
     NdShardSpec,
     ShardDistributionStrategy,
+    ShardOrientation,
     ShardSpec,
+    ShardStrategy,
     ShardingStrategy,
 )
 
@@ -1122,6 +1125,35 @@ class TestShardingTypes:
         assert mc.nd_shard_spec is spec
         assert mc.shard_spec is None
 
+    def test_shard_strategy_values(self) -> None:
+        """ShardStrategy exposes HEIGHT, WIDTH, and BLOCK."""
+        assert ShardStrategy.HEIGHT
+        assert ShardStrategy.WIDTH
+        assert ShardStrategy.BLOCK
+
+    def test_shard_orientation_values(self) -> None:
+        """ShardOrientation exposes ROW_MAJOR and COL_MAJOR."""
+        assert ShardOrientation.ROW_MAJOR
+        assert ShardOrientation.COL_MAJOR
+
+    def test_shard_spec_stores_orientation(self) -> None:
+        """ShardSpec stores orientation and defaults to ROW_MAJOR."""
+        spec = ShardSpec(shard_grid=(4,), shard_shape=(2, 8))
+        assert spec.orientation == ShardOrientation.ROW_MAJOR
+        spec_col = ShardSpec(
+            shard_grid=(4,),
+            shard_shape=(2, 8),
+            orientation=ShardOrientation.COL_MAJOR,
+        )
+        assert spec_col.orientation == ShardOrientation.COL_MAJOR
+
+    def test_core_grid_creation(self) -> None:
+        """CoreGrid stores y, x, and exposes num_cores."""
+        grid = CoreGrid(y=4, x=8)
+        assert grid.y == 4
+        assert grid.x == 8
+        assert grid.num_cores == 32
+
     def test_predefined_constants(self) -> None:
         """DRAM_MEMORY_CONFIG and L1_MEMORY_CONFIG are MemoryConfig instances."""
         assert isinstance(ttnn.DRAM_MEMORY_CONFIG, MemoryConfig)
@@ -1167,3 +1199,82 @@ class TestTensorMemoryConfig:
         t = ttnn.Tensor(torch.zeros(128, 256), memory_config=mc)
         sliced = t[0:2, 0:2]
         assert sliced.memory_config is mc
+
+
+class TestCreateShardedMemoryConfig:
+    """Tests for create_sharded_memory_config factory function."""
+
+    def test_height_sharded(self) -> None:
+        """HEIGHT strategy: each core owns a horizontal slice."""
+        # 4 cores, 128x64 tensor (4x2 tiles), shard = (1, 2) tiles per core
+        mc = ttnn.create_sharded_memory_config(
+            shape=(128, 64),
+            core_grid=CoreGrid(y=2, x=2),
+            strategy=ShardStrategy.HEIGHT,
+        )
+        assert mc.strategy == ShardingStrategy.HEIGHT_SHARDED
+        assert mc.shard_spec is not None
+        assert mc.shard_spec.shard_grid == (4,)
+        assert mc.shard_spec.shard_shape == (1, 2)
+        assert mc.shard_spec.orientation == ShardOrientation.ROW_MAJOR
+
+    def test_width_sharded(self) -> None:
+        """WIDTH strategy: each core owns a vertical slice."""
+        # 4 cores, 64x128 tensor (2x4 tiles), shard = (2, 1) tiles per core
+        mc = ttnn.create_sharded_memory_config(
+            shape=(64, 128),
+            core_grid=CoreGrid(y=2, x=2),
+            strategy=ShardStrategy.WIDTH,
+        )
+        assert mc.strategy == ShardingStrategy.WIDTH_SHARDED
+        assert mc.shard_spec is not None
+        assert mc.shard_spec.shard_grid == (4,)
+        assert mc.shard_spec.shard_shape == (2, 1)
+
+    def test_block_sharded(self) -> None:
+        """BLOCK strategy: 2-D core grid, each core owns a rectangular block."""
+        # 2x4 core grid, 128x256 tensor (4x8 tiles), shard = (2, 2) tiles per core
+        mc = ttnn.create_sharded_memory_config(
+            shape=(128, 256),
+            core_grid=CoreGrid(y=2, x=4),
+            strategy=ShardStrategy.BLOCK,
+        )
+        assert mc.strategy == ShardingStrategy.BLOCK_SHARDED
+        assert mc.shard_spec is not None
+        assert mc.shard_spec.shard_grid == (2, 4)
+        assert mc.shard_spec.shard_shape == (2, 2)
+
+    def test_use_height_and_width_as_shard_shape(self) -> None:
+        """When use_height_and_width_as_shard_shape=True, shape is the shard shape."""
+        mc = ttnn.create_sharded_memory_config(
+            shape=(64, 32),
+            core_grid=CoreGrid(y=2, x=4),
+            strategy=ShardStrategy.BLOCK,
+            use_height_and_width_as_shard_shape=True,
+        )
+        assert mc.strategy == ShardingStrategy.BLOCK_SHARDED
+        assert mc.shard_spec is not None
+        # 64x32 elements = 2x1 tiles
+        assert mc.shard_spec.shard_shape == (2, 1)
+
+    def test_orientation_stored(self) -> None:
+        """Orientation is stored in the resulting ShardSpec."""
+        mc = ttnn.create_sharded_memory_config(
+            shape=(128, 64),
+            core_grid=CoreGrid(y=2, x=2),
+            strategy=ShardStrategy.HEIGHT,
+            orientation=ShardOrientation.COL_MAJOR,
+        )
+        assert mc.shard_spec is not None
+        assert mc.shard_spec.orientation == ShardOrientation.COL_MAJOR
+
+    def test_batch_dimensions_compressed_to_2d(self) -> None:
+        """Higher-rank tensors are compressed to 2D before shard computation."""
+        # (2, 128, 64) -> 2D (256, 64) = (8, 2) tiles; 4 cores HEIGHT -> shard (2, 2)
+        mc = ttnn.create_sharded_memory_config(
+            shape=(2, 128, 64),
+            core_grid=CoreGrid(y=2, x=2),
+            strategy=ShardStrategy.HEIGHT,
+        )
+        assert mc.shard_spec is not None
+        assert mc.shard_spec.shard_shape == (2, 2)
