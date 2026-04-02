@@ -634,7 +634,7 @@ def TTL_CopyDstOp : TTL_Op<"copy_dst",
     The dst_idx attribute specifies the destination DST register index. The
     source DST register is determined by the src_tile's dst_idx attribute.
 
-    Lowering: ttl.copy_dst -> ttkernel.copy_dest_values(dst_idx, src.dst_idx)
+    Lowering: ttl.copy_dst -> ttkernel.copy_dest_values(src.dst_idx, dst_idx)
 
     Example:
     ```mlir
