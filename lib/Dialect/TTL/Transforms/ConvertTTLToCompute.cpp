@@ -1047,8 +1047,11 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
     }
 
     // Detect matmul+add fusion: when the matmul's sole user is an AddOp
-    // and the other add operand is CB-attached, absorb the add into a
-    // 3-operand tile_matmul_block (DST += A*B with accumulator preload).
+    // whose result feeds a store (not another op like relu), and the other
+    // add operand is CB-attached, absorb the add into a 3-operand
+    // tile_matmul_block (DST += A*B with accumulator preload).
+    // When the add feeds into another op (e.g., relu(prev + a @ b)), defer
+    // to the elementwise fusion mechanism via buildFusedCompute.
     AddOp addUser = nullptr;
     Value acc;
     if (op.getResult().hasOneUse()) {
@@ -1057,10 +1060,33 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
         Value otherOperand = (addOp.getLhs() == op.getResult())
                                  ? addOp.getRhs()
                                  : addOp.getLhs();
-        if (getAttachedCB(otherOperand)) {
+        if (getAttachedCB(otherOperand) && !collectOutputCBs(addOp).empty()) {
           addUser = addOp;
           acc = otherOperand;
         }
+      }
+    }
+
+    // Defer when the matmul feeds into an elementwise op that was not
+    // absorbed above (e.g., the add feeds a relu, or the matmul feeds a
+    // sub). The downstream op's fusion (buildFusedCompute) handles this
+    // via the deferred-matmul fold for single-tile blocks.
+    if (!addUser && op.getResult().hasOneUse()) {
+      auto *user = *op.getResult().getUsers().begin();
+      if (isElementwiseOp(user)) {
+        auto userOutType = getTensorType(user->getResult(0));
+        auto lhsType = getTensorType(lhs);
+        auto rhsType = getTensorType(rhs);
+        if (isBroadcastCompatible(lhsType, userOutType) &&
+            isBroadcastCompatible(rhsType, userOutType)) {
+          return rewriter.notifyMatchFailure(op, "deferring matmul to fusion");
+        }
+        // Multi-tile matmul feeding an elementwise chain (e.g.,
+        // relu(prev + a @ b) with block_k > 1) cannot be fused yet.
+        return op.emitError(
+            "multi-tile matmul feeding an elementwise chain is not yet "
+            "supported; use single-tile blocks or separate the matmul "
+            "result into its own store before applying elementwise ops");
       }
     }
 
