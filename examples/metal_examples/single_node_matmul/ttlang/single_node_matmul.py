@@ -2,8 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 # up to tt-lang spec, not intended to compile or run currently
-import sys
-from pathlib import Path
 import ttnn
 import pytest
 import torch
@@ -39,9 +37,11 @@ def tt_lang_singlenode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         for _ in range(Mt):
             for _ in range(Nt):
                 with out_dfb.reserve() as out_blk:
+                    acc = ttl.math.fill(out_blk, 0)
                     for _ in range(Kt):
                         with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
-                            out_blk.store(a_blk @ b_blk, acc=True)
+                            acc = acc + a_blk @ b_blk
+                    out_blk.store(acc)
 
     @ttl.datamovement()
     def mm_reader():
@@ -78,6 +78,7 @@ def test_singlenode_matmul_tt_lang():
     )
     result = ttnn.to_torch(c).to(torch.bfloat16)
     assert_with_ulp(golden, result)
+    print("test passed")
 
     ttnn.close_device(device)
 

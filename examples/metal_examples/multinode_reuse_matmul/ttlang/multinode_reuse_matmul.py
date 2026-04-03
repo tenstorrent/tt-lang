@@ -121,6 +121,7 @@ def test_multinode_reuse_matmul_tt_lang(M, K, N):
     )
     result = ttnn.to_torch(c).to(torch.bfloat16)
     assert_with_ulp(golden, result)
+    print("Test passed!")
 
     ttnn.close_device(device)
 
