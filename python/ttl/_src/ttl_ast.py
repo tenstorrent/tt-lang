@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Set
 
 from pykernel._src.kernel_ast import TTCompilerBase
+from pykernel._src.utils import _get_type_str
 from ttl.dialects import arith, func, ttcore, ttkernel
 from ttl.ir import *
 
@@ -278,6 +279,11 @@ class TTLGenericCompiler(TTCompilerBase):
                     and node.func.id == "print"
                 ):
                     return self.visit_Print(node.args, node.keywords)
+
+                # Check for PipeNet.if_src/if_dst calls
+                if self._is_pipenet_callback_call(node):
+                    return self._handle_pipenet_callback(node)
+
                 return self._try_emit_auto_signposts(
                     node, lambda: super(TTLGenericCompiler, self).visit_Call(node)
                 )
@@ -285,6 +291,92 @@ class TTLGenericCompiler(TTCompilerBase):
                 if isinstance(e, TTLangCompileError):
                     raise
                 self._raise_error(node, str(e))
+
+    def _is_pipenet_callback_call(self, node):
+        """Check if this is a pipenet.if_src(fn) or pipenet.if_dst(fn) call."""
+        if not isinstance(node.func, ast.Attribute):
+            return False
+        if node.func.attr not in ("if_src", "if_dst"):
+            return False
+        if not isinstance(node.func.value, ast.Name):
+            return False
+        # Check if the variable is a PipeNet
+        var_name = node.func.value.id
+        tbl = self._var_exists(var_name)
+        if not tbl:
+            return False
+        val = tbl[var_name]
+        from ..pipe import PipeNet
+        return isinstance(val, PipeNet)
+
+    def _handle_pipenet_callback(self, node):
+        """Handle pipenet.if_src(callback) or pipenet.if_dst(callback) calls."""
+        from ..pipe import PipeNet, SrcPipeIdentity, DstPipeIdentity
+
+        method_name = node.func.attr
+        var_name = node.func.value.id
+        tbl = self._var_exists(var_name)
+        pipenet = tbl[var_name]
+
+        # Get the callback argument
+        if len(node.args) != 1:
+            self._raise_error(
+                node, f"PipeNet.{method_name}() requires exactly one callback argument"
+            )
+        callback_node = node.args[0]
+
+        # Support lambda or function name
+        if isinstance(callback_node, ast.Lambda):
+            callback_body = callback_node.body
+            callback_args = callback_node.args
+            if len(callback_args.args) != 1:
+                self._raise_error(
+                    callback_node,
+                    f"PipeNet.{method_name}() callback must take exactly one argument (pipe)",
+                )
+            pipe_param_name = callback_args.args[0].arg
+        elif isinstance(callback_node, ast.Name):
+            # Function reference - look it up and get its AST
+            self._raise_error(
+                callback_node,
+                f"PipeNet.{method_name}() currently only supports lambda callbacks. "
+                "Use: net.if_src(lambda pipe: ...)",
+            )
+        else:
+            self._raise_error(
+                callback_node,
+                f"PipeNet.{method_name}() requires a lambda or function reference",
+            )
+
+        # Iterate over all pipes and emit if_src/if_dst for each
+        for pipe in pipenet.pipes:
+            # Emit the pipe MLIR value
+            pipe_val = self._emit_pipe_from_capture(pipe)
+            pipe._mlir_value = pipe_val
+
+            # Create the appropriate PipeIdentity
+            if method_name == "if_src":
+                pipe_identity = SrcPipeIdentity(pipe)
+                op = ttl.if_src(pipe_val)
+            else:
+                pipe_identity = DstPipeIdentity(pipe)
+                op = ttl.if_dst(pipe_val)
+
+            # Create body block and compile callback inside
+            block = Block.create_at_start(op.body)
+            with InsertionPoint(block):
+                # Bind the pipe parameter to the pipe value
+                self.symbol_tables.append({})
+                self.symbol_tables[-1][pipe_param_name] = pipe_val
+                # Also store the identity object for property access
+                self.symbol_tables[-1][f"__{pipe_param_name}_identity"] = pipe_identity
+
+                # Visit the callback body (lambda body is an expression)
+                self.visit(callback_body)
+
+                self.symbol_tables.pop()
+
+        return None  # Statement, no return value
 
     def visit_BinOp(self, node):
         """Override to inject auto-profiling and provide better error messages."""
@@ -344,6 +436,20 @@ class TTLGenericCompiler(TTCompilerBase):
             self._raise_error(node, f"Unknown function: {namespace}.{node.attr}")
         return fn(*func_args, **kwargs)
 
+    def _resolve_chained_method_call(self, node, func_args, kwargs):
+        """Handle chained calls like foo().bar() where node.value is a Call."""
+        mlir_value = self.visit(node.value)
+        if mlir_value is None:
+            self._raise_error(node, "Chained call returned no value")
+        mlir_type = _get_type_str(mlir_value.type)
+        qualified_object_syntax = f"{mlir_type}.{node.attr}"
+        fn = self._fn_map.get(qualified_object_syntax, None)
+        if fn is None:
+            self._raise_error(
+                node, f"No method '{node.attr}' on type {mlir_type}"
+            )
+        return fn(mlir_value, *func_args, **kwargs)
+
     def visit_Attribute(self, node, func_args=[], kwargs={}):
         """Override to set location context and catch errors for method calls."""
         with self._loc_for_node(node):
@@ -351,6 +457,9 @@ class TTLGenericCompiler(TTCompilerBase):
                 # Handle ttl.XXX and ttl.math.XXX attribute access
                 if self._is_ttl_module_access(node) or self._is_ttl_math_access(node):
                     return self._resolve_ttl_function(node, func_args, kwargs)
+                # Handle chained method calls: expr().method()
+                if isinstance(node.value, ast.Call):
+                    return self._resolve_chained_method_call(node, func_args, kwargs)
                 return super().visit_Attribute(node, func_args, kwargs)
             except (ValueError, TypeError, NotImplementedError) as e:
                 if isinstance(e, TTLangCompileError):
@@ -538,7 +647,7 @@ class TTLGenericCompiler(TTCompilerBase):
 
             # Prepopulate other captures (non-tensor)
             from ..circular_buffer import CircularBuffer
-            from ..pipe import Pipe
+            from ..pipe import Pipe, PipeNet
 
             for name, val in self.captures.items():
                 if is_ttnn_tensor(val):
@@ -556,6 +665,9 @@ class TTLGenericCompiler(TTCompilerBase):
                     self.symbol_tables[-1][name] = pipe_val
                     # Store MLIR value on the Pipe object for use in operators
                     val._mlir_value = pipe_val
+                elif isinstance(val, PipeNet):
+                    # PipeNet is stored directly - we emit pipes lazily in if_src/if_dst
+                    self.symbol_tables[-1][name] = val
                 else:
                     self._raise_error(
                         node, f"Invalid capture type for var {name}: {type(val)}"
@@ -571,6 +683,10 @@ class TTLGenericCompiler(TTCompilerBase):
 
     def visit_FunctionDef(self, node):
         with self._loc_for_node(node):
+            # Nested function defs are stored as callback ASTs for PipeNet
+            if self._is_nested_function_def():
+                self._store_callback_def(node)
+                return
             return self._emit_entry(node)
 
     def visit_AsyncFunctionDef(self, node):
@@ -777,6 +893,14 @@ class TTLGenericCompiler(TTCompilerBase):
             thread=self._resolve_print_thread("scalar", thread),
             num_pages=None,
         )
+
+    def _is_nested_function_def(self):
+        """Check if we're inside a function body (nested def, not entry)."""
+        return len(self.symbol_tables) > 1
+
+    def _store_callback_def(self, node):
+        """Store a nested function def AST for use as a PipeNet callback."""
+        self.symbol_tables[-1][node.name] = node
 
     def _get_cb_tensor_type(self, cb_val, node=None):
         """Extract the tensor type from a TTL CB type."""

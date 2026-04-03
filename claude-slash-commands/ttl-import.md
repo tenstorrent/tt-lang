@@ -154,7 +154,7 @@ def dm_read():
 dfb = ttl.make_dataflow_buffer_like(
     tensor,           # TTNN tensor to inherit dtype/layout from
     shape=(R, C),     # Block size in tiles (e.g., (2, 2) = 4 tiles per block)
-    buffer_factor=2   # Number of blocks in DFB (2 = double buffering)
+    buffer_factor=2   # Factor of extra blocks in DFB (2 = double buffering) for pipelining
 )
 
 # Consumer operations (compute thread consumes data)
@@ -176,6 +176,8 @@ blk.store(expr)             # Store result of expression into block
 ```
 
 **DFB Shape = Block Size:** The `shape=(R, C)` parameter defines the **block size** in tiles. A block is the unit of data transferred between threads. For tensors larger than one block, use **loops** to iterate over multiple blocks:
+
+Note: buffer factor is a pipeline hint, not a queue depth. Almost all kernels just use 2.
 
 ```python
 # 128x128 tensor = 4x4 tiles, process in 2x2 blocks (4 iterations)
