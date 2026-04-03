@@ -298,10 +298,26 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   Location loc = sinkOp->getLoc();
   MLIRContext *ctx = rewriter.getContext();
 
-  // Validate broadcast compatibility: each root input dimension must either
-  // match the output or be 1 (broadcast). Any other mismatch means the
-  // identity-or-broadcast indexing map heuristic would produce incorrect maps.
+  // Detect matmul in the fusion chain. When present, the iteration space
+  // must be 3D [M, N, K] with K as reduction, and the matmul's root inputs
+  // need matmul-specific indexing maps instead of broadcast/identity maps.
+  MatmulOp chainMatmul = nullptr;
+  DenseSet<Value> matmulConsumedRoots;
+  for (Operation *chainOp : trace.opsInOrder) {
+    if (auto matmulOp = dyn_cast<MatmulOp>(chainOp)) {
+      chainMatmul = matmulOp;
+      matmulConsumedRoots.insert(matmulOp.getLhs());
+      matmulConsumedRoots.insert(matmulOp.getRhs());
+    }
+  }
+
+  // Validate broadcast compatibility for non-matmul root inputs. Matmul
+  // inputs are exempt: their contraction dimension is handled by the
+  // deferred-matmul fold and matmul-specific indexing maps below.
   for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
+    if (matmulConsumedRoots.contains(trace.rootInputs[i])) {
+      continue;
+    }
     auto inputType = getTensorType(trace.rootInputs[i]);
     if (!inputType) {
       continue;
@@ -313,16 +329,50 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     }
   }
 
-  // Build indexing maps: broadcast-aware for inputs, identity for output.
-  // When an input has size 1 in a dimension but the output doesn't, that
-  // dimension is broadcast and the map should project to constant 0.
-  // This is required for TilingInterface: without correct maps, subblocking
-  // would create out-of-bounds slices on broadcast dimensions.
+  // Determine iteration space dimensionality. When the chain contains a
+  // matmul, add a K (reduction) dimension; otherwise use the output rank
+  // with all-parallel iterators.
+  int64_t numDims = type.getRank();
+  SmallVector<Attribute> iterTypes(numDims, rewriter.getStringAttr("parallel"));
+  if (chainMatmul) {
+    numDims = type.getRank() + 1; // append K dimension
+    iterTypes.push_back(rewriter.getStringAttr("reduction"));
+  }
+
+  // Build indexing maps.
   SmallVector<Attribute> maps;
   AffineMap identityMap =
       AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
+
+  // For matmul chains, build maps in the 3D [M, N, K] space.
+  AffineMap lhsMap, rhsMap;
+  if (chainMatmul) {
+    auto d0 = getAffineDimExpr(0, ctx); // M
+    auto d1 = getAffineDimExpr(1, ctx); // N
+    auto d2 = getAffineDimExpr(2, ctx); // K
+    lhsMap = AffineMap::get(numDims, 0, {d0, d2}, ctx);
+    rhsMap = AffineMap::get(numDims, 0, {d2, d1}, ctx);
+    // Non-matmul maps project M,N from the 3D space (ignore K).
+    identityMap = AffineMap::get(numDims, 0, {d0, d1}, ctx);
+  }
+
   for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
-    auto inputType = getTensorType(trace.rootInputs[i]);
+    Value rootInput = trace.rootInputs[i];
+
+    // Matmul inputs use matmul-specific maps.
+    if (chainMatmul) {
+      if (rootInput == chainMatmul.getLhs()) {
+        maps.push_back(AffineMapAttr::get(lhsMap));
+        continue;
+      }
+      if (rootInput == chainMatmul.getRhs()) {
+        maps.push_back(AffineMapAttr::get(rhsMap));
+        continue;
+      }
+    }
+
+    // Non-matmul inputs: broadcast-aware map.
+    auto inputType = getTensorType(rootInput);
     if (inputType && inputType.getRank() == type.getRank()) {
       SmallVector<AffineExpr> exprs;
       bool hasBroadcast = false;
@@ -336,7 +386,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       }
       if (hasBroadcast) {
         maps.push_back(
-            AffineMapAttr::get(AffineMap::get(type.getRank(), 0, exprs, ctx)));
+            AffineMapAttr::get(AffineMap::get(numDims, 0, exprs, ctx)));
       } else {
         maps.push_back(AffineMapAttr::get(identityMap));
       }
@@ -347,10 +397,6 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   for (size_t i = 0; i < outCbs.size(); ++i) {
     maps.push_back(AffineMapAttr::get(identityMap));
   }
-
-  // Build iterator types: all parallel
-  SmallVector<Attribute> iterTypes(type.getRank(),
-                                   rewriter.getStringAttr("parallel"));
 
   // Position compute after all reserves by inserting before the last store.
   insertAtLastStore(rewriter, sinkOp);
@@ -443,16 +489,17 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   // Emit tile ops in topological order with interleaved side-effect ops.
   //
-  // Matmul+add fold for longer chains (e.g., relu(prev + a @ b)): when a
-  // MatmulOp result feeds into an AddOp in the chain, both are replaced by
-  // a single 3-operand TileMatmulBlockOp (lhs, rhs, accumulator).
-  // matmul_block accumulates (DST += A*B), so pre-loading the accumulator
-  // into DST yields accumulator + A*B without an explicit tile_add.
+  // Matmul+add fold for elementwise chains (e.g., relu(prev + a @ b)):
+  // when a MatmulOp result feeds into an AddOp in the chain, both are
+  // replaced by a single 3-operand TileMatmulBlockOp (lhs, rhs,
+  // accumulator). matmul_block accumulates (DST += A*B), so pre-loading
+  // the accumulator into DST yields accumulator + A*B without an explicit
+  // tile_add. Works for both single-tile and multi-tile blocks; the
+  // matmul-aware iteration space and indexing maps are set up by
+  // buildFusedCompute above.
   //
-  // The primary matmul+add fusion is handled by LowerMatmulToCompute, which
-  // absorbs a direct AddOp user. This deferred fold handles the remaining
-  // case where additional ops (like relu) wrap the matmul+add chain, causing
-  // the fusion trace to include the matmul in opsInOrder.
+  // The primary matmul+add fusion (without additional wrapping ops) is
+  // handled by LowerMatmulToCompute, which absorbs a direct AddOp user.
   DenseMap<Value, std::pair<Value, Value>> deferredMatmul;
 
   Value finalResult;
@@ -1070,23 +1117,11 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
     // Defer when the matmul feeds into an elementwise op that was not
     // absorbed above (e.g., the add feeds a relu, or the matmul feeds a
     // sub). The downstream op's fusion (buildFusedCompute) handles this
-    // via the deferred-matmul fold for single-tile blocks.
+    // via the deferred-matmul fold with matmul-aware indexing maps.
     if (!addUser && op.getResult().hasOneUse()) {
       auto *user = *op.getResult().getUsers().begin();
       if (isElementwiseOp(user)) {
-        auto userOutType = getTensorType(user->getResult(0));
-        auto lhsType = getTensorType(lhs);
-        auto rhsType = getTensorType(rhs);
-        if (isBroadcastCompatible(lhsType, userOutType) &&
-            isBroadcastCompatible(rhsType, userOutType)) {
-          return rewriter.notifyMatchFailure(op, "deferring matmul to fusion");
-        }
-        // Multi-tile matmul feeding an elementwise chain (e.g.,
-        // relu(prev + a @ b) with block_k > 1) cannot be fused yet.
-        return op.emitError(
-            "multi-tile matmul feeding an elementwise chain is not yet "
-            "supported; use single-tile blocks or separate the matmul "
-            "result into its own store before applying elementwise ops");
+        return rewriter.notifyMatchFailure(op, "deferring matmul to fusion");
       }
     }
 
