@@ -1152,11 +1152,11 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 
     if (pipeType.srcInDstRange()) {
       auto falseBoolAttr = rewriter.getBoolAttr(false);
-      ttk::NocSemaphoreSetMulticastLoopbackOp::create(rewriter, 
+      ttk::NocSemaphoreSetMulticastLoopbackOp::create(rewriter,
           loc, semAddr, semMcastAddr.getResult(), numDestsVal,
-          /*linked=*/falseBoolAttr, /*multicast_path_reserve=*/falseBoolAttr);
+          /*linked=*/falseBoolAttr);
     } else {
-      ttk::NocSemaphoreSetMulticastOp::create(rewriter, 
+      ttk::NocSemaphoreSetMulticastOp::create(rewriter,
           loc, semAddr, semMcastAddr.getResult(), numDestsVal,
           /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr);
     }
@@ -1185,7 +1185,7 @@ static LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
   // For point-to-point, source uses atomic inc; for multicast, source uses set.
   auto oneVal = arith::ConstantOp::create(rewriter, 
       loc, rewriter.getI32Type(), rewriter.getI32IntegerAttr(1));
-  ttk::NocSemaphoreWaitMinOp::create(rewriter, loc, semPtr, oneVal);
+  ttk::SemaphoreWaitMinOp::create(rewriter, loc, semPtr, oneVal);
 
   // Reset semaphore for next use
   auto zeroVal = arith::ConstantIndexOp::create(rewriter, loc, 0);
