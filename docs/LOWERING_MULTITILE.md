@@ -7,7 +7,7 @@ This document traces the lowering of a 2x2 multi-tile add operation from Python 
 ```python
 import ttl
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def add_multitile_kernel(lhs, rhs, out):
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(2, 2), buffer_factor=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(2, 2), buffer_factor=2)

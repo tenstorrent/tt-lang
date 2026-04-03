@@ -485,6 +485,72 @@ def broadcast(
     return ttl.bcast(output.type, input, output, bcast_attr)
 
 
+def _reduce_impl(
+    input: TensorBlock, scaler: TensorBlock, dims: List[int], reduce_type: int
+) -> TensorBlock:
+    """Shared implementation for reduce_sum and reduce_max."""
+    from ttl.ir import IntegerAttr, IntegerType, DenseI64ArrayAttr
+
+    input_type = input.type
+    input_shape = list(input_type.shape)
+    rank = len(input_shape)
+    if rank != 2:
+        raise ValueError(f"reduce only supports 2D tensors, got rank {rank}")
+    if not dims:
+        raise ValueError("dims must be non-empty")
+
+    for d in dims:
+        if d < -rank or d >= rank:
+            raise ValueError(
+                f"dim {d} out of range for rank {rank}: "
+                f"must be in [{-rank}, {rank - 1}]"
+            )
+    norm_dims = sorted({d % rank for d in dims})
+
+    result_shape = [1 if i in norm_dims else s for i, s in enumerate(input_shape)]
+    result_type = RankedTensorType.get(
+        result_shape, input_type.element_type, input_type.encoding
+    )
+
+    ctx = input_type.context
+    i32_type = IntegerType.get_signless(32, ctx)
+    reduce_type_attr = IntegerAttr.get(i32_type, reduce_type)
+    dims_attr = DenseI64ArrayAttr.get(dims, ctx)
+    return ttl.reduce(result_type, input, scaler, reduce_type_attr, dims_attr)
+
+
+@syntax("reduce_sum")
+def reduce_sum(
+    input: TensorBlock, scaler: TensorBlock, *, dims: List[int]
+) -> TensorBlock:
+    """Scaled sum reduction over specified dimensions."""
+    return _reduce_impl(input, scaler, dims, reduce_type=0)
+
+
+@syntax("reduce_max")
+def reduce_max(
+    input: TensorBlock, scaler: TensorBlock, *, dims: List[int]
+) -> TensorBlock:
+    """Scaled max reduction over specified dimensions."""
+    return _reduce_impl(input, scaler, dims, reduce_type=1)
+
+
+@syntax("transpose")
+def transpose(input: TensorBlock) -> TensorBlock:
+    """Transpose a 2D block: (M, N) -> (N, M)."""
+    input_type = input.type
+    input_shape = list(input_type.shape)
+    if len(input_shape) != 2:
+        raise ValueError(
+            f"transpose only supports 2D tensors, got rank {len(input_shape)}"
+        )
+    result_shape = [input_shape[1], input_shape[0]]
+    result_type = RankedTensorType.get(
+        result_shape, input_type.element_type, input_type.encoding
+    )
+    return ttl.transpose(result_type, input)
+
+
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",

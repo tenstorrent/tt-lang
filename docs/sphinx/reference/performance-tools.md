@@ -1,6 +1,6 @@
 # Performance Tools
 
-TT-Lang provides built-in performance analysis tools for profiling kernels on Tenstorrent hardware. All tools are activated via environment variables and print results after kernel execution.
+TT-Lang provides built-in performance analysis tools for profiling operations on Tenstorrent hardware. All tools are activated via environment variables and print results after operation execution.
 
 ## Using Claude for Performance Analysis
 
@@ -14,7 +14,7 @@ The `/ttl-profile` and `/ttl-optimize` [Claude Code](https://claude.com/claude-c
 | `TT_METAL_DEVICE_PROFILER=1` | Enable device profiler (required for all profiling) |
 | `TT_METAL_PROFILER_MID_RUN_DUMP=1` | Enable mid-run profiler dumps (required for all profiling) |
 | `TT_METAL_DEVICE_PROFILER_NOC_EVENTS=1` | Enable NOC event tracing (required for perf summary) |
-| `TTLANG_PERF_DUMP=1` | Print NOC traffic and per-thread wall time summary |
+| `TTLANG_PERF_DUMP=1` | Print NOC traffic and per-kernel wall time summary |
 | `TTLANG_AUTO_PROFILE=1` | Instrument every line with signposts and print per-line cycle counts |
 | `TTLANG_SIGNPOST_PROFILE=1` | Print cycle counts for user-defined `ttl.signpost()` regions |
 | `TTLANG_PERF_SERV=1` | Serve profiler data as a Perfetto trace after execution |
@@ -27,7 +27,7 @@ The `/ttl-profile` and `/ttl-optimize` [Claude Code](https://claude.com/claude-c
 
 ## Perf Summary
 
-Set `TTLANG_PERF_DUMP=1` to print a NOC traffic and per-thread wall time summary after kernel execution.
+Set `TTLANG_PERF_DUMP=1` to print a NOC traffic and per-kernel wall time summary after operation execution.
 
 **Required environment variables** (must be exported before running):
 ```bash
@@ -62,7 +62,7 @@ duration: 2,225,436 cycles (1.65 ms)
 
 ### Standalone usage
 
-The perf summary tool can also be run standalone against previously collected profiler logs. This works with any tt-metal program, not just tt-lang kernels -- it parses the same NOC trace JSON and device profiler CSV that tt-metal's profiling infrastructure produces.
+The perf summary tool can also be run standalone against previously collected profiler logs. This works with any tt-metal program, not just TT-Lang operations -- it parses the same NOC trace JSON and device profiler CSV that tt-metal's profiling infrastructure produces.
 
 ```bash
 # Default: reads from $TT_METAL_HOME/generated/profiler/.logs/
@@ -74,13 +74,13 @@ python -m ttl._src.perf_summary --path /path/to/profiler/.logs/
 # Machine-readable JSON output
 python -m ttl._src.perf_summary --path /path/to/profiler/.logs/ --json
 
-# Filter to specific kernel names
+# Filter to specific operation names
 python -m ttl._src.perf_summary --names "my_kernel,ttnn.multiply"
 ```
 
 ## Auto-Profiling
 
-TT-Lang includes built-in auto-profiling that instruments kernels with signposts and generates per-line cycle count reports.
+TT-Lang includes built-in auto-profiling that instruments operations with signposts and generates per-line cycle count reports.
 
 **Required environment variables** (must be exported before running):
 ```bash
@@ -133,7 +133,7 @@ Use `ttl.signpost("name")` as a context manager to measure cycle counts for targ
 
 Signposts and auto-profiling must be used independently. If both are enabled, user signposts are skipped with a warning.
 
-**Important:** Each node supports only 125 signposts. To avoid overflowing the signpost buffer, update your kernel to run only one iteration when profiling. Watch for warnings about buffer overflow in the output.
+**Important:** Each node supports only 125 signposts. To avoid overflowing the signpost buffer, update your operation to run only one iteration when profiling. Watch for warnings about buffer overflow in the output.
 
 **Required environment variables:**
 ```bash
@@ -231,7 +231,7 @@ Signposts can be nested as shown above. The report breaks down cycle counts per 
 
 ## Perfetto Trace Server
 
-Set `TTLANG_PERF_SERV=1` to serve profiler data as a [Perfetto](https://perfetto.dev/) trace after kernel execution. This works with both auto-profiling and signpost profiling. The server converts the device profiler CSV to Chrome Trace Event format and opens it in the Perfetto UI.
+Set `TTLANG_PERF_SERV=1` to serve profiler data as a [Perfetto](https://perfetto.dev/) trace after operation execution. This works with both auto-profiling and signpost profiling. The server converts the device profiler CSV to Chrome Trace Event format and opens it in the Perfetto UI.
 
 ![Perfetto trace server showing signpost regions per hardware thread](perfetto-trace-server.png)
 
@@ -252,7 +252,7 @@ export TTLANG_PERF_SERV=1
 python path/to/program.py
 ```
 
-After kernel execution, the server starts and prints connection instructions:
+After operation execution, the server starts and prints connection instructions:
 
 ```
 ======================================================================

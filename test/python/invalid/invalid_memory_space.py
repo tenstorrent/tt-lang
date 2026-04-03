@@ -22,7 +22,7 @@ import ttl
 
 # CHECK: ValueError: Invalid memory_space: 'INVALID'
 # CHECK: Must be one of:
-@ttl.kernel(grid=(1, 1), memory_space="INVALID")
+@ttl.operation(grid=(1, 1), memory_space="INVALID")
 def invalid_memory_space_kernel(lhs, rhs, out):
     """This kernel should fail because memory_space='INVALID' is not supported."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)

@@ -40,7 +40,7 @@ TENSOR_SHAPE = (
 )
 
 
-@ttl.kernel(grid=(6, 8))  # (cols, rows)
+@ttl.operation(grid=(6, 8))  # (cols, rows)
 def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
     """
     Adversarial kernel with 4 inputs and 4 outputs.

@@ -984,7 +984,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
 /// (ttl-lower-to-loops).
 static LogicalResult
 lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
-                       TTLToTTKernelTypeConverter &typeConverter) {
+                       TTLToTTKernelTypeConverter &typeConverter,
+                       bool reduceFullFp32) {
   ConversionTarget computeTarget(ctx);
   computeTarget.addLegalDialect<ttkernel::TTKernelDialect>();
   computeTarget.addLegalDialect<affine::AffineDialect, arith::ArithDialect>();
@@ -1017,7 +1018,8 @@ lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
       });
 
   RewritePatternSet computePatterns(&ctx);
-  populateTTLTileOpsToTTKernelPatterns(&typeConverter, computePatterns);
+  populateTTLTileOpsToTTKernelPatterns(&typeConverter, computePatterns,
+                                       reduceFullFp32);
   return applyPartialConversion(mod, computeTarget, std::move(computePatterns));
 }
 
@@ -1112,15 +1114,82 @@ static void cleanupComputeKernels(ModuleOp mod, MLIRContext &ctx) {
 }
 
 //===----------------------------------------------------------------------===//
+// DstSectionOp expansion
+//===----------------------------------------------------------------------===//
+
+/// Expand DstSectionOp: insert sync ops at the math/pack boundary (first
+/// TileStoreOp), then inline the body. LowerToLoops ensures pack-phase ops
+/// are already grouped at the end.
+static void expandDstSection(DstSectionOp dstSection) {
+  Block &body = dstSection.getBody().front();
+  Block *parentBlock = dstSection->getBlock();
+  Location loc = dstSection.getLoc();
+
+  // Find the first TileStoreOp -- this is the math/pack boundary.
+  Operation *firstStore = nullptr;
+  for (Operation &op : body.without_terminator()) {
+    if (isa<TileStoreOp>(&op)) {
+      firstStore = &op;
+      break;
+    }
+  }
+
+  // Insert sync ops within the body at the correct positions.
+  OpBuilder builder(dstSection->getContext());
+
+  // Acquire at the start of the body.
+  builder.setInsertionPointToStart(&body);
+  TileRegsAcquireOp::create(builder, loc);
+
+  // Commit + wait before the first store (or before yield if no stores).
+  if (firstStore) {
+    builder.setInsertionPoint(firstStore);
+  } else {
+    builder.setInsertionPoint(body.getTerminator());
+  }
+  TileRegsCommitOp::create(builder, loc);
+  TileRegsWaitOp::create(builder, loc);
+
+  // Release before the yield.
+  builder.setInsertionPoint(body.getTerminator());
+  TileRegsReleaseOp::create(builder, loc);
+
+  // Erase the yield terminator -- the body will be inlined into the parent.
+  body.getTerminator()->erase();
+
+  // Inline the body into the parent block, replacing the DstSectionOp.
+  parentBlock->getOperations().splice(Block::iterator(dstSection),
+                                      body.getOperations());
+  dstSection->erase();
+}
+
+/// Expand all DstSectionOps in the module to four TTL sync ops.
+/// Runs as a pre-processing step before dialect conversion.
+static void expandDstSections(ModuleOp mod) {
+  SmallVector<DstSectionOp> sections;
+  mod.walk([&](DstSectionOp op) { sections.push_back(op); });
+  for (DstSectionOp section : sections) {
+    expandDstSection(section);
+  }
+}
+
+//===----------------------------------------------------------------------===//
 // TTLConvertTTLToTTKernelPass
 //===----------------------------------------------------------------------===//
 
 struct TTLConvertTTLToTTKernelPass
     : impl::TTLConvertTTLToTTKernelBase<TTLConvertTTLToTTKernelPass> {
+  using TTLConvertTTLToTTKernelBase::TTLConvertTTLToTTKernelBase;
+
   void runOnOperation() override {
     MLIRContext &ctx = getContext();
     ModuleOp mod = getOperation();
     TTLToTTKernelTypeConverter typeConverter;
+
+    // Phase 0: Expand DstSectionOp into four TTL sync ops. This inlines the
+    // DstSectionOp body and inserts acquire/commit/wait/release around it,
+    // with stores reordered to the pack phase (after wait).
+    expandDstSections(mod);
 
     // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)
     if (failed(lowerTTLOpsToTTKernel(mod, ctx, typeConverter, getName()))) {
@@ -1129,7 +1198,8 @@ struct TTLConvertTTLToTTKernelPass
     }
 
     // Phase 2: Lower tile compute ops to TTKernel (tile_add, tile_mul, ...)
-    if (failed(lowerTileOpsToTTKernel(mod, ctx, typeConverter))) {
+    if (failed(
+            lowerTileOpsToTTKernel(mod, ctx, typeConverter, reduceFullFp32))) {
       signalPassFailure();
       return;
     }

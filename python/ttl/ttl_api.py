@@ -574,6 +574,7 @@ def _compile_ttnn_kernel(
     program_hash=None,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    compiler_options: CompilerOptions = CompilerOptions(),
     verbose=True,
     source_lines=None,
     all_source_lines=None,
@@ -695,6 +696,16 @@ def _compile_ttnn_kernel(
                     print(
                         "  [fp32 detected] Enabling fp32_dest_acc_en for compute kernel"
                     )
+            if fp32_dest_acc_en is None and compiler_options.reduce_full_fp32:
+                if "reduce_tile" in cpp_source:
+                    config.fp32_dest_acc_en = True
+            if fp32_dest_acc_en is None and compiler_options.matmul_full_fp32:
+                if "matmul_block" in cpp_source:
+                    # TODO(#454): Remove once tt-llk #1338 is fixed.
+                    # Suppress for any unary_bcast; f32 bcast kernels are
+                    # already covered by the has_f32 check above.
+                    if "unary_bcast" not in cpp_source:
+                        config.fp32_dest_acc_en = True
             # Compute kernels run on TRISC threads
             thread_to_kernel["TRISC_0"] = name
             thread_to_kernel["TRISC_1"] = name
@@ -1129,6 +1140,12 @@ def _compile_kernel(
             config_options.append(
                 f"dst-full-sync-en={1 if dst_full_sync_en else 0}"
             )
+        config_options.append(
+            f"reduce-full-fp32={int(compiler_options.reduce_full_fp32)}"
+        )
+        config_options.append(
+            f"matmul-full-fp32={int(compiler_options.matmul_full_fp32)}"
+        )
         if config_options:
             set_compute_config_pass = (
                 "func.func(ttl-set-compute-kernel-config{"
@@ -1151,10 +1168,12 @@ def _compile_kernel(
             pipeline_passes.append(
                 f"func.func(ttl-subblock-compute-for-dst{{subblock-sync={subblock_sync}}})"
             )
-        pipeline_passes.append("func.func(ttl-insert-tile-regs-sync)")
         if compiler_options.use_block_matmul:
             pipeline_passes.append("func.func(ttl-lower-matmul-block)")
-        pipeline_passes.append("func.func(ttl-lower-to-loops)")
+        dst_acc_str = "true" if compiler_options.maximize_dst else "false"
+        pipeline_passes.append(
+            f"func.func(ttl-lower-to-loops{{dst-accumulation={dst_acc_str}}})"
+        )
         if compiler_options.maximize_dst:
             pipeline_passes.append("func.func(ttl-schedule-operations)")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
@@ -1181,10 +1200,12 @@ def _compile_kernel(
                 cb_flow_json = f"{tt_metal_home}/generated/profiler/.logs/cb_flow_graph.json"
             pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
 
+        reduce_fp32_flag = int(compiler_options.reduce_full_fp32)
         pipeline_passes += [
             "ttl-lower-dprint-to-emitc",
-            "convert-ttl-to-ttkernel",
+            f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag}}}",
             "ttkernel-insert-inits",
+            "ttkernel-insert-l1-accumulation",
         ]
         if compiler_options.combine_pack_tiles:
             pipeline_passes.append("func.func(ttkernel-combine-pack-tiles)")
@@ -1270,6 +1291,7 @@ def _compile_kernel(
             program_hash=program_hash,
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,
+            compiler_options=compiler_options,
             source_lines=profile_source_lines,
             all_source_lines=all_source_lines,
             kernel_line_offsets=kernel_line_offsets,
@@ -1445,12 +1467,12 @@ def pykernel_gen(
 
 
 # Alias for backward compatibility
-kernel = pykernel_gen
+operation = pykernel_gen
 
 
 __all__ = [
     "pykernel_gen",
-    "kernel",
+    "operation",
     "Program",
     "compute",
     "datamovement",

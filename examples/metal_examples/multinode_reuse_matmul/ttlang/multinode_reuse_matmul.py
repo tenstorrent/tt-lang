@@ -10,7 +10,7 @@ from utils.block_allocation import get_large_matmul_params
 from utils.correctness import assert_with_ulp
 
 
-@ttl.kernel(grid=(13, 10))
+@ttl.operation(grid=(13, 10))
 def tt_lang_multinode_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
@@ -61,12 +61,14 @@ def tt_lang_multinode_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
         out_col = per_node_N * node_x
         if (out_row < Mt) and (out_col < Nt):
             with out_dfb.reserve() as out_blk:  # per_node_M * per_node_N
+                acc = ttl.math.fill(out_blk, 0)
                 for _ in range(Kt // K_block_size):
                     with (
                         a_dfb.wait() as a_blk,
                         b_dfb.wait() as b_blk,
                     ):  # a per_node_M x K_block_size, b K_block_size x per_node_N
-                        out_blk.store(a_blk @ b_blk, acc=True)
+                        acc += a_blk @ b_blk
+                out_blk.store(acc)
 
     @ttl.datamovement()
     def mm_reader():
@@ -108,7 +110,7 @@ def tt_lang_multinode_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
 
 @pytest.mark.parametrize("M,K,N", [(640, 640, 640)])
 def test_multinode_reuse_matmul_tt_lang(M, K, N):
-    """Test multinode matmul kernel."""
+    """Test multinode matmul operation."""
     device = ttnn.open_device(device_id=0)
     a = ttnn.rand((M, K), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
     b = ttnn.rand((K, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
@@ -126,7 +128,7 @@ def test_multinode_reuse_matmul_tt_lang(M, K, N):
     ttnn.close_device(device)
 
 
-@ttl.kernel(grid=(13, 10))
+@ttl.operation(grid=(13, 10))
 def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     M = a.shape[0]
     N = b.shape[1]
@@ -157,9 +159,11 @@ def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         out_col = node_x
         if (out_row < Mt) and (out_col < Nt):
             with out_dfb.reserve() as out_blk:
+                acc = ttl.math.fill(out_blk, 0)
                 for _ in range(Kt):
                     with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
-                        out_blk.store(a_blk @ b_blk, acc=True)
+                        acc += a_blk @ b_blk
+                out_blk.store(acc)
 
     @ttl.datamovement()
     def mm_reader():

@@ -12,7 +12,18 @@ from utils.correctness import assert_with_ulp
 from utils.block_allocation import split_work_to_nodes
 
 
-@ttl.kernel(grid=(13, 10))
+def get_number_of_nodes(grid_range):
+    total_nodes = 0
+    if len(grid_range) != 0:
+        start = grid_range[0]
+        end = grid_range[1]
+        x_range = end[0] - start[0] + 1
+        y_range = end[1] - start[1] + 1
+        total_nodes += x_range * y_range
+    return total_nodes
+
+
+@ttl.operation(grid=(13, 10))
 def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
@@ -71,9 +82,11 @@ def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         node_id = ttl.node(dims=1)
         for _ in range(get_tiles_per_node(node_id)):
             with out_dfb.reserve() as out_blk:
+                acc = ttl.math.fill(out_blk, 0)
                 for _ in range(Kt):
                     with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
-                        out_blk.store(a_blk @ b_blk, acc=True)
+                        acc += a_blk @ b_blk
+                out_blk.store(acc)
 
     @ttl.datamovement()
     def mm_reader():
@@ -105,7 +118,7 @@ def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
 
 @pytest.mark.parametrize("M,K,N", [(640, 640, 640)])
 def test_multinode_matmul_tt_lang(M, K, N):
-    """Test multinode matmul kernel."""
+    """Test multinode matmul operation."""
     device = ttnn.open_device(device_id=0)
     a = ttnn.rand((M, K), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
     b = ttnn.rand((K, N), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)

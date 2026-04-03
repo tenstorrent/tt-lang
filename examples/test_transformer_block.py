@@ -51,7 +51,7 @@ def to_device(tensor, device):
 # ============================================================================
 # Kernel 1: RMSNorm + Q/K/V projections
 # ============================================================================
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def norm_qkv_kernel(x, w_q, w_k, w_v, scaler, q_out, k_out, v_out):
     """
     RMSNorm(x) then project to Q, K, V.
@@ -156,7 +156,7 @@ def norm_qkv_kernel(x, w_q, w_k, w_v, scaler, q_out, k_out, v_out):
 # ============================================================================
 # Kernel 2: Rotary embeddings on Q and K
 # ============================================================================
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def rotary_qk_kernel(q_in, k_in, cos, q_out, k_out):
     """
     Apply rotary embeddings to Q and K (simplified - just multiply by cos).
@@ -214,7 +214,7 @@ def rotary_qk_kernel(q_in, k_in, cos, q_out, k_out):
 # ============================================================================
 # Kernel 3: Attention (reusing from test_attention.py)
 # ============================================================================
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def attention_kernel(q, k, v, scale, causal_mask, scaler, out):
     """Single-head scaled dot-product attention."""
     q_dfb = ttl.make_dataflow_buffer_like(
@@ -332,7 +332,7 @@ def attention_kernel(q, k, v, scale, causal_mask, scaler, out):
 # ============================================================================
 # Kernel 4: Output projection + residual
 # ============================================================================
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def proj_residual_kernel(attn_out, x_residual, w_proj, out):
     """Output projection and residual add: out = x_residual + attn_out @ w_proj"""
     attn_dfb = ttl.make_dataflow_buffer_like(
@@ -386,7 +386,7 @@ def proj_residual_kernel(attn_out, x_residual, w_proj, out):
 # ============================================================================
 # Kernel 5: RMSNorm + MLP + residual
 # ============================================================================
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def norm_mlp_residual_kernel(x, x_residual, w_fc, w_proj, scaler, out):
     """RMSNorm(x) -> MLP (relu²) -> + residual"""
     x_dfb = ttl.make_dataflow_buffer_like(

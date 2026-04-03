@@ -25,7 +25,7 @@ except ImportError:
 import torch
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def matmul_fusion_kernel(a, b, c, out):
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
@@ -95,7 +95,7 @@ def matmul_fusion_kernel(a, b, c, out):
 # CHECK-CPP-NEXT:  copy_tile_init(
 # CHECK-CPP-NEXT:  copy_tile(
 # CHECK-CPP-NEXT:  mm_block_init_short(
-# CHECK-CPP-NEXT:  experimental::matmul_block(
+# CHECK-CPP-NEXT:  matmul_block(
 # CHECK-CPP-NEXT:  tile_regs_commit
 # CHECK-CPP-NEXT:  tile_regs_wait
 # CHECK-CPP-NEXT:  pack_tile

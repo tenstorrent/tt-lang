@@ -27,7 +27,7 @@ def get_number_of_nodes(node_range_set):
     return total_nodes
 
 
-@ttl.kernel(grid=(13, 10))
+@ttl.operation(grid=(13, 10))
 def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -> None:
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
@@ -101,10 +101,11 @@ def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
             # The reserved block is automatically initialized with zeros
             with out_dfb.reserve() as out_blk:
                 # Accumulate over K dimension
+                acc = ttl.math.fill(out_blk, 0)
                 for _ in range(Kt):
                     with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
-                        # Accumulate using acc=True
-                        out_blk.store(a_blk @ b_blk, acc=True)
+                        acc += a_blk @ b_blk
+                out_blk.store(acc)
 
     @ttl.datamovement()
     def mm_reader():

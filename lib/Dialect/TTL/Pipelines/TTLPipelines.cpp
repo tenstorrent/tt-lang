@@ -19,7 +19,11 @@ namespace mlir::tt::ttl {
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   pm.addPass(createTTLConvertTTLToCompute());
-  pm.addPass(createTTLSetComputeKernelConfig());
+  {
+    TTLSetComputeKernelConfigOptions configOpts;
+    configOpts.reduceFullFp32 = options.reduceFullFp32;
+    pm.addPass(createTTLSetComputeKernelConfig(configOpts));
+  }
   {
     TTLAssignDSTOptions assignDstOpts;
     assignDstOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
@@ -30,17 +34,25 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     subblockOpts.subblockSync = options.autoSync;
     pm.addPass(createTTLSubblockComputeForDST(subblockOpts));
   }
-  pm.addPass(createTTLInsertTileRegsSync());
   if (options.useBlockMatmul) {
     pm.addPass(createTTLLowerMatmulBlock());
   }
-  pm.addPass(createTTLLowerToLoops());
+  {
+    TTLLowerToLoopsOptions loopOpts;
+    loopOpts.dstAccumulation = options.maximizeDST;
+    pm.addPass(createTTLLowerToLoops(loopOpts));
+  }
   if (options.maximizeDST) {
     pm.addPass(createTTLScheduleOperations());
   }
   pm.addPass(createTTLAnnotateCBAssociations());
-  pm.addPass(createTTLConvertTTLToTTKernel());
+  {
+    TTLConvertTTLToTTKernelOptions ttkOpts;
+    ttkOpts.reduceFullFp32 = options.reduceFullFp32;
+    pm.addPass(createTTLConvertTTLToTTKernel(ttkOpts));
+  }
   pm.addPass(createTTKernelInsertInits());
+  pm.addPass(createTTKernelInsertL1Accumulation());
   if (options.combinePackTiles) {
     pm.addNestedPass<func::FuncOp>(createTTKernelCombinePackTiles());
   }

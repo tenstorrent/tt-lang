@@ -36,7 +36,7 @@ Each Python lit test generates up to two output files:
   `TTLANG_INITIAL_MLIR`)
 - `%t.output` -- stdout/stderr, which contains the generated C++ kernel code
 
-**Important:** Each test file should contain only one `@ttl.kernel` decorated
+**Important:** Each test file should contain only one `@ttl.operation` decorated
 function. Multiple kernels in one file will overwrite the temp files, causing
 only the last kernel to be checked.
 

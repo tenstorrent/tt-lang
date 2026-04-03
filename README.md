@@ -68,7 +68,7 @@ The environment activates automatically on login. Run an example immediately:
 python /opt/ttlang-toolchain/examples/elementwise-tutorial/step_4_multinode_grid_auto.py
 ```
 
-To learn more, work through the [tutorial](docs/sphinx/ttl-tutorial/index.md), explore the [programming guide](docs/sphinx/programming-guide.md) for compiler options, debugging, and performance tools, or use [Claude Code](https://claude.com/claude-code) with the built-in [slash commands](docs/sphinx/claude-skills.md) to translate kernels, profile, and optimize.
+To learn more, take a [tour](docs/sphinx/tour/index.md), explore the [programming guide](docs/sphinx/programming-guide.md) for compiler options, debugging, and performance tools, or use [Claude Code](https://claude.com/claude-code) with the built-in [slash commands](docs/sphinx/claude-skills.md) to translate kernels, profile, and optimize.
 
 ### 2.2 ![ird](https://img.shields.io/badge/ird-blueviolet) Development image (for building tt-lang)
 
@@ -138,7 +138,7 @@ The simulator typically supports more language features than the compiler at any
 
 Full documentation is built with Sphinx. The source lives in [docs/sphinx/](docs/sphinx/) and covers:
 
-- [Tutorial](docs/sphinx/ttl-tutorial/index.md) — step-by-step examples from single-tile to multinode kernels
+- [Tour of TT-Lang](docs/sphinx/tour/index.md) — an introduction to TT-Lang features
 - [Programming Guide](docs/sphinx/programming-guide.md) — compiler options, print debugging, performance tools
 - [Functional Simulator](docs/sphinx/simulator.md) — run kernels without hardware, debugging setup
 - [Claude Skills](docs/sphinx/claude-skills.md) — AI-assisted kernel translation, profiling, and optimization via [Claude Code](https://claude.com/claude-code)

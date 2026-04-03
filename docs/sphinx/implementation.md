@@ -1,6 +1,6 @@
 # Implementation Notes
 
-This section collects design documents and pipeline traces that describe how tt-lang lowers kernels from Python to hardware code. These are intended for contributors and anyone who needs to understand compiler internals.
+This section collects design documents and pipeline traces that describe how TT-Lang lowers operations from Python to hardware code. These are intended for contributors and anyone who needs to understand compiler internals.
 
 ## Design Documents
 

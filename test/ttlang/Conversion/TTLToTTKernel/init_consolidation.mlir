@@ -23,10 +23,12 @@ func.func @four_consecutive_exp(
     %b: !ttcore.tile<32x32, f32>,
     %c: !ttcore.tile<32x32, f32>,
     %d: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
+  ttkernel.tile_regs_acquire() : () -> ()
   %e0 = ttl.tile_exp %a {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
   %e1 = ttl.tile_exp %b {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
   %e2 = ttl.tile_exp %c {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
   %e3 = ttl.tile_exp %d {dst_idx = 3 : i32} : !ttcore.tile<32x32, f32>
+  ttkernel.tile_regs_release() : () -> ()
   func.return %e3 : !ttcore.tile<32x32, f32>
 }
 
@@ -45,10 +47,12 @@ func.func @exp_then_log(
     %b: !ttcore.tile<32x32, f32>,
     %c: !ttcore.tile<32x32, f32>,
     %d: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
+  ttkernel.tile_regs_acquire() : () -> ()
   %e0 = ttl.tile_exp %a {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
   %e1 = ttl.tile_exp %b {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
   %l0 = ttl.tile_log %c {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
   %l1 = ttl.tile_log %d {dst_idx = 3 : i32} : !ttcore.tile<32x32, f32>
+  ttkernel.tile_regs_release() : () -> ()
   func.return %l1 : !ttcore.tile<32x32, f32>
 }
 
@@ -66,10 +70,12 @@ func.func @exp_then_log(
 func.func @interleaved_no_scheduling(
     %a: !ttcore.tile<32x32, f32>,
     %b: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
+  ttkernel.tile_regs_acquire() : () -> ()
   %e0 = ttl.tile_exp %a {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
   %l0 = ttl.tile_log %e0 {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
   %e1 = ttl.tile_exp %l0 {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
   %l1 = ttl.tile_log %e1 {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
+  ttkernel.tile_regs_release() : () -> ()
   func.return %l1 : !ttcore.tile<32x32, f32>
 }
 
@@ -88,9 +94,11 @@ func.func @interleaved_no_scheduling(
 func.func @mixed_binary(
     %a: !ttcore.tile<32x32, f32>,
     %b: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
+  ttkernel.tile_regs_acquire() : () -> ()
   %m0 = ttl.tile_mul %a, %b {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
   %m1 = ttl.tile_mul %a, %b {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
   %s0 = ttl.tile_add %m0, %m1 {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
+  ttkernel.tile_regs_release() : () -> ()
   func.return %s0 : !ttcore.tile<32x32, f32>
 }
 
@@ -119,10 +127,12 @@ func.func @fpu_binary_consolidation() {
   %c1 = arith.constant 1 : index
   %c2 = arith.constant 2 : index
   %c3 = arith.constant 3 : index
+  ttkernel.tile_regs_acquire() : () -> ()
   ttkernel.add_tiles(%cb0, %cb1, %c0, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index, index) -> ()
   ttkernel.add_tiles(%cb0, %cb1, %c1, %c1, %c1) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index, index) -> ()
   ttkernel.mul_tiles(%cb0, %cb1, %c0, %c0, %c2) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index, index) -> ()
   ttkernel.mul_tiles(%cb0, %cb1, %c1, %c1, %c3) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
   func.return
 }
 
@@ -307,12 +317,14 @@ func.func @copy_tile_init_per_cb() {
   %cb1 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
+  ttkernel.tile_regs_acquire() : () -> ()
   // Copies from cb0 (grouped)
   ttkernel.copy_tile(%cb0, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index) -> ()
   ttkernel.copy_tile(%cb0, %c1, %c1) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index) -> ()
   // Copies from cb1 (grouped) -> new init
   ttkernel.copy_tile(%cb1, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index) -> ()
   ttkernel.copy_tile(%cb1, %c1, %c1) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
   func.return
 }
 

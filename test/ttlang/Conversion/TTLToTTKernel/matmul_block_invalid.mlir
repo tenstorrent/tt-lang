@@ -2,7 +2,7 @@
 // is not in the pipeline. With subblocking enabled, these cases compile
 // successfully (tested by simple_matmul_subblock.py).
 // RUN: not ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-insert-tile-regs-sync, ttl-lower-matmul-block))' \
+// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-lower-matmul-block))' \
 // RUN:   --split-input-file 2>&1 | FileCheck %s
 
 // bf16 DST capacity exceeded.

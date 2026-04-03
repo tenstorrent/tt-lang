@@ -2,7 +2,7 @@
 
 > ⚠️ Skills are an experimental feature under active development; skills currently reference in-flight functionality that may not be available such as the matmul operator.
 
-One of the easiest ways to get started with tt-lang is using [Claude Code](https://claude.com/claude-code) and an existing codebase. TT-Lang provides slash commands that guide Claude through kernel translation, testing, profiling, and optimization workflows.
+One of the easiest ways to get started with TT-Lang is using [Claude Code](https://claude.com/claude-code) and an existing codebase. TT-Lang provides slash commands that guide Claude through operation translation, testing, profiling, and optimization workflows.
 
 ## Example Workflow
 
@@ -19,7 +19,7 @@ cd /path/to/tt-lang/claude-slash-commands
 cd /path/to/nanoGPT
 claude
 
-# Now type slash to use skills to translate kernels to TT-Lang:
+# Now type slash to use skills to translate operations to TT-Lang:
 #   /ttl-import model.py    "translate the attention kernel to TT-Lang DSL"
 ```
 
@@ -33,19 +33,19 @@ Run `/ttl-help` in Claude Code to see all available commands. Here is a summary:
     source kernel, maps GPU concepts to Tenstorrent equivalents, and iterates
     on testing until the translated kernel matches the original behavior.
 
-/ttl-export <kernel>
-    Export a TT-Lang kernel to TT-Metal C++ code. Runs the compiler pipeline,
+/ttl-export <operation>
+    Export a TT-Lang operation to TT-Metal C++ code. Runs the compiler pipeline,
     extracts the generated C++, and beautifies it by improving variable names
     and removing unnecessary casts for readable, production-ready output.
 
-/ttl-optimize <kernel>
-    Profile a kernel and apply performance optimizations. Identifies bottlenecks,
+/ttl-optimize <operation>
+    Profile an operation and apply performance optimizations. Identifies bottlenecks,
     suggests improvements like tiling, pipelining, and fusion, then validates
     that optimizations preserve correctness while improving throughput.
 
-/ttl-profile <kernel>
+/ttl-profile <operation>
     Run the profiler and display per-line cycle counts. Shows exactly where time
-    is spent in the kernel with annotated source, hotspot highlighting, and
+    is spent in the operation with annotated source, hotspot highlighting, and
     memory vs compute breakdown.
 
 /ttl-bug <reproducer>

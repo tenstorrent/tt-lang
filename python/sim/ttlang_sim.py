@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .stats import enable_stats, print_stats
-from .kernel import set_default_grid
+from .operation import set_default_grid
 from .greenlet_scheduler import set_scheduler_algorithm
 
 
@@ -200,9 +200,9 @@ def _print_filtered_traceback(exc: Exception, user_file: Path) -> None:
 def _get_version() -> str:
     """Return the tt-lang version string for ttlang-sim --version."""
     try:
-        from ttl.version import __version__
+        from ttl.version import __version__  # type: ignore[import-untyped]
 
-        return __version__
+        return __version__  # type: ignore[return-value]
     except ImportError:
         return "unknown"
 

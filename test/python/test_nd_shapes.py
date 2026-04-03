@@ -162,7 +162,7 @@ def _make_binary_kernel_code(shape, op_str):
     return f"""\
 import ttl
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def nd_kernel(lhs, rhs, out):
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=({cb}), buffer_factor=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=({cb}), buffer_factor=2)
@@ -219,7 +219,7 @@ def _make_binary_fn_kernel_code(shape, fn_name):
     return f"""\
 import ttl
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def nd_kernel(lhs, rhs, out):
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=({cb}), buffer_factor=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=({cb}), buffer_factor=2)
@@ -269,7 +269,7 @@ def _make_unary_kernel_code(shape, fn_name):
     return f"""\
 import ttl
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def nd_kernel(inp, out):
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=({cb}), buffer_factor=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=({cb}), buffer_factor=2)

@@ -30,7 +30,7 @@ class TestBasicExecution:
     def test_cooperative_mode_basic(self) -> None:
         """Test basic cooperative mode execution."""
 
-        @ttl.kernel(grid=(1, 1))
+        @ttl.operation(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
             # Create accessors and dataflow buffers
             # a already is ttnn.Tensor
@@ -79,7 +79,7 @@ class TestBasicExecution:
     def test_multi_tile_computation(self) -> None:
         """Test computation with multiple tiles."""
 
-        @ttl.kernel(grid=(1, 1))
+        @ttl.operation(grid=(1, 1))
         def test_kernel(
             a: ttnn.Tensor,
             b: ttnn.Tensor,
@@ -146,7 +146,7 @@ class TestMultinode:
     def test_two_core_execution(self) -> None:
         """Test execution on 2 cores."""
 
-        @ttl.kernel(grid=(2, 1))
+        @ttl.operation(grid=(2, 1))
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
@@ -197,7 +197,7 @@ class TestMultinode:
     def test_four_core_2d_grid(self) -> None:
         """Test execution on 2x2 grid (4 cores)."""
 
-        @ttl.kernel(grid=(2, 2))
+        @ttl.operation(grid=(2, 2))
         def test_kernel(out: ttnn.Tensor):
             # out already is ttnn.Tensor
             out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=1)
@@ -248,7 +248,7 @@ class TestContextIsolation:
     def test_dataflow_buffers_isolated(self) -> None:
         """Test that dataflow buffers are independent per core."""
 
-        @ttl.kernel(grid=(2, 1))
+        @ttl.operation(grid=(2, 1))
         def test_kernel(out: ttnn.Tensor):
             # out already is ttnn.Tensor
             # Each core gets its own DFB instance
@@ -295,7 +295,7 @@ class TestContextIsolation:
         and uses store() to write to DFB (not copy).
         """
 
-        @ttl.kernel(grid=(2, 1))
+        @ttl.operation(grid=(2, 1))
         def test_kernel(shared: ttnn.Tensor, out: ttnn.Tensor):
             dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
@@ -342,7 +342,7 @@ class TestErrorHandling:
     def test_error_in_compute(self) -> None:
         """Test that errors in compute function are properly reported."""
 
-        @ttl.kernel(grid=(1, 1))
+        @ttl.operation(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor):
             # a already is ttnn.Tensor
             dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
@@ -373,7 +373,7 @@ class TestErrorHandling:
     def test_error_in_dm0(self) -> None:
         """Test that errors in dm0 are properly reported."""
 
-        @ttl.kernel(grid=(1, 1))
+        @ttl.operation(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor):
             # a already is ttnn.Tensor
             _ = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
@@ -403,7 +403,7 @@ class TestErrorHandling:
     def test_deadlock_detection(self) -> None:
         """Test that deadlock is detected."""
 
-        @ttl.kernel(grid=(1, 1))
+        @ttl.operation(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor):
             # a already is ttnn.Tensor
             dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=1)
@@ -442,7 +442,7 @@ class TestBlockCompletion:
     def test_missing_push_detected(self) -> None:
         """Test that missing push() is detected at end of execution."""
 
-        @ttl.kernel(grid=(1,))
+        @ttl.operation(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor):
             # Create dataflow buffers
             element = make_ones_tensor(32, 32)
@@ -479,7 +479,7 @@ class TestBlockCompletion:
     def test_missing_pop_detected(self) -> None:
         """Test that missing pop() is detected at end of execution."""
 
-        @ttl.kernel(grid=(1,))
+        @ttl.operation(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor):
             # Create dataflow buffers
             element = make_ones_tensor(32, 32)
@@ -520,7 +520,7 @@ class TestBlockCompletion:
     def test_complete_operations_pass(self) -> None:
         """Test that properly completed operations pass validation."""
 
-        @ttl.kernel(grid=(1,))
+        @ttl.operation(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor, output_data: ttnn.Tensor):
             # Create dataflow buffers
             element = make_ones_tensor(32, 32)
@@ -564,7 +564,7 @@ class TestBlockCompletion:
     def test_multiple_dfbs_with_errors(self) -> None:
         """Test that errors from multiple DFBs are all reported."""
 
-        @ttl.kernel(grid=(1,))
+        @ttl.operation(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor):
             from python.sim.dfb import DataflowBuffer
 
@@ -718,7 +718,7 @@ class TestCooperativeScheduling:
     def test_yielding_on_blocking_operations(self) -> None:
         """Test that cooperative mode properly yields on blocking operations."""
 
-        @ttl.kernel(grid=(1, 1))
+        @ttl.operation(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
@@ -763,7 +763,7 @@ class TestCooperativeScheduling:
     def test_multiple_iterations_cooperative(self) -> None:
         """Test multiple iterations in cooperative mode."""
 
-        @ttl.kernel(grid=(1, 1))
+        @ttl.operation(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
@@ -810,7 +810,7 @@ class TestCooperativeScheduling:
     def test_copy_tensor_to_block_cooperative(self) -> None:
         """Test Tensor → Block copy in cooperative mode."""
 
-        @ttl.kernel(grid=(1, 1))
+        @ttl.operation(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
             # a already is ttnn.Tensor
             # out already is ttnn.Tensor
@@ -860,7 +860,7 @@ class TestCooperativeScheduling:
         - Compute processes data
         """
 
-        @ttl.kernel(grid=(1, 1))
+        @ttl.operation(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor, out: ttnn.Tensor):
             dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
 
@@ -904,7 +904,7 @@ class TestCooperativeScheduling:
         - Compute thread can read from wait() blocks (via direct access, not copy)
         """
 
-        @ttl.kernel(grid=(1, 1))
+        @ttl.operation(grid=(1, 1))
         def test_kernel(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
             dfb_a = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
             dfb_b = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)

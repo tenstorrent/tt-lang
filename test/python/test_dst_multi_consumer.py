@@ -30,7 +30,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 from ttlang_test_utils import assert_allclose, to_dram
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def silu_kernel(x, out):
     """SiLU: x * sigmoid(x) - tests multi-consumer DST allocation."""
     x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
@@ -57,7 +57,7 @@ def silu_kernel(x, out):
             tx.wait()
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def unary_binary_kernel(x, y, out):
     """Tests block arg with one unary and two binary consumers."""
     x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
@@ -136,7 +136,7 @@ def test_unary_binary_consumers(device):
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def three_consumers_kernel(a, b, out_sig, out_exp, out_add):
     """Block arg with 2 unary + 1 binary consumers: sigmoid(a), exp(a), a+b."""
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
@@ -214,7 +214,7 @@ def test_three_consumers(device):
     assert_allclose(result_add.float(), expected_add.float(), rtol=1e-2, atol=1e-2)
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def square_kernel(x, out):
     """Square pattern: x * x - same value used as both operands."""
     x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
@@ -257,7 +257,7 @@ def test_square_pattern(device):
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def unary_chain_branch_kernel(a, b, out_exp, out_add):
     """Unary chain that branches: abs(a) feeds both exp and add operations."""
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
