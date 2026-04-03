@@ -199,14 +199,66 @@ def test_mixed_memory_add(device, lhs_mem, rhs_mem, out_mem):
 # Test: multicore height-sharded
 # =============================================================================
 
+MULTICORE_ADD_KERNEL = """
+import ttl
+
+@ttl.operation(grid=(1, 4))
+def multicore_add_kernel(lhs, rhs, out):
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+
+    @ttl.compute()
+    def compute_fn():
+        with lhs_dfb.wait() as l, rhs_dfb.wait() as r, out_dfb.reserve() as o:
+            o.store(l + r)
+
+    @ttl.datamovement()
+    def dm_read():
+        x, y = ttl.node(dims=2)
+        with lhs_dfb.reserve() as blk:
+            tx = ttl.copy(lhs[y, x], blk)
+            tx.wait()
+        with rhs_dfb.reserve() as blk:
+            tx = ttl.copy(rhs[y, x], blk)
+            tx.wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        x, y = ttl.node(dims=2)
+        with out_dfb.wait() as blk:
+            tx = ttl.copy(blk, out[y, x])
+            tx.wait()
+"""
+
+_multicore_kernel = None
+
+
+def _get_multicore_add_kernel():
+    global _multicore_kernel
+    if _multicore_kernel is not None:
+        return _multicore_kernel
+    code = MULTICORE_ADD_KERNEL
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, prefix="kernel_multicore_add_"
+    ) as f:
+        f.write(code)
+        temp_path = f.name
+    spec = importlib.util.spec_from_file_location("multicore_add_module", temp_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    temp_kernel_files.append(temp_path)
+    _multicore_kernel = getattr(module, "multicore_add_kernel")
+    return _multicore_kernel
+
 
 def test_multicore_height_sharded_add(device):
     """Test add with height-sharded tensors across 4 cores (1x4 grid).
 
     Tensor is 128x32 (4 tile rows), height-sharded so each of the 4 cores
-    gets one 32x32 tile. Verifies all shards produce correct results.
+    gets one 32x32 tile. Each core uses ttl.node() to index its own tile.
     """
-    kernel = _make_add_kernel(1, 4)
+    kernel = _get_multicore_add_kernel()
 
     lhs_torch = torch.full((128, 32), 2.0, dtype=torch.bfloat16)
     rhs_torch = torch.full((128, 32), 3.0, dtype=torch.bfloat16)
