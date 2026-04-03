@@ -21,6 +21,7 @@ from typing import (
     NamedTuple,
     Optional,
     Union,
+    cast,
 )
 
 import torch
@@ -62,6 +63,7 @@ class Block:
         "_element_shape",  # Element-level shape (for broadcast semantics)
         "_sm",  # BlockStateMachine: owns all access-state logic
         "_is_temporary",
+        "_store_confirmation_pending",  # Set by assign_src; cleared by mark_store_read_complete
         "_source_blocks",  # Track wait() blocks that contributed to this temporary block
         "_broadcast_dims",  # Pending broadcast dimensions (None or tuple of ints)
         "dfb",  # Reference to DataflowBuffer for context manager cleanup
@@ -88,6 +90,9 @@ class Block:
         # Element shape is always derived from the tensor's actual shape
         self._element_shape = tuple(tensor.shape)
         self._is_temporary = is_temporary
+        self._store_confirmation_pending: bool = (
+            False  # Set by assign_src; cleared by mark_store_read_complete
+        )
         self._source_blocks: List["Block"] = []  # Track source wait() blocks
         self._broadcast_dims: Optional[tuple[int, ...]] = (
             None  # Pending broadcast metadata
@@ -189,22 +194,39 @@ class Block:
         """Mark that tx.wait() has completed for a copy operation."""
         self._sm.transition("tx_wait", "tx.wait()", ExpectedOp.TX_WAIT)
 
-    def mark_store_read_complete(self) -> None:
-        """Mark that this block was used as source (input) in a store operation."""
-        self._sm.transition("store_src", "store (as source)", ExpectedOp.STORE_SRC)
+    def mark_assign_src_complete(self) -> None:
+        """Mark that this block's data was used as an arithmetic operand.
 
-    def mark_store_complete(self, acc: bool = False) -> None:
-        """Mark that store() has completed on this block (as destination).
-
-        Args:
-            acc: Whether this is an accumulate store operation
+        Fires the assign_src state machine transition, unlocking pop() so the
+        context manager can exit.  Sets _store_confirmation_pending and
+        registers the block in the DFB's pending confirmation set.  Both are
+        cleared by mark_store_read_complete() when store() eventually fires on
+        the downstream result.  Program termination validates that all pending
+        confirmations have been cleared.
         """
-        if acc:
-            self._sm.transition(
-                "store_dst_acc", "store(acc=True)", ExpectedOp.STORE_ACC
-            )
-        else:
-            self._sm.transition("store_dst", "store(acc=False)", ExpectedOp.STORE)
+        self._sm.transition_assign_src()
+        self._store_confirmation_pending = True
+        if self.dfb is not None:
+            self.dfb.register_pending_confirmation(self)
+
+    def mark_store_read_complete(self) -> None:
+        """Mark that this block was used as source (input) in a store operation.
+
+        Fires the store_src state machine transition when the block is still
+        active (not OS).  Always clears _store_confirmation_pending and removes
+        the block from the DFB's pending confirmation set, satisfying the
+        program-termination check regardless of whether the block has already
+        been popped.
+        """
+        if self._sm.access_state != AccessState.OS:
+            self._sm.transition("store_src", "store (as source)", ExpectedOp.STORE_SRC)
+        self._store_confirmation_pending = False
+        if self.dfb is not None:
+            self.dfb.discard_pending_confirmation(self)
+
+    def mark_store_complete(self) -> None:
+        """Mark that store() has completed on this block (as destination)."""
+        self._sm.transition("store_dst", "store()", ExpectedOp.STORE)
 
     def mark_push_complete(self) -> None:
         """Mark that push() has completed (RESERVE blocks only)."""
@@ -288,7 +310,7 @@ class Block:
                 f"Cannot write to Block: Block has no access ({self._access_state.name} state). "
                 f"Current state: {self._access_state.name}, Expected operations: [{expected_ops_str}]"
             )
-        # Note: We allow writing in MR/RW/A states as appropriate for the operation
+        # Note: We allow writing in MR/RW states as appropriate for the operation
 
     def get_item(self, idx: Index) -> Tensor:
         """Return a single tile by flat index (row-major order across self._shape).
@@ -606,13 +628,11 @@ class Block:
         # Return tensor directly
         return Tensor(expanded_tensor.contiguous())
 
-    def store(self, items: "Block", acc: bool = False) -> None:
+    def store(self, items: "Block") -> None:
         """Store data into this block.
 
         Args:
             items: A Block whose tile count matches this block.
-            acc: If True, accumulate with existing values (+=), otherwise
-                 assign (=).  The first store(acc=True) always assigns.
 
         Raises:
             ValueError: If the source tile count does not match this block's.
@@ -635,6 +655,7 @@ class Block:
                 blk
                 for blk in items._source_blocks
                 if ExpectedOp.STORE_SRC in blk._expected_ops
+                or blk._store_confirmation_pending
             )
 
         # Check if source has broadcast metadata - if so, expand it
@@ -662,15 +683,9 @@ class Block:
         for source_block in source_blocks_to_mark:
             source_block.mark_store_read_complete()
 
-        is_first_acc_store = acc and self._access_state == AccessState.MW
-        self.mark_store_complete(acc=acc)
+        self.mark_store_complete()
 
-        if acc and not is_first_acc_store:
-            # Subsequent accumulate: y += x (requires matching shapes)
-            self._buf.to_torch().add_(
-                src_tensor.to_torch().reshape(self._buf.to_torch().shape)
-            )
-        elif src_tensor.shape == self._buf.shape:
+        if src_tensor.shape == self._buf.shape:
             # Fast path: same element shape — copy in-place
             self._buf.to_torch().copy_(src_tensor.to_torch())
         else:
@@ -685,7 +700,9 @@ class Block:
         """Track source blocks that contribute to a result block.
 
         For each source block, if it's a wait() Compute block, add it to the result's
-        source list. If it's already a temporary block, extend with its sources.
+        source list and eagerly mark it as read so that pop() can succeed when the
+        block's context manager exits (i.e. before store() is called on the result).
+        If it's already a temporary block, extend with its sources.
 
         Args:
             result_block: The result block to track sources for
@@ -698,6 +715,12 @@ class Block:
                 and source._thread_type == ThreadType.COMPUTE
             ):
                 result_block._source_blocks.append(source)
+                # Fire assign_src so pop() is allowed when the 'with' context exits,
+                # even though store() on the result block may come later.
+                # The block is registered as pending store confirmation and cleared
+                # by mark_store_read_complete() when store() eventually fires.
+                if ExpectedOp.STORE_SRC in source._expected_ops:
+                    source.mark_assign_src_complete()
             elif source._is_temporary:
                 result_block._source_blocks.extend(source._source_blocks)
 
@@ -829,6 +852,36 @@ class Block:
         # It has its own shape rules: (M, K) @ (K, N) -> (M, N).
         # matmul is defined later in this module (after Block and DataflowBuffer).
         return matmul(self, other)
+
+    # ---- in-place operator (temporary blocks only) ----
+
+    def __iadd__(self, other: "Block") -> "Block":
+        """In-place add for temporary accumulator blocks.
+
+        Allows the pattern:
+            y = ttl.math.fill(0)
+            y += a_blk @ b_blk   # repeated accumulation
+            dst_blk.store(y)
+
+        Raises:
+            RuntimeError: If self is not a temporary block.
+        """
+        if not self._is_temporary:
+            raise RuntimeError(
+                "In-place accumulation (+=) is only valid for temporary blocks "
+                "(e.g. the result of fill() or a block expression). "
+                "Use store() to write into a reserved block."
+            )
+        return self + other
+
+    # ---- reflected operators (scalar op Block, e.g. fill(0) + blk) ----
+
+    def __radd__(self, other: "Union[int, float]") -> "Block":
+        """Scalar + Block: fill(v) + blk creates a temporary block with v added."""
+        result_tensor = Tensor(
+            torch.tensor(other, dtype=self._buf.dtype) + self._buf.to_torch()
+        )
+        return self._create_temporary_result(result_tensor, self._shape)
 
     @property
     def acquisition(self) -> BlockAcquisition:
@@ -986,6 +1039,7 @@ class DataflowBuffer:
 
         self._pending_reserved_block: Optional[Block] = None
         self._pending_waited_block: Optional[Block] = None
+        self._pending_confirmations: set[Block] = set()
 
         # Create and configure the ring-buffer state immediately.
         self._state = DFBState()
@@ -1054,6 +1108,14 @@ class DataflowBuffer:
             True if at least one complete operation slot is ready to consume.
         """
         return self._state.visible >= 1
+
+    def register_pending_confirmation(self, block: Block) -> None:
+        """Register block as pending store confirmation."""
+        self._pending_confirmations.add(block)
+
+    def discard_pending_confirmation(self, block: Block) -> None:
+        """Remove block from pending store confirmation set."""
+        self._pending_confirmations.discard(block)
 
     def reserve(self) -> Block:
         """Reserve one operation slot for writing and return a write view.
@@ -1251,6 +1313,13 @@ class DataflowBuffer:
                 f"Did you forget to call pop()?"
             )
 
+        for block in self._pending_confirmations:
+            errors.append(
+                f"Block(acquisition={block.acquisition.name}, "
+                f"thread={block.thread_type.name}, access={block.access_state.name}): "
+                f"block data was used in arithmetic but never reached a store()."
+            )
+
         if errors:
             raise RuntimeError(
                 f"DataflowBuffer {self} has incomplete blocks at end of execution:\n"
@@ -1320,8 +1389,9 @@ def make_dataflow_buffer_like(
 def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
     """Track source wait() blocks for proper state management.
 
-    Adds input wait() blocks to the result block's _source_blocks list so that
-    when the result is stored, the sources can be marked as consumed.
+    Adds input wait() blocks to the result block's _source_blocks list and
+    eagerly marks them as read so that pop() can succeed when the block's
+    context manager exits, even if store() on the result is called later.
 
     Args:
         result_block: The result block to track sources for
@@ -1340,6 +1410,12 @@ def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
             source_blocks = getattr(result_block, "_source_blocks", None)
             if source_blocks is not None:
                 source_blocks.append(block)
+            # Fire assign_src so pop() is allowed when the 'with' context exits.
+            # MR means the block has not yet been consumed as an arithmetic source.
+            # The block is registered as pending store confirmation and cleared
+            # by mark_store_read_complete() when store() eventually fires.
+            if block.access_state == AccessState.MR:
+                block.mark_assign_src_complete()
         elif is_temporary:
             actual_source = getattr(block, "_source_blocks", None)
             result_source = getattr(result_block, "_source_blocks", None)
@@ -1347,13 +1423,44 @@ def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
                 result_source.extend(actual_source)
 
 
+def _matmul_tile_shape(a_shape: Shape, b_shape: Shape) -> Shape:
+    """Compute the output tile-grid shape for matmul a @ b.
+
+    Applies PyTorch matmul broadcasting rules in tile-grid space, so the
+    declared shape of the operand blocks determines the result shape rather
+    than the actual backing-tensor dimensions.
+
+    Examples:
+        (1, 1) @ (1, 1)       -> (1, 1)       # standard 2-D
+        (1, 1, 1) @ (1, 1)   -> (1, 1, 1)    # batch x 2-D
+        (2, 1, 1) @ (2, 1, 1) -> (2, 1, 1)   # same batch
+    """
+    if len(b_shape) == 1:
+        # (..., m, k) @ (k,) -> (..., m)
+        return a_shape[:-1]
+    if len(a_shape) == 1:
+        # (k,) @ (..., k, n) -> (..., n)
+        return b_shape[:-2] + (b_shape[-1],)
+    if len(a_shape) == 2 and len(b_shape) == 2:
+        # Standard 2-D: (m, k) @ (k, n) -> (m, n)
+        return (a_shape[0], b_shape[1])
+    # Batched: (..., m, k) @ (..., k, n) -> (broadcast_batch, m, n)
+    a_batch = a_shape[:-2]
+    b_batch = b_shape[:-2]
+    if b_batch:
+        out_batch: Shape = cast(Shape, tuple(torch.broadcast_shapes(a_batch, b_batch)))  # type: ignore[misc]
+    else:
+        out_batch = a_batch
+    return out_batch + (a_shape[-2], b_shape[-1])
+
+
 def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
     """Matrix multiplication of two blocks.
 
     Converts each block to a ttnnsim.Tensor, delegates to torch.matmul via the
-    @ operator, then converts the result back to a Block.  The output tile
-    shape follows PyTorch's matmul broadcasting rules applied to the
-    element-space tensors, with the last two dimensions divided by TILE_SHAPE.
+    @ operator, then wraps the result in a Block whose tile-grid shape is
+    derived from the declared shapes of the operands (following PyTorch batched
+    matmul rules) rather than from the result tensor dimensions.
 
     Args:
         a: First input block.
@@ -1363,6 +1470,14 @@ def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
     Returns:
         Block whose tile shape corresponds to the matmul output shape.
     """
-    result_block = Block.from_tensor(a.to_tensor() @ b.to_tensor())
+    result_tensor = a.to_tensor() @ b.to_tensor()
+    result_shape = _matmul_tile_shape(a.shape, b.shape)
+    result_block = Block(
+        tensor=result_tensor,
+        shape=result_shape,
+        acquisition=BlockAcquisition.RESERVE,
+        thread_type=ThreadType.COMPUTE,
+        is_temporary=True,
+    )
     track_source_blocks(result_block, a, b)
     return result_block
