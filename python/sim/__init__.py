@@ -124,7 +124,7 @@ __all__ = [
     "node",
     "compute",
     "datamovement",
-    "kernel",
+    "operation",
     "ttl",
     "ttnn",
     "TTNN_AVAILABLE",

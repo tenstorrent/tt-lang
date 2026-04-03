@@ -7,6 +7,16 @@ import pytest
 import torch
 
 from sim import ttnn, TTNN_AVAILABLE
+from sim.ttnnsim import (
+    CoreGrid,
+    MemoryConfig,
+    NdShardSpec,
+    ShardDistributionStrategy,
+    ShardOrientation,
+    ShardSpec,
+    ShardStrategy,
+    ShardingStrategy,
+)
 
 # Marker for tests that require ttnn golden functions
 requires_ttnn = pytest.mark.skipif(
@@ -1061,7 +1071,287 @@ class TestTensorTileIndexing:
         assert torch.allclose(tile.to_torch(), raw)
 
 
-# ---- Row-major layout tests ----
+class TestShardingTypes:
+    """Tests for ShardingStrategy, ShardSpec, NdShardSpec, and MemoryConfig data types."""
+
+    def test_sharding_strategy_values(self) -> None:
+        """All sharding strategies are defined."""
+        assert ShardingStrategy.INTERLEAVED
+        assert ShardingStrategy.HEIGHT_SHARDED
+        assert ShardingStrategy.WIDTH_SHARDED
+        assert ShardingStrategy.BLOCK_SHARDED
+        assert ShardingStrategy.ND_SHARDED
+
+    def test_shard_spec_creation(self) -> None:
+        """ShardSpec stores shard_grid and shard_shape."""
+        spec = ShardSpec(shard_grid=(4,), shard_shape=(2, 8))
+        assert spec.shard_grid == (4,)
+        assert spec.shard_shape == (2, 8)
+
+    def test_nd_shard_spec_creation(self) -> None:
+        """NdShardSpec stores shard_grid, shard_shape, and distribution."""
+        spec = NdShardSpec(
+            shard_grid=(2, 4),
+            shard_shape=(2, 2),
+            distribution=ShardDistributionStrategy.GRID_2D,
+        )
+        assert spec.shard_grid == (2, 4)
+        assert spec.shard_shape == (2, 2)
+        assert spec.distribution == ShardDistributionStrategy.GRID_2D
+
+    def test_nd_shard_spec_default_distribution(self) -> None:
+        """NdShardSpec defaults to ROUND_ROBIN_1D."""
+        spec = NdShardSpec(shard_grid=(4,), shard_shape=(1, 1))
+        assert spec.distribution == ShardDistributionStrategy.ROUND_ROBIN_1D
+
+    def test_memory_config_interleaved(self) -> None:
+        """MemoryConfig without shard_spec defaults to INTERLEAVED."""
+        mc = MemoryConfig(strategy=ShardingStrategy.INTERLEAVED)
+        assert mc.strategy == ShardingStrategy.INTERLEAVED
+        assert mc.shard_spec is None
+
+    def test_memory_config_sharded(self) -> None:
+        """MemoryConfig accepts a ShardSpec for sharded strategies."""
+        spec = ShardSpec(shard_grid=(2, 4), shard_shape=(2, 2))
+        mc = MemoryConfig(strategy=ShardingStrategy.BLOCK_SHARDED, shard_spec=spec)
+        assert mc.strategy == ShardingStrategy.BLOCK_SHARDED
+        assert mc.shard_spec is spec
+
+    def test_memory_config_nd_sharded(self) -> None:
+        """MemoryConfig accepts an NdShardSpec for ND_SHARDED strategy."""
+        spec = NdShardSpec(shard_grid=(2, 4), shard_shape=(2, 2))
+        mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=spec)
+        assert mc.strategy == ShardingStrategy.ND_SHARDED
+        assert mc.nd_shard_spec is spec
+        assert mc.shard_spec is None
+
+    def test_shard_strategy_values(self) -> None:
+        """ShardStrategy exposes HEIGHT, WIDTH, and BLOCK."""
+        assert ShardStrategy.HEIGHT
+        assert ShardStrategy.WIDTH
+        assert ShardStrategy.BLOCK
+
+    def test_shard_orientation_values(self) -> None:
+        """ShardOrientation exposes ROW_MAJOR and COL_MAJOR."""
+        assert ShardOrientation.ROW_MAJOR
+        assert ShardOrientation.COL_MAJOR
+
+    def test_shard_spec_stores_orientation(self) -> None:
+        """ShardSpec stores orientation and defaults to ROW_MAJOR."""
+        spec = ShardSpec(shard_grid=(4,), shard_shape=(2, 8))
+        assert spec.orientation == ShardOrientation.ROW_MAJOR
+        spec_col = ShardSpec(
+            shard_grid=(4,),
+            shard_shape=(2, 8),
+            orientation=ShardOrientation.COL_MAJOR,
+        )
+        assert spec_col.orientation == ShardOrientation.COL_MAJOR
+
+    def test_core_grid_creation(self) -> None:
+        """CoreGrid stores y, x, and exposes num_cores."""
+        grid = CoreGrid(y=4, x=8)
+        assert grid.y == 4
+        assert grid.x == 8
+        assert grid.num_cores == 32
+
+    def test_predefined_constants(self) -> None:
+        """DRAM_MEMORY_CONFIG and L1_MEMORY_CONFIG are MemoryConfig instances."""
+        assert isinstance(ttnn.DRAM_MEMORY_CONFIG, MemoryConfig)
+        assert isinstance(ttnn.L1_MEMORY_CONFIG, MemoryConfig)
+        assert ttnn.DRAM_MEMORY_CONFIG.strategy == ShardingStrategy.INTERLEAVED
+        assert ttnn.L1_MEMORY_CONFIG.strategy == ShardingStrategy.INTERLEAVED
+
+
+class TestTensorMemoryConfig:
+    """Tests for Tensor.memory_config attribute and related behaviour."""
+
+    def test_tensor_default_memory_config_is_dram(self) -> None:
+        """A plain Tensor defaults to DRAM_MEMORY_CONFIG."""
+        t = ttnn.Tensor(torch.zeros(64, 64))
+        assert t.memory_config is ttnn.DRAM_MEMORY_CONFIG
+
+    def test_tensor_with_memory_config(self) -> None:
+        """Tensor stores the MemoryConfig passed at construction."""
+        spec = ShardSpec(shard_grid=(4,), shard_shape=(2, 4))
+        mc = MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED, shard_spec=spec)
+        t = ttnn.Tensor(torch.zeros(256, 128), memory_config=mc)
+        assert t.memory_config is mc
+
+    def test_from_torch_propagates_memory_config(self) -> None:
+        """from_torch attaches the given MemoryConfig to the returned Tensor."""
+        spec = ShardSpec(shard_grid=(2,), shard_shape=(1, 4))
+        mc = MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED, shard_spec=spec)
+        t = ttnn.from_torch(torch.zeros(64, 128), memory_config=mc)
+        assert t.memory_config is mc
+
+    def test_getitem_propagates_memory_config(self) -> None:
+        """Slicing a sharded Tensor propagates memory_config to the result."""
+        spec = ShardSpec(shard_grid=(4,), shard_shape=(2, 4))
+        mc = MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED, shard_spec=spec)
+        t = ttnn.Tensor(torch.zeros(256, 128), memory_config=mc)
+        sliced = t[0:2, 0:4]
+        assert sliced.memory_config is mc
+
+    def test_nd_sharded_propagated_through_getitem(self) -> None:
+        """Slicing an ND_SHARDED Tensor propagates memory_config."""
+        spec = NdShardSpec(shard_grid=(2, 4), shard_shape=(2, 2))
+        mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=spec)
+        t = ttnn.Tensor(torch.zeros(128, 256), memory_config=mc)
+        sliced = t[0:2, 0:2]
+        assert sliced.memory_config is mc
+
+
+class TestCreateShardedMemoryConfig:
+    """Tests for create_sharded_memory_config factory function."""
+
+    def test_height_sharded(self) -> None:
+        """HEIGHT strategy: each core owns a horizontal slice."""
+        # 4 cores, 128x64 tensor (4x2 tiles), shard = (1, 2) tiles per core
+        mc = ttnn.create_sharded_memory_config(
+            shape=(128, 64),
+            core_grid=CoreGrid(y=2, x=2),
+            strategy=ShardStrategy.HEIGHT,
+        )
+        assert mc.strategy == ShardingStrategy.HEIGHT_SHARDED
+        assert mc.shard_spec is not None
+        assert mc.shard_spec.shard_grid == (4,)
+        assert mc.shard_spec.shard_shape == (1, 2)
+        assert mc.shard_spec.orientation == ShardOrientation.ROW_MAJOR
+
+    def test_width_sharded(self) -> None:
+        """WIDTH strategy: each core owns a vertical slice."""
+        # 4 cores, 64x128 tensor (2x4 tiles), shard = (2, 1) tiles per core
+        mc = ttnn.create_sharded_memory_config(
+            shape=(64, 128),
+            core_grid=CoreGrid(y=2, x=2),
+            strategy=ShardStrategy.WIDTH,
+        )
+        assert mc.strategy == ShardingStrategy.WIDTH_SHARDED
+        assert mc.shard_spec is not None
+        assert mc.shard_spec.shard_grid == (4,)
+        assert mc.shard_spec.shard_shape == (2, 1)
+
+    def test_block_sharded(self) -> None:
+        """BLOCK strategy: 2-D core grid, each core owns a rectangular block."""
+        # 2x4 core grid, 128x256 tensor (4x8 tiles), shard = (2, 2) tiles per core
+        mc = ttnn.create_sharded_memory_config(
+            shape=(128, 256),
+            core_grid=CoreGrid(y=2, x=4),
+            strategy=ShardStrategy.BLOCK,
+        )
+        assert mc.strategy == ShardingStrategy.BLOCK_SHARDED
+        assert mc.shard_spec is not None
+        assert mc.shard_spec.shard_grid == (2, 4)
+        assert mc.shard_spec.shard_shape == (2, 2)
+
+    def test_use_height_and_width_as_shard_shape(self) -> None:
+        """When use_height_and_width_as_shard_shape=True, shape is the shard shape."""
+        mc = ttnn.create_sharded_memory_config(
+            shape=(64, 32),
+            core_grid=CoreGrid(y=2, x=4),
+            strategy=ShardStrategy.BLOCK,
+            use_height_and_width_as_shard_shape=True,
+        )
+        assert mc.strategy == ShardingStrategy.BLOCK_SHARDED
+        assert mc.shard_spec is not None
+        # 64x32 elements = 2x1 tiles
+        assert mc.shard_spec.shard_shape == (2, 1)
+
+    def test_orientation_stored(self) -> None:
+        """Orientation is stored in the resulting ShardSpec."""
+        mc = ttnn.create_sharded_memory_config(
+            shape=(128, 64),
+            core_grid=CoreGrid(y=2, x=2),
+            strategy=ShardStrategy.HEIGHT,
+            orientation=ShardOrientation.COL_MAJOR,
+        )
+        assert mc.shard_spec is not None
+        assert mc.shard_spec.orientation == ShardOrientation.COL_MAJOR
+
+    def test_batch_dimensions_compressed_to_2d(self) -> None:
+        """Higher-rank tensors are compressed to 2D before shard computation."""
+        # (2, 128, 64) -> 2D (256, 64) = (8, 2) tiles; 4 cores HEIGHT -> shard (2, 2)
+        mc = ttnn.create_sharded_memory_config(
+            shape=(2, 128, 64),
+            core_grid=CoreGrid(y=2, x=2),
+            strategy=ShardStrategy.HEIGHT,
+        )
+        assert mc.shard_spec is not None
+        assert mc.shard_spec.shard_shape == (2, 2)
+
+
+class TestShardingHelpers:
+    """Tests for is_sharded, get_memory_config, and to_memory_config."""
+
+    def test_is_sharded_interleaved_returns_false(self) -> None:
+        """Interleaved tensors are not sharded."""
+        t = ttnn.from_torch(torch.zeros(64, 64))
+        assert not ttnn.is_sharded(t)
+
+    def test_is_sharded_height_sharded_returns_true(self) -> None:
+        """Height-sharded tensors are considered sharded."""
+        mc = MemoryConfig(
+            strategy=ShardingStrategy.HEIGHT_SHARDED,
+            shard_spec=ShardSpec(shard_grid=(4,), shard_shape=(1, 2)),
+        )
+        t = ttnn.from_torch(torch.zeros(128, 64), memory_config=mc)
+        assert ttnn.is_sharded(t)
+
+    def test_is_sharded_block_sharded_returns_true(self) -> None:
+        """Block-sharded tensors are considered sharded."""
+        mc = MemoryConfig(
+            strategy=ShardingStrategy.BLOCK_SHARDED,
+            shard_spec=ShardSpec(shard_grid=(2, 2), shard_shape=(1, 1)),
+        )
+        t = ttnn.from_torch(torch.zeros(64, 64), memory_config=mc)
+        assert ttnn.is_sharded(t)
+
+    def test_get_memory_config_returns_attached_config(self) -> None:
+        """get_memory_config returns the MemoryConfig stored on the tensor."""
+        mc = MemoryConfig(
+            strategy=ShardingStrategy.HEIGHT_SHARDED,
+            shard_spec=ShardSpec(shard_grid=(4,), shard_shape=(1, 2)),
+        )
+        t = ttnn.from_torch(torch.zeros(128, 64), memory_config=mc)
+        assert ttnn.get_memory_config(t) is mc
+
+    def test_get_memory_config_default_is_dram(self) -> None:
+        """get_memory_config on a plain tensor returns DRAM_MEMORY_CONFIG."""
+        t = ttnn.from_torch(torch.zeros(64, 64))
+        assert ttnn.get_memory_config(t) == ttnn.DRAM_MEMORY_CONFIG
+
+    def test_to_memory_config_updates_config(self) -> None:
+        """to_memory_config returns a tensor with the new MemoryConfig."""
+        raw = torch.arange(64 * 64, dtype=torch.float32).reshape(64, 64)
+        src = ttnn.from_torch(raw)
+        mc = MemoryConfig(
+            strategy=ShardingStrategy.HEIGHT_SHARDED,
+            shard_spec=ShardSpec(shard_grid=(4,), shard_shape=(1, 2)),
+        )
+        dst = ttnn.to_memory_config(src, mc)
+        assert ttnn.get_memory_config(dst) == mc
+
+    def test_to_memory_config_preserves_data(self) -> None:
+        """to_memory_config does not alter tensor values."""
+        raw = torch.arange(64 * 64, dtype=torch.float32).reshape(64, 64)
+        src = ttnn.from_torch(raw)
+        mc = MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED)
+        dst = ttnn.to_memory_config(src, mc)
+        assert torch.equal(dst.to_torch(), raw)
+
+    def test_to_memory_config_does_not_mutate_source(self) -> None:
+        """to_memory_config leaves the original tensor's MemoryConfig unchanged."""
+        t = ttnn.from_torch(torch.zeros(64, 64))
+        original_mc = ttnn.get_memory_config(t)
+        ttnn.to_memory_config(t, MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED))
+        assert ttnn.get_memory_config(t) is original_mc
+
+    def test_to_memory_config_preserves_layout(self) -> None:
+        """to_memory_config propagates the source tensor's layout."""
+        raw = torch.zeros(5, 9)
+        src = ttnn.from_torch(raw, layout=ttnn.ROW_MAJOR_LAYOUT)
+        dst = ttnn.to_memory_config(src, ttnn.DRAM_MEMORY_CONFIG)
+        assert dst.layout == ttnn.ROW_MAJOR_LAYOUT
 
 
 class TestRowMajorLayout:

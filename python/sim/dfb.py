@@ -40,7 +40,13 @@ from .dfbstate import DFBState
 from .constants import TILE_SHAPE
 from .errors import DFBContractError
 from .stats import record_dfb_reserve, record_dfb_wait
-from .ttnnsim import ROW_MAJOR_LAYOUT, TILE_LAYOUT, Tensor, tile_count_from_tensor
+from .ttnnsim import (
+    ROW_MAJOR_LAYOUT,
+    TILE_LAYOUT,
+    Tensor,
+    tile_count_from_tensor,
+    tile_shape_from_tensor,
+)
 from .typedefs import Index, IndexType, PositiveInt, Shape, Size
 
 
@@ -498,8 +504,6 @@ class Block:
                     f"1-D tensor dimension ({w},) must be a multiple of "
                     f"TILE_SHAPE[0]={TILE_SHAPE[0]}, or exactly 1"
                 )
-            tk = 1 if w == 1 else w // TILE_SHAPE[0]
-            tile_shape: Shape = (tk,)
         else:
             h, w = elem_shape[-2], elem_shape[-1]
             if (h != 1 and h % TILE_SHAPE[0] != 0) or (
@@ -509,10 +513,7 @@ class Block:
                     f"Last two tensor dimensions ({h}, {w}) must be multiples of "
                     f"TILE_SHAPE {TILE_SHAPE}, or exactly 1"
                 )
-            batch_shape = elem_shape[:-2]
-            tm = 1 if h == 1 else h // TILE_SHAPE[0]
-            tk = 1 if w == 1 else w // TILE_SHAPE[1]
-            tile_shape = (*batch_shape, tm, tk)
+        tile_shape: Shape = tile_shape_from_tensor(t)
 
         return cls(
             tensor=t,
