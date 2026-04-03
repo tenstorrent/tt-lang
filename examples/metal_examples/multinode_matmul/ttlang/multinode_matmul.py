@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-# up to tt-lang spec, not intended to compile or run currently
 import pytest
 import torch
 
@@ -12,7 +11,7 @@ from utils.correctness import assert_with_ulp
 from utils.block_allocation import get_number_of_nodes_from_ranges, split_work_to_nodes
 
 
-@ttl.operation(grid=(13, 10))
+@ttl.operation(grid=("auto"))
 def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
@@ -126,4 +125,6 @@ def test_multinode_matmul_tt_lang(M, K, N):
 
 
 if __name__ == "__main__":
+    test_multinode_matmul_tt_lang(256, 256, 256)
+    test_multinode_matmul_tt_lang(512, 512, 512)
     test_multinode_matmul_tt_lang(640, 640, 640)

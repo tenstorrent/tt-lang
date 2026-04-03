@@ -505,6 +505,6 @@ def test_1d_matmul_metal(
     torch_output = torch.matmul(a_tensor_torch, b_tensor_torch)
 
     assert_with_ulp(torch_output, metal_output)
-    print("test passed.")
+    print("Test passed!")
 
     ttnn.close_device(device)

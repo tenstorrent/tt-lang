@@ -229,7 +229,6 @@ def test_2d_mcast_matmul(M, K, N):
     reader_rt_args_interior = []
     writer_rt_args_left = []
     writer_rt_args_rest = []
-    compute_rt_args = []
 
     for node_idx_y in range(num_active_y):
         for node_idx_x in range(num_active_x):
@@ -269,9 +268,12 @@ def test_2d_mcast_matmul(M, K, N):
                 per_node_N * in0_block_w,  # in1 block num tiles
                 Kt // in0_block_w,  # num blocks
                 # in0 mcast args (rightward from left column)
-                right_phys.x,
+                # NOTE: Physical NOC coords may be inverted from logical coords.
+                # The kernel passes (end, start) to get_noc_multicast_addr to
+                # produce the correct physical bounding box for the NOC in use.
+                right_phys.x,  # in0_mcast_dest_noc_start
                 right_phys.y,
-                left_plus_one_phys.x,
+                left_plus_one_phys.x,  # in0_mcast_dest_noc_end
                 left_plus_one_phys.y,
                 num_active_x - 1,  # in0 mcast num dests
                 left_phys.x,
@@ -279,9 +281,10 @@ def test_2d_mcast_matmul(M, K, N):
                 in0_mcast_sender_semaphore_id,
                 in0_mcast_receiver_semaphore_id,
                 # in1 mcast args (downward from top row)
-                bottom_phys.x,
+                # NOTE: Same start/end convention as in0 above.
+                bottom_phys.x,  # in1_mcast_dest_noc_start
                 bottom_phys.y,
-                top_plus_one_phys.x,
+                top_plus_one_phys.x,  # in1_mcast_dest_noc_end
                 top_plus_one_phys.y,
                 num_active_y - 1,  # in1 mcast num dests
                 top_phys.x,
@@ -392,7 +395,7 @@ def test_2d_mcast_matmul(M, K, N):
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
         core_ranges=all_nodes,
         compile_time_args=compute_compile_time_args,
-        runtime_args=compute_rt_args,
+        runtime_args=[],
         config=computeConfig,
     )
 
