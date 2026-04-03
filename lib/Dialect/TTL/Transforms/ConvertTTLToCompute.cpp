@@ -443,15 +443,16 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   // Emit tile ops in topological order with interleaved side-effect ops.
   //
-  // Matmul+add fold: when a MatmulOp result feeds into an AddOp in the
-  // chain, both are replaced by a single 3-operand TileMatmulBlockOp
-  // (lhs, rhs, accumulator). matmul_block accumulates (DST += A*B), so
-  // pre-loading the accumulator into DST yields accumulator + A*B without
-  // an explicit tile_add.
+  // Matmul+add fold for longer chains (e.g., relu(prev + a @ b)): when a
+  // MatmulOp result feeds into an AddOp in the chain, both are replaced by
+  // a single 3-operand TileMatmulBlockOp (lhs, rhs, accumulator).
+  // matmul_block accumulates (DST += A*B), so pre-loading the accumulator
+  // into DST yields accumulator + A*B without an explicit tile_add.
   //
-  // The matmul is emitted before the add in topological order. When the
-  // matmul's sole user is an add in the chain, emission is deferred: the
-  // tile operands are stashed and the 3-operand form is emitted at the add.
+  // The primary matmul+add fusion is handled by LowerMatmulToCompute, which
+  // absorbs a direct AddOp user. This deferred fold handles the remaining
+  // case where additional ops (like relu) wrap the matmul+add chain, causing
+  // the fusion trace to include the matmul in opsInOrder.
   DenseMap<Value, std::pair<Value, Value>> deferredMatmul;
 
   Value finalResult;
@@ -1045,24 +1046,28 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
                                          "matmul inputs must be CB-attached");
     }
 
-    auto lhsType = getTensorType(lhs);
-    auto rhsType = getTensorType(rhs);
-    auto resultType = getTensorType(op.getResult());
-
-    // Defer to fusion when the matmul result feeds into a single elementwise
-    // op and the matmul inputs are broadcast-compatible with the user's output
-    // shape. Without the broadcast check, fusion would reject and the greedy
-    // rewriter would cycle.
+    // Detect matmul+add fusion: when the matmul's sole user is an AddOp
+    // and the other add operand is CB-attached, absorb the add into a
+    // 3-operand tile_matmul_block (DST += A*B with accumulator preload).
+    AddOp addUser = nullptr;
+    Value acc;
     if (op.getResult().hasOneUse()) {
-      Operation *user = *op.getResult().getUsers().begin();
-      if (isElementwiseOp(user)) {
-        auto userOutType = getTensorType(user->getResult(0));
-        if (isBroadcastCompatible(lhsType, userOutType) &&
-            isBroadcastCompatible(rhsType, userOutType)) {
-          return rewriter.notifyMatchFailure(op, "deferring matmul to fusion");
+      auto *user = *op.getResult().getUsers().begin();
+      if (auto addOp = dyn_cast<AddOp>(user)) {
+        Value otherOperand = (addOp.getLhs() == op.getResult())
+                                 ? addOp.getRhs()
+                                 : addOp.getLhs();
+        if (getAttachedCB(otherOperand)) {
+          addUser = addOp;
+          acc = otherOperand;
         }
       }
     }
+
+    // The sink op owns the store users. When fusing with add, the add is
+    // the sink (it has the store); otherwise the matmul itself is the sink.
+    Operation *sinkOp = addUser ? addUser.getOperation() : op.getOperation();
+    auto resultType = getTensorType(sinkOp->getResult(0));
 
     MLIRContext *ctx = rewriter.getContext();
 
@@ -1073,19 +1078,45 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
     AffineMap lhsMap = AffineMap::get(3, 0, {d0, d2}, ctx);
     AffineMap rhsMap = AffineMap::get(3, 0, {d2, d1}, ctx);
     AffineMap outMap = AffineMap::get(3, 0, {d0, d1}, ctx);
-    SmallVector<Attribute> inputMaps = {AffineMapAttr::get(lhsMap),
-                                        AffineMapAttr::get(rhsMap)};
+
+    SmallVector<Value> inputs;
+    SmallVector<Attribute> inputMaps;
+
+    if (acc) {
+      inputs = {acc, lhs, rhs};
+      inputMaps = {AffineMapAttr::get(outMap), AffineMapAttr::get(lhsMap),
+                   AffineMapAttr::get(rhsMap)};
+    } else {
+      inputs = {lhs, rhs};
+      inputMaps = {AffineMapAttr::get(lhsMap), AffineMapAttr::get(rhsMap)};
+    }
+
     SmallVector<Attribute> iterTypes = {rewriter.getStringAttr("parallel"),
                                         rewriter.getStringAttr("parallel"),
                                         rewriter.getStringAttr("reduction")};
 
-    return buildComputeFromInputs(
-        op, rewriter, ValueRange{lhs, rhs}, resultType, inputMaps, outMap,
-        iterTypes, [](OpBuilder &b, Location loc, Type tileType, Block *body) {
+    bool hasAcc = acc != nullptr;
+    auto result = buildComputeFromInputs(
+        sinkOp, rewriter, inputs, resultType, inputMaps, outMap, iterTypes,
+        [hasAcc](OpBuilder &b, Location loc, Type tileType, Block *body) {
+          if (hasAcc) {
+            // body args: [acc, lhs, rhs, out...]
+            return TileMatmulBlockOp::create(
+                b, loc, tileType, body->getArgument(1), body->getArgument(2),
+                body->getArgument(0));
+          }
+          // body args: [lhs, rhs, out...]
           return TileMatmulBlockOp::create(b, loc, tileType,
                                            body->getArgument(0),
                                            body->getArgument(1), Value());
         });
+
+    if (succeeded(result) && addUser) {
+      // The matmul is now dead (its sole user, the add, was replaced).
+      rewriter.eraseOp(op);
+    }
+
+    return result;
   }
 };
 
@@ -1374,7 +1405,9 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   patterns.add<LowerBcastToCompute>(ctx);
-  patterns.add<LowerMatmulToCompute>(ctx);
+  // Higher benefit so the matmul pattern fires before LowerAdd when it can
+  // absorb a matmul+add pair into a single 3-operand tile_matmul_block.
+  patterns.add<LowerMatmulToCompute>(ctx, /*benefit=*/2);
   patterns.add<LowerReduceToCompute>(ctx);
   patterns.add<LowerTransposeToCompute>(ctx);
   patterns.add<LowerStoreToCompute>(ctx);
