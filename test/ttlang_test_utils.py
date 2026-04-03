@@ -280,7 +280,9 @@ def to_l1_sharded(torch_tensor, device, layout="height"):
         "block": ttnn.TensorMemoryLayout.BLOCK_SHARDED,
     }
     if layout not in layout_map:
-        raise ValueError(f"Unknown shard layout {layout!r}, expected one of {list(layout_map)}")
+        raise ValueError(
+            f"Unknown shard layout {layout!r}, expected one of {list(layout_map)}"
+        )
     dram_tensor = to_dram(torch_tensor, device)
     rows, cols = torch_tensor.shape[-2], torch_tensor.shape[-1]
     shard_spec = ttnn.ShardSpec(
