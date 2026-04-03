@@ -362,7 +362,9 @@ def emit_runner_source(
     lines.append("")
     lines.append("def run(tensors, device=None):")
     lines.append(f'    """Run the {kernel_name} on device."""')
-    lines.append(f"    assert len(tensors) == {num_tensors}, f'Expected {num_tensors} tensors, got {{len(tensors)}}'")
+    lines.append(
+        f"    assert len(tensors) == {num_tensors}, f'Expected {num_tensors} tensors, got {{len(tensors)}}'"
+    )
     lines.append("")
     lines.append("    if device is None:")
     lines.append("        device = tensors[0].device()")
@@ -376,11 +378,15 @@ def emit_runner_source(
 
     lines.append("    tensor_accessor_args = []")
     lines.append("    for tensor in tensors:")
-    lines.append("        tensor_accessor_args.extend(ttnn.TensorAccessorArgs(tensor).get_compile_time_args())")
+    lines.append(
+        "        tensor_accessor_args.extend(ttnn.TensorAccessorArgs(tensor).get_compile_time_args())"
+    )
     lines.append("")
 
     lines.append("    cb_descriptors = []")
-    lines.append("    for i, (shape, buffer_factor, dtype, page_size, total_size) in enumerate(CB_CONFIGS):")
+    lines.append(
+        "    for i, (shape, buffer_factor, dtype, page_size, total_size) in enumerate(CB_CONFIGS):"
+    )
     lines.append("        cb_format = ttnn.CBFormatDescriptor(")
     lines.append("            buffer_index=i,")
     lines.append("            data_format=dtype,")
@@ -398,9 +404,13 @@ def emit_runner_source(
     lines.append("    kernel_descriptors = []")
     lines.append("    noc_idx = 0")
     lines.append("")
-    lines.append("    for kernel_idx, (kernel_path, thread_type) in enumerate(KERNEL_PATHS):")
+    lines.append(
+        "    for kernel_idx, (kernel_path, thread_type) in enumerate(KERNEL_PATHS):"
+    )
     lines.append("        tensor_indices = KERNEL_TENSOR_INDICES[kernel_idx]")
-    lines.append("        common_runtime_args = [tensors[idx].buffer_address() for idx in tensor_indices]")
+    lines.append(
+        "        common_runtime_args = [tensors[idx].buffer_address() for idx in tensor_indices]"
+    )
     lines.append("")
     lines.append("        if thread_type == 'compute':")
     lines.append("            compile_time_args = cb_indices")

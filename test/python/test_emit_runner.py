@@ -79,7 +79,9 @@ def test_emit_runner(device):
         spec.loader.exec_module(runner_module)
 
         assert hasattr(runner_module, "run"), "Runner module missing run() function"
-        assert hasattr(runner_module, "KERNEL_PATHS"), "Runner module missing KERNEL_PATHS"
+        assert hasattr(
+            runner_module, "KERNEL_PATHS"
+        ), "Runner module missing KERNEL_PATHS"
         assert hasattr(runner_module, "CB_CONFIGS"), "Runner module missing CB_CONFIGS"
 
         # Run the emitted runner on fresh output tensor.
