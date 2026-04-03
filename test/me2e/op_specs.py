@@ -88,6 +88,7 @@ class ComputeOpSpec:
     input_range: Optional[Tuple[float, float]] = None
     ulp_threshold_overrides: Optional[dict[torch.dtype, int]] = None
     pcc_threshold_overrides: Optional[dict[torch.dtype, float]] = None
+    exact_bool_output: bool = False
 
 
 # Special cases for ops that need custom golden functions (not in OP_TORCH_MAP or need different implementation).
@@ -131,6 +132,7 @@ def _generate_compute_ops() -> list[ComputeOpSpec]:
         # Get per-op threshold overrides if specified.
         ulp_overrides = OP_ULP_THRESHOLD_OVERRIDES.get(op_name)
         pcc_overrides = OP_PCC_THRESHOLD_OVERRIDES.get(op_name)
+        exact_bool = op_name in ("gt", "lt")
 
         compute_ops.append(
             ComputeOpSpec(
@@ -142,6 +144,7 @@ def _generate_compute_ops() -> list[ComputeOpSpec]:
                 input_range=input_range,
                 ulp_threshold_overrides=ulp_overrides,
                 pcc_threshold_overrides=pcc_overrides,
+                exact_bool_output=exact_bool,
             )
         )
 

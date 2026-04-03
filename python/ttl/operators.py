@@ -94,6 +94,14 @@ class TensorBlock:
         """Element-wise division using ttl.div."""
         return ttl.div(ast_self.type, ast_self, rhs)
 
+    def __gt__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
+        """Element-wise greater-than using ttl.gt (mask in float/bfloat)."""
+        return ttl.gt(ast_self.type, ast_self, rhs)
+
+    def __lt__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
+        """Element-wise less-than using ttl.lt (mask in float/bfloat)."""
+        return ttl.lt(ast_self.type, ast_self, rhs)
+
     def __matmul__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Matrix multiplication using ttl.matmul.
 

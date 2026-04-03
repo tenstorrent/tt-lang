@@ -45,6 +45,8 @@ OP_TORCH_MAP: Dict[str, Callable[..., Tensor]] = {
     "sin": torch.sin,
     "cos": torch.cos,
     "tan": torch.tan,
+    "gt": torch.gt,
+    "lt": torch.lt,
 }
 
 # Domain constraints for ops that require specific input ranges.
@@ -113,6 +115,9 @@ def _parse_elementwise_ops_def() -> Dict[str, int]:
 
 # Parse ops from .def file at module load time.
 ELEMENTWISE_OPS: Dict[str, int] = _parse_elementwise_ops_def()
+# Compare ops use custom MLIR lowering (sub + gtz/ltz), not TTLElementwiseOps.def x-macros.
+ELEMENTWISE_OPS["gt"] = 2
+ELEMENTWISE_OPS["lt"] = 2
 
 
 class OpTestBase(ME2ETestBase):
@@ -187,6 +192,8 @@ class OpTestBase(ME2ETestBase):
             golden = torch_op(torch_inputs[0])
         else:
             golden = torch_op(torch_inputs[0], torch_inputs[1])
+        if golden.dtype == torch.bool:
+            golden = golden.float()
 
         # Build full ME2E module with reader, compute, and writer threads.
         mlir_str = build_e2e_module_mlir(self.OP_STR, self.ARITY, config)
@@ -259,6 +266,8 @@ def generate_op_test_classes() -> Dict[str, Type[OpTestBase]]:
                 overrides = OP_PCC_THRESHOLD_OVERRIDES[op_name]
                 if dtype in overrides:
                     attrs["PCC_THRESHOLD"] = overrides[dtype]
+            if op_name in ("gt", "lt"):
+                attrs["EXACT_BOOL_OUTPUT"] = True
 
             # Create class dynamically with dtype suffix.
             class_name = f"Test{op_name.capitalize()}{dtype_suffix}"

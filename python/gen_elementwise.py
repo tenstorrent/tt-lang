@@ -145,6 +145,11 @@ def main():
         raise FileNotFoundError(f"Definition file not found: {args.def_file}")
 
     binary_ops, unary_ops = parse_def_file(args.def_file)
+    # Compare ops are defined in TTLOps.td with custom lowering, not in TTLElementwiseOps.def.
+    for name in ("gt", "lt"):
+        if name not in binary_ops:
+            binary_ops.append(name)
+    binary_ops.sort()
 
     print(f"Found {len(binary_ops)} binary ops: {binary_ops}")
     print(f"Found {len(unary_ops)} unary ops: {unary_ops}")

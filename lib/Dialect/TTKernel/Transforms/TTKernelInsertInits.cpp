@@ -174,6 +174,18 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
         ttk::TransposeInitOp::create(b, l, transposeOp.getIcb(), outputCB);
       }};
 
+  // ttl.tile_gt / ttl.tile_lt lower to sub_binary_tile + gtz_tile / ltz_tile;
+  // the unary SFPU ops are not in TTLElementwiseOps.def.
+  // TODO: Consider adding gtz_tile / ltz_tile as standalone ops.
+  map[mlir::TypeID::get<ttk::GtzTileOp>()] = {
+      [](OpBuilder &b, Location l, Operation *) {
+        ttk::GtzTileInitOp::create(b, l);
+      }};
+  map[mlir::TypeID::get<ttk::LtzTileOp>()] = {
+      [](OpBuilder &b, Location l, Operation *) {
+        ttk::LtzTileInitOp::create(b, l);
+      }};
+
   return map;
 }
 

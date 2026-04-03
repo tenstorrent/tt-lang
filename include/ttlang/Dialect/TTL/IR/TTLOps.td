@@ -808,6 +808,11 @@ defm TTL_Max : TTL_BinaryElementwisePair<"max", "max_tiles",
 defm TTL_Min : TTL_BinaryElementwisePair<"min", "binary_min_tile",
                                          [TTL_InPlaceOpTrait]>;
 
+// Elementwise compare: hardware lowers as sub_binary_tile then gtz_tile /
+// ltz_tile (see ConvertTTLTileOpsToTTKernel).
+defm TTL_Gt : TTL_BinaryElementwisePair<"gt", "sub_binary_tile + gtz_tile">;
+defm TTL_Lt : TTL_BinaryElementwisePair<"lt", "sub_binary_tile + ltz_tile">;
+
 
 //===----------------------------------------------------------------------===//
 // Unary Elementwise Operations (Tensor + Tile Ops)

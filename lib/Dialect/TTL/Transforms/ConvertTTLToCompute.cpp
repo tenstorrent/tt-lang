@@ -176,6 +176,15 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
 /// Returns the result Value, or null on failure.
 static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *sourceOp,
                            ValueRange tileOperands, Type tileType) {
+  // Compare ops use custom TTKernel lowering (sub + gtz/ltz), not
+  // TTLElementwiseOps.def.
+  if (isa<GtOp>(sourceOp)) {
+    return GtTileOp::create(b, loc, tileType, tileOperands[0], tileOperands[1]);
+  }
+  if (isa<LtOp>(sourceOp)) {
+    return LtTileOp::create(b, loc, tileType, tileOperands[0], tileOperands[1]);
+  }
+
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
   if (isa<TTL_OP##Op>(sourceOp))                                               \
     return TILE_OP::create(b, loc, tileType, tileOperands[0]);
@@ -1474,6 +1483,9 @@ struct LowerTransposeToCompute : OpRewritePattern<TransposeOp> {
   using Lower##TTL_OP = LowerUnaryToCompute<TTL_OP##Op, TILE_OP>;
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
+using LowerGt = LowerBinaryToCompute<GtOp, GtTileOp>;
+using LowerLt = LowerBinaryToCompute<LtOp, LtTileOp>;
+
 //===----------------------------------------------------------------------===//
 // Pass Implementations
 //===----------------------------------------------------------------------===//
@@ -1514,6 +1526,9 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
   patterns.add<Lower##TTL_OP>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
+  patterns.add<LowerGt>(ctx);
+  patterns.add<LowerLt>(ctx);
 
   patterns.add<LowerBcastToCompute>(ctx);
   patterns.add<LowerMatmulToCompute>(ctx);

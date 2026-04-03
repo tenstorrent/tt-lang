@@ -1,15 +1,19 @@
-# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Minimal declarative test for all compute operations.
+ME2E tests for elementwise compare operations (ttl.gt, ttl.lt).
 
-Uses pytest parametrize to test all operations with all configurations and dtypes.
-Single function covers everything - operations, configs, and dtypes are declared as data.
+Lowering uses sub_binary_tile + gtz_tile / ltz_tile on DST. Golden references use
+torch.gt / torch.lt; bool tensors are converted to float 0/1 for device I/O.
+Validation requires binary-identical masks (torch.equal), not PCC/ULP.
 
-Elementwise compare (gt, lt) uses the same harness but is collected in
-test_compare_ops.py so it can be run and reviewed on its own.
+Run only these tests:
+
+    pytest -v test/me2e/test_compare_ops.py
+
+Class-based coverage also appears in ops/test_binary.py as TestGt* / TestLt*.
 """
 
 from dataclasses import replace
@@ -21,21 +25,23 @@ from .config_specs import CONFIGS, XFAILS
 from .op_specs import COMPUTE_OPS
 from .runner import run_compute_test
 
-# Exclude compare ops; they are covered in test_compare_ops.py (avoid duplicate runs).
-_COMPUTE_OPS_NO_COMPARE = tuple(op for op in COMPUTE_OPS if op.name not in ("gt", "lt"))
+_COMPARE_OPS = tuple(op for op in COMPUTE_OPS if op.name in ("gt", "lt"))
+assert len(_COMPARE_OPS) == 2, (
+    "COMPUTE_OPS must include exactly gt and lt; check ELEMENTWISE_OPS / OP_TORCH_MAP "
+    f"in test/me2e/ops/__init__.py (got { [o.name for o in _COMPARE_OPS]!r})"
+)
 
 
 def _check_xfail(config_str: str, dtype_str: str, op_name: str):
     """Apply xfail marker if (config, dtype, op) matches an XFAILS entry."""
     params = (config_str, dtype_str, op_name)
     for key, reason in XFAILS.items():
-        # Pad key with None to length 3 so trailing positions match anything.
         padded = key + (None,) * (3 - len(key))
         if all(k is None or k == p for k, p in zip(padded, params)):
             pytest.xfail(reason)
 
 
-@pytest.mark.parametrize("op", _COMPUTE_OPS_NO_COMPARE, ids=lambda o: o.name)
+@pytest.mark.parametrize("op", _COMPARE_OPS, ids=lambda o: o.name)
 @pytest.mark.parametrize(
     "config",
     CONFIGS,
@@ -43,10 +49,9 @@ def _check_xfail(config_str: str, dtype_str: str, op_name: str):
 )
 @pytest.mark.parametrize("dtype", get_test_dtypes(), ids=get_dtype_ids())
 @pytest.mark.requires_device
-def test_compute(op, config, dtype, device):
-    """Test all compute operations with all configurations and dtypes."""
+def test_compare(op, config, dtype, device):
+    """Elementwise gt/lt: same harness as test_compute, scoped to compare ops."""
     dtype_str = str(dtype).split(".")[-1]
     _check_xfail(str(config), dtype_str, op.name)
-    # Create a new config with the specified dtype.
     config_with_dtype = replace(config, dtype=dtype)
     run_compute_test(op, config_with_dtype, device)

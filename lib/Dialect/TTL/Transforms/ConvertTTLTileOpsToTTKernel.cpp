@@ -433,6 +433,88 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
   }
 };
 
+/// Lower ttl.tile_gt to sub_binary_tile + gtz_tile (a > b <=> (a - b) > 0).
+struct TTLTileGtToTTKernel : OpConversionPattern<GtTileOp> {
+  using OpConversionPattern<GtTileOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(GtTileOp op, GtTileOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (op->hasAttr(kFPUBinaryAttrName)) {
+      return failure();
+    }
+
+    Location loc = op.getLoc();
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    int64_t odstIdx = dstIdxAttr.getInt();
+
+    auto src0IdxOpt = getDstIndexFromValue(op.getLhs());
+    auto src1IdxOpt = getDstIndexFromValue(op.getRhs());
+    if (!src0IdxOpt) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to extract dst_idx from lhs operand");
+    }
+    if (!src1IdxOpt) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to extract dst_idx from rhs operand");
+    }
+
+    Value src0 = arith::ConstantIndexOp::create(rewriter, loc, *src0IdxOpt);
+    Value src1 = arith::ConstantIndexOp::create(rewriter, loc, *src1IdxOpt);
+    Value odst = arith::ConstantIndexOp::create(rewriter, loc, odstIdx);
+
+    ttk::SubBinaryTilesOp::create(rewriter, loc, src0, src1, odst);
+    ttk::GtzTileOp::create(rewriter, loc, odst);
+
+    rewriter.replaceOp(op, adaptor.getLhs());
+    return success();
+  }
+};
+
+/// Lower ttl.tile_lt to sub_binary_tile + ltz_tile (a < b <=> (a - b) < 0).
+struct TTLTileLtToTTKernel : OpConversionPattern<LtTileOp> {
+  using OpConversionPattern<LtTileOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(LtTileOp op, LtTileOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (op->hasAttr(kFPUBinaryAttrName)) {
+      return failure();
+    }
+
+    Location loc = op.getLoc();
+    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
+    if (!dstIdxAttr) {
+      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    int64_t odstIdx = dstIdxAttr.getInt();
+
+    auto src0IdxOpt = getDstIndexFromValue(op.getLhs());
+    auto src1IdxOpt = getDstIndexFromValue(op.getRhs());
+    if (!src0IdxOpt) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to extract dst_idx from lhs operand");
+    }
+    if (!src1IdxOpt) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to extract dst_idx from rhs operand");
+    }
+
+    Value src0 = arith::ConstantIndexOp::create(rewriter, loc, *src0IdxOpt);
+    Value src1 = arith::ConstantIndexOp::create(rewriter, loc, *src1IdxOpt);
+    Value odst = arith::ConstantIndexOp::create(rewriter, loc, odstIdx);
+
+    ttk::SubBinaryTilesOp::create(rewriter, loc, src0, src1, odst);
+    ttk::LtzTileOp::create(rewriter, loc, odst);
+
+    rewriter.replaceOp(op, adaptor.getLhs());
+    return success();
+  }
+};
+
 /// Lower ttl.copy_tile to TTKernel copy_tile_init + copy_tile.
 struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
   using OpConversionPattern<CopyTileOp>::OpConversionPattern;
@@ -1025,6 +1107,9 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // DST-based ops (no type converter needed).
   patterns.add<TTLTileFillToTTKernel>(ctx);
+
+  patterns.add<TTLTileGtToTTKernel>(ctx);
+  patterns.add<TTLTileLtToTTKernel>(ctx);
 
   // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);

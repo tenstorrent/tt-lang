@@ -23,7 +23,7 @@ from .builder.kernels import (
 )
 from .builder.pipeline import compile_ttl_to_ttkernel
 from .builder.ttl_builder import build_e2e_module
-from .config import validate_against_golden
+from .config import validate_against_golden, validate_exact_mask_against_golden
 from .config_specs import TestConfig
 from .op_specs import ComputeOpSpec
 
@@ -110,6 +110,8 @@ def run_compute_test(
         golden = op.golden(torch_inputs[0])
     else:
         golden = op.golden(torch_inputs[0], torch_inputs[1])
+    if golden.dtype == torch.bool:
+        golden = golden.float()
 
     # 2. Get or generate compute kernel.
     compute_cpp = get_compute_kernel(op, config, device)
@@ -170,9 +172,15 @@ def run_compute_test(
         pcc_threshold = None
         if op.pcc_threshold_overrides and golden.dtype in op.pcc_threshold_overrides:
             pcc_threshold = op.pcc_threshold_overrides[golden.dtype]
-        validate_against_golden(
-            golden, result, ulp_threshold=ulp_threshold, pcc_threshold=pcc_threshold
-        )
+        if op.exact_bool_output:
+            validate_exact_mask_against_golden(golden, result)
+        else:
+            validate_against_golden(
+                golden,
+                result,
+                ulp_threshold=ulp_threshold,
+                pcc_threshold=pcc_threshold,
+            )
 
     finally:
         # Cleanup temporary kernel directory.
