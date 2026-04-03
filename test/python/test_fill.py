@@ -71,7 +71,6 @@ def fill_add_kernel(inp, out):
             tx.wait()
 
 
-
 def test_fill_negative_constant(device):
     """Test multi-tile fill with negative constant value."""
     inp = to_l1(torch.zeros((64, 64), dtype=torch.bfloat16), device)
