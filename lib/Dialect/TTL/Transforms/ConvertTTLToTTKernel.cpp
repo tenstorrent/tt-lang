@@ -1070,20 +1070,26 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
         Value dstAddr =
             b.create<arith::IndexCastOp>(bodyLoc, i32Ty, dstAddrIdx);
 
-        auto mcastAddr = b.create<ttk::GetNocMulticastAddrOp>(
-            bodyLoc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
-            dstAddr, /*noc=*/Value());
-
-        if (pipeType.srcInDstRange()) {
-          b.create<ttk::NocAsyncWriteMulticastLoopbackSrcOp>(
-              bodyLoc, srcAddr, mcastAddr.getResult(), pageSizeVal, numDestsVal,
-              /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr,
-              /*noc=*/Value());
+        if (pipeType.isUnicast()) {
+          auto nocAddr = b.create<ttk::GetNocAddrOp>(
+              bodyLoc, dstStartXVal, dstStartYVal, dstAddr);
+          b.create<ttk::NocAsyncWriteOp>(
+              bodyLoc, srcAddr, nocAddr.getResult(), pageSizeVal);
         } else {
-          b.create<ttk::NocAsyncWriteMulticastOp>(
-              bodyLoc, srcAddr, mcastAddr.getResult(), pageSizeVal, numDestsVal,
-              /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr,
-              /*noc=*/Value());
+          auto mcastAddr = b.create<ttk::GetNocMulticastAddrOp>(
+              bodyLoc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
+              dstAddr, /*noc=*/Value());
+          if (pipeType.srcInDstRange()) {
+            b.create<ttk::NocAsyncWriteMulticastLoopbackSrcOp>(
+                bodyLoc, srcAddr, mcastAddr.getResult(), pageSizeVal,
+                numDestsVal, /*linked=*/nullptr,
+                /*multicast_path_reserve=*/nullptr, /*noc=*/Value());
+          } else {
+            b.create<ttk::NocAsyncWriteMulticastOp>(
+                bodyLoc, srcAddr, mcastAddr.getResult(), pageSizeVal,
+                numDestsVal, /*linked=*/nullptr,
+                /*multicast_path_reserve=*/nullptr, /*noc=*/Value());
+          }
         }
       });
 
