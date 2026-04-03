@@ -96,7 +96,7 @@ def load_pipe_graph(json_path: Optional[str] = None) -> Optional[List[PipeConnec
             )
         return pipes
     except (json.JSONDecodeError, KeyError, TypeError) as e:
-        print(f"Warning: Failed to load pipe graph from {json_path}: {e}")
+        pass
         return None
 
 
