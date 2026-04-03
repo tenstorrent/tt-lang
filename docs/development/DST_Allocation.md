@@ -79,7 +79,7 @@ CBs, and accumulates the reduction result into a fresh DST slot:
   called after the last `reduce_tile` to clear this mask before any
   non-reduce operation.
 
-**Matmul** (tt-metal only; no TTL op yet) reads A and B tiles from CBs and
+**(TTL) Matmul** (`ttl.tile_matmul_block`) reads A and B tiles from CBs and
 accumulates the matrix product into a fresh DST slot:
 - Both inputs stay in CBs (`TTLCBInputTileOpTrait`)
 - Output gets a fresh DST slot (not in-place)
@@ -185,7 +185,7 @@ tt-metal patterns documented for future implementation.
 | Unary | x | | x | | TTL |
 | Broadcast | | x | | | TTL |
 | Reduce | | x | | x | — |
-| Matmul | | x | | x | — |
+| Matmul | | x | | x | TTL |
 | Transpose (CB) | | x | | | — |
 | Transpose (DST) | x | | x | | — |
 
@@ -263,7 +263,7 @@ References:
 
 ### Phase 0: FPU Binary Detection
 
-[Source: TTLAssignDST.cpp, lines 645-694](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L645-L694)
+[Source: TTLAssignDST.cpp](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L577-L626)
 
 Identifies binary tile operations (`add`, `sub`, `mul`) eligible for
 FPU execution and marks them with the `ttl.fpu_binary` attribute. An
@@ -470,7 +470,7 @@ enabling latency-aware scheduling analogous to LLVM's
 
 ### Phase 1: Insert Copy Operations
 
-[Source: TTLAssignDST.cpp, lines 264-350](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L264-L350)
+[Source: TTLAssignDST.cpp](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L135-L247)
 
 Normalize the IR by inserting explicit copy operations where values have
 multiple consumers. The type of copy depends on the value's origin:
@@ -538,7 +538,7 @@ Note on Initialization: The lowering to tt-metal requires `copy_dest_values_init
 
 ### Phase 2: Build Live Intervals with In-Place Merging
 
-[Source: TTLAssignDST.cpp, lines 353-509](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L353-L509)
+[Source: TTLAssignDST.cpp](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L250-L450)
 
 Build live intervals for each tile value. For in-place operations
 (those with `TTLInPlaceOpTrait`), merge the input and output intervals
@@ -634,13 +634,13 @@ trait-based.
 
 ### Phase 3: Linear Scan Allocation (Default: Single-Pass)
 
-[Source: TTLAssignDST.cpp, lines 521-770](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L521-L770)
+[Source: TTLAssignDST.cpp](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L452-L770)
 
 By default, a single linear scan pass allocates all values (inputs,
 intermediates, and outputs) from one shared register pool. Outputs can
 reuse registers freed by expired inputs, which maximizes DST
 utilization. A value is considered an "output" if it has a
-[`TileStoreOp`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L524-L529)
+[`TileStoreOp`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L456-L461)
 consumer (not `linalg.yield` — the `ttl.compute` body uses explicit
 store ops).
 
@@ -701,7 +701,7 @@ maximization.
 
 ### Unroll Factor
 
-[Source: TTLAssignDST.cpp, lines 932-961](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L932-L961)
+[Source: TTLAssignDST.cpp](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L914-L940)
 
 After allocation, the pass computes:
 
@@ -1507,7 +1507,7 @@ Actual Hardware Capacity (from TT-Metal API documentation):
   - f32: 8 tiles physical (4 with double-buffering when `fp32_dest_acc_en=true`)
 
 The DST allocation pass computes capacity dynamically from element types and sync mode
-([`computeDstCapacity`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L74-L92)):
+([`computeDSTCapacity`](https://github.com/tenstorrent/tt-lang/blob/main/include/ttlang/Dialect/TTL/IR/TTLOpsUtils.h#L308-L348)):
 starting from 16 physical tiles, halving for double-buffering, and halving again for f32
 (which occupies 2x the space per tile). The capacity depends on:
 1. Data type (f16/bf16 → 8, f32 → 4 with double-buffering)
@@ -1516,7 +1516,7 @@ starting from 16 physical tiles, halving for double-buffering, and halving again
 ## Pipeline Integration
 
 The DST allocation pass runs in this order
-([pipeline source](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Pipelines/TTLPipelines.cpp#L20-L47)):
+([pipeline source](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Pipelines/TTLPipelines.cpp#L19-L55)):
 
 1. `ttl-assign-dst`: Assigns DST indices, adds `ttl.unroll_factor` attribute
 2. `ttl-subblock-compute-for-dst`: Partitions `ttl.compute` into DST-sized subblocks via TilingInterface
