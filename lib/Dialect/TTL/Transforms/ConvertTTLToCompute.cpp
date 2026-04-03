@@ -516,17 +516,13 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   // Emit tile ops in topological order with interleaved side-effect ops.
   //
-  // Matmul+add fold for elementwise chains (e.g., relu(prev + a @ b)):
-  // when a MatmulOp result feeds into an AddOp in the chain, both are
-  // replaced by a single 3-operand TileMatmulBlockOp (lhs, rhs,
-  // accumulator). matmul_block accumulates (DST += A*B), so pre-loading
-  // the accumulator into DST yields accumulator + A*B without an explicit
-  // tile_add. Works for both single-tile and multi-tile blocks; the
-  // matmul-aware iteration space and indexing maps are set up by
-  // buildFusedCompute above.
-  //
-  // The primary matmul+add fusion (without additional wrapping ops) is
-  // handled by LowerMatmulToCompute, which absorbs a direct AddOp user.
+  // Matmul+add fold: when a MatmulOp result feeds into an AddOp in the
+  // chain, both are replaced by a single 3-operand TileMatmulBlockOp
+  // (lhs, rhs, accumulator). matmul_block accumulates (DST += A*B), so
+  // pre-loading the accumulator into DST yields accumulator + A*B without
+  // an explicit tile_add. Works for both single-tile and multi-tile
+  // blocks; the matmul-aware iteration space and indexing maps are set up
+  // by buildFusedCompute above.
   DenseMap<Value, std::pair<Value, Value>> deferredMatmul;
 
   Value finalResult;
@@ -1103,10 +1099,11 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
 //===----------------------------------------------------------------------===//
 
 /// Lowers ttl.matmul to ttl.compute with ttl.tile_matmul_block in the body.
-/// The iteration space is 3D [M, N, K] at tile granularity with matmul
-/// indexing maps. Downstream passes choose the lowering strategy:
-/// ttl-lower-matmul-block emits a single hardware call; ttl-lower-to-loops
-/// would emit per-tile loops (future).
+/// When the matmul feeds into an elementwise op, defers to let
+/// buildFusedCompute handle the full chain (including matmul+add fusion
+/// into 3-operand tile_matmul_block via the deferred-matmul fold).
+/// Standalone matmul (result stored directly) is lowered here with a 3D
+/// [M, N, K] iteration space.
 struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
   using OpRewritePattern<MatmulOp>::OpRewritePattern;
 
@@ -1120,89 +1117,37 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
                                          "matmul inputs must be CB-attached");
     }
 
-    // Detect matmul+add fusion: when the matmul's sole user is an AddOp
-    // whose result feeds a store (not another op like relu), and the other
-    // add operand is CB-attached, absorb the add into a 3-operand
-    // tile_matmul_block (DST += A*B with accumulator preload).
-    // When the add feeds into another op (e.g., relu(prev + a @ b)), defer
-    // to the elementwise fusion mechanism via buildFusedCompute.
-    AddOp addUser = nullptr;
-    Value acc;
-    if (op.getResult().hasOneUse()) {
-      auto *user = *op.getResult().getUsers().begin();
-      if (auto addOp = dyn_cast<AddOp>(user)) {
-        Value otherOperand = (addOp.getLhs() == op.getResult())
-                                 ? addOp.getRhs()
-                                 : addOp.getLhs();
-        if (getAttachedCB(otherOperand) && !collectOutputCBs(addOp).empty()) {
-          addUser = addOp;
-          acc = otherOperand;
-        }
-      }
-    }
-
-    // Defer when the matmul feeds into an elementwise op that was not
-    // absorbed above (e.g., the add feeds a relu, or the matmul feeds a
-    // sub). The downstream op's fusion (buildFusedCompute) handles this
-    // via the deferred-matmul fold with matmul-aware indexing maps.
-    if (!addUser && op.getResult().hasOneUse() &&
+    // Defer when the matmul feeds into an elementwise op (e.g., add, relu,
+    // sub). The downstream op's fusion (buildFusedCompute) handles the full
+    // chain with matmul-aware 3D indexing maps and the deferred-matmul fold.
+    if (op.getResult().hasOneUse() &&
         isElementwiseOp(*op.getResult().getUsers().begin())) {
       return rewriter.notifyMatchFailure(op, "deferring matmul to fusion");
     }
 
-    // The sink op owns the store users. When fusing with add, the add is
-    // the sink (it has the store); otherwise the matmul itself is the sink.
-    Operation *sinkOp = addUser ? addUser.getOperation() : op.getOperation();
-    auto resultType = getTensorType(sinkOp->getResult(0));
-
+    // Standalone matmul: result stored directly, no elementwise chain.
+    auto resultType = getTensorType(op.getResult());
     MLIRContext *ctx = rewriter.getContext();
 
-    // 3D iteration space [M, N, K] with matmul indexing maps.
     auto d0 = getAffineDimExpr(0, ctx); // m
     auto d1 = getAffineDimExpr(1, ctx); // n
     auto d2 = getAffineDimExpr(2, ctx); // k
     AffineMap lhsMap = AffineMap::get(3, 0, {d0, d2}, ctx);
     AffineMap rhsMap = AffineMap::get(3, 0, {d2, d1}, ctx);
     AffineMap outMap = AffineMap::get(3, 0, {d0, d1}, ctx);
-
-    SmallVector<Value> inputs;
-    SmallVector<Attribute> inputMaps;
-
-    if (acc) {
-      inputs = {acc, lhs, rhs};
-      inputMaps = {AffineMapAttr::get(outMap), AffineMapAttr::get(lhsMap),
-                   AffineMapAttr::get(rhsMap)};
-    } else {
-      inputs = {lhs, rhs};
-      inputMaps = {AffineMapAttr::get(lhsMap), AffineMapAttr::get(rhsMap)};
-    }
-
+    SmallVector<Attribute> inputMaps = {AffineMapAttr::get(lhsMap),
+                                        AffineMapAttr::get(rhsMap)};
     SmallVector<Attribute> iterTypes = {rewriter.getStringAttr("parallel"),
                                         rewriter.getStringAttr("parallel"),
                                         rewriter.getStringAttr("reduction")};
 
-    bool hasAcc = acc != nullptr;
-    auto result = buildComputeFromInputs(
-        sinkOp, rewriter, inputs, resultType, inputMaps, outMap, iterTypes,
-        [hasAcc](OpBuilder &b, Location loc, Type tileType, Block *body) {
-          if (hasAcc) {
-            // body args: [acc, lhs, rhs, out...]
-            return TileMatmulBlockOp::create(
-                b, loc, tileType, body->getArgument(1), body->getArgument(2),
-                body->getArgument(0));
-          }
-          // body args: [lhs, rhs, out...]
+    return buildComputeFromInputs(
+        op, rewriter, ValueRange{lhs, rhs}, resultType, inputMaps, outMap,
+        iterTypes, [](OpBuilder &b, Location loc, Type tileType, Block *body) {
           return TileMatmulBlockOp::create(b, loc, tileType,
                                            body->getArgument(0),
                                            body->getArgument(1), Value());
         });
-
-    if (succeeded(result) && addUser) {
-      // The matmul is now dead (its sole user, the add, was replaced).
-      rewriter.eraseOp(op);
-    }
-
-    return result;
   }
 };
 
@@ -1491,9 +1436,7 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   patterns.add<LowerBcastToCompute>(ctx);
-  // Higher benefit so the matmul pattern fires before LowerAdd when it can
-  // absorb a matmul+add pair into a single 3-operand tile_matmul_block.
-  patterns.add<LowerMatmulToCompute>(ctx, /*benefit=*/2);
+  patterns.add<LowerMatmulToCompute>(ctx);
   patterns.add<LowerReduceToCompute>(ctx);
   patterns.add<LowerTransposeToCompute>(ctx);
   patterns.add<LowerStoreToCompute>(ctx);
