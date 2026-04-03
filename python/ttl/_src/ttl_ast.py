@@ -412,12 +412,28 @@ class TTLGenericCompiler(TTCompilerBase):
             return op_constructor(IntegerType.get_signless(1, self.ctx), node.value)
         elif isinstance(node.value, int):
             return op_constructor(IntegerType.get_signless(64, self.ctx), node.value)
+        elif isinstance(node.value, float):
+            f32 = F32Type.get(self.ctx)
+            if as_attr:
+                return FloatAttr.get(f32, node.value)
+            return arith.ConstantOp(f32, node.value)
         elif isinstance(node.value, str):
             return node.value
         else:
             self._raise_error(
                 node, f"constant type {type(node.value).__name__} not implemented"
             )
+
+    def visit_UnaryOp(self, node):
+        # Fold -float_literal to a negative float constant instead of emitting
+        # emitc.unary_minus on a positive constant.
+        if isinstance(node.op, ast.USub) and isinstance(node.operand, ast.Constant):
+            if isinstance(node.operand.value, float):
+                neg_node = ast.copy_location(
+                    ast.Constant(value=-node.operand.value), node
+                )
+                return self.visit_Constant(neg_node)
+        return super().visit_UnaryOp(node)
 
     def _signed_int_literal(self, elt: ast.AST) -> Optional[int]:
         """Fold a signed integer literal (e.g. ``-1`` in ``dims=[-1]``).
@@ -525,6 +541,10 @@ class TTLGenericCompiler(TTCompilerBase):
                 if isinstance(val, int):
                     self.symbol_tables[-1][name] = arith.ConstantOp(
                         IndexType.get(self.ctx), val
+                    )
+                elif isinstance(val, float):
+                    self.symbol_tables[-1][name] = arith.ConstantOp(
+                        F32Type.get(self.ctx), val
                     )
                 elif isinstance(val, CircularBuffer):
                     cb_val = self._emit_cb_from_capture(val)
