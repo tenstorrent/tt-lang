@@ -66,6 +66,7 @@ from ._src.tensor_registry import (
 )
 from ._src.ttl_ast import TTLGenericCompiler
 from .circular_buffer import CircularBuffer, get_cb_count
+from .pipe import Pipe
 from .constants import SUPPORTED_MEMORY_SPACES
 from .diagnostics import (
     TTLangCompileError,
@@ -754,7 +755,7 @@ def _compile_ttnn_kernel(
 
 def _collect_captures(
     f: Callable,
-) -> Dict[str, Union[int, CircularBuffer]]:
+) -> Dict[str, Union[int, CircularBuffer, Pipe]]:
     """
     Collect and convert captured variables from function closure.
 
@@ -776,6 +777,8 @@ def _collect_captures(
         elif is_ttnn_tensor(val):
             return val
         elif isinstance(val, CircularBuffer):
+            return val
+        elif isinstance(val, Pipe):
             return val
         else:
             raise TypeError(f"Unhandled capture for vars of type({type(val)})")
