@@ -123,39 +123,37 @@ def test_split_work_to_nodes(grid_size_tuple, units, row_wise):
         for start, end in ttnn_g2_coords
     )
 
-    assert new_g1_num_cores == ttnn_g1_num_cores, (
-        f"Group 1 core count mismatch: {new_g1_num_cores} vs {ttnn_g1_num_cores}"
-    )
-    assert new_g2_num_cores == ttnn_g2_num_cores, (
-        f"Group 2 core count mismatch: {new_g2_num_cores} vs {ttnn_g2_num_cores}"
-    )
+    assert (
+        new_g1_num_cores == ttnn_g1_num_cores
+    ), f"Group 1 core count mismatch: {new_g1_num_cores} vs {ttnn_g1_num_cores}"
+    assert (
+        new_g2_num_cores == ttnn_g2_num_cores
+    ), f"Group 2 core count mismatch: {new_g2_num_cores} vs {ttnn_g2_num_cores}"
 
     new_total_work = new_g1_num_cores * new_w1 + new_g2_num_cores * new_w2
-    assert new_total_work == units, (
-        f"Total work mismatch: {new_total_work} vs {units}"
-    )
+    assert new_total_work == units, f"Total work mismatch: {new_total_work} vs {units}"
 
-    assert len(new_g1) == len(ttnn_g1_coords), (
-        f"Group 1 range count mismatch: {len(new_g1)} vs {len(ttnn_g1_coords)}"
-    )
+    assert len(new_g1) == len(
+        ttnn_g1_coords
+    ), f"Group 1 range count mismatch: {len(new_g1)} vs {len(ttnn_g1_coords)}"
     for i, (new_range, ttnn_range) in enumerate(zip(new_g1, ttnn_g1_coords)):
-        assert new_range[0] == ttnn_range[0], (
-            f"G1 range {i} start mismatch: {new_range[0]} vs {ttnn_range[0]}"
-        )
-        assert new_range[1] == ttnn_range[1], (
-            f"G1 range {i} end mismatch: {new_range[1]} vs {ttnn_range[1]}"
-        )
+        assert (
+            new_range[0] == ttnn_range[0]
+        ), f"G1 range {i} start mismatch: {new_range[0]} vs {ttnn_range[0]}"
+        assert (
+            new_range[1] == ttnn_range[1]
+        ), f"G1 range {i} end mismatch: {new_range[1]} vs {ttnn_range[1]}"
 
-    assert len(new_g2) == len(ttnn_g2_coords), (
-        f"Group 2 range count mismatch: {len(new_g2)} vs {len(ttnn_g2_coords)}"
-    )
+    assert len(new_g2) == len(
+        ttnn_g2_coords
+    ), f"Group 2 range count mismatch: {len(new_g2)} vs {len(ttnn_g2_coords)}"
     for i, (new_range, ttnn_range) in enumerate(zip(new_g2, ttnn_g2_coords)):
-        assert new_range[0] == ttnn_range[0], (
-            f"G2 range {i} start mismatch: {new_range[0]} vs {ttnn_range[0]}"
-        )
-        assert new_range[1] == ttnn_range[1], (
-            f"G2 range {i} end mismatch: {new_range[1]} vs {ttnn_range[1]}"
-        )
+        assert (
+            new_range[0] == ttnn_range[0]
+        ), f"G2 range {i} start mismatch: {new_range[0]} vs {ttnn_range[0]}"
+        assert (
+            new_range[1] == ttnn_range[1]
+        ), f"G2 range {i} end mismatch: {new_range[1]} vs {ttnn_range[1]}"
 
 
 @pytest.mark.parametrize(
