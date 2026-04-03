@@ -55,7 +55,12 @@ def pipe_scatter_gather(inp, out):
         x, y = ttl.core(dims=2)
         if x == 0:
             # Core 0: Accumulate 3 gathered results
-            with gather_cb.wait() as t1, gather_cb.wait() as t2, gather_cb.wait() as t3, out_cb.reserve() as result:
+            with (
+                gather_cb.wait() as t1,
+                gather_cb.wait() as t2,
+                gather_cb.wait() as t3,
+                out_cb.reserve() as result,
+            ):
                 result.store(t1 + t2 + t3)
         else:
             # Workers: compute x*x, write to gather_cb for Core 0 to receive

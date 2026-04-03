@@ -843,8 +843,8 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     auto incrVal = rewriter.create<arith::ConstantIndexOp>(loc, 1);
 
     // Get NOC address of destination's semaphore for atomic increment.
-    auto dstSemNocAddr =
-        rewriter.create<ttk::GetNocAddrOp>(loc, dstStartXVal, dstStartYVal, semAddr);
+    auto dstSemNocAddr = rewriter.create<ttk::GetNocAddrOp>(
+        loc, dstStartXVal, dstStartYVal, semAddr);
 
     rewriter.create<ttk::NocSemaphoreIncOp>(loc, dstSemNocAddr.getResult(),
                                             incrVal, /*noc_id=*/Value());
@@ -1056,7 +1056,8 @@ struct IfSrcLowering : OpConversionPattern<IfSrcOp> {
     auto isSrc = rewriter.create<arith::AndIOp>(loc, matchX, matchY);
 
     // Create scf.if with empty body (the builder adds a yield for us).
-    auto ifOp = rewriter.create<scf::IfOp>(loc, isSrc, /*withElseRegion=*/false);
+    auto ifOp =
+        rewriter.create<scf::IfOp>(loc, isSrc, /*withElseRegion=*/false);
 
     // Move ops from the original body into the then block (before the yield).
     // Using inlineBlockBefore moves rather than clones, preserving SSA.
@@ -1111,7 +1112,8 @@ struct IfDstLowering : OpConversionPattern<IfDstOp> {
     auto isDst = rewriter.create<arith::AndIOp>(loc, inRangeX, inRangeY);
 
     // Create scf.if with empty body (the builder adds a yield for us).
-    auto ifOp = rewriter.create<scf::IfOp>(loc, isDst, /*withElseRegion=*/false);
+    auto ifOp =
+        rewriter.create<scf::IfOp>(loc, isDst, /*withElseRegion=*/false);
 
     // Move ops from the original body into the then block (before the yield).
     // Using inlineBlockBefore moves rather than clones, preserving SSA.
