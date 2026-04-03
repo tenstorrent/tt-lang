@@ -1032,47 +1032,7 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     SmallVector<Attribute> iterTypes(outputType.getRank(),
                                      rewriter.getStringAttr("parallel"));
 
-    // Validate that the user's broadcast dims are compatible with the input's
-    // tile data layout when the input comes from a reduce.  Each reduce
-    // dimension leaves valid data at a specific position in the 32x32 tile:
-    //   REDUCE_SCALAR -> data at [0,0]     -> requires dims=[0, 1] (Scalar)
-    //   REDUCE_COL    -> data in row 0     -> requires dims=[0]    (Row)
-    //   REDUCE_ROW    -> data in column 0  -> requires dims=[1]    (Col)
-    // A mismatch causes the hardware to read garbage (#444).
-    // This check must happen before any IR mutations.
     auto bcastType = op.getBcastType();
-    auto inputReduceDim = getInputReduceDim(op.getInput());
-    if (failed(inputReduceDim)) {
-      return op.emitError(
-          "broadcast input traces to a reduce but the reduce dimension "
-          "could not be determined; this is a compiler bug (#449)");
-    }
-    if (auto reduceDim = *inputReduceDim) {
-      BcastType requiredBcastType;
-      StringRef requiredKind, requiredDims;
-      switch (*reduceDim) {
-      case ttkernel::ReduceDim::Scalar:
-        requiredBcastType = BcastType::Scalar;
-        requiredKind = "scalar";
-        requiredDims = "[0, 1]";
-        break;
-      case ttkernel::ReduceDim::Col:
-        requiredBcastType = BcastType::Row;
-        requiredKind = "row";
-        requiredDims = "[0]";
-        break;
-      case ttkernel::ReduceDim::Row:
-        requiredBcastType = BcastType::Col;
-        requiredKind = "column";
-        requiredDims = "[1]";
-        break;
-      }
-      if (bcastType != requiredBcastType) {
-        return op.emitError("broadcast dims are incompatible with the "
-                            "producing reduce; need ")
-               << requiredKind << " broadcast (dims=" << requiredDims << ")";
-      }
-    }
 
     // Position compute after all reserves by inserting before the last store.
     if (findLastStore(op)) {
@@ -1096,6 +1056,22 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     body->addArgument(tileType, loc);
 
     rewriter.setInsertionPointToStart(body);
+    // Override the user-specified broadcast type when the input came from a
+    // reduce, to match the tile-level data layout left by the reduction.
+    auto inputReduceDim = getInputReduceDim(op.getInput());
+    if (succeeded(inputReduceDim) && *inputReduceDim) {
+      switch (**inputReduceDim) {
+      case ttkernel::ReduceDim::Scalar:
+        bcastType = BcastType::Scalar;
+        break;
+      case ttkernel::ReduceDim::Col:
+        bcastType = BcastType::Row;
+        break;
+      case ttkernel::ReduceDim::Row:
+        bcastType = BcastType::Col;
+        break;
+      }
+    }
     Value result =
         TileBcastOp::create(rewriter, loc, tileType, body->getArgument(0),
                             body->getArgument(1), bcastType);
