@@ -802,6 +802,23 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 
   SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
 
+  // For unicast gather pipes (srcX > dstX), each source writes to a different
+  // slot in the destination CB to avoid overwrites when multiple sources send
+  // to the same destination. Slot index = srcX - dstX - 1 (0-based).
+  // For forward pipes (srcX < dstX), slot offset is 0 since there's one source.
+  int64_t slotIdx = 0;
+  if (pipeType.isUnicast()) {
+    int64_t srcX = pipeType.getSrcX();
+    int64_t dstX = pipeType.getDstStartX();
+    if (srcX > dstX) {
+      slotIdx = srcX - dstX - 1;
+    }
+  }
+  int64_t cbNumTiles = 1;
+  for (int64_t d : cbBounds)
+    cbNumTiles *= d;
+  int64_t slotByteOffset = slotIdx * pageSizeBytes * cbNumTiles;
+
   emitTileLoop(
       rewriter, loc, cbBounds,
       [&](OpBuilder &b, Location bodyLoc, ValueRange cbIVs) {
@@ -813,9 +830,18 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
         Value srcAddr =
             b.create<arith::IndexCastOp>(bodyLoc, i32Ty, srcAddrIdx);
 
+        // Compute destination address. For gather patterns (unicast), offset by
+        // slot index so each source writes to a different CB slot.
+        Value dstAddr = srcAddr;
+        if (slotByteOffset > 0) {
+          auto slotOffsetVal = b.create<arith::ConstantOp>(
+              bodyLoc, i32Ty, b.getI32IntegerAttr(slotByteOffset));
+          dstAddr = b.create<arith::AddIOp>(bodyLoc, srcAddr, slotOffsetVal);
+        }
+
         auto mcastAddr = b.create<ttk::GetNocMulticastAddrOp>(
             bodyLoc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
-            srcAddr, /*noc=*/Value());
+            dstAddr, /*noc=*/Value());
 
         if (pipeType.srcInDstRange()) {
           b.create<ttk::NocAsyncWriteMulticastLoopbackSrcOp>(
