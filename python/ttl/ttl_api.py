@@ -699,6 +699,13 @@ def _compile_ttnn_kernel(
             if fp32_dest_acc_en is None and compiler_options.reduce_full_fp32:
                 if "reduce_tile" in cpp_source:
                     config.fp32_dest_acc_en = True
+            if fp32_dest_acc_en is None and compiler_options.matmul_full_fp32:
+                if "matmul_block" in cpp_source:
+                    # TODO(#454): Remove once tt-llk #1338 is fixed.
+                    # Suppress for any unary_bcast; f32 bcast kernels are
+                    # already covered by the has_f32 check above.
+                    if "unary_bcast" not in cpp_source:
+                        config.fp32_dest_acc_en = True
             # Compute kernels run on TRISC threads
             thread_to_kernel["TRISC_0"] = name
             thread_to_kernel["TRISC_1"] = name
@@ -1135,6 +1142,9 @@ def _compile_kernel(
             )
         config_options.append(
             f"reduce-full-fp32={int(compiler_options.reduce_full_fp32)}"
+        )
+        config_options.append(
+            f"matmul-full-fp32={int(compiler_options.matmul_full_fp32)}"
         )
         if config_options:
             set_compute_config_pass = (

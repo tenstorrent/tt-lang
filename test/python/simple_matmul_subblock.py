@@ -10,7 +10,7 @@
 """
 Compile test: 8x8 matmul (64 output tiles) auto-subblocked for DST.
 
-Exceeds bf16 DST capacity (8 tiles) by 8x. The compiler partitions this
+Exceeds f32 DST capacity (4 tiles) by 16x. The compiler partitions this
 into DST-sized subblocks automatically.
 """
 
@@ -24,22 +24,28 @@ import ttl
 
 # CHECK: Compiled kernel ready
 
-# Verify subblock loop structure: 8 iterations, each computing one row
-# of the 8x8 output via matmul_block and packing 8 tiles with
-# pack_tile_block (enabled by per-subblock cb_reserve_back/cb_push_back).
+# Verify subblock loop structure: nested M/N subblock loops, each computing
+# a subblock of the 8x8 output via matmul_block. With matmul_full_fp32
+# (f32 DST capacity=4), subblocks are 1x4 tiles.
+# Individual pack_tile<true> (L1 accumulation) instead of pack_tile_block
+# because the subblock reserve/push is at full-block granularity (not
+# per-subblock), so pack_tile_block's contiguous-from-0 requirement is
+# not met for subblocks after the first.
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
 # CHECK-CPP: cb_wait_front(get_compile_time_arg_val(1),
+# CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(2),
 # CHECK-CPP: mm_block_init(
 # CHECK-CPP: for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
-# CHECK-CPP:   cb_reserve_back(get_compile_time_arg_val(2),
 # CHECK-CPP:   tile_regs_acquire();
-# CHECK-CPP:   experimental::matmul_block(
+# CHECK-CPP:   matmul_block(
 # CHECK-CPP:   tile_regs_commit();
 # CHECK-CPP:   tile_regs_wait();
-# CHECK-CPP:   pack_tile_block(
+# CHECK-CPP:   pack_tile<true>(
+# CHECK-CPP:   pack_tile<true>(
+# CHECK-CPP:   pack_tile<true>(
+# CHECK-CPP:   pack_tile<true>(
 # CHECK-CPP:   tile_regs_release();
-# CHECK-CPP:   cb_push_back(get_compile_time_arg_val(2),
 
 
 @ttl.operation(grid=(1, 1))

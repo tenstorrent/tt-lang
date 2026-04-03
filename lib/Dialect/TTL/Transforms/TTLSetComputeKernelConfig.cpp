@@ -40,18 +40,6 @@ static bool hasF32TileArgs(ComputeOp computeOp) {
   });
 }
 
-static void
-setBoolAttrIf(ComputeOp computeOp, llvm::StringRef attrName, bool condition,
-              llvm::function_ref<bool(ComputeOp)> extraPredicate = {}) {
-  if (!condition || computeOp->hasAttr(attrName)) {
-    return;
-  }
-  if (extraPredicate && !extraPredicate(computeOp)) {
-    return;
-  }
-  computeOp->setAttr(attrName, BoolAttr::get(computeOp.getContext(), true));
-}
-
 struct TTLSetComputeKernelConfigPass
     : public impl::TTLSetComputeKernelConfigBase<
           TTLSetComputeKernelConfigPass> {
@@ -62,26 +50,71 @@ struct TTLSetComputeKernelConfigPass
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
 
-    for (ComputeOp computeOp : funcOp.getOps<ComputeOp>()) {
-
-      // Set fp32_dest_acc_en if any tile arg is f32, or if reduce_full_fp32
-      // is enabled and the compute op contains a reduce tile op.
-      setBoolAttrIf(computeOp, kFp32DestAccEnAttrName, true, [&](ComputeOp op) {
-        if (fp32DestAccEn || hasF32TileArgs(op)) {
-          return true;
+    // fp32_dest_acc_en and dst_full_sync_en are per-kernel compile-time
+    // settings. Set them on the function so all compute ops inherit the
+    // same value via getKernelBoolAttr().
+    bool needsFp32 = fp32DestAccEn;
+    bool fp32FromMatmul = false;
+    if (!needsFp32) {
+      funcOp->walk([&](ComputeOp computeOp) {
+        if (needsFp32) {
+          return WalkResult::interrupt();
+        }
+        if (hasF32TileArgs(computeOp)) {
+          needsFp32 = true;
+          return WalkResult::interrupt();
         }
         if (reduceFullFp32) {
           bool hasReduce = false;
-          op->walk([&](TileReduceOp) { hasReduce = true; });
-          return hasReduce;
+          computeOp->walk([&](TileReduceOp) -> WalkResult {
+            hasReduce = true;
+            return WalkResult::interrupt();
+          });
+          if (hasReduce) {
+            needsFp32 = true;
+            return WalkResult::interrupt();
+          }
         }
-        return false;
+        if (matmulFullFp32) {
+          bool hasMatmul = false;
+          computeOp->walk([&](TileMatmulBlockOp) -> WalkResult {
+            hasMatmul = true;
+            return WalkResult::interrupt();
+          });
+          if (hasMatmul) {
+            needsFp32 = true;
+            fp32FromMatmul = true;
+            return WalkResult::interrupt();
+          }
+        }
+        return WalkResult::advance();
       });
+    }
 
-      // Set dst_full_sync_en if not already set
-      setBoolAttrIf(computeOp, kDstFullSyncEnAttrName, dstFullSyncEn);
+    // TODO(#454): Remove once tt-llk #1338 is fixed. unary_bcast produces
+    // incorrect results with fp32_dest_acc_en and bf16 CBs.
+    if (fp32FromMatmul) {
+      bool hasBf16Bcast = false;
+      funcOp->walk([&](TileBcastOp bcastOp) -> WalkResult {
+        auto elemType = getTileElementType(bcastOp.getInput().getType());
+        if (elemType && !elemType->isF32()) {
+          hasBf16Bcast = true;
+          return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
+      });
+      if (hasBf16Bcast) {
+        needsFp32 = false;
+      }
+    }
 
-      // Add other runtime configuration attributes as needed below
+    if (needsFp32 && !funcOp->hasAttr(kFp32DestAccEnAttrName)) {
+      funcOp->setAttr(kFp32DestAccEnAttrName,
+                      BoolAttr::get(funcOp.getContext(), true));
+    }
+    if (dstFullSyncEn && !funcOp->hasAttr(kDstFullSyncEnAttrName)) {
+      funcOp->setAttr(kDstFullSyncEnAttrName,
+                      BoolAttr::get(funcOp.getContext(), true));
     }
   }
 };

@@ -21,6 +21,7 @@ def TTLConvertTTLToTTKernel
 
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
@@ -114,9 +115,10 @@ def TTLSetComputeKernelConfig
     : Pass<"ttl-set-compute-kernel-config", "::mlir::func::FuncOp"> {
   let summary = "Set ttl.compute kernel configuration attributes";
   let description = [{
-    Sets fp32_dest_acc_en and dst_full_sync_en attributes on ttl.compute
-    operations when they are not already configured. This allows downstream
-    passes to use consistent compute kernel configuration decisions.
+    Sets fp32_dest_acc_en and dst_full_sync_en attributes on the enclosing
+    func.func when they are not already configured. These are per-kernel
+    compile-time settings; all compute ops in the function inherit them
+    via getKernelBoolAttr().
   }];
 
   let options = [
@@ -126,7 +128,10 @@ def TTLSetComputeKernelConfig
            "Set default dst_full_sync_en when not already configured.">,
     Option<"reduceFullFp32", "reduce-full-fp32", "bool", "true",
            "Enable FP32 accumulation for reduce operations. "
-           "Implies fp32_dest_acc_en on compute ops containing reduce.">
+           "Sets fp32_dest_acc_en on the kernel when any compute op contains reduce.">,
+    Option<"matmulFullFp32", "matmul-full-fp32", "bool", "true",
+           "Enable FP32 accumulation for matmul operations. "
+           "Sets fp32_dest_acc_en on the kernel when any compute op contains matmul_block.">
   ];
 
   let dependentDialects = [

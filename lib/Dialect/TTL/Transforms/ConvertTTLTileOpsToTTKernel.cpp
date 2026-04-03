@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/PatternMatch.h"
@@ -814,8 +815,8 @@ struct TTLTileTransposeToTTKernel : OpConversionPattern<TileTransposeOp> {
 // Matmul Block Lowering
 //===----------------------------------------------------------------------===//
 
-/// Lower ttl.tile_matmul_block to ttkernel.experimental::matmul_block.
-/// Block dimensions (rt, ct, kt, nt) are derived from the enclosing
+/// Lower ttl.tile_matmul_block to ttkernel.matmul_block.
+/// Block dimensions (rt, ct, kt) are derived from the enclosing
 /// ttl.compute's operand tensor shapes.
 struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -858,13 +859,10 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
           op, "cannot determine operand tensor shapes for block dimensions");
     }
     // Assumes non-transposed: lhs is [M, K], rhs is [K, N].
-    // TODO(#420): support transpose. When B is transposed, rhs is [N, K]:
-    //   ct = rhsTy.getDimSize(0), and nt_dim changes from N to 1 (the
-    //   matmul_block wrapper advances in1_tile_index by nt_dim per K-step;
-    //   transposed B has stride 1 along K instead of N).
+    // TODO(#420): support transpose.
     int32_t rt = lhsTy.getDimSize(0); // M
     int32_t ct = rhsTy.getDimSize(1); // N
-    int32_t nt = ct;
+    int32_t kt = lhsTy.getDimSize(1); // K
 
     // Starting DFB tile index: 0 when not subblocked (DFB refilled each
     // K-step), or the slice offset when subblocked.
@@ -880,10 +878,8 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
                                             rewriter.getI32IntegerAttr(ct));
     Value rtVal = arith::ConstantOp::create(rewriter, loc,
                                             rewriter.getI32IntegerAttr(rt));
-    Value ktVal =
-        arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(1));
-    Value ntVal = arith::ConstantOp::create(rewriter, loc,
-                                            rewriter.getI32IntegerAttr(nt));
+    Value ktVal = arith::ConstantOp::create(rewriter, loc,
+                                            rewriter.getI32IntegerAttr(kt));
 
     // Accumulator: emit individual copy_tile ops to load DST before matmul.
     // copy_tile_init is inserted later by ttkernel-insert-inits.
@@ -907,10 +903,49 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
       }
     }
 
-    // Emit matmul_block with kt_dim=1 (init inserted by ttkernel-insert-inits).
-    ttk::ExperimentalMatmulBlockOp::create(
-        rewriter, loc, *lhsCB, *rhsCB, in0TileIndex, in1TileIndex, dstIdx,
-        transpose, ctVal, rtVal, ktVal, ntVal);
+    // B stride per K step is the full CB N dimension (not subblock ct).
+    // B is [K, N] row-major in the CB; stride between K rows is N.
+    int32_t fullN = ct; // default when not subblocked
+    Value rhsCBVal = lookupCBByIndex(op.getRhs(), funcOp);
+    assert(rhsCBVal && "rhs CB lookup failed after prior successful lookup");
+    if (auto ttlCb = mlir::dyn_cast<CircularBufferType>(rhsCBVal.getType())) {
+      auto cbShape = ttlCb.getShape();
+      if (cbShape.size() == 2) {
+        fullN = cbShape[1];
+      }
+    }
+
+    // Emit matmul_block K loop. Each matmul_block call processes one K step;
+    // the caller iterates over K. kt_dim is a configuration parameter that
+    // tells the hardware the full K dimension (used by init for stride
+    // setup), not the number of tiles processed per call. Each step advances
+    // A's tile index by 1 (row-major [M,K]) and B's by fullN (row-major
+    // [K,N]).
+    if (kt == 1) {
+      ttk::MatmulBlockOp::create(rewriter, loc, *lhsCB, *rhsCB, in0TileIndex,
+                                 in1TileIndex, dstIdx, transpose, ctVal, rtVal,
+                                 ktVal);
+    } else {
+      Value ub = arith::ConstantIndexOp::create(rewriter, loc, kt);
+      Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
+      Value fullNIndex = arith::ConstantIndexOp::create(rewriter, loc, fullN);
+      auto forOp = scf::ForOp::create(rewriter, loc, zero, ub, step);
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(forOp.getBody());
+        Value kIdx = forOp.getInductionVar();
+        // A tile index: base + k.
+        Value in0Idx = arith::AddIOp::create(rewriter, loc, in0TileIndex, kIdx);
+        // B tile index: base + k * fullN.
+        Value kTimesFullN =
+            arith::MulIOp::create(rewriter, loc, kIdx, fullNIndex);
+        Value in1Idx =
+            arith::AddIOp::create(rewriter, loc, in1TileIndex, kTimesFullN);
+        ttk::MatmulBlockOp::create(rewriter, loc, *lhsCB, *rhsCB, in0Idx,
+                                   in1Idx, dstIdx, transpose, ctVal, rtVal,
+                                   ktVal);
+      }
+    }
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
