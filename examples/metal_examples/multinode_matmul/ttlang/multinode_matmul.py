@@ -9,18 +9,7 @@ import ttnn
 import ttl
 
 from utils.correctness import assert_with_ulp
-from utils.block_allocation import split_work_to_nodes
-
-
-def get_number_of_nodes(grid_range):
-    total_nodes = 0
-    if len(grid_range) != 0:
-        start = grid_range[0]
-        end = grid_range[1]
-        x_range = end[0] - start[0] + 1
-        y_range = end[1] - start[1] + 1
-        total_nodes += x_range * y_range
-    return total_nodes
+from utils.block_allocation import get_number_of_nodes_from_ranges, split_work_to_nodes
 
 
 @ttl.operation(grid=(13, 10))
@@ -55,8 +44,8 @@ def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         f"all_nodes: {all_nodes}, node_group_1: {node_group_1}, node_group_2: {node_group_2}, work_per_node1: {work_per_node1}, work_per_node2: {work_per_node2}"
     )
 
-    num_nodes_group_1 = node_group_1[1][-1] - node_group_1[0][-1] + 1
-    num_nodes_group_2 = node_group_2[1][-1] - node_group_2[0][-1] + 1
+    num_nodes_group_1 = get_number_of_nodes_from_ranges(node_group_1)
+    num_nodes_group_2 = get_number_of_nodes_from_ranges(node_group_2)
 
     def get_tiles_per_node(node_id):
         if node_id < num_nodes_group_1:
