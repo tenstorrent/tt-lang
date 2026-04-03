@@ -410,14 +410,6 @@ def _detect_memory_space_from_tensor(tensor, default: str) -> str:
     return default
 
 
-def _is_interleaved_tensor(tensor) -> bool:
-    """Check if a ttnn tensor has interleaved memory layout."""
-    mem_config = tensor.memory_config()
-    if hasattr(mem_config, "memory_layout"):
-        return "INTERLEAVED" in str(mem_config.memory_layout)
-    return False
-
-
 def _has_float32_args(args) -> bool:
     """
     Check if any input tensor uses float32 dtype.
@@ -681,18 +673,13 @@ def _compile_ttnn_kernel(
             f"Mixed tensor types would generate extra bounce kernels."
         )
 
-    # Validate TTNN tensors - must be interleaved (L1 or DRAM) and tilized
+    # Validate TTNN tensors - must be L1 or DRAM and tilized
     for i, arg in enumerate(args):
         if is_ttnn_tensor(arg):
             mem_space = _detect_memory_space_from_tensor(arg, "unknown")
             if mem_space not in ("L1", "DRAM"):
                 raise ValueError(
                     f"TTNN interop requires L1 or DRAM memory space, but tensor {i} is in {mem_space}."
-                )
-            if not _is_interleaved_tensor(arg):
-                raise ValueError(
-                    f"TTNN interop requires interleaved tensors, but tensor {i} is not. "
-                    f"Use ttnn.DRAM_MEMORY_CONFIG or ttnn.L1_MEMORY_CONFIG for interleaved tensors."
                 )
             if hasattr(arg, "layout") and "TILE" not in str(arg.layout):
                 raise ValueError(

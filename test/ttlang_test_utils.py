@@ -257,6 +257,47 @@ def assert_allclose(actual, expected, rtol=1e-5, atol=1e-8, verbose=True):
         raise AssertionError(msg)
 
 
+def to_l1_sharded(torch_tensor, device, layout="height"):
+    """Create a sharded TTNN tensor in L1 from a torch tensor.
+
+    Shards the tensor across a single core with the full tensor as one shard.
+    This exercises the sharded TensorAccessor path while keeping the test simple.
+
+    Args:
+        torch_tensor: Source torch tensor (dimensions must be multiples of 32)
+        device: TTNN device handle
+        layout: Shard layout -- "height", "width", or "block"
+
+    Returns:
+        Sharded TTNN tensor in L1 with TILE_LAYOUT
+    """
+    ttnn = _get_ttnn()
+    if ttnn is None:
+        raise RuntimeError("TTNN not available")
+    layout_map = {
+        "height": ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+        "width": ttnn.TensorMemoryLayout.WIDTH_SHARDED,
+        "block": ttnn.TensorMemoryLayout.BLOCK_SHARDED,
+    }
+    if layout not in layout_map:
+        raise ValueError(
+            f"Unknown shard layout {layout!r}, expected one of {list(layout_map)}"
+        )
+    dram_tensor = to_dram(torch_tensor, device)
+    rows, cols = torch_tensor.shape[-2], torch_tensor.shape[-1]
+    shard_spec = ttnn.ShardSpec(
+        ttnn.CoreRangeSet({ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}),
+        (rows, cols),
+        ttnn.ShardOrientation.ROW_MAJOR,
+    )
+    sharded_mem_config = ttnn.MemoryConfig(
+        layout_map[layout],
+        ttnn.BufferType.L1,
+        shard_spec,
+    )
+    return ttnn.to_memory_config(dram_tensor, memory_config=sharded_mem_config)
+
+
 __all__ = [
     "is_ttnn_available",
     "is_hardware_available",
@@ -264,6 +305,7 @@ __all__ = [
     "require_hardware",
     "to_dram",
     "to_l1",
+    "to_l1_sharded",
     "assert_pcc",
     "assert_allclose",
 ]
