@@ -71,9 +71,11 @@ def matmul_1d(
                     nb = local_nb + node_index * nb_per_node
                     if nb < Nb:
                         with out_dfb.reserve() as out_blk:
+                            acc = ttl.math.fill(out_blk, 0)
                             for kb in range(Kb):
                                 with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
-                                    out_blk.store(a_blk @ b_blk, acc=True)
+                                    acc += a_blk @ b_blk
+                            out_blk.store(acc)
 
     @ttl.datamovement()
     def a_reader_a_mcast_b_reader():

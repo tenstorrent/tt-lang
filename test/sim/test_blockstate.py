@@ -20,6 +20,7 @@ from test_utils import (
 from python.sim import TILE_SHAPE, copy, ttnn
 from python.sim.blockstate import (
     BlockAcquisition,
+    ExpectedOp,
     ThreadType,
 )
 from python.sim.context import (
@@ -52,8 +53,8 @@ def test_block_state_machine_restrictions() -> None:
     with pytest.raises(RuntimeError, match="Block indexing.*not allowed"):
         _ = block[0]
 
-    # Store makes it RO (for regular store) or RW (for acc store)
-    block.store(Block.from_tensor(ttnn.Tensor(torch.full(TILE_SHAPE, 5.0))), acc=True)
+    # Store makes it MR (read-only after regular store)
+    block.store(Block.from_tensor(ttnn.Tensor(torch.full(TILE_SHAPE, 5.0))))
 
     block.push()
 
@@ -140,6 +141,99 @@ def test_push_validates_expected_state() -> None:
         waited_block.pop()
     finally:
         clear_current_thread_type()
+
+
+# ---------------------------------------------------------------------------
+# assign_src: arithmetic use of wait() block before store() fires
+# ---------------------------------------------------------------------------
+
+
+class TestAssignSrcTransition:
+    """Tests for the assign_src state machine transition.
+
+    When a WAIT/COMPUTE block is used as an arithmetic operand (assigned to a
+    temporary), assign_src fires: the block moves from MR to RW and POP is
+    unlocked.  A pending store confirmation is registered on the DFB and must
+    be cleared by mark_store_read_complete() before program termination.
+    """
+
+    def _make_compute_wait_block(
+        self,
+    ) -> tuple["DataflowBuffer", "Block"]:
+        """Return a DFB and a WAIT/COMPUTE block ready for use."""
+        set_current_thread_type(ThreadType.DM)
+        element = make_ones_tile()
+        dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
+        from python.sim.copy import copy as dm_copy
+
+        src = make_ones_tile()
+        blk = dfb.reserve()
+        tx = dm_copy(src, blk)
+        tx.wait()
+        blk.push()
+
+        set_current_thread_type(ThreadType.COMPUTE)
+        waited = dfb.wait()
+        return dfb, waited
+
+    def test_assign_src_unlocks_pop(self) -> None:
+        """assign_src moves the block from MR to RW and allows pop()."""
+        dfb, block = self._make_compute_wait_block()
+        try:
+            assert block.access_state.name == "MR"
+            block.mark_assign_src_complete()
+            assert block.access_state.name == "RW"
+            assert ExpectedOp.POP in block.expected_ops
+        finally:
+            block.pop()
+            clear_current_thread_type()
+
+    def test_assign_src_registers_pending_confirmation(self) -> None:
+        """assign_src adds the block to the DFB's pending confirmation set."""
+        dfb, block = self._make_compute_wait_block()
+        try:
+            assert block not in dfb._pending_confirmations
+            block.mark_assign_src_complete()
+            assert block in dfb._pending_confirmations
+        finally:
+            block.pop()
+            clear_current_thread_type()
+
+    def test_store_read_complete_clears_pending_confirmation(self) -> None:
+        """mark_store_read_complete() clears the pending confirmation registered by assign_src."""
+        dfb, block = self._make_compute_wait_block()
+        try:
+            block.mark_assign_src_complete()
+            assert block in dfb._pending_confirmations
+            block.mark_store_read_complete()
+            assert block not in dfb._pending_confirmations
+        finally:
+            block.pop()
+            clear_current_thread_type()
+
+    def test_assign_src_idempotent_on_rw(self) -> None:
+        """assign_src is idempotent: calling it again from RW state is safe."""
+        dfb, block = self._make_compute_wait_block()
+        try:
+            block.mark_assign_src_complete()
+            assert block.access_state.name == "RW"
+            block.mark_assign_src_complete()
+            assert block.access_state.name == "RW"
+            assert len(dfb._pending_confirmations) == 1
+        finally:
+            block.pop()
+            clear_current_thread_type()
+
+    def test_validate_no_pending_blocks_raises_on_unconfirmed(self) -> None:
+        """validate_no_pending_blocks() raises if a block was assigned but never stored."""
+        dfb, block = self._make_compute_wait_block()
+        try:
+            block.mark_assign_src_complete()
+            block.pop()
+            with pytest.raises(RuntimeError, match="never reached a store"):
+                dfb.validate_no_pending_blocks()
+        finally:
+            clear_current_thread_type()
 
 
 # ---------------------------------------------------------------------------
