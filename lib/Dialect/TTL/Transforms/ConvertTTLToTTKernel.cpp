@@ -98,16 +98,22 @@ public:
   /// Analyze a module to find all pipe receivers and build the graph.
   static PipeGraph build(ModuleOp mod);
 
-  /// Get receiver CB info for a pipe. Returns nullptr if not found.
+  /// Get the next receiver CB info for a pipe. Multiple PipeNets with the
+  /// same coordinates are returned in program order via an internal counter.
+  /// Returns nullptr if not found or all entries consumed.
   const ReceiverCBInfo *getReceiverInfo(int64_t srcX, int64_t srcY,
                                         int64_t dstStartX, int64_t dstStartY,
                                         int64_t dstEndX, int64_t dstEndY) const {
     PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY};
     auto it = receiverCBs.find(key);
-    if (it == receiverCBs.end()) {
+    if (it == receiverCBs.end() || it->second.empty()) {
       return nullptr;
     }
-    return &it->second;
+    auto &counter = lookupCounters[key];
+    if (counter >= it->second.size()) {
+      return nullptr;
+    }
+    return &it->second[counter++];
   }
 
   /// Get the number of runtime args needed for pipe receiver addresses.
@@ -116,19 +122,22 @@ public:
   /// Check if any pipes were found.
   bool hasPipes() const { return !receiverCBs.empty(); }
 
-  /// Add a receiver CB mapping.
+  /// Add a receiver CB mapping. Multiple calls with the same pipe coordinates
+  /// append to a list, supporting multiple PipeNets with identical routes.
   void addReceiverCB(int64_t srcX, int64_t srcY, int64_t dstStartX,
                      int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
                      int64_t cbIndex) {
     PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY};
-    receiverCBs[key] = {cbIndex, -1, 0};
+    receiverCBs[key].push_back({cbIndex, -1, 0});
   }
 
   /// Assign runtime arg indices for all receiver CB addresses.
   void assignRuntimeArgIndices() {
     int64_t nextArgIdx = 0;
-    for (auto &[key, info] : receiverCBs) {
-      info.runtimeArgIdx = nextArgIdx++;
+    for (auto &[key, infos] : receiverCBs) {
+      for (auto &info : infos) {
+        info.runtimeArgIdx = nextArgIdx++;
+      }
     }
     numPipeRuntimeArgs = nextArgIdx;
   }
@@ -136,37 +145,44 @@ public:
   /// Assign gather slot indices for pipes sharing a destination.
   /// When multiple sources send to the same unicast destination, each source
   /// needs a different slot to avoid overwrites. Slot indices are assigned
-  /// sequentially (0-based) per destination group.
+  /// sequentially (0-based) per destination group. Groups are keyed by
+  /// (destination coordinates, receiver CB index) so that separate PipeNets
+  /// sharing a destination get independent slot numbering.
   void assignGatherSlotIndices() {
-    // Group pipe keys by destination coordinates.
-    struct DstKey {
-      int64_t dstStartX, dstStartY, dstEndX, dstEndY;
-      bool operator==(const DstKey &o) const {
+    struct DstCBKey {
+      int64_t dstStartX, dstStartY, dstEndX, dstEndY, cbIndex;
+      bool operator==(const DstCBKey &o) const {
         return dstStartX == o.dstStartX && dstStartY == o.dstStartY &&
-               dstEndX == o.dstEndX && dstEndY == o.dstEndY;
+               dstEndX == o.dstEndX && dstEndY == o.dstEndY &&
+               cbIndex == o.cbIndex;
       }
     };
-    struct DstKeyHash {
-      std::size_t operator()(const DstKey &k) const {
+    struct DstCBKeyHash {
+      std::size_t operator()(const DstCBKey &k) const {
         return llvm::hash_combine(k.dstStartX, k.dstStartY, k.dstEndX,
-                                  k.dstEndY);
+                                  k.dstEndY, k.cbIndex);
       }
     };
-    std::unordered_map<DstKey, SmallVector<PipeKey *>, DstKeyHash> groups;
-    for (auto &[key, info] : receiverCBs) {
-      DstKey dk{key.dstStartX, key.dstStartY, key.dstEndX, key.dstEndY};
-      groups[dk].push_back(const_cast<PipeKey *>(&key));
+    using Entry = std::pair<PipeKey, size_t>;
+    std::unordered_map<DstCBKey, SmallVector<Entry>, DstCBKeyHash> groups;
+    for (auto &[key, infos] : receiverCBs) {
+      for (size_t i = 0; i < infos.size(); ++i) {
+        DstCBKey dk{key.dstStartX, key.dstStartY, key.dstEndX, key.dstEndY,
+                    infos[i].cbIndex};
+        groups[dk].push_back({key, i});
+      }
     }
-    for (auto &[dk, keys] : groups) {
-      if (keys.size() <= 1) {
+    for (auto &[dk, entries] : groups) {
+      if (entries.size() <= 1) {
         continue;
       }
-      // Sort by source coordinates for deterministic slot assignment.
-      llvm::sort(keys, [](const PipeKey *a, const PipeKey *b) {
-        return std::tie(a->srcX, a->srcY) < std::tie(b->srcX, b->srcY);
+      llvm::sort(entries, [](const Entry &a, const Entry &b) {
+        return std::tie(a.first.srcX, a.first.srcY) <
+               std::tie(b.first.srcX, b.first.srcY);
       });
-      for (int64_t i = 0; i < static_cast<int64_t>(keys.size()); ++i) {
-        receiverCBs[*keys[i]].gatherSlotIdx = i;
+      for (int64_t i = 0; i < static_cast<int64_t>(entries.size()); ++i) {
+        auto &[pk, vecIdx] = entries[i];
+        receiverCBs[pk][vecIdx].gatherSlotIdx = i;
       }
     }
   }
@@ -182,17 +198,19 @@ public:
     llvm::json::Object root;
     llvm::json::Array pipesArray;
 
-    for (const auto &[key, info] : receiverCBs) {
-      llvm::json::Object pipeObj;
-      pipeObj["srcX"] = key.srcX;
-      pipeObj["srcY"] = key.srcY;
-      pipeObj["dstStartX"] = key.dstStartX;
-      pipeObj["dstStartY"] = key.dstStartY;
-      pipeObj["dstEndX"] = key.dstEndX;
-      pipeObj["dstEndY"] = key.dstEndY;
-      pipeObj["receiverCBIndex"] = info.cbIndex;
-      pipeObj["runtimeArgSlot"] = info.runtimeArgIdx;
-      pipesArray.push_back(std::move(pipeObj));
+    for (const auto &[key, infos] : receiverCBs) {
+      for (const auto &info : infos) {
+        llvm::json::Object pipeObj;
+        pipeObj["srcX"] = key.srcX;
+        pipeObj["srcY"] = key.srcY;
+        pipeObj["dstStartX"] = key.dstStartX;
+        pipeObj["dstStartY"] = key.dstStartY;
+        pipeObj["dstEndX"] = key.dstEndX;
+        pipeObj["dstEndY"] = key.dstEndY;
+        pipeObj["receiverCBIndex"] = info.cbIndex;
+        pipeObj["runtimeArgSlot"] = info.runtimeArgIdx;
+        pipesArray.push_back(std::move(pipeObj));
+      }
     }
 
     root["pipes"] = std::move(pipesArray);
@@ -210,7 +228,9 @@ public:
   }
 
 private:
-  std::unordered_map<PipeKey, ReceiverCBInfo, PipeKeyHash> receiverCBs;
+  std::unordered_map<PipeKey, SmallVector<ReceiverCBInfo>, PipeKeyHash>
+      receiverCBs;
+  mutable std::unordered_map<PipeKey, size_t, PipeKeyHash> lookupCounters;
   int64_t numPipeRuntimeArgs = 0;
 };
 
