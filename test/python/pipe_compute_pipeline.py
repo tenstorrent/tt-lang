@@ -45,8 +45,8 @@ def pipe_compute_pipeline(inp, out):
     pipe12 = ttl.Pipe(src=(1, 0), dst=(2, 0))
     pipe23 = ttl.Pipe(src=(2, 0), dst=(3, 0))
 
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():

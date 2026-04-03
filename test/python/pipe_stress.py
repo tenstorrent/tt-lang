@@ -31,8 +31,8 @@ def pipe_stress(inp, out):
     # Full 2D multicast: src=(0,0) to all cores (0,0) through (7,7)
     pipe = ttl.Pipe(src=(0, 0), dst=(slice(0, 8), slice(0, 8)))
 
-    inp_cb = ttl.make_circular_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_cb = ttl.make_circular_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
 
     @ttl.compute()
     def compute():
