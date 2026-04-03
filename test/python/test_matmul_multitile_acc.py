@@ -19,6 +19,7 @@ import ttl
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from ttlang_test_utils import to_dram
+from utils.correctness import assert_pcc
 
 TILE = 32
 
@@ -148,14 +149,137 @@ def test_matmul_multitile_acc(block_m, block_k, block_n, Mt, Kt, Nt, device):
     kernel = _make_matmul_bias_kernel(block_m, block_k, block_n)
     kernel(a_dev, b_dev, c_dev, out_dev)
 
-    result = ttnn.to_torch(out_dev)
-    golden = a_torch @ b_torch + c_torch
+    result = ttnn.to_torch(out_dev).float()
+    golden = (a_torch @ b_torch + c_torch).float()
 
-    pcc = torch.corrcoef(
-        torch.stack([result.flatten().float(), golden.flatten().float()])
-    )[0, 1].item()
-    assert pcc > 0.99, (
-        f"PCC {pcc:.6f} < 0.99 for blk({block_m},{block_k},{block_n}) "
-        f"tiles({Mt},{Kt},{Nt}). "
-        f"Max diff: {(result - golden).abs().max().item()}"
-    )
+    assert_pcc(golden, result, threshold=0.99)
+
+
+# =============================================================================
+# Multi-tile relu(prev + a @ b): matmul+add+relu fused in one compute body.
+# Exercises buildFusedCompute's matmul-aware 3D iteration space with a
+# post-matmul unary op.
+# =============================================================================
+
+
+def _make_matmul_relu_kernel(block_m, block_k, block_n):
+    """Create a matmul+relu kernel: relu(prev + a @ b) with K-accumulation."""
+
+    @ttl.operation(grid=(1, 1))
+    def matmul_relu(a_tensor, b_tensor, out_tensor):
+        Mt = a_tensor.shape[0] // TILE
+        Kt = a_tensor.shape[1] // TILE
+        Nt = b_tensor.shape[1] // TILE
+
+        a_dfb = ttl.make_dataflow_buffer_like(
+            a_tensor, shape=(block_m, block_k), buffer_factor=2
+        )
+        b_dfb = ttl.make_dataflow_buffer_like(
+            b_tensor, shape=(block_k, block_n), buffer_factor=2
+        )
+        acc_dfb = ttl.make_dataflow_buffer_like(
+            out_tensor, shape=(block_m, block_n), buffer_factor=2
+        )
+        out_dfb = ttl.make_dataflow_buffer_like(
+            out_tensor, shape=(block_m, block_n), buffer_factor=2
+        )
+
+        m_blocks = Mt // block_m
+        n_blocks = Nt // block_n
+        k_blocks = Kt // block_k
+
+        @ttl.compute()
+        def mm_compute():
+            for _ in range(m_blocks):
+                for _ in range(n_blocks):
+                    # First K-step: standalone matmul.
+                    a_blk = a_dfb.wait()
+                    b_blk = b_dfb.wait()
+                    with acc_dfb.reserve() as acc:
+                        acc.store(a_blk @ b_blk)
+                    a_blk.pop()
+                    b_blk.pop()
+
+                    # Remaining K-steps: prev + a @ b.
+                    for _ in range(k_blocks - 1):
+                        with (
+                            a_dfb.wait() as a_blk,
+                            b_dfb.wait() as b_blk,
+                            acc_dfb.wait() as prev,
+                        ):
+                            with acc_dfb.reserve() as acc:
+                                acc.store(prev + a_blk @ b_blk)
+
+                    # relu applied after full K-accumulation.
+                    with acc_dfb.wait() as final:
+                        with out_dfb.reserve() as o:
+                            o.store(ttl.math.relu(final))
+
+        @ttl.datamovement()
+        def dm_read():
+            for mi in range(m_blocks):
+                for ni in range(n_blocks):
+                    row = mi * block_m
+                    col = ni * block_n
+                    for ki in range(k_blocks):
+                        kcol = ki * block_k
+                        with a_dfb.reserve() as blk:
+                            tx = ttl.copy(
+                                a_tensor[row : row + block_m, kcol : kcol + block_k],
+                                blk,
+                            )
+                            tx.wait()
+                        with b_dfb.reserve() as blk:
+                            tx = ttl.copy(
+                                b_tensor[kcol : kcol + block_k, col : col + block_n],
+                                blk,
+                            )
+                            tx.wait()
+
+        @ttl.datamovement()
+        def dm_write():
+            for mi in range(m_blocks):
+                for ni in range(n_blocks):
+                    row = mi * block_m
+                    col = ni * block_n
+                    with out_dfb.wait() as blk:
+                        tx = ttl.copy(
+                            blk,
+                            out_tensor[row : row + block_m, col : col + block_n],
+                        )
+                        tx.wait()
+
+    return matmul_relu
+
+
+RELU_PARAMS = [
+    (1, 1, 1, 2, 2, 2),
+    (2, 2, 2, 4, 4, 4),
+    (4, 2, 4, 4, 4, 4),
+]
+
+RELU_IDS = [
+    f"blk{bm}x{bk}x{bn}_tiles{mt}x{kt}x{nt}" for bm, bk, bn, mt, kt, nt in RELU_PARAMS
+]
+
+
+@pytest.mark.parametrize("block_m,block_k,block_n,Mt,Kt,Nt", RELU_PARAMS, ids=RELU_IDS)
+@pytest.mark.requires_device
+def test_matmul_multitile_relu(block_m, block_k, block_n, Mt, Kt, Nt, device):
+    """relu(A @ B) with multi-tile blocks and K-accumulation."""
+    M, K, N = Mt * TILE, Kt * TILE, Nt * TILE
+
+    a_torch = torch.randn(M, K, dtype=torch.bfloat16)
+    b_torch = torch.randn(K, N, dtype=torch.bfloat16)
+
+    a_dev = to_dram(a_torch, device)
+    b_dev = to_dram(b_torch, device)
+    out_dev = to_dram(torch.zeros(M, N, dtype=torch.bfloat16), device)
+
+    kernel = _make_matmul_relu_kernel(block_m, block_k, block_n)
+    kernel(a_dev, b_dev, out_dev)
+
+    result = ttnn.to_torch(out_dev).float()
+    golden = torch.relu((a_torch @ b_torch).float())
+
+    assert_pcc(golden, result, threshold=0.99)

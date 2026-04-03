@@ -298,17 +298,44 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   Location loc = sinkOp->getLoc();
   MLIRContext *ctx = rewriter.getContext();
 
-  // Detect matmul in the fusion chain. When present, the iteration space
-  // must be 3D [M, N, K] with K as reduction, and the matmul's root inputs
-  // need matmul-specific indexing maps instead of broadcast/identity maps.
+  // Detect matmul in the fusion chain. When present and the matmul inputs
+  // are not broadcast-compatible with the output (multi-tile K dimension),
+  // the iteration space is promoted to 3D [M, N, K] with K as reduction.
+  // Single-tile matmuls (K=1) use the standard 2D iteration with the
+  // deferred-matmul fold handling tile_matmul_block emission.
   MatmulOp chainMatmul = nullptr;
   DenseSet<Value> matmulConsumedRoots;
+  unsigned matmulCount = 0;
   for (Operation *chainOp : trace.opsInOrder) {
     if (auto matmulOp = dyn_cast<MatmulOp>(chainOp)) {
       chainMatmul = matmulOp;
       matmulConsumedRoots.insert(matmulOp.getLhs());
       matmulConsumedRoots.insert(matmulOp.getRhs());
+      ++matmulCount;
     }
+  }
+
+  // Determine whether the matmul requires 3D promotion. Single-tile
+  // matmuls (broadcast-compatible with output) use the 2D deferred fold.
+  bool needsPromotion = false;
+  if (chainMatmul) {
+    auto lhsType = getTensorType(chainMatmul.getLhs());
+    auto rhsType = getTensorType(chainMatmul.getRhs());
+    needsPromotion = !isBroadcastCompatible(lhsType, type) ||
+                     !isBroadcastCompatible(rhsType, type);
+  }
+
+  // Multi-tile matmul requires 3D promotion, which only supports a single
+  // matmul in the chain. Multiple matmuls with multi-tile blocks would
+  // need multiple reduction dimensions.
+  if (needsPromotion && matmulCount > 1) {
+    return sinkOp->emitError(
+        "fusion with multiple multi-tile matmuls is not supported");
+  }
+
+  if (!needsPromotion) {
+    chainMatmul = nullptr;
+    matmulConsumedRoots.clear();
   }
 
   // Validate broadcast compatibility for non-matmul root inputs. Matmul
@@ -1118,11 +1145,9 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
     // absorbed above (e.g., the add feeds a relu, or the matmul feeds a
     // sub). The downstream op's fusion (buildFusedCompute) handles this
     // via the deferred-matmul fold with matmul-aware indexing maps.
-    if (!addUser && op.getResult().hasOneUse()) {
-      auto *user = *op.getResult().getUsers().begin();
-      if (isElementwiseOp(user)) {
-        return rewriter.notifyMatchFailure(op, "deferring matmul to fusion");
-      }
+    if (!addUser && op.getResult().hasOneUse() &&
+        isElementwiseOp(*op.getResult().getUsers().begin())) {
+      return rewriter.notifyMatchFailure(op, "deferring matmul to fusion");
     }
 
     // The sink op owns the store users. When fusing with add, the add is
