@@ -35,7 +35,7 @@ from ttlang_test_utils import assert_allclose, to_dram, to_l1, to_l1_sharded
 # Kernel templates
 # =============================================================================
 
-ADD_KERNEL_TEMPLATE = '''
+ADD_KERNEL_TEMPLATE = """
 import ttl
 
 @ttl.operation(grid=({grid_rows}, {grid_cols}))
@@ -63,13 +63,15 @@ def add_kernel(lhs, rhs, out):
         with out_dfb.wait() as blk:
             tx = ttl.copy(blk, out[0, 0])
             tx.wait()
-'''
+"""
 
 
 def _make_add_kernel(grid_rows=1, grid_cols=1):
     code = ADD_KERNEL_TEMPLATE.format(grid_rows=grid_rows, grid_cols=grid_cols)
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False,
+        mode="w",
+        suffix=".py",
+        delete=False,
         prefix=f"kernel_add_{grid_rows}x{grid_cols}_",
     ) as f:
         f.write(code)
@@ -84,6 +86,7 @@ def _make_add_kernel(grid_rows=1, grid_cols=1):
 # =============================================================================
 # Tensor creation helpers
 # =============================================================================
+
 
 def _to_sharded_multicore(torch_tensor, device, num_cores):
     """Height-shard a tensor across num_cores cores (single column of cores)."""
@@ -108,6 +111,7 @@ def _to_sharded_multicore(torch_tensor, device, num_cores):
 # =============================================================================
 # Memory config factories keyed by name
 # =============================================================================
+
 
 def _make_tensor(torch_tensor, device, mem_type):
     """Create a TTNN tensor with the given memory configuration."""
