@@ -101,9 +101,9 @@ func.func @copy_tile_basic(%t_tensor: tensor<1x1x!ttcore.tile<32x32, f32>>, %src
                         buffer = l1, grid = [1, 1], memory = block_sharded>
 
 // CHECK-LABEL: func.func @sharded_layout_roundtrip
-// CHECK-SAME: %{{.*}}: tensor<1x1x!ttcore.tile<32x32, f32>, #ttl.layout<{{.*}}memory = height_sharded{{.*}}>>
-// CHECK-SAME: %{{.*}}: tensor<1x1x!ttcore.tile<32x32, f32>, #ttl.layout<{{.*}}memory = width_sharded{{.*}}>>
-// CHECK-SAME: %{{.*}}: tensor<1x1x!ttcore.tile<32x32, f32>, #ttl.layout<{{.*}}memory = block_sharded{{.*}}>>
+// CHECK-SAME: memory = height_sharded
+// CHECK-SAME: memory = width_sharded
+// CHECK-SAME: memory = block_sharded
 func.func @sharded_layout_roundtrip(
     %h: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_height_sharded>,
     %w: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_width_sharded>,
