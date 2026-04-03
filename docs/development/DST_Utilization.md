@@ -32,21 +32,23 @@ file responsible.
 | # | Component | Status | Location |
 |---|-----------|--------|----------|
 | 1 | DST register allocation | Done | [`TTLAssignDST.cpp`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp) |
-| 2 | Subblock size computation (`unroll_factor`) | Done | [`TTLAssignDST.cpp` (lines 932-961)](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L932-L961) |
+| 2 | Subblock size computation (`unroll_factor`) | Done | [`TTLAssignDST.cpp`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L914-L940) |
 | 3 | TilingInterface on ComputeOp | Done | [`TTLOps.cpp`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/IR/TTLOps.cpp), [`TTLOps.td`](https://github.com/tenstorrent/tt-lang/blob/main/include/ttlang/Dialect/TTL/IR/TTLOps.td) |
 | 4 | Subblock partitioning pass | Done | [`TTLSubblockComputeForDST.cpp`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLSubblockComputeForDST.cpp) |
-| 5 | `extract_slice` tracing in `getAttachedCB()` | Done | [`TTLOpsUtils.h`](https://github.com/tenstorrent/tt-lang/blob/main/include/ttlang/Dialect/Utils/TTLOpsUtils.h) |
+| 5 | `extract_slice` tracing in `getAttachedCB()` | Done | [`TTLOpsUtils.h`](https://github.com/tenstorrent/tt-lang/blob/main/include/ttlang/Dialect/TTL/IR/TTLOpsUtils.h) |
 | 6 | `extract_slice` cleanup in final lowering | Done | [`ConvertTTLToTTKernel.cpp`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/ConvertTTLToTTKernel.cpp) |
 | 7 | Operation category traits | Done | [`TTLBase.td`](https://github.com/tenstorrent/tt-lang/blob/main/include/ttlang/Dialect/TTL/IR/TTLBase.td), [`TTL.h`](https://github.com/tenstorrent/tt-lang/blob/main/include/ttlang/Dialect/TTL/IR/TTL.h), `TTLOps.td` |
-| 8 | FPU-aware DST pressure in `unroll_factor` | Done | [`TTLAssignDST.cpp`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L645-L694) |
+| 8 | FPU-aware DST pressure in `unroll_factor` | Done | [`TTLAssignDST.cpp`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L577-L626) |
 | 9 | Pipeline option to gate DST maximization | Done | [`TTLPipelines.h`](https://github.com/tenstorrent/tt-lang/blob/main/include/ttlang/Dialect/TTL/Pipelines/TTLPipelines.h), [`TTLPipelines.cpp`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Pipelines/TTLPipelines.cpp), [`compiler_options.py`](https://github.com/tenstorrent/tt-lang/blob/main/python/ttl/compiler_options.py) |
 | 10 | Integrated unrolling in lower-to-loops | Done | [`ConvertTTLComputeToSCF.cpp`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/ConvertTTLComputeToSCF.cpp) |
 | 11 | Subblock-level synchronization insertion | Done | [`TTLInsertTileRegsSync.cpp`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLInsertTileRegsSync.cpp) |
 | 12 | Operation grouping (by-kind scheduling) | Done | [`TTLScheduleOperations.cpp`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLScheduleOperations.cpp) |
 | 13 | Init insertion | Done | [`TTKernelInsertInits.cpp`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTKernel/Transforms/TTKernelInsertInits.cpp) |
-| 14 | DST spilling (CB-based) | Not started | — |
+| 15 | Block-level matmul lowering | Done | [`TTLLowerMatmulBlock.cpp`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLLowerMatmulBlock.cpp) |
+| 16 | Pack tile combining | Done | [`TTKernelCombinePackTiles.cpp`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTKernel/Transforms/TTKernelCombinePackTiles.cpp) |
+| 14 | DST spilling (CB-based) | Not started | -- |
 
-Components 1-13 are implemented on `main`.
+Components 1-13 and 15-16 are implemented on `main`.
 Component 14 (DST spilling) is not yet implemented. The remainder of
 this document describes each component and the pipeline that connects
 them.
@@ -64,11 +66,13 @@ set-compute-kernel-config
 assign-dst                  ← DST allocation + unroll_factor [1, 2, 7, 8]
 subblock-compute-for-dst    ← outer loop over subblocks [3, 4]
 insert-tile-regs-sync       ← sync regions + commit/wait [11]
+lower-matmul-block          ← block-level matmul lowering (gated by use-block-matmul)
 lower-to-loops              ← loop creation, unrolling, store reordering [10]
 schedule-operations         ← group by kind within compute phase [12]
 annotate-cb-associations    ← attach CB index attributes for conversion
 convert-ttl-to-ttkernel     ← [5, 6]
 ttkernel-insert-inits       ← one init per consecutive group [13]
+combine-pack-tiles          ← merge consecutive pack_tile into pack_tile_block
 canonicalize, cse
 ```
 
@@ -76,7 +80,7 @@ canonicalize, cse
 `loopUnrollByFactor` for subblocked computes. It also reorders
 `tile_store` ops from the compute phase (acquire→commit) to the pack
 phase (wait→release) via
-[`reorderStoresAfterSync`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/ConvertTTLComputeToSCF.cpp#L475-L502).
+[`reorderStoresAfterSync`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/ConvertTTLComputeToSCF.cpp#L436).
 Sync insertion stays
 before lowering — after subblocking, each inner `ttl.compute` fits in
 DST by construction, so one acquire/release per compute is correct.
@@ -109,9 +113,10 @@ detected in Phase 0 of `TTLAssignDST` and marked with the
 `enable-fpu-binary-ops` option (default true); when disabled, all binary
 ops use the SFPU path with `copy_tile`.
 
-FPU binary DST register reuse prevention: When multiple FPU binary
-ops appear in the same compute body, their output DST registers must be
-distinct within a single `tile_regs_acquire`/`tile_regs_release` region.
+FPU/accumulating DST register reuse prevention: When multiple
+FPU binary ops or `tile_matmul_block` ops appear in the same compute
+body, their output DST registers must be distinct within a single
+`tile_regs_acquire`/`tile_regs_release` region.
 The tt-metal API provides an
 [`acc_to_dest` parameter](https://github.com/tenstorrent/tt-metal/blob/0aa689f1b1b8/tt_metal/hw/inc/api/compute/eltwise_binary.h#L57)
 on FPU binary init functions (`add_tiles_init`, `sub_tiles_init`,
@@ -119,7 +124,7 @@ on FPU binary init functions (`add_tiles_init`, `sub_tiles_init`,
 accumulates (`DST[i] += A op B`) or overwrites (`DST[i] = A op B`).
 The default is `acc_to_dest=false` (overwrite). However, TTKernel's
 `AddTilesInitOp` and `SubTilesInitOp` do not yet expose this parameter
-([FIXME in TTKernelOps.td](https://github.com/tenstorrent/tt-mlir/blob/main/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td#L328)),
+([FIXME in TTKernelOps.td](https://github.com/tenstorrent/tt-mlir/blob/main/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td#L397)),
 so the emitted C++ calls `add_tiles_init(cb0, cb1)` without an explicit
 `acc_to_dest=false`.
 
@@ -132,12 +137,14 @@ binary op's result included residual from the first). Across separate
 sync regions (`tile_regs_release` between ops), DST is cleared and no
 accumulation occurs (`examples/fpu_dst_reuse_test.py` passed).
 
-`TTLAssignDST` prevents this by extending FPU binary result intervals
-in Phase 2 so the linear scan allocator assigns distinct registers
-([source](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L462-L509)).
-The interval end is set to `lastFPUStart + 1` (strictly greater than
-the last FPU binary op's start index) because the expiry condition
-uses `<=`.
+`TTLAssignDST` prevents this by extending result intervals for
+FPU-accumulating ops in Phase 2 so the linear scan allocator assigns
+distinct registers
+([source](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L387-L438)).
+The same extension applies to `TileMatmulBlockOp`, which also
+accumulates into DST. The interval end is set to
+`lastFPUStart + 1` (strictly greater than the last FPU/matmul-block
+op's start index) because the expiry condition uses `<=`.
 
 This is tested in `dst_fpu_binary.mlir` Test 6
 (`@fpu_binary_no_dst_reuse`), which verifies that the pattern
@@ -147,7 +154,7 @@ This is tested in `dst_fpu_binary.mlir` Test 6
 > **TODO** (tracked by #343): The long-term fix is to pass
 > `acc_to_dest=false` explicitly to FPU init functions in tt-mlir's
 > TTKernel dialect. `AddTilesInitOp` and `SubTilesInitOp` have a
-> [FIXME](https://github.com/tenstorrent/tt-mlir/blob/main/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td#L328)
+> [FIXME](https://github.com/tenstorrent/tt-mlir/blob/main/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td#L397)
 > where the `acc_to_dst` parameter is commented out; `MulTilesInitOp`
 > omits it entirely. The tt-metal API flows `acc_to_dest` down to a
 > hardware bit
@@ -331,7 +338,7 @@ Three discardable attributes annotate compiler-generated loops and ops:
   `lower-to-loops` reads this to annotate tile loops with the correct
   stride values.
 
-`computeCBTileIndexFromLoops` (in `ConversionUtils.h`) uses these
+`computeCBTileIndex` (in `ConversionUtils.h`) uses these
 attributes to compute correct absolute CB tile indices during
 TTL-to-TTKernel conversion:
 - Tile loops contribute `IV * stride` from the `ttl.tile_loop_stride` attribute.
@@ -411,7 +418,7 @@ compiler must be able to produce valid code without it (per-tile
 synchronization, no subblocking). The `maximize-dst` option in
 `TTLToTTKernelPipelineOptions` controls whether `subblock-compute-for-dst`
 and `schedule-operations` run
-([source](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Pipelines/TTLPipelines.cpp#L28-L35));
+([source](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Pipelines/TTLPipelines.cpp#L28-L40));
 both are skipped when disabled. `assign-dst` always runs (DST index
 attributes are needed regardless). See the [Pipeline Options](#pipeline-options) section for
 details.
@@ -422,7 +429,7 @@ Each inner subblock `ttl.compute` (after subblocking) has exactly
 $S$ tiles. `lower-to-loops`
 ([source](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/ConvertTTLComputeToSCF.cpp))
 creates scf.for tile loops and then fully unrolls them using
-[`loopUnrollByFactor`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/ConvertTTLComputeToSCF.cpp#L334-L374),
+[`loopUnrollByFactor`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/ConvertTTLComputeToSCF.cpp#L320-L334),
 assigning incrementing DST indices to each unrolled copy via the
 unrolling callback.
 
@@ -445,7 +452,7 @@ $D = 1$). After unrolling, no scf.for remains for the
 inner subblock; only the outer subblock loop (from component 4) remains.
 
 After unrolling, `lower-to-loops` also runs
-[`reorderStoresAfterSync`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/ConvertTTLComputeToSCF.cpp#L475-L502),
+[`reorderStoresAfterSync`](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/ConvertTTLComputeToSCF.cpp#L436),
 which moves `tile_store` ops from the compute phase (between acquire
 and commit) to the pack phase (after wait). This structural separation
 is a prerequisite for the scheduler (component 12), which only operates
@@ -520,7 +527,7 @@ algorithm assigns each op a depth (longest path from any root in the
 dependency graph), then sorts by a 6-component key:
 
 1. depthLevel — dependency depth (correctness constraint)
-2. category — [`TileOpCategory`](https://github.com/tenstorrent/tt-lang/blob/main/include/ttlang/Dialect/TTL/IR/TTLOpsUtils.h#L170-L179) enum: Bcast < Transpose < CopyTile < FPUBinary < SFPUUnary < SFPUBinary < CopyDst (no Reduce entry yet — reduction ops do not exist in TTL; when added, they would likely slot between Bcast and Transpose as full-init CB-input ops)
+2. category — [`TileOpCategory`](https://github.com/tenstorrent/tt-lang/blob/main/include/ttlang/Dialect/TTL/IR/TTLOpsUtils.h#L178-L187) enum: Bcast < Transpose < CopyTile < FPUBinary < SFPUUnary < SFPUBinary < CopyDst (no Reduce entry yet — reduction ops do not exist in TTL; when added, they would likely slot between Bcast and Transpose as full-init CB-input ops)
 3. opName — groups identical op types for init sharing (string comparison for determinism)
 4. initAffinity — groups ops sharing one init call (e.g., COL vs ROW bcasts, copies from different CBs)
 5. dstIdx — DST register index for deterministic ordering
@@ -571,6 +578,27 @@ them in two phases:
 The grouping pass (component 12) must provide the ordering guarantees
 that make per-op init consolidation maximally effective.
 
+### 15. Block-Level Matmul Lowering
+
+`TTLLowerMatmulBlock`
+([source](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLLowerMatmulBlock.cpp))
+replaces `ttl.tile_matmul_block` ops with calls to
+`experimental::matmul_block`, which performs block-level
+multiply-accumulate in hardware. Gated by the `use-block-matmul`
+pipeline option (default: true). The matmul block op carries
+`TTLCBInputTileOpTrait` (both A and B read from CBs) and accumulates
+into DST, so the DST allocator extends its result interval to prevent
+register reuse (same mechanism as FPU binary ops).
+
+### 16. Pack Tile Combining
+
+`TTKernelCombinePackTiles`
+([source](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTKernel/Transforms/TTKernelCombinePackTiles.cpp))
+merges consecutive `pack_tile` ops into a single `pack_tile_block`
+call when the packed tiles are contiguous in both DST and CB indices.
+Gated by the `combine-pack-tiles` pipeline option (default: true).
+Runs after `ttkernel-insert-inits` at the TTKernel level.
+
 ### 14. DST Spilling
 
 When per-iteration DST pressure exceeds capacity (long operation chains
@@ -585,7 +613,7 @@ savings from larger subblocks.
 
 ## Current State
 
-Implemented (components 1-13, `main`):
+Implemented (components 1-13 and 15-16, `main`):
 
 The full DST maximization pipeline is operational. The pipeline computes
 the correct subblock size (with FPU-aware DST pressure), partitions the
@@ -656,17 +684,22 @@ pipeline option to gate the optimization passes.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `maximize-dst` | true | Enable subblock partitioning and operation scheduling |
-| ~~`consolidate-inits`~~ | ~~true~~ | ~~Removed: init insertion is now unconditional~~ |
 | `enable-fpu-binary-ops` | true | Use FPU execution for binary add/sub/mul when both operands are CB-backed |
+| `use-block-matmul` | true | Lower matmul to block-level hardware calls (`experimental::matmul_block`) instead of per-tile loops |
+| `auto-sync` | false | Let the compiler insert and move DFB synchronization ops; when disabled, user-placed reserve/push is preserved |
+| `combine-pack-tiles` | true | Combine consecutive `pack_tile` ops into `pack_tile_block` |
 | `lower-to-emitc` | false | Lower TTKernel to EmitC (for C++ translation) |
 
-Python API equivalents (`CompilerOptions` in `ttl_api.py`):
+Python API equivalents (`CompilerOptions` in
+[`compiler_options.py`](https://github.com/tenstorrent/tt-lang/blob/main/python/ttl/compiler_options.py)):
 
 | Python option | CLI flag | Pipeline option |
 |---------------|----------|-----------------|
-| `maximize_dst` | `--no-ttl-maximize-dst` | `maximize-dst=0` |
-| ~~`consolidate_inits`~~ | ~~removed~~ | ~~removed~~ |
-| `enable_fpu_binary_ops` | `--no-ttl-fpu-binary-ops` | `enable-fpu-binary-ops=0` |
+| `maximize_dst` | `--ttl-maximize-dst` / `--no-ttl-maximize-dst` | `maximize-dst` |
+| `enable_fpu_binary_ops` | `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | `enable-fpu-binary-ops` |
+| `use_block_matmul` | `--ttl-block-matmul` / `--no-ttl-block-matmul` | `use-block-matmul` |
+| `auto_sync` | `--ttl-auto-sync` / `--no-ttl-auto-sync` | `auto-sync` |
+| `combine_pack_tiles` | `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | `combine-pack-tiles` |
 
 Environment variable: `TTLANG_COMPILER_OPTIONS` (space-separated flags).
 
@@ -688,10 +721,13 @@ convert-ttl-to-compute
 set-compute-kernel-config
 assign-dst                  ← always runs (assigns dst_idx attributes)
 insert-tile-regs-sync       ← per-tile sync (baseline behavior)
+lower-matmul-block          ← (gated by use-block-matmul, independent of maximize-dst)
 lower-to-loops
 annotate-cb-associations
 convert-ttl-to-ttkernel
 ttkernel-insert-inits
+combine-pack-tiles          ← (gated by combine-pack-tiles, independent of maximize-dst)
+canonicalize, cse
 ```
 
 No `subblock-compute-for-dst` or `schedule-operations`. Each tile gets
@@ -705,6 +741,18 @@ marked with `ttl.fpu_binary` and use the SFPU path (copy_tile for both
 operands, `add_binary_tile`/`sub_binary_tile`/`mul_binary_tile` instead
 of `add_tiles`/`sub_tiles`/`mul_tiles`). The consolidation pass emits
 `init_sfpu` instead of `binary_op_init_common`.
+
+With `--no-ttl-block-matmul`:
+
+The `lower-matmul-block` pass is skipped. `TileMatmulBlockOp` ops are
+not lowered to `experimental::matmul_block` and instead follow the
+per-tile matmul path.
+
+With `--no-ttl-combine-pack-tiles`:
+
+The `combine-pack-tiles` pass is skipped. Each `pack_tile` op is
+emitted individually rather than being merged into `pack_tile_block`
+calls.
 
 ### Why This Matters
 
@@ -731,21 +779,27 @@ they invoke passes directly, not through the pipeline.
 3. `insert-tile-regs-sync` must run before `lower-to-loops` because
    sync ops are inserted around `ttl.compute` bodies before they are
    expanded into loops.
-4. `lower-to-loops` performs lowering, unrolling, and store reordering
+4. `lower-matmul-block` runs after sync insertion and before
+   `lower-to-loops`. It replaces `TileMatmulBlockOp` with
+   `experimental::matmul_block` hardware calls.
+5. `lower-to-loops` performs lowering, unrolling, and store reordering
    (component 10): it reads `ttl.full_linearization_strides`, creates
    tile loops, unrolls via `loopUnrollByFactor`, and moves `tile_store`
    ops from the compute phase to the pack phase.
-5. `schedule-operations` runs after `lower-to-loops` because it
+6. `schedule-operations` runs after `lower-to-loops` because it
    reorders individual tile ops (not `ttl.compute` ops). It operates
-   within the compute phase (acquire→commit) of the sync region
+   within the compute phase (acquire->commit) of the sync region
    established by `insert-tile-regs-sync`. Store reordering (in
    `lower-to-loops`) must have already separated stores into the pack
    phase, since the scheduler only sees the compute phase.
-6. `ttkernel-insert-inits` runs after `convert-ttl-to-ttkernel`
+7. `ttkernel-insert-inits` runs after `convert-ttl-to-ttkernel`
    because it operates on TTKernel ops, not TTL ops. Scheduling
    (component 12) must have already grouped same-kind ops for
    consolidation to be maximally effective.
-7. Sync insertion must run before `convert-ttl-to-ttkernel` because
+8. `combine-pack-tiles` runs after `ttkernel-insert-inits` because
+   it merges consecutive `pack_tile` ops into `pack_tile_block` calls,
+   and init ops must already be in place.
+9. Sync insertion must run before `convert-ttl-to-ttkernel` because
    the conversion pass expects sync ops to be present.
 
 ## Related Documents
