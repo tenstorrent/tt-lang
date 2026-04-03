@@ -32,8 +32,12 @@
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/JSON.h"
+#include "llvm/Support/raw_ostream.h"
+#include <cstdlib>
 
 namespace mlir::tt::ttl {
 #define GEN_PASS_DEF_TTLCONVERTTTLTOTTKERNEL
@@ -52,6 +56,183 @@ constexpr llvm::StringLiteral kBaseCTAIndexAttr = "ttl.base_cta_index";
 // addresses). CRTA is filtered per-thread, containing only addresses for
 // tensors this thread uses.
 constexpr llvm::StringLiteral kCRTAIndicesAttr = "ttl.crta_indices";
+
+//===----------------------------------------------------------------------===//
+// Pipe Graph: Tracks sender->receiver CB associations for pipe copies.
+//
+// For gather patterns, senders must write to the receiver's CB address, not
+// their own. The PipeGraph identifies receiver CBs for each pipe and assigns
+// runtime arg slots for passing receiver CB addresses to senders.
+//===----------------------------------------------------------------------===//
+
+/// Key for identifying a pipe by its source and destination coordinates.
+struct PipeKey {
+  int64_t srcX, srcY;
+  int64_t dstStartX, dstStartY, dstEndX, dstEndY;
+
+  bool operator==(const PipeKey &other) const {
+    return srcX == other.srcX && srcY == other.srcY &&
+           dstStartX == other.dstStartX && dstStartY == other.dstStartY &&
+           dstEndX == other.dstEndX && dstEndY == other.dstEndY;
+  }
+};
+
+struct PipeKeyHash {
+  std::size_t operator()(const PipeKey &k) const {
+    return llvm::hash_combine(k.srcX, k.srcY, k.dstStartX, k.dstStartY,
+                              k.dstEndX, k.dstEndY);
+  }
+};
+
+/// Receiver CB information for a pipe.
+struct ReceiverCBInfo {
+  int64_t cbIndex;       // CB index (0-31) used by receiver
+  int64_t runtimeArgIdx; // Index in runtime args for receiver's CB address
+  int64_t gatherSlotIdx; // Slot index for gather patterns (0 if not gather)
+};
+
+/// Graph tracking pipe connections and receiver CB assignments.
+/// Built before lowering by analyzing Pipe->CB copy operations.
+class PipeGraph {
+public:
+  /// Analyze a module to find all pipe receivers and build the graph.
+  static PipeGraph build(ModuleOp mod);
+
+  /// Get the next receiver CB info for a pipe. Multiple PipeNets with the
+  /// same coordinates are returned in program order via an internal counter.
+  /// Returns nullptr if not found or all entries consumed.
+  const ReceiverCBInfo *getReceiverInfo(int64_t srcX, int64_t srcY,
+                                        int64_t dstStartX, int64_t dstStartY,
+                                        int64_t dstEndX, int64_t dstEndY) const {
+    PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY};
+    auto it = receiverCBs.find(key);
+    if (it == receiverCBs.end() || it->second.empty()) {
+      return nullptr;
+    }
+    auto &counter = lookupCounters[key];
+    if (counter >= it->second.size()) {
+      return nullptr;
+    }
+    return &it->second[counter++];
+  }
+
+  /// Get the number of runtime args needed for pipe receiver addresses.
+  int64_t getNumPipeRuntimeArgs() const { return numPipeRuntimeArgs; }
+
+  /// Check if any pipes were found.
+  bool hasPipes() const { return !receiverCBs.empty(); }
+
+  /// Add a receiver CB mapping. Multiple calls with the same pipe coordinates
+  /// append to a list, supporting multiple PipeNets with identical routes.
+  void addReceiverCB(int64_t srcX, int64_t srcY, int64_t dstStartX,
+                     int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
+                     int64_t cbIndex) {
+    PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY};
+    receiverCBs[key].push_back({cbIndex, -1, 0});
+  }
+
+  /// Assign runtime arg indices for all receiver CB addresses.
+  void assignRuntimeArgIndices() {
+    int64_t nextArgIdx = 0;
+    for (auto &[key, infos] : receiverCBs) {
+      for (auto &info : infos) {
+        info.runtimeArgIdx = nextArgIdx++;
+      }
+    }
+    numPipeRuntimeArgs = nextArgIdx;
+  }
+
+  /// Assign gather slot indices for pipes sharing a destination.
+  /// When multiple sources send to the same unicast destination, each source
+  /// needs a different slot to avoid overwrites. Slot indices are assigned
+  /// sequentially (0-based) per destination group. Groups are keyed by
+  /// (destination coordinates, receiver CB index) so that separate PipeNets
+  /// sharing a destination get independent slot numbering.
+  void assignGatherSlotIndices() {
+    struct DstCBKey {
+      int64_t dstStartX, dstStartY, dstEndX, dstEndY, cbIndex;
+      bool operator==(const DstCBKey &o) const {
+        return dstStartX == o.dstStartX && dstStartY == o.dstStartY &&
+               dstEndX == o.dstEndX && dstEndY == o.dstEndY &&
+               cbIndex == o.cbIndex;
+      }
+    };
+    struct DstCBKeyHash {
+      std::size_t operator()(const DstCBKey &k) const {
+        return llvm::hash_combine(k.dstStartX, k.dstStartY, k.dstEndX,
+                                  k.dstEndY, k.cbIndex);
+      }
+    };
+    using Entry = std::pair<PipeKey, size_t>;
+    std::unordered_map<DstCBKey, SmallVector<Entry>, DstCBKeyHash> groups;
+    for (auto &[key, infos] : receiverCBs) {
+      for (size_t i = 0; i < infos.size(); ++i) {
+        DstCBKey dk{key.dstStartX, key.dstStartY, key.dstEndX, key.dstEndY,
+                    infos[i].cbIndex};
+        groups[dk].push_back({key, i});
+      }
+    }
+    for (auto &[dk, entries] : groups) {
+      if (entries.size() <= 1) {
+        continue;
+      }
+      llvm::sort(entries, [](const Entry &a, const Entry &b) {
+        return std::tie(a.first.srcX, a.first.srcY) <
+               std::tie(b.first.srcX, b.first.srcY);
+      });
+      for (int64_t i = 0; i < static_cast<int64_t>(entries.size()); ++i) {
+        auto &[pk, vecIdx] = entries[i];
+        receiverCBs[pk][vecIdx].gatherSlotIdx = i;
+      }
+    }
+  }
+
+  /// Emit pipe graph as JSON for Python to read and populate runtime args.
+  /// Controlled by TTLANG_PIPE_GRAPH_JSON environment variable.
+  void emitJSON() const {
+    const char *path = std::getenv("TTLANG_PIPE_GRAPH_JSON");
+    if (!path || receiverCBs.empty()) {
+      return;
+    }
+
+    llvm::json::Object root;
+    llvm::json::Array pipesArray;
+
+    for (const auto &[key, infos] : receiverCBs) {
+      for (const auto &info : infos) {
+        llvm::json::Object pipeObj;
+        pipeObj["srcX"] = key.srcX;
+        pipeObj["srcY"] = key.srcY;
+        pipeObj["dstStartX"] = key.dstStartX;
+        pipeObj["dstStartY"] = key.dstStartY;
+        pipeObj["dstEndX"] = key.dstEndX;
+        pipeObj["dstEndY"] = key.dstEndY;
+        pipeObj["receiverCBIndex"] = info.cbIndex;
+        pipeObj["runtimeArgSlot"] = info.runtimeArgIdx;
+        pipesArray.push_back(std::move(pipeObj));
+      }
+    }
+
+    root["pipes"] = std::move(pipesArray);
+    root["numPipeRuntimeArgs"] = numPipeRuntimeArgs;
+
+    std::error_code ec;
+    llvm::raw_fd_ostream os(path, ec);
+    if (ec) {
+      llvm::errs() << "Error writing pipe graph JSON to " << path << ": "
+                   << ec.message() << "\n";
+      return;
+    }
+
+    os << llvm::json::Value(std::move(root));
+  }
+
+private:
+  std::unordered_map<PipeKey, SmallVector<ReceiverCBInfo>, PipeKeyHash>
+      receiverCBs;
+  mutable std::unordered_map<PipeKey, size_t, PipeKeyHash> lookupCounters;
+  int64_t numPipeRuntimeArgs = 0;
+};
 
 class TTLToTTKernelTypeConverter : public TypeConverter {
 public:
@@ -435,11 +616,53 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
   }
 };
 
-enum class CopyOperandKind { TensorSlice, CircularBuffer, Unknown };
+//===----------------------------------------------------------------------===//
+// PipeGraph implementation
+//===----------------------------------------------------------------------===//
+
+PipeGraph PipeGraph::build(ModuleOp mod) {
+  PipeGraph graph;
+
+  // Find all Pipe->CB copies (receiver side) and extract CB index
+  mod.walk([&](CopyOp copyOp) {
+    auto srcPipeType = dyn_cast<PipeType>(copyOp.getSrc().getType());
+    if (!srcPipeType) {
+      return;
+    }
+
+    // Found Pipe->CB copy: this is the receiver side
+    Value dstCB = copyOp.getDst();
+    if (!isa<CircularBufferType>(dstCB.getType())) {
+      return;
+    }
+
+    // Trace to the BindCBOp to get the CB index
+    Value cbVal = traceUnrealizedCasts(dstCB);
+    auto bindOp = cbVal.getDefiningOp<BindCBOp>();
+    if (!bindOp) {
+      return;
+    }
+
+    int64_t cbIndex = bindOp.getCbIndex().getSExtValue();
+    graph.addReceiverCB(srcPipeType.getSrcX(), srcPipeType.getSrcY(),
+                        srcPipeType.getDstStartX(), srcPipeType.getDstStartY(),
+                        srcPipeType.getDstEndX(), srcPipeType.getDstEndY(),
+                        cbIndex);
+  });
+
+  graph.assignGatherSlotIndices();
+  graph.assignRuntimeArgIndices();
+  return graph;
+}
+
+enum class CopyOperandKind { TensorSlice, CircularBuffer, Pipe, Unknown };
 
 static CopyOperandKind classifyOperand(Value v) {
   if (llvm::isa<CircularBufferType>(v.getType())) {
     return CopyOperandKind::CircularBuffer;
+  }
+  if (llvm::isa<PipeType>(v.getType())) {
+    return CopyOperandKind::Pipe;
   }
   if (v.getDefiningOp<TensorSliceOp>()) {
     return CopyOperandKind::TensorSlice;
@@ -723,6 +946,255 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
   return success();
 }
 
+/// Compute semaphore index for a pipe based on source coordinates.
+/// For point-to-point pipes (gather pattern), each source uses a distinct
+/// semaphore to avoid race conditions when multiple sources signal the same
+/// destination. For multicast pipes, all destinations share semaphore 0.
+static int64_t getPipeSemaphoreIndex(PipeType pipeType) {
+  if (pipeType.isUnicast()) {
+    // Point-to-point: use source X coordinate as semaphore index.
+    // This ensures each source->dest pipe has a unique semaphore.
+    // Note: For 2D grids, this should be srcX * gridHeight + srcY.
+    return pipeType.getSrcX();
+  }
+  // Multicast: all destinations use semaphore 0.
+  return 0;
+}
+
+/// Lower CB -> Pipe copy: multicast tiles from source CB to destination cores.
+/// For gather patterns, uses receiver's CB address from PipeGraph.
+/// After multicast, signals destinations via semaphore.
+///
+/// Parameters:
+/// - receiverInfo: If non-null, contains the receiver's CB index and runtime
+///   arg index for the gather pattern. The receiver's CB address is loaded from
+///   runtime args to ensure data lands at the correct L1 address on the
+///   destination core (which may differ from the sender's CB address).
+static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
+                                   const ReceiverCBInfo *receiverInfo,
+                                   ConversionPatternRewriter &rewriter) {
+  auto loc = op.getLoc();
+  auto pipeType = llvm::cast<PipeType>(pipe.getType());
+
+  auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
+  if (failed(cbConverted)) {
+    return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
+  }
+
+  auto cbType = getTTLCBType(srcCB);
+  if (!cbType) {
+    return rewriter.notifyMatchFailure(op, "failed to get CB type");
+  }
+  auto cbShape = cbType.getShape();
+
+  auto elementType = cbType.getElementType();
+  auto tileType = llvm::dyn_cast<ttcore::TileType>(elementType);
+  if (!tileType) {
+    return rewriter.notifyMatchFailure(op, "CB element type must be tile");
+  }
+  int64_t pageSizeBytes = tileType.getSizeBytes();
+
+  int64_t dstStartX = pipeType.getDstStartX();
+  int64_t dstStartY = pipeType.getDstStartY();
+  int64_t dstEndX = pipeType.getDstEndX();
+  int64_t dstEndY = pipeType.getDstEndY();
+  int64_t numDests = pipeType.getNumDests();
+
+  auto indexTy = rewriter.getIndexType();
+  auto i32Ty = rewriter.getI32Type();
+
+  auto cbReadPtr = rewriter.create<ttk::GetReadPtrOp>(loc, *cbConverted);
+  auto cbReadPtrIdx =
+      rewriter.create<arith::IndexCastOp>(loc, indexTy, cbReadPtr);
+
+  // Resolve the destination L1 base address. When the receiver uses a
+  // different CB than the sender, we look up the receiver's CB read pointer
+  // so that multicast data lands at the correct L1 address on the destination.
+  // CB layout is uniform across cores, so the address is the same everywhere.
+  Value dstBaseIdx = cbReadPtrIdx;
+  if (receiverInfo) {
+    // Determine sender CB index to check if it differs from receiver.
+    // The source CB may be pre- or post-conversion, so check both BindCBOp
+    // (pre-conversion) and GetCompileArgValOp (post-conversion).
+    int64_t senderCBIndex = -1;
+    Value tracedSrc = traceUnrealizedCasts(srcCB);
+    if (auto bindOp = tracedSrc.getDefiningOp<BindCBOp>()) {
+      senderCBIndex = bindOp.getCbIndex().getSExtValue();
+    } else if (auto argOp =
+                   tracedSrc.getDefiningOp<ttk::GetCompileArgValOp>()) {
+      senderCBIndex = argOp.getArgIndex();
+    }
+    if (senderCBIndex >= 0 && senderCBIndex != receiverInfo->cbIndex) {
+      auto srcCBType = llvm::dyn_cast<ttk::CBType>(cbConverted->getType());
+      auto recvCB = rewriter.create<ttk::GetCompileArgValOp>(
+          loc, srcCBType, static_cast<int32_t>(receiverInfo->cbIndex));
+      auto recvReadPtr = rewriter.create<ttk::GetReadPtrOp>(loc, recvCB);
+      dstBaseIdx =
+          rewriter.create<arith::IndexCastOp>(loc, indexTy, recvReadPtr);
+    }
+  }
+
+  auto pageSizeIdx =
+      rewriter.create<arith::ConstantIndexOp>(loc, pageSizeBytes);
+
+  // Destination coordinates for multicast - convert logical to virtual coords
+  auto dstStartXLogical =
+      rewriter.create<arith::ConstantIndexOp>(loc, dstStartX);
+  auto dstStartYLogical =
+      rewriter.create<arith::ConstantIndexOp>(loc, dstStartY);
+  auto dstEndXLogical = rewriter.create<arith::ConstantIndexOp>(loc, dstEndX);
+  auto dstEndYLogical = rewriter.create<arith::ConstantIndexOp>(loc, dstEndY);
+
+  // NOC operations require virtual/translated coordinates
+  auto dstStartXVal = rewriter.create<ttk::ConvertLogicalXToTranslatedOp>(
+      loc, indexTy, dstStartXLogical);
+  auto dstStartYVal = rewriter.create<ttk::ConvertLogicalYToTranslatedOp>(
+      loc, indexTy, dstStartYLogical);
+  auto dstEndXVal = rewriter.create<ttk::ConvertLogicalXToTranslatedOp>(
+      loc, indexTy, dstEndXLogical);
+  auto dstEndYVal = rewriter.create<ttk::ConvertLogicalYToTranslatedOp>(
+      loc, indexTy, dstEndYLogical);
+
+  auto numDestsVal = rewriter.create<arith::ConstantOp>(
+      loc, i32Ty, rewriter.getI32IntegerAttr(numDests));
+  auto pageSizeVal = rewriter.create<arith::ConstantOp>(
+      loc, i32Ty, rewriter.getI32IntegerAttr(pageSizeBytes));
+
+  SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
+
+  // For gather patterns (multiple sources to one destination), each source
+  // writes to a different slot in the destination CB to avoid overwrites.
+  // Slot indices are assigned by PipeGraph based on actual destination sharing.
+  int64_t slotIdx = receiverInfo ? receiverInfo->gatherSlotIdx : 0;
+  int64_t cbNumTiles = 1;
+  for (int64_t d : cbBounds)
+    cbNumTiles *= d;
+  int64_t slotByteOffset = slotIdx * pageSizeBytes * cbNumTiles;
+
+  emitTileLoop(
+      rewriter, loc, cbBounds,
+      [&](OpBuilder &b, Location bodyLoc, ValueRange cbIVs) {
+        Value cbTileIdx = linearizeNDIndex(b, bodyLoc, cbIVs, cbBounds);
+        Value byteOffset =
+            b.create<arith::MulIOp>(bodyLoc, cbTileIdx, pageSizeIdx);
+        Value srcAddrIdx =
+            b.create<arith::AddIOp>(bodyLoc, cbReadPtrIdx, byteOffset);
+        Value srcAddr =
+            b.create<arith::IndexCastOp>(bodyLoc, i32Ty, srcAddrIdx);
+
+        // Compute destination address using the receiver's CB base address.
+        // Add slot offset for gather patterns (multiple sources to one dest).
+        Value dstAddrIdx =
+            b.create<arith::AddIOp>(bodyLoc, dstBaseIdx, byteOffset);
+        if (slotByteOffset > 0) {
+          auto slotOffsetIdx =
+              b.create<arith::ConstantIndexOp>(bodyLoc, slotByteOffset);
+          dstAddrIdx =
+              b.create<arith::AddIOp>(bodyLoc, dstAddrIdx, slotOffsetIdx);
+        }
+        Value dstAddr =
+            b.create<arith::IndexCastOp>(bodyLoc, i32Ty, dstAddrIdx);
+
+        if (pipeType.isUnicast()) {
+          auto nocAddr = b.create<ttk::GetNocAddrOp>(
+              bodyLoc, dstStartXVal, dstStartYVal, dstAddr);
+          b.create<ttk::NocAsyncWriteOp>(
+              bodyLoc, srcAddr, nocAddr.getResult(), pageSizeVal);
+        } else {
+          auto mcastAddr = b.create<ttk::GetNocMulticastAddrOp>(
+              bodyLoc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
+              dstAddr, /*noc=*/Value());
+          if (pipeType.srcInDstRange()) {
+            b.create<ttk::NocAsyncWriteMulticastLoopbackSrcOp>(
+                bodyLoc, srcAddr, mcastAddr.getResult(), pageSizeVal,
+                numDestsVal, /*linked=*/nullptr,
+                /*multicast_path_reserve=*/nullptr, /*noc=*/Value());
+          } else {
+            b.create<ttk::NocAsyncWriteMulticastOp>(
+                bodyLoc, srcAddr, mcastAddr.getResult(), pageSizeVal,
+                numDestsVal, /*linked=*/nullptr,
+                /*multicast_path_reserve=*/nullptr, /*noc=*/Value());
+          }
+        }
+      });
+
+  // Wait for all async writes to complete before signaling the semaphore.
+  // Without this barrier, the receiver may wake up before all data arrives.
+  rewriter.create<ttk::NocAsyncWriteBarrierOp>(loc);
+
+  // Signal destinations that data has arrived.
+  // For point-to-point pipes, use atomic increment to support gather pattern
+  // (multiple sources to one destination). For multicast, use set+multicast.
+  int64_t semIdxVal = getPipeSemaphoreIndex(pipeType);
+  auto semIdx = rewriter.create<arith::ConstantIndexOp>(loc, semIdxVal);
+  auto semAddr = rewriter.create<ttk::GetSemaphoreOp>(loc, semIdx);
+
+  if (pipeType.isUnicast()) {
+    // Point-to-point: atomically increment destination's semaphore.
+    // This supports gather patterns where multiple sources signal one dest.
+    auto incrVal = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+
+    // Get NOC address of destination's semaphore for atomic increment.
+    auto dstSemNocAddr = rewriter.create<ttk::GetNocAddrOp>(
+        loc, dstStartXVal, dstStartYVal, semAddr);
+
+    rewriter.create<ttk::NocSemaphoreIncOp>(loc, dstSemNocAddr.getResult(),
+                                            incrVal, /*noc_id=*/Value());
+  } else {
+    // Multicast: set local semaphore and multicast to all destinations.
+    auto semPtr = rewriter.create<ttk::CastToL1PtrOp>(loc, semAddr);
+    auto validVal = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    rewriter.create<ttk::NocSemaphoreSetOp>(loc, semPtr, validVal);
+
+    auto semMcastAddr = rewriter.create<ttk::GetNocMulticastAddrOp>(
+        loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal, semAddr,
+        /*noc=*/Value());
+
+    if (pipeType.srcInDstRange()) {
+      auto falseBoolAttr = rewriter.getBoolAttr(false);
+      rewriter.create<ttk::NocSemaphoreSetMulticastLoopbackOp>(
+          loc, semAddr, semMcastAddr.getResult(), numDestsVal,
+          /*linked=*/falseBoolAttr, /*multicast_path_reserve=*/falseBoolAttr);
+    } else {
+      rewriter.create<ttk::NocSemaphoreSetMulticastOp>(
+          loc, semAddr, semMcastAddr.getResult(), numDestsVal,
+          /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr);
+    }
+  }
+
+  rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
+  return success();
+}
+
+/// Lower Pipe -> CB copy: destination side of pipe transfer.
+/// At the destination, data arrives via multicast/unicast from source core.
+/// Waits for semaphore signal from source before proceeding.
+static LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
+                                   ConversionPatternRewriter &rewriter) {
+  auto loc = op.getLoc();
+  auto pipeType = llvm::cast<PipeType>(pipe.getType());
+
+  // Use semaphore index derived from pipe's source coordinates.
+  // This ensures each source->dest pipe has a unique semaphore.
+  int64_t semIdxVal = getPipeSemaphoreIndex(pipeType);
+  auto semIdx = rewriter.create<arith::ConstantIndexOp>(loc, semIdxVal);
+  auto semAddr = rewriter.create<ttk::GetSemaphoreOp>(loc, semIdx);
+  auto semPtr = rewriter.create<ttk::CastToL1PtrOp>(loc, semAddr);
+
+  // Wait for semaphore to reach at least 1.
+  // For point-to-point, source uses atomic inc; for multicast, source uses set.
+  auto oneVal = rewriter.create<arith::ConstantOp>(
+      loc, rewriter.getI32Type(), rewriter.getI32IntegerAttr(1));
+  rewriter.create<ttk::NocSemaphoreWaitMinOp>(loc, semPtr, oneVal);
+
+  // Reset semaphore for next use
+  auto zeroVal = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  rewriter.create<ttk::NocSemaphoreSetOp>(loc, semPtr, zeroVal);
+
+  rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
+  return success();
+}
+
 struct TensorSliceLowering : OpConversionPattern<TensorSliceOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -741,7 +1213,9 @@ struct TensorSliceLowering : OpConversionPattern<TensorSliceOp> {
 };
 
 struct CopyLowering : OpConversionPattern<CopyOp> {
-  using OpConversionPattern::OpConversionPattern;
+  CopyLowering(const TypeConverter &typeConverter, MLIRContext *context,
+               const PipeGraph *pipeGraph)
+      : OpConversionPattern(typeConverter, context), pipeGraph(pipeGraph) {}
 
   LogicalResult
   matchAndRewrite(CopyOp op, OpAdaptor adaptor,
@@ -756,12 +1230,38 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     auto srcKind = classifyOperand(src);
     auto dstKind = classifyOperand(dst);
 
-    // Validate: copy requires exactly one TensorSlice and one CircularBuffer.
     bool srcIsSlice = srcKind == CopyOperandKind::TensorSlice;
     bool srcIsCB = srcKind == CopyOperandKind::CircularBuffer;
+    bool srcIsPipe = srcKind == CopyOperandKind::Pipe;
     bool dstIsSlice = dstKind == CopyOperandKind::TensorSlice;
     bool dstIsCB = dstKind == CopyOperandKind::CircularBuffer;
+    bool dstIsPipe = dstKind == CopyOperandKind::Pipe;
 
+    // Pipe transfers: CB <-> Pipe
+    if (srcIsCB && dstIsPipe) {
+      // CB -> Pipe: source core multicasts data to destination cores
+      // Look up receiver CB info for gather patterns
+      const ReceiverCBInfo *receiverInfo = nullptr;
+      if (pipeGraph) {
+        auto pipeType = llvm::cast<PipeType>(adaptor.getDst().getType());
+        receiverInfo = pipeGraph->getReceiverInfo(
+            pipeType.getSrcX(), pipeType.getSrcY(), pipeType.getDstStartX(),
+            pipeType.getDstStartY(), pipeType.getDstEndX(),
+            pipeType.getDstEndY());
+      }
+      return lowerCBToPipe(op, adaptor.getSrc(), adaptor.getDst(), receiverInfo,
+                           rewriter);
+    }
+    if (srcIsPipe && dstIsCB) {
+      // Pipe -> CB: destination receives data via multicast from source
+      return lowerPipeToCB(op, adaptor.getSrc(), adaptor.getDst(), rewriter);
+    }
+    if (srcIsPipe || dstIsPipe) {
+      return rewriter.notifyMatchFailure(
+          op, "pipe copy requires CB <-> Pipe, got invalid combination");
+    }
+
+    // Non-pipe transfers: validate exactly one TensorSlice and one CB.
     if (!((srcIsSlice && dstIsCB) || (srcIsCB && dstIsSlice))) {
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
         diag << "ttl.copy requires one tensor_slice and one circular_buffer, "
@@ -790,6 +1290,9 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     return lowerTensorCBCopy(op, sliceOp, adaptor.getSrc(),
                              NocCopyDirection::Write, rewriter, *typeConverter);
   }
+
+private:
+  const PipeGraph *pipeGraph;
 };
 
 struct WaitLowering : OpConversionPattern<WaitOp> {
@@ -801,13 +1304,15 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
     // TODO(ttl): Lower ttl.wait to TRID-specific barriers keyed by the transfer
     // handle (read vs write barrier based on transfer direction). Issue: #87.
     //
-    // MVP behavior: require a direction-typed handle and emit the
-    // corresponding global barrier. Untyped handles are rejected by the
-    // verifier, but we also fail the rewrite defensively.
+    // MVP behavior: emit the corresponding global barrier based on transfer
+    // direction. Untyped handles (no kind) are no-ops - used for pipe receives
+    // where data arrives via multicast and no local barrier is needed.
     auto kind = getTransferKindFromHandleType(adaptor.getXf().getType());
     if (!kind) {
-      return rewriter.notifyMatchFailure(
-          op, "requires direction-typed !ttl.transfer_handle<read|write>");
+      // No transfer kind means no barrier needed (e.g., pipe receive where
+      // data arrives via multicast from source core).
+      rewriter.eraseOp(op);
+      return success();
     }
     if (*kind == TransferKind::read) {
       ttk::NocAsyncReadBarrierOp::create(rewriter, op.getLoc());
@@ -821,6 +1326,130 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
       });
     }
     rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Pipe conditional operation lowering patterns
+//===----------------------------------------------------------------------===//
+
+struct IfSrcLowering : OpConversionPattern<IfSrcOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(IfSrcOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto pipeType = mlir::cast<PipeType>(op.getPipe().getType());
+
+    // Get current core coordinates.
+    auto coreX =
+        rewriter.create<ttk::MyLogicalXOp>(loc, rewriter.getIndexType());
+    auto coreY =
+        rewriter.create<ttk::MyLogicalYOp>(loc, rewriter.getIndexType());
+
+    // Get source coordinates from pipe type.
+    auto srcXConst =
+        rewriter.create<arith::ConstantIndexOp>(loc, pipeType.getSrcX());
+    auto srcYConst =
+        rewriter.create<arith::ConstantIndexOp>(loc, pipeType.getSrcY());
+
+    // Check if current core matches source coordinates.
+    auto matchX = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                                 coreX, srcXConst);
+    auto matchY = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                                 coreY, srcYConst);
+    auto isSrc = rewriter.create<arith::AndIOp>(loc, matchX, matchY);
+
+    // Create scf.if with empty body (the builder adds a yield for us).
+    auto ifOp =
+        rewriter.create<scf::IfOp>(loc, isSrc, /*withElseRegion=*/false);
+
+    // Move ops from the original body into the then block (before the yield).
+    // Using inlineBlockBefore moves rather than clones, preserving SSA.
+    Block &srcBlock = op.getBody().front();
+    Block &thenBlock = ifOp.getThenRegion().front();
+    rewriter.inlineBlockBefore(&srcBlock, thenBlock.getTerminator());
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct IfDstLowering : OpConversionPattern<IfDstOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(IfDstOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto pipeType = mlir::cast<PipeType>(op.getPipe().getType());
+
+    // Get current core coordinates.
+    auto coreX =
+        rewriter.create<ttk::MyLogicalXOp>(loc, rewriter.getIndexType());
+    auto coreY =
+        rewriter.create<ttk::MyLogicalYOp>(loc, rewriter.getIndexType());
+
+    // Get destination range from pipe type.
+    int64_t dstMinX = std::min(pipeType.getDstStartX(), pipeType.getDstEndX());
+    int64_t dstMaxX = std::max(pipeType.getDstStartX(), pipeType.getDstEndX());
+    int64_t dstMinY = std::min(pipeType.getDstStartY(), pipeType.getDstEndY());
+    int64_t dstMaxY = std::max(pipeType.getDstStartY(), pipeType.getDstEndY());
+
+    auto minXConst = rewriter.create<arith::ConstantIndexOp>(loc, dstMinX);
+    auto maxXConst = rewriter.create<arith::ConstantIndexOp>(loc, dstMaxX);
+    auto minYConst = rewriter.create<arith::ConstantIndexOp>(loc, dstMinY);
+    auto maxYConst = rewriter.create<arith::ConstantIndexOp>(loc, dstMaxY);
+
+    // Check if current core is within destination range.
+    // coreX >= minX && coreX <= maxX && coreY >= minY && coreY <= maxY
+    auto geMinX = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge,
+                                                 coreX, minXConst);
+    auto leMaxX = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sle,
+                                                 coreX, maxXConst);
+    auto geMinY = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge,
+                                                 coreY, minYConst);
+    auto leMaxY = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sle,
+                                                 coreY, maxYConst);
+
+    auto inRangeX = rewriter.create<arith::AndIOp>(loc, geMinX, leMaxX);
+    auto inRangeY = rewriter.create<arith::AndIOp>(loc, geMinY, leMaxY);
+    auto isDst = rewriter.create<arith::AndIOp>(loc, inRangeX, inRangeY);
+
+    // Create scf.if with empty body (the builder adds a yield for us).
+    auto ifOp =
+        rewriter.create<scf::IfOp>(loc, isDst, /*withElseRegion=*/false);
+
+    // Move ops from the original body into the then block (before the yield).
+    // Using inlineBlockBefore moves rather than clones, preserving SSA.
+    Block &srcBlock = op.getBody().front();
+    Block &thenBlock = ifOp.getThenRegion().front();
+    rewriter.inlineBlockBefore(&srcBlock, thenBlock.getTerminator());
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct CreatePipeLowering : OpConversionPattern<CreatePipeOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CreatePipeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // CreatePipeOp is a Pure op that just produces a pipe type value.
+    // The pipe type carries all the coordinate information as type parameters.
+    // At runtime, pipes don't need any materialization - the coordinates are
+    // baked into the generated code through if_src/if_dst lowering.
+    //
+    // Always replace with an unrealized cast to handle uses in nested regions
+    // (like if_src/if_dst bodies) that may be processed in a different order.
+    // The unrealized cast preserves the type for downstream patterns.
+    auto cast = rewriter.create<UnrealizedConversionCastOp>(
+        op.getLoc(), op.getResult().getType(), ValueRange{});
+    rewriter.replaceOp(op, cast.getResult(0));
     return success();
   }
 };
@@ -957,11 +1586,21 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
            typeConverter.isLegal(&op.getBody());
   });
 
+  // Build pipe graph to track receiver CB addresses for gather patterns.
+  // This must happen before lowering so we can look up receiver info.
+  PipeGraph pipeGraph = PipeGraph::build(mod);
+
+  // Emit pipe graph JSON for Python to read (controlled by env var).
+  pipeGraph.emitJSON();
+
   RewritePatternSet patterns(&ctx);
-  patterns.add<BindCBLowering, TensorSliceLowering, CopyLowering, WaitLowering,
+  // CopyLowering needs the pipe graph for gather pattern receiver CB lookup
+  patterns.add<CopyLowering>(typeConverter, &ctx, &pipeGraph);
+  patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering>(
-      typeConverter, &ctx);
+               TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering,
+               IfSrcLowering, IfDstLowering, CreatePipeLowering>(typeConverter,
+                                                                  &ctx);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 
