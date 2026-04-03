@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Set
 
 from pykernel._src.kernel_ast import TTCompilerBase
+from pykernel._src.utils import _get_type_str
 from ttl.dialects import arith, func, ttcore, ttkernel
 from ttl.ir import *
 
@@ -278,6 +279,11 @@ class TTLGenericCompiler(TTCompilerBase):
                     and node.func.id == "print"
                 ):
                     return self.visit_Print(node.args, node.keywords)
+
+                # Check for PipeNet.if_src/if_dst calls
+                if self._is_pipenet_callback_call(node):
+                    return self._handle_pipenet_callback(node)
+
                 return self._try_emit_auto_signposts(
                     node, lambda: super(TTLGenericCompiler, self).visit_Call(node)
                 )
@@ -285,6 +291,92 @@ class TTLGenericCompiler(TTCompilerBase):
                 if isinstance(e, TTLangCompileError):
                     raise
                 self._raise_error(node, str(e))
+
+    def _is_pipenet_callback_call(self, node):
+        """Check if this is a pipenet.if_src(fn) or pipenet.if_dst(fn) call."""
+        if not isinstance(node.func, ast.Attribute):
+            return False
+        if node.func.attr not in ("if_src", "if_dst"):
+            return False
+        if not isinstance(node.func.value, ast.Name):
+            return False
+        # Check if the variable is a PipeNet
+        var_name = node.func.value.id
+        tbl = self._var_exists(var_name)
+        if not tbl:
+            return False
+        val = tbl[var_name]
+        from ..pipe import PipeNet
+        return isinstance(val, PipeNet)
+
+    def _handle_pipenet_callback(self, node):
+        """Handle pipenet.if_src(callback) or pipenet.if_dst(callback) calls."""
+        from ..pipe import PipeNet, SrcPipeIdentity, DstPipeIdentity
+
+        method_name = node.func.attr
+        var_name = node.func.value.id
+        tbl = self._var_exists(var_name)
+        pipenet = tbl[var_name]
+
+        # Get the callback argument
+        if len(node.args) != 1:
+            self._raise_error(
+                node, f"PipeNet.{method_name}() requires exactly one callback argument"
+            )
+        callback_node = node.args[0]
+
+        # Support lambda or function name
+        if isinstance(callback_node, ast.Lambda):
+            callback_body = callback_node.body
+            callback_args = callback_node.args
+            if len(callback_args.args) != 1:
+                self._raise_error(
+                    callback_node,
+                    f"PipeNet.{method_name}() callback must take exactly one argument (pipe)",
+                )
+            pipe_param_name = callback_args.args[0].arg
+        elif isinstance(callback_node, ast.Name):
+            # Function reference - look it up and get its AST
+            self._raise_error(
+                callback_node,
+                f"PipeNet.{method_name}() currently only supports lambda callbacks. "
+                "Use: net.if_src(lambda pipe: ...)",
+            )
+        else:
+            self._raise_error(
+                callback_node,
+                f"PipeNet.{method_name}() requires a lambda or function reference",
+            )
+
+        # Iterate over all pipes and emit if_src/if_dst for each
+        for pipe in pipenet.pipes:
+            # Emit the pipe MLIR value
+            pipe_val = self._emit_pipe_from_capture(pipe)
+            pipe._mlir_value = pipe_val
+
+            # Create the appropriate PipeIdentity
+            if method_name == "if_src":
+                pipe_identity = SrcPipeIdentity(pipe)
+                op = ttl.if_src(pipe_val)
+            else:
+                pipe_identity = DstPipeIdentity(pipe)
+                op = ttl.if_dst(pipe_val)
+
+            # Create body block and compile callback inside
+            block = Block.create_at_start(op.body)
+            with InsertionPoint(block):
+                # Bind the pipe parameter to the pipe value
+                self.symbol_tables.append({})
+                self.symbol_tables[-1][pipe_param_name] = pipe_val
+                # Also store the identity object for property access
+                self.symbol_tables[-1][f"__{pipe_param_name}_identity"] = pipe_identity
+
+                # Visit the callback body (lambda body is an expression)
+                self.visit(callback_body)
+
+                self.symbol_tables.pop()
+
+        return None  # Statement, no return value
 
     def visit_BinOp(self, node):
         """Override to inject auto-profiling and provide better error messages."""
@@ -344,6 +436,20 @@ class TTLGenericCompiler(TTCompilerBase):
             self._raise_error(node, f"Unknown function: {namespace}.{node.attr}")
         return fn(*func_args, **kwargs)
 
+    def _resolve_chained_method_call(self, node, func_args, kwargs):
+        """Handle chained calls like foo().bar() where node.value is a Call."""
+        mlir_value = self.visit(node.value)
+        if mlir_value is None:
+            self._raise_error(node, "Chained call returned no value")
+        mlir_type = _get_type_str(mlir_value.type)
+        qualified_object_syntax = f"{mlir_type}.{node.attr}"
+        fn = self._fn_map.get(qualified_object_syntax, None)
+        if fn is None:
+            self._raise_error(
+                node, f"No method '{node.attr}' on type {mlir_type}"
+            )
+        return fn(mlir_value, *func_args, **kwargs)
+
     def visit_Attribute(self, node, func_args=[], kwargs={}):
         """Override to set location context and catch errors for method calls."""
         with self._loc_for_node(node):
@@ -351,6 +457,9 @@ class TTLGenericCompiler(TTCompilerBase):
                 # Handle ttl.XXX and ttl.math.XXX attribute access
                 if self._is_ttl_module_access(node) or self._is_ttl_math_access(node):
                     return self._resolve_ttl_function(node, func_args, kwargs)
+                # Handle chained method calls: expr().method()
+                if isinstance(node.value, ast.Call):
+                    return self._resolve_chained_method_call(node, func_args, kwargs)
                 return super().visit_Attribute(node, func_args, kwargs)
             except (ValueError, TypeError, NotImplementedError) as e:
                 if isinstance(e, TTLangCompileError):
@@ -477,6 +586,27 @@ class TTLGenericCompiler(TTCompilerBase):
         # Emit: %cb = ttl.bind_cb {cb_index = N, buffer_factor = M} : !ttl.cb<...>
         return ttl.bind_cb(cb_type, cb._cb_index, buffer_factor=cb.buffer_factor)
 
+    def _emit_pipe_from_capture(self, pipe):
+        """Emit ttl.create_pipe for a captured Pipe instance."""
+        pipe_type = ttl.PipeType.get(
+            self.ctx,
+            pipe.src[0],
+            pipe.src[1],
+            pipe.dst_start[0],
+            pipe.dst_start[1],
+            pipe.dst_end[0],
+            pipe.dst_end[1],
+        )
+        return ttl.create_pipe(
+            pipe_type,
+            pipe.src[0],
+            pipe.src[1],
+            pipe.dst_start[0],
+            pipe.dst_start[1],
+            pipe.dst_end[0],
+            pipe.dst_end[1],
+        )
+
     def _emit_entry(self, node):
         assert not self.func_entry, "Cannot declare function within a function"
 
@@ -533,6 +663,7 @@ class TTLGenericCompiler(TTCompilerBase):
 
             # Prepopulate other captures (non-tensor)
             from ..circular_buffer import CircularBuffer
+            from ..pipe import Pipe, PipeNet
 
             for name, val in self.captures.items():
                 if is_ttnn_tensor(val):
@@ -549,6 +680,14 @@ class TTLGenericCompiler(TTCompilerBase):
                 elif isinstance(val, CircularBuffer):
                     cb_val = self._emit_cb_from_capture(val)
                     self.symbol_tables[-1][name] = cb_val
+                elif isinstance(val, Pipe):
+                    pipe_val = self._emit_pipe_from_capture(val)
+                    self.symbol_tables[-1][name] = pipe_val
+                    # Store MLIR value on the Pipe object for use in operators
+                    val._mlir_value = pipe_val
+                elif isinstance(val, PipeNet):
+                    # PipeNet is stored directly - we emit pipes lazily in if_src/if_dst
+                    self.symbol_tables[-1][name] = val
                 else:
                     self._raise_error(
                         node, f"Invalid capture type for var {name}: {type(val)}"
@@ -564,6 +703,10 @@ class TTLGenericCompiler(TTCompilerBase):
 
     def visit_FunctionDef(self, node):
         with self._loc_for_node(node):
+            # Nested function defs are stored as callback ASTs for PipeNet
+            if self._is_nested_function_def():
+                self._store_callback_def(node)
+                return
             return self._emit_entry(node)
 
     def visit_AsyncFunctionDef(self, node):
@@ -771,6 +914,14 @@ class TTLGenericCompiler(TTCompilerBase):
             num_pages=None,
         )
 
+    def _is_nested_function_def(self):
+        """Check if we're inside a function body (nested def, not entry)."""
+        return len(self.symbol_tables) > 1
+
+    def _store_callback_def(self, node):
+        """Store a nested function def AST for use as a PipeNet callback."""
+        self.symbol_tables[-1][node.name] = node
+
     def _get_cb_tensor_type(self, cb_val, node=None):
         """Extract the tensor type from a TTL CB type."""
         cb_type = ttl.CircularBufferType.maybe_downcast(cb_val.type)
@@ -821,9 +972,20 @@ class TTLGenericCompiler(TTCompilerBase):
             )
         return name
 
+    def _is_pipe_value(self, val):
+        """Check if a value is a TTL pipe type."""
+        pipe_type = ttl.PipeType.maybe_downcast(val.type)
+        return pipe_type is not None
+
+    def _is_cb_value(self, val):
+        """Check if a value is a TTL circular buffer type."""
+        cb_type = ttl.CircularBufferType.maybe_downcast(val.type)
+        return cb_type is not None
+
     def visit_With(self, node):
         """
-        Handle 'with' for CircularBuffer acquire/release or signpost scopes.
+        Handle 'with' for CircularBuffer acquire/release, signpost scopes,
+        and Pipe if_src/if_dst.
 
         Signpost scopes:
             with ttl.signpost("my_region"):
@@ -833,6 +995,10 @@ class TTLGenericCompiler(TTCompilerBase):
             with lhs_cb.wait() as l, rhs_cb.wait() as r, out_cb.reserve() as o:
                 ...
                 # releases in reverse order: push(out), pop(rhs), pop(lhs)
+
+        Pipe conditionals:
+            with pipe.if_src():
+                ttl.copy(blk, pipe).wait()
         """
         with self._loc_for_node(node):
             # Check for signpost scope
@@ -868,87 +1034,138 @@ class TTLGenericCompiler(TTCompilerBase):
                 self._emit_signpost(f"ttl_{name}", is_end=True)
                 return
 
-            # Process each with-item: acquire resources and track for release
-            releases = []  # [(release_op, cb_val), ...] in acquisition order
-
-            self._on_scope_exit()
-
-            for item in node.items:
+            # Check if this is a pipe conditional (single item, if_src/if_dst)
+            if len(node.items) == 1:
+                item = node.items[0]
                 context_expr = item.context_expr
-                optional_vars = item.optional_vars
+                if (
+                    isinstance(context_expr, ast.Call)
+                    and isinstance(context_expr.func, ast.Attribute)
+                    and context_expr.func.attr in ("if_src", "if_dst")
+                ):
+                    self._visit_with_pipe(node, item)
+                    return
 
-                if not isinstance(context_expr, ast.Call):
-                    self._raise_error(
-                        context_expr,
-                        "'with' requires a method call (e.g., cb.reserve())",
-                    )
+            # Otherwise, handle as CircularBuffer acquire/release
+            self._visit_with_cb(node)
 
-                if not isinstance(context_expr.func, ast.Attribute):
-                    self._raise_error(
-                        context_expr, "'with' requires a method call on an object"
-                    )
+    def _visit_with_pipe(self, node, item):
+        """Handle 'with pipe.if_src():' or 'with pipe.if_dst():'."""
+        context_expr = item.context_expr
+        method_name = context_expr.func.attr
+        pipe_node = context_expr.func.value
 
-                method_name = context_expr.func.attr
-                cb_node = context_expr.func.value
+        if not isinstance(pipe_node, ast.Name):
+            self._raise_error(
+                context_expr,
+                "'with pipe.if_src()' requires a simple variable",
+            )
 
-                if method_name not in ("reserve", "wait"):
-                    self._raise_error(
-                        context_expr,
-                        f"'with' only supports 'reserve()' or 'wait()', got '{method_name}'",
-                    )
+        pipe_table = self._var_exists(pipe_node.id)
+        if not pipe_table:
+            self._raise_error(pipe_node, f"'{pipe_node.id}' not found in scope")
+        pipe_val = pipe_table[pipe_node.id]
 
-                if not isinstance(cb_node, ast.Name):
-                    self._raise_error(
-                        context_expr,
-                        "'with' requires a simple variable (e.g., cb.reserve())",
-                    )
+        if not self._is_pipe_value(pipe_val):
+            self._raise_error(
+                context_expr,
+                f"'{pipe_node.id}' is not a Pipe",
+            )
 
-                cb_table = self._var_exists(cb_node.id)
-                if not cb_table:
-                    self._raise_error(cb_node, f"'{cb_node.id}' not found in scope")
-                cb_val = cb_table[cb_node.id]
+        # Emit ttl.if_src or ttl.if_dst with the body
+        if method_name == "if_src":
+            op = ttl.if_src(pipe_val)
+        else:  # if_dst
+            op = ttl.if_dst(pipe_val)
 
-                # Get tensor type from CB for reserve/wait result
-                tensor_type = self._get_cb_tensor_type(cb_val, node=context_expr)
-                if method_name == "reserve":
-                    tensor = self._emit_op_signposts(
-                        "cb_reserve",
-                        context_expr,
-                        lambda tt=tensor_type, cv=cb_val: ttl.cb_reserve(tt, cv),
-                    )
-                    releases.append(("cb_push", ttl.cb_push, cb_val, context_expr))
-                else:  # wait
-                    tensor = self._emit_op_signposts(
-                        "cb_wait",
-                        context_expr,
-                        lambda tt=tensor_type, cv=cb_val: ttl.cb_wait(tt, cv),
-                    )
-                    releases.append(("cb_pop", ttl.cb_pop, cb_val, context_expr))
-
-                # Attach CB to tensor so store() can find the CB association
-                acquire_result = ttl.attach_cb(tensor.type, tensor, cb_val)
-
-                if optional_vars is not None:
-                    if not isinstance(optional_vars, ast.Name):
-                        self._raise_error(
-                            optional_vars,
-                            "'with ... as var' requires a simple variable name",
-                        )
-                    self.symbol_tables[-1][optional_vars.id] = acquire_result
-
+        # Create the body block and visit the body inside
+        block = Block.create_at_start(op.body)
+        with InsertionPoint(block):
             for stmt in node.body:
                 self.visit(stmt)
 
-            self._on_scope_exit()
+    def _visit_with_cb(self, node):
+        """Handle 'with cb.reserve():' or 'with cb.wait():'."""
+        releases = []  # [(release_op, cb_val), ...] in acquisition order
 
-            # Release in reverse order (implicit ops from with statement)
-            for op_name, release_op, cb_val, expr_node in reversed(releases):
-                self._emit_op_signposts(
-                    op_name,
-                    expr_node,
-                    lambda ro=release_op, cv=cb_val: ro(cv),
-                    implicit=True,
+        self._on_scope_exit()
+
+        for item in node.items:
+            context_expr = item.context_expr
+            optional_vars = item.optional_vars
+
+            if not isinstance(context_expr, ast.Call):
+                self._raise_error(
+                    context_expr,
+                    "'with' requires a method call (e.g., cb.reserve())",
                 )
+
+            if not isinstance(context_expr.func, ast.Attribute):
+                self._raise_error(
+                    context_expr, "'with' requires a method call on an object"
+                )
+
+            method_name = context_expr.func.attr
+            cb_node = context_expr.func.value
+
+            if method_name not in ("reserve", "wait"):
+                self._raise_error(
+                    context_expr,
+                    f"'with' only supports 'reserve()', 'wait()', 'if_src()', or 'if_dst()', got '{method_name}'",
+                )
+
+            if not isinstance(cb_node, ast.Name):
+                self._raise_error(
+                    context_expr,
+                    "'with' requires a simple variable (e.g., cb.reserve())",
+                )
+
+            cb_table = self._var_exists(cb_node.id)
+            if not cb_table:
+                self._raise_error(cb_node, f"'{cb_node.id}' not found in scope")
+            cb_val = cb_table[cb_node.id]
+
+            # Get tensor type from CB for reserve/wait result
+            tensor_type = self._get_cb_tensor_type(cb_val, node=context_expr)
+            if method_name == "reserve":
+                tensor = self._emit_op_signposts(
+                    "cb_reserve",
+                    context_expr,
+                    lambda tt=tensor_type, cv=cb_val: ttl.cb_reserve(tt, cv),
+                )
+                releases.append(("cb_push", ttl.cb_push, cb_val, context_expr))
+            else:  # wait
+                tensor = self._emit_op_signposts(
+                    "cb_wait",
+                    context_expr,
+                    lambda tt=tensor_type, cv=cb_val: ttl.cb_wait(tt, cv),
+                )
+                releases.append(("cb_pop", ttl.cb_pop, cb_val, context_expr))
+
+            # Attach CB to tensor so store() can find the CB association
+            acquire_result = ttl.attach_cb(tensor.type, tensor, cb_val)
+
+            if optional_vars is not None:
+                if not isinstance(optional_vars, ast.Name):
+                    self._raise_error(
+                        optional_vars,
+                        "'with ... as var' requires a simple variable name",
+                    )
+                self.symbol_tables[-1][optional_vars.id] = acquire_result
+
+        for stmt in node.body:
+            self.visit(stmt)
+
+        self._on_scope_exit()
+
+        # Release in reverse order (implicit ops from with statement)
+        for op_name, release_op, cb_val, expr_node in reversed(releases):
+            self._emit_op_signposts(
+                op_name,
+                expr_node,
+                lambda ro=release_op, cv=cb_val: ro(cv),
+                implicit=True,
+            )
 
 
 def syntax(syntax_name):
