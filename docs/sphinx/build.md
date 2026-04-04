@@ -46,12 +46,31 @@ target directory is cleaned automatically to prevent stale libraries from being
 linked. If `TTLANG_TOOLCHAIN_DIR` is omitted, defaults to
 `build/toolchain-install/`.
 
-The convenience script `_scripts/rebuild-toolchain.sh` automates this with a
-temporary build directory that is removed after a successful build and test.
+The convenience script `scripts/build-and-install.sh --toolchain-only` automates
+this — it configures, builds LLVM + tt-metal, installs them into the toolchain
+prefix, and cleans up.
 
 > **Note:** Setting only `-DTTLANG_TOOLCHAIN_DIR=...` (without
 > `TTLANG_BUILD_TOOLCHAIN`) will reuse an existing installation if one is found
 > at that directory. Use `TTLANG_BUILD_TOOLCHAIN=ON` to guarantee a fresh build.
+
+### Install a toolchain locally
+
+To build and install just the toolchain (LLVM + tt-metal) without building
+tt-lang itself:
+
+```bash
+# Ensure you own the install prefix
+sudo mkdir -p /opt/ttlang-toolchain && sudo chown $USER /opt/ttlang-toolchain
+
+TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain scripts/build-and-install.sh --toolchain-only
+```
+
+This runs the full configure (building LLVM and tt-metal from submodules),
+installs tt-metal artifacts into the prefix, and finalizes the installation.
+Set `TTLANG_TOOLCHAIN_DIR` to change the install location (default:
+`/opt/ttlang-toolchain`). Once installed, use `-DTTLANG_USE_TOOLCHAIN=ON` for
+fast rebuilds of tt-lang itself.
 
 ### Use a pre-built toolchain
 

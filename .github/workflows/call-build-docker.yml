@@ -147,7 +147,7 @@ jobs:
             -w /workspace \
             -e TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
             "$BASE_IMAGE" \
-            bash .github/containers/build-and-install.sh --configure-only
+            bash scripts/build-and-install.sh --configure-only
           echo "=== Configure complete ==="
           df -h
 
@@ -180,7 +180,7 @@ jobs:
             -w /workspace \
             -e TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
             "$BASE_IMAGE" \
-            bash .github/containers/build-and-install.sh --build-and-install
+            bash scripts/build-and-install.sh --build-and-install
           echo "=== tt-lang build complete ==="
           df -h
 
