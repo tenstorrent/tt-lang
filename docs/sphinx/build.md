@@ -11,7 +11,7 @@ produces a fully working environment.
 
 - CMake 3.28+
 - Ninja
-- Clang/Clang++ 17+ (or GCC 11+)
+- Clang/Clang++ 17+ (or GCC 12+)
 - Python 3.11+
 - Git (submodules must be initialized:
   `git submodule update --init --recursive`)
@@ -107,11 +107,11 @@ Open `http://localhost:8000` to browse the docs locally.
 
 `.gitmodules` pins three submodules:
 
-| Submodule | Purpose |
-|---|---|
-| `third-party/llvm-project` | LLVM/MLIR source (built at configure time) |
-| `third-party/tt-mlir` | tt-mlir source (only select directories compiled) |
-| `third-party/tt-metal` | Runtime (built at configure time) |
+| Submodule                    | Purpose                                           |
+| ---------------------------- | ------------------------------------------------- |
+| `third-party/llvm-project` | LLVM/MLIR source (built at configure time)        |
+| `third-party/tt-mlir`      | tt-mlir source (only select directories compiled) |
+| `third-party/tt-metal`     | Runtime (built at configure time)                 |
 
 ### LLVM SHA verification
 
@@ -125,21 +125,21 @@ mismatch.
 
 ## CMake Options
 
-| Option | Default | Description |
-|---|---|---|
-| `CMAKE_BUILD_TYPE` | `Release` | Build type (Debug, Release, RelWithDebInfo) |
-| `LLVM_BUILD_TYPE` | `Release` | LLVM build type (independent of project build type) |
-| `TTLANG_TOOLCHAIN_DIR` | — | Toolchain prefix for LLVM, tt-metal, and venv |
-| `TTLANG_USE_TOOLCHAIN` | `OFF` | Use pre-built toolchain at `TTLANG_TOOLCHAIN_DIR` |
-| `TTLANG_BUILD_TOOLCHAIN` | `OFF` | Build LLVM and tt-metal into a reusable toolchain directory (cleans stale artifacts) |
-| `MLIR_PREFIX` | — | Path to pre-built LLVM/MLIR install |
-| `TTLANG_ACCEPT_LLVM_MISMATCH` | `OFF` | Allow LLVM SHA mismatch with pre-built installs |
-| `TTLANG_ACCEPT_TTMETAL_MISMATCH` | `OFF` | Allow tt-metal SHA mismatch with pre-built installs |
-| `TTLANG_ENABLE_PERF_TRACE` | `ON` | Enable tt-metal performance tracing support |
-| `TTLANG_SIM_ONLY` | `OFF` | Set up Python environment for [simulator](simulator.md) only; skip compiler build |
-| `TTLANG_ENABLE_DOCS` | `OFF` | Enable Sphinx documentation build (`ttlang-docs` target) |
-| `CODE_COVERAGE` | `OFF` | Enable code coverage reporting |
-| `TTLANG_FORCE_TOOLCHAIN_REBUILD` | `OFF` | Force rebuild of LLVM and tt-metal into `TTLANG_TOOLCHAIN_DIR` |
+| Option                             | Default     | Description                                                                          |
+| ---------------------------------- | ----------- | ------------------------------------------------------------------------------------ |
+| `CMAKE_BUILD_TYPE`               | `Release` | Build type (Debug, Release, RelWithDebInfo)                                          |
+| `LLVM_BUILD_TYPE`                | `Release` | LLVM build type (independent of project build type)                                  |
+| `TTLANG_TOOLCHAIN_DIR`           | —          | Toolchain prefix for LLVM, tt-metal, and venv                                        |
+| `TTLANG_USE_TOOLCHAIN`           | `OFF`     | Use pre-built toolchain at `TTLANG_TOOLCHAIN_DIR`                                  |
+| `TTLANG_BUILD_TOOLCHAIN`         | `OFF`     | Build LLVM and tt-metal into a reusable toolchain directory (cleans stale artifacts) |
+| `MLIR_PREFIX`                    | —          | Path to pre-built LLVM/MLIR install                                                  |
+| `TTLANG_ACCEPT_LLVM_MISMATCH`    | `OFF`     | Allow LLVM SHA mismatch with pre-built installs                                      |
+| `TTLANG_ACCEPT_TTMETAL_MISMATCH` | `OFF`     | Allow tt-metal SHA mismatch with pre-built installs                                  |
+| `TTLANG_ENABLE_PERF_TRACE`       | `ON`      | Enable tt-metal performance tracing support                                          |
+| `TTLANG_SIM_ONLY`                | `OFF`     | Set up Python environment for[simulator](simulator.md) only; skip compiler build        |
+| `TTLANG_ENABLE_DOCS`             | `OFF`     | Enable Sphinx documentation build (`ttlang-docs` target)                           |
+| `CODE_COVERAGE`                  | `OFF`     | Enable code coverage reporting                                                       |
+| `TTLANG_FORCE_TOOLCHAIN_REBUILD` | `OFF`     | Force rebuild of LLVM and tt-metal into `TTLANG_TOOLCHAIN_DIR`                     |
 
 ## Build Architecture
 
@@ -167,6 +167,7 @@ TTKernel, and TTMetal dialect bindings. A CAPI aggregation library
 single shared object. The Python package prefix is `ttl.`.
 
 Three-stage site initialization registers all dialects on context creation:
+
 1. `_mlirRegisterEverything` — upstream MLIR dialects (func, arith, scf, etc.)
 2. `_site_initialize_0.py` — tt-mlir dialects (TTCore, TTKernel, TTMetal)
 3. `_site_initialize_1.py` — TTL dialect
@@ -198,6 +199,7 @@ your own risk.
 ### Python import errors
 
 Ensure the environment is activated and the build completed:
+
 ```bash
 source build/env/activate
 python3 -c "from ttl.dialects import ttl, ttkernel, ttcore"
