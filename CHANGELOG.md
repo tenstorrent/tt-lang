@@ -18,9 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Implemented compute expression optimizations (tiling and unrolling) to maximize DST usage
 - Implemented support for elementwise operations to use FPU when possible
 - Added support for debug prints
-- Added support for auto-profiling, profiling with user specified scopes (ttl.signpost) and performance summary
+- Added support for auto-profiling, profiling with user specified scopes (`ttl.signpost`) and performance summary
 - Enabled interactive visualization of profiling results with [Perfetto](https://perfetto.dev/)
-- Added support for /, min, max, floor, recip from ttl.math
+- Added support for `/`, `min`, `max`, `floor`, `recip` from `ttl.math`
 - Added support for 3D+ blocks
 
 ### Simulator
@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added CLI options for setting hardware limits such as grid size, number of DFBs etc
 - Added using TT-NN golden functions for simulations of TT-NN
 - Added enforcement for block state machines
-- Added support for ttl.math functions
+- Added support for `ttl.math` functions
 - Added support for 3D+ blocks
 - Added support for collecting performance statistics
 - Improved various error messages
