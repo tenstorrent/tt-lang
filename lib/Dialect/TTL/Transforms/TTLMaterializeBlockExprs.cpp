@@ -60,12 +60,15 @@ static bool isBlockExprUnary(Operation *op) {
 }
 
 static SmallVector<Value, 2> getBlockExprOperands(Operation *op) {
-  if (isa<BlockExprFillOp>(op))
+  if (isa<BlockExprFillOp>(op)) {
     return {};
-  if (isBlockExprUnary(op))
+  }
+  if (isBlockExprUnary(op)) {
     return {op->getOperand(0)};
-  if (isa<BlockExprBcastOp>(op))
+  }
+  if (isa<BlockExprBcastOp>(op)) {
     return {op->getOperand(0)};
+  }
   return {op->getOperand(0), op->getOperand(1)};
 }
 
@@ -82,9 +85,11 @@ static BlockExprTrace traceBlockExprToRoots(Value value) {
       result.rootInputs.insert(v);
       return true;
     }
-    for (Value operand : getBlockExprOperands(defOp))
-      if (!trace(operand))
+    for (Value operand : getBlockExprOperands(defOp)) {
+      if (!trace(operand)) {
         return false;
+      }
+    }
     result.opsInOrder.insert(defOp);
     return true;
   };
@@ -101,15 +106,19 @@ mergeTraces(const DenseMap<Operation *, BlockExprTrace> &storeTraces,
     auto it = storeTraces.find(store.getOperation());
     assert(it != storeTraces.end());
     const BlockExprTrace &trace = it->second;
-    for (Value root : trace.rootInputs)
+    for (Value root : trace.rootInputs) {
       merged.rootInputs.insert(root);
-    for (Operation *op : trace.opsInOrder)
+    }
+    for (Operation *op : trace.opsInOrder) {
       allOps.insert(op);
+    }
   }
   Block *block = stores.front()->getBlock();
-  for (auto &op : *block)
-    if (allOps.contains(&op))
+  for (auto &op : *block) {
+    if (allOps.contains(&op)) {
       merged.opsInOrder.insert(&op);
+    }
+  }
   return merged;
 }
 
@@ -137,34 +146,40 @@ static RankedTensorType getTensorType(Value v) {
 static SmallVector<DPrintOp>
 collectDPrintsForCompute(const BlockExprTrace &trace,
                          SmallVectorImpl<StoreOp> &stores) {
-  if (trace.opsInOrder.empty())
+  if (trace.opsInOrder.empty()) {
     return {};
+  }
 
   DenseSet<Operation *> fusedSet(trace.opsInOrder.begin(),
                                  trace.opsInOrder.end());
   DenseSet<Operation *> storeSet;
-  for (StoreOp store : stores)
+  for (StoreOp store : stores) {
     storeSet.insert(store.getOperation());
+  }
 
   // Find span: first fused op to last store.
   Operation *firstFused = nullptr;
   Operation *lastStore = nullptr;
   for (auto &op : *stores.front()->getBlock()) {
-    if (fusedSet.contains(&op) && !firstFused)
+    if (fusedSet.contains(&op) && !firstFused) {
       firstFused = &op;
-    if (storeSet.contains(&op))
+    }
+    if (storeSet.contains(&op)) {
       lastStore = &op;
+    }
   }
-  if (!firstFused || !lastStore)
+  if (!firstFused || !lastStore) {
     return {};
+  }
 
   SmallVector<DPrintOp> result;
   for (auto *op = firstFused; op != lastStore->getNextNode();
        op = op->getNextNode()) {
     if (auto dp = dyn_cast<DPrintOp>(op)) {
       StringRef mode = dp.getMode();
-      if (mode == "dst" || mode == "tile")
+      if (mode == "dst" || mode == "tile") {
         result.push_back(dp);
+      }
     }
   }
   return result;
@@ -180,32 +195,38 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
   // on compiler-inserted ops (sync, inits).
   Location storeLoc = stores.back().getLoc();
   Location loc = storeLoc;
-  if (auto fusedLoc = dyn_cast<FusedLoc>(storeLoc))
-    if (isa_and_nonnull<SignpostScopeAttr>(fusedLoc.getMetadata()))
+  if (auto fusedLoc = dyn_cast<FusedLoc>(storeLoc)) {
+    if (isa_and_nonnull<SignpostScopeAttr>(fusedLoc.getMetadata())) {
       loc = fusedLoc.getLocations().empty() ? storeLoc
                                             : fusedLoc.getLocations().front();
-
-  auto outputType = getTensorType(stores.front().getView());
-  if (!outputType)
-    return stores.front().emitError("store view must have ranked tensor type");
-  for (size_t i = 1; i < stores.size(); ++i) {
-    StoreOp store = stores[i];
-    if (getTensorType(store.getView()) != outputType)
-      return store.emitError(
-          "multi-store group: output type mismatch across stores");
+    }
   }
 
-  if (trace.opsInOrder.empty())
+  auto outputType = getTensorType(stores.front().getView());
+  if (!outputType) {
+    return stores.front().emitError("store view must have ranked tensor type");
+  }
+  for (size_t i = 1; i < stores.size(); ++i) {
+    StoreOp store = stores[i];
+    if (getTensorType(store.getView()) != outputType) {
+      return store.emitError(
+          "multi-store group: output type mismatch across stores");
+    }
+  }
+
+  if (trace.opsInOrder.empty()) {
     return success();
+  }
 
   // Validate bcast inputs.
   for (Operation *op : trace.opsInOrder) {
     if (auto bcastOp = dyn_cast<BlockExprBcastOp>(op)) {
       Value input = bcastOp.getInput();
-      if (input.getDefiningOp() && isBlockExprOp(input.getDefiningOp()))
+      if (input.getDefiningOp() && isBlockExprOp(input.getDefiningOp())) {
         return bcastOp.emitError(
             "broadcast input must come directly from a circular buffer "
             "(DFB-attached value), not from an intermediate expression");
+      }
     }
   }
 
@@ -217,8 +238,9 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
   SmallVector<Value> outCbs;
   for (StoreOp store : stores) {
     auto reserve = store.getView().getDefiningOp<CBReserveOp>();
-    if (!reserve)
+    if (!reserve) {
       return store.emitError("store view not from cb_reserve");
+    }
     outCbs.push_back(reserve.getCb());
   }
 
@@ -239,17 +261,19 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
           exprs.push_back(getAffineDimExpr(d, ctx));
         }
       }
-      if (hasBroadcast)
+      if (hasBroadcast) {
         maps.push_back(AffineMapAttr::get(
             AffineMap::get(outputType.getRank(), 0, exprs, ctx)));
-      else
+      } else {
         maps.push_back(AffineMapAttr::get(identityMap));
+      }
     } else {
       maps.push_back(AffineMapAttr::get(identityMap));
     }
   }
-  for (size_t i = 0; i < outCbs.size(); ++i)
+  for (size_t i = 0; i < outCbs.size(); ++i) {
     maps.push_back(AffineMapAttr::get(identityMap));
+  }
 
   SmallVector<Attribute> iterTypes(outputType.getRank(),
                                    builder.getStringAttr("parallel"));
@@ -274,23 +298,27 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
 
   Block *body = builder.createBlock(&computeOp.getBody());
   Type tileType = ttcore::TileType::get(outputType.getElementType());
-  for (size_t i = 0; i < trace.rootInputs.size(); ++i)
+  for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
     body->addArgument(tileType, loc);
-  for (size_t i = 0; i < outCbs.size(); ++i)
+  }
+  for (size_t i = 0; i < outCbs.size(); ++i) {
     body->addArgument(tileType, loc);
+  }
 
   builder.setInsertionPointToStart(body);
 
   DenseMap<Value, Value> tensorToTile;
-  for (size_t i = 0; i < trace.rootInputs.size(); ++i)
+  for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
     tensorToTile[trace.rootInputs[i]] = body->getArgument(i);
+  }
 
   // Matmul+add deferred emission.
   DenseMap<Value, std::pair<Value, Value>> deferredMatmul;
 
   Value finalResult;
   for (Operation *op : trace.opsInOrder) {
-    // Use the source block_expr op's location (carries FusedLoc scope metadata).
+    // Use the source block_expr op's location (carries FusedLoc scope
+    // metadata).
     Location opLoc = op->getLoc();
     Value tileResult;
 
@@ -313,28 +341,32 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
           deferred = true;
         }
       }
-      if (!deferred)
+      if (!deferred) {
         tileResult = TileMatmulBlockOp::create(builder, opLoc, tileType,
                                                lhsTile, rhsTile, Value());
+      }
     } else {
       if (isa<AddBlockExprOp>(op)) {
         Value lhs = op->getOperand(0), rhs = op->getOperand(1);
         auto tryFold = [&](Value tensorA, Value tensorB) -> Value {
           auto dfIt = deferredMatmul.find(tensorA);
-          if (dfIt == deferredMatmul.end())
+          if (dfIt == deferredMatmul.end()) {
             return nullptr;
+          }
           auto [mmLhs, mmRhs] = dfIt->second;
           Value accTile = tensorToTile.lookup(tensorB);
-          if (!accTile)
+          if (!accTile) {
             return nullptr;
+          }
           deferredMatmul.erase(dfIt);
           return TileMatmulBlockOp::create(builder, opLoc, tileType, mmLhs,
                                            mmRhs, accTile);
         };
-        if (Value folded = tryFold(lhs, rhs))
+        if (Value folded = tryFold(lhs, rhs)) {
           tileResult = folded;
-        else if (Value folded = tryFold(rhs, lhs))
+        } else if (Value folded = tryFold(rhs, lhs)) {
           tileResult = folded;
+        }
       }
 
       if (!tileResult) {
@@ -353,15 +385,17 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
         SmallVector<Value, 2> tileOperands;
         for (Value operand : getBlockExprOperands(op)) {
           auto it = tensorToTile.find(operand);
-          if (it == tensorToTile.end())
+          if (it == tensorToTile.end()) {
             return op->emitError("block_expr materialization: operand not "
                                  "mapped to tile value");
+          }
           tileOperands.push_back(it->second);
         }
         tileResult =
             emitTileOpForBlockExpr(builder, opLoc, op, tileOperands, tileType);
-        if (!tileResult)
+        if (!tileResult) {
           return op->emitError("block_expr materialization: unsupported op");
+        }
       }
     }
 
@@ -377,23 +411,27 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
   size_t numInputs = trace.rootInputs.size();
 
   DenseMap<Value, size_t> cbToOutputIdx;
-  if (outCbs.size() > 1)
-    for (auto [idx, outCb] : llvm::enumerate(outCbs))
+  if (outCbs.size() > 1) {
+    for (auto [idx, outCb] : llvm::enumerate(outCbs)) {
       cbToOutputIdx[outCb] = idx;
+    }
+  }
 
   for (int si = stores.size() - 1; si >= 0; --si) {
     StoreOp store = stores[si];
     Value tileVal = tensorToTile.lookup(store.getTensor());
-    if (!tileVal)
+    if (!tileVal) {
       tileVal = finalResult;
+    }
 
     size_t outputIdx = 0;
     if (outCbs.size() > 1) {
       Value viewCB = getAttachedCB(store.getView());
       if (viewCB) {
         auto it = cbToOutputIdx.find(viewCB);
-        if (it != cbToOutputIdx.end())
+        if (it != cbToOutputIdx.end()) {
           outputIdx = it->second;
+        }
       }
     }
     AffineMap outputMap = indexingMaps[numInputs + outputIdx];
@@ -403,25 +441,29 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
     // Use the store's scoped location so tile_store carries the scope.
     TileStoreOp::create(builder, store.getLoc(), tileVal, store.getView(),
                         indices);
-
   }
 
   // Emit collected dprints inside the compute body (after tile ops,
   // before yield). Their signpost_scopes attributes are preserved.
-  for (DPrintOp dp : dprintsForBody)
+  for (DPrintOp dp : dprintsForBody) {
     builder.clone(*dp.getOperation());
+  }
 
   YieldOp::create(builder, loc);
 
   // Erase stores, block_expr ops, and collected dprints.
-  for (StoreOp store : stores)
+  for (StoreOp store : stores) {
     store.erase();
+  }
   for (auto it = trace.opsInOrder.rbegin(); it != trace.opsInOrder.rend();
-       ++it)
-    if ((*it)->use_empty())
+       ++it) {
+    if ((*it)->use_empty()) {
       (*it)->erase();
-  for (DPrintOp dp : dprintsForBody)
+    }
+  }
+  for (DPrintOp dp : dprintsForBody) {
     dp.erase();
+  }
 
   return success();
 }
@@ -432,20 +474,24 @@ static LogicalResult materializePassthrough(StoreOp storeOp,
   Value input = storeOp.getTensor();
   Value reserveView = storeOp.getView();
   auto reserve = reserveView.getDefiningOp<CBReserveOp>();
-  if (!reserve)
+  if (!reserve) {
     return storeOp.emitError("store view not from cb_reserve");
+  }
   Value outputCb = reserve.getCb();
 
   auto inputType = getTensorType(input);
-  if (!inputType)
+  if (!inputType) {
     return storeOp.emitError("passthrough store input must have tensor type");
+  }
 
   Location storeLoc = storeOp.getLoc();
   Location loc = storeLoc;
-  if (auto fusedLoc = dyn_cast<FusedLoc>(storeLoc))
-    if (isa_and_nonnull<SignpostScopeAttr>(fusedLoc.getMetadata()))
+  if (auto fusedLoc = dyn_cast<FusedLoc>(storeLoc)) {
+    if (isa_and_nonnull<SignpostScopeAttr>(fusedLoc.getMetadata())) {
       loc = fusedLoc.getLocations().empty() ? storeLoc
                                             : fusedLoc.getLocations().front();
+    }
+  }
   MLIRContext *ctx = builder.getContext();
 
   AffineMap identityMap =
@@ -461,10 +507,10 @@ static LogicalResult materializePassthrough(StoreOp storeOp,
   Value initAttached =
       AttachCBOp::create(builder, loc, init.getType(), init, outputCb);
 
-  auto computeOp = ComputeOp::create(
-      builder, loc, TypeRange{inputType}, ValueRange{input},
-      ValueRange{initAttached}, builder.getArrayAttr(maps),
-      builder.getArrayAttr(iterTypes));
+  auto computeOp =
+      ComputeOp::create(builder, loc, TypeRange{inputType}, ValueRange{input},
+                        ValueRange{initAttached}, builder.getArrayAttr(maps),
+                        builder.getArrayAttr(iterTypes));
 
   Block *body = builder.createBlock(&computeOp.getBody());
   Type tileType = ttcore::TileType::get(inputType.getElementType());
@@ -477,14 +523,17 @@ static LogicalResult materializePassthrough(StoreOp storeOp,
       applyIndexingMapToIterIndices(builder, loc, identityMap, iterIndices);
 
   TileStoreOp::create(builder, loc, body->getArgument(0), reserveView,
-                       storeIndices);
+                      storeIndices);
 
   YieldOp::create(builder, loc);
 
-  for (OpOperand &use : llvm::make_early_inc_range(input.getUses()))
-    if (auto attachOp = dyn_cast<AttachCBOp>(use.getOwner()))
-      if (attachOp.getCb() == outputCb)
+  for (OpOperand &use : llvm::make_early_inc_range(input.getUses())) {
+    if (auto attachOp = dyn_cast<AttachCBOp>(use.getOwner())) {
+      if (attachOp.getCb() == outputCb) {
         attachOp.replaceAllUsesWith(computeOp.getResult(0));
+      }
+    }
+  }
 
   storeOp.erase();
   return success();
@@ -515,14 +564,16 @@ struct TTLMaterializeBlockExprsPass
 
     if (!blockExprStores.empty()) {
       DenseMap<Value, SmallVector<StoreOp>> groupMap;
-      for (StoreOp store : blockExprStores)
+      for (StoreOp store : blockExprStores) {
         groupMap[store.getTensor()].push_back(store);
+      }
 
       for (auto &[tensorVal, groupStores] : groupMap) {
         DenseMap<Operation *, unsigned> blockPos;
         unsigned pos = 0;
-        for (auto &op : *groupStores.front()->getBlock())
+        for (auto &op : *groupStores.front()->getBlock()) {
           blockPos[&op] = pos++;
+        }
         llvm::sort(groupStores, [&](StoreOp lhs, StoreOp rhs) {
           return blockPos[lhs.getOperation()] < blockPos[rhs.getOperation()];
         });
@@ -532,14 +583,17 @@ struct TTLMaterializeBlockExprsPass
                 ? storeTraces[groupStores.front().getOperation()]
                 : mergeTraces(storeTraces, groupStores);
 
-        if (failed(materializeStoreGroup(groupStores, merged, builder)))
+        if (failed(materializeStoreGroup(groupStores, merged, builder))) {
           return signalPassFailure();
+        }
       }
     }
 
-    for (StoreOp store : passthroughStores)
-      if (failed(materializePassthrough(store, builder)))
+    for (StoreOp store : passthroughStores) {
+      if (failed(materializePassthrough(store, builder))) {
         return signalPassFailure();
+      }
+    }
   }
 };
 
