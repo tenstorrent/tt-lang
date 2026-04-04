@@ -1,4 +1,4 @@
-TTL Documentation
+TT-Lang Documentation
 =================
 
 .. toctree::

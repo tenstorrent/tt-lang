@@ -6,14 +6,14 @@
 # Tutorial Step 1: Single Node, Single-Tile Block
 # ================================================
 # Introduces the core TT-Lang programming model:
-#   - @ttl.operation   — declares a kernel and the grid it runs on
-#   - @ttl.compute  — the compute thread: arithmetic on tiles
-#   - @ttl.datamovement — DM threads: move data between DRAM and L1
+#   - @ttl.operation   — declares an operation and the grid it runs on
+#   - @ttl.compute  — the compute kernel: arithmetic on tiles
+#   - @ttl.datamovement — DM kernels: move data between DRAM and L1
 #   - ttl.make_dataflow_buffer_like — creates an in-L1 dataflow buffer (DFB)
-#     that synchronizes data passing between threads
+#     that synchronizes data passing between kernels
 #   - ttl.copy / tx.wait — initiates and awaits a transfer
 #
-# The kernel fuses a * b + c into a single operation, processing one 32×32 tile
+# The operation fuses a * b + c into a single operation, processing one 32×32 tile
 # at a time.  The outer TT-NN multiply by d is left to TT-NN (see Step 0).
 
 import ttnn
@@ -39,13 +39,15 @@ TILE_SIZE = 32
 
 
 # @ttl.operation marks a Python function as a TT-Lang operation.
-# grid=(1, 1) means the kernel runs on a single node (one Tensix core).
-# The function signature lists the tensors the kernel reads and writes;
+# grid=(1, 1) means the operation runs on a single node (one Tensix core).
+# The function signature lists the tensors the operation reads and writes;
 # these live in DRAM and are passed by the host at call time.
 
 
 @ttl.operation(grid=(1, 1))
-def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
+def __tutorial_operation(
+    a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
+):
 
     # Compute iteration counts in tile coordinates.
 
@@ -55,14 +57,14 @@ def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Te
     # Dataflow buffers (DFBs) are L1 buffers shared between threads.
     # shape=(1, 1) means each entry holds exactly one 32×32 tile.
     # buffer_factor=2 allocates two entries, enabling double-buffering: while the
-    # compute thread processes one entry, the DM thread can fill the other.
+    # compute kernel processes one entry, the DM kernel can fill the other.
 
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
     c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
     y_dfb = ttl.make_dataflow_buffer_like(y, shape=(1, 1), buffer_factor=2)
 
-    # The compute thread runs concurrently with the DM threads.
+    # The compute kernel runs concurrently with the DM kernels.
     # It waits for filled input blocks and reserves empty output blocks.
 
     @ttl.compute()
@@ -84,14 +86,14 @@ def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Te
 
                     y_blk.store(a_blk * b_blk + c_blk)
 
-    # The first DM thread reads input tiles from DRAM into DFBs.
+    # The first DM kernel reads input tiles from DRAM into DFBs.
 
     @ttl.datamovement()
     def tutorial_read():
         for row in range(rows):
             for col in range(cols):
                 with (
-                    # reserve() blocks until the compute thread has freed an entry.
+                    # reserve() blocks until the compute kernel has freed an entry.
                     a_dfb.reserve() as a_blk,
                     b_dfb.reserve() as b_blk,
                     c_dfb.reserve() as c_blk,
@@ -116,13 +118,13 @@ def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Te
 
                     # Wait for all three trasfers to finish before the `with` block
                     # exits and implicitly calls push(), signalling the compute
-                    # thread that the tiles are ready.
+                    # kernel that the tiles are ready.
 
                     tx_a.wait()
                     tx_b.wait()
                     tx_c.wait()
 
-    # The second DM thread writes computed output tiles from L1 back to DRAM.
+    # The second DM kernel writes computed output tiles from L1 back to DRAM.
 
     @ttl.datamovement()
     def tutorial_write():
@@ -137,9 +139,9 @@ def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Te
                     tx.wait()
 
 
-def tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
+def tutorial_operation(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
     y = from_torch(torch.zeros((a.shape[0], a.shape[1]), dtype=torch.bfloat16))
-    __tutorial_kernel(a, b, c, y)
+    __tutorial_operation(a, b, c, y)
     return y
 
 
@@ -162,7 +164,7 @@ try:
     c = from_torch(c)
     d = from_torch(d)
 
-    y = ttnn.multiply(tutorial_kernel(a, b, c), d)
+    y = ttnn.multiply(tutorial_operation(a, b, c), d)
 
     y = ttnn.to_torch(y)
     print(y)

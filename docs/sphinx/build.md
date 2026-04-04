@@ -2,8 +2,8 @@
 
 ## Overview
 
-tt-lang uses a CMake-based build system that compiles LLVM/MLIR, a minimal
-tt-mlir subset, tt-metal, and tt-lang's own dialects and tools from pinned git
+TT-Lang uses a CMake-based build system that compiles LLVM/MLIR, a minimal
+tt-mlir subset, tt-metal, and TT-Lang's own dialects and tools from pinned git
 submodules. A single `cmake -G Ninja -B build && cmake --build build` invocation
 produces a fully working environment.
 
@@ -32,16 +32,26 @@ dialects compile inline. The result is cached — subsequent configures skip the
 LLVM build if `build/llvm-install/lib/cmake/mlir/MLIRConfig.cmake` already
 exists.
 
-### Build with reusable toolchain
+### Build a reusable toolchain
 
 ```bash
-cmake -G Ninja -B build -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
+cmake -G Ninja -B build -DTTLANG_BUILD_TOOLCHAIN=ON -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
 source build/env/activate
 cmake --build build
 ```
 
-Same as above, but LLVM, tt-metal, and the Python venv are installed into the
-given prefix so they can be reused by other builds.
+Builds LLVM/MLIR and tt-metal from submodules and installs them into the given
+prefix so they can be reused by other builds. Any existing installation at the
+target directory is cleaned automatically to prevent stale libraries from being
+linked. If `TTLANG_TOOLCHAIN_DIR` is omitted, defaults to
+`build/toolchain-install/`.
+
+The convenience script `_scripts/rebuild-toolchain.sh` automates this with a
+temporary build directory that is removed after a successful build and test.
+
+> **Note:** Setting only `-DTTLANG_TOOLCHAIN_DIR=...` (without
+> `TTLANG_BUILD_TOOLCHAIN`) will reuse an existing installation if one is found
+> at that directory. Use `TTLANG_BUILD_TOOLCHAIN=ON` to guarantee a fresh build.
 
 ### Use a pre-built toolchain
 
@@ -65,7 +75,7 @@ cmake --build build
 ```
 
 Point directly at an LLVM/MLIR install prefix. tt-metal still builds from
-submodule. tt-lang may not build successfully if the pre-built LLVM is a
+submodule. TT-Lang may not build successfully if the pre-built LLVM is a
 significantly different version than what tt-mlir expects.
 
 ## Installing
@@ -78,10 +88,10 @@ Docker images). It is not needed for development — just use
 cmake --install build --prefix /opt/ttlang-toolchain
 ```
 
-This copies tt-lang binaries, Python packages, examples, tests, and the
+This copies TT-Lang binaries, Python packages, examples, tests, and the
 environment activation script into the given prefix. When `TTLANG_TOOLCHAIN_DIR`
 was set during configure, LLVM, tt-metal, and the Python venv are already there;
-the install step adds only tt-lang's own artifacts.
+the install step adds only TT-Lang's own artifacts.
 
 ## Building Documentation
 
@@ -121,6 +131,7 @@ mismatch.
 | `LLVM_BUILD_TYPE` | `Release` | LLVM build type (independent of project build type) |
 | `TTLANG_TOOLCHAIN_DIR` | — | Toolchain prefix for LLVM, tt-metal, and venv |
 | `TTLANG_USE_TOOLCHAIN` | `OFF` | Use pre-built toolchain at `TTLANG_TOOLCHAIN_DIR` |
+| `TTLANG_BUILD_TOOLCHAIN` | `OFF` | Build LLVM and tt-metal into a reusable toolchain directory (cleans stale artifacts) |
 | `MLIR_PREFIX` | — | Path to pre-built LLVM/MLIR install |
 | `TTLANG_ACCEPT_LLVM_MISMATCH` | `OFF` | Allow LLVM SHA mismatch with pre-built installs |
 | `TTLANG_ACCEPT_TTMETAL_MISMATCH` | `OFF` | Allow tt-metal SHA mismatch with pre-built installs |

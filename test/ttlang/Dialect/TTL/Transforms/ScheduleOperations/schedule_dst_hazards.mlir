@@ -1,5 +1,5 @@
 // RUN: ttlang-opt %s --split-input-file \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-subblock-compute-for-dst, ttl-insert-tile-regs-sync, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-subblock-compute-for-dst, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   | FileCheck %s --check-prefix=CHECK-WAR
 
 // Purpose: Regression test for WAR (Write-After-Read) hazard in DST scheduling.
@@ -28,35 +28,39 @@
 // CHECK-WAR-LABEL: func.func @war_hazard_three_input
 // CHECK-WAR:       ttkernel.tile_regs_acquire
 //
-// Depth 0: initial copies for a (cb0) and b (cb1)
+// Grouped scheduling with WAR hazard tracking:
+// Group 1: copies from CB0 (a) for both tiles
 // CHECK-WAR:       ttkernel.copy_tile_init(
-// CHECK-WAR:       ttkernel.copy_tile(
-// CHECK-WAR:       ttkernel.copy_tile(
-// CHECK-WAR:       ttkernel.copy_tile_init(
-// CHECK-WAR:       ttkernel.copy_tile(
-// CHECK-WAR:       ttkernel.copy_tile(
+// CHECK-WAR-NEXT:  ttkernel.copy_tile(
+// CHECK-WAR-NEXT:  ttkernel.copy_tile(
+// Group 2: copies from CB1 (b) for both tiles
+// CHECK-WAR-NEXT:  ttkernel.copy_tile_init(
+// CHECK-WAR-NEXT:  ttkernel.copy_tile(
+// CHECK-WAR-NEXT:  ttkernel.copy_tile(
+// Group 3: tanh on both tiles
+// CHECK-WAR-NEXT:  ttkernel.tanh_tile_init
+// CHECK-WAR-NEXT:  ttkernel.tanh_tile(
+// CHECK-WAR-NEXT:  ttkernel.tanh_tile(
+// Group 4: first add for both tiles
+// CHECK-WAR-NEXT:  ttkernel.add_binary_tile_init
+// CHECK-WAR-NEXT:  ttkernel.add_binary_tile(
+// CHECK-WAR-NEXT:  ttkernel.add_binary_tile(
+// Group 5: copies from CB2 (c) for both tiles (WAR: must follow first add)
+// CHECK-WAR-NEXT:  ttkernel.copy_tile_init(
+// CHECK-WAR-NEXT:  ttkernel.copy_tile(
+// CHECK-WAR-NEXT:  ttkernel.copy_tile(
+// Group 6: second add for both tiles
+// CHECK-WAR-NEXT:  ttkernel.add_binary_tile_init
+// CHECK-WAR-NEXT:  ttkernel.add_binary_tile(
+// CHECK-WAR-NEXT:  ttkernel.add_binary_tile(
 //
-// Depth 1: tanh group
-// CHECK-WAR:       ttkernel.tanh_tile_init
-// CHECK-WAR:       ttkernel.tanh_tile(
-// CHECK-WAR:       ttkernel.tanh_tile(
-//
-// Depth 2: first add (consumes dst1/dst3 from b copies)
-// CHECK-WAR:       ttkernel.add_binary_tile_init
-// CHECK-WAR:       ttkernel.add_binary_tile(
-// CHECK-WAR:       ttkernel.add_binary_tile(
-//
-// Depth 3: c copies -- MUST be after first add (WAR on dst1/dst3)
-// CHECK-WAR:       ttkernel.copy_tile_init(
-// CHECK-WAR:       ttkernel.copy_tile(
-// CHECK-WAR:       ttkernel.copy_tile(
-//
-// Depth 4: second add
-// CHECK-WAR:       ttkernel.add_binary_tile_init
-// CHECK-WAR:       ttkernel.add_binary_tile(
-// CHECK-WAR:       ttkernel.add_binary_tile(
-//
-// CHECK-WAR:       ttkernel.tile_regs_commit
+// Pack phase: pack_tile after wait, cb_push_back after release
+// CHECK-WAR-NEXT:  ttkernel.tile_regs_commit
+// CHECK-WAR-NEXT:  ttkernel.tile_regs_wait
+// CHECK-WAR:       ttkernel.pack_tile(
+// CHECK-WAR:       ttkernel.pack_tile(
+// CHECK-WAR:       ttkernel.tile_regs_release
+// CHECK-WAR:       ttkernel.cb_push_back(
 func.func @war_hazard_three_input(
     %a: tensor<2x1x!ttcore.tile<32x32, bf16>>,
     %b: tensor<2x1x!ttcore.tile<32x32, bf16>>,

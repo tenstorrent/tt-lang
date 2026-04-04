@@ -1,7 +1,7 @@
 // Summary: ensure DST assignment and tile_regs sync are correctly inserted in ttl.compute.
 // FPU binary ops (both operands from CB block args) get ttl.fpu_binary and need no copy_tile.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-insert-tile-regs-sync), canonicalize, cse)' --split-input-file | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-insert-tile-regs-sync), canonicalize, cse)' --split-input-file | FileCheck %s --check-prefix=SFPU
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst), canonicalize, cse)' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}), canonicalize, cse)' --split-input-file | FileCheck %s --check-prefix=SFPU
 
 // Verify no placeholder copies remain in final IR
 // CHECK-NOT: placeholder
@@ -18,15 +18,11 @@
 // CHECK-DAG:       %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 2}
 // CHECK:           %[[RES:.*]] = ttl.compute
 // CHECK:           ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[O:.*]]: !ttcore.tile<32x32, f32>):
-// CHECK-NEXT:        ttl.tile_regs_acquire
 // CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary: no copy_tile needed, tile_add operates directly on block args
 // CHECK-NEXT:        %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary}
-// CHECK-NEXT:        ttl.tile_regs_commit
-// CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]]
-// CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        ttl.yield
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 // CHECK-NEXT:      return %[[RES]]
@@ -37,15 +33,11 @@
 // SFPU-DAG:       %[[CB2S:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 2}
 // SFPU:           ttl.compute
 // SFPU:           ^bb0
-// SFPU:             ttl.tile_regs_acquire
 // SFPU-NOT:         fpu_binary
 // SFPU:             ttl.copy_tile {{.*}} {dst_idx = 0 : i32}
 // SFPU:             ttl.copy_tile {{.*}} {dst_idx = 1 : i32}
 // SFPU:             %[[ADDS:.*]] = ttl.tile_add {{.*}} {dst_idx = 0 : i32}
-// SFPU:             ttl.tile_regs_commit
-// SFPU-NEXT:        ttl.tile_regs_wait
 // SFPU:             ttl.tile_store %[[ADDS]], %{{.*}}[%{{.*}}, %{{.*}}]
-// SFPU-NEXT:        ttl.tile_regs_release
 // SFPU-NEXT:        ttl.yield
 func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                           %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
@@ -93,28 +85,20 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-DAG:       %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 2}
 // CHECK:           %[[R0:.*]] = ttl.compute
 // CHECK:           ^bb0(%[[A0:.*]]: !ttcore.tile<32x32, f32>, %[[B0:.*]]: !ttcore.tile<32x32, f32>, %{{.*}}: !ttcore.tile<32x32, f32>):
-// CHECK-NEXT:        ttl.tile_regs_acquire
 // CHECK-NEXT:        %[[I0_0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:        %[[I1_0:.*]] = ttl.iter_index 1 : index
 // CHECK-NEXT:        %[[SUM0:.*]] = ttl.tile_add %[[A0]], %[[B0]] {dst_idx = 0 : i32, ttl.fpu_binary}
-// CHECK-NEXT:        ttl.tile_regs_commit
-// CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        ttl.tile_store %[[SUM0]], %{{.*}}[%[[I0_0]], %[[I1_0]]]
-// CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        ttl.yield
 // Inter-compute: bind_cb for output of first compute, attach_cb
 // CHECK:           %[[CB3:.*]] = ttl.bind_cb{cb_index = 3, buffer_factor = 2}
 // CHECK-NEXT:      %{{.*}} = ttl.attach_cb %[[R0]], %[[CB3]]
 // CHECK:           %[[R1:.*]] = ttl.compute
 // CHECK:           ^bb0(%[[A1:.*]]: !ttcore.tile<32x32, f32>, %[[B1:.*]]: !ttcore.tile<32x32, f32>, %{{.*}}: !ttcore.tile<32x32, f32>):
-// CHECK-NEXT:        ttl.tile_regs_acquire
 // CHECK-NEXT:        %[[I0_1:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:        %[[I1_1:.*]] = ttl.iter_index 1 : index
 // CHECK-NEXT:        %[[SUM1:.*]] = ttl.tile_add %[[A1]], %[[B1]] {dst_idx = 0 : i32, ttl.fpu_binary}
-// CHECK-NEXT:        ttl.tile_regs_commit
-// CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        ttl.tile_store %[[SUM1]], %{{.*}}[%[[I0_1]], %[[I1_1]]]
-// CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        ttl.yield
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 // CHECK-NEXT:      return %[[R1]]
@@ -125,20 +109,18 @@ func.func @acquire_insert(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // SFPU-DAG:       %[[CB2S:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 2}
 // First compute: SFPU binary add with copy_tiles
 // SFPU:           ttl.compute
-// SFPU:             ttl.tile_regs_acquire
+// SFPU:           ^bb0
 // SFPU-NOT:         fpu_binary
 // SFPU:             ttl.copy_tile
 // SFPU:             ttl.copy_tile
 // SFPU:             ttl.tile_add {{.*}} {dst_idx = 0 : i32}
-// SFPU:             ttl.tile_regs_commit
 // Second compute: also SFPU
 // SFPU:           ttl.compute
-// SFPU:             ttl.tile_regs_acquire
+// SFPU:           ^bb0
 // SFPU-NOT:         fpu_binary
 // SFPU:             ttl.copy_tile
 // SFPU:             ttl.copy_tile
 // SFPU:             ttl.tile_add {{.*}} {dst_idx = 0 : i32}
-// SFPU:             ttl.tile_regs_commit
 func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                 %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
@@ -209,7 +191,6 @@ func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-DAG:       %[[CB3:.*]] = ttl.bind_cb{cb_index = 3, buffer_factor = 2}
 // CHECK:           %[[RES:.*]] = ttl.compute
 // CHECK:           ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[C:.*]]: !ttcore.tile<32x32, f32>, %[[O:.*]]: !ttcore.tile<32x32, f32>):
-// CHECK-NEXT:        ttl.tile_regs_acquire
 // CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary tile_add: no copy_tile needed
@@ -218,10 +199,7 @@ func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:        %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[C]][%[[I0]], %[[I1]]], %[[C1]] {dst_idx = 1 : i32}
 // CHECK-NEXT:        %[[MUL:.*]] = ttl.tile_mul %[[ADD]], %[[DTILE]] {dst_idx = 0 : i32}
 // CHECK-NEXT:        %[[EXP:.*]] = ttl.tile_exp %[[MUL]] {dst_idx = 0 : i32}
-// CHECK-NEXT:        ttl.tile_regs_commit
-// CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        ttl.tile_store %[[EXP]], %{{.*}}[%[[I0]], %[[I1]]]
-// CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        ttl.yield
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 // CHECK-NEXT:      return %[[RES]]
@@ -231,7 +209,7 @@ func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // SFPU-DAG:       %[[CB0S:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2}
 // SFPU-DAG:       %[[CB3S:.*]] = ttl.bind_cb{cb_index = 3, buffer_factor = 2}
 // SFPU:           ttl.compute
-// SFPU:             ttl.tile_regs_acquire
+// SFPU:           ^bb0
 // SFPU-NOT:         fpu_binary
 // copy A and B for SFPU add
 // SFPU:             ttl.copy_tile {{.*}} {dst_idx = 0 : i32}
@@ -241,10 +219,7 @@ func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // SFPU:             ttl.copy_tile {{.*}} {dst_idx = 1 : i32}
 // SFPU:             ttl.tile_mul {{.*}} {dst_idx = 0 : i32}
 // SFPU:             %[[EXPS:.*]] = ttl.tile_exp {{.*}} {dst_idx = 0 : i32}
-// SFPU:             ttl.tile_regs_commit
-// SFPU-NEXT:        ttl.tile_regs_wait
 // SFPU:             ttl.tile_store %[[EXPS]]
-// SFPU-NEXT:        ttl.tile_regs_release
 // SFPU-NEXT:        ttl.yield
 func.func @acquire_chain_three_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                    %b: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -303,10 +278,7 @@ func.func @acquire_chain_three_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // CHECK-NEXT:        %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary}
-// CHECK-NEXT:        ttl.tile_regs_commit
-// CHECK-NEXT:        ttl.tile_regs_wait
 // CHECK-NEXT:        ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]]
-// CHECK-NEXT:        ttl.tile_regs_release
 // CHECK-NEXT:        ttl.yield
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 // CHECK-NEXT:      return %[[RES]]
@@ -317,6 +289,7 @@ func.func @acquire_chain_three_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // SFPU:           %[[CB2S:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 2}
 // SFPU:           ttl.tile_regs_acquire
 // SFPU:           ttl.compute
+// SFPU:           ^bb0
 // SFPU-NOT:       fpu_binary
 // SFPU:           ttl.copy_tile {{.*}} {dst_idx = 0 : i32}
 // SFPU:           ttl.copy_tile {{.*}} {dst_idx = 1 : i32}

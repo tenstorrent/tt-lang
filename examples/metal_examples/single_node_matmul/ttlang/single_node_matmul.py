@@ -64,7 +64,7 @@ def tt_lang_singlenode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
 
 
 def test_singlenode_matmul_tt_lang():
-    """Test singlenode matmul kernel."""
+    """Test singlenode matmul operation."""
     device = ttnn.open_device(device_id=0)
     M, K, N = 256, 256, 256
     a = ttnn.rand((M, K), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)

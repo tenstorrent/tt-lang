@@ -40,6 +40,8 @@ include(TTLangCompilerSetup)
 # Toolchain options (declared early because TTLangPython needs them).
 # ---------------------------------------------------------------------------
 option(TTLANG_USE_TOOLCHAIN "Use pre-built LLVM from ttlang toolchain" OFF)
+option(TTLANG_BUILD_TOOLCHAIN
+  "Build LLVM and tt-metal into a reusable toolchain directory" OFF)
 if(NOT DEFINED TTLANG_TOOLCHAIN_DIR)
   if(DEFINED ENV{TTLANG_TOOLCHAIN_DIR})
     set(TTLANG_TOOLCHAIN_DIR "$ENV{TTLANG_TOOLCHAIN_DIR}" CACHE PATH

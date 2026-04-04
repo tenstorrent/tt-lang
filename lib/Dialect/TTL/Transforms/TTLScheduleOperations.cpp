@@ -248,37 +248,19 @@ struct TTLScheduleOperationsPass
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
 
-    funcOp.walk([](Block *block) {
-      llvm::SmallVector<Operation *, 16> currentRegionOps;
-      bool inSyncRegion = false;
-
-      for (Operation &op : *block) {
-        // Detect acquire (start of sync region).
-        if (isa<TileRegsAcquireOp>(op)) {
-          inSyncRegion = true;
-          currentRegionOps.clear();
-          continue;
+    funcOp.walk([](DstSectionOp dstSection) {
+      SmallVector<Operation *, 16> mathOps;
+      for (Operation &op : dstSection.getBody().front().without_terminator()) {
+        if (isa<TileStoreOp>(op)) {
+          break;
         }
-
-        // Detect commit (end of sync region) - schedule collected ops.
-        if (isa<TileRegsCommitOp>(op)) {
-          if (inSyncRegion) {
-            scheduleOpsInRegion(currentRegionOps);
-          }
-          inSyncRegion = false;
-          currentRegionOps.clear();
-          continue;
-        }
-
-        if (!inSyncRegion) {
-          continue;
-        }
-
-        // Collect tile ops (classified ops only).
         TileOpCategory cat = classifyTileOp(&op);
         if (cat != TileOpCategory::Unknown) {
-          currentRegionOps.push_back(&op);
+          mathOps.push_back(&op);
         }
+      }
+      if (!mathOps.empty()) {
+        scheduleOpsInRegion(mathOps);
       }
     });
   }

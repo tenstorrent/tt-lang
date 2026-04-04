@@ -103,12 +103,24 @@ struct TTLSubblockComputeForDSTPass
     func::FuncOp funcOp = getOperation();
 
     // Collect compute ops to subblock (avoid modifying while walking).
+    // Skip accumulating computes -- subblocking would break reduction
+    // accumulation by splitting the reduction loop across subblocks.
     SmallVector<ComputeOp> opsToSubblock;
     funcOp.walk([&](ComputeOp computeOp) {
       auto unrollAttr =
           computeOp->getAttrOfType<IntegerAttr>(kUnrollFactorAttrName);
       if (unrollAttr && unrollAttr.getInt() > 1) {
-        opsToSubblock.push_back(computeOp);
+        bool hasAccumulating = false;
+        computeOp.getBody().walk([&](Operation *op) {
+          if (op->hasTrait<TTLAccumulatingOpTrait>()) {
+            hasAccumulating = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        });
+        if (!hasAccumulating) {
+          opsToSubblock.push_back(computeOp);
+        }
       }
     });
 
@@ -135,29 +147,49 @@ private:
     SmallVector<utils::IteratorType> iterTypes =
         computeOp.getIteratorTypesArray();
 
+    // matmul_block accumulates K in-place in DST; only M*N tiles occupy DST.
+    bool hasMatmulBlock = false;
+    computeOp.getBody().walk([&](TileMatmulBlockOp) {
+      hasMatmulBlock = true;
+      return WalkResult::interrupt();
+    });
+
     // Compute row-major strides over the CB block iteration domain for tile
     // offset computation. Used for loop annotation, CB linearization strides
     // attribute, and linearized index offset adjustment.
     SmallVector<int64_t> blockStrides = computeStrides(dimSizes);
 
-    // When unroll_factor >= total tiles, no outer loop is needed -- the compute
-    // op already fits in one DST sync region. Set strides so lower-to-loops
-    // can annotate tile loops with correct CB linearization strides.
-    if (unrollFactor >= totalTiles) {
+    // Compute the effective DST tile count: for matmul computes, only
+    // parallel dimensions (M*N) count; reduction (K) is free.
+    int64_t effectiveTiles = totalTiles;
+    if (hasMatmulBlock) {
+      effectiveTiles = 1;
+      for (int64_t d = 0; d < rank; ++d) {
+        if (iterTypes[d] == utils::IteratorType::parallel) {
+          effectiveTiles *= dimSizes[d];
+        }
+      }
+    }
+
+    // When unroll_factor >= effective tiles, no outer loop is needed -- the
+    // compute op already fits in one DST sync region. Set strides so
+    // lower-to-loops can annotate tile loops with correct CB linearization
+    // strides.
+    if (unrollFactor >= effectiveTiles) {
       computeOp->setAttr(kFullLinStridesAttrName,
                          b.getDenseI64ArrayAttr(blockStrides));
       return success();
     }
 
     // Only parallel dimensions are candidates for subblocking; reduction
-    // dimensions must be fully included in each subblock in this
-    // implementation.
+    // dimensions must be fully included in each subblock. Matmul K is
+    // excluded because it accumulates in-place (see hasMatmulBlock above).
     SmallVector<int64_t> parallelDimSizes;
     int64_t reductionProduct = 1;
     for (int64_t d = 0; d < rank; ++d) {
       if (iterTypes[d] == utils::IteratorType::parallel) {
         parallelDimSizes.push_back(dimSizes[d]);
-      } else {
+      } else if (!hasMatmulBlock) {
         reductionProduct *= dimSizes[d];
       }
     }

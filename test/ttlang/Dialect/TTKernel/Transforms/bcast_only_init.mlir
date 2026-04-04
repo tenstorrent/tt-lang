@@ -1,6 +1,6 @@
-// Summary: In a bcast-only TTKernel function, the consolidation pass derives
-// the output CB for unary_bcast_init from the ttl.bcast_output_cb_index
-// attribute on the unary_bcast op (propagated during TTL -> TTKernel lowering).
+// Summary: In a bcast-only TTKernel function, the init pass derives
+// the output CB for unary_bcast_init from the pack_tile op in the
+// sync region.
 
 // RUN: ttlang-opt %s --ttkernel-insert-inits | FileCheck %s
 
@@ -8,7 +8,7 @@
 // CHECK-DAG: %[[IN_CB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK-DAG: %[[OUT_CB:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: ttkernel.tile_regs_acquire
-// unary_bcast_init must be emitted with out_cb derived from bcast_output_cb_index attr.
+// unary_bcast_init derives output CB from the pack_tile in the sync region.
 // CHECK: ttkernel.unary_bcast_init(%[[IN_CB]], %[[OUT_CB]], <col>)
 // CHECK-NEXT: ttkernel.unary_bcast(%[[IN_CB]],
 // CHECK: ttkernel.tile_regs_commit

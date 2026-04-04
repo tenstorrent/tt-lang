@@ -302,21 +302,25 @@ inline std::uint32_t getDstCapacity(bool isFloat32, bool fullSyncEn) {
   return capacity;
 }
 
+/// Read a per-kernel bool attribute from the enclosing func.func.
+/// These are set by TTLSetComputeKernelConfig on the function (not on
+/// individual compute ops) because they are per-kernel compile-time settings.
+/// Returns false when the attribute is absent or the op has no enclosing func.
+inline bool getKernelBoolAttr(mlir::Operation *op, llvm::StringRef attrName) {
+  auto funcOp = op->getParentOfType<mlir::func::FuncOp>();
+  assert(funcOp && "getKernelBoolAttr called on op outside of func.func");
+  if (auto attr = funcOp->getAttrOfType<mlir::BoolAttr>(attrName)) {
+    return attr.getValue();
+  }
+  return false;
+}
+
 /// Compute DST capacity for a compute op by inspecting block argument types
-/// and sync-mode attributes.
+/// and the kernel-level fp32/sync-mode attributes on the enclosing function.
 /// Returns failure for mixed f32/non-f32 tile arguments.
 inline FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
-  bool fullSyncEn = false;
-  if (auto fullSyncAttr =
-          computeOp->getAttrOfType<mlir::BoolAttr>(kDstFullSyncEnAttrName)) {
-    fullSyncEn = fullSyncAttr.getValue();
-  }
-
-  bool fp32DestAccEn = false;
-  if (auto fp32Attr =
-          computeOp->getAttrOfType<mlir::BoolAttr>(kFp32DestAccEnAttrName)) {
-    fp32DestAccEn = fp32Attr.getValue();
-  }
+  bool fullSyncEn = getKernelBoolAttr(computeOp, kDstFullSyncEnAttrName);
+  bool fp32DestAccEn = getKernelBoolAttr(computeOp, kFp32DestAccEnAttrName);
 
   bool sawF32 = false;
   bool sawNonF32 = false;

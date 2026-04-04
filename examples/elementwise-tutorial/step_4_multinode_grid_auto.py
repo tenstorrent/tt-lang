@@ -9,16 +9,17 @@
 # dimensions that are not evenly divisible by the grid.
 #
 # New concepts introduced:
-#   - grid="auto"     — the compiler picks the largest grid available in the;
-#                       the kernel must not assume any specific grid dimensions
+#   - grid="auto"     — the compiler picks the largest grid available in the
+#                       hardware; the operation must not assume any specific
+#                       grid dimensions
 #   - ceiling division — ensures every block is assigned to a node even when
 #                        the block count doesn't divide evenly across the grid
 #   - bounds checking — nodes at the trailing edge of the grid may have fewer
 #                       blocks to process; guard all per-block work with
 #                       `if row < rows` / `if col < cols`
 #
-# Because compute and DM threads must agree on which blocks to process, the
-# bounds check appears in all three thread functions.
+# Because compute and DM kernels must agree on which blocks to process, the
+# bounds check appears in all three kernel functions.
 
 import torch
 import ttnn
@@ -41,12 +42,14 @@ GRANULARITY = 4
 
 
 # grid="auto" asks the compiler to select the grid at compile time based on
-# available hardware resources.  The kernel body must work correctly for any
+# available hardware resources.  The operation body must work correctly for any
 # grid the compiler may choose.
 
 
 @ttl.operation(grid="auto")
-def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
+def __tutorial_operation(
+    a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
+):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY
 
@@ -174,9 +177,9 @@ def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Te
                             tx.wait()
 
 
-def tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
+def tutorial_operation(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
     y = from_torch(torch.zeros((a.shape[0], a.shape[1]), dtype=torch.bfloat16))
-    __tutorial_kernel(a, b, c, y)
+    __tutorial_operation(a, b, c, y)
     return y
 
 
@@ -199,7 +202,7 @@ try:
     c = from_torch(c)
     d = from_torch(d)
 
-    y = ttnn.multiply(tutorial_kernel(a, b, c), d)
+    y = ttnn.multiply(tutorial_operation(a, b, c), d)
 
     y = ttnn.to_torch(y)
     print(y)

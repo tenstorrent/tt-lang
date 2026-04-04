@@ -1,8 +1,8 @@
-# TTL Debug Print Spec
+# TT-Lang Debug Print Spec
 
 ## Overview
 
-Python `print()` inside TTL kernels lowers to device debug prints via a `ttl.dprint` op and a dedicated lowering pass. The pass has full compiler context (DST assignments, CB indices, thread types) and emits the appropriate tt-metal DPRINT calls.
+Python `print()` inside TT-Lang operations lowers to device debug prints via a `ttl.dprint` op and a dedicated lowering pass. The pass has full compiler context (DST assignments, CB indices, thread types) and emits the appropriate tt-metal DPRINT calls.
 
 Enabled at runtime by `TT_METAL_DPRINT_CORES=0,0`. Zero overhead when not set (tt-metal compiles DPRINT to dead code).
 
@@ -137,7 +137,7 @@ print_bf16_pages(get_read_ptr(get_compile_time_arg_val(0)), 1024, 2);
 
 Pass derives the data format from the tensor element type (`bf16` -> `print_bf16_pages`, `f32` -> `print_f32_pages`) and the L1 address from the tensor accessor. `num_pages` comes from the op attribute.
 
-Should only be used in datamovement threads.
+Should only be used in datamovement kernels.
 
 ### DST dump
 

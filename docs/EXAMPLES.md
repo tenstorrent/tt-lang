@@ -1,6 +1,6 @@
 # Examples: simulator, pytest, and hardware
 
-This document lists kernel examples under `examples/` and `examples/tutorial/`, how they are exercised, and why some are excluded from the default hardware compile-and-run step.
+This document lists operation examples under `examples/`, how they are exercised, and why some are excluded from the default hardware compile-and-run step.
 
 ## How to run
 
@@ -11,7 +11,7 @@ This document lists kernel examples under `examples/` and `examples/tutorial/`, 
 | Simulator CLI | `./bin/ttlang-sim examples/<name>.py` |
 | Simulator pytest | `python -m pytest test/sim/test_examples.py -v` |
 
-**Compiler and device (Docker):** run `python` inside the device container using the Docker toolchain venv (`build-docker/env/activate`), not `TTLANG_COMPILE_ONLY`. That mode skips kernel execution and does not validate an example end-to-end.
+**Compiler and device (Docker):** run `python` inside the device container using the Docker toolchain venv (`build-docker/env/activate`), not `TTLANG_COMPILE_ONLY`. That mode skips operation execution and does not validate an example end-to-end.
 
 Example (adjust container name, workdir, and script path to match the machine):
 
@@ -47,13 +47,13 @@ The hardware CI batch (`.github/scripts/compile-and-run-examples.sh`) uses the s
 | `eltwise_1d_broadcast.py` | sim | yes | skip | Simulator-backed; hardware batch uses real stack only. |
 | `errors/copy_lock_error.py` | real | negative test (expect failure) | skip | Demonstrates copy-lock error; must not exit 0. |
 | `test_transformer_block.py` | real | no (not in `test_example_cli`) | skip | Large demo; run manually on device. |
-| `tutorial/single_core_single_tile_block.py` | real | yes (needs ttnn) | yes | |
-| `tutorial/single_core_multitile_block.py` | real | yes (needs ttnn) | yes | |
-| `tutorial/single_core_broadcast_single_tile_block.py` | real | yes (needs ttnn) | yes | |
-| `tutorial/single_core_broadcast_multitile_blocks.py` | real | yes (needs ttnn) | yes | |
-| `tutorial/multicore.py` | real | yes (needs ttnn) | yes | |
-| `tutorial/multicore_grid_auto.py` | real | yes (needs ttnn) | yes | |
-| `tutorial/ttnn_base.py` | real | yes (needs ttnn) | no | No `@ttl.operation`; not discovered by compile-and-run. |
+| `elementwise-tutorial/step_0_ttnn_base.py` | real | yes (needs ttnn) | no | No `@ttl.operation`; not discovered by compile-and-run. |
+| `elementwise-tutorial/step_1_single_node_single_tile_block.py` | real | yes (needs ttnn) | yes | |
+| `elementwise-tutorial/step_2_single_node_multitile_block.py` | real | yes (needs ttnn) | yes | |
+| `elementwise-tutorial/step_3_multinode.py` | real | yes (needs ttnn) | yes | |
+| `elementwise-tutorial/step_4_multinode_grid_auto.py` | real | yes (needs ttnn) | yes | |
+| `tutorial/single_node_broadcast_single_tile_block.py` | real | yes (needs ttnn) | yes | |
+| `tutorial/single_node_broadcast_multitile_blocks.py` | real | yes (needs ttnn) | yes | |
 
 `requires_ttnn` in `test_examples.py` skips rows that need a real `ttnn` import for golden checks when `ttnn` is missing from the environment.
 

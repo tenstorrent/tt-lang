@@ -47,6 +47,38 @@ endif()
 option(TTLANG_FORCE_TOOLCHAIN_REBUILD
   "Force rebuild of LLVM and tt-metal into TTLANG_TOOLCHAIN_DIR" OFF)
 
+# ---------------------------------------------------------------------------
+# TTLANG_BUILD_TOOLCHAIN: shortcut for building a fresh toolchain from source.
+# Equivalent to TTLANG_TOOLCHAIN_DIR + TTLANG_USE_TOOLCHAIN=OFF with forced
+# cleanup of stale artifacts.
+# ---------------------------------------------------------------------------
+if(TTLANG_BUILD_TOOLCHAIN AND TTLANG_USE_TOOLCHAIN)
+  message(FATAL_ERROR
+    "TTLANG_BUILD_TOOLCHAIN and TTLANG_USE_TOOLCHAIN are mutually exclusive.\n"
+    "Use TTLANG_BUILD_TOOLCHAIN to build a toolchain from source.\n"
+    "Use TTLANG_USE_TOOLCHAIN to consume an existing toolchain.")
+endif()
+
+if(TTLANG_BUILD_TOOLCHAIN)
+  if(NOT DEFINED TTLANG_TOOLCHAIN_DIR)
+    set(TTLANG_TOOLCHAIN_DIR "${CMAKE_BINARY_DIR}/toolchain-install" CACHE PATH
+      "tt-lang toolchain directory" FORCE)
+  endif()
+
+  set(TTLANG_USE_TOOLCHAIN OFF CACHE BOOL
+    "Use pre-built LLVM from ttlang toolchain" FORCE)
+  unset(MLIR_DIR CACHE)
+
+  # Clean stale artifacts so the build is always fresh.
+  file(REMOVE "${TTLANG_TOOLCHAIN_DIR}/lib/cmake/mlir/MLIRConfig.cmake")
+  file(REMOVE "${TTLANG_TOOLCHAIN_DIR}/tt-metal/ttnn/_ttnn.so")
+  file(REMOVE_RECURSE "${CMAKE_BINARY_DIR}/llvm-build")
+  unset(Python3_EXECUTABLE CACHE)
+
+  message(STATUS
+    "TTLANG_BUILD_TOOLCHAIN: building fresh toolchain into ${TTLANG_TOOLCHAIN_DIR}")
+endif()
+
 # Force rebuild implies build mode — override any cached state from a
 # previous TTLANG_USE_TOOLCHAIN configure.
 if(TTLANG_FORCE_TOOLCHAIN_REBUILD)

@@ -1,6 +1,6 @@
-# Elementwise Kernel Tutorial
+# Elementwise Operation Tutorial
 
-This tutorial walks through building a fused elementwise kernel in TT-Lang,
+This tutorial walks through building a fused elementwise operation in TT-Lang,
 introducing one concept at a time. Each step is a self-contained runnable
 script.
 
@@ -9,7 +9,7 @@ script.
 We want to compute `y = (a * b + c) * d` on 2048×2048 `bfloat16` tensors. The
 inner expression `a * b + c` is the target for kernel fusion: instead of
 dispatching three separate TT-NN operations that each read and write DRAM, a
-custom TT-Lang kernel reads each input once, computes the result in L1, and writes
+custom TT-Lang operation reads each input once, computes the result in L1, and writes
 output once. It is possible to vary the expression as well as the size of
 tensors and the data type, for example `float32`. We ecougarge the user to do this.
 
@@ -17,7 +17,7 @@ tensors and the data type, for example `float32`. We ecougarge the user to do th
 
 **Script**: [`examples/elementwise-tutorial/step_0_ttnn_base.py`](https://github.com/tenstorrent/tt-lang/blob/main/examples/elementwise-tutorial/step_0_ttnn_base.py)
 
-The starting point uses TT-NN directly, with no custom kernel:
+The starting point uses TT-NN directly, with no custom operation:
 
 ```python
 y = ttnn.multiply(ttnn.add(ttnn.multiply(a, b), c), d)
@@ -25,35 +25,35 @@ y = ttnn.multiply(ttnn.add(ttnn.multiply(a, b), c), d)
 
 Each call dispatches a separate operation and writes an intermediate tensor back
 to DRAM. This is the reference we'll verify against as we build the custom
-kernel.
+operation.
 
 ## Step 1 — Single Node, Single-Tile Block
 
 **Script**: [`examples/elementwise-tutorial/step_1_single_node_single_tile_block.py`](https://github.com/tenstorrent/tt-lang/blob/main/examples/elementwise-tutorial/step_1_single_node_single_tile_block.py)
 
-This step introduces the complete TT-Lang programming model. The kernel fuses
+This step introduces the complete TT-Lang programming model. The operation fuses
 `a * b + c` into a single pass, processing one 32×32 tile at a time on one
 node.
 
-### Kernel function and grid
+### Operation function and grid
 
-A kernel is a Python function decorated with `@ttl.operation()`. The `grid`
+An operation is a Python function decorated with `@ttl.operation()`. The `grid`
 argument selects how many nodes (Tensix cores) to run on. `grid=(1, 1)` means
 a single node.
 
 ```python
 @ttl.operation(grid=(1, 1))
-def __tutorial_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
+def __tutorial_operation(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor):
     ...
 ```
 
-The function arguments are the tensors the kernel operates on. They live in
+The function arguments are the tensors the operation operates on. They live in
 DRAM on device and are passed by the host at call time.
 
 ### Dataflow buffers
 
-A *dataflow buffer* (DFB) is an L1 buffer shared between thread functions
-within a node. It is created once in the kernel scope from a tensor likeness
+A *dataflow buffer* (DFB) is an L1 buffer shared between kernel functions
+within a node. It is created once in the operation scope from a tensor likeness
 and a block shape:
 
 ```python
@@ -61,13 +61,13 @@ a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
 ```
 
 `shape=(1, 1)` means each buffer entry holds one 32×32 tile. `buffer_factor=2`
-allocates two entries in L1 so that the reader and compute threads can work
+allocates two entries in L1 so that the reader and compute kernels can work
 concurrently — while compute processes one entry, the reader fills the other
 (double-buffering).
 
-### Thread functions
+### Kernel functions
 
-Three thread functions run concurrently inside the kernel:
+Three kernel functions run concurrently inside the operation:
 
 ```python
 @ttl.compute()
@@ -80,7 +80,7 @@ def tutorial_read(): ...
 def tutorial_write(): ...
 ```
 
-**Compute thread** — waits for filled input blocks and reserves output blocks,
+**Compute kernel** — waits for filled input blocks and reserves output blocks,
 then runs the fused expression:
 
 ```python
@@ -97,7 +97,7 @@ with (
 until the writer has freed an entry. The `with` block automatically calls `pop()`
 on inputs and `push()` on the output when the scope exits.
 
-**Reader DM thread** — copies tiles from DRAM into the input DFBs:
+**Reader DM kernel** — copies tiles from DRAM into the input DFBs:
 
 ```python
 with (
@@ -114,9 +114,9 @@ with (
 `ttl.copy` starts a transfer; `tx.wait()` waits for it to complete. The
 index `a[row, col]` selects a tile in *tile coordinates* (not element
 coordinates). The `with` block calls `push()` on exit, signalling the compute
-thread.
+kernel.
 
-**Writer DM thread** — copies computed output tiles from L1 back to DRAM:
+**Writer DM kernel** — copies computed output tiles from L1 back to DRAM:
 
 ```python
 with y_dfb.wait() as y_blk:
@@ -156,14 +156,14 @@ tx_a = ttl.copy(
 )
 ```
 
-The kernel structure, synchronization pattern, and compute expression are
+The operation structure, synchronization pattern, and compute expression are
 unchanged from Step 1.
 
 ## Step 3 — Multi-Node, Fixed Grid
 
 **Script**: [`examples/elementwise-tutorial/step_3_multinode.py`](https://github.com/tenstorrent/tt-lang/blob/main/examples/elementwise-tutorial/step_3_multinode.py)
 
-This step parallelizes the kernel across a 4×4 grid of nodes. Each node
+This step parallelizes the operation across a 4×4 grid of nodes. Each node
 processes an independent rectangular region of the tensor. To familiarize
 the user with Tenstorrent hardware architecture we recommend reading
 [TT Architecture and Metalium Guide](https://github.com/tenstorrent/tt-metal/blob/main/METALIUM_GUIDE.md).
@@ -172,10 +172,10 @@ the user with Tenstorrent hardware architecture we recommend reading
 
 ```python
 @ttl.operation(grid=(4, 4))
-def __tutorial_kernel(...):
+def __tutorial_operation(...):
 ```
 
-All nodes execute the same kernel body. They differentiate their work using
+All nodes execute the same operation body. They differentiate their work using
 their coordinates in the grid as explained in the next sections.
 
 ### Querying grid size and node position
@@ -193,7 +193,7 @@ cols_per_node = a.shape[1] // TILE_SIZE // col_tiles_per_block // grid_cols
 
 ### Mapping local to global indices
 
-Each DM thread uses its node coordinates to offset into the global tensor:
+Each DM kernel uses its node coordinates to offset into the global tensor:
 
 ```python
 node_col, node_row = ttl.node(dims=2)
@@ -206,8 +206,8 @@ for local_col in range(cols_per_node):
     ...
 ```
 
-In this particular example, the compute thread is unaware of node coordinates — it
-simply processes all blocks that the DM threads deliver to it.
+In this particular example, the compute kernel is unaware of node coordinates — it
+simply processes all blocks that the DM kernels deliver to it.
 
 This version requires the tensor dimensions to be evenly divisible by the grid.
 See Step 4 for a version that handles arbitrary sizes.
@@ -226,7 +226,7 @@ the requirement for even divisibility.
 ```
 
 `grid="auto"` lets the compiler select the largest grid that fits available
-hardware resources. The kernel must work correctly for any grid the compiler may
+hardware resources. The operation must work correctly for any grid the compiler may
 choose as elaborated next.
 
 ### Ceiling division
@@ -243,7 +243,7 @@ cols_per_node = -(-cols // grid_cols)  # ceil(cols / grid_cols)
 ### Bounds checking
 
 Nodes at the trailing edge may be assigned more iterations than there are
-actual blocks. All three thread functions guard per-block work:
+actual blocks. All three kernel functions guard per-block work:
 
 ```python
 for local_row in range(rows_per_node):
@@ -255,5 +255,5 @@ for local_row in range(rows_per_node):
                 ...
 ```
 
-The guard must appear in every thread function — compute, read, and write —
+The guard must appear in every kernel function — compute, read, and write —
 so that they all agree on exactly which blocks to process.

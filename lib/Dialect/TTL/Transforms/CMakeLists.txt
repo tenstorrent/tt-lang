@@ -7,7 +7,6 @@ add_mlir_dialect_library(TTLangTTLTransforms
   LowerSignpostToEmitC.cpp
   TTLAnnotateCBAssociations.cpp
   TTLDumpCBFlowGraph.cpp
-  TTLInsertTileRegsSync.cpp
   TTLMaterializeBlockExprs.cpp
   TTLLowerMatmulBlock.cpp
   TTLAttachSignpostScopes.cpp
