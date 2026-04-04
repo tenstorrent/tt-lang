@@ -894,16 +894,13 @@ static FailureOr<ttkernel::ReduceDim> computeReduceDim(ArrayRef<int64_t> dims,
 /// TODO(#449): replace this tracing with a structured approach (e.g.,
 /// propagate reduce dim as an attribute during lowering).
 ///
-/// Returns:
-///   - std::nullopt: no reduce feeds this broadcast (no adjustment needed)
-///   - ReduceDim value: successfully traced the producing reduce
-///   - failure(): a reduce was found but the tracing is broken (caller
-///     should emit an error)
-static FailureOr<std::optional<ttkernel::ReduceDim>>
-getInputReduceDim(Value bcastInput) {
+/// Returns std::nullopt when no unique reduce can be traced (no CB, ambiguous
+/// stores, non-reduce producer, etc.). Returns a ReduceDim when a unique
+/// reduce was successfully traced.
+static std::optional<ttkernel::ReduceDim> getInputReduceDim(Value bcastInput) {
   Value cb = getAttachedCB(bcastInput);
   if (!cb) {
-    return std::optional<ttkernel::ReduceDim>(std::nullopt);
+    return std::nullopt;
   }
 
   // Find the unique store to this CB in the enclosing function.  Walking the
@@ -914,7 +911,7 @@ getInputReduceDim(Value bcastInput) {
   auto enclosingFunc =
       bcastInput.getDefiningOp()->getParentOfType<func::FuncOp>();
   if (!enclosingFunc) {
-    return std::optional<ttkernel::ReduceDim>(std::nullopt);
+    return std::nullopt;
   }
   enclosingFunc.walk([&](StoreOp storeOp) {
     if (ambiguous || getAttachedCB(storeOp.getView()) != cb) {
@@ -926,27 +923,24 @@ getInputReduceDim(Value bcastInput) {
     }
     foundStore = storeOp;
   });
-  if (!foundStore) {
-    return std::optional<ttkernel::ReduceDim>(std::nullopt);
-  }
-  if (ambiguous) {
-    return failure();
+  if (!foundStore || ambiguous) {
+    return std::nullopt;
   }
 
   auto reduceOp = foundStore.getTensor().getDefiningOp<ReduceOp>();
   if (!reduceOp) {
-    return std::optional<ttkernel::ReduceDim>(std::nullopt);
+    return std::nullopt;
   }
 
   auto inputType = getTensorType(reduceOp.getInput());
   if (!inputType) {
-    return failure();
+    return std::nullopt;
   }
   auto reduceDim = computeReduceDim(reduceOp.getDims(), inputType.getRank());
   if (failed(reduceDim)) {
-    return failure();
+    return std::nullopt;
   }
-  return std::optional<ttkernel::ReduceDim>(*reduceDim);
+  return *reduceDim;
 }
 
 /// Validate that shape expansion is compatible with bcast type.
@@ -1041,13 +1035,7 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     // A mismatch causes the hardware to read garbage (#444).
     // This check must happen before any IR mutations.
     auto bcastType = op.getBcastType();
-    auto inputReduceDim = getInputReduceDim(op.getInput());
-    if (failed(inputReduceDim)) {
-      return op.emitError(
-          "broadcast input traces to a reduce but the reduce dimension "
-          "could not be determined; this is a compiler bug (#449)");
-    }
-    if (auto reduceDim = *inputReduceDim) {
+    if (auto reduceDim = getInputReduceDim(op.getInput())) {
       BcastType requiredBcastType;
       StringRef requiredKind, requiredDims;
       switch (*reduceDim) {
