@@ -27,7 +27,7 @@ module {
     %out_res = ttl.cb_reserve %out_cb : !ttl.cb<[2, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x1x!ttcore.tile<32x32, bf16>>
     %out_init = tensor.empty() : tensor<2x1x!ttcore.tile<32x32, bf16>>
     %out_a = ttl.attach_cb %out_init, %out_cb : (tensor<2x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x1x!ttcore.tile<32x32, bf16>>
-    // expected-error @below {{broadcast dims are incompatible with the producing reduce; need scalar broadcast (dims=[0, 1])}}
+    // expected-error @below {{'ttl.bcast' op broadcast dims are incompatible with the producing reduce; need scalar broadcast (dims=[0, 1])}}
     %bcast = ttl.bcast %red_a, %out_a 2 : i32 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<2x1x!ttcore.tile<32x32, bf16>>) -> tensor<2x1x!ttcore.tile<32x32, bf16>>
     ttl.store %bcast, %out_res : tensor<2x1x!ttcore.tile<32x32, bf16>>, tensor<2x1x!ttcore.tile<32x32, bf16>>
     func.return
@@ -59,7 +59,7 @@ module {
     %out_res = ttl.cb_reserve %out_cb : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x2x!ttcore.tile<32x32, bf16>>
     %out_init = tensor.empty() : tensor<1x2x!ttcore.tile<32x32, bf16>>
     %out_a = ttl.attach_cb %out_init, %out_cb : (tensor<1x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x2x!ttcore.tile<32x32, bf16>>
-    // expected-error @below {{broadcast dims are incompatible with the producing reduce; need scalar broadcast (dims=[0, 1])}}
+    // expected-error @below {{'ttl.bcast' op broadcast dims are incompatible with the producing reduce; need scalar broadcast (dims=[0, 1])}}
     %bcast = ttl.bcast %red_a, %out_a 1 : i32 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, bf16>>) -> tensor<1x2x!ttcore.tile<32x32, bf16>>
     ttl.store %bcast, %out_res : tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, bf16>>
     func.return
