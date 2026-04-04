@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQUIRES: ttnn
+# REQUIRES: ttnn, tt-device
 # UNSUPPORTED: system-darwin
 # RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.output.txt
@@ -10,8 +10,10 @@
 # Verify: DRAM interleaved tensors with bfloat8_b data format can be passed
 # to a tt-lang kernel and produce correct results.
 
+import pytest
 import torch
-import ttnn
+
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 import ttl
 from utils.correctness import assert_allclose
 
