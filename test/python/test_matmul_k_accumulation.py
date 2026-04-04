@@ -13,7 +13,7 @@ Accuracy requirements (PCC > 0.999, max/mean error scaling as sqrt(K)):
   - Each K step adds an independent bf16 rounding error. For random inputs
     these errors are uncorrelated, so the accumulated error grows as
     O(sqrt(K)) (random walk).
-  - Kt>1 with matmul_full_fp32 accumulates in f32 DST without intermediate
+  - Kt>1 with fp32_dst_acc accumulates in f32 DST without intermediate
     bf16 truncation, so error bounds are tighter than Kt=1 which truncates
     to bf16 at each CB round-trip.
   - Error that grows faster than sqrt(K) indicates a correctness bug

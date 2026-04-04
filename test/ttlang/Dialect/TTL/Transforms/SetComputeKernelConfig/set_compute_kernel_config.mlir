@@ -2,7 +2,7 @@
 // Attributes are per-kernel (set on the function, not individual compute ops).
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --split-input-file | FileCheck %s --check-prefix=DEFAULT
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=1 dst-full-sync-en=1}))' --split-input-file | FileCheck %s --check-prefix=OVERRIDE
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{matmul-full-fp32=0}))' --split-input-file | FileCheck %s --check-prefix=NO-MATMUL-FP32
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{fp32-dst-acc=0}))' --split-input-file | FileCheck %s --check-prefix=NO-MATMUL-FP32
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -13,7 +13,7 @@
 // OVERRIDE-LABEL: func.func @f32_auto_enable
 // OVERRIDE-SAME: dst_full_sync_en = true
 // OVERRIDE-SAME: fp32_dest_acc_en = true
-// f32 tile args still trigger fp32 even with matmul-full-fp32=0.
+// f32 tile args still trigger fp32 even with fp32-dst-acc=0.
 // NO-MATMUL-FP32-LABEL: func.func @f32_auto_enable
 // NO-MATMUL-FP32-SAME: fp32_dest_acc_en = true
 func.func @f32_auto_enable(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
@@ -155,8 +155,8 @@ func.func @preserve_existing(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
 
 #map3 = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: bf16 matmul triggers fp32_dest_acc_en via matmul-full-fp32 (default).
-// With matmul-full-fp32=0, bf16 matmul does not trigger fp32_dest_acc_en.
+// Purpose: bf16 matmul triggers fp32_dest_acc_en via fp32-dst-acc (default).
+// With fp32-dst-acc=0, bf16 matmul does not trigger fp32_dest_acc_en.
 // DEFAULT-LABEL: func.func @bf16_matmul_auto_fp32
 // DEFAULT-SAME: fp32_dest_acc_en = true
 // OVERRIDE-LABEL: func.func @bf16_matmul_auto_fp32

@@ -27,7 +27,7 @@ func.func @multi_matmul_multitile() attributes {ttl.kernel_thread = #ttkernel.th
   %reserve = ttl.cb_reserve %out_cb : <[4, 4], !ttcore.tile<32x32, bf16>, 2> -> tensor<4x4x!ttcore.tile<32x32, bf16>>
   %mm1 = ttl.matmul %a1, %b1 : tensor<4x2x!ttcore.tile<32x32, bf16>>, tensor<2x4x!ttcore.tile<32x32, bf16>> -> tensor<4x4x!ttcore.tile<32x32, bf16>>
   %mm2 = ttl.matmul %a2, %b2 : tensor<4x2x!ttcore.tile<32x32, bf16>>, tensor<2x4x!ttcore.tile<32x32, bf16>> -> tensor<4x4x!ttcore.tile<32x32, bf16>>
-  // expected-error @+1 {{fusion with multiple multi-tile matmuls is not supported}}
+  // expected-error @+1 {{fusion with multiple matmuls is not supported}}
   %sum = ttl.add %mm1, %mm2 : tensor<4x4x!ttcore.tile<32x32, bf16>>, tensor<4x4x!ttcore.tile<32x32, bf16>> -> tensor<4x4x!ttcore.tile<32x32, bf16>>
   ttl.store %sum, %reserve : tensor<4x4x!ttcore.tile<32x32, bf16>>, tensor<4x4x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %out_cb : <[4, 4], !ttcore.tile<32x32, bf16>, 2>

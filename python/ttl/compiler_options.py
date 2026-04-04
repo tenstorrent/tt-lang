@@ -63,18 +63,12 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Combine consecutive pack_tile ops into pack_tile_block (default: enabled).",
     )
     p.add_argument(
-        "--ttl-reduce-full-fp32",
+        "--ttl-fp32-dst-acc",
         default=None,
-        dest="reduce_full_fp32",
+        dest="fp32_dst_acc",
         action=argparse.BooleanOptionalAction,
-        help="Enable FP32 accumulation for reduce operations (default: enabled).",
-    )
-    p.add_argument(
-        "--ttl-matmul-full-fp32",
-        default=None,
-        dest="matmul_full_fp32",
-        action=argparse.BooleanOptionalAction,
-        help="Enable FP32 accumulation for matmul operations (default: enabled).",
+        help="Enable FP32 accumulation in DST for matmul and reduce operations (default: enabled). "
+        "For bf16/f16 inputs, this halves DST capacity (4 tiles in half-sync mode instead of 8).",
     )
     return p
 
@@ -119,8 +113,7 @@ class CompilerOptions:
     use_block_matmul: bool = True
     auto_sync: bool = False
     combine_pack_tiles: bool = True
-    reduce_full_fp32: bool = True
-    matmul_full_fp32: bool = True
+    fp32_dst_acc: bool = True
 
     # Fields that were explicitly provided (not defaulted). Excluded from
     # equality and hashing so two instances with the same bool values are

@@ -21,7 +21,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addPass(createTTLConvertTTLToCompute());
   {
     TTLSetComputeKernelConfigOptions configOpts;
-    configOpts.reduceFullFp32 = options.reduceFullFp32;
+    configOpts.fp32DstAcc = options.fp32DstAcc;
     pm.addPass(createTTLSetComputeKernelConfig(configOpts));
   }
   {
@@ -48,7 +48,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addPass(createTTLAnnotateCBAssociations());
   {
     TTLConvertTTLToTTKernelOptions ttkOpts;
-    ttkOpts.reduceFullFp32 = options.reduceFullFp32;
+    ttkOpts.reduceFullFp32 = options.fp32DstAcc;
     pm.addPass(createTTLConvertTTLToTTKernel(ttkOpts));
   }
   pm.addPass(createTTKernelInsertInits());

@@ -25,7 +25,7 @@ import ttl
 # CHECK: Compiled kernel ready
 
 # Verify subblock loop structure: nested M/N subblock loops, each computing
-# a subblock of the 8x8 output via matmul_block. With matmul_full_fp32
+# a subblock of the 8x8 output via matmul_block. With fp32_dst_acc
 # (f32 DST capacity=4), subblocks are 1x4 tiles.
 # Individual pack_tile<true> (L1 accumulation) instead of pack_tile_block
 # because the subblock reserve/push is at full-block granularity (not

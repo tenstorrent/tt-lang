@@ -126,12 +126,10 @@ def TTLSetComputeKernelConfig
            "Set default fp32_dest_acc_en when not already configured.">,
     Option<"dstFullSyncEn", "dst-full-sync-en", "bool", "false",
            "Set default dst_full_sync_en when not already configured.">,
-    Option<"reduceFullFp32", "reduce-full-fp32", "bool", "true",
-           "Enable FP32 accumulation for reduce operations. "
-           "Sets fp32_dest_acc_en on the kernel when any compute op contains reduce.">,
-    Option<"matmulFullFp32", "matmul-full-fp32", "bool", "true",
-           "Enable FP32 accumulation for matmul operations. "
-           "Sets fp32_dest_acc_en on the kernel when any compute op contains matmul_block.">
+    Option<"fp32DstAcc", "fp32-dst-acc", "bool", "true",
+           "Enable FP32 DST accumulation for matmul and reduce operations. "
+           "Sets fp32_dest_acc_en on the kernel when any compute op contains "
+           "reduce_tile or matmul_block.">
   ];
 
   let dependentDialects = [
