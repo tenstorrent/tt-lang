@@ -952,9 +952,12 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
   }
 };
 
-/// Lower ttl.tile_fill to ttkernel.fill_tile.
+//===----------------------------------------------------------------------===//
+// Fill Tile Op Lowering
+//===----------------------------------------------------------------------===//
+
 struct TTLTileFillToTTKernel : OpConversionPattern<TileFillOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using OpConversionPattern<TileFillOp>::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(TileFillOp op, TileFillOp::Adaptor adaptor,
@@ -962,18 +965,24 @@ struct TTLTileFillToTTKernel : OpConversionPattern<TileFillOp> {
     Location loc = op.getLoc();
 
     auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
-    if (!dstIdxAttr)
+    if (!dstIdxAttr) {
       return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
+    }
+    int64_t dstIdx = dstIdxAttr.getInt();
+    Value dstIdxVal = arith::ConstantIndexOp::create(rewriter, loc, dstIdx);
 
-    Value dstIdxVal =
-        arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
-    Value fillVal = arith::ConstantOp::create(rewriter, loc, op.getValueAttr());
+    Value fillValue = arith::ConstantOp::create(
+        rewriter, loc,
+        rewriter.getF32FloatAttr(op.getValue().convertToFloat()));
 
-    ttk::FillTileOp::create(rewriter, loc, dstIdxVal, fillVal);
+    ttk::FillTileOp::create(rewriter, loc, dstIdxVal, fillValue);
 
-    // Fill produces a DST value; replace uses with a placeholder index.
-    rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(op,
-                                                        dstIdxAttr.getInt());
+    // Replace with an unrealized cast carrying dst_idx for tile_store.
+    auto cast = mlir::UnrealizedConversionCastOp::create(
+        rewriter, loc, TypeRange{op.getResult().getType()},
+        ValueRange{dstIdxVal});
+    cast->setAttr(kDstIdxAttrName, dstIdxAttr);
+    rewriter.replaceOp(op, cast.getResult(0));
     return success();
   }
 };
@@ -1013,6 +1022,9 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 #define TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)         \
   patterns.add<TTL_OP##FPUTileLowering>(*typeConverter, ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
+  // DST-based ops (no type converter needed).
+  patterns.add<TTLTileFillToTTKernel>(ctx);
 
   // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);

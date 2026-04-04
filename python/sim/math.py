@@ -588,21 +588,21 @@ def threshold(expr: Block, threshold: PositiveInt, value: PositiveInt) -> Block:
 
 
 # Fill, mask and where functions
-def fill(expr: Block, value: float) -> Block:
-    """Fill a block with specified value.
+def fill(out_blk: Block, value: float) -> Block:
+    """Return a temporary block with the same shape as out_blk filled with value.
 
     Args:
-        expr: Input block (shape is preserved)
-        value: Value to fill
+        out_blk: Block whose shape determines the result shape.
+        value: The scalar value to fill every element with.
 
     Returns:
-        Block filled with specified value
+        A temporary Block with the same shape as out_blk, every element set to value.
     """
 
     def _op(t: torch.Tensor) -> torch.Tensor:
         return torch.full_like(t, value)
 
-    return _apply_unary_with_params(expr, _op)
+    return _apply_unary_with_params(out_blk, _op)
 
 
 def mask(expr: Block, mask: Block) -> Block:

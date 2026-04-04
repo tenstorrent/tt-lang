@@ -22,7 +22,7 @@ import torch
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from conftest import temp_kernel_files
-from ttlang_test_utils import assert_allclose, to_l1
+from ttlang_test_utils import assert_allclose, to_l1, to_l1_sharded
 
 
 # =============================================================================
@@ -268,6 +268,51 @@ def test_unary_op(device, op_name):
 
     inp = to_l1(inp_torch, device)
     out = to_l1(out_torch, device)
+
+    kernel(inp, out)
+    result = ttnn.to_torch(out)
+
+    assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+
+
+# =============================================================================
+# Sharded L1 Tests - same ops with height-sharded memory layout
+# =============================================================================
+
+
+@pytest.mark.parametrize("shard_layout", ["height", "width", "block"])
+@pytest.mark.parametrize("op_name", ["add", "sub", "mul"])
+def test_binary_op_sharded(device, op_name, shard_layout):
+    """Test binary elementwise operation with sharded L1 memory."""
+    kernel, torch_fn = BINARY_OPS[op_name]
+
+    lhs_torch = torch.full((32, 32), 2.0, dtype=torch.bfloat16)
+    rhs_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
+    out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
+    expected = torch_fn(lhs_torch, rhs_torch)
+
+    lhs = to_l1_sharded(lhs_torch, device, layout=shard_layout)
+    rhs = to_l1_sharded(rhs_torch, device, layout=shard_layout)
+    out = to_l1_sharded(out_torch, device, layout=shard_layout)
+
+    kernel(lhs, rhs, out)
+    result = ttnn.to_torch(out)
+
+    assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("shard_layout", ["height", "width", "block"])
+@pytest.mark.parametrize("op_name", ["exp", "neg", "relu"])
+def test_unary_op_sharded(device, op_name, shard_layout):
+    """Test unary elementwise operation with sharded L1 memory."""
+    kernel, torch_fn = UNARY_OPS[op_name]
+
+    inp_torch = torch.full((32, 32), 0.5, dtype=torch.bfloat16)
+    out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
+    expected = torch_fn(inp_torch)
+
+    inp = to_l1_sharded(inp_torch, device, layout=shard_layout)
+    out = to_l1_sharded(out_torch, device, layout=shard_layout)
 
     kernel(inp, out)
     result = ttnn.to_torch(out)

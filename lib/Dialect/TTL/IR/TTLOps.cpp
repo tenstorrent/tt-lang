@@ -712,11 +712,9 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     return emitOpError("body block must be terminated with ttl.yield");
   }
 
-  // Verify at least one input and one output (required for SFPU protocol).
-  if (getInputs().empty()) {
-    return emitOpError(
-        "requires at least one input for SFPU unpacker configuration");
-  }
+  // Verify at least one output (required for SFPU packer configuration).
+  // Zero inputs are allowed for ops like fill that produce output without
+  // input.
   if (getOutputs().empty()) {
     return emitOpError(
         "requires at least one output for SFPU packer configuration");

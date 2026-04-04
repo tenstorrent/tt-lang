@@ -4,4 +4,6 @@
 
 """tt-lang version string, read from CMake-generated config module."""
 
-from ttl.config import VERSION as __version__
+from ttl.config import VERSION as _VERSION  # type: ignore[reportMissingTypeStubs]
+
+__version__: str = str(_VERSION)

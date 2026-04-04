@@ -42,6 +42,8 @@
 | 0.10 | 03/06/2026 | Add debug printing |
 | 0.11 | 03/19/2026 | Rename `ttl.core` to `ttl.node` |
 | 0.12 | 03/24/2026 | Remove `store(..., acc=True)` |
+| 0.13 | 03/31/2026 | Rename `ttl.kernel` to `ttl.operation` |
+| 0.14 | 04/02/2026 | Add `ttl.math.abs`, `ttl.math.neg` and `ttl.math.pow` in addition to Python built-in operators. |
 
 
 ## Introduction
@@ -398,7 +400,7 @@ def matmul_write():
 | Function | Description |
 | :---- | :---- |
 | `ttl.Block.store(self, expr: ttl.BlockExpr)` | This function materializes the result of a *block expression* and stores it in the block. Block expression uses Python builtin math operators and `ttl.math.xxx` functions on block expression. **This function is blocking** so that block is safe to use immediately after the call. |
-| `ttl.BlockExpr.__pow__(self, exponent: ttl.PositiveInt) -> ttl.BlockExpr` | Example of Python built-in operator. See full list in [Appendix B. Block operators and math functions](#appendix-b-block-operators-and-math-functions). |
+| `ttl.BlockExpr.__pow__(self, exponent: ttl.NaturalInt) -> ttl.BlockExpr` | Example of Python built-in operator. See full list in [Appendix B. Block operators and math functions](#appendix-b-block-operators-and-math-functions). |
 | `ttl.BlockExpr.__add__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | 〃 |
 | `ttl.BlockExpr.__iadd__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | 〃 |
 | `ttl.math.sqrt(expr: ttl.BlockExpr) -> ttl.BlockExpr` | 〃 |
@@ -1025,9 +1027,9 @@ def matmul_read():
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.BlockExpr.__abs__(self) -> ttl.BlockExpr` | Absolute value. Example: `abs(a)`. |
-| `ttl.BlockExpr.__neg__(self) -> ttl.BlockExpr` | Negation. Example: `-a`. |
-| `ttl.BlockExpr.__pow__(self, exponent: ttl.PositiveInt) -> ttl.BlockExpr` | Power with scalar unsigned integer exponent. Example; `a ** 2`. |
+| `ttl.BlockExpr.__abs__(self) -> ttl.BlockExpr`<br><br>`ttl.math.abs(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Absolute value. Example: `abs(a)`, `ttl.math.abs(a)`. |
+| `ttl.BlockExpr.__neg__(self) -> ttl.BlockExpr`<br><br>`ttl.math.neg(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Negation. Example: `-a`, `ttl.math.neg(a)`. |
+| `ttl.BlockExpr.__pow__(self, exponent: ttl.NaturalInt) -> ttl.BlockExpr`<br><br>`ttl.math.pow(expr: ttl.BlockExpr, exponent: ttl.NaturalInt) -> ttl.BlockExpr` | Power with scalar unsigned integer exponent. Example; `a ** 2`, `ttl.math.pow(a, 2)`. |
 | `ttl.math.exp(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Natural base exponential (`e^x`) |
 | `ttl.math.exp2(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Base 2 exponential (`2^x`) |
 | `ttl.math.expm1(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Natural base exponential minus one (`ttl.math.exp(x) - 1`) |
@@ -1037,7 +1039,7 @@ def matmul_read():
 | `ttl.math.square(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Square |
 | `ttl.math.rsqrt(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Reciprocal square root (`1 / ttl.math.sqrt(x)`) |
 | `ttl.math.recip(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Reciprocal (`1 / x`) |
-| `ttl.math.rsub(a: ttl.BlockExpr, b: ttl.PositiveInt) -> ttl.BlockExpr` | Subtract a from b where b is scalar unsigned integer (`b - a`) |
+| `ttl.math.rsub(a: ttl.BlockExpr, b: ttl.NaturalInt) -> ttl.BlockExpr` | Subtract a from b where b is scalar unsigned integer (`b - a`) |
 
 ### Trigonometric unary math functions
 
@@ -1059,20 +1061,20 @@ def matmul_read():
 | Function | Description |
 | :---- | :---- |
 | `ttl.math.relu(expr: ttl.BlockExpr) -> ttl.BlockExpr` | [ReLU](https://docs.pytorch.org/docs/stable/generated/torch.nn.ReLU.html) |
-| `ttl.math.relu_max(expr: ttl.BlockExpr, upper_limit: ttl.PositiveInt) -> ttl.BlockExpr` | ReLU with upper limit (`ttl.math.relu(ttl.math.min(x, upper_limit)))`) |
-| `ttl.math.relu_min(expr: ttl.BlockExpr, lower_limit: ttl.PositiveInt) -> ttl.BlockExpr` | ReLU with lower limit (`ttl.math.relu(ttl.math.max(x, lower_limit)))`) |
-| `ttl.math.leaky_relu(expr: ttl.BlockExpr, slope: ttl.PositiveInt) -> ttl.BlockExpr` | [Leaky ReLU](https://docs.pytorch.org/docs/stable/generated/torch.nn.LeakyReLU.html) |
-| `ttl.math.elu(expr: ttl.BlockExpr, slope: ttl.PositiveInt) -> ttl.BlockExpr` | [ELU](https://docs.pytorch.org/docs/stable/generated/torch.nn.ELU.html) |
+| `ttl.math.relu_max(expr: ttl.BlockExpr, upper_limit: ttl.NaturalInt) -> ttl.BlockExpr` | ReLU with upper limit (`ttl.math.relu(ttl.math.min(x, upper_limit)))`) |
+| `ttl.math.relu_min(expr: ttl.BlockExpr, lower_limit: ttl.NaturalInt) -> ttl.BlockExpr` | ReLU with lower limit (`ttl.math.relu(ttl.math.max(x, lower_limit)))`) |
+| `ttl.math.leaky_relu(expr: ttl.BlockExpr, slope: ttl.NaturalInt) -> ttl.BlockExpr` | [Leaky ReLU](https://docs.pytorch.org/docs/stable/generated/torch.nn.LeakyReLU.html) |
+| `ttl.math.elu(expr: ttl.BlockExpr, slope: ttl.NaturalInt) -> ttl.BlockExpr` | [ELU](https://docs.pytorch.org/docs/stable/generated/torch.nn.ELU.html) |
 | `ttl.math.gelu(expr: ttl.BlockExpr) -> ttl.BlockExpr` | [GELU](https://docs.pytorch.org/docs/stable/generated/torch.nn.GELU.html) |
 | `ttl.math.sigmoid(expr: ttl.BlockExpr) -> ttl.BlockExpr` | [Sigmoid](https://docs.pytorch.org/docs/stable/generated/torch.nn.Sigmoid.html) |
-| `ttl.math.celu(expr: ttl.BlockExpr, alpha: ttl.PositiveInt, alpha_recip: ttl.PositiveInt) -> ttl.BlockExpr` | [CELU](https://docs.pytorch.org/docs/stable/generated/torch.nn.CELU.html) |
+| `ttl.math.celu(expr: ttl.BlockExpr, alpha: ttl.NaturalInt, alpha_recip: ttl.NaturalInt) -> ttl.BlockExpr` | [CELU](https://docs.pytorch.org/docs/stable/generated/torch.nn.CELU.html) |
 | `ttl.math.silu(expr: ttl.BlockExpr) -> ttl.BlockExpr` | [SiLU](https://docs.pytorch.org/docs/stable/generated/torch.nn.SiLU.html#torch.nn.SiLU) (Swish) |
-| `ttl.math.prelu(expr: ttl.BlockExpr, alpha: ttl.PositiveInt) -> ttl.BlockExpr` | [PReLU](https://docs.pytorch.org/docs/stable/generated/torch.nn.PReLU.html) |
-| `ttl.math.softplus(expr: ttl.BlockExpr, beta: ttl.PositiveInt, beta_reciprocal: ttl.PositiveInt, threshold: ttl.PositiveInt) -> ttl.BlockExpr` | [Softplus](https://docs.pytorch.org/docs/stable/generated/torch.nn.Softplus.html) |
+| `ttl.math.prelu(expr: ttl.BlockExpr, alpha: ttl.NaturalInt) -> ttl.BlockExpr` | [PReLU](https://docs.pytorch.org/docs/stable/generated/torch.nn.PReLU.html) |
+| `ttl.math.softplus(expr: ttl.BlockExpr, beta: ttl.NaturalInt, beta_reciprocal: ttl.NaturalInt, threshold: ttl.NaturalInt) -> ttl.BlockExpr` | [Softplus](https://docs.pytorch.org/docs/stable/generated/torch.nn.Softplus.html) |
 | `ttl.math.softsign(expr: ttl.BlockExpr) -> ttl.BlockExpr` | [Softsign](https://docs.pytorch.org/docs/stable/generated/torch.nn.Softsign.html) |
 | `ttl.math.hardsigmoid(expr: ttl.BlockExpr) -> ttl.BlockExpr` | [Hardsigmoid](https://docs.pytorch.org/docs/stable/generated/torch.nn.modules.activation.Hardsigmoid.html) |
-| `ttl.math.hardtanh(expr: ttl.BlockExpr, min: ttl.PositiveInt, max: ttl.PositiveInt) -> ttl.BlockExpr` | [Hardtanh](https://docs.pytorch.org/docs/stable/generated/torch.nn.modules.activation.Hardtanh.html) |
-| `ttl.math.selu(expr: ttl.BlockExpr, scale: ttl.PositiveInt, alpha: ttl.PositiveInt) -> ttl.BlockExpr` | [SELU](https://docs.pytorch.org/docs/stable/generated/torch.nn.modules.activation.SELU.html) |
+| `ttl.math.hardtanh(expr: ttl.BlockExpr, min: ttl.NaturalInt, max: ttl.NaturalInt) -> ttl.BlockExpr` | [Hardtanh](https://docs.pytorch.org/docs/stable/generated/torch.nn.modules.activation.Hardtanh.html) |
+| `ttl.math.selu(expr: ttl.BlockExpr, scale: ttl.NaturalInt, alpha: ttl.NaturalInt) -> ttl.BlockExpr` | [SELU](https://docs.pytorch.org/docs/stable/generated/torch.nn.modules.activation.SELU.html) |
 
 ### Reduction, broadcast and transpose functions
 
@@ -1101,11 +1103,11 @@ Example for broadcast over two innermost dimensions: `y.store(b + ttl.math.broad
 | :---- | :---- |
 | `ttl.math.frac(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Fractional portion |
 | `ttl.math.trunc(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Truncated integer portion |
-| `ttl.math.round(expr: ttl.BlockExpr, decimals: ttl.PositiveInt) -> ttl.BlockExpr` | Rounds to the number of decimal places specified in `decimals` |
+| `ttl.math.round(expr: ttl.BlockExpr, decimals: ttl.NaturalInt) -> ttl.BlockExpr` | Rounds to the number of decimal places specified in `decimals` |
 | `ttl.math.floor(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Floor |
 | `ttl.math.ceil(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Ceil |
-| `ttl.math.clamp(expr: ttl.BlockExpr, min: ttl.PositiveInt, max: ttl.PositiveInt) -> ttl.BlockExpr` | Clamp to specified `min` and `max` |
-| `ttl.math.threshold(expr: ttl.BlockExpr, threshold: ttl.PositiveInt, value: ttl.PositiveInt) -> ttl.BlockExpr` | For all values greater than specified `threshold` replace with specified `value` |
+| `ttl.math.clamp(expr: ttl.BlockExpr, min: ttl.NaturalInt, max: ttl.NaturalInt) -> ttl.BlockExpr` | Clamp to specified `min` and `max` |
+| `ttl.math.threshold(expr: ttl.BlockExpr, threshold: ttl.NaturalInt, value: ttl.NaturalInt) -> ttl.BlockExpr` | For all values greater than specified `threshold` replace with specified `value` |
 | `ttl.math.sign(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Replace positive element with 1, negative elements with -1 and leave zeroes as zero. |
 | `ttl.math.signbit(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Replace positive and positive zero elements with 1 and the rest with 0 |
 

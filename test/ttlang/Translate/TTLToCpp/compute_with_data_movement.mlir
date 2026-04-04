@@ -34,7 +34,7 @@
 
 // Read tensor A into CB0
 // FPU:   int32_t [[RT_ARG_A:.*]] = get_common_arg_val<uint32_t>([[ZERO]]);
-// FPU-NEXT:   auto [[ARGS_A:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<2, 0>();
+// FPU-NEXT:   auto [[ARGS_A:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 2>(), 0>();
 // FPU-NEXT:   TensorAccessor [[ACC_A:.*]] = TensorAccessor([[ARGS_A]], [[RT_ARG_A]],
 // CB pointer casting chain: int32_t -> ptrdiff_t -> size_t
 // FPU:   int32_t [[CB0_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(0));
@@ -60,7 +60,7 @@
 
 // Read tensor B into CB1
 // FPU:   int32_t [[RT_ARG_B:.*]] = get_common_arg_val<uint32_t>([[ONE]]);
-// FPU-NEXT:   auto [[ARGS_B:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 1>();
+// FPU-NEXT:   auto [[ARGS_B:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<1, 2>(), 1>();
 // FPU-NEXT:   TensorAccessor [[ACC_B:.*]] = TensorAccessor([[ARGS_B]], [[RT_ARG_B]],
 // CB pointer casting chain: int32_t -> ptrdiff_t -> size_t
 // FPU:   int32_t [[CB1_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(1));
@@ -133,7 +133,7 @@
 // FPU-DAG:   size_t [[WPAGE:v[0-9]+]] = 4096
 // FPU-DAG:   size_t [[WZERO:v[0-9]+]] = 0
 // FPU:   int32_t [[WRT_ARG:.*]] = get_common_arg_val<uint32_t>([[WZERO]]);
-// FPU-NEXT:   auto [[WARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<1, 0>();
+// FPU-NEXT:   auto [[WARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
 // FPU-NEXT:   TensorAccessor [[WACC:.*]] = TensorAccessor([[WARGS]], [[WRT_ARG]],
 // CB pointer casting chain: int32_t -> ptrdiff_t -> size_t
 // FPU:   int32_t [[WR_PTR:.*]] = get_read_ptr(get_compile_time_arg_val(2));
@@ -169,7 +169,7 @@
 
 // Read tensor A into CB0
 // SFPU:   int32_t [[RT_ARG_A:.*]] = get_common_arg_val<uint32_t>([[ZERO]]);
-// SFPU-NEXT:   auto [[ARGS_A:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<2, 0>();
+// SFPU-NEXT:   auto [[ARGS_A:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 2>(), 0>();
 // SFPU-NEXT:   TensorAccessor [[ACC_A:.*]] = TensorAccessor([[ARGS_A]], [[RT_ARG_A]],
 // CB pointer casting chain: int32_t -> ptrdiff_t -> size_t
 // SFPU:   int32_t [[CB0_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(0));
@@ -195,7 +195,7 @@
 
 // Read tensor B into CB1
 // SFPU:   int32_t [[RT_ARG_B:.*]] = get_common_arg_val<uint32_t>([[ONE]]);
-// SFPU-NEXT:   auto [[ARGS_B:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 1>();
+// SFPU-NEXT:   auto [[ARGS_B:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<1, 2>(), 1>();
 // SFPU-NEXT:   TensorAccessor [[ACC_B:.*]] = TensorAccessor([[ARGS_B]], [[RT_ARG_B]],
 // CB pointer casting chain: int32_t -> ptrdiff_t -> size_t
 // SFPU:   int32_t [[CB1_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(1));
@@ -268,7 +268,7 @@
 // SFPU-DAG:   size_t [[WPAGE:v[0-9]+]] = 4096
 // SFPU-DAG:   size_t [[WZERO:v[0-9]+]] = 0
 // SFPU:   int32_t [[WRT_ARG:.*]] = get_common_arg_val<uint32_t>([[WZERO]]);
-// SFPU-NEXT:   auto [[WARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<1, 0>();
+// SFPU-NEXT:   auto [[WARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
 // SFPU-NEXT:   TensorAccessor [[WACC:.*]] = TensorAccessor([[WARGS]], [[WRT_ARG]],
 // CB pointer casting chain: int32_t -> ptrdiff_t -> size_t
 // SFPU:   int32_t [[WR_PTR:.*]] = get_read_ptr(get_compile_time_arg_val(2));

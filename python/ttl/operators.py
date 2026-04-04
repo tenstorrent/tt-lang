@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import List, Tuple, Union
 
 from ttl.dialects import arith
-from ttl.ir import RankedTensorType, Type
+from ttl.ir import RankedTensorType, Type, FloatAttr, F32Type
 
 # Re-export generated elementwise operations
 from ._generated_elementwise import *  # noqa: F401,F403
@@ -25,6 +25,15 @@ def _get_constant_int(val):
     if isinstance(val, arith.ConstantOp):
         return val.literal_value
     raise ValueError(f"Expected int or arith.ConstantOp, got {type(val)}")
+
+
+def _get_constant_float(val):
+    """Extract Python float from MLIR arith.ConstantOp or return as-is if already float."""
+    if isinstance(val, (float, int)):
+        return float(val)
+    if isinstance(val, arith.ConstantOp):
+        return float(val.literal_value)
+    raise ValueError(f"Expected float or arith.ConstantOp, got {type(val)}")
 
 
 # Type aliases for common patterns
@@ -559,6 +568,15 @@ def transpose(input: TensorBlock) -> TensorBlock:
         result_shape, input_type.element_type, input_type.encoding
     )
     return ttl.transpose(result_type, input)
+
+
+@syntax("fill")
+def fill(output: TensorBlock, value) -> TensorBlock:
+    """Fill a tensor with a constant f32 value."""
+    fill_val = _get_constant_float(value)
+    ctx = output.type.context
+    value_attr = FloatAttr.get(F32Type.get(ctx), fill_val)
+    return ttl.fill(output.type, value_attr)
 
 
 __all__ = [
