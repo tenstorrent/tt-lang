@@ -17,7 +17,6 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-block-matmul` / `--no-ttl-block-matmul` | enabled | Emit `matmul_block` (processes the full tile block atomically) instead of per-tile matmul loops. Disabling this option is not yet supported. |
 | `--ttl-auto-sync` / `--no-ttl-auto-sync` | disabled | Let the compiler insert and move DFB synchronization ops. When enabled, reserve/push may be refined to per-subblock granularity. When disabled, user-placed reserve/push is preserved as written. |
 | `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | enabled | Combine consecutive `pack_tile` ops on the same CB with contiguous DST and CB indices into a single `pack_tile_block` call. |
-| `--ttl-fp32-dst-acc` / `--no-ttl-fp32-dst-acc` | enabled | When the compute kernel contains `matmul_block` or `reduce_tile`, enable f32 accumulation in the DST register file (`fp32_dest_acc_en=true`). For bf16/f16 inputs, this halves DST capacity (4 tiles in half-sync mode instead of 8). |
 
 ### Other Ways to Set These
 
@@ -111,7 +110,6 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `use-block-matmul` | bool | `true` | Lower matmul to block-level hardware calls (`experimental::matmul_block`). |
 | `auto-sync` | bool | `false` | Let the compiler insert and move DFB synchronization ops. |
 | `combine-pack-tiles` | bool | `true` | Combine consecutive `pack_tile` ops into `pack_tile_block`. |
-| `fp32-dst-acc` | bool | `true` | Enable f32 DST accumulation for matmul and reduce operations. |
 | `lower-to-emitc` | bool | `false` | Run the TTKernel-to-EmitC backend (produces C++ source). |
 
 The pipeline runs these passes in order:
@@ -144,7 +142,6 @@ Set default compute kernel configuration attributes on `ttl.compute` ops.
 |---|---|---|---|
 | `fp32-dest-acc-en` | bool | `false` | Default `fp32_dest_acc_en` when not already configured. |
 | `dst-full-sync-en` | bool | `false` | Default `dst_full_sync_en` when not already configured. |
-| `fp32-dst-acc` | bool | `true` | Set `fp32_dest_acc_en` on the kernel function when any compute op contains `reduce_tile` or `matmul_block`. |
 
 ```bash
 ttlang-opt input.mlir -p 'func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=1})'
