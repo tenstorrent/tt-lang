@@ -292,21 +292,13 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // Without this, subblocking along M would incorrectly slice B (which is
   // indexed by [K, N], not [M, N]).
   DenseSet<Value> matmulLhsTensors, matmulRhsTensors;
-  unsigned matmulCount = 0;
   for (Operation *op : trace.opsInOrder) {
     if (auto matmulOp = dyn_cast<MatmulOp>(op)) {
       matmulLhsTensors.insert(matmulOp.getLhs());
       matmulRhsTensors.insert(matmulOp.getRhs());
-      ++matmulCount;
     }
   }
   bool hasMatmul = !matmulLhsTensors.empty();
-
-  // Multiple matmuls in one fusion chain would require multiple reduction
-  // dimensions — not supported.
-  if (matmulCount > 1) {
-    return sinkOp->emitError("fusion with multiple matmuls is not supported");
-  }
 
   // Build indexing maps and iterator types based on whether the chain
   // contains a matmul.

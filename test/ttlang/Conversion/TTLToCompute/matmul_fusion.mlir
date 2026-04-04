@@ -46,9 +46,13 @@ func.func @matmul_add() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indic
 // Commuted add: c + matmul(a,b) produces the same 3-operand fold.
 // The accumulator (c) traces first, so it appears as the first block arg.
 
+// CHECK-DAG: #[[$C_PAR:.*]] = affine_map<(d0, d1, d2) -> (d0, d1)>
+// CHECK-DAG: #[[$C_LHS:.*]] = affine_map<(d0, d1, d2) -> (d0, d2)>
+// CHECK-DAG: #[[$C_RHS:.*]] = affine_map<(d0, d1, d2) -> (d2, d1)>
+
 // CHECK-LABEL: func.func @matmul_add_commuted
 // CHECK:         ttl.compute
-// CHECK-SAME:      indexing_maps =
+// CHECK-SAME:      indexing_maps = [#[[$C_PAR]], #[[$C_LHS]], #[[$C_RHS]], #[[$C_PAR]]]
 // CHECK-SAME:      iterator_types = ["parallel", "parallel", "reduction"]
 // CHECK-NEXT:    ^bb0(%[[CT:.*]]: !ttcore.tile{{.*}}, %[[AT:.*]]: !ttcore.tile{{.*}}, %[[BT:.*]]: !ttcore.tile{{.*}}, %{{.*}}: !ttcore.tile{{.*}}):
 // CHECK-NEXT:      ttl.iter_index 0
@@ -296,8 +300,6 @@ func.func @matmul_sub_no_fold() attributes {ttl.base_cta_index = 4 : i32, ttl.cr
   func.return
 }
 
-// Multiple matmuls in one fusion chain are rejected — tested in
-// convert_ttl_matmul_add_multitile_invalid.mlir.
 
 // -----
 
