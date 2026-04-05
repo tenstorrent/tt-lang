@@ -22,22 +22,14 @@
 // CHECK:     auto [[ARGS_READ:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
 // CHECK:     TensorAccessor [[ACC_READ:v[0-9]+]] = TensorAccessor([[ARGS_READ]], [[RT_ARG_R]], [[ADDR]]);
 // CHECK:     int32_t [[CB_WRITE_PTR:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
-// CHECK-NEXT:     ptrdiff_t [[RC1:v[0-9]+]] = (ptrdiff_t) [[CB_WRITE_PTR]];
-// CHECK-NEXT:     size_t [[RC2:v[0-9]+]] = (size_t) [[RC1]];
-// CHECK-NEXT:     ptrdiff_t [[RC3:v[0-9]+]] = (ptrdiff_t) [[RC2]];
-// CHECK-NEXT:     int32_t [[RC4:v[0-9]+]] = (int32_t) [[RC3]];
-// CHECK-NEXT:     noc_async_read_tile([[ZERO]], [[ACC_READ]], [[RC4]]);
+// CHECK-NEXT:     noc_async_read_tile([[ZERO]], [[ACC_READ]], [[CB_WRITE_PTR]]);
 // CHECK:     noc_async_read_barrier();
 // Write: CB -> tensor (uses get_read_ptr for CB source, with cast chain)
 // CHECK:     int32_t [[RT_ARG_W:v[0-9]+]] = get_common_arg_val<uint32_t>([[STEP]]);
 // CHECK:     auto [[ARGS_WRITE:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<1, 1>(), 1>();
 // CHECK:     TensorAccessor [[ACC_WRITE:v[0-9]+]] = TensorAccessor([[ARGS_WRITE]], [[RT_ARG_W]], [[ADDR]]);
 // CHECK:     int32_t [[CB_READ_PTR:v[0-9]+]] = get_read_ptr(get_compile_time_arg_val(0));
-// CHECK-NEXT:     ptrdiff_t [[WC1:v[0-9]+]] = (ptrdiff_t) [[CB_READ_PTR]];
-// CHECK-NEXT:     size_t [[WC2:v[0-9]+]] = (size_t) [[WC1]];
-// CHECK-NEXT:     ptrdiff_t [[WC3:v[0-9]+]] = (ptrdiff_t) [[WC2]];
-// CHECK-NEXT:     int32_t [[WC4:v[0-9]+]] = (int32_t) [[WC3]];
-// CHECK-NEXT:     noc_async_write_tile([[ZERO]], [[ACC_WRITE]], [[WC4]]);
+// CHECK-NEXT:     noc_async_write_tile([[ZERO]], [[ACC_WRITE]], [[CB_READ_PTR]]);
 // CHECK:     noc_async_write_barrier();
 // CHECK:   }
 // CHECK:   return;

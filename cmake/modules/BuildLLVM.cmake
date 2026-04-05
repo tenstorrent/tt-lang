@@ -219,7 +219,8 @@ else()
     "${LLVM_SUBMODULE_DIR}/mlir/python/requirements.txt" FATAL)
 
   # Check if LLVM is already built (skip rebuild if install exists).
-  if(EXISTS "${LLVM_INSTALL_DIR}/lib/cmake/mlir/MLIRConfig.cmake")
+  if(EXISTS "${LLVM_INSTALL_DIR}/lib/cmake/mlir/MLIRConfig.cmake"
+     AND NOT TTLANG_BUILD_TOOLCHAIN)
     message(STATUS "LLVM/MLIR already built at ${LLVM_INSTALL_DIR}, skipping rebuild")
     # Warn if the submodule moved to a different commit than what was built.
     if(DEFINED _TTLANG_EXPECTED_LLVM_SHA)

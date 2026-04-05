@@ -8,21 +8,17 @@
 // TTKERNEL-LABEL: func.func @loopback_dram_copy
 // Verify runtime args and CB pointers are used for both read and write operations.
 // TTKERNEL: scf.for
-// Read: runtime arg for src tensor, accessor, write ptr for CB, index_cast round-trip
+// Read: runtime arg for src tensor, accessor, write ptr for CB
 // TTKERNEL:   ttkernel.get_common_arg_val({{.*}}) : (index) -> i32
 // TTKERNEL:   %[[ACC_R:.*]] = ttkernel.TensorAccessor({{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
 // TTKERNEL:   %[[CB_W_PTR:.*]] = ttkernel.get_write_ptr({{.*}}) : (!ttkernel.cb<2, f32>) -> i32
-// TTKERNEL:   %[[CB_W_PTR_IDX:.*]] = arith.index_cast %[[CB_W_PTR]] : i32 to index
-// TTKERNEL:   %[[CB_W_PTR_I32:.*]] = arith.index_cast %[[CB_W_PTR_IDX]] : index to i32
-// TTKERNEL:   ttkernel.noc_async_read_tile({{.*}}, %[[ACC_R]], %[[CB_W_PTR_I32]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL:   ttkernel.noc_async_read_tile({{.*}}, %[[ACC_R]], %[[CB_W_PTR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
 // TTKERNEL:   ttkernel.noc_async_read_barrier() : () -> ()
-// Write: runtime arg for dst tensor, accessor, read ptr for CB, index_cast round-trip
+// Write: runtime arg for dst tensor, accessor, read ptr for CB
 // TTKERNEL:   ttkernel.get_common_arg_val({{.*}}) : (index) -> i32
 // TTKERNEL:   %[[ACC_W:.*]] = ttkernel.TensorAccessor({{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
 // TTKERNEL:   %[[CB_R_PTR:.*]] = ttkernel.get_read_ptr({{.*}}) : (!ttkernel.cb<2, f32>) -> i32
-// TTKERNEL:   %[[CB_R_PTR_IDX:.*]] = arith.index_cast %[[CB_R_PTR]] : i32 to index
-// TTKERNEL:   %[[CB_R_PTR_I32:.*]] = arith.index_cast %[[CB_R_PTR_IDX]] : index to i32
-// TTKERNEL:   ttkernel.noc_async_write_tile({{.*}}, %[[ACC_W]], %[[CB_R_PTR_I32]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
+// TTKERNEL:   ttkernel.noc_async_write_tile({{.*}}, %[[ACC_W]], %[[CB_R_PTR]]) : (i32, !ttkernel.TensorAccessor, i32) -> ()
 // TTKERNEL:   ttkernel.noc_async_write_barrier() : () -> ()
 
 module {

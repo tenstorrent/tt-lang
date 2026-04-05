@@ -17,11 +17,7 @@
 // CHECK:   auto [[ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
 // CHECK:   TensorAccessor [[ACCESSOR:v[0-9]+]] = TensorAccessor([[ARGS]], [[RT_ARG]], [[ADDR]]);
 // CHECK:   int32_t [[CB_PTR:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
-// CHECK-NEXT:   ptrdiff_t [[CAST1:v[0-9]+]] = (ptrdiff_t) [[CB_PTR]];
-// CHECK-NEXT:   size_t [[CAST2:v[0-9]+]] = (size_t) [[CAST1]];
-// CHECK-NEXT:   ptrdiff_t [[CAST3:v[0-9]+]] = (ptrdiff_t) [[CAST2]];
-// CHECK-NEXT:   int32_t [[CAST4:v[0-9]+]] = (int32_t) [[CAST3]];
-// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR]], [[CAST4]]);
+// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR]], [[CB_PTR]]);
 // CHECK:   noc_async_read_barrier();
 // CHECK:   return;
 // CHECK-NEXT: }
