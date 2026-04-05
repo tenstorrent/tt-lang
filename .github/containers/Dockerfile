@@ -44,9 +44,10 @@ COPY --from=ird-toolchain --chmod=777 /src $TTLANG_TOOLCHAIN_DIR/src/
 
 # Install Python dev dependencies (black, sphinx, etc.) into the toolchain venv
 COPY requirements.txt /tmp/requirements.txt
+COPY docs/requirements.txt /tmp/docs/requirements.txt
 COPY dev-requirements.txt /tmp/dev-requirements.txt
 RUN $TTLANG_TOOLCHAIN_DIR/venv/bin/python -m pip install -r /tmp/dev-requirements.txt tt-smi --no-cache-dir && \
-    rm /tmp/requirements.txt /tmp/dev-requirements.txt && \
+    rm -rf /tmp/requirements.txt /tmp/docs /tmp/dev-requirements.txt && \
     apt-get update && apt-get install -y \
     ssh \
     sudo \
