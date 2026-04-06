@@ -894,16 +894,13 @@ static FailureOr<ttkernel::ReduceDim> computeReduceDim(ArrayRef<int64_t> dims,
 /// TODO(#449): replace this tracing with a structured approach (e.g.,
 /// propagate reduce dim as an attribute during lowering).
 ///
-/// Returns:
-///   - std::nullopt: no reduce feeds this broadcast (no adjustment needed)
-///   - ReduceDim value: successfully traced the producing reduce
-///   - failure(): a reduce was found but the tracing is broken (caller
-///     should emit an error)
-static FailureOr<std::optional<ttkernel::ReduceDim>>
-getInputReduceDim(Value bcastInput) {
+/// Returns std::nullopt when no unique reduce can be traced (no CB, ambiguous
+/// stores, non-reduce producer, etc.). Returns a ReduceDim when a unique
+/// reduce was successfully traced.
+static std::optional<ttkernel::ReduceDim> getInputReduceDim(Value bcastInput) {
   Value cb = getAttachedCB(bcastInput);
   if (!cb) {
-    return std::optional<ttkernel::ReduceDim>(std::nullopt);
+    return std::nullopt;
   }
 
   // Find the unique store to this CB in the enclosing function.  Walking the
@@ -911,10 +908,13 @@ getInputReduceDim(Value bcastInput) {
   // store is inside a nested region (e.g., nested with-stmt scopes).
   StoreOp foundStore;
   bool ambiguous = false;
-  auto enclosingFunc =
-      bcastInput.getDefiningOp()->getParentOfType<func::FuncOp>();
+  auto *defOp = bcastInput.getDefiningOp();
+  if (!defOp) {
+    return std::nullopt;
+  }
+  auto enclosingFunc = defOp->getParentOfType<func::FuncOp>();
   if (!enclosingFunc) {
-    return std::optional<ttkernel::ReduceDim>(std::nullopt);
+    return std::nullopt;
   }
   enclosingFunc.walk([&](StoreOp storeOp) {
     if (ambiguous || getAttachedCB(storeOp.getView()) != cb) {
@@ -926,48 +926,102 @@ getInputReduceDim(Value bcastInput) {
     }
     foundStore = storeOp;
   });
-  if (!foundStore) {
-    return std::optional<ttkernel::ReduceDim>(std::nullopt);
-  }
-  if (ambiguous) {
-    return failure();
+  if (!foundStore || ambiguous) {
+    return std::nullopt;
   }
 
   auto reduceOp = foundStore.getTensor().getDefiningOp<ReduceOp>();
   if (!reduceOp) {
-    return std::optional<ttkernel::ReduceDim>(std::nullopt);
+    return std::nullopt;
   }
 
   auto inputType = getTensorType(reduceOp.getInput());
   if (!inputType) {
-    return failure();
+    return std::nullopt;
   }
   auto reduceDim = computeReduceDim(reduceOp.getDims(), inputType.getRank());
   if (failed(reduceDim)) {
-    return failure();
+    return std::nullopt;
   }
-  return std::optional<ttkernel::ReduceDim>(*reduceDim);
+  return *reduceDim;
 }
 
-/// Validate that shape expansion is compatible with bcast type.
-/// Uses emitError (not notifyMatchFailure) because these are user-facing
-/// errors with no alternative pattern to try. TODO: move to BcastOp verifier.
-static LogicalResult validateBcastExpansion(BcastOp op, bool expandRows,
-                                            bool expandCols) {
+/// Validate a single BcastOp. Called from runOnOperation() before patterns
+/// run, so emitOpError is safe (not inside a pattern rewriter).
+static LogicalResult validateBcastOp(BcastOp op) {
+  auto outputType = getTensorType(op.getResult());
+  auto inputType = getTensorType(op.getInput());
+  if (!outputType || !inputType) {
+    return success(); // pattern will handle gracefully
+  }
+
+  if (!getAttachedCB(op.getInput())) {
+    return op.emitOpError(
+        "broadcast input must come directly from a circular buffer, not from "
+        "an elementwise result; move the broadcast to its own compute block "
+        "or make it the first operation in a fused sequence");
+  }
+  if (!getAttachedCB(op.getOutput())) {
+    return op.emitOpError("output must be attached to a circular buffer");
+  }
+
+  if (inputType.getRank() != 2 || outputType.getRank() != 2) {
+    return op.emitOpError("requires rank-2 tensors");
+  }
+
+  auto inputShape = inputType.getShape();
+  auto outputShape = outputType.getShape();
+  bool expandRows = inputShape[0] != outputShape[0];
+  bool expandCols = inputShape[1] != outputShape[1];
+
+  if (expandRows && inputShape[0] != 1) {
+    return op.emitOpError("row expansion requires input dim 0 to be 1");
+  }
+  if (expandCols && inputShape[1] != 1) {
+    return op.emitOpError("col expansion requires input dim 1 to be 1");
+  }
+
   auto bcastType = op.getBcastType();
-  // SCALAR is a superset: valid for any expansion direction.
-  if (bcastType == BcastType::Scalar) {
-    return success();
+  if (bcastType != BcastType::Scalar) {
+    if (expandRows && expandCols) {
+      return op.emitOpError("row+col expansion requires scalar bcast type");
+    }
+    if (expandCols && bcastType != BcastType::Col) {
+      return op.emitOpError("col expansion requires col or scalar bcast type");
+    }
+    if (expandRows && bcastType != BcastType::Row) {
+      return op.emitOpError("row expansion requires row or scalar bcast type");
+    }
   }
-  if (expandRows && expandCols) {
-    return op.emitError("row+col expansion requires scalar bcast type");
+
+  // Validate broadcast dims vs. producing reduce (#444).
+  if (auto reduceDim = getInputReduceDim(op.getInput())) {
+    BcastType requiredBcastType;
+    StringRef requiredKind, requiredDims;
+    switch (*reduceDim) {
+    case ttkernel::ReduceDim::Scalar:
+      requiredBcastType = BcastType::Scalar;
+      requiredKind = "scalar";
+      requiredDims = "[0, 1]";
+      break;
+    case ttkernel::ReduceDim::Col:
+      requiredBcastType = BcastType::Row;
+      requiredKind = "row";
+      requiredDims = "[0]";
+      break;
+    case ttkernel::ReduceDim::Row:
+      requiredBcastType = BcastType::Col;
+      requiredKind = "column";
+      requiredDims = "[1]";
+      break;
+    }
+    if (bcastType != requiredBcastType) {
+      return op.emitOpError("broadcast dims are incompatible with the "
+                            "producing reduce; need ")
+             << requiredKind << " broadcast (dims=" << requiredDims << ")";
+    }
   }
-  if (expandCols && bcastType != BcastType::Col) {
-    return op.emitError("col expansion requires col or scalar bcast type");
-  }
-  if (expandRows && bcastType != BcastType::Row) {
-    return op.emitError("row expansion requires row or scalar bcast type");
-  }
+
   return success();
 }
 
@@ -984,40 +1038,20 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
       return failure();
     }
 
+    // Preconditions validated by validateBcastOp in runOnOperation().
     Value inputCb = getAttachedCB(op.getInput());
     Value outCb = getAttachedCB(op.getOutput());
-    // Bcast validation uses emitError (not notifyMatchFailure) because these
-    // are user-facing errors with no alternative pattern. TODO: move to
-    // verifier.
-    if (!inputCb) {
-      return op.emitError(
-          "broadcast input must come directly from a circular buffer, not from "
-          "an elementwise result; move the broadcast to its own compute block "
-          "or make it the first operation in a fused sequence");
+    if (!inputCb || !outCb) {
+      return rewriter.notifyMatchFailure(op, "input/output not CB-attached");
     }
-    if (!outCb) {
-      return op.emitError("bcast output must be attached to a circular buffer");
-    }
-
     if (inputType.getRank() != 2 || outputType.getRank() != 2) {
-      return op.emitError("bcast requires rank-2 tensors");
+      return rewriter.notifyMatchFailure(op, "requires rank-2 tensors");
     }
 
     auto inputShape = inputType.getShape();
     auto outputShape = outputType.getShape();
     bool expandRows = inputShape[0] != outputShape[0];
     bool expandCols = inputShape[1] != outputShape[1];
-
-    if (expandRows && inputShape[0] != 1) {
-      return op.emitError("row expansion requires input dim 0 to be 1");
-    }
-    if (expandCols && inputShape[1] != 1) {
-      return op.emitError("col expansion requires input dim 1 to be 1");
-    }
-
-    if (failed(validateBcastExpansion(op, expandRows, expandCols))) {
-      return failure();
-    }
 
     Location loc = op.getLoc();
     MLIRContext *ctx = rewriter.getContext();
@@ -1032,47 +1066,7 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     SmallVector<Attribute> iterTypes(outputType.getRank(),
                                      rewriter.getStringAttr("parallel"));
 
-    // Validate that the user's broadcast dims are compatible with the input's
-    // tile data layout when the input comes from a reduce.  Each reduce
-    // dimension leaves valid data at a specific position in the 32x32 tile:
-    //   REDUCE_SCALAR -> data at [0,0]     -> requires dims=[0, 1] (Scalar)
-    //   REDUCE_COL    -> data in row 0     -> requires dims=[0]    (Row)
-    //   REDUCE_ROW    -> data in column 0  -> requires dims=[1]    (Col)
-    // A mismatch causes the hardware to read garbage (#444).
-    // This check must happen before any IR mutations.
     auto bcastType = op.getBcastType();
-    auto inputReduceDim = getInputReduceDim(op.getInput());
-    if (failed(inputReduceDim)) {
-      return op.emitError(
-          "broadcast input traces to a reduce but the reduce dimension "
-          "could not be determined; this is a compiler bug (#449)");
-    }
-    if (auto reduceDim = *inputReduceDim) {
-      BcastType requiredBcastType;
-      StringRef requiredKind, requiredDims;
-      switch (*reduceDim) {
-      case ttkernel::ReduceDim::Scalar:
-        requiredBcastType = BcastType::Scalar;
-        requiredKind = "scalar";
-        requiredDims = "[0, 1]";
-        break;
-      case ttkernel::ReduceDim::Col:
-        requiredBcastType = BcastType::Row;
-        requiredKind = "row";
-        requiredDims = "[0]";
-        break;
-      case ttkernel::ReduceDim::Row:
-        requiredBcastType = BcastType::Col;
-        requiredKind = "column";
-        requiredDims = "[1]";
-        break;
-      }
-      if (bcastType != requiredBcastType) {
-        return op.emitError("broadcast dims are incompatible with the "
-                            "producing reduce; need ")
-               << requiredKind << " broadcast (dims=" << requiredDims << ")";
-      }
-    }
 
     // Position compute after all reserves by inserting before the last store.
     if (findLastStore(op)) {
@@ -1486,6 +1480,19 @@ struct TTLConvertTTLToComputePass
 
   void runOnOperation() override {
     func::FuncOp func = getOperation();
+
+    // Validate bcast ops before running patterns. Emitting errors here
+    // (outside a pattern rewriter) is safe for the Python bindings.
+    bool hasErrors = false;
+    func.walk([&](BcastOp op) {
+      if (failed(validateBcastOp(op))) {
+        hasErrors = true;
+      }
+    });
+    if (hasErrors) {
+      return signalPassFailure();
+    }
+
     RewritePatternSet patterns(func.getContext());
     populateTTLToComputePatterns(patterns);
     if (failed(applyPatternsGreedily(func, std::move(patterns)))) {
