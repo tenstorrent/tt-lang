@@ -33,7 +33,6 @@ import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-
 # FW/kernel wrapper zones that obscure the actual trace
 _WRAPPER_ZONES = frozenset(
     {

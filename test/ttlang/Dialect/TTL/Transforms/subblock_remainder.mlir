@@ -20,8 +20,8 @@
 
 module {
   func.func @remainder_3x3() attributes {ttl.base_cta_index = 0 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
-    %cb_in = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[3, 3], !ttcore.tile<32x32, bf16>, 2>
-    %cb_out = ttl.bind_cb{cb_index = 1, buffer_factor = 2} : <[3, 3], !ttcore.tile<32x32, bf16>, 2>
+    %cb_in = ttl.bind_cb{cb_index = 0, block_count = 2} : <[3, 3], !ttcore.tile<32x32, bf16>, 2>
+    %cb_out = ttl.bind_cb{cb_index = 1, block_count = 2} : <[3, 3], !ttcore.tile<32x32, bf16>, 2>
     %wait = ttl.cb_wait %cb_in : <[3, 3], !ttcore.tile<32x32, bf16>, 2> -> tensor<3x3x!ttcore.tile<32x32, bf16>>
     %in = ttl.attach_cb %wait, %cb_in : (tensor<3x3x!ttcore.tile<32x32, bf16>>, !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 2>) -> tensor<3x3x!ttcore.tile<32x32, bf16>>
     %res = ttl.cb_reserve %cb_out : <[3, 3], !ttcore.tile<32x32, bf16>, 2> -> tensor<3x3x!ttcore.tile<32x32, bf16>>

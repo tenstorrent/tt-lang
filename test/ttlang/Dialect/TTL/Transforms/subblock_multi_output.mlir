@@ -48,12 +48,12 @@
 // independent compute regions within a single function.
 module {
   func.func @fused_compute() attributes {ttl.base_cta_index = 6 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
-    %0 = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
-    %1 = ttl.bind_cb{cb_index = 1, buffer_factor = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
-    %2 = ttl.bind_cb{cb_index = 2, buffer_factor = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
-    %3 = ttl.bind_cb{cb_index = 3, buffer_factor = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
-    %4 = ttl.bind_cb{cb_index = 4, buffer_factor = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
-    %5 = ttl.bind_cb{cb_index = 5, buffer_factor = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
+    %0 = ttl.bind_cb{cb_index = 0, block_count = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
+    %1 = ttl.bind_cb{cb_index = 1, block_count = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
+    %2 = ttl.bind_cb{cb_index = 2, block_count = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
+    %3 = ttl.bind_cb{cb_index = 3, block_count = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
+    %4 = ttl.bind_cb{cb_index = 4, block_count = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
+    %5 = ttl.bind_cb{cb_index = 5, block_count = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
     %6 = ttl.cb_wait %0 : <[4, 4], !ttcore.tile<32x32, bf16>, 2> -> tensor<4x4x!ttcore.tile<32x32, bf16>>
     %7 = ttl.attach_cb %6, %0 : (tensor<4x4x!ttcore.tile<32x32, bf16>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, bf16>, 2>) -> tensor<4x4x!ttcore.tile<32x32, bf16>>
     %8 = ttl.cb_wait %1 : <[4, 4], !ttcore.tile<32x32, bf16>, 2> -> tensor<4x4x!ttcore.tile<32x32, bf16>>

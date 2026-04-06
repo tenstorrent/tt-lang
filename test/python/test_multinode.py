@@ -44,9 +44,9 @@ import ttl
 @ttl.operation(grid=({grid_cols}, {grid_rows}))  # (cols, rows)
 def multinode_loop(lhs, rhs, out):
     """Multinode kernel: each core loops over 2x2 tiles computing exp(lhs) + sqrt(rhs)."""
-    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), block_count=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def fused_compute():

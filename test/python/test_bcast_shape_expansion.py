@@ -12,6 +12,7 @@ Examples:
   - row bcast: (1, 2) -> (2, 2) - broadcast row to fill 2 rows
   - scalar bcast: (1, 1) -> (2, 2) - broadcast scalar to fill all tiles
 """
+
 import sys
 
 import pytest
@@ -35,9 +36,9 @@ TILE_SIZE = 32
 def bcast_col_expand_kernel(inp, out):
     """Col bcast with shape expansion: (2, 1) -> (2, 2)."""
     # Input DFB is (2, 1) - one column of tiles
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 1), block_count=2)
     # Output DFB is (2, 2) - full tile grid
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -65,9 +66,9 @@ def bcast_col_expand_kernel(inp, out):
 def bcast_row_expand_kernel(inp, out):
     """Row bcast with shape expansion: (1, 2) -> (2, 2)."""
     # Input DFB is (1, 2) - one row of tiles
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 2), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 2), block_count=2)
     # Output DFB is (2, 2) - full tile grid
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -93,9 +94,9 @@ def bcast_row_expand_kernel(inp, out):
 def bcast_scalar_expand_kernel(inp, out):
     """Scalar bcast with shape expansion: (1, 1) -> (2, 2)."""
     # Input DFB is (1, 1) - single tile
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     # Output DFB is (2, 2) - full tile grid
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -124,13 +125,13 @@ def mul_add_bcast_expand_kernel(a, b, c, out):
     a, b: full (2, 2) tile grid
     c: column vector (2, 1) that gets col-broadcast to (2, 2)
     """
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 2), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 2), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 2), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 2), block_count=2)
     # c input is (2, 1) - will be expanded by bcast
-    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(2, 1), buffer_factor=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(2, 1), block_count=2)
     # c_bcast output is (2, 2)
-    c_bcast_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    c_bcast_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -335,15 +336,15 @@ def bcast_col_expand_with_outer_loops_kernel(a, b, c, y):
     rows = y.shape[0] // TILE_SIZE // block_rows
     cols = y.shape[1] // TILE_SIZE // block_cols
 
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(block_rows, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(block_rows, 1), block_count=2)
     b_dfb = ttl.make_dataflow_buffer_like(
-        b, shape=(block_rows, block_cols), buffer_factor=2
+        b, shape=(block_rows, block_cols), block_count=2
     )
     c_dfb = ttl.make_dataflow_buffer_like(
-        c, shape=(block_rows, block_cols), buffer_factor=2
+        c, shape=(block_rows, block_cols), block_count=2
     )
     y_dfb = ttl.make_dataflow_buffer_like(
-        y, shape=(block_rows, block_cols), buffer_factor=2
+        y, shape=(block_rows, block_cols), block_count=2
     )
 
     @ttl.compute()

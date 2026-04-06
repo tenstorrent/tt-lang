@@ -7,6 +7,14 @@ on:
                 description: "Build and deploy documentation."
                 type: boolean
                 default: false
+            build_toolchain:
+                description: "Build toolchain from submodules (for uplift PRs)."
+                type: boolean
+                default: false
+            docker_tag:
+                description: "Docker image tag for the ird container."
+                type: string
+                default: "v0.1.7"
     workflow_call:
         inputs:
             build_docs:
@@ -14,20 +22,35 @@ on:
                 type: boolean
                 required: false
                 default: false
+            build_toolchain:
+                description: "Build toolchain from submodules (for uplift PRs)."
+                type: boolean
+                required: false
+                default: false
+            docker_tag:
+                description: "Docker image tag for the ird container."
+                type: string
+                required: false
+                default: "v0.1.7"
 
 permissions:
     checks: write
     contents: read
+    packages: read
 
 jobs:
     configure-deps:
+        if: inputs.build_toolchain
         uses: ./.github/workflows/call-build-toolchain.yml
 
     build-tt-lang:
         name: "Build and test tt-lang"
-        needs: configure-deps
+        needs: [configure-deps]
+        if: always() && (needs.configure-deps.result == 'success' || needs.configure-deps.result == 'skipped')
         runs-on: ubuntu-22.04
         timeout-minutes: 60
+
+        container: ${{ !inputs.build_toolchain && fromJSON(format('{{"image":"ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:{0}"}}', inputs.docker_tag)) || null }}
 
         defaults:
             run:
@@ -39,12 +62,18 @@ jobs:
               with:
                   fetch-depth: 1
 
+            - name: Fix git safe directory for submodules
+              run: git config --global --add safe.directory '*'
+
+            # Steps only needed when building from toolchain cache (uplift)
             - name: Setup Python 3.12
+              if: inputs.build_toolchain
               uses: actions/setup-python@v5
               with:
                   python-version: "3.12"
 
             - name: Install system dependencies
+              if: inputs.build_toolchain
               run: |
                   sudo apt-get update
                   sudo apt-get install -y \
@@ -56,6 +85,7 @@ jobs:
                       wget zstd
 
             - name: Install Clang 18
+              if: inputs.build_toolchain
               run: |
                   wget https://apt.llvm.org/llvm.sh
                   chmod u+x llvm.sh
@@ -65,13 +95,12 @@ jobs:
                   sudo ln -sf /usr/bin/clang++-18 /usr/bin/clang++
                   rm -f llvm.sh
 
-            - name: Fix git safe directory for submodules
-              run: git config --global --add safe.directory '*'
-
             - name: Prepare toolchain directory
+              if: inputs.build_toolchain
               run: sudo install -d -o $(id -u) -g $(id -g) /opt/ttlang-toolchain
 
             - name: Restore toolchain cache
+              if: inputs.build_toolchain
               uses: actions/cache/restore@v5
               with:
                   path: /opt/ttlang-toolchain
@@ -139,3 +168,4 @@ jobs:
         with:
             runs-on: n150
             timeout: 60
+            docker_tag: ${{ inputs.docker_tag }}

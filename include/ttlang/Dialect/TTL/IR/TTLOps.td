@@ -32,20 +32,20 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
     threaded into data movement and compute threads.
 
     - `cb_index` is the circular buffer hardware slot index (0-31).
-    - `buffer_factor` is the number of blocks (default 2 for double buffering).
+    - `block_count` is the number of blocks (default 2 for double buffering).
     Example:
 
     ```mlir
-    %cb = ttl.bind_cb {cb_index = 0 : index, buffer_factor = 2}
+    %cb = ttl.bind_cb {cb_index = 0 : index, block_count = 2}
           : !ttl.cb<[1, 1], f32, 2>
     ```
   }];
   let arguments = (ins
     IndexAttr:$cb_index,
-    DefaultValuedAttr<I64Attr, "2">:$buffer_factor
+    DefaultValuedAttr<I64Attr, "2">:$block_count
   );
   let results = (outs TTL_CircularBuffer:$result);
-  let assemblyFormat = "`{` `cb_index` `=` $cb_index `,` `buffer_factor` `=` $buffer_factor `}` attr-dict `:` type($result)";
+  let assemblyFormat = "`{` `cb_index` `=` $cb_index `,` `block_count` `=` $block_count `}` attr-dict `:` type($result)";
   let hasVerifier = 1;
 }
 
@@ -134,7 +134,7 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
                           buffer = L1, grid = [1, 1], memory = Interleaved>
 
     func.func @dma_single(%t: tensor<32x32xf32, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-      %cb = ttl.bind_cb() {shape = [1, 1], element_type = f32, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+      %cb = ttl.bind_cb() {shape = [1, 1], element_type = f32, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
       // Create a slice at tile position (0, 0)
       %c0 = arith.constant 0 : index
       %slice = ttl.tensor_slice %t[%c0, %c0] : tensor<32x32xf32, #layout> -> tensor<32x32xf32, #layout>

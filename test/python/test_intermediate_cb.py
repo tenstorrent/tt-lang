@@ -36,9 +36,9 @@ def intermediate_dfb_kernel(x, out):
     - intermediate_dfb (index 1): stores relu result
     - out_dfb (index 2): output
     """
-    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
-    intermediate_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
+    intermediate_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():

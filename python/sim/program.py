@@ -163,7 +163,7 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                         new_dfb = DataflowBuffer(
                             likeness_tensor=value.likeness_tensor,
                             shape=value.shape,
-                            buffer_factor=value.buffer_factor,
+                            block_count=value.block_count,
                         )
                         setattr(new_dfb, "_name", key)
                         core_context[key] = new_dfb

@@ -34,19 +34,19 @@ def _make_matmul_bias_kernel(block_m, block_k, block_n):
         Nt = b_tensor.shape[1] // TILE
 
         a_dfb = ttl.make_dataflow_buffer_like(
-            a_tensor, shape=(block_m, block_k), buffer_factor=2
+            a_tensor, shape=(block_m, block_k), block_count=2
         )
         b_dfb = ttl.make_dataflow_buffer_like(
-            b_tensor, shape=(block_k, block_n), buffer_factor=2
+            b_tensor, shape=(block_k, block_n), block_count=2
         )
         c_dfb = ttl.make_dataflow_buffer_like(
-            c_tensor, shape=(block_m, block_n), buffer_factor=2
+            c_tensor, shape=(block_m, block_n), block_count=2
         )
         acc_dfb = ttl.make_dataflow_buffer_like(
-            out_tensor, shape=(block_m, block_n), buffer_factor=2
+            out_tensor, shape=(block_m, block_n), block_count=2
         )
         out_dfb = ttl.make_dataflow_buffer_like(
-            out_tensor, shape=(block_m, block_n), buffer_factor=2
+            out_tensor, shape=(block_m, block_n), block_count=2
         )
 
         m_blocks = Mt // block_m
@@ -171,16 +171,16 @@ def _make_matmul_bias_full_k_kernel(block_m, block_n):
         Nt = b_tensor.shape[1] // TILE
 
         a_dfb = ttl.make_dataflow_buffer_like(
-            a_tensor, shape=(block_m, Kt), buffer_factor=2
+            a_tensor, shape=(block_m, Kt), block_count=2
         )
         b_dfb = ttl.make_dataflow_buffer_like(
-            b_tensor, shape=(Kt, block_n), buffer_factor=2
+            b_tensor, shape=(Kt, block_n), block_count=2
         )
         c_dfb = ttl.make_dataflow_buffer_like(
-            c_tensor, shape=(block_m, block_n), buffer_factor=2
+            c_tensor, shape=(block_m, block_n), block_count=2
         )
         out_dfb = ttl.make_dataflow_buffer_like(
-            out_tensor, shape=(block_m, block_n), buffer_factor=2
+            out_tensor, shape=(block_m, block_n), block_count=2
         )
 
         m_blocks = Mt // block_m
@@ -288,16 +288,16 @@ def _make_matmul_relu_kernel(block_m, block_k, block_n):
         Nt = b_tensor.shape[1] // TILE
 
         a_dfb = ttl.make_dataflow_buffer_like(
-            a_tensor, shape=(block_m, block_k), buffer_factor=2
+            a_tensor, shape=(block_m, block_k), block_count=2
         )
         b_dfb = ttl.make_dataflow_buffer_like(
-            b_tensor, shape=(block_k, block_n), buffer_factor=2
+            b_tensor, shape=(block_k, block_n), block_count=2
         )
         acc_dfb = ttl.make_dataflow_buffer_like(
-            out_tensor, shape=(block_m, block_n), buffer_factor=2
+            out_tensor, shape=(block_m, block_n), block_count=2
         )
         out_dfb = ttl.make_dataflow_buffer_like(
-            out_tensor, shape=(block_m, block_n), buffer_factor=2
+            out_tensor, shape=(block_m, block_n), block_count=2
         )
 
         m_blocks = Mt // block_m

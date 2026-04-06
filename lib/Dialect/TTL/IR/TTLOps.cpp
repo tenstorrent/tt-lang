@@ -102,15 +102,14 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
                          << kMaxCircularBuffers - 1 << "]";
   }
 
-  // Validate buffer factor against type for consistency.
-  int64_t bufferFactor = getBufferFactor();
-  if (bufferFactor <= 0) {
+  // Validate block count against type for consistency.
+  int64_t blockCount = getBlockCount();
+  if (blockCount <= 0) {
     return emitOpError() << "buffer_factor must be > 0";
   }
-  if (bufferFactor != cbTy.getBufferFactor()) {
-    return emitOpError()
-           << "buffer_factor must match result type buffer factor ("
-           << cbTy.getBufferFactor() << ")";
+  if (blockCount != cbTy.getBlockCount()) {
+    return emitOpError() << "buffer_factor must match result type block count ("
+                         << cbTy.getBlockCount() << ")";
   }
 
   return mlir::success();

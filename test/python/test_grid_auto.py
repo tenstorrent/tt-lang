@@ -15,15 +15,14 @@ import torch
 import ttl
 from ttlang_test_utils import to_dram
 
-
 TILE_SIZE = 32
 
 
 @ttl.operation(grid="auto")
 def auto_grid_kernel(a, out):
     """Simple kernel using automatic grid sizing."""
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute_fn():
