@@ -48,7 +48,10 @@ linked. If `TTLANG_TOOLCHAIN_DIR` is omitted, defaults to
 
 The convenience script `scripts/build-and-install.sh --toolchain-only` automates
 this — it configures, builds LLVM + tt-metal, installs them into the toolchain
-prefix, and cleans up.
+prefix, and cleans up. The build directory defaults to `build-toolchain/`; set
+the `CMAKE_BINARY_DIR` environment variable to use a different location. The
+toolchain install location defaults to `/opt/ttlang-toolchain`; set the
+`TTLANG_TOOLCHAIN_DIR` environment variable to change it.
 
 > **Note:** Setting only `-DTTLANG_TOOLCHAIN_DIR=...` (without
 > `TTLANG_BUILD_TOOLCHAIN`) will reuse an existing installation if one is found
