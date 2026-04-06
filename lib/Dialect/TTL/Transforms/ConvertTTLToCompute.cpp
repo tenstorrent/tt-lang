@@ -28,23 +28,6 @@ static RankedTensorType getTensorType(Value v) {
   return dyn_cast<RankedTensorType>(v.getType());
 }
 
-/// Check if `input` is broadcast-compatible with `output`: for each dimension,
-/// either the sizes match or the input size is 1.
-static bool isBroadcastCompatible(RankedTensorType input,
-                                  RankedTensorType output) {
-  if (input.getRank() != output.getRank()) {
-    return false;
-  }
-  for (int64_t d = 0; d < output.getRank(); ++d) {
-    int64_t inDim = input.getDimSize(d);
-    int64_t outDim = output.getDimSize(d);
-    if (inDim != outDim && inDim != 1) {
-      return false;
-    }
-  }
-  return true;
-}
-
 static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
                              Value exemplar) {
   SmallVector<Value> dynDims;
@@ -303,131 +286,117 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   Location loc = sinkOp->getLoc();
   MLIRContext *ctx = rewriter.getContext();
 
-  // Detect matmul in the fusion chain. When present and the matmul inputs
-  // are not broadcast-compatible with the output (multi-tile K dimension),
-  // the iteration space is promoted to 3D [M, N, K] with K as reduction.
-  // Single-tile matmuls (K=1) use the standard 2D iteration with the
-  // deferred-matmul fold handling tile_matmul_block emission.
-  MatmulOp chainMatmul = nullptr;
-  DenseSet<Value> matmulConsumedRoots;
-  unsigned matmulCount = 0;
-  for (Operation *chainOp : trace.opsInOrder) {
-    if (auto matmulOp = dyn_cast<MatmulOp>(chainOp)) {
-      chainMatmul = matmulOp;
-      matmulConsumedRoots.insert(matmulOp.getLhs());
-      matmulConsumedRoots.insert(matmulOp.getRhs());
-      ++matmulCount;
+  // Pre-scan: detect matmul in the chain and identify LHS/RHS tensors.
+  // When a matmul is fused with an elementwise add (acc + A @ B), the
+  // iteration space must be 3D [M, N, K] with K as a reduction dimension.
+  // Without this, subblocking along M would incorrectly slice B (which is
+  // indexed by [K, N], not [M, N]).
+  DenseSet<Value> matmulLhsTensors, matmulRhsTensors;
+  for (Operation *op : trace.opsInOrder) {
+    if (auto matmulOp = dyn_cast<MatmulOp>(op)) {
+      matmulLhsTensors.insert(matmulOp.getLhs());
+      matmulRhsTensors.insert(matmulOp.getRhs());
     }
   }
+  bool hasMatmul = !matmulLhsTensors.empty();
 
-  // Determine whether the matmul requires 3D promotion. Single-tile
-  // matmuls (broadcast-compatible with output) use the 2D deferred fold.
-  bool needsPromotion = false;
-  if (chainMatmul) {
-    auto lhsType = getTensorType(chainMatmul.getLhs());
-    auto rhsType = getTensorType(chainMatmul.getRhs());
-    needsPromotion = !isBroadcastCompatible(lhsType, type) ||
-                     !isBroadcastCompatible(rhsType, type);
+  // Build indexing maps and iterator types based on whether the chain
+  // contains a matmul.
+  SmallVector<Attribute> maps;
+  SmallVector<Attribute> iterTypes;
+
+  if (hasMatmul) {
+    // 3D iteration space [M, N, K] with matmul indexing maps.
+    // LHS A is [M, K], RHS B is [K, N] (non-transposed).
+    // TODO(#420): derive RHS map from a transpose flag for transposed B.
+    auto d0 = getAffineDimExpr(0, ctx); // M
+    auto d1 = getAffineDimExpr(1, ctx); // N
+    auto d2 = getAffineDimExpr(2, ctx); // K
+    AffineMap lhsMap = AffineMap::get(3, 0, {d0, d2}, ctx);
+    AffineMap rhsMap = AffineMap::get(3, 0, {d2, d1}, ctx);
+    AffineMap parallelMap = AffineMap::get(3, 0, {d0, d1}, ctx);
+
+    for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
+      Value input = trace.rootInputs[i];
+      if (matmulLhsTensors.contains(input)) {
+        maps.push_back(AffineMapAttr::get(lhsMap));
+      } else if (matmulRhsTensors.contains(input)) {
+        maps.push_back(AffineMapAttr::get(rhsMap));
+      } else {
+        maps.push_back(AffineMapAttr::get(parallelMap));
+      }
+    }
+    for (size_t i = 0; i < outCbs.size(); ++i) {
+      maps.push_back(AffineMapAttr::get(parallelMap));
+    }
+
+    iterTypes = {rewriter.getStringAttr("parallel"),
+                 rewriter.getStringAttr("parallel"),
+                 rewriter.getStringAttr("reduction")};
+  } else {
+    // 2D iteration space with broadcast-aware identity maps.
+    AffineMap identityMap =
+        AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
+    for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
+      auto inputType = getTensorType(trace.rootInputs[i]);
+      if (inputType && inputType.getRank() == type.getRank()) {
+        SmallVector<AffineExpr> exprs;
+        bool hasBroadcast = false;
+        for (int64_t d = 0; d < type.getRank(); ++d) {
+          if (inputType.getDimSize(d) == 1 && type.getDimSize(d) != 1) {
+            exprs.push_back(getAffineConstantExpr(0, ctx));
+            hasBroadcast = true;
+          } else {
+            exprs.push_back(getAffineDimExpr(d, ctx));
+          }
+        }
+        if (hasBroadcast) {
+          maps.push_back(AffineMapAttr::get(
+              AffineMap::get(type.getRank(), 0, exprs, ctx)));
+        } else {
+          maps.push_back(AffineMapAttr::get(identityMap));
+        }
+      } else {
+        maps.push_back(AffineMapAttr::get(identityMap));
+      }
+    }
+    for (size_t i = 0; i < outCbs.size(); ++i) {
+      maps.push_back(AffineMapAttr::get(identityMap));
+    }
+
+    iterTypes.assign(type.getRank(), rewriter.getStringAttr("parallel"));
   }
 
-  // Multi-tile matmul requires 3D promotion, which only supports a single
-  // matmul in the chain. Multiple matmuls with multi-tile blocks would
-  // need multiple reduction dimensions.
-  if (needsPromotion && matmulCount > 1) {
-    return sinkOp->emitError(
-        "fusion with multiple multi-tile matmuls is not supported");
-  }
-
-  if (!needsPromotion) {
-    chainMatmul = nullptr;
-    matmulConsumedRoots.clear();
-  }
-
-  // Validate broadcast compatibility for non-matmul root inputs. Matmul
-  // inputs are exempt: their contraction dimension is handled by the
-  // deferred-matmul fold and matmul-specific indexing maps below.
+  // Validate each input's shape against its assigned indexing map. For each
+  // non-constant result expression d_i in the map, collect the expected
+  // iteration domain size for that dimension. Two inputs mapping the same
+  // iteration dimension must agree on that dimension's size.
+  DenseMap<unsigned, int64_t> iterDimSizes;
   for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
-    if (matmulConsumedRoots.contains(trace.rootInputs[i])) {
-      continue;
-    }
     auto inputType = getTensorType(trace.rootInputs[i]);
     if (!inputType) {
       continue;
     }
-    if (!isBroadcastCompatible(inputType, type)) {
-      return rewriter.notifyMatchFailure(
-          sinkOp, "fusion failed: input " + Twine(i) +
-                      " is not broadcast-compatible with output");
-    }
-  }
-
-  // Determine iteration space dimensionality. When the chain contains a
-  // matmul, add a K (reduction) dimension; otherwise use the output rank
-  // with all-parallel iterators.
-  int64_t numDims = type.getRank();
-  SmallVector<Attribute> iterTypes(numDims, rewriter.getStringAttr("parallel"));
-  if (chainMatmul) {
-    numDims = type.getRank() + 1; // append K dimension
-    iterTypes.push_back(rewriter.getStringAttr("reduction"));
-  }
-
-  // Build indexing maps.
-  SmallVector<Attribute> maps;
-  AffineMap identityMap =
-      AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
-
-  // For matmul chains, build maps in the 3D [M, N, K] space.
-  AffineMap lhsMap, rhsMap;
-  if (chainMatmul) {
-    auto d0 = getAffineDimExpr(0, ctx); // M
-    auto d1 = getAffineDimExpr(1, ctx); // N
-    auto d2 = getAffineDimExpr(2, ctx); // K
-    lhsMap = AffineMap::get(numDims, 0, {d0, d2}, ctx);
-    rhsMap = AffineMap::get(numDims, 0, {d2, d1}, ctx);
-    // Non-matmul maps project M,N from the 3D space (ignore K).
-    identityMap = AffineMap::get(numDims, 0, {d0, d1}, ctx);
-  }
-
-  for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
-    Value rootInput = trace.rootInputs[i];
-
-    // Matmul inputs use matmul-specific maps.
-    if (chainMatmul) {
-      if (rootInput == chainMatmul.getLhs()) {
-        maps.push_back(AffineMapAttr::get(lhsMap));
-        continue;
+    auto map = cast<AffineMapAttr>(maps[i]).getValue();
+    for (unsigned r = 0; r < map.getNumResults(); ++r) {
+      auto dimExpr = dyn_cast<AffineDimExpr>(map.getResult(r));
+      if (!dimExpr) {
+        continue; // constant (broadcast dim) — no constraint
       }
-      if (rootInput == chainMatmul.getRhs()) {
-        maps.push_back(AffineMapAttr::get(rhsMap));
-        continue;
+      unsigned iterDim = dimExpr.getPosition();
+      int64_t inputDimSize = inputType.getDimSize(r);
+      auto it = iterDimSizes.find(iterDim);
+      if (it == iterDimSizes.end()) {
+        iterDimSizes[iterDim] = inputDimSize;
+      } else if (it->second != inputDimSize) {
+        return rewriter.notifyMatchFailure(
+            sinkOp, "fusion failed: input " + Twine(i) + " dimension " +
+                        Twine(r) + " (size " + Twine(inputDimSize) +
+                        ") conflicts with iteration dimension d" +
+                        Twine(iterDim) + " (expected " + Twine(it->second) +
+                        ")");
       }
     }
-
-    // Non-matmul inputs: broadcast-aware map.
-    auto inputType = getTensorType(rootInput);
-    if (inputType && inputType.getRank() == type.getRank()) {
-      SmallVector<AffineExpr> exprs;
-      bool hasBroadcast = false;
-      for (int64_t d = 0; d < type.getRank(); ++d) {
-        if (inputType.getDimSize(d) == 1 && type.getDimSize(d) != 1) {
-          exprs.push_back(getAffineConstantExpr(0, ctx));
-          hasBroadcast = true;
-        } else {
-          exprs.push_back(getAffineDimExpr(d, ctx));
-        }
-      }
-      if (hasBroadcast) {
-        maps.push_back(
-            AffineMapAttr::get(AffineMap::get(numDims, 0, exprs, ctx)));
-      } else {
-        maps.push_back(AffineMapAttr::get(identityMap));
-      }
-    } else {
-      maps.push_back(AffineMapAttr::get(identityMap));
-    }
-  }
-  for (size_t i = 0; i < outCbs.size(); ++i) {
-    maps.push_back(AffineMapAttr::get(identityMap));
   }
 
   // Position compute after all reserves by inserting before the last store.

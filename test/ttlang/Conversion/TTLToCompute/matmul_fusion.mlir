@@ -3,19 +3,19 @@
 // Matmul+add fold: add is eliminated, producing 3-operand tile_matmul_block.
 // Post-matmul unary: applied in-place in the same fused compute body.
 
-// CHECK-DAG: #[[$ID:.*]] = affine_map<(d0, d1) -> (d0, d1)>
+// CHECK-DAG: #[[$LHS:.*]] = affine_map<(d0, d1, d2) -> (d0, d2)>
+// CHECK-DAG: #[[$RHS:.*]] = affine_map<(d0, d1, d2) -> (d2, d1)>
+// CHECK-DAG: #[[$PAR:.*]] = affine_map<(d0, d1, d2) -> (d0, d1)>
 
 // CHECK-LABEL: func.func @matmul_add
 // CHECK:         %[[A:.*]] = ttl.attach_cb
 // CHECK:         %[[B:.*]] = ttl.attach_cb
 // CHECK:         %[[C:.*]] = ttl.attach_cb
 // CHECK:         ttl.compute ins(%[[A]], %[[B]], %[[C]] :
-// CHECK-SAME:      indexing_maps = [#[[$ID]], #[[$ID]], #[[$ID]], #[[$ID]]]
-// CHECK-SAME:      iterator_types = ["parallel", "parallel"]
-// CHECK-NEXT:    ^bb0(%[[AT:.*]]: !ttcore.tile{{.*}}, %[[BT:.*]]: !ttcore.tile{{.*}}, %[[CT:.*]]: !ttcore.tile{{.*}}, %[[OUTT:.*]]: !ttcore.tile{{.*}}):
-// CHECK-NEXT:      %[[I0:.*]] = ttl.iter_index 0 : index
-// CHECK-NEXT:      %[[I1:.*]] = ttl.iter_index 1 : index
-// CHECK-NEXT:      %[[MM:.*]] = ttl.tile_matmul_block %[[AT]], %[[BT]], %[[CT]]
+// CHECK-SAME:      indexing_maps = [#[[$LHS]], #[[$RHS]], #[[$PAR]], #[[$PAR]]]
+// CHECK-SAME:      iterator_types = ["parallel", "parallel", "reduction"]
+// CHECK-NEXT:    ^bb0(%[[AT:.*]]: !ttcore.tile{{.*}}, %[[BT:.*]]: !ttcore.tile{{.*}}, %[[CT:.*]]: !ttcore.tile{{.*}}, %[[OUT:.*]]: !ttcore.tile{{.*}}):
+// CHECK:           %[[MM:.*]] = ttl.tile_matmul_block %[[AT]], %[[BT]], %[[CT]]
 // CHECK-NOT:       ttl.tile_add
 // CHECK-NEXT:      ttl.tile_store %[[MM]]
 // CHECK-NEXT:      ttl.yield
@@ -46,12 +46,14 @@ func.func @matmul_add() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indic
 // Commuted add: c + matmul(a,b) produces the same 3-operand fold.
 // The accumulator (c) traces first, so it appears as the first block arg.
 
-// CHECK-DAG: #[[$C_ID:.*]] = affine_map<(d0, d1) -> (d0, d1)>
+// CHECK-DAG: #[[$C_PAR:.*]] = affine_map<(d0, d1, d2) -> (d0, d1)>
+// CHECK-DAG: #[[$C_LHS:.*]] = affine_map<(d0, d1, d2) -> (d0, d2)>
+// CHECK-DAG: #[[$C_RHS:.*]] = affine_map<(d0, d1, d2) -> (d2, d1)>
 
 // CHECK-LABEL: func.func @matmul_add_commuted
 // CHECK:         ttl.compute
-// CHECK-SAME:      indexing_maps = [#[[$C_ID]], #[[$C_ID]], #[[$C_ID]], #[[$C_ID]]]
-// CHECK-SAME:      iterator_types = ["parallel", "parallel"]
+// CHECK-SAME:      indexing_maps = [#[[$C_PAR]], #[[$C_LHS]], #[[$C_RHS]], #[[$C_PAR]]]
+// CHECK-SAME:      iterator_types = ["parallel", "parallel", "reduction"]
 // CHECK-NEXT:    ^bb0(%[[CT:.*]]: !ttcore.tile{{.*}}, %[[AT:.*]]: !ttcore.tile{{.*}}, %[[BT:.*]]: !ttcore.tile{{.*}}, %{{.*}}: !ttcore.tile{{.*}}):
 // CHECK-NEXT:      ttl.iter_index 0
 // CHECK-NEXT:      ttl.iter_index 1
@@ -86,7 +88,7 @@ func.func @matmul_add_commuted() attributes {ttl.base_cta_index = 4 : i32, ttl.c
 
 // CHECK-LABEL: func.func @matmul_relu
 // CHECK:         ttl.compute
-// CHECK-SAME:      iterator_types = ["parallel", "parallel"]
+// CHECK-SAME:      iterator_types = ["parallel", "parallel", "reduction"]
 // CHECK-NEXT:    ^bb0(%[[AT:.*]]: !ttcore.tile{{.*}}, %[[BT:.*]]: !ttcore.tile{{.*}}, %{{.*}}: !ttcore.tile{{.*}}):
 // CHECK-NEXT:      ttl.iter_index 0
 // CHECK-NEXT:      ttl.iter_index 1
@@ -118,7 +120,7 @@ func.func @matmul_relu() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indi
 
 // CHECK-LABEL: func.func @matmul_add_relu
 // CHECK:         ttl.compute
-// CHECK-SAME:      iterator_types = ["parallel", "parallel"]
+// CHECK-SAME:      iterator_types = ["parallel", "parallel", "reduction"]
 // CHECK-NEXT:    ^bb0(%[[AT:.*]]: !ttcore.tile{{.*}}, %[[BT:.*]]: !ttcore.tile{{.*}}, %[[CT:.*]]: !ttcore.tile{{.*}}, %{{.*}}: !ttcore.tile{{.*}}):
 // CHECK-NEXT:      ttl.iter_index 0
 // CHECK-NEXT:      ttl.iter_index 1
@@ -186,14 +188,10 @@ func.func @matmul_standalone() attributes {ttl.base_cta_index = 4 : i32, ttl.crt
 // LHS [2,1] and RHS [1,2] are broadcast-compatible with [2,2] output.
 // This is the standard pattern from Python K-accumulation loops.
 
-// CHECK-DAG: #[[$BC_LHS:.*]] = affine_map<(d0, d1) -> (d0, 0)>
-// CHECK-DAG: #[[$BC_RHS:.*]] = affine_map<(d0, d1) -> (0, d1)>
-// CHECK-DAG: #[[$BC_OUT:.*]] = affine_map<(d0, d1) -> (d0, d1)>
-
 // CHECK-LABEL: func.func @matmul_add_broadcast_compatible
 // CHECK:         ttl.compute
-// CHECK-SAME:      indexing_maps = [#[[$BC_LHS]], #[[$BC_RHS]], #[[$BC_OUT]], #[[$BC_OUT]]]
-// CHECK-SAME:      iterator_types = ["parallel", "parallel"]
+// CHECK-SAME:      indexing_maps = [#[[$LHS]], #[[$RHS]], #[[$PAR]], #[[$PAR]]]
+// CHECK-SAME:      iterator_types = ["parallel", "parallel", "reduction"]
 // CHECK:           ttl.tile_matmul_block
 // CHECK-NOT:       ttl.tile_add
 func.func @matmul_add_broadcast_compatible() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
@@ -271,7 +269,7 @@ func.func @matmul_add_incompatible_shapes() attributes {ttl.base_cta_index = 4 :
 
 // CHECK-LABEL: func.func @matmul_sub_no_fold
 // CHECK:         ttl.compute
-// CHECK-SAME:      iterator_types = ["parallel", "parallel"]
+// CHECK-SAME:      iterator_types = ["parallel", "parallel", "reduction"]
 // CHECK-NEXT:    ^bb0(%[[AT:.*]]: !ttcore.tile{{.*}}, %[[BT:.*]]: !ttcore.tile{{.*}}, %[[CT:.*]]: !ttcore.tile{{.*}}, %{{.*}}: !ttcore.tile{{.*}}):
 // CHECK-NEXT:      ttl.iter_index 0
 // CHECK-NEXT:      ttl.iter_index 1
@@ -302,45 +300,38 @@ func.func @matmul_sub_no_fold() attributes {ttl.base_cta_index = 4 : i32, ttl.cr
   func.return
 }
 
+
 // -----
 
-// Both add operands are matmul results. Neither fold applies; both matmuls
-// are emitted as 2-operand tile_matmul_block, followed by an explicit tile_add.
+// Regression test: non-square fused matmul+add. A=[2,4], B=[4,3], acc=[2,3].
+// With incorrect 2D identity maps, B would be sliced along M during
+// subblocking, producing wrong tile indices. The 3D maps ensure B gets
+// (d0,d1,d2)->(d2,d1) and is indexed by [K,N], not [M,N].
 
-// CHECK-LABEL: func.func @matmul_add_matmul_no_fold
+// CHECK-LABEL: func.func @matmul_add_non_square
 // CHECK:         ttl.compute
-// CHECK-SAME:      iterator_types = ["parallel", "parallel"]
-// CHECK-NEXT:    ^bb0(%[[A1:.*]]: !ttcore.tile{{.*}}, %[[B1:.*]]: !ttcore.tile{{.*}}, %[[A2:.*]]: !ttcore.tile{{.*}}, %[[B2:.*]]: !ttcore.tile{{.*}}, %{{.*}}: !ttcore.tile{{.*}}):
-// CHECK-NEXT:      ttl.iter_index 0
-// CHECK-NEXT:      ttl.iter_index 1
-// CHECK-NEXT:      %[[MM1:.*]] = ttl.tile_matmul_block %[[A1]], %[[B1]] :
-// CHECK-NEXT:      %[[MM2:.*]] = ttl.tile_matmul_block %[[A2]], %[[B2]] :
-// CHECK-NEXT:      %[[SUM:.*]] = ttl.tile_add %[[MM1]], %[[MM2]]
-// CHECK-NEXT:      ttl.tile_store %[[SUM]]
-// CHECK-NEXT:      ttl.yield
-func.func @matmul_add_matmul_no_fold() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
-  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb3 = ttl.bind_cb {cb_index = 3, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb4 = ttl.bind_cb {cb_index = 4, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %w0 = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %a1 = ttl.attach_cb %w0, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %w1 = ttl.cb_wait %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %b1 = ttl.attach_cb %w1, %cb1 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %w2 = ttl.cb_wait %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %a2 = ttl.attach_cb %w2, %cb2 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %w3 = ttl.cb_wait %cb3 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %b2 = ttl.attach_cb %w3, %cb3 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %reserve = ttl.cb_reserve %cb4 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %mm1 = ttl.matmul %a1, %b1 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %mm2 = ttl.matmul %a2, %b2 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %sum = ttl.add %mm1, %mm2 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  ttl.store %sum, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
-  ttl.cb_push %cb4 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  ttl.cb_pop %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  ttl.cb_pop %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  ttl.cb_pop %cb3 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+// CHECK-SAME:      indexing_maps = [#[[$LHS]], #[[$RHS]], #[[$PAR]], #[[$PAR]]]
+// CHECK-SAME:      iterator_types = ["parallel", "parallel", "reduction"]
+// CHECK:           ttl.tile_matmul_block
+// CHECK-NOT:       ttl.tile_add
+func.func @matmul_add_non_square() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 4], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[4, 3], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[2, 3], !ttcore.tile<32x32, bf16>, 2>
+  %cb3 = ttl.bind_cb {cb_index = 3, block_count = 2} : !ttl.cb<[2, 3], !ttcore.tile<32x32, bf16>, 2>
+  %w0 = ttl.cb_wait %cb0 : <[2, 4], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x4x!ttcore.tile<32x32, bf16>>
+  %a = ttl.attach_cb %w0, %cb0 : (tensor<2x4x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 4], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x4x!ttcore.tile<32x32, bf16>>
+  %w1 = ttl.cb_wait %cb1 : <[4, 3], !ttcore.tile<32x32, bf16>, 2> -> tensor<4x3x!ttcore.tile<32x32, bf16>>
+  %b = ttl.attach_cb %w1, %cb1 : (tensor<4x3x!ttcore.tile<32x32, bf16>>, !ttl.cb<[4, 3], !ttcore.tile<32x32, bf16>, 2>) -> tensor<4x3x!ttcore.tile<32x32, bf16>>
+  %w2 = ttl.cb_wait %cb2 : <[2, 3], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x3x!ttcore.tile<32x32, bf16>>
+  %c = ttl.attach_cb %w2, %cb2 : (tensor<2x3x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 3], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x3x!ttcore.tile<32x32, bf16>>
+  %reserve = ttl.cb_reserve %cb3 : <[2, 3], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x3x!ttcore.tile<32x32, bf16>>
+  %mm = ttl.matmul %a, %b : tensor<2x4x!ttcore.tile<32x32, bf16>>, tensor<4x3x!ttcore.tile<32x32, bf16>> -> tensor<2x3x!ttcore.tile<32x32, bf16>>
+  %sum = ttl.add %mm, %c : tensor<2x3x!ttcore.tile<32x32, bf16>>, tensor<2x3x!ttcore.tile<32x32, bf16>> -> tensor<2x3x!ttcore.tile<32x32, bf16>>
+  ttl.store %sum, %reserve : tensor<2x3x!ttcore.tile<32x32, bf16>>, tensor<2x3x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %cb3 : <[2, 3], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %cb0 : <[2, 4], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %cb1 : <[4, 3], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %cb2 : <[2, 3], !ttcore.tile<32x32, bf16>, 2>
   func.return
 }

@@ -36,7 +36,9 @@ KEEP_BINS=(
     FileCheck
     not
     count
+    llvm-ar
     llvm-lit
+    llvm-ranlib
     llvm-tblgen
     mlir-linalg-ods-yaml-gen
     mlir-opt
