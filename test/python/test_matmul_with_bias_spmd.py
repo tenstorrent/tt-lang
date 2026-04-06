@@ -2,10 +2,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+"""
+SPMD matmul+bias test across multiple devices.
+
+Shards A, C, Y on dim=0 across all available devices; replicates B.
+Each device computes Y_shard = A_shard @ B + C_shard independently.
+Requires >=2 devices.
+"""
+
+# UNSUPPORTED: system-darwin
+# RUN: %python -m pytest %s -v
+
+import pytest
 import torch
+
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 import ttl
-import ttnn
-import time
 
 TILE_SIZE = 32
 M_GRANULARITY = 4
@@ -154,74 +166,76 @@ def matmul_with_bias(
                             tx.wait()
 
 
-def main() -> None:
+MIN_DEVICES = 2
+
+
+@pytest.fixture
+def mesh_device():
     n_devices = ttnn.GetNumAvailableDevices()
+    if n_devices < MIN_DEVICES:
+        pytest.skip(f"need >={MIN_DEVICES} devices, have {n_devices}")
+
     ttnn.set_fabric_config(ttnn.FabricConfig.FABRIC_1D)
-    mesh_device = ttnn.open_mesh_device(ttnn.MeshShape(1, n_devices))
-
-    try:
-        M, K, N = 8192, 8192, 8192
-
-        A_torch = torch.randn((M, K), dtype=torch.bfloat16)
-        B_torch = torch.randn((K, N), dtype=torch.bfloat16)
-        C_torch = torch.randn((M, N), dtype=torch.bfloat16)
-
-        A = ttnn.from_torch(
-            A_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=mesh_device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
-        )
-        B = ttnn.from_torch(
-            B_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=mesh_device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
-        )
-        C = ttnn.from_torch(
-            C_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=mesh_device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
-        )
-        Y = ttnn.from_torch(
-            torch.zeros((M, N), dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=mesh_device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
-        )
-
-        matmul_with_bias(A, B, C, Y)
-
-        result = ttnn.to_torch(
-            Y,
-            mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0),
-        )
-        print(result)
-
-        expected = A_torch @ B_torch + C_torch
-        print(expected)
-
-        pcc = torch.corrcoef(
-            torch.stack([result.flatten().float(), expected.flatten().float()])
-        )[0, 1].item()
-        assert pcc > 0.99, (
-            f"PCC {pcc:.6f} < 0.99 for matmul+bias. "
-            f"Max diff: {(result - expected).abs().max().item()}"
-        )
-        print(f"PCC {pcc:.6f}")
-
-    finally:
-        ttnn.close_device(mesh_device)
+    mesh = ttnn.open_mesh_device(ttnn.MeshShape(1, n_devices))
+    yield mesh, n_devices
+    ttnn.close_mesh_device(mesh)
 
 
-if __name__ == "__main__":
-    main()
+def test_matmul_with_bias_spmd(mesh_device):
+    mesh, n_devices = mesh_device
+
+    M, K, N = 8192, 8192, 8192
+
+    A_torch = torch.randn((M, K), dtype=torch.bfloat16)
+    B_torch = torch.randn((K, N), dtype=torch.bfloat16)
+    C_torch = torch.randn((M, N), dtype=torch.bfloat16)
+
+    A = ttnn.from_torch(
+        A_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=mesh,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+    )
+    B = ttnn.from_torch(
+        B_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=mesh,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        mesh_mapper=ttnn.ReplicateTensorToMesh(mesh),
+    )
+    C = ttnn.from_torch(
+        C_torch,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=mesh,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+    )
+    Y = ttnn.from_torch(
+        torch.zeros((M, N), dtype=torch.bfloat16),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=mesh,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+    )
+
+    matmul_with_bias(A, B, C, Y)
+
+    result = ttnn.to_torch(
+        Y,
+        mesh_composer=ttnn.ConcatMeshToTensor(mesh, dim=0),
+    )
+
+    expected = A_torch @ B_torch + C_torch
+
+    pcc = torch.corrcoef(
+        torch.stack([result.flatten().float(), expected.flatten().float()])
+    )[0, 1].item()
+    assert pcc > 0.99, (
+        f"PCC {pcc:.6f} < 0.99 for matmul+bias. "
+        f"Max diff: {(result - expected).abs().max().item()}"
+    )
