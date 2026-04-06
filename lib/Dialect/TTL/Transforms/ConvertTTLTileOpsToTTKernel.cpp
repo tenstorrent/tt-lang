@@ -397,7 +397,7 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
         arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
 
     // Verify matching per-block tile counts (via tensor shape, not
-    // ttk::CBType::getNumTiles() which includes buffer_factor).
+    // ttk::CBType::getNumTiles() which includes block_count).
     auto lhsExtract = op.getLhs().template getDefiningOp<tensor::ExtractOp>();
     auto rhsExtract = op.getRhs().template getDefiningOp<tensor::ExtractOp>();
     assert(lhsExtract && rhsExtract &&

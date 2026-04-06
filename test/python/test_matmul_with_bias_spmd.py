@@ -46,19 +46,19 @@ def matmul_with_bias(
     n_blocks_per_node = -(-n_blocks // grid_n)  # divceil
 
     a_dfb = ttl.make_dataflow_buffer_like(
-        a, shape=(m_tiles_per_block, k_tiles_per_block), buffer_factor=2
+        a, shape=(m_tiles_per_block, k_tiles_per_block), block_count=2
     )
     b_dfb = ttl.make_dataflow_buffer_like(
-        b, shape=(k_tiles_per_block, n_tiles_per_block), buffer_factor=2
+        b, shape=(k_tiles_per_block, n_tiles_per_block), block_count=2
     )
     c_dfb = ttl.make_dataflow_buffer_like(
-        c, shape=(m_tiles_per_block, n_tiles_per_block), buffer_factor=2
+        c, shape=(m_tiles_per_block, n_tiles_per_block), block_count=2
     )
     acc_dfb = ttl.make_dataflow_buffer_like(
-        y, shape=(m_tiles_per_block, n_tiles_per_block), buffer_factor=2
+        y, shape=(m_tiles_per_block, n_tiles_per_block), block_count=2
     )
     y_dfb = ttl.make_dataflow_buffer_like(
-        y, shape=(m_tiles_per_block, n_tiles_per_block), buffer_factor=2
+        y, shape=(m_tiles_per_block, n_tiles_per_block), block_count=2
     )
 
     @ttl.datamovement()

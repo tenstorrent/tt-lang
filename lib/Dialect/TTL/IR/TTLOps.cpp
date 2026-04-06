@@ -105,10 +105,10 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
   // Validate block count against type for consistency.
   int64_t blockCount = getBlockCount();
   if (blockCount <= 0) {
-    return emitOpError() << "buffer_factor must be > 0";
+    return emitOpError() << "block_count must be > 0";
   }
   if (blockCount != cbTy.getBlockCount()) {
-    return emitOpError() << "buffer_factor must match result type block count ("
+    return emitOpError() << "block_count must match result type block count ("
                          << cbTy.getBlockCount() << ")";
   }
 
@@ -212,7 +212,7 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   }
 
   // TODO(#89): Verify that the tensor tile/block shape and element type match
-  // the CB element_type and shape/buffer_factor semantics.
+  // the CB element_type and shape/block_count semantics.
 
   // MVP: every transfer must be synchronized explicitly. Requiring a `ttl.wait`
   // use ensures we do not silently drop transfers.

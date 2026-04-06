@@ -41,19 +41,19 @@ def _make_kernel(m_blk, k_blk, n_blk):
         n_blocks_per_node = -(-n_blocks // grid_n)
 
         a_dfb = ttl.make_dataflow_buffer_like(
-            a_tensor, shape=(m_blk, k_blk), buffer_factor=2
+            a_tensor, shape=(m_blk, k_blk), block_count=2
         )
         b_dfb = ttl.make_dataflow_buffer_like(
-            b_tensor, shape=(k_blk, n_blk), buffer_factor=2
+            b_tensor, shape=(k_blk, n_blk), block_count=2
         )
         c_dfb = ttl.make_dataflow_buffer_like(
-            c_tensor, shape=(m_blk, n_blk), buffer_factor=2
+            c_tensor, shape=(m_blk, n_blk), block_count=2
         )
         acc_dfb = ttl.make_dataflow_buffer_like(
-            y_tensor, shape=(m_blk, n_blk), buffer_factor=2
+            y_tensor, shape=(m_blk, n_blk), block_count=2
         )
         y_dfb = ttl.make_dataflow_buffer_like(
-            y_tensor, shape=(m_blk, n_blk), buffer_factor=2
+            y_tensor, shape=(m_blk, n_blk), block_count=2
         )
 
         @ttl.datamovement()
