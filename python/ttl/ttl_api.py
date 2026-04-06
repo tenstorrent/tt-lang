@@ -351,29 +351,12 @@ def _is_mesh_tensor(tensor) -> bool:
 
 
 def _get_shard_shape(tensor) -> list:
-    """Compute per-device shard shape from a distributed tensor's topology.
+    """Get the per-device shard shape from a distributed tensor.
 
-    Uses the tensor's topology (distribution_shape + placements) to determine
-    how the logical shape is divided across the mesh. Sharded dims are divided
-    by the corresponding mesh dimension; replicated dims are unchanged.
+    For distributed (mesh) tensors, tensor.shape already returns the per-device
+    shard dimensions, so we return it directly.
     """
-    logical_shape = list(tensor.shape)
-    topology = tensor.tensor_topology()
-    dist_shape = topology.distribution_shape()
-    placements = topology.placements()
-
-    shard_shape = list(logical_shape)
-    for mesh_dim, placement in enumerate(placements):
-        if hasattr(placement, "dim"):
-            tensor_dim = placement.dim
-            mesh_extent = dist_shape[mesh_dim]
-            if shard_shape[tensor_dim] % mesh_extent != 0:
-                raise ValueError(
-                    f"Tensor dim {tensor_dim} (size {shard_shape[tensor_dim]}) "
-                    f"is not evenly divisible by mesh dim {mesh_dim} (size {mesh_extent})"
-                )
-            shard_shape[tensor_dim] //= mesh_extent
-    return shard_shape
+    return list(tensor.shape)
 
 
 class MeshTensorProxy:
