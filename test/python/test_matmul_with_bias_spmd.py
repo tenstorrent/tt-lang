@@ -202,26 +202,6 @@ def main() -> None:
             mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
         )
 
-        # Debug: print shapes
-        print(f"A.shape = {A.shape}")
-        print(f"B.shape = {B.shape}")
-        topo = A.tensor_topology()
-        print(f"A topology: dist_shape={topo.distribution_shape()}, placements={topo.placements()}")
-        # Check what shape APIs exist
-        print(f"A dir: {[x for x in dir(A) if 'shape' in x.lower() or 'logical' in x.lower()]}")
-        print(f"A topo dir: {[x for x in dir(topo) if not x.startswith('_')]}")
-        # Try logical_shape if it exists
-        try:
-            print(f"A.logical_shape() = {A.logical_shape()}")
-        except:
-            print("No A.logical_shape()")
-        try:
-            print(f"topo.logical_shape() = {topo.logical_shape()}")
-        except:
-            print("No topo.logical_shape()")
-        # The shard shape IS A.shape -- no need to divide again
-        print(f"A.shape is already per-device: {A.shape}")
-
         matmul_with_bias(A, B, C, Y)
 
         result = ttnn.to_torch(

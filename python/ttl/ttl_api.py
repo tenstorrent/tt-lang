@@ -350,35 +350,6 @@ def _is_mesh_tensor(tensor) -> bool:
     return prod(shape) > 1
 
 
-def _get_shard_shape(tensor) -> list:
-    """Get the per-device shard shape from a distributed tensor.
-
-    For distributed (mesh) tensors, tensor.shape already returns the per-device
-    shard dimensions, so we return it directly.
-    """
-    return list(tensor.shape)
-
-
-class MeshTensorProxy:
-    """Wraps a distributed tensor to report shard shape instead of logical shape.
-
-    Used during compilation so that kernel code like ``a.shape[0]`` sees the
-    per-device shard dimensions rather than the full logical tensor size.
-    All other attribute accesses are delegated to the underlying tensor.
-    """
-
-    _is_mesh_proxy = True
-
-    def __init__(self, tensor, shard_shape):
-        self._tensor = tensor
-        self._shard_shape = shard_shape
-
-    @property
-    def shape(self):
-        return self._shard_shape
-
-    def __getattr__(self, name):
-        return getattr(self._tensor, name)
 
 
 def _detect_memory_space_from_tensor(tensor, default: str) -> str:
@@ -1039,21 +1010,10 @@ def _compile_kernel(
 
     has_ttnn_tensors = any(is_ttnn_tensor(arg) for arg in args)
 
-    # For mesh tensors, wrap args so .shape returns the per-device shard shape.
-    # The kernel code sees shard dimensions during compilation, but execution
-    # uses the original distributed tensors for SPMD dispatch via generic_op.
+    # For mesh tensors, tensor.shape already returns the per-device shard
+    # dimensions, so no wrapping is needed.
     is_mesh = has_ttnn_tensors and any(_is_mesh_tensor(arg) for arg in args)
-    if is_mesh:
-        compile_args = tuple(
-            (
-                MeshTensorProxy(arg, _get_shard_shape(arg))
-                if is_ttnn_tensor(arg) and _is_mesh_tensor(arg)
-                else arg
-            )
-            for arg in args
-        )
-    else:
-        compile_args = args
+    compile_args = args
 
     # For TTNN tensors, detect memory space from tensor's buffer type.
     # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing.
