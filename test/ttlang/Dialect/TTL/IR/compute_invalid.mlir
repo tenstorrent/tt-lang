@@ -348,7 +348,7 @@ func.func @ambiguous_cb_attachment(
     %cb1: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
     %cb2: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) {
   %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
-  %cbout = ttl.bind_cb {cb_index = 0, buffer_factor = 2}
+  %cbout = ttl.bind_cb {cb_index = 0, block_count = 2}
            : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %init_att = ttl.attach_cb %init, %cbout
       : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)

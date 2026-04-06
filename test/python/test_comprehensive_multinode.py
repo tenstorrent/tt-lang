@@ -7,7 +7,7 @@ Comprehensive multinode test combining multiple features:
 - 2MB DRAM inputs (a, b) + L1 input (c)
 - 2MB DRAM outputs (out1, out2) + L1 output (out3)
 - 8x8 multinode grid with dynamic indexing via core(dims=2)
-- 4x4 DFB shape with buffer_factor=2
+- 4x4 DFB shape with block_count=2
 - 20 fused ops using bounded operations
 - Random inputs
 """
@@ -39,18 +39,18 @@ def comprehensive_kernel(a, b, c, out1, out2, out3):
     - out2 = g(b, c): 7 ops
     - out3 = h(a, c): 6 ops
     """
-    # Circular buffers: 4x4 shape, buffer_factor=2
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
-    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
+    # Circular buffers: 4x4 shape, block_count=2
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(CB_ROWS, CB_COLS), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(CB_ROWS, CB_COLS), block_count=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(CB_ROWS, CB_COLS), block_count=2)
     out1_dfb = ttl.make_dataflow_buffer_like(
-        out1, shape=(CB_ROWS, CB_COLS), buffer_factor=2
+        out1, shape=(CB_ROWS, CB_COLS), block_count=2
     )
     out2_dfb = ttl.make_dataflow_buffer_like(
-        out2, shape=(CB_ROWS, CB_COLS), buffer_factor=2
+        out2, shape=(CB_ROWS, CB_COLS), block_count=2
     )
     out3_dfb = ttl.make_dataflow_buffer_like(
-        out3, shape=(CB_ROWS, CB_COLS), buffer_factor=2
+        out3, shape=(CB_ROWS, CB_COLS), block_count=2
     )
 
     @ttl.compute()

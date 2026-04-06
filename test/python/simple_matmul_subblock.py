@@ -50,9 +50,9 @@ import ttl
 
 @ttl.operation(grid=(1, 1))
 def matmul_8x8(a, b, y):
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(8, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 8), buffer_factor=2)
-    y_dfb = ttl.make_dataflow_buffer_like(y, shape=(8, 8), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(8, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 8), block_count=2)
+    y_dfb = ttl.make_dataflow_buffer_like(y, shape=(8, 8), block_count=2)
 
     @ttl.compute()
     def compute_fn():

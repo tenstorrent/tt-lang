@@ -293,7 +293,7 @@ class TestCopyWithStateMachine:
         dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((2, 1)),
             shape=(2, 1),
-            buffer_factor=2,
+            block_count=2,
         )
 
         with dfb.reserve() as block:
@@ -313,7 +313,7 @@ class TestCopyWithStateMachine:
         dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((2, 1)),
             shape=(2, 1),
-            buffer_factor=2,
+            block_count=2,
         )
         source = make_rand_tensor(64, 32)
 
@@ -344,7 +344,7 @@ class TestCopyWithStateMachine:
         dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((1, 1)),
             shape=(1, 1),
-            buffer_factor=2,
+            block_count=2,
         )
 
         with dfb.reserve() as block:
@@ -364,7 +364,7 @@ class TestCopyWithStateMachine:
         dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((4, 1)),
             shape=(4, 1),
-            buffer_factor=2,
+            block_count=2,
         )
 
         with dfb.reserve() as block:
@@ -383,10 +383,10 @@ class TestCopyWithStateMachine:
 
         tile = make_full_tile(123.0)
         src_dfb = DataflowBuffer(
-            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=2
         )
         dst_dfb = DataflowBuffer(
-            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=2
         )
         pipe = Pipe(210, 211)
 
@@ -421,12 +421,12 @@ class TestCopyWithStateMachine:
         src_dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((2, 1)),
             shape=(2, 1),
-            buffer_factor=2,
+            block_count=2,
         )
         dst_dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((2, 1)),
             shape=(2, 1),
-            buffer_factor=2,
+            block_count=2,
         )
         pipe = Pipe((26, 3), (26, slice(4, 6)))
 
@@ -466,7 +466,7 @@ class TestCopyWithStateMachine:
         dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((2, 1)),
             shape=(2, 1),
-            buffer_factor=2,
+            block_count=2,
         )
         result = make_rand_tensor(64, 32)
 
@@ -497,7 +497,7 @@ class TestCopyWithStateMachine:
         dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((1, 1)),
             shape=(1, 1),
-            buffer_factor=2,
+            block_count=2,
         )
 
         with dfb.reserve() as block:
@@ -520,7 +520,7 @@ class TestCopyWithStateMachine:
         dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((1, 1)),
             shape=(1, 1),
-            buffer_factor=2,
+            block_count=2,
         )
 
         with dfb.reserve() as block:
@@ -543,7 +543,7 @@ class TestCopyWithStateMachine:
         dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((2, 2)),
             shape=(2, 2),
-            buffer_factor=2,
+            block_count=2,
         )
 
         with dfb.reserve() as block:
@@ -562,10 +562,10 @@ class TestCopyWithStateMachine:
 
         pipe = Pipe(10, 20)
         src_dfb = DataflowBuffer(
-            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=2
         )
         dst_dfb = DataflowBuffer(
-            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=2
         )
 
         # Send data to pipe
@@ -603,7 +603,7 @@ class TestCopyTransactionProperties:
         dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((1, 1)),
             shape=(1, 1),
-            buffer_factor=2,
+            block_count=2,
         )
 
         with dfb.reserve() as block:
@@ -631,7 +631,7 @@ class TestCopyTransactionProperties:
         dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((2, 1)),
             shape=(2, 1),
-            buffer_factor=2,
+            block_count=2,
         )
 
         with dfb.reserve() as block:
@@ -658,7 +658,7 @@ class TestCopyTransactionProperties:
         dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((1, 1)),
             shape=(1, 1),
-            buffer_factor=2,
+            block_count=2,
         )
 
         with dfb.reserve() as block:
@@ -682,10 +682,10 @@ class TestCopyContextManagerExtraction:
 
         source = make_full_tile(42.0)
         src_dfb = DataflowBuffer(
-            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=2
         )
         dst_dfb = DataflowBuffer(
-            likeness_tensor=make_ones_tile(), shape=(1, 1), buffer_factor=2
+            likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=2
         )
         pipe = Pipe(1000, 1001)
 
@@ -724,7 +724,7 @@ class TestCopyContextManagerExtraction:
         dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((1, 1)),
             shape=(1, 1),
-            buffer_factor=2,
+            block_count=2,
         )
 
         # Tensor -> Context manager
@@ -754,7 +754,7 @@ class TestCopyErrorConditions:
         dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((1, 1)),
             shape=(1, 1),
-            buffer_factor=2,
+            block_count=2,
         )
 
         with dfb.reserve() as block:

@@ -151,7 +151,7 @@ def build_cb_descriptors(
             corresponds to its CB index. For intermediate CBs (not backed by
             input/output tensors), pass None in the corresponding position.
         cb_configs: List of CircularBuffer objects for each CB, indexed by CB index.
-            Each CB has shape, buffer_factor, tensor (for dtype), and _cb_index attributes.
+            Each CB has shape, block_count, tensor (for dtype), and _cb_index attributes.
         core_ranges: ttnn.CoreRangeSet for CB allocation.
 
     Returns:
@@ -177,7 +177,7 @@ def build_cb_descriptors(
             data_format = torch_dtype_to_ttnn_datatype(ref_tensor.dtype)
 
         page_size = tile_bytes_from_dtype(data_format)
-        num_tiles = cb.shape[0] * cb.shape[1] * cb.buffer_factor
+        num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
         total_size = num_tiles * page_size
 
         cb_format = ttnn.CBFormatDescriptor(
@@ -215,7 +215,7 @@ def run_kernel_on_device(
             in each KernelSpec.
         cb_configs: List of CircularBuffer objects for each CB, indexed by CB index.
             Includes both tensor-backed CBs and intermediate CBs. Each CB has shape,
-            buffer_factor, tensor (for dtype), and _cb_index attributes.
+            block_count, tensor (for dtype), and _cb_index attributes.
         core_ranges: ttnn.CoreRangeSet for kernel execution.
         program_hash: Hash for tt-metal program cache (not yet used).
 

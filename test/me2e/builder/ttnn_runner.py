@@ -185,9 +185,9 @@ def _run_op(
     ]
 
     # Build CB configs: CircularBuffer objects for each tensor.
-    # Shape is (1, 1) for single tile, buffer_factor is 1 for single buffering.
+    # Shape is (1, 1) for single tile, block_count is 1 for single buffering.
     cb_configs: List[CircularBuffer] = [
-        CircularBuffer(tensor=tensor, shape=(1, 1), buffer_factor=1)
+        CircularBuffer(tensor=tensor, shape=(1, 1), block_count=1)
         for tensor in io_tensors
     ]
 

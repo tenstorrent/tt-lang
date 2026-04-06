@@ -44,14 +44,14 @@ def tt_lang_multinode_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
 
     buffering_factor = 2
     a_dfb = ttl.make_dataflow_buffer_like(
-        a, shape=(per_node_M, K_block_size), buffer_factor=buffering_factor
+        a, shape=(per_node_M, K_block_size), block_count=buffering_factor
     )
     b_dfb = ttl.make_dataflow_buffer_like(
-        b, shape=(K_block_size, per_node_N), buffer_factor=buffering_factor
+        b, shape=(K_block_size, per_node_N), block_count=buffering_factor
     )
     # non buffered output, matching metal implementation
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(per_node_M, per_node_N), buffer_factor=1
+        out, shape=(per_node_M, per_node_N), block_count=1
     )
 
     @ttl.compute()
@@ -143,13 +143,13 @@ def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
 
     buffering_factor = 2
     a_dfb = ttl.make_dataflow_buffer_like(
-        a, shape=(1, 1), buffer_factor=buffering_factor
+        a, shape=(1, 1), block_count=buffering_factor
     )
     b_dfb = ttl.make_dataflow_buffer_like(
-        b, shape=(1, 1), buffer_factor=buffering_factor
+        b, shape=(1, 1), block_count=buffering_factor
     )
     # non buffered output, matching metal implementation
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=1)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
 
     @ttl.compute()
     def mm_compute():

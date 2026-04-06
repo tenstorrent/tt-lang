@@ -67,9 +67,9 @@ def test_multinode_matmul(M, K, N):
         memory_config=dram_memory_config,
     )
     dtype_size = 2  # bfloat16
-    buffer_factor = 2
+    block_count = 2
     cb_page_size = dtype_size * ttnn.TILE_SIZE * ttnn.TILE_SIZE
-    cb_total_size = buffer_factor * cb_page_size
+    cb_total_size = block_count * cb_page_size
 
     a_cb = 0
     b_cb = 1

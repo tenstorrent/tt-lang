@@ -17,10 +17,10 @@ def matmul_add_relu_kernel(a, b, c, out):
     Mt = a.shape[0] // TILE   # 2
     Nt = b.shape[1] // TILE   # 2
 
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(Mt, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, Nt), buffer_factor=2)
-    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(Mt, Nt), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(Mt, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, Nt), block_count=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(Mt, Nt), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), block_count=2)
 
     @ttl.compute()
     def mm_compute():

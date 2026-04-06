@@ -21,7 +21,7 @@ from .typedefs import Index, Shape, Size
 
 class DFBState:
     __slots__ = (
-        "cap",  # capacity in operations (= buffer_factor)
+        "cap",  # capacity in operations (= block_count)
         "buf",  # ring buffer: List[Optional[Tensor]], length = cap
         "head",  # current read slot index (in operations)
         "visible",  # number of complete operations ready to consume

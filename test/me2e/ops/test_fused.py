@@ -148,7 +148,7 @@ class TestExpAddFused(FusedOpTestBase):
         """
         rows, cols = config.grid_shape
         dtype = torch_dtype_to_mlir_str(config.dtype)
-        bf = config.buffer_factor
+        bf = config.block_count
 
         # Generate layout attributes (includes #dram and #layout)
         layout_attrs = generate_layout_attrs(config)
@@ -163,9 +163,9 @@ class TestExpAddFused(FusedOpTestBase):
         compute_mlir = f"""
 // Compute thread for exp(a + b) fused operation.
 func.func @compute_exp_add() attributes {{ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}} {{
-  %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-  %cb1 = ttl.bind_cb {{cb_index = 1, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-  %cb_out = ttl.bind_cb {{cb_index = 2, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  %cb0 = ttl.bind_cb {{cb_index = 0, block_count = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  %cb1 = ttl.bind_cb {{cb_index = 1, block_count = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  %cb_out = ttl.bind_cb {{cb_index = 2, block_count = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
 
   // Wait for input data from reader.
   %a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
@@ -224,7 +224,7 @@ class TestReluMulFused(FusedOpTestBase):
         """
         rows, cols = config.grid_shape
         dtype = torch_dtype_to_mlir_str(config.dtype)
-        bf = config.buffer_factor
+        bf = config.block_count
 
         # Generate layout attributes (includes #dram and #layout)
         layout_attrs = generate_layout_attrs(config)
@@ -239,9 +239,9 @@ class TestReluMulFused(FusedOpTestBase):
         compute_mlir = f"""
 // Compute thread for relu(a * b) fused operation.
 func.func @compute_relu_mul() attributes {{ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}} {{
-  %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-  %cb1 = ttl.bind_cb {{cb_index = 1, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-  %cb_out = ttl.bind_cb {{cb_index = 2, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  %cb0 = ttl.bind_cb {{cb_index = 0, block_count = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  %cb1 = ttl.bind_cb {{cb_index = 1, block_count = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  %cb_out = ttl.bind_cb {{cb_index = 2, block_count = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
 
   // Wait for input data from reader.
   %a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
@@ -301,7 +301,7 @@ class TestSqrtAbsFused(FusedOpTestBase):
         """
         rows, cols = config.grid_shape
         dtype = torch_dtype_to_mlir_str(config.dtype)
-        bf = config.buffer_factor
+        bf = config.block_count
 
         # Generate layout attributes (includes #dram and #layout)
         layout_attrs = generate_layout_attrs(config)
@@ -316,8 +316,8 @@ class TestSqrtAbsFused(FusedOpTestBase):
         compute_mlir = f"""
 // Compute thread for sqrt(abs(a)) fused operation.
 func.func @compute_sqrt_abs() attributes {{ttl.base_cta_index = 2 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}} {{
-  %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-  %cb_out = ttl.bind_cb {{cb_index = 1, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  %cb0 = ttl.bind_cb {{cb_index = 0, block_count = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  %cb_out = ttl.bind_cb {{cb_index = 1, block_count = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
 
   // Wait for input data from reader.
   %a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>

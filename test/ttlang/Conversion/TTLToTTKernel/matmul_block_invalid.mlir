@@ -10,9 +10,9 @@
 func.func @matmul_3x3_bf16_dst_overflow(
     %arg0: tensor<3x1x!ttcore.tile<32x32, bf16>>,
     %arg1: tensor<1x3x!ttcore.tile<32x32, bf16>>) -> tensor<3x3x!ttcore.tile<32x32, bf16>> {
-  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[3, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[1, 3], !ttcore.tile<32x32, bf16>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[3, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 3], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 2>
   %a = ttl.attach_cb %arg0, %cb0 : (tensor<3x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[3, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<3x1x!ttcore.tile<32x32, bf16>>
   %b = ttl.attach_cb %arg1, %cb1 : (tensor<1x3x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 3], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x3x!ttcore.tile<32x32, bf16>>
   %reserve = ttl.cb_reserve %cb2 : <[3, 3], !ttcore.tile<32x32, bf16>, 2> -> tensor<3x3x!ttcore.tile<32x32, bf16>>
@@ -28,9 +28,9 @@ func.func @matmul_3x3_bf16_dst_overflow(
 func.func @matmul_2x3_f32_dst_overflow(
     %arg0: tensor<2x1x!ttcore.tile<32x32, f32>>,
     %arg1: tensor<1x3x!ttcore.tile<32x32, f32>>) -> tensor<2x3x!ttcore.tile<32x32, f32>> {
-  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 1], !ttcore.tile<32x32, f32>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[1, 3], !ttcore.tile<32x32, f32>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[2, 3], !ttcore.tile<32x32, f32>, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 1], !ttcore.tile<32x32, f32>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 3], !ttcore.tile<32x32, f32>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[2, 3], !ttcore.tile<32x32, f32>, 2>
   %a = ttl.attach_cb %arg0, %cb0 : (tensor<2x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x1x!ttcore.tile<32x32, f32>>
   %b = ttl.attach_cb %arg1, %cb1 : (tensor<1x3x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 3], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x3x!ttcore.tile<32x32, f32>>
   %reserve = ttl.cb_reserve %cb2 : <[2, 3], !ttcore.tile<32x32, f32>, 2> -> tensor<2x3x!ttcore.tile<32x32, f32>>

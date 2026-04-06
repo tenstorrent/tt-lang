@@ -163,7 +163,7 @@ There are two acquisition functions on a dataflow buffer object: `wait` and `res
 ```py
 x_dfb = ttl.make_dataflow_buffer_like(x,
     shape = (2, 2),
-    buffer_factor = 2)
+    block_count = 2)
 
 @ttl.datamovement()
 def some_read():
@@ -188,7 +188,7 @@ def some_compute():
 
 | Type alias/Function | Description |
 | :---- | :---- |
-|  `ttl.make_dataflow_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape,   buffer_factor: ttl.Size) -> ttl.DataflowBuffer` | Create a dataflow buffer by inheriting basic properties from `likeness_tensor`. |
+|  `ttl.make_dataflow_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape,   block_count: ttl.Size) -> ttl.DataflowBuffer` | Create a dataflow buffer by inheriting basic properties from `likeness_tensor`. |
 |  `ttl.DataflowBuffer.reserve(self) -> ttl.Block` | Reserve and return a block from a dataflow buffer. **This function is blocking** and will wait until a *free* block is available. A free block is typically used by a producer to write the data into. |
 | `ttl.Block.push(self)` | Push a block to a dataflow buffer. This function is called by the producer to signal the consumer that a block *filled* with data is available. **This function is non-blocking.** |
 | `ttl.DataflowBuffer.wait(self) -> ttl.Block` | Wait for and return a block from a dataflow buffer. **This function is blocking** and will wait until a block filled with data is available. A filled block is typically used by a consumer to read data from. |
@@ -731,7 +731,7 @@ When `ttl.copy` function is called multiple times, instead of waiting on each tr
 # WO = WI * scale_factor[1]
 
 io_dfb = ttl.make_dataflow_buffer_like(
-    input_images, shape=(C,), buffer_factor=2
+    input_images, shape=(C,), block_count=2
 )
 
 @ttl.datamovement()

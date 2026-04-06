@@ -52,7 +52,7 @@ void populateTTLModule(nb::module_ &m) {
                 unwrap(ctx), shape, unwrap(elementType), bufferFactor));
           },
           nb::arg("context"), nb::arg("shape"), nb::arg("element_type"),
-          nb::arg("buffer_factor"))
+          nb::arg("block_count"))
       .def_prop_ro("shape",
                    [](CircularBufferType &self) {
                      return std::vector<int64_t>(self.getShape().begin(),
@@ -61,7 +61,7 @@ void populateTTLModule(nb::module_ &m) {
       .def_prop_ro(
           "element_type",
           [](CircularBufferType &self) { return wrap(self.getElementType()); })
-      .def_prop_ro("buffer_factor", &CircularBufferType::getBufferFactor);
+      .def_prop_ro("block_count", &CircularBufferType::getBufferFactor);
 
   //===--------------------------------------------------------------------===//
   // LayoutAttr

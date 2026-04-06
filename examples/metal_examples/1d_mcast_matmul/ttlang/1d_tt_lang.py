@@ -47,14 +47,14 @@ def matmul_1d(
 
     buffering_factor = 2
     a_dfb = ttl.make_dataflow_buffer_like(
-        a_tensor, shape=(block_h, block_inner_dim), buffer_factor=buffering_factor
+        a_tensor, shape=(block_h, block_inner_dim), block_count=buffering_factor
     )
     b_dfb = ttl.make_dataflow_buffer_like(
-        b_tensor, shape=(block_inner_dim, block_w), buffer_factor=buffering_factor
+        b_tensor, shape=(block_inner_dim, block_w), block_count=buffering_factor
     )
     # non buffered output, matching metal implementation
     out_dfb = ttl.make_dataflow_buffer_like(
-        out_tensor, shape=(block_h, block_w), buffer_factor=1
+        out_tensor, shape=(block_h, block_w), block_count=1
     )
 
     mcast_pipe = ttl.Pipe((0,), (slice(1, num_working_nodes),))

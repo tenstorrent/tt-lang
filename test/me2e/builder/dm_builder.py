@@ -48,7 +48,7 @@ class DMThreadBuilder(StringBasedThreadBuilder):
         # Generate CB bindings.
         cb_binds = "\n".join(
             [
-                f"  %cb{i} = ttl.bind_cb {{cb_index = {i}, buffer_factor = {self._buffer_factor}}} : {self.cb_type_str}"
+                f"  %cb{i} = ttl.bind_cb {{cb_index = {i}, block_count = {self._block_count}}} : {self.cb_type_str}"
                 for i in range(num_inputs)
             ]
         )
@@ -113,7 +113,7 @@ func.func @{name}({args})
         # Generate CB bindings.
         cb_binds = "\n".join(
             [
-                f"  %cb_out{i} = ttl.bind_cb {{cb_index = {output_cbs[i]}, buffer_factor = {self._buffer_factor}}} : {self.cb_type_str}"
+                f"  %cb_out{i} = ttl.bind_cb {{cb_index = {output_cbs[i]}, block_count = {self._block_count}}} : {self.cb_type_str}"
                 for i in range(num_outputs)
             ]
         )

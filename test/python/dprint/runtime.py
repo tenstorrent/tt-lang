@@ -34,9 +34,9 @@ import ttl
 
 @ttl.operation(grid=(1, 1))
 def dprint_bf16_kernel(inp, inp2, out):
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    inp2_dfb = ttl.make_dataflow_buffer_like(inp2, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    inp2_dfb = ttl.make_dataflow_buffer_like(inp2, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -96,8 +96,8 @@ def dprint_bf16_kernel(inp, inp2, out):
 
 @ttl.operation(grid=(1, 1), fp32_dest_acc_en=True, dst_full_sync_en=False)
 def dprint_f32_kernel(inp_f32, out_f32):
-    inp_dfb = ttl.make_dataflow_buffer_like(inp_f32, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out_f32, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp_f32, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out_f32, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():

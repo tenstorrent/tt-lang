@@ -47,13 +47,13 @@ def matmul_1d(
 
     bf = 2
     a_dfb = ttl.make_dataflow_buffer_like(
-        a, shape=(granularity_m, granularity_k), buffer_factor=bf
+        a, shape=(granularity_m, granularity_k), block_count=bf
     )
     b_dfb = ttl.make_dataflow_buffer_like(
-        b, shape=(granularity_k, granularity_n), buffer_factor=bf
+        b, shape=(granularity_k, granularity_n), block_count=bf
     )
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(granularity_m, granularity_n), buffer_factor=bf
+        out, shape=(granularity_m, granularity_n), block_count=bf
     )
 
     def block_slice(block_offset, block_size):
