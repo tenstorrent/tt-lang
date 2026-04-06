@@ -446,9 +446,7 @@ class TestBlockCompletion:
         def test_kernel(input_data: ttnn.Tensor):
             # Create dataflow buffers
             element = make_ones_tensor(32, 32)
-            in_dfb = ttl.make_dataflow_buffer_like(
-                element, shape=(1, 1), block_count=2
-            )
+            in_dfb = ttl.make_dataflow_buffer_like(element, shape=(1, 1), block_count=2)
 
             @ttl.datamovement()
             def dm0():
@@ -483,9 +481,7 @@ class TestBlockCompletion:
         def test_kernel(input_data: ttnn.Tensor):
             # Create dataflow buffers
             element = make_ones_tensor(32, 32)
-            in_dfb = ttl.make_dataflow_buffer_like(
-                element, shape=(1, 1), block_count=2
-            )
+            in_dfb = ttl.make_dataflow_buffer_like(element, shape=(1, 1), block_count=2)
 
             @ttl.datamovement()
             def dm0():
@@ -524,9 +520,7 @@ class TestBlockCompletion:
         def test_kernel(input_data: ttnn.Tensor, output_data: ttnn.Tensor):
             # Create dataflow buffers
             element = make_ones_tensor(32, 32)
-            in_dfb = ttl.make_dataflow_buffer_like(
-                element, shape=(1, 1), block_count=2
-            )
+            in_dfb = ttl.make_dataflow_buffer_like(element, shape=(1, 1), block_count=2)
             out_dfb = ttl.make_dataflow_buffer_like(
                 output_data, shape=(1, 1), block_count=2
             )
@@ -570,12 +564,8 @@ class TestBlockCompletion:
 
             # Create multiple dataflow buffers
             element = make_ones_tensor(32, 32)
-            dfb1 = DataflowBuffer(
-                likeness_tensor=element, shape=(1, 1), block_count=2
-            )
-            dfb2 = DataflowBuffer(
-                likeness_tensor=element, shape=(1, 1), block_count=2
-            )
+            dfb1 = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
+            dfb2 = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
 
             @ttl.datamovement()
             def dm0():

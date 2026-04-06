@@ -2,7 +2,7 @@
 
 ## Overview
 
-A dataflow buffer is a communication primitive for synchronizing the passing of data between kernel functions within one node. An analogy is a conveyor belt in a factory: the producer (data movement kernel) places items onto the belt, and the consumer (compute kernel) picks them up. The belt has a fixed number of entries, and when full, the producer must wait for the consumer to free up space.
+A dataflow buffer is a communication primitive for synchronizing the passing of data between kernel functions within one node. An analogy is a conveyor belt in a factory: the producer (data movement kernel) places items onto the belt, and the consumer (compute kernel) picks them up. The belt has a fixed number of blocks, and when full, the producer must wait for the consumer to free up space.
 
 A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing a TT-NN tensor, shape, and block count.
 

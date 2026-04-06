@@ -909,9 +909,7 @@ def test_dataflow_buffer_basic_flow(configured_dfb8: DataflowBuffer) -> None:
         values = stored.to_list()
         assert len(values) == 1
         assert tensors_exact_equal(values[0], test_tensors[i])
-        drain_blk = DataflowBuffer(
-            likeness_tensor=element, shape=(1, 1), block_count=2
-        )
+        drain_blk = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
         drain = drain_blk.reserve()
         drain.store(stored)
         drain.push()

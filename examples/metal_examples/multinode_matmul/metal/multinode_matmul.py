@@ -34,7 +34,7 @@ def test_multinode_matmul(M, K, N):
     print(
         f"node_grid: {device_node_grid}, num_output_tiles_total: {num_output_tiles_total}"
     )
-    (_, all_nodes, node_group_1, node_group_2, work_per_node1, work_per_node2) = (
+    _, all_nodes, node_group_1, node_group_2, work_per_node1, work_per_node2 = (
         ttnn.split_work_to_cores(
             device_node_grid, num_output_tiles_total, row_wise=True
         )

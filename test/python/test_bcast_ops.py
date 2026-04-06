@@ -28,7 +28,6 @@ from ttlang_test_utils import assert_allclose, to_l1
 
 import ttl
 
-
 # =============================================================================
 # Helper to create input tensors for broadcast tests
 # =============================================================================

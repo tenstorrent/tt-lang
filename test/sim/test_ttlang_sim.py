@@ -692,12 +692,10 @@ class TestTensorStatsOption:
     def test_tensor_stats_no_data(self):
         """Test that --show-stats handles programs with no tensor operations gracefully."""
         script = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)
-        script.write(
-            """
+        script.write("""
 # Simple program with no kernel calls
 print("No kernels here!")
-"""
-        )
+""")
         script.close()
         script_path = Path(script.name)
         try:
@@ -790,12 +788,10 @@ class TestSchedulerAlgorithmOption:
         # Create a temporary script that checks the algorithm
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             script_path = Path(f.name)
-            f.write(
-                """
+            f.write("""
 from python.sim.greenlet_scheduler import get_scheduler_algorithm
 print(f"Algorithm: {get_scheduler_algorithm()}")
-"""
-            )
+""")
 
         try:
             result = subprocess.run(

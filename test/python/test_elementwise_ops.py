@@ -24,7 +24,6 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 from conftest import temp_kernel_files
 from ttlang_test_utils import assert_allclose, to_l1, to_l1_sharded
 
-
 # =============================================================================
 # Kernel Template - generates kernels via temp file + import
 # =============================================================================

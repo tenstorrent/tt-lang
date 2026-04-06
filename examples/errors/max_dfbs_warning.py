@@ -4,6 +4,7 @@
 #
 # TTLANG_HARDWARE_CI: skip-compiler
 """Test: how many CBs can we allocate?"""
+
 import torch
 import numpy as np
 import ttnn

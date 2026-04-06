@@ -21,7 +21,6 @@ os.environ["TTLANG_COMPILE_ONLY"] = "1"
 import ttnn
 import ttl
 
-
 # CHECK: Compiled kernel ready
 
 # Verify subblock loop structure: nested M/N subblock loops, each computing

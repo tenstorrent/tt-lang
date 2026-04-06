@@ -14,7 +14,6 @@ in tt-lang. This test verifies the validation catches them.
 from unittest.mock import MagicMock
 from ttl._src.ttl_ast import _build_tensor_type
 
-
 # CHECK: ValueError: All shape dimensions must be positive, got shape (-1, 32)
 mock_tensor = MagicMock()
 mock_tensor.shape = (-1, 32)

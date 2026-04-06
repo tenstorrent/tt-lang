@@ -45,12 +45,12 @@ def matmul_1d(
     num_blocks_m = Mt // block_h
     num_blocks_k = Kt // block_inner_dim
 
-    buffering_factor = 2
+    dfb_block_count = 2
     a_dfb = ttl.make_dataflow_buffer_like(
-        a_tensor, shape=(block_h, block_inner_dim), block_count=buffering_factor
+        a_tensor, shape=(block_h, block_inner_dim), block_count=dfb_block_count
     )
     b_dfb = ttl.make_dataflow_buffer_like(
-        b_tensor, shape=(block_inner_dim, block_w), block_count=buffering_factor
+        b_tensor, shape=(block_inner_dim, block_w), block_count=dfb_block_count
     )
     # non buffered output, matching metal implementation
     out_dfb = ttl.make_dataflow_buffer_like(

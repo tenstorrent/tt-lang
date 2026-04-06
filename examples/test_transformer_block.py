@@ -31,7 +31,6 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 import ttl
 
-
 # Test configuration
 SEQ_TILES = 1  # 32 tokens
 EMBD_TILES = 1  # 32 embedding dim (single head)

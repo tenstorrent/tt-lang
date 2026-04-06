@@ -12,6 +12,7 @@ Examples:
   - row bcast: (1, 2) -> (2, 2) - broadcast row to fill 2 rows
   - scalar bcast: (1, 1) -> (2, 2) - broadcast scalar to fill all tiles
 """
+
 import sys
 
 import pytest

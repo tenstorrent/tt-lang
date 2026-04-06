@@ -16,7 +16,6 @@ from CBs with different total tile counts but identical per-block shapes.
 Expected computation: out = cv * bv = 5.0 * 3.0 = 15.0
 """
 
-
 import pytest
 import torch
 import ttl

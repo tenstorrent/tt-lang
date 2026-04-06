@@ -9,7 +9,6 @@ row-block of A and B is read in full by every core.
 Includes tests with Kt > 1 blocks and outer K-loop accumulation.
 """
 
-
 import pytest
 import torch
 import ttl

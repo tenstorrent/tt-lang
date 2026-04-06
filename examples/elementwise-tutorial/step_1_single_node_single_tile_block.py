@@ -56,7 +56,7 @@ def __tutorial_operation(
 
     # Dataflow buffers (DFBs) are L1 buffers shared between threads.
     # shape=(1, 1) means each entry holds exactly one 32×32 tile.
-    # block_count=2 allocates two entries, enabling double-buffering: while the
+    # block_count=2 allocates two blocks, enabling double-buffering: while the
     # compute kernel processes one entry, the DM kernel can fill the other.
 
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)

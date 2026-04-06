@@ -49,9 +49,7 @@ def flash_attention(
     )
     sc_dfb = ttl.make_dataflow_buffer_like(scale_tile, shape=(1, 1), block_count=1)
     scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=1)
-    ninf_dfb = ttl.make_dataflow_buffer_like(
-        neg_inf_tile, shape=(1, 1), block_count=1
-    )
+    ninf_dfb = ttl.make_dataflow_buffer_like(neg_inf_tile, shape=(1, 1), block_count=1)
     zero_dfb = ttl.make_dataflow_buffer_like(zero_tile, shape=(1, 1), block_count=1)
     zero_head_dfb = ttl.make_dataflow_buffer_like(
         zero_head, shape=(1, HD_TILES), block_count=1
@@ -62,9 +60,7 @@ def flash_attention(
         K_all, shape=(HD_TILES, KV_CHUNK), block_count=2
     )
     qk_dfb = ttl.make_dataflow_buffer_like(mask, shape=(1, KV_CHUNK), block_count=2)
-    scaled_dfb = ttl.make_dataflow_buffer_like(
-        mask, shape=(1, KV_CHUNK), block_count=2
-    )
+    scaled_dfb = ttl.make_dataflow_buffer_like(mask, shape=(1, KV_CHUNK), block_count=2)
     chunk_max_dfb = ttl.make_dataflow_buffer_like(
         scale_tile, shape=(1, 1), block_count=2
     )

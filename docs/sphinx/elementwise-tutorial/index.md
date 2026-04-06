@@ -61,7 +61,7 @@ a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
 ```
 
 `shape=(1, 1)` means each buffer entry holds one 32×32 tile. `block_count=2`
-allocates two entries in L1 so that the reader and compute kernels can work
+allocates two blocks in L1 so that the reader and compute kernels can work
 concurrently — while compute processes one entry, the reader fills the other
 (double-buffering).
 

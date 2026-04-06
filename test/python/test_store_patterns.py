@@ -79,12 +79,8 @@ def _make_two_output_add_kernel(rows, cols):
     def kernel(a, b, out1, out2):
         a_dfb = ttl.make_dataflow_buffer_like(a, shape=(rows, cols), block_count=2)
         b_dfb = ttl.make_dataflow_buffer_like(b, shape=(rows, cols), block_count=2)
-        o1_dfb = ttl.make_dataflow_buffer_like(
-            out1, shape=(rows, cols), block_count=2
-        )
-        o2_dfb = ttl.make_dataflow_buffer_like(
-            out2, shape=(rows, cols), block_count=2
-        )
+        o1_dfb = ttl.make_dataflow_buffer_like(out1, shape=(rows, cols), block_count=2)
+        o2_dfb = ttl.make_dataflow_buffer_like(out2, shape=(rows, cols), block_count=2)
 
         @ttl.compute()
         def compute():

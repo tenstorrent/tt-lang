@@ -12,6 +12,7 @@ Simple add kernel with float32 data type.
 Tests that float32 tensors are properly handled through the layout derivation
 path (TTNNLayoutAttr -> page size calculation).
 """
+
 import ttl
 
 try:

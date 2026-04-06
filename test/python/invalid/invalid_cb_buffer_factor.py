@@ -8,7 +8,6 @@
 Validation test: DFB block_count must be in range [1, 32].
 """
 
-
 # CHECK: block_count must be in range [1, 32]
 # Validation happens in CircularBuffer.__init__, no ttnn needed
 import ttl

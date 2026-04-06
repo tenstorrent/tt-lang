@@ -29,7 +29,6 @@ from ttl.circular_buffer import CircularBuffer
 
 from .kernels import KernelSpec
 
-
 # Tile dimensions.
 TILE_HEIGHT = 32
 TILE_WIDTH = 32
