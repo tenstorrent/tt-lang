@@ -27,15 +27,11 @@ from ttl.dialects import ttcore
 
 
 def is_ttnn_tensor(tensor) -> bool:
-    """Check if tensor is a ttnn.Tensor (or a MeshTensorProxy wrapping one)."""
+    """Check if tensor is a ttnn.Tensor."""
     _ensure_ttnn()
     if ttnn is None:
         return False
-    if isinstance(tensor, ttnn.Tensor):
-        return True
-    if getattr(tensor, "_is_mesh_proxy", False):
-        return True
-    return False
+    return isinstance(tensor, ttnn.Tensor)
 
 
 def torch_dtype_to_ttcore_datatype(torch_dtype):
