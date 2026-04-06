@@ -123,10 +123,7 @@ def matmul_with_bias(
                                 with acc_dfb.reserve() as acc_blk:
                                     acc_blk.store(pre_acc_blk + a_blk @ b_blk)
 
-                        with (
-                            c_dfb.wait() as c_blk,
-                            acc_dfb.wait() as acc_blk
-                        ):
+                        with c_dfb.wait() as c_blk, acc_dfb.wait() as acc_blk:
                             with y_dfb.reserve() as y_blk:
                                 y_blk.store(c_blk + acc_blk)
 

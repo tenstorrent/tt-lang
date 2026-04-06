@@ -350,8 +350,6 @@ def _is_mesh_tensor(tensor) -> bool:
     return prod(shape) > 1
 
 
-
-
 def _detect_memory_space_from_tensor(tensor, default: str) -> str:
     """Detect memory space (L1/DRAM) from a ttnn tensor's buffer type."""
     mem_config = tensor.memory_config()
