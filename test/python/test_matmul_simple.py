@@ -174,8 +174,8 @@ BLOCK_COUNT_PARAMS = [
 ]
 
 BLOCK_COUNT_IDS = [
-    f"{m}x{k}x{n}_{'bf16' if dt == torch.bfloat16 else 'f32'}_bf{bf}"
-    for (m, k, n), dt, bf in BLOCK_COUNT_PARAMS
+    f"{m}x{k}x{n}_{'bf16' if dt == torch.bfloat16 else 'f32'}_bf{bc}"
+    for (m, k, n), dt, bc in BLOCK_COUNT_PARAMS
 ]
 
 
@@ -202,7 +202,7 @@ def test_matmul_block_count(shape, dtype, block_count, device):
     pcc = torch.corrcoef(torch.stack([result.flatten(), golden.flatten()]))[0, 1].item()
     threshold = 0.9999 if dtype == torch.float32 else 0.999
     assert pcc > threshold, (
-        f"PCC {pcc:.6f} < {threshold} for {Mt}x{Kt}x{Nt} " f"bf={block_count} matmul"
+        f"PCC {pcc:.6f} < {threshold} for {Mt}x{Kt}x{Nt} " f"bc={block_count} matmul"
     )
 
 
