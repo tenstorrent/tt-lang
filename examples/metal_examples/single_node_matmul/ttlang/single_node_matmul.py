@@ -23,15 +23,11 @@ def tt_lang_singlenode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     Mt = M // ttnn.TILE_SIZE
     Kt = K // ttnn.TILE_SIZE
     Nt = N // ttnn.TILE_SIZE
-    buffering_factor = 2
-    a_dfb = ttl.make_dataflow_buffer_like(
-        a, shape=(1, 1), buffer_factor=buffering_factor
-    )
-    b_dfb = ttl.make_dataflow_buffer_like(
-        b, shape=(1, 1), buffer_factor=buffering_factor
-    )
+    dfb_block_count = 2
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=dfb_block_count)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=dfb_block_count)
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(1, 1), buffer_factor=buffering_factor
+        out, shape=(1, 1), block_count=dfb_block_count
     )
 
     @ttl.compute()

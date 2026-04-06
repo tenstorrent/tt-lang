@@ -29,11 +29,11 @@ except ImportError:
 
 @ttl.operation(grid=(1, 1))
 def multi_store_kernel(a, b, out1, out2, out3):
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    out1_dfb = ttl.make_dataflow_buffer_like(out1, shape=(1, 1), buffer_factor=2)
-    out2_dfb = ttl.make_dataflow_buffer_like(out2, shape=(1, 1), buffer_factor=2)
-    out3_dfb = ttl.make_dataflow_buffer_like(out3, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+    out1_dfb = ttl.make_dataflow_buffer_like(out1, shape=(1, 1), block_count=2)
+    out2_dfb = ttl.make_dataflow_buffer_like(out2, shape=(1, 1), block_count=2)
+    out3_dfb = ttl.make_dataflow_buffer_like(out3, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():

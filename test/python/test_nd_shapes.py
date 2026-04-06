@@ -164,9 +164,9 @@ import ttl
 
 @ttl.operation(grid=(1, 1))
 def nd_kernel(lhs, rhs, out):
-    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=({cb}), buffer_factor=2)
-    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=({cb}), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({cb}), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=({cb}), block_count=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=({cb}), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({cb}), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -221,9 +221,9 @@ import ttl
 
 @ttl.operation(grid=(1, 1))
 def nd_kernel(lhs, rhs, out):
-    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=({cb}), buffer_factor=2)
-    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=({cb}), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({cb}), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=({cb}), block_count=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=({cb}), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({cb}), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -271,8 +271,8 @@ import ttl
 
 @ttl.operation(grid=(1, 1))
 def nd_kernel(inp, out):
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=({cb}), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({cb}), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=({cb}), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({cb}), block_count=2)
 
     @ttl.compute()
     def compute_fn():

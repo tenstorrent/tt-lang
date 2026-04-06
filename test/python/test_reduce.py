@@ -41,13 +41,13 @@ import ttl
 def reduce_kernel(inp, scaler, out):
     """Reduce {reduce_fn} dims={dims} on ({inp_rows},{inp_cols}) grid."""
     inp_dfb = ttl.make_dataflow_buffer_like(
-        inp, shape=({inp_rows}, {inp_cols}), buffer_factor=2
+        inp, shape=({inp_rows}, {inp_cols}), block_count=2
     )
     scaler_dfb = ttl.make_dataflow_buffer_like(
-        scaler, shape=(1, 1), buffer_factor=2
+        scaler, shape=(1, 1), block_count=2
     )
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=({out_rows}, {out_cols}), buffer_factor=2
+        out, shape=({out_rows}, {out_cols}), block_count=2
     )
 
     @ttl.compute()
@@ -82,13 +82,13 @@ import ttl
 def reduce_kernel(inp, scaler, out):
     """Multicore reduce {reduce_fn} dims={dims}, each core reduces its own tile."""
     inp_dfb = ttl.make_dataflow_buffer_like(
-        inp, shape=(1, 1), buffer_factor=2
+        inp, shape=(1, 1), block_count=2
     )
     scaler_dfb = ttl.make_dataflow_buffer_like(
-        scaler, shape=(1, 1), buffer_factor=2
+        scaler, shape=(1, 1), block_count=2
     )
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(1, 1), buffer_factor=2
+        out, shape=(1, 1), block_count=2
     )
 
     @ttl.compute()
@@ -708,13 +708,13 @@ import ttl
 def reduce_kernel(inp, scaler, out):
     """Reduce {reduce_fn} dims={dims} with L1 accumulation."""
     inp_dfb = ttl.make_dataflow_buffer_like(
-        inp, shape=({inp_rows}, {inp_cols}), buffer_factor=2
+        inp, shape=({inp_rows}, {inp_cols}), block_count=2
     )
     scaler_dfb = ttl.make_dataflow_buffer_like(
-        scaler, shape=(1, 1), buffer_factor=2
+        scaler, shape=(1, 1), block_count=2
     )
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=({out_rows}, {out_cols}), buffer_factor=2
+        out, shape=({out_rows}, {out_cols}), block_count=2
     )
 
     @ttl.compute()
@@ -850,16 +850,16 @@ import ttl
 @ttl.operation(grid=(1, 1))
 def reduce_bcast_kernel(inp, scaler, out):
     inp_dfb = ttl.make_dataflow_buffer_like(
-        inp, shape=({inp_rows}, {inp_cols}), buffer_factor=2
+        inp, shape=({inp_rows}, {inp_cols}), block_count=2
     )
     scaler_dfb = ttl.make_dataflow_buffer_like(
-        scaler, shape=(1, 1), buffer_factor=2
+        scaler, shape=(1, 1), block_count=2
     )
     reduced_dfb = ttl.make_dataflow_buffer_like(
-        scaler, shape=({red_rows}, {red_cols}), buffer_factor=2
+        scaler, shape=({red_rows}, {red_cols}), block_count=2
     )
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=({inp_rows}, {inp_cols}), buffer_factor=2
+        out, shape=({inp_rows}, {inp_cols}), block_count=2
     )
 
     @ttl.compute()
@@ -1021,13 +1021,13 @@ import ttl
 @ttl.operation(grid=({grid_rows}, {grid_cols}))
 def reduce_kernel(inp, scaler, out):
     inp_dfb = ttl.make_dataflow_buffer_like(
-        inp, shape=(1, {inp_cols}), buffer_factor=2
+        inp, shape=(1, {inp_cols}), block_count=2
     )
     scaler_dfb = ttl.make_dataflow_buffer_like(
-        scaler, shape=(1, 1), buffer_factor=2
+        scaler, shape=(1, 1), block_count=2
     )
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(1, {out_cols}), buffer_factor=2
+        out, shape=(1, {out_cols}), block_count=2
     )
 
     @ttl.compute()
@@ -1159,13 +1159,13 @@ import ttl
 @ttl.operation(grid=({grid_rows}, {grid_cols}))
 def reduce_kernel(inp, scaler, out):
     inp_dfb = ttl.make_dataflow_buffer_like(
-        inp, shape=({tile_rows}, {tile_cols}), buffer_factor=2
+        inp, shape=({tile_rows}, {tile_cols}), block_count=2
     )
     scaler_dfb = ttl.make_dataflow_buffer_like(
-        scaler, shape=(1, 1), buffer_factor=2
+        scaler, shape=(1, 1), block_count=2
     )
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=({out_tile_rows}, {out_tile_cols}), buffer_factor=2
+        out, shape=({out_tile_rows}, {out_tile_cols}), block_count=2
     )
 
     @ttl.compute()
@@ -1310,22 +1310,22 @@ import ttl
 @ttl.operation(grid=({grid_rows}, {grid_cols}))
 def bcast_reduce_kernel(inp, bcast_in, scaler, out):
     inp_dfb = ttl.make_dataflow_buffer_like(
-        inp, shape=({tile_rows}, {tile_cols}), buffer_factor=2
+        inp, shape=({tile_rows}, {tile_cols}), block_count=2
     )
     bcast_dfb = ttl.make_dataflow_buffer_like(
-        bcast_in, shape=(1, 1), buffer_factor=2
+        bcast_in, shape=(1, 1), block_count=2
     )
     bcast_out_dfb = ttl.make_dataflow_buffer_like(
-        inp, shape=({tile_rows}, {tile_cols}), buffer_factor=2
+        inp, shape=({tile_rows}, {tile_cols}), block_count=2
     )
     scaler_dfb = ttl.make_dataflow_buffer_like(
-        scaler, shape=(1, 1), buffer_factor=2
+        scaler, shape=(1, 1), block_count=2
     )
     add_out_dfb = ttl.make_dataflow_buffer_like(
-        inp, shape=({tile_rows}, {tile_cols}), buffer_factor=2
+        inp, shape=({tile_rows}, {tile_cols}), block_count=2
     )
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(1, 1), buffer_factor=2
+        out, shape=(1, 1), block_count=2
     )
 
     @ttl.compute()
@@ -1417,11 +1417,11 @@ def test_bcast_then_reduce_multicore_multitile(device):
 
 @ttl.operation(grid=(1, 1))
 def matmul_then_reduce_kernel(mat_a, mat_b, scaler, out):
-    a_dfb = ttl.make_dataflow_buffer_like(mat_a, shape=(1, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(mat_b, shape=(1, 1), buffer_factor=2)
-    mm_dfb = ttl.make_dataflow_buffer_like(mat_a, shape=(1, 1), buffer_factor=2)
-    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(mat_a, shape=(1, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(mat_b, shape=(1, 1), block_count=2)
+    mm_dfb = ttl.make_dataflow_buffer_like(mat_a, shape=(1, 1), block_count=2)
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -1480,14 +1480,14 @@ import ttl
 
 @ttl.operation(grid=(1, 1), fp32_dest_acc_en=True)
 def reduce_bcast_matmul_kernel(reduce_in, mat_b, scaler, out):
-    reduce_dfb = ttl.make_dataflow_buffer_like(reduce_in, shape=({mt}, {kt}), buffer_factor=2)
-    sc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    red_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    bcast_dfb = ttl.make_dataflow_buffer_like(scaler, shape=({mt}, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(mat_b, shape=(1, {nt}), buffer_factor=2)
-    partial_dfb = ttl.make_dataflow_buffer_like(out, shape=({mt}, {nt}), buffer_factor=2)
-    acc_dfb = ttl.make_dataflow_buffer_like(out, shape=({mt}, {nt}), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({mt}, {nt}), buffer_factor=2)
+    reduce_dfb = ttl.make_dataflow_buffer_like(reduce_in, shape=({mt}, {kt}), block_count=2)
+    sc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+    red_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+    bcast_dfb = ttl.make_dataflow_buffer_like(scaler, shape=({mt}, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(mat_b, shape=(1, {nt}), block_count=2)
+    partial_dfb = ttl.make_dataflow_buffer_like(out, shape=({mt}, {nt}), block_count=2)
+    acc_dfb = ttl.make_dataflow_buffer_like(out, shape=({mt}, {nt}), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({mt}, {nt}), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -1602,10 +1602,10 @@ import ttl
 
 @ttl.operation(grid=(1, 1))
 def reduce_bcast_type_kernel(inp, scaler, out):
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=({inp_rows}, {inp_cols}), buffer_factor=2)
-    sc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    red_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({out_rows}, {out_cols}), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=({inp_rows}, {inp_cols}), block_count=2)
+    sc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+    red_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({out_rows}, {out_cols}), block_count=2)
 
     @ttl.compute()
     def compute_fn():

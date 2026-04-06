@@ -7,7 +7,7 @@
 // attached CB. getAttachedCB returns null.
 func.func @bcast_output_no_cb(%out_tile: !ttcore.tile<32x32, bf16>)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
   %input = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %input_cb = ttl.attach_cb %input, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
 
@@ -28,7 +28,7 @@ func.func @bcast_output_no_cb(%out_tile: !ttcore.tile<32x32, bf16>)
 // expected-note @+1 {{circular buffer defined here}}
 func.func @bcast_output_cb_not_from_bind(%cb_arg: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
   %input = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %input_cb = ttl.attach_cb %input, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
 

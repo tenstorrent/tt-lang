@@ -97,8 +97,8 @@ module {
   func.func @dma_loop_multi_tile(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>, #layout_2x2>, %arg1: tensor<3x2x!ttcore.tile<32x32, f32>, #layout_3x2>)
       attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
-    %cb1 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], f32, 2>
-    %cb2 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[3, 2], f32, 2>
+    %cb1 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], f32, 2>
+    %cb2 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[3, 2], f32, 2>
     %c4 = arith.constant 4 : index
     %c1 = arith.constant 1 : index
 
