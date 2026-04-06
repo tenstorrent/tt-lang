@@ -12,6 +12,7 @@ permissions:
   checks: write
   pull-requests: write
   contents: read
+  packages: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -25,6 +26,8 @@ jobs:
   build:
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
+    with:
+      docker_tag: "v0.1.7"
 
   test-sim:
     uses: ./.github/workflows/call-test-sim.yml
