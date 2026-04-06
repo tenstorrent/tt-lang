@@ -108,9 +108,8 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
     return emitOpError() << "buffer_factor must be > 0";
   }
   if (blockCount != cbTy.getBlockCount()) {
-    return emitOpError()
-           << "buffer_factor must match result type block count ("
-           << cbTy.getBlockCount() << ")";
+    return emitOpError() << "buffer_factor must match result type block count ("
+                         << cbTy.getBlockCount() << ")";
   }
 
   return mlir::success();
