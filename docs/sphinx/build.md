@@ -186,7 +186,7 @@ mismatch.
 
 Uplifting means updating submodule pins to newer commits. tt-mlir defines the
 compatible versions of LLVM and tt-metal, so when updating tt-mlir, update the
-other submodules to match. Note that you can specify other SHAs for LLVM 
+other submodules to match. Note that you can specify other SHAs for LLVM
 or tt-metal, but then may have to bypass SHA mismatch checks by specifying the
 `TTLANG_ACCEPT_LLVM_MISMATCH` and `TTLANG_ACCEPT_TTMETAL_MISMATCH` options to cmake.
 
