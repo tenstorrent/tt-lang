@@ -14,7 +14,6 @@ from typing import Optional
 import numpy as np
 import torch
 
-
 # =============================================================================
 # Custom Exceptions for Failure Classification
 # =============================================================================

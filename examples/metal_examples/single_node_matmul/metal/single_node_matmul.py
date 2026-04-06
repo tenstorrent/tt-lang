@@ -64,8 +64,8 @@ def test_singlenode_matmul_metal(M, K, N):
     # single node grid
     node = ttnn.CoreCoord(0, 0)
     node_grid = ttnn.NodeRangeSet([ttnn.NodeRange(node, node)])
-    buffering_factor = 2
-    cb_total_size = buffering_factor * cb_page_size
+    dfb_block_count = 2
+    cb_total_size = dfb_block_count * cb_page_size
     a_cb_descriptor = ttnn.CBDescriptor(
         total_size=cb_total_size,
         node_ranges=node_grid,

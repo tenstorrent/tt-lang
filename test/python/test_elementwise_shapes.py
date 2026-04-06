@@ -54,9 +54,9 @@ import ttl
 @ttl.operation(grid=(1, 1))
 def {name}_kernel(lhs, rhs, out):
     """Binary {name} kernel for {tile_rows}x{tile_cols} tiles."""
-    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=({tile_rows}, {tile_cols}), block_count={block_count})
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=({tile_rows}, {tile_cols}), block_count={block_count})
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({tile_rows}, {tile_cols}), block_count={block_count})
 
     @ttl.compute()
     def compute_fn():
@@ -96,9 +96,9 @@ import ttl
 @ttl.operation(grid=(1, 1))
 def {name}_kernel(lhs, rhs, out):
     """Binary {name} kernel (function call) for {tile_rows}x{tile_cols} tiles."""
-    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=({tile_rows}, {tile_cols}), block_count={block_count})
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=({tile_rows}, {tile_cols}), block_count={block_count})
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({tile_rows}, {tile_cols}), block_count={block_count})
 
     @ttl.compute()
     def compute_fn():
@@ -138,8 +138,8 @@ import ttl
 @ttl.operation(grid=(1, 1))
 def {name}_kernel(inp, out):
     """Unary {name} kernel for {tile_rows}x{tile_cols} tiles."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({tile_rows}, {tile_cols}), buffer_factor={buffer_factor})
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=({tile_rows}, {tile_cols}), block_count={block_count})
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=({tile_rows}, {tile_cols}), block_count={block_count})
 
     @ttl.compute()
     def compute_fn():
@@ -189,13 +189,13 @@ def make_binary_kernel(name: str, op: str, tile_rows: int, tile_cols: int) -> Ca
     if cache_key in _kernel_cache:
         return _kernel_cache[cache_key]
 
-    buffer_factor = 2
+    block_count = 2
     code = BINARY_KERNEL_TEMPLATE.format(
         name=name,
         op=op,
         tile_rows=tile_rows,
         tile_cols=tile_cols,
-        buffer_factor=buffer_factor,
+        block_count=block_count,
         slice_syntax=_get_slice_syntax(tile_rows, tile_cols),
     )
 
@@ -226,13 +226,13 @@ def make_binary_fn_kernel(
     if cache_key in _kernel_cache:
         return _kernel_cache[cache_key]
 
-    buffer_factor = 2
+    block_count = 2
     code = BINARY_FN_KERNEL_TEMPLATE.format(
         name=name,
         op=op,
         tile_rows=tile_rows,
         tile_cols=tile_cols,
-        buffer_factor=buffer_factor,
+        block_count=block_count,
         slice_syntax=_get_slice_syntax(tile_rows, tile_cols),
     )
 
@@ -261,13 +261,13 @@ def make_unary_kernel(name: str, op: str, tile_rows: int, tile_cols: int) -> Cal
     if cache_key in _kernel_cache:
         return _kernel_cache[cache_key]
 
-    buffer_factor = 2
+    block_count = 2
     code = UNARY_KERNEL_TEMPLATE.format(
         name=name,
         op=op,
         tile_rows=tile_rows,
         tile_cols=tile_cols,
-        buffer_factor=buffer_factor,
+        block_count=block_count,
         slice_syntax=_get_slice_syntax(tile_rows, tile_cols),
     )
 

@@ -8,9 +8,8 @@
 Validation test: DFB shape must have at least 2 dimensions.
 """
 
-
 # CHECK: CB shape must have at least 2 dimensions
 # Validation happens in CircularBuffer.__init__, no ttnn needed
 import ttl
 
-ttl.make_dataflow_buffer_like(None, shape=(1,), buffer_factor=2)
+ttl.make_dataflow_buffer_like(None, shape=(1,), block_count=2)

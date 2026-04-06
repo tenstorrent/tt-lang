@@ -24,8 +24,8 @@ import ttl
 # CHECK: cannot call .push() on '{{.*}}store{{.*}}': expression does not produce a value
 @ttl.operation(grid=(1, 1))
 def invalid_chain_kernel(a, out):
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():

@@ -33,8 +33,8 @@ from ttlang_test_utils import assert_allclose, to_dram
 @ttl.operation(grid=(1, 1))
 def silu_kernel(x, out):
     """SiLU: x * sigmoid(x) - tests multi-consumer DST allocation."""
-    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -60,9 +60,9 @@ def silu_kernel(x, out):
 @ttl.operation(grid=(1, 1))
 def unary_binary_kernel(x, y, out):
     """Tests block arg with one unary and two binary consumers."""
-    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
-    y_dfb = ttl.make_dataflow_buffer_like(y, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
+    y_dfb = ttl.make_dataflow_buffer_like(y, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -139,11 +139,11 @@ def test_unary_binary_consumers(device):
 @ttl.operation(grid=(1, 1))
 def three_consumers_kernel(a, b, out_sig, out_exp, out_add):
     """Block arg with 2 unary + 1 binary consumers: sigmoid(a), exp(a), a+b."""
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    sig_dfb = ttl.make_dataflow_buffer_like(out_sig, shape=(1, 1), buffer_factor=2)
-    exp_dfb = ttl.make_dataflow_buffer_like(out_exp, shape=(1, 1), buffer_factor=2)
-    add_dfb = ttl.make_dataflow_buffer_like(out_add, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+    sig_dfb = ttl.make_dataflow_buffer_like(out_sig, shape=(1, 1), block_count=2)
+    exp_dfb = ttl.make_dataflow_buffer_like(out_exp, shape=(1, 1), block_count=2)
+    add_dfb = ttl.make_dataflow_buffer_like(out_add, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -217,8 +217,8 @@ def test_three_consumers(device):
 @ttl.operation(grid=(1, 1))
 def square_kernel(x, out):
     """Square pattern: x * x - same value used as both operands."""
-    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -260,10 +260,10 @@ def test_square_pattern(device):
 @ttl.operation(grid=(1, 1))
 def unary_chain_branch_kernel(a, b, out_exp, out_add):
     """Unary chain that branches: abs(a) feeds both exp and add operations."""
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    exp_dfb = ttl.make_dataflow_buffer_like(out_exp, shape=(1, 1), buffer_factor=2)
-    add_dfb = ttl.make_dataflow_buffer_like(out_add, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+    exp_dfb = ttl.make_dataflow_buffer_like(out_exp, shape=(1, 1), block_count=2)
+    add_dfb = ttl.make_dataflow_buffer_like(out_add, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():

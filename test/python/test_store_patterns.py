@@ -21,8 +21,8 @@ from ttl import ttl
 
 @ttl.operation(grid=(1, 1))
 def passthrough_kernel(inp, out):
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -44,9 +44,9 @@ def passthrough_kernel(inp, out):
 
 @ttl.operation(grid=(1, 1))
 def double_store_kernel(a, b, out):
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -77,14 +77,10 @@ def _make_two_output_add_kernel(rows, cols):
 
     @ttl.operation(grid=(1, 1))
     def kernel(a, b, out1, out2):
-        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(rows, cols), buffer_factor=2)
-        b_dfb = ttl.make_dataflow_buffer_like(b, shape=(rows, cols), buffer_factor=2)
-        o1_dfb = ttl.make_dataflow_buffer_like(
-            out1, shape=(rows, cols), buffer_factor=2
-        )
-        o2_dfb = ttl.make_dataflow_buffer_like(
-            out2, shape=(rows, cols), buffer_factor=2
-        )
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(rows, cols), block_count=2)
+        b_dfb = ttl.make_dataflow_buffer_like(b, shape=(rows, cols), block_count=2)
+        o1_dfb = ttl.make_dataflow_buffer_like(out1, shape=(rows, cols), block_count=2)
+        o2_dfb = ttl.make_dataflow_buffer_like(out2, shape=(rows, cols), block_count=2)
 
         @ttl.compute()
         def compute():
@@ -122,11 +118,11 @@ _two_output_kernels = {s: _make_two_output_add_kernel(*s) for s in TWO_OUTPUT_SH
 
 @ttl.operation(grid=(1, 1))
 def three_outputs_kernel(a, b, out1, out2, out3):
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    out1_dfb = ttl.make_dataflow_buffer_like(out1, shape=(1, 1), buffer_factor=2)
-    out2_dfb = ttl.make_dataflow_buffer_like(out2, shape=(1, 1), buffer_factor=2)
-    out3_dfb = ttl.make_dataflow_buffer_like(out3, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+    out1_dfb = ttl.make_dataflow_buffer_like(out1, shape=(1, 1), block_count=2)
+    out2_dfb = ttl.make_dataflow_buffer_like(out2, shape=(1, 1), block_count=2)
+    out3_dfb = ttl.make_dataflow_buffer_like(out3, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -168,10 +164,10 @@ def fused_bcast_two_outputs_kernel(a, b, out1, out2):
     """Fused chain: broadcast(b) + a -> store to 2 outputs.
     a is 4x1 tiles (128x32), b is 1x1 tile (32x32), output is 4x1 tiles.
     Tests broadcast inside a fused compute with multi-output."""
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(4, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    out1_dfb = ttl.make_dataflow_buffer_like(out1, shape=(4, 1), buffer_factor=2)
-    out2_dfb = ttl.make_dataflow_buffer_like(out2, shape=(4, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(4, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+    out1_dfb = ttl.make_dataflow_buffer_like(out1, shape=(4, 1), block_count=2)
+    out2_dfb = ttl.make_dataflow_buffer_like(out2, shape=(4, 1), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -203,10 +199,10 @@ def fused_bcast_two_outputs_kernel(a, b, out1, out2):
 
 @ttl.operation(grid=(1, 1))
 def store_then_forward_kernel(a, b, out_main, out_copy):
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    main_dfb = ttl.make_dataflow_buffer_like(out_main, shape=(1, 1), buffer_factor=2)
-    copy_dfb = ttl.make_dataflow_buffer_like(out_copy, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+    main_dfb = ttl.make_dataflow_buffer_like(out_main, shape=(1, 1), block_count=2)
+    copy_dfb = ttl.make_dataflow_buffer_like(out_copy, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():

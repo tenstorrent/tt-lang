@@ -25,8 +25,8 @@ from ttlang_test_utils import assert_allclose, to_l1
 
 @ttl.operation(grid=(1, 1))
 def fill_kernel(inp, out):
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -49,8 +49,8 @@ def fill_kernel(inp, out):
 @ttl.operation(grid=(1, 1))
 def fill_add_kernel(inp, out):
     """Fill with 1.0 then add to input: out = inp + 1.0."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute_fn():

@@ -28,9 +28,9 @@ import ttl
 
 @ttl.operation(grid=(1, 1))
 def add_3d_kernel(lhs, rhs, out):
-    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(2, 2, 2), buffer_factor=2)
-    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(2, 2, 2), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2, 2), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(2, 2, 2), block_count=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(2, 2, 2), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2, 2), block_count=2)
 
     @ttl.compute()
     def add_compute():
@@ -74,9 +74,9 @@ def add_3d_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @add_compute
 
 # 3D CB shapes
-# CHECK: ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
-# CHECK: ttl.bind_cb{cb_index = 2, buffer_factor = 2} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
-# CHECK: ttl.bind_cb{cb_index = 1, buffer_factor = 2} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
+# CHECK: ttl.bind_cb{cb_index = 0, block_count = 2} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
+# CHECK: ttl.bind_cb{cb_index = 2, block_count = 2} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
+# CHECK: ttl.bind_cb{cb_index = 1, block_count = 2} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
 
 # Wait/reserve produce 3D tensors of tiles
 # CHECK: ttl.cb_wait %{{.*}} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x2x!ttcore.tile<32x32, bf16>>

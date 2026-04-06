@@ -94,7 +94,7 @@ class ThreadBuilder(ABC):
         self._dtype_str = torch_dtype_to_mlir_str(config.dtype)
         self._dtype_int = torch_dtype_to_ttcore_datatype(config.dtype)
         self._rows, self._cols = config.grid_shape
-        self._buffer_factor = config.buffer_factor
+        self._block_count = config.block_count
         self._num_iterations = config.num_tiles
 
         # CB processes 1 tile at a time.
@@ -117,7 +117,7 @@ class ThreadBuilder(ABC):
 
     @property
     def cb_type(self):
-        """Get the CB type (!ttl.cb<[1,1], tile, buffer_factor>)."""
+        """Get the CB type (!ttl.cb<[1,1], tile, block_count>)."""
         return self._cb_type
 
     @property
@@ -139,7 +139,7 @@ class ThreadBuilder(ABC):
             self.ctx,
             [self._cb_rows, self._cb_cols],
             self._tile_type,
-            self._buffer_factor,
+            self._block_count,
         )
 
     def _create_tile_tensor_type(self):
@@ -155,7 +155,7 @@ class ThreadBuilder(ABC):
         return ttl.bind_cb(
             self._cb_type,
             cb_index=cb_index,
-            buffer_factor=self._buffer_factor,
+            block_count=self._block_count,
             loc=self.loc,
         )
 
@@ -354,7 +354,7 @@ class StringBasedThreadBuilder:
         self.config = config
         self._dtype_str = torch_dtype_to_mlir_str(config.dtype)
         self._rows, self._cols = config.grid_shape
-        self._buffer_factor = config.buffer_factor
+        self._block_count = config.block_count
         self._num_iterations = config.num_tiles
         self._cb_rows = 1
         self._cb_cols = 1
@@ -384,7 +384,7 @@ class StringBasedThreadBuilder:
         """Get CB type string."""
         return (
             f"!ttl.cb<[{self._cb_rows}, {self._cb_cols}], "
-            f"!ttcore.tile<32x32, {self._dtype_str}>, {self._buffer_factor}>"
+            f"!ttcore.tile<32x32, {self._dtype_str}>, {self._block_count}>"
         )
 
     @property
@@ -444,7 +444,7 @@ class StringBasedThreadBuilder:
         return (
             f"{result_var} = ttl.cb_reserve {cb_var} : "
             f"<[{self._cb_rows}, {self._cb_cols}], "
-            f"!ttcore.tile<32x32, {self._dtype_str}>, {self._buffer_factor}> "
+            f"!ttcore.tile<32x32, {self._dtype_str}>, {self._block_count}> "
             f"-> {self.cb_tensor_type_str}"
         )
 
@@ -453,7 +453,7 @@ class StringBasedThreadBuilder:
         return (
             f"{result_var} = ttl.cb_wait {cb_var} : "
             f"<[{self._cb_rows}, {self._cb_cols}], "
-            f"!ttcore.tile<32x32, {self._dtype_str}>, {self._buffer_factor}> "
+            f"!ttcore.tile<32x32, {self._dtype_str}>, {self._block_count}> "
             f"-> {self.cb_tensor_type_str}"
         )
 
@@ -462,7 +462,7 @@ class StringBasedThreadBuilder:
         return (
             f"ttl.cb_push {cb_var} : "
             f"<[{self._cb_rows}, {self._cb_cols}], "
-            f"!ttcore.tile<32x32, {self._dtype_str}>, {self._buffer_factor}>"
+            f"!ttcore.tile<32x32, {self._dtype_str}>, {self._block_count}>"
         )
 
     def _cb_pop_str(self, cb_var: str) -> str:
@@ -470,7 +470,7 @@ class StringBasedThreadBuilder:
         return (
             f"ttl.cb_pop {cb_var} : "
             f"<[{self._cb_rows}, {self._cb_cols}], "
-            f"!ttcore.tile<32x32, {self._dtype_str}>, {self._buffer_factor}>"
+            f"!ttcore.tile<32x32, {self._dtype_str}>, {self._block_count}>"
         )
 
     def _attach_cb_str(self, tensor_var: str, cb_var: str, result_var: str) -> str:
