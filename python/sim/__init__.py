@@ -10,7 +10,7 @@ import types
 from . import ttnnsim as ttnn
 from .dfb import DFBStats
 from .constants import TILE_SHAPE
-from .copy import CopyTransaction, copy
+from .copy import CopyTransaction, GroupTransfer, copy
 from .decorators import compute, datamovement
 from .corecontext import node
 from .operation import operation
@@ -83,6 +83,7 @@ class _TTLNamespace:
         self.datamovement = datamovement
         self.node = node
         self.copy = copy
+        self.GroupTransfer = GroupTransfer
         self.transpose = math_module.transpose
         self.Pipe = Pipe
         self.PipeNet = PipeNet
@@ -120,6 +121,7 @@ __all__ = [
     "TILE_SHAPE",
     "copy",
     "CopyTransaction",
+    "GroupTransfer",
     "Program",
     "node",
     "compute",
