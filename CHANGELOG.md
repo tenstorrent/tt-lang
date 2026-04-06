@@ -53,7 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for dot product operator (`@`) with lowering to [`ckernel::matmul_block`](https://docs.tenstorrent.com/tt-metal/v0.55.0/tt-metalium/tt_metal/apis/kernel_apis/compute/matmul_block.html)
 - Support for fusing matmul and certain elementwise operations
 - Support lowering to `pack_tile_block`
-- Support for for `ttl.math.fill`, `ttl.math.reduce_sum`, `ttl.math.reduce_max`, and `ttl.math.transpose`
+- Support for `ttl.math.fill`, `ttl.math.reduce_sum`, `ttl.math.reduce_max`, and `ttl.math.transpose`
 - Support for arbitrary sub-blocking including dot product K-dimension to allow maximizing L1 usage and reuse
 - Support for `sin`, `cos`, `tan`, `asin`, `acos`, `atan` in `ttl.math`
 - Support for L1 sharded tensors
