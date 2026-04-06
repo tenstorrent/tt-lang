@@ -182,6 +182,100 @@ expected SHA is read from `third-party/tt-mlir/env/CMakeLists.txt`
 `FATAL_ERROR`. Pass `-DTTLANG_ACCEPT_LLVM_MISMATCH=ON` to proceed despite the
 mismatch.
 
+## Uplifting Submodules
+
+Uplifting means updating submodule pins to newer commits. tt-mlir defines the
+compatible versions of LLVM and tt-metal, so when updating tt-mlir, update the
+other submodules to match. Note that you can specify other SHAs for LLVM 
+or tt-metal, but then may have to bypass SHA mismatch checks by specifying the
+`TTLANG_ACCEPT_LLVM_MISMATCH` and `TTLANG_ACCEPT_TTMETAL_MISMATCH` options to cmake.
+
+### Local uplift procedure
+
+```bash
+# Update tt-mlir to the desired commit
+cd third-party/tt-mlir && git fetch && git checkout <commit> && cd ../..
+
+# Update LLVM and tt-metal to the versions tt-mlir expects
+scripts/update-submodules.sh
+
+# Rebuild
+cmake -G Ninja -B build
+cmake --build build
+```
+
+Commit all submodule pointer changes together:
+
+```bash
+git add third-party/llvm-project third-party/tt-mlir third-party/tt-metal
+git commit -m "Update submodules to tt-mlir <short-sha>"
+```
+
+### CI: toolchain cache and Docker images
+
+CI uses two caching layers that must be rebuilt when submodule SHAs change:
+
+1. **GitHub Actions toolchain cache** -- a cached LLVM + tt-metal build keyed
+   by the LLVM and tt-metal submodule SHAs
+   (`Linux-toolchain_llvm-<sha>_ttmetal-<sha>`). When an uplift changes either
+   SHA, the cache key changes and the
+   `call-build-toolchain.yml` workflow automatically builds and caches a new
+   toolchain.
+
+2. **Docker images** -- `ird` and `dist` container images tagged by a hash of
+   submodule SHAs and Dockerfile contents (see
+   `.github/containers/get-docker-tag.sh`). When submodule SHAs change, the tag
+   changes and `call-build-docker.yml` builds new images.
+
+#### Triggering a toolchain cache rebuild on PRs
+
+By default, PR and push workflows use a pre-built Docker container and skip
+building the toolchain from source. For uplift PRs where the submodule pins have
+changed, pass `build_toolchain: true` to force a from-source build:
+
+```yaml
+# In on-pr.yml or on-push.yml, pass build_toolchain to call-build.yml:
+build:
+  uses: ./.github/workflows/call-build.yml
+  secrets: inherit
+  with:
+    build_toolchain: true
+    docker_tag: "v0.1.7"
+```
+
+When `build_toolchain` is true, the workflow:
+
+1. Runs `call-build-toolchain.yml`, which checks for a cached toolchain
+   matching the current submodule SHAs. On cache miss, it builds LLVM + tt-metal
+   from source and saves the result.
+2. Runs the build job on a bare `ubuntu-22.04` runner (instead of inside the
+   Docker container), restoring the cached toolchain and building tt-lang
+   against it.
+
+When `build_toolchain` is false (the default), the build job runs inside the
+pre-built `ird` Docker container, which already contains the toolchain.
+
+#### Rebuilding Docker images
+
+Docker images are rebuilt automatically by `call-build-docker.yml`, which runs
+on version tags (`v*.*.*`) or manual dispatch. The workflow:
+
+1. Generates a deterministic tag from submodule SHAs and Dockerfile content
+   hashes.
+2. Checks whether images with that tag already exist in the registry.
+3. On cache miss, builds the toolchain (or restores from GitHub Actions cache),
+   then packages `base`, `ird`, and `dist` images.
+
+After an uplift merges, create a new version tag to trigger image rebuilds:
+
+```bash
+git tag v0.1.8
+git push origin v0.1.8
+```
+
+Once the new images are published, update the `docker_tag` parameter in
+`on-pr.yml` and `on-push.yml` to reference the new tag.
+
 ## CMake Options
 
 | Option                             | Default     | Description                                                                          |
