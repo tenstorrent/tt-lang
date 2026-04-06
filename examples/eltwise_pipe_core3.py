@@ -38,7 +38,7 @@ def eltwise_pipe_node3(
     grid_h, grid_w = ttl.grid_size()
     cols_per_node = math.ceil(col_tiles / (grid_h * grid_w))
     block_count = (
-        2  # TODO: Should buffer factor be tunable by the user? Or tuned by operation?
+        2  # TODO: Should block count be tunable by the user? Or tuned by operation?
     )
 
     # Create circular buffers

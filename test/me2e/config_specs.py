@@ -70,7 +70,7 @@ class TestConfig:
             documentation and validation. Default is 64 (8x8 grid). Note: This is
             a derived value - the actual grid shape is determined by block_h and block_w.
 
-        block_count: Circular buffer factor for double buffering.
+        block_count: Circular block count for double buffering.
             - 1: Single buffering
             - 2: Double buffering (default, overlaps data movement with compute)
             Double buffering can improve performance but uses more L1 memory.
@@ -133,7 +133,7 @@ class TestConfig:
         # Short dtype name (bf16, f32, etc.)
         dtype_str = str(self.dtype).split(".")[-1]
 
-        # Buffer factor (always explicit)
+        # Block count (always explicit)
         buffer_str = f"_buf{self.block_count}"
 
         # Layout indicator (always explicit, using enum value)

@@ -1247,7 +1247,7 @@ class DataflowBuffer:
 
     @property
     def block_count(self) -> Size:
-        """Get the buffer factor (capacity multiplier)."""
+        """Get the block count (capacity multiplier)."""
         return self._block_count
 
     @property

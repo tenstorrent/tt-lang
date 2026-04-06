@@ -157,8 +157,8 @@ def test_matmul_block_sizes(shape, dtype, device):
 
 # block_count=1 (single-buffered) and block_count=3 (triple-buffered)
 # exercise different CB allocation sizes and synchronization patterns.
-# Shapes chosen to cover K=1, K>1, and subblocking at each buffer factor.
-block_count_PARAMS = [
+# Shapes chosen to cover K=1, K>1, and subblocking at each block count.
+BLOCK_COUNT_PARAMS = [
     # (shape, dtype, block_count)
     # block_count=1: single-buffered, no overlap between DM and compute.
     ((1, 1, 1), torch.bfloat16, 1),
@@ -173,14 +173,14 @@ block_count_PARAMS = [
     ((4, 4, 4), torch.float32, 3),
 ]
 
-block_count_IDS = [
+BLOCK_COUNT_IDS = [
     f"{m}x{k}x{n}_{'bf16' if dt == torch.bfloat16 else 'f32'}_bf{bf}"
-    for (m, k, n), dt, bf in block_count_PARAMS
+    for (m, k, n), dt, bf in BLOCK_COUNT_PARAMS
 ]
 
 
 @pytest.mark.parametrize(
-    "shape,dtype,block_count", block_count_PARAMS, ids=block_count_IDS
+    "shape,dtype,block_count", BLOCK_COUNT_PARAMS, ids=BLOCK_COUNT_IDS
 )
 @pytest.mark.requires_device
 def test_matmul_block_count(shape, dtype, block_count, device):

@@ -52,7 +52,7 @@ class E2EConfig:
     # Data type.
     dtype: torch.dtype = torch.bfloat16
 
-    # Buffer factor: 1=single buffer, 2=double buffer (default).
+    # Block count: 1=single buffer, 2=double buffer (default).
     block_count: int = 2
 
     # Memory configuration.

@@ -47,9 +47,9 @@ void populateTTLModule(nb::module_ &m) {
       .def_static(
           "get",
           [](MlirContext ctx, std::vector<int64_t> shape, MlirType elementType,
-             int64_t bufferFactor) {
+             int64_t blockCount) {
             return wrap(CircularBufferType::get(
-                unwrap(ctx), shape, unwrap(elementType), bufferFactor));
+                unwrap(ctx), shape, unwrap(elementType), blockCount));
           },
           nb::arg("context"), nb::arg("shape"), nb::arg("element_type"),
           nb::arg("block_count"))
@@ -61,7 +61,7 @@ void populateTTLModule(nb::module_ &m) {
       .def_prop_ro(
           "element_type",
           [](CircularBufferType &self) { return wrap(self.getElementType()); })
-      .def_prop_ro("block_count", &CircularBufferType::getBufferFactor);
+      .def_prop_ro("block_count", &CircularBufferType::getBlockCount);
 
   //===--------------------------------------------------------------------===//
   // LayoutAttr

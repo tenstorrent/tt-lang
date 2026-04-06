@@ -44,6 +44,7 @@
 | 0.12 | 03/24/2026 | Remove `store(..., acc=True)` |
 | 0.13 | 03/31/2026 | Rename `ttl.kernel` to `ttl.operation` |
 | 0.14 | 04/02/2026 | Add `ttl.math.abs`, `ttl.math.neg` and `ttl.math.pow` in addition to Python built-in operators. |
+| 0.15 | 04/06/2026 | Rename `buffer_factor` to `block_count` |
 
 
 ## Introduction
@@ -150,11 +151,11 @@ x, y, z = ttl.node(dims = 3)
 
 ## Dataflow buffer
 
-A *dataflow buffer* is a communication primitive for synchronizing the passing of data between kernel functions running on the same node. A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing TT-NN tensor, *shape* and *buffer factor*.
+A *dataflow buffer* is a communication primitive for synchronizing the passing of data between kernel functions running on the same node. A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing TT-NN tensor, *shape* and *block count*.
 
 The shape is expressed as a tuple with outermost dimension first and innermost dimension last. For `ttl.math` functions that take dimension indexes, the outermost dimension is indexed as 0, next to outermost as 1. It is possible to use negative dimension indexes to index from innermost dimension. This way the innermost dimension is indexed as -1, next to innermost as -2. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. The shape unit affects two innermost dimensions and is a whole tile (32 by 32 scalars) if the tensor has a tiled layout. For example, if a TT-NN tensor is of tiled layout and has shape of `(2, 128, 32)`, the corresponding block that fits this entire tensor will have shape of `(2, 4, 1)`. If tensor has a row-major layout the shape unit is an scalar. For the TT-NN tensor in the above example the corresponding block that fits this entire tensor will have shape of `(2, 128, 32)`.
 
-Shape determines the shape of a *block* returned by one of the *acquisition functions*. The size of a block in L1 memory is determined by shape, shape unit and data type. For example, for a block with shape `(2, 4, 1)`, shape unit of a tile and BF16 data type, its size in L1 will be `2 * 4 * 32 * 1 * 32 * 2 = 16384` bytes. The buffer factor determines the total size of L1 memory allocated for a dataflow buffer. This size as a product of a block size and buffer factor. For the most common case buffer factor defaults to 2 to support double buffering. With double buffered dataflow buffer one kernel can write to a block while another is reading from a block thus enabling enabling the pipelining. For the example above, this means there will be a total of 32768 bytes of L1 memory allocated for the dataflow buffer.
+Shape determines the shape of a *block* returned by one of the *acquisition functions*. The size of a block in L1 memory is determined by shape, shape unit and data type. For example, for a block with shape `(2, 4, 1)`, shape unit of a tile and BF16 data type, its size in L1 will be `2 * 4 * 32 * 1 * 32 * 2 = 16384` bytes. The block count determines the total size of L1 memory allocated for a dataflow buffer. This size as a product of a block size and block count. For the most common case block count defaults to 2 to support double buffering. With double buffered dataflow buffer one kernel can write to a block while another is reading from a block thus enabling enabling the pipelining. For the example above, this means there will be a total of 32768 bytes of L1 memory allocated for the dataflow buffer.
 
 There are two acquisition functions on a dataflow buffer object: `wait` and `reserve`. A dataflow buffer is constructed in the scope of an operation function but its object functions can only be used inside of kernel functions. Acquisition functions can be used with Python `with` statement, which will automatically release acquired blocks at the end of the `with` scope. Alternatively, if acquisition functions are used without the `with` the user must explicitly call a corresponding release function on the acquired block: `pop` for `wait` and `push` for `reserve`.
 
@@ -990,7 +991,7 @@ def matmul_read():
 | *Dataflow buffer* | A communication primitive for synchronizing the passing of data between kernels on the same node. Maintains memory space that is written by a producer and read by a consumer as well as synchronization mechanism necessary to communicate between producer and consumer to avoid data races. |
 | *Dataflow buffer’s shape* | A shape of a block of memory acquired from a dataflow buffer to be either written by the producer or read by the consumer. |
 | *Dataflow buffer’s shape unit* | A unit in which dataflow buffer shape is expressed. When a dataflow buffer is created in likeness of tiled TT-NN Tensor the unit is a tile. If it is created in likeness of row-major TT-NN the unit is a scalar. |
-| *Dataflow buffer’s buffer factor* | A buffer factor determines how many block sized pages are allocated by the dataflow buffer. In the most case it is 2 pages to allow double buffering so that both consumer and producer can make progress by having one acquired block each to work with. |
+| *Dataflow buffer’s block count* | A block count determines how many block sized pages are allocated by the dataflow buffer. In the most case it is 2 pages to allow double buffering so that both consumer and producer can make progress by having one acquired block each to work with. |
 | *Dataflow buffer’s acquisition function* | A blocking function that keeps a kernel waiting until a block becomes available in the dataflow buffer. |
 | *Dataflow buffer’s release function* | A non-blocking function that releases a block back to the dataflow buffer to make it available to other kernels. |
 | *Block* | A block of memory acquired from a dataflow buffer. In a compute kernel a block can participate in an expression as input, and also be used to store the expression's result. In a data movement kernel a block can participate in copy operation as a source or destination. |
