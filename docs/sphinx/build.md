@@ -132,6 +132,43 @@ Open `http://localhost:8000` to browse the docs locally.
 | `third-party/tt-mlir`      | tt-mlir source (only select directories compiled) |
 | `third-party/tt-metal`     | Runtime (built at configure time)                 |
 
+### Switching branches
+
+Different branches may pin different submodule commits. After switching branches,
+update the submodules to match:
+
+```bash
+git checkout <branch>
+git submodule update --init --force --depth 1
+```
+
+`--force` is required because CMake applies patches to the submodule working
+trees at configure time. Without it, `git submodule update` refuses to overwrite
+the patched files. This is safe because the patches are tracked in
+`third-party/patches/` and re-applied automatically on the next configure.
+
+For tt-metal's nested submodules (tracy, tt_llk, umd):
+
+```bash
+git -C third-party/tt-metal submodule update --init --force --depth 1
+```
+
+Do not use `--recursive` at the top level — LLVM's nested submodules are large
+and not needed.
+
+Or use the convenience script that handles both steps:
+
+```bash
+scripts/update-submodules.sh
+```
+
+After updating submodules, reconfigure and rebuild:
+
+```bash
+cmake -G Ninja -B build
+cmake --build build
+```
+
 ### LLVM SHA verification
 
 When using a pre-built LLVM (via `MLIR_PREFIX` or `TTLANG_USE_TOOLCHAIN`), the
