@@ -329,7 +329,7 @@ def test_unary_op_sharded(device, op_name, shard_layout):
 
 
 def _flush_subnormals(tensor):
-    """Flush subnormal values to zero (hardware behavior)."""
+    """Flush subnormal values to zero in-place (hardware behavior)."""
     tensor[torch.abs(tensor) < 2.0 ** (-126)] = 0.0
     return tensor
 
@@ -374,6 +374,7 @@ INVERSE_TRIG_OPS = {
     "acos": {
         "torch_fn": torch.acos,
         "input_range": (-0.9961, 0.9961),
+        # Same precision characteristics as asin.
         "ulp": {torch.bfloat16: 3, torch.float32: 2**15},
     },
     "atan": {
@@ -417,8 +418,8 @@ def test_inverse_trig_f32(device, op_name):
     Uses linspace to generate evenly-spaced f32 values across the valid
     domain, avoiding the zero-density problem of bf16 bit pattern
     subsampling. ULP at zero is meaningless (ULP(0)=1.4e-45), so the
-    range excludes zero. Thresholds aligned with tt-metal's
-    run_unary_fp32_test_with_ulp.
+    range excludes zero. Thresholds calibrated from measured hardware
+    precision (higher than tt-metal's bf16-pattern thresholds).
     """
     spec = INVERSE_TRIG_OPS[op_name]
     kernel, _ = UNARY_OPS[op_name]

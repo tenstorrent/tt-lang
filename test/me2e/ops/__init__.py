@@ -82,8 +82,8 @@ OP_PCC_THRESHOLD_OVERRIDES: Dict[str, Dict[torch.dtype, float]] = {
     "exp": {torch.float32: 0.9998},
     "tanh": {torch.float32: 0.993},
     "recip": {torch.bfloat16: 0.999},
-    "acos": {torch.float32: 0.999, torch.bfloat16: 0.999},
-    "asin": {torch.float32: 0.999, torch.bfloat16: 0.999},
+    "acos": {torch.bfloat16: 0.999},
+    "asin": {torch.bfloat16: 0.999},
 }
 
 # Per-op allclose (rtol, atol) overrides keyed by dtype.
@@ -91,7 +91,7 @@ OP_PCC_THRESHOLD_OVERRIDES: Dict[str, Dict[torch.dtype, float]] = {
 # Used for ops where random inputs near zero inflate ULP
 # (ULP(0)=1.4e-45 for f32, so any non-zero result at zero produces
 # enormous ULP ratios despite correct absolute precision).
-OP_ALLCLOSE_OVERRIDES: Dict[str, Dict[torch.dtype, tuple]] = {
+OP_ALLCLOSE_OVERRIDES: Dict[str, Dict[torch.dtype, Tuple[float, float]]] = {
     # Measured max abs diff: asin ~3.3e-3, acos ~1.7e-3.
     "asin": {torch.float32: (1e-2, 1e-2)},
     "acos": {torch.float32: (1e-2, 1e-2)},
