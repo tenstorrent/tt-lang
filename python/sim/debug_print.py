@@ -18,7 +18,6 @@ from .blockstate import AccessState, BlockAcquisition, ThreadType
 from .diagnostics import warn_once_per_location
 from .greenlet_scheduler import get_current_core_id
 
-
 # Type alias for TT-Lang printable objects
 TTLangObject = Union[Tensor, Block, DataflowBuffer]
 

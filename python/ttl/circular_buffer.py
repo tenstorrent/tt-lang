@@ -63,9 +63,7 @@ class CircularBuffer:
         if len(shape) < 2:
             raise ValueError(f"CB shape must have at least 2 dimensions, got {shape}")
         if block_count < 1 or block_count > 32:
-            raise ValueError(
-                f"block_count must be in range [1, 32], got {block_count}"
-            )
+            raise ValueError(f"block_count must be in range [1, 32], got {block_count}")
 
         self.tensor = tensor
         self.shape = shape
