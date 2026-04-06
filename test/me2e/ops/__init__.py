@@ -86,6 +86,17 @@ OP_PCC_THRESHOLD_OVERRIDES: Dict[str, Dict[torch.dtype, float]] = {
     "asin": {torch.float32: 0.999, torch.bfloat16: 0.999},
 }
 
+# Per-op allclose (rtol, atol) overrides keyed by dtype.
+# When set, validation uses assert_allclose instead of ULP+PCC.
+# Used for ops where random inputs near zero inflate ULP
+# (ULP(0)=1.4e-45 for f32, so any non-zero result at zero produces
+# enormous ULP ratios despite correct absolute precision).
+OP_ALLCLOSE_OVERRIDES: Dict[str, Dict[torch.dtype, tuple]] = {
+    # Measured max abs diff: asin ~3.3e-3, acos ~1.7e-3.
+    "asin": {torch.float32: (1e-2, 1e-2)},
+    "acos": {torch.float32: (1e-2, 1e-2)},
+}
+
 
 def _parse_elementwise_ops_def() -> Dict[str, int]:
     """
@@ -136,6 +147,7 @@ class OpTestBase(ME2ETestBase):
     # Comparison tolerances (auto-computed from dtype if None)
     ULP_THRESHOLD: Optional[float] = None
     PCC_THRESHOLD: Optional[float] = None
+    ALLCLOSE: Optional[Tuple[float, float]] = None
 
     # Input value range
     MIN_VALUE = -1.0
@@ -263,6 +275,10 @@ def generate_op_test_classes() -> Dict[str, Type[OpTestBase]]:
                 overrides = OP_PCC_THRESHOLD_OVERRIDES[op_name]
                 if dtype in overrides:
                     attrs["PCC_THRESHOLD"] = overrides[dtype]
+            if op_name in OP_ALLCLOSE_OVERRIDES:
+                overrides = OP_ALLCLOSE_OVERRIDES[op_name]
+                if dtype in overrides:
+                    attrs["ALLCLOSE"] = overrides[dtype]
 
             # Create class dynamically with dtype suffix.
             class_name = f"Test{op_name.capitalize()}{dtype_suffix}"

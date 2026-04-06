@@ -18,7 +18,4 @@ These tests are expected to fail and will be marked with xfail during test colle
 #         "module_path::ClassName::test_method_name[param_id]": "reason"
 # Example:
 #   "test.me2e.ops.test_binary::TestAddFloat32::test_validate_golden": "f32 produces incorrect results (#254)"
-XFAIL_TESTS = {
-    "test.me2e.ops.test_unary::TestAsinFloat32::test_validate_golden": "SFPU asin f32 ULP ~2^21 exceeds threshold; tt-metal only tests bf16 bit patterns",
-    "test.me2e.ops.test_unary::TestAcosFloat32::test_validate_golden": "SFPU acos f32 ULP ~2^21 exceeds threshold; tt-metal only tests bf16 bit patterns",
-}
+XFAIL_TESTS = {}
