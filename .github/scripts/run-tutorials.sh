@@ -18,6 +18,14 @@
 
 set -uo pipefail
 
+# Activate the tt-lang environment if not already active.
+if [[ "${TTLANG_ENV_ACTIVATED:-0}" != "1" ]]; then
+    ACTIVATE="${TTLANG_TOOLCHAIN_DIR:-/opt/ttlang-toolchain}/env/activate"
+    if [[ -f "$ACTIVATE" ]]; then
+        source "$ACTIVATE"
+    fi
+fi
+
 ROOT="${1:-/root}"
 EXAMPLES_DIR="${ROOT}/examples"
 
