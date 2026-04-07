@@ -263,7 +263,16 @@ def run_kernel_on_device(
         # custom_program_hash=program_hash,
     )
 
-    return ttnn.generic_op(list(tensors), program)
+    # ttnn.generic_op requires io_tensors to contain at least one input
+    # and one output (size >= 2).  Output-only kernels (e.g. fill with no
+    # input tensor) have only the output tensor; duplicate it so the runtime
+    # sees [out, out].  The first copy acts as a dummy input that no kernel
+    # thread actually reads.
+    io_tensors = list(tensors)
+    if len(io_tensors) < 2:
+        io_tensors = [io_tensors[-1]] + io_tensors
+
+    return ttnn.generic_op(io_tensors, program)
 
 
 __all__ = [
