@@ -51,7 +51,9 @@ def nop_fixed_grid(a):
 
 
 def test_auto_grid_host_tensor(device):
-    """grid='auto' with a host tensor should produce a clear error, not an AttributeError on NoneType."""
+    """
+    grid='auto' with a host tensor should produce a clear error, not an AttributeError on NoneType.
+    """
     a = ttnn.from_torch(
         torch.zeros(32, 32, dtype=torch.bfloat16),
         dtype=ttnn.bfloat16,
@@ -65,7 +67,9 @@ def test_auto_grid_host_tensor(device):
 
 
 def test_fixed_grid_host_tensor(device):
-    """grid=(1,1) with a host tensor should produce a clear error, not an AttributeError on NoneType."""
+    """
+    grid=(1,1) with a host tensor should produce a clear error, not an AttributeError on NoneType.
+    """
     a = ttnn.from_torch(
         torch.zeros(32, 32, dtype=torch.bfloat16),
         dtype=ttnn.bfloat16,
@@ -79,6 +83,10 @@ def test_fixed_grid_host_tensor(device):
 
 
 def test_auto_grid_no_ttnn_tensors():
-    """grid='auto' with no ttnn tensors should report that none were provided."""
+    """
+    grid='auto' with no ttnn tensors should report that none were provided.
+    The fixed-grid path hits _require_device at __call__ time (post-compile),
+    so it can't be reached without a valid ttnn tensor to compile against.
+    """
     with pytest.raises(ValueError, match="no ttnn tensor arguments were provided"):
         nop_auto_grid(torch.zeros(32, 32, dtype=torch.bfloat16))
