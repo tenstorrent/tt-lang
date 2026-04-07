@@ -36,7 +36,6 @@ from .pipe import AnyDst, AnyPipe, Pipe
 from .typedefs import CoreCoord
 from .pipe import SrcPipeIdentity
 
-
 # TODO: Ideally, to avoid duplication, we would want something like this:
 # CopyEndpointTypes: List[type] = [torch.Tensor, Block, Pipe]
 # CopyEndpoint = Union[*CopyEndpointTypes]

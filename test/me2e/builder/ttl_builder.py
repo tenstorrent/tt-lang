@@ -54,7 +54,7 @@ def _get_cb_type_str(config: E2EConfig) -> str:
     """Get the !ttl.cb type as a string for parsing."""
     rows, cols = config.grid_shape
     dtype_str = torch_dtype_to_mlir_str(config.dtype)
-    return f"!ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {config.buffer_factor}>"
+    return f"!ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype_str}>, {config.block_count}>"
 
 
 def build_ttl_module(
@@ -107,7 +107,7 @@ def build_ttl_module(
                     cb = ttl.bind_cb(
                         cb_type,
                         cb_index=i,
-                        buffer_factor=config.buffer_factor,
+                        block_count=config.block_count,
                         loc=loc,
                     )
                     attached = ttl.attach_cb(
@@ -122,7 +122,7 @@ def build_ttl_module(
                 output_cb = ttl.bind_cb(
                     cb_type,
                     cb_index=arity,  # Next index after inputs.
-                    buffer_factor=config.buffer_factor,
+                    block_count=config.block_count,
                     loc=loc,
                 )
                 reserve = ttl.cb_reserve(tile_tensor_type, output_cb, loc=loc)

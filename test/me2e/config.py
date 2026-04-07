@@ -52,8 +52,8 @@ class E2EConfig:
     # Data type.
     dtype: torch.dtype = torch.bfloat16
 
-    # Buffer factor: 1=single buffer, 2=double buffer (default).
-    buffer_factor: int = 2
+    # Block count: 1=single buffer, 2=double buffer (default).
+    block_count: int = 2
 
     # Memory configuration.
     memory_layout: MemoryLayout = MemoryLayout.INTERLEAVED
@@ -70,7 +70,7 @@ class E2EConfig:
         return (self.grid_shape[0] * self.tile_h, self.grid_shape[1] * self.tile_w)
 
     def __str__(self) -> str:
-        layout = "db" if self.buffer_factor == 2 else "sb"
+        layout = "db" if self.block_count == 2 else "sb"
         dtype_str = str(self.dtype).split(".")[-1]
         return f"{self.grid_shape[0]}x{self.grid_shape[1]}_{dtype_str}_{layout}"
 

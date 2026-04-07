@@ -1,9 +1,9 @@
 // RUN: ttlang-opt %s --split-input-file | FileCheck %s
 
 // CHECK-LABEL: func.func @bind_cb
-// CHECK: %[[CB:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[1, 1], f32, 2>
+// CHECK: %[[CB:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} : <[1, 1], f32, 2>
 func.func @bind_cb() {
-  %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
   func.return
 }
 
@@ -14,11 +14,11 @@ func.func @bind_cb() {
 
 // CHECK-LABEL: func.func @copy_read_wait
 // CHECK-SAME: (%[[T:.*]]: tensor<1x1x!ttcore.tile<32x32, f32>, #ttl.layout<{{.*}}>>)
-// CHECK: %[[CB:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[1, 1], f32, 2>
+// CHECK: %[[CB:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} : <[1, 1], f32, 2>
 // CHECK: %[[XF:.*]] = ttl.copy %[[T]], %[[CB]] : (tensor<1x1x!ttcore.tile<32x32, f32>, #ttl.layout<{{.*}}>>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
 // CHECK: ttl.wait %[[XF]] : !ttl.transfer_handle<read>
 func.func @copy_read_wait(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_interleaved>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
   %xf = ttl.copy %t, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout_interleaved>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
   ttl.wait %xf : !ttl.transfer_handle<read>
   func.return
@@ -31,11 +31,11 @@ func.func @copy_read_wait(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_inter
 
 // CHECK-LABEL: func.func @copy_write_wait
 // CHECK-SAME: (%[[T:.*]]: tensor<1x1x!ttcore.tile<32x32, f32>, #ttl.layout<{{.*}}>>)
-// CHECK: %[[CB:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[1, 1], f32, 2>
+// CHECK: %[[CB:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} : <[1, 1], f32, 2>
 // CHECK: %[[XF:.*]] = ttl.copy %[[CB]], %[[T]] : (!ttl.cb<[1, 1], f32, 2>, tensor<1x1x!ttcore.tile<32x32, f32>, #ttl.layout<{{.*}}>>) -> !ttl.transfer_handle<write>
 // CHECK: ttl.wait %[[XF]] : !ttl.transfer_handle<write>
 func.func @copy_write_wait(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_interleaved>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
   %xf = ttl.copy %cb, %t : (!ttl.cb<[1, 1], f32, 2>, tensor<1x1x!ttcore.tile<32x32, f32>, #layout_interleaved>) -> !ttl.transfer_handle<write>
   ttl.wait %xf : !ttl.transfer_handle<write>
   func.return
@@ -48,11 +48,11 @@ func.func @copy_write_wait(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_inte
 
 // CHECK-LABEL: func.func @copy_read_wait_tile_layout
 // CHECK-SAME: (%[[T:.*]]: tensor<1x1x!ttcore.tile<32x32, f32>, #ttl.layout<{{.*}}>>)
-// CHECK: %[[CB:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[1, 1], f32, 2>
+// CHECK: %[[CB:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} : <[1, 1], f32, 2>
 // CHECK: %[[XF:.*]] = ttl.copy %[[T]], %[[CB]] : (tensor<1x1x!ttcore.tile<32x32, f32>, #ttl.layout<{{.*}}>>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
 // CHECK: ttl.wait %[[XF]] : !ttl.transfer_handle<read>
 func.func @copy_read_wait_tile_layout(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_tile>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], f32, 2>
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
   %xf = ttl.copy %t, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout_tile>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
   ttl.wait %xf : !ttl.transfer_handle<read>
   func.return
@@ -70,7 +70,7 @@ func.func @copy_read_wait_tile_layout(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #
 // CHECK:   ttl.yield
 // CHECK: }
 func.func @copy_tile_basic(%t_tensor: tensor<1x1x!ttcore.tile<32x32, f32>>, %src_idx: index, %dst_idx: index) -> tensor<1x1x!ttcore.tile<32x32, f32>> {
-  %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
   %t_attached = ttl.attach_cb %t_tensor, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %out_view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %result = ttl.compute

@@ -37,10 +37,10 @@
 // DST: }
 module {
   func.func @binary_two_outputs() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
-    %cb0 = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %cb1 = ttl.bind_cb{cb_index = 1, buffer_factor = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %cb2 = ttl.bind_cb{cb_index = 2, buffer_factor = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %cb3 = ttl.bind_cb{cb_index = 3, buffer_factor = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb1 = ttl.bind_cb{cb_index = 1, block_count = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb2 = ttl.bind_cb{cb_index = 2, block_count = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb3 = ttl.bind_cb{cb_index = 3, block_count = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %a = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     %a_att = ttl.attach_cb %a, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     %b = ttl.cb_wait %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -84,9 +84,9 @@ module {
 // DST-NEXT: ttl.tile_store
 module {
   func.func @unary_two_outputs() attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
-    %cb0 = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
-    %cb1 = ttl.bind_cb{cb_index = 1, buffer_factor = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
-    %cb2 = ttl.bind_cb{cb_index = 2, buffer_factor = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+    %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+    %cb1 = ttl.bind_cb{cb_index = 1, block_count = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+    %cb2 = ttl.bind_cb{cb_index = 2, block_count = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
     %a = ttl.cb_wait %cb0 : <[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
     %a_att = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x2x!ttcore.tile<32x32, bf16>>
     %r1 = ttl.cb_reserve %cb1 : <[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
@@ -128,10 +128,10 @@ module {
 // DST-NEXT: ttl.tile_store
 module {
   func.func @fused_two_outputs() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
-    %cb0 = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
-    %cb1 = ttl.bind_cb{cb_index = 1, buffer_factor = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
-    %cb2 = ttl.bind_cb{cb_index = 2, buffer_factor = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
-    %cb3 = ttl.bind_cb{cb_index = 3, buffer_factor = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+    %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+    %cb1 = ttl.bind_cb{cb_index = 1, block_count = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+    %cb2 = ttl.bind_cb{cb_index = 2, block_count = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+    %cb3 = ttl.bind_cb{cb_index = 3, block_count = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
     %a = ttl.cb_wait %cb0 : <[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
     %a_att = ttl.attach_cb %a, %cb0 : (tensor<2x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x2x!ttcore.tile<32x32, bf16>>
     %b = ttl.cb_wait %cb1 : <[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
@@ -177,11 +177,11 @@ module {
 // DST: }
 module {
   func.func @three_outputs() attributes {ttl.base_cta_index = 5 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
-    %cb0 = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %cb1 = ttl.bind_cb{cb_index = 1, buffer_factor = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %cb2 = ttl.bind_cb{cb_index = 2, buffer_factor = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %cb3 = ttl.bind_cb{cb_index = 3, buffer_factor = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %cb4 = ttl.bind_cb{cb_index = 4, buffer_factor = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb1 = ttl.bind_cb{cb_index = 1, block_count = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb2 = ttl.bind_cb{cb_index = 2, block_count = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb3 = ttl.bind_cb{cb_index = 3, block_count = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb4 = ttl.bind_cb{cb_index = 4, block_count = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %a = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     %a_att = ttl.attach_cb %a, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     %b = ttl.cb_wait %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -227,10 +227,10 @@ module {
 // DST:         }
 module {
   func.func @multi_output_4x4() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
-    %cb0 = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
-    %cb1 = ttl.bind_cb{cb_index = 1, buffer_factor = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
-    %cb2 = ttl.bind_cb{cb_index = 2, buffer_factor = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
-    %cb3 = ttl.bind_cb{cb_index = 3, buffer_factor = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
+    %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
+    %cb1 = ttl.bind_cb{cb_index = 1, block_count = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
+    %cb2 = ttl.bind_cb{cb_index = 2, block_count = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
+    %cb3 = ttl.bind_cb{cb_index = 3, block_count = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
     %a = ttl.cb_wait %cb0 : <[4, 4], !ttcore.tile<32x32, bf16>, 2> -> tensor<4x4x!ttcore.tile<32x32, bf16>>
     %a_att = ttl.attach_cb %a, %cb0 : (tensor<4x4x!ttcore.tile<32x32, bf16>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, bf16>, 2>) -> tensor<4x4x!ttcore.tile<32x32, bf16>>
     %b = ttl.cb_wait %cb1 : <[4, 4], !ttcore.tile<32x32, bf16>, 2> -> tensor<4x4x!ttcore.tile<32x32, bf16>>

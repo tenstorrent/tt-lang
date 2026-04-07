@@ -9,7 +9,6 @@ row-block of A and B is read in full by every core.
 Includes tests with Kt > 1 blocks and outer K-loop accumulation.
 """
 
-
 import pytest
 import torch
 import ttl
@@ -27,9 +26,9 @@ def matmul_multinode_2rows(a, b, out):
     """2-core matmul: each core computes one row-block of the output."""
     Nt = b.shape[1] // TILE
 
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, Nt), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, Nt), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, Nt), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, Nt), block_count=2)
 
     @ttl.compute()
     def mm_compute():

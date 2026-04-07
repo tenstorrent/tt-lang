@@ -24,9 +24,9 @@ import ttl
 
 @ttl.operation(grid=(2, 2))
 def multitile_dst_kernel(inp, inp2, out):
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
-    inp2_dfb = ttl.make_dataflow_buffer_like(inp2, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), block_count=2)
+    inp2_dfb = ttl.make_dataflow_buffer_like(inp2, shape=(2, 2), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute():

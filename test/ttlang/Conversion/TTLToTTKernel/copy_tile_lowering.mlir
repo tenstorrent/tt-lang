@@ -19,7 +19,7 @@ func.func @copy_tile_in_compute(
     %t_tensor: tensor<1x1x!ttcore.tile<32x32, f32>>,
     %src_idx: index,
     %dst_idx: index) -> tensor<1x1x!ttcore.tile<32x32, f32>> {
-  %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
   %t_attached = ttl.attach_cb %t_tensor, %cb
       : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>)
       -> tensor<1x1x!ttcore.tile<32x32, f32>>

@@ -22,7 +22,6 @@ from torch import Tensor
 from ..base import ME2ETestBase
 from ..config import E2EConfig
 
-
 # Map op names to torch reference functions.
 OP_TORCH_MAP: Dict[str, Callable[..., Tensor]] = {
     "add": torch.add,

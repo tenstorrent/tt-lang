@@ -62,9 +62,9 @@ import ttl
 @ttl.operation(grid=({grid_cols}, {grid_rows}))
 def uneven_grid_kernel(lhs, rhs, out):
     """Kernel that handles uneven grid distribution."""
-    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), block_count=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     # Total tiles in tensor
     total_tiles_y = {tiles_y}
@@ -219,9 +219,9 @@ def multitile_uneven_kernel(lhs, rhs, out):
     CB_ROWS = {dfb_rows}
     CB_COLS = {dfb_cols}
 
-    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
-    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(CB_ROWS, CB_COLS), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(CB_ROWS, CB_COLS), block_count=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(CB_ROWS, CB_COLS), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(CB_ROWS, CB_COLS), block_count=2)
 
     # Total tiles in tensor
     total_tiles_y = {tiles_y}

@@ -19,9 +19,9 @@
 // CHECK-NOT: ttl.matmul
 // CHECK-NOT: ttl.add
 func.func @matmul_add_multitile() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-  %a_cb = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[4, 2], !ttcore.tile<32x32, bf16>, 2>
-  %b_cb = ttl.bind_cb{cb_index = 1, buffer_factor = 2} : <[2, 4], !ttcore.tile<32x32, bf16>, 2>
-  %acc_cb = ttl.bind_cb{cb_index = 2, buffer_factor = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
+  %a_cb = ttl.bind_cb{cb_index = 0, block_count = 2} : <[4, 2], !ttcore.tile<32x32, bf16>, 2>
+  %b_cb = ttl.bind_cb{cb_index = 1, block_count = 2} : <[2, 4], !ttcore.tile<32x32, bf16>, 2>
+  %acc_cb = ttl.bind_cb{cb_index = 2, block_count = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
   %c0 = arith.constant 0 : index
   %c3 = arith.constant 3 : index
   %c1 = arith.constant 1 : index
@@ -56,9 +56,9 @@ func.func @matmul_add_multitile() attributes {ttl.kernel_thread = #ttkernel.thre
 // CHECK-NOT: ttl.matmul
 // CHECK-NOT: ttl.add
 func.func @matmul_add_commuted() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-  %a_cb = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[4, 2], !ttcore.tile<32x32, bf16>, 2>
-  %b_cb = ttl.bind_cb{cb_index = 1, buffer_factor = 2} : <[2, 4], !ttcore.tile<32x32, bf16>, 2>
-  %acc_cb = ttl.bind_cb{cb_index = 2, buffer_factor = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
+  %a_cb = ttl.bind_cb{cb_index = 0, block_count = 2} : <[4, 2], !ttcore.tile<32x32, bf16>, 2>
+  %b_cb = ttl.bind_cb{cb_index = 1, block_count = 2} : <[2, 4], !ttcore.tile<32x32, bf16>, 2>
+  %acc_cb = ttl.bind_cb{cb_index = 2, block_count = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
   %a_t = ttl.cb_wait %a_cb : <[4, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<4x2x!ttcore.tile<32x32, bf16>>
   %a = ttl.attach_cb %a_t, %a_cb : (tensor<4x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[4, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<4x2x!ttcore.tile<32x32, bf16>>
   %b_t = ttl.cb_wait %b_cb : <[2, 4], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x4x!ttcore.tile<32x32, bf16>>
@@ -87,9 +87,9 @@ func.func @matmul_add_commuted() attributes {ttl.kernel_thread = #ttkernel.threa
 // CHECK: ttl.tile_matmul_block
 // CHECK-NOT: ttl.matmul
 func.func @matmul_standalone_multitile() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-  %a_cb = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[4, 2], !ttcore.tile<32x32, bf16>, 2>
-  %b_cb = ttl.bind_cb{cb_index = 1, buffer_factor = 2} : <[2, 4], !ttcore.tile<32x32, bf16>, 2>
-  %out_cb = ttl.bind_cb{cb_index = 2, buffer_factor = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
+  %a_cb = ttl.bind_cb{cb_index = 0, block_count = 2} : <[4, 2], !ttcore.tile<32x32, bf16>, 2>
+  %b_cb = ttl.bind_cb{cb_index = 1, block_count = 2} : <[2, 4], !ttcore.tile<32x32, bf16>, 2>
+  %out_cb = ttl.bind_cb{cb_index = 2, block_count = 2} : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
   %a_t = ttl.cb_wait %a_cb : <[4, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<4x2x!ttcore.tile<32x32, bf16>>
   %a = ttl.attach_cb %a_t, %a_cb : (tensor<4x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[4, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<4x2x!ttcore.tile<32x32, bf16>>
   %b_t = ttl.cb_wait %b_cb : <[2, 4], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x4x!ttcore.tile<32x32, bf16>>

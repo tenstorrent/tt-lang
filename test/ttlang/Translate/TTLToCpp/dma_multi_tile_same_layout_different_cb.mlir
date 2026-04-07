@@ -82,8 +82,8 @@ module {
   func.func @same_layout_different_cb(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %arg1: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>)
       attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
-    %cb1 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], f32, 2>
-    %cb2 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[2, 2], f32, 2>
+    %cb1 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], f32, 2>
+    %cb2 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[2, 2], f32, 2>
 
     // First copy: 64x64 → CB [2,2]
     %slice0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<2x2x!ttcore.tile<32x32, f32>, #layout> -> tensor<2x2x!ttcore.tile<32x32, f32>, #layout>

@@ -46,15 +46,15 @@ def matmul_1d(
     )
     write_tiles = (granularity_n * granularity_m) * Mb * Nb
 
-    bf = 2
+    bc = 2
     a_dfb = ttl.make_dataflow_buffer_like(
-        a, shape=(granularity_m, granularity_k), buffer_factor=bf
+        a, shape=(granularity_m, granularity_k), block_count=bc
     )
     b_dfb = ttl.make_dataflow_buffer_like(
-        b, shape=(granularity_k, granularity_n), buffer_factor=bf
+        b, shape=(granularity_k, granularity_n), block_count=bc
     )
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(granularity_m, granularity_n), buffer_factor=bf
+        out, shape=(granularity_m, granularity_n), block_count=bc
     )
 
     mcast_a_net = ttl.PipeNet([ttl.Pipe((0,), (slice(1, num_working_nodes),))])

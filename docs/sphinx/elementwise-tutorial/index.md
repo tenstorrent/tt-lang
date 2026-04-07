@@ -57,11 +57,11 @@ within a node. It is created once in the operation scope from a tensor likeness
 and a block shape:
 
 ```python
-a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
 ```
 
-`shape=(1, 1)` means each buffer entry holds one 32×32 tile. `buffer_factor=2`
-allocates two entries in L1 so that the reader and compute kernels can work
+`shape=(1, 1)` means each buffer entry holds one 32×32 tile. `block_count=2`
+allocates two blocks in L1 so that the reader and compute kernels can work
 concurrently — while compute processes one entry, the reader fills the other
 (double-buffering).
 
@@ -136,7 +136,7 @@ transfer and compute iteration covers a `GRANULARITY × GRANULARITY` patch of ti
 GRANULARITY = 4  # each block is a 4×4 patch of 32×32 tiles = 128×128 elements
 
 a_dfb = ttl.make_dataflow_buffer_like(
-    a, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
+    a, shape=(row_tiles_per_block, col_tiles_per_block), block_count=2
 )
 ```
 

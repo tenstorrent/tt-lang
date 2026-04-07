@@ -42,16 +42,16 @@ def tt_lang_multinode_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Ten
         num_blocks_x <= num_nodes_x and num_blocks_y <= num_nodes_y
     ), "number of total blocks must be less than or equal to num nodes"
 
-    buffering_factor = 2
+    dfb_block_count = 2
     a_dfb = ttl.make_dataflow_buffer_like(
-        a, shape=(per_node_M, K_block_size), buffer_factor=buffering_factor
+        a, shape=(per_node_M, K_block_size), block_count=dfb_block_count
     )
     b_dfb = ttl.make_dataflow_buffer_like(
-        b, shape=(K_block_size, per_node_N), buffer_factor=buffering_factor
+        b, shape=(K_block_size, per_node_N), block_count=dfb_block_count
     )
     # non buffered output, matching metal implementation
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(per_node_M, per_node_N), buffer_factor=1
+        out, shape=(per_node_M, per_node_N), block_count=1
     )
 
     @ttl.compute()
@@ -141,15 +141,11 @@ def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     assert num_nodes_x >= Nt
     assert num_nodes_y >= Mt
 
-    buffering_factor = 2
-    a_dfb = ttl.make_dataflow_buffer_like(
-        a, shape=(1, 1), buffer_factor=buffering_factor
-    )
-    b_dfb = ttl.make_dataflow_buffer_like(
-        b, shape=(1, 1), buffer_factor=buffering_factor
-    )
+    dfb_block_count = 2
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=dfb_block_count)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=dfb_block_count)
     # non buffered output, matching metal implementation
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=1)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
 
     @ttl.compute()
     def mm_compute():

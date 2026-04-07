@@ -41,11 +41,11 @@ def _make_matmul_bias_fused(block_m, block_n):
         num_m = Mt // block_m
         num_n = Nt // block_n
 
-        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(block_m, 1), buffer_factor=2)
-        b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, block_n), buffer_factor=2)
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(block_m, 1), block_count=2)
+        b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, block_n), block_count=2)
         c_dfb = ttl.make_dataflow_buffer_like(c, shape=(block_m, block_n))
         acc_dfb = ttl.make_dataflow_buffer_like(
-            y, shape=(block_m, block_n), buffer_factor=2
+            y, shape=(block_m, block_n), block_count=2
         )
         y_dfb = ttl.make_dataflow_buffer_like(y, shape=(block_m, block_n))
 
@@ -117,10 +117,10 @@ def _make_matmul_single_k(block_m, block_n):
         num_m = Mt // block_m
         num_n = Nt // block_n
 
-        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(block_m, Kt), buffer_factor=2)
-        b_dfb = ttl.make_dataflow_buffer_like(b, shape=(Kt, block_n), buffer_factor=2)
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(block_m, Kt), block_count=2)
+        b_dfb = ttl.make_dataflow_buffer_like(b, shape=(Kt, block_n), block_count=2)
         out_dfb = ttl.make_dataflow_buffer_like(
-            out, shape=(block_m, block_n), buffer_factor=2
+            out, shape=(block_m, block_n), block_count=2
         )
 
         @ttl.compute()
@@ -177,17 +177,17 @@ def _make_matmul_bias_explicit_k(block_m, block_k, block_n):
         num_k = Kt // block_k
 
         a_dfb = ttl.make_dataflow_buffer_like(
-            a, shape=(block_m, block_k), buffer_factor=2
+            a, shape=(block_m, block_k), block_count=2
         )
         b_dfb = ttl.make_dataflow_buffer_like(
-            b, shape=(block_k, block_n), buffer_factor=2
+            b, shape=(block_k, block_n), block_count=2
         )
         c_dfb = ttl.make_dataflow_buffer_like(c, shape=(block_m, block_n))
         partial_dfb = ttl.make_dataflow_buffer_like(
-            y, shape=(block_m, block_n), buffer_factor=2
+            y, shape=(block_m, block_n), block_count=2
         )
         acc_dfb = ttl.make_dataflow_buffer_like(
-            y, shape=(block_m, block_n), buffer_factor=2
+            y, shape=(block_m, block_n), block_count=2
         )
         y_dfb = ttl.make_dataflow_buffer_like(y, shape=(block_m, block_n))
 
