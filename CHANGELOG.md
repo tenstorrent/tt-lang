@@ -1,30 +1,71 @@
 # Changelog
 
-All notable changes to tt-lang will be documented in this file.
+All notable changes to TT-Lang will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## Version 0.1.3
 
-### Added
-- Initial prototype
-- Python DSL with `@pykernel_gen` decorator for authoring custom kernels
-- Integration with tt-mlir compiler infrastructure
-- LLVM lit-based testing framework
-- Pre-commit hooks for code formatting (Black for Python, clang-format for C++)
-- CMake build system with flexible tt-mlir integration modes
+- Added tutorial examples under `examples/tutorial`
+- Implemented compatible `ttl.math.broadcast` in simulator and compiler
+- Added support for [pipes and pipenets](https://github.com/tenstorrent/tt-lang/blob/main/docs/sphinx/specs/TTLangSpecification.md#pipe) in simulator
 
-### Documentation
-- Hitchhiker's Guide - Complete DSL documentation with examples
-- Build System Guide - Detailed build configuration and integration scenarios
-- Testing Guide - Instructions for writing and running tests
-- Comprehensive README with quick start and examples
-- Code of Conduct (Contributor Covenant 2.0)
-- Apache 2.0 License with NOTICE file for third-party dependencies
+## Version 0.1.7
+
+### Compiler
+
+- Implemented compute expression optimizations (tiling and unrolling) to maximize DST usage
+- Implemented support for elementwise operations to use FPU when possible
+- Added support for debug prints
+- Added support for auto-profiling, profiling with user specified scopes (`ttl.signpost`) and performance summary
+- Enabled interactive visualization of profiling results with [Perfetto](https://perfetto.dev/)
+- Added support for `/`, `min`, `max`, `floor`, `recip` from `ttl.math`
+- Added support for 3D+ blocks
+
+### Simulator
+
+- Reimplemented with greenlets to enable deterministic scheduling
+- Added support for greedy and fair scheduling modes
+- Added CLI options for setting hardware limits such as grid size, number of DFBs etc
+- Added using TT-NN golden functions for simulations of TT-NN
+- Added enforcement for block state machines
+- Added support for `ttl.math` functions
+- Added support for 3D+ blocks
+- Added support for collecting performance statistics
+- Improved various error messages
+- Added support for debug prints
+- Added support for VSCode step-by-step debugger
 
 ### Examples
-- Custom data movement with matrix multiplication
-- Element-wise addition kernel
-- TensorAccessor usage patterns
-- Simple addition kernel demonstrations
+
+- C++ Metal examples for single-, multicore with reuse and 1D matmul
+- TT-Lang  examples for single-, multicore with reuse and 1D matmul
+
+### Infrastructure
+
+- Simplified dependency management, build, CI and reduced Docker container size from 9.48GB to 6.47GB.
+
+## Version 0.1.8
+
+### Compiler
+
+- Support for dot product operator (`@`) with lowering to [`ckernel::matmul_block`](https://docs.tenstorrent.com/tt-metal/v0.55.0/tt-metalium/tt_metal/apis/kernel_apis/compute/matmul_block.html)
+- Support for fusing matmul and certain elementwise operations
+- Support lowering to `pack_tile_block`
+- Support for `ttl.math.fill`, `ttl.math.reduce_sum`, `ttl.math.reduce_max`, and `ttl.math.transpose`
+- Support for arbitrary sub-blocking including dot product K-dimension to allow maximizing L1 usage and reuse
+- Support for `sin`, `cos`, `tan`, `asin`, `acos`, `atan` in `ttl.math`
+- Support for L1 sharded tensors
+- Support for tensors with BF8 data type
+- SPMD support (`ttnn.open_mesh_device`)
+
+### Simulator
+
+- Track L1 space and number of DFBs usage and warn when exceeded
+- Support for tensors with row-major layout
+- Support for L1 sharded tensors
+
+### Examples and documentation
+- Elementwise tutorial
+- Image upsample with row-major tensors

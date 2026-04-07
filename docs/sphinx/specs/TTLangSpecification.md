@@ -96,7 +96,7 @@ ttnn.exp(y, foo(ttnn.abs(x)), fast_and_approximate_mode=True)
 
 ## Grid
 
-A *grid* defines a space of nodes to which the TT-Lang operation is submitted for execution. A node corresponds to a single Tensix Core and is a minimal unit capable of executing a TT-Lang program. In a single-chip case where node-to-node communication is conducted over Network-on-Chip (NoC), the grid is two dimensional. In a multi-chip case where chip-to-chip communication is conduced over TT-Fabric, the grid has additional mesh dimensions representing different levels of connectivity (same card, same host, same rack etc). There is also Single-Program-Multiple-Data (SPMD) mode in which the grid remains two dimensional while the TT-Lang operation is submitted for execution on multiple chips. In SPMD mode TT-Lang operation instances have the same behaviour on different chips while working on different partitions of data, which significantly simplifies reasoning about it.
+A *grid* defines a space of nodes to which the TT-Lang operation is submitted for execution. A node corresponds to a single Tensix Core and is a minimal unit capable of executing a TT-Lang program. In a single-chip case where node-to-node communication is conducted over Network-on-Chip (NoC), the grid is two dimensional. In a multi-chip case where chip-to-chip communication is conduced over TT-Fabric, the grid has additional mesh dimensions representing different levels of connectivity (same card, same host, same rack etc). There is also Single-Program-Multiple-Data (SPMD) mode in which the grid remains two dimensional while the TT-Lang operation is submitted for execution on multiple chips. In SPMD mode TT-Lang operation instances have the same behaviour on different chips while working on different partitions of data, which significantly simplifies reasoning about it. The SPMD functionality is based on [TT-NN Mesh Devices](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/Programming_Mesh_of_Devices/Programming_Mesh_of_Devices_with_TT-NN.md).
 
 
 ### Grid size function
@@ -1140,11 +1140,12 @@ Example for broadcast over two innermost dimensions: `y.store(b + ttl.math.broad
 | 2D grid `ttl.grid_size` and `ttl.node` with `dims=2`| 0.1.7 | 0.1.7 |
 | 2D grid `ttl.grid_size` and `ttl.node` with any `dims` | 0.1.7 | N/S |
 | 4D grid `ttl.grid_size` and `ttl.node` | N/S | N/S |
-| SPMD | N/A | N/S |
+| [TT-NN Mesh Devices](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/Programming_Mesh_of_Devices/Programming_Mesh_of_Devices_with_TT-NN.md) | 0.1.8 | 0.1.8 |
+| [TT-NN L1 Sharded Tensors](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/tensor_sharding/tensor_sharding.md) | 0.1.8 | 0.1.8 |
 | `ttl.make_dataflow_buffer_like` with 2D+ `shape` | 0.1.7 | 0.1.7 |
 | `ttl.make_dataflow_buffer_like` with any `shape` | 0.1.7 | N/S |
 | `ttl.make_dataflow_buffer_like` for tilized tensors | 0.1.7 | 0.1.7 |
-| `ttl.make_dataflow_buffer_like` for row-major tensors | N/S | N/S |
+| `ttl.make_dataflow_buffer_like` for row-major tensors | 0.1.8 | N/S |
 | `ttl.Block.store` | 0.1.7 | 0.1.7 |
 | Overwriting and accumulation through summation (`+=`) for block expressions | 0.1.7 | N/S |
 | `ttl.copy` and `ttl.Transfer` | 0.1.7 | 0.1.7 |
@@ -1157,16 +1158,19 @@ Example for broadcast over two innermost dimensions: `y.store(b + ttl.math.broad
 | Debug printing with `print` | 0.1.7 | 0.1.7 |
 | Built-in unary math operators: `-`, `abs` | 0.1.7 | 0.1.7 |
 | Built-in binary math operators: `+`, `-`, `*`, `/` | 0.1.7 | 0.1.7 |
-| Built-in binary math operators: `@`, `%`, `//`, `^`, | 0.1.7 | N/S |
-| `ttl.math` unary math functions: `exp`, `log`, `sqrt`, `rsqrt`, `tanh`, `sigmoid`, `relu`, `floor`, `recip`, `sin`, `cos`, `tan` | 0.1.7 | 0.1.7 |
-| `ttl.math` unary math functions: `exp2`, `expm1`, `logp1`, `square`, `tan`, `atan`, `atanh`, `asin`, `asinh`, `acos`, `acosh`, `gelu`, `silu`, `softsign`, `hardsigmoid`, `selu`, `ceil`, `frac`, `trunc`, `sign`, `signbit`, `rsub`, `relu_max`, `relu_min`, `leaky_relu`, `elu`, `celu`, `prelu`, `softplus`, `hardtanh`, `round`, `clamp`, `threshold`, `fill` | 0.1.7 | N/S |
+| Built-in binary math operators: `@` | 0.1.7 | 0.1.8 |
+| Built-in binary math operators: `%`, `//`, `^`, | 0.1.7 | N/S |
+| `ttl.math` unary math functions: `exp`, `log`, `sqrt`, `rsqrt`, `tanh`, `sigmoid`, `relu`, `floor`, `recip` | 0.1.7 | 0.1.7 |
+| `ttl.math` unary math functions: `sin`, `cos`, `tan`, `asin`, `acos`, `atan` | 0.1.7 | 0.1.8 |
+| `ttl.math` unary math functions: `exp2`, `expm1`, `logp1`, `square`, `atanh`, `asinh`, `acosh`, `gelu`, `silu`, `softsign`, `hardsigmoid`, `selu`, `ceil`, `frac`, `trunc`, `sign`, `signbit`, `rsub`, `relu_max`, `relu_min`, `leaky_relu`, `elu`, `celu`, `prelu`, `softplus`, `hardtanh`, `round`, `clamp`, `threshold` | 0.1.7 | N/S |
 | `ttl.math` binary math functions: `min`, `max` | 0.1.7 | 0.1.7 |
 | `ttl.math` binary math functions: `mask`, `mask_posinf` | 0.1.7 | N/S |
 | `ttl.math.where` | 0.1.7 | N/S |
 | `ttl.math.broadcast` (compiler requires target block as argument) | 0.1.7 | 0.1.7 |
-| `ttl.math.reduce_max` | 0.1.7 | N/S |
-| `ttl.math.reduce_sum` | 0.1.7 | N/S |
-| `ttl.math.transpose` | 0.1.7 | N/S |
+| `ttl.math.fill` (compiler requires target block as argument) | 0.1.7 | 0.1.8 |
+| `ttl.math.reduce_max` | 0.1.7 | 0.1.8 |
+| `ttl.math.reduce_sum` | 0.1.7 | 0.1.8 |
+| `ttl.math.transpose` | 0.1.7 | 0.1.8 |
 
 * N/S - Not Supported
 * N/A - Not Applicable
