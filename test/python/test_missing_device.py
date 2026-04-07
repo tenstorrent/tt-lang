@@ -76,3 +76,9 @@ def test_fixed_grid_host_tensor(device):
 
     with pytest.raises(ValueError, match="No device found"):
         nop_fixed_grid(a_host)
+
+
+def test_auto_grid_no_ttnn_tensors():
+    """grid='auto' with no ttnn tensors should report that none were provided."""
+    with pytest.raises(ValueError, match="no ttnn tensor arguments were provided"):
+        nop_auto_grid(torch.zeros(32, 32, dtype=torch.bfloat16))
