@@ -83,8 +83,9 @@ if [ -z "$TTLANG_VERSION" ]; then
 fi
 echo "tt-lang version: $TTLANG_VERSION"
 
-# Docker tag is the git version (sanitized for Docker - replace / and : with -)
-DOCKER_TAG=$(echo "$TTLANG_VERSION" | sed 's/[\/:]/-/g')
+# Docker tag uses the nearest version tag (e.g., v0.1.8) so rebuilds overwrite
+# the same tag rather than creating a new one per commit.
+DOCKER_TAG=$(git describe --tags --match "v[0-9]*" --abbrev=0 2>/dev/null | sed 's/[\/:]/-/g')
 echo "Docker tag: $DOCKER_TAG"
 echo ""
 
