@@ -163,20 +163,20 @@ build_image() {
     # (e.g. --build-context for cache injection)
     local tag_args=()
     if [ "$NO_PUSH" = false ]; then
-        tag_args+=(-t "$registry_image" -t "ghcr.io/$REPO/$name:latest")
+        tag_args+=(-t "$registry_image")
     fi
-    tag_args+=(-t "$local_image" -t "$name:latest")
+    tag_args+=(-t "$local_image")
 
     # Pass BASE_IMAGE so Dockerfile FROM references resolve correctly.
     # For local builds, prefer the local base image but fall back to the
     # registry image if no local build exists.
     local base_image_arg=""
     if [ "$NO_PUSH" = false ]; then
-        base_image_arg="--build-arg BASE_IMAGE=ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:latest"
-    elif docker image inspect tt-lang-base-ubuntu-22-04:latest > /dev/null 2>&1; then
-        base_image_arg="--build-arg BASE_IMAGE=tt-lang-base-ubuntu-22-04:latest"
+        base_image_arg="--build-arg BASE_IMAGE=ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
+    elif docker image inspect "tt-lang-base-ubuntu-22-04:$DOCKER_TAG" > /dev/null 2>&1; then
+        base_image_arg="--build-arg BASE_IMAGE=tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
     else
-        base_image_arg="--build-arg BASE_IMAGE=ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:latest"
+        base_image_arg="--build-arg BASE_IMAGE=ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
     fi
 
     docker build \
@@ -191,7 +191,6 @@ build_image() {
     if [ "$NO_PUSH" = false ]; then
         echo "Pushing: $registry_image"
         docker push "$registry_image"
-        docker push "ghcr.io/$REPO/$name:latest"
     else
         echo "Skipping push (--no-push specified)"
     fi

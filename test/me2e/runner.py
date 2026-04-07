@@ -174,8 +174,11 @@ def run_compute_test(
         if op.allclose_overrides and golden.dtype in op.allclose_overrides:
             use_allclose = op.allclose_overrides[golden.dtype]
         validate_against_golden(
-            golden, result, ulp_threshold=ulp_threshold,
-            pcc_threshold=pcc_threshold, use_allclose=use_allclose,
+            golden,
+            result,
+            ulp_threshold=ulp_threshold,
+            pcc_threshold=pcc_threshold,
+            use_allclose=use_allclose,
         )
 
     finally:

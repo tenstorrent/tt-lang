@@ -15,7 +15,7 @@
 #   --build-context dist-toolchain=./path/to/dist-toolchain
 
 # Base image: parameterized so local builds don't shadow registry tags.
-ARG BASE_IMAGE=ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:latest
+ARG BASE_IMAGE
 
 # Toolchain build contexts: overridden by --build-context at build time.
 FROM scratch AS ird-toolchain

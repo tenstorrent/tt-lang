@@ -96,12 +96,12 @@ missing the toolchain.
 
 After building, use the image with `docker-test.sh`:
 ```bash
-DOCKER_IMAGE=tt-lang-ird-ubuntu-22-04:latest scripts/docker-test.sh mlir
+DOCKER_IMAGE=tt-lang-ird-ubuntu-22-04:<version-tag> scripts/docker-test.sh mlir
 ```
 
 Or run interactively:
 ```bash
-sudo docker run -it --rm --device=/dev/tenstorrent/0:/dev/tenstorrent/0 -v /dev/hugepages:/dev/hugepages -v /dev/hugepages-1G:/dev/hugepages-1G tt-lang-ird-ubuntu-22-04:latest bash
+sudo docker run -it --rm --device=/dev/tenstorrent/0:/dev/tenstorrent/0 -v /dev/hugepages:/dev/hugepages -v /dev/hugepages-1G:/dev/hugepages-1G tt-lang-ird-ubuntu-22-04:<version-tag> bash
 ```
 
 ## Image Architecture

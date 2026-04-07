@@ -229,6 +229,9 @@ class ME2ETestBase:
         pcc_threshold = getattr(self, "PCC_THRESHOLD", None)
         use_allclose = getattr(self, "ALLCLOSE", None)
         validate_against_golden(
-            golden, result, ulp_threshold=ulp_threshold,
-            pcc_threshold=pcc_threshold, use_allclose=use_allclose,
+            golden,
+            result,
+            ulp_threshold=ulp_threshold,
+            pcc_threshold=pcc_threshold,
+            use_allclose=use_allclose,
         )
