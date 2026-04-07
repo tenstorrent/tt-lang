@@ -169,3 +169,10 @@ jobs:
             runs-on: n150
             timeout: 60
             docker_tag: ${{ inputs.docker_tag }}
+
+    test-dist-tutorials:
+        uses: ./.github/workflows/call-test-dist-tutorials.yml
+        secrets: inherit
+        with:
+            runs-on: n150
+            dist_docker_tag: ${{ inputs.docker_tag }}
