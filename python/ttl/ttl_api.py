@@ -502,7 +502,7 @@ class CompiledTTNNKernel:
             num_tensors: Number of input/output tensors
             core_ranges: CoreRangeSet for kernel execution
             kernel_tensor_indices: List of global tensor indices used by each kernel
-            cb_configs: List of (shape, buffer_factor) tuples for each CB, indexed by cb_index
+            cb_configs: List of (shape, block_count) tuples for each CB, indexed by cb_index
             program_hash: Hash for tt-metal program cache
             source_lines: Source code lines for auto-profiling reports (deprecated)
             all_source_lines: Dict mapping kernel name to source lines
@@ -799,7 +799,7 @@ def _collect_cb_configs(threads):
     """Extract CircularBuffer objects from thread closures, indexed by cb_index.
 
     Returns a list of CircularBuffer objects indexed by cb_index. Each CB has
-    shape, buffer_factor, tensor (for dtype), and _cb_index attributes.
+    shape, block_count, tensor (for dtype), and _cb_index attributes.
     """
     cb_configs_dict = {}
     for thread_fn in threads:

@@ -19,13 +19,13 @@ def add_with_kernel(a, b, y):
     cols = 2
 
     a_dfb = ttl.make_dataflow_buffer_like(
-        a, shape=(row_tiles, col_tiles), buffer_factor=2
+        a, shape=(row_tiles, col_tiles), block_count=2
     )
     b_dfb = ttl.make_dataflow_buffer_like(
-        b, shape=(row_tiles, col_tiles), buffer_factor=2
+        b, shape=(row_tiles, col_tiles), block_count=2
     )
     y_dfb = ttl.make_dataflow_buffer_like(
-        y, shape=(row_tiles, col_tiles), buffer_factor=2
+        y, shape=(row_tiles, col_tiles), block_count=2
     )
 
     @ttl.compute()

@@ -44,6 +44,7 @@
 | 0.12 | 03/24/2026 | Remove `store(..., acc=True)` |
 | 0.13 | 03/31/2026 | Rename `ttl.kernel` to `ttl.operation` |
 | 0.14 | 04/02/2026 | Add `ttl.math.abs`, `ttl.math.neg` and `ttl.math.pow` in addition to Python built-in operators. |
+| 0.15 | 04/06/2026 | Rename `buffer_factor` to `block_count` |
 
 
 ## Introduction
@@ -95,7 +96,7 @@ ttnn.exp(y, foo(ttnn.abs(x)), fast_and_approximate_mode=True)
 
 ## Grid
 
-A *grid* defines a space of nodes to which the TT-Lang operation is submitted for execution. A node corresponds to a single Tensix Core and is a minimal unit capable of executing a TT-Lang program. In a single-chip case where node-to-node communication is conducted over Network-on-Chip (NoC), the grid is two dimensional. In a multi-chip case where chip-to-chip communication is conduced over TT-Fabric, the grid has additional mesh dimensions representing different levels of connectivity (same card, same host, same rack etc). There is also Single-Program-Multiple-Data (SPMD) mode in which the grid remains two dimensional while the TT-Lang operation is submitted for execution on multiple chips. In SPMD mode TT-Lang operation instances have the same behaviour on different chips while working on different partitions of data, which significantly simplifies reasoning about it.
+A *grid* defines a space of nodes to which the TT-Lang operation is submitted for execution. A node corresponds to a single Tensix Core and is a minimal unit capable of executing a TT-Lang program. In a single-chip case where node-to-node communication is conducted over Network-on-Chip (NoC), the grid is two dimensional. In a multi-chip case where chip-to-chip communication is conduced over TT-Fabric, the grid has additional mesh dimensions representing different levels of connectivity (same card, same host, same rack etc). There is also Single-Program-Multiple-Data (SPMD) mode in which the grid remains two dimensional while the TT-Lang operation is submitted for execution on multiple chips. In SPMD mode TT-Lang operation instances have the same behaviour on different chips while working on different partitions of data, which significantly simplifies reasoning about it. The SPMD functionality is based on [TT-NN Mesh Devices](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/Programming_Mesh_of_Devices/Programming_Mesh_of_Devices_with_TT-NN.md).
 
 
 ### Grid size function
@@ -150,11 +151,11 @@ x, y, z = ttl.node(dims = 3)
 
 ## Dataflow buffer
 
-A *dataflow buffer* is a communication primitive for synchronizing the passing of data between kernel functions running on the same node. A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing TT-NN tensor, *shape* and *buffer factor*.
+A *dataflow buffer* is a communication primitive for synchronizing the passing of data between kernel functions running on the same node. A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing TT-NN tensor, *shape* and *block count*.
 
 The shape is expressed as a tuple with outermost dimension first and innermost dimension last. For `ttl.math` functions that take dimension indexes, the outermost dimension is indexed as 0, next to outermost as 1. It is possible to use negative dimension indexes to index from innermost dimension. This way the innermost dimension is indexed as -1, next to innermost as -2. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. The shape unit affects two innermost dimensions and is a whole tile (32 by 32 scalars) if the tensor has a tiled layout. For example, if a TT-NN tensor is of tiled layout and has shape of `(2, 128, 32)`, the corresponding block that fits this entire tensor will have shape of `(2, 4, 1)`. If tensor has a row-major layout the shape unit is an scalar. For the TT-NN tensor in the above example the corresponding block that fits this entire tensor will have shape of `(2, 128, 32)`.
 
-Shape determines the shape of a *block* returned by one of the *acquisition functions*. The size of a block in L1 memory is determined by shape, shape unit and data type. For example, for a block with shape `(2, 4, 1)`, shape unit of a tile and BF16 data type, its size in L1 will be `2 * 4 * 32 * 1 * 32 * 2 = 16384` bytes. The buffer factor determines the total size of L1 memory allocated for a dataflow buffer. This size as a product of a block size and buffer factor. For the most common case buffer factor defaults to 2 to support double buffering. With double buffered dataflow buffer one kernel can write to a block while another is reading from a block thus enabling enabling the pipelining. For the example above, this means there will be a total of 32768 bytes of L1 memory allocated for the dataflow buffer.
+Shape determines the shape of a *block* returned by one of the *acquisition functions*. The size of a block in L1 memory is determined by shape, shape unit and data type. For example, for a block with shape `(2, 4, 1)`, shape unit of a tile and BF16 data type, its size in L1 will be `2 * 4 * 32 * 1 * 32 * 2 = 16384` bytes. The block count determines the total size of L1 memory allocated for a dataflow buffer. This size as a product of a block size and block count. For the most common case block count defaults to 2 to support double buffering. With double buffered dataflow buffer one kernel can write to a block while another is reading from a block thus enabling enabling the pipelining. For the example above, this means there will be a total of 32768 bytes of L1 memory allocated for the dataflow buffer.
 
 There are two acquisition functions on a dataflow buffer object: `wait` and `reserve`. A dataflow buffer is constructed in the scope of an operation function but its object functions can only be used inside of kernel functions. Acquisition functions can be used with Python `with` statement, which will automatically release acquired blocks at the end of the `with` scope. Alternatively, if acquisition functions are used without the `with` the user must explicitly call a corresponding release function on the acquired block: `pop` for `wait` and `push` for `reserve`.
 
@@ -163,7 +164,7 @@ There are two acquisition functions on a dataflow buffer object: `wait` and `res
 ```py
 x_dfb = ttl.make_dataflow_buffer_like(x,
     shape = (2, 2),
-    buffer_factor = 2)
+    block_count = 2)
 
 @ttl.datamovement()
 def some_read():
@@ -188,7 +189,7 @@ def some_compute():
 
 | Type alias/Function | Description |
 | :---- | :---- |
-|  `ttl.make_dataflow_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape,   buffer_factor: ttl.Size) -> ttl.DataflowBuffer` | Create a dataflow buffer by inheriting basic properties from `likeness_tensor`. |
+|  `ttl.make_dataflow_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape,   block_count: ttl.Size) -> ttl.DataflowBuffer` | Create a dataflow buffer by inheriting basic properties from `likeness_tensor`. |
 |  `ttl.DataflowBuffer.reserve(self) -> ttl.Block` | Reserve and return a block from a dataflow buffer. **This function is blocking** and will wait until a *free* block is available. A free block is typically used by a producer to write the data into. |
 | `ttl.Block.push(self)` | Push a block to a dataflow buffer. This function is called by the producer to signal the consumer that a block *filled* with data is available. **This function is non-blocking.** |
 | `ttl.DataflowBuffer.wait(self) -> ttl.Block` | Wait for and return a block from a dataflow buffer. **This function is blocking** and will wait until a block filled with data is available. A filled block is typically used by a consumer to read data from. |
@@ -731,7 +732,7 @@ When `ttl.copy` function is called multiple times, instead of waiting on each tr
 # WO = WI * scale_factor[1]
 
 io_dfb = ttl.make_dataflow_buffer_like(
-    input_images, shape=(C,), buffer_factor=2
+    input_images, shape=(C,), block_count=2
 )
 
 @ttl.datamovement()
@@ -990,7 +991,7 @@ def matmul_read():
 | *Dataflow buffer* | A communication primitive for synchronizing the passing of data between kernels on the same node. Maintains memory space that is written by a producer and read by a consumer as well as synchronization mechanism necessary to communicate between producer and consumer to avoid data races. |
 | *Dataflow buffer’s shape* | A shape of a block of memory acquired from a dataflow buffer to be either written by the producer or read by the consumer. |
 | *Dataflow buffer’s shape unit* | A unit in which dataflow buffer shape is expressed. When a dataflow buffer is created in likeness of tiled TT-NN Tensor the unit is a tile. If it is created in likeness of row-major TT-NN the unit is a scalar. |
-| *Dataflow buffer’s buffer factor* | A buffer factor determines how many block sized pages are allocated by the dataflow buffer. In the most case it is 2 pages to allow double buffering so that both consumer and producer can make progress by having one acquired block each to work with. |
+| *Dataflow buffer’s block count* | A block count determines how many block sized pages are allocated by the dataflow buffer. In the most case it is 2 pages to allow double buffering so that both consumer and producer can make progress by having one acquired block each to work with. |
 | *Dataflow buffer’s acquisition function* | A blocking function that keeps a kernel waiting until a block becomes available in the dataflow buffer. |
 | *Dataflow buffer’s release function* | A non-blocking function that releases a block back to the dataflow buffer to make it available to other kernels. |
 | *Block* | A block of memory acquired from a dataflow buffer. In a compute kernel a block can participate in an expression as input, and also be used to store the expression's result. In a data movement kernel a block can participate in copy operation as a source or destination. |
@@ -1139,11 +1140,12 @@ Example for broadcast over two innermost dimensions: `y.store(b + ttl.math.broad
 | 2D grid `ttl.grid_size` and `ttl.node` with `dims=2`| 0.1.7 | 0.1.7 |
 | 2D grid `ttl.grid_size` and `ttl.node` with any `dims` | 0.1.7 | N/S |
 | 4D grid `ttl.grid_size` and `ttl.node` | N/S | N/S |
-| SPMD | N/A | N/S |
+| [TT-NN Mesh Devices](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/Programming_Mesh_of_Devices/Programming_Mesh_of_Devices_with_TT-NN.md) | 0.1.8 | 0.1.8 |
+| [TT-NN L1 Sharded Tensors](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/tensor_sharding/tensor_sharding.md) | 0.1.8 | 0.1.8 |
 | `ttl.make_dataflow_buffer_like` with 2D+ `shape` | 0.1.7 | 0.1.7 |
 | `ttl.make_dataflow_buffer_like` with any `shape` | 0.1.7 | N/S |
 | `ttl.make_dataflow_buffer_like` for tilized tensors | 0.1.7 | 0.1.7 |
-| `ttl.make_dataflow_buffer_like` for row-major tensors | N/S | N/S |
+| `ttl.make_dataflow_buffer_like` for row-major tensors | 0.1.8 | N/S |
 | `ttl.Block.store` | 0.1.7 | 0.1.7 |
 | Overwriting and accumulation through summation (`+=`) for block expressions | 0.1.7 | N/S |
 | `ttl.copy` and `ttl.Transfer` | 0.1.7 | 0.1.7 |
@@ -1156,16 +1158,19 @@ Example for broadcast over two innermost dimensions: `y.store(b + ttl.math.broad
 | Debug printing with `print` | 0.1.7 | 0.1.7 |
 | Built-in unary math operators: `-`, `abs` | 0.1.7 | 0.1.7 |
 | Built-in binary math operators: `+`, `-`, `*`, `/` | 0.1.7 | 0.1.7 |
-| Built-in binary math operators: `@`, `%`, `//`, `^`, | 0.1.7 | N/S |
-| `ttl.math` unary math functions: `exp`, `log`, `sqrt`, `rsqrt`, `tanh`, `sigmoid`, `relu`, `floor`, `recip`, `sin`, `cos`, `tan` | 0.1.7 | 0.1.7 |
-| `ttl.math` unary math functions: `exp2`, `expm1`, `logp1`, `square`, `tan`, `atan`, `atanh`, `asin`, `asinh`, `acos`, `acosh`, `gelu`, `silu`, `softsign`, `hardsigmoid`, `selu`, `ceil`, `frac`, `trunc`, `sign`, `signbit`, `rsub`, `relu_max`, `relu_min`, `leaky_relu`, `elu`, `celu`, `prelu`, `softplus`, `hardtanh`, `round`, `clamp`, `threshold`, `fill` | 0.1.7 | N/S |
+| Built-in binary math operators: `@` | 0.1.7 | 0.1.8 |
+| Built-in binary math operators: `%`, `//`, `^`, | 0.1.7 | N/S |
+| `ttl.math` unary math functions: `exp`, `log`, `sqrt`, `rsqrt`, `tanh`, `sigmoid`, `relu`, `floor`, `recip` | 0.1.7 | 0.1.7 |
+| `ttl.math` unary math functions: `sin`, `cos`, `tan`, `asin`, `acos`, `atan` | 0.1.7 | 0.1.8 |
+| `ttl.math` unary math functions: `exp2`, `expm1`, `logp1`, `square`, `atanh`, `asinh`, `acosh`, `gelu`, `silu`, `softsign`, `hardsigmoid`, `selu`, `ceil`, `frac`, `trunc`, `sign`, `signbit`, `rsub`, `relu_max`, `relu_min`, `leaky_relu`, `elu`, `celu`, `prelu`, `softplus`, `hardtanh`, `round`, `clamp`, `threshold` | 0.1.7 | N/S |
 | `ttl.math` binary math functions: `min`, `max` | 0.1.7 | 0.1.7 |
 | `ttl.math` binary math functions: `mask`, `mask_posinf` | 0.1.7 | N/S |
 | `ttl.math.where` | 0.1.7 | N/S |
 | `ttl.math.broadcast` (compiler requires target block as argument) | 0.1.7 | 0.1.7 |
-| `ttl.math.reduce_max` | 0.1.7 | N/S |
-| `ttl.math.reduce_sum` | 0.1.7 | N/S |
-| `ttl.math.transpose` | 0.1.7 | N/S |
+| `ttl.math.fill` (compiler requires target block as argument) | 0.1.7 | 0.1.8 |
+| `ttl.math.reduce_max` | 0.1.7 | 0.1.8 |
+| `ttl.math.reduce_sum` | 0.1.7 | 0.1.8 |
+| `ttl.math.transpose` | 0.1.7 | 0.1.8 |
 
 * N/S - Not Supported
 * N/A - Not Applicable

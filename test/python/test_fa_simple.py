@@ -40,57 +40,53 @@ def flash_attention(
     kv_seq_tiles = K_all.shape[0] // N_KV // TILE
     n_chunks = kv_seq_tiles // KV_CHUNK
 
-    q_dfb = ttl.make_dataflow_buffer_like(Q_all, shape=(1, HD_TILES), buffer_factor=1)
+    q_dfb = ttl.make_dataflow_buffer_like(Q_all, shape=(1, HD_TILES), block_count=1)
     k_dfb = ttl.make_dataflow_buffer_like(
-        K_all, shape=(KV_CHUNK, HD_TILES), buffer_factor=2
+        K_all, shape=(KV_CHUNK, HD_TILES), block_count=2
     )
     v_dfb = ttl.make_dataflow_buffer_like(
-        V_all, shape=(KV_CHUNK, HD_TILES), buffer_factor=2
+        V_all, shape=(KV_CHUNK, HD_TILES), block_count=2
     )
-    sc_dfb = ttl.make_dataflow_buffer_like(scale_tile, shape=(1, 1), buffer_factor=1)
-    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
-    ninf_dfb = ttl.make_dataflow_buffer_like(
-        neg_inf_tile, shape=(1, 1), buffer_factor=1
-    )
-    zero_dfb = ttl.make_dataflow_buffer_like(zero_tile, shape=(1, 1), buffer_factor=1)
+    sc_dfb = ttl.make_dataflow_buffer_like(scale_tile, shape=(1, 1), block_count=1)
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=1)
+    ninf_dfb = ttl.make_dataflow_buffer_like(neg_inf_tile, shape=(1, 1), block_count=1)
+    zero_dfb = ttl.make_dataflow_buffer_like(zero_tile, shape=(1, 1), block_count=1)
     zero_head_dfb = ttl.make_dataflow_buffer_like(
-        zero_head, shape=(1, HD_TILES), buffer_factor=1
+        zero_head, shape=(1, HD_TILES), block_count=1
     )
-    mask_dfb = ttl.make_dataflow_buffer_like(mask, shape=(1, KV_CHUNK), buffer_factor=2)
+    mask_dfb = ttl.make_dataflow_buffer_like(mask, shape=(1, KV_CHUNK), block_count=2)
 
     kt_dfb = ttl.make_dataflow_buffer_like(
-        K_all, shape=(HD_TILES, KV_CHUNK), buffer_factor=2
+        K_all, shape=(HD_TILES, KV_CHUNK), block_count=2
     )
-    qk_dfb = ttl.make_dataflow_buffer_like(mask, shape=(1, KV_CHUNK), buffer_factor=2)
-    scaled_dfb = ttl.make_dataflow_buffer_like(
-        mask, shape=(1, KV_CHUNK), buffer_factor=2
-    )
+    qk_dfb = ttl.make_dataflow_buffer_like(mask, shape=(1, KV_CHUNK), block_count=2)
+    scaled_dfb = ttl.make_dataflow_buffer_like(mask, shape=(1, KV_CHUNK), block_count=2)
     chunk_max_dfb = ttl.make_dataflow_buffer_like(
-        scale_tile, shape=(1, 1), buffer_factor=2
+        scale_tile, shape=(1, 1), block_count=2
     )
-    m_dfb = ttl.make_dataflow_buffer_like(scale_tile, shape=(1, 1), buffer_factor=2)
-    alpha_dfb = ttl.make_dataflow_buffer_like(scale_tile, shape=(1, 1), buffer_factor=2)
-    m_new_dfb = ttl.make_dataflow_buffer_like(scale_tile, shape=(1, 1), buffer_factor=2)
+    m_dfb = ttl.make_dataflow_buffer_like(scale_tile, shape=(1, 1), block_count=2)
+    alpha_dfb = ttl.make_dataflow_buffer_like(scale_tile, shape=(1, 1), block_count=2)
+    m_new_dfb = ttl.make_dataflow_buffer_like(scale_tile, shape=(1, 1), block_count=2)
     m_bcast_dfb = ttl.make_dataflow_buffer_like(
-        mask, shape=(1, KV_CHUNK), buffer_factor=2
+        mask, shape=(1, KV_CHUNK), block_count=2
     )
     alpha_bcast_dfb = ttl.make_dataflow_buffer_like(
-        Q_all, shape=(1, HD_TILES), buffer_factor=2
+        Q_all, shape=(1, HD_TILES), block_count=2
     )
-    exp_dfb = ttl.make_dataflow_buffer_like(mask, shape=(1, KV_CHUNK), buffer_factor=2)
+    exp_dfb = ttl.make_dataflow_buffer_like(mask, shape=(1, KV_CHUNK), block_count=2)
     chunk_sum_dfb = ttl.make_dataflow_buffer_like(
-        scale_tile, shape=(1, 1), buffer_factor=2
+        scale_tile, shape=(1, 1), block_count=2
     )
-    l_dfb = ttl.make_dataflow_buffer_like(scale_tile, shape=(1, 1), buffer_factor=2)
-    o_dfb = ttl.make_dataflow_buffer_like(Q_all, shape=(1, HD_TILES), buffer_factor=2)
+    l_dfb = ttl.make_dataflow_buffer_like(scale_tile, shape=(1, 1), block_count=2)
+    o_dfb = ttl.make_dataflow_buffer_like(Q_all, shape=(1, HD_TILES), block_count=2)
     o_corr_dfb = ttl.make_dataflow_buffer_like(
-        Q_all, shape=(1, HD_TILES), buffer_factor=2
+        Q_all, shape=(1, HD_TILES), block_count=2
     )
-    pv_dfb = ttl.make_dataflow_buffer_like(Q_all, shape=(1, HD_TILES), buffer_factor=2)
+    pv_dfb = ttl.make_dataflow_buffer_like(Q_all, shape=(1, HD_TILES), block_count=2)
     l_bcast_dfb = ttl.make_dataflow_buffer_like(
-        Q_all, shape=(1, HD_TILES), buffer_factor=2
+        Q_all, shape=(1, HD_TILES), block_count=2
     )
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, HD_TILES), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, HD_TILES), block_count=2)
 
     @ttl.compute()
     def compute():

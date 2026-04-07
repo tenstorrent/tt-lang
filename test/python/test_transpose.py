@@ -40,10 +40,10 @@ import ttl
 def transpose_kernel(inp, out):
     """Transpose ({inp_rows},{inp_cols}) -> ({out_rows},{out_cols})."""
     inp_dfb = ttl.make_dataflow_buffer_like(
-        inp, shape=({inp_rows}, {inp_cols}), buffer_factor=2
+        inp, shape=({inp_rows}, {inp_cols}), block_count=2
     )
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=({out_rows}, {out_cols}), buffer_factor=2
+        out, shape=({out_rows}, {out_cols}), block_count=2
     )
 
     @ttl.compute()
@@ -74,13 +74,13 @@ import ttl
 def double_transpose_kernel(inp, out):
     """Transpose twice: ({rows},{cols}) -> ({cols},{rows}) -> ({rows},{cols})."""
     inp_dfb = ttl.make_dataflow_buffer_like(
-        inp, shape=({rows}, {cols}), buffer_factor=2
+        inp, shape=({rows}, {cols}), block_count=2
     )
     mid_dfb = ttl.make_dataflow_buffer_like(
-        inp, shape=({cols}, {rows}), buffer_factor=2
+        inp, shape=({cols}, {rows}), block_count=2
     )
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=({rows}, {cols}), buffer_factor=2
+        out, shape=({rows}, {cols}), block_count=2
     )
 
     @ttl.compute()

@@ -34,19 +34,15 @@ def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     Kt = K // ttnn.TILE_SIZE
     Nt = N // ttnn.TILE_SIZE
     num_output_tiles_total = (M * N) // (ttnn.TILE_SIZE * ttnn.TILE_SIZE)
-    buffering_factor = 2
-    a_dfb = ttl.make_dataflow_buffer_like(
-        a, shape=(1, 1), buffer_factor=buffering_factor
-    )
-    b_dfb = ttl.make_dataflow_buffer_like(
-        b, shape=(1, 1), buffer_factor=buffering_factor
-    )
+    dfb_block_count = 2
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=dfb_block_count)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=dfb_block_count)
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(1, 1), buffer_factor=buffering_factor
+        out, shape=(1, 1), block_count=dfb_block_count
     )
 
     print(f"num_output_tiles_total: {num_output_tiles_total}")
-    (all_nodes, node_group_1, node_group_2, work_per_node1, work_per_node2) = (
+    all_nodes, node_group_1, node_group_2, work_per_node1, work_per_node2 = (
         split_work_to_nodes(
             ttl.grid_size(dims=2), num_output_tiles_total, row_wise=True
         )

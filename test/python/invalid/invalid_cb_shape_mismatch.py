@@ -25,10 +25,10 @@ import ttl
 def mismatched_shape_kernel(a, b, out):
     """INVALID: add tensors with mismatched DFB shapes."""
     # a_dfb is (2, 1) - column vector
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 1), block_count=2)
     # b_dfb is (2, 2) - full grid
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 2), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():

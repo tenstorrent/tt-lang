@@ -24,8 +24,8 @@ import ttl
 @ttl.operation(grid=(1, 1))
 def invalid_multitile_index_kernel(inp, out):
     """This kernel should fail: 2x2 DFB but using index syntax."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():

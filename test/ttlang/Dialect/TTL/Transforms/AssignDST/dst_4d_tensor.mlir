@@ -17,9 +17,9 @@ func.func @add_4d(%a: tensor<3x6x4x2x!ttcore.tile<32x32, f32>>,
     -> tensor<3x6x4x2x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<3x6x4x2x!ttcore.tile<32x32, f32>>
 
-  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 1} : !ttl.cb<[3, 6, 4, 2], !ttcore.tile<32x32, f32>, 1>
-  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 1} : !ttl.cb<[3, 6, 4, 2], !ttcore.tile<32x32, f32>, 1>
-  %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 1} : !ttl.cb<[3, 6, 4, 2], !ttcore.tile<32x32, f32>, 1>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[3, 6, 4, 2], !ttcore.tile<32x32, f32>, 1>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[3, 6, 4, 2], !ttcore.tile<32x32, f32>, 1>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 1} : !ttl.cb<[3, 6, 4, 2], !ttcore.tile<32x32, f32>, 1>
 
   %a_cb = ttl.attach_cb %a, %cb0 : (tensor<3x6x4x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[3, 6, 4, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<3x6x4x2x!ttcore.tile<32x32, f32>>
   %b_cb = ttl.attach_cb %b, %cb1 : (tensor<3x6x4x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[3, 6, 4, 2], !ttcore.tile<32x32, f32>, 1>) -> tensor<3x6x4x2x!ttcore.tile<32x32, f32>>

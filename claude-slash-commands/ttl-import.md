@@ -98,9 +98,9 @@ import ttl
 
 @ttl.operation(grid=(1, 1))
 def add_kernel(lhs, rhs, out):
-    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), block_count=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -154,7 +154,7 @@ def dm_read():
 dfb = ttl.make_dataflow_buffer_like(
     tensor,           # TTNN tensor to inherit dtype/layout from
     shape=(R, C),     # Block size in tiles (e.g., (2, 2) = 4 tiles per block)
-    buffer_factor=2   # Number of blocks in DFB (2 = double buffering)
+    block_count=2   # Number of blocks in DFB (2 = double buffering)
 )
 
 # Consumer operations (compute thread consumes data)
@@ -179,7 +179,7 @@ blk.store(expr)             # Store result of expression into block
 
 ```python
 # 128x128 tensor = 4x4 tiles, process in 2x2 blocks (4 iterations)
-dfb = ttl.make_dataflow_buffer_like(tensor, shape=(2, 2), buffer_factor=2)
+dfb = ttl.make_dataflow_buffer_like(tensor, shape=(2, 2), block_count=2)
 
 @ttl.datamovement()
 def dm_read():
@@ -266,8 +266,8 @@ with inp_dfb.wait() as x, out_dfb.reserve() as o:
 
 **Non-square example:** For 4x2 tiles → 2x4 tiles:
 ```python
-inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(4, 2), buffer_factor=2)
-out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 4), buffer_factor=2)  # Swapped!
+inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(4, 2), block_count=2)
+out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 4), block_count=2)  # Swapped!
 ```
 
 ### Reductions (require scaler tensor)
@@ -277,7 +277,7 @@ out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 4), buffer_factor=2)  # S
 # dims=[0] = row reduction, dims=[1] = col reduction, dims=[0, 1] = scalar
 
 # Scaler: 32x32 tile of 1.0s in a 1x1 DFB
-scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
 
 with inp_dfb.wait() as i, scaler_dfb.wait() as s, out_dfb.reserve() as o:
     # Scalar reduction (sum/max entire DFB -> single value in output [0,0])
@@ -434,8 +434,8 @@ def large_tensor_kernel(inp, out):
     # Each node handles 8x8 tiles worth of data
     # But DFB only holds 2x2 tiles at a time - stream through with loops
 
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     BLOCKS_PER_NODE = 4  # 8x8 tiles / 2x2 block = 4x4 = 16 blocks... adjust per node
 
@@ -506,9 +506,9 @@ def gather_kernel(inp, out):
     pipe2 = ttl.Pipe(src=(2, 0), dst=(0, 0))
     pipe3 = ttl.Pipe(src=(3, 0), dst=(0, 0))
 
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    gather_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=4)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    gather_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=4)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -590,9 +590,9 @@ Larger DFB shapes give better throughput. Aim for 4x4 or 8x8 if L1 allows:
 @ttl.operation(grid=(1, 1))
 def multitile_kernel(lhs, rhs, out):
     # DFB holds all 4 tiles - larger shapes better for throughput
-    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(2, 2), buffer_factor=2)
-    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(2, 2), block_count=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(2, 2), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -613,9 +613,9 @@ def multitile_kernel(lhs, rhs, out):
 # 256x256 tensor across 8x8 grid = 1 tile per node
 @ttl.operation(grid=(8, 8))
 def multinode_kernel(lhs, rhs, out):
-    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), block_count=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -802,9 +802,9 @@ __global__ void add_kernel(float* a, float* b, float* c, int n) {
 ```python
 @ttl.operation(grid=(1, 1))  # Or multinode for large tensors
 def add_kernel(a, b, c):
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -843,8 +843,8 @@ def gelu(x):
 ```python
 @ttl.operation(grid=(1, 1))
 def gelu_kernel(x, out):
-    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -981,8 +981,8 @@ You cannot print or assert inside kernels. Instead:
 # Example: Testing an op in isolation
 @ttl.operation(grid=(1, 1))
 def test_single_op(inp, out):
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -1056,26 +1056,26 @@ def full_reduce_bcast_matmul_kernel(A, B, scaler, out):
     matmul_pipe3 = ttl.Pipe(src=(3, 0), dst=(0, 0))
 
     # Input CBs for reduce (A slice: 4 rows x 1 col of tiles)
-    a_dfb = ttl.make_dataflow_buffer_like(A, shape=(4, 1), buffer_factor=2)
-    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(A, shape=(4, 1), block_count=2)
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
 
     # Input DFB for matmul (B: 4x4 tiles)
-    b_dfb = ttl.make_dataflow_buffer_like(B, shape=(4, 4), buffer_factor=2)
+    b_dfb = ttl.make_dataflow_buffer_like(B, shape=(4, 4), block_count=2)
 
     # Reduce intermediate CBs
-    reduce_out_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    reduce_acc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    reduce_out_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+    reduce_acc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
 
     # Broadcast DFB (4x4 output)
-    bcast_out_dfb = ttl.make_dataflow_buffer_like(out, shape=(4, 4), buffer_factor=2)
+    bcast_out_dfb = ttl.make_dataflow_buffer_like(out, shape=(4, 4), block_count=2)
 
     # Matmul CBs (4x4 tiles)
-    matmul_out_dfb = ttl.make_dataflow_buffer_like(out, shape=(4, 4), buffer_factor=2)
-    matmul_gather_dfb = ttl.make_dataflow_buffer_like(out, shape=(4, 4), buffer_factor=6)
-    matmul_acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(4, 4), buffer_factor=2)
+    matmul_out_dfb = ttl.make_dataflow_buffer_like(out, shape=(4, 4), block_count=2)
+    matmul_gather_dfb = ttl.make_dataflow_buffer_like(out, shape=(4, 4), block_count=6)
+    matmul_acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(4, 4), block_count=2)
 
     # Output DFB
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(4, 4), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(4, 4), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -1196,12 +1196,12 @@ def fused_mlp_kernel(x, w_fc, w_proj, out):
     """
     SEQ_TILES, EMBD_TILES, MLP_TILES = 4, 4, 16
 
-    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    w_fc_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(EMBD_TILES, MLP_TILES), buffer_factor=2)
-    w_proj_dfb = ttl.make_dataflow_buffer_like(w_proj, shape=(MLP_TILES, EMBD_TILES), buffer_factor=2)
-    mlp_hidden_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(SEQ_TILES, MLP_TILES), buffer_factor=2)
-    mlp_act_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(SEQ_TILES, MLP_TILES), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), block_count=2)
+    w_fc_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(EMBD_TILES, MLP_TILES), block_count=2)
+    w_proj_dfb = ttl.make_dataflow_buffer_like(w_proj, shape=(MLP_TILES, EMBD_TILES), block_count=2)
+    mlp_hidden_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(SEQ_TILES, MLP_TILES), block_count=2)
+    mlp_act_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(SEQ_TILES, MLP_TILES), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -1273,27 +1273,27 @@ def fused_block_kernel(attn_concat, x, wo, ln2_w, w_fc, w_proj, scaler, out):
     SEQ_TILES, EMBD_TILES, MLP_TILES = 4, 4, 16
     MLP_CHUNK_TILES, NUM_MLP_CHUNKS = 4, 4
 
-    # Input CBs - buffer_factor=1 for single-use weights
-    attn_dfb = ttl.make_dataflow_buffer_like(attn_concat, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=1)
-    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=1)
-    wo_dfb = ttl.make_dataflow_buffer_like(wo, shape=(EMBD_TILES, EMBD_TILES), buffer_factor=1)
-    ln2_w_dfb = ttl.make_dataflow_buffer_like(ln2_w, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=1)
-    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
+    # Input CBs - block_count=1 for single-use weights
+    attn_dfb = ttl.make_dataflow_buffer_like(attn_concat, shape=(SEQ_TILES, EMBD_TILES), block_count=1)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), block_count=1)
+    wo_dfb = ttl.make_dataflow_buffer_like(wo, shape=(EMBD_TILES, EMBD_TILES), block_count=1)
+    ln2_w_dfb = ttl.make_dataflow_buffer_like(ln2_w, shape=(SEQ_TILES, EMBD_TILES), block_count=1)
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=1)
 
     # Streaming MLP weight chunks
-    w_fc_chunk_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(EMBD_TILES, MLP_CHUNK_TILES), buffer_factor=2)
-    w_proj_chunk_dfb = ttl.make_dataflow_buffer_like(w_proj, shape=(MLP_CHUNK_TILES, EMBD_TILES), buffer_factor=2)
+    w_fc_chunk_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(EMBD_TILES, MLP_CHUNK_TILES), block_count=2)
+    w_proj_chunk_dfb = ttl.make_dataflow_buffer_like(w_proj, shape=(MLP_CHUNK_TILES, EMBD_TILES), block_count=2)
 
     # Intermediate CBs
-    act_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    hidden1_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    ln2_out_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    mlp_chunk_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(SEQ_TILES, MLP_CHUNK_TILES), buffer_factor=2)
-    mlp_acc_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    partial_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    reduce_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
-    bcast_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=1)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=1)
+    act_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), block_count=2)
+    hidden1_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), block_count=2)
+    ln2_out_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), block_count=2)
+    mlp_chunk_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(SEQ_TILES, MLP_CHUNK_TILES), block_count=2)
+    mlp_acc_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), block_count=2)
+    partial_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), block_count=2)
+    reduce_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=1)
+    bcast_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), block_count=1)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), block_count=1)
 
     @ttl.compute()
     def compute():
@@ -1416,19 +1416,19 @@ def streaming_mlp_kernel(x, w_fc, w_proj, out):
     SEQ_TILES, EMBD_TILES = 4, 4
 
     # Input stays in L1 (loaded once)
-    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), block_count=2)
 
     # Streaming weight CBs - SMALL, reused per chunk
-    w_fc_chunk_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(EMBD_TILES, MLP_CHUNK_TILES), buffer_factor=2)
-    w_proj_chunk_dfb = ttl.make_dataflow_buffer_like(w_proj, shape=(MLP_CHUNK_TILES, EMBD_TILES), buffer_factor=2)
+    w_fc_chunk_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(EMBD_TILES, MLP_CHUNK_TILES), block_count=2)
+    w_proj_chunk_dfb = ttl.make_dataflow_buffer_like(w_proj, shape=(MLP_CHUNK_TILES, EMBD_TILES), block_count=2)
 
     # MLP hidden chunk
-    mlp_chunk_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(SEQ_TILES, MLP_CHUNK_TILES), buffer_factor=2)
+    mlp_chunk_dfb = ttl.make_dataflow_buffer_like(w_fc, shape=(SEQ_TILES, MLP_CHUNK_TILES), block_count=2)
 
     # Output accumulator
-    out_acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    partial_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    out_acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), block_count=2)
+    partial_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -1503,15 +1503,15 @@ def softmax_kernel(x, scaler, out):
     """softmax(x) = exp(x - max(x)) / sum(exp(x - max(x)))"""
     SEQ_TILES = 4
 
-    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2)
-    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, SEQ_TILES), block_count=2)
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, SEQ_TILES), block_count=2)
 
-    max_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    max_bcast_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2)
-    exp_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2)
-    sum_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    sum_bcast_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2)
+    max_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+    max_bcast_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, SEQ_TILES), block_count=2)
+    exp_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, SEQ_TILES), block_count=2)
+    sum_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+    sum_bcast_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, SEQ_TILES), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -1577,14 +1577,14 @@ def rmsnorm_kernel(x, weight, scaler, out):
     """RMSNorm: out = x * rsqrt(sum(x²)) * weight"""
     SEQ_TILES, EMBD_TILES = 4, 4
 
-    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    weight_dfb = ttl.make_dataflow_buffer_like(weight, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), block_count=2)
+    weight_dfb = ttl.make_dataflow_buffer_like(weight, shape=(SEQ_TILES, EMBD_TILES), block_count=2)
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(SEQ_TILES, EMBD_TILES), block_count=2)
 
-    sq_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
-    reduce_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    bcast_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2)
+    sq_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), block_count=2)
+    reduce_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+    bcast_dfb = ttl.make_dataflow_buffer_like(x, shape=(SEQ_TILES, EMBD_TILES), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -1641,7 +1641,7 @@ Multiple nodes compute independent output columns in parallel. All nodes read th
 - All nodes read the SAME input tensor (broadcast read)
 - Each node reads DIFFERENT weight/bias slices based on `core_x`
 - Each node writes DIFFERENT output slices based on `core_x`
-- `buffer_factor=1` for data used only once (bias)
+- `block_count=1` for data used only once (bias)
 
 ```python
 # MNIST Layer 1: hidden = relu(x @ w1 + bias1)
@@ -1656,15 +1656,15 @@ NUM_CHUNKS = 8     # 1024 hidden / 128 per node = 8 nodes
 @ttl.operation(grid=(NUM_CHUNKS, 1))
 def layer1_kernel(x, w1, bias1, hidden_out):
     # Input DFB - same data read by all nodes
-    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(BATCH_TILES, INPUT_TILES), buffer_factor=1)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(BATCH_TILES, INPUT_TILES), block_count=1)
 
     # Weight/bias CBs - each node reads different columns
-    w1_dfb = ttl.make_dataflow_buffer_like(w1, shape=(INPUT_TILES, CHUNK_TILES), buffer_factor=1)
-    bias1_dfb = ttl.make_dataflow_buffer_like(bias1, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=1)
+    w1_dfb = ttl.make_dataflow_buffer_like(w1, shape=(INPUT_TILES, CHUNK_TILES), block_count=1)
+    bias1_dfb = ttl.make_dataflow_buffer_like(bias1, shape=(BATCH_TILES, CHUNK_TILES), block_count=1)
 
     # Intermediate and output CBs
-    hidden_mm_dfb = ttl.make_dataflow_buffer_like(hidden_out, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=2)
-    hidden_dfb = ttl.make_dataflow_buffer_like(hidden_out, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=1)
+    hidden_mm_dfb = ttl.make_dataflow_buffer_like(hidden_out, shape=(BATCH_TILES, CHUNK_TILES), block_count=2)
+    hidden_dfb = ttl.make_dataflow_buffer_like(hidden_out, shape=(BATCH_TILES, CHUNK_TILES), block_count=1)
 
     @ttl.compute()
     def compute():
@@ -1736,26 +1736,26 @@ NUM_CHUNKS = 8     # 1024 hidden / 128 per chunk = 8 chunks
 
 @ttl.operation(grid=(1, 1))
 def layer2_kernel(hidden, w2, bias2, scaler, out):
-    # Streaming input CBs - buffer_factor=2 for double buffering
-    hidden_dfb = ttl.make_dataflow_buffer_like(hidden, shape=(BATCH_TILES, CHUNK_TILES), buffer_factor=2)
-    w2_dfb = ttl.make_dataflow_buffer_like(w2, shape=(CHUNK_TILES, OUTPUT_TILES), buffer_factor=2)
+    # Streaming input CBs - block_count=2 for double buffering
+    hidden_dfb = ttl.make_dataflow_buffer_like(hidden, shape=(BATCH_TILES, CHUNK_TILES), block_count=2)
+    w2_dfb = ttl.make_dataflow_buffer_like(w2, shape=(CHUNK_TILES, OUTPUT_TILES), block_count=2)
 
     # Accumulator and partial result CBs
-    acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
-    part_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
+    acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), block_count=2)
+    part_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), block_count=2)
 
-    # Single-use inputs - buffer_factor=1
-    bias2_dfb = ttl.make_dataflow_buffer_like(bias2, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=1)
-    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
+    # Single-use inputs - block_count=1
+    bias2_dfb = ttl.make_dataflow_buffer_like(bias2, shape=(BATCH_TILES, OUTPUT_TILES), block_count=1)
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=1)
 
     # Softmax intermediate CBs
-    logits_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
-    max_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    max_bcast_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
-    exp_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
-    sum_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
-    sum_bcast_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), buffer_factor=1)
+    logits_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), block_count=2)
+    max_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+    max_bcast_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), block_count=2)
+    exp_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), block_count=2)
+    sum_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+    sum_bcast_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(BATCH_TILES, OUTPUT_TILES), block_count=1)
 
     @ttl.compute()
     def compute():

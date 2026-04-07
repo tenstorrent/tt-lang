@@ -17,9 +17,9 @@
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // CHECK-LABEL:   func.func @seven_op_chain
-// CHECK:           %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 1}
-// CHECK:           %[[CB1:.*]] = ttl.bind_cb{cb_index = 1, buffer_factor = 1}
-// CHECK:           %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 1}
+// CHECK:           %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, block_count = 1}
+// CHECK:           %[[CB1:.*]] = ttl.bind_cb{cb_index = 1, block_count = 1}
+// CHECK:           %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, block_count = 1}
 // CHECK:           %[[RES:.*]] = ttl.compute
 // CHECK:           ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[O:.*]]: !ttcore.tile<32x32, f32>):
 // CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
@@ -38,8 +38,8 @@
 //
 // SFPU path: init_sfpu instead of init_binary, copy_tile for both add operands
 // SFPU-LABEL:   func.func @seven_op_chain
-// SFPU:           %[[CB0S:.*]] = ttl.bind_cb{cb_index = 0, buffer_factor = 1}
-// SFPU:           %[[CB2S:.*]] = ttl.bind_cb{cb_index = 2, buffer_factor = 1}
+// SFPU:           %[[CB0S:.*]] = ttl.bind_cb{cb_index = 0, block_count = 1}
+// SFPU:           %[[CB2S:.*]] = ttl.bind_cb{cb_index = 2, block_count = 1}
 // SFPU:           ttl.compute
 // SFPU:           ^bb0
 // SFPU-NOT:         fpu_binary
@@ -66,9 +66,9 @@ func.func @seven_op_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   %output = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
 
-  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
-  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
-  %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
 
   %a_ready = ttl.cb_wait %cb0 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %b_ready = ttl.cb_wait %cb1 : <[2, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<2x2x!ttcore.tile<32x32, f32>>

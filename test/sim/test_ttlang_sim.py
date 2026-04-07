@@ -318,7 +318,7 @@ class TestMaxDfbsCommandLineOption:
         """Create a temporary test script that uses a specific number of CBs."""
         # Generate CB declarations
         cb_declarations = "\n    ".join(
-            f"cb{i} = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)"
+            f"cb{i} = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)"
             for i in range(num_cbs)
         )
 
@@ -515,7 +515,7 @@ if __name__ == "__main__":
 class TestMaxL1CommandLineOption:
     """Test --max-l1 command-line option in ttlang-sim.
 
-    Each CB uses shape=(1,1), buffer_factor=2, bfloat16:
+    Each CB uses shape=(1,1), block_count=2, bfloat16:
       capacity_bytes = 2 (slots) * 32*32 (elements/slot) * 2 (bytes/element) = 4096
     Three CBs total: 3 * 4096 = 12288 bytes.
 
@@ -535,9 +535,9 @@ import torch
 
 @ttl.operation(grid=(1, 1))
 def test_kernel(a: ttnn.Tensor):
-    cb0 = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    cb1 = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    cb2 = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
+    cb0 = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    cb1 = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    cb2 = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():

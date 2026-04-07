@@ -148,7 +148,7 @@ class TestExpAddFused(FusedOpTestBase):
         """
         rows, cols = config.grid_shape
         dtype = torch_dtype_to_mlir_str(config.dtype)
-        bf = config.buffer_factor
+        bc = config.block_count
 
         # Generate layout attributes (includes #dram and #layout)
         layout_attrs = generate_layout_attrs(config)
@@ -163,18 +163,18 @@ class TestExpAddFused(FusedOpTestBase):
         compute_mlir = f"""
 // Compute thread for exp(a + b) fused operation.
 func.func @compute_exp_add() attributes {{ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}} {{
-  %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-  %cb1 = ttl.bind_cb {{cb_index = 1, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-  %cb_out = ttl.bind_cb {{cb_index = 2, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  %cb0 = ttl.bind_cb {{cb_index = 0, block_count = {bc}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
+  %cb1 = ttl.bind_cb {{cb_index = 1, block_count = {bc}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
+  %cb_out = ttl.bind_cb {{cb_index = 2, block_count = {bc}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
 
   // Wait for input data from reader.
-  %a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-  %a_attached = ttl.attach_cb %a, %cb0 : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-  %b = ttl.cb_wait %cb1 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-  %b_attached = ttl.attach_cb %b, %cb1 : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %a_attached = ttl.attach_cb %a, %cb0 : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %b = ttl.cb_wait %cb1 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %b_attached = ttl.attach_cb %b, %cb1 : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 
   // Reserve output CB.
-  %out_reserved = ttl.cb_reserve %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %out_reserved = ttl.cb_reserve %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 
   // Fused: add then exp.
   %sum = ttl.add %a_attached, %b_attached : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
@@ -182,9 +182,9 @@ func.func @compute_exp_add() attributes {{ttl.base_cta_index = 3 : i32, ttl.crta
   ttl.store %result, %out_reserved : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 
   // Push output, pop inputs.
-  ttl.cb_push %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-  ttl.cb_pop %cb1 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-  ttl.cb_pop %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  ttl.cb_push %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
+  ttl.cb_pop %cb1 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
+  ttl.cb_pop %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
   return
 }}
 """
@@ -224,7 +224,7 @@ class TestReluMulFused(FusedOpTestBase):
         """
         rows, cols = config.grid_shape
         dtype = torch_dtype_to_mlir_str(config.dtype)
-        bf = config.buffer_factor
+        bc = config.block_count
 
         # Generate layout attributes (includes #dram and #layout)
         layout_attrs = generate_layout_attrs(config)
@@ -239,18 +239,18 @@ class TestReluMulFused(FusedOpTestBase):
         compute_mlir = f"""
 // Compute thread for relu(a * b) fused operation.
 func.func @compute_relu_mul() attributes {{ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}} {{
-  %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-  %cb1 = ttl.bind_cb {{cb_index = 1, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-  %cb_out = ttl.bind_cb {{cb_index = 2, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  %cb0 = ttl.bind_cb {{cb_index = 0, block_count = {bc}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
+  %cb1 = ttl.bind_cb {{cb_index = 1, block_count = {bc}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
+  %cb_out = ttl.bind_cb {{cb_index = 2, block_count = {bc}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
 
   // Wait for input data from reader.
-  %a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-  %a_attached = ttl.attach_cb %a, %cb0 : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-  %b = ttl.cb_wait %cb1 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-  %b_attached = ttl.attach_cb %b, %cb1 : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %a_attached = ttl.attach_cb %a, %cb0 : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %b = ttl.cb_wait %cb1 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %b_attached = ttl.attach_cb %b, %cb1 : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 
   // Reserve output CB.
-  %out_reserved = ttl.cb_reserve %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %out_reserved = ttl.cb_reserve %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 
   // Fused: mul then relu.
   %prod = ttl.mul %a_attached, %b_attached : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
@@ -258,9 +258,9 @@ func.func @compute_relu_mul() attributes {{ttl.base_cta_index = 3 : i32, ttl.crt
   ttl.store %result, %out_reserved : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 
   // Push output, pop inputs.
-  ttl.cb_push %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-  ttl.cb_pop %cb1 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-  ttl.cb_pop %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  ttl.cb_push %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
+  ttl.cb_pop %cb1 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
+  ttl.cb_pop %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
   return
 }}
 """
@@ -301,7 +301,7 @@ class TestSqrtAbsFused(FusedOpTestBase):
         """
         rows, cols = config.grid_shape
         dtype = torch_dtype_to_mlir_str(config.dtype)
-        bf = config.buffer_factor
+        bc = config.block_count
 
         # Generate layout attributes (includes #dram and #layout)
         layout_attrs = generate_layout_attrs(config)
@@ -316,15 +316,15 @@ class TestSqrtAbsFused(FusedOpTestBase):
         compute_mlir = f"""
 // Compute thread for sqrt(abs(a)) fused operation.
 func.func @compute_sqrt_abs() attributes {{ttl.base_cta_index = 2 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}} {{
-  %cb0 = ttl.bind_cb {{cb_index = 0, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-  %cb_out = ttl.bind_cb {{cb_index = 1, buffer_factor = {bf}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  %cb0 = ttl.bind_cb {{cb_index = 0, block_count = {bc}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
+  %cb_out = ttl.bind_cb {{cb_index = 1, block_count = {bc}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
 
   // Wait for input data from reader.
-  %a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
-  %a_attached = ttl.attach_cb %a, %cb0 : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %a_attached = ttl.attach_cb %a, %cb0 : (tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>) -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 
   // Reserve output CB.
-  %out_reserved = ttl.cb_reserve %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
+  %out_reserved = ttl.cb_reserve %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 
   // Fused: abs then sqrt.
   %abs_result = ttl.abs %a_attached : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
@@ -332,8 +332,8 @@ func.func @compute_sqrt_abs() attributes {{ttl.base_cta_index = 2 : i32, ttl.crt
   ttl.store %result, %out_reserved : tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>, tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
 
   // Push output, pop input.
-  ttl.cb_push %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
-  ttl.cb_pop %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bf}>
+  ttl.cb_push %cb_out : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
+  ttl.cb_pop %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
   return
 }}
 """

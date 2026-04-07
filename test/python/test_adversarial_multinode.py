@@ -10,7 +10,7 @@ Evil features:
 - 2x2 DFB shape with multi-tile blocks
 - Variable reuse/shadowing
 - Interleaved operations in non-obvious order
-- buffer_factor=1 (no double buffering) for some CBs
+- block_count=1 (no double buffering) for some CBs
 - Binary ops with operands in different orders
 - Deep nesting of with statements (8 levels)
 - 4 inputs, 4 outputs
@@ -47,20 +47,20 @@ def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
     Designed to stress compiler with weird patterns.
     All tensors same size, 2x2 DFB blocks.
     """
-    # Mix of buffer_factor=1 and buffer_factor=2
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 2), buffer_factor=2)
+    # Mix of block_count=1 and block_count=2
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 2), block_count=2)
     b_dfb = ttl.make_dataflow_buffer_like(
-        b, shape=(2, 2), buffer_factor=1
+        b, shape=(2, 2), block_count=1
     )  # No double buffer!
-    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(2, 2), buffer_factor=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(2, 2), block_count=2)
     d_dfb = ttl.make_dataflow_buffer_like(
-        d, shape=(2, 2), buffer_factor=1
+        d, shape=(2, 2), block_count=1
     )  # No double buffer!
 
-    out1_dfb = ttl.make_dataflow_buffer_like(out1, shape=(2, 2), buffer_factor=2)
-    out2_dfb = ttl.make_dataflow_buffer_like(out2, shape=(2, 2), buffer_factor=1)
-    out3_dfb = ttl.make_dataflow_buffer_like(out3, shape=(2, 2), buffer_factor=2)
-    out4_dfb = ttl.make_dataflow_buffer_like(out4, shape=(2, 2), buffer_factor=1)
+    out1_dfb = ttl.make_dataflow_buffer_like(out1, shape=(2, 2), block_count=2)
+    out2_dfb = ttl.make_dataflow_buffer_like(out2, shape=(2, 2), block_count=1)
+    out3_dfb = ttl.make_dataflow_buffer_like(out3, shape=(2, 2), block_count=2)
+    out4_dfb = ttl.make_dataflow_buffer_like(out4, shape=(2, 2), block_count=1)
 
     @ttl.compute()
     def evil_compute():

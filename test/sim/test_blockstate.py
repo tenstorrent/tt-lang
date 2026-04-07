@@ -44,7 +44,7 @@ def setup_thread_context(compute_thread_context):
 def test_block_state_machine_restrictions() -> None:
     """Test that block state machine enforces access restrictions."""
     element = make_zeros_tile()
-    dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
+    dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
 
     # Test: Cannot index blocks - block indexing is not allowed
     block = dfb.reserve()
@@ -66,7 +66,7 @@ def test_block_state_machine_restrictions() -> None:
         read_block.store(Block.from_tensor(ttnn.Tensor(torch.full(TILE_SHAPE, 10.0))))
 
     # Use waited block as STORE_SRC before pop
-    out_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
+    out_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
     out_block = out_dfb.reserve()
     out_block.store(read_block)
     out_block.push()
@@ -110,7 +110,7 @@ def test_push_validates_expected_state() -> None:
 
     try:
         element = make_ones_tile()
-        dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
+        dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
 
         # Populate the DFB from a DM thread
         set_current_thread_type(ThreadType.DM)
@@ -134,7 +134,7 @@ def test_push_validates_expected_state() -> None:
             waited_block.mark_push_complete()
 
         # Clean up properly
-        out_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
+        out_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
         out_block = out_dfb.reserve()
         out_block.store(waited_block)
         out_block.push()
@@ -163,7 +163,7 @@ class TestAssignSrcTransition:
         """Return a DFB and a WAIT/COMPUTE block ready for use."""
         set_current_thread_type(ThreadType.DM)
         element = make_ones_tile()
-        dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), buffer_factor=2)
+        dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
         from python.sim.copy import copy as dm_copy
 
         src = make_ones_tile()
@@ -255,7 +255,7 @@ class TestRORState:
         dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((2, 1)),
             shape=(2, 1),
-            buffer_factor=2,
+            block_count=2,
         )
         with dfb.reserve() as blk:
             tx = copy(make_rand_tensor(64, 32), blk)
