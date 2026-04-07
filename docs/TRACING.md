@@ -55,8 +55,15 @@ whether a pipeline is producer-bound or consumer-bound.
 
 A span covering each `copy()` call:
 
-- **copy_start** / **copy_end** -- source type, destination type, bytes transferred,
-  node, kernel
+- **copy_start** -- emitted at the end of `copy()`, after the source and destination
+  blocks have been validated and locked for transfer.
+- **copy_end** -- emitted at the end of `tx.wait()`, after the data transfer has
+  completed and the blocks have been released. Fields: source type, destination type,
+  node, kernel.
+
+`copy_start` and `copy_end` are therefore the simulator equivalents of issuing and
+completing a DMA: the tick difference between them is the number of scheduler
+activations the issuing kernel spent blocked waiting for the transfer to finish.
 
 ---
 
