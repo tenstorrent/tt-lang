@@ -793,12 +793,12 @@ class TestGroupTransfer:
         dfb1 = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((1, 1)),
             shape=(1, 1),
-            buffer_factor=1,
+            block_count=1,
         )
         dfb2 = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((1, 1)),
             shape=(1, 1),
-            buffer_factor=1,
+            block_count=1,
         )
 
         with dfb1.reserve() as blk1, dfb2.reserve() as blk2:
@@ -816,7 +816,7 @@ class TestGroupTransfer:
         dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((1, 1)),
             shape=(1, 1),
-            buffer_factor=1,
+            block_count=1,
         )
 
         with dfb.reserve() as blk:
@@ -834,7 +834,7 @@ class TestGroupTransfer:
         dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((1, 1)),
             shape=(1, 1),
-            buffer_factor=1,
+            block_count=1,
         )
 
         with dfb.reserve() as blk:

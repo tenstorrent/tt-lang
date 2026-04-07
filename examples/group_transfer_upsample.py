@@ -37,7 +37,7 @@ def nearest_neighbor_upsample(
     output: ttnn.Tensor,
     scale_factor: tuple,
 ) -> None:
-    io_dfb = ttl.make_dataflow_buffer_like(input_images, shape=(C,), buffer_factor=2)
+    io_dfb = ttl.make_dataflow_buffer_like(input_images, shape=(C,), block_count=2)
 
     @ttl.compute()
     def compute():
