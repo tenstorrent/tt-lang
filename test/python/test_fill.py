@@ -7,7 +7,6 @@ Test for fill operation: fill tiles with a constant value.
 
 Tests:
 - Multi-tile (2x2) fill with negative constant (-3.0), no input tensor
-- Single-tile fill with constant (42.0), no input tensor
 - Fill fused with elementwise add (fill(1.0) + input)
 """
 
