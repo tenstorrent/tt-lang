@@ -418,6 +418,8 @@ def _require_device(args):
     host_args = [
         f"  arg[{i}]: {arg.shape}" for i, arg in enumerate(args) if is_ttnn_tensor(arg)
     ]
+    if not host_args:
+        raise ValueError("No device found: no ttnn tensor arguments were provided.")
     raise ValueError(
         "No device found on any tensor argument. "
         "All ttnn tensor inputs are on host:\n"
