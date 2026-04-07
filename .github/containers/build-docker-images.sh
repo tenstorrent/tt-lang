@@ -185,6 +185,11 @@ build_image() {
     if [ "$NO_PUSH" = false ]; then
         echo "Pushing: $registry_image"
         docker push "$registry_image"
+
+        local latest_image="${registry_image%:*}:latest"
+        echo "Tagging and pushing: $latest_image"
+        docker tag "$registry_image" "$latest_image"
+        docker push "$latest_image"
     else
         echo "Skipping push (--no-push specified)"
     fi

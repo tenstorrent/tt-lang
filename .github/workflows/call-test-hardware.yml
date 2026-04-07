@@ -18,6 +18,16 @@ on:
         required: false
         type: string
         default: 'v0.1.7'
+      test_dist:
+        description: 'Run tutorial examples in the dist container'
+        required: false
+        type: boolean
+        default: false
+      dist_docker_tag:
+        description: 'Docker tag for the dist container (used when test_dist is true)'
+        required: false
+        type: string
+        default: 'latest'
   workflow_call:
     inputs:
       runs-on:
@@ -32,6 +42,16 @@ on:
         default: 60
       docker_tag:
         description: 'Docker image tag for the ird container.'
+        required: false
+        type: string
+        default: 'latest'
+      test_dist:
+        description: 'Run tutorial examples in the dist container'
+        required: false
+        type: boolean
+        default: false
+      dist_docker_tag:
+        description: 'Docker tag for the dist container (used when test_dist is true)'
         required: false
         type: string
         default: 'latest'
@@ -143,3 +163,34 @@ jobs:
             build/test/pytest-report.xml
             build/test/sim-report.xml
           retention-days: 7
+
+  test-dist-tutorials:
+    name: "Dist Container Tutorials (${{ inputs.runs-on }})"
+    if: inputs.test_dist
+    runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout }}
+
+    container:
+      image: ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:${{ inputs.dist_docker_tag }}
+      options: --device /dev/tenstorrent
+      volumes:
+        - /dev/hugepages:/dev/hugepages
+        - /dev/hugepages-1G:/dev/hugepages-1G
+        - /etc/udev/rules.d:/etc/udev/rules.d
+        - /lib/modules:/lib/modules
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      PYTHONDONTWRITEBYTECODE: 1
+
+    steps:
+      - name: Checkout (for test script)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Run tutorial examples
+        run: bash .github/scripts/run-dist-tutorials.sh
