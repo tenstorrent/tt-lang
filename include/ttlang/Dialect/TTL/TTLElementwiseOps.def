@@ -93,6 +93,9 @@ TTL_UNARY_TILE_OP(Recip, RecipTileOp, RecipTileInitOp, RecipTileOp)
 TTL_UNARY_TILE_OP(Sin, SinTileOp, SinTileInitOp, SinTileOp)
 TTL_UNARY_TILE_OP(Cos, CosTileOp, CosTileInitOp, CosTileOp)
 TTL_UNARY_TILE_OP(Tan, TanTileOp, TanTileInitOp, TanTileOp)
+TTL_UNARY_TILE_OP(Asin, AsinTileOp, AsinTileInitOp, AsinTileOp)
+TTL_UNARY_TILE_OP(Acos, AcosTileOp, AcosTileInitOp, AcosTileOp)
+TTL_UNARY_TILE_OP(Atan, AtanTileOp, AtanTileInitOp, AtanTileOp)
 
 // CB -> DST ops with attribute
 TTL_CB_UNARY_ATTR_OP(Bcast, TileBcastOp, UnaryBcastInitOp, UnaryBcastTileOp)

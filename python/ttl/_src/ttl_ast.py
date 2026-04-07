@@ -482,10 +482,10 @@ class TTLGenericCompiler(TTCompilerBase):
             self.ctx,
             list(cb.shape),
             element_type,
-            cb.buffer_factor,
+            cb.block_count,
         )
-        # Emit: %cb = ttl.bind_cb {cb_index = N, buffer_factor = M} : !ttl.cb<...>
-        return ttl.bind_cb(cb_type, cb._cb_index, buffer_factor=cb.buffer_factor)
+        # Emit: %cb = ttl.bind_cb {cb_index = N, block_count = M} : !ttl.cb<...>
+        return ttl.bind_cb(cb_type, cb._cb_index, block_count=cb.block_count)
 
     def _emit_entry(self, node):
         assert not self.func_entry, "Cannot declare function within a function"

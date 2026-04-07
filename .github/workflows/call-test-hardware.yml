@@ -13,6 +13,11 @@ on:
         required: false
         type: number
         default: 60
+      docker_tag:
+        description: 'Docker image tag for the ird container.'
+        required: false
+        type: string
+        default: 'v0.1.7'
   workflow_call:
     inputs:
       runs-on:
@@ -25,6 +30,11 @@ on:
         required: false
         type: number
         default: 60
+      docker_tag:
+        description: 'Docker image tag for the ird container.'
+        required: false
+        type: string
+        default: 'latest'
 
 permissions:
   checks: write
@@ -37,7 +47,7 @@ jobs:
     timeout-minutes: ${{ inputs.timeout }}
 
     container:
-      image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest
+      image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:${{ inputs.docker_tag }}
       options: --device /dev/tenstorrent
       volumes:
         - /dev/hugepages:/dev/hugepages

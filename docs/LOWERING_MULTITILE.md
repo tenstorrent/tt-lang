@@ -9,9 +9,9 @@ import ttl
 
 @ttl.operation(grid=(1, 1))
 def add_multitile_kernel(lhs, rhs, out):
-    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(2, 2), buffer_factor=2)
-    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(2, 2), block_count=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(2, 2), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def add_compute():
@@ -37,9 +37,9 @@ High-level TTL operations on 2x2 tile tensors. The `ttl.add` operates on entire 
 
 ```mlir
 func.func @add_compute() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-  %0 = ttl.bind_cb{cb_index = 0, buffer_factor = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
-  %1 = ttl.bind_cb{cb_index = 1, buffer_factor = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
-  %2 = ttl.bind_cb{cb_index = 2, buffer_factor = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  %0 = ttl.bind_cb{cb_index = 0, block_count = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  %1 = ttl.bind_cb{cb_index = 1, block_count = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  %2 = ttl.bind_cb{cb_index = 2, block_count = 2} : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
 
   %3 = ttl.cb_wait %0 : ... -> tensor<2x2x!ttcore.tile<32x32, bf16>>
   %5 = ttl.cb_wait %1 : ... -> tensor<2x2x!ttcore.tile<32x32, bf16>>

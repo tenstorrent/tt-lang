@@ -27,9 +27,9 @@ import ttl
 @ttl.operation(grid=(1, 1))
 def add_multitile_kernel(lhs, rhs, out):
     """Add kernel processing 2x2 tile grid (4 tiles total)."""
-    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(2, 2), buffer_factor=2)
-    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(2, 2), block_count=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(2, 2), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def add_compute():

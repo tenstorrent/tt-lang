@@ -271,6 +271,15 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--num-devices",
+        type=int,
+        metavar="N",
+        dest="num_devices",
+        default=4,
+        help="Number of simulated devices returned by GetNumAvailableDevices() (default: 4)",
+    )
+
+    parser.add_argument(
         "script_args",
         nargs=argparse.REMAINDER,
         help="Arguments to pass to the script",
@@ -284,6 +293,16 @@ def main() -> None:
 
     # Set up simulator imports before running any code
     setup_simulator_imports()
+
+    # Configure simulated device count
+    if args.num_devices != 4:
+        try:
+            from .ttnnsim import set_num_devices
+
+            set_num_devices(args.num_devices)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
 
     # Configure max_dfbs limit if specified
     if args.max_dfbs is not None:

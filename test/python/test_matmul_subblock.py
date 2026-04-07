@@ -38,13 +38,13 @@ def make_matmul_kernel(m_tiles, n_tiles, k_tiles=1, dtype=torch.bfloat16):
     @ttl.operation(grid=(1, 1))
     def kernel(a, b, out):
         a_dfb = ttl.make_dataflow_buffer_like(
-            a, shape=(m_tiles, k_tiles), buffer_factor=2
+            a, shape=(m_tiles, k_tiles), block_count=2
         )
         b_dfb = ttl.make_dataflow_buffer_like(
-            b, shape=(k_tiles, n_tiles), buffer_factor=2
+            b, shape=(k_tiles, n_tiles), block_count=2
         )
         out_dfb = ttl.make_dataflow_buffer_like(
-            out, shape=(m_tiles, n_tiles), buffer_factor=2
+            out, shape=(m_tiles, n_tiles), block_count=2
         )
 
         @ttl.compute()
@@ -76,13 +76,13 @@ def make_matmul_bias_kernel(m_tiles, n_tiles):
 
     @ttl.operation(grid=(1, 1))
     def kernel(a, b, c, out):
-        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(m_tiles, 1), buffer_factor=2)
-        b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, n_tiles), buffer_factor=2)
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(m_tiles, 1), block_count=2)
+        b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, n_tiles), block_count=2)
         c_dfb = ttl.make_dataflow_buffer_like(
-            c, shape=(m_tiles, n_tiles), buffer_factor=2
+            c, shape=(m_tiles, n_tiles), block_count=2
         )
         out_dfb = ttl.make_dataflow_buffer_like(
-            out, shape=(m_tiles, n_tiles), buffer_factor=2
+            out, shape=(m_tiles, n_tiles), block_count=2
         )
 
         @ttl.compute()
@@ -121,10 +121,10 @@ def make_matmul_relu_kernel(m_tiles, n_tiles):
 
     @ttl.operation(grid=(1, 1))
     def kernel(a, b, out):
-        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(m_tiles, 1), buffer_factor=2)
-        b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, n_tiles), buffer_factor=2)
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(m_tiles, 1), block_count=2)
+        b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, n_tiles), block_count=2)
         out_dfb = ttl.make_dataflow_buffer_like(
-            out, shape=(m_tiles, n_tiles), buffer_factor=2
+            out, shape=(m_tiles, n_tiles), block_count=2
         )
 
         @ttl.compute()

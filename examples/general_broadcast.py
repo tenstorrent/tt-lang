@@ -41,16 +41,16 @@ def __demo_kernel(a, b, c, y):
     c_col_tiles = col_tiles_per_block if c.shape[1] > TILE_SIZE else 1
 
     a_dfb = ttl.make_dataflow_buffer_like(
-        a, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
+        a, shape=(row_tiles_per_block, col_tiles_per_block), block_count=2
     )
     b_dfb = ttl.make_dataflow_buffer_like(
-        b, shape=(b_row_tiles, b_col_tiles), buffer_factor=2
+        b, shape=(b_row_tiles, b_col_tiles), block_count=2
     )
     c_dfb = ttl.make_dataflow_buffer_like(
-        c, shape=(c_row_tiles, c_col_tiles), buffer_factor=2
+        c, shape=(c_row_tiles, c_col_tiles), block_count=2
     )
     y_dfb = ttl.make_dataflow_buffer_like(
-        y, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
+        y, shape=(row_tiles_per_block, col_tiles_per_block), block_count=2
     )
 
     @ttl.compute()

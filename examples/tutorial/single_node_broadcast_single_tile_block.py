@@ -29,10 +29,10 @@ def __demo_kernel(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor, y: ttnn.Tensor
     rows = y.shape[0] // TILE_SIZE
     cols = y.shape[1] // TILE_SIZE
 
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
-    y_dfb = ttl.make_dataflow_buffer_like(y, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), block_count=2)
+    y_dfb = ttl.make_dataflow_buffer_like(y, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def demo_compute():

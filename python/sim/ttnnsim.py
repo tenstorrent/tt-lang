@@ -330,6 +330,89 @@ def close_device(device: Device) -> None:
     return None
 
 
+# -------------------------------------------------------------------------
+# Multi-device (mesh) support
+#
+# The simulator treats multi-device operations as single-device: all mesh
+# and sharding APIs are stubs that accept the same arguments as the real
+# ttnn but otherwise do nothing.  Kernels execute on the full tensor as if
+# there were a single device, which is sufficient for functional correctness
+# testing.
+# -------------------------------------------------------------------------
+
+
+def GetNumAvailableDevices() -> int:
+    """Return the configured number of simulated devices."""
+    from .context import get_context
+
+    return get_context().config.num_devices
+
+
+def set_num_devices(n: int) -> None:
+    """Set the number of devices returned by GetNumAvailableDevices."""
+    from .context import get_context
+
+    if n < 1:
+        raise ValueError(f"num_devices must be >= 1, got {n}")
+    get_context().config.num_devices = n
+
+
+class FabricConfig:
+    """Stub for ttnn.FabricConfig."""
+
+    FABRIC_1D = "FABRIC_1D"
+
+
+def set_fabric_config(config: Any) -> None:
+    """Stub for ttnn.set_fabric_config (no-op in simulator)."""
+
+
+class MeshShape:
+    """Stub for ttnn.MeshShape."""
+
+    def __init__(self, rows: int, cols: int) -> None:
+        self.rows = rows
+        self.cols = cols
+
+
+class MeshDevice:
+    """Stub for a mesh device handle (no-op in simulator)."""
+
+    def __init__(self, shape: MeshShape) -> None:
+        self.shape = shape
+        self.num_devices = shape.rows * shape.cols
+
+
+def open_mesh_device(shape: MeshShape) -> MeshDevice:
+    """Open a simulated mesh device (stub)."""
+    return MeshDevice(shape)
+
+
+def close_mesh_device(mesh: MeshDevice) -> None:
+    """Close a simulated mesh device (no-op)."""
+
+
+class ShardTensorToMesh:
+    """Stub mapper — ignored by from_torch in the simulator."""
+
+    def __init__(self, mesh: MeshDevice, dim: int) -> None:
+        pass
+
+
+class ReplicateTensorToMesh:
+    """Stub mapper — ignored by from_torch in the simulator."""
+
+    def __init__(self, mesh: MeshDevice) -> None:
+        pass
+
+
+class ConcatMeshToTensor:
+    """Stub composer — ignored by to_torch in the simulator."""
+
+    def __init__(self, mesh: MeshDevice, dim: int) -> None:
+        pass
+
+
 def tile_shape_from_tensor(t: "Tensor") -> Shape:
     """Return the tile-grid shape of a tensor.
 
@@ -762,11 +845,21 @@ def empty(
     return Tensor(t, layout)
 
 
-def to_torch(t: Union[Tensor, torch.Tensor]) -> torch.Tensor:
-    """Convert a simulator Tensor or torch.Tensor to torch.Tensor."""
+def to_torch(
+    t: Union[Tensor, torch.Tensor],
+    mesh_composer: Optional[ConcatMeshToTensor] = None,
+) -> torch.Tensor:
+    """Convert a simulator Tensor or torch.Tensor to torch.Tensor.
+
+    Args:
+        t: Tensor to convert.
+        mesh_composer: Ignored in the simulator; accepted for API compatibility.
+
+    Returns:
+        Plain torch.Tensor.
+    """
     match t:
         case Tensor() as tw:
-            # Use the public accessor to avoid private attribute usage warnings
             return tw.to_torch()
         case torch.Tensor() as tt:
             return tt
@@ -778,8 +871,9 @@ def from_torch(
     tensor: torch.Tensor,
     dtype: Optional[torch.dtype] = None,
     layout: IndexType = TILE_LAYOUT,
-    device: Optional[Device] = None,
+    device: Optional[Union[Device, MeshDevice]] = None,
     memory_config: MemoryConfig = DRAM_MEMORY_CONFIG,
+    mesh_mapper: Optional[Union[ShardTensorToMesh, ReplicateTensorToMesh]] = None,
 ) -> Tensor:
     """Convert a torch.Tensor to a TTNN simulator Tensor.
 
@@ -789,9 +883,10 @@ def from_torch(
         layout: Layout for the resulting Tensor (TILE_LAYOUT or ROW_MAJOR_LAYOUT)
         device: Device parameter (no-op in simulator)
         memory_config: Optional MemoryConfig to attach to the tensor.
+        mesh_mapper: Ignored in the simulator; accepted for API compatibility.
 
     Returns:
-        Tensor wrapping the input (potentially converted) torch tensor
+        Tensor wrapping the input (potentially dtype-converted) torch tensor.
     """
     if dtype is not None and tensor.dtype != dtype:
         tensor = tensor.to(dtype)

@@ -26,7 +26,6 @@ from ttlang_test_utils import assert_allclose, to_l1
 
 import ttl
 
-
 # =============================================================================
 # Kernel definitions
 # =============================================================================
@@ -35,9 +34,9 @@ import ttl
 @ttl.operation(grid=(1, 1))
 def bcast_col_add_1x1_kernel(a, b, out):
     """Compute bcast_col(b) + a on a 1x1 tile."""
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -73,9 +72,9 @@ def bcast_col_add_1x1_kernel(a, b, out):
 @ttl.operation(grid=(1, 1))
 def bcast_col_add_2x2_kernel(a, b, out):
     """Compute bcast_col(b) + a on a 2x2 tile grid."""
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 2), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 2), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 2), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -111,9 +110,9 @@ def bcast_col_add_2x2_kernel(a, b, out):
 @ttl.operation(grid=(1, 1))
 def bcast_col_add_4x4_kernel(a, b, out):
     """Compute bcast_col(b) + a on a 4x4 tile grid (requires DST subblocking)."""
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(4, 4), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(4, 4), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(4, 4), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(4, 4), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(4, 4), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(4, 4), block_count=2)
 
     @ttl.compute()
     def compute_fn():

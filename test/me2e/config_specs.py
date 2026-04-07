@@ -70,7 +70,7 @@ class TestConfig:
             documentation and validation. Default is 64 (8x8 grid). Note: This is
             a derived value - the actual grid shape is determined by block_h and block_w.
 
-        buffer_factor: Circular buffer factor for double buffering.
+        block_count: Circular block count for double buffering.
             - 1: Single buffering
             - 2: Double buffering (default, overlaps data movement with compute)
             Double buffering can improve performance but uses more L1 memory.
@@ -95,7 +95,7 @@ class TestConfig:
         >>> config = TestConfig(
         ...     block_h=8,
         ...     block_w=16,
-        ...     buffer_factor=2
+        ...     block_count=2
         ... )
         >>> config.num_tiles
         128
@@ -112,7 +112,7 @@ class TestConfig:
     block_w: int = 8
     dtype: torch.dtype = torch.bfloat16
     num_tiles: int = 64
-    buffer_factor: int = 2
+    block_count: int = 2
     memory_layout: MemoryLayout = MemoryLayout.INTERLEAVED
 
     # Pipeline options.
@@ -123,7 +123,7 @@ class TestConfig:
         """
         Compact string representation for test output.
 
-        Format: block_h x block_w_dtype_buf{buffer_factor}_layout[_nodst][_sfpu]
+        Format: block_h x block_w_dtype_buf{block_count}_layout[_nodst][_sfpu]
         Examples:
             - 2x2_bf16_buf2_interleaved (2x2 grid, bfloat16, double buffer, interleaved)
             - 8x8_f32_buf2_interleaved (8x8 grid, float32, double buffer, interleaved)
@@ -133,8 +133,8 @@ class TestConfig:
         # Short dtype name (bf16, f32, etc.)
         dtype_str = str(self.dtype).split(".")[-1]
 
-        # Buffer factor (always explicit)
-        buffer_str = f"_buf{self.buffer_factor}"
+        # Block count (always explicit)
+        buffer_str = f"_buf{self.block_count}"
 
         # Layout indicator (always explicit, using enum value)
         layout_str = f"_{self.memory_layout.value}"
@@ -163,7 +163,7 @@ class TestConfig:
         return E2EConfig(
             grid_shape=(self.block_h, self.block_w),
             dtype=self.dtype,
-            buffer_factor=self.buffer_factor,
+            block_count=self.block_count,
             memory_layout=self.memory_layout,
         )
 

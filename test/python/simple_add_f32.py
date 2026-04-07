@@ -12,6 +12,7 @@ Simple add kernel with float32 data type.
 Tests that float32 tensors are properly handled through the layout derivation
 path (TTNNLayoutAttr -> page size calculation).
 """
+
 import ttl
 
 try:
@@ -27,9 +28,9 @@ except ImportError:
     dst_full_sync_en=False,
 )
 def add_kernel_f32(lhs, rhs, out):
-    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), buffer_factor=2)
-    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), block_count=2)
+    rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def add_compute():

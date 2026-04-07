@@ -397,7 +397,7 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
         arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
 
     // Verify matching per-block tile counts (via tensor shape, not
-    // ttk::CBType::getNumTiles() which includes buffer_factor).
+    // ttk::CBType::getNumTiles() which includes block_count).
     auto lhsExtract = op.getLhs().template getDefiningOp<tensor::ExtractOp>();
     auto rhsExtract = op.getRhs().template getDefiningOp<tensor::ExtractOp>();
     assert(lhsExtract && rhsExtract &&
@@ -903,48 +903,55 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
       }
     }
 
-    // B stride per K step is the full CB N dimension (not subblock ct).
-    // B is [K, N] row-major in the CB; stride between K rows is N.
-    int32_t fullN = ct; // default when not subblocked
+    // B stride per K step: for non-transposed B [K, N] the stride between
+    // K rows is the full CB N dimension. For transposed B [N, K] (future)
+    // the stride would be 1.
+    // TODO(#420): derive from transpose flag once transpose is supported.
+    int32_t bStridePerK = ct; // default when not subblocked
     Value rhsCBVal = lookupCBByIndex(op.getRhs(), funcOp);
     assert(rhsCBVal && "rhs CB lookup failed after prior successful lookup");
     if (auto ttlCb = mlir::dyn_cast<CircularBufferType>(rhsCBVal.getType())) {
       auto cbShape = ttlCb.getShape();
       if (cbShape.size() == 2) {
-        fullN = cbShape[1];
+        bStridePerK = cbShape[1];
       }
     }
 
-    // Emit matmul_block K loop. Each matmul_block call processes one K step;
-    // the caller iterates over K. kt_dim is a configuration parameter that
-    // tells the hardware the full K dimension (used by init for stride
-    // setup), not the number of tiles processed per call. Each step advances
-    // A's tile index by 1 (row-major [M,K]) and B's by fullN (row-major
-    // [K,N]).
-    if (kt == 1) {
-      ttk::MatmulBlockOp::create(rewriter, loc, *lhsCB, *rhsCB, in0TileIndex,
-                                 in1TileIndex, dstIdx, transpose, ctVal, rtVal,
-                                 ktVal);
-    } else {
+    // Emit matmul_block K loop. Each matmul_block call processes one K
+    // tile; the loop iterates K times. The kt_dim parameter passed to the
+    // hardware is the full K dimension, used by the unpacker for address
+    // stride setup. Each K step advances A's tile index by 1 (row-major
+    // [M, K]) and B's tile index by bStridePerK (row-major [K, N]).
+    {
       Value ub = arith::ConstantIndexOp::create(rewriter, loc, kt);
       Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
-      Value fullNIndex = arith::ConstantIndexOp::create(rewriter, loc, fullN);
       auto forOp = scf::ForOp::create(rewriter, loc, zero, ub, step);
-      {
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToStart(forOp.getBody());
-        Value kIdx = forOp.getInductionVar();
-        // A tile index: base + k.
-        Value in0Idx = arith::AddIOp::create(rewriter, loc, in0TileIndex, kIdx);
-        // B tile index: base + k * fullN.
-        Value kTimesFullN =
-            arith::MulIOp::create(rewriter, loc, kIdx, fullNIndex);
-        Value in1Idx =
-            arith::AddIOp::create(rewriter, loc, in1TileIndex, kTimesFullN);
-        ttk::MatmulBlockOp::create(rewriter, loc, *lhsCB, *rhsCB, in0Idx,
-                                   in1Idx, dstIdx, transpose, ctVal, rtVal,
-                                   ktVal);
-      }
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(forOp.getBody());
+      Value kIdx = forOp.getInductionVar();
+      MLIRContext *ctx = rewriter.getContext();
+
+      // A tile index: base + k.
+      //   affine_map<(k)[base] -> (base + k)>
+      auto in0Map = AffineMap::get(
+          1, 1, getAffineSymbolExpr(0, ctx) + getAffineDimExpr(0, ctx), ctx);
+      Value in0Idx = affine::AffineApplyOp::create(
+          rewriter, loc, in0Map, ValueRange{kIdx, in0TileIndex});
+
+      // B tile index: base + k * bStridePerK.
+      //   affine_map<(k)[base, stride] -> (base + k * stride)>
+      auto in1Map = AffineMap::get(1, 2,
+                                   getAffineSymbolExpr(0, ctx) +
+                                       getAffineDimExpr(0, ctx) *
+                                           getAffineSymbolExpr(1, ctx),
+                                   ctx);
+      Value bStrideVal =
+          arith::ConstantIndexOp::create(rewriter, loc, bStridePerK);
+      Value in1Idx = affine::AffineApplyOp::create(
+          rewriter, loc, in1Map, ValueRange{kIdx, in1TileIndex, bStrideVal});
+
+      ttk::MatmulBlockOp::create(rewriter, loc, *lhsCB, *rhsCB, in0Idx, in1Idx,
+                                 dstIdx, transpose, ctVal, rtVal, ktVal);
     }
 
     rewriter.replaceOp(op, adaptor.getLhs());
