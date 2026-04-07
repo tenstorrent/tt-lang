@@ -74,7 +74,7 @@ The `build-docker-images.sh` script:
 
 The toolchain (LLVM + tt-metal + Python venv) must be built separately
 before building `ird`/`dist` images. On CI this is done by
-`build-and-install.sh`; locally you build it with
+`scripts/build-and-install.sh`; locally you build it with
 `cmake -DTTLANG_TOOLCHAIN_DIR=/path/to/prefix` and then pass the path
 via `DOCKER_BUILD_EXTRA_ARGS` as shown above.
 
@@ -96,12 +96,12 @@ missing the toolchain.
 
 After building, use the image with `docker-test.sh`:
 ```bash
-DOCKER_IMAGE=tt-lang-ird-ubuntu-22-04:latest scripts/docker-test.sh mlir
+DOCKER_IMAGE=tt-lang-ird-ubuntu-22-04:<version-tag> scripts/docker-test.sh mlir
 ```
 
 Or run interactively:
 ```bash
-sudo docker run -it --rm --device=/dev/tenstorrent/0:/dev/tenstorrent/0 -v /dev/hugepages:/dev/hugepages -v /dev/hugepages-1G:/dev/hugepages-1G tt-lang-ird-ubuntu-22-04:latest bash
+sudo docker run -it --rm --device=/dev/tenstorrent/0:/dev/tenstorrent/0 -v /dev/hugepages:/dev/hugepages -v /dev/hugepages-1G:/dev/hugepages-1G tt-lang-ird-ubuntu-22-04:<version-tag> bash
 ```
 
 ## Image Architecture
@@ -176,7 +176,7 @@ docker run -it \
 
 - `Dockerfile.base` -- base image from ubuntu:22.04 with Python and system deps
 - `Dockerfile` -- multi-stage build (`ird` and `dist` targets, with separate build stages)
-- `build-and-install.sh` -- cmake configure/build/install with mode flags (`--toolchain-only`, `--force-rebuild`, `--test-toolchain`, etc. Used by CI and local toolchain builds. See '--help' for usage.)
+- `scripts/build-and-install.sh` -- cmake configure/build/install with mode flags (`--toolchain-only`, `--force-rebuild`, `--test-toolchain`, etc. Used by CI and local toolchain builds. See '--help' for usage.)
 - `entrypoint.sh` -- activates tt-lang environment on container start
 - `activate-install.sh` -- environment activation for installed tt-lang (used in containers)
 - `build-docker-images.sh` -- build/push script with `--image-type` filter

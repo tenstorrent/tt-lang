@@ -1253,10 +1253,26 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
       return failure();
     }
 
-    // No fusion support for reduce (deferred to follow-up PR).
-    if (!getAttachedCB(op.getInput()) || !getAttachedCB(op.getScaler())) {
+    if (!getAttachedCB(op.getScaler())) {
       return rewriter.notifyMatchFailure(op,
-                                         "reduce inputs must be CB-attached");
+                                         "reduce scaler must be CB-attached");
+    }
+
+    if (!getAttachedCB(op.getInput())) {
+      // Emit a user-facing error when the reduce input comes from an
+      // elementwise op that hasn't been stored to a dataflow buffer.
+      // Without this, the elementwise op fails to legalize with a
+      // cryptic "failed to legalize" message pointing at the wrong op.
+      Operation *defOp = op.getInput().getDefiningOp();
+      if (defOp && (isElementwiseOp(defOp) || isa<MatmulOp>(defOp) ||
+                    isa<BcastOp>(defOp) || isa<FillOp>(defOp))) {
+        op.emitError("elementwise operations feeding into reduce cannot be "
+                     "fused yet; store the intermediate result to a dataflow "
+                     "buffer before passing it to reduce (see issue #474)");
+        return failure();
+      }
+      return rewriter.notifyMatchFailure(op,
+                                         "reduce input must be CB-attached");
     }
 
     MLIRContext *ctx = rewriter.getContext();

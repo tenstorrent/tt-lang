@@ -728,6 +728,9 @@ defm TTL_Recip : TTL_UnaryElementwisePair<"recip", "recip_tile">;
 defm TTL_Sin : TTL_UnaryElementwisePair<"sin", "sin_tile">;
 defm TTL_Cos : TTL_UnaryElementwisePair<"cos", "cos_tile">;
 defm TTL_Tan : TTL_UnaryElementwisePair<"tan", "tan_tile">;
+defm TTL_Asin : TTL_UnaryElementwisePair<"asin", "asin_tile">;
+defm TTL_Acos : TTL_UnaryElementwisePair<"acos", "acos_tile">;
+defm TTL_Atan : TTL_UnaryElementwisePair<"atan", "atan_tile">;
 
 //===----------------------------------------------------------------------===//
 // Broadcast Operation

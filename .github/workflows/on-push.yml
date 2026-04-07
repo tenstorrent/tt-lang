@@ -26,7 +26,7 @@ jobs:
     secrets: inherit
     with:
       build_docs: ${{ github.ref == 'refs/heads/main' }}
-      docker_tag: "v0.1.7"
+      docker_tag: "latest"
 
   test-sim:
     uses: ./.github/workflows/call-test-sim.yml

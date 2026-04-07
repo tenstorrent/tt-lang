@@ -8,7 +8,7 @@
 #   ./build-docker-images.sh [--check-only] [--no-push] [--no-cache] [--image-type <base|dist|ird>]
 #
 # Arguments:
-#   --check-only      - Only check if images exist, don't build
+#   --check-only      - Only check if images exist in registry, don't build
 #   --no-push         - Build locally but don't push to registry
 #   --no-cache        - Build from scratch without using Docker cache
 #   --image-type TYPE - Build only the specified image type (base, dist, or ird)
@@ -83,8 +83,9 @@ if [ -z "$TTLANG_VERSION" ]; then
 fi
 echo "tt-lang version: $TTLANG_VERSION"
 
-# Docker tag is the git version (sanitized for Docker - replace / and : with -)
-DOCKER_TAG=$(echo "$TTLANG_VERSION" | sed 's/[\/:]/-/g')
+# Docker tag uses the nearest version tag (e.g., v0.1.8) so rebuilds overwrite
+# the same tag rather than creating a new one per commit.
+DOCKER_TAG=$(git describe --tags --match "v[0-9]*" --abbrev=0 2>/dev/null | sed 's/[\/:]/-/g')
 echo "Docker tag: $DOCKER_TAG"
 echo ""
 
@@ -122,18 +123,12 @@ build_image() {
 
     echo "--- Processing: $name ---"
 
-    # Check if image already exists in registry (only when not using --no-push)
-    if [ "$NO_PUSH" = false ]; then
+    # Check if image already exists in registry (--check-only mode)
+    if [ "$CHECK_ONLY" = true ] && [ "$NO_PUSH" = false ]; then
         if docker manifest inspect "$registry_image" > /dev/null 2>&1; then
             echo "Image already exists: $registry_image"
-            if [ "$CHECK_ONLY" = true ]; then
-                return 0
-            fi
-            echo "  Skipping build (image exists)"
             return 0
-        fi
-
-        if [ "$CHECK_ONLY" = true ]; then
+        else
             echo "Image does not exist: $registry_image"
             return 2
         fi
@@ -162,20 +157,20 @@ build_image() {
     # (e.g. --build-context for cache injection)
     local tag_args=()
     if [ "$NO_PUSH" = false ]; then
-        tag_args+=(-t "$registry_image" -t "ghcr.io/$REPO/$name:latest")
+        tag_args+=(-t "$registry_image")
     fi
-    tag_args+=(-t "$local_image" -t "$name:latest")
+    tag_args+=(-t "$local_image")
 
     # Pass BASE_IMAGE so Dockerfile FROM references resolve correctly.
     # For local builds, prefer the local base image but fall back to the
     # registry image if no local build exists.
     local base_image_arg=""
     if [ "$NO_PUSH" = false ]; then
-        base_image_arg="--build-arg BASE_IMAGE=ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:latest"
-    elif docker image inspect tt-lang-base-ubuntu-22-04:latest > /dev/null 2>&1; then
-        base_image_arg="--build-arg BASE_IMAGE=tt-lang-base-ubuntu-22-04:latest"
+        base_image_arg="--build-arg BASE_IMAGE=ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
+    elif docker image inspect "tt-lang-base-ubuntu-22-04:$DOCKER_TAG" > /dev/null 2>&1; then
+        base_image_arg="--build-arg BASE_IMAGE=tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
     else
-        base_image_arg="--build-arg BASE_IMAGE=ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:latest"
+        base_image_arg="--build-arg BASE_IMAGE=ghcr.io/$REPO/tt-lang-base-ubuntu-22-04:$DOCKER_TAG"
     fi
 
     docker build \
@@ -190,7 +185,6 @@ build_image() {
     if [ "$NO_PUSH" = false ]; then
         echo "Pushing: $registry_image"
         docker push "$registry_image"
-        docker push "ghcr.io/$REPO/$name:latest"
     else
         echo "Skipping push (--no-push specified)"
     fi

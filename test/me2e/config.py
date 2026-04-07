@@ -111,21 +111,29 @@ def validate_against_golden(
     result: torch.Tensor,
     ulp_threshold: int | None = None,
     pcc_threshold: float | None = None,
+    use_allclose: tuple[float, float] | None = None,
 ) -> None:
-    """Validate result against golden using both ULP and PCC.
+    """Validate result against golden using PCC and either ULP or allclose.
 
     Args:
         golden: Expected reference tensor.
         result: Actual tensor to compare.
         ulp_threshold: Explicit ULP threshold override. None uses the per-dtype default.
         pcc_threshold: Explicit PCC threshold override. None uses the assert_pcc default (0.9999).
+        use_allclose: If set, use assert_allclose with (rtol, atol) instead of
+            ULP+PCC. Used for ops where random inputs near zero inflate ULP
+            (ULP(0)=1.4e-45 for f32).
     """
-    from utils.correctness import assert_pcc, assert_with_ulp
+    from utils.correctness import assert_allclose, assert_pcc, assert_with_ulp
 
-    if ulp_threshold is None:
-        ulp_threshold = get_maximum_ulp_threshold(golden.dtype)
+    if use_allclose is not None:
+        rtol, atol = use_allclose
+        assert_allclose(result.float(), golden.float(), rtol=rtol, atol=atol)
+        return
     if pcc_threshold is not None:
         assert_pcc(golden.float(), result.float(), threshold=pcc_threshold)
     else:
         assert_pcc(golden.float(), result.float())
+    if ulp_threshold is None:
+        ulp_threshold = get_maximum_ulp_threshold(golden.dtype)
     assert_with_ulp(golden, result, ulp_threshold=ulp_threshold)

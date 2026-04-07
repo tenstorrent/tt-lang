@@ -18,21 +18,13 @@
 // CHECK:   auto [[ARGS0:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 2>(), 0>();
 // CHECK:   TensorAccessor [[ACCESSOR0:v[0-9]+]] = TensorAccessor([[ARGS0]], [[RT_ARG0]], [[ADDR]]);
 // CHECK:   int32_t [[CB_PTR0:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
-// CHECK-NEXT:   ptrdiff_t [[C0_1:v[0-9]+]] = (ptrdiff_t) [[CB_PTR0]];
-// CHECK-NEXT:   size_t [[C0_2:v[0-9]+]] = (size_t) [[C0_1]];
-// CHECK-NEXT:   ptrdiff_t [[C0_3:v[0-9]+]] = (ptrdiff_t) [[C0_2]];
-// CHECK-NEXT:   int32_t [[C0_4:v[0-9]+]] = (int32_t) [[C0_3]];
-// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR0]], [[C0_4]]);
+// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR0]], [[CB_PTR0]]);
 // Tensor 1: get runtime arg, create accessor, get CB write ptr, cast chain, async read
 // CHECK:   int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>({{v[0-9]+}});
 // CHECK:   auto [[ARGS1:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<1, 2>(), 1>();
 // CHECK:   TensorAccessor [[ACCESSOR1:v[0-9]+]] = TensorAccessor([[ARGS1]], [[RT_ARG1]], [[ADDR]]);
 // CHECK:   int32_t [[CB_PTR1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(1));
-// CHECK-NEXT:   ptrdiff_t [[C1_1:v[0-9]+]] = (ptrdiff_t) [[CB_PTR1]];
-// CHECK-NEXT:   size_t [[C1_2:v[0-9]+]] = (size_t) [[C1_1]];
-// CHECK-NEXT:   ptrdiff_t [[C1_3:v[0-9]+]] = (ptrdiff_t) [[C1_2]];
-// CHECK-NEXT:   int32_t [[C1_4:v[0-9]+]] = (int32_t) [[C1_3]];
-// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR1]], [[C1_4]]);
+// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR1]], [[CB_PTR1]]);
 // Consecutive barriers deduplicated to single barrier.
 // CHECK:   noc_async_read_barrier();
 // CHECK:   return;

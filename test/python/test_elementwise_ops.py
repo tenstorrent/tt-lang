@@ -23,6 +23,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from conftest import temp_kernel_files
 from ttlang_test_utils import assert_allclose, to_l1, to_l1_sharded
+from utils.correctness import assert_with_ulp
 
 # =============================================================================
 # Kernel Template - generates kernels via temp file + import
@@ -227,6 +228,9 @@ UNARY_OPS = {
     "sin": (make_unary_kernel("sin", "sin"), torch.sin),
     "cos": (make_unary_kernel("cos", "cos"), torch.cos),
     "tan": (make_unary_kernel("tan", "tan"), torch.tan),
+    "asin": (make_unary_kernel("asin", "asin"), torch.asin),
+    "acos": (make_unary_kernel("acos", "acos"), torch.acos),
+    "atan": (make_unary_kernel("atan", "atan"), torch.atan),
 }
 
 
@@ -317,6 +321,125 @@ def test_unary_op_sharded(device, op_name, shard_layout):
     result = ttnn.to_torch(out)
 
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+
+
+# =============================================================================
+# Inverse trig tests - bf16 bit patterns with ULP validation matching tt-metal
+# =============================================================================
+
+
+def _flush_subnormals(tensor):
+    """Flush subnormal values to zero in-place (hardware behavior)."""
+    tensor[torch.abs(tensor) < 2.0 ** (-126)] = 0.0
+    return tensor
+
+
+def _bf16_bitpatterns_in_range(lo, hi, dtype):
+    """Generate all bf16 bit patterns in [lo, hi], cast to dtype.
+
+    Matches tt-metal's test methodology (generate_all_bfloat16_bitpatterns)
+    but filtered to a domain range and sized for a single 32x32 tile.
+    Hardware flushes subnormals to zero, so we do the same.
+    """
+    all_bits = torch.arange(0, 2**16, dtype=torch.int32).to(torch.uint16)
+    all_bf16 = all_bits.view(torch.bfloat16).to(torch.float32)
+    # Filter to domain and remove non-finite values.
+    mask = (all_bf16 >= lo) & (all_bf16 <= hi) & torch.isfinite(all_bf16)
+    values = all_bf16[mask]
+    _flush_subnormals(values)
+    # Sample down to 32*32 = 1024 if needed, preserving endpoints.
+    num_elements = 32 * 32
+    if len(values) > num_elements:
+        indices = torch.linspace(0, len(values) - 1, steps=num_elements).long()
+        values = values[indices]
+    elif len(values) < num_elements:
+        # Pad with zeros if too few values.
+        values = torch.nn.functional.pad(values, (0, num_elements - len(values)))
+    return values.to(dtype).reshape(32, 32)
+
+
+# Thresholds aligned with tt-metal tests:
+#   bf16: asin ULP 3, acos ULP 3, atan ULP 3 (test_unary.py)
+#   f32:  asin ULP 100, acos ULP 100, atan ULP 3 (test_unary_fp32.py)
+INVERSE_TRIG_OPS = {
+    "asin": {
+        "torch_fn": torch.asin,
+        # Exclude exact boundaries where derivative is infinite.
+        "input_range": (-0.9961, 0.9961),
+        # bf16 ULP 3: aligned with tt-metal run_unary_inverse_trig_bf16_test.
+        # f32 ULP 2^15: true f32 linspace hits SFPU polynomial precision limits
+        # (measured max ~14748); tt-metal's ULP 100 only applies to bf16 bit patterns.
+        "ulp": {torch.bfloat16: 3, torch.float32: 2**15},
+    },
+    "acos": {
+        "torch_fn": torch.acos,
+        "input_range": (-0.9961, 0.9961),
+        # Same precision characteristics as asin.
+        "ulp": {torch.bfloat16: 3, torch.float32: 2**15},
+    },
+    "atan": {
+        "torch_fn": torch.atan,
+        "input_range": (-10.0, 10.0),
+        "ulp": {torch.bfloat16: 3, torch.float32: 2**14},
+    },
+}
+
+
+@pytest.mark.parametrize("op_name", INVERSE_TRIG_OPS.keys())
+def test_inverse_trig_bf16(device, op_name):
+    """Test inverse trig (bf16) with bf16 bit pattern inputs and ULP validation.
+
+    Matches tt-metal's test methodology: bf16 bit patterns with subnormal
+    flushing, filtered to valid domain. ULP thresholds aligned with
+    tt-metal's test_unary.py (run_unary_inverse_trig_bf16_test).
+    """
+    spec = INVERSE_TRIG_OPS[op_name]
+    kernel, _ = UNARY_OPS[op_name]
+    lo, hi = spec["input_range"]
+    dtype = torch.bfloat16
+
+    inp_torch = _bf16_bitpatterns_in_range(lo, hi, dtype)
+    out_torch = torch.zeros((32, 32), dtype=dtype)
+    expected = spec["torch_fn"](inp_torch)
+
+    inp = to_l1(inp_torch, device)
+    out = to_l1(out_torch, device)
+
+    kernel(inp, out)
+    result = ttnn.to_torch(out)
+
+    assert_with_ulp(expected, result, ulp_threshold=spec["ulp"][dtype])
+
+
+@pytest.mark.parametrize("op_name", INVERSE_TRIG_OPS.keys())
+def test_inverse_trig_f32(device, op_name):
+    """Test inverse trig (f32) with dense linspace inputs and ULP validation.
+
+    Uses linspace to generate evenly-spaced f32 values across the valid
+    domain, avoiding the zero-density problem of bf16 bit pattern
+    subsampling. ULP at zero is meaningless (ULP(0)=1.4e-45), so the
+    range excludes zero. Thresholds calibrated from measured hardware
+    precision (higher than tt-metal's bf16-pattern thresholds).
+    """
+    spec = INVERSE_TRIG_OPS[op_name]
+    kernel, _ = UNARY_OPS[op_name]
+    lo, hi = spec["input_range"]
+    dtype = torch.float32
+
+    # Two linspace halves to avoid zero (ULP is meaningless at zero).
+    neg_half = torch.linspace(lo, -0.001, steps=512, dtype=dtype)
+    pos_half = torch.linspace(0.001, hi, steps=512, dtype=dtype)
+    inp_torch = torch.cat([neg_half, pos_half]).reshape(32, 32)
+    out_torch = torch.zeros((32, 32), dtype=dtype)
+    expected = spec["torch_fn"](inp_torch)
+
+    inp = to_l1(inp_torch, device)
+    out = to_l1(out_torch, device)
+
+    kernel(inp, out)
+    result = ttnn.to_torch(out)
+
+    assert_with_ulp(expected, result, ulp_threshold=spec["ulp"][dtype])
 
 
 if __name__ == "__main__":

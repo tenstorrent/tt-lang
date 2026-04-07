@@ -22,7 +22,7 @@ The framework provides four types of tests:
 1. Declarative parametrized tests (`test_compute_ops.py`):
    - Single parametrized test function covering all elementwise operations
    - Operations auto-generated from `TTLElementwiseOps.def` in `op_specs.py`
-   - Tests all operations defined in the `.def` file (currently 13: add, sub, mul, max, exp, log, sqrt, rsqrt, tanh, abs, neg, relu, sigmoid)
+   - Tests all operations defined in the `.def` file (currently: add, sub, mul, div, max, min, exp, log, sqrt, rsqrt, tanh, abs, neg, relu, sigmoid, floor, recip, sin, cos, tan, asin, acos, atan)
    - Each operation tested with multiple configurations from `config_specs.py` (1x1, 2x2 grids)
    - All pipeline stages (build -> compile -> translate -> execute -> validate) executed in a single test function via `runner.py`
    - Uses temporary directories for kernel artifacts
