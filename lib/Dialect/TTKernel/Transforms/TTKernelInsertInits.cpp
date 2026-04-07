@@ -158,6 +158,12 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
     }
   }};
 
+  // Fill: init takes no arguments.
+  map[mlir::TypeID::get<ttk::FillTileOp>()] = {
+      [](OpBuilder &b, Location l, Operation *) {
+        ttk::FillTileInitOp::create(b, l);
+      }};
+
   // Transpose: resolves output CB from annotated attribute.
   map[mlir::TypeID::get<ttk::TransposeTileOp>()] = {
       [](OpBuilder &b, Location l, Operation *computeOp) {
@@ -389,6 +395,13 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
     Operation *insertBefore = hoistAboveCompilerLoops(acquireOp);
     OpBuilder builder(insertBefore);
     Location loc = acquireOp->getLoc();
+
+    // For fill-only regions, no copy_tile or bcast provides an input CB.
+    // Use the output CB for both sides of init_sfpu; the unpacker format
+    // is irrelevant since fill writes a constant directly to DST.
+    if (!inputCB && outputCB) {
+      inputCB = outputCB;
+    }
 
     if (analysis.hasMatmul && in0CB && in1CB) {
       // mm_block_init configures UNPACK + MATH + PACK for matmul_block.

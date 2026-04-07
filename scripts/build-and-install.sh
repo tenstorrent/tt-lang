@@ -81,7 +81,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 TTLANG_TOOLCHAIN_DIR="${TTLANG_TOOLCHAIN_DIR:-/opt/ttlang-toolchain}"
-CMAKE_BINARY_DIR="${CMAKE_BINARY_DIR:-build}"
+if [ "$MODE" = "toolchain-only" ]; then
+    CMAKE_BINARY_DIR="${CMAKE_BINARY_DIR:-build-toolchain}"
+else
+    CMAKE_BINARY_DIR="${CMAKE_BINARY_DIR:-build}"
+fi
 
 # ---- Configure (cmake configure + pip install) ----
 do_configure() {

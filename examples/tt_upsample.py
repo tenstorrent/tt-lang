@@ -19,16 +19,14 @@ def tt_lang_upsample_nearest_rowwise_interleaved(
     scale_factor: tuple[int, int],
 ):
     # input and output expected to be 4D tensors already in NxHxWxC row-wise interleaved layout
-    (N, H, W, C) = input_t.shape
+    N, H, W, C = input_t.shape
 
-    buffer_factor = 1
-    io_dfb = ttl.make_dataflow_buffer_like(
-        input_t, shape=(C,), buffer_factor=buffer_factor
-    )
+    block_count = 1
+    io_dfb = ttl.make_dataflow_buffer_like(input_t, shape=(C,), block_count=block_count)
 
     num_rows = N * H * W
     print(f"num_rows: {num_rows}")
-    (all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2) = (
+    all_cores, core_group_1, core_group_2, work_per_core1, work_per_core2 = (
         split_work_to_nodes((ttl.grid_size(dims=1),), num_rows)
     )
     print(

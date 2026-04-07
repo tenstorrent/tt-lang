@@ -34,7 +34,7 @@ def test_multinode_matmul(M, K, N):
     print(
         f"node_grid: {device_node_grid}, num_output_tiles_total: {num_output_tiles_total}"
     )
-    (_, all_nodes, node_group_1, node_group_2, work_per_node1, work_per_node2) = (
+    _, all_nodes, node_group_1, node_group_2, work_per_node1, work_per_node2 = (
         ttnn.split_work_to_cores(
             device_node_grid, num_output_tiles_total, row_wise=True
         )
@@ -67,9 +67,9 @@ def test_multinode_matmul(M, K, N):
         memory_config=dram_memory_config,
     )
     dtype_size = 2  # bfloat16
-    buffer_factor = 2
+    block_count = 2
     cb_page_size = dtype_size * ttnn.TILE_SIZE * ttnn.TILE_SIZE
-    cb_total_size = buffer_factor * cb_page_size
+    cb_total_size = block_count * cb_page_size
 
     a_cb = 0
     b_cb = 1

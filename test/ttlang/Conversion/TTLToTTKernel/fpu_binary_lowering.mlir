@@ -97,9 +97,9 @@
 func.func @fpu_add_2x2()
     attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [],
                 ttl.kernel_thread = #ttkernel.thread<compute>} {
-  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
   %lhs_ready = ttl.cb_wait %cb0 : <[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
   %lhs = ttl.attach_cb %lhs_ready, %cb0 : (tensor<2x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x2x!ttcore.tile<32x32, bf16>>
   %rhs_ready = ttl.cb_wait %cb2 : <[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
@@ -180,9 +180,9 @@ func.func @fpu_add_2x2()
 func.func @fpu_sub_1x1()
     attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [],
                 ttl.kernel_thread = #ttkernel.thread<compute>} {
-  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %lhs_ready = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %lhs = ttl.attach_cb %lhs_ready, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %rhs_ready = ttl.cb_wait %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -263,9 +263,9 @@ func.func @fpu_sub_1x1()
 func.func @fpu_mul_1x1()
     attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [],
                 ttl.kernel_thread = #ttkernel.thread<compute>} {
-  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %lhs_ready = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %lhs = ttl.attach_cb %lhs_ready, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %rhs_ready = ttl.cb_wait %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -391,9 +391,9 @@ func.func @fpu_mul_1x1()
 func.func @fpu_add_tanh_f32()
     attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [],
                 ttl.kernel_thread = #ttkernel.thread<compute>} {
-  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[2, 3], !ttcore.tile<32x32, f32>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[2, 3], !ttcore.tile<32x32, f32>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 2} : !ttl.cb<[2, 3], !ttcore.tile<32x32, f32>, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 3], !ttcore.tile<32x32, f32>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[2, 3], !ttcore.tile<32x32, f32>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[2, 3], !ttcore.tile<32x32, f32>, 2>
   %lhs_ready = ttl.cb_wait %cb0 : <[2, 3], !ttcore.tile<32x32, f32>, 2> -> tensor<2x3x!ttcore.tile<32x32, f32>>
   %lhs = ttl.attach_cb %lhs_ready, %cb0 : (tensor<2x3x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 3], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x3x!ttcore.tile<32x32, f32>>
   %rhs_ready = ttl.cb_wait %cb2 : <[2, 3], !ttcore.tile<32x32, f32>, 2> -> tensor<2x3x!ttcore.tile<32x32, f32>>
@@ -426,14 +426,14 @@ func.func @fpu_add_tanh_f32()
 // -----
 
 // =============================================================================
-// Test 5: FPU binary mul with mismatched buffer_factors (issue #438)
+// Test 5: FPU binary mul with mismatched block_counts (issue #438)
 // =============================================================================
 // Verifies that FPU binary lowering works when input CBs have different
-// buffer_factors. The per-block shape [1,1] is the same for both operands;
-// only the buffer_factor differs (1 vs 2). The buffer_factor controls
+// block_counts. The per-block shape [1,1] is the same for both operands;
+// only the block_count differs (1 vs 2). The block_count controls
 // double-buffering and does not affect the tile index range.
 
-// FPU-LABEL: func.func @fpu_mul_mismatched_buffer_factor
+// FPU-LABEL: func.func @fpu_mul_mismatched_block_count
 // FPU-DAG: %[[C1I:.*]] = arith.constant 1 : i32
 // FPU-DAG: %[[C0:.*]] = arith.constant 0 : index
 // FPU:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
@@ -450,17 +450,17 @@ func.func @fpu_add_tanh_f32()
 // FPU:     ttkernel.tile_regs_release
 // FPU:     ttkernel.cb_push_back(%[[CB1]], %[[C1I]])
 
-// SFPU-LABEL: func.func @fpu_mul_mismatched_buffer_factor
+// SFPU-LABEL: func.func @fpu_mul_mismatched_block_count
 // SFPU:     ttkernel.mul_binary_tile
 // SFPU-NOT: ttkernel.mul_tiles
 
 #map_bf = affine_map<(d0, d1) -> (d0, d1)>
-func.func @fpu_mul_mismatched_buffer_factor()
+func.func @fpu_mul_mismatched_block_count()
     attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [],
                 ttl.kernel_thread = #ttkernel.thread<compute>} {
-  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, buffer_factor = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
   %lhs_ready = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %lhs = ttl.attach_cb %lhs_ready, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %rhs_ready = ttl.cb_wait %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>

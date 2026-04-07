@@ -56,16 +56,16 @@ def __tutorial_operation(
     # large enough to hold the entire multi-tile block.
 
     a_dfb = ttl.make_dataflow_buffer_like(
-        a, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
+        a, shape=(row_tiles_per_block, col_tiles_per_block), block_count=2
     )
     b_dfb = ttl.make_dataflow_buffer_like(
-        b, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
+        b, shape=(row_tiles_per_block, col_tiles_per_block), block_count=2
     )
     c_dfb = ttl.make_dataflow_buffer_like(
-        c, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
+        c, shape=(row_tiles_per_block, col_tiles_per_block), block_count=2
     )
     y_dfb = ttl.make_dataflow_buffer_like(
-        y, shape=(row_tiles_per_block, col_tiles_per_block), buffer_factor=2
+        y, shape=(row_tiles_per_block, col_tiles_per_block), block_count=2
     )
 
     # The compute kernel is unchanged in structure: it still iterates over

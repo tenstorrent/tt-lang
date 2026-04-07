@@ -11,9 +11,9 @@ func.func @reduction_exceeds_dst_budget(
     -> tensor<2x!ttcore.tile<32x32, f32>> {
   %init = tensor.empty() : tensor<2x!ttcore.tile<32x32, f32>>
 
-  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 2}
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2}
       : !ttl.cb<[2, 10], !ttcore.tile<32x32, f32>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 16, buffer_factor = 2}
+  %cb1 = ttl.bind_cb {cb_index = 16, block_count = 2}
       : !ttl.cb<[2], !ttcore.tile<32x32, f32>, 2>
 
   %a_cb = ttl.attach_cb %a, %cb0

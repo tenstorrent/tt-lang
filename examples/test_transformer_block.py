@@ -31,7 +31,6 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 import ttl
 
-
 # Test configuration
 SEQ_TILES = 1  # 32 tokens
 EMBD_TILES = 1  # 32 embedding dim (single head)
@@ -57,38 +56,38 @@ def norm_qkv_kernel(x, w_q, w_k, w_v, scaler, q_out, k_out, v_out):
     RMSNorm(x) then project to Q, K, V.
     """
     x_dfb = ttl.make_dataflow_buffer_like(
-        x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        x, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
     w_q_dfb = ttl.make_dataflow_buffer_like(
-        w_q, shape=(EMBD_TILES, EMBD_TILES), buffer_factor=1
+        w_q, shape=(EMBD_TILES, EMBD_TILES), block_count=1
     )
     w_k_dfb = ttl.make_dataflow_buffer_like(
-        w_k, shape=(EMBD_TILES, EMBD_TILES), buffer_factor=1
+        w_k, shape=(EMBD_TILES, EMBD_TILES), block_count=1
     )
     w_v_dfb = ttl.make_dataflow_buffer_like(
-        w_v, shape=(EMBD_TILES, EMBD_TILES), buffer_factor=1
+        w_v, shape=(EMBD_TILES, EMBD_TILES), block_count=1
     )
-    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=1)
     q_dfb = ttl.make_dataflow_buffer_like(
-        q_out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        q_out, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
     k_dfb = ttl.make_dataflow_buffer_like(
-        k_out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        k_out, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
     v_dfb = ttl.make_dataflow_buffer_like(
-        v_out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        v_out, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
 
     # RMSNorm intermediates
     sq_dfb = ttl.make_dataflow_buffer_like(
-        x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        x, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
-    sum_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    sum_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
     bcast_dfb = ttl.make_dataflow_buffer_like(
-        x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        x, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
     normed_dfb = ttl.make_dataflow_buffer_like(
-        x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        x, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
 
     @ttl.compute()
@@ -163,19 +162,19 @@ def rotary_qk_kernel(q_in, k_in, cos, q_out, k_out):
     Real RoPE would split dimension and use sin too.
     """
     q_dfb = ttl.make_dataflow_buffer_like(
-        q_in, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        q_in, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
     k_dfb = ttl.make_dataflow_buffer_like(
-        k_in, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        k_in, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
     cos_dfb = ttl.make_dataflow_buffer_like(
-        cos, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        cos, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
     qo_dfb = ttl.make_dataflow_buffer_like(
-        q_out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        q_out, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
     ko_dfb = ttl.make_dataflow_buffer_like(
-        k_out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        k_out, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
 
     @ttl.compute()
@@ -218,48 +217,48 @@ def rotary_qk_kernel(q_in, k_in, cos, q_out, k_out):
 def attention_kernel(q, k, v, scale, causal_mask, scaler, out):
     """Single-head scaled dot-product attention."""
     q_dfb = ttl.make_dataflow_buffer_like(
-        q, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        q, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
     k_dfb = ttl.make_dataflow_buffer_like(
-        k, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        k, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
     v_dfb = ttl.make_dataflow_buffer_like(
-        v, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        v, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
-    scale_dfb = ttl.make_dataflow_buffer_like(scale, shape=(1, 1), buffer_factor=1)
+    scale_dfb = ttl.make_dataflow_buffer_like(scale, shape=(1, 1), block_count=1)
     mask_dfb = ttl.make_dataflow_buffer_like(
-        causal_mask, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=1
+        causal_mask, shape=(SEQ_TILES, SEQ_TILES), block_count=1
     )
-    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=1)
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        out, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
 
     k_t_dfb = ttl.make_dataflow_buffer_like(
-        k, shape=(EMBD_TILES, SEQ_TILES), buffer_factor=2
+        k, shape=(EMBD_TILES, SEQ_TILES), block_count=2
     )
     snodes_dfb = ttl.make_dataflow_buffer_like(
-        causal_mask, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2
+        causal_mask, shape=(SEQ_TILES, SEQ_TILES), block_count=2
     )
     scale_bcast_dfb = ttl.make_dataflow_buffer_like(
-        causal_mask, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2
+        causal_mask, shape=(SEQ_TILES, SEQ_TILES), block_count=2
     )
     scaled_masked_dfb = ttl.make_dataflow_buffer_like(
-        causal_mask, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2
+        causal_mask, shape=(SEQ_TILES, SEQ_TILES), block_count=2
     )
-    max_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    max_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
     max_bcast_dfb = ttl.make_dataflow_buffer_like(
-        causal_mask, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2
+        causal_mask, shape=(SEQ_TILES, SEQ_TILES), block_count=2
     )
     exp_dfb = ttl.make_dataflow_buffer_like(
-        causal_mask, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2
+        causal_mask, shape=(SEQ_TILES, SEQ_TILES), block_count=2
     )
-    sum_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    sum_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
     sum_bcast_dfb = ttl.make_dataflow_buffer_like(
-        causal_mask, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2
+        causal_mask, shape=(SEQ_TILES, SEQ_TILES), block_count=2
     )
     softmax_dfb = ttl.make_dataflow_buffer_like(
-        causal_mask, shape=(SEQ_TILES, SEQ_TILES), buffer_factor=2
+        causal_mask, shape=(SEQ_TILES, SEQ_TILES), block_count=2
     )
 
     @ttl.compute()
@@ -336,20 +335,20 @@ def attention_kernel(q, k, v, scale, causal_mask, scaler, out):
 def proj_residual_kernel(attn_out, x_residual, w_proj, out):
     """Output projection and residual add: out = x_residual + attn_out @ w_proj"""
     attn_dfb = ttl.make_dataflow_buffer_like(
-        attn_out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        attn_out, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
     res_dfb = ttl.make_dataflow_buffer_like(
-        x_residual, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        x_residual, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
     w_dfb = ttl.make_dataflow_buffer_like(
-        w_proj, shape=(EMBD_TILES, EMBD_TILES), buffer_factor=1
+        w_proj, shape=(EMBD_TILES, EMBD_TILES), block_count=1
     )
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        out, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
 
     proj_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        out, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
 
     @ttl.compute()
@@ -390,41 +389,41 @@ def proj_residual_kernel(attn_out, x_residual, w_proj, out):
 def norm_mlp_residual_kernel(x, x_residual, w_fc, w_proj, scaler, out):
     """RMSNorm(x) -> MLP (relu²) -> + residual"""
     x_dfb = ttl.make_dataflow_buffer_like(
-        x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        x, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
     res_dfb = ttl.make_dataflow_buffer_like(
-        x_residual, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        x_residual, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
     w_fc_dfb = ttl.make_dataflow_buffer_like(
-        w_fc, shape=(EMBD_TILES, MLP_TILES), buffer_factor=1
+        w_fc, shape=(EMBD_TILES, MLP_TILES), block_count=1
     )
     w_proj_dfb = ttl.make_dataflow_buffer_like(
-        w_proj, shape=(MLP_TILES, EMBD_TILES), buffer_factor=1
+        w_proj, shape=(MLP_TILES, EMBD_TILES), block_count=1
     )
-    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=1)
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=1)
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        out, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
 
     # Intermediates
     sq_dfb = ttl.make_dataflow_buffer_like(
-        x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        x, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
-    sum_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), buffer_factor=2)
+    sum_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
     bcast_dfb = ttl.make_dataflow_buffer_like(
-        x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        x, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
     normed_dfb = ttl.make_dataflow_buffer_like(
-        x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        x, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
     hidden_dfb = ttl.make_dataflow_buffer_like(
-        w_fc, shape=(SEQ_TILES, MLP_TILES), buffer_factor=2
+        w_fc, shape=(SEQ_TILES, MLP_TILES), block_count=2
     )
     act_dfb = ttl.make_dataflow_buffer_like(
-        w_fc, shape=(SEQ_TILES, MLP_TILES), buffer_factor=2
+        w_fc, shape=(SEQ_TILES, MLP_TILES), block_count=2
     )
     mlp_out_dfb = ttl.make_dataflow_buffer_like(
-        x, shape=(SEQ_TILES, EMBD_TILES), buffer_factor=2
+        x, shape=(SEQ_TILES, EMBD_TILES), block_count=2
     )
 
     @ttl.compute()

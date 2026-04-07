@@ -178,7 +178,12 @@ function(ttlang_verify_llvm_sha INSTALL_PREFIX EXPECTED_SHA)
   endif()
   set(_actual_sha "${CMAKE_MATCH_1}")
 
-  if(_actual_sha STREQUAL EXPECTED_SHA)
+  execute_process(
+    COMMAND "${CMAKE_SOURCE_DIR}/scripts/verify-sha.sh"
+            "${EXPECTED_SHA}" "${_actual_sha}"
+    RESULT_VARIABLE _sha_cmp)
+
+  if(_sha_cmp EQUAL 0)
     message(STATUS "LLVM SHA verified: ${_actual_sha}")
     return()
   endif()
@@ -188,16 +193,11 @@ function(ttlang_verify_llvm_sha INSTALL_PREFIX EXPECTED_SHA)
 
   message(AUTHOR_WARNING
     "LLVM SHA mismatch!\n"
-    "  Expected (tt-mlir): ${EXPECTED_SHA}\n"
-    "  Actual (installed): ${_actual_sha}\n"
-    "  Install prefix:     ${INSTALL_PREFIX}\n"
-    "Using a mismatched LLVM may cause build failures or runtime errors.")
-
-  if(NOT TTLANG_ACCEPT_LLVM_MISMATCH)
-    message(FATAL_ERROR
-      "LLVM SHA mismatch. To proceed despite this, re-run with:\n"
-      "  -DTTLANG_ACCEPT_LLVM_MISMATCH=ON")
-  endif()
+    "  Expected (submodule): ${EXPECTED_SHA}\n"
+    "  Actual (installed):   ${_actual_sha}\n"
+    "  Install prefix:       ${INSTALL_PREFIX}\n"
+    "The installed LLVM differs from what the tt-lang submodule pins.\n"
+    "This is usually fine if you built the toolchain yourself.")
 endfunction()
 
 # ttlang_verify_ttmetal_sha(SUBMODULE_DIR EXPECTED_SHA)
@@ -215,7 +215,12 @@ function(ttlang_verify_ttmetal_sha SUBMODULE_DIR EXPECTED_SHA)
     return()
   endif()
 
-  if(_actual_sha STREQUAL EXPECTED_SHA)
+  execute_process(
+    COMMAND "${CMAKE_SOURCE_DIR}/scripts/verify-sha.sh"
+            "${EXPECTED_SHA}" "${_actual_sha}"
+    RESULT_VARIABLE _sha_cmp)
+
+  if(_sha_cmp EQUAL 0)
     ttlang_debug_message("tt-metal SHA verified: ${_actual_sha}")
     return()
   endif()
@@ -225,11 +230,11 @@ function(ttlang_verify_ttmetal_sha SUBMODULE_DIR EXPECTED_SHA)
 
   message(AUTHOR_WARNING
     "tt-metal SHA mismatch!\n"
-    "  Expected (tt-mlir): ${EXPECTED_SHA}\n"
-    "  Actual (submodule): ${_actual_sha}\n"
-    "  Submodule path:     ${SUBMODULE_DIR}\n"
+    "  Expected (tt-mlir pins): ${EXPECTED_SHA}\n"
+    "  Actual (submodule):      ${_actual_sha}\n"
+    "  Submodule path:          ${SUBMODULE_DIR}\n"
     "Using a mismatched tt-metal may cause JIT compile failures or runtime errors.\n"
-    "To update: cd ${SUBMODULE_DIR} && git fetch origin ${EXPECTED_SHA} && git checkout ${EXPECTED_SHA}")
+    "To update: cd ${SUBMODULE_DIR} && git fetch --unshallow && git fetch origin ${EXPECTED_SHA} && git checkout ${EXPECTED_SHA}")
 
   if(NOT TTLANG_ACCEPT_TTMETAL_MISMATCH)
     message(FATAL_ERROR

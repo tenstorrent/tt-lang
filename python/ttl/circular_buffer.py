@@ -58,18 +58,16 @@ class CircularBuffer:
         self,
         tensor: Any,
         shape: Tuple[int, ...],
-        buffer_factor: int,
+        block_count: int,
     ):
         if len(shape) < 2:
             raise ValueError(f"CB shape must have at least 2 dimensions, got {shape}")
-        if buffer_factor < 1 or buffer_factor > 32:
-            raise ValueError(
-                f"buffer_factor must be in range [1, 32], got {buffer_factor}"
-            )
+        if block_count < 1 or block_count > 32:
+            raise ValueError(f"block_count must be in range [1, 32], got {block_count}")
 
         self.tensor = tensor
         self.shape = shape
-        self.buffer_factor = buffer_factor
+        self.block_count = block_count
         self._cb_index = _next_cb_index()
 
     @property
@@ -120,7 +118,7 @@ class CircularBuffer:
 def make_dataflow_buffer_like(
     tensor: Any,
     shape: Tuple[int, ...],
-    buffer_factor: int = 2,
+    block_count: int = 2,
 ) -> CircularBuffer:
     """
     Create a circular buffer with properties derived from a tensor.
@@ -128,9 +126,9 @@ def make_dataflow_buffer_like(
     Args:
         tensor: Tensor that determines the CB's data type
         shape: Tile counts per dimension for wait/reserve operations
-        buffer_factor: Capacity multiplier (default 2 for double-buffering)
+        block_count: Capacity multiplier (default 2 for double-buffering)
 
     Returns:
         CircularBuffer for use in thread function closures
     """
-    return CircularBuffer(tensor, shape, buffer_factor)
+    return CircularBuffer(tensor, shape, block_count)

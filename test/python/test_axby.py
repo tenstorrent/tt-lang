@@ -44,11 +44,11 @@ def axby_fused_kernel(a, x, b, y, out):
     This tests proper DST register allocation across multiple
     binary operations with distinct operands.
     """
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    y_dfb = ttl.make_dataflow_buffer_like(y, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+    y_dfb = ttl.make_dataflow_buffer_like(y, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():

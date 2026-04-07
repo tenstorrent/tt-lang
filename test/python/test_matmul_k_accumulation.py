@@ -42,15 +42,11 @@ def _make_matmul_k1(k_tiles, block_n):
     def kernel(a, w, out):
         Nt = w.shape[1] // TILE
 
-        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
-        w_dfb = ttl.make_dataflow_buffer_like(w, shape=(1, block_n), buffer_factor=2)
-        mm_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, block_n), buffer_factor=2)
-        acc_dfb = ttl.make_dataflow_buffer_like(
-            out, shape=(1, block_n), buffer_factor=2
-        )
-        out_dfb = ttl.make_dataflow_buffer_like(
-            out, shape=(1, block_n), buffer_factor=2
-        )
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+        w_dfb = ttl.make_dataflow_buffer_like(w, shape=(1, block_n), block_count=2)
+        mm_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, block_n), block_count=2)
+        acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, block_n), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, block_n), block_count=2)
 
         @ttl.compute()
         def compute():
@@ -98,13 +94,11 @@ def _make_matmul_kn(k_tiles, block_n):
     def kernel(a, w, out):
         Nt = w.shape[1] // TILE
 
-        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, k_tiles), buffer_factor=2)
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, k_tiles), block_count=2)
         w_dfb = ttl.make_dataflow_buffer_like(
-            w, shape=(k_tiles, block_n), buffer_factor=2
+            w, shape=(k_tiles, block_n), block_count=2
         )
-        out_dfb = ttl.make_dataflow_buffer_like(
-            out, shape=(1, block_n), buffer_factor=2
-        )
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, block_n), block_count=2)
 
         @ttl.compute()
         def compute():

@@ -11,12 +11,13 @@ Re-exports elementwise operations from the generated module.
 # Re-export all generated elementwise operations
 from ._generated_elementwise import *  # noqa: F401,F403
 from ._generated_elementwise import __all__ as _generated_all
-from .operators import broadcast, reduce_sum, reduce_max, transpose
+from .operators import broadcast, reduce_sum, reduce_max, transpose, fill
 
 __all__ = [
     "broadcast",
     "reduce_sum",
     "reduce_max",
     "transpose",
+    "fill",
     *_generated_all,
 ]
