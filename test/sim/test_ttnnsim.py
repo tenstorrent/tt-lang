@@ -1502,3 +1502,111 @@ class TestRowMajorLayout:
         """Tile count for tiled tensors is unchanged (regression guard)."""
         t = ttnn.Tensor(torch.zeros(64, 64))  # 2x2 tiles
         assert ttnn.tile_count_from_tensor(t) == 4
+
+
+class TestAllReduce:
+    """Tests for ttnn.all_reduce collective operation."""
+
+    def test_all_reduce_sums_shards(self) -> None:
+        """all_reduce sums each dim-0 shard and replicates the result."""
+        from python.sim.ttnnsim import set_num_devices
+
+        set_num_devices(4)
+        # Build a tensor with 4 equal shards along dim-0; only shard 0 is non-zero.
+        shard = torch.ones(2, 4, dtype=torch.float32)
+        zeros = torch.zeros(2, 4, dtype=torch.float32)
+        raw = torch.cat([shard, zeros, zeros, zeros], dim=0)  # (8, 4)
+        t = ttnn.from_torch(raw)
+        result = ttnn.all_reduce(t)
+        # Every shard should now equal the original shard.
+        expected = torch.cat([shard] * 4, dim=0)
+        assert torch.allclose(result.to_torch(), expected)
+
+    def test_all_reduce_layout_preserved(self) -> None:
+        """all_reduce preserves the input tensor's layout."""
+        from python.sim.ttnnsim import set_num_devices
+
+        set_num_devices(2)
+        raw = torch.ones(4, 8, dtype=torch.float32)
+        t = ttnn.from_torch(raw, layout=ttnn.ROW_MAJOR_LAYOUT)
+        result = ttnn.all_reduce(t)
+        assert result.layout == ttnn.ROW_MAJOR_LAYOUT
+
+    def test_all_reduce_single_device_identity(self) -> None:
+        """With a single device, all_reduce is the identity operation."""
+        from python.sim.ttnnsim import set_num_devices
+
+        set_num_devices(1)
+        raw = torch.arange(6, dtype=torch.float32).reshape(3, 2)
+        t = ttnn.from_torch(raw, layout=ttnn.ROW_MAJOR_LAYOUT)
+        result = ttnn.all_reduce(t)
+        assert torch.equal(result.to_torch(), raw)
+
+    def test_all_reduce_not_divisible_returns_unchanged(self) -> None:
+        """When shape[0] is not divisible by n_devices, tensor is returned as-is."""
+        from python.sim.ttnnsim import set_num_devices
+
+        set_num_devices(4)
+        # 5 rows is not divisible by 4 devices.
+        raw = torch.ones(5, 4, dtype=torch.float32)
+        t = ttnn.from_torch(raw, layout=ttnn.ROW_MAJOR_LAYOUT)
+        result = ttnn.all_reduce(t)
+        assert torch.equal(result.to_torch(), raw)
+
+    def test_all_reduce_dtype_conversion(self) -> None:
+        """all_reduce converts output dtype when dtype argument is given."""
+        from python.sim.ttnnsim import set_num_devices
+
+        set_num_devices(2)
+        raw = torch.ones(4, 4, dtype=torch.float32)
+        t = ttnn.from_torch(raw)
+        result = ttnn.all_reduce(t, dtype=torch.bfloat16)
+        assert result.dtype == torch.bfloat16
+
+    def test_all_reduce_memory_config_override(self) -> None:
+        """all_reduce uses the supplied memory_config when provided."""
+        from python.sim.ttnnsim import set_num_devices
+
+        set_num_devices(2)
+        raw = torch.ones(4, 4, dtype=torch.float32)
+        t = ttnn.from_torch(raw)
+        mc = MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED)
+        result = ttnn.all_reduce(t, memory_config=mc)
+        assert ttnn.get_memory_config(result) is mc
+
+    def test_all_reduce_propagates_name(self) -> None:
+        """all_reduce propagates the _name attribute from the source tensor."""
+        from python.sim.ttnnsim import set_num_devices
+        from python.sim.stats import register_tensor_name
+
+        set_num_devices(2)
+        raw = torch.ones(4, 4, dtype=torch.float32)
+        t = ttnn.from_torch(raw)
+        register_tensor_name(t, "my_tensor")
+        result = ttnn.all_reduce(t)
+        assert getattr(result, "_name", None) == "my_tensor"
+
+    def test_all_reduce_all_nonzero_shards(self) -> None:
+        """all_reduce correctly sums when multiple shards have non-zero values."""
+        from python.sim.ttnnsim import set_num_devices
+
+        set_num_devices(3)
+        shard0 = torch.full((2, 3), 1.0)
+        shard1 = torch.full((2, 3), 2.0)
+        shard2 = torch.full((2, 3), 3.0)
+        raw = torch.cat([shard0, shard1, shard2], dim=0)  # (6, 3)
+        t = ttnn.from_torch(raw, layout=ttnn.ROW_MAJOR_LAYOUT)
+        result = ttnn.all_reduce(t)
+        # Sum = 1+2+3 = 6, replicated to all 3 shards.
+        expected = torch.full((6, 3), 6.0)
+        assert torch.equal(result.to_torch(), expected)
+
+    def test_all_reduce_kwargs_accepted(self) -> None:
+        """all_reduce silently accepts unknown keyword arguments for API compatibility."""
+        from python.sim.ttnnsim import set_num_devices
+
+        set_num_devices(2)
+        raw = torch.ones(4, 4, dtype=torch.float32)
+        t = ttnn.from_torch(raw)
+        # Should not raise even with extra kwargs.
+        result = ttnn.all_reduce(t, num_links=2, topology="Ring")

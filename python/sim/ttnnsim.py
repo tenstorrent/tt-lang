@@ -1197,6 +1197,68 @@ def split_work_to_cores(
     )
 
 
+def all_reduce(
+    input_tensor: Tensor,
+    cluster_axis: Optional[int] = None,
+    mesh_device: Optional[Any] = None,
+    memory_config: Optional[MemoryConfig] = None,
+    dtype: Optional[torch.dtype] = None,
+    **kwargs: Any,
+) -> Tensor:
+    """Sum-reduce across all simulated devices.
+
+    In the simulator, the input tensor is treated as if its first dimension is
+    partitioned equally across GetNumAvailableDevices() virtual device shards.
+    Each shard's contribution is summed and the result is replicated back to
+    every shard, matching the all-reduce collective semantics.
+
+    If shape[0] is not divisible by the number of devices, the tensor is
+    returned unchanged.
+
+    Args:
+        input_tensor: Input tensor with shape[0] divisible by num_devices.
+        cluster_axis: Ignored (accepted for API compatibility).
+        mesh_device: Ignored (accepted for API compatibility).
+        memory_config: Optional output memory config.
+        dtype: Optional output dtype.
+        **kwargs: Additional keyword arguments accepted for API compatibility.
+
+    Returns:
+        Tensor where every virtual shard along dim=0 holds the sum of all shards.
+    """
+    from .context import get_context
+
+    n_devices = get_context().config.num_devices
+    torch_tensor = input_tensor.to_torch()
+    shape = torch_tensor.shape
+
+    if shape[0] % n_devices != 0:
+        return input_tensor
+
+    shard_size = shape[0] // n_devices
+    rest = shape[1:]
+    # Reshape to (n_devices, shard_size, *rest), reduce along device axis, replicate.
+    reshaped = torch_tensor.reshape(n_devices, shard_size, *rest)
+    summed = reshaped.sum(dim=0)  # (shard_size, *rest)
+    result = (
+        summed.unsqueeze(0)
+        .expand(n_devices, *summed.shape)
+        .reshape(*shape)
+        .contiguous()
+    )
+
+    if dtype is not None and result.dtype != dtype:
+        result = result.to(dtype)
+
+    out_memory_config = (
+        memory_config if memory_config is not None else input_tensor.memory_config
+    )
+    result_tensor = Tensor(result, input_tensor.layout, out_memory_config)
+    if hasattr(input_tensor, "_name"):
+        result_tensor._name = input_tensor._name  # type: ignore[attr-defined]
+    return result_tensor
+
+
 def squeeze(input_tensor: Tensor, dim: Optional[int] = None) -> Tensor:
     """Remove dimensions of size 1 from a tensor.
 
