@@ -78,6 +78,7 @@ jobs:
 
     outputs:
       docker-image: ${{ steps.build-dist.outputs.docker-image }}
+      docker-tag: ${{ steps.docker-tag.outputs.docker-tag }}
 
     steps:
       - uses: actions/checkout@v5
@@ -99,6 +100,13 @@ jobs:
 
       - name: Fix git safe directory for submodules
         run: git config --global --add safe.directory '*'
+
+      - name: Extract Docker tag
+        id: docker-tag
+        run: |
+          DOCKER_TAG=$(.github/containers/get-version-tag.sh)
+          echo "docker-tag=$DOCKER_TAG" >> $GITHUB_OUTPUT
+          echo "Docker tag: $DOCKER_TAG"
 
       - name: Prepare toolchain directory
         run: sudo install -d -o $(id -u) -g $(id -g) /opt/ttlang-toolchain
@@ -248,3 +256,11 @@ jobs:
           echo ""
           echo "=== Docker Disk Usage ==="
           docker system df || true
+
+  test-dist-tutorials:
+    needs: [build-images]
+    uses: ./.github/workflows/call-test-dist-tutorials.yml
+    secrets: inherit
+    with:
+      runs-on: n150
+      dist_docker_tag: ${{ needs.build-images.outputs.docker-tag }}

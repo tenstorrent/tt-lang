@@ -85,7 +85,7 @@ echo "tt-lang version: $TTLANG_VERSION"
 
 # Docker tag uses the nearest version tag (e.g., v0.1.8) so rebuilds overwrite
 # the same tag rather than creating a new one per commit.
-DOCKER_TAG=$(git describe --tags --match "v[0-9]*" --abbrev=0 2>/dev/null | sed 's/[\/:]/-/g')
+DOCKER_TAG=$("${SCRIPT_DIR}/get-version-tag.sh")
 echo "Docker tag: $DOCKER_TAG"
 echo ""
 
