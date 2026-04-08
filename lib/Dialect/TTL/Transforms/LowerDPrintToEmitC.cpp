@@ -207,22 +207,23 @@ static SmallVector<DSTSlotInfo> findLiveDSTSlots(Operation *dprintOp) {
     }
 
     if (isa<TileStoreOp>(op)) {
-      auto tileVal = op->getOperand(0);
-      if (auto *defOp = tileVal.getDefiningOp()) {
-        if (auto attr = defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-          slotToOp.erase(attr.getInt());
+      if (auto dstVal = getTileOpDstIndex(op)) {
+        if (auto slot = foldIndexToConstant(*dstVal)) {
+          slotToOp.erase(*slot);
         }
       }
     } else if (isTileComputeOp(op)) {
-      if (auto attr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-        bool isF32 = false;
-        if (op->getNumResults() > 0) {
-          if (auto tileType =
-                  dyn_cast<ttcore::TileType>(op->getResult(0).getType())) {
-            isF32 = tileType.getElementType().isF32();
+      if (auto dstVal = getTileOpDstIndex(op)) {
+        if (auto slot = foldIndexToConstant(*dstVal)) {
+          bool isF32 = false;
+          if (op->getNumResults() > 0) {
+            if (auto tileType =
+                    dyn_cast<ttcore::TileType>(op->getResult(0).getType())) {
+              isF32 = tileType.getElementType().isF32();
+            }
           }
+          slotToOp[*slot] = {op->getName().getStringRef().str(), isF32};
         }
-        slotToOp[attr.getInt()] = {op->getName().getStringRef().str(), isF32};
       }
     }
     return WalkResult::advance();

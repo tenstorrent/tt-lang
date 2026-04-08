@@ -106,8 +106,9 @@ func.func @single_type_already_sorted(
        %out_tile: !ttcore.tile<32x32, bf16>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %sum, %result_view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
+    %c0 = arith.constant 0 : index
+    %sum = ttl.tile_add %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    ttl.tile_store %sum, %result_view[%i, %j] into dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<2x1x!ttcore.tile<32x32, bf16>>
 
@@ -155,11 +156,11 @@ func.func @single_type_already_sorted(
 // FPU:       ttkernel.exp_tile(%[[C3]])
 // FPU:       ttkernel.tile_regs_commit
 // FPU-NEXT:  ttkernel.tile_regs_wait
-// Pack phase
+// Pack phase: DST indices are reused (add and exp share dst slots per tile)
 // FPU:       ttkernel.pack_tile(%[[C0]], %[[CB3]], %[[C0]], true)
-// FPU:       ttkernel.pack_tile(%[[C1]], %[[CB4]], %[[C0]], true)
+// FPU:       ttkernel.pack_tile(%[[C0]], %[[CB4]], %[[C0]], true)
 // FPU:       ttkernel.pack_tile(%[[C2]], %[[CB3]], %[[C1]], true)
-// FPU:       ttkernel.pack_tile(%[[C3]], %[[CB4]], %[[C1]], true)
+// FPU:       ttkernel.pack_tile(%[[C2]], %[[CB4]], %[[C1]], true)
 // FPU:       ttkernel.tile_regs_release
 // FPU:       ttkernel.cb_push_back(%[[CB3]], %[[C2_I32]])
 // FPU:       ttkernel.cb_push_back(%[[CB4]], %[[C2_I32]])
@@ -201,11 +202,11 @@ func.func @single_type_already_sorted(
 // SFPU:      ttkernel.exp_tile(%[[C3]])
 // SFPU:      ttkernel.tile_regs_commit
 // SFPU-NEXT: ttkernel.tile_regs_wait
-// Pack phase
+// Pack phase: DST indices are reused (add and exp share dst slots per tile)
 // SFPU:      ttkernel.pack_tile(%[[C0]], %[[CB3]], %[[C0]], true)
-// SFPU:      ttkernel.pack_tile(%[[C1]], %[[CB4]], %[[C0]], true)
+// SFPU:      ttkernel.pack_tile(%[[C0]], %[[CB4]], %[[C0]], true)
 // SFPU:      ttkernel.pack_tile(%[[C2]], %[[CB3]], %[[C1]], true)
-// SFPU:      ttkernel.pack_tile(%[[C3]], %[[CB4]], %[[C1]], true)
+// SFPU:      ttkernel.pack_tile(%[[C2]], %[[CB4]], %[[C1]], true)
 // SFPU:      ttkernel.tile_regs_release
 // SFPU:      ttkernel.cb_push_back(%[[CB3]], %[[C2_I32]])
 // SFPU:      ttkernel.cb_push_back(%[[CB4]], %[[C2_I32]])
@@ -250,12 +251,13 @@ func.func @copy_before_sfpu_reorder(
        %o1: !ttcore.tile<32x32, bf16>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
+    %c0 = arith.constant 0 : index
     // Binary at depth 0: reads from CB
-    %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, bf16>
+    %sum = ttl.tile_add %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
     // Unary: exp of c (needs copy_tile, independent of add)
-    %exp = ttl.tile_exp %c_tile : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %sum, %rv0[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
-    ttl.tile_store %exp, %rv1[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
+    %exp = ttl.tile_exp %c_tile into dst[%c0] : !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    ttl.tile_store %sum, %rv0[%i, %j] into dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %exp, %rv1[%i, %j] into dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> (tensor<2x1x!ttcore.tile<32x32, bf16>>, tensor<2x1x!ttcore.tile<32x32, bf16>>)
 

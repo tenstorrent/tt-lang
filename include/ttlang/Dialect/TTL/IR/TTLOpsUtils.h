@@ -351,6 +351,63 @@ inline FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
   return getDstCapacity(isFloat32, fullSyncEn);
 }
 
+/// Fold a Value through constant integer arithmetic to resolve its value.
+/// Handles arith.constant directly, and recursively folds arith.addi and
+/// arith.muli where both operands are foldable.
+inline std::optional<int64_t> foldIndexToConstant(Value val) {
+  if (auto constIdx = getConstantIntValue(val)) {
+    return constIdx;
+  }
+  auto *defOp = val.getDefiningOp();
+  if (!defOp) {
+    return std::nullopt;
+  }
+  auto foldBinOp = [](auto binOp, auto combine) -> std::optional<int64_t> {
+    auto lhs = foldIndexToConstant(binOp.getLhs());
+    auto rhs = foldIndexToConstant(binOp.getRhs());
+    if (lhs && rhs) {
+      return combine(*lhs, *rhs);
+    }
+    return std::nullopt;
+  };
+  if (auto addOp = dyn_cast<arith::AddIOp>(defOp)) {
+    return foldBinOp(addOp, std::plus<int64_t>{});
+  }
+  if (auto mulOp = dyn_cast<arith::MulIOp>(defOp)) {
+    return foldBinOp(mulOp, std::multiplies<int64_t>{});
+  }
+  return std::nullopt;
+}
+
+/// Get the dst_index Value from a tile op, or std::nullopt if the op
+/// does not have the TTLDstResultOpTrait. CopyTileOp is handled separately
+/// since it has its own dst_index operand but not the trait.
+inline std::optional<Value> getTileOpDstIndex(Operation *op) {
+  if (auto copyTile = dyn_cast<CopyTileOp>(op)) {
+    return copyTile.getDstIndex();
+  }
+  if (op->hasTrait<TTLDstResultOpTrait>()) {
+    return op->getOperand(op->getNumOperands() - 1);
+  }
+  return std::nullopt;
+}
+
+/// Set the dst_index Value on a tile op.
+inline void setTileOpDstIndex(Operation *op, Value newDstIndex) {
+  if (auto copyTile = dyn_cast<CopyTileOp>(op)) {
+    copyTile.getDstIndexMutable().assign(newDstIndex);
+  } else if (op->hasTrait<TTLDstResultOpTrait>()) {
+    op->setOperand(op->getNumOperands() - 1, newDstIndex);
+  }
+}
+
+/// Create a placeholder dst_index (constant 0). Used when creating tile ops
+/// before AssignDST has computed the actual index. AssignDST replaces the
+/// operand with the correct value via getDstIndexMutable().assign().
+inline Value createPlaceholderDstIndex(OpBuilder &builder, Location loc) {
+  return arith::ConstantIndexOp::create(builder, loc, 0);
+}
+
 } // namespace mlir::tt::ttl
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSUTILS_H

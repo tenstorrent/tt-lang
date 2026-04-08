@@ -43,8 +43,9 @@ func.func @no_tiling_when_all_fit(%a: tensor<1x8x!ttcore.tile<32x32, f32>>)
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x8x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %exp = ttl.tile_exp %a_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %exp, %reserve[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x8x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x8x!ttcore.tile<32x32, f32>>
 
@@ -92,8 +93,9 @@ func.func @tile_binary_1x8(
        %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x8x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %sum = ttl.tile_add %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %sum, %reserve[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x8x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x8x!ttcore.tile<32x32, f32>>
 
@@ -150,8 +152,9 @@ func.func @tile_multidim_2x8(%a: tensor<2x8x!ttcore.tile<32x32, f32>>)
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x8x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %exp = ttl.tile_exp %a_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %exp, %reserve[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x8x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x8x!ttcore.tile<32x32, f32>>
 
@@ -194,8 +197,9 @@ func.func @no_subblocking_multidim(%a: tensor<2x4x!ttcore.tile<32x32, f32>>)
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x4x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %exp = ttl.tile_exp %a_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %exp, %reserve[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x4x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x4x!ttcore.tile<32x32, f32>>
 
@@ -252,8 +256,9 @@ func.func @subblock_multidim_4x4(%a: tensor<4x4x!ttcore.tile<32x32, f32>>)
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %exp = ttl.tile_exp %a_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %exp, %reserve[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<4x4x!ttcore.tile<32x32, f32>>
 
@@ -301,8 +306,9 @@ func.func @no_subblocking_binary(
        %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x4x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %sum = ttl.tile_add %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %sum, %reserve[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x4x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x4x!ttcore.tile<32x32, f32>>
 
@@ -359,8 +365,9 @@ func.func @tile_multidim_remainder_3x3(%a: tensor<3x3x!ttcore.tile<32x32, f32>>)
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<3x3x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %exp = ttl.tile_exp %a_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %exp, %reserve[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<3x3x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<3x3x!ttcore.tile<32x32, f32>>
 
@@ -440,8 +447,9 @@ func.func @subblock_broadcast_col(
        %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %sum = ttl.tile_add %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %sum, %reserve[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<4x4x!ttcore.tile<32x32, f32>>
 

@@ -25,16 +25,16 @@
 // CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary add: both operands are block args, no copy_tile needed
-// CHECK-NEXT:        %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary}
+// CHECK:        %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[{{.*}}] {ttl.fpu_binary}
 // Copy B for sub/mul (SFPU operand needs copy_tile)
-// CHECK:             %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]], %{{.*}} {dst_idx = 1 : i32}
-// CHECK-NEXT:        %[[SUB:.*]] = ttl.tile_sub %[[ADD]], %[[DTILE]] {dst_idx = 0 : i32}
-// CHECK-NEXT:        %[[MUL:.*]] = ttl.tile_mul %[[SUB]], %[[DTILE]] {dst_idx = 0 : i32}
-// CHECK-NEXT:        %[[EXP:.*]] = ttl.tile_exp %[[MUL]] {dst_idx = 0 : i32}
-// CHECK-NEXT:        %[[LOG:.*]] = ttl.tile_log %[[EXP]] {dst_idx = 0 : i32}
-// CHECK-NEXT:        %[[NEG:.*]] = ttl.tile_neg %[[LOG]] {dst_idx = 0 : i32}
-// CHECK-NEXT:        %[[SQRT:.*]] = ttl.tile_sqrt %[[NEG]] {dst_idx = 0 : i32}
-// SEPARATE: ttl.tile_sqrt {{.*}} {dst_idx = 2 : i32}
+// CHECK:             %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]], %
+// CHECK:        %[[SUB:.*]] = ttl.tile_sub %[[ADD]], %[[DTILE]] into dst[{{.*}}]
+// CHECK:        %[[MUL:.*]] = ttl.tile_mul %[[SUB]], %[[DTILE]] into dst[{{.*}}]
+// CHECK:        %[[EXP:.*]] = ttl.tile_exp %[[MUL]] into dst[{{.*}}]
+// CHECK:        %[[LOG:.*]] = ttl.tile_log %[[EXP]] into dst[{{.*}}]
+// CHECK:        %[[NEG:.*]] = ttl.tile_neg %[[LOG]] into dst[{{.*}}]
+// CHECK:        %[[SQRT:.*]] = ttl.tile_sqrt %[[NEG]] into dst[{{.*}}]
+// SEPARATE: ttl.tile_sqrt {{.*}} into dst[{{.*}}]
 //
 // SFPU path: init_sfpu instead of init_binary, copy_tile for both add operands
 // SFPU-LABEL:   func.func @seven_op_chain
@@ -44,17 +44,17 @@
 // SFPU:           ^bb0
 // SFPU-NOT:         fpu_binary
 // copy A and B for SFPU add
-// SFPU:             ttl.copy_tile {{.*}} {dst_idx = 0 : i32}
-// SFPU:             ttl.copy_tile {{.*}} {dst_idx = 1 : i32}
-// SFPU:             ttl.tile_add {{.*}} {dst_idx = 0 : i32}
+// SFPU:             ttl.copy_tile {{.*}}
+// SFPU:             ttl.copy_tile {{.*}}
+// SFPU:             ttl.tile_add {{.*}} into dst[{{.*}}]
 // sub, mul reuse the B copy (dst_tile_1 at slot 1)
-// SFPU:             ttl.tile_sub {{.*}} {dst_idx = 0 : i32}
-// SFPU:             ttl.tile_mul {{.*}} {dst_idx = 0 : i32}
-// SFPU:             ttl.tile_exp {{.*}} {dst_idx = 0 : i32}
-// SFPU:             ttl.tile_log {{.*}} {dst_idx = 0 : i32}
-// SFPU:             ttl.tile_neg {{.*}} {dst_idx = 0 : i32}
-// SFPU:             %[[SQRTS:.*]] = ttl.tile_sqrt {{.*}} {dst_idx = 0 : i32}
-// SFPU:             ttl.tile_store %[[SQRTS]], %{{.*}}[%{{.*}}, %{{.*}}]
+// SFPU:             ttl.tile_sub {{.*}} into dst[{{.*}}]
+// SFPU:             ttl.tile_mul {{.*}} into dst[{{.*}}]
+// SFPU:             ttl.tile_exp {{.*}} into dst[{{.*}}]
+// SFPU:             ttl.tile_log {{.*}} into dst[{{.*}}]
+// SFPU:             ttl.tile_neg {{.*}} into dst[{{.*}}]
+// SFPU:             %[[SQRTS:.*]] = ttl.tile_sqrt {{.*}} into dst[{{.*}}]
+// SFPU:             ttl.tile_store %[[SQRTS]], %{{.*}}[%{{.*}}, %{{.*}}]{{.*}}into dst[{{.*}}]
 // SFPU-NEXT:        ttl.yield
 //
 // CHECK-NEXT:        ttl.tile_store %[[SQRT]], %{{.*}}[%[[I0]], %[[I1]]]
@@ -87,14 +87,15 @@ func.func @seven_op_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
     // Seven-operation fused chain - each must appear in output with dst_idx
-    %add = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    %sub = ttl.tile_sub %add, %b_tile : !ttcore.tile<32x32, f32>
-    %mul = ttl.tile_mul %sub, %b_tile : !ttcore.tile<32x32, f32>
-    %exp = ttl.tile_exp %mul : !ttcore.tile<32x32, f32>
-    %log = ttl.tile_log %exp : !ttcore.tile<32x32, f32>
-    %neg = ttl.tile_neg %log : !ttcore.tile<32x32, f32>
-    %sqrt = ttl.tile_sqrt %neg : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sqrt, %result_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %add = ttl.tile_add %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %sub = ttl.tile_sub %add, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %mul = ttl.tile_mul %sub, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %exp = ttl.tile_exp %mul into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %log = ttl.tile_log %exp into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %neg = ttl.tile_neg %log into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %sqrt = ttl.tile_sqrt %neg into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %sqrt, %result_view[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

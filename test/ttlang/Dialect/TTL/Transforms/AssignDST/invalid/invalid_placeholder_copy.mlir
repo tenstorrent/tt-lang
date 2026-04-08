@@ -32,7 +32,8 @@ func.func @invalid_placeholder_copy(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>,
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
     // First compute an intermediate result
-    %add = ttl.tile_add %x, %y : !ttcore.tile<32x32, f32>
+    %c0 = arith.constant 0 : index
+    %add = ttl.tile_add %x, %y into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     // Pre-existing copy_tile with placeholder sentinel indices
     // The src is NOT a block argument (it's %add), so the pass cannot replace it
     %placeholder_dst = arith.constant 9223372036854775807 : index
@@ -40,8 +41,8 @@ func.func @invalid_placeholder_copy(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>,
     %dst_token, %copied = ttl.copy_tile %add[], %placeholder_dst
         {ttl.placeholder_copy}
         : !ttcore.tile<32x32, f32>, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-    %exp = ttl.tile_exp %copied : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    %exp = ttl.tile_exp %copied into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %exp, %out_view[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 

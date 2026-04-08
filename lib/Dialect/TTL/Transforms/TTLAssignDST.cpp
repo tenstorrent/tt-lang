@@ -232,7 +232,9 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
         });
       } else {
         // Operation result: insert copy_dst (DST-to-DST)
-        auto copyOp = CopyDstOp::create(builder, loc, value.getType(), value);
+        auto copyOp =
+            CopyDstOp::create(builder, loc, value.getType(), value,
+                              createPlaceholderDstIndex(builder, loc));
         copyResult = copyOp.getResult();
         LLVM_DEBUG({
           llvm::dbgs() << "Phase 1: Inserted copy_dst for consumer " << i
@@ -831,8 +833,11 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
             }
           }
 
-          op.setAttr(kDstIdxAttrName,
-                     builder.getI32IntegerAttr(static_cast<int32_t>(dstIdx)));
+          OpBuilder::InsertionGuard guard(builder);
+          builder.setInsertionPoint(&op);
+          Value dstIdxVal =
+              arith::ConstantIndexOp::create(builder, op.getLoc(), dstIdx);
+          setTileOpDstIndex(&op, dstIdxVal);
         }
       }
 

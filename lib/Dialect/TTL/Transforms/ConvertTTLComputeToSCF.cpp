@@ -181,9 +181,9 @@ static scf::LoopNest generateAccumulatingLoops(
   SmallVector<std::pair<TileStoreOp, int32_t>> storeInfos;
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (auto store = dyn_cast<TileStoreOp>(&bodyOp)) {
-      auto dstAttr = store->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
-      int32_t dstIdx = dstAttr ? dstAttr.getInt() : 0;
-      storeInfos.emplace_back(store, dstIdx);
+      auto dstIdx = getConstantIntValue(store.getDstIndex());
+      storeInfos.emplace_back(store,
+                              dstIdx ? static_cast<int32_t>(*dstIdx) : 0);
     }
   }
 
@@ -308,11 +308,10 @@ static scf::LoopNest generateAccumulatingLoops(
               applyIndexingMap(storeBuilder, parLoc,
                                indexingMaps[numInputs + outputIdx], fullIVs);
 
-          auto newStore =
-              TileStoreOp::create(storeBuilder, parLoc, placeholder,
-                                  origStore.getView(), storeIndices);
-          newStore->setAttr(kDstIdxAttrName,
-                            storeBuilder.getI32IntegerAttr(dstIdx));
+          Value dstIdxVal =
+              arith::ConstantIndexOp::create(storeBuilder, parLoc, dstIdx);
+          TileStoreOp::create(storeBuilder, parLoc, placeholder,
+                              origStore.getView(), storeIndices, dstIdxVal);
         }
 
         return {};
@@ -561,11 +560,8 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
   // tileIdx * dstPerIteration to avoid register collisions.
   int64_t maxDstIdx = 0;
   nest.back().getBody()->walk([&](Operation *op) {
-    if (auto attr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-      maxDstIdx = std::max(maxDstIdx, static_cast<int64_t>(attr.getInt()));
-    }
-    if (auto copyTile = dyn_cast<CopyTileOp>(op)) {
-      if (auto constIdx = getConstantIntValue(copyTile.getDstIndex())) {
+    if (auto dstVal = getTileOpDstIndex(op)) {
+      if (auto constIdx = foldIndexToConstant(*dstVal)) {
         maxDstIdx = std::max(maxDstIdx, *constIdx);
       }
     }
@@ -636,26 +632,16 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
 
     int64_t dstBase = tileIdx * dstPerIteration;
 
-    // Offset dst_idx so each unrolled tile occupies a unique DST register.
-    if (auto attr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-      if (dstBase != 0) {
-        int64_t newIdx = attr.getInt() + dstBase;
-        op->setAttr(kDstIdxAttrName,
-                    IntegerAttr::get(IntegerType::get(op->getContext(), 32),
-                                     static_cast<int32_t>(newIdx)));
-      }
-    }
-
-    // dst_idx attribute (above) covers tile compute ops. CopyTileOp's
-    // dst index is an SSA value, so we must emit an op to compute the offset.
-    if (auto copyTile = dyn_cast<CopyTileOp>(op)) {
-      if (dstBase != 0) {
-        OpBuilder b(copyTile);
+    // Offset dst_index SSA operand so each unrolled tile occupies a
+    // unique DST register.
+    if (dstBase != 0) {
+      if (auto oldDst = getTileOpDstIndex(op)) {
+        OpBuilder b(op);
         Value offsetVal =
-            arith::ConstantIndexOp::create(b, copyTile.getLoc(), dstBase);
-        Value newDstIndex = arith::AddIOp::create(
-            b, copyTile.getLoc(), copyTile.getDstIndex(), offsetVal);
-        copyTile.getDstIndexMutable().assign(newDstIndex);
+            arith::ConstantIndexOp::create(b, op->getLoc(), dstBase);
+        Value newDst =
+            arith::AddIOp::create(b, op->getLoc(), *oldDst, offsetVal);
+        setTileOpDstIndex(op, newDst);
       }
     }
 
@@ -782,16 +768,6 @@ struct TTLLowerToLoopsPass
             packOps, [](Operation *op) { return isa<TileStoreOp>(op); });
         if (storeCount <= 1) {
           return;
-        }
-
-        // Verify DST allocation assigned distinct indices.
-        llvm::SmallDenseSet<int32_t> dstIndices;
-        for (Operation *op : packOps) {
-          if (auto attr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-            assert(dstIndices.insert(attr.getInt()).second &&
-                   "duplicate dst_idx in subblocked DstSectionOp body; "
-                   "reordering requires distinct DST slots per output tile");
-          }
         }
 
         Operation *yield = body.getTerminator();

@@ -23,7 +23,7 @@
 // COMPUTE:      ^bb0(%[[IN0:.*]]: !ttcore.tile<32x32, bf16>, %[[IN1:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT0:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT1:.*]]: !ttcore.tile<32x32, bf16>):
 // COMPUTE:        ttl.iter_index
 // COMPUTE:        ttl.iter_index
-// COMPUTE:        %[[SUM:.*]] = ttl.tile_add %[[IN0]], %[[IN1]] : !ttcore.tile<32x32, bf16>
+// COMPUTE:        %[[SUM:.*]] = ttl.tile_add %[[IN0]], %[[IN1]] into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
 // COMPUTE-NEXT:   ttl.tile_store %[[SUM]], %[[R3]]
 // COMPUTE-NEXT:   ttl.tile_store %[[SUM]], %[[R2]]
 // COMPUTE-NEXT:   ttl.yield
@@ -31,7 +31,7 @@
 
 // DST-LABEL: func.func @binary_two_outputs
 // DST: ttl.dst_section {
-// DST:   ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
+// DST:   ttl.tile_add {{.*}} into dst[{{.*}}] {ttl.fpu_binary}
 // DST:   ttl.tile_store
 // DST-NEXT: ttl.tile_store
 // DST: }
@@ -66,7 +66,7 @@ module {
 
 // COMPUTE-LABEL: func.func @unary_two_outputs
 // COMPUTE:      %[[C:.*]]:2 = ttl.compute
-// COMPUTE-SAME:   ins(%{{[^:]+}} :
+// COMPUTE-SAME:   ins(%{{[^:]+}}:
 // COMPUTE-SAME:   outs({{[^)]+}}, {{[^)]+}})
 // 1 input + 2 output maps = 3 total.
 // COMPUTE-SAME:   indexing_maps = [#{{[^,]+}}, #{{[^,]+}}, #{{[^]]+}}]
@@ -79,7 +79,7 @@ module {
 
 // DST-LABEL: func.func @unary_two_outputs
 // DST: ttl.dst_section {
-// DST:   ttl.tile_exp {{.*}} {dst_idx = 0 : i32
+// DST:   ttl.tile_exp {{.*}} into dst[{{.*}}]
 // DST:   ttl.tile_store
 // DST-NEXT: ttl.tile_store
 module {
@@ -170,7 +170,7 @@ module {
 
 // DST-LABEL: func.func @three_outputs
 // DST: ttl.dst_section {
-// DST:   ttl.tile_add {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
+// DST:   ttl.tile_add {{.*}} into dst[{{.*}}] {ttl.fpu_binary}
 // DST:   ttl.tile_store
 // DST-NEXT: ttl.tile_store
 // DST-NEXT: ttl.tile_store
@@ -220,8 +220,8 @@ module {
 // DST-LABEL: func.func @multi_output_4x4
 // DST:       scf.for
 // DST:         ttl.dst_section {
-// DST:           ttl.tile_add {{.*}} {dst_idx = 0 : i32
-// DST:           ttl.tile_add {{.*}} {dst_idx = 7 : i32
+// DST:           ttl.tile_add {{.*}} into dst[{{.*}}]
+// DST:           ttl.tile_add {{.*}} into dst[{{.*}}]
 // DST:           ttl.tile_store
 // DST:           ttl.tile_store
 // DST:         }
