@@ -26,7 +26,7 @@ K_GRANULARITY = 4
 
 
 @ttl.operation(grid="auto")
-def __tutorial_operation(
+def tutorial_operation(
     a: ttnn.Tensor,
     b: ttnn.Tensor,
     c: ttnn.Tensor,
@@ -137,7 +137,7 @@ def __tutorial_operation(
 
                         with c_dfb.wait() as c_blk, acc_dfb.wait() as acc_blk:
                             with y_dfb.reserve() as y_blk:
-                                y_blk.store(ttl.math.relu(c_blk + acc_blk))
+                                y_blk.store(c_blk + acc_blk)
 
     @ttl.datamovement()
     def write():
@@ -166,11 +166,6 @@ def __tutorial_operation(
                             tx.wait()
 
 
-def tutorial_operation(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
-    y = from_torch(torch.zeros((a.shape[0], b.shape[1]), dtype=torch.bfloat16))
-    __tutorial_operation(a, b, c, y)
-    return y
-
 
 torch.manual_seed(42)
 
@@ -197,7 +192,11 @@ try:
         replicated_cs, ttnn.ShardTensorToMesh(mesh_device, dim=0)
     )
 
-    partial_ys = tutorial_operation(a, b, replicated_cs)
+    partial_ys = torch.zeros((M * n_devices, N), dtype=torch.bfloat16)
+    partial_ys = from_torch(partial_ys, ttnn.ShardTensorToMesh(mesh_device, dim=0))
+
+    tutorial_operation(a, b, replicated_cs, partial_ys)
+
     partial_ys = ttnn.to_torch(
         partial_ys, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0)
     )
@@ -207,8 +206,7 @@ try:
     for i in range(n_devices):
         y += partial_ys[i * M : (i + 1) * M, :]
 
-    print(y)
-    print(expected_y)
+    y = torch.relu(y)
 
     pcc = torch.corrcoef(
         torch.stack([y.flatten().float(), expected_y.flatten().float()])
@@ -219,4 +217,4 @@ try:
     assert pcc > 0.99
 
 finally:
-    ttnn.close_device(device)
+    ttnn.close_device(mesh_device)

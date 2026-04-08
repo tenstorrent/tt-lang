@@ -26,7 +26,7 @@ K_GRANULARITY = 4
 
 
 @ttl.operation(grid="auto")
-def __tutorial_operation(
+def tutorial_operation(
     a: ttnn.Tensor,
     b: ttnn.Tensor,
     c: ttnn.Tensor,
@@ -166,12 +166,6 @@ def __tutorial_operation(
                             tx.wait()
 
 
-def tutorial_operation(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
-    y = from_torch(torch.zeros((a.shape[0], b.shape[1]), dtype=torch.bfloat16))
-    __tutorial_operation(a, b, c, y)
-    return y
-
-
 torch.manual_seed(42)
 
 n_devices = ttnn.GetNumAvailableDevices()
@@ -192,12 +186,12 @@ try:
     b = from_torch(b, ttnn.ReplicateTensorToMesh(mesh_device))
     c = from_torch(c, ttnn.ShardTensorToMesh(mesh_device, dim=0))
 
-    y = tutorial_operation(a, b, c)
+    y = torch.zeros((M, N), dtype=torch.bfloat16)
+    y = from_torch(y, ttnn.ShardTensorToMesh(mesh_device, dim=0))
+
+    tutorial_operation(a, b, c, y)
 
     y = ttnn.to_torch(y, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
-
-    print(y)
-    print(expected_y)
 
     pcc = torch.corrcoef(
         torch.stack([y.flatten().float(), expected_y.flatten().float()])
@@ -208,4 +202,4 @@ try:
     assert pcc > 0.99
 
 finally:
-    ttnn.close_device(device)
+    ttnn.close_device(mesh_device)

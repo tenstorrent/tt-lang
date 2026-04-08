@@ -126,9 +126,6 @@ try:
 
     y = ttnn.to_torch(y)
 
-    print(y)
-    print(expected_y)
-
     pcc = torch.corrcoef(
         torch.stack([y.flatten().float(), expected_y.flatten().float()])
     )[0, 1].item()
