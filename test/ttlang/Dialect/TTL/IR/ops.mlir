@@ -88,3 +88,25 @@ func.func @copy_tile_basic(%t_tensor: tensor<1x1x!ttcore.tile<32x32, f32>>, %src
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, f32>>
 }
+
+// -----
+
+// Verify sharded layout attrs round-trip through the parser.
+
+#layout_height_sharded = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                         buffer = l1, grid = [1, 1], memory = height_sharded>
+#layout_width_sharded = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                        buffer = l1, grid = [1, 1], memory = width_sharded>
+#layout_block_sharded = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                        buffer = l1, grid = [1, 1], memory = block_sharded>
+
+// CHECK-LABEL: func.func @sharded_layout_roundtrip
+// CHECK-SAME: memory = height_sharded
+// CHECK-SAME: memory = width_sharded
+// CHECK-SAME: memory = block_sharded
+func.func @sharded_layout_roundtrip(
+    %h: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_height_sharded>,
+    %w: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_width_sharded>,
+    %b: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_block_sharded>) {
+  func.return
+}

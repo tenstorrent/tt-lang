@@ -191,9 +191,10 @@ def _create_unary_op_wrapper(
 
 # Mapping of ttl.math unary operations to PyTorch functions
 # Only includes simple unary functions from TTLangSpecification.md
-# Note: abs and neg are operators (__abs__, __neg__), not ttl.math functions
 _TORCH_UNARY_OPS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     # Basic unary math functions (from spec)
+    "abs": torch.abs,
+    "neg": torch.neg,
     "exp": torch.exp,
     "exp2": torch.exp2,
     "expm1": torch.expm1,
