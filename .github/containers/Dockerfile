@@ -81,6 +81,7 @@ COPY --from=dist-toolchain --chmod=777 /bin $TTLANG_TOOLCHAIN_DIR/bin/
 COPY --from=dist-toolchain --chmod=777 /venv $TTLANG_TOOLCHAIN_DIR/venv/
 COPY --from=dist-toolchain --chmod=777 /lib $TTLANG_TOOLCHAIN_DIR/lib/
 COPY --from=dist-toolchain --chmod=777 /tt-metal $TTLANG_TOOLCHAIN_DIR/tt-metal/
+RUN mkdir -p $TTLANG_TOOLCHAIN_DIR/tt-metal/generated && chmod 777 $TTLANG_TOOLCHAIN_DIR/tt-metal/generated
 COPY --from=dist-toolchain --chmod=777 /python_packages $TTLANG_TOOLCHAIN_DIR/python_packages/
 COPY --from=dist-toolchain --chmod=777 /include $TTLANG_TOOLCHAIN_DIR/include/
 COPY --from=dist-toolchain --chmod=777 /share $TTLANG_TOOLCHAIN_DIR/share/

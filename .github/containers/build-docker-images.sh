@@ -85,7 +85,7 @@ echo "tt-lang version: $TTLANG_VERSION"
 
 # Docker tag uses the nearest version tag (e.g., v0.1.8) so rebuilds overwrite
 # the same tag rather than creating a new one per commit.
-DOCKER_TAG=$(git describe --tags --match "v[0-9]*" --abbrev=0 2>/dev/null | sed 's/[\/:]/-/g')
+DOCKER_TAG=$("${SCRIPT_DIR}/get-version-tag.sh")
 echo "Docker tag: $DOCKER_TAG"
 echo ""
 
@@ -185,6 +185,11 @@ build_image() {
     if [ "$NO_PUSH" = false ]; then
         echo "Pushing: $registry_image"
         docker push "$registry_image"
+
+        local latest_image="${registry_image%:*}:latest"
+        echo "Tagging and pushing: $latest_image"
+        docker tag "$registry_image" "$latest_image"
+        docker push "$latest_image"
     else
         echo "Skipping push (--no-push specified)"
     fi
