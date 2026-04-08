@@ -1,9 +1,12 @@
 [submodule "third-party/tt-mlir"]
 	path = third-party/tt-mlir
 	url = https://github.com/tenstorrent/tt-mlir.git
+	ignore = dirty
 [submodule "third-party/llvm-project"]
 	path = third-party/llvm-project
 	url = https://github.com/llvm/llvm-project.git
+	ignore = dirty
 [submodule "third-party/tt-metal"]
 	path = third-party/tt-metal
 	url = https://github.com/tenstorrent/tt-metal.git
+	ignore = dirty
