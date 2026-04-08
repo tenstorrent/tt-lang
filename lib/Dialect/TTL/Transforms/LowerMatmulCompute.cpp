@@ -43,8 +43,12 @@ static std::optional<unsigned> traceToBlockArgIndex(Value val) {
   return std::nullopt;
 }
 
-/// Validate that a matmul compute's output fits within DST capacity.
-static LogicalResult validateMatmulDSTCapacity(ComputeOp computeOp) {
+/// Validate that the compute's total DST usage fits within capacity.
+/// The output shape determines the number of output tiles; dstSlotsPerTile
+/// is the number of DST registers each output tile requires (1 for the
+/// result plus any scratch slots for post-ops).
+static LogicalResult validateDSTCapacity(ComputeOp computeOp,
+                                         int64_t dstSlotsPerTile) {
   auto capacityOrErr = computeDSTCapacity(computeOp);
   if (failed(capacityOrErr)) {
     return failure();
@@ -52,11 +56,13 @@ static LogicalResult validateMatmulDSTCapacity(ComputeOp computeOp) {
   auto outType = cast<RankedTensorType>(computeOp.getOutputs()[0].getType());
   int64_t outM = outType.getDimSize(0);
   int64_t outN = outType.getDimSize(1);
+  int64_t totalDstSlots = outM * outN * dstSlotsPerTile;
   int64_t dstCapacity = static_cast<int64_t>(*capacityOrErr);
-  if (outM * outN > dstCapacity) {
+  if (totalDstSlots > dstCapacity) {
     computeOp.emitOpError()
-        << "matmul output " << outM << "x" << outN << " = " << outM * outN
-        << " tiles exceeds DST capacity of " << dstCapacity
+        << "output " << outM << "x" << outN << " with " << dstSlotsPerTile
+        << " DST slots per tile = " << totalDstSlots
+        << " total slots exceeds DST capacity of " << dstCapacity
         << "; enable maximize_dst to auto-subblock";
     return failure();
   }
@@ -98,10 +104,6 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
     }
   }
   assert(mmOp && "generateMatmulCompute requires tile_matmul_block in body");
-
-  if (failed(validateMatmulDSTCapacity(op))) {
-    return failure();
-  }
 
   auto outType = cast<RankedTensorType>(op.getOutputs()[0].getType());
   int64_t numRows = outType.getDimSize(0);
@@ -163,6 +165,10 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
     }
   }
   int64_t dstPerIteration = maxBodyDstIdx + 1;
+
+  if (failed(validateDSTCapacity(op, dstPerIteration))) {
+    return failure();
+  }
 
   // Create the DstSectionOp that wraps matmul + post-ops + stores.
   auto dstSection = DstSectionOp::create(rewriter, loc);
