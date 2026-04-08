@@ -7,7 +7,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   LowerSignpostToEmitC.cpp
   TTLAnnotateCBAssociations.cpp
   TTLDumpCBFlowGraph.cpp
-  TTLLowerMatmulBlock.cpp
+  LowerMatmulCompute.cpp
   TTLAssignDST.cpp
   TTLScheduleOperations.cpp
   TTLSetComputeKernelConfig.cpp

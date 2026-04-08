@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include "ttlang/Dialect/TTL/Transforms/LowerMatmulCompute.h"
+
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -335,11 +337,12 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
   /// Populated during pattern application, consumed by runOnOperation.
   SmallVector<scf::ForOp> &loopsToUnroll;
   bool dstAccumulation;
+  bool useBlockMatmul;
 
   LowerComputeToLoops(MLIRContext *ctx, SmallVector<scf::ForOp> &loopsToUnroll,
-                      bool dstAccumulation)
+                      bool dstAccumulation, bool useBlockMatmul)
       : OpRewritePattern<ComputeOp>(ctx), loopsToUnroll(loopsToUnroll),
-        dstAccumulation(dstAccumulation) {}
+        dstAccumulation(dstAccumulation), useBlockMatmul(useBlockMatmul) {}
 
   LogicalResult matchAndRewrite(ComputeOp op,
                                 PatternRewriter &rewriter) const override {
@@ -380,6 +383,13 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     SmallVector<StringAttr> iterTypes;
     for (Attribute attr : op.getIteratorTypes()) {
       iterTypes.push_back(mlir::cast<StringAttr>(attr));
+    }
+
+    // Block-level matmul: a single DstSectionOp with the matmul_block call,
+    // per-tile post-ops, and per-tile stores. When useBlockMatmul is false,
+    // the compute falls through to per-tile loop lowering (matmul_tile).
+    if (useBlockMatmul && op.containsOp<TileMatmulBlockOp>()) {
+      return generateMatmulCompute(rewriter, loc, op, indexingMaps, iterTypes);
     }
 
     // Side-effect-only loops: no iter_args, no tensor.insert, no scf.yield
@@ -715,7 +725,7 @@ struct TTLLowerToLoopsPass
     SmallVector<scf::ForOp> loopsToUnroll;
     RewritePatternSet patterns(func.getContext());
     patterns.add<LowerComputeToLoops>(func.getContext(), loopsToUnroll,
-                                      dstAccumulation);
+                                      dstAccumulation, useBlockMatmul);
     FrozenRewritePatternSet frozen(std::move(patterns));
     if (failed(applyPatternsGreedily(func, frozen))) {
       return signalPassFailure();

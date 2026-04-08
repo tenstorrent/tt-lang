@@ -34,12 +34,10 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     subblockOpts.subblockSync = options.autoSync;
     pm.addPass(createTTLSubblockComputeForDST(subblockOpts));
   }
-  if (options.useBlockMatmul) {
-    pm.addPass(createTTLLowerMatmulBlock());
-  }
   {
     TTLLowerToLoopsOptions loopOpts;
     loopOpts.dstAccumulation = options.maximizeDST;
+    loopOpts.useBlockMatmul = options.useBlockMatmul;
     pm.addPass(createTTLLowerToLoops(loopOpts));
   }
   if (options.maximizeDST) {
