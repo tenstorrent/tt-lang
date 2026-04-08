@@ -357,6 +357,44 @@ jq -s 'group_by(.kernel) | .[] |
 
 ---
 
+## Replay and Schedule Fuzzing
+
+### Replay
+
+The simulator is deterministic: given the same inputs and the same scheduling order,
+execution produces identical results. The scheduling order is fully recorded in the
+trace: each event carries the `kernel` that was active at that tick, so the ordered
+sequence of `(tick, kernel)` pairs is the complete schedule.
+
+To extract the schedule from a trace:
+
+```bash
+jq -s '[.[] | select(.event == "kernel_start" or .event == "kernel_unblock") |
+        {tick, kernel}]' trace.jsonl
+```
+
+A replay scheduler uses this sequence instead of the normal fair or greedy algorithm:
+at each activation it runs the kernel specified in the recorded schedule. If the
+recorded kernel is blocked (cannot proceed), the recorded schedule is no longer
+valid for the current code -- the replay fails rather than proceeding silently with a
+different order.
+
+Replay is useful for:
+
+- Reproducing a specific execution after adding instrumentation or print statements.
+- Regression testing: verify that a code change does not alter the trace.
+- Debugging: narrow a failure to a particular scheduling sequence and then re-run
+  that exact sequence repeatedly.
+
+### Schedule Fuzzing
+
+Schedule fuzzing explores alternative scheduling orders to verify that a kernel
+produces correct results regardless of how the scheduler interleaves its
+threads.  The idea is that we can fuzz multiple schedules and if one of them
+fails we could replay it for debugging purposes. The **choice points** for the
+fuzzer is a scheduler activation at which more than one kernel is runnable. A
+trace records one path through this choice tree
+
 ## Why No Tracing Framework
 
 Several Python tracing libraries were considered and rejected:
