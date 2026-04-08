@@ -240,10 +240,7 @@ def elwise_read():
 
         # Reserve a_blk
 
-        with (
-            a_dfb.reserve() as a_blk,
-            b_dfb.reserve() as b_blk,
-        ):
+        with a_dfb.reserve() as a_blk:
             # Load BLOCK_SIZE block of a
  
             a_xf = ttl.copy(a[n_block * BLOCK_SIZE : (n_block + 1) * BLOCK_SIZE], a_blk)
@@ -947,16 +944,16 @@ TT-Lang includes ability to print information to the standard output for debuggi
 ```py
 @ttl.datamovement()
 def matmul_read():
-    # Print first two pages of a
+    # Print first two pages of c
 
-    print("C: ", c, num_pages=2)
+    print("c: ", c, num_pages=2)
 
     # Print first page of a and b
 
-    print("A: ", a)
-    print("B: ", b)
+    print("a: ", a)
+    print("b: ", b)
 
-    for it in range(I_TILES):
+    for i_tile in range(I_TILES):
         for m_tile in range(M_TILES):
             for n_tile in range(N_TILES):
                 with c_dfb.reserve() as c_blk:
