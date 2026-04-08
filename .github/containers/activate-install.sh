@@ -25,13 +25,11 @@ export VIRTUAL_ENV="${TTLANG_TOOLCHAIN_DIR}/venv"
 
 # Set paths for installed tt-lang
 export TT_LANG_HOME="$INSTALL_PREFIX"
-export PATH="${INSTALL_PREFIX}/bin:${TTLANG_TOOLCHAIN_DIR}/bin:${VIRTUAL_ENV}/bin:$PATH"
-export PYTHONPATH="${INSTALL_PREFIX}/python_packages:${TTLANG_TOOLCHAIN_DIR}/python_packages:${TTLANG_TOOLCHAIN_DIR}/tt-metal/python_packages/ttnn:${TTLANG_TOOLCHAIN_DIR}/tt-metal/python_packages/tools:$PYTHONPATH"
-export LD_LIBRARY_PATH="${TTLANG_TOOLCHAIN_DIR}/lib:${TTLANG_TOOLCHAIN_DIR}/tt-metal/lib:$LD_LIBRARY_PATH"
+export PATH="${INSTALL_PREFIX}/bin:${TTLANG_TOOLCHAIN_DIR}/bin:${VIRTUAL_ENV}/bin:${PATH:-}"
+export PYTHONPATH="${INSTALL_PREFIX}/python_packages:${TTLANG_TOOLCHAIN_DIR}/python_packages:${TTLANG_TOOLCHAIN_DIR}/tt-metal/python_packages/ttnn:${TTLANG_TOOLCHAIN_DIR}/tt-metal/python_packages/tools:${PYTHONPATH:-}"
+export LD_LIBRARY_PATH="${TTLANG_TOOLCHAIN_DIR}/lib:${TTLANG_TOOLCHAIN_DIR}/tt-metal/lib:${LD_LIBRARY_PATH:-}"
 
-# Set TT_METAL_RUNTIME_ROOT
 export TT_METAL_RUNTIME_ROOT="${TTLANG_TOOLCHAIN_DIR}/tt-metal"
-export TT_METAL_HOME="$TT_METAL_RUNTIME_ROOT"
 
 export TTLANG_ENV_ACTIVATED=1
 

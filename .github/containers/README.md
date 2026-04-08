@@ -68,7 +68,7 @@ sudo .github/containers/build-docker-images.sh --image-type base --no-push
 ### How it works
 
 The `build-docker-images.sh` script:
-1. Determines the Docker tag from `git describe` (e.g. `v0.1.6-47-g0ad37bac`)
+1. Determines the Docker tag from the nearest version tag (e.g. `v0.1.8`) via `get-version-tag.sh`
 2. Runs `docker build` for each image type with appropriate tags
 3. For `ird`/`dist`, the Dockerfile COPYs the toolchain from a build context
 
@@ -129,17 +129,20 @@ parameterized via `ARG BASE_IMAGE` so local builds resolve against local tags.
 ## CI Job Flow
 
 ```
-check-if-images-already-exist (ubuntu-latest)
-  |-- if all images exist: all build jobs skipped, outputs existing image names
-  |-- if any missing: sets docker-image='' to trigger builds
-
-                        |
-                build-images (ubuntu-22.04)
-                  1. Build base image (Dockerfile.base)
-                  2. Build toolchains (LLVM + tt-metal) on host
-                  3. docker build --target ird (with --build-context)
-                  4. docker build --target dist (with --build-context)
-                  5. Push all images
+configure-deps                build-image-base
+  (toolchain cache)             (Dockerfile.base)
+        |                            |
+        +----------------------------+
+                     |
+               build-images (ubuntu-22.04)
+                 1. Restore toolchain cache
+                 2. Configure + build tt-lang
+                 3. docker build --target dist (with --build-context)
+                 4. docker build --target ird (with --build-context)
+                 5. Push all images (versioned + latest tags)
+                     |
+          test-dist-tutorials (n150 hardware)
+                 Run tutorial examples in the dist container
 ```
 
 ## Docker Testing (Local)
@@ -181,7 +184,8 @@ docker run -it \
 - `activate-install.sh` -- environment activation for installed tt-lang (used in containers)
 - `build-docker-images.sh` -- build/push script with `--image-type` filter
 - `cleanup-toolchain.sh` -- normalizes toolchain venv (lib64 symlink fix), strips LLVM binaries, and optionally removes headers/static libs for dist
-- `get-docker-tag.sh` -- generates deterministic Docker tags from submodule SHAs and file hashes
+- `get-version-tag.sh` -- extracts the Docker version tag from the nearest git version tag (e.g. `v0.1.8`)
+- `get-docker-tag.sh` -- generates deterministic Docker tags from submodule SHAs and file hashes (content-based)
 - `test-docker-smoke.sh` -- quick smoke test for container functionality
 - `CONTAINER_README.md` -- welcome message shown inside dist container
 - `IRD_README.md` -- welcome message shown inside IRD container
