@@ -3,18 +3,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# Run all tutorial examples from the dist container's installed examples.
-# Designed to run inside the dist container where the environment is already
-# activated and examples are installed at /root/examples/.
+# Run all tutorial examples. Works both inside the dist container (where
+# examples are at /root/examples/) and from a source checkout (pass "." as
+# the examples root).
 #
 # Discovers *.py files under examples/elementwise-tutorial/ and
 # examples/tutorial/ directories.
 #
-# Usage (inside dist container):
-#   bash /workspace/run-dist-tutorials.sh [examples-root]
+# Usage:
+#   bash .github/scripts/run-tutorials.sh [examples-root]
 #
 # Optional argument: root directory containing the examples/ tree.
-# Defaults to /root.
+# Defaults to /root (matching the dist container layout).
 
 set -uo pipefail
 
@@ -53,7 +53,7 @@ if [[ ${#SCRIPTS[@]} -eq 0 ]]; then
     exit 1
 fi
 
-echo "=== Dist Container Tutorial Tests ==="
+echo "=== Tutorial Tests ==="
 echo "Examples root: ${EXAMPLES_DIR}"
 echo "Found ${#SCRIPTS[@]} tutorial script(s)"
 echo ""
@@ -79,7 +79,7 @@ for script in "${SCRIPTS[@]}"; do
 done
 
 echo "========================================"
-echo "  dist tutorial tests: results"
+echo "  tutorial tests: results"
 echo "========================================"
 for r in "${RESULTS[@]}"; do
     echo "  ${r}"
