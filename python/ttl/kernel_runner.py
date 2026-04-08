@@ -351,10 +351,10 @@ def emit_runner_source(
             data_format = torch_dtype_to_ttnn_datatype(ref_tensor.dtype)
         page_size = tile_bytes_from_dtype(data_format)
         dtype_str = _dtype_to_ttnn_str(data_format)
-        num_tiles = cb.shape[0] * cb.shape[1] * cb.buffer_factor
+        num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
         total_size = num_tiles * page_size
         lines.append(
-            f"    ({cb.shape!r}, {cb.buffer_factor}, {dtype_str}, {page_size}, {total_size}),  # CB {i}"
+            f"    ({cb.shape!r}, {cb.block_count}, {dtype_str}, {page_size}, {total_size}),  # CB {i}"
         )
     lines.append("]")
     lines.append("")
@@ -385,7 +385,7 @@ def emit_runner_source(
 
     lines.append("    cb_descriptors = []")
     lines.append(
-        "    for i, (shape, buffer_factor, dtype, page_size, total_size) in enumerate(CB_CONFIGS):"
+        "    for i, (shape, block_count, dtype, page_size, total_size) in enumerate(CB_CONFIGS):"
     )
     lines.append("        cb_format = ttnn.CBFormatDescriptor(")
     lines.append("            buffer_index=i,")
