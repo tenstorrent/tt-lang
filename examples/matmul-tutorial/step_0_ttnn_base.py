@@ -36,7 +36,7 @@ try:
     y = ttnn.relu(ttnn.add(ttnn.matmul(a, b), c))
 
     y = ttnn.to_torch(y)
-    
+
     print(y)
     print(expected_y)
 

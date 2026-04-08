@@ -16,6 +16,7 @@ def from_torch(tensor: torch.Tensor, mesh_mapper):
         mesh_mapper=mesh_mapper,
     )
 
+
 import ttl
 
 TILE_SIZE = 32
@@ -164,6 +165,7 @@ def __tutorial_operation(
                             )
                             tx.wait()
 
+
 def tutorial_operation(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
     y = from_torch(torch.zeros((a.shape[0], b.shape[1]), dtype=torch.bfloat16))
     __tutorial_operation(a, b, c, y)
@@ -190,18 +192,21 @@ try:
     b = from_torch(b, ttnn.ShardTensorToMesh(mesh_device, dim=0))
 
     replicated_cs = torch.zeros((M * n_devices, N), dtype=torch.bfloat16)
-    replicated_cs[:M,:] = c
-    replicated_cs = from_torch(replicated_cs, ttnn.ShardTensorToMesh(mesh_device, dim=0))
+    replicated_cs[:M, :] = c
+    replicated_cs = from_torch(
+        replicated_cs, ttnn.ShardTensorToMesh(mesh_device, dim=0)
+    )
 
     partial_ys = tutorial_operation(a, b, replicated_cs)
-    partial_ys = ttnn.to_torch(partial_ys, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
+    partial_ys = ttnn.to_torch(
+        partial_ys, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0)
+    )
 
     y = torch.zeros((M, N), dtype=torch.bfloat16)
 
     for i in range(n_devices):
-        y += partial_ys[i * M:(i + 1) * M,:]
+        y += partial_ys[i * M : (i + 1) * M, :]
 
-    
     print(y)
     print(expected_y)
 

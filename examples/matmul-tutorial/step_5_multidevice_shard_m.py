@@ -16,6 +16,7 @@ def from_torch(tensor: torch.Tensor, mesh_mapper):
         mesh_mapper=mesh_mapper,
     )
 
+
 import ttl
 
 TILE_SIZE = 32
@@ -164,6 +165,7 @@ def __tutorial_operation(
                             )
                             tx.wait()
 
+
 def tutorial_operation(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
     y = from_torch(torch.zeros((a.shape[0], b.shape[1]), dtype=torch.bfloat16))
     __tutorial_operation(a, b, c, y)
@@ -193,7 +195,7 @@ try:
     y = tutorial_operation(a, b, c)
 
     y = ttnn.to_torch(y, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
-    
+
     print(y)
     print(expected_y)
 

@@ -15,6 +15,7 @@ def from_torch(tensor: torch.Tensor):
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
 
+
 import ttl
 
 TILE_SIZE = 32
@@ -31,21 +32,11 @@ def __tutorial_operation(
     n_tiles = b.shape[1] // TILE_SIZE
     k_tiles = a.shape[1] // TILE_SIZE
 
-    a_dfb = ttl.make_dataflow_buffer_like(
-        a, shape=(1, 1), block_count=2
-    )
-    b_dfb = ttl.make_dataflow_buffer_like(
-        b, shape=(1, 1), block_count=2
-    )
-    c_dfb = ttl.make_dataflow_buffer_like(
-        c, shape=(1, 1), block_count=2
-    )
-    acc_dfb = ttl.make_dataflow_buffer_like(
-        y, shape=(1, 1), block_count=2
-    )
-    y_dfb = ttl.make_dataflow_buffer_like(
-        y, shape=(1, 1), block_count=2
-    )
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), block_count=2)
+    acc_dfb = ttl.make_dataflow_buffer_like(y, shape=(1, 1), block_count=2)
+    y_dfb = ttl.make_dataflow_buffer_like(y, shape=(1, 1), block_count=2)
 
     @ttl.datamovement()
     def read():
@@ -65,7 +56,7 @@ def __tutorial_operation(
                         b_dfb.reserve() as b_blk,
                     ):
                         tx_a = ttl.copy(
-                            a[m_tile,k_tile],
+                            a[m_tile, k_tile],
                             a_blk,
                         )
                         tx_b = ttl.copy(
@@ -107,6 +98,7 @@ def __tutorial_operation(
                     )
                     tx.wait()
 
+
 def tutorial_operation(a: ttnn.Tensor, b: ttnn.Tensor, c: ttnn.Tensor):
     y = from_torch(torch.zeros((a.shape[0], b.shape[1]), dtype=torch.bfloat16))
     __tutorial_operation(a, b, c, y)
@@ -133,7 +125,7 @@ try:
     y = tutorial_operation(a, b, c)
 
     y = ttnn.to_torch(y)
-    
+
     print(y)
     print(expected_y)
 
