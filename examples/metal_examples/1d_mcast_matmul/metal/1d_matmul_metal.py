@@ -215,14 +215,14 @@ def test_1d_matmul_metal(
         page_size=cb_page_size,
     )
 
-    buffer_factor = 2
+    block_count = 2
     a_cb_descriptor = ttnn.CBDescriptor(
-        total_size=buffer_factor * cb_page_size * (block_m * block_k),
+        total_size=block_count * cb_page_size * (block_m * block_k),
         node_ranges=all_nodes,
         format_descriptors=[a_cb_format],
     )
     b_cb_descriptor = ttnn.CBDescriptor(
-        total_size=buffer_factor * cb_page_size * (block_n * block_k),
+        total_size=block_count * cb_page_size * (block_n * block_k),
         node_ranges=all_nodes,
         format_descriptors=[b_cb_format],
     )

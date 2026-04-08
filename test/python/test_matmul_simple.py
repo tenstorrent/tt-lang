@@ -21,7 +21,7 @@ from ttlang_test_utils import assert_allclose, to_dram, to_l1
 TILE = 32
 
 
-def _make_matmul_kernel(buffer_factor=2):
+def _make_matmul_kernel(block_count=2):
     @ttl.operation(grid=(1, 1))
     def kernel(a, b, out):
         Mt = a.shape[0] // TILE
@@ -29,13 +29,13 @@ def _make_matmul_kernel(buffer_factor=2):
         Nt = b.shape[1] // TILE
 
         a_dfb = ttl.make_dataflow_buffer_like(
-            a, shape=(Mt, Kt), buffer_factor=buffer_factor
+            a, shape=(Mt, Kt), block_count=block_count
         )
         b_dfb = ttl.make_dataflow_buffer_like(
-            b, shape=(Kt, Nt), buffer_factor=buffer_factor
+            b, shape=(Kt, Nt), block_count=block_count
         )
         out_dfb = ttl.make_dataflow_buffer_like(
-            out, shape=(Mt, Nt), buffer_factor=buffer_factor
+            out, shape=(Mt, Nt), block_count=block_count
         )
 
         @ttl.compute()
@@ -67,7 +67,7 @@ def _make_matmul_kernel(buffer_factor=2):
     return kernel
 
 
-matmul_kernel = _make_matmul_kernel(buffer_factor=2)
+matmul_kernel = _make_matmul_kernel(block_count=2)
 
 
 BF16_SHAPES = [
@@ -155,17 +155,17 @@ def test_matmul_block_sizes(shape, dtype, device):
     )
 
 
-# buffer_factor=1 (single-buffered) and buffer_factor=3 (triple-buffered)
+# block_count=1 (single-buffered) and block_count=3 (triple-buffered)
 # exercise different CB allocation sizes and synchronization patterns.
-# Shapes chosen to cover K=1, K>1, and subblocking at each buffer factor.
-BUFFER_FACTOR_PARAMS = [
-    # (shape, dtype, buffer_factor)
-    # buffer_factor=1: single-buffered, no overlap between DM and compute.
+# Shapes chosen to cover K=1, K>1, and subblocking at each block count.
+BLOCK_COUNT_PARAMS = [
+    # (shape, dtype, block_count)
+    # block_count=1: single-buffered, no overlap between DM and compute.
     ((1, 1, 1), torch.bfloat16, 1),
     ((2, 4, 2), torch.bfloat16, 1),
     ((4, 4, 4), torch.bfloat16, 1),
     ((2, 4, 2), torch.float32, 1),
-    # buffer_factor=3: triple-buffered, extra L1 per CB.
+    # block_count=3: triple-buffered, extra L1 per CB.
     ((1, 1, 1), torch.bfloat16, 3),
     ((2, 4, 2), torch.bfloat16, 3),
     ((4, 4, 4), torch.bfloat16, 3),
@@ -173,18 +173,18 @@ BUFFER_FACTOR_PARAMS = [
     ((4, 4, 4), torch.float32, 3),
 ]
 
-BUFFER_FACTOR_IDS = [
-    f"{m}x{k}x{n}_{'bf16' if dt == torch.bfloat16 else 'f32'}_bf{bf}"
-    for (m, k, n), dt, bf in BUFFER_FACTOR_PARAMS
+BLOCK_COUNT_IDS = [
+    f"{m}x{k}x{n}_{'bf16' if dt == torch.bfloat16 else 'f32'}_bf{bc}"
+    for (m, k, n), dt, bc in BLOCK_COUNT_PARAMS
 ]
 
 
 @pytest.mark.parametrize(
-    "shape,dtype,buffer_factor", BUFFER_FACTOR_PARAMS, ids=BUFFER_FACTOR_IDS
+    "shape,dtype,block_count", BLOCK_COUNT_PARAMS, ids=BLOCK_COUNT_IDS
 )
 @pytest.mark.requires_device
-def test_matmul_buffer_factor(shape, dtype, buffer_factor, device):
-    """Matmul with non-default buffer_factor (single- and triple-buffered)."""
+def test_matmul_block_count(shape, dtype, block_count, device):
+    """Matmul with non-default block_count (single- and triple-buffered)."""
     Mt, Kt, Nt = shape
     M, K, N = Mt * TILE, Kt * TILE, Nt * TILE
 
@@ -193,7 +193,7 @@ def test_matmul_buffer_factor(shape, dtype, buffer_factor, device):
     out_torch = torch.zeros(M, N, dtype=dtype)
 
     out = to_dram(out_torch, device)
-    kernel = _make_matmul_kernel(buffer_factor=buffer_factor)
+    kernel = _make_matmul_kernel(block_count=block_count)
     kernel(to_dram(a_torch, device), to_dram(b_torch, device), out)
 
     result = ttnn.to_torch(out).float()
@@ -202,7 +202,7 @@ def test_matmul_buffer_factor(shape, dtype, buffer_factor, device):
     pcc = torch.corrcoef(torch.stack([result.flatten(), golden.flatten()]))[0, 1].item()
     threshold = 0.9999 if dtype == torch.float32 else 0.999
     assert pcc > threshold, (
-        f"PCC {pcc:.6f} < {threshold} for {Mt}x{Kt}x{Nt} " f"bf={buffer_factor} matmul"
+        f"PCC {pcc:.6f} < {threshold} for {Mt}x{Kt}x{Nt} " f"bc={block_count} matmul"
     )
 
 

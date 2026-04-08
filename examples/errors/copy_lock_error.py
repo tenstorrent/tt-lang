@@ -33,17 +33,17 @@ def eltwise_add(
     # Parallelizing by columns here to get reuse on C
     grid_h, grid_w = ttl.grid_size()
     cols_per_node = math.ceil(col_tiles / (grid_h * grid_w))
-    buffer_factor = 2
+    block_count = 2
 
     # Create circular buffers
     a_in_dfb = ttl.make_dataflow_buffer_like(
-        a_in, shape=(granularity, 1), buffer_factor=buffer_factor
+        a_in, shape=(granularity, 1), block_count=block_count
     )
     b_in_dfb = ttl.make_dataflow_buffer_like(
-        b_in, shape=(granularity, 1), buffer_factor=buffer_factor
+        b_in, shape=(granularity, 1), block_count=block_count
     )
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(granularity, 1), buffer_factor=buffer_factor
+        out, shape=(granularity, 1), block_count=block_count
     )
 
     @ttl.compute()

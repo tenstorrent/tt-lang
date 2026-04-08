@@ -28,7 +28,6 @@ from ttlang_test_utils import assert_allclose, to_l1
 
 import ttl
 
-
 # =============================================================================
 # Helper to create input tensors for broadcast tests
 # =============================================================================
@@ -68,8 +67,8 @@ def expected_bcast_result(value: float, dtype=torch.bfloat16):
 @ttl.operation(grid=(1, 1))
 def bcast_row_kernel(inp, out):
     """Broadcast row tile to full tile (bcast as first op in compute)."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -95,8 +94,8 @@ def bcast_row_kernel(inp, out):
 @ttl.operation(grid=(1, 1))
 def bcast_col_kernel(inp, out):
     """Broadcast column tile to full tile."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -122,8 +121,8 @@ def bcast_col_kernel(inp, out):
 @ttl.operation(grid=(1, 1))
 def bcast_scalar_kernel(inp, out):
     """Broadcast scalar tile to full tile."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -149,8 +148,8 @@ def bcast_scalar_kernel(inp, out):
 @ttl.operation(grid=(1, 1))
 def bcast_row_neg_dim_kernel(inp, out):
     """Row broadcast, ``dims=[-2]``, 2x2 tile grid (same as multitile row + ``[0]``)."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -176,8 +175,8 @@ def bcast_row_neg_dim_kernel(inp, out):
 @ttl.operation(grid=(1, 1))
 def bcast_col_neg_dim_kernel(inp, out):
     """Column broadcast, ``dims=[-1]``, 1x2 tile grid (32x64)."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 2), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 2), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 2), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -203,8 +202,8 @@ def bcast_col_neg_dim_kernel(inp, out):
 @ttl.operation(grid=(1, 1))
 def bcast_scalar_neg_dim_kernel(inp, out):
     """Scalar broadcast, ``dims=[-2, -1]``, 2x1 tile grid (64x32)."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 1), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -244,11 +243,11 @@ def mul_add_bcast_kernel(a, b, c, out):
     add/mul read from DST. It would be trivial to allow DFB-reading ops
     (bcast, reduce, transpose) as the FIRST op only in a fused compute block.
     """
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
-    c_bcast_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), block_count=2)
+    c_bcast_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -381,8 +380,8 @@ def expected_2x1_full_tile(values, dtype=torch.bfloat16):
 @ttl.operation(grid=(1, 1))
 def bcast_row_multitile_kernel(inp, out):
     """Broadcast row tiles to full tiles (2x2 grid = 4 tiles)."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -408,8 +407,8 @@ def bcast_row_multitile_kernel(inp, out):
 @ttl.operation(grid=(1, 1))
 def bcast_col_multitile_kernel(inp, out):
     """Broadcast col tiles to full tiles (2x2 grid = 4 tiles)."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -435,8 +434,8 @@ def bcast_col_multitile_kernel(inp, out):
 @ttl.operation(grid=(1, 1))
 def bcast_scalar_multitile_kernel(inp, out):
     """Broadcast scalar tiles to full tiles (2x2 grid = 4 tiles)."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -784,11 +783,11 @@ def mul_add_bcast_multitile_kernel(a, b, c, out):
     - Stage 1: bcast c to intermediate DFB
     - Stage 2: compute (a * b) + c_bcast
     """
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 2), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 2), buffer_factor=2)
-    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(2, 2), buffer_factor=2)
-    c_bcast_dfb = ttl.make_dataflow_buffer_like(c, shape=(2, 2), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(2, 2), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(2, 2), block_count=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(2, 2), block_count=2)
+    c_bcast_dfb = ttl.make_dataflow_buffer_like(c, shape=(2, 2), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():
@@ -992,8 +991,8 @@ import ttl, torch
 
 @ttl.operation(grid=(1, 1))
 def kern(inp, out):
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
     @ttl.compute()
     def compute_fn():
         with inp_dfb.wait() as i, out_dfb.reserve() as o:

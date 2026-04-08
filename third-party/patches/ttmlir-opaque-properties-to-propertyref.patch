@@ -1,0 +1,22 @@
+diff --git a/lib/Dialect/TTCore/IR/TTCoreOps.cpp b/lib/Dialect/TTCore/IR/TTCoreOps.cpp
+index 2fd346b..39e4d58 100644
+--- a/lib/Dialect/TTCore/IR/TTCoreOps.cpp
++++ b/lib/Dialect/TTCore/IR/TTCoreOps.cpp
+@@ -42,7 +42,7 @@ namespace mlir::tt::ttcore {
+
+ LogicalResult GetTupleElementOp::inferReturnTypes(
+     MLIRContext *, std::optional<Location> location, ValueRange operands,
+-    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
++    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+     SmallVectorImpl<Type> &inferredReturnTypes) {
+
+   GetTupleElementOp::Adaptor adaptor(operands, attributes, properties, regions);
+@@ -70,7 +70,7 @@ LogicalResult inferTupleOp(MLIRContext *context, std::optional<Location>,
+
+ LogicalResult TupleOp::inferReturnTypes(
+     MLIRContext *context, std::optional<Location> location, ValueRange operands,
+-    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
++    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+     SmallVectorImpl<Type> &inferredReturnTypes) {
+
+   TupleOp::Adaptor adaptor(operands, attributes, properties, regions);

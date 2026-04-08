@@ -27,13 +27,13 @@ def eltwise_add(a_in: ttnn.Tensor, b_in: ttnn.Tensor, out: ttnn.Tensor) -> None:
     cols_per_node = -(-col_tiles // grid_cols)
 
     a_dfb = ttl.make_dataflow_buffer_like(
-        a_in, shape=(BATCH_GRANULARITY, GRANULARITY, 1), buffer_factor=2
+        a_in, shape=(BATCH_GRANULARITY, GRANULARITY, 1), block_count=2
     )
     b_dfb = ttl.make_dataflow_buffer_like(
-        b_in, shape=(BATCH_GRANULARITY, GRANULARITY, 1), buffer_factor=2
+        b_in, shape=(BATCH_GRANULARITY, GRANULARITY, 1), block_count=2
     )
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(BATCH_GRANULARITY, GRANULARITY, 1), buffer_factor=2
+        out, shape=(BATCH_GRANULARITY, GRANULARITY, 1), block_count=2
     )
 
     @ttl.compute()

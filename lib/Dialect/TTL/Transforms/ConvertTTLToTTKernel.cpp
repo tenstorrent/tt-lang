@@ -134,18 +134,28 @@ getBufferAddressFromRuntimeArg(Value tensor, Location loc,
       .getResult();
 }
 
-/// Build a TensorAccessor from CTA/CRTA indices, bank base, and page size.
-/// ctaIndex: Index into compile-time args where tensor config starts.
-/// crtaIndex: Index into compile-runtime args (typically 0).
+/// Build a TensorAccessor using tt-metal's constexpr CTA offset chaining.
+///
+/// The CTA offset for tensor N is computed at device compile time via
+/// get_tensor_accessor_args_cta_offset<N, baseCTA>(). This chains through
+/// all preceding tensors' configs to find the correct offset, regardless of
+/// whether each tensor is interleaved (2 CTAs) or sharded (variable CTAs).
 static Value buildTensorAccessor(Location loc,
                                  ConversionPatternRewriter &rewriter,
-                                 int32_t ctaIndex, int32_t crtaIndex,
-                                 Value bankBase, Value pageSize) {
-  auto ctaConst = arith::ConstantIntOp::create(rewriter, loc, ctaIndex, 32);
+                                 int32_t baseCTA, int32_t globalTensorIdx,
+                                 int32_t crtaIndex, Value bankBase,
+                                 Value pageSize) {
+  std::string ctaExpr =
+      "tensor_accessor::detail::get_tensor_accessor_args_cta_offset<" +
+      std::to_string(globalTensorIdx) + ", " + std::to_string(baseCTA) + ">()";
+
+  // Verifier requires cta_base even when cta_expr is set; EmitC ignores it.
+  auto dummyCTA = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
   auto crtaConst = arith::ConstantIntOp::create(rewriter, loc, crtaIndex, 32);
   auto args = ttk::TensorAccessorArgsOp::create(
-      rewriter, loc, ctaConst.getResult(), crtaConst.getResult(),
-      /*prev_args=*/Value(), /*cta_expr=*/nullptr, /*crta_expr=*/nullptr);
+      rewriter, loc, dummyCTA.getResult(), crtaConst.getResult(),
+      /*prev_args=*/Value(), rewriter.getStringAttr(ctaExpr),
+      /*crta_expr=*/nullptr);
   auto accessor = ttk::TensorAccessorOp::create(rewriter, loc, args.getResult(),
                                                 bankBase, pageSize);
   return accessor.getResult();
@@ -451,8 +461,10 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
 
 /// Compute CTA index for a tensor function argument.
 /// Reads ttl.base_cta_index and ttl.crta_indices from parent function.
-/// Returns baseCTA + crtaIndices[argIdx].
-static FailureOr<int32_t> computeCTAIndex(unsigned argIdx, Operation *op) {
+/// Returns the baseCTA (number of CBs) and global tensor index for a function
+/// argument. These are used to build the constexpr CTA offset expression.
+static FailureOr<std::pair<int32_t, int32_t>>
+getBaseCTAAndGlobalTensorIdx(unsigned argIdx, Operation *op) {
   auto parentFunc = op->getParentOfType<func::FuncOp>();
   if (!parentFunc) {
     return op->emitError("operation must be inside a function");
@@ -475,15 +487,14 @@ static FailureOr<int32_t> computeCTAIndex(unsigned argIdx, Operation *op) {
            << kCRTAIndicesAttr;
   }
 
-  int64_t baseCTA = baseCTAAttr.getInt();
-  int64_t globalTensorIdx =
-      mlir::cast<IntegerAttr>(crtaIndicesAttr[argIdx]).getInt();
+  int32_t baseCTA = static_cast<int32_t>(baseCTAAttr.getInt());
+  int32_t globalTensorIdx = static_cast<int32_t>(
+      mlir::cast<IntegerAttr>(crtaIndicesAttr[argIdx]).getInt());
 
-  return static_cast<int32_t>(baseCTA + globalTensorIdx);
+  return std::make_pair(baseCTA, globalTensorIdx);
 }
 
 /// Validate TTLLayoutAttr encoding on a tensor and return the page size.
-/// Rejects sharded (#118) layouts with diagnostics.
 static FailureOr<int64_t> getValidatedPageSize(Value tensor, Operation *op) {
   auto tensorTy = llvm::dyn_cast<RankedTensorType>(tensor.getType());
   if (!tensorTy) {
@@ -496,13 +507,6 @@ static FailureOr<int64_t> getValidatedPageSize(Value tensor, Operation *op) {
     return op->emitError(
         "tensor must have ttl.layout encoding for accessor "
         "materialization; Python layer should reject tensors without layout");
-  }
-
-  auto memLayout = layoutAttr.getMemoryLayout();
-  if (memLayout != tt::ttl::TensorMemoryLayout::Interleaved &&
-      memLayout != tt::ttl::TensorMemoryLayout::SingleBank) {
-    return op->emitError("sharded memory layout not yet supported for tensor "
-                         "accessor; see GH issue #118");
   }
 
   // TTL layouts are always tiled. Compute page size from tile element type.
@@ -530,15 +534,16 @@ materializeTensorAccessor(Value tensor, Value bankBase, int64_t pageSizeBytes,
 
   auto loc = tensor.getLoc();
 
-  auto ctaIndex = computeCTAIndex(*argIdx, op);
-  if (failed(ctaIndex)) {
+  auto ctaInfo = getBaseCTAAndGlobalTensorIdx(*argIdx, op);
+  if (failed(ctaInfo)) {
     return failure();
   }
+  auto [baseCTA, globalTensorIdx] = *ctaInfo;
 
   auto pageSize =
       arith::ConstantIntOp::create(rewriter, loc, pageSizeBytes, 32);
 
-  return buildTensorAccessor(loc, rewriter, *ctaIndex,
+  return buildTensorAccessor(loc, rewriter, baseCTA, globalTensorIdx,
                              static_cast<int32_t>(*argIdx), bankBase, pageSize);
 }
 

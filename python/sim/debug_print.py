@@ -18,7 +18,6 @@ from .blockstate import AccessState, BlockAcquisition, ThreadType
 from .diagnostics import warn_once_per_location
 from .greenlet_scheduler import get_current_core_id
 
-
 # Type alias for TT-Lang printable objects
 TTLangObject = Union[Tensor, Block, DataflowBuffer]
 
@@ -118,7 +117,7 @@ def _format_dfb(dfb: DataflowBuffer) -> str:
     lines = [f"<DataflowBuffer name='{getattr(dfb, '_name', 'unnamed')}'>"]
     lines.append(f"  shape: {dfb.shape}")
     lines.append(f"  likeness_tensor: {dfb.likeness_tensor}")
-    lines.append(f"  buffer_factor: {dfb.buffer_factor}")
+    lines.append(f"  block_count: {dfb.block_count}")
     lines.append(f"  capacity: {dfb.capacity_tiles} tiles")
     lines.append(f"  rd_ptr (head): {dfb.head}")
     lines.append(f"  visible: {dfb.visible} operations")

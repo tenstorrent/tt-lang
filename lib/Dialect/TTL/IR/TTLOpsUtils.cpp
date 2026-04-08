@@ -87,6 +87,12 @@ FusionTraceResult traceFusionToRoots(mlir::Value value) {
     return result;
   }
 
+  // FillOp is a fusable leaf: it produces a value with no input operands.
+  if (isa<FillOp>(defOp)) {
+    result.opsInOrder.insert(defOp);
+    return result;
+  }
+
   if (!isElementwiseOp(defOp)) {
     result.failureReason = TraceFailureReason::NotFusableOp;
     result.failedValue = value;

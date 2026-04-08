@@ -41,10 +41,10 @@ def max_plus_min_kernel(
     row_tiles = a.shape[0] // TILE_SIZE // GRANULARITY
     col_tiles = a.shape[1] // TILE_SIZE
 
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(GRANULARITY, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(GRANULARITY, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(GRANULARITY, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(GRANULARITY, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(GRANULARITY, 1), buffer_factor=2
+        out, shape=(GRANULARITY, 1), block_count=2
     )
 
     @ttl.compute()

@@ -33,13 +33,13 @@ def matmul_acc_kernel(a, b, out):
     Kt = a.shape[1] // TILE
     Nt = b.shape[1] // TILE
 
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(Mt, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, Nt), buffer_factor=2)
-    partial_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(Mt, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, Nt), block_count=2)
+    partial_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), block_count=2)
     # Compute-local accumulator. DM writer does NOT touch this.
-    acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), buffer_factor=2)
+    acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), block_count=2)
     # Output DFB: only written once after accumulation completes.
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), buffer_factor=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), block_count=2)
 
     @ttl.compute()
     def mm_compute():
@@ -93,11 +93,11 @@ def matmul_fused_acc_kernel(a, b, out):
     Kt = a.shape[1] // TILE
     Nt = b.shape[1] // TILE
 
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(Mt, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, Nt), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(Mt, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, Nt), block_count=2)
     # Compute-local accumulator. No partial_dfb needed — fusion eliminates it.
-    acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), buffer_factor=2)
+    acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), block_count=2)
 
     @ttl.compute()
     def mm_compute():
@@ -216,12 +216,12 @@ def matmul_bcast_bias_kernel(a, b, bias, out):
     Kt = a.shape[1] // TILE
     Nt = b.shape[1] // TILE
 
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(Mt, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, Nt), buffer_factor=2)
-    partial_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), buffer_factor=2)
-    acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), buffer_factor=2)
-    bias_dfb = ttl.make_dataflow_buffer_like(bias, shape=(1, Nt), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(Mt, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, Nt), block_count=2)
+    partial_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), block_count=2)
+    acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), block_count=2)
+    bias_dfb = ttl.make_dataflow_buffer_like(bias, shape=(1, Nt), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), block_count=2)
 
     @ttl.compute()
     def mm_compute():
@@ -362,10 +362,10 @@ def matmul_fused_acc_blocked_kernel(a, b, out):
     Kt = a.shape[1] // TILE
     Nt = b.shape[1] // TILE
 
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=2)
-    acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+    acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def mm_compute():
@@ -453,10 +453,10 @@ def matmul_relu_kernel(a, b, out):
     Kt = a.shape[1] // TILE
     Nt = b.shape[1] // TILE
 
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(Mt, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, Nt), buffer_factor=2)
-    acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(Mt, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, Nt), block_count=2)
+    acc_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), block_count=2)
 
     @ttl.compute()
     def mm_compute():
@@ -554,10 +554,10 @@ def matmul_add_relu_kernel(a, b, c, out):
     Mt = a.shape[0] // TILE
     Nt = b.shape[1] // TILE
 
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(Mt, 1), buffer_factor=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, Nt), buffer_factor=2)
-    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(Mt, Nt), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), buffer_factor=2)
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(Mt, 1), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, Nt), block_count=2)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(Mt, Nt), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(Mt, Nt), block_count=2)
 
     @ttl.compute()
     def mm_compute():

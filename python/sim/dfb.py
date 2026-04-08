@@ -40,7 +40,13 @@ from .dfbstate import DFBState
 from .constants import TILE_SHAPE
 from .errors import DFBContractError
 from .stats import record_dfb_reserve, record_dfb_wait
-from .ttnnsim import ROW_MAJOR_LAYOUT, TILE_LAYOUT, Tensor, tile_count_from_tensor
+from .ttnnsim import (
+    ROW_MAJOR_LAYOUT,
+    TILE_LAYOUT,
+    Tensor,
+    tile_count_from_tensor,
+    tile_shape_from_tensor,
+)
 from .typedefs import Index, IndexType, PositiveInt, Shape, Size
 
 
@@ -498,8 +504,6 @@ class Block:
                     f"1-D tensor dimension ({w},) must be a multiple of "
                     f"TILE_SHAPE[0]={TILE_SHAPE[0]}, or exactly 1"
                 )
-            tk = 1 if w == 1 else w // TILE_SHAPE[0]
-            tile_shape: Shape = (tk,)
         else:
             h, w = elem_shape[-2], elem_shape[-1]
             if (h != 1 and h % TILE_SHAPE[0] != 0) or (
@@ -509,10 +513,7 @@ class Block:
                     f"Last two tensor dimensions ({h}, {w}) must be multiples of "
                     f"TILE_SHAPE {TILE_SHAPE}, or exactly 1"
                 )
-            batch_shape = elem_shape[:-2]
-            tm = 1 if h == 1 else h // TILE_SHAPE[0]
-            tk = 1 if w == 1 else w // TILE_SHAPE[1]
-            tile_shape = (*batch_shape, tm, tk)
+        tile_shape: Shape = tile_shape_from_tensor(t)
 
         return cls(
             tensor=t,
@@ -926,7 +927,7 @@ class DFBStats(NamedTuple):
     one operation equals tiles_per_op tiles (= math.prod(shape)).
     """
 
-    capacity: int  # total slots (= buffer_factor)
+    capacity: int  # total slots (= block_count)
     visible: int  # slots ready to consume
     reserved: int  # slots reserved for writing
     free: int  # slots available for reservation
@@ -946,7 +947,7 @@ class DataflowBuffer:
     determined by the shape parameter.
 
     Example:
-        dfb = DataflowBuffer(likeness_tensor=t, shape=(2, 3), buffer_factor=2)
+        dfb = DataflowBuffer(likeness_tensor=t, shape=(2, 3), block_count=2)
 
         # Producer workflow
         write_view = dfb.reserve()  # Reserve space for 6 tiles
@@ -963,7 +964,7 @@ class DataflowBuffer:
         self,
         likeness_tensor: Tensor,
         shape: Shape,
-        buffer_factor: Size = 2,
+        block_count: Size = 2,
     ):
         """
         Initialize a DataflowBuffer.
@@ -971,21 +972,21 @@ class DataflowBuffer:
         Args:
             likeness_tensor: Tensor providing dtype and element shape (including degenerate dimensions)
             shape: Tile-grid shape for each wait/reserve operation (at least 1 dimension)
-            buffer_factor: Capacity multiplier (capacity = prod(shape) * buffer_factor)
+            block_count: Capacity multiplier (capacity = prod(shape) * block_count)
 
         Raises:
-            ValueError: If shape or buffer_factor are invalid
+            ValueError: If shape or block_count are invalid
         """
         if len(shape) < 1:
             raise ValueError(f"Shape must have at least 1 dimension, got {shape}")
         if any(s <= 0 for s in shape):
             raise ValueError(f"Shape elements must be positive, got {shape}")
-        if buffer_factor <= 0:
-            raise ValueError(f"buffer_factor must be positive, got {buffer_factor}")
+        if block_count <= 0:
+            raise ValueError(f"block_count must be positive, got {block_count}")
 
         self.likeness_tensor = likeness_tensor
         self._shape = shape
-        self._buffer_factor = buffer_factor
+        self._block_count = block_count
 
         if likeness_tensor.layout == ROW_MAJOR_LAYOUT:
             # Row-major: shape is in scalar units. No tile alignment required.
@@ -1043,9 +1044,9 @@ class DataflowBuffer:
 
         # Create and configure the ring-buffer state immediately.
         self._state = DFBState()
-        self._state.cap = buffer_factor
+        self._state.cap = block_count
         self._state.shape = shape
-        self._state.buf = [None] * buffer_factor
+        self._state.buf = [None] * block_count
         self._state.reset()
 
     # ------------------------------------------------------------------
@@ -1235,19 +1236,19 @@ class DataflowBuffer:
     def capacity_bytes(self) -> int:
         """Get the total L1 memory used by this buffer in bytes.
 
-        Computed as: buffer_factor * elements_per_operation * bytes_per_element,
+        Computed as: block_count * elements_per_operation * bytes_per_element,
         where elements_per_operation is the product of the element shape dimensions.
         """
         return (
-            self._buffer_factor
+            self._block_count
             * math.prod(self._element_shape)
             * self.likeness_tensor.element_size
         )
 
     @property
-    def buffer_factor(self) -> Size:
-        """Get the buffer factor (capacity multiplier)."""
-        return self._buffer_factor
+    def block_count(self) -> Size:
+        """Get the block count (capacity multiplier)."""
+        return self._block_count
 
     @property
     def head(self) -> int:
@@ -1335,7 +1336,7 @@ class DataflowBuffer:
         new_dfb = DataflowBuffer(
             likeness_tensor=self.likeness_tensor,
             shape=self._shape,
-            buffer_factor=self._buffer_factor,
+            block_count=self._block_count,
         )
         memo[id(self)] = new_dfb
         return new_dfb
@@ -1356,7 +1357,7 @@ class DataflowBuffer:
 def make_dataflow_buffer_like(
     likeness_tensor: Tensor,
     shape: Shape,
-    buffer_factor: Size = 2,
+    block_count: Size = 2,
 ) -> DataflowBuffer:
     """
     Create a DataflowBuffer with the same dtype and element shape as likeness_tensor.
@@ -1365,20 +1366,20 @@ def make_dataflow_buffer_like(
         likeness_tensor: A tensor providing dtype and element shape (including degenerate dimensions)
         shape: Tuple of tile-grid dimensions, e.g. (1,) for 1-D, (1, 1) for 2-D,
             (1, 1, 1) for 3-D, etc. The total buffer capacity is
-            math.prod(shape) * buffer_factor blocks.
-        buffer_factor: Multiplier for total buffer capacity
+            math.prod(shape) * block_count blocks.
+        block_count: Multiplier for total buffer capacity
 
     Returns:
         A DataflowBuffer with dtype and element shape matching likeness_tensor
 
     Example:
         x = ttnn.zeros((64, 64), dtype=ttnn.float32)
-        x_dfb = make_dataflow_buffer_like(x, shape=(2, 2), buffer_factor=2)
+        x_dfb = make_dataflow_buffer_like(x, shape=(2, 2), block_count=2)
     """
     from .context import get_context
 
     dfb = DataflowBuffer(
-        likeness_tensor=likeness_tensor, shape=shape, buffer_factor=buffer_factor
+        likeness_tensor=likeness_tensor, shape=shape, block_count=block_count
     )
     ctx = get_context()
     ctx.kernel_dfb_count += 1

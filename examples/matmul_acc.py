@@ -39,9 +39,9 @@ def matmul_with_bias(
     b_dfb = ttl.make_dataflow_buffer_like(B, shape=(1, block_cols))
     c_dfb = ttl.make_dataflow_buffer_like(C, shape=(block_rows, block_cols))
     # Compute-local CB for K-accumulation (DM threads do not touch it).
-    # buffer_factor=2: read previous partial while writing new one.
+    # block_count=2: read previous partial while writing new one.
     acc_dfb = ttl.make_dataflow_buffer_like(
-        Y, shape=(block_rows, block_cols), buffer_factor=2
+        Y, shape=(block_rows, block_cols), block_count=2
     )
     y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(block_rows, block_cols))
 

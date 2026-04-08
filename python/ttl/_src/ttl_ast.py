@@ -15,7 +15,12 @@ from ..constants import DEFAULT_TILE_SIZE
 from ..diagnostics import TTLangCompileError
 from ttl.dialects import ttl
 from ..dtype_utils import is_ttnn_tensor, tensor_dtype_to_ttcore_datatype
-from ..layouts import LayoutConfig, create_layout
+from ..layouts import (
+    LayoutConfig,
+    create_layout,
+    detect_memory_layout,
+    TENSOR_MEMORY_LAYOUT_INTERLEAVED,
+)
 from ..ttl_utils import get_thread_type_string
 from .auto_profile import (
     get_line_mapper,
@@ -81,12 +86,17 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
             f"All shape dimensions must be positive, got shape {tensor.shape}",
         )
 
+    mem_layout = TENSOR_MEMORY_LAYOUT_INTERLEAVED
+    if is_ttnn_tensor(tensor):
+        mem_layout = detect_memory_layout(tensor)
+
     layout = create_layout(
         ctx,
         LayoutConfig(
             logical_shape=shape,
             grid=grid,
             dtype=tensor.dtype,
+            memory_layout=mem_layout,
         ),
     )
 
@@ -412,12 +422,28 @@ class TTLGenericCompiler(TTCompilerBase):
             return op_constructor(IntegerType.get_signless(1, self.ctx), node.value)
         elif isinstance(node.value, int):
             return op_constructor(IntegerType.get_signless(64, self.ctx), node.value)
+        elif isinstance(node.value, float):
+            f32 = F32Type.get(self.ctx)
+            if as_attr:
+                return FloatAttr.get(f32, node.value)
+            return arith.ConstantOp(f32, node.value)
         elif isinstance(node.value, str):
             return node.value
         else:
             self._raise_error(
                 node, f"constant type {type(node.value).__name__} not implemented"
             )
+
+    def visit_UnaryOp(self, node):
+        # Fold -float_literal to a negative float constant instead of emitting
+        # emitc.unary_minus on a positive constant.
+        if isinstance(node.op, ast.USub) and isinstance(node.operand, ast.Constant):
+            if isinstance(node.operand.value, float):
+                neg_node = ast.copy_location(
+                    ast.Constant(value=-node.operand.value), node
+                )
+                return self.visit_Constant(neg_node)
+        return super().visit_UnaryOp(node)
 
     def _signed_int_literal(self, elt: ast.AST) -> Optional[int]:
         """Fold a signed integer literal (e.g. ``-1`` in ``dims=[-1]``).
@@ -456,10 +482,10 @@ class TTLGenericCompiler(TTCompilerBase):
             self.ctx,
             list(cb.shape),
             element_type,
-            cb.buffer_factor,
+            cb.block_count,
         )
-        # Emit: %cb = ttl.bind_cb {cb_index = N, buffer_factor = M} : !ttl.cb<...>
-        return ttl.bind_cb(cb_type, cb._cb_index, buffer_factor=cb.buffer_factor)
+        # Emit: %cb = ttl.bind_cb {cb_index = N, block_count = M} : !ttl.cb<...>
+        return ttl.bind_cb(cb_type, cb._cb_index, block_count=cb.block_count)
 
     def _emit_entry(self, node):
         assert not self.func_entry, "Cannot declare function within a function"
@@ -525,6 +551,10 @@ class TTLGenericCompiler(TTCompilerBase):
                 if isinstance(val, int):
                     self.symbol_tables[-1][name] = arith.ConstantOp(
                         IndexType.get(self.ctx), val
+                    )
+                elif isinstance(val, float):
+                    self.symbol_tables[-1][name] = arith.ConstantOp(
+                        F32Type.get(self.ctx), val
                     )
                 elif isinstance(val, CircularBuffer):
                     cb_val = self._emit_cb_from_capture(val)

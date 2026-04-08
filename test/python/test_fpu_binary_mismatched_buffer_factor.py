@@ -3,19 +3,18 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Regression test for issue #438: FPU binary mul with mismatched buffer_factors.
+Regression test for issue #438: FPU binary mul with mismatched block_counts.
 
-When input DFBs have different buffer_factors (e.g., 1 vs 2), the FPU binary
-lowering incorrectly compared total CB tile counts (including buffer_factor)
+When input DFBs have different block_counts (e.g., 1 vs 2), the FPU binary
+lowering incorrectly compared total CB tile counts (including block_count)
 instead of per-block tile counts. This caused tile_mul to fail legalization.
 
-The pattern: an outer multi-wait scope with buffer_factor=1 DFBs and an inner
-scope with buffer_factor=2 DFBs. Multiplying across scopes produces operands
+The pattern: an outer multi-wait scope with block_count=1 DFBs and an inner
+scope with block_count=2 DFBs. Multiplying across scopes produces operands
 from CBs with different total tile counts but identical per-block shapes.
 
 Expected computation: out = cv * bv = 5.0 * 3.0 = 15.0
 """
-
 
 import pytest
 import torch
@@ -28,11 +27,11 @@ from ttlang_test_utils import assert_allclose, to_dram
 
 @ttl.operation(grid=(1, 1))
 def mul_mismatched_bf(a, b, c, out):
-    """Multiply cv * bv where c_dfb has buffer_factor=2, b_dfb has buffer_factor=1."""
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), buffer_factor=1)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), buffer_factor=1)
-    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    """Multiply cv * bv where c_dfb has block_count=2, b_dfb has block_count=1."""
+    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=1)
+    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=1)
+    c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -59,8 +58,8 @@ def mul_mismatched_bf(a, b, c, out):
             tx.wait()
 
 
-def test_mul_mismatched_buffer_factor(device):
-    """Issue #438: tile_mul must work when operand DFBs have different buffer_factors."""
+def test_mul_mismatched_block_count(device):
+    """Issue #438: tile_mul must work when operand DFBs have different block_counts."""
     a_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     b_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     c_torch = torch.randn(32, 32, dtype=torch.bfloat16)

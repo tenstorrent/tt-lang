@@ -19,9 +19,9 @@
 func.func @tile_index_2x3(
     %output: tensor<2x3x!ttcore.tile<32x32, bf16>>
 ) -> tensor<2x3x!ttcore.tile<32x32, bf16>> {
-  %cb0 = ttl.bind_cb {cb_index = 0, buffer_factor = 1} : !ttl.cb<[2, 3], !ttcore.tile<32x32, bf16>, 1>
-  %cb1 = ttl.bind_cb {cb_index = 1, buffer_factor = 1} : !ttl.cb<[2, 3], !ttcore.tile<32x32, bf16>, 1>
-  %cb_out = ttl.bind_cb {cb_index = 2, buffer_factor = 1} : !ttl.cb<[2, 3], !ttcore.tile<32x32, bf16>, 1>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[2, 3], !ttcore.tile<32x32, bf16>, 1>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[2, 3], !ttcore.tile<32x32, bf16>, 1>
+  %cb_out = ttl.bind_cb {cb_index = 2, block_count = 1} : !ttl.cb<[2, 3], !ttcore.tile<32x32, bf16>, 1>
 
   %in0 = ttl.cb_wait %cb0 : <[2, 3], !ttcore.tile<32x32, bf16>, 1> -> tensor<2x3x!ttcore.tile<32x32, bf16>>
   %in1 = ttl.cb_wait %cb1 : <[2, 3], !ttcore.tile<32x32, bf16>, 1> -> tensor<2x3x!ttcore.tile<32x32, bf16>>
@@ -74,9 +74,9 @@ func.func @tile_index_2x3(
 
 func.func @bcast_index_2x3()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-  %cb_col = ttl.bind_cb {cb_index = 0, buffer_factor = 1} : !ttl.cb<[2, 1], !ttcore.tile<32x32, bf16>, 1>
-  %cb_row = ttl.bind_cb {cb_index = 1, buffer_factor = 1} : !ttl.cb<[1, 3], !ttcore.tile<32x32, bf16>, 1>
-  %cb_out = ttl.bind_cb {cb_index = 2, buffer_factor = 1} : !ttl.cb<[2, 3], !ttcore.tile<32x32, bf16>, 1>
+  %cb_col = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[2, 1], !ttcore.tile<32x32, bf16>, 1>
+  %cb_row = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[1, 3], !ttcore.tile<32x32, bf16>, 1>
+  %cb_out = ttl.bind_cb {cb_index = 2, block_count = 1} : !ttl.cb<[2, 3], !ttcore.tile<32x32, bf16>, 1>
 
   %col_in = ttl.cb_wait %cb_col : <[2, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<2x1x!ttcore.tile<32x32, bf16>>
   %col_cb = ttl.attach_cb %col_in, %cb_col : (tensor<2x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 1], !ttcore.tile<32x32, bf16>, 1>) -> tensor<2x1x!ttcore.tile<32x32, bf16>>

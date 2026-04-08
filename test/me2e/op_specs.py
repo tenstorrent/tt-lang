@@ -16,6 +16,7 @@ import torch
 
 from .ops import (
     ELEMENTWISE_OPS,
+    OP_ALLCLOSE_OVERRIDES,
     OP_INPUT_RANGES,
     OP_PCC_THRESHOLD_OVERRIDES,
     OP_TORCH_MAP,
@@ -88,6 +89,7 @@ class ComputeOpSpec:
     input_range: Optional[Tuple[float, float]] = None
     ulp_threshold_overrides: Optional[dict[torch.dtype, int]] = None
     pcc_threshold_overrides: Optional[dict[torch.dtype, float]] = None
+    allclose_overrides: Optional[dict[torch.dtype, Tuple[float, float]]] = None
 
 
 # Special cases for ops that need custom golden functions (not in OP_TORCH_MAP or need different implementation).
@@ -131,6 +133,7 @@ def _generate_compute_ops() -> list[ComputeOpSpec]:
         # Get per-op threshold overrides if specified.
         ulp_overrides = OP_ULP_THRESHOLD_OVERRIDES.get(op_name)
         pcc_overrides = OP_PCC_THRESHOLD_OVERRIDES.get(op_name)
+        allclose_overrides = OP_ALLCLOSE_OVERRIDES.get(op_name)
 
         compute_ops.append(
             ComputeOpSpec(
@@ -142,6 +145,7 @@ def _generate_compute_ops() -> list[ComputeOpSpec]:
                 input_range=input_range,
                 ulp_threshold_overrides=ulp_overrides,
                 pcc_threshold_overrides=pcc_overrides,
+                allclose_overrides=allclose_overrides,
             )
         )
 

@@ -28,23 +28,6 @@ static RankedTensorType getTensorType(Value v) {
   return dyn_cast<RankedTensorType>(v.getType());
 }
 
-/// Check if `input` is broadcast-compatible with `output`: for each dimension,
-/// either the sizes match or the input size is 1.
-static bool isBroadcastCompatible(RankedTensorType input,
-                                  RankedTensorType output) {
-  if (input.getRank() != output.getRank()) {
-    return false;
-  }
-  for (int64_t d = 0; d < output.getRank(); ++d) {
-    int64_t inDim = input.getDimSize(d);
-    int64_t outDim = output.getDimSize(d);
-    if (inDim != outDim && inDim != 1) {
-      return false;
-    }
-  }
-  return true;
-}
-
 static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
                              Value exemplar) {
   SmallVector<Value> dynDims;
@@ -186,6 +169,11 @@ static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *sourceOp,
   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
+  // FillOp: no tile operands, just a value attribute.
+  if (auto fillOp = dyn_cast<FillOp>(sourceOp)) {
+    return TileFillOp::create(b, loc, tileType, fillOp.getValueAttr());
+  }
+
   return nullptr;
 }
 
@@ -298,68 +286,134 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   Location loc = sinkOp->getLoc();
   MLIRContext *ctx = rewriter.getContext();
 
-  // Validate broadcast compatibility: each root input dimension must either
-  // match the output or be 1 (broadcast). Any other mismatch means the
-  // identity-or-broadcast indexing map heuristic would produce incorrect maps.
+  // Pre-scan: detect matmul in the chain and identify LHS/RHS tensors.
+  // When a matmul is fused with an elementwise add (acc + A @ B), the
+  // iteration space must be 3D [M, N, K] with K as a reduction dimension.
+  // Without this, subblocking along M would incorrectly slice B (which is
+  // indexed by [K, N], not [M, N]).
+  DenseSet<Value> matmulLhsTensors, matmulRhsTensors;
+  for (Operation *op : trace.opsInOrder) {
+    if (auto matmulOp = dyn_cast<MatmulOp>(op)) {
+      matmulLhsTensors.insert(matmulOp.getLhs());
+      matmulRhsTensors.insert(matmulOp.getRhs());
+    }
+  }
+  bool hasMatmul = !matmulLhsTensors.empty();
+
+  // Build indexing maps and iterator types based on whether the chain
+  // contains a matmul.
+  SmallVector<Attribute> maps;
+  SmallVector<Attribute> iterTypes;
+
+  if (hasMatmul) {
+    // 3D iteration space [M, N, K] with matmul indexing maps.
+    // LHS A is [M, K], RHS B is [K, N] (non-transposed).
+    // TODO(#420): derive RHS map from a transpose flag for transposed B.
+    auto d0 = getAffineDimExpr(0, ctx); // M
+    auto d1 = getAffineDimExpr(1, ctx); // N
+    auto d2 = getAffineDimExpr(2, ctx); // K
+    AffineMap lhsMap = AffineMap::get(3, 0, {d0, d2}, ctx);
+    AffineMap rhsMap = AffineMap::get(3, 0, {d2, d1}, ctx);
+    AffineMap parallelMap = AffineMap::get(3, 0, {d0, d1}, ctx);
+
+    for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
+      Value input = trace.rootInputs[i];
+      if (matmulLhsTensors.contains(input)) {
+        maps.push_back(AffineMapAttr::get(lhsMap));
+      } else if (matmulRhsTensors.contains(input)) {
+        maps.push_back(AffineMapAttr::get(rhsMap));
+      } else {
+        maps.push_back(AffineMapAttr::get(parallelMap));
+      }
+    }
+    for (size_t i = 0; i < outCbs.size(); ++i) {
+      maps.push_back(AffineMapAttr::get(parallelMap));
+    }
+
+    iterTypes = {rewriter.getStringAttr("parallel"),
+                 rewriter.getStringAttr("parallel"),
+                 rewriter.getStringAttr("reduction")};
+  } else {
+    // 2D iteration space with broadcast-aware identity maps.
+    AffineMap identityMap =
+        AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
+    for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
+      auto inputType = getTensorType(trace.rootInputs[i]);
+      if (inputType && inputType.getRank() == type.getRank()) {
+        SmallVector<AffineExpr> exprs;
+        bool hasBroadcast = false;
+        for (int64_t d = 0; d < type.getRank(); ++d) {
+          if (inputType.getDimSize(d) == 1 && type.getDimSize(d) != 1) {
+            exprs.push_back(getAffineConstantExpr(0, ctx));
+            hasBroadcast = true;
+          } else {
+            exprs.push_back(getAffineDimExpr(d, ctx));
+          }
+        }
+        if (hasBroadcast) {
+          maps.push_back(AffineMapAttr::get(
+              AffineMap::get(type.getRank(), 0, exprs, ctx)));
+        } else {
+          maps.push_back(AffineMapAttr::get(identityMap));
+        }
+      } else {
+        maps.push_back(AffineMapAttr::get(identityMap));
+      }
+    }
+    for (size_t i = 0; i < outCbs.size(); ++i) {
+      maps.push_back(AffineMapAttr::get(identityMap));
+    }
+
+    iterTypes.assign(type.getRank(), rewriter.getStringAttr("parallel"));
+  }
+
+  // Validate each input's shape against its assigned indexing map. For each
+  // non-constant result expression d_i in the map, collect the expected
+  // iteration domain size for that dimension. Two inputs mapping the same
+  // iteration dimension must agree on that dimension's size.
+  DenseMap<unsigned, int64_t> iterDimSizes;
   for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
     auto inputType = getTensorType(trace.rootInputs[i]);
     if (!inputType) {
       continue;
     }
-    if (!isBroadcastCompatible(inputType, type)) {
-      return rewriter.notifyMatchFailure(
-          sinkOp, "fusion failed: input " + Twine(i) +
-                      " is not broadcast-compatible with output");
+    auto map = cast<AffineMapAttr>(maps[i]).getValue();
+    for (unsigned r = 0; r < map.getNumResults(); ++r) {
+      auto dimExpr = dyn_cast<AffineDimExpr>(map.getResult(r));
+      if (!dimExpr) {
+        continue; // constant (broadcast dim) — no constraint
+      }
+      unsigned iterDim = dimExpr.getPosition();
+      int64_t inputDimSize = inputType.getDimSize(r);
+      auto it = iterDimSizes.find(iterDim);
+      if (it == iterDimSizes.end()) {
+        iterDimSizes[iterDim] = inputDimSize;
+      } else if (it->second != inputDimSize) {
+        return rewriter.notifyMatchFailure(
+            sinkOp, "fusion failed: input " + Twine(i) + " dimension " +
+                        Twine(r) + " (size " + Twine(inputDimSize) +
+                        ") conflicts with iteration dimension d" +
+                        Twine(iterDim) + " (expected " + Twine(it->second) +
+                        ")");
+      }
     }
   }
-
-  // Build indexing maps: broadcast-aware for inputs, identity for output.
-  // When an input has size 1 in a dimension but the output doesn't, that
-  // dimension is broadcast and the map should project to constant 0.
-  // This is required for TilingInterface: without correct maps, subblocking
-  // would create out-of-bounds slices on broadcast dimensions.
-  SmallVector<Attribute> maps;
-  AffineMap identityMap =
-      AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
-  for (size_t i = 0; i < trace.rootInputs.size(); ++i) {
-    auto inputType = getTensorType(trace.rootInputs[i]);
-    if (inputType && inputType.getRank() == type.getRank()) {
-      SmallVector<AffineExpr> exprs;
-      bool hasBroadcast = false;
-      for (int64_t d = 0; d < type.getRank(); ++d) {
-        if (inputType.getDimSize(d) == 1 && type.getDimSize(d) != 1) {
-          exprs.push_back(getAffineConstantExpr(0, ctx));
-          hasBroadcast = true;
-        } else {
-          exprs.push_back(getAffineDimExpr(d, ctx));
-        }
-      }
-      if (hasBroadcast) {
-        maps.push_back(
-            AffineMapAttr::get(AffineMap::get(type.getRank(), 0, exprs, ctx)));
-      } else {
-        maps.push_back(AffineMapAttr::get(identityMap));
-      }
-    } else {
-      maps.push_back(AffineMapAttr::get(identityMap));
-    }
-  }
-  for (size_t i = 0; i < outCbs.size(); ++i) {
-    maps.push_back(AffineMapAttr::get(identityMap));
-  }
-
-  // Build iterator types: all parallel
-  SmallVector<Attribute> iterTypes(type.getRank(),
-                                   rewriter.getStringAttr("parallel"));
 
   // Position compute after all reserves by inserting before the last store.
   insertAtLastStore(rewriter, sinkOp);
 
   // Create init tensors and attach to output CBs.
+  // Use the first root input as exemplar for dynamic dims. For fill-only
+  // chains with no root inputs, use tensor.empty directly (static shapes).
   SmallVector<Value> allInitAttached;
   SmallVector<Type> resultTypes;
   for (Value outCb : outCbs) {
-    Value init = buildInitTensor(rewriter, loc, type, trace.rootInputs[0]);
+    Value init =
+        trace.rootInputs.empty()
+            ? tensor::EmptyOp::create(rewriter, loc, type.getShape(),
+                                      type.getElementType())
+                  .getResult()
+            : buildInitTensor(rewriter, loc, type, trace.rootInputs[0]);
     Value initAttached =
         AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
     allInitAttached.push_back(initAttached);
@@ -447,11 +501,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // chain, both are replaced by a single 3-operand TileMatmulBlockOp
   // (lhs, rhs, accumulator). matmul_block accumulates (DST += A*B), so
   // pre-loading the accumulator into DST yields accumulator + A*B without
-  // an explicit tile_add.
-  //
-  // The matmul is emitted before the add in topological order. When the
-  // matmul's sole user is an add in the chain, emission is deferred: the
-  // tile operands are stashed and the 3-operand form is emitted at the add.
+  // an explicit tile_add. Works for both single-tile and multi-tile
+  // blocks; the matmul-aware iteration space and indexing maps are set up
+  // by buildFusedCompute above.
   DenseMap<Value, std::pair<Value, Value>> deferredMatmul;
 
   Value finalResult;
@@ -811,16 +863,13 @@ static FailureOr<ttkernel::ReduceDim> computeReduceDim(ArrayRef<int64_t> dims,
 /// TODO(#449): replace this tracing with a structured approach (e.g.,
 /// propagate reduce dim as an attribute during lowering).
 ///
-/// Returns:
-///   - std::nullopt: no reduce feeds this broadcast (no adjustment needed)
-///   - ReduceDim value: successfully traced the producing reduce
-///   - failure(): a reduce was found but the tracing is broken (caller
-///     should emit an error)
-static FailureOr<std::optional<ttkernel::ReduceDim>>
-getInputReduceDim(Value bcastInput) {
+/// Returns std::nullopt when no unique reduce can be traced (no CB, ambiguous
+/// stores, non-reduce producer, etc.). Returns a ReduceDim when a unique
+/// reduce was successfully traced.
+static std::optional<ttkernel::ReduceDim> getInputReduceDim(Value bcastInput) {
   Value cb = getAttachedCB(bcastInput);
   if (!cb) {
-    return std::optional<ttkernel::ReduceDim>(std::nullopt);
+    return std::nullopt;
   }
 
   // Find the unique store to this CB in the enclosing function.  Walking the
@@ -828,10 +877,13 @@ getInputReduceDim(Value bcastInput) {
   // store is inside a nested region (e.g., nested with-stmt scopes).
   StoreOp foundStore;
   bool ambiguous = false;
-  auto enclosingFunc =
-      bcastInput.getDefiningOp()->getParentOfType<func::FuncOp>();
+  auto *defOp = bcastInput.getDefiningOp();
+  if (!defOp) {
+    return std::nullopt;
+  }
+  auto enclosingFunc = defOp->getParentOfType<func::FuncOp>();
   if (!enclosingFunc) {
-    return std::optional<ttkernel::ReduceDim>(std::nullopt);
+    return std::nullopt;
   }
   enclosingFunc.walk([&](StoreOp storeOp) {
     if (ambiguous || getAttachedCB(storeOp.getView()) != cb) {
@@ -843,48 +895,102 @@ getInputReduceDim(Value bcastInput) {
     }
     foundStore = storeOp;
   });
-  if (!foundStore) {
-    return std::optional<ttkernel::ReduceDim>(std::nullopt);
-  }
-  if (ambiguous) {
-    return failure();
+  if (!foundStore || ambiguous) {
+    return std::nullopt;
   }
 
   auto reduceOp = foundStore.getTensor().getDefiningOp<ReduceOp>();
   if (!reduceOp) {
-    return std::optional<ttkernel::ReduceDim>(std::nullopt);
+    return std::nullopt;
   }
 
   auto inputType = getTensorType(reduceOp.getInput());
   if (!inputType) {
-    return failure();
+    return std::nullopt;
   }
   auto reduceDim = computeReduceDim(reduceOp.getDims(), inputType.getRank());
   if (failed(reduceDim)) {
-    return failure();
+    return std::nullopt;
   }
-  return std::optional<ttkernel::ReduceDim>(*reduceDim);
+  return *reduceDim;
 }
 
-/// Validate that shape expansion is compatible with bcast type.
-/// Uses emitError (not notifyMatchFailure) because these are user-facing
-/// errors with no alternative pattern to try. TODO: move to BcastOp verifier.
-static LogicalResult validateBcastExpansion(BcastOp op, bool expandRows,
-                                            bool expandCols) {
+/// Validate a single BcastOp. Called from runOnOperation() before patterns
+/// run, so emitOpError is safe (not inside a pattern rewriter).
+static LogicalResult validateBcastOp(BcastOp op) {
+  auto outputType = getTensorType(op.getResult());
+  auto inputType = getTensorType(op.getInput());
+  if (!outputType || !inputType) {
+    return success(); // pattern will handle gracefully
+  }
+
+  if (!getAttachedCB(op.getInput())) {
+    return op.emitOpError(
+        "broadcast input must come directly from a circular buffer, not from "
+        "an elementwise result; move the broadcast to its own compute block "
+        "or make it the first operation in a fused sequence");
+  }
+  if (!getAttachedCB(op.getOutput())) {
+    return op.emitOpError("output must be attached to a circular buffer");
+  }
+
+  if (inputType.getRank() != 2 || outputType.getRank() != 2) {
+    return op.emitOpError("requires rank-2 tensors");
+  }
+
+  auto inputShape = inputType.getShape();
+  auto outputShape = outputType.getShape();
+  bool expandRows = inputShape[0] != outputShape[0];
+  bool expandCols = inputShape[1] != outputShape[1];
+
+  if (expandRows && inputShape[0] != 1) {
+    return op.emitOpError("row expansion requires input dim 0 to be 1");
+  }
+  if (expandCols && inputShape[1] != 1) {
+    return op.emitOpError("col expansion requires input dim 1 to be 1");
+  }
+
   auto bcastType = op.getBcastType();
-  // SCALAR is a superset: valid for any expansion direction.
-  if (bcastType == BcastType::Scalar) {
-    return success();
+  if (bcastType != BcastType::Scalar) {
+    if (expandRows && expandCols) {
+      return op.emitOpError("row+col expansion requires scalar bcast type");
+    }
+    if (expandCols && bcastType != BcastType::Col) {
+      return op.emitOpError("col expansion requires col or scalar bcast type");
+    }
+    if (expandRows && bcastType != BcastType::Row) {
+      return op.emitOpError("row expansion requires row or scalar bcast type");
+    }
   }
-  if (expandRows && expandCols) {
-    return op.emitError("row+col expansion requires scalar bcast type");
+
+  // Validate broadcast dims vs. producing reduce (#444).
+  if (auto reduceDim = getInputReduceDim(op.getInput())) {
+    BcastType requiredBcastType;
+    StringRef requiredKind, requiredDims;
+    switch (*reduceDim) {
+    case ttkernel::ReduceDim::Scalar:
+      requiredBcastType = BcastType::Scalar;
+      requiredKind = "scalar";
+      requiredDims = "[0, 1]";
+      break;
+    case ttkernel::ReduceDim::Col:
+      requiredBcastType = BcastType::Row;
+      requiredKind = "row";
+      requiredDims = "[0]";
+      break;
+    case ttkernel::ReduceDim::Row:
+      requiredBcastType = BcastType::Col;
+      requiredKind = "column";
+      requiredDims = "[1]";
+      break;
+    }
+    if (bcastType != requiredBcastType) {
+      return op.emitOpError("broadcast dims are incompatible with the "
+                            "producing reduce; need ")
+             << requiredKind << " broadcast (dims=" << requiredDims << ")";
+    }
   }
-  if (expandCols && bcastType != BcastType::Col) {
-    return op.emitError("col expansion requires col or scalar bcast type");
-  }
-  if (expandRows && bcastType != BcastType::Row) {
-    return op.emitError("row expansion requires row or scalar bcast type");
-  }
+
   return success();
 }
 
@@ -901,40 +1007,20 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
       return failure();
     }
 
+    // Preconditions validated by validateBcastOp in runOnOperation().
     Value inputCb = getAttachedCB(op.getInput());
     Value outCb = getAttachedCB(op.getOutput());
-    // Bcast validation uses emitError (not notifyMatchFailure) because these
-    // are user-facing errors with no alternative pattern. TODO: move to
-    // verifier.
-    if (!inputCb) {
-      return op.emitError(
-          "broadcast input must come directly from a circular buffer, not from "
-          "an elementwise result; move the broadcast to its own compute block "
-          "or make it the first operation in a fused sequence");
+    if (!inputCb || !outCb) {
+      return rewriter.notifyMatchFailure(op, "input/output not CB-attached");
     }
-    if (!outCb) {
-      return op.emitError("bcast output must be attached to a circular buffer");
-    }
-
     if (inputType.getRank() != 2 || outputType.getRank() != 2) {
-      return op.emitError("bcast requires rank-2 tensors");
+      return rewriter.notifyMatchFailure(op, "requires rank-2 tensors");
     }
 
     auto inputShape = inputType.getShape();
     auto outputShape = outputType.getShape();
     bool expandRows = inputShape[0] != outputShape[0];
     bool expandCols = inputShape[1] != outputShape[1];
-
-    if (expandRows && inputShape[0] != 1) {
-      return op.emitError("row expansion requires input dim 0 to be 1");
-    }
-    if (expandCols && inputShape[1] != 1) {
-      return op.emitError("col expansion requires input dim 1 to be 1");
-    }
-
-    if (failed(validateBcastExpansion(op, expandRows, expandCols))) {
-      return failure();
-    }
 
     Location loc = op.getLoc();
     MLIRContext *ctx = rewriter.getContext();
@@ -949,47 +1035,7 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     SmallVector<Attribute> iterTypes(outputType.getRank(),
                                      rewriter.getStringAttr("parallel"));
 
-    // Validate that the user's broadcast dims are compatible with the input's
-    // tile data layout when the input comes from a reduce.  Each reduce
-    // dimension leaves valid data at a specific position in the 32x32 tile:
-    //   REDUCE_SCALAR -> data at [0,0]     -> requires dims=[0, 1] (Scalar)
-    //   REDUCE_COL    -> data in row 0     -> requires dims=[0]    (Row)
-    //   REDUCE_ROW    -> data in column 0  -> requires dims=[1]    (Col)
-    // A mismatch causes the hardware to read garbage (#444).
-    // This check must happen before any IR mutations.
     auto bcastType = op.getBcastType();
-    auto inputReduceDim = getInputReduceDim(op.getInput());
-    if (failed(inputReduceDim)) {
-      return op.emitError(
-          "broadcast input traces to a reduce but the reduce dimension "
-          "could not be determined; this is a compiler bug (#449)");
-    }
-    if (auto reduceDim = *inputReduceDim) {
-      BcastType requiredBcastType;
-      StringRef requiredKind, requiredDims;
-      switch (*reduceDim) {
-      case ttkernel::ReduceDim::Scalar:
-        requiredBcastType = BcastType::Scalar;
-        requiredKind = "scalar";
-        requiredDims = "[0, 1]";
-        break;
-      case ttkernel::ReduceDim::Col:
-        requiredBcastType = BcastType::Row;
-        requiredKind = "row";
-        requiredDims = "[0]";
-        break;
-      case ttkernel::ReduceDim::Row:
-        requiredBcastType = BcastType::Col;
-        requiredKind = "column";
-        requiredDims = "[1]";
-        break;
-      }
-      if (bcastType != requiredBcastType) {
-        return op.emitError("broadcast dims are incompatible with the "
-                            "producing reduce; need ")
-               << requiredKind << " broadcast (dims=" << requiredDims << ")";
-      }
-    }
 
     // Position compute after all reserves by inserting before the last store.
     if (findLastStore(op)) {
@@ -1028,10 +1074,11 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
 //===----------------------------------------------------------------------===//
 
 /// Lowers ttl.matmul to ttl.compute with ttl.tile_matmul_block in the body.
-/// The iteration space is 3D [M, N, K] at tile granularity with matmul
-/// indexing maps. Downstream passes choose the lowering strategy:
-/// ttl-lower-matmul-block emits a single hardware call; ttl-lower-to-loops
-/// would emit per-tile loops (future).
+/// When the matmul feeds into an elementwise op, defers to let
+/// buildFusedCompute handle the full chain (including matmul+add fusion
+/// into 3-operand tile_matmul_block via the deferred-matmul fold).
+/// Standalone matmul (result stored directly) is lowered here with a 3D
+/// [M, N, K] iteration space.
 struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
   using OpRewritePattern<MatmulOp>::OpRewritePattern;
 
@@ -1045,28 +1092,18 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
                                          "matmul inputs must be CB-attached");
     }
 
-    auto lhsType = getTensorType(lhs);
-    auto rhsType = getTensorType(rhs);
-    auto resultType = getTensorType(op.getResult());
-
-    // Defer to fusion when the matmul result feeds into a single elementwise
-    // op and the matmul inputs are broadcast-compatible with the user's output
-    // shape. Without the broadcast check, fusion would reject and the greedy
-    // rewriter would cycle.
-    if (op.getResult().hasOneUse()) {
-      Operation *user = *op.getResult().getUsers().begin();
-      if (isElementwiseOp(user)) {
-        auto userOutType = getTensorType(user->getResult(0));
-        if (isBroadcastCompatible(lhsType, userOutType) &&
-            isBroadcastCompatible(rhsType, userOutType)) {
-          return rewriter.notifyMatchFailure(op, "deferring matmul to fusion");
-        }
-      }
+    // Defer when the matmul feeds into an elementwise op (e.g., add, relu,
+    // sub). The downstream op's fusion (buildFusedCompute) handles the full
+    // chain with matmul-aware 3D indexing maps and the deferred-matmul fold.
+    if (op.getResult().hasOneUse() &&
+        isElementwiseOp(*op.getResult().getUsers().begin())) {
+      return rewriter.notifyMatchFailure(op, "deferring matmul to fusion");
     }
 
+    // Standalone matmul: result stored directly, no elementwise chain.
+    auto resultType = getTensorType(op.getResult());
     MLIRContext *ctx = rewriter.getContext();
 
-    // 3D iteration space [M, N, K] with matmul indexing maps.
     auto d0 = getAffineDimExpr(0, ctx); // m
     auto d1 = getAffineDimExpr(1, ctx); // n
     auto d2 = getAffineDimExpr(2, ctx); // k
@@ -1216,10 +1253,26 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
       return failure();
     }
 
-    // No fusion support for reduce (deferred to follow-up PR).
-    if (!getAttachedCB(op.getInput()) || !getAttachedCB(op.getScaler())) {
+    if (!getAttachedCB(op.getScaler())) {
       return rewriter.notifyMatchFailure(op,
-                                         "reduce inputs must be CB-attached");
+                                         "reduce scaler must be CB-attached");
+    }
+
+    if (!getAttachedCB(op.getInput())) {
+      // Emit a user-facing error when the reduce input comes from an
+      // elementwise op that hasn't been stored to a dataflow buffer.
+      // Without this, the elementwise op fails to legalize with a
+      // cryptic "failed to legalize" message pointing at the wrong op.
+      Operation *defOp = op.getInput().getDefiningOp();
+      if (defOp && (isElementwiseOp(defOp) || isa<MatmulOp>(defOp) ||
+                    isa<BcastOp>(defOp) || isa<FillOp>(defOp))) {
+        op.emitError("elementwise operations feeding into reduce cannot be "
+                     "fused yet; store the intermediate result to a dataflow "
+                     "buffer before passing it to reduce (see issue #474)");
+        return failure();
+      }
+      return rewriter.notifyMatchFailure(op,
+                                         "reduce input must be CB-attached");
     }
 
     MLIRContext *ctx = rewriter.getContext();
@@ -1275,6 +1328,74 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
               b, loc, tileType, body->getArgument(0), body->getArgument(1),
               body->getArgument(2), reduceType, reduceDim);
         });
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Fill Lowering
+//===----------------------------------------------------------------------===//
+
+struct LowerFillToCompute : OpRewritePattern<FillOp> {
+  using OpRewritePattern<FillOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(FillOp op,
+                                PatternRewriter &rewriter) const override {
+    auto type = getTensorType(op.getResult());
+    if (!type) {
+      return failure();
+    }
+
+    SmallVector<Value> outCbs = collectOutputCBs(op);
+    if (outCbs.empty()) {
+      return rewriter.notifyMatchFailure(
+          op, "fill requires a store to determine output CB");
+    }
+
+    Location loc = op.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    AffineMap identityMap =
+        AffineMap::getMultiDimIdentityMap(type.getRank(), ctx);
+    SmallVector<Attribute> maps;
+    for (size_t i = 0; i < outCbs.size(); ++i) {
+      maps.push_back(AffineMapAttr::get(identityMap));
+    }
+
+    SmallVector<Attribute> iterTypes(type.getRank(),
+                                     rewriter.getStringAttr("parallel"));
+
+    insertAtLastStore(rewriter, op);
+
+    // Static shapes only for fill (no exemplar needed for dynamic dims).
+    SmallVector<Value> allInitAttached;
+    SmallVector<Type> resultTypes;
+    for (Value outCb : outCbs) {
+      Value init = tensor::EmptyOp::create(rewriter, loc, type.getShape(),
+                                           type.getElementType());
+      Value initAttached =
+          AttachCBOp::create(rewriter, loc, init.getType(), init, outCb);
+      allInitAttached.push_back(initAttached);
+      resultTypes.push_back(type);
+    }
+
+    auto computeOp = ComputeOp::create(
+        rewriter, loc, TypeRange(resultTypes), ValueRange{},
+        ValueRange(allInitAttached), rewriter.getArrayAttr(maps),
+        rewriter.getArrayAttr(iterTypes));
+
+    Block *body = rewriter.createBlock(&computeOp.getBody());
+    Type tileType = ttcore::TileType::get(type.getElementType());
+    for (size_t i = 0; i < outCbs.size(); ++i) {
+      body->addArgument(tileType, loc);
+    }
+
+    rewriter.setInsertionPointToStart(body);
+    Value result =
+        TileFillOp::create(rewriter, loc, tileType, op.getValueAttr());
+    emitTileStores(rewriter, loc, result, op);
+    YieldOp::create(rewriter, loc);
+    rewriter.replaceOp(op, computeOp.getResults());
+    return success();
   }
 };
 
@@ -1344,6 +1465,19 @@ struct TTLConvertTTLToComputePass
 
   void runOnOperation() override {
     func::FuncOp func = getOperation();
+
+    // Validate bcast ops before running patterns. Emitting errors here
+    // (outside a pattern rewriter) is safe for the Python bindings.
+    bool hasErrors = false;
+    func.walk([&](BcastOp op) {
+      if (failed(validateBcastOp(op))) {
+        hasErrors = true;
+      }
+    });
+    if (hasErrors) {
+      return signalPassFailure();
+    }
+
     RewritePatternSet patterns(func.getContext());
     populateTTLToComputePatterns(patterns);
     if (failed(applyPatternsGreedily(func, std::move(patterns)))) {
@@ -1377,6 +1511,7 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
   patterns.add<LowerMatmulToCompute>(ctx);
   patterns.add<LowerReduceToCompute>(ctx);
   patterns.add<LowerTransposeToCompute>(ctx);
+  patterns.add<LowerFillToCompute>(ctx);
   patterns.add<LowerStoreToCompute>(ctx);
 }
 

@@ -170,8 +170,15 @@ def run_compute_test(
         pcc_threshold = None
         if op.pcc_threshold_overrides and golden.dtype in op.pcc_threshold_overrides:
             pcc_threshold = op.pcc_threshold_overrides[golden.dtype]
+        use_allclose = None
+        if op.allclose_overrides and golden.dtype in op.allclose_overrides:
+            use_allclose = op.allclose_overrides[golden.dtype]
         validate_against_golden(
-            golden, result, ulp_threshold=ulp_threshold, pcc_threshold=pcc_threshold
+            golden,
+            result,
+            ulp_threshold=ulp_threshold,
+            pcc_threshold=pcc_threshold,
+            use_allclose=use_allclose,
         )
 
     finally:

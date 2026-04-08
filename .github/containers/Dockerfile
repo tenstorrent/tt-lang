@@ -15,7 +15,7 @@
 #   --build-context dist-toolchain=./path/to/dist-toolchain
 
 # Base image: parameterized so local builds don't shadow registry tags.
-ARG BASE_IMAGE=ghcr.io/tenstorrent/tt-lang/tt-lang-base-ubuntu-22-04:latest
+ARG BASE_IMAGE
 
 # Toolchain build contexts: overridden by --build-context at build time.
 FROM scratch AS ird-toolchain
@@ -44,9 +44,10 @@ COPY --from=ird-toolchain --chmod=777 /src $TTLANG_TOOLCHAIN_DIR/src/
 
 # Install Python dev dependencies (black, sphinx, etc.) into the toolchain venv
 COPY requirements.txt /tmp/requirements.txt
+COPY docs/requirements.txt /tmp/docs/requirements.txt
 COPY dev-requirements.txt /tmp/dev-requirements.txt
 RUN $TTLANG_TOOLCHAIN_DIR/venv/bin/python -m pip install -r /tmp/dev-requirements.txt tt-smi --no-cache-dir && \
-    rm /tmp/requirements.txt /tmp/dev-requirements.txt && \
+    rm -rf /tmp/requirements.txt /tmp/docs /tmp/dev-requirements.txt && \
     apt-get update && apt-get install -y \
     ssh \
     sudo \
@@ -80,6 +81,7 @@ COPY --from=dist-toolchain --chmod=777 /bin $TTLANG_TOOLCHAIN_DIR/bin/
 COPY --from=dist-toolchain --chmod=777 /venv $TTLANG_TOOLCHAIN_DIR/venv/
 COPY --from=dist-toolchain --chmod=777 /lib $TTLANG_TOOLCHAIN_DIR/lib/
 COPY --from=dist-toolchain --chmod=777 /tt-metal $TTLANG_TOOLCHAIN_DIR/tt-metal/
+RUN mkdir -p $TTLANG_TOOLCHAIN_DIR/tt-metal/generated && chmod 777 $TTLANG_TOOLCHAIN_DIR/tt-metal/generated
 COPY --from=dist-toolchain --chmod=777 /python_packages $TTLANG_TOOLCHAIN_DIR/python_packages/
 COPY --from=dist-toolchain --chmod=777 /include $TTLANG_TOOLCHAIN_DIR/include/
 COPY --from=dist-toolchain --chmod=777 /share $TTLANG_TOOLCHAIN_DIR/share/
