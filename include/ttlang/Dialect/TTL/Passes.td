@@ -508,4 +508,21 @@ def ConvertStableHLOToTTL
   ];
 }
 
+def ConvertStableHLOToTTL
+    : Pass<"convert-stablehlo-to-ttl", "::mlir::ModuleOp"> {
+  let summary = "Convert post-Shardy StableHLO to TTL dialect";
+  let description = [{
+    Converts sdy.manual_computation regions containing StableHLO ops
+    into TTL IR (reader, compute, writer func.func per region).
+    Expects post-Shardy IR with local shapes. Errors on unsupported ops,
+    CCL ops, dynamic shapes, and non-tile-aligned shapes.
+  }];
+  let dependentDialects = [
+    "::mlir::stablehlo::StablehloDialect",
+    "::mlir::sdy::SdyDialect",
+    "::mlir::tt::ttl::TTLDialect",
+    "::mlir::arith::ArithDialect"
+  ];
+}
+
 #endif // TTLANG_DIALECT_TTL_PASSES_TD

@@ -13,7 +13,7 @@ target_link_libraries(ttlang-opt PRIVATE
   TTLangTTLPipelines
   MLIRTTLDialect
   StablehloRegister
-  MLIRSdyDialect
+  SdyRegister
   TTLangStableHLOToTTL
 )
 

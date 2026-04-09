@@ -10,7 +10,7 @@ add_mlir_dialect_library(TTLangStableHLOToTTL
 
   LINK_LIBS PUBLIC
   StablehloOps
-  MLIRSdyDialect
+  SdyDialect
   MLIRTTLDialect
   MLIRTTCoreDialect
   MLIRIR
