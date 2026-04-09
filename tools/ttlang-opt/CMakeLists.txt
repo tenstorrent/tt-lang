@@ -12,6 +12,9 @@ target_link_libraries(ttlang-opt PRIVATE
   TTLangTTLTransforms
   TTLangTTLPipelines
   MLIRTTLDialect
+  StablehloRegister
+  MLIRSdyDialect
+  TTLangStableHLOToTTL
 )
 
 mlir_check_link_libraries(ttlang-opt)

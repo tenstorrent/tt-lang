@@ -18,6 +18,8 @@
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/Dialect/TTKernel/Transforms/Passes.h"
 #include "ttmlir/Dialect/TTMetal/IR/TTMetal.h"
+#include "shardy/dialect/sdy/ir/register.h"
+#include "stablehlo/dialect/Register.h"
 #include "llvm/Support/CommandLine.h"
 
 int main(int argc, char **argv) {
@@ -47,6 +49,10 @@ int main(int argc, char **argv) {
   registry.insert<mlir::tt::ttcore::TTCoreDialect>();
   registry.insert<mlir::tt::ttkernel::TTKernelDialect>();
   registry.insert<mlir::tt::ttmetal::TTMetalDialect>();
+
+  // Register external dialects (StableHLO, Shardy)
+  mlir::stablehlo::registerAllDialects(registry);
+  mlir::sdy::registerAllDialects(registry);
 
   // Register tt-lang dialects
   registry.insert<mlir::tt::ttl::TTLDialect>();

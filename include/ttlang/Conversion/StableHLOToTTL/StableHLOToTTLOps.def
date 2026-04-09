@@ -1,0 +1,50 @@
+// SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//===----------------------------------------------------------------------===//
+// StableHLO to TTL Op Mapping
+//===----------------------------------------------------------------------===//
+//
+// X-macro file mapping StableHLO ops to TTL tensor-level ops.
+//
+// Macro signatures:
+//   SHLO_TO_TTL_BINARY(SHLO_OP, TTL_OP)
+//   SHLO_TO_TTL_UNARY(SHLO_OP, TTL_OP)
+//
+// Parameters:
+//   SHLO_OP - StableHLO op name (e.g., AddOp -> stablehlo::AddOp)
+//   TTL_OP  - TTL tensor op name (e.g., AddOp -> ttl::AddOp)
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef SHLO_TO_TTL_BINARY
+#define SHLO_TO_TTL_BINARY(SHLO_OP, TTL_OP)
+#endif
+
+#ifndef SHLO_TO_TTL_UNARY
+#define SHLO_TO_TTL_UNARY(SHLO_OP, TTL_OP)
+#endif
+
+// Binary elementwise
+SHLO_TO_TTL_BINARY(AddOp,      AddOp)
+SHLO_TO_TTL_BINARY(SubtractOp, SubOp)
+SHLO_TO_TTL_BINARY(MulOp,      MulOp)
+SHLO_TO_TTL_BINARY(DivOp,      DivOp)
+SHLO_TO_TTL_BINARY(MaxOp,      MaxOp)
+SHLO_TO_TTL_BINARY(MinOp,      MinOp)
+
+// Unary elementwise
+SHLO_TO_TTL_UNARY(ExpOp,       ExpOp)
+SHLO_TO_TTL_UNARY(LogOp,       LogOp)
+SHLO_TO_TTL_UNARY(TanhOp,      TanhOp)
+SHLO_TO_TTL_UNARY(SineOp,      SinOp)
+SHLO_TO_TTL_UNARY(CosineOp,    CosOp)
+SHLO_TO_TTL_UNARY(NegOp,       NegOp)
+SHLO_TO_TTL_UNARY(AbsOp,       AbsOp)
+SHLO_TO_TTL_UNARY(SqrtOp,      SqrtOp)
+SHLO_TO_TTL_UNARY(RsqrtOp,     RsqrtOp)
+SHLO_TO_TTL_UNARY(LogisticOp,  SigmoidOp)
+
+#undef SHLO_TO_TTL_BINARY
+#undef SHLO_TO_TTL_UNARY

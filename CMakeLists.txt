@@ -125,6 +125,11 @@ include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
 include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
 
 # ---------------------------------------------------------------------------
+# External dialect IR definitions (StableHLO, Shardy)
+# ---------------------------------------------------------------------------
+include(BuildExternalDialects)
+
+# ---------------------------------------------------------------------------
 # Minimal tt-mlir build (from submodule)
 # ---------------------------------------------------------------------------
 include(BuildTTMLIRMinimal)

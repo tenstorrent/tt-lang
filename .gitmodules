@@ -7,3 +7,9 @@
 [submodule "third-party/tt-metal"]
 	path = third-party/tt-metal
 	url = https://github.com/tenstorrent/tt-metal.git
+[submodule "third-party/stablehlo"]
+	path = third-party/stablehlo
+	url = https://github.com/openxla/stablehlo.git
+[submodule "third-party/shardy"]
+	path = third-party/shardy
+	url = https://github.com/openxla/shardy.git

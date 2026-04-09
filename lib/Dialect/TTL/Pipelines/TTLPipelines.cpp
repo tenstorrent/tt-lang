@@ -4,6 +4,7 @@
 
 #include "ttlang/Dialect/TTL/Pipelines/TTLPipelines.h"
 
+#include "ttlang/Conversion/StableHLOToTTL/StableHLOToTTL.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
 
@@ -66,12 +67,23 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
 }
 
+void createStableHLOToTTKernelPipeline(
+    OpPassManager &pm, const TTLToTTKernelPipelineOptions &options) {
+  pm.addPass(createConvertStableHLOToTTL());
+  createTTLToTTKernelPipeline(pm, options);
+}
+
 void registerTTLPipelines() {
   PassPipelineRegistration<TTLToTTKernelPipelineOptions>(
       "ttl-to-ttkernel-pipeline",
       "Lower TTL to TTKernel, run cleanup canonicalization/CSE, and optionally "
       "lower TTKernel to EmitC.",
       createTTLToTTKernelPipeline);
+
+  PassPipelineRegistration<TTLToTTKernelPipelineOptions>(
+      "stablehlo-to-ttkernel-pipeline",
+      "Convert post-Shardy StableHLO to TTL, then lower to TTKernel.",
+      createStableHLOToTTKernelPipeline);
 }
 
 } // namespace mlir::tt::ttl

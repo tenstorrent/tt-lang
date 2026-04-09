@@ -11,5 +11,6 @@ add_mlir_dialect_library(TTLangTTLPipelines
   MLIRArithDialect
   MLIREmitCTransforms
   TTLangTTLTransforms
+  TTLangStableHLOToTTL
   TTMLIRTTKernelToEmitC
 )
