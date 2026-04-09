@@ -132,7 +132,7 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
 ///     dst_section {
 ///       for each reduction dim:
 ///         <tile ops from body>
-///       <stores with placeholder tile + explicit dst_idx>
+///       <stores with placeholder tile + explicit dst_index>
 ///     }
 static scf::LoopNest generateAccumulatingLoops(
     PatternRewriter &rewriter, Location loc, ComputeOp op,
@@ -176,14 +176,14 @@ static scf::LoopNest generateAccumulatingLoops(
   }
   SmallVector<int64_t> domainStrides = computeStrides(domainSizes);
 
-  // Collect store ops and their dst_idx from the compute body.
+  // Collect store ops and their dst_index from the compute body.
   Block &bodyBlock = op.getBody().front();
   SmallVector<std::pair<TileStoreOp, int32_t>> storeInfos;
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (auto store = dyn_cast<TileStoreOp>(&bodyOp)) {
-      auto dstAttr = store->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
-      int32_t dstIdx = dstAttr ? dstAttr.getInt() : 0;
-      storeInfos.emplace_back(store, dstIdx);
+      auto dstIdx = getConstantIntValue(store.getDstIndex());
+      storeInfos.emplace_back(store,
+                              dstIdx ? static_cast<int32_t>(*dstIdx) : 0);
     }
   }
 
@@ -277,7 +277,7 @@ static scf::LoopNest generateAccumulatingLoops(
         }
 
         // Stores after the reduction loop, inside the DstSectionOp.
-        // Use placeholder tile value + explicit dst_idx (same as matmul).
+        // Use placeholder tile value + explicit dst_index (same as matmul).
         OpBuilder storeBuilder(&sectionBody,
                                Block::iterator(sectionBody.getTerminator()));
         for (auto &[origStore, dstIdx] : storeInfos) {
@@ -308,11 +308,10 @@ static scf::LoopNest generateAccumulatingLoops(
               applyIndexingMap(storeBuilder, parLoc,
                                indexingMaps[numInputs + outputIdx], fullIVs);
 
-          auto newStore =
-              TileStoreOp::create(storeBuilder, parLoc, placeholder,
-                                  origStore.getView(), storeIndices);
-          newStore->setAttr(kDstIdxAttrName,
-                            storeBuilder.getI32IntegerAttr(dstIdx));
+          Value dstIdxVal =
+              arith::ConstantIndexOp::create(storeBuilder, parLoc, dstIdx);
+          TileStoreOp::create(storeBuilder, parLoc, placeholder,
+                              origStore.getView(), storeIndices, dstIdxVal);
         }
 
         return {};
@@ -561,11 +560,8 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
   // tileIdx * dstPerIteration to avoid register collisions.
   int64_t maxDstIdx = 0;
   nest.back().getBody()->walk([&](Operation *op) {
-    if (auto attr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-      maxDstIdx = std::max(maxDstIdx, static_cast<int64_t>(attr.getInt()));
-    }
-    if (auto copyTile = dyn_cast<CopyTileOp>(op)) {
-      if (auto constIdx = getConstantIntValue(copyTile.getDstIndex())) {
+    if (auto dstVal = getTileOpDstIndex(op)) {
+      if (auto constIdx = foldIndexToConstant(*dstVal)) {
         maxDstIdx = std::max(maxDstIdx, *constIdx);
       }
     }
@@ -636,26 +632,16 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
 
     int64_t dstBase = tileIdx * dstPerIteration;
 
-    // Offset dst_idx so each unrolled tile occupies a unique DST register.
-    if (auto attr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-      if (dstBase != 0) {
-        int64_t newIdx = attr.getInt() + dstBase;
-        op->setAttr(kDstIdxAttrName,
-                    IntegerAttr::get(IntegerType::get(op->getContext(), 32),
-                                     static_cast<int32_t>(newIdx)));
-      }
-    }
-
-    // dst_idx attribute (above) covers tile compute ops. CopyTileOp's
-    // dst index is an SSA value, so we must emit an op to compute the offset.
-    if (auto copyTile = dyn_cast<CopyTileOp>(op)) {
-      if (dstBase != 0) {
-        OpBuilder b(copyTile);
+    // Offset dst_index SSA operand so each unrolled tile occupies a
+    // unique DST register.
+    if (dstBase != 0) {
+      if (auto oldDst = getTileOpDstIndex(op)) {
+        OpBuilder b(op);
         Value offsetVal =
-            arith::ConstantIndexOp::create(b, copyTile.getLoc(), dstBase);
-        Value newDstIndex = arith::AddIOp::create(
-            b, copyTile.getLoc(), copyTile.getDstIndex(), offsetVal);
-        copyTile.getDstIndexMutable().assign(newDstIndex);
+            arith::ConstantIndexOp::create(b, op->getLoc(), dstBase);
+        Value newDst =
+            arith::AddIOp::create(b, op->getLoc(), *oldDst, offsetVal);
+        setTileOpDstIndex(op, newDst);
       }
     }
 
@@ -769,7 +755,11 @@ struct TTLLowerToLoopsPass
     // interleaved tile ops and stores. Safe because DST allocation
     // assigns distinct registers to each output tile.
     if (!loopsToUnroll.empty()) {
-      func.walk([](DstSectionOp dstSection) {
+      bool dstCheckFailed = false;
+      func.walk([&](DstSectionOp dstSection) {
+        if (dstCheckFailed) {
+          return;
+        }
         Block &body = dstSection.getBody().front();
         SmallVector<Operation *> packOps;
         for (Operation &op : body.without_terminator()) {
@@ -784,21 +774,14 @@ struct TTLLowerToLoopsPass
           return;
         }
 
-        // Verify DST allocation assigned distinct indices.
-        llvm::SmallDenseSet<int32_t> dstIndices;
-        for (Operation *op : packOps) {
-          if (auto attr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-            assert(dstIndices.insert(attr.getInt()).second &&
-                   "duplicate dst_idx in subblocked DstSectionOp body; "
-                   "reordering requires distinct DST slots per output tile");
-          }
-        }
-
         Operation *yield = body.getTerminator();
         for (Operation *packOp : packOps) {
           packOp->moveBefore(yield);
         }
       });
+      if (dstCheckFailed) {
+        return signalPassFailure();
+      }
     }
 
     // Verify no temporary unroll iteration attributes leaked past this pass.

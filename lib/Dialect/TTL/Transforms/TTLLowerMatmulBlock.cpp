@@ -96,7 +96,8 @@ static void emitPerTileUnaryOps(OpBuilder &rewriter, Location loc,
       auto *cloned = rewriter.clone(*bodyOp);
       // The body is erased after expansion; use placeholder for DST reference.
       cloned->setOperand(0, placeholder);
-      cloned->setAttr(kDstIdxAttrName, rewriter.getI32IntegerAttr(dstIdx));
+      Value dstIdxVal = arith::ConstantIndexOp::create(rewriter, loc, dstIdx);
+      setTileOpDstIndex(cloned, dstIdxVal);
     }
   }
 }
@@ -179,9 +180,9 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
                          Block::iterator(sectionBody.getTerminator()));
 
     // Matmul_block with optional accumulator.
-    auto mmResult = TileMatmulBlockOp::create(secBuilder, loc, tileType,
-                                              lhsTensor, rhsTensor, accTensor);
-    mmResult->setAttr(kDstIdxAttrName, secBuilder.getI32IntegerAttr(0));
+    Value dstZero = arith::ConstantIndexOp::create(secBuilder, loc, 0);
+    TileMatmulBlockOp::create(secBuilder, loc, tileType, lhsTensor, rhsTensor,
+                              accTensor, dstZero);
 
     // Per-tile unary post-ops (relu, exp, etc.).
     Value placeholder = UnrealizedConversionCastOp::create(
@@ -196,10 +197,10 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
       for (int64_t n = 0; n < N; ++n) {
         Value mIdx = arith::ConstantIndexOp::create(secBuilder, loc, m);
         Value nIdx = arith::ConstantIndexOp::create(secBuilder, loc, n);
-        auto store = TileStoreOp::create(secBuilder, loc, placeholder, outView,
-                                         ValueRange{mIdx, nIdx});
-        store->setAttr(kDstIdxAttrName,
-                       secBuilder.getI32IntegerAttr(m * N + n));
+        Value dstIdx =
+            arith::ConstantIndexOp::create(secBuilder, loc, m * N + n);
+        TileStoreOp::create(secBuilder, loc, placeholder, outView,
+                            ValueRange{mIdx, nIdx}, dstIdx);
       }
     }
 

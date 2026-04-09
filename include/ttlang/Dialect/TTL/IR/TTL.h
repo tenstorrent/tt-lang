@@ -27,7 +27,6 @@ class TTLTileOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileOpTrait> {};
 
 /// Attribute names.
-constexpr llvm::StringLiteral kDstIdxAttrName("dst_idx");
 constexpr llvm::StringLiteral kCBIndexAttrPrefix("ttl.cb_index.");
 
 /// Runtime configuration attributes.
@@ -128,6 +127,25 @@ class TTLInPlaceOpTrait
 template <typename ConcreteType>
 class TTLAccumulatingOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLAccumulatingOpTrait> {};
+
+/// Trait for tile operations that write to a DST register.
+template <typename ConcreteType>
+class TTLDstResultOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLDstResultOpTrait> {
+public:
+  static mlir::LogicalResult verifyTrait(mlir::Operation *op) {
+    if (op->getNumOperands() == 0) {
+      return op->emitOpError("expected at least one operand (dst_index)");
+    }
+    mlir::Value lastOperand = op->getOperand(op->getNumOperands() - 1);
+    if (!lastOperand.getType().isIndex()) {
+      return op->emitOpError("last operand (dst_index) must be index type, "
+                             "got ")
+             << lastOperand.getType();
+    }
+    return mlir::success();
+  }
+};
 
 /// Trait for tile operations that carry an explicit output CB operand.
 /// These operations' init functions configure the PACK thread and require

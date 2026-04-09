@@ -28,7 +28,7 @@ Add an entry with the TTL op name, tile op name, and TTKernel init/compute op na
 // Binary op (3-arg form: DST[odst] = op(DST[src0], DST[src1]))
 TTL_BINARY_TILE_OP(NewOp, NewOpTileOp, NewOpBinaryTilesInitOp, NewOpBinaryTilesOp)
 
-// Unary op (in-place form: DST[dst_idx] = op(DST[dst_idx]))
+// Unary op (in-place form: DST[dst_index] = op(DST[dst_index]))
 TTL_UNARY_TILE_OP(NewOp, NewOpTileOp, NewOpTileInitOp, NewOpTileOp)
 ```
 

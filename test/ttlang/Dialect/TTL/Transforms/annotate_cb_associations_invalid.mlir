@@ -15,7 +15,7 @@ func.func @bcast_output_no_cb(%out_tile: !ttcore.tile<32x32, bf16>)
   %in_tile = tensor.extract %input_cb[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, bf16>>
 
   // expected-error @+1 {{output does not have an attached circular buffer}}
-  %bcast = ttl.tile_bcast %in_tile, %out_tile 3 : i32 : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>) -> !ttcore.tile<32x32, bf16>
+  %bcast = ttl.tile_bcast %in_tile, %out_tile 3 : i32 into dst[%c0] : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>) -> !ttcore.tile<32x32, bf16>
 
   return
 }
@@ -40,7 +40,7 @@ func.func @bcast_output_cb_not_from_bind(%cb_arg: !ttl.cb<[1, 1], !ttcore.tile<3
   %out_tile = tensor.extract %out_tensor[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, bf16>>
 
   // expected-error @+1 {{output circular buffer is not from ttl.bind_cb; cb_index required for broadcast lowering}}
-  %bcast = ttl.tile_bcast %in_tile, %out_tile 3 : i32 : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>) -> !ttcore.tile<32x32, bf16>
+  %bcast = ttl.tile_bcast %in_tile, %out_tile 3 : i32 into dst[%c0] : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>) -> !ttcore.tile<32x32, bf16>
 
   return
 }
