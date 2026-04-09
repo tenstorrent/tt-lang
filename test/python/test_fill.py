@@ -6,7 +6,7 @@
 Test for fill operation: fill tiles with a constant value.
 
 Tests:
-- Multi-tile (2x2) fill with negative constant (-3.0)
+- Multi-tile (2x2) fill with negative constant (-3.0), no input tensor
 - Fill fused with elementwise add (fill(1.0) + input)
 """
 
@@ -24,20 +24,18 @@ from ttlang_test_utils import assert_allclose, to_l1
 
 
 @ttl.operation(grid=(1, 1))
-def fill_kernel(inp, out):
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), block_count=2)
+def fill_kernel(out):
+    """Fill with no input tensor -- dm_read is a no-op."""
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
 
     @ttl.compute()
     def compute_fn():
-        with inp_dfb.wait() as _in, out_dfb.reserve() as o:
+        with out_dfb.reserve() as o:
             o.store(ttl.math.fill(o, -3.0))
 
     @ttl.datamovement()
     def dm_read():
-        inp_blk = inp_dfb.reserve()
-        ttl.copy(inp[0:2, 0:2], inp_blk).wait()
-        inp_blk.push()
+        pass
 
     @ttl.datamovement()
     def dm_write():
@@ -72,11 +70,10 @@ def fill_add_kernel(inp, out):
 
 
 def test_fill_negative_constant(device):
-    """Test multi-tile fill with negative constant value."""
-    inp = to_l1(torch.zeros((64, 64), dtype=torch.bfloat16), device)
+    """Test multi-tile fill with negative constant value, no input tensor."""
     out = to_l1(torch.zeros((64, 64), dtype=torch.bfloat16), device)
 
-    fill_kernel(inp, out)
+    fill_kernel(out)
     result = ttnn.to_torch(out)
 
     expected = torch.full((64, 64), -3.0, dtype=torch.bfloat16)

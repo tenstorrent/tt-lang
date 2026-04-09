@@ -553,8 +553,8 @@ class Tensor:
                 )
 
     @staticmethod
-    def _normalize_tile_index(selector: Selector) -> slice:
-        """Convert an integer tile index to a unit slice, or return slice as-is."""
+    def _normalize_index(selector: Selector) -> slice:
+        """Convert an integer index to a unit slice, or return slice as-is."""
         match selector:
             case int():
                 return slice(selector, selector + 1)
@@ -587,15 +587,14 @@ class Tensor:
     def _to_element_key(self, key: Tuple[Selector, ...]) -> Tuple[Selector, ...]:
         """Translate a coordinate key to an element-space index tuple.
 
-        For ROW_MAJOR_LAYOUT tensors, indices are already in element-space:
-        integer indices are normalized to unit slices, but no TILE_SHAPE
-        multiplication is applied.
+        All integer indices are first normalized to unit slices via
+        _normalize_index so that no dimension is ever collapsed.
 
-        For TILE_LAYOUT tensors the last two elements of the key are tile-row
-        and tile-col coordinates, scaled by TILE_SHAPE to produce element-space
-        slices.  Preceding batch elements are passed through unchanged (implicit
-        tile size 1, so tile-space and element-space are identical for those
-        dimensions).
+        For ROW_MAJOR_LAYOUT tensors no further scaling is applied.
+
+        For TILE_LAYOUT tensors the last two (row, col) slices are multiplied
+        by TILE_SHAPE to convert from tile-space to element-space.  Batch
+        slices are left as-is (implicit tile size 1).
 
         Args:
             key: Tuple whose length must exactly match the tensor's rank.
@@ -617,28 +616,26 @@ class Tensor:
                 f"expected exactly {ndim} element(s)"
             )
 
+        normalized = tuple(self._normalize_index(k) for k in key)
+
         if self._layout == ROW_MAJOR_LAYOUT:
-            # Element-space indexing: normalize ints to unit slices, no scaling.
-            normalized: List[Selector] = []
-            for k in key:
-                if isinstance(k, int):
-                    normalized.append(slice(k, k + 1))
-                else:
-                    normalized.append(k)
-            return tuple(normalized)
+            # Element-space indexing: no tile scaling needed.
+            return normalized
 
         self._validate_tile_alignment()
         if ndim == 1:
-            col_s = self._normalize_tile_index(key[0])
-            self._validate_tile_slice(col_s, "col")
-            return (slice(col_s.start * TILE_SHAPE[0], col_s.stop * TILE_SHAPE[0]),)
-        *batch, row_k, col_k = key
-        row_s = self._normalize_tile_index(row_k)
-        col_s = self._normalize_tile_index(col_k)
+            self._validate_tile_slice(normalized[0], "col")
+            return (
+                slice(
+                    normalized[0].start * TILE_SHAPE[0],
+                    normalized[0].stop * TILE_SHAPE[0],
+                ),
+            )
+        *batch_s, row_s, col_s = normalized
         self._validate_tile_slice(row_s, "row")
         self._validate_tile_slice(col_s, "col")
         return (
-            *batch,
+            *batch_s,
             slice(row_s.start * TILE_SHAPE[0], row_s.stop * TILE_SHAPE[0]),
             slice(col_s.start * TILE_SHAPE[1], col_s.stop * TILE_SHAPE[1]),
         )
