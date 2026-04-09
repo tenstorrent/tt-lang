@@ -2,11 +2,35 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+#
+# Tutorial Step 5: Multi-Device, Shard M
+# =======================================
+# Extends Step 4 to run across multiple devices using SPMD (Single-Program
+# Multiple-Data) mode.  The TT-Lang operation itself is unchanged; only the
+# tensor distribution across devices differs.
+#
+# New concepts introduced:
+#   - ttnn.MeshShape / ttnn.open_mesh_device — open a 1D mesh of all available
+#     devices
+#   - ttnn.ShardTensorToMesh(dim=0) — split a tensor along the M dimension so
+#     each device receives M/n_devices rows
+#   - ttnn.ReplicateTensorToMesh   — send the same tensor to every device
+#   - ttnn.ConcatMeshToTensor(dim=0) — gather per-device output tensors back to
+#     the host by concatenating along M
+#
+# Sharding strategy: a and c are sharded along M (rows), b is replicated.
+# Each device computes its portion of the M×N output independently with no
+# inter-device communication required.  The host concatenates the results.
+
 import ttnn
 import torch
 
 
 def from_torch(tensor: torch.Tensor, mesh_mapper):
+
+    # Upload a bfloat16 torch tensor to DRAM on all mesh devices, applying the
+    # given mapper to determine how the tensor is distributed.
+
     return ttnn.from_torch(
         tensor,
         dtype=ttnn.bfloat16,
@@ -23,6 +47,10 @@ TILE_SIZE = 32
 M_GRANULARITY = 4
 N_GRANULARITY = 4
 K_GRANULARITY = 4
+
+
+# The TT-Lang operation body is identical to Step 4.  grid="auto" applies
+# independently to each device in SPMD mode; each device fills its own grid.
 
 
 @ttl.operation(grid="auto")
@@ -171,6 +199,10 @@ torch.manual_seed(42)
 n_devices = ttnn.GetNumAvailableDevices()
 assert n_devices % 2 == 0, "Number of available devices must be power of 2 "
 ttnn.set_fabric_config(ttnn.FabricConfig.FABRIC_1D)
+
+# Open a 1D mesh of all available devices.  Each device will process an
+# independent M/n_devices slice of the output rows.
+
 mesh_device = ttnn.open_mesh_device(ttnn.MeshShape(1, n_devices))
 
 try:
@@ -182,6 +214,11 @@ try:
 
     expected_y = torch.relu(a @ b + c)
 
+    # Distribute tensors across devices:
+    #   a: sharded along M (each device gets M/n_devices rows)
+    #   b: replicated on every device (all devices need the full K×N matrix)
+    #   c: sharded along M to match the corresponding rows of a
+
     a = from_torch(a, ttnn.ShardTensorToMesh(mesh_device, dim=0))
     b = from_torch(b, ttnn.ReplicateTensorToMesh(mesh_device))
     c = from_torch(c, ttnn.ShardTensorToMesh(mesh_device, dim=0))
@@ -190,6 +227,8 @@ try:
     y = from_torch(y, ttnn.ShardTensorToMesh(mesh_device, dim=0))
 
     tutorial_operation(a, b, c, y)
+
+    # Gather per-device output shards back to the host by concatenating along M.
 
     y = ttnn.to_torch(y, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0))
 

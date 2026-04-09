@@ -2,6 +2,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+#
+# Tutorial Step 3: Multi-Node, Fixed Grid
+# ========================================
+# Extends Step 2 by running the operation across a grid of nodes in parallel.
+#
+# New concepts introduced:
+#   - grid=(4, 4)           — run the operation on a 4×4 grid of nodes (16 cores)
+#   - ttl.grid_size(dims=2) — query the (n, m) grid dimensions at runtime
+#   - ttl.node(dims=2)      — query this node's (node_n, node_m) position
+#
+# Each node processes an independent rectangular region of the output tensor,
+# partitioned along the M and N dimensions.  The K dimension is not partitioned:
+# every node iterates over all k_blocks to accumulate its full partial product.
+# This requires tensor dimensions to be evenly divisible by the grid (see Step
+# 4 for a version that handles remainders).
+
 import ttnn
 import torch
 
@@ -24,6 +40,11 @@ N_GRANULARITY = 4
 K_GRANULARITY = 4
 
 
+# grid=(4, 4) launches the operation body on every node of a 4-column × 4-row
+# grid.  All nodes execute the same code; they differentiate their work via
+# ttl.node().
+
+
 @ttl.operation(grid=(4, 4))
 def __tutorial_operation(
     a: ttnn.Tensor,
@@ -39,7 +60,14 @@ def __tutorial_operation(
     n_blocks = b.shape[1] // TILE_SIZE // n_tiles_per_block
     k_blocks = a.shape[1] // TILE_SIZE // k_tiles_per_block
 
+    # ttl.grid_size returns (grid_n, grid_m) matching the (n, m) convention
+    # used by ttl.node.  The grid is partitioned so each node handles an
+    # independent slice of the M×N output space.
+
     grid_n, grid_m = ttl.grid_size(dims=2)
+
+    # Divide the total block count evenly across the grid.
+    # Assumes the tensor is evenly divisible by the grid size.
 
     m_blocks_per_node = m_blocks // grid_m
     n_blocks_per_node = n_blocks // grid_n
@@ -62,9 +90,16 @@ def __tutorial_operation(
 
     @ttl.datamovement()
     def read():
+
+        # ttl.node() returns the zero-based coordinates of this specific node.
+        # node_n and node_m are used to offset into the global tensor.
+
         node_n, node_m = ttl.node(dims=2)
 
         for local_m_block in range(m_blocks_per_node):
+
+            # Map local block index to global block index.
+
             m_block = node_m * m_blocks_per_node + local_m_block
             start_m_tile = m_block * m_tiles_per_block
             end_m_tile = (m_block + 1) * m_tiles_per_block
@@ -84,6 +119,9 @@ def __tutorial_operation(
                     )
 
                     tx_c.wait()
+
+                # All nodes iterate over the full k dimension to accumulate
+                # their partial matmul result independently.
 
                 for k_block in range(k_blocks):
                     start_k_tile = k_block * k_tiles_per_block
@@ -109,6 +147,10 @@ def __tutorial_operation(
 
                         tx_a.wait()
                         tx_b.wait()
+
+    # The compute kernel iterates over the blocks assigned to this node.
+    # It does not need to know its node coordinates: the DM kernels already
+    # stream only the relevant tiles into the DFBs.
 
     @ttl.compute()
     def compute():

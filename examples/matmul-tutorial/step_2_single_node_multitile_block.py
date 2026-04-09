@@ -2,6 +2,23 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+#
+# Tutorial Step 2: Single Node, Multi-Tile Block
+# ===============================================
+# Builds on Step 1 by processing multiple tiles per dataflow buffer entry
+# instead of one tile at a time.
+#
+# New concepts introduced:
+#   - Multi-tile blocks: each DFB entry holds a granularity-sized patch of
+#     tiles.  Fewer, larger memory transfers reduce per-transfer overhead and
+#     give the compute kernel more work per synchronization round-trip.
+#   - Asymmetric block shapes: a, b, and c have different tile dimensions
+#     (M×K, K×N, and M×N respectively), so their DFBs use matching shapes.
+#
+# Everything else (single node, same three-kernel structure) is identical to
+# Step 1.  The loop bodies are unchanged; only the DFB shapes and the tensor
+# slice ranges differ.
+
 import ttnn
 import torch
 
@@ -19,6 +36,12 @@ def from_torch(tensor: torch.Tensor):
 import ttl
 
 TILE_SIZE = 32
+
+# M_GRANULARITY, N_GRANULARITY, K_GRANULARITY control how many tiles fit along
+# each matmul dimension per block.  With all set to 4, each a-block is a 4×4
+# patch of tiles (128×128 elements), each b-block is 4×4, and each c/y-block
+# is 4×4 in M×N space.
+
 M_GRANULARITY = 4
 N_GRANULARITY = 4
 K_GRANULARITY = 4
@@ -35,9 +58,16 @@ def __tutorial_operation(
     n_tiles_per_block = N_GRANULARITY
     k_tiles_per_block = K_GRANULARITY
 
+    # m_blocks, n_blocks, k_blocks now count blocks, not individual tiles.
+
     m_blocks = a.shape[0] // TILE_SIZE // m_tiles_per_block
     n_blocks = b.shape[1] // TILE_SIZE // n_tiles_per_block
     k_blocks = a.shape[1] // TILE_SIZE // k_tiles_per_block
+
+    # DFB shapes match the tile dimensions of each tensor operand:
+    #   a: M×K → shape (m_tiles_per_block, k_tiles_per_block)
+    #   b: K×N → shape (k_tiles_per_block, n_tiles_per_block)
+    #   c, acc, y: M×N → shape (m_tiles_per_block, n_tiles_per_block)
 
     a_dfb = ttl.make_dataflow_buffer_like(
         a, shape=(m_tiles_per_block, k_tiles_per_block), block_count=2
@@ -58,12 +88,17 @@ def __tutorial_operation(
     @ttl.datamovement()
     def read():
         for m_block in range(m_blocks):
+
+            # Convert block index to tile index range for the tensor slice.
+
             start_m_tile = m_block * m_tiles_per_block
             end_m_tile = (m_block + 1) * m_tiles_per_block
 
             for n_block in range(n_blocks):
                 start_n_tile = n_block * n_tiles_per_block
                 end_n_tile = (n_block + 1) * n_tiles_per_block
+
+                # Slice with a range to copy the entire M×N block in one transfer.
 
                 with c_dfb.reserve() as c_blk:
                     tx_c = ttl.copy(
@@ -100,6 +135,10 @@ def __tutorial_operation(
 
                         tx_a.wait()
                         tx_b.wait()
+
+    # The compute kernel is unchanged in structure from Step 1.  The hardware
+    # now operates on full multi-tile blocks per iteration rather than single
+    # tiles, amortizing synchronization overhead over more compute work.
 
     @ttl.compute()
     def compute():

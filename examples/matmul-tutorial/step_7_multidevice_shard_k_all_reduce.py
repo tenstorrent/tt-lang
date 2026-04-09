@@ -2,6 +2,24 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+#
+# Tutorial Step 7: Multi-Device, Shard K with All-Reduce
+# =======================================================
+# Replaces the host-side manual reduction from Step 6 with an on-device
+# all-reduce, keeping the final result on the mesh rather than pulling it
+# to the host for summation.
+#
+# New concepts introduced:
+#   - ttnn.all_reduce — sums partial_ys across all devices in-place using the
+#     TT-Fabric interconnect; each device ends up with the fully reduced M×N
+#     result (the result is replicated across all devices)
+#   - Post-reduce activation: relu is applied on-device after all_reduce,
+#     replacing the host-side relu from Step 6
+#
+# The TT-Lang operation body and the K-sharding setup are identical to Step 6.
+# The only change is in the host code: ttnn.all_reduce + ttnn.relu replace the
+# manual Python loop that summed partial outputs.
+
 import ttnn
 import torch
 
@@ -183,6 +201,8 @@ try:
 
     expected_y = torch.relu(a @ b + c)
 
+    # K-sharding setup is identical to Step 6.
+
     a = from_torch(a, ttnn.ShardTensorToMesh(mesh_device, dim=1))
     b = from_torch(b, ttnn.ShardTensorToMesh(mesh_device, dim=0))
 
@@ -197,8 +217,16 @@ try:
 
     tutorial_operation(a, b, replicated_cs, partial_ys)
 
+    # ttnn.all_reduce sums partial_ys across all devices using TT-Fabric,
+    # producing a fully reduced M×N result replicated on every device.
+    # ttnn.relu is then applied on-device, replacing the host-side loop from
+    # Step 6.
+
     replicated_ys = ttnn.all_reduce(partial_ys)
     replicated_ys = ttnn.relu(replicated_ys)
+
+    # Because the result is replicated, all devices hold the correct answer.
+    # Verify each device's copy against the expected output.
 
     replicated_ys = ttnn.to_torch(
         replicated_ys, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0)
