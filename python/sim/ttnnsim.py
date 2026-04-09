@@ -295,6 +295,51 @@ bfloat16 = torch.bfloat16
 float32 = torch.float32
 
 
+class _BFloat8BDtype:
+    """Sentinel class for the bfloat8_b block-floating-point dtype.
+
+    PyTorch has no native bfloat8_b type.  The simulator backs bfloat8_b
+    tensors with bfloat16 for computation.
+
+    BFP8B encoding: each element is stored as a 1-byte mantissa; every group
+    of 16 elements shares a 1-byte exponent.  Storage cost is therefore
+    n + n // 16 bytes for n elements, which is not a fixed per-element
+    constant.  Use size_in_bytes(n) for correct capacity accounting.
+    """
+
+    # Exponent group size: one shared exponent byte per this many elements.
+    _EXPONENT_GROUP_SIZE: int = 16
+
+    @property
+    def element_size(self) -> int:
+        """Mantissa storage width in bytes (excludes shared exponent overhead)."""
+        return 1
+
+    def size_in_bytes(self, n_elements: int) -> int:
+        """Total bytes required to store n_elements in BFP8B encoding.
+
+        Accounts for both the per-element mantissa byte and the shared
+        exponent byte for every group of _EXPONENT_GROUP_SIZE elements.
+        """
+        return n_elements + n_elements // self._EXPONENT_GROUP_SIZE
+
+    def __repr__(self) -> str:
+        return "bfloat8_b"
+
+    def __eq__(self, other: object) -> bool:
+        match other:
+            case _BFloat8BDtype():
+                return True
+            case _:
+                return False
+
+    def __hash__(self) -> int:
+        return hash("bfloat8_b")
+
+
+bfloat8_b: _BFloat8BDtype = _BFloat8BDtype()
+
+
 class Device:
     """Simple device handle.
 
@@ -489,19 +534,32 @@ class Tensor:
         tensor: torch.Tensor,
         layout: IndexType = TILE_LAYOUT,
         memory_config: MemoryConfig = DRAM_MEMORY_CONFIG,
+        dtype: Any = None,
     ) -> None:
         if tensor.ndim < 1:
             raise ValueError(f"Tensor must have at least 1 dimension, got 0-d scalar")
         self._tensor: torch.Tensor = tensor
         self._layout: IndexType = layout
         self.memory_config: MemoryConfig = memory_config
+        # _dtype is the declared/logical type; defaults to the tensor's native dtype.
+        self._dtype: Any = dtype if dtype is not None else tensor.dtype
 
     @property
     def shape(self) -> Shape:
         return tuple(self._tensor.shape)
 
     @property
-    def dtype(self) -> torch.dtype:
+    def dtype(self) -> Any:
+        """Declared logical dtype (e.g. bfloat8_b, torch.bfloat16, torch.float32)."""
+        return self._dtype
+
+    @property
+    def underlying_dtype(self) -> torch.dtype:
+        """PyTorch dtype used for storage and computation.
+
+        For standard types this equals dtype.  For custom types such as bfloat8_b
+        this is the native torch dtype that backs the tensor (e.g. torch.bfloat16).
+        """
         return self._tensor.dtype
 
     @property
@@ -510,8 +568,30 @@ class Tensor:
 
     @property
     def element_size(self) -> int:
-        """Number of bytes per element for this tensor's dtype."""
-        return self._tensor.element_size()
+        """Number of bytes per element for this tensor's declared dtype.
+
+        For dtypes with a shared exponent (e.g. bfloat8_b) this returns only
+        the mantissa byte and does not include exponent overhead.  Use
+        size_in_bytes(n) for accurate multi-element capacity accounting.
+        """
+        match self._dtype:
+            case _BFloat8BDtype():
+                return 1
+            case _:
+                return self._tensor.element_size()
+
+    def size_in_bytes(self, n_elements: int) -> int:
+        """Total bytes required to store n_elements of this tensor's dtype.
+
+        For standard torch dtypes this is n_elements * element_size.
+        For dtypes with shared exponents (e.g. bfloat8_b) this includes the
+        exponent overhead; use this method for correct capacity accounting.
+        """
+        match self._dtype:
+            case _BFloat8BDtype():
+                return self._dtype.size_in_bytes(n_elements)
+            case _:
+                return n_elements * self._tensor.element_size()
 
     def _validate_tile_alignment(self) -> None:
         """Validate that this tensor supports tile-style indexing.
@@ -819,27 +899,40 @@ class Tensor:
 
 def rand(
     shape: Shape,
-    dtype: torch.dtype = bfloat16,
+    dtype: Any = bfloat16,
     layout: IndexType = TILE_LAYOUT,
     device: object = None,
     memory_config: object = None,
 ) -> Tensor:
     """Create a random tensor with given shape, dtype, and layout."""
-    t = torch.rand(shape, dtype=torch.float32)
-    t = t.to(dtype)
-    return Tensor(t, layout)
+    match dtype:
+        case _BFloat8BDtype():
+            return Tensor(
+                torch.rand(shape, dtype=torch.float32).to(torch.bfloat16),
+                layout,
+                dtype=bfloat8_b,
+            )
+        case _:
+            t = torch.rand(shape, dtype=torch.float32)
+            t = t.to(dtype)
+            return Tensor(t, layout)
 
 
 def empty(
     shape: Shape,
-    dtype: torch.dtype = bfloat16,
+    dtype: Any = bfloat16,
     layout: IndexType = TILE_LAYOUT,
     device: object = None,
     memory_config: object = None,
 ) -> Tensor:
     """Create an uninitialized tensor with given shape, dtype, and layout."""
-    t = torch.empty(shape, dtype=dtype)
-    return Tensor(t, layout)
+    match dtype:
+        case _BFloat8BDtype():
+            return Tensor(
+                torch.empty(shape, dtype=torch.bfloat16), layout, dtype=bfloat8_b
+            )
+        case _:
+            return Tensor(torch.empty(shape, dtype=dtype), layout)
 
 
 def to_torch(
@@ -885,10 +978,19 @@ def from_torch(
     Returns:
         Tensor wrapping the input (potentially dtype-converted) torch tensor.
     """
-    if dtype is not None and tensor.dtype != dtype:
-        tensor = tensor.to(dtype)
-
-    return Tensor(tensor, layout, memory_config=memory_config)
+    match dtype:
+        case _BFloat8BDtype():
+            return Tensor(
+                tensor.to(torch.bfloat16),
+                layout,
+                memory_config=memory_config,
+                dtype=bfloat8_b,
+            )
+        case _ if dtype is not None and tensor.dtype != dtype:
+            tensor = tensor.to(dtype)
+            return Tensor(tensor, layout, memory_config=memory_config)
+        case _:
+            return Tensor(tensor, layout, memory_config=memory_config)
 
 
 # Strategy-to-ShardingStrategy mapping for create_sharded_memory_config.
