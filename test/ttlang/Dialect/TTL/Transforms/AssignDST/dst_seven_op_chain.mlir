@@ -28,7 +28,7 @@
 // FPU binary add: both operands are block args, no copy_tile needed
 // CHECK:        %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%[[C0]]] {ttl.fpu_binary}
 // Copy B for sub/mul (SFPU operand needs copy_tile)
-// CHECK:             %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]] into dst[%{{.*}}]
+// CHECK:             %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]] into dst[%c1]
 // CHECK:        %[[SUB:.*]] = ttl.tile_sub %[[ADD]], %[[DTILE]] into dst[%[[C0]]]
 // CHECK:        %[[MUL:.*]] = ttl.tile_mul %[[SUB]], %[[DTILE]] into dst[%[[C0]]]
 // CHECK:        %[[EXP:.*]] = ttl.tile_exp %[[MUL]] into dst[%[[C0]]]

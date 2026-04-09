@@ -49,8 +49,8 @@ func.func @add_4d(%a: tensor<3x6x4x2x!ttcore.tile<32x32, f32>>,
 // SFPU-NEXT:      %[[SI1:.*]] = ttl.iter_index 1 : index
 // SFPU-NEXT:      %[[SI2:.*]] = ttl.iter_index 2 : index
 // SFPU-NEXT:      %[[SI3:.*]] = ttl.iter_index 3 : index
-// SFPU:           %{{.*}}, %[[DA:.*]] = ttl.copy_tile %[[AS]][%[[SI0]], %[[SI1]], %[[SI2]], %[[SI3]]] into dst[%{{.*}}]
-// SFPU-NEXT:      %{{.*}}, %[[DB:.*]] = ttl.copy_tile %[[BS]][%[[SI0]], %[[SI1]], %[[SI2]], %[[SI3]]] into dst[%{{.*}}]
+// SFPU:           %{{.*}}, %[[DA:.*]] = ttl.copy_tile %[[AS]][%[[SI0]], %[[SI1]], %[[SI2]], %[[SI3]]] into dst[%c0]
+// SFPU-NEXT:      %{{.*}}, %[[DB:.*]] = ttl.copy_tile %[[BS]][%[[SI0]], %[[SI1]], %[[SI2]], %[[SI3]]] into dst[%c1]
 // SFPU-NEXT:      %[[ADDS:.*]] = ttl.tile_add %[[DA]], %[[DB]] into dst[%c0]
 // SFPU:           ttl.tile_store %[[ADDS]], %{{.*}}[%[[SI0]], %[[SI1]], %[[SI2]], %[[SI3]]]
 // SFPU-NEXT:      ttl.yield

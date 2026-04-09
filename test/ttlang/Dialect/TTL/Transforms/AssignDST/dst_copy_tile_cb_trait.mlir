@@ -38,7 +38,7 @@ func.func @copy_tile_with_bcast_and_add(
 // Bcast reads from CB - no copy_tile for %A in bcast position.
 // CHECK-NEXT:   %[[BCAST:.*]] = ttl.tile_bcast %[[A]], %[[OUT]] 2 : i32 into dst[%c0]
 // B needs copy_tile for tile_add (DST-reading op).
-// CHECK:        %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]] into dst[%{{.*}}]
+// CHECK:        %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]] into dst[%c1]
 // CHECK-NEXT:   %[[ADD:.*]] = ttl.tile_add %[[BCAST]], %[[DTILE]] into dst[%c0]
 // CHECK-NEXT:   ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:   ttl.yield

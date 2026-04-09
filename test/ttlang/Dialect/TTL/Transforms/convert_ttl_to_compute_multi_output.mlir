@@ -4,7 +4,7 @@
 // Covers: binary, unary, fused chains, 3 outputs, and larger shapes.
 
 // RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute))' | FileCheck %s --check-prefix=COMPUTE
-// RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-subblock-compute-for-dst,ttl-lower-to-loops))' | FileCheck %s --check-prefix=DST
+// RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-subblock-compute-for-dst,ttl-lower-to-loops,canonicalize,cse))' | FileCheck %s --check-prefix=DST
 
 // ---- Test 1: Binary add, 1x1 shape, 2 outputs ----
 
@@ -218,10 +218,12 @@ module {
 // COMPUTE:      -> (tensor<4x4x!ttcore.tile<32x32, bf16>>, tensor<4x4x!ttcore.tile<32x32, bf16>>)
 
 // DST-LABEL: func.func @multi_output_4x4
+// DST-DAG:   %[[MO_C0:.*]] = arith.constant 0 : index
+// DST-DAG:   %[[MO_C1:.*]] = arith.constant 1 : index
 // DST:       scf.for
 // DST:         ttl.dst_section {
-// DST:           ttl.tile_add {{.*}} into dst[%c0]
-// DST:           ttl.tile_add {{.*}} into dst[%{{.*}}]
+// DST:           ttl.tile_add {{.*}} into dst[%[[MO_C0]]]
+// DST:           ttl.tile_add {{.*}} into dst[%[[MO_C1]]]
 // DST:           ttl.tile_store
 // DST:           ttl.tile_store
 // DST:         }

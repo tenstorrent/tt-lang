@@ -30,9 +30,9 @@
 // CHECK-NEXT:      %[[I1:.*]] = ttl.iter_index 1 : index
 // Copy A for sigmoid (unary consumer needs DST). Exp also gets its own copy.
 // Add is FPU binary (both block args, no copies).
-// CHECK:           %{{.*}}, %[[ACOPY1:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%{{.*}}]
+// CHECK:           %{{.*}}, %[[ACOPY1:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
 // CHECK:      %[[SIG:.*]] = ttl.tile_sigmoid %[[ACOPY1]] into dst[%[[C0]]]
-// CHECK:           %{{.*}}, %[[ACOPY2:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%{{.*}}]
+// CHECK:           %{{.*}}, %[[ACOPY2:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%[[C1]]]
 // CHECK:      %[[EXP:.*]] = ttl.tile_exp %[[ACOPY2]] into dst[%[[C1]]]
 // CHECK:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%[[C2]]] {ttl.fpu_binary}
 // CHECK:           ttl.tile_store %[[SIG]], %{{.*}}[%[[I0]], %[[I1]]]
@@ -107,7 +107,7 @@ func.func @block_arg_three_consumers(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // Single copy_tile for the passthrough block arg
-// CHECK:           %{{.*}}, %[[TILE:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%{{.*}}]
+// CHECK:           %{{.*}}, %[[TILE:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%c0]
 // CHECK-NOT:       ttl.copy_tile
 // CHECK:           ttl.tile_store %[[TILE]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield
@@ -157,9 +157,9 @@ func.func @block_arg_passthrough(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 // CHECK:           %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:      %[[I1:.*]] = ttl.iter_index 1 : index
 // Both exp and sigmoid get their own copy_tile
-// CHECK:           %{{.*}}, %[[TILE_EXP:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%{{.*}}]
+// CHECK:           %{{.*}}, %[[TILE_EXP:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
 // CHECK:      %[[EXP:.*]] = ttl.tile_exp %[[TILE_EXP]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-// CHECK:           %{{.*}}, %[[TILE_SIG:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%{{.*}}]
+// CHECK:           %{{.*}}, %[[TILE_SIG:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%[[C1]]]
 // CHECK:      %[[SIG:.*]] = ttl.tile_sigmoid %[[TILE_SIG]] into dst[%[[C1]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:           ttl.tile_store %[[EXP]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK:           ttl.tile_store %[[SIG]], %{{.*}}[%[[I0]], %[[I1]]]
@@ -229,13 +229,13 @@ func.func @single_input_multiple_outputs(%a: tensor<2x2x!ttcore.tile<32x32, f32>
 // CHECK:           %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:      %[[I1:.*]] = ttl.iter_index 1 : index
 // Copy A for abs (at first use)
-// CHECK:           %{{.*}}, %[[ATILE:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%{{.*}}]
+// CHECK:           %{{.*}}, %[[ATILE:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
 // CHECK:      %[[ABS:.*]] = ttl.tile_abs %[[ATILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // ABS result has unary consumer (exp), so copy_dst is inserted
 // CHECK:      %[[ABSCOPY:.*]] = ttl.copy_dst %[[ABS]] into dst[%[[C1]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:      %[[EXP:.*]] = ttl.tile_exp %[[ABSCOPY]] into dst[%[[C1]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // B copied at first use (tile_add)
-// CHECK:           %{{.*}}, %[[BTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]] into dst[%{{.*}}]
+// CHECK:           %{{.*}}, %[[BTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]] into dst[%c2]
 // CHECK:      %[[ADD:.*]] = ttl.tile_add %[[ABS]], %[[BTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:           ttl.tile_store %[[EXP]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK:           ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]]
@@ -303,14 +303,14 @@ func.func @unary_chain_with_branch(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK:           %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:      %[[I1:.*]] = ttl.iter_index 1 : index
 // Copy A for the unary chain (at first use)
-// CHECK:           %{{.*}}, %[[ATILE:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%{{.*}}]
+// CHECK:           %{{.*}}, %[[ATILE:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
 // All unary ops share DST register 0 (merged interval)
 // CHECK:      %[[ABS:.*]] = ttl.tile_abs %[[ATILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:      %[[EXP:.*]] = ttl.tile_exp %[[ABS]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:      %[[RELU:.*]] = ttl.tile_relu %[[EXP]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:      %[[SIG:.*]] = ttl.tile_sigmoid %[[RELU]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // B copied at first use (tile_add)
-// CHECK:           %{{.*}}, %[[BTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]] into dst[%{{.*}}]
+// CHECK:           %{{.*}}, %[[BTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]] into dst[%c1]
 // CHECK:      %[[ADD:.*]] = ttl.tile_add %[[SIG]], %[[BTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:           ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield
@@ -432,7 +432,7 @@ func.func @square_pattern(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 // CHECK-NEXT:      %[[I1:.*]] = ttl.iter_index 1 : index
 // First add is FPU binary (no copies for A, B). C copied for SFPU mul.
 // CHECK:           %[[ADD0:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%[[C0]]] {ttl.fpu_binary} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-// CHECK:           %{{.*}}, %[[CTILE:.*]] = ttl.copy_tile %[[C]][%[[I0]], %[[I1]]] into dst[%{{.*}}]
+// CHECK:           %{{.*}}, %[[CTILE:.*]] = ttl.copy_tile %[[C]][%[[I0]], %[[I1]]] into dst[%[[C1]]]
 // CHECK:      %[[MUL:.*]] = ttl.tile_mul %[[ADD0]], %[[CTILE]] into dst[%[[C1]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:      %[[EXP:.*]] = ttl.tile_exp %[[MUL]] into dst[%[[C1]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // ADD0 is reused here - it was kept live across mul and exp
@@ -510,7 +510,7 @@ func.func @intermediate_reuse_late(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:      %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:      %[[I1:.*]] = ttl.iter_index 1 : index
 // Copy X for abs (unary consumer needs DST)
-// CHECK:           %{{.*}}, %[[XCOPY_ABS:.*]] = ttl.copy_tile %[[X]][%[[I0]], %[[I1]]] into dst[%{{.*}}]
+// CHECK:           %{{.*}}, %[[XCOPY_ABS:.*]] = ttl.copy_tile %[[X]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
 // CHECK:      %[[ABS:.*]] = ttl.tile_abs %[[XCOPY_ABS]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // Both add and mul are FPU binary (both operands are block args)
 // CHECK:      %[[ADD:.*]] = ttl.tile_add %[[X]], %[[Y]] into dst[%[[C1]]] {ttl.fpu_binary} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
