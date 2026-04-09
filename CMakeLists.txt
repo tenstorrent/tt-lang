@@ -130,11 +130,6 @@ include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
 include(BuildExternalDialects)
 
 # ---------------------------------------------------------------------------
-# External dialect IR definitions (StableHLO, Shardy)
-# ---------------------------------------------------------------------------
-include(BuildExternalDialects)
-
-# ---------------------------------------------------------------------------
 # Minimal tt-mlir build (from submodule)
 # ---------------------------------------------------------------------------
 include(BuildTTMLIRMinimal)
