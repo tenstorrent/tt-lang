@@ -150,6 +150,46 @@ class CopyTransaction:
         return self._completed
 
 
+class GroupTransfer:
+    """Group of transfer handles that can be waited on together.
+
+    Collects handles returned by ttl.copy and waits for all of them at once
+    via wait_all().  No further add() calls are permitted after wait_all().
+
+    Example:
+        gxf = GroupTransfer()
+        for dst in destinations:
+            gxf.add(ttl.copy(src_blk, dst))
+        gxf.wait_all()
+    """
+
+    def __init__(self) -> None:
+        self._transfers: list[CopyTransaction] = []
+        self._waited: bool = False
+
+    def add(self, xf: CopyTransaction) -> None:
+        """Add a transfer handle to the group.
+
+        Raises:
+            RuntimeError: If called after wait_all().
+        """
+        if self._waited:
+            raise RuntimeError("GroupTransfer.add() called after wait_all()")
+        self._transfers.append(xf)
+
+    def wait_all(self) -> None:
+        """Wait for all transfers in the group to complete.
+
+        Raises:
+            RuntimeError: If called more than once.
+        """
+        if self._waited:
+            raise RuntimeError("GroupTransfer.wait_all() called more than once")
+        self._waited = True
+        for xf in self._transfers:
+            xf.wait()
+
+
 def copy(
     src: CopyEndpoint,
     dst: CopyEndpoint,

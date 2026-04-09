@@ -1043,13 +1043,18 @@ class TestTensorTileIndexing:
     # --- N-D keys with mixed int/slice on last two dims ---
 
     def test_nd_mixed_key_reads_tile_region(self) -> None:
-        """Batch dim (int) + slice tile-row + int tile-col is valid tile indexing."""
+        """Batch dim (int) + slice tile-row + int tile-col is valid tile indexing.
+
+        Integer batch indices are normalized to unit slices so the batch
+        dimension is preserved in the output (shape includes a leading 1).
+        """
         raw = torch.zeros(2, 128, 64)
         raw[1, 0:32, 32:64] = 5.0  # batch=1, tile-row=0, tile-col=1
         t = ttnn.Tensor(raw)
-        # (batch=1, tile-row slice 0:1, tile-col 1) → element [1, 0:32, 32:64]
+        # (batch=1, tile-row slice 0:1, tile-col 1) → element [1:2, 0:32, 32:64]
+        # batch integer index is normalized to a unit slice, preserving the dimension.
         result = t[1, slice(0, 1), 1]
-        assert result.shape == (32, 32)
+        assert result.shape == (1, 32, 32)
         assert torch.all(result.to_torch() == 5.0)
 
     def test_nd_mixed_key_writes_tile_region(self) -> None:
