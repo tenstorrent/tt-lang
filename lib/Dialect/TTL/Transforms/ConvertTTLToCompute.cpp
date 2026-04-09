@@ -143,10 +143,8 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
     SmallVector<Value> indices =
         applyIndexingMapToIterIndices(rewriter, loc, outputMap, iterIndices);
 
-    auto newStore =
-        TileStoreOp::create(rewriter, loc, tileResult, storeOp.getView(),
-                            indices, createPlaceholderDstIndex(rewriter, loc));
-    markDstPlaceholder(newStore);
+    TileStoreOp::create(rewriter, loc, tileResult, storeOp.getView(), indices,
+                        createPlaceholderDstIndex(rewriter, loc));
     storesToErase.push_back(storeOp);
   }
   for (StoreOp s : storesToErase) {
@@ -163,29 +161,21 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
 static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *sourceOp,
                            ValueRange tileOperands, Type tileType) {
   Value dstIdx = createPlaceholderDstIndex(b, loc);
-  // Helper: create tile op and mark as placeholder.
-  auto markAndReturn = [](Operation *created) -> Value {
-    markDstPlaceholder(created);
-    return created->getResult(0);
-  };
+
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
   if (isa<TTL_OP##Op>(sourceOp))                                               \
-    return markAndReturn(                                                      \
-        TILE_OP::create(b, loc, tileType, tileOperands[0], dstIdx));
+    return TILE_OP::create(b, loc, tileType, tileOperands[0], dstIdx);
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
   if (isa<TTL_OP##Op>(sourceOp))                                               \
-    return markAndReturn(TILE_OP::create(b, loc, tileType, tileOperands[0],    \
-                                         tileOperands[1], dstIdx));
+    return TILE_OP::create(b, loc, tileType, tileOperands[0], tileOperands[1], \
+                           dstIdx);
 #define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   // FillOp: no tile operands, just a value attribute.
   if (auto fillOp = dyn_cast<FillOp>(sourceOp)) {
-    auto op =
-        TileFillOp::create(b, loc, tileType, fillOp.getValueAttr(), dstIdx);
-    markDstPlaceholder(op);
-    return op;
+    return TileFillOp::create(b, loc, tileType, fillOp.getValueAttr(), dstIdx);
   }
 
   return nullptr;
@@ -538,7 +528,6 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       auto bcastTileOp = TileBcastOp::create(
           rewriter, loc, tileType, inputTile, outputTile,
           bcastOp.getBcastTypeAttr(), createPlaceholderDstIndex(rewriter, loc));
-      markDstPlaceholder(bcastTileOp);
       tileResult = bcastTileOp;
     } else if (auto matmulOp = dyn_cast<MatmulOp>(op)) {
       Value lhsTile = tensorToTile[matmulOp.getLhs()];
@@ -557,7 +546,6 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
         auto matmulTileOp = TileMatmulBlockOp::create(
             rewriter, loc, tileType, lhsTile, rhsTile, Value(),
             createPlaceholderDstIndex(rewriter, loc));
-        markDstPlaceholder(matmulTileOp);
         tileResult = matmulTileOp;
       }
     } else {
@@ -578,7 +566,6 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
           auto foldedMatmul = TileMatmulBlockOp::create(
               rewriter, loc, tileType, mmLhs, mmRhs, accTile,
               createPlaceholderDstIndex(rewriter, loc));
-          markDstPlaceholder(foldedMatmul);
           return foldedMatmul;
         };
         Value folded = tryFold(operands[0], operands[1]);
@@ -602,7 +589,6 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
             auto mmTileOp = TileMatmulBlockOp::create(
                 rewriter, loc, tileType, mmLhs, mmRhs, Value(),
                 createPlaceholderDstIndex(rewriter, loc));
-            markDstPlaceholder(mmTileOp);
             tensorToTile[operand] = mmTileOp;
             deferredMatmul.erase(dfIt);
           }
@@ -777,7 +763,6 @@ static LogicalResult buildBinaryCompute(Operation *op,
         auto tileOp = TileOp::create(b, loc, tileType, body->getArgument(0),
                                      body->getArgument(1),
                                      createPlaceholderDstIndex(b, loc));
-        markDstPlaceholder(tileOp);
         return tileOp;
       });
 }
@@ -809,7 +794,6 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
       [](OpBuilder &b, Location loc, Type tileType, Block *body) {
         auto tileOp = TileOp::create(b, loc, tileType, body->getArgument(0),
                                      createPlaceholderDstIndex(b, loc));
-        markDstPlaceholder(tileOp);
         return tileOp;
       });
 }
@@ -1093,7 +1077,6 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     auto bcastTileOp = TileBcastOp::create(
         rewriter, loc, tileType, body->getArgument(0), body->getArgument(1),
         bcastType, createPlaceholderDstIndex(rewriter, loc));
-    markDstPlaceholder(bcastTileOp);
     emitTileStores(rewriter, loc, bcastTileOp, op.getOperation());
     YieldOp::create(rewriter, loc);
     rewriter.replaceOp(op, computeOp.getResult(0));
@@ -1154,7 +1137,6 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
           auto matmulOp = TileMatmulBlockOp::create(
               b, loc, tileType, body->getArgument(0), body->getArgument(1),
               Value(), createPlaceholderDstIndex(b, loc));
-          markDstPlaceholder(matmulOp);
           return matmulOp;
         });
   }
@@ -1222,10 +1204,8 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
         getOrCreateIterIndices(rewriter, computeOp);
     SmallVector<Value> storeIndices =
         applyIndexingMapToIterIndices(rewriter, loc, identityMap, iterIndices);
-    auto storeOp = TileStoreOp::create(
-        rewriter, loc, body->getArgument(0), reserveView, storeIndices,
-        createPlaceholderDstIndex(rewriter, loc));
-    markDstPlaceholder(storeOp);
+    TileStoreOp::create(rewriter, loc, body->getArgument(0), reserveView,
+                        storeIndices, createPlaceholderDstIndex(rewriter, loc));
     YieldOp::create(rewriter, loc);
 
     // make_early_inc_range: replaceOp erases attachOp, invalidating the
@@ -1364,7 +1344,6 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
               b, loc, tileType, body->getArgument(0), body->getArgument(1),
               body->getArgument(2), reduceType, reduceDim,
               createPlaceholderDstIndex(b, loc));
-          markDstPlaceholder(reduceOp);
           return reduceOp;
         });
   }
@@ -1432,7 +1411,6 @@ struct LowerFillToCompute : OpRewritePattern<FillOp> {
     auto fillTileOp =
         TileFillOp::create(rewriter, loc, tileType, op.getValueAttr(),
                            createPlaceholderDstIndex(rewriter, loc));
-    markDstPlaceholder(fillTileOp);
     emitTileStores(rewriter, loc, fillTileOp, op);
     YieldOp::create(rewriter, loc);
     rewriter.replaceOp(op, computeOp.getResults());
@@ -1478,7 +1456,6 @@ struct LowerTransposeToCompute : OpRewritePattern<TransposeOp> {
           auto transposeOp = TileTransposeOp::create(
               b, loc, tileType, body->getArgument(0), body->getArgument(1),
               createPlaceholderDstIndex(b, loc));
-          markDstPlaceholder(transposeOp);
           return transposeOp;
         });
   }

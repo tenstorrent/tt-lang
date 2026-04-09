@@ -235,7 +235,6 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
         auto copyOp =
             CopyDstOp::create(builder, loc, value.getType(), value,
                               createPlaceholderDstIndex(builder, loc));
-        markDstPlaceholder(copyOp);
         copyResult = copyOp.getResult();
         LLVM_DEBUG({
           llvm::dbgs() << "Phase 1: Inserted copy_dst for consumer " << i

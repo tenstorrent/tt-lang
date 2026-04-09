@@ -403,15 +403,11 @@ constexpr llvm::StringLiteral kDstPlaceholderAttrName("ttl.dst_placeholder");
 /// accidental use fails loudly at TTKernel lowering or on hardware.
 constexpr int64_t kUnassignedDstIndex = -1;
 
-/// Create a placeholder dst_index (constant -1). The caller must also call
-/// markDstPlaceholder on the created op to mark it as unassigned.
+/// Create a tile op with a placeholder dst_index (constant -1).
 inline Value createPlaceholderDstIndex(OpBuilder &builder, Location loc) {
-  return arith::ConstantIndexOp::create(builder, loc, kUnassignedDstIndex);
-}
-
-/// Mark a tile op as having an unassigned placeholder dst_index.
-inline void markDstPlaceholder(Operation *op) {
-  op->setAttr(kDstPlaceholderAttrName, UnitAttr::get(op->getContext()));
+  auto op = arith::ConstantIndexOp::create(builder, loc, kUnassignedDstIndex);
+  op->setAttr(kDstPlaceholderAttrName, UnitAttr::get(builder.getContext()));
+  return op.getResult();
 }
 
 } // namespace mlir::tt::ttl
