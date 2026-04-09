@@ -1,4 +1,4 @@
-# Elementwise Operation Tutorial
+# Elementwise Tutorial
 
 This tutorial walks through building a fused elementwise operation in TT-Lang,
 introducing one concept at a time. Each step is a self-contained runnable
