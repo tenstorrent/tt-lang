@@ -380,25 +380,19 @@ inline std::optional<int64_t> foldIndexToConstant(Value val) {
 }
 
 /// Get the dst_index Value from a tile op, or std::nullopt if the op
-/// does not have the TTLDstResultOpTrait. CopyTileOp is handled separately
-/// since it has its own dst_index operand but not the trait.
+/// does not have TTLDstResultOpTrait.
 inline std::optional<Value> getTileOpDstIndex(Operation *op) {
-  if (auto copyTile = dyn_cast<CopyTileOp>(op)) {
-    return copyTile.getDstIndex();
-  }
   if (op->hasTrait<TTLDstResultOpTrait>()) {
     return op->getOperand(op->getNumOperands() - 1);
   }
   return std::nullopt;
 }
 
-/// Set the dst_index Value on a tile op.
+/// Set the dst_index Value on a tile op with TTLDstResultOpTrait.
 inline void setTileOpDstIndex(Operation *op, Value newDstIndex) {
-  if (auto copyTile = dyn_cast<CopyTileOp>(op)) {
-    copyTile.getDstIndexMutable().assign(newDstIndex);
-  } else if (op->hasTrait<TTLDstResultOpTrait>()) {
-    op->setOperand(op->getNumOperands() - 1, newDstIndex);
-  }
+  assert(op->hasTrait<TTLDstResultOpTrait>() &&
+         "setTileOpDstIndex called on op without TTLDstResultOpTrait");
+  op->setOperand(op->getNumOperands() - 1, newDstIndex);
 }
 
 /// Temporary marker attribute for tile ops whose dst_index has not been

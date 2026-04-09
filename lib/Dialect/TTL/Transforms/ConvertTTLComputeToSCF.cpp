@@ -132,7 +132,7 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
 ///     dst_section {
 ///       for each reduction dim:
 ///         <tile ops from body>
-///       <stores with placeholder tile + explicit dst_idx>
+///       <stores with placeholder tile + explicit dst_index>
 ///     }
 static scf::LoopNest generateAccumulatingLoops(
     PatternRewriter &rewriter, Location loc, ComputeOp op,
@@ -176,7 +176,7 @@ static scf::LoopNest generateAccumulatingLoops(
   }
   SmallVector<int64_t> domainStrides = computeStrides(domainSizes);
 
-  // Collect store ops and their dst_idx from the compute body.
+  // Collect store ops and their dst_index from the compute body.
   Block &bodyBlock = op.getBody().front();
   SmallVector<std::pair<TileStoreOp, int32_t>> storeInfos;
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
@@ -277,7 +277,7 @@ static scf::LoopNest generateAccumulatingLoops(
         }
 
         // Stores after the reduction loop, inside the DstSectionOp.
-        // Use placeholder tile value + explicit dst_idx (same as matmul).
+        // Use placeholder tile value + explicit dst_index (same as matmul).
         OpBuilder storeBuilder(&sectionBody,
                                Block::iterator(sectionBody.getTerminator()));
         for (auto &[origStore, dstIdx] : storeInfos) {

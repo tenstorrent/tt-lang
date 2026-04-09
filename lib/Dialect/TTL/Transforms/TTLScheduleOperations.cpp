@@ -96,7 +96,7 @@ struct TileOpSortKey {
     if (initAffinity != other.initAffinity) {
       return initAffinity < other.initAffinity;
     }
-    // Quinary: dst_idx for deterministic ordering.
+    // Quinary: dst_index for deterministic ordering.
     if (dstIdx != other.dstIdx) {
       return dstIdx < other.dstIdx;
     }

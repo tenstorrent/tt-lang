@@ -581,7 +581,8 @@ def TTL_IterIndexOp : TTL_Op<"iter_index", [Pure,
 def TTL_CopyTileOp : TTL_Op<"copy_tile",
                             [MemoryEffects<[MemRead, MemWrite]>,
                              TTL_CBInputTileOpTrait,
-                             TTL_DataMovementOpTrait]> {
+                             TTL_DataMovementOpTrait,
+                             TTL_DstResultOpTrait]> {
   let summary = "Copy a tile from a circular buffer into a DST register";
   let description = [{
     Performs a CB -> DST copy, matching `copy_tile_init` + `copy_tile` in the
@@ -609,8 +610,8 @@ def TTL_CopyTileOp : TTL_Op<"copy_tile",
   }];
   let arguments = (ins
     TTL_TileType:$src,
-    Index:$dst_index,
-    Variadic<Index>:$src_indices
+    Variadic<Index>:$src_indices,
+    Index:$dst_index
   );
   let results = (outs TTL_DSTRegister:$dst_token, TTL_TileType:$dst_tile);
   let assemblyFormat =

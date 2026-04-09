@@ -29,7 +29,7 @@
 //   - Optional: Separate output region (--separate-output-region flag)
 //
 // This pass also inserts ttl.copy_tile ops for block arguments and assigns
-// dst_idx attributes to all tile compute operations.
+// dst_index SSA operands to all tile compute operations.
 //
 // Testing: LLVM_DEBUG messages are used extensively for lit test verification.
 // Tests use -debug-only=ttl-assign-dst to check intervals, allocations, and
@@ -300,7 +300,7 @@ static void buildLiveIntervals(Block *body,
   // DST register -- this is a hardware constraint. The merge is unconditional:
   // regardless of what downstream ops consume the result, the input and output
   // must share the same DST index so the lowered instruction (e.g.,
-  // exp_tile(dst_idx)) operates on the correct register.
+  // exp_tile(dst_index)) operates on the correct register.
   for (Operation &op : *body) {
     if (!op.hasTrait<TTLInPlaceOpTrait>()) {
       continue;
@@ -721,7 +721,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         }
       });
 
-      //=== Insert copy_tile for block arguments and set dst_idx ===
+      //=== Insert copy_tile for block arguments and set dst_index ===
       llvm::SmallBitVector inUse(capacity);
       DenseMap<Value, std::uint32_t> dstIndexForValue;
 
@@ -808,7 +808,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         }
       }
 
-      // Set dst_idx attributes on tile compute ops, copy_tile, and copy_dst.
+      // Set dst_index operands on tile compute ops, copy_tile, and copy_dst.
       for (Operation &op : *body) {
         if (!isTileComputeOp(&op) && !isa<CopyDstOp>(&op) &&
             !isa<CopyTileOp>(&op)) {
@@ -917,7 +917,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
           auto newCopy = CopyTileOp::create(
               builder, ct.getLoc(),
               TypeRange{ct.getDstToken().getType(), ct.getDstTile().getType()},
-              ct.getSrc(), ct.getDstIndex(), cbIndices);
+              ct.getSrc(), cbIndices, ct.getDstIndex());
           for (NamedAttribute attr : ct->getAttrs()) {
             newCopy->setAttr(attr.getName(), attr.getValue());
           }

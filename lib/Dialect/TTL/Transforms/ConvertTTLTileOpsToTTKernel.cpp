@@ -206,7 +206,7 @@ using TTLTileRegsReleaseToTTKernel =
 
 /// Extract the DST register index from a tile value. The index is obtained
 /// from either the copy_tile op that placed the tile in DST, or from the
-/// dst_idx attribute on the producing tile operation.
+/// dst_index operand on the producing tile operation.
 ///
 /// For block arguments (function parameters), returns the argument number as
 /// a fallback. This supports testing tile ops in isolation without copy_tile.
@@ -227,7 +227,7 @@ static std::optional<int64_t> getDstIndexFromValue(Value v) {
 //===----------------------------------------------------------------------===//
 
 /// Generic pattern for lowering TTL unary tile ops to TTKernel SFPU ops.
-/// Unary SFPU ops: DST[dst_idx] = op(DST[dst_idx]) - operates in-place.
+/// Unary SFPU ops: DST[dst_index] = op(DST[dst_index]) - operates in-place.
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
 struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
   using OpConversionPattern<SourceOp>::OpConversionPattern;
