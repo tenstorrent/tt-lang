@@ -184,7 +184,6 @@ def tutorial_operation(
                             tx.wait()
 
 
-
 torch.manual_seed(42)
 
 n_devices = ttnn.GetNumAvailableDevices()
