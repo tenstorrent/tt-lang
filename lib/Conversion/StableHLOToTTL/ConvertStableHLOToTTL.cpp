@@ -204,7 +204,7 @@ generateReader(OpBuilder &moduleBuilder, Location loc, StringRef baseName,
     auto slice =
         ttl::TensorSliceOp::create(builder, loc, sliceType, srcArg, indices);
 
-    auto xfType = ttl::TransferHandleType::get(ctx, ttl::TransferKind::Read);
+    auto xfType = ttl::TransferHandleType::get(ctx, ttl::TransferKind::read);
     auto copy = ttl::CopyOp::create(builder, loc, xfType, slice, cb);
     ttl::WaitOp::create(builder, loc, copy);
     ttl::CBPushOp::create(builder, loc, cb, IntegerAttr{});
@@ -377,7 +377,7 @@ generateWriter(OpBuilder &moduleBuilder, Location loc, StringRef baseName,
     auto slice =
         ttl::TensorSliceOp::create(builder, loc, sliceType, dstArg, indices);
 
-    auto xfType = ttl::TransferHandleType::get(ctx, ttl::TransferKind::Write);
+    auto xfType = ttl::TransferHandleType::get(ctx, ttl::TransferKind::write);
     auto copy = ttl::CopyOp::create(builder, loc, xfType, cb, slice);
     ttl::WaitOp::create(builder, loc, copy);
     ttl::CBPopOp::create(builder, loc, cb);
