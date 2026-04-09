@@ -622,6 +622,7 @@ def TTL_CopyTileOp : TTL_Op<"copy_tile",
 
 def TTL_CopyDstOp : TTL_Op<"copy_dst",
                            [TTL_DstResultOpTrait,
+                            AllTypesMatch<["src_tile", "result"]>,
                             MemoryEffects<[MemRead, MemWrite]>,
                             TTL_DSTInputsTrait,
                             TTL_DataMovementOpTrait]> {
@@ -656,7 +657,8 @@ def TTL_CopyDstOp : TTL_Op<"copy_dst",
 class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
     : TTL_TileOp<mnemonic, !listconcat(traits, [TTL_TileBinaryOpTrait,
                                                  TTL_DSTInputsTrait,
-                                                 TTL_DstResultOpTrait])> {
+                                                 TTL_DstResultOpTrait,
+                                                 AllTypesMatch<["lhs", "rhs", "result"]>])> {
   let summary = "Binary tile operation";
   let arguments = (ins TTL_TileType:$lhs, TTL_TileType:$rhs, Index:$dst_index);
   let results = (outs TTL_TileType:$result);
@@ -666,7 +668,8 @@ class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
 class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
     : TTL_TileOp<mnemonic, !listconcat(traits, [TTL_TileUnaryOpTrait,
                                                  TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
-                                                 TTL_DstResultOpTrait])> {
+                                                 TTL_DstResultOpTrait,
+                                                 AllTypesMatch<["input", "result"]>])> {
   let summary = "Unary tile operation";
   let arguments = (ins TTL_TileType:$input, Index:$dst_index);
   let results = (outs TTL_TileType:$result);

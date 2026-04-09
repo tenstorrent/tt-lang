@@ -128,9 +128,7 @@ template <typename ConcreteType>
 class TTLAccumulatingOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLAccumulatingOpTrait> {};
 
-/// Trait for tile operations that write to a DST register. The last operand
-/// must be an index-typed dst_index specifying the destination register.
-/// Provides getDstIndex() and getDstIndexMutable() accessors.
+/// Trait for tile operations that write to a DST register.
 template <typename ConcreteType>
 class TTLDstResultOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLDstResultOpTrait> {
@@ -146,16 +144,6 @@ public:
              << lastOperand.getType();
     }
     return mlir::success();
-  }
-
-  mlir::Value getDstIndex() {
-    auto *op = this->getOperation();
-    return op->getOperand(op->getNumOperands() - 1);
-  }
-
-  void setDstIndex(mlir::Value newIndex) {
-    auto *op = this->getOperation();
-    op->setOperand(op->getNumOperands() - 1, newIndex);
   }
 };
 
