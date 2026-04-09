@@ -864,8 +864,15 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       //=== Post-pass verification: no unassigned dst_index placeholders ===
       for (Operation &op : *body) {
         if (op.hasAttr(kDstPlaceholderAttrName)) {
-          op.emitOpError("dst_index was not assigned by AssignDST");
-          return signalPassFailure();
+          llvm_unreachable("dst_index was not assigned by AssignDST");
+        }
+        if (auto dstVal = getTileOpDstIndex(&op)) {
+          if (auto constIdx = getConstantIntValue(*dstVal)) {
+            if (*constIdx == kUnassignedDstIndex) {
+              llvm_unreachable(
+                  "dst_index is still the unassigned sentinel (-1)");
+            }
+          }
         }
       }
 
