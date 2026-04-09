@@ -48,16 +48,16 @@ def tt_lang_2d_mcast_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     num_active_y = num_blocks_y
     num_blocks_k = Kt // K_block_size
 
-    buffering_factor = 2
+    block_count = 2
     a_dfb = ttl.make_dataflow_buffer_like(
-        a, shape=(per_node_M, K_block_size), buffer_factor=buffering_factor
+        a, shape=(per_node_M, K_block_size), block_count=block_count
     )
     b_dfb = ttl.make_dataflow_buffer_like(
-        b, shape=(K_block_size, per_node_N), buffer_factor=buffering_factor
+        b, shape=(K_block_size, per_node_N), block_count=block_count
     )
     # non buffered output, matching metal implementation
     out_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(per_node_M, per_node_N), buffer_factor=1
+        out, shape=(per_node_M, per_node_N), block_count=1
     )
 
     # A multicast: left column (x=0) reads from DRAM and multicasts rightward along each row
