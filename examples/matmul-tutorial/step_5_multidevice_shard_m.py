@@ -197,7 +197,7 @@ def tutorial_operation(
 torch.manual_seed(42)
 
 n_devices = ttnn.GetNumAvailableDevices()
-assert n_devices % 2 == 0, "Number of available devices must be power of 2 "
+assert n_devices > 0 and (n_devices & (n_devices - 1) == 0), "Number of available devices must be power of 2 "
 ttnn.set_fabric_config(ttnn.FabricConfig.FABRIC_1D)
 
 # Open a 1D mesh of all available devices.  Each device will process an
