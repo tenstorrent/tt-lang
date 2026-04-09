@@ -244,8 +244,8 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
   }
 };
 
-static Value getSrcDstIndex(Value operand, Location loc,
-                            ConversionPatternRewriter &rewriter) {
+static FailureOr<Value> getSrcDstIndex(Value operand, Location loc,
+                                       ConversionPatternRewriter &rewriter) {
   if (auto *defOp = operand.getDefiningOp()) {
     if (auto dstVal = getTileOpDstIndex(defOp)) {
       return *dstVal;
@@ -253,9 +253,9 @@ static Value getSrcDstIndex(Value operand, Location loc,
   }
   auto idx = getDstIndexFromValue(operand);
   if (idx) {
-    return arith::ConstantIndexOp::create(rewriter, loc, *idx);
+    return Value(arith::ConstantIndexOp::create(rewriter, loc, *idx));
   }
-  return Value();
+  return failure();
 }
 
 /// Generic pattern for lowering TTL binary tile ops to TTKernel SFPU ops.
@@ -278,15 +278,15 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
 
     Location loc = op.getLoc();
 
-    Value src0 = getSrcDstIndex(op.getLhs(), loc, rewriter);
-    Value src1 = getSrcDstIndex(op.getRhs(), loc, rewriter);
-    if (!src0 || !src1) {
+    auto src0 = getSrcDstIndex(op.getLhs(), loc, rewriter);
+    auto src1 = getSrcDstIndex(op.getRhs(), loc, rewriter);
+    if (failed(src0) || failed(src1)) {
       return rewriter.notifyMatchFailure(
           op, "failed to extract dst_index from operands");
     }
     Value odst = adaptor.getDstIndex();
 
-    TTKernelComputeOp::create(rewriter, loc, src0, src1, odst);
+    TTKernelComputeOp::create(rewriter, loc, *src0, *src1, odst);
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
@@ -307,19 +307,19 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
     Location loc = op.getLoc();
 
     // Source DST indices from the defining ops of the operands.
-    Value dst0 = getSrcDstIndex(op.getLhs(), loc, rewriter);
-    Value dst1 = getSrcDstIndex(op.getRhs(), loc, rewriter);
+    auto dst0 = getSrcDstIndex(op.getLhs(), loc, rewriter);
+    auto dst1 = getSrcDstIndex(op.getRhs(), loc, rewriter);
 
-    if (!dst0) {
+    if (failed(dst0)) {
       return rewriter.notifyMatchFailure(
           op, "failed to extract dst_index from lhs operand");
     }
-    if (!dst1) {
+    if (failed(dst1)) {
       return rewriter.notifyMatchFailure(
           op, "failed to extract dst_index from rhs operand");
     }
 
-    TTKernelComputeOp::create(rewriter, loc, dst0, dst1, dst0);
+    TTKernelComputeOp::create(rewriter, loc, *dst0, *dst1, *dst0);
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
@@ -479,8 +479,8 @@ struct TTLCopyDstToTTKernel : OpConversionPattern<CopyDstOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    Value srcIdx = getSrcDstIndex(op.getSrcTile(), loc, rewriter);
-    if (!srcIdx) {
+    auto srcIdx = getSrcDstIndex(op.getSrcTile(), loc, rewriter);
+    if (failed(srcIdx)) {
       return rewriter.notifyMatchFailure(
           op, "cannot determine src DST index from input tile");
     }
@@ -490,7 +490,7 @@ struct TTLCopyDstToTTKernel : OpConversionPattern<CopyDstOp> {
 
     // Emit copy_dest_values(idst_in, idst_out): copies DST[idst_in] ->
     // DST[idst_out].
-    ttk::CopyDestValuesOp::create(rewriter, loc, srcIdx, dstIdx);
+    ttk::CopyDestValuesOp::create(rewriter, loc, *srcIdx, dstIdx);
 
     // Replace with an unrealized conversion cast to preserve the tile value.
     // The tile is now in DST[dstIdx].
