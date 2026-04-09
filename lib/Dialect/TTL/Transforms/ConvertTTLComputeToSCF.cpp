@@ -774,51 +774,6 @@ struct TTLLowerToLoopsPass
           return;
         }
 
-        // Verify DST allocation assigned distinct indices per output tile.
-        llvm::DenseMap<Value, int64_t> tileToDst;
-        llvm::DenseMap<int64_t, Value> dstToTile;
-        for (Operation *op : packOps) {
-          auto store = dyn_cast<TileStoreOp>(op);
-          if (!store) {
-            continue;
-          }
-          auto dstVal = getTileOpDstIndex(op);
-          if (!dstVal) {
-            store.emitOpError(
-                "pack-phase op missing dst_index after unrolling");
-            dstCheckFailed = true;
-            return;
-          }
-          auto dstIdx = foldIndexToConstant(*dstVal);
-          if (!dstIdx) {
-            store.emitOpError("pack-phase op has non-constant dst_index");
-            dstCheckFailed = true;
-            return;
-          }
-
-          Value storedTile = store.getTile();
-          auto existing = tileToDst.find(storedTile);
-          if (existing != tileToDst.end()) {
-            if (existing->second != *dstIdx) {
-              store.emitOpError(
-                  "tile stored with conflicting dst_index assignments");
-              dstCheckFailed = true;
-              return;
-            }
-            continue;
-          }
-
-          auto dstExisting = dstToTile.find(*dstIdx);
-          if (dstExisting != dstToTile.end()) {
-            store.emitOpError() << "dst_index " << *dstIdx
-                                << " already used by a different tile";
-            dstCheckFailed = true;
-            return;
-          }
-          tileToDst[storedTile] = *dstIdx;
-          dstToTile[*dstIdx] = storedTile;
-        }
-
         Operation *yield = body.getTerminator();
         for (Operation *packOp : packOps) {
           packOp->moveBefore(yield);
