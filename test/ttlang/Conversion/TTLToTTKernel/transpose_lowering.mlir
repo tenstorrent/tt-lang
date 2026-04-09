@@ -38,10 +38,10 @@ func.func @transpose_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_in
       %in_tile = tensor.extract %inp_cb[%iv1, %iv0] : tensor<1x1x!ttcore.tile<32x32, bf16>>
       %out_tile = tensor.extract %out_cb[%iv0, %iv1] : tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.tile_regs_acquire
-      %tr = ttl.tile_transpose %in_tile, %out_tile {dst_idx = 0 : i32, ttl.transpose_output_cb_index = 1 : index} : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>) -> !ttcore.tile<32x32, bf16>
+      %tr = ttl.tile_transpose %in_tile, %out_tile into dst[%c0] {ttl.transpose_output_cb_index = 1 : index} : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>) -> !ttcore.tile<32x32, bf16>
       ttl.tile_regs_commit
       ttl.tile_regs_wait
-      ttl.tile_store %tr, %reserve[%iv0, %iv1] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.tile_store %tr, %reserve[%iv0, %iv1] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.tile_regs_release
     } {ttl.tile_loop_stride = 1 : index}
   } {ttl.tile_loop_stride = 1 : index}

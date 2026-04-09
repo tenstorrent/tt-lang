@@ -94,10 +94,11 @@ func.func @war_hazard_three_input(
        %out_tile: !ttcore.tile<32x32, bf16>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %t = ttl.tile_tanh %a_tile : !ttcore.tile<32x32, bf16>
-    %sum1 = ttl.tile_add %t, %b_tile : !ttcore.tile<32x32, bf16>
-    %sum2 = ttl.tile_add %sum1, %c_tile : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %sum2, %result_view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
+    %c0 = arith.constant 0 : index
+    %t = ttl.tile_tanh %a_tile into dst[%c0] : !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    %sum1 = ttl.tile_add %t, %b_tile into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    %sum2 = ttl.tile_add %sum1, %c_tile into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    ttl.tile_store %sum2, %result_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<2x1x!ttcore.tile<32x32, bf16>>
 

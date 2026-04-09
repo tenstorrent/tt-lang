@@ -719,7 +719,7 @@ Without `--ttl-maximize-dst` (baseline compilation):
 ```
 convert-ttl-to-compute
 set-compute-kernel-config
-assign-dst                  ← always runs (assigns dst_idx attributes)
+assign-dst                  ← always runs (sets dst_index operands)
 insert-tile-regs-sync       ← per-tile sync (baseline behavior)
 lower-matmul-block          ← (gated by use-block-matmul, independent of maximize-dst)
 lower-to-loops
@@ -731,8 +731,8 @@ canonicalize, cse
 ```
 
 No `subblock-compute-for-dst` or `schedule-operations`. Each tile gets
-its own acquire/release cycle. `assign-dst` still runs because `dst_idx`
-attributes are needed by all compute lowering.
+its own acquire/release cycle. `assign-dst` still runs because `dst_index`
+operands are needed by all compute lowering.
 
 With `--no-ttl-fpu-binary-ops`:
 

@@ -20,7 +20,7 @@ func.func @fused_exp_sqrt_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tens
   ttl.store %add, %reserve : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
 
   // CHECK: ttl.compute
-  // CHECK-SAME: ins(%{{.*}}, %{{.*}} :
+  // CHECK-SAME: ins(%{{.*}}, %{{.*}}:
   // CHECK: ttl.tile_exp
   // CHECK: ttl.tile_sqrt
   // CHECK: ttl.tile_add
