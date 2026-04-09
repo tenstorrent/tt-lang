@@ -52,7 +52,7 @@ func.func @unary_exp(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x
   // CHECK-NEXT: ^bb0(%[[IN:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
   // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
   // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
-  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
   // CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[DTILE]] into dst[%c0]
   // CHECK-NEXT:   ttl.tile_store %[[EXP]], %{{.*}}[%[[I0]], %[[I1]]]
   // CHECK-NEXT:   ttl.yield

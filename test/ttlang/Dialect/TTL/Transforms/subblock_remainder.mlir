@@ -14,7 +14,7 @@
 // SUBBLOCK:          ttl.compute
 // SUBBLOCK:            %[[I_DIM0:.*]] = ttl.iter_index 0 : index
 // SUBBLOCK-NEXT:       %[[I_DIM1:.*]] = ttl.iter_index 1 : index
-// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0]], %[[I_DIM1]]], %{{.*}}
+// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0]], %[[I_DIM1]]] into dst[%{{.*}}]
 // SUBBLOCK:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0]], %[[I_DIM1]]]
 // SUBBLOCK:        } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 3 : index}
 

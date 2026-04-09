@@ -400,7 +400,6 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
     cbTileIndex =
         utils::addSliceOffset(op.getView(), cbTileIndex, rewriter, loc);
 
-    // DST index comes directly from the tile_store's SSA dst_index operand.
     Value dstIndex = adaptor.getDstIndex();
 
     ttk::PackTileOp::create(rewriter, loc, dstIndex, *cb, cbTileIndex,

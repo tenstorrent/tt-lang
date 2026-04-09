@@ -401,11 +401,23 @@ inline void setTileOpDstIndex(Operation *op, Value newDstIndex) {
   }
 }
 
-/// Create a placeholder dst_index (constant 0). Used when creating tile ops
-/// before AssignDST has computed the actual index. AssignDST replaces the
-/// operand with the correct value via getDstIndexMutable().assign().
+/// Temporary marker attribute for tile ops whose dst_index has not been
+/// assigned yet.
+constexpr llvm::StringLiteral kDstPlaceholderAttrName("ttl.dst_placeholder");
+
+/// Sentinel value for unassigned DST indices. Obviously invalid so any
+/// accidental use fails loudly at TTKernel lowering or on hardware.
+constexpr int64_t kUnassignedDstIndex = -1;
+
+/// Create a placeholder dst_index (constant -1). The caller must also call
+/// markDstPlaceholder on the created op to mark it as unassigned.
 inline Value createPlaceholderDstIndex(OpBuilder &builder, Location loc) {
-  return arith::ConstantIndexOp::create(builder, loc, 0);
+  return arith::ConstantIndexOp::create(builder, loc, kUnassignedDstIndex);
+}
+
+/// Mark a tile op as having an unassigned placeholder dst_index.
+inline void markDstPlaceholder(Operation *op) {
+  op->setAttr(kDstPlaceholderAttrName, UnitAttr::get(op->getContext()));
 }
 
 } // namespace mlir::tt::ttl

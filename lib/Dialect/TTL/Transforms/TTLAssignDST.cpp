@@ -235,6 +235,7 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
         auto copyOp =
             CopyDstOp::create(builder, loc, value.getType(), value,
                               createPlaceholderDstIndex(builder, loc));
+        markDstPlaceholder(copyOp);
         copyResult = copyOp.getResult();
         LLVM_DEBUG({
           llvm::dbgs() << "Phase 1: Inserted copy_dst for consumer " << i
@@ -838,6 +839,33 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
           Value dstIdxVal =
               arith::ConstantIndexOp::create(builder, op.getLoc(), dstIdx);
           setTileOpDstIndex(&op, dstIdxVal);
+          op.removeAttr(kDstPlaceholderAttrName);
+        }
+      }
+
+      // Set dst_index on tile_store ops based on their source tile's DST slot.
+      for (Operation &op : *body) {
+        auto store = dyn_cast<TileStoreOp>(&op);
+        if (!store) {
+          continue;
+        }
+        Value tile = store.getTile();
+        auto it = dstIndexForValue.find(tile);
+        if (it != dstIndexForValue.end()) {
+          OpBuilder::InsertionGuard guard(builder);
+          builder.setInsertionPoint(&op);
+          Value dstIdxVal =
+              arith::ConstantIndexOp::create(builder, op.getLoc(), it->second);
+          setTileOpDstIndex(&op, dstIdxVal);
+          op.removeAttr(kDstPlaceholderAttrName);
+        }
+      }
+
+      //=== Post-pass verification: no unassigned dst_index placeholders ===
+      for (Operation &op : *body) {
+        if (op.hasAttr(kDstPlaceholderAttrName)) {
+          op.emitOpError("dst_index was not assigned by AssignDST");
+          return signalPassFailure();
         }
       }
 

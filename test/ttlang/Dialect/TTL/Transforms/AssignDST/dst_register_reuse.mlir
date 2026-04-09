@@ -75,7 +75,7 @@ func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // First add is FPU binary (no copies for ARG0/ARG1). ARG2 copied for SFPU adds.
 // CHECK:           %[[ADD0:.*]] = ttl.tile_add %[[ARG0]], %[[ARG1]] into dst[{{.*}}] {ttl.fpu_binary}
-// CHECK:           %{{.*}}, %[[COPY:.*]] = ttl.copy_tile %[[ARG2]][%[[I0]], %[[I1]]], %
+// CHECK:           %{{.*}}, %[[COPY:.*]] = ttl.copy_tile %[[ARG2]][%[[I0]], %[[I1]]] into dst[%{{.*}}]
 // CHECK:      %{{.*}} = ttl.tile_add %[[ADD0]], %[[COPY]] into dst[{{.*}}]
 // CHECK:      %{{.*}} = ttl.tile_add %{{.*}}, %[[COPY]] into dst[{{.*}}]
 // CHECK:      %{{.*}} = ttl.tile_add %{{.*}}, %[[COPY]] into dst[{{.*}}]
@@ -147,7 +147,7 @@ func.func @chain_reuse(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: tensor<1x
 // First add is FPU binary (no copies for ARG0/ARG1).
 // CHECK:           %[[ADD0:.*]] = ttl.tile_add %[[ARG0]], %[[ARG1]] into dst[{{.*}}] {ttl.fpu_binary}
 // ARG0 copied for subsequent SFPU adds that use it with DST results.
-// CHECK:           %{{.*}}, %[[COPY0:.*]] = ttl.copy_tile %[[ARG0]][%[[I0]], %[[I1]]], %
+// CHECK:           %{{.*}}, %[[COPY0:.*]] = ttl.copy_tile %[[ARG0]][%[[I0]], %[[I1]]] into dst[%{{.*}}]
 // CHECK:      %[[ADD1:.*]] = ttl.tile_add %[[COPY0]], %[[ADD0]] into dst[{{.*}}]
 // CHECK:      %[[ADD2:.*]] = ttl.tile_add %[[COPY0]], %[[ADD1]] into dst[{{.*}}]
 // CHECK:           ttl.tile_store %[[ADD2]], %{{.*}}[%[[I0]], %[[I1]]]
@@ -210,9 +210,9 @@ func.func @block_arg_multi_use(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: t
 // CHECK-NEXT:      ^bb0(%[[X:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
 // CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
-// CHECK:           %{{.*}}, %[[XCOPY_SIG:.*]] = ttl.copy_tile %[[X]][%[[I0]], %[[I1]]], %
+// CHECK:           %{{.*}}, %[[XCOPY_SIG:.*]] = ttl.copy_tile %[[X]][%[[I0]], %[[I1]]] into dst[%{{.*}}]
 // CHECK:      %[[SIG:.*]] = ttl.tile_sigmoid %[[XCOPY_SIG]] into dst[{{.*}}]
-// CHECK:           %{{.*}}, %[[XCOPY_MUL:.*]] = ttl.copy_tile %[[X]][%[[I0]], %[[I1]]], %
+// CHECK:           %{{.*}}, %[[XCOPY_MUL:.*]] = ttl.copy_tile %[[X]][%[[I0]], %[[I1]]] into dst[%{{.*}}]
 // CHECK:      %[[MUL:.*]] = ttl.tile_mul %[[XCOPY_MUL]], %[[SIG]] into dst[{{.*}}]
 // CHECK:           ttl.tile_store %[[MUL]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield

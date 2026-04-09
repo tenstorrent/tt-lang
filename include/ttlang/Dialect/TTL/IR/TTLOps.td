@@ -566,7 +566,7 @@ def TTL_IterIndexOp : TTL_Op<"iter_index", [Pure,
     ^bb0(%a: !ttcore.tile<32x32, bf16>, %b: !ttcore.tile<32x32, bf16>):
         %i = ttl.iter_index 0 : index
         %j = ttl.iter_index 1 : index
-        %tok, %tile = ttl.copy_tile %a[%i, %j], %c0 : ...
+        %tok, %tile = ttl.copy_tile %a[%i, %j] into dst[%c0] : ...
         ttl.tile_store %result, %view[%i, %j] : ...
         ttl.yield
     }
@@ -600,10 +600,10 @@ def TTL_CopyTileOp : TTL_Op<"copy_tile",
     // After assign-dst (inside ttl.compute body, iter_index provides coordinates):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %tok, %tile = ttl.copy_tile %src[%i, %j], %c0 : !ttcore.tile<32x32, bf16>, index
+    %tok, %tile = ttl.copy_tile %src[%i, %j] into dst[%c0] : !ttcore.tile<32x32, bf16>
                   -> !ttl.dst, !ttcore.tile<32x32, bf16>
     // After lower-to-loops (iter_index replaced with loop IVs):
-    %tok, %tile = ttl.copy_tile %src[%row, %col], %c0 : !ttcore.tile<32x32, bf16>, index
+    %tok, %tile = ttl.copy_tile %src[%row, %col] into dst[%c0] : !ttcore.tile<32x32, bf16>
                   -> !ttl.dst, !ttcore.tile<32x32, bf16>
     ```
   }];
@@ -614,8 +614,8 @@ def TTL_CopyTileOp : TTL_Op<"copy_tile",
   );
   let results = (outs TTL_DSTRegister:$dst_token, TTL_TileType:$dst_tile);
   let assemblyFormat =
-      "$src `[` $src_indices `]` `,` $dst_index attr-dict `:` "
-      "type($src) `,` type($dst_index) "
+      "$src `[` $src_indices `]` `into` `dst` `[` $dst_index `]` attr-dict `:` "
+      "type($src) "
       "`->` type($dst_token) `,` type($dst_tile)";
   let hasVerifier = 1;
 }

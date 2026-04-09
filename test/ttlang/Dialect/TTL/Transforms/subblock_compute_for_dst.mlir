@@ -126,7 +126,7 @@ func.func @tile_binary_1x8(
 // TILED-SAME:     ttl.full_linearization_strides
 // TILED:            %[[I_DIM0_A:.*]] = ttl.iter_index 0 : index
 // TILED:            %[[I_DIM1_A:.*]] = ttl.iter_index 1 : index
-// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_A]], %[[I_DIM1_A]]], %{{.*}}
+// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_A]], %[[I_DIM1_A]]] into dst[%{{.*}}]
 // TILED:            ttl.tile_exp
 // TILED:            ttl.tile_store %{{.*}}, %[[OUT_SLICE_A]][%[[I_DIM0_A]], %[[I_DIM1_A]]]
 // TILED-NEXT:       ttl.yield
@@ -230,7 +230,7 @@ func.func @no_subblocking_multidim(%a: tensor<2x4x!ttcore.tile<32x32, f32>>)
 // TILED-SAME:     ttl.full_linearization_strides
 // TILED:            %[[I_DIM0_B:.*]] = ttl.iter_index 0 : index
 // TILED:            %[[I_DIM1_B:.*]] = ttl.iter_index 1 : index
-// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_B]], %[[I_DIM1_B]]], %{{.*}}
+// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_B]], %[[I_DIM1_B]]] into dst[%{{.*}}]
 // TILED:            ttl.tile_exp
 // TILED:            ttl.tile_store %{{.*}}, %[[OUT_SLICE_B]][%[[I_DIM0_B]], %[[I_DIM1_B]]]
 // TILED-NEXT:       ttl.yield
@@ -339,7 +339,7 @@ func.func @no_subblocking_binary(
 // TILED-SAME:     ttl.full_linearization_strides
 // TILED:            %[[I_DIM0_C:.*]] = ttl.iter_index 0 : index
 // TILED:            %[[I_DIM1_C:.*]] = ttl.iter_index 1 : index
-// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_C]], %[[I_DIM1_C]]], %{{.*}}
+// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_C]], %[[I_DIM1_C]]] into dst[%{{.*}}]
 // TILED:            ttl.tile_exp
 // TILED:            ttl.tile_store %{{.*}}, %[[OUT_SLICE_C]][%[[I_DIM0_C]], %[[I_DIM1_C]]]
 // TILED-NEXT:       ttl.yield
@@ -413,9 +413,9 @@ func.func @tile_multidim_remainder_3x3(%a: tensor<3x3x!ttcore.tile<32x32, f32>>)
 // BCAST-TILED:              %[[I_DIM0:.*]] = ttl.iter_index 0 : index
 // BCAST-TILED:              %[[I_DIM1:.*]] = ttl.iter_index 1 : index
 // Identity-map input: both dims with local coordinates.
-// BCAST-TILED:              ttl.copy_tile %{{.*}}[%[[I_DIM0]], %[[I_DIM1]]], %{{.*}}
+// BCAST-TILED:              ttl.copy_tile %{{.*}}[%[[I_DIM0]], %[[I_DIM1]]] into dst[%{{.*}}]
 // Col-broadcast input (map (d0,d1)->(d0,0)): d0 local, d1 constant 0.
-// BCAST-TILED:              ttl.copy_tile %{{.*}}[%[[I_DIM0]], %{{.*}}], %{{.*}}
+// BCAST-TILED:              ttl.copy_tile %{{.*}}[%[[I_DIM0]], %{{.*}}] into dst[%{{.*}}]
 // BCAST-TILED:              ttl.tile_add
 // BCAST-TILED:              ttl.tile_store %{{.*}}, %[[OUT_SLICE_BC]][%[[I_DIM0]], %[[I_DIM1]]]
 // BCAST-TILED-NEXT:         ttl.yield

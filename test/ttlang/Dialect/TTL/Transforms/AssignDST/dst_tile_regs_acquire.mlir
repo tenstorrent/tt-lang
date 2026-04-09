@@ -199,7 +199,7 @@ func.func @acquire_two_computes(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // FPU binary tile_add: no copy_tile needed
 // CHECK:        %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[{{.*}}] {ttl.fpu_binary}
 // tile_mul needs copy_tile for %c (not in DST)
-// CHECK:        %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[C]][%[[I0]], %[[I1]]], %[[C1]]
+// CHECK:        %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[C]][%[[I0]], %[[I1]]] into dst[%[[C1]]]
 // CHECK:        %[[MUL:.*]] = ttl.tile_mul %[[ADD]], %[[DTILE]] into dst[{{.*}}]
 // CHECK:        %[[EXP:.*]] = ttl.tile_exp %[[MUL]] into dst[{{.*}}]
 // CHECK-NEXT:        ttl.tile_store %[[EXP]], %{{.*}}[%[[I0]], %[[I1]]]

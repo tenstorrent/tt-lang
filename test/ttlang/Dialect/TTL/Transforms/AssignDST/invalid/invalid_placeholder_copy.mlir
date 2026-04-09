@@ -38,9 +38,9 @@ func.func @invalid_placeholder_copy(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>,
     // The src is NOT a block argument (it's %add), so the pass cannot replace it
     %placeholder_dst = arith.constant 9223372036854775807 : index
     // expected-error @+1 {{placeholder copy_tile not replaced with proper copy}}
-    %dst_token, %copied = ttl.copy_tile %add[], %placeholder_dst
+    %dst_token, %copied = ttl.copy_tile %add[] into dst[%placeholder_dst]
         {ttl.placeholder_copy}
-        : !ttcore.tile<32x32, f32>, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+        : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
     %exp = ttl.tile_exp %copied into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     ttl.tile_store %exp, %out_view[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield

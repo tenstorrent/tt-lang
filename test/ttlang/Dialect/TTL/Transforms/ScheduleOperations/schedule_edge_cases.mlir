@@ -156,11 +156,11 @@ func.func @single_type_already_sorted(
 // FPU:       ttkernel.exp_tile(%[[C3]])
 // FPU:       ttkernel.tile_regs_commit
 // FPU-NEXT:  ttkernel.tile_regs_wait
-// Pack phase: DST indices are reused (add and exp share dst slots per tile)
+// Pack phase
 // FPU:       ttkernel.pack_tile(%[[C0]], %[[CB3]], %[[C0]], true)
-// FPU:       ttkernel.pack_tile(%[[C0]], %[[CB4]], %[[C0]], true)
+// FPU:       ttkernel.pack_tile(%[[C1]], %[[CB4]], %[[C0]], true)
 // FPU:       ttkernel.pack_tile(%[[C2]], %[[CB3]], %[[C1]], true)
-// FPU:       ttkernel.pack_tile(%[[C2]], %[[CB4]], %[[C1]], true)
+// FPU:       ttkernel.pack_tile(%[[C3]], %[[CB4]], %[[C1]], true)
 // FPU:       ttkernel.tile_regs_release
 // FPU:       ttkernel.cb_push_back(%[[CB3]], %[[C2_I32]])
 // FPU:       ttkernel.cb_push_back(%[[CB4]], %[[C2_I32]])
@@ -202,11 +202,11 @@ func.func @single_type_already_sorted(
 // SFPU:      ttkernel.exp_tile(%[[C3]])
 // SFPU:      ttkernel.tile_regs_commit
 // SFPU-NEXT: ttkernel.tile_regs_wait
-// Pack phase: DST indices are reused (add and exp share dst slots per tile)
+// Pack phase
 // SFPU:      ttkernel.pack_tile(%[[C0]], %[[CB3]], %[[C0]], true)
-// SFPU:      ttkernel.pack_tile(%[[C0]], %[[CB4]], %[[C0]], true)
+// SFPU:      ttkernel.pack_tile(%[[C1]], %[[CB4]], %[[C0]], true)
 // SFPU:      ttkernel.pack_tile(%[[C2]], %[[CB3]], %[[C1]], true)
-// SFPU:      ttkernel.pack_tile(%[[C2]], %[[CB4]], %[[C1]], true)
+// SFPU:      ttkernel.pack_tile(%[[C3]], %[[CB4]], %[[C1]], true)
 // SFPU:      ttkernel.tile_regs_release
 // SFPU:      ttkernel.cb_push_back(%[[CB3]], %[[C2_I32]])
 // SFPU:      ttkernel.cb_push_back(%[[CB4]], %[[C2_I32]])

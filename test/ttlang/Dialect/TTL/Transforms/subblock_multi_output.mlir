@@ -18,7 +18,7 @@
 // SUBBLOCK:          ttl.compute
 // SUBBLOCK:            %[[I_DIM0_A:.*]] = ttl.iter_index 0 : index
 // SUBBLOCK-NEXT:       %[[I_DIM1_A:.*]] = ttl.iter_index 1 : index
-// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_A]], %[[I_DIM1_A]]], %{{.*}}
+// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_A]], %[[I_DIM1_A]]] into dst[%{{.*}}]
 // SUBBLOCK:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_A]], %[[I_DIM1_A]]]
 // SUBBLOCK:        } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 4 : index}
 // Chain 2:
@@ -26,7 +26,7 @@
 // SUBBLOCK:          ttl.compute
 // SUBBLOCK:            %[[I_DIM0_B:.*]] = ttl.iter_index 0 : index
 // SUBBLOCK-NEXT:       %[[I_DIM1_B:.*]] = ttl.iter_index 1 : index
-// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_B]], %[[I_DIM1_B]]], %{{.*}}
+// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_B]], %[[I_DIM1_B]]] into dst[%{{.*}}]
 // SUBBLOCK:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_B]], %[[I_DIM1_B]]]
 // SUBBLOCK:        } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 4 : index}
 // Chain 3:
@@ -34,7 +34,7 @@
 // SUBBLOCK:          ttl.compute
 // SUBBLOCK:            %[[I_DIM0_C:.*]] = ttl.iter_index 0 : index
 // SUBBLOCK-NEXT:       %[[I_DIM1_C:.*]] = ttl.iter_index 1 : index
-// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_C]], %[[I_DIM1_C]]], %{{.*}}
+// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_C]], %[[I_DIM1_C]]] into dst[%{{.*}}]
 // SUBBLOCK:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_C]], %[[I_DIM1_C]]]
 // SUBBLOCK:        } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 4 : index}
 

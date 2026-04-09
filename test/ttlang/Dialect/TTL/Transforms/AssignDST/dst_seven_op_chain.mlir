@@ -27,7 +27,7 @@
 // FPU binary add: both operands are block args, no copy_tile needed
 // CHECK:        %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[{{.*}}] {ttl.fpu_binary}
 // Copy B for sub/mul (SFPU operand needs copy_tile)
-// CHECK:             %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]], %
+// CHECK:             %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]] into dst[%{{.*}}]
 // CHECK:        %[[SUB:.*]] = ttl.tile_sub %[[ADD]], %[[DTILE]] into dst[{{.*}}]
 // CHECK:        %[[MUL:.*]] = ttl.tile_mul %[[SUB]], %[[DTILE]] into dst[{{.*}}]
 // CHECK:        %[[EXP:.*]] = ttl.tile_exp %[[MUL]] into dst[{{.*}}]
@@ -57,7 +57,7 @@
 // SFPU:             ttl.tile_store %[[SQRTS]], %{{.*}}[%{{.*}}, %{{.*}}]{{.*}}into dst[{{.*}}]
 // SFPU-NEXT:        ttl.yield
 //
-// CHECK-NEXT:        ttl.tile_store %[[SQRT]], %{{.*}}[%[[I0]], %[[I1]]]
+// CHECK:             ttl.tile_store %[[SQRT]], %{{.*}}[%[[I0]], %[[I1]]] into dst[{{.*}}]
 // CHECK-NEXT:        ttl.yield
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 // CHECK-NEXT:      return %[[RES]]
