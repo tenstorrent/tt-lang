@@ -403,11 +403,28 @@ constexpr llvm::StringLiteral kDstPlaceholderAttrName("ttl.dst_placeholder");
 /// accidental use fails loudly at TTKernel lowering or on hardware.
 constexpr int64_t kUnassignedDstIndex = -1;
 
-/// Create a tile op with a placeholder dst_index (constant -1).
+/// Create a placeholder dst_index constant (-1).
 inline Value createPlaceholderDstIndex(OpBuilder &builder, Location loc) {
-  auto op = arith::ConstantIndexOp::create(builder, loc, kUnassignedDstIndex);
-  op->setAttr(kDstPlaceholderAttrName, UnitAttr::get(builder.getContext()));
-  return op.getResult();
+  auto constant =
+      arith::ConstantIndexOp::create(builder, loc, kUnassignedDstIndex);
+  return constant.getResult();
+}
+
+/// Mark a tile op as having an unassigned dst_index.
+inline void addPlaceholderDstIndexAttr(Operation *op) {
+  op->setAttr(kDstPlaceholderAttrName, UnitAttr::get(op->getContext()));
+}
+
+/// Create a tile op with a placeholder dst_index and mark the op.
+template <typename TileOp, typename... Args>
+inline TileOp createTileOpWithPlaceholderDstIndex(OpBuilder &builder,
+                                                  Location loc,
+                                                  Args &&...args) {
+  Value dstIndex = createPlaceholderDstIndex(builder, loc);
+  TileOp tileOp =
+      TileOp::create(builder, loc, std::forward<Args>(args)..., dstIndex);
+  addPlaceholderDstIndexAttr(tileOp.getOperation());
+  return tileOp;
 }
 
 } // namespace mlir::tt::ttl
