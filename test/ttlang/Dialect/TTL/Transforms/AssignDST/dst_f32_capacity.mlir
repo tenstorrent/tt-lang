@@ -6,7 +6,7 @@
 
 // Purpose: f32 tiles use dst_idx in [0-3] with default (double-buffered) capacity.
 // CHECK-LABEL: func.func @f32_add
-// CHECK: ttl.tile_add {{.*}} into dst[{{.*}}]
+// CHECK: ttl.tile_add {{.*}} into dst[%c0]
 func.func @f32_add(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
                    %b: tensor<1x1x!ttcore.tile<32x32, f32>>)
     -> tensor<1x1x!ttcore.tile<32x32, f32>> {
@@ -53,7 +53,7 @@ func.func @f32_add(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
 
 // Purpose: Manual dst-capacity=8 override widens the index range to [0-7].
 // OVERRIDE-LABEL: func.func @f32_capacity_override
-// OVERRIDE: ttl.tile_add {{.*}} into dst[{{.*}}]
+// OVERRIDE: ttl.tile_add {{.*}} into dst[%c0]
 func.func @f32_capacity_override(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
                              %b: tensor<1x1x!ttcore.tile<32x32, f32>>)
     -> tensor<1x1x!ttcore.tile<32x32, f32>> {

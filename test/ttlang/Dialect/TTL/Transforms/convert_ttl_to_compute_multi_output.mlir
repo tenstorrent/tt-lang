@@ -31,7 +31,7 @@
 
 // DST-LABEL: func.func @binary_two_outputs
 // DST: ttl.dst_section {
-// DST:   ttl.tile_add {{.*}} into dst[{{.*}}] {ttl.fpu_binary}
+// DST:   ttl.tile_add {{.*}} into dst[%c0] {ttl.fpu_binary}
 // DST:   ttl.tile_store
 // DST-NEXT: ttl.tile_store
 // DST: }
@@ -79,7 +79,7 @@ module {
 
 // DST-LABEL: func.func @unary_two_outputs
 // DST: ttl.dst_section {
-// DST:   ttl.tile_exp {{.*}} into dst[{{.*}}]
+// DST:   ttl.tile_exp {{.*}} into dst[%c0]
 // DST:   ttl.tile_store
 // DST-NEXT: ttl.tile_store
 module {
@@ -170,7 +170,7 @@ module {
 
 // DST-LABEL: func.func @three_outputs
 // DST: ttl.dst_section {
-// DST:   ttl.tile_add {{.*}} into dst[{{.*}}] {ttl.fpu_binary}
+// DST:   ttl.tile_add {{.*}} into dst[%c0] {ttl.fpu_binary}
 // DST:   ttl.tile_store
 // DST-NEXT: ttl.tile_store
 // DST-NEXT: ttl.tile_store
@@ -220,8 +220,8 @@ module {
 // DST-LABEL: func.func @multi_output_4x4
 // DST:       scf.for
 // DST:         ttl.dst_section {
-// DST:           ttl.tile_add {{.*}} into dst[{{.*}}]
-// DST:           ttl.tile_add {{.*}} into dst[{{.*}}]
+// DST:           ttl.tile_add {{.*}} into dst[%c0]
+// DST:           ttl.tile_add {{.*}} into dst[%{{.*}}]
 // DST:           ttl.tile_store
 // DST:           ttl.tile_store
 // DST:         }

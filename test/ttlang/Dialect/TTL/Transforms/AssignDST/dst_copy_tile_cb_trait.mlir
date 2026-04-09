@@ -88,7 +88,7 @@ func.func @two_inputs_both_need_copy(
 // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary: reads from CB, no copy_tile needed.
 // CHECK-NOT:  ttl.copy_tile
-// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[{{.*}}] {ttl.fpu_binary}
+// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%c0] {ttl.fpu_binary}
 // CHECK:      ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT: ttl.yield
   %out_view_0 = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>

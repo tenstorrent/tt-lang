@@ -17,7 +17,7 @@
 // CHECK-NEXT:    ^bb0(%[[AT:.*]]: !ttcore.tile{{.*}}, %[[BT:.*]]: !ttcore.tile{{.*}}, %[[CT:.*]]: !ttcore.tile{{.*}}, %[[OUT:.*]]: !ttcore.tile{{.*}}):
 // CHECK:           %[[MM:.*]] = ttl.tile_matmul_block %[[AT]], %[[BT]], %[[CT]]
 // CHECK-NOT:       ttl.tile_add
-// CHECK:      ttl.tile_store %[[MM]],{{.*}}from dst[{{.*}}]
+// CHECK:      ttl.tile_store %[[MM]],{{.*}} from dst[%c-1]
 // CHECK-NEXT:      ttl.yield
 func.func @matmul_add() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -59,7 +59,7 @@ func.func @matmul_add() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indic
 // CHECK-NEXT:      ttl.iter_index 1
 // CHECK:      %[[MM:.*]] = ttl.tile_matmul_block %[[AT]], %[[BT]], %[[CT]]
 // CHECK-NOT:       ttl.tile_add
-// CHECK:      ttl.tile_store %[[MM]],{{.*}}from dst[{{.*}}]
+// CHECK:      ttl.tile_store %[[MM]],{{.*}}from dst[%c-1]
 func.func @matmul_add_commuted() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -92,9 +92,9 @@ func.func @matmul_add_commuted() attributes {ttl.base_cta_index = 4 : i32, ttl.c
 // CHECK-NEXT:    ^bb0(%[[AT:.*]]: !ttcore.tile{{.*}}, %[[BT:.*]]: !ttcore.tile{{.*}}, %{{.*}}: !ttcore.tile{{.*}}):
 // CHECK-NEXT:      ttl.iter_index 0
 // CHECK-NEXT:      ttl.iter_index 1
-// CHECK:      %[[MM:.*]] = ttl.tile_matmul_block %[[AT]], %[[BT]]{{.*}}into dst[{{.*}}]{{.*}}:
-// CHECK:      %[[R:.*]] = ttl.tile_relu %[[MM]]{{.*}}into dst[{{.*}}]
-// CHECK:      ttl.tile_store %[[R]],{{.*}}from dst[{{.*}}]
+// CHECK:      %[[MM:.*]] = ttl.tile_matmul_block %[[AT]], %[[BT]]{{.*}}into dst[%c-1] {ttl.dst_placeholder} :
+// CHECK:      %[[R:.*]] = ttl.tile_relu %[[MM]]{{.*}}into dst[%c-1] {ttl.dst_placeholder}
+// CHECK:      ttl.tile_store %[[R]],{{.*}}from dst[%c-1]
 // CHECK-NEXT:      ttl.yield
 func.func @matmul_relu() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -126,8 +126,8 @@ func.func @matmul_relu() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indi
 // CHECK-NEXT:      ttl.iter_index 1
 // CHECK:      %[[MM:.*]] = ttl.tile_matmul_block %[[AT]], %[[BT]], %[[CT]]
 // CHECK-NOT:       ttl.tile_add
-// CHECK:      %[[R:.*]] = ttl.tile_relu %[[MM]]{{.*}}into dst[{{.*}}]
-// CHECK:      ttl.tile_store %[[R]],{{.*}}from dst[{{.*}}]
+// CHECK:      %[[R:.*]] = ttl.tile_relu %[[MM]]{{.*}}into dst[%c-1] {ttl.dst_placeholder}
+// CHECK:      ttl.tile_store %[[R]],{{.*}}from dst[%c-1]
 // CHECK-NEXT:      ttl.yield
 func.func @matmul_add_relu() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -162,8 +162,8 @@ func.func @matmul_add_relu() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_
 // CHECK-NEXT:    ^bb0(%[[AT:.*]]: !ttcore.tile{{.*}}, %[[BT:.*]]: !ttcore.tile{{.*}}, %{{.*}}: !ttcore.tile{{.*}}):
 // CHECK-NEXT:      ttl.iter_index 0
 // CHECK-NEXT:      ttl.iter_index 1
-// CHECK:      %[[MM:.*]] = ttl.tile_matmul_block %[[AT]], %[[BT]]{{.*}}into dst[{{.*}}]{{.*}}:
-// CHECK:      ttl.tile_store %[[MM]],{{.*}}from dst[{{.*}}]
+// CHECK:      %[[MM:.*]] = ttl.tile_matmul_block %[[AT]], %[[BT]]{{.*}}into dst[%c-1] {ttl.dst_placeholder} :
+// CHECK:      ttl.tile_store %[[MM]],{{.*}}from dst[%c-1]
 // CHECK-NEXT:      ttl.yield
 func.func @matmul_standalone() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -273,10 +273,10 @@ func.func @matmul_add_incompatible_shapes() attributes {ttl.base_cta_index = 4 :
 // CHECK-NEXT:    ^bb0(%[[AT:.*]]: !ttcore.tile{{.*}}, %[[BT:.*]]: !ttcore.tile{{.*}}, %[[CT:.*]]: !ttcore.tile{{.*}}, %{{.*}}: !ttcore.tile{{.*}}):
 // CHECK-NEXT:      ttl.iter_index 0
 // CHECK-NEXT:      ttl.iter_index 1
-// CHECK:      %[[MM:.*]] = ttl.tile_matmul_block %[[AT]], %[[BT]]{{.*}}into dst[{{.*}}]{{.*}}:
+// CHECK:      %[[MM:.*]] = ttl.tile_matmul_block %[[AT]], %[[BT]]{{.*}}into dst[%c-1] {ttl.dst_placeholder} :
 // CHECK-NOT:       ttl.tile_add
 // CHECK-NEXT:      %[[S:.*]] = ttl.tile_sub %[[MM]], %[[CT]]
-// CHECK:      ttl.tile_store %[[S]],{{.*}}from dst[{{.*}}]
+// CHECK:      ttl.tile_store %[[S]],{{.*}}from dst[%c-1]
 // CHECK-NEXT:      ttl.yield
 func.func @matmul_sub_no_fold() attributes {ttl.base_cta_index = 4 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>

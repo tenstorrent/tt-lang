@@ -33,11 +33,11 @@ func.func @add_4d(%a: tensor<3x6x4x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:   %[[I3:.*]] = ttl.iter_index 3 : index
 // FPU binary: no copy_tile needed.
 // CHECK-NOT:  ttl.copy_tile
-// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[{{.*}}] {ttl.fpu_binary}
+// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%c0] {ttl.fpu_binary}
 // CHECK-NEXT: ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]], %[[I2]], %[[I3]]]
 // CHECK-NEXT: ttl.yield
 // SEPARATE-LABEL: func.func @add_4d
-// SEPARATE:      %[[ADDS:.*]] = ttl.tile_add {{.*}} into dst[{{.*}}] {ttl.fpu_binary}
+// SEPARATE:      %[[ADDS:.*]] = ttl.tile_add {{.*}} into dst[%c0] {ttl.fpu_binary}
 // SEPARATE:      ttl.tile_store
 // SEPARATE-NEXT: ttl.yield
 //
@@ -51,7 +51,7 @@ func.func @add_4d(%a: tensor<3x6x4x2x!ttcore.tile<32x32, f32>>,
 // SFPU-NEXT:      %[[SI3:.*]] = ttl.iter_index 3 : index
 // SFPU:           %{{.*}}, %[[DA:.*]] = ttl.copy_tile %[[AS]][%[[SI0]], %[[SI1]], %[[SI2]], %[[SI3]]] into dst[%{{.*}}]
 // SFPU-NEXT:      %{{.*}}, %[[DB:.*]] = ttl.copy_tile %[[BS]][%[[SI0]], %[[SI1]], %[[SI2]], %[[SI3]]] into dst[%{{.*}}]
-// SFPU-NEXT:      %[[ADDS:.*]] = ttl.tile_add %[[DA]], %[[DB]] into dst[{{.*}}]
+// SFPU-NEXT:      %[[ADDS:.*]] = ttl.tile_add %[[DA]], %[[DB]] into dst[%c0]
 // SFPU:           ttl.tile_store %[[ADDS]], %{{.*}}[%[[SI0]], %[[SI1]], %[[SI2]], %[[SI3]]]
 // SFPU-NEXT:      ttl.yield
   %out_view = ttl.cb_reserve %cb2 : <[3, 6, 4, 2], !ttcore.tile<32x32, f32>, 1> -> tensor<3x6x4x2x!ttcore.tile<32x32, f32>>
