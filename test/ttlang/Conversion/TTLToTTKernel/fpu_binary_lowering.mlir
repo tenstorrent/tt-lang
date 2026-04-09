@@ -121,7 +121,7 @@ func.func @fpu_add_2x2()
     %j = ttl.iter_index 1 : index
     %c0 = arith.constant 0 : index
     %sum = ttl.tile_add %lhs_tile, %rhs_tile into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
-    ttl.tile_store %sum, %out_view[%i, %j] into dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %sum, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %cb1 : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
@@ -205,7 +205,7 @@ func.func @fpu_sub_1x1()
     %j = ttl.iter_index 1 : index
     %c0 = arith.constant 0 : index
     %diff = ttl.tile_sub %lhs_tile, %rhs_tile into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
-    ttl.tile_store %diff, %out_view[%i, %j] into dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %diff, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -289,7 +289,7 @@ func.func @fpu_mul_1x1()
     %j = ttl.iter_index 1 : index
     %c0 = arith.constant 0 : index
     %prod = ttl.tile_mul %lhs_tile, %rhs_tile into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
-    ttl.tile_store %prod, %out_view[%i, %j] into dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %prod, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -420,7 +420,7 @@ func.func @fpu_add_tanh_f32()
     %c0 = arith.constant 0 : index
     %sum = ttl.tile_add %lhs_tile, %rhs_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     %tanh = ttl.tile_tanh %sum into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-    ttl.tile_store %tanh, %out_view[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x3x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %tanh, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x3x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x3x!ttcore.tile<32x32, f32>>
   ttl.cb_push %cb1 : <[2, 3], !ttcore.tile<32x32, f32>, 2>
@@ -486,7 +486,7 @@ func.func @fpu_mul_mismatched_block_count()
     %j = ttl.iter_index 1 : index
     %c0 = arith.constant 0 : index
     %prod = ttl.tile_mul %lhs_tile, %rhs_tile into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
-    ttl.tile_store %prod, %out_view[%i, %j] into dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %prod, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>

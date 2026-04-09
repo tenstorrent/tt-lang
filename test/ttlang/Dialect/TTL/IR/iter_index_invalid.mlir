@@ -32,7 +32,7 @@ func.func @dim_out_of_range(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     // expected-error @below {{'ttl.iter_index' op dimension 3 is out of range for iteration domain of rank 2}}
     %idx = ttl.iter_index 3 : index
     %c0 = arith.constant 0 : index
-    ttl.tile_store %arg0, %out_view[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %arg0, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   return
@@ -61,7 +61,7 @@ func.func @negative_dim(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     // expected-error @below {{'ttl.iter_index' op dimension -1 is out of range for iteration domain of rank 2}}
     %idx = ttl.iter_index -1 : index
     %c0 = arith.constant 0 : index
-    ttl.tile_store %arg0, %out_view[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %arg0, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   return

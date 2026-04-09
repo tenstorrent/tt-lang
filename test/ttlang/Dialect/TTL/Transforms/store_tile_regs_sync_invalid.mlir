@@ -16,7 +16,7 @@ func.func @view_not_from_reserve(%arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>, %
       %j = ttl.iter_index 1 : index
       %tok, %tile = ttl.copy_tile %in[%c0] into dst[%c0] : !ttcore.tile<32x32, bf16> -> !ttl.dst, !ttcore.tile<32x32, bf16>
       // expected-error @below {{'ttl.tile_store' op view must trace to a dataflow buffer}}
-      ttl.tile_store %tile, %view[%i, %j] into dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.tile_store %tile, %view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>

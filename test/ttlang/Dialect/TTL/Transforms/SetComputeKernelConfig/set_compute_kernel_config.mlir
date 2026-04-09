@@ -47,7 +47,7 @@ func.func @f32_auto_enable(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
       %j = ttl.iter_index 1 : index
       %c0 = arith.constant 0 : index
       %sum = ttl.tile_add %a_arg, %b_arg into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-      ttl.tile_store %sum, %out_view[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.tile_store %sum, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
@@ -97,7 +97,7 @@ func.func @bf16_no_special_ops(%a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     ^bb0(%a_arg: !ttcore.tile<32x32, bf16>, %b_arg: !ttcore.tile<32x32, bf16>, %out: !ttcore.tile<32x32, bf16>):
       %i = ttl.iter_index 0 : index
       %j = ttl.iter_index 1 : index
-      ttl.tile_store %out, %out_view_0[%i, %j] into dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.tile_store %out, %out_view_0[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
 
@@ -147,7 +147,7 @@ func.func @preserve_existing(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
     ^bb0(%a_arg: !ttcore.tile<32x32, f32>, %b_arg: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
       %i = ttl.iter_index 0 : index
       %j = ttl.iter_index 1 : index
-      ttl.tile_store %out, %out_view_1[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.tile_store %out, %out_view_1[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
@@ -199,7 +199,7 @@ func.func @bf16_matmul_auto_fp32(
       %mm = ttl.tile_matmul_block %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
       %i = ttl.iter_index 0 : index
       %j = ttl.iter_index 1 : index
-      ttl.tile_store %mm, %out_view_2[%i, %j] into dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.tile_store %mm, %out_view_2[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
 
@@ -262,7 +262,7 @@ func.func @bf16_matmul_bcast_no_fp32(
       %sum = ttl.tile_add %mm, %bc into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
       %i0 = ttl.iter_index 0 : index
       %j0 = ttl.iter_index 1 : index
-      ttl.tile_store %sum, %out_view_3[%i0, %j0] into dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.tile_store %sum, %out_view_3[%i0, %j0] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
 

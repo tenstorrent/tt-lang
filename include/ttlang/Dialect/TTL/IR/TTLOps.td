@@ -1082,11 +1082,11 @@ def TTL_TileStoreOp : TTL_Op<"tile_store", [MemoryEffects<[MemWrite]>, TTL_DstRe
     // After assign-dst (inside ttl.compute body):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    ttl.tile_store %tile, %view[%i, %j] : !ttcore.tile<32x32, bf16>,
-                                           tensor<2x3x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %tile, %view[%i, %j] from dst[%c0]
+      : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
     // After lower-to-loops (iter_index replaced with loop IVs):
-    ttl.tile_store %tile, %view[%row, %col] : !ttcore.tile<32x32, bf16>,
-                                              tensor<2x3x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %tile, %view[%row, %col] from dst[%c0]
+      : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
     ```
   }];
   let arguments = (ins
@@ -1095,7 +1095,7 @@ def TTL_TileStoreOp : TTL_Op<"tile_store", [MemoryEffects<[MemWrite]>, TTL_DstRe
     Variadic<Index>:$indices,
     Index:$dst_index
   );
-  let assemblyFormat = "$tile `,` $view `[` $indices `]` `into` `dst` `[` $dst_index `]` attr-dict `:` type($tile) `,` type($view)";
+  let assemblyFormat = "$tile `,` $view `[` $indices `]` `from` `dst` `[` $dst_index `]` attr-dict `:` type($tile) `,` type($view)";
   let hasVerifier = 1;
 }
 

@@ -70,7 +70,7 @@ func.func @add_4d(%a: tensor<3x6x4x2x!ttcore.tile<32x32, f32>>,
     %l = ttl.iter_index 3 : index
     %c0 = arith.constant 0 : index
     %sum = ttl.tile_add %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %out_view[%i, %j, %k, %l] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<3x6x4x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sum, %out_view[%i, %j, %k, %l] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<3x6x4x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<3x6x4x2x!ttcore.tile<32x32, f32>>
 

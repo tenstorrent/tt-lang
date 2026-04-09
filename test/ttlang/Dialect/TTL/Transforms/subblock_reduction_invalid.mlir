@@ -41,7 +41,7 @@ func.func @reduction_exceeds_dst_budget(
     %j = ttl.iter_index 1 : index
     %c0 = arith.constant 0 : index
     %add = ttl.tile_add %in, %acc into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-    ttl.tile_store %add, %reserve[%i] into dst[%c0]
+    ttl.tile_store %add, %reserve[%i] from dst[%c0]
         : !ttcore.tile<32x32, f32>, tensor<2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x!ttcore.tile<32x32, f32>>

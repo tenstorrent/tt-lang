@@ -50,10 +50,10 @@ func.func @tile_store_conflicting_dst() -> (tensor<2x2x!ttcore.tile<32x32, bf16>
     %t0 = ttl.tile_add %in_tile, %in_tile into dst[%c0]
         : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>
         -> !ttcore.tile<32x32, bf16>
-    ttl.tile_store %t0, %view0[%i, %j] into dst[%c0]
+    ttl.tile_store %t0, %view0[%i, %j] from dst[%c0]
         : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
     // expected-error @below {{tile stored with conflicting dst_index assignments}}
-    ttl.tile_store %t0, %view1[%i, %j] into dst[%c1]
+    ttl.tile_store %t0, %view1[%i, %j] from dst[%c1]
         : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> (tensor<2x2x!ttcore.tile<32x32, bf16>>,
@@ -112,10 +112,10 @@ func.func @dst_index_reused_by_other_tile() -> (tensor<2x2x!ttcore.tile<32x32, b
         -> !ttcore.tile<32x32, bf16>
     %t1 = ttl.tile_exp %in_tile into dst[%c0]
         : !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
-    ttl.tile_store %t0, %view0[%i, %j] into dst[%c0]
+    ttl.tile_store %t0, %view0[%i, %j] from dst[%c0]
         : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
     // expected-error @below {{dst_index 0 already used by a different tile}}
-    ttl.tile_store %t1, %view1[%i, %j] into dst[%c0]
+    ttl.tile_store %t1, %view1[%i, %j] from dst[%c0]
         : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> (tensor<2x2x!ttcore.tile<32x32, bf16>>,

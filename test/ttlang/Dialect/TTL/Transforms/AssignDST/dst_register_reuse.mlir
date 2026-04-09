@@ -53,7 +53,7 @@ func.func @simple_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %j = ttl.iter_index 1 : index
     %c0 = arith.constant 0 : index
     %sum = ttl.tile_add %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %out_view[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sum, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -123,7 +123,7 @@ func.func @chain_reuse(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: tensor<1x
     %x2 = ttl.tile_add %x1, %arg2 into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     %x3 = ttl.tile_add %x2, %arg2 into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     %x4 = ttl.tile_add %x3, %arg2 into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-    ttl.tile_store %x4, %out_view_0[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %x4, %out_view_0[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
 
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -188,7 +188,7 @@ func.func @block_arg_multi_use(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>, %i1: t
     %x0 = ttl.tile_add %arg0, %arg1 into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     %x1 = ttl.tile_add %arg0, %x0 into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     %x2 = ttl.tile_add %arg0, %x1 into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-    ttl.tile_store %x2, %out_view_1[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %x2, %out_view_1[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
 
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -247,7 +247,7 @@ func.func @silu_pattern(%i0: tensor<1x1x!ttcore.tile<32x32, f32>>) -> tensor<1x1
     %c0 = arith.constant 0 : index
     %sig = ttl.tile_sigmoid %x into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     %prod = ttl.tile_mul %x, %sig into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-    ttl.tile_store %prod, %out_view_2[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %prod, %out_view_2[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 

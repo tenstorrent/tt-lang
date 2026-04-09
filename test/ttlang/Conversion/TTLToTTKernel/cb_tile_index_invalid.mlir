@@ -15,7 +15,7 @@ module {
     %fake_cb = builtin.unrealized_conversion_cast to !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
     %view = builtin.unrealized_conversion_cast %fake_cb : !ttkernel.cb<4, !ttcore.tile<32x32, bf16>> to tensor<2x2x!ttcore.tile<32x32, bf16>>
     %c0 = arith.constant 0 : index
-    ttl.tile_store %tile, %view[] into dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %tile, %view[] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
     func.return
   }
 }

@@ -54,10 +54,10 @@
 // SFPU:             ttl.tile_log {{.*}} into dst[{{.*}}]
 // SFPU:             ttl.tile_neg {{.*}} into dst[{{.*}}]
 // SFPU:             %[[SQRTS:.*]] = ttl.tile_sqrt {{.*}} into dst[{{.*}}]
-// SFPU:             ttl.tile_store %[[SQRTS]], %{{.*}}[%{{.*}}, %{{.*}}]{{.*}}into dst[{{.*}}]
+// SFPU:             ttl.tile_store %[[SQRTS]], %{{.*}}[%{{.*}}, %{{.*}}]{{.*}}from dst[{{.*}}]
 // SFPU-NEXT:        ttl.yield
 //
-// CHECK:             ttl.tile_store %[[SQRT]], %{{.*}}[%[[I0]], %[[I1]]] into dst[{{.*}}]
+// CHECK:             ttl.tile_store %[[SQRT]], %{{.*}}[%[[I0]], %[[I1]]] from dst[{{.*}}]
 // CHECK-NEXT:        ttl.yield
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 // CHECK-NEXT:      return %[[RES]]
@@ -95,7 +95,7 @@ func.func @seven_op_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %log = ttl.tile_log %exp into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     %neg = ttl.tile_neg %log into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     %sqrt = ttl.tile_sqrt %neg into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-    ttl.tile_store %sqrt, %result_view[%i, %j] into dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %sqrt, %result_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

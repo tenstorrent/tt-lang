@@ -59,7 +59,7 @@ func.func @multi_reserve_skip(%a: tensor<4x4x!ttcore.tile<32x32, f32>>)
     %j = ttl.iter_index 1 : index
     %c0 = arith.constant 0 : index
     %exp = ttl.tile_exp %a_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %reserve1[%i, %j] into dst[%c0]
+    ttl.tile_store %exp, %reserve1[%i, %j] from dst[%c0]
         : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -118,7 +118,7 @@ func.func @multi_push_skip(%a: tensor<4x4x!ttcore.tile<32x32, f32>>)
     %j = ttl.iter_index 1 : index
     %c0 = arith.constant 0 : index
     %exp = ttl.tile_exp %a_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %reserve[%i, %j] into dst[%c0]
+    ttl.tile_store %exp, %reserve[%i, %j] from dst[%c0]
         : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<4x4x!ttcore.tile<32x32, f32>>

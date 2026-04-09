@@ -117,7 +117,7 @@ scf.for %j = %c0 to %c2 step %c1 {       // parallel
             %out = tensor.extract %init[%c0, %j]
             ttl.tile_reduce %in, %sc, %out sum reduce_dim_col into dst[%c0]
         } {ttl.reduction_loop, ttl.tile_loop_stride = 2}
-        ttl.tile_store %placeholder, %view[%c0, %j] into dst[%c0]
+        ttl.tile_store %placeholder, %view[%c0, %j] from dst[%c0]
     }
 } {ttl.tile_loop_stride = 1}
 ```

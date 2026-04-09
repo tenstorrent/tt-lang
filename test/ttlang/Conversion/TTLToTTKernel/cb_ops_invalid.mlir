@@ -9,7 +9,7 @@
 module {
   func.func @store_view_not_from_reserve(%tile: !ttcore.tile<32x32, bf16>, %view: tensor<1x1x!ttcore.tile<32x32, bf16>>) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %c0 = arith.constant 0 : index
-    ttl.tile_store %tile, %view[] into dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %tile, %view[] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     func.return
   }
 }
