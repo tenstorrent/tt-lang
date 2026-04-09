@@ -715,6 +715,7 @@ multiclass TTL_UnaryElementwisePair<string mnemonic, string kernelOp> {
 
 // Define all unary elementwise ops using the multiclass
 defm TTL_Exp : TTL_UnaryElementwisePair<"exp", "exp_tile">;
+defm TTL_Exp2 : TTL_UnaryElementwisePair<"exp2", "exp2_tile">;
 defm TTL_Log : TTL_UnaryElementwisePair<"log", "log_tile">;
 defm TTL_Sqrt : TTL_UnaryElementwisePair<"sqrt", "sqrt_tile">;
 defm TTL_Rsqrt : TTL_UnaryElementwisePair<"rsqrt", "rsqrt_tile">;

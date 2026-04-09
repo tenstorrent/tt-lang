@@ -31,6 +31,7 @@ OP_TORCH_MAP: Dict[str, Callable[..., Tensor]] = {
     "max": torch.maximum,
     "min": torch.minimum,
     "exp": torch.exp,
+    "exp2": torch.exp2,
     "log": torch.log,
     "sqrt": torch.sqrt,
     "rsqrt": torch.rsqrt,

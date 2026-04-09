@@ -71,6 +71,38 @@ func.func @unary_exp(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x
 
 // -----
 
+// Test: Unary exp2 (base-2 exponential) lowers to ttl.compute with tile_exp2
+
+// CHECK-LABEL: func.func @unary_exp2
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
+func.func @unary_exp2(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
+  // CHECK-DAG:  %[[C0:.+]] = arith.constant 0 : index
+  // CHECK-DAG:  %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
+  // CHECK-NEXT: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
+  // CHECK-NEXT: %[[ARG0_CB:.+]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
+  // CHECK:      %[[INIT:.+]] = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: %[[INIT_CB:.+]] = ttl.attach_cb %[[INIT]], %[[CB1]]
+  // CHECK:      %[[RESULT:.+]] = ttl.compute ins(%[[ARG0_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
+  // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
+  // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
+  // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
+  // CHECK-NEXT:   %[[EXP2:.+]] = ttl.tile_exp2 %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[EXP2]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   ttl.yield
+  // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: return %[[RESULT]]
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
+  %a = ttl.attach_cb %arg0, %cb0 : (tensor<4x4x!ttcore.tile<32x32, f32>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x4x!ttcore.tile<32x32, f32>>
+  %reserve = ttl.cb_reserve %cb1 : <[4, 4], !ttcore.tile<32x32, f32>, 2> -> tensor<4x4x!ttcore.tile<32x32, f32>>
+  %0 = ttl.exp2 %a : tensor<4x4x!ttcore.tile<32x32, f32>> -> tensor<4x4x!ttcore.tile<32x32, f32>>
+  ttl.store %0, %reserve : tensor<4x4x!ttcore.tile<32x32, f32>>, tensor<4x4x!ttcore.tile<32x32, f32>>
+  func.return %0 : tensor<4x4x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
 // Test: Chained elementwise operations produce multiple ttl.compute ops
 
 // CHECK-LABEL: func.func @chained_ops
@@ -201,11 +233,12 @@ func.func @all_unary_ops(%x: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2
   %cb7 = ttl.bind_cb {cb_index = 7, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   %cb8 = ttl.bind_cb {cb_index = 8, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   %cb9 = ttl.bind_cb {cb_index = 9, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+  %cb10 = ttl.bind_cb {cb_index = 10, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
 
   %x_cb = ttl.attach_cb %x, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   // CHECK: ttl.compute
-  // CHECK: ttl.tile_exp
+  // CHECK: ttl.tile_exp %
   // CHECK: ttl.tile_store
   %r0 = ttl.cb_reserve %cb1 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %exp = ttl.exp %x_cb : tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
@@ -275,7 +308,15 @@ func.func @all_unary_ops(%x: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2
   %relu = ttl.relu %abs_cb : tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   ttl.store %relu, %r8 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
 
-  func.return %relu : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %relu_cb = ttl.attach_cb %relu, %cb9 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+
+  // CHECK: ttl.tile_exp2
+  // CHECK: ttl.tile_store
+  %r9 = ttl.cb_reserve %cb10 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %exp2 = ttl.exp2 %relu_cb : tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  ttl.store %exp2, %r9 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
+
+  func.return %exp2 : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
 
 // -----

@@ -215,6 +215,7 @@ BINARY_OPS = {
 
 UNARY_OPS = {
     "exp": (make_unary_kernel("exp", "exp"), torch.exp),
+    "exp2": (make_unary_kernel("exp2", "exp2"), torch.exp2),
     "log": (make_unary_kernel("log", "log"), torch.log),
     "sqrt": (make_unary_kernel("sqrt", "sqrt"), torch.sqrt),
     "rsqrt": (make_unary_kernel("rsqrt", "rsqrt"), torch.rsqrt),
