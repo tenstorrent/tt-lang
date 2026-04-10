@@ -81,7 +81,7 @@ Replaces tensor-level `ttl.add` with `ttl.compute` region containing element-wis
 
 Pass: [lib/Dialect/TTL/Transforms/TTLAssignDST.cpp](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp)
 
-Inserts `ttl.copy_tile` to load tiles into DST registers. Assigns `dst_idx` attributes to tile math ops. Creates `ttl.iter_index` ops for each iteration dimension and wires per-operand indexing maps as CB-space coordinates on `copy_tile` and `tile_store`. For a 2x2 grid with identity maps, each copy_tile gets `[%i, %j]` indices.
+Inserts `ttl.copy_tile` to load tiles into DST registers. Sets `dst_index` operands on tile math ops. Creates `ttl.iter_index` ops for each iteration dimension and wires per-operand indexing maps as CB-space coordinates on `copy_tile` and `tile_store`. For a 2x2 grid with identity maps, each copy_tile gets `[%i, %j]` indices.
 
 ```mlir
 %11 = ttl.compute ins(%4, %6 : ...) outs(%10 : ...) {...} {
@@ -89,14 +89,14 @@ Inserts `ttl.copy_tile` to load tiles into DST registers. Assigns `dst_idx` attr
   %i = ttl.iter_index 0 : index
   %j = ttl.iter_index 1 : index
   %c0 = arith.constant 0 : index
-  %dst_token, %dst_tile = ttl.copy_tile %arg0[%i, %j], %c0 {dst_idx = 0 : i32}
-      : !ttcore.tile<32x32, bf16>, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
+  %dst_token, %dst_tile = ttl.copy_tile %arg0[%i, %j] into dst[%c0]
+      : !ttcore.tile<32x32, bf16> -> !ttl.dst, !ttcore.tile<32x32, bf16>
 
   %c1 = arith.constant 1 : index
-  %dst_token_0, %dst_tile_1 = ttl.copy_tile %arg1[%i, %j], %c1 {dst_idx = 1 : i32}
-      : !ttcore.tile<32x32, bf16>, index -> !ttl.dst, !ttcore.tile<32x32, bf16>
+  %dst_token_0, %dst_tile_1 = ttl.copy_tile %arg1[%i, %j] into dst[%c1]
+      : !ttcore.tile<32x32, bf16> -> !ttl.dst, !ttcore.tile<32x32, bf16>
 
-  %15 = ttl.tile_add %dst_tile, %dst_tile_1 {dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>
+  %15 = ttl.tile_add %dst_tile, %dst_tile_1 into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
   ttl.tile_store %15, %view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<2x2x!ttcore.tile<32x32, bf16>>
   ttl.yield
 } -> tensor<2x2x!ttcore.tile<32x32, bf16>>
@@ -115,7 +115,7 @@ ttl.tile_regs_acquire
 %11 = ttl.compute ins(...) outs(...) {...} {
 ^bb0(...):
   // ... copy_tile operations ...
-  %15 = ttl.tile_add %dst_tile, %dst_tile_1 {dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>
+  %15 = ttl.tile_add %dst_tile, %dst_tile_1 into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
 
   ttl.tile_regs_commit
   ttl.tile_regs_wait
@@ -150,10 +150,10 @@ ttl.tile_regs_acquire
     %14 = affine.apply affine_map<(d0, d1) -> (d0 * 2 + d1)>(%arg0, %arg2)
     %15 = affine.apply affine_map<(d0, d1) -> (d0 * 2 + d1)>(%arg0, %arg2)
 
-    %dst_token, %dst_tile = ttl.copy_tile %extracted, %14, %c0 : ...
-    %dst_token_1, %dst_tile_2 = ttl.copy_tile %extracted_0, %15, %c1 : ...
+    %dst_token, %dst_tile = ttl.copy_tile %extracted[%14] into dst[%c0] : ...
+    %dst_token_1, %dst_tile_2 = ttl.copy_tile %extracted_0[%15] into dst[%c1] : ...
 
-    %16 = ttl.tile_add %dst_tile, %dst_tile_2 {dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>
+    %16 = ttl.tile_add %dst_tile, %dst_tile_2 into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
 
     ttl.tile_regs_commit
     ttl.tile_regs_wait

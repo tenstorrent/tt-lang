@@ -63,22 +63,22 @@ def test_singlenode_matmul_metal(M, K, N):
 
     # single node grid
     node = ttnn.CoreCoord(0, 0)
-    node_grid = ttnn.NodeRangeSet([ttnn.NodeRange(node, node)])
+    node_grid = ttnn.CoreRangeSet([ttnn.CoreRange(node, node)])
     dfb_block_count = 2
     cb_total_size = dfb_block_count * cb_page_size
     a_cb_descriptor = ttnn.CBDescriptor(
         total_size=cb_total_size,
-        node_ranges=node_grid,
+        core_ranges=node_grid,
         format_descriptors=[a_cb_format],
     )
     b_cb_descriptor = ttnn.CBDescriptor(
         total_size=cb_total_size,
-        node_ranges=node_grid,
+        core_ranges=node_grid,
         format_descriptors=[b_cb_format],
     )
     out_cb_descriptor = ttnn.CBDescriptor(
         total_size=cb_total_size,
-        node_ranges=node_grid,
+        core_ranges=node_grid,
         format_descriptors=[out_cb_format],
     )
 
@@ -100,27 +100,27 @@ def test_singlenode_matmul_metal(M, K, N):
     computeConfig.math_approx_mode = False
 
     reader_kernel_descriptor = ttnn.KernelDescriptor(
-        kernel_source="examples/metal_examples/singlenode_matmul/metal/kernels/mm_reader.cpp",
+        kernel_source="examples/metal_examples/single_node_matmul/metal/kernels/mm_reader.cpp",
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        node_ranges=node_grid,
+        core_ranges=node_grid,
         compile_time_args=reader_compile_time_args,
-        runtime_args=[[reader_rt_args]],
+        runtime_args=[(node, reader_rt_args)],
         config=ttnn.ReaderConfigDescriptor(),
     )
     writer_kernel_descriptor = ttnn.KernelDescriptor(
-        kernel_source="examples/metal_examples/singlenode_matmul/metal/kernels/mm_writer.cpp",
+        kernel_source="examples/metal_examples/single_node_matmul/metal/kernels/mm_writer.cpp",
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        node_ranges=node_grid,
+        core_ranges=node_grid,
         compile_time_args=writer_compile_time_args,
-        runtime_args=[[writer_rt_args]],
+        runtime_args=[(node, writer_rt_args)],
         config=ttnn.WriterConfigDescriptor(),
     )
     compute_kernel_descriptor = ttnn.KernelDescriptor(
-        kernel_source="examples/metal_examples/singlenode_matmul/metal/kernels/mm_compute.cpp",
+        kernel_source="examples/metal_examples/single_node_matmul/metal/kernels/mm_compute.cpp",
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        node_ranges=node_grid,
+        core_ranges=node_grid,
         compile_time_args=compute_compile_time_args,
-        runtime_args=[[[]]],
+        runtime_args=[],
         config=computeConfig,
     )
 

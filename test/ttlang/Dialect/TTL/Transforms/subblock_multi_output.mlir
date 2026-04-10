@@ -5,7 +5,7 @@
 // Shape: 4x4 bf16 (capacity=8). Multi-dim tiling: tileSizes=[2,4], product=8.
 // Loop on dim 0 (0 to 4 step 2). Stride 4 for dim 0 offset.
 
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-subblock-compute-for-dst))' | FileCheck %s --check-prefix=SUBBLOCK
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-subblock-compute-for-dst,canonicalize,cse))' | FileCheck %s --check-prefix=SUBBLOCK
 
 // SUBBLOCK-LABEL: func.func @fused_compute
 // Verify three separate scf.for loops with inner ttl.compute ops (one per
@@ -13,12 +13,14 @@
 // (no arith.addi offset). tile_store views reference extract_slice of the
 // attach_cb result.
 //
+// SUBBLOCK-DAG:    %[[C0:.*]] = arith.constant 0 : index
+// SUBBLOCK-DAG:    %[[C1:.*]] = arith.constant 1 : index
 // Chain 1:
 // SUBBLOCK:        scf.for %[[IV1:.*]] =
 // SUBBLOCK:          ttl.compute
 // SUBBLOCK:            %[[I_DIM0_A:.*]] = ttl.iter_index 0 : index
 // SUBBLOCK-NEXT:       %[[I_DIM1_A:.*]] = ttl.iter_index 1 : index
-// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_A]], %[[I_DIM1_A]]], %{{.*}}
+// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_A]], %[[I_DIM1_A]]] into dst[%[[C0]]]
 // SUBBLOCK:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_A]], %[[I_DIM1_A]]]
 // SUBBLOCK:        } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 4 : index}
 // Chain 2:
@@ -26,7 +28,7 @@
 // SUBBLOCK:          ttl.compute
 // SUBBLOCK:            %[[I_DIM0_B:.*]] = ttl.iter_index 0 : index
 // SUBBLOCK-NEXT:       %[[I_DIM1_B:.*]] = ttl.iter_index 1 : index
-// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_B]], %[[I_DIM1_B]]], %{{.*}}
+// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_B]], %[[I_DIM1_B]]] into dst[%[[C0]]]
 // SUBBLOCK:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_B]], %[[I_DIM1_B]]]
 // SUBBLOCK:        } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 4 : index}
 // Chain 3:
@@ -34,7 +36,7 @@
 // SUBBLOCK:          ttl.compute
 // SUBBLOCK:            %[[I_DIM0_C:.*]] = ttl.iter_index 0 : index
 // SUBBLOCK-NEXT:       %[[I_DIM1_C:.*]] = ttl.iter_index 1 : index
-// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_C]], %[[I_DIM1_C]]], %{{.*}}
+// SUBBLOCK:            ttl.copy_tile %{{.*}}[%[[I_DIM0_C]], %[[I_DIM1_C]]] into dst[%[[C0]]]
 // SUBBLOCK:            ttl.tile_store %{{.*}}, %{{.*}}[%[[I_DIM0_C]], %[[I_DIM1_C]]]
 // SUBBLOCK:        } {ttl.subblock_dim = 0 : index, ttl.subblock_loop_stride = 4 : index}
 

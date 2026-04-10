@@ -50,8 +50,9 @@ func.func @reduction_fits_in_dst(
   ^bb0(%in: !ttcore.tile<32x32, f32>, %acc: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %add = ttl.tile_add %in, %acc : !ttcore.tile<32x32, f32>
-    ttl.tile_store %add, %reserve[%i] : !ttcore.tile<32x32, f32>, tensor<2x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %add = ttl.tile_add %in, %acc into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %add, %reserve[%i] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x!ttcore.tile<32x32, f32>>
 
@@ -119,8 +120,9 @@ func.func @reduction_subblock_parallel_only(
   ^bb0(%in: !ttcore.tile<32x32, f32>, %acc: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %add = ttl.tile_add %in, %acc : !ttcore.tile<32x32, f32>
-    ttl.tile_store %add, %reserve2[%i] : !ttcore.tile<32x32, f32>, tensor<8x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %add = ttl.tile_add %in, %acc into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %add, %reserve2[%i] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<8x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<8x!ttcore.tile<32x32, f32>>
 

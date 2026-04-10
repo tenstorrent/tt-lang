@@ -40,8 +40,9 @@ func.func @tile_index_2x3(
        %c: !ttcore.tile<32x32, bf16>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %sum = ttl.tile_add %a, %b : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %sum, %view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
+    %c0 = arith.constant 0 : index
+    %sum = ttl.tile_add %a, %b into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    ttl.tile_store %sum, %view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<2x3x!ttcore.tile<32x32, bf16>>
 
@@ -96,18 +97,16 @@ func.func @bcast_index_2x3()
       // Col-broadcast: 2x1 input, extract at [%row, 0]
       %col_tile = tensor.extract %col_cb[%row, %c0] : tensor<2x1x!ttcore.tile<32x32, bf16>>
       %out_tile = tensor.extract %view_cb[%row, %col] : tensor<2x3x!ttcore.tile<32x32, bf16>>
-      %col_bcast = ttl.tile_bcast %col_tile, %out_tile 1 : i32
-          {dst_idx = 0 : i32, ttl.bcast_output_cb_index = 2 : index}
+      %col_bcast = ttl.tile_bcast %col_tile, %out_tile 1 : i32 into dst[%c0] {ttl.bcast_output_cb_index = 2 : index}
           : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>)
           -> !ttcore.tile<32x32, bf16>
       // Row-broadcast: 1x3 input, extract at [0, %col]
       %row_tile = tensor.extract %row_cb[%c0, %col] : tensor<1x3x!ttcore.tile<32x32, bf16>>
-      %row_bcast = ttl.tile_bcast %row_tile, %out_tile 2 : i32
-          {dst_idx = 1 : i32, ttl.bcast_output_cb_index = 2 : index}
+      %row_bcast = ttl.tile_bcast %row_tile, %out_tile 2 : i32 into dst[%c1] {ttl.bcast_output_cb_index = 2 : index}
           : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>)
           -> !ttcore.tile<32x32, bf16>
       // Store the row-broadcast result (arbitrary choice for the test)
-      ttl.tile_store %row_bcast, %view[%row, %col] : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
+      ttl.tile_store %row_bcast, %view[%row, %col] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
       ttl.tile_regs_commit
       ttl.tile_regs_wait
       ttl.tile_regs_release

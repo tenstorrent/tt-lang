@@ -4,10 +4,10 @@
 // Multi-dimensional tensors are tiled across multiple dimensions.
 
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}))' --split-input-file | FileCheck %s --check-prefix=ASSIGN
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8},ttl-subblock-compute-for-dst))' --split-input-file | FileCheck %s --check-prefix=TILED
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8},ttl-subblock-compute-for-dst,canonicalize,cse))' --split-input-file | FileCheck %s --check-prefix=TILED
 // Actual DST capacity (no override) for broadcast tests where FPU detection matters:
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst))' --split-input-file | FileCheck %s --check-prefix=BCAST-ASSIGN
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst,ttl-subblock-compute-for-dst))' --split-input-file | FileCheck %s --check-prefix=BCAST-TILED
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst,ttl-subblock-compute-for-dst,canonicalize,cse))' --split-input-file | FileCheck %s --check-prefix=BCAST-TILED
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -43,8 +43,9 @@ func.func @no_tiling_when_all_fit(%a: tensor<1x8x!ttcore.tile<32x32, f32>>)
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x8x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %exp = ttl.tile_exp %a_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %exp, %reserve[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x8x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x8x!ttcore.tile<32x32, f32>>
 
@@ -92,8 +93,9 @@ func.func @tile_binary_1x8(
        %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x8x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %sum = ttl.tile_add %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %sum, %reserve[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x8x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x8x!ttcore.tile<32x32, f32>>
 
@@ -113,10 +115,10 @@ func.func @tile_binary_1x8(
 // ASSIGN:         ttl.compute
 // ASSIGN-SAME:    ttl.unroll_factor = 8 : i64
 // TILED-LABEL:  func.func @tile_multidim_2x8
-// TILED:        %[[C0:.*]] = arith.constant 0 : index
-// TILED-NEXT:   %[[C2:.*]] = arith.constant 2 : index
-// TILED-NEXT:   %[[C1:.*]] = arith.constant 1 : index
-// TILED-NEXT:   scf.for %[[IV:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
+// TILED-DAG:    %[[C0:.*]] = arith.constant 0 : index
+// TILED-DAG:    %[[C2:.*]] = arith.constant 2 : index
+// TILED-DAG:    %[[C1:.*]] = arith.constant 1 : index
+// TILED:        scf.for %[[IV:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
 // TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [1, 8] [1, 1] : tensor<2x8x!ttcore.tile<32x32, f32>> to tensor<1x8x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:     %[[OUT_SLICE_A:.*]] = tensor.extract_slice {{.*}}[%[[IV]], 0] [1, 8] [1, 1] : tensor<2x8x!ttcore.tile<32x32, f32>> to tensor<1x8x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:     {{.*}} = ttl.compute
@@ -124,7 +126,7 @@ func.func @tile_binary_1x8(
 // TILED-SAME:     ttl.full_linearization_strides
 // TILED:            %[[I_DIM0_A:.*]] = ttl.iter_index 0 : index
 // TILED:            %[[I_DIM1_A:.*]] = ttl.iter_index 1 : index
-// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_A]], %[[I_DIM1_A]]], %{{.*}}
+// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_A]], %[[I_DIM1_A]]] into dst[%[[C0]]]
 // TILED:            ttl.tile_exp
 // TILED:            ttl.tile_store %{{.*}}, %[[OUT_SLICE_A]][%[[I_DIM0_A]], %[[I_DIM1_A]]]
 // TILED-NEXT:       ttl.yield
@@ -150,8 +152,9 @@ func.func @tile_multidim_2x8(%a: tensor<2x8x!ttcore.tile<32x32, f32>>)
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x8x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %exp = ttl.tile_exp %a_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %exp, %reserve[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x8x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x8x!ttcore.tile<32x32, f32>>
 
@@ -194,8 +197,9 @@ func.func @no_subblocking_multidim(%a: tensor<2x4x!ttcore.tile<32x32, f32>>)
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x4x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %exp = ttl.tile_exp %a_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %exp, %reserve[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x4x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x4x!ttcore.tile<32x32, f32>>
 
@@ -215,10 +219,10 @@ func.func @no_subblocking_multidim(%a: tensor<2x4x!ttcore.tile<32x32, f32>>)
 // ASSIGN:         ttl.compute
 // ASSIGN-SAME:    ttl.unroll_factor = 8 : i64
 // TILED-LABEL:  func.func @subblock_multidim_4x4
-// TILED:        %[[C0:.*]] = arith.constant 0 : index
-// TILED-NEXT:   %[[C4:.*]] = arith.constant 4 : index
-// TILED-NEXT:   %[[C2:.*]] = arith.constant 2 : index
-// TILED-NEXT:   scf.for %[[IV:.*]] = %[[C0]] to %[[C4]] step %[[C2]] {
+// TILED-DAG:    %[[C0:.*]] = arith.constant 0 : index
+// TILED-DAG:    %[[C4:.*]] = arith.constant 4 : index
+// TILED-DAG:    %[[C2:.*]] = arith.constant 2 : index
+// TILED:        scf.for %[[IV:.*]] = %[[C0]] to %[[C4]] step %[[C2]] {
 // TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [2, 4] [1, 1] : tensor<4x4x!ttcore.tile<32x32, f32>> to tensor<2x4x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:     %[[OUT_SLICE_B:.*]] = tensor.extract_slice {{.*}}[%[[IV]], 0] [2, 4] [1, 1] : tensor<4x4x!ttcore.tile<32x32, f32>> to tensor<2x4x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:     {{.*}} = ttl.compute
@@ -226,7 +230,7 @@ func.func @no_subblocking_multidim(%a: tensor<2x4x!ttcore.tile<32x32, f32>>)
 // TILED-SAME:     ttl.full_linearization_strides
 // TILED:            %[[I_DIM0_B:.*]] = ttl.iter_index 0 : index
 // TILED:            %[[I_DIM1_B:.*]] = ttl.iter_index 1 : index
-// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_B]], %[[I_DIM1_B]]], %{{.*}}
+// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_B]], %[[I_DIM1_B]]] into dst[%[[C0]]]
 // TILED:            ttl.tile_exp
 // TILED:            ttl.tile_store %{{.*}}, %[[OUT_SLICE_B]][%[[I_DIM0_B]], %[[I_DIM1_B]]]
 // TILED-NEXT:       ttl.yield
@@ -252,8 +256,9 @@ func.func @subblock_multidim_4x4(%a: tensor<4x4x!ttcore.tile<32x32, f32>>)
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %exp = ttl.tile_exp %a_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %exp, %reserve[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<4x4x!ttcore.tile<32x32, f32>>
 
@@ -301,8 +306,9 @@ func.func @no_subblocking_binary(
        %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x4x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %sum = ttl.tile_add %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %sum, %reserve[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x4x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x4x!ttcore.tile<32x32, f32>>
 
@@ -322,10 +328,10 @@ func.func @no_subblocking_binary(
 // ASSIGN:         ttl.compute
 // ASSIGN-SAME:    ttl.unroll_factor = 8 : i64
 // TILED-LABEL:  func.func @tile_multidim_remainder_3x3
-// TILED:        %[[C0:.*]] = arith.constant 0 : index
-// TILED-NEXT:   %[[C3:.*]] = arith.constant 3 : index
-// TILED-NEXT:   %[[C1:.*]] = arith.constant 1 : index
-// TILED-NEXT:   scf.for %[[IV:.*]] = %[[C0]] to %[[C3]] step %[[C1]] {
+// TILED-DAG:    %[[C0:.*]] = arith.constant 0 : index
+// TILED-DAG:    %[[C3:.*]] = arith.constant 3 : index
+// TILED-DAG:    %[[C1:.*]] = arith.constant 1 : index
+// TILED:        scf.for %[[IV:.*]] = %[[C0]] to %[[C3]] step %[[C1]] {
 // TILED-NEXT:     {{.*}} = tensor.extract_slice {{.*}}[%[[IV]], 0] [1, 3] [1, 1] : tensor<3x3x!ttcore.tile<32x32, f32>> to tensor<1x3x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:     %[[OUT_SLICE_C:.*]] = tensor.extract_slice {{.*}}[%[[IV]], 0] [1, 3] [1, 1] : tensor<3x3x!ttcore.tile<32x32, f32>> to tensor<1x3x!ttcore.tile<32x32, f32>>
 // TILED-NEXT:     {{.*}} = ttl.compute
@@ -333,7 +339,7 @@ func.func @no_subblocking_binary(
 // TILED-SAME:     ttl.full_linearization_strides
 // TILED:            %[[I_DIM0_C:.*]] = ttl.iter_index 0 : index
 // TILED:            %[[I_DIM1_C:.*]] = ttl.iter_index 1 : index
-// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_C]], %[[I_DIM1_C]]], %{{.*}}
+// TILED:            ttl.copy_tile %{{.*}}[%[[I_DIM0_C]], %[[I_DIM1_C]]] into dst[%[[C0]]]
 // TILED:            ttl.tile_exp
 // TILED:            ttl.tile_store %{{.*}}, %[[OUT_SLICE_C]][%[[I_DIM0_C]], %[[I_DIM1_C]]]
 // TILED-NEXT:       ttl.yield
@@ -359,8 +365,9 @@ func.func @tile_multidim_remainder_3x3(%a: tensor<3x3x!ttcore.tile<32x32, f32>>)
   ^bb0(%a_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %exp = ttl.tile_exp %a_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<3x3x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %exp = ttl.tile_exp %a_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %exp, %reserve[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<3x3x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<3x3x!ttcore.tile<32x32, f32>>
 
@@ -390,6 +397,8 @@ func.func @tile_multidim_remainder_3x3(%a: tensor<3x3x!ttcore.tile<32x32, f32>>)
 // BCAST-ASSIGN:         ttl.compute
 // BCAST-ASSIGN-SAME:    ttl.unroll_factor = 2 : i64
 // BCAST-TILED-LABEL:  func.func @subblock_broadcast_col
+// BCAST-TILED-DAG:    %[[BC_C0:.*]] = arith.constant 0 : index
+// BCAST-TILED-DAG:    %[[BC_C1:.*]] = arith.constant 1 : index
 // BCAST-TILED:        scf.for %[[IV0:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
 // BCAST-TILED-NEXT:     scf.for %[[IV1:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
 // A: identity map, 1x2 subblock slice.
@@ -406,9 +415,9 @@ func.func @tile_multidim_remainder_3x3(%a: tensor<3x3x!ttcore.tile<32x32, f32>>)
 // BCAST-TILED:              %[[I_DIM0:.*]] = ttl.iter_index 0 : index
 // BCAST-TILED:              %[[I_DIM1:.*]] = ttl.iter_index 1 : index
 // Identity-map input: both dims with local coordinates.
-// BCAST-TILED:              ttl.copy_tile %{{.*}}[%[[I_DIM0]], %[[I_DIM1]]], %{{.*}}
+// BCAST-TILED:              ttl.copy_tile %{{.*}}[%[[I_DIM0]], %[[I_DIM1]]] into dst[%[[BC_C0]]]
 // Col-broadcast input (map (d0,d1)->(d0,0)): d0 local, d1 constant 0.
-// BCAST-TILED:              ttl.copy_tile %{{.*}}[%[[I_DIM0]], %{{.*}}], %{{.*}}
+// BCAST-TILED:              ttl.copy_tile %{{.*}}[%[[I_DIM0]], %[[BC_C0]]] into dst[%[[BC_C1]]]
 // BCAST-TILED:              ttl.tile_add
 // BCAST-TILED:              ttl.tile_store %{{.*}}, %[[OUT_SLICE_BC]][%[[I_DIM0]], %[[I_DIM1]]]
 // BCAST-TILED-NEXT:         ttl.yield
@@ -440,8 +449,9 @@ func.func @subblock_broadcast_col(
        %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sum, %reserve[%i, %j] : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %sum = ttl.tile_add %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %sum, %reserve[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<4x4x!ttcore.tile<32x32, f32>>
 

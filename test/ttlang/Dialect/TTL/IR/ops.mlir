@@ -65,7 +65,7 @@ func.func @copy_read_wait_tile_layout(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #
 // CHECK: %[[T_CB:.*]] = ttl.attach_cb %[[TENS:.*]], %[[CB]]
 // CHECK: %[[RES:.*]] = ttl.compute
 // CHECK: ^bb0(%[[T:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-// CHECK:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[T]][%[[SRC_IDX:.*]]], %[[DST_IDX:.*]] : !ttcore.tile<32x32, f32>, index -> !ttl.dst, !ttcore.tile<32x32, f32>
+// CHECK:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[T]][%[[SRC_IDX:.*]]] into dst[%[[DST_IDX:.*]]] : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
 // CHECK:   ttl.tile_store
 // CHECK:   ttl.yield
 // CHECK: }
@@ -82,9 +82,32 @@ func.func @copy_tile_basic(%t_tensor: tensor<1x1x!ttcore.tile<32x32, f32>>, %src
   ^bb0(%t: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %dst, %dst_tile = ttl.copy_tile %t[%src_idx], %dst_idx : !ttcore.tile<32x32, f32>, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-    ttl.tile_store %dst_tile, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    %dst, %dst_tile = ttl.copy_tile %t[%src_idx] into dst[%dst_idx] : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
+    %c0 = arith.constant 0 : index
+    ttl.tile_store %dst_tile, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
+// Verify sharded layout attrs round-trip through the parser.
+
+#layout_height_sharded = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                         buffer = l1, grid = [1, 1], memory = height_sharded>
+#layout_width_sharded = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                        buffer = l1, grid = [1, 1], memory = width_sharded>
+#layout_block_sharded = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                        buffer = l1, grid = [1, 1], memory = block_sharded>
+
+// CHECK-LABEL: func.func @sharded_layout_roundtrip
+// CHECK-SAME: memory = height_sharded
+// CHECK-SAME: memory = width_sharded
+// CHECK-SAME: memory = block_sharded
+func.func @sharded_layout_roundtrip(
+    %h: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_height_sharded>,
+    %w: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_width_sharded>,
+    %b: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_block_sharded>) {
+  func.return
 }
