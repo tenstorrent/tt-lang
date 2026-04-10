@@ -1092,6 +1092,7 @@ def _compile_kernel(
 
         # Track per-kernel line offsets for correct display
         kernel_line_offsets = {}
+        noc_kernel_idx = 0
 
         for compile_thread in program.threads:
             try:
@@ -1121,6 +1122,14 @@ def _compile_kernel(
                 ],
                 ctx,
             )
+
+            # Tag noc functions with their index so pipe semaphore
+            # allocation can distinguish threads.
+            if ct.kernel_type == "datamovement":
+                ct.func_entry.attributes["ttl.noc_index"] = IntegerAttr.get(
+                    IntegerType.get_signless(32, ctx), noc_kernel_idx
+                )
+                noc_kernel_idx += 1
 
             # Collect source info for error reporting
             if hasattr(ct, "source_file") and hasattr(ct, "source_lines"):
