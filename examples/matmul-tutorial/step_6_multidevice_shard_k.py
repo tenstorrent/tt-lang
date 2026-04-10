@@ -241,7 +241,7 @@ try:
     # Sum the partial products from each device to recover the full matmul
     # result, then apply relu on the host.
 
-    y = torch.zeros((M, N), dtype=torch.bfloat16)
+    y = torch.zeros((M, N))
 
     for i in range(n_devices):
         y += partial_ys[i * M : (i + 1) * M, :]

@@ -154,8 +154,6 @@ def __tutorial_operation(
 
     @ttl.compute()
     def compute():
-        node_n, node_m = ttl.node(dims=2)
-
         for _ in range(m_blocks_per_node):
             for _ in range(n_blocks_per_node):
                 with acc_dfb.reserve() as acc_blk:
