@@ -946,19 +946,32 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
   return success();
 }
 
-/// Compute semaphore index for a pipe based on source coordinates.
-/// For point-to-point pipes (gather pattern), each source uses a distinct
-/// semaphore to avoid race conditions when multiple sources signal the same
-/// destination. For multicast pipes, all destinations share semaphore 0.
-static int64_t getPipeSemaphoreIndex(PipeType pipeType) {
+/// Read the ttl.noc_index attribute from a CopyOp's parent function.
+/// Returns 0 if the attribute is missing (single-thread case).
+static int64_t getNocIndex(Operation *op) {
+  auto parentFunc = op->getParentOfType<FuncOp>();
+  if (!parentFunc)
+    return 0;
+  auto attr = parentFunc->getAttrOfType<IntegerAttr>("ttl.noc_index");
+  if (!attr)
+    return 0;
+  return attr.getInt();
+}
+
+/// Compute semaphore index for a pipe. Pipes on different DM threads get
+/// distinct semaphore IDs so concurrent senders don't collide.
+/// For unicast (gather pattern), each source uses a distinct semaphore.
+/// For multicast, the noc function index separates threads.
+static int64_t getPipeSemaphoreIndex(PipeType pipeType, int64_t nocIdx) {
   if (pipeType.isUnicast()) {
     // Point-to-point: use source X coordinate as semaphore index.
     // This ensures each source->dest pipe has a unique semaphore.
     // Note: For 2D grids, this should be srcX * gridHeight + srcY.
     return pipeType.getSrcX();
   }
-  // Multicast: all destinations use semaphore 0.
-  return 0;
+  // Multicast: use noc function index so pipes on different threads
+  // don't share a semaphore.
+  return nocIdx;
 }
 
 /// Lower CB -> Pipe copy: multicast tiles from source CB to destination cores.
@@ -1115,7 +1128,7 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   // Signal destinations that data has arrived.
   // For point-to-point pipes, use atomic increment to support gather pattern
   // (multiple sources to one destination). For multicast, use set+multicast.
-  int64_t semIdxVal = getPipeSemaphoreIndex(pipeType);
+  int64_t semIdxVal = getPipeSemaphoreIndex(pipeType, getNocIndex(op));
   auto semIdx = arith::ConstantIndexOp::create(rewriter, loc, semIdxVal);
   auto semAddr = ttk::GetSemaphoreOp::create(rewriter, loc, semIdx);
 
@@ -1164,9 +1177,7 @@ static LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
   auto loc = op.getLoc();
   auto pipeType = llvm::cast<PipeType>(pipe.getType());
 
-  // Use semaphore index derived from pipe's source coordinates.
-  // This ensures each source->dest pipe has a unique semaphore.
-  int64_t semIdxVal = getPipeSemaphoreIndex(pipeType);
+  int64_t semIdxVal = getPipeSemaphoreIndex(pipeType, getNocIndex(op));
   auto semIdx = arith::ConstantIndexOp::create(rewriter, loc, semIdxVal);
   auto semAddr = ttk::GetSemaphoreOp::create(rewriter, loc, semIdx);
   auto semPtr = ttk::CastToL1PtrOp::create(rewriter, loc, semAddr);
@@ -1496,6 +1507,7 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
       return failure();
     }
     op->removeAttr("ttl.kernel_thread");
+    op->removeAttr("ttl.noc_index");
     op->setAttr("ttkernel.thread", ttlAttr);
 
     // If function has arguments, we need to transform them
