@@ -1113,7 +1113,7 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     ttk::NocAsyncWriteOp::create(rewriter,
         loc, srcAddr, nocAddr.getResult(), totalSizeVal);
   } else {
-    auto mcastAddr = ttk::GetNocMulticastAddrOp::create(rewriter,
+    auto mcastAddr = ttk::ExperimentalGetNocMulticastAddrOp::create(rewriter,
         loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
         dstAddr, nocVal);
     if (pipeType.srcInDstRange()) {
@@ -1157,7 +1157,7 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     auto validVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
     ttk::NocSemaphoreSetOp::create(rewriter, loc, semPtr, validVal);
 
-    auto semMcastAddr = ttk::GetNocMulticastAddrOp::create(rewriter,
+    auto semMcastAddr = ttk::ExperimentalGetNocMulticastAddrOp::create(rewriter,
         loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal, semAddr,
         nocVal);
 
