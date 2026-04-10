@@ -293,10 +293,10 @@ def run_ttnn_matmul_benchmark(name, a, b, device, config, warmup=3, iters=10):
 # ---- Kernel factories ----
 
 from minimal_matmul import (
-    make_minimal_matmul,
-    make_minimal_matmul_single_reader,
-    make_matmul_compiler_k_loop,
-    make_matmul_l1_acc,
+    make_matmul_v1 as make_v1,
+    make_matmul_v2 as make_v2,
+    make_matmul_v3 as make_v3,
+    make_matmul_v4 as make_v4,
 )
 
 
@@ -348,8 +348,8 @@ def main():
             device=device,
         )
         single_t3a, _ = run_benchmark(
-            "v1-single-reader K=8 Kblocks=16",
-            make_minimal_matmul_single_reader(8, 8, 8),
+            "v1_baseline K=8 Kblocks=16",
+            make_v1(8, 8, 8),
             (a, b, out_v1a),
             device,
             config={**cfg, "K_block": 8, "strategy": "single_reader"},
@@ -363,8 +363,8 @@ def main():
             device=device,
         )
         single_t3b, _ = run_benchmark(
-            "v1-single-reader K=1 Kblocks=128",
-            make_minimal_matmul_single_reader(8, 1, 8),
+            "v1_baseline K=1 Kblocks=128",
+            make_v1(8, 1, 8),
             (a, b, out_v1b),
             device,
             config={**cfg, "K_block": 1, "strategy": "single_reader"},
@@ -379,8 +379,8 @@ def main():
             device=device,
         )
         manual_t3a, _ = run_benchmark(
-            "v2-split-dma K=8 Kblocks=16",
-            make_minimal_matmul(8, 8, 8),
+            "v2_split_dma K=8 Kblocks=16",
+            make_v2(8, 8, 8),
             (a, b, out5),
             device,
             config={**cfg, "K_block": 8, "strategy": "manual_k_loop"},
@@ -394,8 +394,8 @@ def main():
             device=device,
         )
         manual_t3b, _ = run_benchmark(
-            "v2-split-dma K=1 Kblocks=128",
-            make_minimal_matmul(8, 1, 8),
+            "v2_split_dma K=1 Kblocks=128",
+            make_v2(8, 1, 8),
             (a, b, out6),
             device,
             config={**cfg, "K_block": 1, "strategy": "manual_k_loop"},
@@ -410,8 +410,8 @@ def main():
             device=device,
         )
         l1acc_t3a, _ = run_benchmark(
-            "l1_acc M=8 K=8 N=8 Kblocks=16",
-            make_matmul_l1_acc(8, 8, 8),
+            "v4_l1_acc K=8 Kblocks=16",
+            make_v4(8, 8, 8),
             (a, b, out7),
             device,
             config={**cfg, "K_block": 8, "strategy": "l1_acc"},
@@ -425,8 +425,8 @@ def main():
             device=device,
         )
         l1acc_t3b, _ = run_benchmark(
-            "l1_acc M=8 K=1 N=8 Kblocks=128",
-            make_matmul_l1_acc(8, 1, 8),
+            "v4_l1_acc K=1 Kblocks=128",
+            make_v4(8, 1, 8),
             (a, b, out8),
             device,
             config={**cfg, "K_block": 1, "strategy": "l1_acc"},
@@ -434,12 +434,12 @@ def main():
         assert_pcc(golden, ttnn.to_torch(out8).float(), threshold=PCC_THRESHOLD)
 
         print(f"\n  Ratios (tt-lang / ttnn.matmul):")
-        print(f"    v1 single K=8: {single_t3a/ttnn_t3:.2f}x")
-        print(f"    v1 single K=1: {single_t3b/ttnn_t3:.2f}x")
-        print(f"    v2 split  K=8: {manual_t3a/ttnn_t3:.2f}x")
-        print(f"    v2 split  K=1: {manual_t3b/ttnn_t3:.2f}x")
-        print(f"    l1_acc    K=8: {l1acc_t3a/ttnn_t3:.2f}x")
-        print(f"    l1_acc    K=1: {l1acc_t3b/ttnn_t3:.2f}x")
+        print(f"    v1_baseline  K=8: {single_t3a/ttnn_t3:.2f}x")
+        print(f"    v1_baseline  K=1: {single_t3b/ttnn_t3:.2f}x")
+        print(f"    v2_split_dma K=8: {manual_t3a/ttnn_t3:.2f}x")
+        print(f"    v2_split_dma K=1: {manual_t3b/ttnn_t3:.2f}x")
+        print(f"    v4_l1_acc    K=8: {l1acc_t3a/ttnn_t3:.2f}x")
+        print(f"    v4_l1_acc    K=1: {l1acc_t3b/ttnn_t3:.2f}x")
 
         # ---------------------------------------------------------------
         # L1-Only: Compute Isolation (Section 3.1)
@@ -489,8 +489,8 @@ def main():
             memory_config=l1_cfg,
         )
         manual_t4a, _ = run_benchmark(
-            "manual_k M=8 K=8 N=8 Kblocks=2 (L1)",
-            make_minimal_matmul(8, 8, 8),
+            "v2_split_dma K=8 Kblocks=2 (L1)",
+            make_v2(8, 8, 8),
             (a_l1, b_l1, out_l1),
             device,
             config={**cfg, "K_block": 8, "strategy": "manual_k_loop_l1"},
@@ -505,8 +505,8 @@ def main():
             memory_config=l1_cfg,
         )
         manual_t4b, _ = run_benchmark(
-            "manual_k M=8 K=1 N=8 Kblocks=16 (L1)",
-            make_minimal_matmul(8, 1, 8),
+            "v2_split_dma K=1 Kblocks=16 (L1)",
+            make_v2(8, 1, 8),
             (a_l1, b_l1, out_l1b),
             device,
             config={**cfg, "K_block": 1, "strategy": "manual_k_loop_l1"},
@@ -522,8 +522,8 @@ def main():
             memory_config=l1_cfg,
         )
         l1acc_t4a, _ = run_benchmark(
-            "l1_acc M=8 K=8 N=8 Kblocks=2 (L1)",
-            make_matmul_l1_acc(8, 8, 8),
+            "v4_l1_acc K=8 Kblocks=2 (L1)",
+            make_v4(8, 8, 8),
             (a_l1, b_l1, out_l1c),
             device,
             config={**cfg, "K_block": 8, "strategy": "l1_acc_l1"},
@@ -538,8 +538,8 @@ def main():
             memory_config=l1_cfg,
         )
         l1acc_t4b, _ = run_benchmark(
-            "l1_acc M=8 K=1 N=8 Kblocks=16 (L1)",
-            make_matmul_l1_acc(8, 1, 8),
+            "v4_l1_acc K=1 Kblocks=16 (L1)",
+            make_v4(8, 1, 8),
             (a_l1, b_l1, out_l1d),
             device,
             config={**cfg, "K_block": 1, "strategy": "l1_acc_l1"},
@@ -547,10 +547,10 @@ def main():
         assert_pcc(golden, ttnn.to_torch(out_l1d).float(), threshold=PCC_THRESHOLD)
 
         print(f"\n  Ratios (tt-lang / ttnn.matmul), L1-only:")
-        print(f"    manual_k K=8:  {manual_t4a/ttnn_t4:.2f}x")
-        print(f"    manual_k K=1:  {manual_t4b/ttnn_t4:.2f}x")
-        print(f"    l1_acc   K=8:  {l1acc_t4a/ttnn_t4:.2f}x")
-        print(f"    l1_acc   K=1:  {l1acc_t4b/ttnn_t4:.2f}x")
+        print(f"    v2_split_dma K=8: {manual_t4a/ttnn_t4:.2f}x")
+        print(f"    v2_split_dma K=1: {manual_t4b/ttnn_t4:.2f}x")
+        print(f"    v4_l1_acc    K=8: {l1acc_t4a/ttnn_t4:.2f}x")
+        print(f"    v4_l1_acc    K=1: {l1acc_t4b/ttnn_t4:.2f}x")
 
         # ---------------------------------------------------------------
         # DRAM: bf16 Accumulation (fp32_dest_acc_en=False)
@@ -591,8 +591,8 @@ def main():
             device=device,
         )
         manual_t5a, _ = run_benchmark(
-            "manual_k M=8 K=8 N=8 bf16acc",
-            make_minimal_matmul(8, 8, 8, fp32_acc=False),
+            "v2_split_dma K=8 bf16acc",
+            make_v2(8, 8, 8, fp32_acc=False),
             (a, b, out5a),
             device,
             config={**cfg, "K_block": 8, "strategy": "manual_k_bf16acc"},
@@ -606,8 +606,8 @@ def main():
             device=device,
         )
         manual_t5b, _ = run_benchmark(
-            "manual_k M=8 K=1 N=8 bf16acc",
-            make_minimal_matmul(8, 1, 8, fp32_acc=False),
+            "v2_split_dma K=1 bf16acc",
+            make_v2(8, 1, 8, fp32_acc=False),
             (a, b, out5b),
             device,
             config={**cfg, "K_block": 1, "strategy": "manual_k_bf16acc"},
@@ -615,8 +615,8 @@ def main():
         assert_pcc(golden, ttnn.to_torch(out5b).float(), threshold=PCC_THRESHOLD)
 
         print(f"\n  Ratios (tt-lang / ttnn.matmul), bf16 acc:")
-        print(f"    manual_k K=8: {manual_t5a/ttnn_t5:.2f}x")
-        print(f"    manual_k K=1: {manual_t5b/ttnn_t5:.2f}x")
+        print(f"    v2_split_dma K=8: {manual_t5a/ttnn_t5:.2f}x")
+        print(f"    v2_split_dma K=1: {manual_t5b/ttnn_t5:.2f}x")
 
         print(f"\n{'='*70}")
         print(f"Results saved to {RESULTS_CSV}")

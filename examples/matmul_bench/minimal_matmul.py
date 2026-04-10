@@ -664,6 +664,19 @@ def make_matmul_l1_acc(M_block_tiles, K_block_tiles, N_block_tiles, fp32_acc=Non
 
 
 # ---------------------------------------------------------------------------
+# Consistent naming aliases (used in benchmark output and docs)
+# ---------------------------------------------------------------------------
+# v1_baseline:    single DM reader, DST accumulation (prev + a @ b)
+# v2_split_dma:   split DM (NCRISC=A, BRISC=B+out), DST accumulation
+# v3_compiler_k:  compiler-generated K loop, full K in DFB
+# v4_l1_acc:      L1 additive packing, split DM, no copy_tile/acc_dfb
+make_matmul_v1 = make_minimal_matmul_single_reader
+make_matmul_v2 = make_minimal_matmul
+make_matmul_v3 = make_matmul_compiler_k_loop
+make_matmul_v4 = make_matmul_l1_acc
+
+
+# ---------------------------------------------------------------------------
 # Test harness
 # ---------------------------------------------------------------------------
 
