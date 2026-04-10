@@ -112,7 +112,9 @@ def test_auto_grid_multiple_host_tensors():
         layout=ttnn.TILE_LAYOUT,
     )
 
-    with pytest.raises(ValueError, match="All ttnn tensor inputs are on host") as exc_info:
+    with pytest.raises(
+        ValueError, match="All ttnn tensor inputs are on host"
+    ) as exc_info:
         nop_auto_grid_2(a_host, b_host)
     msg = str(exc_info.value)
     assert "arg[0]" in msg
