@@ -404,20 +404,41 @@ def _has_float32_args(args) -> bool:
     return False
 
 
+def _require_device(args):
+    """Extract the device from tensor arguments, raising if none are on-device.
+
+    Returns the first non-None device found. Raises ValueError with
+    a message listing which arguments are host tensors and suggesting
+    ttnn.to_device().
+    """
+    for i, arg in enumerate(args):
+        if is_ttnn_tensor(arg):
+            device = arg.device()
+            if device is not None:
+                return device
+    host_args = [
+        f"  arg[{i}]: {arg.shape}" for i, arg in enumerate(args) if is_ttnn_tensor(arg)
+    ]
+    if not host_args:
+        raise ValueError("No device found: no ttnn tensor arguments were provided.")
+    raise ValueError(
+        "No device found on any tensor argument. "
+        "All ttnn tensor inputs are on host:\n"
+        + "\n".join(host_args)
+        + "\nPlace tensors on device before calling the operation, e.g.:\n"
+        "  ttnn.to_device(tensor, device)\n"
+        "  ttnn.from_torch(tensor, ..., device=device)"
+    )
+
+
 def _resolve_grid(grid, args, kwargs):
     """Resolve grid, evaluating callable or 'auto' if needed."""
     if callable(grid):
         return grid(*args, **kwargs)
     if grid == "auto":
-        for arg in args:
-            if is_ttnn_tensor(arg) and hasattr(arg, "device"):
-                device = arg.device()
-                device_grid = device.compute_with_storage_grid_size()
-                return (device_grid.x, device_grid.y)
-        raise ValueError(
-            "grid='auto' requires at least one ttnn tensor argument "
-            "to determine device compute grid"
-        )
+        device = _require_device(args)
+        device_grid = device.compute_with_storage_grid_size()
+        return (device_grid.x, device_grid.y)
     return grid
 
 
@@ -529,7 +550,7 @@ class CompiledTTNNKernel:
             raise ValueError(f"Expected {self.num_tensors} tensors, got {len(args)}")
 
         # Validate grid against device's compute grid.
-        device = args[0].device()
+        device = _require_device(args)
         device_grid = device.compute_with_storage_grid_size()
         kernel_grid = self.core_ranges.bounding_box().grid_size()
         if kernel_grid.x > device_grid.x or kernel_grid.y > device_grid.y:
