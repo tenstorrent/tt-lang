@@ -464,12 +464,18 @@ def main():
         cfg = {"M": M, "K": K, "N": N, "M_block": 8, "N_block": 8}
 
         ttnn_t_dram2k = run_ttnn_matmul_benchmark(
-            "ttnn.matmul (reference)", a, b, device, config=cfg,
+            "ttnn.matmul (reference)",
+            a,
+            b,
+            device,
+            config=cfg,
         )
 
         out_d2k = ttnn.from_torch(
             torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
         )
         v4_t_dram2k, _ = run_benchmark(
             "v4_l1_acc K=8 Kblocks=8 (DRAM 2048^3)",
@@ -482,7 +488,9 @@ def main():
 
         out_d2k2 = ttnn.from_torch(
             torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
         )
         v4_t_dram2k_k1, _ = run_benchmark(
             "v4_l1_acc K=1 Kblocks=64 (DRAM 2048^3)",

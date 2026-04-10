@@ -117,8 +117,8 @@ struct TTKernelInsertL1AccumulationPass
     // Find the top-level operation in each L1 acc loop body that contains
     // the last tile_regs_release. The release may be nested inside subblock
     // loops, so we find the enclosing top-level op to insert after.
-    auto findTopLevelAncestor = [](Operation *op, Block *loopBody)
-        -> Operation * {
+    auto findTopLevelAncestor = [](Operation *op,
+                                   Block *loopBody) -> Operation * {
       while (op && op->getBlock() != loopBody) {
         op = op->getParentOp();
       }
@@ -129,8 +129,7 @@ struct TTKernelInsertL1AccumulationPass
     for (auto loop : l1AccLoops) {
       Operation *lastTopLevel = nullptr;
       loop->walk([&](ttk::TileRegsReleaseOp releaseOp) {
-        Operation *topLevel =
-            findTopLevelAncestor(releaseOp, loop.getBody());
+        Operation *topLevel = findTopLevelAncestor(releaseOp, loop.getBody());
         if (topLevel) {
           lastTopLevel = topLevel;
         }
