@@ -597,17 +597,16 @@ def make_matmul_l1_acc(M_block_tiles, K_block_tiles, N_block_tiles, fp32_acc=Non
                     for local_n in range(n_blocks_per_node):
                         n_block = node_n * n_blocks_per_node + local_n
                         if n_block < N_num_blocks:
-                            # Reserve output once before K loop.
+                            # L1 additive packing: first K block writes
+                            # (l1_acc off), subsequent K blocks add
+                            # (l1_acc on). No fill needed.
                             out_blk = out_dfb.reserve()
-                            # K loop: each store packs to same CB slot.
-                            # L1 acc makes subsequent packs additive.
                             for _ in range(K_num_blocks):
                                 a_blk = a_dfb.wait()
                                 b_blk = b_dfb.wait()
                                 out_blk.store(a_blk @ b_blk)
                                 a_blk.pop()
                                 b_blk.pop()
-                            # Push once after all K iterations.
                             out_blk.push()
 
         @ttl.datamovement()
