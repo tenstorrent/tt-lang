@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-# up to tt-lang spec, not intended to compile or run currently
 import pytest
 import torch
 
@@ -9,21 +8,10 @@ import ttnn
 import ttl
 
 from utils.correctness import assert_with_ulp
-from utils.block_allocation import split_work_to_nodes
+from utils.block_allocation import get_number_of_nodes_from_ranges, split_work_to_nodes
 
 
-def get_number_of_nodes(grid_range):
-    total_nodes = 0
-    if len(grid_range) != 0:
-        start = grid_range[0]
-        end = grid_range[1]
-        x_range = end[0] - start[0] + 1
-        y_range = end[1] - start[1] + 1
-        total_nodes += x_range * y_range
-    return total_nodes
-
-
-@ttl.operation(grid=(13, 10))
+@ttl.operation(grid=("auto"))
 def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
@@ -44,15 +32,15 @@ def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     print(f"num_output_tiles_total: {num_output_tiles_total}")
     all_nodes, node_group_1, node_group_2, work_per_node1, work_per_node2 = (
         split_work_to_nodes(
-            ttl.grid_size(dims=2), num_output_tiles_total, row_wise=True
+            (ttl.grid_size(dims=1),), num_output_tiles_total, row_wise=True
         )
     )
     print(
         f"all_nodes: {all_nodes}, node_group_1: {node_group_1}, node_group_2: {node_group_2}, work_per_node1: {work_per_node1}, work_per_node2: {work_per_node2}"
     )
 
-    num_nodes_group_1 = get_number_of_nodes(node_group_1)
-    num_nodes_group_2 = get_number_of_nodes(node_group_2)
+    num_nodes_group_1 = get_number_of_nodes_from_ranges(node_group_1)
+    num_nodes_group_2 = get_number_of_nodes_from_ranges(node_group_2)
 
     def get_tiles_per_node(node_id):
         if node_id < num_nodes_group_1:
@@ -112,7 +100,7 @@ def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
                 out_wr.wait()
 
 
-@pytest.mark.parametrize("M,K,N", [(256, 256, 256), (512, 512, 512)])
+@pytest.mark.parametrize("M,K,N", [(640, 640, 640)])
 def test_multinode_matmul_tt_lang(M, K, N):
     """Test multinode matmul operation."""
     device = ttnn.open_device(device_id=0)
@@ -127,10 +115,12 @@ def test_multinode_matmul_tt_lang(M, K, N):
     )
     result = ttnn.to_torch(c).to(torch.bfloat16)
     assert_with_ulp(golden, result)
+    print("Test passed!")
 
     ttnn.close_device(device)
 
 
 if __name__ == "__main__":
-    # TODO: This won't work with 256, 256, 256
+    test_multinode_matmul_tt_lang(256, 256, 256)
+    test_multinode_matmul_tt_lang(512, 512, 512)
     test_multinode_matmul_tt_lang(640, 640, 640)
