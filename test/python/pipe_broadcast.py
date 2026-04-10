@@ -27,7 +27,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
-@ttl.kernel(grid=(2, 2))
+@ttl.operation(grid=(2, 2))
 def pipe_broadcast(inp, out):
     """Broadcast data from core (0,0) to all cores in 2x2 grid."""
     # 2D multicast: src=(0,0) to all cores (0,0) through (1,1)
@@ -60,7 +60,7 @@ def pipe_broadcast(inp, out):
     @ttl.datamovement()
     def dm_write():
         with out_cb.wait() as out_blk:
-            x, y = ttl.core(dims=2)
+            x, y = ttl.node(dims=2)
             tx_write = ttl.copy(out_blk, out[y, x])
             tx_write.wait()
 
