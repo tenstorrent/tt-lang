@@ -732,6 +732,17 @@ defm TTL_Tan : TTL_UnaryElementwisePair<"tan", "tan_tile">;
 defm TTL_Asin : TTL_UnaryElementwisePair<"asin", "asin_tile">;
 defm TTL_Acos : TTL_UnaryElementwisePair<"acos", "acos_tile">;
 defm TTL_Atan : TTL_UnaryElementwisePair<"atan", "atan_tile">;
+defm TTL_Ceil : TTL_UnaryElementwisePair<"ceil", "ceil_tile">;
+defm TTL_Sign : TTL_UnaryElementwisePair<"sign", "sign_tile">;
+defm TTL_Gelu : TTL_UnaryElementwisePair<"gelu", "gelu_tile">;
+defm TTL_Silu : TTL_UnaryElementwisePair<"silu", "silu_tile">;
+defm TTL_Hardsigmoid : TTL_UnaryElementwisePair<"hardsigmoid", "hardsigmoid_tile">;
+defm TTL_Expm1 : TTL_UnaryElementwisePair<"expm1", "expm1_tile">;
+defm TTL_Square : TTL_UnaryElementwisePair<"square", "square_tile">;
+defm TTL_Softsign : TTL_UnaryElementwisePair<"softsign", "softsign_tile">;
+defm TTL_Signbit : TTL_UnaryElementwisePair<"signbit", "signbit_tile">;
+defm TTL_Frac : TTL_UnaryElementwisePair<"frac", "frac_tile">;
+defm TTL_Trunc : TTL_UnaryElementwisePair<"trunc", "trunc_tile">;
 
 //===----------------------------------------------------------------------===//
 // Broadcast Operation

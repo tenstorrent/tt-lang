@@ -232,6 +232,26 @@ UNARY_OPS = {
     "asin": (make_unary_kernel("asin", "asin"), torch.asin),
     "acos": (make_unary_kernel("acos", "acos"), torch.acos),
     "atan": (make_unary_kernel("atan", "atan"), torch.atan),
+    "ceil": (make_unary_kernel("ceil", "ceil"), torch.ceil),
+    "sign": (make_unary_kernel("sign", "sign"), torch.sign),
+    "gelu": (make_unary_kernel("gelu", "gelu"), torch.nn.functional.gelu),
+    "silu": (make_unary_kernel("silu", "silu"), torch.nn.functional.silu),
+    "hardsigmoid": (
+        make_unary_kernel("hardsigmoid", "hardsigmoid"),
+        torch.nn.functional.hardsigmoid,
+    ),
+    "expm1": (make_unary_kernel("expm1", "expm1"), torch.expm1),
+    "square": (make_unary_kernel("square", "square"), torch.square),
+    "softsign": (
+        make_unary_kernel("softsign", "softsign"),
+        torch.nn.functional.softsign,
+    ),
+    "signbit": (
+        make_unary_kernel("signbit", "signbit"),
+        lambda x: torch.signbit(x).float(),
+    ),
+    "frac": (make_unary_kernel("frac", "frac"), torch.frac),
+    "trunc": (make_unary_kernel("trunc", "trunc"), torch.trunc),
 }
 
 
