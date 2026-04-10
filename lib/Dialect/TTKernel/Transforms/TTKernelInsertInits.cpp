@@ -359,7 +359,8 @@ static Operation *hoistAboveCompilerLoops(Operation *op) {
   while (auto *parentOp = insertBefore->getParentOp()) {
     if (isa<scf::ForOp>(parentOp) &&
         (parentOp->hasAttr(kTileLoopStrideAttrName) ||
-         parentOp->hasAttr(kSubblockLoopStrideAttrName))) {
+         parentOp->hasAttr(kSubblockLoopStrideAttrName) ||
+         parentOp->hasAttr(kL1AccLoopAttrName))) {
       insertBefore = parentOp;
     } else {
       break;
