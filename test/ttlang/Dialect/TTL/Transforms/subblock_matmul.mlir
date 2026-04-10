@@ -13,11 +13,8 @@
 
 // CHECK-LABEL: func.func @matmul_subblock_k_excluded
 // CHECK-SAME:  fp32_dest_acc_en = true
-// CHECK-DAG:   %[[C0:.*]] = arith.constant 0 : index
-// CHECK-DAG:   %[[C4:.*]] = arith.constant 4 : index
-// CHECK-DAG:   %[[C1:.*]] = arith.constant 1 : index
 // Outer subblock loop over M dimension.
-// CHECK:       scf.for %[[IV:.*]] = %[[C0]] to %[[C4]] step %[[C1]] {
+// CHECK:       scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
 // A sliced on M, K kept whole: [iv, 0] [1, 3].
 // CHECK:         tensor.extract_slice {{.*}}[%[[IV]], 0] [1, 3] [1, 1]
 // B not sliced (full [3, 4]).

@@ -10,7 +10,7 @@
 // CHECK-LABEL: func.func @matmul_with_accumulator
 // Accumulator and output merged to dst_idx = 0. Three operands preserved.
 // CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, bf16>, %[[B:.*]]: !ttcore.tile<32x32, bf16>, %[[C:.*]]: !ttcore.tile<32x32, bf16>, %{{.*}}: !ttcore.tile<32x32, bf16>):
-// CHECK: %[[MM:.*]] = ttl.tile_matmul_block %[[A]], %[[B]], %[[C]] {dst_idx = 0 : i32}
+// CHECK: %[[MM:.*]] = ttl.tile_matmul_block %[[A]], %[[B]], %[[C]] into dst[%c0]
 func.func @matmul_with_accumulator(
     %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %b: tensor<1x1x!ttcore.tile<32x32, bf16>>,
@@ -37,8 +37,9 @@ func.func @matmul_with_accumulator(
   ^bb0(%a_t: !ttcore.tile<32x32, bf16>, %b_t: !ttcore.tile<32x32, bf16>, %c_t: !ttcore.tile<32x32, bf16>, %out_t: !ttcore.tile<32x32, bf16>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %mm = ttl.tile_matmul_block %a_t, %b_t, %c_t : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
-    ttl.tile_store %mm, %out_view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %c0 = arith.constant 0 : index
+    %mm = ttl.tile_matmul_block %a_t, %b_t, %c_t into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    ttl.tile_store %mm, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
 
@@ -54,8 +55,8 @@ func.func @matmul_with_accumulator(
 
 // CHECK-LABEL: func.func @matmul_accumulator_relu
 // CHECK: ^bb0(%[[A2:.*]]: !ttcore.tile<32x32, bf16>, %[[B2:.*]]: !ttcore.tile<32x32, bf16>, %[[C2:.*]]: !ttcore.tile<32x32, bf16>, %{{.*}}: !ttcore.tile<32x32, bf16>):
-// CHECK: %[[MM2:.*]] = ttl.tile_matmul_block %[[A2]], %[[B2]], %[[C2]] {dst_idx = 0 : i32}
-// CHECK: ttl.tile_relu %[[MM2]] {dst_idx = 0 : i32}
+// CHECK: %[[MM2:.*]] = ttl.tile_matmul_block %[[A2]], %[[B2]], %[[C2]] into dst[%c0]
+// CHECK: ttl.tile_relu %[[MM2]] into dst[%c0]
 func.func @matmul_accumulator_relu(
     %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %b: tensor<1x1x!ttcore.tile<32x32, bf16>>,
@@ -82,9 +83,10 @@ func.func @matmul_accumulator_relu(
   ^bb0(%a_t: !ttcore.tile<32x32, bf16>, %b_t: !ttcore.tile<32x32, bf16>, %c_t: !ttcore.tile<32x32, bf16>, %out_t: !ttcore.tile<32x32, bf16>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %mm = ttl.tile_matmul_block %a_t, %b_t, %c_t : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
-    %r = ttl.tile_relu %mm : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %r, %out_view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %c0 = arith.constant 0 : index
+    %mm = ttl.tile_matmul_block %a_t, %b_t, %c_t into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    %r = ttl.tile_relu %mm into dst[%c0] : !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    ttl.tile_store %r, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
 

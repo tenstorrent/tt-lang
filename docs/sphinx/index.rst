@@ -10,6 +10,7 @@ TT-Lang Documentation
    getting-started
    tour/index
    elementwise-tutorial/index
+   matmul-tutorial/index
    programming-guide
    claude-skills
    testing

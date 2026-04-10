@@ -29,7 +29,7 @@
 //   - Optional: Separate output region (--separate-output-region flag)
 //
 // This pass also inserts ttl.copy_tile ops for block arguments and assigns
-// dst_idx attributes to all tile compute operations.
+// dst_index SSA operands to all tile compute operations.
 //
 // Testing: LLVM_DEBUG messages are used extensively for lit test verification.
 // Tests use -debug-only=ttl-assign-dst to check intervals, allocations, and
@@ -232,7 +232,10 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
         });
       } else {
         // Operation result: insert copy_dst (DST-to-DST)
-        auto copyOp = CopyDstOp::create(builder, loc, value.getType(), value);
+        auto copyOp =
+            CopyDstOp::create(builder, loc, value.getType(), value,
+                              createPlaceholderDstIndex(builder, loc));
+        addPlaceholderDstIndexAttr(copyOp.getOperation());
         copyResult = copyOp.getResult();
         LLVM_DEBUG({
           llvm::dbgs() << "Phase 1: Inserted copy_dst for consumer " << i
@@ -297,7 +300,7 @@ static void buildLiveIntervals(Block *body,
   // DST register -- this is a hardware constraint. The merge is unconditional:
   // regardless of what downstream ops consume the result, the input and output
   // must share the same DST index so the lowered instruction (e.g.,
-  // exp_tile(dst_idx)) operates on the correct register.
+  // exp_tile(dst_index)) operates on the correct register.
   for (Operation &op : *body) {
     if (!op.hasTrait<TTLInPlaceOpTrait>()) {
       continue;
@@ -718,7 +721,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         }
       });
 
-      //=== Insert copy_tile for block arguments and set dst_idx ===
+      //=== Insert copy_tile for block arguments and set dst_index ===
       llvm::SmallBitVector inUse(capacity);
       DenseMap<Value, std::uint32_t> dstIndexForValue;
 
@@ -805,7 +808,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
         }
       }
 
-      // Set dst_idx attributes on tile compute ops, copy_tile, and copy_dst.
+      // Set dst_index operands on tile compute ops, copy_tile, and copy_dst.
       for (Operation &op : *body) {
         if (!isTileComputeOp(&op) && !isa<CopyDstOp>(&op) &&
             !isa<CopyTileOp>(&op)) {
@@ -831,8 +834,45 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
             }
           }
 
-          op.setAttr(kDstIdxAttrName,
-                     builder.getI32IntegerAttr(static_cast<int32_t>(dstIdx)));
+          OpBuilder::InsertionGuard guard(builder);
+          builder.setInsertionPoint(&op);
+          Value dstIdxVal =
+              arith::ConstantIndexOp::create(builder, op.getLoc(), dstIdx);
+          setTileOpDstIndex(&op, dstIdxVal);
+          op.removeAttr(kDstPlaceholderAttrName);
+        }
+      }
+
+      // Set dst_index on tile_store ops based on their source tile's DST slot.
+      for (Operation &op : *body) {
+        auto store = dyn_cast<TileStoreOp>(&op);
+        if (!store) {
+          continue;
+        }
+        Value tile = store.getTile();
+        auto it = dstIndexForValue.find(tile);
+        if (it != dstIndexForValue.end()) {
+          OpBuilder::InsertionGuard guard(builder);
+          builder.setInsertionPoint(&op);
+          Value dstIdxVal =
+              arith::ConstantIndexOp::create(builder, op.getLoc(), it->second);
+          setTileOpDstIndex(&op, dstIdxVal);
+          op.removeAttr(kDstPlaceholderAttrName);
+        }
+      }
+
+      //=== Post-pass verification: no unassigned dst_index placeholders ===
+      for (Operation &op : *body) {
+        if (op.hasAttr(kDstPlaceholderAttrName)) {
+          llvm_unreachable("dst_index was not assigned by AssignDST");
+        }
+        if (auto dstVal = getTileOpDstIndex(&op)) {
+          if (auto constIdx = getConstantIntValue(*dstVal)) {
+            if (*constIdx == kUnassignedDstIndex) {
+              llvm_unreachable(
+                  "dst_index is still the unassigned sentinel (-1)");
+            }
+          }
         }
       }
 
@@ -884,7 +924,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
           auto newCopy = CopyTileOp::create(
               builder, ct.getLoc(),
               TypeRange{ct.getDstToken().getType(), ct.getDstTile().getType()},
-              ct.getSrc(), ct.getDstIndex(), cbIndices);
+              ct.getSrc(), cbIndices, ct.getDstIndex());
           for (NamedAttribute attr : ct->getAttrs()) {
             newCopy->setAttr(attr.getName(), attr.getValue());
           }

@@ -45,8 +45,9 @@ func.func @f32_auto_enable(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
     ^bb0(%a_arg: !ttcore.tile<32x32, f32>, %b_arg: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
       %i = ttl.iter_index 0 : index
       %j = ttl.iter_index 1 : index
-      %sum = ttl.tile_add %a_arg, %b_arg : !ttcore.tile<32x32, f32>
-      ttl.tile_store %sum, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+      %c0 = arith.constant 0 : index
+      %sum = ttl.tile_add %a_arg, %b_arg into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+      ttl.tile_store %sum, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
@@ -69,6 +70,7 @@ func.func @f32_auto_enable(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
 func.func @bf16_no_special_ops(%a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
                                %b: tensor<1x1x!ttcore.tile<32x32, bf16>>)
     -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+  %c0 = arith.constant 0 : index
   %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
 
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -95,7 +97,7 @@ func.func @bf16_no_special_ops(%a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     ^bb0(%a_arg: !ttcore.tile<32x32, bf16>, %b_arg: !ttcore.tile<32x32, bf16>, %out: !ttcore.tile<32x32, bf16>):
       %i = ttl.iter_index 0 : index
       %j = ttl.iter_index 1 : index
-      ttl.tile_store %out, %out_view_0[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.tile_store %out, %out_view_0[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
 
@@ -118,6 +120,7 @@ func.func @preserve_existing(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
                              %b: tensor<1x1x!ttcore.tile<32x32, f32>>)
     -> tensor<1x1x!ttcore.tile<32x32, f32>>
     attributes {dst_full_sync_en = false, fp32_dest_acc_en = false} {
+  %c0 = arith.constant 0 : index
   %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, f32>>
 
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -144,7 +147,7 @@ func.func @preserve_existing(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
     ^bb0(%a_arg: !ttcore.tile<32x32, f32>, %b_arg: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
       %i = ttl.iter_index 0 : index
       %j = ttl.iter_index 1 : index
-      ttl.tile_store %out, %out_view_1[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.tile_store %out, %out_view_1[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
@@ -168,6 +171,7 @@ func.func @bf16_matmul_auto_fp32(
     %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %b: tensor<1x1x!ttcore.tile<32x32, bf16>>)
     -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+  %c0 = arith.constant 0 : index
   %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
 
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -192,10 +196,10 @@ func.func @bf16_matmul_auto_fp32(
       {indexing_maps = [#map3, #map3, #map3],
        iterator_types = ["parallel", "parallel"]} {
     ^bb0(%a_tile: !ttcore.tile<32x32, bf16>, %b_tile: !ttcore.tile<32x32, bf16>, %out_tile: !ttcore.tile<32x32, bf16>):
-      %mm = ttl.tile_matmul_block %a_tile, %b_tile : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+      %mm = ttl.tile_matmul_block %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
       %i = ttl.iter_index 0 : index
       %j = ttl.iter_index 1 : index
-      ttl.tile_store %mm, %out_view_2[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.tile_store %mm, %out_view_2[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
 
@@ -221,6 +225,7 @@ func.func @bf16_matmul_bcast_no_fp32(
     %b: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %bias: tensor<1x1x!ttcore.tile<32x32, bf16>>)
     -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+  %c0 = arith.constant 0 : index
   %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
 
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -252,12 +257,12 @@ func.func @bf16_matmul_bcast_no_fp32(
        iterator_types = ["parallel", "parallel"]} {
     ^bb0(%a_tile: !ttcore.tile<32x32, bf16>, %b_tile: !ttcore.tile<32x32, bf16>,
          %bias_tile: !ttcore.tile<32x32, bf16>, %out_tile: !ttcore.tile<32x32, bf16>):
-      %mm = ttl.tile_matmul_block %a_tile, %b_tile : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
-      %bc = ttl.tile_bcast %bias_tile, %out_tile 1 : i32 : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>) -> !ttcore.tile<32x32, bf16>
-      %sum = ttl.tile_add %mm, %bc : !ttcore.tile<32x32, bf16>
+      %mm = ttl.tile_matmul_block %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+      %bc = ttl.tile_bcast %bias_tile, %out_tile 1 : i32 into dst[%c0] : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>) -> !ttcore.tile<32x32, bf16>
+      %sum = ttl.tile_add %mm, %bc into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
       %i0 = ttl.iter_index 0 : index
       %j0 = ttl.iter_index 1 : index
-      ttl.tile_store %sum, %out_view_3[%i0, %j0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.tile_store %sum, %out_view_3[%i0, %j0] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
 

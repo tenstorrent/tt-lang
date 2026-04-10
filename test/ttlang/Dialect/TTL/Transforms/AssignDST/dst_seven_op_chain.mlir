@@ -1,7 +1,7 @@
 // Summary: Seven-operation fused chain to verify DST allocation handles long chains.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}))' | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 separate-output-region=1}))' | FileCheck %s --check-prefix=SEPARATE
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 enable-fpu-binary-ops=0}))' | FileCheck %s --check-prefix=SFPU
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}), canonicalize, cse)' | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 separate-output-region=1}), canonicalize, cse)' | FileCheck %s --check-prefix=SEPARATE
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 enable-fpu-binary-ops=0}), canonicalize, cse)' | FileCheck %s --check-prefix=SFPU
 
 // Verify no placeholder copies remain in final IR
 // CHECK-NOT: placeholder
@@ -17,6 +17,7 @@
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // CHECK-LABEL:   func.func @seven_op_chain
+// CHECK-DAG:       %[[C0:.*]] = arith.constant 0 : index
 // CHECK:           %[[CB0:.*]] = ttl.bind_cb{cb_index = 0, block_count = 1}
 // CHECK:           %[[CB1:.*]] = ttl.bind_cb{cb_index = 1, block_count = 1}
 // CHECK:           %[[CB2:.*]] = ttl.bind_cb{cb_index = 2, block_count = 1}
@@ -25,39 +26,42 @@
 // CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary add: both operands are block args, no copy_tile needed
-// CHECK-NEXT:        %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary}
+// CHECK:        %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%[[C0]]] {ttl.fpu_binary}
 // Copy B for sub/mul (SFPU operand needs copy_tile)
-// CHECK:             %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]], %{{.*}} {dst_idx = 1 : i32}
-// CHECK-NEXT:        %[[SUB:.*]] = ttl.tile_sub %[[ADD]], %[[DTILE]] {dst_idx = 0 : i32}
-// CHECK-NEXT:        %[[MUL:.*]] = ttl.tile_mul %[[SUB]], %[[DTILE]] {dst_idx = 0 : i32}
-// CHECK-NEXT:        %[[EXP:.*]] = ttl.tile_exp %[[MUL]] {dst_idx = 0 : i32}
-// CHECK-NEXT:        %[[LOG:.*]] = ttl.tile_log %[[EXP]] {dst_idx = 0 : i32}
-// CHECK-NEXT:        %[[NEG:.*]] = ttl.tile_neg %[[LOG]] {dst_idx = 0 : i32}
-// CHECK-NEXT:        %[[SQRT:.*]] = ttl.tile_sqrt %[[NEG]] {dst_idx = 0 : i32}
-// SEPARATE: ttl.tile_sqrt {{.*}} {dst_idx = 2 : i32}
+// CHECK:             %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]] into dst[%c1]
+// CHECK:        %[[SUB:.*]] = ttl.tile_sub %[[ADD]], %[[DTILE]] into dst[%[[C0]]]
+// CHECK:        %[[MUL:.*]] = ttl.tile_mul %[[SUB]], %[[DTILE]] into dst[%[[C0]]]
+// CHECK:        %[[EXP:.*]] = ttl.tile_exp %[[MUL]] into dst[%[[C0]]]
+// CHECK:        %[[LOG:.*]] = ttl.tile_log %[[EXP]] into dst[%[[C0]]]
+// CHECK:        %[[NEG:.*]] = ttl.tile_neg %[[LOG]] into dst[%[[C0]]]
+// CHECK:        %[[SQRT:.*]] = ttl.tile_sqrt %[[NEG]] into dst[%[[C0]]]
+// SEPARATE-LABEL: func.func @seven_op_chain
+// SEPARATE-DAG:    %[[C2:.*]] = arith.constant 2 : index
+// SEPARATE: ttl.tile_sqrt {{.*}} into dst[%[[C2]]]
 //
 // SFPU path: init_sfpu instead of init_binary, copy_tile for both add operands
 // SFPU-LABEL:   func.func @seven_op_chain
+// SFPU-DAG:       %[[C0:.*]] = arith.constant 0 : index
 // SFPU:           %[[CB0S:.*]] = ttl.bind_cb{cb_index = 0, block_count = 1}
 // SFPU:           %[[CB2S:.*]] = ttl.bind_cb{cb_index = 2, block_count = 1}
 // SFPU:           ttl.compute
 // SFPU:           ^bb0
 // SFPU-NOT:         fpu_binary
 // copy A and B for SFPU add
-// SFPU:             ttl.copy_tile {{.*}} {dst_idx = 0 : i32}
-// SFPU:             ttl.copy_tile {{.*}} {dst_idx = 1 : i32}
-// SFPU:             ttl.tile_add {{.*}} {dst_idx = 0 : i32}
+// SFPU:             ttl.copy_tile {{.*}}
+// SFPU:             ttl.copy_tile {{.*}}
+// SFPU:             ttl.tile_add {{.*}} into dst[%[[C0]]]
 // sub, mul reuse the B copy (dst_tile_1 at slot 1)
-// SFPU:             ttl.tile_sub {{.*}} {dst_idx = 0 : i32}
-// SFPU:             ttl.tile_mul {{.*}} {dst_idx = 0 : i32}
-// SFPU:             ttl.tile_exp {{.*}} {dst_idx = 0 : i32}
-// SFPU:             ttl.tile_log {{.*}} {dst_idx = 0 : i32}
-// SFPU:             ttl.tile_neg {{.*}} {dst_idx = 0 : i32}
-// SFPU:             %[[SQRTS:.*]] = ttl.tile_sqrt {{.*}} {dst_idx = 0 : i32}
-// SFPU:             ttl.tile_store %[[SQRTS]], %{{.*}}[%{{.*}}, %{{.*}}]
+// SFPU:             ttl.tile_sub {{.*}} into dst[%[[C0]]]
+// SFPU:             ttl.tile_mul {{.*}} into dst[%[[C0]]]
+// SFPU:             ttl.tile_exp {{.*}} into dst[%[[C0]]]
+// SFPU:             ttl.tile_log {{.*}} into dst[%[[C0]]]
+// SFPU:             ttl.tile_neg {{.*}} into dst[%[[C0]]]
+// SFPU:             %[[SQRTS:.*]] = ttl.tile_sqrt {{.*}} into dst[%[[C0]]]
+// SFPU:             ttl.tile_store %[[SQRTS]], %{{.*}}[%{{.*}}, %{{.*}}]{{.*}}from dst[%[[C0]]]
 // SFPU-NEXT:        ttl.yield
 //
-// CHECK-NEXT:        ttl.tile_store %[[SQRT]], %{{.*}}[%[[I0]], %[[I1]]]
+// CHECK:             ttl.tile_store %[[SQRT]], %{{.*}}[%[[I0]], %[[I1]]] from dst[%[[C0]]]
 // CHECK-NEXT:        ttl.yield
 // CHECK-NEXT:      } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 // CHECK-NEXT:      return %[[RES]]
@@ -87,14 +91,15 @@ func.func @seven_op_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
     // Seven-operation fused chain - each must appear in output with dst_idx
-    %add = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    %sub = ttl.tile_sub %add, %b_tile : !ttcore.tile<32x32, f32>
-    %mul = ttl.tile_mul %sub, %b_tile : !ttcore.tile<32x32, f32>
-    %exp = ttl.tile_exp %mul : !ttcore.tile<32x32, f32>
-    %log = ttl.tile_log %exp : !ttcore.tile<32x32, f32>
-    %neg = ttl.tile_neg %log : !ttcore.tile<32x32, f32>
-    %sqrt = ttl.tile_sqrt %neg : !ttcore.tile<32x32, f32>
-    ttl.tile_store %sqrt, %result_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %add = ttl.tile_add %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %sub = ttl.tile_sub %add, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %mul = ttl.tile_mul %sub, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %exp = ttl.tile_exp %mul into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %log = ttl.tile_log %exp into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %neg = ttl.tile_neg %log into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %sqrt = ttl.tile_sqrt %neg into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %sqrt, %result_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
