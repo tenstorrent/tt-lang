@@ -196,6 +196,128 @@ def make_minimal_matmul(M_block_tiles, K_block_tiles, N_block_tiles, fp32_acc=No
     return kernel
 
 
+def make_minimal_matmul_single_reader(
+    M_block_tiles, K_block_tiles, N_block_tiles, fp32_acc=None
+):
+    """Matmul without bias, single-reader DMA: out = a @ b.
+
+    Same compute kernel as make_minimal_matmul, but all DMA reads (A and B)
+    are on one RISC core (reader). The writer thread only writes output.
+    This is the v1-single-reader variant used to measure the effect of
+    splitting DMA across both RISC cores.
+    """
+
+    @ttl.operation(grid="auto", fp32_dest_acc_en=fp32_acc)
+    def kernel(a, b, out):
+        Mt = a.shape[0] // TILE
+        Kt = a.shape[1] // TILE
+        Nt = b.shape[1] // TILE
+
+        K_num_blocks = Kt // K_block_tiles
+        M_num_blocks = Mt // M_block_tiles
+        N_num_blocks = Nt // N_block_tiles
+
+        grid_n, grid_m = ttl.grid_size(dims=2)
+        m_blocks_per_node = -(-M_num_blocks // grid_m)
+        n_blocks_per_node = -(-N_num_blocks // grid_n)
+
+        a_dfb = ttl.make_dataflow_buffer_like(
+            a, shape=(M_block_tiles, K_block_tiles), block_count=2
+        )
+        b_dfb = ttl.make_dataflow_buffer_like(
+            b, shape=(K_block_tiles, N_block_tiles), block_count=2
+        )
+        acc_dfb = ttl.make_dataflow_buffer_like(
+            out, shape=(M_block_tiles, N_block_tiles), block_count=2
+        )
+        out_dfb = ttl.make_dataflow_buffer_like(
+            out, shape=(M_block_tiles, N_block_tiles), block_count=2
+        )
+
+        @ttl.compute()
+        def compute():
+            node_n, node_m = ttl.node(dims=2)
+            for local_m in range(m_blocks_per_node):
+                m_block = node_m * m_blocks_per_node + local_m
+                if m_block < M_num_blocks:
+                    for local_n in range(n_blocks_per_node):
+                        n_block = node_n * n_blocks_per_node + local_n
+                        if n_block < N_num_blocks:
+                            a_blk = a_dfb.wait()
+                            b_blk = b_dfb.wait()
+                            with acc_dfb.reserve() as acc:
+                                acc.store(a_blk @ b_blk)
+                            a_blk.pop()
+                            b_blk.pop()
+
+                            for _ in range(K_num_blocks - 1):
+                                with (
+                                    a_dfb.wait() as a_blk,
+                                    b_dfb.wait() as b_blk,
+                                    acc_dfb.wait() as prev,
+                                ):
+                                    with acc_dfb.reserve() as acc:
+                                        acc.store(prev + a_blk @ b_blk)
+
+                            with acc_dfb.wait() as acc_blk:
+                                with out_dfb.reserve() as out_blk:
+                                    out_blk.store(acc_blk)
+
+        # Single-reader DMA: one thread reads both A and B.
+        @ttl.datamovement()
+        def reader():
+            node_n, node_m = ttl.node(dims=2)
+            for local_m in range(m_blocks_per_node):
+                m_block = node_m * m_blocks_per_node + local_m
+                if m_block < M_num_blocks:
+                    m_off = m_block * M_block_tiles
+                    for local_n in range(n_blocks_per_node):
+                        n_block = node_n * n_blocks_per_node + local_n
+                        if n_block < N_num_blocks:
+                            n_off = n_block * N_block_tiles
+                            for kb in range(K_num_blocks):
+                                k_off = kb * K_block_tiles
+                                with a_dfb.reserve() as a_blk:
+                                    ttl.copy(
+                                        a[
+                                            m_off : m_off + M_block_tiles,
+                                            k_off : k_off + K_block_tiles,
+                                        ],
+                                        a_blk,
+                                    ).wait()
+                                with b_dfb.reserve() as b_blk:
+                                    ttl.copy(
+                                        b[
+                                            k_off : k_off + K_block_tiles,
+                                            n_off : n_off + N_block_tiles,
+                                        ],
+                                        b_blk,
+                                    ).wait()
+
+        # Writer only writes output.
+        @ttl.datamovement()
+        def writer():
+            node_n, node_m = ttl.node(dims=2)
+            for local_m in range(m_blocks_per_node):
+                m_block = node_m * m_blocks_per_node + local_m
+                if m_block < M_num_blocks:
+                    m_off = m_block * M_block_tiles
+                    for local_n in range(n_blocks_per_node):
+                        n_block = node_n * n_blocks_per_node + local_n
+                        if n_block < N_num_blocks:
+                            n_off = n_block * N_block_tiles
+                            with out_dfb.wait() as out_blk:
+                                ttl.copy(
+                                    out_blk,
+                                    out[
+                                        m_off : m_off + M_block_tiles,
+                                        n_off : n_off + N_block_tiles,
+                                    ],
+                                ).wait()
+
+    return kernel
+
+
 def make_minimal_matmul_with_bias(M_block_tiles, K_block_tiles, N_block_tiles):
     """Matmul with bias: out = a @ b + c.
 
@@ -418,6 +540,119 @@ def make_matmul_compiler_k_loop(M_block_tiles, N_block_tiles, fp32_acc=None):
                                     b[0:Kt, n_off : n_off + N_block_tiles],
                                     b_blk,
                                 ).wait()
+                            with out_dfb.wait() as out_blk:
+                                ttl.copy(
+                                    out_blk,
+                                    out[
+                                        m_off : m_off + M_block_tiles,
+                                        n_off : n_off + N_block_tiles,
+                                    ],
+                                ).wait()
+
+    return kernel
+
+
+def make_matmul_l1_acc(M_block_tiles, K_block_tiles, N_block_tiles,
+                       fp32_acc=None):
+    """Matmul with L1 accumulation: out = a @ b.
+
+    Uses the "reserve once, store K times, push once" pattern. The compiler
+    detects the scf.for loop storing to the same reserved CB and annotates
+    it as a reduction loop. TTKernelInsertL1Accumulation inserts
+    pack_reconfig_l1_acc guards. Each K iteration packs to L1 additively,
+    eliminating the copy_tile + acc_dfb overhead of the prev + a @ b pattern.
+
+    DMA is split: reader (NCRISC) handles A, writer (BRISC) handles B + output.
+    """
+
+    @ttl.operation(grid="auto", fp32_dest_acc_en=fp32_acc)
+    def kernel(a, b, out):
+        Mt = a.shape[0] // TILE
+        Kt = a.shape[1] // TILE
+        Nt = b.shape[1] // TILE
+
+        K_num_blocks = Kt // K_block_tiles
+        M_num_blocks = Mt // M_block_tiles
+        N_num_blocks = Nt // N_block_tiles
+
+        grid_n, grid_m = ttl.grid_size(dims=2)
+        m_blocks_per_node = -(-M_num_blocks // grid_m)
+        n_blocks_per_node = -(-N_num_blocks // grid_n)
+
+        a_dfb = ttl.make_dataflow_buffer_like(
+            a, shape=(M_block_tiles, K_block_tiles), block_count=2
+        )
+        b_dfb = ttl.make_dataflow_buffer_like(
+            b, shape=(K_block_tiles, N_block_tiles), block_count=2
+        )
+        out_dfb = ttl.make_dataflow_buffer_like(
+            out, shape=(M_block_tiles, N_block_tiles), block_count=2
+        )
+
+        @ttl.compute()
+        def compute():
+            node_n, node_m = ttl.node(dims=2)
+            for local_m in range(m_blocks_per_node):
+                m_block = node_m * m_blocks_per_node + local_m
+                if m_block < M_num_blocks:
+                    for local_n in range(n_blocks_per_node):
+                        n_block = node_n * n_blocks_per_node + local_n
+                        if n_block < N_num_blocks:
+                            # Reserve output once before K loop.
+                            out_blk = out_dfb.reserve()
+                            # K loop: each store packs to same CB slot.
+                            # L1 acc makes subsequent packs additive.
+                            for _ in range(K_num_blocks):
+                                a_blk = a_dfb.wait()
+                                b_blk = b_dfb.wait()
+                                out_blk.store(a_blk @ b_blk)
+                                a_blk.pop()
+                                b_blk.pop()
+                            # Push once after all K iterations.
+                            out_blk.push()
+
+        @ttl.datamovement()
+        def reader():
+            node_n, node_m = ttl.node(dims=2)
+            for local_m in range(m_blocks_per_node):
+                m_block = node_m * m_blocks_per_node + local_m
+                if m_block < M_num_blocks:
+                    m_off = m_block * M_block_tiles
+                    for local_n in range(n_blocks_per_node):
+                        n_block = node_n * n_blocks_per_node + local_n
+                        if n_block < N_num_blocks:
+                            for kb in range(K_num_blocks):
+                                k_off = kb * K_block_tiles
+                                with a_dfb.reserve() as a_blk:
+                                    ttl.copy(
+                                        a[
+                                            m_off : m_off + M_block_tiles,
+                                            k_off : k_off + K_block_tiles,
+                                        ],
+                                        a_blk,
+                                    ).wait()
+
+        @ttl.datamovement()
+        def writer():
+            node_n, node_m = ttl.node(dims=2)
+            for local_m in range(m_blocks_per_node):
+                m_block = node_m * m_blocks_per_node + local_m
+                if m_block < M_num_blocks:
+                    m_off = m_block * M_block_tiles
+                    for local_n in range(n_blocks_per_node):
+                        n_block = node_n * n_blocks_per_node + local_n
+                        if n_block < N_num_blocks:
+                            n_off = n_block * N_block_tiles
+                            for kb in range(K_num_blocks):
+                                k_off = kb * K_block_tiles
+                                with b_dfb.reserve() as b_blk:
+                                    ttl.copy(
+                                        b[
+                                            k_off : k_off + K_block_tiles,
+                                            n_off : n_off + N_block_tiles,
+                                        ],
+                                        b_blk,
+                                    ).wait()
                             with out_dfb.wait() as out_blk:
                                 ttl.copy(
                                     out_blk,

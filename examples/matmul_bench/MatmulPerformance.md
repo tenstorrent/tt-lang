@@ -36,41 +36,34 @@ Each configuration is measured as follows:
 
 ### 1.2 Kernel Versions
 
-Five kernel versions are compared. All implement C = A * B (general
-matrix multiply) with identical numerical results (PCC > 0.99 against
-f32 golden).
+Three tt-lang kernel versions are compared against ttnn.matmul. All
+implement C = A * B (general matrix multiply) with identical numerical
+results (PCC > 0.99 against f32 golden).
 
 **ttnn.matmul** -- tt-metal's production matmul. Uses L1 accumulation
-(`packer_l1_acc=True`), subblocking (subblock_h=2, subblock_w=4),
+(`packer_l1_acc=True`), subblocking (subblock_h=2, subblock_w=2),
 and K-direction alternation for input reuse. The internal DMA scheduling
 strategy is not directly observable from the Python API; the description
 in Section 6 is derived from reading the tt-metal source code.
 
-**v1-single-reader** -- tt-lang kernel with all DMA on one RISC core.
-The reader thread fetches both A and B blocks; the writer thread only
-writes output. Outer K loop is user-managed: each iteration calls
-`acc.store(prev + a @ b)`, which lowers to `copy_tile` (load
-accumulator from CB into DST) followed by `matmul_block` (DST += A*B).
-Block sizes are parameterized by M_block, K_block, N_block.
+**v1-single-reader** -- tt-lang kernel with all DMA reads on one RISC
+core. The reader thread fetches both A and B blocks; the writer thread
+only writes output. Compute is identical to v2-split-dma: user-managed
+outer K loop with `acc.store(prev + a @ b)`.
 
 **v2-split-dma** -- Same compute kernel as v1, but DMA is split across
 both RISC cores: NCRISC reads A blocks, BRISC reads B blocks and writes
-output.
+output. Block sizes are parameterized by M_block, K_block, N_block.
+When the output block exceeds DST capacity, `SubblockComputeForDST`
+partitions the M x N output block into DST-sized subblocks. K
+accumulation remains in DST within each subblock (matmul_block
+accumulates kt tiles in-place).
 
 **v3-compiler-k** -- tt-lang kernel where the full K dimension is
 placed in one DFB fill. The user writes `out.store(a @ b)` and the
 compiler generates the K reduction loop internally from the 3D
 [M, N, K] iteration space. No user-managed K loop or accumulator DFB.
 Only viable when M_block * K + K * N_block fits in L1.
-
-**v4-subblocked** -- v2-split-dma with the compiler change that enables
-subblocking for accumulating matmul computes. `SubblockComputeForDST`
-partitions the M x N output block into DST-sized subblocks (e.g., 1x4
-for bf16). K accumulation remains in DST within each subblock
-(matmul_block accumulates kt tiles in-place). The generated EmitC
-output was inspected to confirm that subblocking produces the expected
-structure (4 `pack_tile` calls per `tile_regs_acquire`/`release` pair
-instead of 1).
 
 ### 1.3 Isolating Compute from Data Movement
 
@@ -89,8 +82,7 @@ contributions:
 ## 2. Compute Kernel Structure
 
 This section describes the generated compute kernel for each version.
-The pseudocode reflects the EmitC output (after all compiler passes),
-verified by inspecting the generated C++ files in `/tmp/default/`.
+The pseudocode reflects the EmitC output after all compiler passes.
 Data movement kernels are identical across compute versions and omitted
 here; their impact is analyzed in Section 4.
 
@@ -136,7 +128,8 @@ cb_push_back(intermediate_cb, M_block * N_block)
 pack_reconfig_l1_acc(0)
 ```
 
-DST holds `subblock_h * subblock_w` tiles (e.g., 2x4=8 for bf16).
+DST holds `subblock_h * subblock_w` tiles (e.g., 2x2=4 with
+`fp32_dest_acc_en=true`, or 8 without).
 Within each subblock, `matmul_block` accumulates K_block tiles via DST.
 Across K_num_blocks iterations, `pack_reconfig_l1_acc` makes each pack
 additive to the existing L1 value, avoiding the need to reload the
@@ -208,6 +201,55 @@ K_block=1, meaning:
 - More `copy_tile` calls (one per K tile per subblock)
 - More `tile_regs_acquire`/`release` cycles
 
+### 2.4 v3-compiler-k (L1 accumulation, output > DST)
+
+When the user writes `out.store(a @ b)` with full K in the DFB and the
+output block exceeds DST capacity, the compiler generates a K reduction
+loop with L1 accumulation. `LowerMatmulBlock` detects the subblocked
+accumulating matmul (output M*N > DST capacity, K > 1, no explicit
+accumulator) and emits the following structure (verified by inspecting
+the generated TTKernel IR):
+
+```
+scf.for %k = 0 to K step 1 {                  // reduction loop
+    lhs_slice = extract_slice(lhs, [0, %k], [M, 1])
+    rhs_slice = extract_slice(rhs, [%k, 0], [1, N])
+    dst_section {
+        matmul_block(lhs_slice, rhs_slice, dst=0,
+                     ct=N, rt=M, kt=1)         // single K tile
+        for m in 0..M:
+            for n in 0..N:
+                pack_tile<true>(m*N+n, out_cb, indexed)
+    }
+} {ttl.reduction_loop}
+```
+
+`TTKernelInsertL1Accumulation` detects the `ttl.reduction_loop`
+annotation and inserts guards:
+- `pack_reconfig_l1_acc(1)` after `tile_regs_acquire` when the loop
+  induction variable is not equal to the lower bound (i.e., from the
+  second K iteration onward)
+- `pack_reconfig_l1_acc(0)` after the loop exits
+
+Differences from v2-split-dma (Section 2.2):
+
+- **No copy_tile.** L1 additive packing replaces the explicit
+  accumulator reload. Each K iteration packs to the same CB slot;
+  `pack_reconfig_l1_acc` makes subsequent packs additive.
+- **No acc CB.** The output is written directly to `out_cb`. No
+  intermediate `acc_dfb` or final copy step.
+- **Per-K DstSection.** DST is acquired and released each K iteration
+  (the DstSection is inside the K loop). In v2-split-dma, DST persists
+  across K iterations within the fused `copy_tile + matmul_block`
+  DstSection.
+
+This structure matches the tt-metal minimal_matmul pattern (Section
+2.1) at the per-K-iteration level. The remaining structural difference
+is that minimal_matmul's outer K loop is in the data movement layer
+(cb_wait/cb_pop per K block), while v3-compiler-k's K loop is
+compiler-generated within the compute kernel from the 3D iteration
+space.
+
 ## 3. Results
 
 ### 3.1 L1-Only (Compute Isolation)
@@ -218,7 +260,7 @@ All tensors in interleaved L1.
 
 | Version | K_block | K_num_blocks | Median (ms) | Min (ms) | Max (ms) | vs ttnn |
 |---------|---------|--------------|-------------|----------|----------|---------|
-| ttnn.matmul | -- | -- | 0.55 | 0.54 | 0.56 | 1.00x |
+| ttnn.matmul | -- | -- | 0.55 | 0.54 | 0.55 | 1.00x |
 | v2-split-dma | 8 | 8 | 0.51 | 0.42 | 0.55 | 0.93x |
 | v2-split-dma | 1 | 64 | 0.47 | 0.47 | 0.48 | 0.87x |
 
@@ -246,49 +288,60 @@ Matches tt-metal `test_minimal_matmul.py::test_linear` reference shape.
 
 | Version | K_block | K_num_blocks | Median (ms) | Min (ms) | Max (ms) | vs ttnn |
 |---------|---------|--------------|-------------|----------|----------|---------|
-| ttnn.matmul | -- | -- | 0.90 | 0.81 | 0.96 | 1.00x |
-| v1-single-reader | 8 | 16 | 3.95 | 3.89 | 4.00 | 4.39x |
-| v1-single-reader | 1 | 128 | 4.14 | 4.06 | 4.25 | 4.60x |
-| v2-split-dma | 8 | 16 | 3.43 | 3.36 | 3.47 | 3.82x |
-| v2-split-dma | 1 | 128 | 3.16 | 3.04 | 3.19 | 3.53x |
+| ttnn.matmul | -- | -- | 0.90 | 0.75 | 1.03 | 1.00x |
+| v1-single-reader | 8 | 16 | -- | -- | -- | -- |
+| v1-single-reader | 1 | 128 | -- | -- | -- | -- |
+| v2-split-dma | 8 | 16 | 3.44 | 3.34 | 3.51 | 3.82x |
+| v2-split-dma | 1 | 128 | 3.19 | 3.10 | 3.26 | 3.54x |
 
-**Observation 3.** tt-lang is 3.5--3.8x slower than ttnn.matmul in
-the DRAM configuration. The L1-only results (Section 3.1) show that
-the tt-lang compute kernel is not slower than ttnn's in isolation.
-This is consistent with the hypothesis that the DRAM slowdown
-originates in the data movement layer, though the L1 configuration
-does not fully eliminate data movement (NOC transfers remain).
+v1-single-reader has not yet been re-measured with the current
+benchmark script. The rows above will be populated once the
+single-reader variant is added to `bench_matmul.py`.
 
-**Observation 4.** Split DMA (v2 vs v1) reduces execution time by
-13--24% (measured). The v2 split distributes reads across both RISC
-cores (NCRISC reads A, BRISC reads B + writes output). The improvement
-is consistent with increased DMA concurrency, though we have not
-measured per-thread NOC utilization directly.
+**Observation 3.** tt-lang v2-split-dma is 3.5--3.8x slower than
+ttnn.matmul in the DRAM configuration. The L1-only results (Section
+3.1) show that the tt-lang compute kernel is not slower than ttnn's in
+isolation. This is consistent with the hypothesis that the DRAM
+slowdown originates in the data movement layer, though the L1
+configuration does not fully eliminate data movement (NOC transfers
+remain).
 
-**Observation 5.** With split DMA, K_block=1 is 8% faster than
-K_block=8 (3.16 vs 3.43 ms). Without split DMA, K_block=8 was 5%
-faster (3.95 vs 4.14 ms). The reversal is observed but the causal
-mechanism is not fully characterized. A possible explanation: with
-split DMA, K_block=1 generates more frequent, smaller DMA transfers,
-which may create more overlap between the two DM threads operating
-concurrently. This hypothesis requires per-thread cycle profiling to
-confirm.
+**Observation 4.** K_block=1 is 7% faster than K_block=8 (3.19 vs
+3.44 ms). One possible explanation: K_block=1 generates more frequent,
+smaller DMA transfers, which may create more overlap between the two
+DM threads operating concurrently. However, without per-RISC-thread
+cycle counts, we cannot confirm whether the difference originates in
+DMA scheduling or compute.
 
-### 3.3 Dispatch-Dominated Regime
+### 3.3 Compiler-Generated K Loop: Requirements for Scale
 
-**Problem:** 128 x 128 x 128 (4 x 4 x 4 tiles).
+The v3-compiler-k version places the full K dimension in one DFB fill
+and relies on the compiler to generate the K reduction loop. This is
+currently limited to problem sizes where M_block * K + K * N_block
+tiles fit in L1 (precluding the 4096^3 benchmark shape).
 
-| Version | M_block | K_block | N_block | Median (ms) | vs ttnn |
-|---------|---------|---------|---------|-------------|---------|
-| ttnn.matmul | -- | -- | -- | 0.04 | 1.00x |
-| v2-split-dma | 2 | 2 | 2 | 0.15 | 3.53x |
-| v3-compiler-k | 2 | full(4) | 2 | 0.14 | 3.28x |
-| v2-split-dma | 4 | 2 | 4 | 0.14 | 3.07x |
-| v3-compiler-k | 4 | full(4) | 4 | 0.14 | 3.03x |
+For v3-compiler-k to operate at scale (large K that does not fit in a
+single DFB fill), the following compiler and runtime support is needed:
 
-Both tt-lang and ttnn.matmul complete in under 0.15 ms. At these
-timescales, host-side dispatch overhead dominates. The ratios are not
-informative about device-side performance.
+1. **K splitting.** The compiler must decompose the K dimension into
+   K_block (DFB fill size, DST-accumulated within each block) and
+   K_num_blocks (outer loop, L1-accumulated across blocks). The user
+   writes `out.store(a @ b)` with K_block-sized DFBs; the compiler
+   generates the outer K_num_blocks loop with `pack_reconfig_l1_acc`
+   guards. This requires the Python tracer to support for-loops in
+   compute that generate `scf.for` (PR #446, `bnorris/block-expr`
+   branch).
+
+2. **DFB streaming for K blocks.** The data movement threads must
+   deliver K_block-sized chunks per iteration, synchronized with the
+   compute thread's K loop via CB semaphores. The DFB API supports this
+   (reserve/push per block with `block_count=2`), but the compiler does
+   not yet automatically generate the DM-side K loop from the compute's
+   K reduction.
+
+3. **Split DMA for the generated K loop.** The compiler-generated
+   reader and writer must distribute A and B reads across both RISC
+   cores, as in the v2-split-dma optimization.
 
 ## 4. Data Movement Analysis
 
@@ -320,7 +373,7 @@ N_block 2:  K = 0, 1, 2, ..., 15    (forward)
 When the M block is the same across consecutive N blocks (row-major
 output traversal), the A block for the first K iteration of N_block 1
 is the same as the last K iteration of N_block 0. The reader skips the
-read (`reuse_in0_block = true` in `dm_in0_sender.cpp:378`).
+read (`reuse_block = true` in `dm_in0_sender.cpp:359`).
 
 Over N_blocks_per_core consecutive N iterations with the same M block,
 this eliminates (N_blocks_per_core - 1) A block reads out of
@@ -371,8 +424,8 @@ independently (this would require per-RISC-thread cycle profiling).
 
 4. **Concurrent input reads.** With v2-split-dma, A and B reads
    execute on separate RISC cores concurrently. This is already
-   implemented and its effect is measured: 13--24% improvement
-   (Observation 4).
+   implemented. The v1-single-reader vs v2-split-dma comparison
+   (pending re-measurement) will quantify the improvement.
 
 ### 4.3 Expressibility in tt-lang
 
@@ -388,7 +441,7 @@ independently (this would require per-RISC-thread cycle profiling).
 ## 5. Reproducing
 
 ```bash
-# In Docker (bnorris-ird-v0.1.8), from the tt-lang root:
+# From the tt-lang root, inside the Docker container:
 source build-docker/env/activate
 python examples/matmul_bench/bench_matmul.py
 ```

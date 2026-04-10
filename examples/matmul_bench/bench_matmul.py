@@ -34,6 +34,7 @@ PROFILER_CSV = Path(
 )
 RESULTS_CSV = Path("examples/matmul_bench/matmul_perf_results.csv")
 
+PCC_THRESHOLD = 0.999  # Correlation threshold for correctness assertion
 
 def parse_kernel_cycles(csv_path):
     """Parse profiler CSV: max kernel duration per RISC thread across all cores."""
@@ -290,7 +291,12 @@ def run_ttnn_matmul_benchmark(name, a, b, device, config, warmup=3, iters=10):
 
 # ---- Kernel factories ----
 
-from minimal_matmul import make_minimal_matmul, make_matmul_compiler_k_loop
+from minimal_matmul import (
+    make_minimal_matmul,
+    make_minimal_matmul_single_reader,
+    make_matmul_compiler_k_loop,
+    make_matmul_l1_acc,
+)
 
 
 def main():
@@ -303,135 +309,12 @@ def main():
         print(f"  Results: {RESULTS_CSV}")
 
         # ---------------------------------------------------------------
-        # Test 1: Small problem, output fits in DST, K > 1
-        # Both strategies should work; compiler_k avoids copy_tile overhead.
+        # DRAM: End-to-End Performance (Section 3.2)
+        # Compare single-reader vs split-dma, K_block=8 vs K_block=1.
         # ---------------------------------------------------------------
         print(f"\n{'='*70}")
-        print("Test 1: 128x128x128 (4x4x4 tiles), blocks 2x2, K_block=2")
-        print("  Output 2x2=4 tiles fits in bf16 DST (8). K=2 inner tiles.")
-        print("=" * 70)
-
-        Mt, Kt, Nt = 4, 4, 4
-        M, K, N = Mt * TILE, Kt * TILE, Nt * TILE
-        a_torch = torch.randn(M, K, dtype=torch.bfloat16)
-        b_torch = torch.randn(K, N, dtype=torch.bfloat16)
-        golden = (a_torch.float() @ b_torch.float()).float()
-
-        a = ttnn.from_torch(
-            a_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device
-        )
-        b = ttnn.from_torch(
-            b_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device
-        )
-
-        cfg = {"M": M, "K": K, "N": N, "M_block": 2, "N_block": 2}
-
-        ttnn_t1 = run_ttnn_matmul_benchmark(
-            "ttnn.matmul (reference)",
-            a,
-            b,
-            device,
-            config=cfg,
-        )
-
-        out1 = ttnn.from_torch(
-            torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
-        manual_t1, _ = run_benchmark(
-            "manual_k M=2 K=2 N=2 Kblocks=2",
-            make_minimal_matmul(2, 2, 2),
-            (a, b, out1),
-            device,
-            config={**cfg, "K_block": 2, "strategy": "manual_k_loop"},
-        )
-        assert_pcc(golden, ttnn.to_torch(out1).float(), threshold=0.99)
-
-        out2 = ttnn.from_torch(
-            torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
-        compiler_t1, _ = run_benchmark(
-            "compiler_k M=2 N=2 Kfull=4",
-            make_matmul_compiler_k_loop(2, 2),
-            (a, b, out2),
-            device,
-            config={**cfg, "K_block": 4, "strategy": "compiler_k_loop"},
-        )
-        assert_pcc(golden, ttnn.to_torch(out2).float(), threshold=0.99)
-
-        print(f"\n  Ratios (tt-lang / ttnn.matmul):")
-        print(f"    manual_k:   {manual_t1/ttnn_t1:.2f}x")
-        print(f"    compiler_k: {compiler_t1/ttnn_t1:.2f}x")
-
-        # ---------------------------------------------------------------
-        # Test 2: Output > DST capacity, K > 1
-        # This is the target for the L1 acc plan. Currently both use
-        # per-tile DST acc (no subblocking). After implementation,
-        # compiler_k will use hybrid subblocking + L1 acc.
-        # ---------------------------------------------------------------
-        print(f"\n{'='*70}")
-        print("Test 2: 128x128x128 (4x4x4 tiles), blocks 4x4, K_block=2")
-        print("  Output 4x4=16 tiles > bf16 DST (8). K=2 inner tiles.")
-        print("  Target for L1 acc: subblocked 2x2 within DST, L1 across K.")
-        print("=" * 70)
-
-        cfg = {"M": M, "K": K, "N": N, "M_block": 4, "N_block": 4}
-
-        ttnn_t2 = run_ttnn_matmul_benchmark(
-            "ttnn.matmul (reference)",
-            a,
-            b,
-            device,
-            config=cfg,
-        )
-
-        out3 = ttnn.from_torch(
-            torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
-        manual_t2, _ = run_benchmark(
-            "manual_k M=4 K=2 N=4 Kblocks=2",
-            make_minimal_matmul(4, 2, 4),
-            (a, b, out3),
-            device,
-            config={**cfg, "K_block": 2, "strategy": "manual_k_loop"},
-        )
-        assert_pcc(golden, ttnn.to_torch(out3).float(), threshold=0.99)
-
-        out4 = ttnn.from_torch(
-            torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
-        compiler_t2, _ = run_benchmark(
-            "compiler_k M=4 N=4 Kfull=4",
-            make_matmul_compiler_k_loop(4, 4),
-            (a, b, out4),
-            device,
-            config={**cfg, "K_block": 4, "strategy": "compiler_k_loop"},
-        )
-        assert_pcc(golden, ttnn.to_torch(out4).float(), threshold=0.99)
-
-        print(f"\n  Ratios (tt-lang / ttnn.matmul):")
-        print(f"    manual_k:   {manual_t2/ttnn_t2:.2f}x")
-        print(f"    compiler_k: {compiler_t2/ttnn_t2:.2f}x")
-
-        # ---------------------------------------------------------------
-        # Test 3: Benchmark shape 4096x4096x4096
-        # Only manual_k works at this scale (full K=128 overflows L1).
-        # Compare K_block=8 (matching tt-metal) vs K_block=1 (streaming).
-        # ---------------------------------------------------------------
-        print(f"\n{'='*70}")
-        print("Test 3: 4096x4096x4096 (128x128x128 tiles), blocks 8x8")
-        print("  tt-metal benchmark reference shape.")
+        print("DRAM: End-to-End Performance")
+        print("  4096x4096x4096 (128x128x128 tiles), blocks 8x8")
         print("=" * 70)
 
         Mt, Kt, Nt = 128, 128, 128
@@ -456,6 +339,38 @@ def main():
             config=cfg,
         )
 
+        # v1-single-reader: all reads on one RISC core.
+        out_v1a = ttnn.from_torch(
+            torch.zeros(M, N, dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+        )
+        single_t3a, _ = run_benchmark(
+            "v1-single-reader K=8 Kblocks=16",
+            make_minimal_matmul_single_reader(8, 8, 8),
+            (a, b, out_v1a),
+            device,
+            config={**cfg, "K_block": 8, "strategy": "single_reader"},
+        )
+        assert_pcc(golden, ttnn.to_torch(out_v1a).float(), threshold=PCC_THRESHOLD)
+
+        out_v1b = ttnn.from_torch(
+            torch.zeros(M, N, dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+        )
+        single_t3b, _ = run_benchmark(
+            "v1-single-reader K=1 Kblocks=128",
+            make_minimal_matmul_single_reader(8, 1, 8),
+            (a, b, out_v1b),
+            device,
+            config={**cfg, "K_block": 1, "strategy": "single_reader"},
+        )
+        assert_pcc(golden, ttnn.to_torch(out_v1b).float(), threshold=PCC_THRESHOLD)
+
+        # v2-split-dma: reads split across both RISC cores.
         out5 = ttnn.from_torch(
             torch.zeros(M, N, dtype=torch.bfloat16),
             dtype=ttnn.bfloat16,
@@ -463,13 +378,13 @@ def main():
             device=device,
         )
         manual_t3a, _ = run_benchmark(
-            "manual_k M=8 K=8 N=8 Kblocks=16",
+            "v2-split-dma K=8 Kblocks=16",
             make_minimal_matmul(8, 8, 8),
             (a, b, out5),
             device,
             config={**cfg, "K_block": 8, "strategy": "manual_k_loop"},
         )
-        assert_pcc(golden, ttnn.to_torch(out5).float(), threshold=0.99)
+        assert_pcc(golden, ttnn.to_torch(out5).float(), threshold=PCC_THRESHOLD)
 
         out6 = ttnn.from_torch(
             torch.zeros(M, N, dtype=torch.bfloat16),
@@ -478,25 +393,59 @@ def main():
             device=device,
         )
         manual_t3b, _ = run_benchmark(
-            "manual_k M=8 K=1 N=8 Kblocks=128",
+            "v2-split-dma K=1 Kblocks=128",
             make_minimal_matmul(8, 1, 8),
             (a, b, out6),
             device,
             config={**cfg, "K_block": 1, "strategy": "manual_k_loop"},
         )
-        assert_pcc(golden, ttnn.to_torch(out6).float(), threshold=0.99)
+        assert_pcc(golden, ttnn.to_torch(out6).float(), threshold=PCC_THRESHOLD)
+
+        # L1 acc: reserve once, store K times, push once.
+        out7 = ttnn.from_torch(
+            torch.zeros(M, N, dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+        )
+        l1acc_t3a, _ = run_benchmark(
+            "l1_acc M=8 K=8 N=8 Kblocks=16",
+            make_matmul_l1_acc(8, 8, 8),
+            (a, b, out7),
+            device,
+            config={**cfg, "K_block": 8, "strategy": "l1_acc"},
+        )
+        assert_pcc(golden, ttnn.to_torch(out7).float(), threshold=PCC_THRESHOLD)
+
+        out8 = ttnn.from_torch(
+            torch.zeros(M, N, dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+        )
+        l1acc_t3b, _ = run_benchmark(
+            "l1_acc M=8 K=1 N=8 Kblocks=128",
+            make_matmul_l1_acc(8, 1, 8),
+            (a, b, out8),
+            device,
+            config={**cfg, "K_block": 1, "strategy": "l1_acc"},
+        )
+        assert_pcc(golden, ttnn.to_torch(out8).float(), threshold=PCC_THRESHOLD)
 
         print(f"\n  Ratios (tt-lang / ttnn.matmul):")
-        print(f"    manual_k K=8: {manual_t3a/ttnn_t3:.2f}x")
-        print(f"    manual_k K=1: {manual_t3b/ttnn_t3:.2f}x")
+        print(f"    v1 single K=8: {single_t3a/ttnn_t3:.2f}x")
+        print(f"    v1 single K=1: {single_t3b/ttnn_t3:.2f}x")
+        print(f"    v2 split  K=8: {manual_t3a/ttnn_t3:.2f}x")
+        print(f"    v2 split  K=1: {manual_t3b/ttnn_t3:.2f}x")
+        print(f"    l1_acc    K=8: {l1acc_t3a/ttnn_t3:.2f}x")
+        print(f"    l1_acc    K=1: {l1acc_t3b/ttnn_t3:.2f}x")
 
         # ---------------------------------------------------------------
-        # Test 4: L1-only (no DRAM DMA), isolate compute kernel cost.
-        # 512x512x512 in L1 (fits with interleaved layout).
+        # L1-Only: Compute Isolation (Section 3.1)
         # ---------------------------------------------------------------
         print(f"\n{'='*70}")
-        print("Test 4: L1-only 2048x2048x2048 (64x64x64 tiles), blocks 8x8")
-        print("  Inputs/outputs in L1. Isolates compute kernel cost.")
+        print("L1-Only: Compute Isolation")
+        print("  2048x2048x2048 (64x64x64 tiles), blocks 8x8")
         print("=" * 70)
 
         Mt, Kt, Nt = 64, 64, 64
@@ -545,7 +494,7 @@ def main():
             device,
             config={**cfg, "K_block": 8, "strategy": "manual_k_loop_l1"},
         )
-        assert_pcc(golden, ttnn.to_torch(out_l1).float(), threshold=0.99)
+        assert_pcc(golden, ttnn.to_torch(out_l1).float(), threshold=PCC_THRESHOLD)
 
         out_l1b = ttnn.from_torch(
             torch.zeros(M, N, dtype=torch.bfloat16),
@@ -561,20 +510,55 @@ def main():
             device,
             config={**cfg, "K_block": 1, "strategy": "manual_k_loop_l1"},
         )
-        assert_pcc(golden, ttnn.to_torch(out_l1b).float(), threshold=0.99)
+        assert_pcc(golden, ttnn.to_torch(out_l1b).float(), threshold=PCC_THRESHOLD)
+
+        # L1 acc variants.
+        out_l1c = ttnn.from_torch(
+            torch.zeros(M, N, dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=l1_cfg,
+        )
+        l1acc_t4a, _ = run_benchmark(
+            "l1_acc M=8 K=8 N=8 Kblocks=2 (L1)",
+            make_matmul_l1_acc(8, 8, 8),
+            (a_l1, b_l1, out_l1c),
+            device,
+            config={**cfg, "K_block": 8, "strategy": "l1_acc_l1"},
+        )
+        assert_pcc(golden, ttnn.to_torch(out_l1c).float(), threshold=PCC_THRESHOLD)
+
+        out_l1d = ttnn.from_torch(
+            torch.zeros(M, N, dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=l1_cfg,
+        )
+        l1acc_t4b, _ = run_benchmark(
+            "l1_acc M=8 K=1 N=8 Kblocks=16 (L1)",
+            make_matmul_l1_acc(8, 1, 8),
+            (a_l1, b_l1, out_l1d),
+            device,
+            config={**cfg, "K_block": 1, "strategy": "l1_acc_l1"},
+        )
+        assert_pcc(golden, ttnn.to_torch(out_l1d).float(), threshold=PCC_THRESHOLD)
 
         print(f"\n  Ratios (tt-lang / ttnn.matmul), L1-only:")
-        print(f"    manual_k K=8: {manual_t4a/ttnn_t4:.2f}x")
-        print(f"    manual_k K=1: {manual_t4b/ttnn_t4:.2f}x")
+        print(f"    manual_k K=8:  {manual_t4a/ttnn_t4:.2f}x")
+        print(f"    manual_k K=1:  {manual_t4b/ttnn_t4:.2f}x")
+        print(f"    l1_acc   K=8:  {l1acc_t4a/ttnn_t4:.2f}x")
+        print(f"    l1_acc   K=1:  {l1acc_t4b/ttnn_t4:.2f}x")
 
         # ---------------------------------------------------------------
-        # Test 5: bf16 accumulation (fp32_dest_acc_en=False)
+        # DRAM: bf16 Accumulation (fp32_dest_acc_en=False)
         # Doubles DST capacity (bf16: 8 -> 16 tiles), enabling larger
         # subblocks and fewer acquire/release cycles.
         # ---------------------------------------------------------------
         print(f"\n{'='*70}")
-        print("Test 5: 4096x4096x4096, blocks 8x8, bf16 accumulation")
-        print("  fp32_dest_acc_en=False: DST capacity 16 (bf16 double-buf).")
+        print("DRAM: bf16 Accumulation")
+        print("  4096x4096x4096, blocks 8x8, fp32_dest_acc_en=False")
         print("=" * 70)
 
         Mt, Kt, Nt = 128, 128, 128
@@ -612,7 +596,7 @@ def main():
             device,
             config={**cfg, "K_block": 8, "strategy": "manual_k_bf16acc"},
         )
-        assert_pcc(golden, ttnn.to_torch(out5a).float(), threshold=0.99)
+        assert_pcc(golden, ttnn.to_torch(out5a).float(), threshold=PCC_THRESHOLD)
 
         out5b = ttnn.from_torch(
             torch.zeros(M, N, dtype=torch.bfloat16),
@@ -627,7 +611,7 @@ def main():
             device,
             config={**cfg, "K_block": 1, "strategy": "manual_k_bf16acc"},
         )
-        assert_pcc(golden, ttnn.to_torch(out5b).float(), threshold=0.99)
+        assert_pcc(golden, ttnn.to_torch(out5b).float(), threshold=PCC_THRESHOLD)
 
         print(f"\n  Ratios (tt-lang / ttnn.matmul), bf16 acc:")
         print(f"    manual_k K=8: {manual_t5a/ttnn_t5:.2f}x")
