@@ -1016,6 +1016,14 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   auto indexTy = rewriter.getIndexType();
   auto i32Ty = rewriter.getI32Type();
 
+  // Build optional NOC index value for ops that accept a noc parameter.
+  int64_t nocIdx = getNocIndex(op);
+  Value nocVal;
+  if (nocIdx > 0) {
+    nocVal = arith::ConstantOp::create(rewriter, loc,
+        rewriter.getI8Type(), rewriter.getI8IntegerAttr(nocIdx));
+  }
+
   auto cbReadPtr = ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted);
   auto cbReadPtrIdx =
       arith::IndexCastOp::create(rewriter, loc, indexTy, cbReadPtr);
@@ -1107,17 +1115,17 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   } else {
     auto mcastAddr = ttk::GetNocMulticastAddrOp::create(rewriter,
         loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
-        dstAddr, /*noc=*/Value());
+        dstAddr, nocVal);
     if (pipeType.srcInDstRange()) {
       ttk::NocAsyncWriteMulticastLoopbackSrcOp::create(rewriter,
           loc, srcAddr, mcastAddr.getResult(), totalSizeVal,
           numDestsVal, /*linked=*/nullptr,
-          /*multicast_path_reserve=*/nullptr, /*noc=*/Value());
+          /*multicast_path_reserve=*/nullptr, nocVal);
     } else {
       ttk::NocAsyncWriteMulticastOp::create(rewriter,
           loc, srcAddr, mcastAddr.getResult(), totalSizeVal,
           numDestsVal, /*linked=*/nullptr,
-          /*multicast_path_reserve=*/nullptr, /*noc=*/Value());
+          /*multicast_path_reserve=*/nullptr, nocVal);
     }
   }
 
@@ -1149,9 +1157,9 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     auto validVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
     ttk::NocSemaphoreSetOp::create(rewriter, loc, semPtr, validVal);
 
-    auto semMcastAddr = ttk::GetNocMulticastAddrOp::create(rewriter, 
+    auto semMcastAddr = ttk::GetNocMulticastAddrOp::create(rewriter,
         loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal, semAddr,
-        /*noc=*/Value());
+        nocVal);
 
     if (pipeType.srcInDstRange()) {
       auto falseBoolAttr = rewriter.getBoolAttr(false);
