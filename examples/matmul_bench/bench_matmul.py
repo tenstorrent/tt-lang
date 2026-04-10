@@ -442,6 +442,62 @@ def main():
         print(f"    v4_l1_acc    K=1: {l1acc_t3b/ttnn_t3:.2f}x")
 
         # ---------------------------------------------------------------
+        # DRAM 2048^3 (same size as L1-only, for direct comparison)
+        # ---------------------------------------------------------------
+        print(f"\n{'='*70}")
+        print("DRAM: 2048x2048x2048 (64x64x64 tiles), blocks 8x8")
+        print("  Same size as L1-only test for direct comparison.")
+        print("=" * 70)
+
+        Mt, Kt, Nt = 64, 64, 64
+        M, K, N = Mt * TILE, Kt * TILE, Nt * TILE
+        a_torch = torch.randn(M, K, dtype=torch.bfloat16)
+        b_torch = torch.randn(K, N, dtype=torch.bfloat16)
+        golden = (a_torch.float() @ b_torch.float()).float()
+
+        a = ttnn.from_torch(
+            a_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device
+        )
+        b = ttnn.from_torch(
+            b_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device
+        )
+        cfg = {"M": M, "K": K, "N": N, "M_block": 8, "N_block": 8}
+
+        ttnn_t_dram2k = run_ttnn_matmul_benchmark(
+            "ttnn.matmul (reference)", a, b, device, config=cfg,
+        )
+
+        out_d2k = ttnn.from_torch(
+            torch.zeros(M, N, dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device,
+        )
+        v4_t_dram2k, _ = run_benchmark(
+            "v4_l1_acc K=8 Kblocks=8 (DRAM 2048^3)",
+            make_v4(8, 8, 8),
+            (a, b, out_d2k),
+            device,
+            config={**cfg, "K_block": 8, "strategy": "l1_acc_dram_2k"},
+        )
+        assert_pcc(golden, ttnn.to_torch(out_d2k).float(), threshold=PCC_THRESHOLD)
+
+        out_d2k2 = ttnn.from_torch(
+            torch.zeros(M, N, dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device,
+        )
+        v4_t_dram2k_k1, _ = run_benchmark(
+            "v4_l1_acc K=1 Kblocks=64 (DRAM 2048^3)",
+            make_v4(8, 1, 8),
+            (a, b, out_d2k2),
+            device,
+            config={**cfg, "K_block": 1, "strategy": "l1_acc_dram_2k"},
+        )
+        assert_pcc(golden, ttnn.to_torch(out_d2k2).float(), threshold=PCC_THRESHOLD)
+
+        print(f"\n  Ratios (tt-lang / ttnn.matmul), DRAM 2048^3:")
+        print(f"    v4_l1_acc K=8: {v4_t_dram2k/ttnn_t_dram2k:.2f}x")
+        print(f"    v4_l1_acc K=1: {v4_t_dram2k_k1/ttnn_t_dram2k:.2f}x")
+
+        # ---------------------------------------------------------------
         # L1-Only: Compute Isolation (Section 3.1)
         # ---------------------------------------------------------------
         print(f"\n{'='*70}")
@@ -449,9 +505,9 @@ def main():
         print("  2048x2048x2048 (64x64x64 tiles), blocks 8x8")
         print("=" * 70)
 
+        # Reuse a_torch, b_torch, golden from DRAM 2048^3 above.
         Mt, Kt, Nt = 64, 64, 64
         M, K, N = Mt * TILE, Kt * TILE, Nt * TILE
-        a_torch = torch.randn(M, K, dtype=torch.bfloat16)
         b_torch = torch.randn(K, N, dtype=torch.bfloat16)
         golden = (a_torch.float() @ b_torch.float()).float()
 

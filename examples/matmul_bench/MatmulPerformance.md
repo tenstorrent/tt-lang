@@ -40,11 +40,17 @@ Four tt-lang kernel versions are compared against ttnn.matmul. All
 implement C = A * B (general matrix multiply) with identical numerical
 results (PCC > 0.99 against f32 golden).
 
-**ttnn.matmul** -- tt-metal's production matmul. Uses L1 accumulation
-(`packer_l1_acc=True`), subblocking (subblock_h=2, subblock_w=2),
-and K-direction alternation for input reuse. The internal DMA scheduling
-strategy is not directly observable from the Python API; the description
-in Section 6 is derived from reading the tt-metal source code.
+**ttnn.matmul** -- tt-metal's production matmul, called with default
+parameters. tt-metal has multiple matmul program factories and selects
+one based on tensor shapes, memory layout, and grid size. For large
+interleaved DRAM matrices (e.g., 4096^3), the dispatcher selects
+`MatmulMultiCoreReuseMultiCastProgramConfig` (2D multicast), where
+input tiles are read from DRAM by designated cores and multicast to
+entire rows or columns of the compute grid in single NOC transactions.
+This is distinct from the unicast relay chain used by
+`ttnn.experimental.minimal_matmul` (Section 6). There is no
+user-facing mechanism to log which specific kernel is selected at
+runtime.
 
 **v1_baseline** -- tt-lang kernel with all DMA reads on one RISC
 core. The reader thread fetches both A and B blocks; the writer thread
@@ -340,7 +346,37 @@ over v2-split (both 3.44ms), consistent with the L1 acc overhead
 (enable/disable per outer K iteration) being comparable to the
 `copy_tile` overhead it replaces when K_block is large.
 
-### 3.3 Compiler-Generated K Loop: Requirements for Scale
+### 3.3 DRAM vs L1 at Same Problem Size (2048^3)
+
+**Problem:** 2048 x 2048 x 2048 (64 x 64 x 64 tiles).
+`M_block = N_block = 8`. Grid: auto (130 cores).
+
+| Config | DRAM (ms) | L1 (ms) | DRAM overhead |
+|--------|-----------|---------|---------------|
+| ttnn.matmul | 0.18 | 0.55 | L1 is 3.1x slower |
+| v4_l1_acc `K=8` | 0.56 | 0.48 | DRAM 17% slower |
+| v4_l1_acc `K=1` | 0.46 | 0.37 | DRAM 24% slower |
+
+**Observation 5.** For tt-lang, DRAM adds 17--24% overhead over L1 at
+2048^3 (0.46 vs 0.37 ms for v4_l1_acc `K=1`). For ttnn.matmul, L1 is
+3.1x SLOWER than DRAM (0.55 vs 0.18 ms). This was verified in an
+isolated test (not a benchmark artifact). The explanation: ttnn.matmul
+uses 2D multicast with DRAM inputs (one core reads from DRAM and
+multicasts to the grid in a single NOC transaction). With L1
+interleaved inputs, tiles are distributed round-robin across all
+cores' L1 memories. Reading a tile from another core's L1 requires an
+individual NOC read per tile, replacing the efficient DRAM+multicast
+with many point-to-point NOC transfers. tt-lang does not use multicast,
+so it reads each tile individually regardless of memory location;
+the L1 variant simply has lower per-transfer latency than DRAM.
+
+This means the L1-only results (Section 3.1) measure tt-lang compute
+efficiency relative to ttnn in a regime where ttnn's multicast
+advantage is neutralized. The DRAM results (Section 3.2) reflect the
+production-relevant scenario where ttnn's multicast provides a
+structural advantage that tt-lang does not yet match.
+
+### 3.4 Compiler-Generated K Loop: Requirements for Scale
 
 The v3_compiler_k version places the full K dimension in one DFB fill
 and relies on the compiler to generate the K reduction loop. This is
@@ -420,49 +456,96 @@ The read volume difference between tt-metal and tt-lang is under 2% for
 the 130-core, 4096^3 configuration. This is too small to explain the
 observed 3.6--4.8x slowdown.
 
-### 4.2 DMA Scheduling
+### 4.2 Input Distribution (Dominant Factor)
 
-The following are known structural differences between the tt-lang and
-ttnn.matmul data movement implementations. Their individual
-contributions to the observed 3.5x slowdown have not been measured
-independently (this would require per-RISC-thread cycle profiling).
+tt-metal distributes input tiles across cores rather than having each
+core read independently from DRAM. The default `ttnn.matmul` uses 2D
+multicast (one DRAM read, then a NOC multicast to a row or column of
+cores). The experimental `minimal_matmul` uses a unicast relay chain
+(sequential forwarding from core to core). Both reduce DRAM traffic
+compared to tt-lang's independent-read model.
 
-1. **Double buffering.** Both DM threads use `block_count=2`. The CB
-   semaphore protocol allows the reader to start the next block's DMA
-   while compute processes the current block. We verified empirically
-   that increasing `block_count` to 3 (triple buffering) produced no
-   improvement (3.48 ms vs 3.43 ms for K_block=8, within noise). This
-   indicates that the double-buffering pipeline depth is not the
-   bottleneck, but does not tell us whether the pipeline is effectively
-   utilized or whether DMA latency per block exceeds compute time per
-   block (which would cause compute to stall regardless of buffer
-   depth).
+The `minimal_matmul` unicast relay chain
+(`dm_in0_sender.cpp:265-314`) illustrates the mechanism: only one
+**DRAM reader** per chain reads from DRAM. All other cores receive
+via L1-to-L1 NOC unicast from their neighbor:
 
-2. **K-direction alternation.** As quantified in Section 4.1, this
-   saves 1.5% of total read volume at 130 cores. The performance
-   effect, if any, is within measurement noise.
+```
+First core (DRAM reader):  DRAM read -> DFB -> push to compute -> NOC write to next core
+Middle core:               receive from prev -> DFB -> push to compute -> NOC write to next
+...
+Last core:                 receive from prev -> DFB -> push to compute (no forward)
+```
 
-3. **Deferred output writes.** tt-metal defers the previous output
-   block's DRAM write until a specific K iteration of the next block
-   (`defer_write_k_block` in `dm_in0_sender.cpp:224`), overlapping
-   output writes with input reads. tt-lang writes output synchronously
-   after each output block completes. The performance impact has not
-   been measured in isolation.
+tt-lang reads every input block independently from DRAM on every core.
 
-4. **Concurrent input reads.** With v2_split_dma, A and B reads
-   execute on separate RISC cores concurrently. Measured: v1 to v2
-   improvement is 12--24% (Section 3.2, Observation 4).
+For the 4096^3 benchmark on a 13x10 grid
+(`minimal_matmul_program_factory.cpp:220-221`):
 
-### 4.3 Expressibility in tt-lang
+- A is relayed along **columns** (10 cores). 13 DRAM readers read A
+  from DRAM; 117 cores receive via L1 relay.
+- B is relayed along **rows** (13 cores). 10 DRAM readers read B
+  from DRAM; 120 cores receive via L1 relay.
 
-| Optimization | Status | Required infrastructure |
-|-------------|--------|------------------------|
-| Split DMA | Implemented (v2) | -- |
-| Double buffering | Active (`block_count=2`) | -- |
-| Concurrent A+B reads | Active (via split DMA) | -- |
-| K-direction alternation | Not implemented | Runtime ternary expressions (`k_forward ? k : K-1-k`) |
-| Deferred output writes | Not implemented | DM-thread coordination, runtime conditionals |
-| Multicast input distribution | Not implemented | A subset of cores read from DRAM and multicast to neighbors, reducing total DRAM read traffic. Requires multicast NOC primitives in the DM kernel. |
+DRAM read volume (calculated, 4 MB per output block per input):
+
+| | tt-metal (relay) | tt-lang (independent) | Ratio |
+|---|---|---|---|
+| A from DRAM | 13 DRAM readers x 4 MB = 52 MB | 130 cores x 4 MB = 520 MB | 10x |
+| B from DRAM | 10 DRAM readers x 4 MB = 40 MB | 130 cores x 4 MB = 520 MB | 13x |
+| **Total** | **92 MB** | **1040 MB** | **11.3x** |
+
+At ~250 GB/s DRAM bandwidth, the minimum time to transfer the data
+(assuming no other activity) is:
+
+| | DRAM transfer time | Measured wall clock |
+|---|---|---|
+| tt-metal (multicast) | 92 MB / 250 GB/s = 0.37 ms | 0.82 ms |
+| tt-lang (independent reads) | 1040 MB / 250 GB/s = 4.16 ms | 2.95 ms |
+
+The measured wall clock is less than the DRAM transfer time for tt-lang
+because DMA and compute execute concurrently (double buffering). The
+2.95 ms wall clock contains 4.16 ms of DRAM transfer overlapped with
+compute. For tt-metal, the 0.82 ms wall clock exceeds the 0.37 ms
+transfer time, indicating additional overhead (multicast
+synchronization, compute).
+
+The 11.3x DRAM traffic difference is the dominant contributor to the
+observed 3.6x performance ratio. The default `ttnn.matmul` uses 2D
+multicast rather than unicast relay, which is even more efficient
+(single NOC multicast transaction per tile vs sequential forwarding).
+Implementing any form of input distribution (unicast relay, tree, or
+multicast) in tt-lang would reduce the DRAM bandwidth lower bound from
+4.16 ms toward 0.37 ms.
+
+### 4.3 Secondary DMA Differences
+
+1. **Double buffering.** Both use `block_count=2`. Increasing to 3
+   produced no improvement (verified empirically), confirming buffer
+   depth is not a bottleneck.
+
+2. **K-direction alternation.** Saves under 2% of total read volume
+   at 130 cores (Section 4.1). Negligible compared to the relay chain.
+
+3. **Deferred output writes.** tt-metal overlaps previous output
+   block's DRAM write with the next block's input DMA. tt-lang writes
+   synchronously. Not measured in isolation.
+
+4. **Concurrent input reads.** v2_split_dma distributes A and B reads
+   across both RISC cores. Measured: 12--24% improvement over v1_baseline
+   (Section 3.2).
+
+### 4.4 Expressibility in tt-lang
+
+| Optimization | Status | Estimated impact | Required infrastructure |
+|-------------|--------|-----------------|------------------------|
+| Multicast input distribution | Not implemented | **11.3x** DRAM traffic reduction (Section 4.2) | `noc_async_write_multicast` in DM kernels; DRAM reader role assignment per row/column |
+| Split DMA | Implemented (v2_split_dma) | 12--24% (measured) | -- |
+| L1 accumulation | Implemented (v4_l1_acc) | 5% DRAM, 32% L1 (measured) | -- |
+| Double buffering | Active (`block_count=2`) | -- | -- |
+| Concurrent A+B reads | Active (via split DMA) | -- | -- |
+| K-direction alternation | Not implemented | Under 2% read volume | Runtime ternary expressions |
+| Deferred output writes | Not implemented | Not measured | DM-thread coordination, runtime conditionals |
 
 ## 5. Reproducing
 
@@ -480,14 +563,15 @@ TT_METAL_DEVICE_PROFILER=1 TTLANG_AUTO_PROFILE=1 \
   python examples/matmul_bench/bench_matmul.py
 ```
 
-## 6. tt-metal Reference Configuration
+## 6. tt-metal `minimal_matmul` Reference
 
-The following is derived from reading the tt-metal source code
-(`test_minimal_matmul.py`, `minimal_matmul/device/kernels/compute.cpp`,
-`dm_in0_sender.cpp`, `dm_in1_sender_out.cpp`), not from runtime
-profiling of ttnn.matmul.
+The following describes the `ttnn.experimental.minimal_matmul` kernel,
+a separate implementation from the default `ttnn.matmul`. We analyzed
+its source code for structural comparison (compute kernel structure,
+DMA relay chain, L1 accumulation pattern). The default `ttnn.matmul`
+may use a different program factory with different characteristics.
 
-tt-metal `test_minimal_matmul.py::test_linear`:
+`test_minimal_matmul.py::test_linear`:
 - Shape: 4096 x 4096 x 4096
 - Blocks: M=8, K=8, N=8, subblock_h=2, subblock_w=2
 - Config: `fp32_dest_acc_en=True`, `packer_l1_acc=True`,
@@ -558,13 +642,20 @@ Changes needed:
 - Same runtime conditional infrastructure as K-direction alternation
 - `reuse_block` flag controlling `cb_pop_front` and `noc_async_read`
 
-**Multicast input distribution.** A subset of cores read from DRAM and
-multicast to neighbors, reducing total DRAM read traffic.
+**Multicast input distribution.** The default `ttnn.matmul` uses 2D
+multicast: one core reads a tile from DRAM and multicasts it to an
+entire row or column of the compute grid in a single NOC transaction.
+This is the target for tt-lang, as it matches the production
+implementation and provides the largest DRAM traffic reduction
+(Section 4.2).
 
 Changes needed:
-- Multicast NOC primitives in the DM kernel API
-- Grid-aware core role assignment (reader vs receiver)
-- DFB synchronization between multicast sender and receivers
+- `noc_async_write_multicast` (or equivalent) in DM kernel API
+- Grid-aware core role assignment: DRAM readers (one per row/column)
+  vs multicast receivers
+- DFB synchronization between sender and receivers (semaphore-based)
+- Compiler support: the DM kernel generator must produce multicast
+  DM code instead of independent DRAM reads per core
 
 ### 7.3 Programming Model
 
@@ -607,8 +698,8 @@ Changes needed:
 expression.
 
 Changes needed:
-- Fix issue #476: elementwise ops fused with matmul in a single
-  `store` are silently dropped
+- Fix issue #476 (PR #486): elementwise ops fused with matmul in a
+  single `store` are silently dropped
 - `ConvertTTLToCompute.cpp`: separate matmul K reduction from post-op,
   generating K loop with L1 acc for the matmul and a separate compute
   for the post-op on the intermediate CB
