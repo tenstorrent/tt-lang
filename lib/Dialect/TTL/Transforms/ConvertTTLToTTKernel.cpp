@@ -1034,9 +1034,6 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     }
   }
 
-  auto pageSizeIdx =
-      arith::ConstantIndexOp::create(rewriter, loc, pageSizeBytes);
-
   // Destination coordinates for multicast - convert logical to virtual coords
   auto dstStartXLogical =
       arith::ConstantIndexOp::create(rewriter, loc, dstStartX);
@@ -1055,10 +1052,8 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   auto dstEndYVal = ttk::ConvertLogicalYToTranslatedOp::create(rewriter, 
       loc, indexTy, dstEndYLogical);
 
-  auto numDestsVal = arith::ConstantOp::create(rewriter, 
+  auto numDestsVal = arith::ConstantOp::create(rewriter,
       loc, i32Ty, rewriter.getI32IntegerAttr(numDests));
-  auto pageSizeVal = arith::ConstantOp::create(rewriter, 
-      loc, i32Ty, rewriter.getI32IntegerAttr(pageSizeBytes));
 
   SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
 
@@ -1071,52 +1066,47 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     cbNumTiles *= d;
   int64_t slotByteOffset = slotIdx * pageSizeBytes * cbNumTiles;
 
-  emitTileLoop(
-      rewriter, loc, cbBounds,
-      [&](OpBuilder &b, Location bodyLoc, ValueRange cbIVs) {
-        Value cbTileIdx = linearizeNDIndex(b, bodyLoc, cbIVs, cbBounds);
-        Value byteOffset =
-            arith::MulIOp::create(b, bodyLoc, cbTileIdx, pageSizeIdx);
-        Value srcAddrIdx =
-            arith::AddIOp::create(b, bodyLoc, cbReadPtrIdx, byteOffset);
-        Value srcAddr =
-            arith::IndexCastOp::create(b, bodyLoc, i32Ty, srcAddrIdx);
+  // Transfer the entire block in a single NOC write. Tiles are contiguous in
+  // the CB, and destination CB layout is uniform across cores, so we can send
+  // all tiles at once instead of one per tile.
+  int64_t totalSizeBytes = cbNumTiles * pageSizeBytes;
+  auto totalSizeVal = arith::ConstantOp::create(rewriter,
+      loc, i32Ty, rewriter.getI32IntegerAttr(totalSizeBytes));
 
-        // Compute destination address using the receiver's CB base address.
-        // Add slot offset for gather patterns (multiple sources to one dest).
-        Value dstAddrIdx =
-            arith::AddIOp::create(b, bodyLoc, dstBaseIdx, byteOffset);
-        if (slotByteOffset > 0) {
-          auto slotOffsetIdx =
-              arith::ConstantIndexOp::create(b, bodyLoc, slotByteOffset);
-          dstAddrIdx =
-              arith::AddIOp::create(b, bodyLoc, dstAddrIdx, slotOffsetIdx);
-        }
-        Value dstAddr =
-            arith::IndexCastOp::create(b, bodyLoc, i32Ty, dstAddrIdx);
+  Value srcAddr =
+      arith::IndexCastOp::create(rewriter, loc, i32Ty, cbReadPtrIdx);
 
-        if (pipeType.isUnicast()) {
-          auto nocAddr = ttk::GetNocAddrOp::create(b, 
-              bodyLoc, dstStartXVal, dstStartYVal, dstAddr);
-          ttk::NocAsyncWriteOp::create(b, 
-              bodyLoc, srcAddr, nocAddr.getResult(), pageSizeVal);
-        } else {
-          auto mcastAddr = ttk::GetNocMulticastAddrOp::create(b, 
-              bodyLoc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
-              dstAddr, /*noc=*/Value());
-          if (pipeType.srcInDstRange()) {
-            ttk::NocAsyncWriteMulticastLoopbackSrcOp::create(b, 
-                bodyLoc, srcAddr, mcastAddr.getResult(), pageSizeVal,
-                numDestsVal, /*linked=*/nullptr,
-                /*multicast_path_reserve=*/nullptr, /*noc=*/Value());
-          } else {
-            ttk::NocAsyncWriteMulticastOp::create(b, 
-                bodyLoc, srcAddr, mcastAddr.getResult(), pageSizeVal,
-                numDestsVal, /*linked=*/nullptr,
-                /*multicast_path_reserve=*/nullptr, /*noc=*/Value());
-          }
-        }
-      });
+  Value dstAddrIdx = dstBaseIdx;
+  if (slotByteOffset > 0) {
+    auto slotOffsetIdx =
+        arith::ConstantIndexOp::create(rewriter, loc, slotByteOffset);
+    dstAddrIdx =
+        arith::AddIOp::create(rewriter, loc, dstAddrIdx, slotOffsetIdx);
+  }
+  Value dstAddr =
+      arith::IndexCastOp::create(rewriter, loc, i32Ty, dstAddrIdx);
+
+  if (pipeType.isUnicast()) {
+    auto nocAddr = ttk::GetNocAddrOp::create(rewriter,
+        loc, dstStartXVal, dstStartYVal, dstAddr);
+    ttk::NocAsyncWriteOp::create(rewriter,
+        loc, srcAddr, nocAddr.getResult(), totalSizeVal);
+  } else {
+    auto mcastAddr = ttk::GetNocMulticastAddrOp::create(rewriter,
+        loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
+        dstAddr, /*noc=*/Value());
+    if (pipeType.srcInDstRange()) {
+      ttk::NocAsyncWriteMulticastLoopbackSrcOp::create(rewriter,
+          loc, srcAddr, mcastAddr.getResult(), totalSizeVal,
+          numDestsVal, /*linked=*/nullptr,
+          /*multicast_path_reserve=*/nullptr, /*noc=*/Value());
+    } else {
+      ttk::NocAsyncWriteMulticastOp::create(rewriter,
+          loc, srcAddr, mcastAddr.getResult(), totalSizeVal,
+          numDestsVal, /*linked=*/nullptr,
+          /*multicast_path_reserve=*/nullptr, /*noc=*/Value());
+    }
+  }
 
   // Wait for all async writes to complete before signaling the semaphore.
   // Without this barrier, the receiver may wake up before all data arrives.

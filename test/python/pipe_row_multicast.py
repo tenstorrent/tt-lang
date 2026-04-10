@@ -24,7 +24,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
-@ttl.kernel(grid=(4, 1))
+@ttl.operation(grid=(4, 1))
 def pipe_row_multicast(inp, out):
     """Multicast from core (0,0) to cores (1,0), (2,0), (3,0) in same row."""
     # Horizontal multicast: src=(0,0) to cores (1,0) through (3,0)
@@ -57,7 +57,7 @@ def pipe_row_multicast(inp, out):
     @ttl.datamovement()
     def dm_write():
         with out_cb.wait() as out_blk:
-            x, y = ttl.core(dims=2)
+            x, y = ttl.node(dims=2)
             tx_write = ttl.copy(out_blk, out[y, x])
             tx_write.wait()
 
