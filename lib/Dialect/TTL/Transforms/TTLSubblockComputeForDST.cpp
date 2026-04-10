@@ -103,24 +103,30 @@ struct TTLSubblockComputeForDSTPass
     func::FuncOp funcOp = getOperation();
 
     // Collect compute ops to subblock (avoid modifying while walking).
-    // Skip accumulating computes -- subblocking would break reduction
-    // accumulation by splitting the reduction loop across subblocks.
+    // Skip non-matmul accumulating computes (e.g., reduce_tile) because
+    // subblocking would break their reduction accumulation semantics.
+    // Matmul accumulating computes are safe: K accumulates in-place in
+    // DST without consuming DST slots (effectiveTiles already excludes
+    // reduction dims for matmul -- see hasMatmulBlock logic below).
     SmallVector<ComputeOp> opsToSubblock;
     funcOp.walk([&](ComputeOp computeOp) {
       auto unrollAttr =
           computeOp->getAttrOfType<IntegerAttr>(kUnrollFactorAttrName);
       if (unrollAttr && unrollAttr.getInt() > 1) {
         bool hasAccumulating = false;
+        bool hasMatmulBlock = false;
         computeOp.getBody().walk([&](Operation *op) {
           if (op->hasTrait<TTLAccumulatingOpTrait>()) {
             hasAccumulating = true;
-            return WalkResult::interrupt();
           }
-          return WalkResult::advance();
+          if (isa<TileMatmulBlockOp>(op)) {
+            hasMatmulBlock = true;
+          }
         });
-        if (!hasAccumulating) {
-          opsToSubblock.push_back(computeOp);
+        if (hasAccumulating && !hasMatmulBlock) {
+          return;
         }
+        opsToSubblock.push_back(computeOp);
       }
     });
 
