@@ -143,9 +143,10 @@ func.func @f32_subblock_scheduling()
        %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %sum = ttl.tile_add %lhs_tile, %rhs_tile : !ttcore.tile<32x32, f32>
-    %tanh = ttl.tile_tanh %sum : !ttcore.tile<32x32, f32>
-    ttl.tile_store %tanh, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x3x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %sum = ttl.tile_add %lhs_tile, %rhs_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %tanh = ttl.tile_tanh %sum into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %tanh, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x3x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x3x!ttcore.tile<32x32, f32>>
   ttl.cb_push %cb1 : <[2, 3], !ttcore.tile<32x32, f32>, 2>

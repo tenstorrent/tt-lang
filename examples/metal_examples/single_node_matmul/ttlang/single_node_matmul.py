@@ -1,9 +1,6 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-# up to tt-lang spec, not intended to compile or run currently
-import sys
-from pathlib import Path
 import ttnn
 import pytest
 import torch
@@ -76,6 +73,7 @@ def test_singlenode_matmul_tt_lang():
     )
     result = ttnn.to_torch(c).to(torch.bfloat16)
     assert_with_ulp(golden, result)
+    print("Test passed!")
 
     ttnn.close_device(device)
 

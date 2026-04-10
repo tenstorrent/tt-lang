@@ -22,7 +22,7 @@ func.func @fpu_add_cb_shape_mismatch()
   %rhs_tile = tensor.extract %rhs[%c0, %c0] : tensor<1x2x!ttcore.tile<32x32, bf16>>
 
   // expected-error @+1 {{failed to legalize operation 'ttl.tile_add' that was explicitly marked illegal}}
-  %sum = ttl.tile_add %lhs_tile, %rhs_tile {"ttl.fpu_binary", dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>
+  %sum = ttl.tile_add %lhs_tile, %rhs_tile into dst[%c0] {ttl.fpu_binary} : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
 
   %out_view = ttl.cb_reserve %cb1 : <[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
   %out = tensor.insert %sum into %out_view[%c0, %c0] : tensor<2x2x!ttcore.tile<32x32, bf16>>

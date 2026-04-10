@@ -28,11 +28,13 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Extract dst_idx attribute value from an operation, or return max int64
-/// for deterministic ordering of ops without dst_idx.
+/// Extract dst_index from a tile op's SSA operand, or return max int64
+/// for non-tile ops.
 static int64_t getDstIdx(Operation *op) {
-  if (auto attr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-    return attr.getInt();
+  if (auto dstVal = getTileOpDstIndex(op)) {
+    if (auto constIdx = foldIndexToConstant(*dstVal)) {
+      return *constIdx;
+    }
   }
   return std::numeric_limits<int64_t>::max();
 }
@@ -94,7 +96,7 @@ struct TileOpSortKey {
     if (initAffinity != other.initAffinity) {
       return initAffinity < other.initAffinity;
     }
-    // Quinary: dst_idx for deterministic ordering.
+    // Quinary: dst_index for deterministic ordering.
     if (dstIdx != other.dstIdx) {
       return dstIdx < other.dstIdx;
     }

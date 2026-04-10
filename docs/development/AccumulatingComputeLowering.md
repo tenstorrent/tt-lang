@@ -60,12 +60,12 @@ for each parallel dim:           // output tile iteration
     dst_section {
         for each reduction dim:  // accumulate into DST
             <tile ops>
-        <stores with placeholder tile + explicit dst_idx>
+        <stores with placeholder tile + explicit dst_index>
     }
 ```
 
 Stores use a placeholder tile value (via `UnrealizedConversionCastOp`)
-with an explicit `dst_idx` attribute, since the SSA tile value from
+with an explicit `dst_index` operand, since the SSA tile value from
 `reduce_tile` is loop-local.
 
 ### L1 accumulation (declaration-order loops)
@@ -115,9 +115,9 @@ scf.for %j = %c0 to %c2 step %c1 {       // parallel
             %in = tensor.extract %inp[%i, %j]
             %sc = tensor.extract %scaler[%c0, %c0]
             %out = tensor.extract %init[%c0, %j]
-            ttl.tile_reduce %in, %sc, %out sum reduce_dim_col {dst_idx = 0}
+            ttl.tile_reduce %in, %sc, %out sum reduce_dim_col into dst[%c0]
         } {ttl.reduction_loop, ttl.tile_loop_stride = 2}
-        ttl.tile_store %placeholder, %view[%c0, %j] {dst_idx = 0}
+        ttl.tile_store %placeholder, %view[%c0, %j] from dst[%c0]
     }
 } {ttl.tile_loop_stride = 1}
 ```
@@ -144,7 +144,7 @@ After LowerToLoops:
 scf.for %i = %c0 to %c2 step %c1 {       // reduction (declaration order)
     scf.for %j = %c0 to %c2 step %c1 {   // parallel
         ttl.dst_section {
-            ttl.tile_reduce ... {dst_idx = 0}
+            ttl.tile_reduce ... into dst[%c0]
             ttl.tile_store ...
         }
     } {ttl.tile_loop_stride = 1}
