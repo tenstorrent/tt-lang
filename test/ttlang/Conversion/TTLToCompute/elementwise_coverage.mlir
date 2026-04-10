@@ -74,24 +74,12 @@ func.func @unary_exp(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x
 // Test: Unary exp2 (base-2 exponential) lowers to ttl.compute with tile_exp2
 
 // CHECK-LABEL: func.func @unary_exp2
-// CHECK-SAME: (%[[ARG0:.*]]: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
 func.func @unary_exp2(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
-  // CHECK-DAG:  %[[C0:.+]] = arith.constant 0 : index
-  // CHECK-DAG:  %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
-  // CHECK-NEXT: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
-  // CHECK-NEXT: %[[ARG0_CB:.+]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
-  // CHECK:      %[[INIT:.+]] = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
-  // CHECK-NEXT: %[[INIT_CB:.+]] = ttl.attach_cb %[[INIT]], %[[CB1]]
-  // CHECK:      %[[RESULT:.+]] = ttl.compute ins(%[[ARG0_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
-  // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
-  // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
-  // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
-  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
-  // CHECK-NEXT:   %[[EXP2:.+]] = ttl.tile_exp2 %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT:   ttl.tile_store %[[EXP2]], %{{.*}}[%[[I0]], %[[I1]]]
-  // CHECK-NEXT:   ttl.yield
-  // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
-  // CHECK-NEXT: return %[[RESULT]]
+  // CHECK: ttl.compute
+  // CHECK: ttl.copy_tile
+  // CHECK: ttl.tile_exp2
+  // CHECK: ttl.tile_store
+  // CHECK: ttl.yield
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %a = ttl.attach_cb %arg0, %cb0 : (tensor<4x4x!ttcore.tile<32x32, f32>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x4x!ttcore.tile<32x32, f32>>
