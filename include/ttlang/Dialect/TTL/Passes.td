@@ -46,6 +46,24 @@ def TTKernelInsertL1Accumulation
   ];
 }
 
+def TTLAnnotateReductionLoops
+    : Pass<"ttl-annotate-reduction-loops", "::mlir::func::FuncOp"> {
+  let summary = "Annotate user-written scf.for loops as reduction loops";
+  let description = [{
+    Detects user-written `scf.for` loops where all iterations store to the
+    same CB slot (reserved before the loop, pushed after) and annotates them
+    with `ttl.reduction_loop`. This enables `TTKernelInsertL1Accumulation`
+    to insert `pack_reconfig_l1_acc` guards so that packs accumulate across
+    iterations instead of overwriting.
+
+    Targets the pattern:
+      cb_reserve -> scf.for { compute(store to reserved CB) } -> cb_push
+  }];
+  let dependentDialects = [
+    "::mlir::scf::SCFDialect"
+  ];
+}
+
 def TTLConvertTTLToCompute
     : Pass<"convert-ttl-to-compute", "::mlir::func::FuncOp"> {
   let summary = "Lower TTL elementwise tensor ops to ttl.compute with tile ops";
