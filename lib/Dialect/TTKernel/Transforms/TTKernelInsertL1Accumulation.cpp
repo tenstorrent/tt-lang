@@ -35,26 +35,36 @@ namespace ttk = mlir::tt::ttkernel;
 
 namespace {
 
-/// Find the innermost enclosing reduction loop for an operation.
-static scf::ForOp findInnermostReductionLoop(Operation *op) {
+/// Find the enclosing loop that should control L1 accumulation.
+/// Prefers kL1AccLoopAttrName (user-annotated) over kReductionLoopAttrName
+/// (compiler-generated). Returns the innermost matching loop, but if a
+/// kL1AccLoopAttrName loop exists, kReductionLoopAttrName loops inside
+/// it are skipped (they use DST accumulation, not L1).
+static scf::ForOp findL1AccLoop(Operation *op) {
+  scf::ForOp l1AccLoop;
+  scf::ForOp reductionLoop;
   for (Operation *parent = op->getParentOp(); parent;
        parent = parent->getParentOp()) {
     if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-      if (forOp->hasAttr(kReductionLoopAttrName)) {
-        return forOp;
+      if (forOp->hasAttr(kL1AccLoopAttrName)) {
+        l1AccLoop = forOp;
+      } else if (forOp->hasAttr(kReductionLoopAttrName) && !reductionLoop) {
+        reductionLoop = forOp;
       }
     }
   }
-  return nullptr;
+  // User-annotated L1 acc loop takes priority.
+  return l1AccLoop ? l1AccLoop : reductionLoop;
 }
 
-/// Find the outermost enclosing reduction loop for an operation.
-static scf::ForOp findOutermostReductionLoop(Operation *op) {
+/// Find the outermost enclosing L1 acc or reduction loop for the disable guard.
+static scf::ForOp findOutermostL1AccLoop(Operation *op) {
   scf::ForOp outermost;
   for (Operation *parent = op->getParentOp(); parent;
        parent = parent->getParentOp()) {
     if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-      if (forOp->hasAttr(kReductionLoopAttrName)) {
+      if (forOp->hasAttr(kL1AccLoopAttrName) ||
+          forOp->hasAttr(kReductionLoopAttrName)) {
         outermost = forOp;
       }
     }
@@ -72,7 +82,7 @@ struct TTKernelInsertL1AccumulationPass
     // avoids invalidation issues from modifying IR during iteration.
     SmallVector<std::pair<ttk::TileRegsAcquireOp, scf::ForOp>> targets;
     moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
-      auto reductionLoop = findInnermostReductionLoop(acquireOp);
+      auto reductionLoop = findL1AccLoop(acquireOp);
       if (!reductionLoop) {
         return;
       }
@@ -108,7 +118,7 @@ struct TTKernelInsertL1AccumulationPass
       ttk::PackReconfigL1AccOp::create(builder, loc, enableFlag);
 
       // Disable L1 accumulation after the outermost reduction loop.
-      auto outermostLoop = findOutermostReductionLoop(acquireOp);
+      auto outermostLoop = findOutermostL1AccLoop(acquireOp);
       if (disabledLoops.insert(outermostLoop).second) {
         builder.setInsertionPointAfter(outermostLoop);
         Value disableFlag = arith::ConstantOp::create(
