@@ -2,7 +2,7 @@
 
 A performance comparison of tt-lang compiled matmul kernels against
 ttnn.matmul (tt-metal's hand-optimized implementation) on Tenstorrent
-Blackhole hardware.
+Blackhole hardware. The tests were done on the branch in [PR490](https://github.com/tenstorrent/tt-lang/pull/490).
 
 ## 1. Experimental Setup
 
