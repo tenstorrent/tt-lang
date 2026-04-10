@@ -74,12 +74,24 @@ func.func @unary_exp(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x
 // Test: Unary exp2 (base-2 exponential) lowers to ttl.compute with tile_exp2
 
 // CHECK-LABEL: func.func @unary_exp2
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
 func.func @unary_exp2(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
-  // CHECK: ttl.compute
-  // CHECK: ttl.copy_tile
-  // CHECK: ttl.tile_exp2
-  // CHECK: ttl.tile_store
-  // CHECK: ttl.yield
+  // CHECK-DAG:  %[[C0:.+]] = arith.constant 0 : index
+  // CHECK-DAG:  %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
+  // CHECK-NEXT: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
+  // CHECK-NEXT: %[[ARG0_CB:.+]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
+  // CHECK:      %[[INIT:.+]] = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: %[[INIT_CB:.+]] = ttl.attach_cb %[[INIT]], %[[CB1]]
+  // CHECK:      %[[RESULT:.+]] = ttl.compute ins(%[[ARG0_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
+  // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
+  // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
+  // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_exp2 %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   ttl.yield
+  // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: return %[[RESULT]]
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %a = ttl.attach_cb %arg0, %cb0 : (tensor<4x4x!ttcore.tile<32x32, f32>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -94,10 +106,24 @@ func.func @unary_exp2(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4
 // Test: Unary ceil lowers to ttl.compute with tile_ceil
 
 // CHECK-LABEL: func.func @unary_ceil
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
 func.func @unary_ceil(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
-  // CHECK: ttl.compute
-  // CHECK: ttl.tile_ceil
-  // CHECK: ttl.tile_store
+  // CHECK-DAG:  %[[C0:.+]] = arith.constant 0 : index
+  // CHECK-DAG:  %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
+  // CHECK-NEXT: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
+  // CHECK-NEXT: %[[ARG0_CB:.+]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
+  // CHECK:      %[[INIT:.+]] = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: %[[INIT_CB:.+]] = ttl.attach_cb %[[INIT]], %[[CB1]]
+  // CHECK:      %[[RESULT:.+]] = ttl.compute ins(%[[ARG0_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
+  // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
+  // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
+  // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_ceil %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   ttl.yield
+  // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: return %[[RESULT]]
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %a = ttl.attach_cb %arg0, %cb0 : (tensor<4x4x!ttcore.tile<32x32, f32>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -112,10 +138,24 @@ func.func @unary_ceil(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4
 // Test: Unary sign lowers to ttl.compute with tile_sign
 
 // CHECK-LABEL: func.func @unary_sign
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
 func.func @unary_sign(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
-  // CHECK: ttl.compute
-  // CHECK: ttl.tile_sign
-  // CHECK: ttl.tile_store
+  // CHECK-DAG:  %[[C0:.+]] = arith.constant 0 : index
+  // CHECK-DAG:  %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
+  // CHECK-NEXT: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
+  // CHECK-NEXT: %[[ARG0_CB:.+]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
+  // CHECK:      %[[INIT:.+]] = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: %[[INIT_CB:.+]] = ttl.attach_cb %[[INIT]], %[[CB1]]
+  // CHECK:      %[[RESULT:.+]] = ttl.compute ins(%[[ARG0_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
+  // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
+  // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
+  // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_sign %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   ttl.yield
+  // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: return %[[RESULT]]
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %a = ttl.attach_cb %arg0, %cb0 : (tensor<4x4x!ttcore.tile<32x32, f32>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -130,10 +170,24 @@ func.func @unary_sign(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4
 // Test: Unary gelu lowers to ttl.compute with tile_gelu
 
 // CHECK-LABEL: func.func @unary_gelu
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
 func.func @unary_gelu(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
-  // CHECK: ttl.compute
-  // CHECK: ttl.tile_gelu
-  // CHECK: ttl.tile_store
+  // CHECK-DAG:  %[[C0:.+]] = arith.constant 0 : index
+  // CHECK-DAG:  %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
+  // CHECK-NEXT: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
+  // CHECK-NEXT: %[[ARG0_CB:.+]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
+  // CHECK:      %[[INIT:.+]] = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: %[[INIT_CB:.+]] = ttl.attach_cb %[[INIT]], %[[CB1]]
+  // CHECK:      %[[RESULT:.+]] = ttl.compute ins(%[[ARG0_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
+  // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
+  // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
+  // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_gelu %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   ttl.yield
+  // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: return %[[RESULT]]
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %a = ttl.attach_cb %arg0, %cb0 : (tensor<4x4x!ttcore.tile<32x32, f32>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -148,10 +202,24 @@ func.func @unary_gelu(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4
 // Test: Unary silu lowers to ttl.compute with tile_silu
 
 // CHECK-LABEL: func.func @unary_silu
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
 func.func @unary_silu(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
-  // CHECK: ttl.compute
-  // CHECK: ttl.tile_silu
-  // CHECK: ttl.tile_store
+  // CHECK-DAG:  %[[C0:.+]] = arith.constant 0 : index
+  // CHECK-DAG:  %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
+  // CHECK-NEXT: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
+  // CHECK-NEXT: %[[ARG0_CB:.+]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
+  // CHECK:      %[[INIT:.+]] = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: %[[INIT_CB:.+]] = ttl.attach_cb %[[INIT]], %[[CB1]]
+  // CHECK:      %[[RESULT:.+]] = ttl.compute ins(%[[ARG0_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
+  // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
+  // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
+  // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_silu %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   ttl.yield
+  // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: return %[[RESULT]]
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %a = ttl.attach_cb %arg0, %cb0 : (tensor<4x4x!ttcore.tile<32x32, f32>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -166,10 +234,24 @@ func.func @unary_silu(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4
 // Test: Unary hardsigmoid lowers to ttl.compute with tile_hardsigmoid
 
 // CHECK-LABEL: func.func @unary_hardsigmoid
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
 func.func @unary_hardsigmoid(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
-  // CHECK: ttl.compute
-  // CHECK: ttl.tile_hardsigmoid
-  // CHECK: ttl.tile_store
+  // CHECK-DAG:  %[[C0:.+]] = arith.constant 0 : index
+  // CHECK-DAG:  %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
+  // CHECK-NEXT: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
+  // CHECK-NEXT: %[[ARG0_CB:.+]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
+  // CHECK:      %[[INIT:.+]] = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: %[[INIT_CB:.+]] = ttl.attach_cb %[[INIT]], %[[CB1]]
+  // CHECK:      %[[RESULT:.+]] = ttl.compute ins(%[[ARG0_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
+  // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
+  // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
+  // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_hardsigmoid %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   ttl.yield
+  // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: return %[[RESULT]]
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %a = ttl.attach_cb %arg0, %cb0 : (tensor<4x4x!ttcore.tile<32x32, f32>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -184,10 +266,24 @@ func.func @unary_hardsigmoid(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> ten
 // Test: Unary expm1 lowers to ttl.compute with tile_expm1
 
 // CHECK-LABEL: func.func @unary_expm1
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
 func.func @unary_expm1(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
-  // CHECK: ttl.compute
-  // CHECK: ttl.tile_expm1
-  // CHECK: ttl.tile_store
+  // CHECK-DAG:  %[[C0:.+]] = arith.constant 0 : index
+  // CHECK-DAG:  %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
+  // CHECK-NEXT: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
+  // CHECK-NEXT: %[[ARG0_CB:.+]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
+  // CHECK:      %[[INIT:.+]] = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: %[[INIT_CB:.+]] = ttl.attach_cb %[[INIT]], %[[CB1]]
+  // CHECK:      %[[RESULT:.+]] = ttl.compute ins(%[[ARG0_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
+  // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
+  // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
+  // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_expm1 %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   ttl.yield
+  // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: return %[[RESULT]]
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %a = ttl.attach_cb %arg0, %cb0 : (tensor<4x4x!ttcore.tile<32x32, f32>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -202,10 +298,24 @@ func.func @unary_expm1(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x
 // Test: Unary square lowers to ttl.compute with tile_square
 
 // CHECK-LABEL: func.func @unary_square
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
 func.func @unary_square(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
-  // CHECK: ttl.compute
-  // CHECK: ttl.tile_square
-  // CHECK: ttl.tile_store
+  // CHECK-DAG:  %[[C0:.+]] = arith.constant 0 : index
+  // CHECK-DAG:  %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
+  // CHECK-NEXT: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
+  // CHECK-NEXT: %[[ARG0_CB:.+]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
+  // CHECK:      %[[INIT:.+]] = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: %[[INIT_CB:.+]] = ttl.attach_cb %[[INIT]], %[[CB1]]
+  // CHECK:      %[[RESULT:.+]] = ttl.compute ins(%[[ARG0_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
+  // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
+  // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
+  // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_square %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   ttl.yield
+  // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: return %[[RESULT]]
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %a = ttl.attach_cb %arg0, %cb0 : (tensor<4x4x!ttcore.tile<32x32, f32>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -220,10 +330,24 @@ func.func @unary_square(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4
 // Test: Unary softsign lowers to ttl.compute with tile_softsign
 
 // CHECK-LABEL: func.func @unary_softsign
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
 func.func @unary_softsign(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
-  // CHECK: ttl.compute
-  // CHECK: ttl.tile_softsign
-  // CHECK: ttl.tile_store
+  // CHECK-DAG:  %[[C0:.+]] = arith.constant 0 : index
+  // CHECK-DAG:  %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
+  // CHECK-NEXT: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
+  // CHECK-NEXT: %[[ARG0_CB:.+]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
+  // CHECK:      %[[INIT:.+]] = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: %[[INIT_CB:.+]] = ttl.attach_cb %[[INIT]], %[[CB1]]
+  // CHECK:      %[[RESULT:.+]] = ttl.compute ins(%[[ARG0_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
+  // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
+  // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
+  // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_softsign %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   ttl.yield
+  // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: return %[[RESULT]]
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %a = ttl.attach_cb %arg0, %cb0 : (tensor<4x4x!ttcore.tile<32x32, f32>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -238,10 +362,24 @@ func.func @unary_softsign(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor
 // Test: Unary signbit lowers to ttl.compute with tile_signbit
 
 // CHECK-LABEL: func.func @unary_signbit
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
 func.func @unary_signbit(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
-  // CHECK: ttl.compute
-  // CHECK: ttl.tile_signbit
-  // CHECK: ttl.tile_store
+  // CHECK-DAG:  %[[C0:.+]] = arith.constant 0 : index
+  // CHECK-DAG:  %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
+  // CHECK-NEXT: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
+  // CHECK-NEXT: %[[ARG0_CB:.+]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
+  // CHECK:      %[[INIT:.+]] = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: %[[INIT_CB:.+]] = ttl.attach_cb %[[INIT]], %[[CB1]]
+  // CHECK:      %[[RESULT:.+]] = ttl.compute ins(%[[ARG0_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
+  // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
+  // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
+  // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_signbit %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   ttl.yield
+  // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: return %[[RESULT]]
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %a = ttl.attach_cb %arg0, %cb0 : (tensor<4x4x!ttcore.tile<32x32, f32>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -256,10 +394,24 @@ func.func @unary_signbit(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<
 // Test: Unary frac lowers to ttl.compute with tile_frac (shared rounding init)
 
 // CHECK-LABEL: func.func @unary_frac
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
 func.func @unary_frac(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
-  // CHECK: ttl.compute
-  // CHECK: ttl.tile_frac
-  // CHECK: ttl.tile_store
+  // CHECK-DAG:  %[[C0:.+]] = arith.constant 0 : index
+  // CHECK-DAG:  %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
+  // CHECK-NEXT: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
+  // CHECK-NEXT: %[[ARG0_CB:.+]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
+  // CHECK:      %[[INIT:.+]] = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: %[[INIT_CB:.+]] = ttl.attach_cb %[[INIT]], %[[CB1]]
+  // CHECK:      %[[RESULT:.+]] = ttl.compute ins(%[[ARG0_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
+  // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
+  // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
+  // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_frac %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   ttl.yield
+  // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: return %[[RESULT]]
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %a = ttl.attach_cb %arg0, %cb0 : (tensor<4x4x!ttcore.tile<32x32, f32>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -274,10 +426,24 @@ func.func @unary_frac(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4
 // Test: Unary trunc lowers to ttl.compute with tile_trunc (shared rounding init)
 
 // CHECK-LABEL: func.func @unary_trunc
+// CHECK-SAME: (%[[ARG0:.*]]: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
 func.func @unary_trunc(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x!ttcore.tile<32x32, f32>> {
-  // CHECK: ttl.compute
-  // CHECK: ttl.tile_trunc
-  // CHECK: ttl.tile_store
+  // CHECK-DAG:  %[[C0:.+]] = arith.constant 0 : index
+  // CHECK-DAG:  %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
+  // CHECK-NEXT: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
+  // CHECK-NEXT: %[[ARG0_CB:.+]] = ttl.attach_cb %[[ARG0]], %[[CB0]]
+  // CHECK:      %[[INIT:.+]] = tensor.empty() : tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: %[[INIT_CB:.+]] = ttl.attach_cb %[[INIT]], %[[CB1]]
+  // CHECK:      %[[RESULT:.+]] = ttl.compute ins(%[[ARG0_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>) outs(%[[INIT_CB]] : tensor<4x4x!ttcore.tile<32x32, f32>>)
+  // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
+  // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
+  // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_trunc %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   ttl.yield
+  // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+  // CHECK-NEXT: return %[[RESULT]]
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
   %a = ttl.attach_cb %arg0, %cb0 : (tensor<4x4x!ttcore.tile<32x32, f32>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -426,11 +592,11 @@ func.func @all_unary_ops(%x: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2
   %cb14 = ttl.bind_cb {cb_index = 14, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   %cb15 = ttl.bind_cb {cb_index = 15, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   %cb16 = ttl.bind_cb {cb_index = 16, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+  %cb17 = ttl.bind_cb {cb_index = 17, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   %cb18 = ttl.bind_cb {cb_index = 18, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   %cb19 = ttl.bind_cb {cb_index = 19, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   %cb20 = ttl.bind_cb {cb_index = 20, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
   %cb21 = ttl.bind_cb {cb_index = 21, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
-  %cb22 = ttl.bind_cb {cb_index = 22, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
 
   %x_cb = ttl.attach_cb %x, %cb0 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
@@ -565,41 +731,41 @@ func.func @all_unary_ops(%x: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2
 
   // CHECK: ttl.tile_square
   // CHECK: ttl.tile_store
-  %r17 = ttl.cb_reserve %cb18 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %r16 = ttl.cb_reserve %cb17 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %square = ttl.square %expm1_cb : tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  ttl.store %square, %r17 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
+  ttl.store %square, %r16 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
 
-  %square_cb = ttl.attach_cb %square, %cb18 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %square_cb = ttl.attach_cb %square, %cb17 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   // CHECK: ttl.tile_softsign
   // CHECK: ttl.tile_store
-  %r18 = ttl.cb_reserve %cb19 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %r17 = ttl.cb_reserve %cb18 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %softsign = ttl.softsign %square_cb : tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  ttl.store %softsign, %r18 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
+  ttl.store %softsign, %r17 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
 
-  %softsign_cb = ttl.attach_cb %softsign, %cb19 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %softsign_cb = ttl.attach_cb %softsign, %cb18 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   // CHECK: ttl.tile_signbit
   // CHECK: ttl.tile_store
-  %r19 = ttl.cb_reserve %cb20 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %r18 = ttl.cb_reserve %cb19 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %signbit = ttl.signbit %softsign_cb : tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  ttl.store %signbit, %r19 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
+  ttl.store %signbit, %r18 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
 
-  %signbit_cb = ttl.attach_cb %signbit, %cb20 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %signbit_cb = ttl.attach_cb %signbit, %cb19 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   // CHECK: ttl.tile_frac
   // CHECK: ttl.tile_store
-  %r20 = ttl.cb_reserve %cb21 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %r19 = ttl.cb_reserve %cb20 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %frac = ttl.frac %signbit_cb : tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  ttl.store %frac, %r20 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
+  ttl.store %frac, %r19 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
 
-  %frac_cb = ttl.attach_cb %frac, %cb21 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %frac_cb = ttl.attach_cb %frac, %cb20 : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x2x!ttcore.tile<32x32, f32>>
 
   // CHECK: ttl.tile_trunc
   // CHECK: ttl.tile_store
-  %r21 = ttl.cb_reserve %cb22 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %r20 = ttl.cb_reserve %cb21 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   %trunc = ttl.trunc %frac_cb : tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
-  ttl.store %trunc, %r21 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
+  ttl.store %trunc, %r20 : tensor<2x2x!ttcore.tile<32x32, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
 
   func.return %trunc : tensor<2x2x!ttcore.tile<32x32, f32>>
 }

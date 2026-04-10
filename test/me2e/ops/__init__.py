@@ -56,6 +56,7 @@ OP_TORCH_MAP: Dict[str, Callable[..., Tensor]] = {
     "expm1": torch.expm1,
     "square": torch.square,
     "softsign": torch.nn.functional.softsign,
+    # torch.signbit returns bool tensor; cast to float for numeric comparison.
     "signbit": lambda x: torch.signbit(x).float(),
     "frac": torch.frac,
     "trunc": torch.trunc,
