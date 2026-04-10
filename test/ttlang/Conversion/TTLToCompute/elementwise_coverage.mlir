@@ -56,7 +56,7 @@ func.func @unary_exp(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4x
   // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
   // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
   // CHECK-NEXT:   %[[EXP:.+]] = ttl.tile_exp %[[DTILE]] into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-  // CHECK-NEXT:   ttl.tile_store %[[EXP]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   ttl.tile_store %[[EXP]], %{{.*}}[%[[I0]], %[[I1]]] from dst[%[[C0]]]
   // CHECK-NEXT:   ttl.yield
   // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: return %[[RESULT]]
@@ -86,9 +86,9 @@ func.func @unary_exp2(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4
   // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
   // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
   // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
-  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
-  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_exp2 %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_exp2 %[[DTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]] from dst[%[[C0]]]
   // CHECK-NEXT:   ttl.yield
   // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: return %[[RESULT]]
@@ -118,9 +118,9 @@ func.func @unary_ceil(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4
   // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
   // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
   // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
-  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
-  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_ceil %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_ceil %[[DTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]] from dst[%[[C0]]]
   // CHECK-NEXT:   ttl.yield
   // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: return %[[RESULT]]
@@ -150,9 +150,9 @@ func.func @unary_sign(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4
   // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
   // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
   // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
-  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
-  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_sign %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_sign %[[DTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]] from dst[%[[C0]]]
   // CHECK-NEXT:   ttl.yield
   // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: return %[[RESULT]]
@@ -182,9 +182,9 @@ func.func @unary_gelu(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4
   // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
   // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
   // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
-  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
-  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_gelu %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_gelu %[[DTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]] from dst[%[[C0]]]
   // CHECK-NEXT:   ttl.yield
   // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: return %[[RESULT]]
@@ -214,9 +214,9 @@ func.func @unary_silu(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4
   // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
   // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
   // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
-  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
-  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_silu %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_silu %[[DTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]] from dst[%[[C0]]]
   // CHECK-NEXT:   ttl.yield
   // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: return %[[RESULT]]
@@ -246,9 +246,9 @@ func.func @unary_hardsigmoid(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> ten
   // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
   // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
   // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
-  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
-  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_hardsigmoid %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_hardsigmoid %[[DTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]] from dst[%[[C0]]]
   // CHECK-NEXT:   ttl.yield
   // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: return %[[RESULT]]
@@ -278,9 +278,9 @@ func.func @unary_expm1(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x
   // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
   // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
   // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
-  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
-  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_expm1 %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_expm1 %[[DTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]] from dst[%[[C0]]]
   // CHECK-NEXT:   ttl.yield
   // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: return %[[RESULT]]
@@ -310,9 +310,9 @@ func.func @unary_square(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4
   // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
   // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
   // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
-  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
-  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_square %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_square %[[DTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]] from dst[%[[C0]]]
   // CHECK-NEXT:   ttl.yield
   // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: return %[[RESULT]]
@@ -342,9 +342,9 @@ func.func @unary_softsign(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor
   // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
   // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
   // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
-  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
-  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_softsign %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_softsign %[[DTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]] from dst[%[[C0]]]
   // CHECK-NEXT:   ttl.yield
   // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: return %[[RESULT]]
@@ -374,9 +374,9 @@ func.func @unary_signbit(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<
   // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
   // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
   // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
-  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
-  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_signbit %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_signbit %[[DTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]] from dst[%[[C0]]]
   // CHECK-NEXT:   ttl.yield
   // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: return %[[RESULT]]
@@ -406,9 +406,9 @@ func.func @unary_frac(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x4
   // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
   // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
   // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
-  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
-  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_frac %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_frac %[[DTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]] from dst[%[[C0]]]
   // CHECK-NEXT:   ttl.yield
   // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: return %[[RESULT]]
@@ -438,9 +438,9 @@ func.func @unary_trunc(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>) -> tensor<4x
   // CHECK-NEXT: ^bb0(%[[IN:.+]]: !ttcore.tile<32x32, f32>, %[[OUT:.+]]: !ttcore.tile<32x32, f32>):
   // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
   // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
-  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]], %[[C0]]
-  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_trunc %[[DTILE]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]]
+  // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[IN]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
+  // CHECK-NEXT:   %[[RES:.+]] = ttl.tile_trunc %[[DTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  // CHECK-NEXT:   ttl.tile_store %[[RES]], %{{.*}}[%[[I0]], %[[I1]]] from dst[%[[C0]]]
   // CHECK-NEXT:   ttl.yield
   // CHECK-NEXT: } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: return %[[RESULT]]
@@ -502,7 +502,7 @@ func.func @chained_ops(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>>, %arg1: tenso
   // CHECK-NEXT:   %[[I1B:.*]] = ttl.iter_index 1 : index
   // CHECK-NEXT:   %[[DTOK2:.*]], %[[DTILE2:.*]] = ttl.copy_tile %[[IN2]][%[[I0B]], %[[I1B]]] into dst[%[[C0]]]
   // CHECK-NEXT:   %[[TILE_RELU:.+]] = ttl.tile_relu %[[DTILE2]] into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-  // CHECK-NEXT:   ttl.tile_store %[[TILE_RELU]], %{{.*}}[%[[I0B]], %[[I1B]]]
+  // CHECK-NEXT:   ttl.tile_store %[[TILE_RELU]], %{{.*}}[%[[I0B]], %[[I1B]]] from dst[%[[C0]]]
   // CHECK-NEXT:   ttl.yield
   // CHECK-NEXT: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   // CHECK-NEXT: return %[[RESULT]]
