@@ -7,9 +7,10 @@
 //===----------------------------------------------------------------------===//
 //
 // Inserts pack_reconfig_l1_acc guards inside reduction loops. When a
-// tile_regs_acquire is inside a reduction loop, the packer must switch
-// to L1 accumulation mode from the second iteration onwards so that
-// pack_tile adds to the existing L1 value instead of overwriting.
+// tile_regs_release is inside a reduction loop, the packer is switched
+// to L1 accumulation mode once after the first iteration's pack so that
+// subsequent iterations add to the existing L1 value instead of
+// overwriting. The L1 acc state persists across tile_regs boundaries.
 //
 // See docs/development/AccumulatingComputeLowering.md for design details.
 //
@@ -95,60 +96,100 @@ struct TTKernelInsertL1AccumulationPass
       }
     });
 
-    // Insert pack_reconfig_l1_acc matching the tt-metal minimal_matmul
-    // pattern: enable at the END of the first K iteration (after all
-    // DstSections complete), disable after the loop. The enable guard
-    // uses `if (k == lb)` so it fires once when the first iteration
-    // finishes, and L1 acc stays enabled for all subsequent iterations.
+    // L1 accumulation guard placement. For any loop that
+    // accumulates in L1 (matmul K loop or reduce loop), the pattern is:
+    //
+    //   pack_reconfig_l1_acc(0)                // disable before loop
+    //   for (iv = lb; ...) {
+    //     [subblock 0: acquire...pack...release]
+    //     [subblock N: acquire...pack...release]
+    //     if (iv == lb) pack_reconfig_l1_acc(1) // enable once after first
+    //                                           // iteration's last pack
+    //   }
+    //   [cb_push_back if present]
+    //   pack_reconfig_l1_acc(0)                // disable after loop
+    //
+    // The L1 acc state persists across tile_regs boundaries, so the enable
+    // call only needs to happen once (after the first iteration completes
+    // all subblock packs). Disable guards are inserted once per outermost
+    // loop.
+
+    // Find the top-level operation in each L1 acc loop body that contains
+    // the last tile_regs_release. The release may be nested inside subblock
+    // loops, so we find the enclosing top-level op to insert after.
+    auto findTopLevelAncestor = [](Operation *op, Block *loopBody)
+        -> Operation * {
+      while (op && op->getBlock() != loopBody) {
+        op = op->getParentOp();
+      }
+      return op;
+    };
+
+    llvm::SmallDenseMap<Operation *, Operation *> enablePointPerLoop;
+    for (auto loop : l1AccLoops) {
+      Operation *lastTopLevel = nullptr;
+      loop->walk([&](ttk::TileRegsReleaseOp releaseOp) {
+        Operation *topLevel =
+            findTopLevelAncestor(releaseOp, loop.getBody());
+        if (topLevel) {
+          lastTopLevel = topLevel;
+        }
+      });
+      if (lastTopLevel) {
+        enablePointPerLoop[loop.getOperation()] = lastTopLevel;
+      }
+    }
+
     llvm::SmallDenseSet<Operation *> disabledLoops;
-    for (scf::ForOp loop : l1AccLoops) {
+    for (auto loop : l1AccLoops) {
+      auto iter = enablePointPerLoop.find(loop.getOperation());
+      if (iter == enablePointPerLoop.end()) {
+        continue;
+      }
+      Operation *enablePoint = iter->second;
       OpBuilder builder(loop->getContext());
-      Location loc = loop.getLoc();
+      Location loc = enablePoint->getLoc();
 
-      // Disable L1 acc before the loop to ensure clean state.
-      builder.setInsertionPoint(loop);
-      Value disablePre = arith::ConstantOp::create(
-          builder, loc, builder.getI32Type(), builder.getI32IntegerAttr(0));
-      ttk::PackReconfigL1AccOp::create(builder, loc, disablePre);
-
-      // Enable at end of first iteration, matching tt-metal:
-      //   if (k_block == 0) { PACK((llk_pack_reconfig_l1_acc(1))); }
-      Operation *yield = loop.getBody()->getTerminator();
-      builder.setInsertionPoint(yield);
+      // Conditional enable after the last subblock/release on the first
+      // iteration. Placed after the top-level op containing the last
+      // release so all subblock packs in iteration 0 write without
+      // accumulation.
+      builder.setInsertionPointAfter(enablePoint);
       Value loopIV = loop.getInductionVar();
       Value loopLB = loop.getLowerBound();
-      Value isFirstIter = arith::CmpIOp::create(
+      Value firstIter = arith::CmpIOp::create(
           builder, loc, arith::CmpIPredicate::eq, loopIV, loopLB);
-      auto ifOp = scf::IfOp::create(builder, loc, isFirstIter);
+      auto ifOp = scf::IfOp::create(builder, loc, firstIter);
       builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
       Value enableFlag = arith::ConstantOp::create(
           builder, loc, builder.getI32Type(), builder.getI32IntegerAttr(1));
       ttk::PackReconfigL1AccOp::create(builder, loc, enableFlag);
 
-      // Disable after each L1 acc loop to prevent L1 acc state from
-      // leaking into outer loops or subsequent code.
-      if (disabledLoops.insert(loop.getOperation()).second) {
-        // For the outermost loop, place disable after cb_push_back.
-        // For inner loops, place directly after the loop.
-        auto outermostLoop = findOutermostL1AccLoop(loop);
-        bool isOutermost = !outermostLoop || outermostLoop == loop;
-        if (isOutermost) {
-          // Scan forward for cb_push_back.
-          Operation *insertPoint = loop->getNextNode();
-          while (insertPoint && !isa<ttk::CBPushBackOp>(insertPoint)) {
-            insertPoint = insertPoint->getNextNode();
-          }
-          if (insertPoint) {
-            builder.setInsertionPointAfter(insertPoint);
-          } else {
-            builder.setInsertionPointAfter(loop);
-          }
-        } else {
-          builder.setInsertionPointAfter(loop);
-        }
-        Value disableFlag = arith::ConstantOp::create(
+      // Disable before and after the outermost L1 acc loop (once per loop).
+      auto outermostLoop = findOutermostL1AccLoop(loop);
+      if (!outermostLoop) {
+        outermostLoop = loop;
+      }
+      if (disabledLoops.insert(outermostLoop.getOperation()).second) {
+        // Disable before the loop.
+        builder.setInsertionPoint(outermostLoop);
+        Value disablePre = arith::ConstantOp::create(
             builder, loc, builder.getI32Type(), builder.getI32IntegerAttr(0));
-        ttk::PackReconfigL1AccOp::create(builder, loc, disableFlag);
+        ttk::PackReconfigL1AccOp::create(builder, loc, disablePre);
+
+        // Disable after cb_push_back following the loop, or after the loop.
+        Operation *insertPoint = outermostLoop->getNextNode();
+        while (insertPoint && !isa<ttk::CBPushBackOp>(insertPoint)) {
+          insertPoint = insertPoint->getNextNode();
+        }
+        if (insertPoint) {
+          builder.setInsertionPointAfter(insertPoint);
+        } else {
+          builder.setInsertionPointAfter(outermostLoop);
+        }
+        Value disablePost = arith::ConstantOp::create(
+            builder, loc, builder.getI32Type(), builder.getI32IntegerAttr(0));
+        ttk::PackReconfigL1AccOp::create(builder, loc, disablePost);
       }
     }
   }
