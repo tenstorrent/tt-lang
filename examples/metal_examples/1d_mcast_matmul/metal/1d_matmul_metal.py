@@ -175,11 +175,11 @@ def test_1d_matmul_metal(
     ), "1D matmul requires multiple blocks to use all 4 kernels"
 
     # Single sender node at (0, 0) broadcasts to all other nodes
-    in0_sender_node = ttnn.NodeRangeSet(
-        [ttnn.NodeRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))]
+    in0_sender_node = ttnn.CoreRangeSet(
+        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))]
     )
     # All compute nodes (entire grid used for computation)
-    all_nodes = ttnn.num_nodes_to_noderangeset(
+    all_nodes = ttnn.num_cores_to_corerangeset(
         num_worker_nodes, ttnn.CoreCoord(num_nodes_x, num_nodes_y), row_wise=True
     )
     # Receiver nodes are all nodes except the single sender node (0,0)
@@ -218,22 +218,22 @@ def test_1d_matmul_metal(
     block_count = 2
     a_cb_descriptor = ttnn.CBDescriptor(
         total_size=block_count * cb_page_size * (block_m * block_k),
-        node_ranges=all_nodes,
+        core_ranges=all_nodes,
         format_descriptors=[a_cb_format],
     )
     b_cb_descriptor = ttnn.CBDescriptor(
         total_size=block_count * cb_page_size * (block_n * block_k),
-        node_ranges=all_nodes,
+        core_ranges=all_nodes,
         format_descriptors=[b_cb_format],
     )
     out_cb_descriptor = ttnn.CBDescriptor(
         total_size=cb_page_size * (block_m * block_n),
-        node_ranges=all_nodes,
+        core_ranges=all_nodes,
         format_descriptors=[out_cb_format],
     )
     intermediate_cb_descriptor = ttnn.CBDescriptor(
         total_size=cb_page_size * (block_m * block_n),
-        node_ranges=all_nodes,
+        core_ranges=all_nodes,
         format_descriptors=[intermediate_cb_format],
     )
     in0_sender_semaphore_id = 0
@@ -346,19 +346,17 @@ def test_1d_matmul_metal(
         -(-num_worker_nodes // num_nodes_x) if num_nodes_x < num_worker_nodes else 1
     )
 
-    in0_sender_rt_args = [[[] for _ in range(num_y_nodes)] for _ in range(num_x_nodes)]
-    in0_receiver_rt_args = [
-        [[] for _ in range(num_y_nodes)] for _ in range(num_x_nodes)
-    ]
-    in1_writer_rt_args = [[[] for _ in range(num_y_nodes)] for _ in range(num_x_nodes)]
-    compute_rt_args = [[[] for _ in range(num_y_nodes)] for _ in range(num_x_nodes)]
+    in0_sender_rt_args = []
+    in0_receiver_rt_args = []
+    in1_writer_rt_args = []
+    compute_rt_args = []
 
     total_receivers = num_worker_nodes - 1
     print(
         f"1D matmul: Single sender at (0,0) multicasts to {total_receivers} receivers, across a grid of {num_x_nodes} x {num_y_nodes} nodes"
     )
 
-    noc_of_sender = device.worker_node_from_logical_node(ttnn.CoreCoord(0, 0))
+    noc_of_sender = device.worker_core_from_logical_core(ttnn.CoreCoord(0, 0))
 
     # Assign work to nodes
     worker_node_idx = 0
@@ -366,16 +364,17 @@ def test_1d_matmul_metal(
         for output_idx_x in range(num_x_nodes):
             if worker_node_idx >= num_worker_nodes:
                 break
+            core = ttnn.CoreCoord(output_idx_x, output_idx_y)
             # in0 sender args (only for node (0,0))
             # Single sender multicasts to all other nodes in the grid
             if output_idx_x == 0 and output_idx_y == 0:
                 # NOTE: multicast nocs require perfect rectangular node regions
                 # so when num_worker_nodes % num_nodes_x != 0, the last row of nodes will be multicasted to, but not utilized
-                mcast_end_node_noc = device.worker_node_from_logical_node(
+                mcast_end_node_noc = device.worker_core_from_logical_core(
                     ttnn.CoreCoord(num_x_nodes - 1, num_y_nodes - 1)
                 )
 
-                in0_sender_rt_args[output_idx_x][output_idx_y] = [
+                sender_args = [
                     a_tensor.buffer_address(),
                     0,
                     noc_of_sender.x,
@@ -383,39 +382,42 @@ def test_1d_matmul_metal(
                     mcast_end_node_noc.x,
                     mcast_end_node_noc.y,
                 ]
+                in0_sender_rt_args.append((core, sender_args))
                 print(
                     f"IN0_SENDER - RUNTIME_ARGS for node ({output_idx_x}, {output_idx_y}), worker: {worker_node_idx}"
                 )
                 print(
-                    f"IN0_SENDER_CORE - RUNTIME_ARGS ({len(in0_sender_rt_args[output_idx_x][output_idx_y])} args): {', '.join(map(str, in0_sender_rt_args[output_idx_x][output_idx_y]))}"
+                    f"IN0_SENDER_CORE - RUNTIME_ARGS ({len(sender_args)} args): {', '.join(map(str, sender_args))}"
                 )
 
             # in0 receiver args (for all nodes except (0,0))
             if not (output_idx_x == 0 and output_idx_y == 0):
-                in0_receiver_rt_args[output_idx_x][output_idx_y] = [
+                receiver_args = [
                     noc_of_sender.x,
                     noc_of_sender.y,
                 ]
+                in0_receiver_rt_args.append((core, receiver_args))
                 print(
                     f"IN0_RECEIVER - RUNTIME_ARGS for node ({output_idx_x}, {output_idx_y}), worker: {worker_node_idx}"
                 )
                 print(
-                    f"IN0_RECEIVER_CORE - RUNTIME_ARGS ({len(in0_receiver_rt_args[output_idx_x][output_idx_y])} args): {', '.join(map(str, in0_receiver_rt_args[output_idx_x][output_idx_y]))}"
+                    f"IN0_RECEIVER_CORE - RUNTIME_ARGS ({len(receiver_args)} args): {', '.join(map(str, receiver_args))}"
                 )
 
             # in1 reader + writer args (all nodes)
-            in1_writer_rt_args[output_idx_x][output_idx_y] = [
+            in1_writer_args = [
                 b_tensor.buffer_address(),
                 worker_node_idx * n_blocks_per_node * block_n,
                 output_tensor.buffer_address(),
                 worker_node_idx * n_blocks_per_node * block_n,
             ]
+            in1_writer_rt_args.append((core, in1_writer_args))
 
             print(
                 f"IN1_SENDER_WRITER - RUNTIME_ARGS for node ({output_idx_x}, {output_idx_y}), worker: {worker_node_idx}"
             )
             print(
-                f"IN1_SENDER_WRITER_CORE - RUNTIME_ARGS ({len(in1_writer_rt_args[output_idx_x][output_idx_y])} args): {', '.join(map(str, in1_writer_rt_args[output_idx_x][output_idx_y]))}"
+                f"IN1_SENDER_WRITER_CORE - RUNTIME_ARGS ({len(in1_writer_args)} args): {', '.join(map(str, in1_writer_args))}"
             )
             worker_node_idx += 1
 
@@ -427,7 +429,7 @@ def test_1d_matmul_metal(
     in0_sender_kernel_descriptor = ttnn.KernelDescriptor(
         kernel_source="examples/metal_examples/1d_mcast_matmul/metal/kernels/sender_in0_interleaved.cpp",
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        node_ranges=in0_sender_node,
+        core_ranges=in0_sender_node,
         compile_time_args=in0_sender_compile_time_args,
         runtime_args=in0_sender_rt_args,
         config=ttnn.ReaderConfigDescriptor(),
@@ -436,7 +438,7 @@ def test_1d_matmul_metal(
     in0_receiver_kernel_descriptor = ttnn.KernelDescriptor(
         kernel_source="examples/metal_examples/1d_mcast_matmul/metal/kernels/reciever_in0_interleaved.cpp",
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        node_ranges=in0_receiver_nodes,
+        core_ranges=in0_receiver_nodes,
         compile_time_args=in0_receiver_compile_time_args,
         runtime_args=in0_receiver_rt_args,
         config=ttnn.ReaderConfigDescriptor(),
@@ -445,7 +447,7 @@ def test_1d_matmul_metal(
     in1_writer_kernel_descriptor = ttnn.KernelDescriptor(
         kernel_source="examples/metal_examples/1d_mcast_matmul/metal/kernels/reader_in1_writer_out_interleaved.cpp",
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        node_ranges=all_nodes,
+        core_ranges=all_nodes,
         compile_time_args=in1_writer_compile_time_args,
         runtime_args=in1_writer_rt_args,
         config=ttnn.WriterConfigDescriptor(),
@@ -454,7 +456,7 @@ def test_1d_matmul_metal(
     compute_kernel_descriptor = ttnn.KernelDescriptor(
         kernel_source="examples/metal_examples/1d_mcast_matmul/metal/kernels/reuse_compute.cpp",
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        node_ranges=all_nodes,
+        core_ranges=all_nodes,
         compile_time_args=compute_compile_time_args,
         runtime_args=compute_rt_args,
         config=computeConfig,
@@ -465,12 +467,12 @@ def test_1d_matmul_metal(
         ttnn.SemaphoreDescriptor(
             id=in0_sender_semaphore_id,
             initial_value=0,
-            node_ranges=in0_sender_node,
+            core_ranges=in0_sender_node,
         ),
         ttnn.SemaphoreDescriptor(
             id=in0_receiver_semaphore_id,
             initial_value=0,
-            node_ranges=all_nodes,
+            core_ranges=all_nodes,
         ),
     ]
 
@@ -503,6 +505,6 @@ def test_1d_matmul_metal(
     torch_output = torch.matmul(a_tensor_torch, b_tensor_torch)
 
     assert_with_ulp(torch_output, metal_output)
-    print("test passed.")
+    print("Test passed!")
 
     ttnn.close_device(device)

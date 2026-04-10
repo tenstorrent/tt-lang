@@ -28,8 +28,8 @@ def test_multinode_matmul(M, K, N):
 
     device_node_size = device.compute_with_storage_grid_size()
     upper_bound_node = ttnn.CoreCoord(device_node_size.x - 1, device_node_size.y - 1)
-    device_node_grid = ttnn.NodeRangeSet(
-        [ttnn.NodeRange(ttnn.CoreCoord(0, 0), upper_bound_node)]
+    device_node_grid = ttnn.CoreRangeSet(
+        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), upper_bound_node)]
     )
     print(
         f"node_grid: {device_node_grid}, num_output_tiles_total: {num_output_tiles_total}"
@@ -92,17 +92,17 @@ def test_multinode_matmul(M, K, N):
 
     a_cb_descriptor = ttnn.CBDescriptor(
         total_size=cb_total_size,
-        node_ranges=all_nodes,
+        core_ranges=all_nodes,
         format_descriptors=[a_cb_format],
     )
     b_cb_descriptor = ttnn.CBDescriptor(
         total_size=cb_total_size,
-        node_ranges=all_nodes,
+        core_ranges=all_nodes,
         format_descriptors=[b_cb_format],
     )
     out_cb_descriptor = ttnn.CBDescriptor(
         total_size=cb_total_size,
-        node_ranges=all_nodes,
+        core_ranges=all_nodes,
         format_descriptors=[out_cb_format],
     )
 
@@ -121,9 +121,9 @@ def test_multinode_matmul(M, K, N):
     # as the larger one to enable indexing in
     num_x_nodes = upper_bound_node.x + 1
     num_y_nodes = upper_bound_node.y + 1
-    reader_rt_args = [[[] for _ in range(num_y_nodes)] for _ in range(num_x_nodes)]
-    writer_rt_args = [[[] for _ in range(num_y_nodes)] for _ in range(num_x_nodes)]
-    compute_rt_args = [[[] for _ in range(num_y_nodes)] for _ in range(num_x_nodes)]
+    reader_rt_args = []
+    writer_rt_args = []
+    compute_rt_args = []
     current_tile = 0
     for node_range in node_group_1.ranges():
         for x in range(node_range.start.x, node_range.end.x + 1):
@@ -131,21 +131,32 @@ def test_multinode_matmul(M, K, N):
                 print(
                     f"Assigning node ({x},{y}) tile {current_tile} work_per_node1 {work_per_node1}"
                 )
-                reader_rt_args[x][y] = [
-                    a_tensor.buffer_address(),
-                    b_tensor.buffer_address(),
-                    Mt,
-                    Kt,
-                    Nt,
-                    current_tile,
-                    work_per_node1,
-                ]
-                writer_rt_args[x][y] = [
-                    output_tensor.buffer_address(),
-                    work_per_node1,
-                    current_tile,
-                ]
-                compute_rt_args[x][y] = [work_per_node1, Kt]
+                core = ttnn.CoreCoord(x, y)
+                reader_rt_args.append(
+                    (
+                        core,
+                        [
+                            a_tensor.buffer_address(),
+                            b_tensor.buffer_address(),
+                            Mt,
+                            Kt,
+                            Nt,
+                            current_tile,
+                            work_per_node1,
+                        ],
+                    )
+                )
+                writer_rt_args.append(
+                    (
+                        core,
+                        [
+                            output_tensor.buffer_address(),
+                            work_per_node1,
+                            current_tile,
+                        ],
+                    )
+                )
+                compute_rt_args.append((core, [work_per_node1, Kt]))
                 current_tile += work_per_node1
 
     for node_range in node_group_2.ranges():
@@ -154,21 +165,32 @@ def test_multinode_matmul(M, K, N):
                 print(
                     f"Assigning node ({x},{y}) tile {current_tile} work_per_node2 {work_per_node2}"
                 )
-                reader_rt_args[x][y] = [
-                    a_tensor.buffer_address(),
-                    b_tensor.buffer_address(),
-                    Mt,
-                    Kt,
-                    Nt,
-                    current_tile,
-                    work_per_node2,
-                ]
-                writer_rt_args[x][y] = [
-                    output_tensor.buffer_address(),
-                    work_per_node2,
-                    current_tile,
-                ]
-                compute_rt_args[x][y] = [work_per_node2, Kt]
+                core = ttnn.CoreCoord(x, y)
+                reader_rt_args.append(
+                    (
+                        core,
+                        [
+                            a_tensor.buffer_address(),
+                            b_tensor.buffer_address(),
+                            Mt,
+                            Kt,
+                            Nt,
+                            current_tile,
+                            work_per_node2,
+                        ],
+                    )
+                )
+                writer_rt_args.append(
+                    (
+                        core,
+                        [
+                            output_tensor.buffer_address(),
+                            work_per_node2,
+                            current_tile,
+                        ],
+                    )
+                )
+                compute_rt_args.append((core, [work_per_node2, Kt]))
                 current_tile += work_per_node2
 
     # Compute config init can't handle options, set here
@@ -180,7 +202,7 @@ def test_multinode_matmul(M, K, N):
     reader_kernel_descriptor = ttnn.KernelDescriptor(
         kernel_source="examples/metal_examples/multinode_matmul/metal/kernels/mm_reader.cpp",
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        node_ranges=all_nodes,
+        core_ranges=all_nodes,
         compile_time_args=reader_compile_time_args,
         runtime_args=reader_rt_args,
         config=ttnn.ReaderConfigDescriptor(),
@@ -188,7 +210,7 @@ def test_multinode_matmul(M, K, N):
     writer_kernel_descriptor = ttnn.KernelDescriptor(
         kernel_source="examples/metal_examples/multinode_matmul/metal/kernels/mm_writer.cpp",
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        node_ranges=all_nodes,
+        core_ranges=all_nodes,
         compile_time_args=writer_compile_time_args,
         runtime_args=writer_rt_args,
         config=ttnn.WriterConfigDescriptor(),
@@ -196,7 +218,7 @@ def test_multinode_matmul(M, K, N):
     compute_kernel_descriptor = ttnn.KernelDescriptor(
         kernel_source="examples/metal_examples/multinode_matmul/metal/kernels/mm_compute.cpp",
         source_type=ttnn.KernelDescriptor.SourceType.FILE_PATH,
-        node_ranges=all_nodes,
+        core_ranges=all_nodes,
         compile_time_args=[],
         runtime_args=compute_rt_args,
         config=computeConfig,
