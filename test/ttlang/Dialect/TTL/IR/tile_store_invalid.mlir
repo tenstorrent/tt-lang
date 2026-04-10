@@ -8,8 +8,9 @@ func.func @tile_store_non_tile_operand() {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2], !ttcore.tile<32x32, f32>, 2>
   %view = ttl.cb_reserve %cb : <[2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x!ttcore.tile<32x32, f32>>
   %val = arith.constant 1.0 : f32
+  %c0 = arith.constant 0 : index
   // expected-error @below {{'ttl.tile_store' op tile operand must be !ttcore.tile, got 'f32'}}
-  ttl.tile_store %val, %view[] : f32, tensor<2x!ttcore.tile<32x32, f32>>
+  ttl.tile_store %val, %view[] from dst[%c0] : f32, tensor<2x!ttcore.tile<32x32, f32>>
   func.return
 }
 
@@ -20,8 +21,9 @@ func.func @tile_store_element_type_mismatch(
     %tile: !ttcore.tile<32x32, f32>) {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2], !ttcore.tile<32x32, bf16>, 2>
   %view = ttl.cb_reserve %cb : <[2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x!ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
   // expected-error @below {{'ttl.tile_store' op view element type ('!ttcore.tile<32x32, bf16>') must match tile type ('!ttcore.tile<32x32, f32>')}}
-  ttl.tile_store %tile, %view[] : !ttcore.tile<32x32, f32>, tensor<2x!ttcore.tile<32x32, bf16>>
+  ttl.tile_store %tile, %view[] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x!ttcore.tile<32x32, bf16>>
   func.return
 }
 
@@ -34,7 +36,7 @@ func.func @tile_store_wrong_index_count(
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 3], !ttcore.tile<32x32, f32>, 2>
   %view = ttl.cb_reserve %cb : <[2, 3], !ttcore.tile<32x32, f32>, 2> -> tensor<2x3x!ttcore.tile<32x32, f32>>
   // expected-error @below {{'ttl.tile_store' op expected 0 or 2 indices, got 1}}
-  ttl.tile_store %tile, %view[%c0] : !ttcore.tile<32x32, f32>, tensor<2x3x!ttcore.tile<32x32, f32>>
+  ttl.tile_store %tile, %view[%c0] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x3x!ttcore.tile<32x32, f32>>
   func.return
 }
 
@@ -55,9 +57,10 @@ func.func @tile_store_empty_indices_in_compute(
       outs(%out_cb : tensor<2x2x!ttcore.tile<32x32, f32>>)
       {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} {
   ^bb0(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32x32, f32>):
-    %exp = ttl.tile_exp %a : !ttcore.tile<32x32, f32>
+    %c0 = arith.constant 0 : index
+    %exp = ttl.tile_exp %a into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     // expected-error @below {{'ttl.tile_store' op expected 2 indices inside compute body, got 0}}
-    ttl.tile_store %exp, %view[] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    ttl.tile_store %exp, %view[] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return

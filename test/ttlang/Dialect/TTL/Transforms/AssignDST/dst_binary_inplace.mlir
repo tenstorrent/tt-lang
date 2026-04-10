@@ -55,10 +55,11 @@ func.func @max_plus_min(%a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
   ^bb0(%a_tile: !ttcore.tile<32x32, bf16>, %b_tile: !ttcore.tile<32x32, bf16>, %out_tile: !ttcore.tile<32x32, bf16>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %mx = ttl.tile_max %a_tile, %b_tile : !ttcore.tile<32x32, bf16>
-    %mn = ttl.tile_min %a_tile, %b_tile : !ttcore.tile<32x32, bf16>
-    %sum = ttl.tile_add %mx, %mn : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %sum, %out_view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %c0 = arith.constant 0 : index
+    %mx = ttl.tile_max %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    %mn = ttl.tile_min %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    %sum = ttl.tile_add %mx, %mn into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    ttl.tile_store %sum, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -101,8 +102,9 @@ func.func @single_max(%a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
   ^bb0(%a_tile: !ttcore.tile<32x32, bf16>, %b_tile: !ttcore.tile<32x32, bf16>, %out_tile: !ttcore.tile<32x32, bf16>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %mx = ttl.tile_max %a_tile, %b_tile : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %mx, %out_view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %c0 = arith.constant 0 : index
+    %mx = ttl.tile_max %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    ttl.tile_store %mx, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>

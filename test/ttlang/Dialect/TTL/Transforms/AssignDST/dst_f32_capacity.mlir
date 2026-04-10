@@ -6,7 +6,7 @@
 
 // Purpose: f32 tiles use dst_idx in [0-3] with default (double-buffered) capacity.
 // CHECK-LABEL: func.func @f32_add
-// CHECK: ttl.tile_add {{.*}} {dst_idx = [[IDX0:[0-3]]] : i32}
+// CHECK: ttl.tile_add {{.*}} into dst[%c0]
 func.func @f32_add(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
                    %b: tensor<1x1x!ttcore.tile<32x32, f32>>)
     -> tensor<1x1x!ttcore.tile<32x32, f32>> {
@@ -37,10 +37,10 @@ func.func @f32_add(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
       %i = ttl.iter_index 0 : index
       %j = ttl.iter_index 1 : index
       %c0 = arith.constant 0 : index
-      %dtok0, %dtile0 = ttl.copy_tile %a_arg[%c0], %c0 : !ttcore.tile<32x32, f32>, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-      %dtok1, %dtile1 = ttl.copy_tile %b_arg[%c0], %c0 : !ttcore.tile<32x32, f32>, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-      %add = ttl.tile_add %dtile0, %dtile1 : !ttcore.tile<32x32, f32>
-      ttl.tile_store %add, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+      %dtok0, %dtile0 = ttl.copy_tile %a_arg[%c0] into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
+      %dtok1, %dtile1 = ttl.copy_tile %b_arg[%c0] into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
+      %add = ttl.tile_add %dtile0, %dtile1 into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+      ttl.tile_store %add, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 
@@ -53,7 +53,7 @@ func.func @f32_add(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
 
 // Purpose: Manual dst-capacity=8 override widens the index range to [0-7].
 // OVERRIDE-LABEL: func.func @f32_capacity_override
-// OVERRIDE: ttl.tile_add {{.*}} {dst_idx = [[OVRIDX0:[0-7]]] : i32}
+// OVERRIDE: ttl.tile_add {{.*}} into dst[%c0]
 func.func @f32_capacity_override(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
                              %b: tensor<1x1x!ttcore.tile<32x32, f32>>)
     -> tensor<1x1x!ttcore.tile<32x32, f32>> {
@@ -84,10 +84,10 @@ func.func @f32_capacity_override(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
       %i = ttl.iter_index 0 : index
       %j = ttl.iter_index 1 : index
       %c0 = arith.constant 0 : index
-      %dtok0, %dtile0 = ttl.copy_tile %a_arg[%c0], %c0 : !ttcore.tile<32x32, f32>, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-      %dtok1, %dtile1 = ttl.copy_tile %b_arg[%c0], %c0 : !ttcore.tile<32x32, f32>, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-      %add = ttl.tile_add %dtile0, %dtile1 : !ttcore.tile<32x32, f32>
-      ttl.tile_store %add, %out_view_0[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+      %dtok0, %dtile0 = ttl.copy_tile %a_arg[%c0] into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
+      %dtok1, %dtile1 = ttl.copy_tile %b_arg[%c0] into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
+      %add = ttl.tile_add %dtile0, %dtile1 into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+      ttl.tile_store %add, %out_view_0[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
       ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 

@@ -317,6 +317,7 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                          %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>>
     attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %c0 = arith.constant 0 : index
   %output = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
 
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 1>
@@ -341,9 +342,9 @@ func.func @compute_fused(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
        %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-    %exp = ttl.tile_exp %sum : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %result_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    %sum = ttl.tile_add %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %exp = ttl.tile_exp %sum into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %exp, %result_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.cb_push %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 1>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>

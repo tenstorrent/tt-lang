@@ -23,11 +23,15 @@ func.func @four_consecutive_exp(
     %b: !ttcore.tile<32x32, f32>,
     %c: !ttcore.tile<32x32, f32>,
     %d: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c3 = arith.constant 3 : index
   ttkernel.tile_regs_acquire() : () -> ()
-  %e0 = ttl.tile_exp %a {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  %e1 = ttl.tile_exp %b {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
-  %e2 = ttl.tile_exp %c {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
-  %e3 = ttl.tile_exp %d {dst_idx = 3 : i32} : !ttcore.tile<32x32, f32>
+  %e0 = ttl.tile_exp %a into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %e1 = ttl.tile_exp %b into dst[%c1] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %e2 = ttl.tile_exp %c into dst[%c2] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %e3 = ttl.tile_exp %d into dst[%c3] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   ttkernel.tile_regs_release() : () -> ()
   func.return %e3 : !ttcore.tile<32x32, f32>
 }
@@ -47,11 +51,15 @@ func.func @exp_then_log(
     %b: !ttcore.tile<32x32, f32>,
     %c: !ttcore.tile<32x32, f32>,
     %d: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c3 = arith.constant 3 : index
   ttkernel.tile_regs_acquire() : () -> ()
-  %e0 = ttl.tile_exp %a {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  %e1 = ttl.tile_exp %b {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
-  %l0 = ttl.tile_log %c {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
-  %l1 = ttl.tile_log %d {dst_idx = 3 : i32} : !ttcore.tile<32x32, f32>
+  %e0 = ttl.tile_exp %a into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %e1 = ttl.tile_exp %b into dst[%c1] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %l0 = ttl.tile_log %c into dst[%c2] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %l1 = ttl.tile_log %d into dst[%c3] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   ttkernel.tile_regs_release() : () -> ()
   func.return %l1 : !ttcore.tile<32x32, f32>
 }
@@ -70,11 +78,13 @@ func.func @exp_then_log(
 func.func @interleaved_no_scheduling(
     %a: !ttcore.tile<32x32, f32>,
     %b: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
   ttkernel.tile_regs_acquire() : () -> ()
-  %e0 = ttl.tile_exp %a {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  %l0 = ttl.tile_log %e0 {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  %e1 = ttl.tile_exp %l0 {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
-  %l1 = ttl.tile_log %e1 {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
+  %e0 = ttl.tile_exp %a into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %l0 = ttl.tile_log %e0 into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %e1 = ttl.tile_exp %l0 into dst[%c1] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %l1 = ttl.tile_log %e1 into dst[%c1] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   ttkernel.tile_regs_release() : () -> ()
   func.return %l1 : !ttcore.tile<32x32, f32>
 }
@@ -94,10 +104,13 @@ func.func @interleaved_no_scheduling(
 func.func @mixed_binary(
     %a: !ttcore.tile<32x32, f32>,
     %b: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
   ttkernel.tile_regs_acquire() : () -> ()
-  %m0 = ttl.tile_mul %a, %b {dst_idx = 0 : i32} : !ttcore.tile<32x32, f32>
-  %m1 = ttl.tile_mul %a, %b {dst_idx = 1 : i32} : !ttcore.tile<32x32, f32>
-  %s0 = ttl.tile_add %m0, %m1 {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
+  %m0 = ttl.tile_mul %a, %b into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %m1 = ttl.tile_mul %a, %b into dst[%c1] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %s0 = ttl.tile_add %m0, %m1 into dst[%c2] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   ttkernel.tile_regs_release() : () -> ()
   func.return %s0 : !ttcore.tile<32x32, f32>
 }

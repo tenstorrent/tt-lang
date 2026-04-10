@@ -400,32 +400,7 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
     cbTileIndex =
         utils::addSliceOffset(op.getView(), cbTileIndex, rewriter, loc);
 
-    // Determine DST index. Priority:
-    // 1. tile_store's own dst_idx (set by lower-matmul-block for per-tile pack)
-    // 2. Source op's dst_idx (tile compute ops, copy_dst)
-    // 3. copy_tile's dst_index operand
-    // 4. CB tile index (CB-reading ops like bcast, reduce)
-    Value dstIndex;
-    if (auto storeIdx = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-      dstIndex =
-          arith::ConstantIndexOp::create(rewriter, loc, storeIdx.getInt());
-    } else {
-      auto tileValue = adaptor.getTile();
-      if (auto defOp = tileValue.getDefiningOp()) {
-        if (auto dstIdxAttr =
-                defOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-          dstIndex = arith::ConstantIndexOp::create(rewriter, loc,
-                                                    dstIdxAttr.getInt());
-        } else if (auto copyTile = dyn_cast<CopyTileOp>(defOp)) {
-          dstIndex = copyTile.getDstIndex();
-        } else {
-          return op.emitError("tile_store source op lacks dst_idx attribute: ")
-                 << defOp->getName();
-        }
-      } else {
-        dstIndex = cbTileIndex;
-      }
-    }
+    Value dstIndex = adaptor.getDstIndex();
 
     ttk::PackTileOp::create(rewriter, loc, dstIndex, *cb, cbTileIndex,
                             /*out_of_order=*/true);

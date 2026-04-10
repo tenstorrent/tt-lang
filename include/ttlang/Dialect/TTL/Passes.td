@@ -89,7 +89,7 @@ def TTLAssignDST
 
     This pass also:
     - Inserts ttl.copy_tile for block arguments
-    - Assigns dst_idx attributes to tile math operations
+    - Assigns dst_index SSA operands to tile math operations
     - Checks capacity and emits diagnostics on overflow
   }];
 
@@ -280,7 +280,7 @@ def TTLScheduleOperations
     one init per consecutive group of same-type ops.
 
     Ops are sorted by (dependency depth, category, TypeID, init affinity,
-    dst_idx). Dependency depth considers RAW (SSA def-use), WAW (same DST
+    dst_index). Dependency depth considers RAW (SSA def-use), WAW (same DST
     write index), and WAR (write after prior read of same DST index) hazards.
     Ops at the same depth are independent and can be reordered.
 
@@ -294,18 +294,18 @@ def TTLScheduleOperations
     ```mlir
     // Before (interleaved by tile iteration):
     ttl.tile_regs_acquire
-    %s0 = ttl.tile_add %a0, %b0 {dst_idx = 0}
-    %e0 = ttl.tile_exp %s0 {dst_idx = 0}
-    %s1 = ttl.tile_add %a1, %b1 {dst_idx = 1}
-    %e1 = ttl.tile_exp %s1 {dst_idx = 1}
+    %s0 = ttl.tile_add %a0, %b0 into dst[%c0] : ...
+    %e0 = ttl.tile_exp %s0 into dst[%c0] : ...
+    %s1 = ttl.tile_add %a1, %b1 into dst[%c1] : ...
+    %e1 = ttl.tile_exp %s1 into dst[%c1] : ...
     ttl.tile_regs_commit
 
     // After (grouped by kind at each dependency depth):
     ttl.tile_regs_acquire
-    %s0 = ttl.tile_add %a0, %b0 {dst_idx = 0}  // depth 0
-    %s1 = ttl.tile_add %a1, %b1 {dst_idx = 1}  // depth 0
-    %e0 = ttl.tile_exp %s0 {dst_idx = 0}       // depth 1
-    %e1 = ttl.tile_exp %s1 {dst_idx = 1}       // depth 1
+    %s0 = ttl.tile_add %a0, %b0 into dst[%c0] : ...  // depth 0
+    %s1 = ttl.tile_add %a1, %b1 into dst[%c1] : ...  // depth 0
+    %e0 = ttl.tile_exp %s0 into dst[%c0] : ...       // depth 1
+    %e1 = ttl.tile_exp %s1 into dst[%c1] : ...       // depth 1
     ttl.tile_regs_commit
     ```
 
