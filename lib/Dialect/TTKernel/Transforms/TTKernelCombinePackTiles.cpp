@@ -72,7 +72,8 @@ struct TTKernelCombinePackTilesPass
       for (Operation *parent = block->getParentOp(); parent;
            parent = parent->getParentOp()) {
         if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-          if (forOp->hasAttr(kReductionLoopAttrName)) {
+          if (forOp->hasAttr(kReductionLoopAttrName) ||
+              forOp->hasAttr(kL1AccLoopAttrName)) {
             return;
           }
         }
