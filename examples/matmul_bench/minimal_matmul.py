@@ -552,8 +552,7 @@ def make_matmul_compiler_k_loop(M_block_tiles, N_block_tiles, fp32_acc=None):
     return kernel
 
 
-def make_matmul_l1_acc(M_block_tiles, K_block_tiles, N_block_tiles,
-                       fp32_acc=None):
+def make_matmul_l1_acc(M_block_tiles, K_block_tiles, N_block_tiles, fp32_acc=None):
     """Matmul with L1 accumulation: out = a @ b.
 
     Uses the "reserve once, store K times, push once" pattern. The compiler

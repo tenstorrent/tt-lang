@@ -59,8 +59,7 @@ struct TTLAnnotateReductionLoopsPass
       });
 
       if (hasReductionStore) {
-        forOp->setAttr(kReductionLoopAttrName,
-                       OpBuilder(forOp).getUnitAttr());
+        forOp->setAttr(kReductionLoopAttrName, OpBuilder(forOp).getUnitAttr());
       }
     });
   }

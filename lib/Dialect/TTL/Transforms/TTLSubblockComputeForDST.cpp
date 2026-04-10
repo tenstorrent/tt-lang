@@ -245,8 +245,7 @@ private:
         // When the subblock degenerates to 1x1 (e.g., prime dimensions),
         // K tiling provides no benefit -- the per-tile DST accumulation
         // path handles it via generateAccumulatingLoops.
-        tileKToOne = parallelProduct > 1 &&
-                     parallelProduct < effectiveTiles &&
+        tileKToOne = parallelProduct > 1 && parallelProduct < effectiveTiles &&
                      effectiveTiles > unrollFactor;
       }
     }

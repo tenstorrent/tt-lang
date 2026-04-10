@@ -36,6 +36,7 @@ RESULTS_CSV = Path("examples/matmul_bench/matmul_perf_results.csv")
 
 PCC_THRESHOLD = 0.999  # Correlation threshold for correctness assertion
 
+
 def parse_kernel_cycles(csv_path):
     """Parse profiler CSV: max kernel duration per RISC thread across all cores."""
     thread_max = defaultdict(int)
