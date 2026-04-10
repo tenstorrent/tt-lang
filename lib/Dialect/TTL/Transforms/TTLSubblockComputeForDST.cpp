@@ -216,13 +216,47 @@ private:
     SmallVector<int64_t> parallelSubblockSizes =
         computeMultiDimSubblockSizes(parallelDimSizes, parallelBudget);
 
-    // Expand back to full-rank subblock sizes: reduction dims get their full
-    // size, parallel dims get the computed subblock size.
+    // Expand back to full-rank subblock sizes. Parallel dims get the
+    // computed subblock size. For matmul when the parallel output exceeds
+    // DST capacity, reduction (K) dims are tiled to 1 for L1 accumulation:
+    // each K step packs to L1 independently, and TTKernelInsertL1Accumulation
+    // inserts pack_reconfig_l1_acc guards. When the output fits in DST, K
+    // stays at full size for DST accumulation (higher precision, fewer packs).
+    bool tileKToOne = false;
+    if (hasMatmulBlock) {
+      // Only tile K for standalone matmul (no accumulator). The fused
+      // prev + a @ b pattern has an accumulator operand that requires
+      // DST accumulation semantics (copy_tile + matmul_block). Tiling
+      // K would break the accumulator reload logic.
+      bool hasAccumulator = false;
+      computeOp.getBody().walk([&](TileMatmulBlockOp mmOp) {
+        if (mmOp.getAccumulator()) {
+          hasAccumulator = true;
+        }
+      });
+      if (!hasAccumulator) {
+        int64_t parallelProduct = 1;
+        for (auto sz : parallelSubblockSizes) {
+          parallelProduct *= sz;
+        }
+        // Tile K to 1 when: (1) subblocking IS needed (parallel output
+        // exceeds DST), (2) the subblock is strictly smaller than the
+        // full output, and (3) the subblock is non-trivial (> 1 tile).
+        // When the subblock degenerates to 1x1 (e.g., prime dimensions),
+        // K tiling provides no benefit -- the per-tile DST accumulation
+        // path handles it via generateAccumulatingLoops.
+        tileKToOne = parallelProduct > 1 &&
+                     parallelProduct < effectiveTiles &&
+                     effectiveTiles > unrollFactor;
+      }
+    }
     SmallVector<int64_t> subblockSizes(rank);
     int64_t parallelIdx = 0;
     for (int64_t d = 0; d < rank; ++d) {
       if (iterTypes[d] == utils::IteratorType::parallel) {
         subblockSizes[d] = parallelSubblockSizes[parallelIdx++];
+      } else if (tileKToOne) {
+        subblockSizes[d] = 1;
       } else {
         subblockSizes[d] = dimSizes[d];
       }
@@ -303,11 +337,14 @@ private:
     // can distinguish subblock loops from tile loops and compute correct
     // CB offsets (both linearized and per-dimension).
     for (size_t i = 0; i < subblockedDims.size(); ++i) {
-      loopNest.loops[i]->setAttr(
-          kSubblockLoopStrideAttrName,
-          b.getIndexAttr(blockStrides[subblockedDims[i]]));
-      loopNest.loops[i]->setAttr(kSubblockDimAttrName,
-                                 b.getIndexAttr(subblockedDims[i]));
+      int64_t dim = subblockedDims[i];
+      loopNest.loops[i]->setAttr(kSubblockLoopStrideAttrName,
+                                 b.getIndexAttr(blockStrides[dim]));
+      loopNest.loops[i]->setAttr(kSubblockDimAttrName, b.getIndexAttr(dim));
+      // Mark reduction dimension loops for L1 accumulation insertion.
+      if (iterTypes[dim] == utils::IteratorType::reduction) {
+        loopNest.loops[i]->setAttr(kReductionLoopAttrName, b.getUnitAttr());
+      }
     }
 
     // Precompute per-output subblock info: shape, tile count, and whether

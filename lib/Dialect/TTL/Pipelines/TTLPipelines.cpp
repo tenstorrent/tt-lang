@@ -18,6 +18,7 @@ namespace mlir::tt::ttl {
 
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
+  pm.addPass(createTTLAnnotateReductionLoops());
   pm.addPass(createTTLConvertTTLToCompute());
   {
     TTLSetComputeKernelConfigOptions configOpts;
