@@ -494,16 +494,14 @@ def get_current_core_id() -> str:
     """Get the current core ID from the active thread.
 
     Returns:
-        Core ID like "core0", or "unknown" if no scheduler is active
-        (e.g., in unit tests)
+        Core ID like "core0".
+
+    Raises:
+        RuntimeError: If called outside a running kernel (no active scheduler).
     """
-    try:
-        scheduler = get_scheduler()
-        thread_name = scheduler.get_current_thread_name()
-        return extract_core_id_from_thread_name(thread_name)
-    except RuntimeError:
-        # No active scheduler (e.g., in unit tests)
-        return "unknown"
+    scheduler = get_scheduler()
+    thread_name = scheduler.get_current_thread_name()
+    return extract_core_id_from_thread_name(thread_name)
 
 
 def block_if_needed(obj: Any, operation: str) -> None:

@@ -1118,7 +1118,7 @@ def test_from_list_to_list_roundtrip_4d():
         ), f"Tile {i} mismatch after from_list / to_list round-trip"
 
 
-def test_1d_broadcast_warning(capsys):
+def test_1d_broadcast_warning(capsys, compute_thread_context):
     """Test that broadcasting a 1D block generates a hardware warning.
 
     1D broadcasts are not supported by current hardware, so the simulator
