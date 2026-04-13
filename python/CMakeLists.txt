@@ -248,10 +248,10 @@ add_mlir_python_common_capi_library(TTLangPythonCAPI
     TTLangPythonExtensions
 )
 
-# Create pykernel as a separate top-level package
+# Create pykernel as a subpackage of ttl
 add_mlir_python_modules(PykernelPythonModules
-  ROOT_PREFIX "${TTLANG_PYTHON_PACKAGES_DIR}/pykernel"
-  INSTALL_PREFIX "python_packages/pykernel"
+  ROOT_PREFIX "${TTLANG_PYTHON_PACKAGES_DIR}/ttl/pykernel"
+  INSTALL_PREFIX "python_packages/ttl/pykernel"
   DECLARED_SOURCES
     PykernelPythonSources
 )
@@ -287,6 +287,17 @@ target_include_directories(TTLangPythonModules.extension._ttmlir.dso PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/ttmlir"
   "${CMAKE_SOURCE_DIR}/third-party/tt-mlir/python"
   "${CMAKE_SOURCE_DIR}/lib/ttmlir-minimal/CAPI"
+)
+
+# ###############################################################################
+# Symlink sim package into the ttl namespace (pure Python, no C extensions).
+# Uses a symlink so that source edits are picked up without rebuilding.
+# ###############################################################################
+add_custom_target(TTLangSimPackage ALL
+  COMMAND ${CMAKE_COMMAND} -E create_symlink
+    "${CMAKE_CURRENT_SOURCE_DIR}/sim"
+    "${TTLANG_PYTHON_PACKAGES_DIR}/ttl/sim"
+  COMMENT "Symlinking sim package into ttl/sim/"
 )
 
 # ###############################################################################

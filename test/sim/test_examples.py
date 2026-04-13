@@ -24,12 +24,12 @@ except ImportError:
     TTNN_AVAILABLE = False
 
 # Import simulator modules
-from python.sim.context import reset_context
-from python.sim.greenlet_scheduler import set_scheduler_algorithm
-from python.sim.program import set_max_l1_bytes
-from python.sim.stats import reset_stats
-from python.sim.ttlang_sim import execute_script_with_simulator
-from python import sim
+from ttl.sim.context import reset_context
+from ttl.sim.greenlet_scheduler import set_scheduler_algorithm
+from ttl.sim.program import set_max_l1_bytes
+from ttl.sim.stats import reset_stats
+from ttl.sim.ttlang_sim import execute_script_with_simulator
+from ttl import sim
 
 # Marker for tests that require ttnn
 requires_ttnn = pytest.mark.skipif(
@@ -81,7 +81,11 @@ def run_script_in_process(
         set_max_l1_bytes(max_l1_bytes)
 
     # Shadow sys.modules locally (same as ttlang_sim.setup_simulator_imports())
-    # Done here so it doesn't interfere with other tests in parallel execution
+    # Done here so it doesn't interfere with other tests in parallel execution.
+    # Pre-import ttl subpackages so they survive the shadowing.
+    from ttl.sim.ttlang_sim import _preserve_ttl_subpackages
+
+    _preserve_ttl_subpackages()
     original_modules = {"ttl": sys.modules.get("ttl"), "ttnn": sys.modules.get("ttnn")}
     sys.modules["ttl"] = sim.ttl  # type: ignore[assignment]
     sys.modules["ttnn"] = sim.ttnn  # type: ignore[assignment]

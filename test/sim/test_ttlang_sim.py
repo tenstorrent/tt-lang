@@ -17,9 +17,9 @@ import pytest
 
 from test_utils import make_zeros_tensor
 
-from python.sim import ttl, ttnn
-from python.sim.operation import get_default_grid, set_default_grid
-from python.sim.typedefs import Shape
+from ttl.sim import ttl, ttnn
+from ttl.sim.operation import get_default_grid, set_default_grid
+from ttl.sim.typedefs import Shape
 
 
 class TestDefaultGrid:
@@ -792,7 +792,7 @@ class TestSchedulerAlgorithmOption:
             script_path = Path(f.name)
             f.write(
                 """
-from python.sim.greenlet_scheduler import get_scheduler_algorithm
+from ttl.sim.greenlet_scheduler import get_scheduler_algorithm
 print(f"Algorithm: {get_scheduler_algorithm()}")
 """
             )

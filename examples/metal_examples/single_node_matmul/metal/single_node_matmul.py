@@ -4,7 +4,7 @@
 import pytest
 import torch
 
-from utils.correctness import assert_with_ulp
+from ttl.utils.correctness import assert_with_ulp
 import ttnn
 
 

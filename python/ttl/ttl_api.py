@@ -37,7 +37,7 @@ def _ensure_ttnn():
 
 
 import ttl._mlir_libs._ttlang  # Register tt-lang passes
-from pykernel._src.utils import _cleanup_source_code
+from ttl.pykernel._src.utils import _cleanup_source_code
 from ttl.dialects import ttkernel
 from ttl.ir import *
 from ttl.passes import (

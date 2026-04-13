@@ -974,7 +974,7 @@ def test_reduce_broadcast_chain(device, reduce_fn, inp_shape, dims, test_id):
         reduced = inp_f.amax(dim=dims, keepdim=True)
     expected = reduced.expand_as(inp_f)
 
-    from utils.correctness import assert_allclose
+    from ttl.utils.correctness import assert_allclose
 
     assert_allclose(result.float(), expected, rtol=0.1, atol=1.0)
 
@@ -1138,7 +1138,7 @@ def test_reduce_multicore_row_col(
     result = ttnn.to_torch(out)
 
     # Verify first core's output.
-    from utils.correctness import assert_allclose
+    from ttl.utils.correctness import assert_allclose
 
     core_inp = inp_torch[:TILE, : inp_cols * TILE].float()
     if reduce_fn == "reduce_sum":
@@ -1295,7 +1295,7 @@ def test_reduce_multicore_multitile(device, reduce_fn, grid, tiles, dims, test_i
     else:
         expected = core_inp.amax(dim=dims, keepdim=True)
 
-    from utils.correctness import assert_allclose
+    from ttl.utils.correctness import assert_allclose
 
     assert_allclose(result[0, 0].float(), expected.flatten()[0], rtol=0.05, atol=1.0)
 
@@ -1588,7 +1588,7 @@ def test_reduce_bcast_matmul(device, mt, kt, nt, test_id):
     bcast_mat = torch.full((size_m, size_k), scalar_val, dtype=torch.float32)
     expected = bcast_mat @ b_torch.float()
 
-    from utils.correctness import assert_pcc
+    from ttl.utils.correctness import assert_pcc
 
     assert_pcc(expected, result.float(), threshold=0.99)
 
@@ -1695,6 +1695,6 @@ def test_reduce_bcast_type(device, inp_shape, bcast_dims, out_shape, test_id):
     scalar_val = inp_torch.float().sum().item()
     expected = torch.full_like(result.float(), scalar_val)
 
-    from utils.correctness import assert_allclose
+    from ttl.utils.correctness import assert_allclose
 
     assert_allclose(result.float(), expected, rtol=0.01, atol=10.0)

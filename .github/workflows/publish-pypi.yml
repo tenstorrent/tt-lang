@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Publish target"
+        type: choice
+        options:
+          - testpypi
+          - pypi
+        default: testpypi
+
+permissions:
+  contents: read
+
+jobs:
+  build-wheels:
+    uses: ./.github/workflows/call-build-wheels.yml
+
+  publish:
+    name: "Publish to PyPI"
+    needs: build-wheels
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')) && 'pypi' || 'testpypi' }}
+      url: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')) && 'https://pypi.org/project/tt-lang/' || 'https://test.pypi.org/project/tt-lang/' }}
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: tt-lang-wheels
+          path: dist/
+
+      - name: List wheels
+        run: ls -lh dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ (github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi') && 'https://test.pypi.org/legacy/' || '' }}

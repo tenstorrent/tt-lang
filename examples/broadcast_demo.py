@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# Simulator-backed (`from sim import ttl`). Run via pytest test/sim, not the
+# Simulator-backed (`from ttl.sim import ttl`). Run via pytest test/sim, not the
 # hardware compiler example step.
 #
 # TTLANG_HARDWARE_CI: xfail-compiler

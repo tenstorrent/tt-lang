@@ -11,12 +11,12 @@ and that child greenlets inherit parent context correctly.
 import pytest
 from greenlet import greenlet, getcurrent
 
-from python.sim.context import (
+from ttl.sim.context import (
     get_context,
     set_context,
     reset_context,
 )
-from python.sim.context_types import (
+from ttl.sim.context_types import (
     SimulatorContext,
     SimulatorConfig,
     SimulatorStats,

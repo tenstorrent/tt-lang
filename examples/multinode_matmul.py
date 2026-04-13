@@ -7,7 +7,7 @@
 
 import ttl
 import ttnn
-from utils.correctness import assert_with_ulp
+from ttl.utils.correctness import assert_with_ulp
 
 
 def get_number_of_nodes(node_range_set):

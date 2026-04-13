@@ -8,7 +8,7 @@
 
 import torch
 import ttnn
-from utils import assert_with_ulp
+from ttl.utils import assert_with_ulp
 import ttl
 
 

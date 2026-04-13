@@ -5,7 +5,7 @@ import pytest
 import torch
 import ttnn
 import ttl
-from utils.correctness import assert_with_ulp
+from ttl.utils.correctness import assert_with_ulp
 
 TS = ttnn.TILE_SIZE  # 32
 

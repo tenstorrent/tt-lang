@@ -25,10 +25,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 
 import torch
 
-from sim import ttl, ttnn
+from ttl.sim import ttl as sim_ttl, ttnn
 
 
-@ttl.operation(grid=(1, 1))
+@sim_ttl.operation(grid=(1, 1))
 def eltwise_1d_broadcast(
     A: ttnn.Tensor,
     B: ttnn.Tensor,
@@ -44,17 +44,17 @@ def eltwise_1d_broadcast(
     # Y        N            NT
     # Z        N            NT
     #
-    TILE_SIZE = ttl.TILE_SHAPE[0]
+    TILE_SIZE = sim_ttl.TILE_SHAPE[0]
     N = A.shape[0]
     NT = N // TILE_SIZE
 
-    a_dfb = ttl.make_dataflow_buffer_like(A, shape=(1,))
+    a_dfb = sim_ttl.make_dataflow_buffer_like(A, shape=(1,))
     # B is a scalar (1 element) that will be broadcast to match A's shape
-    b_dfb = ttl.make_dataflow_buffer_like(B, shape=(1,))
-    y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1,))
-    z_dfb = ttl.make_dataflow_buffer_like(Z, shape=(1,))
+    b_dfb = sim_ttl.make_dataflow_buffer_like(B, shape=(1,))
+    y_dfb = sim_ttl.make_dataflow_buffer_like(Y, shape=(1,))
+    z_dfb = sim_ttl.make_dataflow_buffer_like(Z, shape=(1,))
 
-    @ttl.datamovement()
+    @sim_ttl.datamovement()
     def elwise_read():
         for nt in range(NT):
 
@@ -66,15 +66,15 @@ def eltwise_1d_broadcast(
             ):
                 # then copy:
 
-                a_xf = ttl.copy(A[nt], a_blk)
-                b_xf = ttl.copy(B[0], b_blk)
+                a_xf = sim_ttl.copy(A[nt], a_blk)
+                b_xf = sim_ttl.copy(B[0], b_blk)
 
                 a_xf.wait()
                 b_xf.wait()
 
                 # release a_blk and b_blk
 
-    @ttl.compute()
+    @sim_ttl.compute()
     def elwise_compute():
         for _ in range(NT):
 
@@ -92,11 +92,11 @@ def eltwise_1d_broadcast(
                 b_squared = b_blk**2
 
                 # Broadcast b_squared from element_shape=(1,) to match a_squared's element_shape=(32,)
-                y = ttl.math.sqrt(
-                    a_squared + ttl.math.broadcast(b_squared, y_blk, dims=[0])
+                y = sim_ttl.math.sqrt(
+                    a_squared + sim_ttl.math.broadcast(b_squared, y_blk, dims=[0])
                 )
-                z = ttl.math.sqrt(
-                    a_squared - ttl.math.broadcast(b_squared, z_blk, dims=[0])
+                z = sim_ttl.math.sqrt(
+                    a_squared - sim_ttl.math.broadcast(b_squared, z_blk, dims=[0])
                 )
 
                 y_blk.store(y)
@@ -104,7 +104,7 @@ def eltwise_1d_broadcast(
 
                 # release a_blk, b_blk and y_blk
 
-    @ttl.datamovement()
+    @sim_ttl.datamovement()
     def elwise_write():
         for nt in range(NT):
 
@@ -117,8 +117,8 @@ def eltwise_1d_broadcast(
 
                 # then copy:
 
-                y_xf = ttl.copy(y_blk, Y[nt])
-                z_xf = ttl.copy(z_blk, Z[nt])
+                y_xf = sim_ttl.copy(y_blk, Y[nt])
+                z_xf = sim_ttl.copy(z_blk, Z[nt])
                 y_xf.wait()
                 z_xf.wait()
 
