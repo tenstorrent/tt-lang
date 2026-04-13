@@ -507,25 +507,27 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
   let hasVerifier = 1;
 
   let builders = [
-    // Builder for unicast pipe (single destination)
+    // Builder for unicast pipe (single destination, pipeNetId = 0)
     OpBuilder<(ins "int64_t":$srcX, "int64_t":$srcY,
                    "int64_t":$dstX, "int64_t":$dstY), [{
-      build($_builder, $_state, srcX, srcY, dstX, dstY, dstX, dstY);
+      build($_builder, $_state, srcX, srcY, dstX, dstY, dstX, dstY, 0);
     }]>,
     // Builder with all coordinates
     OpBuilder<(ins "int64_t":$srcX, "int64_t":$srcY,
                    "int64_t":$dstStartX, "int64_t":$dstStartY,
-                   "int64_t":$dstEndX, "int64_t":$dstEndY), [{
+                   "int64_t":$dstEndX, "int64_t":$dstEndY,
+                   "int64_t":$pipeNetId), [{
       auto pipeType = PipeType::get($_builder.getContext(),
                                     srcX, srcY, dstStartX, dstStartY,
-                                    dstEndX, dstEndY);
+                                    dstEndX, dstEndY, pipeNetId);
       build($_builder, $_state, pipeType,
             $_builder.getI64IntegerAttr(srcX),
             $_builder.getI64IntegerAttr(srcY),
             $_builder.getI64IntegerAttr(dstStartX),
             $_builder.getI64IntegerAttr(dstStartY),
             $_builder.getI64IntegerAttr(dstEndX),
-            $_builder.getI64IntegerAttr(dstEndY));
+            $_builder.getI64IntegerAttr(dstEndY),
+            $_builder.getI64IntegerAttr(pipeNetId));
     }]>
   ];
 }

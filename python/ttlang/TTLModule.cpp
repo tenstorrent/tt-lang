@@ -112,13 +112,14 @@ void populateTTLModule(nb::module_ &m) {
       .def_static(
           "get",
           [](MlirContext ctx, int64_t srcX, int64_t srcY, int64_t dstStartX,
-             int64_t dstStartY, int64_t dstEndX, int64_t dstEndY) {
+             int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
+             int64_t pipeNetId) {
             return wrap(PipeType::get(unwrap(ctx), srcX, srcY, dstStartX,
-                                      dstStartY, dstEndX, dstEndY));
+                                      dstStartY, dstEndX, dstEndY, pipeNetId));
           },
           nb::arg("context"), nb::arg("src_x"), nb::arg("src_y"),
           nb::arg("dst_start_x"), nb::arg("dst_start_y"), nb::arg("dst_end_x"),
-          nb::arg("dst_end_y"))
+          nb::arg("dst_end_y"), nb::arg("pipe_net_id"))
       .def_prop_ro("src_x", &PipeType::getSrcX)
       .def_prop_ro("src_y", &PipeType::getSrcY)
       .def_prop_ro("dst_start_x", &PipeType::getDstStartX)
