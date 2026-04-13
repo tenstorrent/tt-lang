@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //===----------------------------------------------------------------------===//
-// TTL Annotate Reduction Loops
+// TTL Annotate L1 Acc Loops
 //===----------------------------------------------------------------------===//
 //
 // Detects user-written scf.for loops that accumulate into the same CB slot
@@ -18,18 +18,17 @@
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
 
-#define DEBUG_TYPE "ttl-annotate-reduction-loops"
+#define DEBUG_TYPE "ttl-annotate-l1-acc-loops"
 
 namespace mlir::tt::ttl {
 
-#define GEN_PASS_DEF_TTLANNOTATEREDUCTIONLOOPS
+#define GEN_PASS_DEF_TTLANNOTATEL1ACCLOOPS
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
 
-struct TTLAnnotateReductionLoopsPass
-    : public impl::TTLAnnotateReductionLoopsBase<
-          TTLAnnotateReductionLoopsPass> {
+struct TTLAnnotateL1AccLoopsPass
+    : public impl::TTLAnnotateL1AccLoopsBase<TTLAnnotateL1AccLoopsPass> {
   void runOnOperation() override {
     func::FuncOp func = getOperation();
 
@@ -46,16 +45,9 @@ struct TTLAnnotateReductionLoopsPass
       // CB that was reserved (ttl.cb_reserve) before the loop.
       bool hasReductionStore = false;
       forOp.getBody()->walk([&](StoreOp store) {
-        Value view = store.getView();
-        // Trace through attach_cb to find the cb_reserve.
-        if (auto attachCB = view.getDefiningOp<AttachCBOp>()) {
-          view = attachCB.getTensor();
-        }
-        if (auto reserve = view.getDefiningOp<CBReserveOp>()) {
-          // The cb_reserve must be OUTSIDE the for loop (before it).
-          if (!forOp->isAncestor(reserve)) {
-            hasReductionStore = true;
-          }
+        auto reserve = store.getView().getDefiningOp<CBReserveOp>();
+        if (reserve && !forOp->isAncestor(reserve)) {
+          hasReductionStore = true;
         }
       });
 

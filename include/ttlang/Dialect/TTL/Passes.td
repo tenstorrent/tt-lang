@@ -60,9 +60,9 @@ def TTKernelInsertL1Accumulation
   ];
 }
 
-def TTLAnnotateReductionLoops
-    : Pass<"ttl-annotate-reduction-loops", "::mlir::func::FuncOp"> {
-  let summary = "Annotate user-written scf.for loops as reduction loops";
+def TTLAnnotateL1AccLoops
+    : Pass<"ttl-annotate-l1-acc-loops", "::mlir::func::FuncOp"> {
+  let summary = "Annotate user-written scf.for loops for L1 accumulation";
   let description = [{
     Detects user-written `scf.for` loops where all iterations store to the
     same CB slot (reserved before the loop, pushed after) and annotates them

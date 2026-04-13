@@ -152,7 +152,10 @@ struct TTKernelInsertL1AccumulationPass
           builder, loc, builder.getI32Type(), builder.getI32IntegerAttr(1));
       ttk::PackReconfigL1AccOp::create(builder, loc, enableFlag);
 
-      // Bracket the outermost reduction loop with disable guards.
+      // Bracket the outermost accumulation loop with disable guards.
+      // Both kL1AccLoopAttrName and kReductionLoopAttrName mean "all
+      // iterations write to the same CB slot," so the outermost such
+      // loop is the correct accumulation boundary.
       auto outermostLoop = findOutermostL1AccLoop(loop);
       if (!outermostLoop) {
         outermostLoop = loop;
@@ -164,13 +167,15 @@ struct TTKernelInsertL1AccumulationPass
             builder, loc, builder.getI32Type(), builder.getI32IntegerAttr(0));
         ttk::PackReconfigL1AccOp::create(builder, loc, disablePre);
 
-        // Disable after cb_push_back following the loop, or after the loop.
-        Operation *insertPoint = outermostLoop->getNextNode();
-        while (insertPoint && !isa<ttk::CBPushBackOp>(insertPoint)) {
-          insertPoint = insertPoint->getNextNode();
+        // Disable after any consecutive cb_push_back ops that follow the
+        // loop. Multi-output computes produce one push per output CB.
+        Operation *lastPush = nullptr;
+        for (Operation *op = outermostLoop->getNextNode();
+             op && isa<ttk::CBPushBackOp>(op); op = op->getNextNode()) {
+          lastPush = op;
         }
-        if (insertPoint) {
-          builder.setInsertionPointAfter(insertPoint);
+        if (lastPush) {
+          builder.setInsertionPointAfter(lastPush);
         } else {
           builder.setInsertionPointAfter(outermostLoop);
         }
