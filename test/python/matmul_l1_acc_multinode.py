@@ -8,9 +8,12 @@
 # RUN: FileCheck %s --check-prefix=CHECK-RESULT < %t.output
 
 """
-Multinode matmul with L1 packer accumulation. Mirrors the benchmark kernel
-(make_matmul_l1_acc / v4_l1_acc): auto grid, split DMA (reader=A,
-writer=B+output), 8x8x8 blocks, K_num_blocks=4 at 1024x1024x1024.
+Multinode matmul with L1 packer accumulation. Auto grid, split DMA (reader=A,
+writer=B+output), 8x8x8 blocks, K_num_blocks=4 at 3072x1024x3072.
+
+The larger dimensions (96x32x96 tiles, 12x4x12 blocks) ensure each core
+handles multiple output blocks (ceil(12/8)=2 per axis on an 8x8 grid),
+exercising the per-block L1 acc disable/re-enable sequence.
 
 The compute thread uses += for accumulation across K iterations. The
 compiler inserts pack_reconfig_l1_acc guards so each K iteration packs
@@ -150,8 +153,11 @@ if __name__ == "__main__":
     device = ttnn.open_device(device_id=0)
 
     try:
-        # 32x32x32 tiles = 1024x1024x1024, 8x8x8 blocks -> K_num_blocks=4
-        Mt, Kt, Nt = 32, 32, 32
+        # 96x32x96 tiles = 3072x1024x3072, 8x8x8 blocks -> 12x4x12 blocks.
+        # With an 8x8 grid each core handles ceil(12/8)=2 M-blocks and
+        # 2 N-blocks (4 output blocks), exercising the per-block L1 acc
+        # disable/re-enable sequence.
+        Mt, Kt, Nt = 96, 32, 96
         M, K, N = Mt * TILE, Kt * TILE, Nt * TILE
 
         a_torch = torch.randn(M, K, dtype=torch.bfloat16)

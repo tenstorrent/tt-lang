@@ -41,11 +41,14 @@ struct TTLAnnotateL1AccLoopsPass
         return;
       }
 
-      // Check if the loop body contains an accumulating store (ttl.store
-      // with the {accumulate} attribute, emitted by the ``+=`` operator).
+      // Check if this loop directly contains an accumulating store
+      // (ttl.store with the {accumulate} attribute, emitted by +=).
+      // Only count stores whose nearest enclosing scf.for is this forOp,
+      // so that nested inner loops are not attributed to outer loops.
       bool hasAccumulatingStore = false;
       forOp.getBody()->walk([&](StoreOp store) {
-        if (store.getAccumulate()) {
+        if (store.getAccumulate() &&
+            store->getParentOfType<scf::ForOp>() == forOp) {
           hasAccumulatingStore = true;
         }
       });
