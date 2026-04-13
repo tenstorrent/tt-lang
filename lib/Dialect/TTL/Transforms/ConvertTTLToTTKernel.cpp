@@ -35,6 +35,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstdlib>
@@ -674,6 +675,13 @@ static Value makeZeroI32(Location loc, ConversionPatternRewriter &rewriter) {
   return arith::ConstantIntOp::create(rewriter, loc, 0, 32);
 }
 
+static void emitVerbatim(Location loc, StringRef value,
+                         ConversionPatternRewriter &rewriter) {
+  OperationState state(loc, "emitc.verbatim");
+  state.addAttribute("value", rewriter.getStringAttr(value));
+  rewriter.create(state);
+}
+
 static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
   auto transferHandle = llvm::dyn_cast<TransferHandleType>(t);
   if (!transferHandle) {
@@ -1133,43 +1141,45 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   // Without this barrier, the receiver may wake up before all data arrives.
   ttk::NocAsyncWriteBarrierOp::create(rewriter, loc);
 
-  // Signal destinations that data has arrived.
-  // For point-to-point pipes, use atomic increment to support gather pattern
-  // (multiple sources to one destination). For multicast, use set+multicast.
+  // Signal destinations that data has arrived via atomic semaphore increment.
+  // Atomic inc (not idempotent set) ensures signals accumulate when the sender
+  // races ahead of the receiver with buffering factor > 1.
   int64_t semIdxVal = getPipeSemaphoreIndex(pipeType, getNocIndex(op));
-  auto semIdx = arith::ConstantIndexOp::create(rewriter, loc, semIdxVal);
-  auto semAddr = ttk::GetSemaphoreOp::create(rewriter, loc, semIdx);
 
   if (pipeType.isUnicast()) {
-    // Point-to-point: atomically increment destination's semaphore.
-    // This supports gather patterns where multiple sources signal one dest.
+    auto semIdx = arith::ConstantIndexOp::create(rewriter, loc, semIdxVal);
+    auto semAddr = ttk::GetSemaphoreOp::create(rewriter, loc, semIdx);
     auto incrVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
-
-    // Get NOC address of destination's semaphore for atomic increment.
-    auto dstSemNocAddr = ttk::GetNocAddrOp::create(rewriter, 
+    auto dstSemNocAddr = ttk::GetNocAddrOp::create(rewriter,
         loc, dstStartXVal, dstStartYVal, semAddr);
-
     ttk::NocSemaphoreIncOp::create(rewriter, loc, dstSemNocAddr.getResult(),
                                             incrVal, /*noc_id=*/Value());
   } else {
-    // Multicast: set local semaphore and multicast to all destinations.
-    auto semPtr = ttk::CastToL1PtrOp::create(rewriter, loc, semAddr);
-    auto validVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
-    ttk::NocSemaphoreSetOp::create(rewriter, loc, semPtr, validVal);
-
-    auto semMcastAddr = ttk::ExperimentalGetNocMulticastAddrOp::create(rewriter,
-        loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal, semAddr,
-        nocVal);
+    // noc_semaphore_inc_multicast always excludes the sender.
+    // For loopback (sender in dest range), subtract self from num_dests
+    // and issue a separate local inc.
+    int64_t mcastNumDests =
+        pipeType.srcInDstRange() ? numDests - 1 : numDests;
+    std::string incMcast = llvm::formatv(
+        "noc_semaphore_inc_multicast("
+        "experimental::get_noc_multicast_addr("
+        "convert_logical_x_to_translated({0}), "
+        "convert_logical_y_to_translated({1}), "
+        "convert_logical_x_to_translated({2}), "
+        "convert_logical_y_to_translated({3}), "
+        "get_semaphore({4}), {5}), "
+        "1, {6}, {5});",
+        dstStartX, dstStartY, dstEndX, dstEndY, semIdxVal, nocIdx,
+        mcastNumDests);
+    emitVerbatim(loc, incMcast, rewriter);
 
     if (pipeType.srcInDstRange()) {
-      auto falseBoolAttr = rewriter.getBoolAttr(false);
-      ttk::NocSemaphoreSetMulticastLoopbackOp::create(rewriter,
-          loc, semAddr, semMcastAddr.getResult(), numDestsVal,
-          /*linked=*/falseBoolAttr);
-    } else {
-      ttk::NocSemaphoreSetMulticastOp::create(rewriter,
-          loc, semAddr, semMcastAddr.getResult(), numDestsVal,
-          /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr);
+      std::string selfInc = llvm::formatv(
+          "noc_semaphore_inc("
+          "get_noc_addr(my_x[noc_index], my_y[noc_index], "
+          "get_semaphore({0})), 1, noc_index);",
+          semIdxVal);
+      emitVerbatim(loc, selfInc, rewriter);
     }
   }
 
@@ -1191,14 +1201,17 @@ static LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
   auto semPtr = ttk::CastToL1PtrOp::create(rewriter, loc, semAddr);
 
   // Wait for semaphore to reach at least 1.
-  // For point-to-point, source uses atomic inc; for multicast, source uses set.
-  auto oneVal = arith::ConstantOp::create(rewriter, 
+  auto oneVal = arith::ConstantOp::create(rewriter,
       loc, rewriter.getI32Type(), rewriter.getI32IntegerAttr(1));
   ttk::SemaphoreWaitMinOp::create(rewriter, loc, semPtr, oneVal);
 
-  // Reset semaphore for next use
-  auto zeroVal = arith::ConstantIndexOp::create(rewriter, loc, 0);
-  ttk::NocSemaphoreSetOp::create(rewriter, loc, semPtr, zeroVal);
+  // Decrement by 1 instead of resetting to 0. This preserves any extra
+  // signals from the sender racing ahead with buffering factor > 1.
+  std::string decrSem = llvm::formatv(
+      "(*reinterpret_cast<volatile tt_l1_ptr uint32_t*>"
+      "(get_semaphore({0})))--;",
+      semIdxVal);
+  emitVerbatim(loc, decrSem, rewriter);
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
   return success();
