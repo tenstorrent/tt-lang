@@ -133,14 +133,16 @@ def matmul_l1_acc(a, b, out):
 #   3. Disable after cb_push_back following the loop
 # =============================================================================
 
-# CHECK-CPP:      PACK((llk_pack_reconfig_l1_acc(
-# CHECK-CPP-NEXT: for
+# CHECK-CPP-DAG:  int32_t [[ENABLE:v[0-9]+]] = 1;
+# CHECK-CPP-DAG:  int32_t [[DISABLE:v[0-9]+]] = 0;
+# CHECK-CPP:      PACK((llk_pack_reconfig_l1_acc([[DISABLE]])));
+# CHECK-CPP:      for
 # CHECK-CPP:        matmul_block(
 # CHECK-CPP:        pack_tile
 # CHECK-CPP:        if (
-# CHECK-CPP-NEXT:   PACK((llk_pack_reconfig_l1_acc(
+# CHECK-CPP-NEXT:   PACK((llk_pack_reconfig_l1_acc([[ENABLE]])));
 # CHECK-CPP:      cb_push_back(
-# CHECK-CPP-NEXT: PACK((llk_pack_reconfig_l1_acc(
+# CHECK-CPP:      PACK((llk_pack_reconfig_l1_acc([[DISABLE]])));
 
 # CHECK-RESULT: PASS
 
