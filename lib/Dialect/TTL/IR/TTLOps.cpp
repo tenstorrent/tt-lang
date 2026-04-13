@@ -1243,12 +1243,15 @@ mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {
   int64_t dstEndX = static_cast<int64_t>(getDstEndX());
   int64_t dstEndY = static_cast<int64_t>(getDstEndY());
 
+  int64_t pipeNetId = static_cast<int64_t>(getPipeNetId());
+
   if (pipeType.getSrcX() != srcX || pipeType.getSrcY() != srcY ||
       pipeType.getDstStartX() != dstStartX ||
       pipeType.getDstStartY() != dstStartY ||
-      pipeType.getDstEndX() != dstEndX || pipeType.getDstEndY() != dstEndY) {
+      pipeType.getDstEndX() != dstEndX || pipeType.getDstEndY() != dstEndY ||
+      pipeType.getPipeNetId() != pipeNetId) {
     return emitOpError()
-           << "attributes must match result pipe type coordinates";
+           << "attributes must match result pipe type";
   }
 
   // Validate coordinates are non-negative.

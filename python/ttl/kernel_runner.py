@@ -58,6 +58,7 @@ class PipeConnection:
     dstEndY: int
     receiverCBIndex: int
     runtimeArgSlot: int
+    pipeNetId: int = 0
 
 
 def load_pipe_graph(json_path: Optional[str] = None) -> Optional[List[PipeConnection]]:
@@ -92,6 +93,7 @@ def load_pipe_graph(json_path: Optional[str] = None) -> Optional[List[PipeConnec
                     dstEndY=p["dstEndY"],
                     receiverCBIndex=p["receiverCBIndex"],
                     runtimeArgSlot=p["runtimeArgSlot"],
+                    pipeNetId=p.get("pipeNetId", 0),
                 )
             )
         return pipes
@@ -348,13 +350,13 @@ def run_kernel_on_device(
     )
 
     # Build semaphore descriptors for pipe synchronization.
-    # Pipe semaphores are indexed by srcX coordinate (see getPipeSemaphoreIndex).
-    # We need to allocate enough semaphores for all pipe sources.
+    # Each PipeNet uses 2 semaphores: sender_sem and receiver_sem.
+    # Index: pipeNetId * 2 (sender), pipeNetId * 2 + 1 (receiver).
     semaphore_descriptors = []
     if pipe_graph:
-        max_sem_idx = max(p.srcX for p in pipe_graph)
-        # Allocate semaphores 0 through max_sem_idx, initialized to 0
-        for sem_id in range(max_sem_idx + 1):
+        max_pipe_net_id = max(p.pipeNetId for p in pipe_graph)
+        num_sems = (max_pipe_net_id + 1) * 2
+        for sem_id in range(num_sems):
             semaphore_descriptors.append(
                 ttnn.SemaphoreDescriptor(sem_id, core_ranges=core_ranges, initial_value=0)
             )

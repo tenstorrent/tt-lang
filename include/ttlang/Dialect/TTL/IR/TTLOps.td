@@ -497,11 +497,12 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
     I64Attr:$dstStartX,
     I64Attr:$dstStartY,
     I64Attr:$dstEndX,
-    I64Attr:$dstEndY
+    I64Attr:$dstEndY,
+    I64Attr:$pipeNetId
   );
   let results = (outs TTL_Pipe:$result);
   let assemblyFormat = [{
-    `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)` attr-dict `:` type($result)
+    `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)` `net` $pipeNetId attr-dict `:` type($result)
   }];
   let hasVerifier = 1;
 

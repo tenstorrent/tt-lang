@@ -90,6 +90,7 @@ class Pipe:
 
         self.src = src
         self.dst = dst
+        self.pipe_net_id = 0
         self._parse_dst()
 
     def _parse_dst(self):
@@ -155,10 +156,16 @@ class PipeNet:
         net.if_dst(lambda pipe: ttl.copy(pipe, blk).wait())
     """
 
+    _next_id = 0
+
     def __init__(self, pipes: List[Pipe]):
         if not pipes:
             raise ValueError("PipeNet requires at least one pipe")
+        self.pipe_net_id = PipeNet._next_id
+        PipeNet._next_id += 1
         self.pipes = pipes
+        for pipe in self.pipes:
+            pipe.pipe_net_id = self.pipe_net_id
 
     def __iter__(self):
         """Iterate over all pipes in the network."""

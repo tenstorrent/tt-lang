@@ -606,6 +606,7 @@ class TTLGenericCompiler(TTCompilerBase):
             pipe.dst_start[1],
             pipe.dst_end[0],
             pipe.dst_end[1],
+            pipe.pipe_net_id,
         )
         return ttl.create_pipe(
             pipe_type,
@@ -615,6 +616,7 @@ class TTLGenericCompiler(TTCompilerBase):
             pipe.dst_start[1],
             pipe.dst_end[0],
             pipe.dst_end[1],
+            pipe.pipe_net_id,
         )
 
     def _emit_entry(self, node):

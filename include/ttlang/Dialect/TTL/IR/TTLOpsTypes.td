@@ -97,9 +97,10 @@ def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
     "int64_t":$dstStartX,
     "int64_t":$dstStartY,
     "int64_t":$dstEndX,
-    "int64_t":$dstEndY
+    "int64_t":$dstEndY,
+    "int64_t":$pipeNetId
   );
-  let assemblyFormat = "`<` `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)` `>`";
+  let assemblyFormat = "`<` `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)` `net` $pipeNetId `>`";
 
   let extraClassDeclaration = [{
     /// Returns true if this is a unicast pipe (single destination).
