@@ -1003,6 +1003,7 @@ def _compile_kernel(
     Returns:
         CompiledTTNNKernel ready for execution
     """
+    PipeNet._next_id = 0
     f_params = inspect.signature(f).parameters
 
     # Get kernel source location for error reporting
