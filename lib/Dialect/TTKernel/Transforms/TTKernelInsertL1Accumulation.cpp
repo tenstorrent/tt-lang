@@ -5,16 +5,6 @@
 //===----------------------------------------------------------------------===//
 // TTKernel Insert L1 Accumulation
 //===----------------------------------------------------------------------===//
-//
-// Inserts pack_reconfig_l1_acc guards inside reduction loops. When a
-// tile_regs_release is inside a reduction loop, the packer is switched
-// to L1 accumulation mode once after the first iteration's pack so that
-// subsequent iterations add to the existing L1 value instead of
-// overwriting. The L1 acc state persists across tile_regs boundaries.
-//
-// See docs/development/AccumulatingComputeLowering.md for design details.
-//
-//===----------------------------------------------------------------------===//
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/Passes.h"
@@ -109,14 +99,13 @@ struct TTKernelInsertL1AccumulationPass
     //   [cb_push_back if present]
     //   pack_reconfig_l1_acc(0)                // disable after loop
     //
-    // The L1 acc state persists across tile_regs boundaries, so the enable
+    // The L1 acc state persists across multiple dst sections, so the enable
     // call only needs to happen once (after the first iteration completes
-    // all subblock packs). Disable guards are inserted once per outermost
-    // loop.
+    // all its packs). Disable guards are inserted once per outermost
+    // reduction loop (parallel loops are not considered).
 
-    // Find the top-level operation in each L1 acc loop body that contains
-    // the last tile_regs_release. The release may be nested inside subblock
-    // loops, so we find the enclosing top-level op to insert after.
+    // Find the insertion point for the enable guard: the top-level op in
+    // the loop body that contains the last tile_regs_release.
     auto findTopLevelAncestor = [](Operation *op,
                                    Block *loopBody) -> Operation * {
       while (op && op->getBlock() != loopBody) {
@@ -149,10 +138,9 @@ struct TTKernelInsertL1AccumulationPass
       OpBuilder builder(loop->getContext());
       Location loc = enablePoint->getLoc();
 
-      // Conditional enable after the last subblock/release on the first
-      // iteration. Placed after the top-level op containing the last
-      // release so all subblock packs in iteration 0 write without
-      // accumulation.
+      // Enable L1 acc once, at the end of the first iteration of the
+      // reduction loop. All packs in iteration 0 write without
+      // accumulation; subsequent iterations add to the existing L1 value.
       builder.setInsertionPointAfter(enablePoint);
       Value loopIV = loop.getInductionVar();
       Value loopLB = loop.getLowerBound();
@@ -164,7 +152,7 @@ struct TTKernelInsertL1AccumulationPass
           builder, loc, builder.getI32Type(), builder.getI32IntegerAttr(1));
       ttk::PackReconfigL1AccOp::create(builder, loc, enableFlag);
 
-      // Disable before and after the outermost L1 acc loop (once per loop).
+      // Bracket the outermost reduction loop with disable guards.
       auto outermostLoop = findOutermostL1AccLoop(loop);
       if (!outermostLoop) {
         outermostLoop = loop;

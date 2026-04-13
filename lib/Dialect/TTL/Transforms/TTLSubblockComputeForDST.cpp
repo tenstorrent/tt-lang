@@ -122,6 +122,8 @@ struct TTLSubblockComputeForDSTPass
           if (isa<TileMatmulBlockOp>(op)) {
             hasMatmulBlock = true;
           }
+          return (hasAccumulating && hasMatmulBlock) ? WalkResult::interrupt()
+                                                     : WalkResult::advance();
         });
         if (hasAccumulating && !hasMatmulBlock) {
           return;

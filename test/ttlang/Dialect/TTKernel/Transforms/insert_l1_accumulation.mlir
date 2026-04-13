@@ -148,3 +148,21 @@ func.func @subblocked_loop() attributes {ttkernel.thread = #ttkernel.thread<comp
   } {ttl.l1_acc_loop}
   return
 }
+
+// -----
+
+// L1 acc loop with no tile_regs_acquire/release inside: no guards inserted.
+
+// CHECK-LABEL: func.func @l1_acc_loop_no_sync
+// CHECK-NOT: pack_reconfig_l1_acc
+func.func @l1_acc_loop_no_sync() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c4_i32 = arith.constant 4 : i32
+  scf.for %iv = %c0 to %c4 step %c1 {
+    ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  } {ttl.l1_acc_loop}
+  return
+}

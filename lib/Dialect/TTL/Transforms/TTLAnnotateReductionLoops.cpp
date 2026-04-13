@@ -8,7 +8,7 @@
 //
 // Detects user-written scf.for loops that accumulate into the same CB slot
 // (reserve before loop, store inside, push after) and annotates them with
-// kReductionLoopAttrName for L1 accumulation.
+// kL1AccLoopAttrName for L1 accumulation.
 //
 //===----------------------------------------------------------------------===//
 
@@ -34,8 +34,9 @@ struct TTLAnnotateReductionLoopsPass
     func::FuncOp func = getOperation();
 
     func.walk([&](scf::ForOp forOp) {
-      // Skip loops already annotated (from compiler-generated tile loops).
-      if (forOp->hasAttr(kReductionLoopAttrName) ||
+      // Skip loops already annotated (compiler-generated or prior run).
+      if (forOp->hasAttr(kL1AccLoopAttrName) ||
+          forOp->hasAttr(kReductionLoopAttrName) ||
           forOp->hasAttr(kTileLoopStrideAttrName) ||
           forOp->hasAttr(kSubblockLoopStrideAttrName)) {
         return;
