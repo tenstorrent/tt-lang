@@ -58,6 +58,11 @@ reportPrivateUsage = "error"
 reportImportCycles = "error"
 reportUnnecessaryIsInstance = "warning"
 
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (deselected by default; enable with --run-slow)",
+]
+
 [tool.isort]
 profile = "black"
 line_length = 88

@@ -5,6 +5,28 @@
 """Shared pytest fixtures for simulator tests."""
 
 import pytest
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--run-slow",
+        action="store_true",
+        default=False,
+        help="Run tests marked as slow (skipped by default).",
+    )
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    if config.getoption("--run-slow"):
+        return
+    skip_slow = pytest.mark.skip(reason="slow test; pass --run-slow to enable")
+    for item in items:
+        if item.get_closest_marker("slow"):
+            item.add_marker(skip_slow)
+
+
 from greenlet import greenlet
 from python.sim.blockstate import ThreadType
 from python.sim.context import set_current_thread_type, reset_context

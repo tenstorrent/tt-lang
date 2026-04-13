@@ -230,6 +230,12 @@ Simulations (software simulation of runtime behavior):
 pytest test/sim/
 ```
 
+Some simulator tests are marked `slow` and are skipped by default.  Pass
+`--run-slow` to include them (CI always does):
+```bash
+pytest test/sim/ --run-slow
+```
+
 ### Running with Simulator
 
 For testing without hardware, set `TT_METAL_SIMULATOR` to enable the TT device
