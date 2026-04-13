@@ -3,11 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Matmul L1 accumulation: reserve once, store K times, push once.
+Matmul L1 accumulation via += across K iterations.
 
-The compiler detects the scf.for loop storing to the same reserved CB
-and annotates it as a reduction loop. TTKernelInsertL1Accumulation inserts
-pack_reconfig_l1_acc guards so each K iteration packs additively to L1.
+The += operator emits ttl.store with {accumulate}, which the compiler
+detects and annotates for L1 packer accumulation. Each K iteration packs
+additively to L1.
 
 Tests single-core and multicore configurations with various block sizes.
 """
@@ -29,7 +29,7 @@ TILE = 32
 
 
 def _make_l1_acc_kernel(block_m, block_n, grid="auto"):
-    """Matmul with L1 accumulation: reserve once, store K times, push once."""
+    """Matmul with L1 accumulation via += across K iterations."""
 
     @ttl.operation(grid=grid)
     def kernel(a, b, out):
@@ -63,7 +63,7 @@ def _make_l1_acc_kernel(block_m, block_n, grid="auto"):
                             for _ in range(Kt):
                                 a_blk = a_dfb.wait()
                                 b_blk = b_dfb.wait()
-                                out_blk.store(a_blk @ b_blk)
+                                out_blk += a_blk @ b_blk
                                 a_blk.pop()
                                 b_blk.pop()
                             out_blk.push()

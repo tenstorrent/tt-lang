@@ -6,9 +6,9 @@
 // TTL Annotate L1 Acc Loops
 //===----------------------------------------------------------------------===//
 //
-// Detects user-written scf.for loops that accumulate into the same CB slot
-// (reserve before loop, store inside, push after) and annotates them with
-// kL1AccLoopAttrName for L1 accumulation.
+// Detects user-written scf.for loops containing accumulating stores
+// (ttl.store with the {accumulate} attribute, emitted by +=) and annotates
+// them with kL1AccLoopAttrName for L1 packer accumulation.
 //
 //===----------------------------------------------------------------------===//
 
@@ -41,17 +41,16 @@ struct TTLAnnotateL1AccLoopsPass
         return;
       }
 
-      // Check if the loop body contains a store (ttl.store) targeting a
-      // CB that was reserved (ttl.cb_reserve) before the loop.
-      bool hasReductionStore = false;
+      // Check if the loop body contains an accumulating store (ttl.store
+      // with the {accumulate} attribute, emitted by the ``+=`` operator).
+      bool hasAccumulatingStore = false;
       forOp.getBody()->walk([&](StoreOp store) {
-        auto reserve = store.getView().getDefiningOp<CBReserveOp>();
-        if (reserve && !forOp->isAncestor(reserve)) {
-          hasReductionStore = true;
+        if (store.getAccumulate()) {
+          hasAccumulatingStore = true;
         }
       });
 
-      if (hasReductionStore) {
+      if (hasAccumulatingStore) {
         forOp->setAttr(kL1AccLoopAttrName, OpBuilder(forOp).getUnitAttr());
       }
     });

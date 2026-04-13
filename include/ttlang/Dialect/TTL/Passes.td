@@ -64,14 +64,11 @@ def TTLAnnotateL1AccLoops
     : Pass<"ttl-annotate-l1-acc-loops", "::mlir::func::FuncOp"> {
   let summary = "Annotate user-written scf.for loops for L1 accumulation";
   let description = [{
-    Detects user-written `scf.for` loops where all iterations store to the
-    same CB slot (reserved before the loop, pushed after) and annotates them
-    with `ttl.l1_acc_loop`. This enables `TTKernelInsertL1Accumulation`
+    Detects user-written `scf.for` loops containing `ttl.store` ops with
+    the `accumulate` attribute (emitted by the `+=` operator) and annotates
+    them with `ttl.l1_acc_loop`. This enables `TTKernelInsertL1Accumulation`
     to insert `pack_reconfig_l1_acc` guards so that packs accumulate across
     iterations instead of overwriting.
-
-    Targets the pattern:
-      cb_reserve -> scf.for { compute(store to reserved CB) } -> cb_push
   }];
   let dependentDialects = [
     "::mlir::scf::SCFDialect"

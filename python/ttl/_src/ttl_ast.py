@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Set
 
 from pykernel._src.kernel_ast import TTCompilerBase
+from pykernel._src.utils import _get_type_str
 from ttl.dialects import arith, func, ttcore, ttkernel
 from ttl.ir import *
 
@@ -295,6 +296,24 @@ class TTLGenericCompiler(TTCompilerBase):
                 if isinstance(e, TTLangCompileError):
                     raise
                 self._raise_error(node, str(e))
+
+    def visit_AugAssign(self, node):
+        """Handle += on tensor blocks via the registered __iadd__ method."""
+        with self._loc_for_node(node):
+            target = self.visit(node.target)
+            if (
+                isinstance(node.op, ast.Add)
+                and hasattr(target, "type")
+                and isinstance(target.type, RankedTensorType)
+            ):
+                rhs = self.visit(node.value)
+                mlir_type = _get_type_str(target.type)
+                iadd_fn = self._fn_map.get(f"{mlir_type}.__iadd__")
+                if iadd_fn:
+                    result = iadd_fn(target, rhs)
+                    self.symbol_tables[-1][node.target.id] = result
+                    return
+            return super().visit_AugAssign(node)
 
     def visit_BinOp(self, node):
         """Override to inject auto-profiling and provide better error messages."""

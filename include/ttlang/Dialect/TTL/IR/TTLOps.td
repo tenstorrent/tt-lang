@@ -1039,8 +1039,13 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
     `ttl.store` represents the user's intent to store a computed tensor into
     an output circular buffer.
 
-    Emitted by Python's `o.store(result)`. During `convert-ttl-to-compute`,
-    this op is transformed into a `ttl.tile_store` inside the compute body.
+    Emitted by Python's `o.store(result)` (overwrite) or `o += result`
+    (accumulate). During `convert-ttl-to-compute`, this op is transformed
+    into a `ttl.tile_store` inside the compute body.
+
+    When `accumulate` is set, the enclosing loop is annotated for L1
+    packer accumulation so that each iteration adds to the existing L1
+    value instead of overwriting.
 
     Example:
     ```mlir
@@ -1048,11 +1053,14 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
     %result = ttl.add %a, %b : ...
     ttl.store %result, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>,
                                   tensor<1x1x!ttcore.tile<32x32, bf16>>
+    // Accumulating store (from +=):
+    ttl.store %result, %reserve {accumulate} : ...
     ```
   }];
   let arguments = (ins
     AnyRankedTensor:$tensor,
-    AnyRankedTensor:$view
+    AnyRankedTensor:$view,
+    OptionalAttr<UnitAttr>:$accumulate
   );
   let assemblyFormat = "$tensor `,` $view attr-dict `:` type($tensor) `,` type($view)";
   let hasVerifier = 1;
