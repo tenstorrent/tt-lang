@@ -11,10 +11,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 
 import torch
 
-from ttl.sim import ttl as sim_ttl, ttnn
+import ttl
+import ttnn
 
 
-@sim_ttl.operation(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def matmul_with_bias(
     A: ttnn.Tensor,
     B: ttnn.Tensor,
@@ -40,12 +41,12 @@ def matmul_with_bias(
     NT = N // TILE_SIZE
     KT = K // TILE_SIZE
 
-    a_dfb = sim_ttl.make_dataflow_buffer_like(A, shape=(1, 1, 1))
-    b_dfb = sim_ttl.make_dataflow_buffer_like(B, shape=(1, 1))
-    c_dfb = sim_ttl.make_dataflow_buffer_like(C, shape=(1, 1))
-    y_dfb = sim_ttl.make_dataflow_buffer_like(Y, shape=(1, 1, 1))
+    a_dfb = ttl.make_dataflow_buffer_like(A, shape=(1, 1, 1))
+    b_dfb = ttl.make_dataflow_buffer_like(B, shape=(1, 1))
+    c_dfb = ttl.make_dataflow_buffer_like(C, shape=(1, 1))
+    y_dfb = ttl.make_dataflow_buffer_like(Y, shape=(1, 1, 1))
 
-    @sim_ttl.datamovement()
+    @ttl.datamovement()
     def matmul_read():
         for it in range(IT):
             for mt in range(MT):
@@ -57,7 +58,7 @@ def matmul_with_bias(
 
                         # then copy:
 
-                        c_xf = sim_ttl.copy(C[mt, nt], c_blk)
+                        c_xf = ttl.copy(C[mt, nt], c_blk)
                         c_xf.wait()
 
                         # release c_blk
@@ -72,15 +73,15 @@ def matmul_with_bias(
                         ):
                             # then copy:
 
-                            a_xf = sim_ttl.copy(A[it, mt, kt], a_blk)
-                            b_xf = sim_ttl.copy(B[kt, nt], b_blk)
+                            a_xf = ttl.copy(A[it, mt, kt], a_blk)
+                            b_xf = ttl.copy(B[kt, nt], b_blk)
 
                             a_xf.wait()
                             b_xf.wait()
 
                             # release a_blk and b_blk
 
-    @sim_ttl.compute()
+    @ttl.compute()
     def matmul_compute():
         for _ in range(IT):
             for _ in range(MT):
@@ -92,7 +93,7 @@ def matmul_with_bias(
 
                         # acquire c_blk from c_dfb:
 
-                        y = sim_ttl.math.fill(y_blk, 0)
+                        y = ttl.math.fill(y_blk, 0)
 
                         for _ in range(KT):
 
@@ -109,13 +110,13 @@ def matmul_with_bias(
 
                         with c_dfb.wait() as c_blk:
 
-                            y = y + sim_ttl.math.broadcast(c_blk, y_blk, dims=[0])
+                            y = y + ttl.math.broadcast(c_blk, y_blk, dims=[0])
 
                             # release c_blk
 
                         y_blk.store(y)
 
-    @sim_ttl.datamovement()
+    @ttl.datamovement()
     def matmul_write():
         for it in range(IT):
             for mt in range(MT):
@@ -127,7 +128,7 @@ def matmul_with_bias(
 
                         # then copy:
 
-                        y_xf = sim_ttl.copy(y_blk, Y[it, mt, nt])
+                        y_xf = ttl.copy(y_blk, Y[it, mt, nt])
                         y_xf.wait()
 
                         # release y_blk
