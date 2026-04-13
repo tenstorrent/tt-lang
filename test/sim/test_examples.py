@@ -81,11 +81,7 @@ def run_script_in_process(
         set_max_l1_bytes(max_l1_bytes)
 
     # Shadow sys.modules locally (same as ttlang_sim.setup_simulator_imports())
-    # Done here so it doesn't interfere with other tests in parallel execution.
-    # Pre-import ttl subpackages so they survive the shadowing.
-    from ttl.sim.ttlang_sim import _preserve_ttl_subpackages
-
-    _preserve_ttl_subpackages()
+    # Done here so it doesn't interfere with other tests in parallel execution
     original_modules = {"ttl": sys.modules.get("ttl"), "ttnn": sys.modules.get("ttnn")}
     sys.modules["ttl"] = sim.ttl  # type: ignore[assignment]
     sys.modules["ttnn"] = sim.ttnn  # type: ignore[assignment]

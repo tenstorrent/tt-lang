@@ -8,8 +8,8 @@ import torch
 import ttnn
 import ttl
 
-from ttl.utils.correctness import assert_with_ulp
-from ttl.utils.block_allocation import (
+from utils.correctness import assert_with_ulp
+from utils.block_allocation import (
     get_number_of_nodes_from_ranges,
     split_work_to_nodes,
 )

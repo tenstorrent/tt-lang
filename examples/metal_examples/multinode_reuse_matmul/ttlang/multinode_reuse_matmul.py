@@ -6,8 +6,8 @@ import torch
 import ttnn
 
 import ttl
-from ttl.utils.block_allocation import get_large_matmul_params
-from ttl.utils.correctness import assert_with_ulp
+from utils.block_allocation import get_large_matmul_params
+from utils.correctness import assert_with_ulp
 
 
 @ttl.operation(grid=("auto"))

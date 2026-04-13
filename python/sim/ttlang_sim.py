@@ -27,34 +27,14 @@ def setup_simulator_imports() -> None:
     Inject simulator implementations into sys.modules so they shadow the compiler APIs.
 
     This allows kernel code written for the compiler to transparently use simulator
-    implementations when run under ttlang-sim. Subpackages like ttl.utils and
-    ttl.pykernel are preserved so that non-compiler imports still resolve.
+    implementations when run under ttlang-sim.
     """
     # Import simulator implementations
     from . import ttl, ttnn
 
-    # Preserve ttl subpackages that are not part of the compiler API
-    _preserve_ttl_subpackages()
-
     # Shadow compiler imports with simulator versions
     sys.modules["ttl"] = ttl  # type: ignore[assignment]
     sys.modules["ttnn"] = ttnn  # type: ignore[assignment]
-
-
-def _preserve_ttl_subpackages() -> None:
-    """Pre-import ttl subpackages so they survive sys.modules["ttl"] shadowing."""
-    for subpkg in (
-        "ttl.utils",
-        "ttl.utils.correctness",
-        "ttl.utils.block_allocation",
-        "ttl.pykernel",
-        "ttl.pykernel._src",
-    ):
-        if subpkg not in sys.modules:
-            try:
-                __import__(subpkg)
-            except ImportError:
-                pass
 
 
 def execute_script_with_simulator(

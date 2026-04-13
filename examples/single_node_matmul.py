@@ -7,7 +7,7 @@
 
 import ttl
 import ttnn
-from ttl.utils.correctness import assert_with_ulp
+from utils.correctness import assert_with_ulp
 
 
 @ttl.operation(grid=(1, 1))

@@ -15,7 +15,7 @@ Unlike the 2D matmul where both inputs are multicast, here:
 import pytest
 import torch
 import ttnn
-from ttl.utils.correctness import assert_with_ulp
+from utils.correctness import assert_with_ulp
 
 TS = ttnn.TILE_SIZE  # 32
 

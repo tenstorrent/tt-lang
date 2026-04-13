@@ -792,7 +792,7 @@ class TestSchedulerAlgorithmOption:
             script_path = Path(f.name)
             f.write(
                 """
-from ttl.sim.greenlet_scheduler import get_scheduler_algorithm
+from sim.greenlet_scheduler import get_scheduler_algorithm
 print(f"Algorithm: {get_scheduler_algorithm()}")
 """
             )
