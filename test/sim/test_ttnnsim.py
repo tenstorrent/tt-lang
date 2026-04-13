@@ -2122,3 +2122,137 @@ class TestRowMajorLayout:
         """Tile count for tiled tensors is unchanged (regression guard)."""
         t = ttnn.Tensor(torch.zeros(64, 64))  # 2x2 tiles
         assert ttnn.tile_count_from_tensor(t) == 4
+
+
+class TestAllReduce:
+    """Tests for :func:`~sim.ttnnsim.all_reduce`.
+
+    Covers both the primary path (tensor created with ShardTensorToMesh, so the
+    partition structure is read from MemoryConfig) and the fallback path (plain
+    tensor, partition determined by GetNumAvailableDevices).
+    """
+
+    # ---- Primary path: ShardTensorToMesh sets MemoryConfig ----
+
+    def _mesh(self, n: int) -> ttnn.MeshDevice:
+        return ttnn.open_mesh_device(ttnn.MeshShape(1, n))
+
+    def test_shard_to_mesh_sets_height_sharded_config(self) -> None:
+        """from_torch with ShardTensorToMesh attaches HEIGHT_SHARDED MemoryConfig."""
+        mesh = self._mesh(4)
+        t = ttnn.from_torch(
+            torch.zeros(8, 6),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        assert t.memory_config.strategy == ShardingStrategy.HEIGHT_SHARDED
+        assert t.memory_config.shard_spec is not None
+        assert t.memory_config.shard_spec.shard_grid == (4,)
+        assert t.memory_config.shard_spec.shard_shape == (2, 6)
+
+    def test_shard_to_mesh_width_sharded(self) -> None:
+        """ShardTensorToMesh along the last dim produces WIDTH_SHARDED config."""
+        mesh = self._mesh(3)
+        t = ttnn.from_torch(
+            torch.zeros(4, 9),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=1),
+        )
+        assert t.memory_config.strategy == ShardingStrategy.WIDTH_SHARDED
+        assert t.memory_config.shard_spec.shard_grid == (3,)
+        assert t.memory_config.shard_spec.shard_shape == (4, 3)
+
+    def test_all_reduce_via_mesh_sums_shards(self) -> None:
+        """all_reduce over a ShardTensorToMesh tensor sums the shards."""
+        mesh = self._mesh(4)
+        # Build a tensor where each shard-row block holds a different value.
+        data = torch.zeros(8, 4)
+        data[0:2, :] = 1.0
+        data[2:4, :] = 2.0
+        data[4:6, :] = 3.0
+        data[6:8, :] = 4.0
+        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        result = ttnn.all_reduce(t)
+        expected_shard = torch.full((2, 4), 10.0)
+        for i in range(4):
+            assert torch.allclose(
+                result.to_torch()[i * 2 : (i + 1) * 2], expected_shard
+            )
+
+    def test_all_reduce_single_device_identity(self) -> None:
+        """With a single-device mesh, all_reduce is an identity."""
+        mesh = self._mesh(1)
+        data = torch.arange(12, dtype=torch.float32).reshape(4, 3)
+        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        result = ttnn.all_reduce(t)
+        assert torch.allclose(result.to_torch(), data)
+
+    def test_all_reduce_preserves_layout(self) -> None:
+        """Output layout matches input layout."""
+        mesh = self._mesh(2)
+        t = ttnn.from_torch(
+            torch.ones(4, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        assert ttnn.all_reduce(t).layout == ttnn.ROW_MAJOR_LAYOUT
+
+    def test_all_reduce_dtype_conversion(self) -> None:
+        """Output is cast when dtype is given."""
+        mesh = self._mesh(2)
+        t = ttnn.from_torch(
+            torch.ones(4, 4, dtype=torch.float32),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        result = ttnn.all_reduce(t, dtype=torch.float16)
+        assert result.to_torch().dtype == torch.float16
+
+    def test_all_reduce_memory_config_override(self) -> None:
+        """Explicit memory_config is applied to the output."""
+        mesh = self._mesh(2)
+        t = ttnn.from_torch(
+            torch.ones(4, 4),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        custom_mc = MemoryConfig(strategy=ShardingStrategy.INTERLEAVED)
+        result = ttnn.all_reduce(t, memory_config=custom_mc)
+        assert result.memory_config == custom_mc
+
+    def test_all_reduce_kwargs_accepted(self) -> None:
+        """Extra keyword arguments are accepted without error."""
+        mesh = self._mesh(2)
+        t = ttnn.from_torch(
+            torch.ones(4, 4),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        ttnn.all_reduce(t, cluster_axis=0, mesh_device=mesh)
+
+    # ---- Fallback path: plain tensor, device count from GetNumAvailableDevices ----
+
+    def test_fallback_sums_shards(self) -> None:
+        """Without mesh metadata, partition count comes from GetNumAvailableDevices."""
+        ttnn.set_num_devices(4)
+        data = torch.zeros(8, 4)
+        data[0:2, :] = 1.0
+        t = ttnn.Tensor(data)
+        result = ttnn.all_reduce(t)
+        expected_shard = torch.ones(2, 4)
+        for i in range(4):
+            assert torch.allclose(
+                result.to_torch()[i * 2 : (i + 1) * 2], expected_shard
+            )
+
+    def test_fallback_not_divisible_returns_unchanged(self) -> None:
+        """Tensor not divisible by device count is returned unchanged."""
+        ttnn.set_num_devices(3)
+        data = torch.ones(8, 4)
+        t = ttnn.Tensor(data)
+        result = ttnn.all_reduce(t)
+        assert torch.allclose(result.to_torch(), data)
+
+    def test_shard_tensor_not_divisible_returns_dram_config(self) -> None:
+        """from_torch with ShardTensorToMesh falls back to DRAM when indivisible."""
+        mesh = self._mesh(3)
+        t = ttnn.from_torch(
+            torch.zeros(8, 4),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        assert t.memory_config.strategy == ShardingStrategy.INTERLEAVED
