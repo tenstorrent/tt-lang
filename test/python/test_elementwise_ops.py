@@ -287,9 +287,9 @@ def test_binary_op(device, op_name):
 UNARY_TEST_INPUTS: dict = {
     "sign": torch.linspace(-2.0, 2.0, 32 * 32, dtype=torch.bfloat16).reshape(32, 32),
     "signbit": torch.linspace(-2.0, 2.0, 32 * 32, dtype=torch.bfloat16).reshape(32, 32),
-    "ceil": torch.linspace(-2.5, 2.5, 32 * 32, dtype=torch.bfloat16).reshape(32, 32),
-    "trunc": torch.linspace(-2.5, 2.5, 32 * 32, dtype=torch.bfloat16).reshape(32, 32),
-    "frac": torch.linspace(-2.5, 2.5, 32 * 32, dtype=torch.bfloat16).reshape(32, 32),
+    "ceil": torch.linspace(-100, 100, 32 * 32, dtype=torch.bfloat16).reshape(32, 32),
+    "trunc": torch.linspace(-100, 100, 32 * 32, dtype=torch.bfloat16).reshape(32, 32),
+    "frac": torch.linspace(-100, 100, 32 * 32, dtype=torch.bfloat16).reshape(32, 32),
     "hardsigmoid": torch.linspace(-4.0, 4.0, 32 * 32, dtype=torch.bfloat16).reshape(
         32, 32
     ),

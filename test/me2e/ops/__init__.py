@@ -70,7 +70,10 @@ OP_INPUT_RANGES: Dict[str, Tuple[float, float]] = {
     "recip": (0.01, 10.0),  # recip requires non-zero inputs
     "div": (0.01, 10.0),  # div requires non-zero divisor
     "tan": (-1.0, 1.0),  # Avoid pi/2 where tan diverges.
-    "expm1": (-0.01, 0.01),  # Avoid overflow for large inputs and focused on intended range
+    "expm1": (
+        -0.01,
+        0.01,
+    ),  # Avoid overflow for large inputs and focused on intended range
 }
 
 # Per-op ULP threshold overrides keyed by dtype.
