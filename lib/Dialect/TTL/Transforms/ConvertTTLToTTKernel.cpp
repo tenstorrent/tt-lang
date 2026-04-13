@@ -1164,10 +1164,10 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     std::string incMcast = llvm::formatv(
         "noc_semaphore_inc_multicast("
         "experimental::get_noc_multicast_addr("
-        "convert_logical_x_to_translated({0}), "
-        "convert_logical_y_to_translated({1}), "
-        "convert_logical_x_to_translated({2}), "
-        "convert_logical_y_to_translated({3}), "
+        "experimental::convert_logical_x_to_translated({0}), "
+        "experimental::convert_logical_y_to_translated({1}), "
+        "experimental::convert_logical_x_to_translated({2}), "
+        "experimental::convert_logical_y_to_translated({3}), "
         "get_semaphore({4}), {5}), "
         "1, {6}, {5});",
         dstStartX, dstStartY, dstEndX, dstEndY, semIdxVal, nocIdx,
