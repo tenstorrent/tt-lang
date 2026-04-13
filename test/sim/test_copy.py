@@ -9,6 +9,7 @@ including error handling and edge cases.
 """
 
 import pytest
+import torch
 from test_utils import (
     make_element_for_buffer_shape,
     make_full_tile,
@@ -22,7 +23,7 @@ from python.sim.blockstate import BlockAcquisition, ThreadType
 from python.sim.context import set_current_thread_type
 from python.sim.dfb import Block, DataflowBuffer
 from python.sim.ttnnsim import Tensor
-from python.sim.copy import CopyTransaction, copy
+from python.sim.copy import CopyTransaction, GroupTransfer, copy
 from python.sim.pipe import Pipe
 
 
@@ -781,6 +782,73 @@ class TestCopyErrorConditions:
             ValueError, match="No copy handler registered for \\(Tensor, Tensor\\)"
         ):
             copy(tensor1, tensor2)
+
+
+class TestGroupTransfer:
+    """Tests for GroupTransfer: grouping and waiting on multiple copy handles."""
+
+    def test_wait_all_completes_all_transfers(self) -> None:
+        """wait_all() executes all transfers in the group."""
+        source = make_rand_tensor(32, 32)
+        dfb1 = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            block_count=1,
+        )
+        dfb2 = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            block_count=1,
+        )
+
+        with dfb1.reserve() as blk1, dfb2.reserve() as blk2:
+            gxf = GroupTransfer()
+            gxf.add(copy(source, blk1))
+            gxf.add(copy(source, blk2))
+            gxf.wait_all()
+
+            assert tensors_equal(blk1.to_tensor(), source)
+            assert tensors_equal(blk2.to_tensor(), source)
+
+    def test_add_after_wait_all_raises(self) -> None:
+        """add() after wait_all() raises RuntimeError."""
+        source = make_ones_tile()
+        dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            block_count=1,
+        )
+
+        with dfb.reserve() as blk:
+            gxf = GroupTransfer()
+            gxf.add(copy(source, blk))
+            gxf.wait_all()
+
+        # add() checks _waited before touching its argument, so a sentinel suffices.
+        with pytest.raises(RuntimeError, match="after wait_all"):
+            gxf.add(None)  # type: ignore[arg-type]
+
+    def test_wait_all_twice_raises(self) -> None:
+        """Calling wait_all() twice raises RuntimeError."""
+        source = make_ones_tile()
+        dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            block_count=1,
+        )
+
+        with dfb.reserve() as blk:
+            gxf = GroupTransfer()
+            gxf.add(copy(source, blk))
+            gxf.wait_all()
+
+        with pytest.raises(RuntimeError, match="more than once"):
+            gxf.wait_all()
+
+    def test_empty_group_wait_all(self) -> None:
+        """wait_all() on an empty group completes without error."""
+        gxf = GroupTransfer()
+        gxf.wait_all()  # should not raise
 
 
 if __name__ == "__main__":

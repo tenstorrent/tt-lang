@@ -27,7 +27,6 @@ class TTLTileOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileOpTrait> {};
 
 /// Attribute names.
-constexpr llvm::StringLiteral kDstIdxAttrName("dst_idx");
 constexpr llvm::StringLiteral kCBIndexAttrPrefix("ttl.cb_index.");
 
 /// Runtime configuration attributes.
@@ -64,6 +63,12 @@ constexpr llvm::StringLiteral kTileLoopStrideAttrName("ttl.tile_loop_stride");
 /// Preserves the reduction semantics from iterator_types after the
 /// ComputeOp is lowered to loops.
 constexpr llvm::StringLiteral kReductionLoopAttrName("ttl.reduction_loop");
+
+/// Marks a user-written scf.for as an L1 accumulation loop. Each iteration
+/// packs to the same CB slot; pack_reconfig_l1_acc makes subsequent
+/// iterations additive. Distinct from kReductionLoopAttrName which marks
+/// compiler-generated reduction loops.
+constexpr llvm::StringLiteral kL1AccLoopAttrName("ttl.l1_acc_loop");
 
 /// Output CB index on tile ops that need it for init insertion.
 constexpr llvm::StringLiteral
@@ -128,6 +133,25 @@ class TTLInPlaceOpTrait
 template <typename ConcreteType>
 class TTLAccumulatingOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLAccumulatingOpTrait> {};
+
+/// Trait for tile operations that write to a DST register.
+template <typename ConcreteType>
+class TTLDstResultOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLDstResultOpTrait> {
+public:
+  static mlir::LogicalResult verifyTrait(mlir::Operation *op) {
+    if (op->getNumOperands() == 0) {
+      return op->emitOpError("expected at least one operand (dst_index)");
+    }
+    mlir::Value lastOperand = op->getOperand(op->getNumOperands() - 1);
+    if (!lastOperand.getType().isIndex()) {
+      return op->emitOpError("last operand (dst_index) must be index type, "
+                             "got ")
+             << lastOperand.getType();
+    }
+    return mlir::success();
+  }
+};
 
 /// Trait for tile operations that carry an explicit output CB operand.
 /// These operations' init functions configure the PACK thread and require

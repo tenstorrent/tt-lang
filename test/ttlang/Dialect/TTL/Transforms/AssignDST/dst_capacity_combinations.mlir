@@ -43,8 +43,9 @@ func.func @bf16_double_buffer()
   ^bb0(%in_tile: !ttcore.tile<32x32, bf16>, %out_tile: !ttcore.tile<32x32, bf16>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %exp = ttl.tile_exp %in_tile : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %exp, %out_view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<4x4x!ttcore.tile<32x32, bf16>>
+    %c0 = arith.constant 0 : index
+    %exp = ttl.tile_exp %in_tile into dst[%c0] : !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    ttl.tile_store %exp, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<4x4x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<4x4x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %cb1 : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
@@ -79,8 +80,9 @@ func.func @f32_double_buffer()
   ^bb0(%in_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %exp = ttl.tile_exp %in_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %exp = ttl.tile_exp %in_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %exp, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   ttl.cb_push %cb1 : <[4, 4], !ttcore.tile<32x32, f32>, 2>
@@ -116,8 +118,9 @@ func.func @bf16_full_sync()
   ^bb0(%in_tile: !ttcore.tile<32x32, bf16>, %out_tile: !ttcore.tile<32x32, bf16>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %exp = ttl.tile_exp %in_tile : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %exp, %out_view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<4x4x!ttcore.tile<32x32, bf16>>
+    %c0 = arith.constant 0 : index
+    %exp = ttl.tile_exp %in_tile into dst[%c0] : !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    ttl.tile_store %exp, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<4x4x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<4x4x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %cb1 : <[4, 4], !ttcore.tile<32x32, bf16>, 2>
@@ -153,8 +156,9 @@ func.func @f32_full_sync()
   ^bb0(%in_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %exp = ttl.tile_exp %in_tile : !ttcore.tile<32x32, f32>
-    ttl.tile_store %exp, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
+    %c0 = arith.constant 0 : index
+    %exp = ttl.tile_exp %in_tile into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %exp, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<4x4x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<4x4x!ttcore.tile<32x32, f32>>
   ttl.cb_push %cb1 : <[4, 4], !ttcore.tile<32x32, f32>, 2>

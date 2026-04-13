@@ -111,9 +111,10 @@ class TensorBlock:
         return ttl.matmul(result_type, ast_self, rhs)
 
     def store(ast_self: TensorBlock, rhs: TensorBlock) -> None:
-        """Store result tensor to the output CB reserve view.
+        """Store result tensor to the output CB reserve view (overwrite).
 
         Emits ttl.store with the result tensor and reserve view.
+        Always overwrites the CB slot. For accumulation, use ``+=``.
         """
         if not _is_block(ast_self):
             raise ValueError(
@@ -121,6 +122,26 @@ class TensorBlock:
             )
         reserve = _get_reserve_from_block(ast_self)
         ttl.store(rhs, reserve)
+
+    def __iadd__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
+        """Accumulate into a reserved block via L1 packer accumulation.
+
+        Emits ttl.store with the ``accumulate`` attribute. When used
+        inside a loop, the compiler inserts ``pack_reconfig_l1_acc``
+        guards so that each iteration adds to the existing L1 value
+        instead of overwriting.
+
+        This is an interim mechanism; the spec's full pattern
+        (``fill`` + lazy ``BlockExpr`` ``+=`` + ``store``) is deferred
+        to the BlockExpr PR (#446).
+        """
+        if not _is_block(ast_self):
+            raise ValueError(
+                "+= must be called on a block acquired from reserve(), not a regular tensor"
+            )
+        reserve = _get_reserve_from_block(ast_self)
+        ttl.store(rhs, reserve, accumulate=True)
+        return ast_self
 
     def push(ast_self: TensorBlock) -> None:
         """

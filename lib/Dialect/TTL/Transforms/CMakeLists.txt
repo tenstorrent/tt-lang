@@ -6,6 +6,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   LowerDPrintToEmitC.cpp
   LowerSignpostToEmitC.cpp
   TTLAnnotateCBAssociations.cpp
+  TTLAnnotateL1AccLoops.cpp
   TTLDumpCBFlowGraph.cpp
   TTLLowerMatmulBlock.cpp
   TTLAssignDST.cpp

@@ -52,7 +52,7 @@ func.func @matmul_add_multitile() attributes {ttl.kernel_thread = #ttkernel.thre
 // CHECK-LABEL: func.func @matmul_add_commuted
 // CHECK: ttl.compute
 // CHECK-SAME: iterator_types = ["parallel", "parallel", "reduction"]
-// CHECK: ttl.tile_matmul_block %{{.*}}, %{{.*}}, %{{.*}} :
+// CHECK: ttl.tile_matmul_block %{{.*}}, %{{.*}}, %{{.*}}:
 // CHECK-NOT: ttl.matmul
 // CHECK-NOT: ttl.add
 func.func @matmul_add_commuted() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {

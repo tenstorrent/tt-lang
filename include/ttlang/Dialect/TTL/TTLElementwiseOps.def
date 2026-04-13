@@ -78,7 +78,7 @@ TTL_BINARY_TILE_OP_MINMAX(Max, MaxTileOp, BinaryMaxTileInitOp, BinaryMaxTileOp)
 TTL_BINARY_TILE_OP_MINMAX(Min, MinTileOp, BinaryMinTileInitOp, BinaryMinTileOp)
 
 // Unary operations: TTL tensor op -> TTL tile op -> TTKernel init/compute ops
-// These use the standard unary template: DST[dst_idx] = op(DST[dst_idx])
+// These use the standard unary template: DST[dst_index] = op(DST[dst_index])
 TTL_UNARY_TILE_OP(Exp, ExpTileOp, ExpTileInitOp, ExpTileOp)
 TTL_UNARY_TILE_OP(Log, LogTileOp, LogTileInitOp, LogTileOp)
 TTL_UNARY_TILE_OP(Sqrt, SqrtTileOp, SqrtTileInitOp, SqrtTileOp)

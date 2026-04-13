@@ -182,11 +182,10 @@ class TTLGenericCompiler(TTCompilerBase):
                 f"Cannot unpack {len(value)} values into {len(targets)} variables"
             )
 
-        sym_table = self.symbol_tables[-1]
         for elt, val in zip(targets, value):
             if not isinstance(elt, ast.Name):
                 raise ValueError("Tuple unpacking requires simple variable names")
-            sym_table[elt.id] = val
+            self._set_var(elt.id, val)
 
     def _loc_for_node(self, node):
         """Return file location for node if debug_locations enabled, else name location."""
@@ -387,6 +386,24 @@ class TTLGenericCompiler(TTCompilerBase):
                 self.symbol_tables.pop()
 
         return None  # Statement, no return value
+
+    def visit_AugAssign(self, node):
+        """Handle += on tensor blocks via the registered __iadd__ method."""
+        with self._loc_for_node(node):
+            target = self.visit(node.target)
+            if (
+                isinstance(node.op, ast.Add)
+                and hasattr(target, "type")
+                and isinstance(target.type, RankedTensorType)
+            ):
+                rhs = self.visit(node.value)
+                mlir_type = _get_type_str(target.type)
+                iadd_fn = self._fn_map.get(f"{mlir_type}.__iadd__")
+                if iadd_fn:
+                    result = iadd_fn(target, rhs)
+                    self._set_var(node.target.id, result)
+                    return
+            return super().visit_AugAssign(node)
 
     def visit_BinOp(self, node):
         """Override to inject auto-profiling and provide better error messages."""
@@ -658,8 +675,8 @@ class TTLGenericCompiler(TTCompilerBase):
         self.symbol_tables.append({})
         func_bb = self.func_entry.add_entry_block()
 
-        # Add ttl module to symbol table
-        self.symbol_tables[-1]["ttl"] = ttl
+        # Add ttl module to symbol table.
+        self._set_var("ttl", ttl)
 
         # Ensure TTL dialect is registered for type parsing
         ttl.ensure_dialects_registered(self.ctx)
@@ -668,12 +685,12 @@ class TTLGenericCompiler(TTCompilerBase):
 
         # Emit function body
         with InsertionPoint(func_bb):
-            # Map TensorAccessor function arguments to symbol table
+            # Map TensorAccessor function arguments to symbol table.
             for i, name in enumerate(self._tensor_accessor_names):
-                self.symbol_tables[-1][name] = func_bb.arguments[i]
+                self._set_var(name, func_bb.arguments[i])
                 self.streams.add(name)
 
-            # Prepopulate other captures (non-tensor)
+            # Prepopulate other captures (non-tensor).
             from ..circular_buffer import CircularBuffer
             from ..pipe import Pipe, PipeNet
 
@@ -682,16 +699,11 @@ class TTLGenericCompiler(TTCompilerBase):
                     continue  # Already handled via function arguments
                 assert isinstance(name, str)
                 if isinstance(val, int):
-                    self.symbol_tables[-1][name] = arith.ConstantOp(
-                        IndexType.get(self.ctx), val
-                    )
+                    self._set_var(name, arith.ConstantOp(IndexType.get(self.ctx), val))
                 elif isinstance(val, float):
-                    self.symbol_tables[-1][name] = arith.ConstantOp(
-                        F32Type.get(self.ctx), val
-                    )
+                    self._set_var(name, arith.ConstantOp(F32Type.get(self.ctx), val))
                 elif isinstance(val, CircularBuffer):
-                    cb_val = self._emit_cb_from_capture(val)
-                    self.symbol_tables[-1][name] = cb_val
+                    self._set_var(name, self._emit_cb_from_capture(val))
                 elif isinstance(val, Pipe):
                     pipe_val = self._emit_pipe_from_capture(val)
                     self.symbol_tables[-1][name] = pipe_val

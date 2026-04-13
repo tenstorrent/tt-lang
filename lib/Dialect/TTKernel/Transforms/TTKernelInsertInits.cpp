@@ -348,18 +348,18 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
 }
 
 /// Find the outermost enclosing insertion point by walking up through
-/// compiler-generated loops (marked with ttl.tile_loop_stride or
-/// ttl.subblock_loop_stride). By construction, these loops iterate over tiles
-/// within a single ttl.compute whose input/output CBs are fixed, so the
-/// CB configuration is invariant across iterations and hoisting is safe.
-/// Stops at unmarked loops to avoid hoisting past user loops that could
-/// contain multiple sync regions with different CB configurations.
+/// loops with invariant CB configurations: compiler-generated tile/subblock
+/// loops (ttl.tile_loop_stride, ttl.subblock_loop_stride) and L1
+/// accumulation loops (ttl.l1_acc_loop). All use fixed CBs across
+/// iterations, so init hoisting is safe. Stops at unmarked loops to avoid
+/// hoisting past user loops with varying CB configurations.
 static Operation *hoistAboveCompilerLoops(Operation *op) {
   Operation *insertBefore = op;
   while (auto *parentOp = insertBefore->getParentOp()) {
     if (isa<scf::ForOp>(parentOp) &&
         (parentOp->hasAttr(kTileLoopStrideAttrName) ||
-         parentOp->hasAttr(kSubblockLoopStrideAttrName))) {
+         parentOp->hasAttr(kSubblockLoopStrideAttrName) ||
+         parentOp->hasAttr(kL1AccLoopAttrName))) {
       insertBefore = parentOp;
     } else {
       break;

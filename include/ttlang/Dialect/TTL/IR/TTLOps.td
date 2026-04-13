@@ -681,7 +681,7 @@ def TTL_IterIndexOp : TTL_Op<"iter_index", [Pure,
     ^bb0(%a: !ttcore.tile<32x32, bf16>, %b: !ttcore.tile<32x32, bf16>):
         %i = ttl.iter_index 0 : index
         %j = ttl.iter_index 1 : index
-        %tok, %tile = ttl.copy_tile %a[%i, %j], %c0 : ...
+        %tok, %tile = ttl.copy_tile %a[%i, %j] into dst[%c0] : ...
         ttl.tile_store %result, %view[%i, %j] : ...
         ttl.yield
     }
@@ -696,7 +696,8 @@ def TTL_IterIndexOp : TTL_Op<"iter_index", [Pure,
 def TTL_CopyTileOp : TTL_Op<"copy_tile",
                             [MemoryEffects<[MemRead, MemWrite]>,
                              TTL_CBInputTileOpTrait,
-                             TTL_DataMovementOpTrait]> {
+                             TTL_DataMovementOpTrait,
+                             TTL_DstResultOpTrait]> {
   let summary = "Copy a tile from a circular buffer into a DST register";
   let description = [{
     Performs a CB -> DST copy, matching `copy_tile_init` + `copy_tile` in the
@@ -715,28 +716,29 @@ def TTL_CopyTileOp : TTL_Op<"copy_tile",
     // After assign-dst (inside ttl.compute body, iter_index provides coordinates):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %tok, %tile = ttl.copy_tile %src[%i, %j], %c0 : !ttcore.tile<32x32, bf16>, index
+    %tok, %tile = ttl.copy_tile %src[%i, %j] into dst[%c0] : !ttcore.tile<32x32, bf16>
                   -> !ttl.dst, !ttcore.tile<32x32, bf16>
     // After lower-to-loops (iter_index replaced with loop IVs):
-    %tok, %tile = ttl.copy_tile %src[%row, %col], %c0 : !ttcore.tile<32x32, bf16>, index
+    %tok, %tile = ttl.copy_tile %src[%row, %col] into dst[%c0] : !ttcore.tile<32x32, bf16>
                   -> !ttl.dst, !ttcore.tile<32x32, bf16>
     ```
   }];
   let arguments = (ins
     TTL_TileType:$src,
-    Index:$dst_index,
-    Variadic<Index>:$src_indices
+    Variadic<Index>:$src_indices,
+    Index:$dst_index
   );
   let results = (outs TTL_DSTRegister:$dst_token, TTL_TileType:$dst_tile);
   let assemblyFormat =
-      "$src `[` $src_indices `]` `,` $dst_index attr-dict `:` "
-      "type($src) `,` type($dst_index) "
+      "$src `[` $src_indices `]` `into` `dst` `[` $dst_index `]` attr-dict `:` "
+      "type($src) "
       "`->` type($dst_token) `,` type($dst_tile)";
   let hasVerifier = 1;
 }
 
 def TTL_CopyDstOp : TTL_Op<"copy_dst",
-                           [SameOperandsAndResultType,
+                           [TTL_DstResultOpTrait,
+                            AllTypesMatch<["src_tile", "result"]>,
                             MemoryEffects<[MemRead, MemWrite]>,
                             TTL_DSTInputsTrait,
                             TTL_DataMovementOpTrait]> {
@@ -746,42 +748,48 @@ def TTL_CopyDstOp : TTL_Op<"copy_dst",
     a value has multiple consumers and at least one is unary (which overwrites
     in-place). The copy ensures earlier consumers work on independent data.
 
-    The dst_idx attribute specifies the destination DST register index. The
-    source DST register is determined by the src_tile's dst_idx attribute.
+    The dst_index operand specifies the destination DST register. The source
+    register is determined by the src_tile's dst_index.
 
-    Lowering: ttl.copy_dst -> ttkernel.copy_dest_values(src.dst_idx, dst_idx)
+    Lowering: ttl.copy_dst -> ttkernel.copy_dest_values(src.dst_index, dst_index)
 
     Example:
     ```mlir
-    %0 = ttl.tile_mul %a, %b : !ttcore.tile<32x32, f32>
-    %0_copy = ttl.copy_dst %0 {dst_idx = 3 : i32} : !ttcore.tile<32x32, f32>
-    %1 = ttl.tile_abs %0_copy {dst_idx = 3 : i32} : !ttcore.tile<32x32, f32>
-    %2 = ttl.tile_exp %0 {dst_idx = 2 : i32} : !ttcore.tile<32x32, f32>
+    %c2 = arith.constant 2 : index
+    %c3 = arith.constant 3 : index
+    %0 = ttl.tile_mul %a, %b into dst[%c2] : !ttcore.tile<32x32, f32>
+    %0_copy = ttl.copy_dst %0 into dst[%c3] : !ttcore.tile<32x32, f32>
+    %1 = ttl.tile_abs %0_copy into dst[%c3] : !ttcore.tile<32x32, f32>
+    %2 = ttl.tile_exp %0 into dst[%c2] : !ttcore.tile<32x32, f32>
     ```
   }];
-  let arguments = (ins TTL_TileType:$src_tile);
+  let arguments = (ins TTL_TileType:$src_tile, Index:$dst_index);
   let results = (outs TTL_TileType:$result);
-  let assemblyFormat = "$src_tile attr-dict `:` type($result)";
+  let assemblyFormat = "$src_tile `into` `dst` `[` $dst_index `]` attr-dict `:` type($src_tile) `->` type($result)";
 }
 
 // Note: DSTInputsTrait is the default for binary ops. FPU-marked binaries
 // (ttl.fpu_binary) read from CB instead; use isCBInputOp() to check at runtime.
 class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
-    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType, TTL_TileBinaryOpTrait,
-                                                 TTL_DSTInputsTrait])> {
+    : TTL_TileOp<mnemonic, !listconcat(traits, [TTL_TileBinaryOpTrait,
+                                                 TTL_DSTInputsTrait,
+                                                 TTL_DstResultOpTrait,
+                                                 AllTypesMatch<["lhs", "rhs", "result"]>])> {
   let summary = "Binary tile operation";
-  let arguments = (ins AnyType:$lhs, AnyType:$rhs);
-  let results = (outs AnyType:$result);
-  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+  let arguments = (ins TTL_TileType:$lhs, TTL_TileType:$rhs, Index:$dst_index);
+  let results = (outs TTL_TileType:$result);
+  let assemblyFormat = "$lhs `,` $rhs `into` `dst` `[` $dst_index `]` attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
 }
 
 class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
-    : TTL_TileOp<mnemonic, !listconcat(traits, [SameOperandsAndResultType, TTL_TileUnaryOpTrait,
-                                                 TTL_DSTInputsTrait, TTL_InPlaceOpTrait])> {
+    : TTL_TileOp<mnemonic, !listconcat(traits, [TTL_TileUnaryOpTrait,
+                                                 TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
+                                                 TTL_DstResultOpTrait,
+                                                 AllTypesMatch<["input", "result"]>])> {
   let summary = "Unary tile operation";
-  let arguments = (ins AnyType:$input);
-  let results = (outs AnyType:$result);
-  let assemblyFormat = "$input attr-dict `:` type($result)";
+  let arguments = (ins TTL_TileType:$input, Index:$dst_index);
+  let results = (outs TTL_TileType:$result);
+  let assemblyFormat = "$input `into` `dst` `[` $dst_index `]` attr-dict `:` type($input) `->` type($result)";
 }
 
 //===----------------------------------------------------------------------===//
@@ -868,7 +876,7 @@ def TTL_BcastOp : TTL_Op<"bcast", []> {
   let assemblyFormat = "$input `,` $output $bcast_type attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
 }
 
-def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait]> {
+def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
   let summary = "Tile-level broadcast operation";
   let description = [{
     Broadcasts a row, column, or scalar tile into a full 32x32 tile.
@@ -876,9 +884,9 @@ def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait]> {
     Reads input from CB, writes result to DST. The output operand carries
     the output CB for init-time PACK configuration only.
   }];
-  let arguments = (ins AnyType:$input, AnyType:$output, TTL_BcastTypeAttr:$bcast_type);
+  let arguments = (ins AnyType:$input, AnyType:$output, TTL_BcastTypeAttr:$bcast_type, Index:$dst_index);
   let results = (outs AnyType:$result);
-  let assemblyFormat = "$input `,` $output $bcast_type attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
+  let assemblyFormat = "$input `,` $output $bcast_type `into` `dst` `[` $dst_index `]` attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
 }
 
 //===----------------------------------------------------------------------===//
@@ -913,7 +921,7 @@ def TTL_ReduceOp : TTL_Op<"reduce", [Pure]> {
 }
 
 def TTL_TileReduceOp : TTL_TileOp<"tile_reduce",
-    [TTL_CBInputTileOpTrait, TTL_AccumulatingOpTrait]> {
+    [TTL_CBInputTileOpTrait, TTL_AccumulatingOpTrait, TTL_DstResultOpTrait]> {
   let summary = "Tile-level reduction with scaling";
   let description = [{
     Reduces a tile from the input dataflow buffer using the specified
@@ -922,10 +930,11 @@ def TTL_TileReduceOp : TTL_TileOp<"tile_reduce",
   }];
   let arguments = (ins AnyType:$input, AnyType:$scaler, AnyType:$output,
                        TTL_ReduceTypeAttr:$reduce_type,
-                       TTKernel_ReduceDimAttr:$reduce_dim);
+                       TTKernel_ReduceDimAttr:$reduce_dim,
+                       Index:$dst_index);
   let results = (outs AnyType:$result);
   let assemblyFormat = [{
-    $input `,` $scaler `,` $output $reduce_type $reduce_dim attr-dict `:`
+    $input `,` $scaler `,` $output $reduce_type $reduce_dim `into` `dst` `[` $dst_index `]` attr-dict `:`
     `(` type($input) `,` type($scaler) `,` type($output) `)` `->` type($result)
   }];
 }
@@ -947,16 +956,16 @@ def TTL_TransposeOp : TTL_Op<"transpose", [Pure]> {
   let hasVerifier = 1;
 }
 
-def TTL_TileTransposeOp : TTL_TileOp<"tile_transpose", [TTL_CBInputTileOpTrait]> {
+def TTL_TileTransposeOp : TTL_TileOp<"tile_transpose", [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
   let summary = "Tile-level 32x32 transpose (dataflow buffer input, DST output)";
   let description = [{
     Transposes a 32x32 tile from a dataflow buffer and writes the result
     to a DST register.
   }];
-  let arguments = (ins AnyType:$input, AnyType:$output);
+  let arguments = (ins AnyType:$input, AnyType:$output, Index:$dst_index);
   let results = (outs AnyType:$result);
   let assemblyFormat = [{
-    $input `,` $output attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)
+    $input `,` $output `into` `dst` `[` $dst_index `]` attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)
   }];
 }
 
@@ -975,15 +984,15 @@ def TTL_FillOp : TTL_Op<"fill", [Pure]> {
   let assemblyFormat = "$value attr-dict `:` type($result)";
 }
 
-def TTL_TileFillOp : TTL_TileOp<"tile_fill", []> {
+def TTL_TileFillOp : TTL_TileOp<"tile_fill", [TTL_DstResultOpTrait]> {
   let summary = "Tile-level fill operation";
   let description = [{
     Fills a DST register tile with a constant f32 value.
     Maps to ttkernel.fill_tile_init + ttkernel.fill_tile.
   }];
-  let arguments = (ins F32Attr:$value);
+  let arguments = (ins F32Attr:$value, Index:$dst_index);
   let results = (outs AnyType:$result);
-  let assemblyFormat = "$value attr-dict `:` type($result)";
+  let assemblyFormat = "$value `into` `dst` `[` $dst_index `]` attr-dict `:` type($result)";
 }
 
 //===----------------------------------------------------------------------===//
@@ -1008,7 +1017,7 @@ def TTL_MatmulOp : TTL_Op<"matmul", [Pure]> {
 }
 
 def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
-    [TTL_CBInputTileOpTrait]> {
+    [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
   let summary = "Block-level matrix multiply-accumulate (CB inputs, DST output)";
   let description = [{
     Multiplies a block of A tiles by a block of B tiles and accumulates
@@ -1024,10 +1033,11 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
     Maps to ttkernel.mm_block_init + ttkernel.experimental::matmul_block.
   }];
   let arguments = (ins TTL_TileOrTensor:$lhs, TTL_TileOrTensor:$rhs,
-                       Optional<TTL_TileOrTensor>:$accumulator);
+                       Optional<TTL_TileOrTensor>:$accumulator,
+                       Index:$dst_index);
   let results = (outs TTL_TileOrTensor:$result);
   let assemblyFormat = [{
-    $lhs `,` $rhs (`,` $accumulator^)? attr-dict `:`
+    $lhs `,` $rhs (`,` $accumulator^)? `into` `dst` `[` $dst_index `]` attr-dict `:`
     type($lhs) `,` type($rhs) (`,` type($accumulator)^)? `->` type($result)
   }];
 }
@@ -1144,8 +1154,13 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
     `ttl.store` represents the user's intent to store a computed tensor into
     an output circular buffer.
 
-    Emitted by Python's `o.store(result)`. During `convert-ttl-to-compute`,
-    this op is transformed into a `ttl.tile_store` inside the compute body.
+    Emitted by Python's `o.store(result)` (overwrite) or `o += result`
+    (accumulate). During `convert-ttl-to-compute`, this op is transformed
+    into a `ttl.tile_store` inside the compute body.
+
+    When `accumulate` is set, the enclosing loop is annotated for L1
+    packer accumulation so that each iteration adds to the existing L1
+    value instead of overwriting.
 
     Example:
     ```mlir
@@ -1153,17 +1168,20 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
     %result = ttl.add %a, %b : ...
     ttl.store %result, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>,
                                   tensor<1x1x!ttcore.tile<32x32, bf16>>
+    // Accumulating store (from +=):
+    ttl.store %result, %reserve {accumulate} : ...
     ```
   }];
   let arguments = (ins
     AnyRankedTensor:$tensor,
-    AnyRankedTensor:$view
+    AnyRankedTensor:$view,
+    OptionalAttr<UnitAttr>:$accumulate
   );
   let assemblyFormat = "$tensor `,` $view attr-dict `:` type($tensor) `,` type($view)";
   let hasVerifier = 1;
 }
 
-def TTL_TileStoreOp : TTL_Op<"tile_store", [MemoryEffects<[MemWrite]>]> {
+def TTL_TileStoreOp : TTL_Op<"tile_store", [MemoryEffects<[MemWrite]>, TTL_DstResultOpTrait]> {
   let summary = "Store a tile into a circular buffer view";
   let description = [{
     `ttl.tile_store` packs a single tile from the DST register into a circular
@@ -1187,19 +1205,20 @@ def TTL_TileStoreOp : TTL_Op<"tile_store", [MemoryEffects<[MemWrite]>]> {
     // After assign-dst (inside ttl.compute body):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    ttl.tile_store %tile, %view[%i, %j] : !ttcore.tile<32x32, bf16>,
-                                           tensor<2x3x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %tile, %view[%i, %j] from dst[%c0]
+      : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
     // After lower-to-loops (iter_index replaced with loop IVs):
-    ttl.tile_store %tile, %view[%row, %col] : !ttcore.tile<32x32, bf16>,
-                                              tensor<2x3x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %tile, %view[%row, %col] from dst[%c0]
+      : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
     ```
   }];
   let arguments = (ins
     AnyType:$tile,
     AnyRankedTensor:$view,
-    Variadic<Index>:$indices
+    Variadic<Index>:$indices,
+    Index:$dst_index
   );
-  let assemblyFormat = "$tile `,` $view `[` $indices `]` attr-dict `:` type($tile) `,` type($view)";
+  let assemblyFormat = "$tile `,` $view `[` $indices `]` `from` `dst` `[` $dst_index `]` attr-dict `:` type($tile) `,` type($view)";
   let hasVerifier = 1;
 }
 

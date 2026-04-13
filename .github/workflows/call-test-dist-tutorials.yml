@@ -1,0 +1,73 @@
+name: Dist Container Tutorial Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs-on:
+        description: 'Hardware type to run on'
+        required: false
+        type: string
+        default: 'n150'
+      timeout:
+        description: 'Job timeout in minutes'
+        required: false
+        type: number
+        default: 30
+      dist_docker_tag:
+        description: 'Docker tag for the dist container'
+        required: false
+        type: string
+        default: 'latest'
+  workflow_call:
+    inputs:
+      runs-on:
+        description: 'Hardware type to run on'
+        required: false
+        type: string
+        default: 'n150'
+      timeout:
+        description: 'Job timeout in minutes'
+        required: false
+        type: number
+        default: 30
+      dist_docker_tag:
+        description: 'Docker tag for the dist container'
+        required: false
+        type: string
+        default: 'latest'
+
+permissions:
+  checks: write
+  contents: read
+  packages: read
+
+jobs:
+  test-dist-tutorials:
+    name: "Dist Container Tutorials (${{ inputs.runs-on }})"
+    runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout }}
+
+    container:
+      image: ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:${{ inputs.dist_docker_tag }}
+      options: --device /dev/tenstorrent
+      volumes:
+        - /dev/hugepages:/dev/hugepages
+        - /dev/hugepages-1G:/dev/hugepages-1G
+        - /etc/udev/rules.d:/etc/udev/rules.d
+        - /lib/modules:/lib/modules
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      PYTHONDONTWRITEBYTECODE: 1
+
+    steps:
+      - name: Checkout (for test script)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Run tutorial examples
+        run: bash .github/scripts/run-tutorials.sh

@@ -5,15 +5,6 @@
 //===----------------------------------------------------------------------===//
 // TTKernel Insert L1 Accumulation
 //===----------------------------------------------------------------------===//
-//
-// Inserts pack_reconfig_l1_acc guards inside reduction loops. When a
-// tile_regs_acquire is inside a reduction loop, the packer must switch
-// to L1 accumulation mode from the second iteration onwards so that
-// pack_tile adds to the existing L1 value instead of overwriting.
-//
-// See docs/development/AccumulatingComputeLowering.md for design details.
-//
-//===----------------------------------------------------------------------===//
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/Passes.h"
@@ -35,26 +26,33 @@ namespace ttk = mlir::tt::ttkernel;
 
 namespace {
 
-/// Find the innermost enclosing reduction loop for an operation.
-static scf::ForOp findInnermostReductionLoop(Operation *op) {
+/// Find the enclosing loop that controls L1 accumulation.
+/// Prefers kL1AccLoopAttrName (user-annotated). Falls back to innermost
+/// kReductionLoopAttrName (compiler-generated, for reduce ops).
+static scf::ForOp findL1AccLoop(Operation *op) {
+  scf::ForOp reductionFallback;
   for (Operation *parent = op->getParentOp(); parent;
        parent = parent->getParentOp()) {
     if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-      if (forOp->hasAttr(kReductionLoopAttrName)) {
+      if (forOp->hasAttr(kL1AccLoopAttrName)) {
         return forOp;
+      }
+      if (forOp->hasAttr(kReductionLoopAttrName) && !reductionFallback) {
+        reductionFallback = forOp;
       }
     }
   }
-  return nullptr;
+  return reductionFallback;
 }
 
-/// Find the outermost enclosing reduction loop for an operation.
-static scf::ForOp findOutermostReductionLoop(Operation *op) {
+/// Find the outermost enclosing L1 acc or reduction loop for the disable guard.
+static scf::ForOp findOutermostL1AccLoop(Operation *op) {
   scf::ForOp outermost;
   for (Operation *parent = op->getParentOp(); parent;
        parent = parent->getParentOp()) {
     if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-      if (forOp->hasAttr(kReductionLoopAttrName)) {
+      if (forOp->hasAttr(kL1AccLoopAttrName) ||
+          forOp->hasAttr(kReductionLoopAttrName)) {
         outermost = forOp;
       }
     }
@@ -68,52 +66,122 @@ struct TTKernelInsertL1AccumulationPass
   void runOnOperation() override {
     auto moduleOp = getOperation();
 
-    // Collect all acquire ops inside reduction loops. Collecting first
-    // avoids invalidation issues from modifying IR during iteration.
-    SmallVector<std::pair<ttk::TileRegsAcquireOp, scf::ForOp>> targets;
+    // Collect L1 acc loops (kL1AccLoopAttrName or kReductionLoopAttrName)
+    // that contain pack_tile activity.
+    SmallVector<scf::ForOp> l1AccLoops;
+    llvm::SmallDenseSet<Operation *> seenLoops;
     moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
-      auto reductionLoop = findInnermostReductionLoop(acquireOp);
-      if (!reductionLoop) {
+      auto loop = findL1AccLoop(acquireOp);
+      if (!loop || !seenLoops.insert(loop).second) {
         return;
       }
-      // L1 accumulation uses additive packing -- only valid for sum
-      // reductions. Max reductions require DST accumulation (Phase 2)
-      // where the hardware max operation accumulates across iterations.
       bool hasMaxReduce = false;
-      reductionLoop->walk([&](ttk::ReduceTileOp reduceOp) {
+      loop->walk([&](ttk::ReduceTileOp reduceOp) {
         if (reduceOp.getReduceType() == ttk::ReduceType::Max) {
           hasMaxReduce = true;
         }
       });
       if (!hasMaxReduce) {
-        targets.emplace_back(acquireOp, reductionLoop);
+        l1AccLoops.push_back(loop);
       }
     });
 
-    llvm::SmallDenseSet<Operation *> disabledLoops;
-    for (auto [acquireOp, reductionLoop] : targets) {
-      OpBuilder builder(acquireOp->getContext());
-      builder.setInsertionPointAfter(acquireOp);
-      Location loc = acquireOp.getLoc();
+    // L1 accumulation guard placement. For any loop that
+    // accumulates in L1 (matmul K loop or reduce loop), the pattern is:
+    //
+    //   pack_reconfig_l1_acc(0)                // disable before loop
+    //   for (iv = lb; ...) {
+    //     [subblock 0: acquire...pack...release]
+    //     [subblock N: acquire...pack...release]
+    //     if (iv == lb) pack_reconfig_l1_acc(1) // enable once after first
+    //                                           // iteration's last pack
+    //   }
+    //   [cb_push_back if present]
+    //   pack_reconfig_l1_acc(0)                // disable after loop
+    //
+    // The L1 acc state persists across multiple dst sections, so the enable
+    // call only needs to happen once (after the first iteration completes
+    // all its packs). Disable guards are inserted once per outermost
+    // reduction loop (parallel loops are not considered).
 
-      // Guard: if (loop_iv != lower_bound) pack_reconfig_l1_acc(1)
-      Value loopIV = reductionLoop.getInductionVar();
-      Value loopLB = reductionLoop.getLowerBound();
-      Value notFirstIter = arith::CmpIOp::create(
-          builder, loc, arith::CmpIPredicate::ne, loopIV, loopLB);
-      auto ifOp = scf::IfOp::create(builder, loc, notFirstIter);
+    // Find the insertion point for the enable guard: the top-level op in
+    // the loop body that contains the last tile_regs_release.
+    auto findTopLevelAncestor = [](Operation *op,
+                                   Block *loopBody) -> Operation * {
+      while (op && op->getBlock() != loopBody) {
+        op = op->getParentOp();
+      }
+      return op;
+    };
+
+    llvm::SmallDenseMap<Operation *, Operation *> enablePointPerLoop;
+    for (auto loop : l1AccLoops) {
+      Operation *lastTopLevel = nullptr;
+      loop->walk([&](ttk::TileRegsReleaseOp releaseOp) {
+        Operation *topLevel = findTopLevelAncestor(releaseOp, loop.getBody());
+        if (topLevel) {
+          lastTopLevel = topLevel;
+        }
+      });
+      if (lastTopLevel) {
+        enablePointPerLoop[loop.getOperation()] = lastTopLevel;
+      }
+    }
+
+    llvm::SmallDenseSet<Operation *> disabledLoops;
+    for (auto loop : l1AccLoops) {
+      auto iter = enablePointPerLoop.find(loop.getOperation());
+      if (iter == enablePointPerLoop.end()) {
+        continue;
+      }
+      Operation *enablePoint = iter->second;
+      OpBuilder builder(loop->getContext());
+      Location loc = enablePoint->getLoc();
+
+      // Enable L1 acc once, at the end of the first iteration of the
+      // reduction loop. All packs in iteration 0 write without
+      // accumulation; subsequent iterations add to the existing L1 value.
+      builder.setInsertionPointAfter(enablePoint);
+      Value loopIV = loop.getInductionVar();
+      Value loopLB = loop.getLowerBound();
+      Value firstIter = arith::CmpIOp::create(
+          builder, loc, arith::CmpIPredicate::eq, loopIV, loopLB);
+      auto ifOp = scf::IfOp::create(builder, loc, firstIter);
       builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
       Value enableFlag = arith::ConstantOp::create(
           builder, loc, builder.getI32Type(), builder.getI32IntegerAttr(1));
       ttk::PackReconfigL1AccOp::create(builder, loc, enableFlag);
 
-      // Disable L1 accumulation after the outermost reduction loop.
-      auto outermostLoop = findOutermostReductionLoop(acquireOp);
-      if (disabledLoops.insert(outermostLoop).second) {
-        builder.setInsertionPointAfter(outermostLoop);
-        Value disableFlag = arith::ConstantOp::create(
+      // Bracket the outermost accumulation loop with disable guards.
+      // Both kL1AccLoopAttrName and kReductionLoopAttrName mean "all
+      // iterations write to the same CB slot," so the outermost such
+      // loop is the correct accumulation boundary.
+      auto outermostLoop = findOutermostL1AccLoop(loop);
+      if (!outermostLoop) {
+        outermostLoop = loop;
+      }
+      if (disabledLoops.insert(outermostLoop.getOperation()).second) {
+        // Disable before the loop.
+        builder.setInsertionPoint(outermostLoop);
+        Value disablePre = arith::ConstantOp::create(
             builder, loc, builder.getI32Type(), builder.getI32IntegerAttr(0));
-        ttk::PackReconfigL1AccOp::create(builder, loc, disableFlag);
+        ttk::PackReconfigL1AccOp::create(builder, loc, disablePre);
+
+        // Disable after any consecutive cb_push_back ops that follow the
+        // loop. Multi-output computes produce one push per output CB.
+        Operation *lastPush = nullptr;
+        for (Operation *op = outermostLoop->getNextNode();
+             op && isa<ttk::CBPushBackOp>(op); op = op->getNextNode()) {
+          lastPush = op;
+        }
+        if (lastPush) {
+          builder.setInsertionPointAfter(lastPush);
+        } else {
+          builder.setInsertionPointAfter(outermostLoop);
+        }
+        Value disablePost = arith::ConstantOp::create(
+            builder, loc, builder.getI32Type(), builder.getI32IntegerAttr(0));
+        ttk::PackReconfigL1AccOp::create(builder, loc, disablePost);
       }
     }
   }

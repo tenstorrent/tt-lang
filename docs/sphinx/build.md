@@ -222,10 +222,11 @@ CI uses two caching layers that must be rebuilt when submodule SHAs change:
    `call-build-toolchain.yml` workflow automatically builds and caches a new
    toolchain.
 
-2. **Docker images** -- `ird` and `dist` container images tagged by a hash of
-   submodule SHAs and Dockerfile contents (see
-   `.github/containers/get-docker-tag.sh`). When submodule SHAs change, the tag
-   changes and `call-build-docker.yml` builds new images.
+2. **Docker images** -- `ird` and `dist` container images tagged by the nearest
+   git version tag (e.g. `v0.1.8`, see `.github/containers/get-version-tag.sh`).
+   Rebuilds overwrite the same tag. A `latest` tag is also pushed alongside
+   each versioned tag. After building, `call-build-docker.yml` runs the
+   tutorial examples in the dist container to verify the image works.
 
 #### Triggering a toolchain cache rebuild on PRs
 
@@ -240,7 +241,7 @@ build:
   secrets: inherit
   with:
     build_toolchain: true
-    docker_tag: "v0.1.7"
+    docker_tag: "v0.1.8"
 ```
 
 When `build_toolchain` is true, the workflow:

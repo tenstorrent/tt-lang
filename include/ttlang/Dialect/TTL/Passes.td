@@ -31,18 +31,47 @@ def TTKernelInsertL1Accumulation
   let summary = "Insert L1 accumulation guards for reduction loops";
   let description = [{
     Inserts `pack_reconfig_l1_acc` guards inside reduction loops so that
-    pack operations accumulate into L1 instead of overwriting. On the first
-    iteration of a reduction loop, pack writes normally. On subsequent
-    iterations, the packer is reconfigured to add to the existing L1 value.
+    pack operations accumulate into L1 instead of overwriting. The enable
+    call happens once after the first iteration's last pack; the L1 acc
+    packer state persists across `tile_regs` boundaries. Disable guards
+    bracket the outermost reduction loop (parallel loops are not
+    considered). Max-reduce loops are excluded (max is not additive).
 
-    Reduction loops are identified by the `ttl.reduction_loop` attribute
-    on `scf.for` ops.
+    The pattern is:
+       pack_reconfig_l1_acc(0)                // disable before loop
+       for (iv = lb; ...) {
+         [subblock 0: acquire...pack...release]
+         [subblock N: acquire...pack...release]
+         if (iv == lb) pack_reconfig_l1_acc(1) // enable once after first
+                                               // iteration's last pack
+       }
+       [cb_push_back if present]
+       pack_reconfig_l1_acc(0)                // disable after loop
+
+    Reduction loops are identified by the `ttl.l1_acc_loop` (user-written)
+    or `ttl.reduction_loop` (compiler-generated) attributes on `scf.for`
+    ops, with `ttl.l1_acc_loop` taking precedence.
   }];
 
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
     "::mlir::scf::SCFDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
+def TTLAnnotateL1AccLoops
+    : Pass<"ttl-annotate-l1-acc-loops", "::mlir::func::FuncOp"> {
+  let summary = "Annotate user-written scf.for loops for L1 accumulation";
+  let description = [{
+    Detects user-written `scf.for` loops containing `ttl.store` ops with
+    the `accumulate` attribute (emitted by the `+=` operator) and annotates
+    them with `ttl.l1_acc_loop`. This enables `TTKernelInsertL1Accumulation`
+    to insert `pack_reconfig_l1_acc` guards so that packs accumulate across
+    iterations instead of overwriting.
+  }];
+  let dependentDialects = [
+    "::mlir::scf::SCFDialect"
   ];
 }
 
@@ -89,7 +118,7 @@ def TTLAssignDST
 
     This pass also:
     - Inserts ttl.copy_tile for block arguments
-    - Assigns dst_idx attributes to tile math operations
+    - Assigns dst_index SSA operands to tile math operations
     - Checks capacity and emits diagnostics on overflow
   }];
 
@@ -280,7 +309,7 @@ def TTLScheduleOperations
     one init per consecutive group of same-type ops.
 
     Ops are sorted by (dependency depth, category, TypeID, init affinity,
-    dst_idx). Dependency depth considers RAW (SSA def-use), WAW (same DST
+    dst_index). Dependency depth considers RAW (SSA def-use), WAW (same DST
     write index), and WAR (write after prior read of same DST index) hazards.
     Ops at the same depth are independent and can be reordered.
 
@@ -294,18 +323,18 @@ def TTLScheduleOperations
     ```mlir
     // Before (interleaved by tile iteration):
     ttl.tile_regs_acquire
-    %s0 = ttl.tile_add %a0, %b0 {dst_idx = 0}
-    %e0 = ttl.tile_exp %s0 {dst_idx = 0}
-    %s1 = ttl.tile_add %a1, %b1 {dst_idx = 1}
-    %e1 = ttl.tile_exp %s1 {dst_idx = 1}
+    %s0 = ttl.tile_add %a0, %b0 into dst[%c0] : ...
+    %e0 = ttl.tile_exp %s0 into dst[%c0] : ...
+    %s1 = ttl.tile_add %a1, %b1 into dst[%c1] : ...
+    %e1 = ttl.tile_exp %s1 into dst[%c1] : ...
     ttl.tile_regs_commit
 
     // After (grouped by kind at each dependency depth):
     ttl.tile_regs_acquire
-    %s0 = ttl.tile_add %a0, %b0 {dst_idx = 0}  // depth 0
-    %s1 = ttl.tile_add %a1, %b1 {dst_idx = 1}  // depth 0
-    %e0 = ttl.tile_exp %s0 {dst_idx = 0}       // depth 1
-    %e1 = ttl.tile_exp %s1 {dst_idx = 1}       // depth 1
+    %s0 = ttl.tile_add %a0, %b0 into dst[%c0] : ...  // depth 0
+    %s1 = ttl.tile_add %a1, %b1 into dst[%c1] : ...  // depth 0
+    %e0 = ttl.tile_exp %s0 into dst[%c0] : ...       // depth 1
+    %e1 = ttl.tile_exp %s1 into dst[%c1] : ...       // depth 1
     ttl.tile_regs_commit
     ```
 

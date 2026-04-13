@@ -10,7 +10,7 @@ from utils.block_allocation import get_large_matmul_params
 from utils.correctness import assert_with_ulp
 
 
-@ttl.operation(grid=(13, 10))
+@ttl.operation(grid=("auto"))
 def tt_lang_multinode_reuse_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
@@ -123,6 +123,7 @@ def test_multinode_reuse_matmul_tt_lang(M, K, N):
     )
     result = ttnn.to_torch(c).to(torch.bfloat16)
     assert_with_ulp(golden, result)
+    print("Test passed!")
 
     ttnn.close_device(device)
 

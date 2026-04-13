@@ -93,12 +93,13 @@ module {
 // CHECK-LABEL: func.func @store_single(
 // CHECK: %[[CB:.*]] = ttl.bind_cb{cb_index = {{.*}}, block_count = {{.*}}} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
 // CHECK: %[[VIEW:.*]] = ttl.cb_reserve %[[CB]] : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-// CHECK: ttl.tile_store %{{.*}}, %[[VIEW]][] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+// CHECK: ttl.tile_store %{{.*}}, %[[VIEW]][] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
 module {
   func.func @store_single(%tile: !ttcore.tile<32x32, bf16>) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %view = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.tile_store %tile, %view[] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %c0 = arith.constant 0 : index
+    ttl.tile_store %tile, %view[] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     func.return
   }
 }
