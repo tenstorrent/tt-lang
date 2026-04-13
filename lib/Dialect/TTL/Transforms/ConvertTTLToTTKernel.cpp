@@ -1041,15 +1041,15 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     ttk::NocSemaphoreSetOp::create(rewriter, loc, senderSemPtr, zeroIdx);
   }
 
-  auto cbReadPtr = ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted);
-  auto cbReadPtrIdx =
-      arith::IndexCastOp::create(rewriter, loc, indexTy, cbReadPtr);
+  // Use write pointer: data was written here by the preceding DRAM read.
+  // All cores execute the same cb_reserve_back, so the write pointer address
+  // is uniform across cores and correct for both the local source and the
+  // remote multicast destination.
+  auto cbWritePtr = ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted);
+  auto cbWritePtrIdx =
+      arith::IndexCastOp::create(rewriter, loc, indexTy, cbWritePtr);
 
-  // Resolve the destination L1 base address. When the receiver uses a
-  // different CB than the sender, we look up the receiver's CB read pointer
-  // so that multicast data lands at the correct L1 address on the destination.
-  // CB layout is uniform across cores, so the address is the same everywhere.
-  Value dstBaseIdx = cbReadPtrIdx;
+  Value dstBaseIdx = cbWritePtrIdx;
   if (receiverInfo) {
     // Determine sender CB index to check if it differs from receiver.
     // The source CB may be pre- or post-conversion, so check both BindCBOp
@@ -1066,9 +1066,9 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
       auto srcCBType = llvm::dyn_cast<ttk::CBType>(cbConverted->getType());
       auto recvCB = ttk::GetCompileArgValOp::create(rewriter, 
           loc, srcCBType, static_cast<int32_t>(receiverInfo->cbIndex));
-      auto recvReadPtr = ttk::GetReadPtrOp::create(rewriter, loc, recvCB);
+      auto recvWritePtr = ttk::GetWritePtrOp::create(rewriter, loc, recvCB);
       dstBaseIdx =
-          arith::IndexCastOp::create(rewriter, loc, indexTy, recvReadPtr);
+          arith::IndexCastOp::create(rewriter, loc, indexTy, recvWritePtr);
     }
   }
 
@@ -1112,7 +1112,7 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
       loc, i32Ty, rewriter.getI32IntegerAttr(totalSizeBytes));
 
   Value srcAddr =
-      arith::IndexCastOp::create(rewriter, loc, i32Ty, cbReadPtrIdx);
+      arith::IndexCastOp::create(rewriter, loc, i32Ty, cbWritePtrIdx);
 
   Value dstAddrIdx = dstBaseIdx;
   if (slotByteOffset > 0) {
