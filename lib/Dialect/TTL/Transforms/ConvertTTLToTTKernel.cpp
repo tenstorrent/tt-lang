@@ -8,6 +8,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -1576,7 +1577,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
-                         BuiltinDialect, scf::SCFDialect, func::FuncDialect,
+                         BuiltinDialect, emitc::EmitCDialect,
+                         scf::SCFDialect, func::FuncDialect,
                          tensor::TensorDialect, ttkernel::TTKernelDialect>();
 
   // Structural ops remain legal (converted elsewhere or kept as-is).
