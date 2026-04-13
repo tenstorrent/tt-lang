@@ -67,7 +67,7 @@ constexpr llvm::StringLiteral kReductionLoopAttrName("ttl.reduction_loop");
 /// Marks a user-written scf.for as an L1 accumulation loop. Each iteration
 /// packs to the same CB slot; pack_reconfig_l1_acc makes subsequent
 /// iterations additive. Distinct from kReductionLoopAttrName which marks
-/// compiler-generated DST accumulation loops.
+/// compiler-generated reduction loops.
 constexpr llvm::StringLiteral kL1AccLoopAttrName("ttl.l1_acc_loop");
 
 /// Output CB index on tile ops that need it for init insertion.

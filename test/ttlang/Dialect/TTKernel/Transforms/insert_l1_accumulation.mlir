@@ -148,3 +148,166 @@ func.func @subblocked_loop() attributes {ttkernel.thread = #ttkernel.thread<comp
   } {ttl.l1_acc_loop}
   return
 }
+
+// -----
+
+// L1 acc loop with no tile_regs_acquire/release inside: no guards inserted.
+
+// CHECK-LABEL: func.func @l1_acc_loop_no_sync
+// CHECK-NOT: pack_reconfig_l1_acc
+func.func @l1_acc_loop_no_sync() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c4_i32 = arith.constant 4 : i32
+  scf.for %iv = %c0 to %c4 step %c1 {
+    ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  } {ttl.l1_acc_loop}
+  return
+}
+
+// -----
+
+// L1 acc loop inside an unannotated outer loop (the realistic pattern:
+// outer M/N iteration loop wraps the inner K reduction loop). The disable
+// guards bracket the inner K loop, not the outer loop. Each outer
+// iteration gets a fresh disable-before -> K loop -> disable-after cycle.
+
+// CHECK-LABEL: func.func @l1_acc_inside_outer_loop
+// CHECK: scf.for
+// CHECK:   ttkernel.pack_reconfig_l1_acc
+// CHECK:   scf.for %[[IV:.*]] = %[[LB:.*]] to
+// CHECK:     ttkernel.tile_regs_acquire
+// CHECK:     ttkernel.pack_tile
+// CHECK:     ttkernel.tile_regs_release
+// CHECK:     %[[CMP:.*]] = arith.cmpi eq, %[[IV]], %[[LB]]
+// CHECK:     scf.if %[[CMP]]
+// CHECK:       ttkernel.pack_reconfig_l1_acc
+// CHECK:   }
+// CHECK:   ttkernel.cb_push_back
+// CHECK:   ttkernel.pack_reconfig_l1_acc
+func.func @l1_acc_inside_outer_loop() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c4 = arith.constant 4 : index
+  %c4_i32 = arith.constant 4 : i32
+  scf.for %outer = %c0 to %c2 step %c1 {
+    scf.for %inner = %c0 to %c4 step %c1 {
+      ttkernel.tile_regs_acquire() : () -> ()
+      ttkernel.tile_regs_commit() : () -> ()
+      ttkernel.tile_regs_wait() : () -> ()
+      ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+      ttkernel.tile_regs_release() : () -> ()
+    } {ttl.l1_acc_loop}
+    ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  }
+  return
+}
+
+// -----
+
+// Multiple consecutive cb_push_back ops after the loop (multi-output compute).
+// The disable guard should go after the last push.
+
+// CHECK-LABEL: func.func @multi_push_after_loop
+// CHECK: ttkernel.pack_reconfig_l1_acc
+// CHECK: scf.for
+// CHECK:   arith.cmpi eq
+// CHECK:   scf.if
+// CHECK:     ttkernel.pack_reconfig_l1_acc
+// CHECK: }
+// CHECK: ttkernel.cb_push_back
+// CHECK: ttkernel.cb_push_back
+// CHECK: ttkernel.pack_reconfig_l1_acc
+func.func @multi_push_after_loop() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %cb1 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c4_i32 = arith.constant 4 : i32
+  scf.for %iv = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb0, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.pack_tile(%c0, %cb1, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_loop}
+  ttkernel.cb_push_back(%cb0, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  ttkernel.cb_push_back(%cb1, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  return
+}
+
+// -----
+
+// Nested l1_acc loops: reserve is outside both loops, so both are annotated
+// and all iterations accumulate into the same CB slot. Disable guards
+// bracket the outermost loop; enable fires once after the first inner
+// iteration of the first outer iteration.
+
+// CHECK-LABEL: func.func @nested_l1_acc_loops
+// CHECK: ttkernel.pack_reconfig_l1_acc
+// CHECK: scf.for
+// CHECK:   scf.for %[[IV:.*]] = %[[LB:.*]] to
+// CHECK:     ttkernel.tile_regs_acquire
+// CHECK:     ttkernel.tile_regs_release
+// CHECK:     arith.cmpi eq, %[[IV]], %[[LB]]
+// CHECK:     scf.if
+// CHECK:       ttkernel.pack_reconfig_l1_acc
+// CHECK: ttkernel.pack_reconfig_l1_acc
+func.func @nested_l1_acc_loops() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c4 = arith.constant 4 : index
+  scf.for %outer = %c0 to %c2 step %c1 {
+    scf.for %inner = %c0 to %c4 step %c1 {
+      ttkernel.tile_regs_acquire() : () -> ()
+      ttkernel.tile_regs_commit() : () -> ()
+      ttkernel.tile_regs_wait() : () -> ()
+      ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+      ttkernel.tile_regs_release() : () -> ()
+    } {ttl.l1_acc_loop}
+  } {ttl.l1_acc_loop}
+  return
+}
+
+// -----
+
+// Nested reduction loops (multi-dim reduce): all iterations contribute to
+// a single accumulated result. Same structure as nested l1_acc loops.
+
+// CHECK-LABEL: func.func @nested_reduction_loops
+// CHECK: ttkernel.pack_reconfig_l1_acc
+// CHECK: scf.for
+// CHECK:   scf.for %[[IV:.*]] = %[[LB:.*]] to
+// CHECK:     ttkernel.tile_regs_acquire
+// CHECK:     ttkernel.tile_regs_release
+// CHECK:     arith.cmpi eq, %[[IV]], %[[LB]]
+// CHECK:     scf.if
+// CHECK:       ttkernel.pack_reconfig_l1_acc
+// CHECK: ttkernel.pack_reconfig_l1_acc
+func.func @nested_reduction_loops() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb_in = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+  %cb_scaler = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+  %cb_out = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  scf.for %row = %c0 to %c2 step %c1 {
+    scf.for %col = %c0 to %c2 step %c1 {
+      ttkernel.tile_regs_acquire() : () -> ()
+      ttkernel.reduce_tile(%cb_in, %cb_scaler, %c0, %c0, %c0, <reduce_sum>, <reduce_dim_col>) : (!ttkernel.cb<1, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>, index, index, index) -> ()
+      ttkernel.tile_regs_commit() : () -> ()
+      ttkernel.tile_regs_wait() : () -> ()
+      ttkernel.pack_tile(%c0, %cb_out, %c0, true) : (index, !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>, index) -> ()
+      ttkernel.tile_regs_release() : () -> ()
+    } {ttl.reduction_loop}
+  } {ttl.reduction_loop}
+  return
+}

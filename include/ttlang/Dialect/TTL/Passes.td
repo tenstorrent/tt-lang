@@ -31,12 +31,26 @@ def TTKernelInsertL1Accumulation
   let summary = "Insert L1 accumulation guards for reduction loops";
   let description = [{
     Inserts `pack_reconfig_l1_acc` guards inside reduction loops so that
-    pack operations accumulate into L1 instead of overwriting. On the first
-    iteration of a reduction loop, pack writes normally. On subsequent
-    iterations, the packer is reconfigured to add to the existing L1 value.
+    pack operations accumulate into L1 instead of overwriting. The enable
+    call happens once after the first iteration's last pack; the L1 acc
+    packer state persists across `tile_regs` boundaries. Disable guards
+    bracket the outermost reduction loop (parallel loops are not
+    considered). Max-reduce loops are excluded (max is not additive).
 
-    Reduction loops are identified by the `ttl.reduction_loop` attribute
-    on `scf.for` ops.
+    The pattern is:
+       pack_reconfig_l1_acc(0)                // disable before loop
+       for (iv = lb; ...) {
+         [subblock 0: acquire...pack...release]
+         [subblock N: acquire...pack...release]
+         if (iv == lb) pack_reconfig_l1_acc(1) // enable once after first
+                                               // iteration's last pack
+       }
+       [cb_push_back if present]
+       pack_reconfig_l1_acc(0)                // disable after loop
+
+    Reduction loops are identified by the `ttl.l1_acc_loop` (user-written)
+    or `ttl.reduction_loop` (compiler-generated) attributes on `scf.for`
+    ops, with `ttl.l1_acc_loop` taking precedence.
   }];
 
   let dependentDialects = [
@@ -46,18 +60,15 @@ def TTKernelInsertL1Accumulation
   ];
 }
 
-def TTLAnnotateReductionLoops
-    : Pass<"ttl-annotate-reduction-loops", "::mlir::func::FuncOp"> {
-  let summary = "Annotate user-written scf.for loops as reduction loops";
+def TTLAnnotateL1AccLoops
+    : Pass<"ttl-annotate-l1-acc-loops", "::mlir::func::FuncOp"> {
+  let summary = "Annotate user-written scf.for loops for L1 accumulation";
   let description = [{
-    Detects user-written `scf.for` loops where all iterations store to the
-    same CB slot (reserved before the loop, pushed after) and annotates them
-    with `ttl.reduction_loop`. This enables `TTKernelInsertL1Accumulation`
+    Detects user-written `scf.for` loops containing `ttl.store` ops with
+    the `accumulate` attribute (emitted by the `+=` operator) and annotates
+    them with `ttl.l1_acc_loop`. This enables `TTKernelInsertL1Accumulation`
     to insert `pack_reconfig_l1_acc` guards so that packs accumulate across
     iterations instead of overwriting.
-
-    Targets the pattern:
-      cb_reserve -> scf.for { compute(store to reserved CB) } -> cb_push
   }];
   let dependentDialects = [
     "::mlir::scf::SCFDialect"

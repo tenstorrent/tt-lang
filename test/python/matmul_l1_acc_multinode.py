@@ -12,9 +12,9 @@ Multinode matmul with L1 packer accumulation. Mirrors the benchmark kernel
 (make_matmul_l1_acc / v4_l1_acc): auto grid, split DMA (reader=A,
 writer=B+output), 8x8x8 blocks, K_num_blocks=4 at 1024x1024x1024.
 
-The compute thread uses the "reserve once, store K times, push once" pattern.
-The compiler detects the K reduction loop and inserts pack_reconfig_l1_acc
-guards so each K iteration packs additively to L1.
+The compute thread uses += for accumulation across K iterations. The
+compiler inserts pack_reconfig_l1_acc guards so each K iteration packs
+additively to L1.
 
 Verifies the L1 packer accumulation pattern in generated C++: disable before
 K loop, conditional enable after first iteration, disable after cb_push_back.
@@ -69,7 +69,7 @@ def matmul_l1_acc(a, b, out):
                         for _ in range(K_num_blocks):
                             a_blk = a_dfb.wait()
                             b_blk = b_dfb.wait()
-                            out_blk.store(a_blk @ b_blk)
+                            out_blk += a_blk @ b_blk
                             a_blk.pop()
                             b_blk.pop()
                         out_blk.push()
@@ -133,14 +133,16 @@ def matmul_l1_acc(a, b, out):
 #   3. Disable after cb_push_back following the loop
 # =============================================================================
 
-# CHECK-CPP:      PACK((llk_pack_reconfig_l1_acc(
-# CHECK-CPP-NEXT: for
+# CHECK-CPP-DAG:  int32_t [[ENABLE:v[0-9]+]] = 1;
+# CHECK-CPP-DAG:  int32_t [[DISABLE:v[0-9]+]] = 0;
+# CHECK-CPP:      PACK((llk_pack_reconfig_l1_acc([[DISABLE]])));
+# CHECK-CPP:      for
 # CHECK-CPP:        matmul_block(
 # CHECK-CPP:        pack_tile
 # CHECK-CPP:        if (
-# CHECK-CPP-NEXT:   PACK((llk_pack_reconfig_l1_acc(
+# CHECK-CPP-NEXT:   PACK((llk_pack_reconfig_l1_acc([[ENABLE]])));
 # CHECK-CPP:      cb_push_back(
-# CHECK-CPP-NEXT: PACK((llk_pack_reconfig_l1_acc(
+# CHECK-CPP:      PACK((llk_pack_reconfig_l1_acc([[DISABLE]])));
 
 # CHECK-RESULT: PASS
 

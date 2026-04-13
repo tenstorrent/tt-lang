@@ -81,10 +81,13 @@ func.func @reduce_sum_dim0_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.c
 // FP32-DAG: %[[C0:.*]] = arith.constant 0 : index
 // FP32-DAG: %[[C1:.*]] = arith.constant 1 : index
 // FP32-DAG: %[[C2:.*]] = arith.constant 2 : index
+// FP32-DAG: %[[C0I:.*]] = arith.constant 0 : i32
 // FP32-DAG: %[[C1I:.*]] = arith.constant 1 : i32
 // FP32: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
 // FP32: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
 // FP32: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// Disable L1 accumulation before the reduction loop.
+// FP32: ttkernel.pack_reconfig_l1_acc(%[[C0I]])
 // FP32: scf.for %[[IV:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
 // FP32-NEXT:   ttkernel.tile_regs_acquire
 // FP32:   ttkernel.reduce_init({{.*}}<reduce_sum>, <reduce_dim_col>) {full_fp32}
@@ -99,7 +102,7 @@ func.func @reduce_sum_dim0_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.c
 // FP32:        }
 // FP32: } {ttl.reduction_loop
 // Disable L1 accumulation after reduction loop.
-// FP32: ttkernel.pack_reconfig_l1_acc({{.*}}0{{.*}})
+// FP32: ttkernel.pack_reconfig_l1_acc(%[[C0I]])
 func.func @reduce_2x1_l1_acc() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
   %c2 = arith.constant 2 : index
   %c1 = arith.constant 1 : index

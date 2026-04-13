@@ -3,10 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Multinode matmul with L1 packer accumulation, L1-only (no DRAM reads during
-compute). All input blocks are pre-loaded into L1 DFBs before the K reduction
-loop begins. The compiler inserts pack_reconfig_l1_acc guards so each K
-iteration packs additively to L1.
+Multinode matmul with L1 packer accumulation via += across K iterations.
+L1-only (no DRAM reads during compute). All input blocks are pre-loaded
+into L1 DFBs before the K reduction loop begins.
 
 Tests multicore configurations with a 2D grid and multiple K blocks.
 """
@@ -63,7 +62,7 @@ def _make_l1_acc_multinode_kernel(block_m, block_n, grid="auto"):
                             for _ in range(Kt):
                                 a_blk = a_dfb.wait()
                                 b_blk = b_dfb.wait()
-                                out_blk.store(a_blk @ b_blk)
+                                out_blk += a_blk @ b_blk
                                 a_blk.pop()
                                 b_blk.pop()
                             out_blk.push()
