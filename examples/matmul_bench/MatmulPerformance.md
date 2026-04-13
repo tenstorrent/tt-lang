@@ -72,9 +72,9 @@ compiler generates the K reduction loop internally from the 3D
 DFB. Only viable when `M_block * K + K * N_block` fits in L1.
 
 **v4_l1_acc** -- tt-lang kernel using L1 additive packing for K
-accumulation. The user writes `reserve`, a K loop of `store(a @ b)`,
-then `push`. The compiler detects the pattern and inserts
-`llk_pack_reconfig_l1_acc` guards. No `copy_tile`, no `acc_dfb`.
+accumulation. The user writes `reserve`, a K loop of `out_blk += a @ b`,
+then `push`. The `+=` operator emits an accumulating store; the compiler
+inserts `llk_pack_reconfig_l1_acc` guards. No `copy_tile`, no `acc_dfb`.
 Inner matmul uses DST accumulation (`matmul_block` with `kt=K_block`).
 DMA is split across both RISC cores (same as v2_split_dma).
 
@@ -217,12 +217,13 @@ K_block=1, meaning:
 ### 2.4 v4_l1_acc (L1 additive packing)
 
 The user writes an outer K loop with `reserve` before the loop,
-`store(a @ b)` per K iteration, and `push` after the loop. The first
-K iteration writes normally (L1 acc off); subsequent iterations add to
-the existing L1 values. The compiler detects the loop
-(`TTLAnnotateReductionLoops`) and inserts `llk_pack_reconfig_l1_acc`
-guards (`TTKernelInsertL1Accumulation`). The inner matmul uses DST
-accumulation (matmul_block accumulates kt=K_block tiles in-place).
+`out_blk += a @ b` per K iteration, and `push` after the loop. The
+`+=` operator emits an accumulating store; the compiler detects it
+(`TTLAnnotateL1AccLoops`) and inserts `llk_pack_reconfig_l1_acc`
+guards (`TTKernelInsertL1Accumulation`). The first K iteration writes
+normally (L1 acc off); subsequent iterations add to the existing L1
+values. The inner matmul uses DST accumulation (matmul_block
+accumulates kt=K_block tiles in-place).
 Verified correct: PCC > 0.999 for K_block = 1, 2, 4, 8.
 
 Generated compute kernel (M_block=N_block=8, K_block=8, K_num_blocks=2,
@@ -288,31 +289,30 @@ Differences from tt-metal minimal_matmul (Section 2.1):
 M_block = N_block = 8. Grid: auto (130 cores).
 All tensors in interleaved L1.
 
-| Version | K_block | K_num_blocks | Median (ms) | Min (ms) | Max (ms) | vs ttnn |
-|---------|---------|--------------|-------------|----------|----------|---------|
-| ttnn.matmul | -- | -- | 0.55 | 0.54 | 0.55 | 1.00x |
-| v2_split_dma | 8 | 8 | 0.51 | 0.43 | 0.55 | 0.94x |
-| v2_split_dma | 1 | 64 | 0.49 | 0.49 | 0.50 | 0.89x |
-| v4_l1_acc | 8 | 8 | 0.48 | 0.43 | 0.52 | 0.87x |
-| v4_l1_acc | 1 | 64 | 0.37 | 0.36 | 0.38 | 0.68x |
+| Version | K_block | K_num_blocks | Median (ms) | vs ttnn |
+|---------|---------|--------------|-------------|---------|
+| ttnn.matmul | -- | -- | 0.55 | 1.00x |
+| v2_split_dma | 8 | 8 | 0.49 | 0.89x |
+| v2_split_dma | 4 | 16 | 0.40 | 0.74x |
+| v2_split_dma | 2 | 32 | 0.41 | 0.75x |
+| v2_split_dma | 1 | 64 | 0.48 | 0.87x |
+| v4_l1_acc | 8 | 8 | 0.47 | 0.87x |
+| v4_l1_acc | 4 | 16 | 0.38 | 0.69x |
+| v4_l1_acc | 2 | 32 | 0.36 | 0.66x |
+| v4_l1_acc | 1 | 64 | 0.38 | 0.69x |
 
-**Observation 1.** tt-lang L1 acc executes 13--32% faster than
-ttnn.matmul in the L1 configuration (0.87x for K_block=8, 0.68x for
-K_block=1). The v2_split_dma (without L1 acc) executes 6--11% faster
-(0.94x and 0.89x). This measurement eliminates DRAM bandwidth as a
-variable but does not fully eliminate data movement: L1 interleaved
-tensors still require NOC transfers between cores. The L1 acc
-improvement over v2_split_dma (0.68x vs 0.89x for K_block=1) comes
-from eliminating `copy_tile` overhead and the intermediate `acc_dfb`.
+**Observation 1.** tt-lang L1 acc executes 13--34% faster than
+ttnn.matmul in the L1 configuration. The best result is v4_l1_acc
+K_block=2 (0.66x, 34% faster). Both v2 and v4 show a sweet spot at
+intermediate K_block values (K=4 for v2, K=2 for v4) rather than at
+the extremes. At K_block=1 the overhead of many outer-loop iterations
+(acquire/release per tile) offsets the benefit of smaller blocks.
 
-**Observation 2.** For v2_split_dma, K_block=1 is 4% faster than
-K_block=8 (0.49 vs 0.51 ms). For l1_acc, K_block=1 is 23% faster than
-K_block=8 (0.37 vs 0.48 ms). The l1_acc K_block=1 advantage comes from
-two factors: (1) each matmul_block(kt=1) call is cheaper per invocation
-than matmul_block(kt=8) (fewer FPU cycles per call, though less
-efficient per K tile due to acquire/release overhead), and (2) the
-l1_acc pattern eliminates all `copy_tile` overhead, making the per-call
-savings compound over many iterations.
+**Observation 2.** v4_l1_acc consistently outperforms v2_split_dma at
+every K_block value. The gap is largest at K_block=2 (0.66x vs 0.75x)
+and smallest at K_block=8 (0.87x vs 0.89x). The L1 acc advantage
+grows as K_block shrinks because it eliminates per-K-block `copy_tile`
+overhead that v2 pays for each iteration.
 
 ### 3.2 DRAM: End-to-End Performance
 
@@ -320,31 +320,36 @@ savings compound over many iterations.
 M_block = N_block = 8. Grid: auto (130 cores).
 Matches tt-metal `test_minimal_matmul.py::test_linear` reference shape.
 
-| Version | K_block | K_num_blocks | Median (ms) | Min (ms) | Max (ms) | vs ttnn |
-|---------|---------|--------------|-------------|----------|----------|---------|
-| ttnn.matmul | -- | -- | 0.82 | 0.75 | 0.89 | 1.00x |
-| v1_baseline | 8 | 16 | 3.92 | 3.86 | 4.00 | 4.78x |
-| v1_baseline | 1 | 128 | 4.06 | 3.99 | 4.12 | 4.95x |
-| v2_split_dma | 8 | 16 | 3.44 | 3.34 | 3.54 | 4.19x |
-| v2_split_dma | 1 | 128 | 3.10 | 3.01 | 3.18 | 3.78x |
-| v4_l1_acc | 8 | 16 | 3.44 | 3.37 | 3.52 | 4.19x |
-| v4_l1_acc | 1 | 128 | 2.95 | 2.78 | 2.97 | 3.60x |
+| Version | K_block | K_num_blocks | Median (ms) | vs ttnn |
+|---------|---------|--------------|-------------|---------|
+| ttnn.matmul | -- | -- | 0.88 | 1.00x |
+| v1_baseline | 8 | 16 | 3.87 | 4.41x |
+| v1_baseline | 4 | 32 | 4.13 | 4.70x |
+| v1_baseline | 2 | 64 | 4.25 | 4.84x |
+| v1_baseline | 1 | 128 | 4.10 | 4.67x |
+| v2_split_dma | 8 | 16 | 3.41 | 3.88x |
+| v2_split_dma | 4 | 32 | 3.44 | 3.92x |
+| v2_split_dma | 2 | 64 | 2.99 | 3.40x |
+| v2_split_dma | 1 | 128 | 3.23 | 3.68x |
+| v4_l1_acc | 8 | 16 | 3.55 | 4.04x |
+| v4_l1_acc | 4 | 32 | 3.39 | 3.86x |
+| v4_l1_acc | 2 | 64 | 3.10 | 3.53x |
+| v4_l1_acc | 1 | 128 | 2.95 | 3.36x |
 
-**Observation 3.** tt-lang is 3.6--4.8x slower than ttnn.matmul in the
-DRAM configuration. The best result (l1_acc K=1, 3.60x) reduces the
-ratio compared to v1_baseline (4.95x). The L1-only results
-(Section 3.1) show tt-lang L1 acc is 32% faster than ttnn in compute
-isolation (0.68x). This confirms the DRAM slowdown originates in data
-movement, not compute.
+**Observation 3.** tt-lang is 3.4--4.8x slower than ttnn.matmul in the
+DRAM configuration. The best result is v4_l1_acc K=1 (3.36x). v4_l1_acc
+improves monotonically as K_block decreases (4.04x -> 3.36x), while
+v2_split_dma has a non-monotonic profile with a minimum at K=2 (3.40x).
+The L1-only results (Section 3.1) show tt-lang L1 acc is 34% faster
+than ttnn in compute isolation (0.66x). This confirms the DRAM slowdown
+originates in data movement, not compute.
 
-**Observation 4.** L1 acc with K_block=1 achieves the best DRAM result
-(2.95ms, 3.60x vs ttnn). Split DMA (v2 vs v1) contributes a 12--24%
-improvement (v1 K=8 3.92ms to v2 K=8 3.44ms; v1 K=1 4.06ms to v2
-K=1 3.10ms). L1 acc adds a further 5% over v2-split for K_block=1
-(3.10ms to 2.95ms). For K_block=8, L1 acc shows no DRAM improvement
-over v2-split (both 3.44ms), consistent with the L1 acc overhead
-(enable/disable per outer K iteration) being comparable to the
-`copy_tile` overhead it replaces when K_block is large.
+**Observation 4.** v1_baseline (single-reader DMA) is consistently
+the slowest across all K values. Split DMA (v2 vs v1) provides a
+12--21% improvement. L1 acc (v4) provides an additional 1--9%
+improvement over v2 at the same K_block, with the gap growing as
+K_block shrinks (the `copy_tile` overhead eliminated by L1 acc is
+proportionally larger with more outer K iterations).
 
 ### 3.3 DRAM vs L1 at Same Problem Size (2048^3)
 
@@ -353,22 +358,21 @@ over v2-split (both 3.44ms), consistent with the L1 acc overhead
 
 | Config | DRAM (ms) | L1 (ms) | DRAM overhead |
 |--------|-----------|---------|---------------|
-| ttnn.matmul | 0.18 | 0.55 | L1 is 3.1x slower |
-| v4_l1_acc `K=8` | 0.56 | 0.48 | DRAM 17% slower |
-| v4_l1_acc `K=1` | 0.46 | 0.37 | DRAM 24% slower |
+| ttnn.matmul | 0.19 | 0.55 | L1 is 2.9x slower |
+| v4_l1_acc `K=8` | 0.56 | 0.47 | DRAM 19% slower |
+| v4_l1_acc `K=4` | 0.54 | 0.38 | DRAM 42% slower |
+| v4_l1_acc `K=2` | 0.48 | 0.36 | DRAM 33% slower |
+| v4_l1_acc `K=1` | 0.48 | 0.38 | DRAM 26% slower |
 
-**Observation 5.** For tt-lang, DRAM adds 17--24% overhead over L1 at
-2048^3 (0.46 vs 0.37 ms for v4_l1_acc `K=1`). For ttnn.matmul, L1 is
-3.1x SLOWER than DRAM (0.55 vs 0.18 ms). This was verified in an
-isolated test (not a benchmark artifact). The explanation: ttnn.matmul
-uses 2D multicast with DRAM inputs (one core reads from DRAM and
-multicasts to the grid in a single NOC transaction). With L1
-interleaved inputs, tiles are distributed round-robin across all
-cores' L1 memories. Reading a tile from another core's L1 requires an
-individual NOC read per tile, replacing the efficient DRAM+multicast
-with many point-to-point NOC transfers. tt-lang does not use multicast,
-so it reads each tile individually regardless of memory location;
-the L1 variant simply has lower per-transfer latency than DRAM.
+**Observation 5.** For tt-lang, DRAM adds 19--42% overhead over L1 at
+2048^3. For ttnn.matmul, L1 is 2.9x SLOWER than DRAM (0.55 vs 0.19 ms).
+The explanation: ttnn.matmul uses 2D multicast with DRAM inputs (one
+core reads from DRAM and multicasts to the grid in a single NOC
+transaction). With L1 interleaved inputs, tiles are distributed
+round-robin across all cores' L1 memories, requiring individual NOC
+reads per tile. tt-lang does not use multicast, so it reads each tile
+individually regardless of memory location; the L1 variant simply has
+lower per-transfer latency than DRAM.
 
 This means the L1-only results (Section 3.1) measure tt-lang compute
 efficiency relative to ttnn in a regime where ttnn's multicast
@@ -456,7 +460,7 @@ The read volume difference between tt-metal and tt-lang is under 2% for
 the 130-core, 4096^3 configuration. This is too small to explain the
 observed 3.6--4.8x slowdown.
 
-### 4.2 Input Distribution (Dominant Factor)
+### 4.2 Multicast vs Per-Core DRAM Reads
 
 tt-metal distributes input tiles across cores rather than having each
 core read independently from DRAM. The default `ttnn.matmul` uses 2D

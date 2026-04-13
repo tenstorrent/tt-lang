@@ -299,6 +299,52 @@ from minimal_matmul import (
     make_matmul_v4 as make_v4,
 )
 
+K_BLOCKS = [8, 4, 2, 1]
+
+
+def sweep_k_blocks(
+    variant_name,
+    make_fn,
+    Kt,
+    M_block,
+    N_block,
+    a,
+    b,
+    golden,
+    device,
+    cfg,
+    strategy,
+    fp32_acc=None,
+):
+    """Run a kernel variant across multiple K_block values. Returns {K_block: median_ms}."""
+    results = {}
+    for kb in K_BLOCKS:
+        if Kt % kb != 0:
+            continue
+        k_num = Kt // kb
+        label = f"{variant_name} K={kb} Kblocks={k_num}"
+        out = ttnn.from_torch(
+            torch.zeros(cfg["M"], cfg["N"], dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=a.memory_config(),
+        )
+        if fp32_acc is not None:
+            kernel = make_fn(M_block, kb, N_block, fp32_acc=fp32_acc)
+        else:
+            kernel = make_fn(M_block, kb, N_block)
+        median, _ = run_benchmark(
+            label,
+            kernel,
+            (a, b, out),
+            device,
+            config={**cfg, "K_block": kb, "strategy": strategy},
+        )
+        assert_pcc(golden, ttnn.to_torch(out).float(), threshold=PCC_THRESHOLD)
+        results[kb] = median
+    return results
+
 
 def main():
     device = ttnn.open_device(device_id=0)
@@ -340,106 +386,56 @@ def main():
             config=cfg,
         )
 
-        # v1-single-reader: all reads on one RISC core.
-        out_v1a = ttnn.from_torch(
-            torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
-        single_t3a, _ = run_benchmark(
-            "v1_baseline K=8 Kblocks=16",
-            make_v1(8, 8, 8),
-            (a, b, out_v1a),
+        v1_results = sweep_k_blocks(
+            "v1_baseline",
+            make_v1,
+            Kt,
+            8,
+            8,
+            a,
+            b,
+            golden,
             device,
-            config={**cfg, "K_block": 8, "strategy": "single_reader"},
+            cfg,
+            strategy="single_reader",
         )
-        assert_pcc(golden, ttnn.to_torch(out_v1a).float(), threshold=PCC_THRESHOLD)
-
-        out_v1b = ttnn.from_torch(
-            torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
-        single_t3b, _ = run_benchmark(
-            "v1_baseline K=1 Kblocks=128",
-            make_v1(8, 1, 8),
-            (a, b, out_v1b),
+        v2_results = sweep_k_blocks(
+            "v2_split_dma",
+            make_v2,
+            Kt,
+            8,
+            8,
+            a,
+            b,
+            golden,
             device,
-            config={**cfg, "K_block": 1, "strategy": "single_reader"},
+            cfg,
+            strategy="manual_k_loop",
         )
-        assert_pcc(golden, ttnn.to_torch(out_v1b).float(), threshold=PCC_THRESHOLD)
-
-        # v2-split-dma: reads split across both RISC cores.
-        out5 = ttnn.from_torch(
-            torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
-        manual_t3a, _ = run_benchmark(
-            "v2_split_dma K=8 Kblocks=16",
-            make_v2(8, 8, 8),
-            (a, b, out5),
+        v4_results = sweep_k_blocks(
+            "v4_l1_acc",
+            make_v4,
+            Kt,
+            8,
+            8,
+            a,
+            b,
+            golden,
             device,
-            config={**cfg, "K_block": 8, "strategy": "manual_k_loop"},
+            cfg,
+            strategy="l1_acc",
         )
-        assert_pcc(golden, ttnn.to_torch(out5).float(), threshold=PCC_THRESHOLD)
-
-        out6 = ttnn.from_torch(
-            torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
-        manual_t3b, _ = run_benchmark(
-            "v2_split_dma K=1 Kblocks=128",
-            make_v2(8, 1, 8),
-            (a, b, out6),
-            device,
-            config={**cfg, "K_block": 1, "strategy": "manual_k_loop"},
-        )
-        assert_pcc(golden, ttnn.to_torch(out6).float(), threshold=PCC_THRESHOLD)
-
-        # L1 acc: reserve once, store K times, push once.
-        out7 = ttnn.from_torch(
-            torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
-        l1acc_t3a, _ = run_benchmark(
-            "v4_l1_acc K=8 Kblocks=16",
-            make_v4(8, 8, 8),
-            (a, b, out7),
-            device,
-            config={**cfg, "K_block": 8, "strategy": "l1_acc"},
-        )
-        assert_pcc(golden, ttnn.to_torch(out7).float(), threshold=PCC_THRESHOLD)
-
-        out8 = ttnn.from_torch(
-            torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
-        l1acc_t3b, _ = run_benchmark(
-            "v4_l1_acc K=1 Kblocks=128",
-            make_v4(8, 1, 8),
-            (a, b, out8),
-            device,
-            config={**cfg, "K_block": 1, "strategy": "l1_acc"},
-        )
-        assert_pcc(golden, ttnn.to_torch(out8).float(), threshold=PCC_THRESHOLD)
 
         print(f"\n  Ratios (tt-lang / ttnn.matmul):")
-        print(f"    v1_baseline  K=8: {single_t3a/ttnn_t3:.2f}x")
-        print(f"    v1_baseline  K=1: {single_t3b/ttnn_t3:.2f}x")
-        print(f"    v2_split_dma K=8: {manual_t3a/ttnn_t3:.2f}x")
-        print(f"    v2_split_dma K=1: {manual_t3b/ttnn_t3:.2f}x")
-        print(f"    v4_l1_acc    K=8: {l1acc_t3a/ttnn_t3:.2f}x")
-        print(f"    v4_l1_acc    K=1: {l1acc_t3b/ttnn_t3:.2f}x")
+        for kb in K_BLOCKS:
+            if kb in v1_results:
+                print(f"    v1_baseline  K={kb}: {v1_results[kb]/ttnn_t3:.2f}x")
+        for kb in K_BLOCKS:
+            if kb in v2_results:
+                print(f"    v2_split_dma K={kb}: {v2_results[kb]/ttnn_t3:.2f}x")
+        for kb in K_BLOCKS:
+            if kb in v4_results:
+                print(f"    v4_l1_acc    K={kb}: {v4_results[kb]/ttnn_t3:.2f}x")
 
         # ---------------------------------------------------------------
         # DRAM 2048^3 (same size as L1-only, for direct comparison)
@@ -471,39 +467,24 @@ def main():
             config=cfg,
         )
 
-        out_d2k = ttnn.from_torch(
-            torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
-        v4_t_dram2k, _ = run_benchmark(
-            "v4_l1_acc K=8 Kblocks=8 (DRAM 2048^3)",
-            make_v4(8, 8, 8),
-            (a, b, out_d2k),
+        v4_dram2k = sweep_k_blocks(
+            "v4_l1_acc",
+            make_v4,
+            Kt,
+            8,
+            8,
+            a,
+            b,
+            golden,
             device,
-            config={**cfg, "K_block": 8, "strategy": "l1_acc_dram_2k"},
+            cfg,
+            strategy="l1_acc_dram_2k",
         )
-        assert_pcc(golden, ttnn.to_torch(out_d2k).float(), threshold=PCC_THRESHOLD)
-
-        out_d2k2 = ttnn.from_torch(
-            torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
-        v4_t_dram2k_k1, _ = run_benchmark(
-            "v4_l1_acc K=1 Kblocks=64 (DRAM 2048^3)",
-            make_v4(8, 1, 8),
-            (a, b, out_d2k2),
-            device,
-            config={**cfg, "K_block": 1, "strategy": "l1_acc_dram_2k"},
-        )
-        assert_pcc(golden, ttnn.to_torch(out_d2k2).float(), threshold=PCC_THRESHOLD)
 
         print(f"\n  Ratios (tt-lang / ttnn.matmul), DRAM 2048^3:")
-        print(f"    v4_l1_acc K=8: {v4_t_dram2k/ttnn_t_dram2k:.2f}x")
-        print(f"    v4_l1_acc K=1: {v4_t_dram2k_k1/ttnn_t_dram2k:.2f}x")
+        for kb in K_BLOCKS:
+            if kb in v4_dram2k:
+                print(f"    v4_l1_acc K={kb}: {v4_dram2k[kb]/ttnn_t_dram2k:.2f}x")
 
         # ---------------------------------------------------------------
         # L1-Only: Compute Isolation (Section 3.1)
@@ -545,76 +526,40 @@ def main():
             config=cfg,
         )
 
-        out_l1 = ttnn.from_torch(
-            torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=l1_cfg,
-        )
-        manual_t4a, _ = run_benchmark(
-            "v2_split_dma K=8 Kblocks=2 (L1)",
-            make_v2(8, 8, 8),
-            (a_l1, b_l1, out_l1),
+        v2_l1 = sweep_k_blocks(
+            "v2_split_dma",
+            make_v2,
+            Kt,
+            8,
+            8,
+            a_l1,
+            b_l1,
+            golden,
             device,
-            config={**cfg, "K_block": 8, "strategy": "manual_k_loop_l1"},
+            cfg,
+            strategy="manual_k_loop_l1",
         )
-        assert_pcc(golden, ttnn.to_torch(out_l1).float(), threshold=PCC_THRESHOLD)
-
-        out_l1b = ttnn.from_torch(
-            torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=l1_cfg,
-        )
-        manual_t4b, _ = run_benchmark(
-            "v2_split_dma K=1 Kblocks=16 (L1)",
-            make_v2(8, 1, 8),
-            (a_l1, b_l1, out_l1b),
+        v4_l1 = sweep_k_blocks(
+            "v4_l1_acc",
+            make_v4,
+            Kt,
+            8,
+            8,
+            a_l1,
+            b_l1,
+            golden,
             device,
-            config={**cfg, "K_block": 1, "strategy": "manual_k_loop_l1"},
+            cfg,
+            strategy="l1_acc_l1",
         )
-        assert_pcc(golden, ttnn.to_torch(out_l1b).float(), threshold=PCC_THRESHOLD)
-
-        # L1 acc variants.
-        out_l1c = ttnn.from_torch(
-            torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=l1_cfg,
-        )
-        l1acc_t4a, _ = run_benchmark(
-            "v4_l1_acc K=8 Kblocks=2 (L1)",
-            make_v4(8, 8, 8),
-            (a_l1, b_l1, out_l1c),
-            device,
-            config={**cfg, "K_block": 8, "strategy": "l1_acc_l1"},
-        )
-        assert_pcc(golden, ttnn.to_torch(out_l1c).float(), threshold=PCC_THRESHOLD)
-
-        out_l1d = ttnn.from_torch(
-            torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=l1_cfg,
-        )
-        l1acc_t4b, _ = run_benchmark(
-            "v4_l1_acc K=1 Kblocks=16 (L1)",
-            make_v4(8, 1, 8),
-            (a_l1, b_l1, out_l1d),
-            device,
-            config={**cfg, "K_block": 1, "strategy": "l1_acc_l1"},
-        )
-        assert_pcc(golden, ttnn.to_torch(out_l1d).float(), threshold=PCC_THRESHOLD)
 
         print(f"\n  Ratios (tt-lang / ttnn.matmul), L1-only:")
-        print(f"    v2_split_dma K=8: {manual_t4a/ttnn_t4:.2f}x")
-        print(f"    v2_split_dma K=1: {manual_t4b/ttnn_t4:.2f}x")
-        print(f"    v4_l1_acc    K=8: {l1acc_t4a/ttnn_t4:.2f}x")
-        print(f"    v4_l1_acc    K=1: {l1acc_t4b/ttnn_t4:.2f}x")
+        for kb in K_BLOCKS:
+            if kb in v2_l1:
+                print(f"    v2_split_dma K={kb}: {v2_l1[kb]/ttnn_t4:.2f}x")
+        for kb in K_BLOCKS:
+            if kb in v4_l1:
+                print(f"    v4_l1_acc    K={kb}: {v4_l1[kb]/ttnn_t4:.2f}x")
 
         # ---------------------------------------------------------------
         # DRAM: bf16 Accumulation (fp32_dest_acc_en=False)
@@ -648,39 +593,25 @@ def main():
             config=cfg,
         )
 
-        out5a = ttnn.from_torch(
-            torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
-        manual_t5a, _ = run_benchmark(
-            "v2_split_dma K=8 bf16acc",
-            make_v2(8, 8, 8, fp32_acc=False),
-            (a, b, out5a),
+        v2_bf16 = sweep_k_blocks(
+            "v2_split_dma bf16acc",
+            make_v2,
+            Kt,
+            8,
+            8,
+            a,
+            b,
+            golden,
             device,
-            config={**cfg, "K_block": 8, "strategy": "manual_k_bf16acc"},
+            cfg,
+            strategy="manual_k_bf16acc",
+            fp32_acc=False,
         )
-        assert_pcc(golden, ttnn.to_torch(out5a).float(), threshold=PCC_THRESHOLD)
-
-        out5b = ttnn.from_torch(
-            torch.zeros(M, N, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-        )
-        manual_t5b, _ = run_benchmark(
-            "v2_split_dma K=1 bf16acc",
-            make_v2(8, 1, 8, fp32_acc=False),
-            (a, b, out5b),
-            device,
-            config={**cfg, "K_block": 1, "strategy": "manual_k_bf16acc"},
-        )
-        assert_pcc(golden, ttnn.to_torch(out5b).float(), threshold=PCC_THRESHOLD)
 
         print(f"\n  Ratios (tt-lang / ttnn.matmul), bf16 acc:")
-        print(f"    v2_split_dma K=8: {manual_t5a/ttnn_t5:.2f}x")
-        print(f"    v2_split_dma K=1: {manual_t5b/ttnn_t5:.2f}x")
+        for kb in K_BLOCKS:
+            if kb in v2_bf16:
+                print(f"    v2_split_dma K={kb}: {v2_bf16[kb]/ttnn_t5:.2f}x")
 
         print(f"\n{'='*70}")
         print(f"Results saved to {RESULTS_CSV}")

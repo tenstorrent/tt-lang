@@ -60,7 +60,7 @@ func.func @matmul_3x3_k_loop(
 // -----
 
 // 8x8 output (64 tiles >> DST capacity 8) with K=4: heavily subblocked.
-// Verifies that multiple levels of subblock loops all sit inside the 
+// Verifies that multiple levels of subblock loops all sit inside the
 // K loop's L1 acc guards.
 
 // CHECK-LABEL: func.func @matmul_8x8_k4

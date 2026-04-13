@@ -553,15 +553,12 @@ def make_matmul_compiler_k_loop(M_block_tiles, N_block_tiles, fp32_acc=None):
 
 
 def make_matmul_l1_acc(M_block_tiles, K_block_tiles, N_block_tiles, fp32_acc=None):
-    """Matmul with L1 accumulation: out = a @ b.
+    """Matmul with L1 accumulation via += across K iterations.
 
-    Uses the "reserve once, store K times, push once" pattern. The compiler
-    detects the scf.for loop storing to the same reserved CB and annotates
-    it as a reduction loop. TTKernelInsertL1Accumulation inserts
-    pack_reconfig_l1_acc guards. Each K iteration packs to L1 additively,
-    eliminating the copy_tile + acc_dfb overhead of the prev + a @ b pattern.
-
-    DMA is split: reader (NCRISC) handles A, writer (BRISC) handles B + output.
+    Each K iteration packs to L1 additively (pack_reconfig_l1_acc),
+    eliminating the copy_tile + acc_dfb overhead of the prev + a @ b
+    pattern. DMA is split: reader (NCRISC) handles A, writer (BRISC)
+    handles B + output.
     """
 
     @ttl.operation(grid="auto", fp32_dest_acc_en=fp32_acc)
@@ -597,14 +594,11 @@ def make_matmul_l1_acc(M_block_tiles, K_block_tiles, N_block_tiles, fp32_acc=Non
                     for local_n in range(n_blocks_per_node):
                         n_block = node_n * n_blocks_per_node + local_n
                         if n_block < N_num_blocks:
-                            # L1 additive packing: first K block writes
-                            # (l1_acc off), subsequent K blocks add
-                            # (l1_acc on). No fill needed.
                             out_blk = out_dfb.reserve()
                             for _ in range(K_num_blocks):
                                 a_blk = a_dfb.wait()
                                 b_blk = b_dfb.wait()
-                                out_blk.store(a_blk @ b_blk)
+                                out_blk += a_blk @ b_blk
                                 a_blk.pop()
                                 b_blk.pop()
                             out_blk.push()
