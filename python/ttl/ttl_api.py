@@ -1236,6 +1236,7 @@ def _compile_kernel(
         assign_dst_pass = f"ttl-assign-dst{{enable-fpu-binary-ops={fpu_flag}}}"
 
         pipeline_passes = [
+            "func.func(ttl-insert-cb-sync)",
             "func.func(ttl-annotate-l1-acc-loops)",
             "func.func(convert-ttl-to-compute)",
             set_compute_config_pass,
