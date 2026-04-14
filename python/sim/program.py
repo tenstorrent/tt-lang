@@ -21,6 +21,7 @@ from .context import get_context
 from .greenlet_scheduler import GreenletScheduler, set_scheduler
 from .ttnnsim import Tensor
 from .debug_print import ttlang_print
+from .trace import trace
 
 
 def set_max_dfbs(limit: int) -> None:
@@ -156,6 +157,7 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
 
                 match value:
                     case Tensor():
+                        setattr(value, "_name", key)
                         core_context[key] = value
                         memo[id(value)] = value
                     case DataflowBuffer():
@@ -222,11 +224,7 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                     all_core_contexts.append(core_context)
 
                     # Add threads to scheduler
-                    for name, tmpl in [
-                        ("compute", compute_func_tmpl),
-                        ("dm0", dm0_tmpl),
-                        ("dm1", dm1_tmpl),
-                    ]:
+                    for tmpl in [compute_func_tmpl, dm0_tmpl, dm1_tmpl]:
                         # Get ThreadType directly from template's thread_type attribute
                         thread_type = getattr(tmpl, "thread_type", None)
                         match thread_type:
@@ -242,11 +240,19 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                         bound_func = tmpl.bind(core_context)
 
                         # Add to scheduler
-                        thread_name = f"core{core}-{name}"
+                        thread_name = f"core{core}-{tmpl.__name__}"
                         scheduler.add_thread(thread_name, bound_func, thread_type)
+
+                # Emit operation_start for each node before the scheduler runs.
+                for core in range(total_cores):
+                    trace("operation_start", node=core)
 
                 # Run scheduler
                 scheduler.run()
+
+                # Emit operation_end for each node now that all kernels completed.
+                for core in range(total_cores):
+                    trace("operation_end", node=core)
 
                 # Validate all DataflowBuffers have no pending blocks
                 self._validate_dataflow_buffers(all_core_contexts)

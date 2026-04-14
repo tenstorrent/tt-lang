@@ -16,6 +16,28 @@ from .copyhandlers import (
     CopyTransferHandler,
     HANDLER_REGISTRY,
 )
+from .ttnnsim import Tensor, tile_count_from_tensor
+from .trace import trace
+import math
+
+
+def _copy_trace_fields(src: CopyEndpoint, dst: CopyEndpoint) -> dict:
+    """Return extra fields for copy_start/copy_end when a Tensor is involved."""
+    match (src, dst):
+        case (Tensor(), Block()):
+            return {
+                "tensor": getattr(src, "_name", None) or type(src).__name__,
+                "tiles": tile_count_from_tensor(src),
+                "direction": "read",
+            }
+        case (Block(), Tensor()):
+            return {
+                "tensor": getattr(dst, "_name", None) or type(dst).__name__,
+                "tiles": math.prod(src.shape),
+                "direction": "write",
+            }
+        case _:
+            return {}
 
 
 class CopyTransaction:
@@ -69,6 +91,13 @@ class CopyTransaction:
 
         # Validate immediately - let exceptions propagate to scheduler for context
         handler.validate(src, dst)
+
+        trace(
+            "copy_start",
+            src=type(src).__name__,
+            dst=type(dst).__name__,
+            **_copy_trace_fields(src, dst),
+        )
 
     @staticmethod
     def _lookup_handler(
@@ -129,6 +158,13 @@ class CopyTransaction:
                 self._dst.mark_tx_wait_complete()
             case _:
                 pass
+
+        trace(
+            "copy_end",
+            src=type(self._src).__name__,
+            dst=type(self._dst).__name__,
+            **_copy_trace_fields(self._src, self._dst),
+        )
 
     def can_wait(self) -> bool:
         """

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Deque, Dict, Optional, Set, Tuple, TypedDict
+from typing import Any, Deque, Dict, FrozenSet, Optional, Set, Tuple, TypedDict
 from .pipe import AnyPipe
 from .ttnnsim import Tensor
 from .typedefs import Count, Shape, BindableTemplate
@@ -32,6 +32,19 @@ class SimulatorConfig:
     default_auto_grid: Shape = (8, 8)
     max_l1_bytes: int = DEFAULT_MAX_L1_BYTES
     num_devices: int = 4
+    # Set of event categories to record. Empty means tracing is disabled.
+    # Use trace.ALL_CATEGORIES to enable all categories.
+    trace_set: FrozenSet[str] = field(default_factory=frozenset)
+
+
+@dataclass
+class TraceEvent:
+    """A single recorded trace event."""
+
+    event: str
+    tick: int
+    kernel: Optional[str]
+    data: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -106,3 +119,4 @@ class SimulatorContext:
     kernel_l1_bytes: int = (
         0  # Total L1 capacity of DFBs created in the current kernel body
     )
+    trace_events: list[TraceEvent] = field(default_factory=list)

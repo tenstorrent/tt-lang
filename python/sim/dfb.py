@@ -47,6 +47,7 @@ from .ttnnsim import (
     tile_count_from_tensor,
     tile_shape_from_tensor,
 )
+from .trace import get_dfb_name, trace
 from .typedefs import Index, IndexType, PositiveInt, Shape, Size
 
 
@@ -1079,6 +1080,7 @@ class DataflowBuffer:
 
         from .greenlet_scheduler import block_if_needed
 
+        trace("dfb_wait_begin", dfb=get_dfb_name(self))
         block_if_needed(self, "wait")
 
         state = self._state
@@ -1098,7 +1100,12 @@ class DataflowBuffer:
         block.dfb = self
         self._pending_waited_block = block
 
-        record_dfb_wait(self, math.prod(state.shape))
+        tiles = math.prod(state.shape)
+        record_dfb_wait(self, tiles)
+
+        trace(
+            "dfb_wait_end", dfb=get_dfb_name(self), occupied=state.visible, tiles=tiles
+        )
 
         return block
 
@@ -1144,6 +1151,7 @@ class DataflowBuffer:
 
         from .greenlet_scheduler import block_if_needed
 
+        trace("dfb_reserve_begin", dfb=get_dfb_name(self))
         block_if_needed(self, "reserve")
 
         state = self._state
@@ -1173,7 +1181,15 @@ class DataflowBuffer:
 
         self._pending_reserved_block = block
 
-        record_dfb_reserve(self, math.prod(state.shape))
+        tiles = math.prod(state.shape)
+        record_dfb_reserve(self, tiles)
+
+        trace(
+            "dfb_reserve_end",
+            dfb=get_dfb_name(self),
+            occupied=state.visible + state.reserved,
+            tiles=tiles,
+        )
 
         return block
 
@@ -1203,6 +1219,8 @@ class DataflowBuffer:
         state.reserved -= 1
         state.visible += 1
 
+        trace("dfb_push", dfb=get_dfb_name(self), occupied=state.visible)
+
     def pop_block(self) -> None:
         """Free the consumed slot, advancing the read pointer.
 
@@ -1221,6 +1239,8 @@ class DataflowBuffer:
         state.buf[state.head] = None
         state.head = (state.head + 1) % state.cap
         state.visible -= 1
+
+        trace("dfb_pop", dfb=get_dfb_name(self), occupied=state.visible)
 
     @property
     def shape(self) -> Shape:

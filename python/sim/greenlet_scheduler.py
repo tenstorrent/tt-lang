@@ -22,6 +22,7 @@ from .diagnostics import (
     format_core_ranges,
     extract_core_id_from_thread_name,
 )
+from .trace import get_dfb_name, trace
 
 
 def set_scheduler_algorithm(algorithm: str) -> None:
@@ -85,7 +86,9 @@ class GreenletScheduler:
 
         # Create greenlet that wraps the function
         def wrapped_func() -> None:
+            trace("kernel_start")
             func()
+            trace("kernel_end")
             # Thread completed successfully
             self._mark_completed(name)
 
@@ -131,7 +134,10 @@ class GreenletScheduler:
         # Switch back to scheduler
         if self._main_greenlet is None:
             raise RuntimeError("Main greenlet not set")
+
+        trace("kernel_block", op=operation, on=get_dfb_name(blocking_obj))
         self._main_greenlet.switch()
+        trace("kernel_unblock")
 
     def _mark_completed(self, name: str) -> None:
         """Mark a thread as completed and remove from active set.
@@ -174,6 +180,11 @@ class GreenletScheduler:
             Current thread name, or None if no thread is executing
         """
         return self._current_name
+
+    @property
+    def tick(self) -> int:
+        """Current logical tick (number of scheduler activations elapsed)."""
+        return self._timestamp
 
     def _format_and_raise_thread_error(
         self,
