@@ -152,10 +152,10 @@ func.func @consecutive_loops_same_reserve(
 // Loop with both += and plain .store() to same reserve. The loop
 // contains an accumulating store, so it should be annotated.
 
-// CHECK-LABEL: func.func @mixed_acc_and_plain_store
+// CHECK-LABEL: func.func @store_and_acc_in_same_loop
 // CHECK: scf.for
 // CHECK: } {ttl.l1_acc_loop}
-func.func @mixed_acc_and_plain_store(
+func.func @store_and_acc_in_same_loop(
     %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %arg1: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
   %c0 = arith.constant 0 : index
@@ -218,36 +218,6 @@ func.func @single_iteration(
   scf.for %iv = %c0 to %c1 step %c1 {
     %mm = ttl.matmul %a, %b : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.store %mm, %reserve {accumulate} : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
-  }
-  func.return %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>
-}
-
-// -----
-
-// += inside scf.if inside scf.for. The store's nearest enclosing
-// ForOp is the outer loop, so it should be annotated.
-
-// CHECK-LABEL: func.func @acc_inside_conditional
-// CHECK: scf.for
-// CHECK: } {ttl.l1_acc_loop}
-func.func @acc_inside_conditional(
-    %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
-    %arg1: tensor<1x1x!ttcore.tile<32x32, bf16>>,
-    %cond: i1) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
-  %c0 = arith.constant 0 : index
-  %c1 = arith.constant 1 : index
-  %c4 = arith.constant 4 : index
-  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %a = ttl.attach_cb %arg0, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %b = ttl.attach_cb %arg1, %cb1 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %reserve = ttl.cb_reserve %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  scf.for %iv = %c0 to %c4 step %c1 {
-    scf.if %cond {
-      %mm = ttl.matmul %a, %b : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      ttl.store %mm, %reserve {accumulate} : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
-    }
   }
   func.return %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>
 }

@@ -52,6 +52,7 @@ struct TTLAnnotateL1AccLoopsPass
   void runOnOperation() override {
     func::FuncOp func = getOperation();
     DominanceInfo domInfo(func);
+    bool failed = false;
 
     func.walk([&](StoreOp store) {
       if (!store.getAccumulate()) {
@@ -63,6 +64,19 @@ struct TTLAnnotateL1AccLoopsPass
         return;
       }
       if (hasCompilerAnnotation(enclosingLoop)) {
+        return;
+      }
+
+      // Conditional += is not supported: the L1 acc enable guard is conditional
+      // based on the loop induction variable, not on whether a pack actually
+      // executed. If the condition is false on iteration 0, subsequent
+      // iterations accumulate into uninitialized L1.
+      if (store->getParentOp() != enclosingLoop.getOperation()) {
+        store->emitError(
+            "+= inside a conditional is not supported (#504); move "
+            "the condition outside the accumulation loop or use a "
+            "separate loop for the conditional path");
+        failed = true;
         return;
       }
 
@@ -79,6 +93,10 @@ struct TTLAnnotateL1AccLoopsPass
       enclosingLoop->setAttr(kL1AccLoopAttrName,
                              UnitAttr::get(enclosingLoop->getContext()));
     });
+
+    if (failed) {
+      signalPassFailure();
+    }
   }
 };
 

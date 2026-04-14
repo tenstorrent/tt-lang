@@ -166,17 +166,23 @@ struct TTKernelInsertL1AccumulationPass
         assignedToGroup.insert(sibling.getOperation());
       }
 
-      // Find scope end: scan forward from rootLoop past sibling loops
-      // and trailing cb_push_back ops. Starts from rootLoop (not the
-      // last inner loop) because push_back ops are siblings of rootLoop,
-      // not of nested inner loops.
+      // Find scope end: scan forward from rootLoop past grouped siblings,
+      // init ops between them, and trailing cb_push_back ops. Only stop
+      // at a non-grouped ForOp (a different accumulation scope) or a
+      // cb_reserve_back (start of a new reserve region).
+      // TODO: Consider adding structural accumulation_region ops to make this
+      // more robust and composable.
       group.scopeEnd = rootLoop;
       for (Operation *op = rootLoop->getNextNode(); op;
            op = op->getNextNode()) {
         if (isa<ttk::CBPushBackOp>(op)) {
           group.scopeEnd = op;
-        } else if (!assignedToGroup.contains(op)) {
+        } else if (isa<ttk::CBReserveBackOp>(op)) {
           break;
+        } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+          if (!assignedToGroup.contains(forOp)) {
+            break;
+          }
         }
       }
 

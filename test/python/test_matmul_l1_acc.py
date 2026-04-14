@@ -349,12 +349,12 @@ def test_l1_acc_consecutive_loops(device):
 
 
 # ---------------------------------------------------------------------------
-# Mixed .store() then += (overwrite first, accumulate rest).
+# .store() before loop, += inside loop (overwrite then accumulate).
 # ---------------------------------------------------------------------------
 
 
-def _make_mixed_store_acc_kernel(total_k):
-    """First iteration overwrites via .store(), rest accumulate via +=."""
+def _make_store_then_acc_kernel(total_k):
+    """.store() before the += loop, then K-1 iterations accumulate via +=."""
 
     @ttl.operation(grid=(1, 1))
     def kernel(a, b, out):
@@ -396,8 +396,8 @@ def _make_mixed_store_acc_kernel(total_k):
 
 @pytest.mark.parametrize("total_k", [2, 4], ids=[f"K{k}" for k in [2, 4]])
 @pytest.mark.requires_device
-def test_l1_acc_mixed_store(total_k, device):
-    """.store() first iteration, += for rest. Result = K * (a @ b)."""
+def test_l1_acc_store_then_acc(total_k, device):
+    """.store() before loop, += inside loop. Result = K * (a @ b)."""
     a_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
     b_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
     golden = (total_k * (a_torch.float() @ b_torch.float())).float()
@@ -406,7 +406,7 @@ def test_l1_acc_mixed_store(total_k, device):
     b_dev = to_dram(b_torch, device)
     out_dev = to_dram(torch.zeros(TILE, TILE, dtype=torch.bfloat16), device)
 
-    kernel = _make_mixed_store_acc_kernel(total_k)
+    kernel = _make_store_then_acc_kernel(total_k)
     kernel(a_dev, b_dev, out_dev)
 
     result = ttnn.to_torch(out_dev).float()
