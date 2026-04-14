@@ -10,14 +10,17 @@
 // Computes a transitive use closure to find the last operation that touches
 // the CB's data, and inserts the release after that point.
 //
+// Releases nested inside structured control flow (scf.if branches) are
+// hoisted: the nested release is erased and a single release is placed
+// after the enclosing structured op. This keeps push/pop at the same
+// scope level as their acquire.
+//
 //===----------------------------------------------------------------------===//
 
-#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -30,60 +33,91 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Return true if `a` is before `b` in their common block. Both ops must
-/// be in the same block.
-static bool isBefore(Operation *a, Operation *b) { return a->isBeforeInBlock(b); }
-
-/// Check if `releaseOps` contains a release on `cb` that is between
-/// `acquire` (exclusive) and `bound` (exclusive). When `bound` is null,
-/// the end of the block is the boundary.
-template <typename ReleaseOpTy>
-static bool hasMatchingRelease(Value cb, Operation *acquire, Operation *bound,
-                               SmallVectorImpl<ReleaseOpTy> &releaseOps) {
-  for (auto release : releaseOps) {
-    if (release.getCb() != cb)
-      continue;
-    if (!isBefore(acquire, release))
-      continue;
-    if (bound && !isBefore(release, bound))
-      continue;
-    return true;
-  }
-  return false;
+/// Walk up the parent chain from `op` until we find an op whose block is
+/// `targetBlock`, or return nullptr if `op` is not nested under it.
+static Operation *getAncestorInBlock(Operation *op, Block *targetBlock) {
+  while (op && op->getBlock() != targetBlock)
+    op = op->getParentOp();
+  return op;
 }
 
-/// Compute the last operation in the transitive use closure of an acquire.
+/// Return true if `a` is before `b` in their common block.
+static bool isBefore(Operation *a, Operation *b) {
+  return a->isBeforeInBlock(b);
+}
+
+/// Find releases on `cb` between `acquire` and `bound` in the acquire's block.
+/// Same-level releases are "matching" (the acquire is already handled).
+/// Nested releases are collected into `toHoist` for erasure.
+template <typename ReleaseOpTy>
+static bool findReleases(Value cb, Operation *acquire, Operation *bound,
+                         SmallVectorImpl<ReleaseOpTy> &allReleases,
+                         SmallVectorImpl<ReleaseOpTy> &toHoist) {
+  Block *block = acquire->getBlock();
+  bool hasSameLevelRelease = false;
+
+  for (auto release : allReleases) {
+    if (release.getCb() != cb)
+      continue;
+
+    // Same-level: release is directly in the acquire's block.
+    if (release->getBlock() == block) {
+      if (!isBefore(acquire, release))
+        continue;
+      if (bound && !isBefore(release, bound))
+        continue;
+      hasSameLevelRelease = true;
+      continue;
+    }
+
+    // Nested: release is inside a structured op in the acquire's block.
+    Operation *ancestor = getAncestorInBlock(release, block);
+    if (!ancestor)
+      continue;
+    if (!isBefore(acquire, ancestor))
+      continue;
+    if (bound && !isBefore(ancestor, bound))
+      continue;
+    toHoist.push_back(release);
+  }
+
+  return hasSameLevelRelease;
+}
+
+/// Compute the last operation (in the acquire's block) in the transitive
+/// use closure of an acquire.
 ///
-/// Starting from the acquire result and all uses of `cb` between `acquire`
-/// and `bound`, chase produced values one level deep (handles the
-/// copy -> transfer_handle -> wait chain).
+/// Uses in nested regions are projected up to their ancestor in the
+/// acquire's block (e.g., an add inside an scf.if projects to the scf.if).
 static Operation *findLastTransitiveUse(Value cb, Operation *acquire,
                                         Operation *bound) {
+  Block *block = acquire->getBlock();
   Operation *last = acquire;
   DenseSet<Operation *> visited;
   SmallVector<Value, 8> worklist;
 
-  // Seed with the acquire result (the tensor view).
   if (acquire->getNumResults() > 0)
     worklist.push_back(acquire->getResult(0));
 
   auto updateLast = [&](Operation *op) {
-    if (op->getBlock() == acquire->getBlock() && isBefore(last, op))
-      last = op;
+    Operation *ancestor = getAncestorInBlock(op, block);
+    if (!ancestor)
+      return;
+    if (isBefore(last, ancestor))
+      last = ancestor;
   };
 
   auto inRange = [&](Operation *op) {
-    if (op->getBlock() != acquire->getBlock())
+    Operation *ancestor = getAncestorInBlock(op, block);
+    if (!ancestor)
       return false;
-    if (!isBefore(acquire, op) && op != acquire)
+    if (!isBefore(acquire, ancestor) && ancestor != acquire)
       return false;
-    if (bound && !isBefore(op, bound))
+    if (bound && !isBefore(ancestor, bound))
       return false;
     return true;
   };
 
-  // Collect direct uses of the CB value in range. These are ops like
-  // copy(%slice, %cb) or store(%tensor, %reserve_view) that reference %cb.
   for (auto &use : cb.getUses()) {
     Operation *user = use.getOwner();
     if (user == acquire)
@@ -97,9 +131,6 @@ static Operation *findLastTransitiveUse(Value cb, Operation *acquire,
       worklist.push_back(result);
   }
 
-  // Chase one level of def-use from seeded values. This handles:
-  //   attach_cb result -> used by store, arithmetic, etc.
-  //   copy result (transfer_handle) -> used by wait
   while (!worklist.empty()) {
     Value v = worklist.pop_back_val();
     for (auto &use : v.getUses()) {
@@ -111,7 +142,6 @@ static Operation *findLastTransitiveUse(Value cb, Operation *acquire,
       if (!inRange(user))
         continue;
       updateLast(user);
-      // Chase one more level for results.
       for (auto result : user->getResults())
         worklist.push_back(result);
     }
@@ -125,7 +155,6 @@ struct TTLInsertCBSyncPass
   void runOnOperation() override {
     func::FuncOp func = getOperation();
 
-    // Collect all CB sync ops per CB value.
     SmallVector<CBReserveOp> reserves;
     SmallVector<CBWaitOp> waits;
     SmallVector<CBPushOp> pushes;
@@ -144,16 +173,12 @@ struct TTLInsertCBSyncPass
 
     OpBuilder builder(func.getContext());
 
-    // For each cb_reserve, check if a matching cb_push exists.
     for (auto reserve : reserves) {
       Value cb = reserve.getCb();
 
-      // Find the next cb_reserve on the same CB (scope boundary).
       Operation *nextReserve = nullptr;
       for (auto other : reserves) {
-        if (other == reserve)
-          continue;
-        if (other.getCb() != cb)
+        if (other == reserve || other.getCb() != cb)
           continue;
         if (other->getBlock() != reserve->getBlock())
           continue;
@@ -163,8 +188,13 @@ struct TTLInsertCBSyncPass
           nextReserve = other;
       }
 
-      if (hasMatchingRelease(cb, reserve, nextReserve, pushes))
+      SmallVector<CBPushOp> nestedPushes;
+      if (findReleases(cb, reserve, nextReserve, pushes, nestedPushes))
         continue;
+
+      // Erase nested pushes (hoist to acquire's scope level).
+      for (auto nested : nestedPushes)
+        nested.erase();
 
       Operation *last = findLastTransitiveUse(cb, reserve, nextReserve);
       builder.setInsertionPointAfter(last);
@@ -172,16 +202,12 @@ struct TTLInsertCBSyncPass
                        /*num_tiles=*/IntegerAttr{});
     }
 
-    // For each cb_wait, check if a matching cb_pop exists.
     for (auto wait : waits) {
       Value cb = wait.getCb();
 
-      // Find the next cb_wait on the same CB (scope boundary).
       Operation *nextWait = nullptr;
       for (auto other : waits) {
-        if (other == wait)
-          continue;
-        if (other.getCb() != cb)
+        if (other == wait || other.getCb() != cb)
           continue;
         if (other->getBlock() != wait->getBlock())
           continue;
@@ -191,8 +217,12 @@ struct TTLInsertCBSyncPass
           nextWait = other;
       }
 
-      if (hasMatchingRelease(cb, wait, nextWait, pops))
+      SmallVector<CBPopOp> nestedPops;
+      if (findReleases(cb, wait, nextWait, pops, nestedPops))
         continue;
+
+      for (auto nested : nestedPops)
+        nested.erase();
 
       Operation *last = findLastTransitiveUse(cb, wait, nextWait);
       builder.setInsertionPointAfter(last);
