@@ -52,11 +52,14 @@ static bool isBefore(Operation *a, Operation *b) {
 template <typename ReleaseOpTy>
 static bool findReleases(Value cb, Operation *acquire, Operation *bound,
                          SmallVectorImpl<ReleaseOpTy> &allReleases,
-                         SmallVectorImpl<ReleaseOpTy> &toHoist) {
+                         SmallVectorImpl<ReleaseOpTy> &toHoist,
+                         const DenseSet<Operation *> &erased) {
   Block *block = acquire->getBlock();
   bool hasSameLevelRelease = false;
 
   for (auto release : allReleases) {
+    if (erased.contains(release))
+      continue;
     if (release.getCb() != cb)
       continue;
 
@@ -173,6 +176,9 @@ struct TTLInsertCBSyncPass
 
     OpBuilder builder(func.getContext());
 
+    // Track erased ops so later iterations don't access dangling pointers.
+    DenseSet<Operation *> erased;
+
     for (auto reserve : reserves) {
       Value cb = reserve.getCb();
 
@@ -189,12 +195,14 @@ struct TTLInsertCBSyncPass
       }
 
       SmallVector<CBPushOp> nestedPushes;
-      if (findReleases(cb, reserve, nextReserve, pushes, nestedPushes))
+      if (findReleases(cb, reserve, nextReserve, pushes, nestedPushes,
+                       erased))
         continue;
 
-      // Erase nested pushes (hoist to acquire's scope level).
-      for (auto nested : nestedPushes)
+      for (auto nested : nestedPushes) {
+        erased.insert(nested);
         nested.erase();
+      }
 
       Operation *last = findLastTransitiveUse(cb, reserve, nextReserve);
       builder.setInsertionPointAfter(last);
@@ -218,11 +226,13 @@ struct TTLInsertCBSyncPass
       }
 
       SmallVector<CBPopOp> nestedPops;
-      if (findReleases(cb, wait, nextWait, pops, nestedPops))
+      if (findReleases(cb, wait, nextWait, pops, nestedPops, erased))
         continue;
 
-      for (auto nested : nestedPops)
+      for (auto nested : nestedPops) {
+        erased.insert(nested);
         nested.erase();
+      }
 
       Operation *last = findLastTransitiveUse(cb, wait, nextWait);
       builder.setInsertionPointAfter(last);

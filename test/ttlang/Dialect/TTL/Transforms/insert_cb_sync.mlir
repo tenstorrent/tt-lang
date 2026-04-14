@@ -230,3 +230,203 @@ func.func @pop_hoisted_from_branch(
   }
   func.return
 }
+
+// -----
+
+// Test 10: reserve with no uses at all. Push should go right after reserve.
+
+// CHECK-LABEL: func.func @reserve_no_uses
+// CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
+// CHECK: ttl.cb_reserve %[[CB]]
+// CHECK-NEXT: ttl.cb_push %[[CB]]
+// CHECK-NOT: ttl.cb_push
+// CHECK: return
+func.func @reserve_no_uses()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %reserve = ttl.cb_reserve %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  func.return
+}
+
+// -----
+
+// Test 11: attach_cb with dead result. Push after attach_cb.
+
+// CHECK-LABEL: func.func @attach_cb_dead_result
+// CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
+// CHECK: ttl.cb_reserve %[[CB]]
+// CHECK: ttl.attach_cb
+// CHECK-NEXT: ttl.cb_push %[[CB]]
+// CHECK-NOT: ttl.cb_push
+// CHECK: return
+func.func @attach_cb_dead_result()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %reserve = ttl.cb_reserve %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %block = ttl.attach_cb %reserve, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  func.return
+}
+
+// -----
+
+// Test 12: two copies on same CB in DM thread. Push after last wait.
+
+// CHECK-LABEL: func.func @two_copies_same_cb
+// CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
+// CHECK: ttl.cb_reserve %[[CB]]
+// CHECK: ttl.copy
+// CHECK: ttl.wait
+// CHECK: ttl.copy
+// CHECK: ttl.wait
+// CHECK-NEXT: ttl.cb_push %[[CB]]
+// CHECK-NOT: ttl.cb_push
+// CHECK: return
+func.func @two_copies_same_cb(
+    %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %c0 = arith.constant 0 : index
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %reserve = ttl.cb_reserve %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %slice0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>> -> tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+  %tx0 = ttl.copy %slice0, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> !ttl.transfer_handle<read>
+  ttl.wait %tx0 : !ttl.transfer_handle<read>
+  %slice1 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>> -> tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+  %tx1 = ttl.copy %slice1, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> !ttl.transfer_handle<read>
+  ttl.wait %tx1 : !ttl.transfer_handle<read>
+  func.return
+}
+
+// -----
+
+// Test 13: pops in BOTH branches of scf.if. Both hoisted, single pop after.
+
+// CHECK-LABEL: func.func @pops_both_branches
+// CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
+// CHECK: ttl.cb_wait %[[CB]]
+// CHECK: scf.if
+// CHECK:   ttl.add
+// CHECK-NOT: ttl.cb_pop
+// CHECK: } else {
+// CHECK:   ttl.mul
+// CHECK-NOT: ttl.cb_pop
+// CHECK: }
+// CHECK-NEXT: ttl.cb_pop %[[CB]]
+// CHECK-NOT: ttl.cb_pop
+// CHECK: return
+func.func @pops_both_branches(
+    %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+    %cond: i1)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %w = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %b = ttl.attach_cb %w, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  scf.if %cond {
+    %r = ttl.add %b, %arg0 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  } else {
+    %r = ttl.mul %b, %arg0 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  }
+  func.return
+}
+
+// -----
+
+// Test 14: reserve outside loop, store inside. Push after the loop.
+
+// CHECK-LABEL: func.func @reserve_outside_loop
+// CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
+// CHECK: ttl.cb_reserve %[[CB]]
+// CHECK: scf.for
+// CHECK:   ttl.store
+// CHECK-NOT: ttl.cb_push
+// CHECK: }
+// CHECK-NEXT: ttl.cb_push %[[CB]]
+// CHECK-NOT: ttl.cb_push
+// CHECK: return
+func.func @reserve_outside_loop(
+    %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %reserve = ttl.cb_reserve %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  scf.for %iv = %c0 to %c4 step %c1 {
+    ttl.store %arg0, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  func.return
+}
+
+// -----
+
+// Test 15: scf.if nested inside scf.for, pop inside if branch.
+// Pop hoisted out of if, stays inside the for body.
+
+// CHECK-LABEL: func.func @if_inside_for
+// CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
+// CHECK: scf.for
+// CHECK:   ttl.cb_wait %[[CB]]
+// CHECK:   scf.if
+// CHECK:     ttl.add
+// CHECK-NOT: ttl.cb_pop
+// CHECK:   } else {
+// CHECK:     ttl.mul
+// CHECK-NOT: ttl.cb_pop
+// CHECK:   }
+// CHECK-NEXT: ttl.cb_pop %[[CB]]
+// CHECK: }
+// CHECK-NOT: ttl.cb_pop
+// CHECK: return
+func.func @if_inside_for(
+    %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+    %cond: i1)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  scf.for %iv = %c0 to %c4 step %c1 {
+    %w = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %b = ttl.attach_cb %w, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    scf.if %cond {
+      %r = ttl.add %b, %arg0 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    } else {
+      %r = ttl.mul %b, %arg0 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+  }
+  func.return
+}
+
+// -----
+
+// Test 16: nested for loops, wait in inner loop.
+
+// CHECK-LABEL: func.func @nested_for_loops
+// CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
+// CHECK: scf.for
+// CHECK:   scf.for
+// CHECK:     ttl.cb_wait %[[CB]]
+// CHECK:     ttl.add
+// CHECK-NEXT: ttl.cb_pop %[[CB]]
+// CHECK:   }
+// CHECK: }
+// CHECK-NOT: ttl.cb_pop
+// CHECK: return
+func.func @nested_for_loops(
+    %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  scf.for %i = %c0 to %c4 step %c1 {
+    scf.for %j = %c0 to %c4 step %c1 {
+      %w = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %b = ttl.attach_cb %w, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %r = ttl.add %b, %arg0 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+  }
+  func.return
+}
