@@ -98,17 +98,18 @@ struct TTKernelInsertL1AccumulationPass
     // precision regardless of block size, at the cost of 2x L1 per tile.
     if (strictF32Acc) {
       for (auto loop : l1AccLoops) {
-        if (!loop->hasAttr(kL1AccLoopAttrName))
+        if (!loop->hasAttr(kL1AccLoopAttrName)) {
           continue;
+        }
         bool hasSubblockLoop = false;
         loop->walk([&](scf::ForOp inner) {
-          if (inner->hasAttr(kSubblockLoopStrideAttrName))
+          if (inner->hasAttr(kSubblockLoopStrideAttrName)) {
             hasSubblockLoop = true;
+          }
         });
         if (hasSubblockLoop) {
-          loop->emitError(
-              "output block exceeds f32 DST capacity; reduce block "
-              "dimensions or compile without --ttl-strict-f32-acc");
+          loop->emitError("output block exceeds f32 DST capacity; reduce block "
+                          "dimensions or compile without --ttl-strict-f32-acc");
           return signalPassFailure();
         }
       }
