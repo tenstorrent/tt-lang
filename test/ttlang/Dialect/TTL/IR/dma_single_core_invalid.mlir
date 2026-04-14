@@ -138,13 +138,12 @@ module {
 #layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
                       buffer = dram, grid = [1, 1], memory = interleaved>
 
-// Using an untyped transfer handle is invalid: direction typing is required so
-// lowering can always select a specific barrier.
+// An untyped transfer handle that is never waited on is invalid.
 module {
-  func.func @untyped_transfer_handle_invalid(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @unwaited_transfer_handle_invalid(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
-    // expected-error @below {{expects transfer handle to be direction-typed (!ttl.transfer_handle<read> or !ttl.transfer_handle<write>)}}
+    // expected-error @below {{expects transfer handle to be synchronized with ttl.wait}}
     %xf = ttl.copy %t, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
     func.return
   }
