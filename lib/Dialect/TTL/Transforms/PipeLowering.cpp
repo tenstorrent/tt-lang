@@ -322,9 +322,8 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
     int64_t waitVal = 1;
     bool resetAfterWait = true;
     if (pipeGraph) {
-      auto [recvIdx, total] = pipeGraph->getGatherRecvProgress(
-          pipeType.getDstStartX(), pipeType.getDstStartY(),
-          pipeType.getPipeNetId());
+      auto [recvIdx, total] =
+          pipeGraph->getGatherRecvProgress(op.getOperation());
       waitVal = recvIdx;
       resetAfterWait = (recvIdx == total);
     }

@@ -455,7 +455,7 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
                         srcPipeType.getDstStartX(), srcPipeType.getDstStartY(),
                         srcPipeType.getDstEndX(), srcPipeType.getDstEndY(),
                         srcPipeType.getPipeNetId(), cbIndex,
-                        cbType.getBlockCount(), copyOp.getLoc());
+                        cbType.getBlockCount(), copyOp.getLoc(), copyOp);
   });
 
   graph.assignGatherSlotIndices();
@@ -818,8 +818,19 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
       // Determine CB access context: consumer (cb_wait/cb_pop) vs producer
       // (cb_reserve/cb_push). This controls whether we read from the CB's
       // read pointer or write pointer for the pipe source address.
-      bool isConsumerCB = llvm::any_of(
-          src.getUsers(), [](Operation *user) { return isa<CBWaitOp>(user); });
+      // Walk backward from this copy to find the nearest CB lifecycle op
+      // on the same CB, so we correctly handle a CB used in both roles.
+      bool isConsumerCB = false;
+      for (Operation *prev = op->getPrevNode(); prev;
+           prev = prev->getPrevNode()) {
+        if (isa<CBWaitOp>(prev) && prev->getOperand(0) == src) {
+          isConsumerCB = true;
+          break;
+        }
+        if (isa<CBReserveOp>(prev) && prev->getOperand(0) == src) {
+          break;
+        }
+      }
       return lowerCBToPipe(op, adaptor.getSrc(), adaptor.getDst(), receiverInfo,
                            isConsumerCB, rewriter);
     }

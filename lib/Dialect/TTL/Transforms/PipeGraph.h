@@ -81,23 +81,18 @@ public:
   /// small).
   static FailureOr<PipeGraph> build(ModuleOp mod);
 
-  /// Get the next receiver CB info for a pipe. Multiple PipeNets with the
-  /// same coordinates are returned in program order via an internal counter.
-  /// Returns nullptr if not found or all entries consumed.
+  /// Get receiver CB info for a pipe identified by its coordinates.
+  /// Returns nullptr if not found.
   const ReceiverCBInfo *getReceiverInfo(int64_t srcX, int64_t srcY,
                                         int64_t dstStartX, int64_t dstStartY,
                                         int64_t dstEndX, int64_t dstEndY,
                                         int64_t pipeNetId) const {
     PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY, pipeNetId};
     auto it = receiverCBs.find(key);
-    if (it == receiverCBs.end() || it->second.empty()) {
+    if (it == receiverCBs.end()) {
       return nullptr;
     }
-    auto &counter = lookupCounters[key];
-    if (counter >= it->second.size()) {
-      return nullptr;
-    }
-    return &it->second[counter++];
+    return &it->second;
   }
 
   /// Get the number of runtime args needed for pipe receiver addresses.
@@ -106,23 +101,23 @@ public:
   /// Check if any pipes were found.
   bool hasPipes() const { return !receiverCBs.empty(); }
 
-  /// Add a receiver CB mapping. Multiple calls with the same pipe coordinates
-  /// append to a list, supporting multiple PipeNets with identical routes.
+  /// Add a receiver CB mapping for a pipe.
   void addReceiverCB(int64_t srcX, int64_t srcY, int64_t dstStartX,
                      int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
                      int64_t pipeNetId, int64_t cbIndex, int64_t blockCount,
-                     Location loc) {
+                     Location loc, Operation *receiverCopyOp) {
     PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY, pipeNetId};
-    receiverCBs[key].push_back({cbIndex, -1, 0, blockCount, loc});
+    assert(receiverCBs.count(key) == 0 &&
+           "duplicate receiver CB for the same pipe");
+    receiverCBs[key] = {cbIndex, -1, 0, blockCount, loc};
+    receiverCopyToKey[receiverCopyOp] = key;
   }
 
   /// Assign runtime arg indices for all receiver CB addresses.
   void assignRuntimeArgIndices() {
     int64_t nextArgIdx = 0;
-    for (auto &[key, infos] : receiverCBs) {
-      for (auto &info : infos) {
-        info.runtimeArgIdx = nextArgIdx++;
-      }
+    for (auto &[key, info] : receiverCBs) {
+      info.runtimeArgIdx = nextArgIdx++;
     }
     numPipeRuntimeArgs = nextArgIdx;
   }
@@ -151,33 +146,28 @@ public:
                                   k.dstEndY, k.cbIndex);
       }
     };
-    using Entry = std::pair<PipeKey, size_t>;
-    std::unordered_map<DstCBKey, SmallVector<Entry>, DstCBKeyHash> groups;
-    for (auto &[key, infos] : receiverCBs) {
-      for (size_t i = 0; i < infos.size(); ++i) {
-        DstCBKey dk{key.dstStartX, key.dstStartY, key.dstEndX, key.dstEndY,
-                    infos[i].cbIndex};
-        groups[dk].push_back({key, i});
-      }
+    std::unordered_map<DstCBKey, SmallVector<PipeKey>, DstCBKeyHash> groups;
+    for (auto &[key, info] : receiverCBs) {
+      DstCBKey dk{key.dstStartX, key.dstStartY, key.dstEndX, key.dstEndY,
+                  info.cbIndex};
+      groups[dk].push_back(key);
     }
-    for (auto &[dk, entries] : groups) {
-      if (entries.size() <= 1) {
+    for (auto &[dk, pipeKeys] : groups) {
+      if (pipeKeys.size() <= 1) {
         continue;
       }
-      llvm::sort(entries, [](const Entry &a, const Entry &b) {
-        return std::tie(a.first.srcX, a.first.srcY) <
-               std::tie(b.first.srcX, b.first.srcY);
+      llvm::sort(pipeKeys, [](const PipeKey &a, const PipeKey &b) {
+        return std::tie(a.srcX, a.srcY) < std::tie(b.srcX, b.srcY);
       });
-      for (int64_t i = 0; i < static_cast<int64_t>(entries.size()); ++i) {
-        auto &[pk, vecIdx] = entries[i];
-        receiverCBs[pk][vecIdx].gatherSlotIdx = i;
+      for (int64_t i = 0; i < static_cast<int64_t>(pipeKeys.size()); ++i) {
+        receiverCBs[pipeKeys[i]].gatherSlotIdx = i;
       }
     }
 
     // Count total senders per unicast destination for gather receive protocol.
     // Keyed by (dstX, dstY, pipeNetId) since all unicast pipes to the same
     // destination share a semaphore.
-    for (auto &[key, infos] : receiverCBs) {
+    for (auto &[key, info] : receiverCBs) {
       bool isUnicast =
           key.dstStartX == key.dstEndX && key.dstStartY == key.dstEndY;
       if (!isUnicast) {
@@ -185,6 +175,18 @@ public:
       }
       GatherDstKey dk{key.dstStartX, key.dstStartY, key.pipeNetId};
       gatherDstCounts[dk]++;
+    }
+
+    // Assign 1-based receive indices per destination. receiver CopyOps
+    // targeting the same gather destination get sequential indices based
+    // on the program order they were discovered during build().
+    std::unordered_map<GatherDstKey, int64_t, GatherDstKeyHash> dstCounters;
+    for (auto &[copyOp, key] : receiverCopyToKey) {
+      GatherDstKey dk{key.dstStartX, key.dstStartY, key.pipeNetId};
+      if (gatherDstCounts.count(dk) == 0) {
+        continue;
+      }
+      gatherRecvProgress[copyOp] = ++dstCounters[dk];
     }
   }
 
@@ -197,12 +199,11 @@ public:
         continue;
       }
       // Find a receiver entry matching this destination to get block_count.
-      for (auto &[pk, infos] : receiverCBs) {
+      for (auto &[pk, info] : receiverCBs) {
         if (pk.dstStartX != dk.dstX || pk.dstStartY != dk.dstY ||
             pk.pipeNetId != dk.pipeNetId) {
           continue;
         }
-        const auto &info = infos[0];
         if (info.blockCount < numSenders) {
           return emitError(info.loc)
                  << "gather pipe receiver CB has block_count="
@@ -216,19 +217,27 @@ public:
     return success();
   }
 
-  /// For unicast gather receivers: returns {currentIndex, totalSenders}.
-  /// Each call advances the counter so sequential receives get 1, 2, 3, ...
+  /// For unicast gather receivers: returns {recvIndex, totalSenders}.
+  /// recvIndex is 1-based (1st sender, 2nd sender, ...).
   /// Non-gather unicast returns {1, 1}.
-  std::pair<int64_t, int64_t> getGatherRecvProgress(int64_t dstX, int64_t dstY,
-                                                    int64_t pipeNetId) const {
-    GatherDstKey key{dstX, dstY, pipeNetId};
-    auto it = gatherDstCounts.find(key);
+  /// Keyed on the receiver CopyOp, so call order doesn't matter.
+  std::pair<int64_t, int64_t>
+  getGatherRecvProgress(Operation *receiverCopyOp) const {
+    auto keyIt = receiverCopyToKey.find(receiverCopyOp);
+    if (keyIt == receiverCopyToKey.end()) {
+      return {1, 1};
+    }
+    const PipeKey &pk = keyIt->second;
+    GatherDstKey dk{pk.dstStartX, pk.dstStartY, pk.pipeNetId};
+    auto it = gatherDstCounts.find(dk);
     if (it == gatherDstCounts.end()) {
       return {1, 1};
     }
-    auto &counter = gatherRecvCounters[key];
-    counter++;
-    return {counter, it->second};
+    auto progIt = gatherRecvProgress.find(receiverCopyOp);
+    if (progIt == gatherRecvProgress.end()) {
+      return {1, 1};
+    }
+    return {progIt->second, it->second};
   }
 
   /// Emit pipe graph as JSON for Python to read and populate runtime args.
@@ -242,20 +251,18 @@ public:
     llvm::json::Object root;
     llvm::json::Array pipesArray;
 
-    for (const auto &[key, infos] : receiverCBs) {
-      for (const auto &info : infos) {
-        llvm::json::Object pipeObj;
-        pipeObj["srcX"] = key.srcX;
-        pipeObj["srcY"] = key.srcY;
-        pipeObj["dstStartX"] = key.dstStartX;
-        pipeObj["dstStartY"] = key.dstStartY;
-        pipeObj["dstEndX"] = key.dstEndX;
-        pipeObj["dstEndY"] = key.dstEndY;
-        pipeObj["pipeNetId"] = key.pipeNetId;
-        pipeObj["receiverCBIndex"] = info.cbIndex;
-        pipeObj["runtimeArgSlot"] = info.runtimeArgIdx;
-        pipesArray.push_back(std::move(pipeObj));
-      }
+    for (const auto &[key, info] : receiverCBs) {
+      llvm::json::Object pipeObj;
+      pipeObj["srcX"] = key.srcX;
+      pipeObj["srcY"] = key.srcY;
+      pipeObj["dstStartX"] = key.dstStartX;
+      pipeObj["dstStartY"] = key.dstStartY;
+      pipeObj["dstEndX"] = key.dstEndX;
+      pipeObj["dstEndY"] = key.dstEndY;
+      pipeObj["pipeNetId"] = key.pipeNetId;
+      pipeObj["receiverCBIndex"] = info.cbIndex;
+      pipeObj["runtimeArgSlot"] = info.runtimeArgIdx;
+      pipesArray.push_back(std::move(pipeObj));
     }
 
     root["pipes"] = std::move(pipesArray);
@@ -273,8 +280,7 @@ public:
   }
 
 private:
-  llvm::DenseMap<PipeKey, SmallVector<ReceiverCBInfo>> receiverCBs;
-  mutable llvm::DenseMap<PipeKey, size_t> lookupCounters;
+  llvm::DenseMap<PipeKey, ReceiverCBInfo> receiverCBs;
   int64_t numPipeRuntimeArgs = 0;
 
   // Gather receive tracking: count senders per unicast destination.
@@ -290,8 +296,12 @@ private:
     }
   };
   std::unordered_map<GatherDstKey, int64_t, GatherDstKeyHash> gatherDstCounts;
-  mutable std::unordered_map<GatherDstKey, int64_t, GatherDstKeyHash>
-      gatherRecvCounters;
+
+  // Maps receiver CopyOp -> PipeKey for CopyOp-keyed lookups.
+  llvm::DenseMap<Operation *, PipeKey> receiverCopyToKey;
+
+  // Maps receiver CopyOp -> 1-based receive index (assigned at build time).
+  llvm::DenseMap<Operation *, int64_t> gatherRecvProgress;
 };
 
 } // namespace mlir::tt::ttl
