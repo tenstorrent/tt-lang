@@ -957,6 +957,7 @@ static int64_t getReceiverSemIdx(PipeType pipeType) {
 ///   destination core (which may differ from the sender's CB address).
 static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                                    const ReceiverCBInfo *receiverInfo,
+                                   bool isConsumerCB,
                                    ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   auto pipeType = llvm::cast<PipeType>(pipe.getType());
@@ -1016,13 +1017,24 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     ttk::NocSemaphoreSetOp::create(rewriter, loc, senderSemPtr, zeroIdx);
   }
 
-  // Use write pointer: data was written here by the preceding DRAM read.
-  // All cores execute the same cb_reserve_back, so the write pointer address
-  // is uniform across cores and correct for both the local source and the
-  // remote multicast destination.
+  // Destination address: always use write_ptr. The receiver does
+  // cb_reserve_back, so the write pointer is the correct target.
+  // CB layout is uniform across cores, so the local write_ptr matches
+  // the remote core's write_ptr for the same CB index.
   auto cbWritePtr = ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted);
   auto cbWritePtrIdx =
       arith::IndexCastOp::create(rewriter, loc, indexTy, cbWritePtr);
+
+  // Source address depends on CB access context:
+  //   Producer (cb_reserve/cb_push): data at write_ptr, before push.
+  //   Consumer (cb_wait/cb_pop):     data at read_ptr, after wait.
+  Value srcPtrIdx;
+  if (isConsumerCB) {
+    auto cbReadPtr = ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted);
+    srcPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, cbReadPtr);
+  } else {
+    srcPtrIdx = cbWritePtrIdx;
+  }
 
   Value dstBaseIdx = cbWritePtrIdx;
   if (receiverInfo) {
@@ -1087,7 +1099,7 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
       loc, i32Ty, rewriter.getI32IntegerAttr(totalSizeBytes));
 
   Value srcAddr =
-      arith::IndexCastOp::create(rewriter, loc, i32Ty, cbWritePtrIdx);
+      arith::IndexCastOp::create(rewriter, loc, i32Ty, srcPtrIdx);
 
   Value dstAddrIdx = dstBaseIdx;
   if (slotByteOffset > 0) {
@@ -1318,8 +1330,14 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
             pipeType.getDstStartY(), pipeType.getDstEndX(),
             pipeType.getDstEndY(), pipeType.getPipeNetId());
       }
+      // Determine CB access context: consumer (cb_wait/cb_pop) vs producer
+      // (cb_reserve/cb_push). This controls whether we read from the CB's
+      // read pointer or write pointer for the pipe source address.
+      bool isConsumerCB = llvm::any_of(src.getUsers(), [](Operation *user) {
+        return isa<CBWaitOp>(user);
+      });
       return lowerCBToPipe(op, adaptor.getSrc(), adaptor.getDst(), receiverInfo,
-                           rewriter);
+                           isConsumerCB, rewriter);
     }
     if (srcIsPipe && dstIsCB) {
       // Pipe -> CB: destination receives data via multicast from source
