@@ -69,7 +69,9 @@ def make_mcast_kernel(M_DIM, K_DIM, N_DIM):
 
         a_cb = ttl.make_dataflow_buffer_like(a, shape=(BLOCK_M, BLOCK_K), block_count=2)
         b_cb = ttl.make_dataflow_buffer_like(w, shape=(BLOCK_K, BLOCK_N), block_count=2)
-        out_cb = ttl.make_dataflow_buffer_like(out, shape=(BLOCK_M, BLOCK_N), block_count=2)
+        out_cb = ttl.make_dataflow_buffer_like(
+            out, shape=(BLOCK_M, BLOCK_N), block_count=2
+        )
 
         @ttl.compute()
         def compute():
@@ -99,23 +101,33 @@ def make_mcast_kernel(M_DIM, K_DIM, N_DIM):
                     for kb in range(K_BLOCKS):
                         kc = kb * BLOCK_K
                         with a_cb.reserve() as a_blk:
+
                             def read_a(pipe):
-                                ttl.copy(a[mr:mr + BLOCK_M, kc:kc + BLOCK_K], a_blk).wait()
+                                ttl.copy(
+                                    a[mr : mr + BLOCK_M, kc : kc + BLOCK_K], a_blk
+                                ).wait()
                                 ttl.copy(a_blk, pipe).wait()
+
                             mcast_a_net.if_src(read_a)
 
                             def recv_a(pipe):
                                 ttl.copy(pipe, a_blk).wait()
+
                             mcast_a_net.if_dst(recv_a)
 
                         with b_cb.reserve() as b_blk:
+
                             def read_b(pipe):
-                                ttl.copy(w[kc:kc + BLOCK_K, nc:nc + BLOCK_N], b_blk).wait()
+                                ttl.copy(
+                                    w[kc : kc + BLOCK_K, nc : nc + BLOCK_N], b_blk
+                                ).wait()
                                 ttl.copy(b_blk, pipe).wait()
+
                             mcast_b_net.if_src(read_b)
 
                             def recv_b(pipe):
                                 ttl.copy(pipe, b_blk).wait()
+
                             mcast_b_net.if_dst(recv_b)
 
         @ttl.datamovement()
@@ -128,7 +140,9 @@ def make_mcast_kernel(M_DIM, K_DIM, N_DIM):
                     nb = node_n * n_blocks_per_node + local_nb
                     nc = nb * BLOCK_N
                     with out_cb.wait() as out_blk:
-                        ttl.copy(out_blk, out[mr:mr + BLOCK_M, nc:nc + BLOCK_N]).wait()
+                        ttl.copy(
+                            out_blk, out[mr : mr + BLOCK_M, nc : nc + BLOCK_N]
+                        ).wait()
 
     return mcast_matmul
 
@@ -159,7 +173,9 @@ def make_balanced_kernel(M_DIM, K_DIM, N_DIM):
 
         a_cb = ttl.make_dataflow_buffer_like(a, shape=(BLOCK_M, BLOCK_K), block_count=2)
         b_cb = ttl.make_dataflow_buffer_like(w, shape=(BLOCK_K, BLOCK_N), block_count=2)
-        out_cb = ttl.make_dataflow_buffer_like(out, shape=(BLOCK_M, BLOCK_N), block_count=2)
+        out_cb = ttl.make_dataflow_buffer_like(
+            out, shape=(BLOCK_M, BLOCK_N), block_count=2
+        )
 
         @ttl.compute()
         def compute():
@@ -188,13 +204,18 @@ def make_balanced_kernel(M_DIM, K_DIM, N_DIM):
                     for kb in range(K_BLOCKS):
                         kc = kb * BLOCK_K
                         with a_cb.reserve() as a_blk:
+
                             def read_a(pipe):
-                                ttl.copy(a[mr:mr + BLOCK_M, kc:kc + BLOCK_K], a_blk).wait()
+                                ttl.copy(
+                                    a[mr : mr + BLOCK_M, kc : kc + BLOCK_K], a_blk
+                                ).wait()
                                 ttl.copy(a_blk, pipe).wait()
+
                             mcast_a_net.if_src(read_a)
 
                             def recv_a(pipe):
                                 ttl.copy(pipe, a_blk).wait()
+
                             mcast_a_net.if_dst(recv_a)
 
         @ttl.datamovement()
@@ -209,17 +230,24 @@ def make_balanced_kernel(M_DIM, K_DIM, N_DIM):
                     for kb in range(K_BLOCKS):
                         kc = kb * BLOCK_K
                         with b_cb.reserve() as b_blk:
+
                             def read_b(pipe):
-                                ttl.copy(w[kc:kc + BLOCK_K, nc:nc + BLOCK_N], b_blk).wait()
+                                ttl.copy(
+                                    w[kc : kc + BLOCK_K, nc : nc + BLOCK_N], b_blk
+                                ).wait()
                                 ttl.copy(b_blk, pipe).wait()
+
                             mcast_b_net.if_src(read_b)
 
                             def recv_b(pipe):
                                 ttl.copy(pipe, b_blk).wait()
+
                             mcast_b_net.if_dst(recv_b)
 
                     with out_cb.wait() as out_blk:
-                        ttl.copy(out_blk, out[mr:mr + BLOCK_M, nc:nc + BLOCK_N]).wait()
+                        ttl.copy(
+                            out_blk, out[mr : mr + BLOCK_M, nc : nc + BLOCK_N]
+                        ).wait()
 
     return balanced_matmul
 
@@ -250,8 +278,12 @@ def make_balanced_relu_kernel(M_DIM, K_DIM, N_DIM):
 
         a_cb = ttl.make_dataflow_buffer_like(a, shape=(BLOCK_M, BLOCK_K), block_count=2)
         b_cb = ttl.make_dataflow_buffer_like(w, shape=(BLOCK_K, BLOCK_N), block_count=2)
-        acc_cb = ttl.make_dataflow_buffer_like(out, shape=(BLOCK_M, BLOCK_N), block_count=2)
-        out_cb = ttl.make_dataflow_buffer_like(out, shape=(BLOCK_M, BLOCK_N), block_count=1)
+        acc_cb = ttl.make_dataflow_buffer_like(
+            out, shape=(BLOCK_M, BLOCK_N), block_count=2
+        )
+        out_cb = ttl.make_dataflow_buffer_like(
+            out, shape=(BLOCK_M, BLOCK_N), block_count=1
+        )
 
         @ttl.compute()
         def compute():
@@ -287,13 +319,18 @@ def make_balanced_relu_kernel(M_DIM, K_DIM, N_DIM):
                     for kb in range(K_BLOCKS):
                         kc = kb * BLOCK_K
                         with a_cb.reserve() as a_blk:
+
                             def read_a(pipe):
-                                ttl.copy(a[mr:mr + BLOCK_M, kc:kc + BLOCK_K], a_blk).wait()
+                                ttl.copy(
+                                    a[mr : mr + BLOCK_M, kc : kc + BLOCK_K], a_blk
+                                ).wait()
                                 ttl.copy(a_blk, pipe).wait()
+
                             mcast_a_net.if_src(read_a)
 
                             def recv_a(pipe):
                                 ttl.copy(pipe, a_blk).wait()
+
                             mcast_a_net.if_dst(recv_a)
 
         @ttl.datamovement()
@@ -308,17 +345,24 @@ def make_balanced_relu_kernel(M_DIM, K_DIM, N_DIM):
                     for kb in range(K_BLOCKS):
                         kc = kb * BLOCK_K
                         with b_cb.reserve() as b_blk:
+
                             def read_b(pipe):
-                                ttl.copy(w[kc:kc + BLOCK_K, nc:nc + BLOCK_N], b_blk).wait()
+                                ttl.copy(
+                                    w[kc : kc + BLOCK_K, nc : nc + BLOCK_N], b_blk
+                                ).wait()
                                 ttl.copy(b_blk, pipe).wait()
+
                             mcast_b_net.if_src(read_b)
 
                             def recv_b(pipe):
                                 ttl.copy(pipe, b_blk).wait()
+
                             mcast_b_net.if_dst(recv_b)
 
                     with out_cb.wait() as out_blk:
-                        ttl.copy(out_blk, out[mr:mr + BLOCK_M, nc:nc + BLOCK_N]).wait()
+                        ttl.copy(
+                            out_blk, out[mr : mr + BLOCK_M, nc : nc + BLOCK_N]
+                        ).wait()
 
     return balanced_matmul_relu
 
@@ -354,7 +398,10 @@ def test_balanced_matmul(device):
 
 def test_balanced_matmul_relu(device):
     """Balanced matmul + fused relu: 130 cores, 4x4 blocks/core."""
+
     def golden_relu(a_tt, w_tt):
         return ttnn.to_torch(ttnn.relu(ttnn.matmul(a_tt, w_tt)))
-    _run_matmul(make_balanced_relu_kernel, 10240, 8192, 13312, device,
-                golden_fn=golden_relu)
+
+    _run_matmul(
+        make_balanced_relu_kernel, 10240, 8192, 13312, device, golden_fn=golden_relu
+    )

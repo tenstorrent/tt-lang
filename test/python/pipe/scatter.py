@@ -28,9 +28,7 @@ os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 @ttl.operation(grid=(4, 1))
 def scatter(inp, out):
-    scatter_net = ttl.PipeNet([
-        ttl.Pipe(src=(0, 0), dst=(slice(1, 4), 0))
-    ])
+    scatter_net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 4), 0))])
 
     inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
@@ -43,16 +41,19 @@ def scatter(inp, out):
     @ttl.datamovement()
     def dm_read():
         with inp_cb.reserve() as blk:
+
             def read_and_send(pipe):
                 tx = ttl.copy(inp[0, 0], blk)
                 tx.wait()
                 xf = ttl.copy(blk, pipe)
                 xf.wait()
+
             scatter_net.if_src(read_and_send)
 
             def recv(pipe):
                 xf = ttl.copy(pipe, blk)
                 xf.wait()
+
             scatter_net.if_dst(recv)
 
     @ttl.datamovement()
@@ -101,13 +102,17 @@ if __name__ == "__main__":
     try:
         inp = ttnn.from_torch(
             torch.randn(32, 128, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-            device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
         out = ttnn.from_torch(
             torch.zeros(32, 128, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-            device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
         scatter(inp, out)
     finally:

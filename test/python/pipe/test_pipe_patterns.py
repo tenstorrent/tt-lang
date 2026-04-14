@@ -34,10 +34,9 @@ N_GATHER_SOURCES = 3
 
 @ttl.operation(grid=(N_GATHER_SOURCES + 1, 1))
 def gather_kernel(inp, out):
-    net = ttl.PipeNet([
-        ttl.Pipe(src=(x, 0), dst=(0, 0))
-        for x in range(1, N_GATHER_SOURCES + 1)
-    ])
+    net = ttl.PipeNet(
+        [ttl.Pipe(src=(x, 0), dst=(0, 0)) for x in range(1, N_GATHER_SOURCES + 1)]
+    )
 
     inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     recv_cb = ttl.make_dataflow_buffer_like(
@@ -69,12 +68,14 @@ def gather_kernel(inp, out):
                 def send(pipe):
                     xf = ttl.copy(blk, pipe)
                     xf.wait()
+
                 net.if_src(send)
 
         def recv(pipe):
             with recv_cb.reserve() as blk:
                 xf = ttl.copy(pipe, blk)
                 xf.wait()
+
         net.if_dst(recv)
 
     @ttl.datamovement()
@@ -90,11 +91,10 @@ def gather_kernel(inp, out):
 # Scatter: core 0 multicasts to cores 1-3
 # ---------------------------------------------------------------------------
 
+
 @ttl.operation(grid=(4, 1))
 def scatter_kernel(inp, out):
-    net = ttl.PipeNet([
-        ttl.Pipe(src=(0, 0), dst=(slice(1, 4), 0))
-    ])
+    net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 4), 0))])
 
     inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
@@ -107,16 +107,19 @@ def scatter_kernel(inp, out):
     @ttl.datamovement()
     def dm_read():
         with inp_cb.reserve() as blk:
+
             def read_and_send(pipe):
                 tx = ttl.copy(inp[0, 0], blk)
                 tx.wait()
                 xf = ttl.copy(blk, pipe)
                 xf.wait()
+
             net.if_src(read_and_send)
 
             def recv(pipe):
                 xf = ttl.copy(pipe, blk)
                 xf.wait()
+
             net.if_dst(recv)
 
     @ttl.datamovement()
@@ -143,11 +146,13 @@ N_SG = 4
 def scatter_gather_kernel(inp, out):
     grid_x, grid_y = ttl.grid_size(dims=2)
 
-    net = ttl.PipeNet([
-        ttl.Pipe(src=(x, y), dst=(x, slice(0, grid_y)))
-        for x in range(grid_x)
-        for y in range(grid_y)
-    ])
+    net = ttl.PipeNet(
+        [
+            ttl.Pipe(src=(x, y), dst=(x, slice(0, grid_y)))
+            for x in range(grid_x)
+            for y in range(grid_y)
+        ]
+    )
 
     pipe_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     acc_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
@@ -167,6 +172,7 @@ def scatter_gather_kernel(inp, out):
     def dm_read():
         x, _ = ttl.node(dims=2)
         with pipe_cb.reserve() as blk:
+
             def pipe_src(pipe):
                 ttl.copy(inp[0, x], blk).wait()
                 ttl.copy(blk, pipe).wait()
@@ -193,10 +199,9 @@ N_RING = 4
 
 @ttl.operation(grid=(N_RING, 1))
 def forward_kernel(inp, out):
-    net = ttl.PipeNet([
-        ttl.Pipe(src=(x, 0), dst=((x + 1) % N_RING, 0))
-        for x in range(N_RING)
-    ])
+    net = ttl.PipeNet(
+        [ttl.Pipe(src=(x, 0), dst=((x + 1) % N_RING, 0)) for x in range(N_RING)]
+    )
 
     own_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     nbr_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
@@ -217,12 +222,15 @@ def forward_kernel(inp, out):
             def send(pipe):
                 xf = ttl.copy(blk, pipe)
                 xf.wait()
+
             net.if_src(send)
 
         with nbr_cb.reserve() as blk:
+
             def recv(pipe):
                 xf = ttl.copy(pipe, blk)
                 xf.wait()
+
             net.if_dst(recv)
 
     @ttl.datamovement()
@@ -249,7 +257,7 @@ def test_gather(device):
 
     result = ttnn.to_torch(out_tt)
     expected = sum(
-        inp_torch[:, x * TILE:(x + 1) * TILE].float()
+        inp_torch[:, x * TILE : (x + 1) * TILE].float()
         for x in range(1, N_GATHER_SOURCES + 1)
     ).to(torch.bfloat16)
     assert_pcc(expected, result)
@@ -283,7 +291,7 @@ def test_scatter_gather(device):
     result = ttnn.to_torch(out_tt)
     # Each core receives all 4 tiles and sums them
     total = sum(
-        inp_torch[:, x * TILE:(x + 1) * TILE].float() for x in range(N_SG)
+        inp_torch[:, x * TILE : (x + 1) * TILE].float() for x in range(N_SG)
     ).to(torch.bfloat16)
     expected = total.repeat(1, N_SG)
     assert_pcc(expected, result)
@@ -301,10 +309,10 @@ def test_forward_ring(device):
     result = ttnn.to_torch(out_tt)
     expected = torch.zeros_like(inp_torch)
     for x in range(N_RING):
-        own = inp_torch[:, x * TILE:(x + 1) * TILE]
+        own = inp_torch[:, x * TILE : (x + 1) * TILE]
         prev = (x - 1) % N_RING
-        nbr = inp_torch[:, prev * TILE:(prev + 1) * TILE]
-        expected[:, x * TILE:(x + 1) * TILE] = own + nbr
+        nbr = inp_torch[:, prev * TILE : (prev + 1) * TILE]
+        expected[:, x * TILE : (x + 1) * TILE] = own + nbr
     assert_pcc(expected, result)
 
 
@@ -321,10 +329,12 @@ N_GATHER_MB_SOURCES = 2
 
 @ttl.operation(grid=(N_GATHER_MB_SOURCES + 1, 1))
 def gather_multiblock_kernel(inp, out):
-    net = ttl.PipeNet([
-        ttl.Pipe(src=(1, 0), dst=(0, 0)),
-        ttl.Pipe(src=(2, 0), dst=(0, 0)),
-    ])
+    net = ttl.PipeNet(
+        [
+            ttl.Pipe(src=(1, 0), dst=(0, 0)),
+            ttl.Pipe(src=(2, 0), dst=(0, 0)),
+        ]
+    )
 
     inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, HTILES), block_count=2)
     recv_cb = ttl.make_dataflow_buffer_like(
@@ -350,18 +360,20 @@ def gather_multiblock_kernel(inp, out):
         x, _ = ttl.node(dims=2)
         if x > 0:
             with inp_cb.reserve() as blk:
-                tx = ttl.copy(inp[0, (x - 1) * HTILES:x * HTILES], blk)
+                tx = ttl.copy(inp[0, (x - 1) * HTILES : x * HTILES], blk)
                 tx.wait()
 
                 def send(pipe):
                     xf = ttl.copy(blk, pipe)
                     xf.wait()
+
                 net.if_src(send)
 
         def recv(pipe):
             with recv_cb.reserve() as blk:
                 xf = ttl.copy(pipe, blk)
                 xf.wait()
+
         net.if_dst(recv)
 
     @ttl.datamovement()
@@ -378,15 +390,13 @@ def test_gather_multiblock(device):
     inp_torch = torch.randn(TILE, 2 * HTILES * TILE, dtype=torch.bfloat16)
 
     inp_tt = to_dram(inp_torch, device)
-    out_tt = to_dram(
-        torch.zeros(TILE, HTILES * TILE, dtype=torch.bfloat16), device
-    )
+    out_tt = to_dram(torch.zeros(TILE, HTILES * TILE, dtype=torch.bfloat16), device)
 
     gather_multiblock_kernel(inp_tt, out_tt)
 
     result = ttnn.to_torch(out_tt)
     # Core 1 sends inp[:, 0:2*TILE], Core 2 sends inp[:, 2*TILE:4*TILE]
-    t0 = inp_torch[:, 0:HTILES * TILE].float()
-    t1 = inp_torch[:, HTILES * TILE:2 * HTILES * TILE].float()
+    t0 = inp_torch[:, 0 : HTILES * TILE].float()
+    t1 = inp_torch[:, HTILES * TILE : 2 * HTILES * TILE].float()
     expected = (t0 + t1).to(torch.bfloat16)
     assert_pcc(expected, result)

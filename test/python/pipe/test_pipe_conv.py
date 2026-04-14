@@ -36,24 +36,13 @@ TILES_PER_CORE = 2
 
 @ttl.operation(grid=(N_CORES, 1))
 def pipe_chain(inp, weight, out):
-    pipes = [
-        ttl.Pipe(src=(x, 0), dst=(x + 1, 0))
-        for x in range(N_CORES - 1)
-    ]
+    pipes = [ttl.Pipe(src=(x, 0), dst=(x + 1, 0)) for x in range(N_CORES - 1)]
     net = ttl.PipeNet(pipes)
 
-    inp_cb = ttl.make_dataflow_buffer_like(
-        inp, shape=(1, HTILES), block_count=2
-    )
-    w_cb = ttl.make_dataflow_buffer_like(
-        weight, shape=(1, HTILES), block_count=1
-    )
-    ctx_cb = ttl.make_dataflow_buffer_like(
-        inp, shape=(1, HTILES), block_count=2
-    )
-    out_cb = ttl.make_dataflow_buffer_like(
-        out, shape=(1, HTILES), block_count=2
-    )
+    inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, HTILES), block_count=2)
+    w_cb = ttl.make_dataflow_buffer_like(weight, shape=(1, HTILES), block_count=1)
+    ctx_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, HTILES), block_count=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, HTILES), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -63,7 +52,11 @@ def pipe_chain(inp, weight, out):
                 tile_idx = core_x * TILES_PER_CORE + local_t
                 if local_t == 0 and core_x > 0:
                     # First tile on non-first core: add received context
-                    with inp_cb.wait() as x, ctx_cb.wait() as ctx, out_cb.reserve() as o:
+                    with (
+                        inp_cb.wait() as x,
+                        ctx_cb.wait() as ctx,
+                        out_cb.reserve() as o,
+                    ):
                         o.store((x + ctx) * w)
                 else:
                     with inp_cb.wait() as x, out_cb.reserve() as o:
@@ -75,9 +68,11 @@ def pipe_chain(inp, weight, out):
         # Cores > 0: receive context from previous core
         if core_x > 0:
             with ctx_cb.reserve() as blk:
+
                 def recv(pipe):
                     xf = ttl.copy(pipe, blk)
                     xf.wait()
+
                 net.if_dst(recv)
         # Load weight
         with w_cb.reserve() as blk:
@@ -101,9 +96,11 @@ def pipe_chain(inp, weight, out):
                 # Send last tile to next core
                 if local_t == TILES_PER_CORE - 1:
                     if core_x < N_CORES - 1:
+
                         def send(pipe):
                             xf = ttl.copy(blk, pipe)
                             xf.wait()
+
                         net.if_src(send)
 
 

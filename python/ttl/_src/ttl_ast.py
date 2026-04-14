@@ -334,6 +334,7 @@ class TTLGenericCompiler(TTCompilerBase):
             return False
         val = tbl[var_name]
         from ..pipe import PipeNet
+
         return isinstance(val, PipeNet)
 
     def _handle_pipenet_callback(self, node):
@@ -486,9 +487,7 @@ class TTLGenericCompiler(TTCompilerBase):
         qualified_object_syntax = f"{mlir_type}.{node.attr}"
         fn = self._fn_map.get(qualified_object_syntax, None)
         if fn is None:
-            self._raise_error(
-                node, f"No method '{node.attr}' on type {mlir_type}"
-            )
+            self._raise_error(node, f"No method '{node.attr}' on type {mlir_type}")
         return fn(mlir_value, *func_args, **kwargs)
 
     def visit_Attribute(self, node, func_args=[], kwargs={}):

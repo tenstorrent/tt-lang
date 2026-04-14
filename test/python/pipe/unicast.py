@@ -25,9 +25,7 @@ os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 @ttl.operation(grid=(2, 1))
 def unicast_pipe(inp, out):
-    net = ttl.PipeNet([
-        ttl.Pipe(src=(1, 0), dst=(0, 0))
-    ])
+    net = ttl.PipeNet([ttl.Pipe(src=(1, 0), dst=(0, 0))])
 
     inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
@@ -48,11 +46,13 @@ def unicast_pipe(inp, out):
 
                 def send(pipe):
                     ttl.copy(blk, pipe).wait()
+
                 net.if_src(send)
 
         def recv(pipe):
             with inp_cb.reserve() as blk:
                 ttl.copy(pipe, blk).wait()
+
         net.if_dst(recv)
 
     @ttl.datamovement()
@@ -97,13 +97,17 @@ if __name__ == "__main__":
     try:
         inp = ttnn.from_torch(
             torch.randn(32, 64, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-            device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
         out = ttnn.from_torch(
             torch.zeros(32, 32, dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-            device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
         unicast_pipe(inp, out)
     finally:

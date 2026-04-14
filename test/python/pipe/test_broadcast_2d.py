@@ -28,12 +28,14 @@ GRID_Y = 2
 
 @ttl.operation(grid=(GRID_X, GRID_Y))
 def broadcast_2d_kernel(inp, out):
-    net = ttl.PipeNet([
-        ttl.Pipe(
-            src=(0, 0),
-            dst=(slice(0, GRID_X), slice(0, GRID_Y)),
-        )
-    ])
+    net = ttl.PipeNet(
+        [
+            ttl.Pipe(
+                src=(0, 0),
+                dst=(slice(0, GRID_X), slice(0, GRID_Y)),
+            )
+        ]
+    )
 
     inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
@@ -46,16 +48,19 @@ def broadcast_2d_kernel(inp, out):
     @ttl.datamovement()
     def dm_read():
         with inp_cb.reserve() as blk:
+
             def read_and_send(pipe):
                 tx = ttl.copy(inp[0, 0], blk)
                 tx.wait()
                 xf = ttl.copy(blk, pipe)
                 xf.wait()
+
             net.if_src(read_and_send)
 
             def recv(pipe):
                 xf = ttl.copy(pipe, blk)
                 xf.wait()
+
             net.if_dst(recv)
 
     @ttl.datamovement()
@@ -68,9 +73,7 @@ def broadcast_2d_kernel(inp, out):
 
 def test_broadcast_2d(device):
     """2D broadcast from (0,0) to 2x2 grid, each core computes abs."""
-    inp_torch = torch.randn(
-        GRID_Y * TILE, GRID_X * TILE, dtype=torch.bfloat16
-    )
+    inp_torch = torch.randn(GRID_Y * TILE, GRID_X * TILE, dtype=torch.bfloat16)
 
     inp_tt = to_dram(inp_torch, device)
     out_tt = to_dram(

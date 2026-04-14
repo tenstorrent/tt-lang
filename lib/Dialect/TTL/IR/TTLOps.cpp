@@ -1250,8 +1250,7 @@ mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {
       pipeType.getDstStartY() != dstStartY ||
       pipeType.getDstEndX() != dstEndX || pipeType.getDstEndY() != dstEndY ||
       pipeType.getPipeNetId() != pipeNetId) {
-    return emitOpError()
-           << "attributes must match result pipe type";
+    return emitOpError() << "attributes must match result pipe type";
   }
 
   // Validate coordinates are non-negative.

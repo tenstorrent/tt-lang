@@ -29,10 +29,9 @@ TILE = 32
 def scatter_auto(inp, out):
     grid_x, grid_y = ttl.grid_size(dims=2)
 
-    net = ttl.PipeNet([
-        ttl.Pipe(src=(x, 0), dst=(x, slice(1, grid_y)))
-        for x in range(grid_x)
-    ])
+    net = ttl.PipeNet(
+        [ttl.Pipe(src=(x, 0), dst=(x, slice(1, grid_y))) for x in range(grid_x)]
+    )
 
     inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
@@ -46,16 +45,19 @@ def scatter_auto(inp, out):
     def dm_read():
         x, y = ttl.node(dims=2)
         with inp_cb.reserve() as blk:
+
             def read_and_send(pipe):
                 tx = ttl.copy(inp[y, x], blk)
                 tx.wait()
                 xf = ttl.copy(blk, pipe)
                 xf.wait()
+
             net.if_src(read_and_send)
 
             def recv(pipe):
                 xf = ttl.copy(pipe, blk)
                 xf.wait()
+
             net.if_dst(recv)
 
     @ttl.datamovement()
