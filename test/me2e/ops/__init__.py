@@ -31,6 +31,7 @@ OP_TORCH_MAP: Dict[str, Callable[..., Tensor]] = {
     "max": torch.maximum,
     "min": torch.minimum,
     "exp": torch.exp,
+    "exp2": torch.exp2,
     "log": torch.log,
     "sqrt": torch.sqrt,
     "rsqrt": torch.rsqrt,
@@ -47,6 +48,18 @@ OP_TORCH_MAP: Dict[str, Callable[..., Tensor]] = {
     "asin": torch.asin,
     "acos": torch.acos,
     "atan": torch.atan,
+    "ceil": torch.ceil,
+    "sign": torch.sign,
+    "gelu": torch.nn.functional.gelu,
+    "silu": torch.nn.functional.silu,
+    "hardsigmoid": torch.nn.functional.hardsigmoid,
+    "expm1": torch.expm1,
+    "square": torch.square,
+    "softsign": torch.nn.functional.softsign,
+    # torch.signbit returns bool tensor; cast to float for numeric comparison.
+    "signbit": lambda x: torch.signbit(x).float(),
+    "frac": torch.frac,
+    "trunc": torch.trunc,
 }
 
 # Domain constraints for ops that require specific input ranges.
@@ -57,6 +70,10 @@ OP_INPUT_RANGES: Dict[str, Tuple[float, float]] = {
     "recip": (0.01, 10.0),  # recip requires non-zero inputs
     "div": (0.01, 10.0),  # div requires non-zero divisor
     "tan": (-1.0, 1.0),  # Avoid pi/2 where tan diverges.
+    "expm1": (
+        -0.01,
+        0.01,
+    ),  # Avoid overflow for large inputs and focused on intended range
 }
 
 # Per-op ULP threshold overrides keyed by dtype.
@@ -72,6 +89,12 @@ OP_ULP_THRESHOLD_OVERRIDES: Dict[str, Dict[torch.dtype, int]] = {
     "add": {torch.float32: 2**24},
     "sub": {torch.float32: 2**24},
     "mul": {torch.float32: 2**16},
+    # tt-metal SFPU tests use ULP=2 (direct), but the full ME2E pipeline
+    # (MLIR -> TTKernel -> C++ -> device) adds precision loss.
+    # Measured max ULP: expm1 ~2^13.8, square ~2^14.5.
+    # PCC checks (0.999) provide the primary quality gate aligned with tt-metal.
+    "expm1": {torch.float32: 2**15},
+    "square": {torch.float32: 2**15},
 }
 
 # Per-op PCC threshold overrides keyed by dtype.
@@ -84,6 +107,9 @@ OP_PCC_THRESHOLD_OVERRIDES: Dict[str, Dict[torch.dtype, float]] = {
     "recip": {torch.bfloat16: 0.999},
     "acos": {torch.bfloat16: 0.999},
     "asin": {torch.bfloat16: 0.999},
+    "gelu": {torch.float32: 0.999, torch.bfloat16: 0.999},
+    # tt-metal sweep uses PCC=0.999; test_math.py uses PCC=0.99 (bf16).
+    "expm1": {torch.float32: 0.999, torch.bfloat16: 0.999},
 }
 
 # Per-op allclose (rtol, atol) overrides keyed by dtype.
@@ -95,6 +121,16 @@ OP_ALLCLOSE_OVERRIDES: Dict[str, Dict[torch.dtype, Tuple[float, float]]] = {
     # Measured max abs diff: asin ~3.3e-3, acos ~1.7e-3.
     "asin": {torch.float32: (1e-2, 1e-2)},
     "acos": {torch.float32: (1e-2, 1e-2)},
+    # hardsigmoid on [-1,1] produces values in [1/3, 2/3]; bfloat16 quantization
+    # makes golden nearly constant, yielding undefined PCC. Use allclose instead.
+    "hardsigmoid": {torch.bfloat16: (1e-2, 1e-2)},
+    # trunc on [-1,1] produces all zeros (constant), making PCC undefined.
+    "trunc": {torch.float32: (1e-5, 1e-5)},
+    # SFPU gelu is a rough polynomial approximation; ULP is meaningless
+    # (measured ULP: f32 ~2^27.7, bf16 ~1e36). Use allclose instead.
+    # Measured max abs diff ~2.3e-2 over [-1,1]; tt-metal uses region-specific
+    # allclose up to (1e-2, 1e-2), but the full ME2E pipeline is rougher.
+    "gelu": {torch.float32: (5e-2, 5e-2), torch.bfloat16: (5e-2, 5e-2)},
 }
 
 
