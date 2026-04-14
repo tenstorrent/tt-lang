@@ -144,6 +144,8 @@ struct TTKernelInsertL1AccumulationPass
       assignedToGroup.insert(loop.getOperation());
 
       // Collect sibling annotated loops that share a pack CB target.
+      // sharePackCB walks recursively, so for nested loops (rootLoop
+      // wrapping loop), it finds pack_tile ops inside the inner loop.
       for (Operation *op = rootLoop->getNextNode(); op;
            op = op->getNextNode()) {
         if (isa<ttk::CBPushBackOp>(op)) {
@@ -164,16 +166,16 @@ struct TTKernelInsertL1AccumulationPass
         assignedToGroup.insert(sibling.getOperation());
       }
 
-      // Scope ends at the last trailing cb_push_back.
-      Operation *lastInGroup = group.loops.size() > 1
-                                   ? group.loops.back().getOperation()
-                                   : rootLoop.getOperation();
-      group.scopeEnd = lastInGroup;
-      for (Operation *op = lastInGroup->getNextNode(); op;
+      // Find scope end: scan forward from rootLoop past sibling loops
+      // and trailing cb_push_back ops. Starts from rootLoop (not the
+      // last inner loop) because push_back ops are siblings of rootLoop,
+      // not of nested inner loops.
+      group.scopeEnd = rootLoop;
+      for (Operation *op = rootLoop->getNextNode(); op;
            op = op->getNextNode()) {
         if (isa<ttk::CBPushBackOp>(op)) {
           group.scopeEnd = op;
-        } else {
+        } else if (!assignedToGroup.contains(op)) {
           break;
         }
       }

@@ -15,8 +15,8 @@
 // the loop, so the same L1 slot persists across iterations).
 //
 // TTKernelInsertL1Accumulation uses the annotated loops to find enable
-// points, and the enclosing cb_reserve_back/cb_push_back pair to determine
-// the accumulation scope for disable guards.
+// points, and groups consecutive sibling loops by shared pack CB targets
+// to determine the accumulation scope for disable guards.
 //
 //===----------------------------------------------------------------------===//
 

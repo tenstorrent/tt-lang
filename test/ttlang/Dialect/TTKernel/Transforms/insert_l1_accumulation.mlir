@@ -466,3 +466,49 @@ func.func @already_guarded() attributes {ttkernel.thread = #ttkernel.thread<comp
   ttkernel.pack_reconfig_l1_acc(%c0_i32) : (i32) -> ()
   return
 }
+
+// -----
+
+// Two consecutive annotated loops packing to DIFFERENT CBs.
+// Each loop gets its own independent disable pair.
+
+// CHECK-LABEL: func.func @different_cb_siblings
+// CHECK: ttkernel.pack_reconfig_l1_acc
+// CHECK: scf.for
+// CHECK:   ttkernel.pack_reconfig_l1_acc
+// CHECK: }
+// CHECK: ttkernel.cb_push_back
+// CHECK: ttkernel.pack_reconfig_l1_acc
+// CHECK-NOT: ttkernel.pack_reconfig_l1_acc
+// CHECK: ttkernel.pack_reconfig_l1_acc
+// CHECK: scf.for
+// CHECK:   ttkernel.pack_reconfig_l1_acc
+// CHECK: }
+// CHECK: ttkernel.cb_push_back
+// CHECK: ttkernel.pack_reconfig_l1_acc
+// CHECK-NOT: ttkernel.pack_reconfig_l1_acc
+func.func @different_cb_siblings() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %cb1 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c4_i32 = arith.constant 4 : i32
+  scf.for %iv1 = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb0, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_loop}
+  ttkernel.cb_push_back(%cb0, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  scf.for %iv2 = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb1, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_loop}
+  ttkernel.cb_push_back(%cb1, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  return
+}
