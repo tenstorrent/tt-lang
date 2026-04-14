@@ -5,6 +5,7 @@
 # REQUIRES: ttnn, tt-device
 # RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
+# RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
 """
 PipeNet scatter: core (0,0) multicasts to cores (1,0)-(3,0) via PipeNet.
@@ -76,6 +77,23 @@ def scatter(inp, out):
 # if_dst call (receive from pipe)
 # CHECK: ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0)
 # CHECK: ttl.if_dst
+
+# =============================================================================
+# C++ Output Checks (multicast pipe)
+# =============================================================================
+
+# Multicast sender: wait for receivers ready, write data, signal receivers
+# CHECK-CPP: // dm_read
+# CHECK-CPP: void kernel_main()
+# CHECK-CPP: experimental::semaphore_wait(
+# CHECK-CPP: noc_async_write_multicast(
+# CHECK-CPP: noc_async_write_barrier();
+# CHECK-CPP: noc_semaphore_set_multicast(
+
+# Multicast receiver: reset sem, signal sender ready, wait for data
+# CHECK-CPP: noc_semaphore_set(
+# CHECK-CPP: noc_semaphore_inc(
+# CHECK-CPP: experimental::semaphore_wait(
 
 
 if __name__ == "__main__":

@@ -10,8 +10,8 @@
 // CHECK:   ttkernel.noc_async_write_barrier
 // CHECK: }
 func.func @if_src_lowering() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
-  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0)>
-  ttl.if_src %p : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0)> {
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  ttl.if_src %p : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
     "ttkernel.noc_async_write_barrier"() : () -> ()
   }
   func.return
@@ -33,8 +33,8 @@ func.func @if_src_lowering() attributes { "ttl.kernel_thread" = #ttkernel.thread
 // CHECK:   ttkernel.noc_async_read_barrier
 // CHECK: }
 func.func @if_dst_lowering() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
-  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3)>
-  ttl.if_dst %p : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3)> {
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
+  ttl.if_dst %p : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0> {
     "ttkernel.noc_async_read_barrier"() : () -> ()
   }
   func.return
@@ -42,32 +42,33 @@ func.func @if_dst_lowering() attributes { "ttl.kernel_thread" = #ttkernel.thread
 
 // -----
 
-// CB -> Pipe copy: lowers to multicast write ops
+// CB -> Pipe copy (unicast): lowers to noc_async_write + semaphore inc
 // CHECK-LABEL: func.func @copy_cb_to_pipe
 // CHECK: ttkernel.get_compile_time_arg_val
-// CHECK: ttkernel.get_read_ptr
-// CHECK: ttkernel.get_noc_multicast_addr
-// CHECK: ttkernel.noc_async_write_multicast
+// CHECK: ttkernel.get_write_ptr
+// CHECK: ttkernel.get_noc_addr
+// CHECK: ttkernel.noc_async_write
 // CHECK: ttkernel.noc_async_write_barrier
+// CHECK: ttkernel.noc_semaphore_inc
 func.func @copy_cb_to_pipe() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
-  %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0)>
-  %xf = ttl.copy %cb, %p : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0)>) -> !ttl.transfer_handle<write>
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %xf = ttl.copy %cb, %p : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> !ttl.transfer_handle<write>
   ttl.wait %xf : !ttl.transfer_handle<write>
   func.return
 }
 
 // -----
 
-// Pipe -> CB copy: destination side, no-op (data arrives via multicast)
-// The CB may be optimized away if unused, but the wait becomes a read barrier.
+// Pipe -> CB copy (unicast receiver): wait for sender semaphore, then reset
 // CHECK-LABEL: func.func @copy_pipe_to_cb
-// CHECK: ttkernel.noc_async_read_barrier
-// CHECK-NOT: ttkernel.noc_async_read_tile
+// CHECK: ttkernel.get_semaphore
+// CHECK: ttkernel.experimental::semaphore_wait_min
+// CHECK: ttkernel.noc_semaphore_set
 func.func @copy_pipe_to_cb() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
-  %cb = ttl.bind_cb {cb_index = 0, buffer_factor = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0)>
-  %xf = ttl.copy %p, %cb : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0)>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<read>
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %xf = ttl.copy %p, %cb : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<read>
   ttl.wait %xf : !ttl.transfer_handle<read>
   func.return
 }
