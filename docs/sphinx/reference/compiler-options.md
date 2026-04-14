@@ -116,21 +116,22 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 
 The pipeline runs these passes in order:
 
-1. `convert-ttl-to-compute` — lower TTL elementwise tensor ops to `ttl.compute` with tile ops
-2. `ttl-set-compute-kernel-config` — set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
-3. `ttl-assign-dst` — DST register allocation (linear scan with copy insertion)
-4. `ttl-subblock-compute-for-dst` — tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `auto-sync=true`)*
-5. `ttl-insert-tile-regs-sync` — insert math/pack thread synchronization
-6. `ttl-lower-matmul-block` — mark block-matmul computes and expand stores *(only if `use-block-matmul=true`)*
-7. `ttl-lower-to-loops` — lower `ttl.compute` to `scf.for` loops
-8. `ttl-schedule-operations` — reorder tile ops by dependency depth and kind *(only if `maximize-dst=true`)*
-9. `ttl-annotate-cb-associations` — annotate block args with CB indices
-10. `convert-ttl-to-ttkernel` — lower TTL DMA ops to TTKernel
-11. `ttkernel-insert-inits` — insert hardware init ops before compute ops
-12. `ttkernel-insert-l1-accumulation` — insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops; errors if `strict-f32-acc=true` and output block exceeds f32 DST capacity
-13. `ttkernel-combine-pack-tiles` — combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
-14. Canonicalization and CSE cleanup
-15. *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
+1. `ttl-annotate-l1-acc-loops` — detect `+=` accumulation loops and annotate for L1 packer accumulation
+2. `convert-ttl-to-compute` — lower TTL elementwise tensor ops to `ttl.compute` with tile ops
+3. `ttl-set-compute-kernel-config` — set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
+4. `ttl-assign-dst` — DST register allocation (linear scan with copy insertion)
+5. `ttl-subblock-compute-for-dst` — tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `auto-sync=true`)*
+6. `ttl-insert-tile-regs-sync` — insert math/pack thread synchronization
+7. `ttl-lower-matmul-block` — mark block-matmul computes and expand stores *(only if `use-block-matmul=true`)*
+8. `ttl-lower-to-loops` — lower `ttl.compute` to `scf.for` loops
+9. `ttl-schedule-operations` — reorder tile ops by dependency depth and kind *(only if `maximize-dst=true`)*
+10. `ttl-annotate-cb-associations` — annotate block args with CB indices
+11. `convert-ttl-to-ttkernel` — lower TTL DMA ops to TTKernel
+12. `ttkernel-insert-inits` — insert hardware init ops before compute ops
+13. `ttkernel-insert-l1-accumulation` — insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops; errors if `strict-f32-acc=true` and output block exceeds f32 DST capacity
+14. `ttkernel-combine-pack-tiles` — combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
+15. Canonicalization and CSE cleanup
+16. *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
 
 ### Individual Pass Options
 
