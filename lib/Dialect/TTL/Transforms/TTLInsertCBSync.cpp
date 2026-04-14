@@ -33,13 +33,6 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Walk up the parent chain from `op` until we find an op whose block is
-/// `targetBlock`, or return nullptr if `op` is not nested under it.
-static Operation *getAncestorInBlock(Operation *op, Block *targetBlock) {
-  while (op && op->getBlock() != targetBlock)
-    op = op->getParentOp();
-  return op;
-}
 
 /// Return true if `a` is before `b` in their common block.
 static bool isBefore(Operation *a, Operation *b) {
@@ -74,7 +67,7 @@ static bool findReleases(Value cb, Operation *acquire, Operation *bound,
     }
 
     // Nested: release is inside a structured op in the acquire's block.
-    Operation *ancestor = getAncestorInBlock(release, block);
+    Operation *ancestor = block->findAncestorOpInBlock(*release);
     if (!ancestor)
       continue;
     if (!isBefore(acquire, ancestor))
@@ -103,7 +96,7 @@ static Operation *findLastTransitiveUse(Value cb, Operation *acquire,
     worklist.push_back(acquire->getResult(0));
 
   auto updateLast = [&](Operation *op) {
-    Operation *ancestor = getAncestorInBlock(op, block);
+    Operation *ancestor = block->findAncestorOpInBlock(*op);
     if (!ancestor)
       return;
     if (isBefore(last, ancestor))
@@ -111,7 +104,7 @@ static Operation *findLastTransitiveUse(Value cb, Operation *acquire,
   };
 
   auto inRange = [&](Operation *op) {
-    Operation *ancestor = getAncestorInBlock(op, block);
+    Operation *ancestor = block->findAncestorOpInBlock(*op);
     if (!ancestor)
       return false;
     if (!isBefore(acquire, ancestor) && ancestor != acquire)
