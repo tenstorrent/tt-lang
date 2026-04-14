@@ -6,8 +6,8 @@
 
 import torch
 
-from ttl.sim import ttnn
-from ttl.sim.typedefs import Shape, Size
+from sim import ttnn
+from sim.typedefs import Shape, Size
 
 # Constants
 TILE_SHAPE: Shape = (32, 32)

@@ -10,9 +10,9 @@ Includes tests for ttl.math.broadcast and verification of explicit broadcasting 
 import pytest
 import torch
 
-from ttl.sim import ttl as sim_ttl
-from ttl.sim.dfb import Block
-from ttl.sim.ttnnsim import Tensor
+from sim import ttl as sim_ttl
+from sim.dfb import Block
+from sim.ttnnsim import Tensor
 
 
 def test_broadcast_basic():

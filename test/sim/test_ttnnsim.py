@@ -6,8 +6,8 @@ from typing import Any
 import pytest
 import torch
 
-from ttl.sim import ttnn, TTNN_AVAILABLE
-from ttl.sim.ttnnsim import (
+from sim import ttnn, TTNN_AVAILABLE
+from sim.ttnnsim import (
     CoreGrid,
     MemoryConfig,
     NdShardSpec,

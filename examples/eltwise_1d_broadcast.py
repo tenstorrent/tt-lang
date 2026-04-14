@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """
+# TTLANG_HARDWARE_CI: skip-compiler
 Element-wise with broadcast using 1-D tensors.
 
 Direct simulator adaptation of the "Element-wise with broadcast" example from

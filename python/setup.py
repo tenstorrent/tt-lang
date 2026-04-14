@@ -148,16 +148,6 @@ class CMakeBuild(build_ext):
         self._strip_binaries(install_dir)
         self._fix_rpath(install_dir)
 
-        # Ensure config.py exists (CMake generates it, but provide a fallback)
-        config_path = install_dir / "ttl" / "config.py"
-        if not config_path.exists():
-            version = get_version_from_git()
-            config_path.write_text(
-                f"# Auto-generated fallback (CMake config.py was missing)\n"
-                f"HAS_TT_DEVICE = False\n"
-                f'VERSION = "{version}"\n'
-            )
-
 
 version = get_version_from_git()
 ttlang_c = TTLangExtension("ttl")
@@ -176,6 +166,7 @@ setup(
         "ttl.pykernel._src",
         "ttl.sim",
         "ttl.utils",
+        "ttl.examples",
     ],
     package_dir={
         "ttl": "ttl",
@@ -184,6 +175,10 @@ setup(
         "ttl.pykernel._src": "pykernel/_src",
         "ttl.sim": "sim",
         "ttl.utils": "utils",
+        "ttl.examples": "../examples",
+    },
+    package_data={
+        "ttl.examples": ["**/*.py"],
     },
     ext_modules=[ttlang_c],
     cmdclass={"build_ext": CMakeBuild},

@@ -17,9 +17,9 @@ import pytest
 
 from test_utils import make_zeros_tensor
 
-from ttl.sim import ttl, ttnn
-from ttl.sim.operation import get_default_grid, set_default_grid
-from ttl.sim.typedefs import Shape
+from sim import ttl, ttnn
+from sim.operation import get_default_grid, set_default_grid
+from sim.typedefs import Shape
 
 
 class TestDefaultGrid:
