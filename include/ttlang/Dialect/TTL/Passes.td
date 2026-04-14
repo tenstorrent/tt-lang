@@ -3,6 +3,26 @@
 
 include "mlir/Pass/PassBase.td"
 
+def TTLInsertCBSync
+    : Pass<"ttl-insert-cb-sync", "::mlir::func::FuncOp"> {
+  let summary = "Insert missing cb_push/cb_pop for unmatched cb_reserve/cb_wait";
+  let description = [{
+    Finds `ttl.cb_reserve` ops without a matching `ttl.cb_push` and
+    `ttl.cb_wait` ops without a matching `ttl.cb_pop`, then inserts the
+    missing release op after the last operation that accesses the CB's data.
+
+    The pass computes a transitive use closure starting from the acquire op:
+    direct uses of the CB value and the acquire result, plus uses of values
+    those ops produce (e.g. copy -> transfer_handle -> wait). The release is
+    inserted after the last op in this closure.
+
+    Explicit push/pop calls and context-manager-generated push/pop are
+    preserved: the pass only fills in what is missing.
+  }];
+
+  let dependentDialects = [];
+}
+
 def TTLConvertTTLToTTKernel
     : Pass<"convert-ttl-to-ttkernel", "::mlir::ModuleOp"> {
   let summary = "Lower TTL DMA ops to TTKernel using global barriers (temporary)";
