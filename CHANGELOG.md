@@ -56,7 +56,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for `ttl.math.fill`, `ttl.math.reduce_sum`, `ttl.math.reduce_max`, and `ttl.math.transpose`
 - Support for arbitrary sub-blocking including dot product K-dimension to allow maximizing L1 usage and reuse
 - Support for `sin`, `cos`, `tan`, `asin`, `acos`, `atan` in `ttl.math`
-- Support for `exp2`, `ceil`, `sign`, `gelu`, `silu`, `hardsigmoid`, `expm1`, `square`, `softsign`, `signbit`, `frac`, `trunc` in `ttl.math`
 - Support for L1 sharded tensors
 - Support for tensors with BF8 data type
 - SPMD support (`ttnn.open_mesh_device`)
