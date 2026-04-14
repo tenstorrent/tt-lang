@@ -26,31 +26,37 @@ TILE = 32
 
 
 # ---------------------------------------------------------------------------
-# Gather: cores 1-3 send to core 0, which sums the tiles
+# Gather: cores 1-3 send to core 0, which sums via accumulator
 # ---------------------------------------------------------------------------
 
-@ttl.operation(grid=(4, 1))
+N_GATHER_SOURCES = 3
+
+
+@ttl.operation(grid=(N_GATHER_SOURCES + 1, 1))
 def gather_kernel(inp, out):
     net = ttl.PipeNet([
         ttl.Pipe(src=(x, 0), dst=(0, 0))
-        for x in range(1, 4)
+        for x in range(1, N_GATHER_SOURCES + 1)
     ])
 
     inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-    recv_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=4)
+    recv_cb = ttl.make_dataflow_buffer_like(
+        inp, shape=(1, 1), block_count=N_GATHER_SOURCES + 1
+    )
+    acc_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
         x, _ = ttl.node(dims=2)
         if x == 0:
-            with (
-                recv_cb.wait() as t0,
-                recv_cb.wait() as t1,
-                recv_cb.wait() as t2,
-                out_cb.reserve() as o,
-            ):
-                o.store(t0 + t1 + t2)
+            with recv_cb.wait() as t, acc_cb.reserve() as a:
+                a.store(t)
+            for _ in range(N_GATHER_SOURCES - 1):
+                with recv_cb.wait() as t, acc_cb.wait() as prev, acc_cb.reserve() as a:
+                    a.store(prev + t)
+            with acc_cb.wait() as a, out_cb.reserve() as o:
+                o.store(a)
 
     @ttl.datamovement()
     def dm_read():
@@ -124,49 +130,86 @@ def scatter_kernel(inp, out):
 # ---------------------------------------------------------------------------
 # Scatter-gather: each core multicasts to all cores (loopback)
 # ---------------------------------------------------------------------------
+#
+# The spec pattern uses a single PipeNet with overlapping multicast
+# destinations:
+#
+#   net = ttl.PipeNet([
+#       ttl.Pipe(src=(x, 0), dst=(slice(0, N_SG), 0))
+#       for x in range(N_SG)
+#   ])
+#
+# This is not yet supported because multicast pipes in the same PipeNet
+# share a semaphore pair. See https://github.com/tenstorrent/tt-lang/issues/505
+#
+# Workaround: use separate PipeNets per source so each gets independent
+# semaphores and per-pipe CB reserve/push cycles.
 
 N_SG = 4
 
 
 @ttl.operation(grid=(N_SG, 1))
 def scatter_gather_kernel(inp, out):
-    net = ttl.PipeNet([
-        ttl.Pipe(src=(x, 0), dst=(slice(0, N_SG), 0))
-        for x in range(N_SG)
-    ])
+    # TODO(#505): collapse into a single PipeNet once multicast overlap
+    # is supported via noc_semaphore_inc_multicast.
+    net0 = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(0, N_SG), 0))])
+    net1 = ttl.PipeNet([ttl.Pipe(src=(1, 0), dst=(slice(0, N_SG), 0))])
+    net2 = ttl.PipeNet([ttl.Pipe(src=(2, 0), dst=(slice(0, N_SG), 0))])
+    net3 = ttl.PipeNet([ttl.Pipe(src=(3, 0), dst=(slice(0, N_SG), 0))])
 
-    inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-    recv_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=8)
+    pipe_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    acc_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
-        with (
-            recv_cb.wait() as t0,
-            recv_cb.wait() as t1,
-            recv_cb.wait() as t2,
-            recv_cb.wait() as t3,
-            out_cb.reserve() as o,
-        ):
-            o.store(t0 + t1 + t2 + t3)
+        with pipe_cb.wait() as t, acc_cb.reserve() as a:
+            a.store(t)
+        for _ in range(N_SG - 1):
+            with pipe_cb.wait() as t, acc_cb.wait() as prev, acc_cb.reserve() as a:
+                a.store(prev + t)
+        with acc_cb.wait() as a, out_cb.reserve() as o:
+            o.store(a)
 
     @ttl.datamovement()
     def dm_read():
         x, _ = ttl.node(dims=2)
-        with inp_cb.reserve() as blk:
-            tx = ttl.copy(inp[0, x], blk)
-            tx.wait()
 
-            def send(pipe):
-                xf = ttl.copy(blk, pipe)
-                xf.wait()
-            net.if_src(send)
+        with pipe_cb.reserve() as blk:
+            def src0(pipe):
+                ttl.copy(inp[0, x], blk).wait()
+                ttl.copy(blk, pipe).wait()
+            def dst0(pipe):
+                ttl.copy(pipe, blk).wait()
+            net0.if_src(src0)
+            net0.if_dst(dst0)
 
-        def recv(pipe):
-            with recv_cb.reserve() as blk:
-                xf = ttl.copy(pipe, blk)
-                xf.wait()
-        net.if_dst(recv)
+        with pipe_cb.reserve() as blk:
+            def src1(pipe):
+                ttl.copy(inp[0, x], blk).wait()
+                ttl.copy(blk, pipe).wait()
+            def dst1(pipe):
+                ttl.copy(pipe, blk).wait()
+            net1.if_src(src1)
+            net1.if_dst(dst1)
+
+        with pipe_cb.reserve() as blk:
+            def src2(pipe):
+                ttl.copy(inp[0, x], blk).wait()
+                ttl.copy(blk, pipe).wait()
+            def dst2(pipe):
+                ttl.copy(pipe, blk).wait()
+            net2.if_src(src2)
+            net2.if_dst(dst2)
+
+        with pipe_cb.reserve() as blk:
+            def src3(pipe):
+                ttl.copy(inp[0, x], blk).wait()
+                ttl.copy(blk, pipe).wait()
+            def dst3(pipe):
+                ttl.copy(pipe, blk).wait()
+            net3.if_src(src3)
+            net3.if_dst(dst3)
 
     @ttl.datamovement()
     def dm_write():
@@ -232,7 +275,7 @@ def forward_kernel(inp, out):
 
 def test_gather(device):
     """Gather: cores 1-3 send to core 0 which sums."""
-    inp_torch = torch.randn(TILE, 4 * TILE, dtype=torch.bfloat16)
+    inp_torch = torch.randn(TILE, (N_GATHER_SOURCES + 1) * TILE, dtype=torch.bfloat16)
 
     inp_tt = to_dram(inp_torch, device)
     out_tt = to_dram(torch.zeros(TILE, TILE, dtype=torch.bfloat16), device)
@@ -240,10 +283,10 @@ def test_gather(device):
     gather_kernel(inp_tt, out_tt)
 
     result = ttnn.to_torch(out_tt)
-    t1 = inp_torch[:, 1 * TILE:2 * TILE].float()
-    t2 = inp_torch[:, 2 * TILE:3 * TILE].float()
-    t3 = inp_torch[:, 3 * TILE:4 * TILE].float()
-    expected = (t1 + t2 + t3).to(torch.bfloat16)
+    expected = sum(
+        inp_torch[:, x * TILE:(x + 1) * TILE].float()
+        for x in range(1, N_GATHER_SOURCES + 1)
+    ).to(torch.bfloat16)
     assert_pcc(expected, result)
 
 
@@ -307,7 +350,10 @@ def test_forward_ring(device):
 HTILES = 2
 
 
-@ttl.operation(grid=(3, 1))
+N_GATHER_MB_SOURCES = 2
+
+
+@ttl.operation(grid=(N_GATHER_MB_SOURCES + 1, 1))
 def gather_multiblock_kernel(inp, out):
     net = ttl.PipeNet([
         ttl.Pipe(src=(1, 0), dst=(0, 0)),
@@ -315,15 +361,23 @@ def gather_multiblock_kernel(inp, out):
     ])
 
     inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, HTILES), block_count=2)
-    recv_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, HTILES), block_count=4)
+    recv_cb = ttl.make_dataflow_buffer_like(
+        inp, shape=(1, HTILES), block_count=N_GATHER_MB_SOURCES + 1
+    )
+    acc_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, HTILES), block_count=2)
     out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, HTILES), block_count=2)
 
     @ttl.compute()
     def compute():
         x, _ = ttl.node(dims=2)
         if x == 0:
-            with recv_cb.wait() as t0, recv_cb.wait() as t1, out_cb.reserve() as o:
-                o.store(t0 + t1)
+            with recv_cb.wait() as t, acc_cb.reserve() as a:
+                a.store(t)
+            for _ in range(N_GATHER_MB_SOURCES - 1):
+                with recv_cb.wait() as t, acc_cb.wait() as prev, acc_cb.reserve() as a:
+                    a.store(prev + t)
+            with acc_cb.wait() as a, out_cb.reserve() as o:
+                o.store(a)
 
     @ttl.datamovement()
     def dm_read():
