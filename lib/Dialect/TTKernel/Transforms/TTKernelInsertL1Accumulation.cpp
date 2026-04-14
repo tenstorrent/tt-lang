@@ -47,22 +47,6 @@ static scf::ForOp findL1AccLoop(Operation *op) {
   return reductionFallback;
 }
 
-/// Walk from loop up through parent ops, returning the outermost
-/// annotated ancestor. Returns loop itself if no annotated ancestor exists.
-static scf::ForOp findOutermostAnnotatedAncestor(scf::ForOp loop) {
-  scf::ForOp outermost = loop;
-  for (Operation *parent = loop->getParentOp(); parent;
-       parent = parent->getParentOp()) {
-    if (auto parentFor = dyn_cast<scf::ForOp>(parent)) {
-      if (parentFor->hasAttr(kL1AccLoopAttrName) ||
-          parentFor->hasAttr(kReductionLoopAttrName)) {
-        outermost = parentFor;
-      }
-    }
-  }
-  return outermost;
-}
-
 struct TTKernelInsertL1AccumulationPass
     : public impl::TTKernelInsertL1AccumulationBase<
           TTKernelInsertL1AccumulationPass> {
@@ -117,106 +101,10 @@ struct TTKernelInsertL1AccumulationPass
       }
     }
 
-    // Step 1: Group loops into accumulation scopes. Consecutive sibling
-    // loops that pack to the same CB share a single disable pair. Nested
-    // annotated loops are folded into the outermost ancestor.
-    struct AccGroup {
-      scf::ForOp rootLoop;
-      SmallVector<scf::ForOp> loops;
-      Operation *scopeEnd = nullptr;
-    };
-    SmallVector<AccGroup> groups;
-    llvm::SmallDenseSet<Operation *> assignedToGroup;
+    // Group consecutive sibling loops that pack to the same CB.
+    auto groups = collectLoopGroups(l1AccLoops, l1AccEnablePoint);
 
-    for (auto loop : l1AccLoops) {
-      if (!l1AccEnablePoint.count(loop.getOperation())) {
-        continue;
-      }
-      if (assignedToGroup.contains(loop.getOperation())) {
-        continue;
-      }
-
-      scf::ForOp rootLoop = findOutermostAnnotatedAncestor(loop);
-
-      AccGroup group;
-      group.rootLoop = rootLoop;
-      group.loops.push_back(loop);
-      assignedToGroup.insert(loop.getOperation());
-
-      // Collect sibling annotated loops that share a pack CB target.
-      // sharePackCB walks recursively, so for nested loops (rootLoop
-      // wrapping loop), it finds pack_tile ops inside the inner loop.
-      for (Operation *op = rootLoop->getNextNode(); op;
-           op = op->getNextNode()) {
-        if (isa<ttk::CBPushBackOp>(op)) {
-          break;
-        }
-        auto sibling = dyn_cast<scf::ForOp>(op);
-        if (!sibling) {
-          continue;
-        }
-        if (!sibling->hasAttr(kL1AccLoopAttrName) &&
-            !sibling->hasAttr(kReductionLoopAttrName)) {
-          break;
-        }
-        if (!sharePackCB(rootLoop, sibling)) {
-          break;
-        }
-        group.loops.push_back(sibling);
-        assignedToGroup.insert(sibling.getOperation());
-      }
-
-      // Find scope end: scan forward from rootLoop past grouped siblings,
-      // init ops between them, and trailing cb_push_back ops. Only stop
-      // at a non-grouped ForOp (a different accumulation scope) or a
-      // cb_reserve_back (start of a new reserve region).
-      // TODO: Consider adding structural accumulation_region ops to make this
-      // more robust and composable.
-      group.scopeEnd = rootLoop;
-      for (Operation *op = rootLoop->getNextNode(); op;
-           op = op->getNextNode()) {
-        if (isa<ttk::CBPushBackOp>(op)) {
-          group.scopeEnd = op;
-        } else if (isa<ttk::CBReserveBackOp>(op)) {
-          break;
-        } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
-          if (!assignedToGroup.contains(forOp)) {
-            break;
-          }
-        }
-      }
-
-      groups.push_back(std::move(group));
-    }
-
-    // Step 2: For the 2nd+ loop in each group, downgrade full
-    // MatmulBlockInitOp to MatmulBlockInitShortOp. The full init
-    // writes config.val[3]=0 which clobbers the Pack_L1_Acc register
-    // bits on Wormhole. init_short only reconfigures UNPACK+MATH,
-    // leaving the PACK configuration (including L1 acc) intact.
-    for (auto &group : groups) {
-      for (size_t idx = 1; idx < group.loops.size(); ++idx) {
-        scf::ForOp loop = group.loops[idx];
-        // The init was hoisted before the loop by InsertInits.
-        for (Operation *op = loop->getPrevNode(); op; op = op->getPrevNode()) {
-          if (auto fullInit = dyn_cast<ttk::MatmulBlockInitOp>(op)) {
-            OpBuilder builder(fullInit);
-            ttk::MatmulBlockInitShortOp::create(
-                builder, fullInit->getLoc(), fullInit.getIn0Cb(),
-                fullInit.getIn1Cb(), fullInit.getTranspose(),
-                fullInit.getCtDim(), fullInit.getRtDim(), fullInit.getKtDim());
-            fullInit->erase();
-            break;
-          }
-          // Stop at a loop or other boundary.
-          if (isa<scf::ForOp>(op)) {
-            break;
-          }
-        }
-      }
-    }
-
-    // Step 3: Emit guards per group.
+    // Emit guards per group.
     for (auto &group : groups) {
       OpBuilder builder(group.rootLoop->getContext());
       Location disableLoc = group.rootLoop->getLoc();

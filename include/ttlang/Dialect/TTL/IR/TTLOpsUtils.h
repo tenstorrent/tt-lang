@@ -5,17 +5,15 @@
 #ifndef TTLANG_DIALECT_TTL_IR_TTLOPSUTILS_H
 #define TTLANG_DIALECT_TTL_IR_TTLOPSUTILS_H
 
-#include "ttlang/Dialect/TTL/IR/TTL.h"
-#include "ttlang/Dialect/TTL/IR/TTLOps.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
-
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "llvm/ADT/SetVector.h"
 #include <cstdint>
 #include <optional>
@@ -430,24 +428,22 @@ inline TileOp createTileOpWithPlaceholderDstIndex(OpBuilder &builder,
 }
 
 /// Collect the CB values targeted by pack_tile ops inside a loop.
-inline llvm::SmallDenseSet<Value, 2> getPackTileCBs(scf::ForOp loop) {
-  namespace ttk = mlir::tt::ttkernel;
-  llvm::SmallDenseSet<Value, 2> cbs;
-  loop->walk([&](ttk::PackTileOp packOp) { cbs.insert(packOp.getOutCb()); });
-  return cbs;
-}
+llvm::SmallDenseSet<Value, 2> getPackTileCBs(scf::ForOp loop);
 
 /// Returns true if two loops share any pack_tile CB target.
-inline bool sharePackCB(scf::ForOp loopA, scf::ForOp loopB) {
-  auto cbsA = getPackTileCBs(loopA);
-  auto cbsB = getPackTileCBs(loopB);
-  for (auto cb : cbsA) {
-    if (cbsB.contains(cb)) {
-      return true;
-    }
-  }
-  return false;
-}
+bool sharePackCB(scf::ForOp loopA, scf::ForOp loopB);
+
+/// A group of consecutive sibling loops that pack to the same output CB.
+struct LoopGroup {
+  scf::ForOp rootLoop;
+  SmallVector<scf::ForOp> loops;
+  Operation *scopeEnd = nullptr;
+};
+
+/// Collect groups of annotated sibling loops that share a pack CB target.
+SmallVector<LoopGroup> collectLoopGroups(
+    ArrayRef<scf::ForOp> l1AccLoops,
+    const llvm::SmallDenseMap<Operation *, Operation *> &enablePointPerLoop);
 
 } // namespace mlir::tt::ttl
 

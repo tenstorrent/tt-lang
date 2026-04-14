@@ -23,6 +23,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
@@ -403,8 +404,36 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
       inputCB = outputCB;
     }
 
-    if (analysis.hasMatmul && in0CB && in1CB) {
-      // mm_block_init configures UNPACK + MATH + PACK for matmul_block.
+    // When a matmul init is hoisted before a loop that shares an
+    // output CB with a preceding sibling annotated loop, use
+    // init_short. The full init reconfigures the PACK pipeline
+    // which clobbers packer state (including L1 acc on Wormhole).
+    // init_short only reconfigures UNPACK+MATH.
+    bool useInitShort = false;
+    if (analysis.hasMatmul) {
+      if (auto forOp = dyn_cast<scf::ForOp>(insertBefore)) {
+        if (forOp->hasAttr(kL1AccLoopAttrName) ||
+            forOp->hasAttr(kReductionLoopAttrName)) {
+          for (Operation *prev = forOp->getPrevNode(); prev;
+               prev = prev->getPrevNode()) {
+            if (auto prevFor = dyn_cast<scf::ForOp>(prev)) {
+              if ((prevFor->hasAttr(kL1AccLoopAttrName) ||
+                   prevFor->hasAttr(kReductionLoopAttrName)) &&
+                  sharePackCB(prevFor, forOp)) {
+                useInitShort = true;
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    if (analysis.hasMatmul && in0CB && in1CB && useInitShort) {
+      ttk::MatmulBlockInitShortOp::create(
+          builder, loc, in0CB, in1CB, analysis.matmulTranspose,
+          analysis.matmulCt, analysis.matmulRt, analysis.matmulKt);
+    } else if (analysis.hasMatmul && in0CB && in1CB) {
       ttk::MatmulBlockInitOp::create(
           builder, loc, in0CB, in1CB, outputCB, analysis.matmulTranspose,
           analysis.matmulCt, analysis.matmulRt, analysis.matmulKt);
