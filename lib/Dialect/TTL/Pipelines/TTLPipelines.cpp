@@ -18,6 +18,7 @@ namespace mlir::tt::ttl {
 
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
+  pm.addPass(createTTLAnnotateL1AccLoops());
   pm.addPass(createTTLConvertTTLToCompute());
   {
     TTLSetComputeKernelConfigOptions configOpts;
@@ -32,6 +33,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   if (options.maximizeDST) {
     TTLSubblockComputeForDSTOptions subblockOpts;
     subblockOpts.subblockSync = options.autoSync;
+    subblockOpts.strictF32Acc = options.strictF32Acc;
     pm.addPass(createTTLSubblockComputeForDST(subblockOpts));
   }
   if (options.useBlockMatmul) {

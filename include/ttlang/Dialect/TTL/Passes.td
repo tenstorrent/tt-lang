@@ -30,19 +30,45 @@ def TTKernelInsertL1Accumulation
     : Pass<"ttkernel-insert-l1-accumulation", "::mlir::ModuleOp"> {
   let summary = "Insert L1 accumulation guards for reduction loops";
   let description = [{
-    Inserts `pack_reconfig_l1_acc` guards inside reduction loops so that
-    pack operations accumulate into L1 instead of overwriting. On the first
-    iteration of a reduction loop, pack writes normally. On subsequent
-    iterations, the packer is reconfigured to add to the existing L1 value.
+    Inserts `pack_reconfig_l1_acc` guards so that pack operations inside
+    annotated loops accumulate into L1 instead of overwriting. Max-reduce
+    loops are excluded (max is not additive).
 
-    Reduction loops are identified by the `ttl.reduction_loop` attribute
-    on `scf.for` ops.
+    Loops are grouped into accumulation scopes: consecutive sibling loops
+    that pack to the same CB share a single disable pair. Nested annotated
+    loops are folded into the outermost ancestor. Each group gets:
+    - `pack_reconfig_l1_acc(0)` before the first loop.
+    - `if (iv == lb) pack_reconfig_l1_acc(1)` after each loop's first
+      iteration (the L1 acc state persists across `tile_regs` boundaries).
+    - For the second+ loop in a group, an enable before the loop to re-enable
+      L1 acc after init ops that may reset packer state.
+    - `pack_reconfig_l1_acc(0)` after the last `cb_push_back`.
+
+    Loops are identified by the `ttl.l1_acc_loop` (user-written) or
+    `ttl.reduction_loop` (compiler-generated) attributes on `scf.for`
+    ops, with `ttl.l1_acc_loop` taking precedence.
+
   }];
 
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
     "::mlir::scf::SCFDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
+def TTLAnnotateL1AccLoops
+    : Pass<"ttl-annotate-l1-acc-loops", "::mlir::func::FuncOp"> {
+  let summary = "Annotate user-written scf.for loops for L1 accumulation";
+  let description = [{
+    Detects user-written `scf.for` loops containing `ttl.store` ops with
+    the `accumulate` attribute (emitted by the `+=` operator) and annotates
+    them with `ttl.l1_acc_loop`. This enables `TTKernelInsertL1Accumulation`
+    to insert `pack_reconfig_l1_acc` guards so that packs accumulate across
+    iterations instead of overwriting.
+  }];
+  let dependentDialects = [
+    "::mlir::scf::SCFDialect"
   ];
 }
 
@@ -184,7 +210,11 @@ def TTLSubblockComputeForDST
     Option<"subblockSync", "subblock-sync", "bool", "false",
            "Refine DFB reserve/push to per-subblock granularity, enabling "
            "pack_tile_block for contiguous subblocks. When disabled (default), "
-           "user-placed reserve/push is preserved.">
+           "user-placed reserve/push is preserved.">,
+    Option<"strictF32Acc", "strict-f32-acc", "bool", "false",
+           "Error if a user-written accumulation loop (+=) with non-f32 "
+           "output requires subblocking. Subblocking reduces accumulation "
+           "precision because bf16 L1 intermediates are narrower than f32 DST.">
   ];
 
   let dependentDialects = [
