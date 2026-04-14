@@ -91,6 +91,8 @@ struct ReceiverCBInfo {
   int64_t cbIndex;       // CB index (0-31) used by receiver
   int64_t runtimeArgIdx; // Index in runtime args for receiver's CB address
   int64_t gatherSlotIdx; // Slot index for gather patterns (0 if not gather)
+  int64_t blockCount;    // CB block_count (for gather validation)
+  Location loc;          // Source location for error reporting
 };
 
 /// Graph tracking pipe connections and receiver CB assignments.
@@ -98,7 +100,8 @@ struct ReceiverCBInfo {
 class PipeGraph {
 public:
   /// Analyze a module to find all pipe receivers and build the graph.
-  static PipeGraph build(ModuleOp mod);
+  /// Returns failure if validation detects an error (e.g., gather CB too small).
+  static FailureOr<PipeGraph> build(ModuleOp mod);
 
   /// Get the next receiver CB info for a pipe. Multiple PipeNets with the
   /// same coordinates are returned in program order via an internal counter.
@@ -129,9 +132,10 @@ public:
   /// append to a list, supporting multiple PipeNets with identical routes.
   void addReceiverCB(int64_t srcX, int64_t srcY, int64_t dstStartX,
                      int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
-                     int64_t pipeNetId, int64_t cbIndex) {
+                     int64_t pipeNetId, int64_t cbIndex, int64_t blockCount,
+                     Location loc) {
     PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY, pipeNetId};
-    receiverCBs[key].push_back({cbIndex, -1, 0});
+    receiverCBs[key].push_back({cbIndex, -1, 0, blockCount, loc});
   }
 
   /// Assign runtime arg indices for all receiver CB addresses.
@@ -204,6 +208,32 @@ public:
       GatherDstKey dk{key.dstStartX, key.dstStartY, key.pipeNetId};
       gatherDstCounts[dk]++;
     }
+  }
+
+  /// Verify that gather receiver CBs have enough blocks for all senders.
+  /// Each sender writes to a different slot, so block_count must be >= the
+  /// number of senders targeting that CB.
+  LogicalResult verifyGatherBlockCounts() const {
+    for (auto &[dk, numSenders] : gatherDstCounts) {
+      if (numSenders <= 1)
+        continue;
+      // Find a receiver entry matching this destination to get block_count.
+      for (auto &[pk, infos] : receiverCBs) {
+        if (pk.dstStartX != dk.dstX || pk.dstStartY != dk.dstY ||
+            pk.pipeNetId != dk.pipeNetId)
+          continue;
+        const auto &info = infos[0];
+        if (info.blockCount < numSenders) {
+          return emitError(info.loc)
+                 << "gather pipe receiver CB has block_count="
+                 << info.blockCount << " but " << numSenders
+                 << " senders target it; "
+                 << "block_count must be >= number of senders";
+        }
+        break;
+      }
+    }
+    return success();
   }
 
   /// For unicast gather receivers: returns {currentIndex, totalSenders}.
@@ -646,7 +676,7 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
 // PipeGraph implementation
 //===----------------------------------------------------------------------===//
 
-PipeGraph PipeGraph::build(ModuleOp mod) {
+FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   PipeGraph graph;
 
   // Find all Pipe->CB copies (receiver side) and extract CB index
@@ -658,7 +688,8 @@ PipeGraph PipeGraph::build(ModuleOp mod) {
 
     // Found Pipe->CB copy: this is the receiver side
     Value dstCB = copyOp.getDst();
-    if (!isa<CircularBufferType>(dstCB.getType())) {
+    auto cbType = dyn_cast<CircularBufferType>(dstCB.getType());
+    if (!cbType) {
       return;
     }
 
@@ -673,11 +704,16 @@ PipeGraph PipeGraph::build(ModuleOp mod) {
     graph.addReceiverCB(srcPipeType.getSrcX(), srcPipeType.getSrcY(),
                         srcPipeType.getDstStartX(), srcPipeType.getDstStartY(),
                         srcPipeType.getDstEndX(), srcPipeType.getDstEndY(),
-                        srcPipeType.getPipeNetId(), cbIndex);
+                        srcPipeType.getPipeNetId(), cbIndex,
+                        cbType.getBlockCount(), copyOp.getLoc());
   });
 
   graph.assignGatherSlotIndices();
   graph.assignRuntimeArgIndices();
+
+  if (failed(graph.verifyGatherBlockCounts()))
+    return failure();
+
   return graph;
 }
 
@@ -1735,7 +1771,10 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
 
   // Build pipe graph to track receiver CB addresses for gather patterns.
   // This must happen before lowering so we can look up receiver info.
-  PipeGraph pipeGraph = PipeGraph::build(mod);
+  auto pipeGraphOrErr = PipeGraph::build(mod);
+  if (failed(pipeGraphOrErr))
+    return signalPassFailure();
+  PipeGraph pipeGraph = std::move(*pipeGraphOrErr);
 
   // Emit pipe graph JSON for Python to read (controlled by env var).
   pipeGraph.emitJSON();
