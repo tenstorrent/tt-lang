@@ -17,6 +17,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-block-matmul` / `--no-ttl-block-matmul` | enabled | Emit `matmul_block` (processes the full tile block atomically) instead of per-tile matmul loops. Disabling this option is not yet supported. |
 | `--ttl-auto-sync` / `--no-ttl-auto-sync` | disabled | Let the compiler insert and move DFB synchronization ops. When enabled, reserve/push may be refined to per-subblock granularity. When disabled, user-placed reserve/push is preserved as written. |
 | `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | enabled | Combine consecutive `pack_tile` ops on the same CB with contiguous DST and CB indices into a single `pack_tile_block` call. |
+| `--ttl-strict-f32-acc` / `--no-ttl-strict-f32-acc` | disabled | Error at compile time if a `+=` accumulation loop's output block exceeds f32 DST capacity (4 tiles with double-buffering). When enabled, guarantees each accumulation step fits in a single DST section without subblocking. |
 
 ### Other Ways to Set These
 
@@ -110,6 +111,7 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `use-block-matmul` | bool | `true` | Lower matmul to block-level hardware calls (`experimental::matmul_block`). |
 | `auto-sync` | bool | `false` | Let the compiler insert and move DFB synchronization ops. |
 | `combine-pack-tiles` | bool | `true` | Combine consecutive `pack_tile` ops into `pack_tile_block`. |
+| `strict-f32-acc` | bool | `false` | Error if a `+=` accumulation loop's output block exceeds f32 DST capacity. |
 | `lower-to-emitc` | bool | `false` | Run the TTKernel-to-EmitC backend (produces C++ source). |
 
 The pipeline runs these passes in order:
@@ -125,9 +127,10 @@ The pipeline runs these passes in order:
 9. `ttl-annotate-cb-associations` — annotate block args with CB indices
 10. `convert-ttl-to-ttkernel` — lower TTL DMA ops to TTKernel
 11. `ttkernel-insert-inits` — insert hardware init ops before compute ops
-12. `ttkernel-combine-pack-tiles` — combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
-13. Canonicalization and CSE cleanup
-14. *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
+12. `ttkernel-insert-l1-accumulation` — insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops; errors if `strict-f32-acc=true` and output block exceeds f32 DST capacity
+13. `ttkernel-combine-pack-tiles` — combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
+14. Canonicalization and CSE cleanup
+15. *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
 
 ### Individual Pass Options
 
@@ -184,4 +187,16 @@ Analyze circular buffer producer/consumer relationships and dump the flow graph.
 
 ```bash
 ttlang-opt input.mlir -p 'ttl-dump-cb-flow-graph{output="/tmp/cb_graph.json"}'
+```
+
+#### `ttkernel-insert-l1-accumulation`
+
+Insert `pack_reconfig_l1_acc` guards around reduction and accumulation loops.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `strict-f32-acc` | bool | `false` | Error if a user-written `+=` accumulation loop requires subblocking because the output block exceeds f32 DST capacity (4 tiles with double-buffering). |
+
+```bash
+ttlang-opt input.mlir -p 'builtin.module(ttkernel-insert-l1-accumulation{strict-f32-acc=true})'
 ```

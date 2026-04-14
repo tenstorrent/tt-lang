@@ -1267,11 +1267,12 @@ def _compile_kernel(
             pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
 
         reduce_fp32_flag = int(compiler_options.reduce_full_fp32)
+        strict_f32_flag = int(compiler_options.strict_f32_acc)
         pipeline_passes += [
             "ttl-lower-dprint-to-emitc",
             f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag}}}",
             "ttkernel-insert-inits",
-            "ttkernel-insert-l1-accumulation",
+            f"ttkernel-insert-l1-accumulation{{strict-f32-acc={strict_f32_flag}}}",
         ]
         if compiler_options.combine_pack_tiles:
             pipeline_passes.append("func.func(ttkernel-combine-pack-tiles)")

@@ -53,7 +53,11 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addPass(createTTLConvertTTLToTTKernel(ttkOpts));
   }
   pm.addPass(createTTKernelInsertInits());
-  pm.addPass(createTTKernelInsertL1Accumulation());
+  {
+    TTKernelInsertL1AccumulationOptions l1AccOpts;
+    l1AccOpts.strictF32Acc = options.strictF32Acc;
+    pm.addPass(createTTKernelInsertL1Accumulation(l1AccOpts));
+  }
   if (options.combinePackTiles) {
     pm.addNestedPass<func::FuncOp>(createTTKernelCombinePackTiles());
   }

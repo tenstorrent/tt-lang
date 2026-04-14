@@ -51,7 +51,19 @@ def TTKernelInsertL1Accumulation
     Reduction loops are identified by the `ttl.l1_acc_loop` (user-written)
     or `ttl.reduction_loop` (compiler-generated) attributes on `scf.for`
     ops, with `ttl.l1_acc_loop` taking precedence.
+
+    When `strict-f32-acc` is enabled, the pass errors if a user-written
+    accumulation loop (`+=`, marked `ttl.l1_acc_loop`) contains subblock
+    loops, indicating the output block exceeds f32 DST capacity. This
+    guarantees each K iteration fits in a single DST section.
   }];
+
+  let options = [
+    Option<"strictF32Acc", "strict-f32-acc", "bool", "false",
+           "Error if a user-written accumulation loop requires subblocking "
+           "(output exceeds f32 DST capacity). Guarantees full f32 "
+           "precision per accumulation step.">
+  ];
 
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
