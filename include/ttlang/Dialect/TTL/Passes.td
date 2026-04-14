@@ -30,26 +30,22 @@ def TTKernelInsertL1Accumulation
     : Pass<"ttkernel-insert-l1-accumulation", "::mlir::ModuleOp"> {
   let summary = "Insert L1 accumulation guards for reduction loops";
   let description = [{
-    Inserts `pack_reconfig_l1_acc` guards inside reduction loops so that
-    pack operations accumulate into L1 instead of overwriting. The enable
-    call happens once after the first iteration's last pack; the L1 acc
-    packer state persists across `tile_regs` boundaries. Disable guards
-    bracket the outermost reduction loop (parallel loops are not
-    considered). Max-reduce loops are excluded (max is not additive).
+    Inserts `pack_reconfig_l1_acc` guards so that pack operations inside
+    annotated loops accumulate into L1 instead of overwriting. Max-reduce
+    loops are excluded (max is not additive).
 
-    The pattern is:
-       pack_reconfig_l1_acc(0)                // disable before loop
-       for (iv = lb; ...) {
-         [subblock 0: acquire...pack...release]
-         [subblock N: acquire...pack...release]
-         if (iv == lb) pack_reconfig_l1_acc(1) // enable once after first
-                                               // iteration's last pack
-       }
-       [cb_push_back if present]
-       pack_reconfig_l1_acc(0)                // disable after loop
+    Loops are grouped into accumulation scopes: consecutive sibling loops
+    that pack to the same CB share a single disable pair. Nested annotated
+    loops are folded into the outermost ancestor. Each group gets:
+    - `pack_reconfig_l1_acc(0)` before the first loop.
+    - `if (iv == lb) pack_reconfig_l1_acc(1)` after each loop's first
+      iteration (the L1 acc state persists across `tile_regs` boundaries).
+    - For the second+ loop in a group, an enable before the loop to re-enable
+      L1 acc after init ops that may reset packer state.
+    - `pack_reconfig_l1_acc(0)` after the last `cb_push_back`.
 
-    Reduction loops are identified by the `ttl.l1_acc_loop` (user-written)
-    or `ttl.reduction_loop` (compiler-generated) attributes on `scf.for`
+    Loops are identified by the `ttl.l1_acc_loop` (user-written) or
+    `ttl.reduction_loop` (compiler-generated) attributes on `scf.for`
     ops, with `ttl.l1_acc_loop` taking precedence.
 
   }];

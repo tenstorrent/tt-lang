@@ -189,3 +189,309 @@ def test_l1_acc_multicore(Mt, Kt, Nt, block_m, block_n, device):
 
     result = ttnn.to_torch(out).float()
     assert_pcc(golden, result, threshold=0.999)
+
+
+# ---------------------------------------------------------------------------
+# Non-matmul accumulation: += with a passthrough copy (sum reduction).
+# ---------------------------------------------------------------------------
+
+
+def _make_sum_reduction_kernel():
+    """Sum K input blocks via += (no matmul)."""
+
+    @ttl.operation(grid=(1, 1))
+    def kernel(inp, out):
+        Kt = inp.shape[0] // TILE
+        inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            out_blk = out_dfb.reserve()
+            for _ in range(Kt):
+                inp_blk = inp_dfb.wait()
+                out_blk += inp_blk
+                inp_blk.pop()
+            out_blk.push()
+
+        @ttl.datamovement()
+        def dm_read():
+            for kt in range(Kt):
+                with inp_dfb.reserve() as blk:
+                    ttl.copy(inp[kt : kt + 1, 0:1], blk).wait()
+
+        @ttl.datamovement()
+        def dm_write():
+            with out_dfb.wait() as blk:
+                ttl.copy(blk, out[0:1, 0:1]).wait()
+
+    return kernel
+
+
+@pytest.mark.parametrize("Kt", [2, 4, 8], ids=[f"K{k}" for k in [2, 4, 8]])
+@pytest.mark.requires_device
+def test_l1_acc_sum_reduction(Kt, device):
+    """Sum K tiles via += without matmul (passthrough accumulation)."""
+    inp_torch = torch.randn(Kt * TILE, TILE, dtype=torch.bfloat16)
+    golden = inp_torch.float().reshape(Kt, TILE, TILE).sum(dim=0)
+
+    inp_dev = to_dram(inp_torch, device)
+    out_dev = to_dram(torch.zeros(TILE, TILE, dtype=torch.bfloat16), device)
+
+    kernel = _make_sum_reduction_kernel()
+    kernel(inp_dev, out_dev)
+
+    result = ttnn.to_torch(out_dev).float()
+    assert_pcc(golden, result, threshold=0.999)
+
+
+# ---------------------------------------------------------------------------
+# K=1 single iteration: accumulation with one loop iteration.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.requires_device
+def test_l1_acc_single_iteration(device):
+    """K=1: single-iteration += loop. Semantically equivalent to plain store."""
+    M, K, N = TILE, TILE, 2 * TILE
+    a_torch = torch.randn(M, K, dtype=torch.bfloat16)
+    b_torch = torch.randn(K, N, dtype=torch.bfloat16)
+    golden = (a_torch.float() @ b_torch.float()).float()
+
+    a_dev = to_dram(a_torch, device)
+    b_dev = to_dram(b_torch, device)
+    out_dev = to_dram(torch.zeros(M, N, dtype=torch.bfloat16), device)
+
+    kernel = _make_l1_acc_kernel(1, 2, grid=(1, 1))
+    kernel(a_dev, b_dev, out_dev)
+
+    result = ttnn.to_torch(out_dev).float()
+    assert_pcc(golden, result, threshold=0.999)
+
+
+# ---------------------------------------------------------------------------
+# Consecutive += loops to the same reserve (two input streams).
+# ---------------------------------------------------------------------------
+
+
+def _make_consecutive_acc_kernel(K1, K2):
+    """Two consecutive += loops to one output: out = (a@b summed K1) + (c@d summed K2)."""
+
+    @ttl.operation(grid=(1, 1))
+    def kernel(a, b, c, d, out):
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+        b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+        c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), block_count=2)
+        d_dfb = ttl.make_dataflow_buffer_like(d, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            out_blk = out_dfb.reserve()
+            for _ in range(K1):
+                a_blk = a_dfb.wait()
+                b_blk = b_dfb.wait()
+                out_blk += a_blk @ b_blk
+                a_blk.pop()
+                b_blk.pop()
+            for _ in range(K2):
+                c_blk = c_dfb.wait()
+                d_blk = d_dfb.wait()
+                out_blk += c_blk @ d_blk
+                c_blk.pop()
+                d_blk.pop()
+            out_blk.push()
+
+        @ttl.datamovement()
+        def reader():
+            for kt in range(K1):
+                with a_dfb.reserve() as blk:
+                    ttl.copy(a[0:1, kt : kt + 1], blk).wait()
+                with b_dfb.reserve() as blk:
+                    ttl.copy(b[kt : kt + 1, 0:1], blk).wait()
+            for kt in range(K2):
+                with c_dfb.reserve() as blk:
+                    ttl.copy(c[0:1, kt : kt + 1], blk).wait()
+                with d_dfb.reserve() as blk:
+                    ttl.copy(d[kt : kt + 1, 0:1], blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_dfb.wait() as blk:
+                ttl.copy(blk, out[0:1, 0:1]).wait()
+
+    return kernel
+
+
+@pytest.mark.requires_device
+def test_l1_acc_consecutive_loops(device):
+    """Two consecutive += loops to the same reserve block."""
+    K1, K2 = 2, 3
+    a_torch = torch.randn(TILE, K1 * TILE, dtype=torch.bfloat16)
+    b_torch = torch.randn(K1 * TILE, TILE, dtype=torch.bfloat16)
+    c_torch = torch.randn(TILE, K2 * TILE, dtype=torch.bfloat16)
+    d_torch = torch.randn(K2 * TILE, TILE, dtype=torch.bfloat16)
+    golden = (
+        (a_torch.float() @ b_torch.float()) + (c_torch.float() @ d_torch.float())
+    ).float()
+
+    a_dev = to_dram(a_torch, device)
+    b_dev = to_dram(b_torch, device)
+    c_dev = to_dram(c_torch, device)
+    d_dev = to_dram(d_torch, device)
+    out_dev = to_dram(torch.zeros(TILE, TILE, dtype=torch.bfloat16), device)
+
+    kernel = _make_consecutive_acc_kernel(K1, K2)
+    kernel(a_dev, b_dev, c_dev, d_dev, out_dev)
+
+    result = ttnn.to_torch(out_dev).float()
+    assert_pcc(golden, result, threshold=0.999)
+
+
+# ---------------------------------------------------------------------------
+# Mixed .store() then += (overwrite first, accumulate rest).
+# ---------------------------------------------------------------------------
+
+
+def _make_mixed_store_acc_kernel(total_k):
+    """First iteration overwrites via .store(), rest accumulate via +=."""
+
+    @ttl.operation(grid=(1, 1))
+    def kernel(a, b, out):
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+        b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            out_blk = out_dfb.reserve()
+            a_blk = a_dfb.wait()
+            b_blk = b_dfb.wait()
+            out_blk.store(a_blk @ b_blk)
+            a_blk.pop()
+            b_blk.pop()
+            for _ in range(total_k - 1):
+                a_blk = a_dfb.wait()
+                b_blk = b_dfb.wait()
+                out_blk += a_blk @ b_blk
+                a_blk.pop()
+                b_blk.pop()
+            out_blk.push()
+
+        @ttl.datamovement()
+        def reader():
+            for _ in range(total_k):
+                with a_dfb.reserve() as blk:
+                    ttl.copy(a[0:1, 0:1], blk).wait()
+                with b_dfb.reserve() as blk:
+                    ttl.copy(b[0:1, 0:1], blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_dfb.wait() as blk:
+                ttl.copy(blk, out[0:1, 0:1]).wait()
+
+    return kernel
+
+
+@pytest.mark.parametrize("total_k", [2, 4], ids=[f"K{k}" for k in [2, 4]])
+@pytest.mark.requires_device
+def test_l1_acc_mixed_store(total_k, device):
+    """.store() first iteration, += for rest. Result = K * (a @ b)."""
+    a_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    b_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    golden = (total_k * (a_torch.float() @ b_torch.float())).float()
+
+    a_dev = to_dram(a_torch, device)
+    b_dev = to_dram(b_torch, device)
+    out_dev = to_dram(torch.zeros(TILE, TILE, dtype=torch.bfloat16), device)
+
+    kernel = _make_mixed_store_acc_kernel(total_k)
+    kernel(a_dev, b_dev, out_dev)
+
+    result = ttnn.to_torch(out_dev).float()
+    assert_pcc(golden, result, threshold=0.999)
+
+
+# ---------------------------------------------------------------------------
+# Multiple += to different outputs in the same loop.
+# ---------------------------------------------------------------------------
+
+
+def _make_multi_output_kernel(Kt):
+    """One loop with += to two independent outputs."""
+
+    @ttl.operation(grid=(1, 1))
+    def kernel(a, b, c, d, out_a, out_b):
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+        b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+        c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, 1), block_count=2)
+        d_dfb = ttl.make_dataflow_buffer_like(d, shape=(1, 1), block_count=2)
+        out_a_dfb = ttl.make_dataflow_buffer_like(out_a, shape=(1, 1), block_count=2)
+        out_b_dfb = ttl.make_dataflow_buffer_like(out_b, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            blk_a = out_a_dfb.reserve()
+            blk_b = out_b_dfb.reserve()
+            for _ in range(Kt):
+                a_blk = a_dfb.wait()
+                b_blk = b_dfb.wait()
+                blk_a += a_blk @ b_blk
+                a_blk.pop()
+                b_blk.pop()
+                c_blk = c_dfb.wait()
+                d_blk = d_dfb.wait()
+                blk_b += c_blk @ d_blk
+                c_blk.pop()
+                d_blk.pop()
+            blk_a.push()
+            blk_b.push()
+
+        @ttl.datamovement()
+        def reader():
+            for kt in range(Kt):
+                with a_dfb.reserve() as blk:
+                    ttl.copy(a[0:1, kt : kt + 1], blk).wait()
+                with b_dfb.reserve() as blk:
+                    ttl.copy(b[kt : kt + 1, 0:1], blk).wait()
+                with c_dfb.reserve() as blk:
+                    ttl.copy(c[0:1, kt : kt + 1], blk).wait()
+                with d_dfb.reserve() as blk:
+                    ttl.copy(d[kt : kt + 1, 0:1], blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_a_dfb.wait() as blk:
+                ttl.copy(blk, out_a[0:1, 0:1]).wait()
+            with out_b_dfb.wait() as blk:
+                ttl.copy(blk, out_b[0:1, 0:1]).wait()
+
+    return kernel
+
+
+@pytest.mark.requires_device
+def test_l1_acc_multi_output(device):
+    """Two independent += outputs in the same K loop."""
+    Kt = 4
+    a_torch = torch.randn(TILE, Kt * TILE, dtype=torch.bfloat16)
+    b_torch = torch.randn(Kt * TILE, TILE, dtype=torch.bfloat16)
+    c_torch = torch.randn(TILE, Kt * TILE, dtype=torch.bfloat16)
+    d_torch = torch.randn(Kt * TILE, TILE, dtype=torch.bfloat16)
+    golden_a = (a_torch.float() @ b_torch.float()).float()
+    golden_b = (c_torch.float() @ d_torch.float()).float()
+
+    a_dev = to_dram(a_torch, device)
+    b_dev = to_dram(b_torch, device)
+    c_dev = to_dram(c_torch, device)
+    d_dev = to_dram(d_torch, device)
+    out_a_dev = to_dram(torch.zeros(TILE, TILE, dtype=torch.bfloat16), device)
+    out_b_dev = to_dram(torch.zeros(TILE, TILE, dtype=torch.bfloat16), device)
+
+    kernel = _make_multi_output_kernel(Kt)
+    kernel(a_dev, b_dev, c_dev, d_dev, out_a_dev, out_b_dev)
+
+    result_a = ttnn.to_torch(out_a_dev).float()
+    result_b = ttnn.to_torch(out_b_dev).float()
+    assert_pcc(golden_a, result_a, threshold=0.999)
+    assert_pcc(golden_b, result_b, threshold=0.999)

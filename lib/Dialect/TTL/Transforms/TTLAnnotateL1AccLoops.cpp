@@ -10,6 +10,14 @@
 // (ttl.store with the {accumulate} attribute, emitted by +=) and annotates
 // them with kL1AccLoopAttrName for L1 packer accumulation.
 //
+// Uses dominance: for each accumulating store, verifies the destination
+// cb_reserve properly dominates the enclosing loop (the reserve is outside
+// the loop, so the same L1 slot persists across iterations).
+//
+// TTKernelInsertL1Accumulation uses the annotated loops to find enable
+// points, and the enclosing cb_reserve_back/cb_push_back pair to determine
+// the accumulation scope for disable guards.
+//
 //===----------------------------------------------------------------------===//
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
@@ -17,6 +25,7 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Dominance.h"
 
 #define DEBUG_TYPE "ttl-annotate-l1-acc-loops"
 
@@ -27,37 +36,48 @@ namespace mlir::tt::ttl {
 
 namespace {
 
+/// Returns true if the loop carries any ttl.* annotation, indicating it
+/// was generated or already processed by a compiler pass.
+static bool hasCompilerAnnotation(scf::ForOp loop) {
+  for (auto attr : loop->getAttrs()) {
+    if (attr.getName().getValue().starts_with("ttl.")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 struct TTLAnnotateL1AccLoopsPass
     : public impl::TTLAnnotateL1AccLoopsBase<TTLAnnotateL1AccLoopsPass> {
   void runOnOperation() override {
     func::FuncOp func = getOperation();
+    DominanceInfo domInfo(func);
 
-    func.walk([&](scf::ForOp forOp) {
-      // Skip loops already annotated (compiler-generated or prior run).
-      if (forOp->hasAttr(kL1AccLoopAttrName) ||
-          forOp->hasAttr(kReductionLoopAttrName) ||
-          forOp->hasAttr(kTileLoopStrideAttrName) ||
-          forOp->hasAttr(kSubblockLoopStrideAttrName)) {
+    func.walk([&](StoreOp store) {
+      if (!store.getAccumulate()) {
         return;
       }
 
-      // Check if this loop directly contains an accumulating store
-      // (ttl.store with the {accumulate} attribute, emitted by +=).
-      // Only count stores whose nearest enclosing scf.for is this forOp,
-      // so that nested inner loops are not attributed to outer loops.
-      bool hasAccumulatingStore = false;
-      forOp.getBody()->walk([&](StoreOp store) -> WalkResult {
-        if (store.getAccumulate() &&
-            store->getParentOfType<scf::ForOp>() == forOp) {
-          hasAccumulatingStore = true;
-          return WalkResult::interrupt();
-        }
-        return WalkResult::advance();
-      });
-
-      if (hasAccumulatingStore) {
-        forOp->setAttr(kL1AccLoopAttrName, UnitAttr::get(forOp->getContext()));
+      auto enclosingLoop = store->getParentOfType<scf::ForOp>();
+      if (!enclosingLoop) {
+        return;
       }
+      if (hasCompilerAnnotation(enclosingLoop)) {
+        return;
+      }
+
+      // The reserve must properly dominate the enclosing loop: the
+      // reserve is outside the loop so the same L1 slot persists across
+      // iterations. If the reserve is inside the loop, each iteration
+      // gets a fresh slot and accumulation is meaningless.
+      Value reserve = store.getView();
+      Operation *reserveOp = reserve.getDefiningOp();
+      if (reserveOp && !domInfo.properlyDominates(reserveOp, enclosingLoop)) {
+        return;
+      }
+
+      enclosingLoop->setAttr(kL1AccLoopAttrName,
+                             UnitAttr::get(enclosingLoop->getContext()));
     });
   }
 };

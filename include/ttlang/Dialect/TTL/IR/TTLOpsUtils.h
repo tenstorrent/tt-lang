@@ -8,10 +8,12 @@
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/SetVector.h"
@@ -425,6 +427,26 @@ inline TileOp createTileOpWithPlaceholderDstIndex(OpBuilder &builder,
       TileOp::create(builder, loc, std::forward<Args>(args)..., dstIndex);
   addPlaceholderDstIndexAttr(tileOp.getOperation());
   return tileOp;
+}
+
+/// Collect the CB values targeted by pack_tile ops inside a loop.
+inline llvm::SmallDenseSet<Value, 2> getPackTileCBs(scf::ForOp loop) {
+  namespace ttk = mlir::tt::ttkernel;
+  llvm::SmallDenseSet<Value, 2> cbs;
+  loop->walk([&](ttk::PackTileOp packOp) { cbs.insert(packOp.getOutCb()); });
+  return cbs;
+}
+
+/// Returns true if two loops share any pack_tile CB target.
+inline bool sharePackCB(scf::ForOp loopA, scf::ForOp loopB) {
+  auto cbsA = getPackTileCBs(loopA);
+  auto cbsB = getPackTileCBs(loopB);
+  for (auto cb : cbsA) {
+    if (cbsB.contains(cb)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 } // namespace mlir::tt::ttl
