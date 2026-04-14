@@ -326,12 +326,12 @@ class TTLGenericCompiler(TTCompilerBase):
         if node.func.attr not in ("if_src", "if_dst"):
             return False
         if not isinstance(node.func.value, ast.Name):
-            return False
-        # Check if the variable is a PipeNet.
-        # Only plain name LHS is supported (e.g., `net.if_src`), not
-        # attribute/subscript expressions (e.g., `self.net.if_src`).
-        if not isinstance(node.func.value, ast.Name):
-            return False
+            self._raise_error(
+                node,
+                f"PipeNet.{node.func.attr}() requires a plain variable name "
+                f"as receiver (e.g., `net.{node.func.attr}(...)`), "
+                f"not an expression",
+            )
         var_name = node.func.value.id
         tbl = self._var_exists(var_name)
         if not tbl:

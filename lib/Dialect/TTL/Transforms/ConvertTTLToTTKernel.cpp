@@ -1050,7 +1050,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // This must happen before lowering so we can look up receiver info.
   auto pipeGraphOrErr = PipeGraph::build(mod);
   if (failed(pipeGraphOrErr)) {
-    return signalPassFailure();
+    return failure();
   }
   PipeGraph pipeGraph = std::move(*pipeGraphOrErr);
 
