@@ -47,7 +47,6 @@ from ttl.passes import (
 )
 from ttl.passmanager import PassManager
 
-import tempfile
 
 from ._src.auto_profile import (
     build_cb_wait_to_dma_map,
@@ -242,8 +241,7 @@ def _run_perf_dump(tensors: tuple, kernel_name: str):
     Called after kernel execution when TTLANG_PERF_DUMP=1 is set.
     Reads NOC traces from $TT_METAL_HOME/generated/profiler/.logs/,
     CB flow graph from /tmp/ttlang_cb_flow_graph.json (written by
-    ttl-dump-cb-flow-graph pass), and pipe graph from
-    /tmp/ttlang_pipe_graph.json (copied from compiler temp file).
+    ttl-dump-cb-flow-graph pass).
     """
     _ensure_ttnn()
     from ._src.perf_summary import run as perf_summary_run
@@ -287,13 +285,8 @@ def _run_perf_dump(tensors: tuple, kernel_name: str):
     print("=== CB FLOW GRAPH ===")
     print(cb_flow_path.read_text())
 
-    # Pipe graph (copied from compiler temp file)
-    pipe_graph_path = Path("/tmp/ttlang_pipe_graph.json")
-    if not pipe_graph_path.exists():
-        print(f"[perf_dump] WARNING: Pipe graph not found: {pipe_graph_path}")
-    else:
-        print("=== PIPE GRAPH ===")
-        print(pipe_graph_path.read_text())
+    # Pipe graph is no longer emitted as JSON. Pipe metadata (num_pipe_nets)
+    # is stored on CompiledTTNNKernel via a module attribute instead.
 
 
 def _run_signpost_profile(tensors: tuple):
@@ -516,6 +509,7 @@ class CompiledTTNNKernel:
         all_source_lines=None,
         thread_to_kernel=None,
         kernel_line_offsets=None,
+        num_pipe_nets=0,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -533,6 +527,7 @@ class CompiledTTNNKernel:
             all_source_lines: Dict mapping kernel name to source lines
             thread_to_kernel: Dict mapping RISC thread name to kernel name
             kernel_line_offsets: Dict mapping kernel name to line offset
+            num_pipe_nets: Number of PipeNets (for semaphore allocation)
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -546,6 +541,7 @@ class CompiledTTNNKernel:
         self.all_source_lines = all_source_lines or {}
         self.thread_to_kernel = thread_to_kernel or {}
         self.kernel_line_offsets = kernel_line_offsets or {}
+        self.num_pipe_nets = num_pipe_nets
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
@@ -583,6 +579,7 @@ class CompiledTTNNKernel:
             cb_configs=self.cb_configs,
             core_ranges=self.core_ranges,
             program_hash=self.program_hash,
+            num_pipe_nets=self.num_pipe_nets,
         )
 
 
@@ -764,6 +761,10 @@ def _compile_ttnn_kernel(
         else:
             kernel_arg_specs.append([])
 
+    # Read pipe metadata from module attribute (set by TTLConvertTTLToTTKernel).
+    num_pipe_nets_attr = module.operation.attributes.get("ttl.num_pipe_nets")
+    num_pipe_nets = int(num_pipe_nets_attr) if num_pipe_nets_attr else 0
+
     compiled_kernel = CompiledTTNNKernel(
         kernel_paths=kernel_paths,
         kernel_configs=kernel_configs,
@@ -777,6 +778,7 @@ def _compile_ttnn_kernel(
         all_source_lines=all_source_lines,
         thread_to_kernel=thread_to_kernel,
         kernel_line_offsets=kernel_line_offsets,
+        num_pipe_nets=num_pipe_nets,
     )
 
     if verbose:
@@ -1266,7 +1268,7 @@ def _compile_kernel(
         perf_dump = os.environ.get("TTLANG_PERF_DUMP") == "1"
         if perf_dump:
             # Remove stale outputs from previous runs
-            for stale in ("/tmp/ttlang_cb_flow_graph.json", "/tmp/ttlang_pipe_graph.json"):
+            for stale in ("/tmp/ttlang_cb_flow_graph.json",):
                 try:
                     os.remove(stale)
                 except FileNotFoundError:
@@ -1330,16 +1332,8 @@ def _compile_kernel(
                 enable_debug_info=True,
             )
 
-        # Set up pipe graph JSON path for compiler to write and runtime to read.
-        # This enables pipe synchronization for gather patterns.
-        pipe_graph_fd = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False
-        )
-        pipe_graph_path = pipe_graph_fd.name
-        pipe_graph_fd.close()
-        os.environ["TTLANG_PIPE_GRAPH_JSON"] = pipe_graph_path
+        # Run the pass manager with error handling for source-aware diagnostics
         try:
-            # Run the pass manager with error handling for source-aware diagnostics
             pm.run(module.operation)
         except Exception as e:
             error_msg = str(e)
@@ -1355,10 +1349,6 @@ def _compile_kernel(
 
             formatted = f"ttlang {__version__}\n{format_mlir_error(error_msg, source_lines, source_file)}"
             raise RuntimeError(formatted) from None
-        finally:
-            # Do NOT delete the pipe graph JSON or remove the env var here.
-            # load_pipe_graph() reads them later during kernel execution.
-            pass
 
         final_mlir_path = os.environ.get("TTLANG_FINAL_MLIR")
         if final_mlir_path:

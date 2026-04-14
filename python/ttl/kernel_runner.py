@@ -14,7 +14,6 @@ building and execution.
 """
 
 from dataclasses import dataclass
-import json
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -36,69 +35,6 @@ def _ensure_ttnn():
 
 
 from .dtype_utils import tile_bytes_from_dtype, torch_dtype_to_ttnn_datatype
-
-
-@dataclass
-class PipeConnection:
-    """Information about a pipe connection from the pipe graph.
-
-    Attributes:
-        srcX, srcY: Sender core coordinates.
-        dstStartX, dstStartY: Receiver start coordinates.
-        dstEndX, dstEndY: Receiver end coordinates.
-        receiverCBIndex: CB index used by the receiver.
-        runtimeArgSlot: Slot in runtime args for this pipe's receiver CB address.
-    """
-
-    srcX: int
-    srcY: int
-    dstStartX: int
-    dstStartY: int
-    dstEndX: int
-    dstEndY: int
-    receiverCBIndex: int
-    runtimeArgSlot: int
-    pipeNetId: int = 0
-
-
-def load_pipe_graph(json_path: Optional[str] = None) -> Optional[List[PipeConnection]]:
-    """Load pipe graph from JSON file.
-
-    Args:
-        json_path: Path to the JSON file. If None, checks TTLANG_PIPE_GRAPH_JSON
-            environment variable.
-
-    Returns:
-        List of PipeConnection objects, or None if no pipe graph available.
-    """
-    if json_path is None:
-        json_path = os.environ.get("TTLANG_PIPE_GRAPH_JSON")
-
-    if not json_path or not os.path.exists(json_path):
-        return None
-
-    try:
-        with open(json_path, "r") as f:
-            data = json.load(f)
-
-        pipes = []
-        for p in data.get("pipes", []):
-            pipes.append(
-                PipeConnection(
-                    srcX=p["srcX"],
-                    srcY=p["srcY"],
-                    dstStartX=p["dstStartX"],
-                    dstStartY=p["dstStartY"],
-                    dstEndX=p["dstEndX"],
-                    dstEndY=p["dstEndY"],
-                    receiverCBIndex=p["receiverCBIndex"],
-                    runtimeArgSlot=p["runtimeArgSlot"],
-                    pipeNetId=p.get("pipeNetId", 0),
-                )
-            )
-        return pipes
-    except (KeyError, TypeError) as e:
-        raise ValueError(f"malformed pipe graph JSON in {json_path}: {e}") from e
 
 
 @dataclass
@@ -147,10 +83,7 @@ def build_kernel_descriptors(
     tensors: List[Any],
     tensor_accessor_args: List[int],
     core_ranges: Any,
-    grid_cols: int,
-    grid_rows: int,
     num_cbs: int,
-    pipe_graph: Optional[List[PipeConnection]] = None,
 ) -> List[Any]:
     """
     Build kernel descriptors for ttnn.generic_op.
@@ -162,10 +95,7 @@ def build_kernel_descriptors(
             tensor_indices in each KernelSpec.
         tensor_accessor_args: Flattened compile-time args from all tensors.
         core_ranges: ttnn.CoreRangeSet for kernel execution.
-        grid_cols: Number of grid columns (x dimension).
-        grid_rows: Number of grid rows (y dimension).
         num_cbs: Total number of circular buffers (including intermediate CBs).
-        pipe_graph: Optional pipe graph for populating sender runtime args.
 
     Returns:
         List of ttnn.KernelDescriptor objects.
@@ -178,17 +108,6 @@ def build_kernel_descriptors(
 
     # CB indices are 0, 1, 2, ... for each CB (including intermediate CBs).
     cb_indices = list(range(num_cbs))
-
-    # Debug: print pipe graph if available
-    if pipe_graph and os.environ.get("TTLANG_DEBUG_PIPE_GRAPH"):
-        print(f"=== Pipe Graph ({len(pipe_graph)} connections) ===")
-        for p in pipe_graph:
-            print(
-                f"  Pipe: src=({p.srcX},{p.srcY}) -> dst=({p.dstStartX},{p.dstStartY})-({p.dstEndX},{p.dstEndY})"
-            )
-            print(
-                f"    receiverCBIndex={p.receiverCBIndex}, runtimeArgSlot={p.runtimeArgSlot}"
-            )
 
     for spec in kernel_specs:
         # Build common_runtime_args using tensor_indices.
@@ -279,6 +198,7 @@ def run_kernel_on_device(
     cb_configs: List[Any],
     core_ranges: Any,
     program_hash: int = None,
+    num_pipe_nets: int = 0,
 ) -> Any:
     """
     Execute kernels on device using ttnn.generic_op.
@@ -296,6 +216,7 @@ def run_kernel_on_device(
             block_count, tensor (for dtype), and _cb_index attributes.
         core_ranges: ttnn.CoreRangeSet for kernel execution.
         program_hash: Hash for tt-metal program cache (not yet used).
+        num_pipe_nets: Number of PipeNets (each needs 2 semaphores).
 
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
@@ -307,24 +228,13 @@ def run_kernel_on_device(
     # Build tensor accessor args.
     tensor_accessor_args = build_tensor_accessor_args(tensors)
 
-    # Get grid dimensions from core_ranges.
-    grid_size = core_ranges.bounding_box().grid_size()
-    grid_cols = grid_size.x
-    grid_rows = grid_size.y
-
-    # Load pipe graph for sender runtime args (gather patterns).
-    pipe_graph = load_pipe_graph()
-
     # Build kernel descriptors.
     kernel_descriptors = build_kernel_descriptors(
         kernel_specs=kernel_specs,
         tensors=tensors,
         tensor_accessor_args=tensor_accessor_args,
         core_ranges=core_ranges,
-        grid_cols=grid_cols,
-        grid_rows=grid_rows,
         num_cbs=len(cb_configs),
-        pipe_graph=pipe_graph,
     )
 
     # Build CB descriptors.
@@ -338,15 +248,12 @@ def run_kernel_on_device(
     # Each PipeNet uses 2 semaphores: sender_sem and receiver_sem.
     # Index: pipeNetId * 2 (sender), pipeNetId * 2 + 1 (receiver).
     semaphore_descriptors = []
-    if pipe_graph:
-        max_pipe_net_id = max(p.pipeNetId for p in pipe_graph)
-        num_sems = (max_pipe_net_id + 1) * 2
-        for sem_id in range(num_sems):
-            semaphore_descriptors.append(
-                ttnn.SemaphoreDescriptor(
-                    sem_id, core_ranges=core_ranges, initial_value=0
-                )
+    for sem_id in range(num_pipe_nets * 2):
+        semaphore_descriptors.append(
+            ttnn.SemaphoreDescriptor(
+                sem_id, core_ranges=core_ranges, initial_value=0
             )
+        )
 
     # Build and execute program.
     # TODO: Enable custom_program_hash once tt-metal exposes it in Python bindings.
@@ -581,8 +488,6 @@ def emit_runner_file(
 
 __all__ = [
     "KernelSpec",
-    "PipeConnection",
-    "load_pipe_graph",
     "build_tensor_accessor_args",
     "build_kernel_descriptors",
     "build_cb_descriptors",

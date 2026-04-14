@@ -37,9 +37,6 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/JSON.h"
-#include "llvm/Support/raw_ostream.h"
-#include <cstdlib>
 
 namespace mlir::tt::ttl {
 #define GEN_PASS_DEF_TTLCONVERTTTLTOTTKERNEL
@@ -459,7 +456,6 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   });
 
   graph.assignGatherSlotIndices();
-  graph.assignRuntimeArgIndices();
 
   if (failed(graph.verifyGatherBlockCounts())) {
     return failure();
@@ -1054,8 +1050,13 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   }
   PipeGraph pipeGraph = std::move(*pipeGraphOrErr);
 
-  // Emit pipe graph JSON for Python to read (controlled by env var).
-  pipeGraph.emitJSON();
+  // Attach the number of PipeNets as a module attribute so the Python
+  // runtime can allocate the correct number of semaphores (2 per PipeNet).
+  if (pipeGraph.hasPipes()) {
+    mod->setAttr("ttl.num_pipe_nets",
+                 IntegerAttr::get(IntegerType::get(&ctx, 64),
+                                  pipeGraph.getNumPipeNets()));
+  }
 
   RewritePatternSet patterns(&ctx);
   // CopyLowering needs the pipe graph for gather pattern receiver CB lookup
