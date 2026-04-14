@@ -1356,12 +1356,9 @@ def _compile_kernel(
             formatted = f"ttlang {__version__}\n{format_mlir_error(error_msg, source_lines, source_file)}"
             raise RuntimeError(formatted) from None
         finally:
-            os.environ.pop("TTLANG_PIPE_GRAPH_JSON", None)
-            if pipe_graph_path:
-                try:
-                    os.unlink(pipe_graph_path)
-                except OSError:
-                    pass
+            # Do NOT delete the pipe graph JSON or remove the env var here.
+            # load_pipe_graph() reads them later during kernel execution.
+            pass
 
         final_mlir_path = os.environ.get("TTLANG_FINAL_MLIR")
         if final_mlir_path:
