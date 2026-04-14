@@ -286,7 +286,6 @@ def _run_perf_dump(tensors: tuple, kernel_name: str):
     print(cb_flow_path.read_text())
 
 
-
 def _run_signpost_profile(tensors: tuple):
     """
     Run user-defined signpost profiler after execution.

@@ -12,8 +12,8 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/Hashing.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 
 namespace mlir::tt::ttl {
 
@@ -42,7 +42,8 @@ struct PipeKey {
 } // namespace mlir::tt::ttl
 
 namespace llvm {
-template <> struct DenseMapInfo<mlir::tt::ttl::PipeKey> {
+template <>
+struct DenseMapInfo<mlir::tt::ttl::PipeKey> {
   using Key = mlir::tt::ttl::PipeKey;
   static Key getEmptyKey() {
     return {DenseMapInfo<int64_t>::getEmptyKey(), 0, 0, 0, 0, 0, 0};

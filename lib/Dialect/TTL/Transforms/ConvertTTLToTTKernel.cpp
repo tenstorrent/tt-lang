@@ -818,8 +818,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
       // (cb_reserve/cb_push). This controls whether we read from the CB's
       // read pointer or write pointer for the pipe source address.
       bool isConsumerCB = llvm::any_of(
-          src.getUsers(),
-          [](Operation *user) { return isa<CBWaitOp>(user); });
+          src.getUsers(), [](Operation *user) { return isa<CBWaitOp>(user); });
       return lowerCBToPipe(op, adaptor.getSrc(), adaptor.getDst(), receiverInfo,
                            isConsumerCB, rewriter);
     }
@@ -1048,8 +1047,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   patterns.add<CopyLowering>(typeConverter, &ctx, &pipeGraph);
   patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               TileStoreLowering, StoreLowering, CoreXLowering,
-               CoreYLowering>(typeConverter, &ctx);
+               TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering>(
+      typeConverter, &ctx);
   populatePipeLoweringPatterns(patterns, typeConverter);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);

@@ -79,9 +79,9 @@ static int64_t getReceiverSemIdx(PipeType pipeType) {
 ///   runtime args to ensure data lands at the correct L1 address on the
 ///   destination core (which may differ from the sender's CB address).
 LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
-                                   const ReceiverCBInfo *receiverInfo,
-                                   bool isConsumerCB,
-                                   ConversionPatternRewriter &rewriter) {
+                            const ReceiverCBInfo *receiverInfo,
+                            bool isConsumerCB,
+                            ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   auto pipeType = llvm::cast<PipeType>(pipe.getType());
 
@@ -308,8 +308,8 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 /// the handshake is skipped since data is already in the CB from the
 /// DRAM read in if_src.
 LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
-                                   const PipeGraph *pipeGraph,
-                                   ConversionPatternRewriter &rewriter) {
+                            const PipeGraph *pipeGraph,
+                            ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   auto pipeType = llvm::cast<PipeType>(pipe.getType());
   auto indexTy = rewriter.getIndexType();
