@@ -151,6 +151,9 @@ public:
   /// sequentially (0-based) per destination group. Groups are keyed by
   /// (destination coordinates, receiver CB index) so that separate PipeNets
   /// sharing a destination get independent slot numbering.
+  ///
+  /// Also populates gatherDstCounts for receiver-side cumulative semaphore
+  /// waits: the count tells the receiver how many total senders target it.
   void assignGatherSlotIndices() {
     struct DstCBKey {
       int64_t dstStartX, dstStartY, dstEndX, dstEndY, cbIndex;
@@ -188,6 +191,33 @@ public:
         receiverCBs[pk][vecIdx].gatherSlotIdx = i;
       }
     }
+
+    // Count total senders per unicast destination for gather receive protocol.
+    // Keyed by (dstX, dstY, pipeNetId) since all unicast pipes to the same
+    // destination share a semaphore.
+    for (auto &[key, infos] : receiverCBs) {
+      bool isUnicast = key.dstStartX == key.dstEndX &&
+                       key.dstStartY == key.dstEndY;
+      if (!isUnicast)
+        continue;
+      GatherDstKey dk{key.dstStartX, key.dstStartY, key.pipeNetId};
+      gatherDstCounts[dk]++;
+    }
+  }
+
+  /// For unicast gather receivers: returns {currentIndex, totalSenders}.
+  /// Each call advances the counter so sequential receives get 1, 2, 3, ...
+  /// Non-gather unicast returns {1, 1}.
+  std::pair<int64_t, int64_t>
+  getGatherRecvProgress(int64_t dstX, int64_t dstY,
+                        int64_t pipeNetId) const {
+    GatherDstKey key{dstX, dstY, pipeNetId};
+    auto it = gatherDstCounts.find(key);
+    if (it == gatherDstCounts.end())
+      return {1, 1};
+    auto &counter = gatherRecvCounters[key];
+    counter++;
+    return {counter, it->second};
   }
 
   /// Emit pipe graph as JSON for Python to read and populate runtime args.
@@ -236,6 +266,22 @@ private:
       receiverCBs;
   mutable std::unordered_map<PipeKey, size_t, PipeKeyHash> lookupCounters;
   int64_t numPipeRuntimeArgs = 0;
+
+  // Gather receive tracking: count senders per unicast destination.
+  struct GatherDstKey {
+    int64_t dstX, dstY, pipeNetId;
+    bool operator==(const GatherDstKey &o) const {
+      return dstX == o.dstX && dstY == o.dstY && pipeNetId == o.pipeNetId;
+    }
+  };
+  struct GatherDstKeyHash {
+    std::size_t operator()(const GatherDstKey &k) const {
+      return llvm::hash_combine(k.dstX, k.dstY, k.pipeNetId);
+    }
+  };
+  std::unordered_map<GatherDstKey, int64_t, GatherDstKeyHash> gatherDstCounts;
+  mutable std::unordered_map<GatherDstKey, int64_t, GatherDstKeyHash>
+      gatherRecvCounters;
 };
 
 class TTLToTTKernelTypeConverter : public TypeConverter {
@@ -1186,6 +1232,7 @@ static LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 /// the handshake is skipped since data is already in the CB from the
 /// DRAM read in if_src.
 static LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
+                                   const PipeGraph *pipeGraph,
                                    ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   auto pipeType = llvm::cast<PipeType>(pipe.getType());
@@ -1194,15 +1241,28 @@ static LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
 
   if (pipeType.isUnicast()) {
     // Point-to-point: wait for sender's atomic increment.
+    // For gather (N senders to 1 receiver), use cumulative waits:
+    // 1st recv waits for sem >= 1, 2nd for >= 2, etc. Only reset after last.
+    int64_t waitVal = 1;
+    bool resetAfterWait = true;
+    if (pipeGraph) {
+      auto [recvIdx, total] = pipeGraph->getGatherRecvProgress(
+          pipeType.getDstStartX(), pipeType.getDstStartY(),
+          pipeType.getPipeNetId());
+      waitVal = recvIdx;
+      resetAfterWait = (recvIdx == total);
+    }
     auto semIdx = arith::ConstantIndexOp::create(rewriter, loc,
         getSenderSemIdx(pipeType));
     auto semAddr = ttk::GetSemaphoreOp::create(rewriter, loc, semIdx);
     auto semPtr = ttk::CastToL1PtrOp::create(rewriter, loc, semAddr);
-    auto oneVal = arith::ConstantOp::create(rewriter, loc, i32Ty,
-        rewriter.getI32IntegerAttr(1));
-    ttk::SemaphoreWaitMinOp::create(rewriter, loc, semPtr, oneVal);
-    auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
-    ttk::NocSemaphoreSetOp::create(rewriter, loc, semPtr, zeroIdx);
+    auto waitValConst = arith::ConstantOp::create(rewriter, loc, i32Ty,
+        rewriter.getI32IntegerAttr(waitVal));
+    ttk::SemaphoreWaitMinOp::create(rewriter, loc, semPtr, waitValConst);
+    if (resetAfterWait) {
+      auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+      ttk::NocSemaphoreSetOp::create(rewriter, loc, semPtr, zeroIdx);
+    }
   } else {
     // Multicast handshake: signal sender "ready", wait for data.
     // For loopback, skip on the sender core (data already in CB).
@@ -1341,7 +1401,8 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     }
     if (srcIsPipe && dstIsCB) {
       // Pipe -> CB: destination receives data via multicast from source
-      return lowerPipeToCB(op, adaptor.getSrc(), adaptor.getDst(), rewriter);
+      return lowerPipeToCB(op, adaptor.getSrc(), adaptor.getDst(), pipeGraph,
+                           rewriter);
     }
     if (srcIsPipe || dstIsPipe) {
       return rewriter.notifyMatchFailure(
