@@ -459,7 +459,6 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   });
 
   graph.assignGatherSlotIndices();
-  graph.assignRuntimeArgIndices();
 
   if (failed(graph.verifyGatherBlockCounts())) {
     return failure();
@@ -1053,9 +1052,6 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     return failure();
   }
   PipeGraph pipeGraph = std::move(*pipeGraphOrErr);
-
-  // Emit pipe graph JSON for Python to read (controlled by env var).
-  pipeGraph.emitJSON();
 
   RewritePatternSet patterns(&ctx);
   // CopyLowering needs the pipe graph for gather pattern receiver CB lookup

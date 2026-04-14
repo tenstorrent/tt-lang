@@ -14,9 +14,6 @@
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Support/JSON.h"
-#include "llvm/Support/raw_ostream.h"
-#include <cstdlib>
 
 namespace mlir::tt::ttl {
 
@@ -66,7 +63,6 @@ namespace mlir::tt::ttl {
 /// Receiver CB information for a pipe.
 struct ReceiverCBInfo {
   int64_t cbIndex;       // CB index (0-31) used by receiver
-  int64_t runtimeArgIdx; // Index in runtime args for receiver's CB address
   int64_t gatherSlotIdx; // Slot index for gather patterns (0 if not gather)
   int64_t blockCount;    // CB block_count (for gather validation)
   Location loc;          // Source location for error reporting
@@ -95,9 +91,6 @@ public:
     return &it->second;
   }
 
-  /// Get the number of runtime args needed for pipe receiver addresses.
-  int64_t getNumPipeRuntimeArgs() const { return numPipeRuntimeArgs; }
-
   /// Check if any pipes were found.
   bool hasPipes() const { return !receiverCBs.empty(); }
 
@@ -109,17 +102,8 @@ public:
     PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY, pipeNetId};
     assert(receiverCBs.count(key) == 0 &&
            "duplicate receiver CB for the same pipe");
-    receiverCBs.insert({key, {cbIndex, -1, 0, blockCount, loc}});
+    receiverCBs.insert({key, {cbIndex, 0, blockCount, loc}});
     receiverCopyToKey[receiverCopyOp] = key;
-  }
-
-  /// Assign runtime arg indices for all receiver CB addresses.
-  void assignRuntimeArgIndices() {
-    int64_t nextArgIdx = 0;
-    for (auto &[key, info] : receiverCBs) {
-      info.runtimeArgIdx = nextArgIdx++;
-    }
-    numPipeRuntimeArgs = nextArgIdx;
   }
 
   /// Assign gather slot indices for pipes sharing a destination.
@@ -240,48 +224,8 @@ public:
     return {progIt->second, it->second};
   }
 
-  /// Emit pipe graph as JSON for Python to read and populate runtime args.
-  /// Controlled by TTLANG_PIPE_GRAPH_JSON environment variable.
-  void emitJSON() const {
-    const char *path = std::getenv("TTLANG_PIPE_GRAPH_JSON");
-    if (!path || receiverCBs.empty()) {
-      return;
-    }
-
-    llvm::json::Object root;
-    llvm::json::Array pipesArray;
-
-    for (const auto &[key, info] : receiverCBs) {
-      llvm::json::Object pipeObj;
-      pipeObj["srcX"] = key.srcX;
-      pipeObj["srcY"] = key.srcY;
-      pipeObj["dstStartX"] = key.dstStartX;
-      pipeObj["dstStartY"] = key.dstStartY;
-      pipeObj["dstEndX"] = key.dstEndX;
-      pipeObj["dstEndY"] = key.dstEndY;
-      pipeObj["pipeNetId"] = key.pipeNetId;
-      pipeObj["receiverCBIndex"] = info.cbIndex;
-      pipeObj["runtimeArgSlot"] = info.runtimeArgIdx;
-      pipesArray.push_back(std::move(pipeObj));
-    }
-
-    root["pipes"] = std::move(pipesArray);
-    root["numPipeRuntimeArgs"] = numPipeRuntimeArgs;
-
-    std::error_code ec;
-    llvm::raw_fd_ostream os(path, ec);
-    if (ec) {
-      llvm::errs() << "Error writing pipe graph JSON to " << path << ": "
-                   << ec.message() << "\n";
-      return;
-    }
-
-    os << llvm::json::Value(std::move(root));
-  }
-
 private:
   llvm::DenseMap<PipeKey, ReceiverCBInfo> receiverCBs;
-  int64_t numPipeRuntimeArgs = 0;
 
   // Gather receive tracking: count senders per unicast destination.
   struct GatherDstKey {
