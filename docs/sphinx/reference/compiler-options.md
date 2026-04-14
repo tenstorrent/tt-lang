@@ -190,4 +190,3 @@ Analyze circular buffer producer/consumer relationships and dump the flow graph.
 ```bash
 ttlang-opt input.mlir -p 'ttl-dump-cb-flow-graph{output="/tmp/cb_graph.json"}'
 ```
-
