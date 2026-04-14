@@ -109,7 +109,7 @@ public:
     PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY, pipeNetId};
     assert(receiverCBs.count(key) == 0 &&
            "duplicate receiver CB for the same pipe");
-    receiverCBs[key] = {cbIndex, -1, 0, blockCount, loc};
+    receiverCBs.insert({key, {cbIndex, -1, 0, blockCount, loc}});
     receiverCopyToKey[receiverCopyOp] = key;
   }
 
@@ -160,7 +160,7 @@ public:
         return std::tie(a.srcX, a.srcY) < std::tie(b.srcX, b.srcY);
       });
       for (int64_t i = 0; i < static_cast<int64_t>(pipeKeys.size()); ++i) {
-        receiverCBs[pipeKeys[i]].gatherSlotIdx = i;
+        receiverCBs.find(pipeKeys[i])->second.gatherSlotIdx = i;
       }
     }
 
