@@ -21,8 +21,8 @@ namespace mlir::tt::ttl {
 // Pipe Graph: Tracks sender->receiver CB associations for pipe copies.
 //
 // For gather patterns, senders must write to the receiver's CB address, not
-// their own. The PipeGraph identifies receiver CBs for each pipe and assigns
-// runtime arg slots for passing receiver CB addresses to senders.
+// their own. The PipeGraph identifies receiver CBs for each pipe and manages
+// gather slot/semaphore assignments.
 //===----------------------------------------------------------------------===//
 
 /// Key for identifying a pipe by its source, destination, and PipeNet ID.
@@ -104,6 +104,7 @@ public:
            "duplicate receiver CB for the same pipe");
     receiverCBs.insert({key, {cbIndex, 0, blockCount, loc}});
     receiverCopyToKey[receiverCopyOp] = key;
+    receiverCopyOrder.push_back({receiverCopyOp, key});
   }
 
   /// Assign gather slot indices for pipes sharing a destination.
@@ -164,8 +165,11 @@ public:
     // Assign 1-based receive indices per destination. receiver CopyOps
     // targeting the same gather destination get sequential indices based
     // on the program order they were discovered during build().
+    // Uses receiverCopyOrder (insertion-ordered) instead of the DenseMap
+    // receiverCopyToKey, because the cumulative wait protocol requires
+    // the last CopyOp in program order to reset the semaphore.
     std::unordered_map<GatherDstKey, int64_t, GatherDstKeyHash> dstCounters;
-    for (auto &[copyOp, key] : receiverCopyToKey) {
+    for (auto &[copyOp, key] : receiverCopyOrder) {
       GatherDstKey dk{key.dstStartX, key.dstStartY, key.pipeNetId};
       if (gatherDstCounts.count(dk) == 0) {
         continue;
@@ -243,6 +247,11 @@ private:
 
   // Maps receiver CopyOp -> PipeKey for CopyOp-keyed lookups.
   llvm::DenseMap<Operation *, PipeKey> receiverCopyToKey;
+
+  // Insertion-ordered record of receiver CopyOps. Used by
+  // assignGatherSlotIndices to assign receive indices in program order
+  // (DenseMap iteration order is hash-based, not insertion-ordered).
+  SmallVector<std::pair<Operation *, PipeKey>> receiverCopyOrder;
 
   // Maps receiver CopyOp -> 1-based receive index (assigned at build time).
   llvm::DenseMap<Operation *, int64_t> gatherRecvProgress;
