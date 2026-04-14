@@ -1,5 +1,6 @@
 add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLToTTKernel.cpp
+  PipeLowering.cpp
   ConvertTTLToCompute.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp

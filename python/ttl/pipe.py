@@ -85,6 +85,25 @@ class Pipe:
         self.pipe_net_id = 0
         self._parse_dst()
 
+    @staticmethod
+    def _validate_slice(s: slice, name: str):
+        """Validate a slice has explicit int start and stop with start < stop."""
+        if s.start is None or s.stop is None:
+            raise ValueError(
+                f"dst {name} slice must have explicit start and stop, "
+                f"got slice({s.start}, {s.stop})"
+            )
+        if not isinstance(s.start, int) or not isinstance(s.stop, int):
+            raise ValueError(
+                f"dst {name} slice bounds must be integers, "
+                f"got slice({s.start}, {s.stop})"
+            )
+        if s.start >= s.stop:
+            raise ValueError(
+                f"dst {name} slice start must be < stop, "
+                f"got slice({s.start}, {s.stop})"
+            )
+
     def _parse_dst(self):
         """Parse destination into start/end coordinates."""
         dst = self.dst
@@ -97,17 +116,18 @@ class Pipe:
                 self.dst_end = (x, y)
                 self._is_multicast = False
             elif isinstance(x, int) and isinstance(y, slice):
-                # Multicast over y: dst is (x, slice(y_start, y_end))
+                self._validate_slice(y, "y")
                 self.dst_start = (x, y.start)
                 self.dst_end = (x, y.stop - 1)
                 self._is_multicast = True
             elif isinstance(x, slice) and isinstance(y, int):
-                # Multicast over x: dst is (slice(x_start, x_end), y)
+                self._validate_slice(x, "x")
                 self.dst_start = (x.start, y)
                 self.dst_end = (x.stop - 1, y)
                 self._is_multicast = True
             elif isinstance(x, slice) and isinstance(y, slice):
-                # Multicast over x and y
+                self._validate_slice(x, "x")
+                self._validate_slice(y, "y")
                 self.dst_start = (x.start, y.start)
                 self.dst_end = (x.stop - 1, y.stop - 1)
                 self._is_multicast = True
@@ -131,6 +151,12 @@ class PipeNet:
 
     PipeNet groups multiple pipes and provides if_src/if_dst methods
     for conditional execution based on core coordinates.
+
+    Limitation: overlapping multicast destinations (a core receiving
+    from multiple multicast sources) within a single PipeNet are not
+    yet supported. This will be fixed once noc_semaphore_inc_multicast
+    is available in the TTKernel dialect. See:
+    https://github.com/tenstorrent/tt-lang/issues/505
 
     Args:
         pipes: List of Pipe objects defining the network

@@ -68,7 +68,70 @@ func.func @copy_cb_to_pipe() attributes { "ttl.kernel_thread" = #ttkernel.thread
 func.func @copy_pipe_to_cb() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-  %xf = ttl.copy %p, %cb : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<read>
-  ttl.wait %xf : !ttl.transfer_handle<read>
+  %xf = ttl.copy %p, %cb : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle
+  ttl.wait %xf : !ttl.transfer_handle
+  func.return
+}
+
+// -----
+
+// CB -> Pipe copy (multicast): lowers to semaphore handshake + noc_async_write_multicast
+// CHECK-LABEL: func.func @copy_cb_to_pipe_multicast
+// CHECK: ttkernel.get_semaphore
+// CHECK: ttkernel.cast_to_l1_ptr
+// CHECK: ttkernel.experimental::semaphore_wait_min
+// CHECK: ttkernel.noc_semaphore_set
+// CHECK: ttkernel.get_write_ptr
+// CHECK: ttkernel.experimental::get_noc_multicast_addr
+// CHECK: ttkernel.noc_async_write_multicast
+// CHECK: ttkernel.noc_async_write_barrier
+// CHECK: ttkernel.noc_semaphore_set
+// CHECK: ttkernel.experimental::get_noc_multicast_addr
+// CHECK: ttkernel.noc_semaphore_set_multicast
+func.func @copy_cb_to_pipe_multicast() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
+  %xf = ttl.copy %cb, %p : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>) -> !ttl.transfer_handle<write>
+  ttl.wait %xf : !ttl.transfer_handle<write>
+  func.return
+}
+
+// -----
+
+// CB -> Pipe copy (multicast loopback): sender is within dst range, uses loopback variant
+// CHECK-LABEL: func.func @copy_cb_to_pipe_multicast_loopback
+// CHECK: ttkernel.get_semaphore
+// CHECK: ttkernel.cast_to_l1_ptr
+// CHECK: ttkernel.experimental::semaphore_wait_min
+// CHECK: ttkernel.noc_semaphore_set
+// CHECK: ttkernel.get_write_ptr
+// CHECK: ttkernel.experimental::get_noc_multicast_addr
+// CHECK: ttkernel.noc_async_write_multicast_loopback_src
+// CHECK: ttkernel.noc_async_write_barrier
+// CHECK: ttkernel.noc_semaphore_set
+// CHECK: ttkernel.experimental::get_noc_multicast_addr
+// CHECK: ttkernel.noc_semaphore_set_multicast_loopback
+func.func @copy_cb_to_pipe_multicast_loopback() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %p = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 3) net 0 : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 3) net 0>
+  %xf = ttl.copy %cb, %p : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(0, 0) to(0, 3) net 0>) -> !ttl.transfer_handle<write>
+  ttl.wait %xf : !ttl.transfer_handle<write>
+  func.return
+}
+
+// -----
+
+// Pipe -> CB copy (multicast receiver): handshake with sender then wait for data
+// CHECK-LABEL: func.func @copy_pipe_to_cb_multicast
+// CHECK: ttkernel.get_semaphore
+// CHECK: ttkernel.cast_to_l1_ptr
+// CHECK: ttkernel.noc_semaphore_inc
+// CHECK: ttkernel.experimental::semaphore_wait_min
+// CHECK: ttkernel.noc_semaphore_set
+func.func @copy_pipe_to_cb_multicast() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
+  %xf = ttl.copy %p, %cb : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle
+  ttl.wait %xf : !ttl.transfer_handle
   func.return
 }

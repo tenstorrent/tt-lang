@@ -1332,17 +1332,13 @@ def _compile_kernel(
 
         # Set up pipe graph JSON path for compiler to write and runtime to read.
         # This enables pipe synchronization for gather patterns.
-        pipe_graph_fd = None
-        pipe_graph_path = None
-        original_env = os.environ.get("TTLANG_PIPE_GRAPH_JSON")
+        pipe_graph_fd = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        )
+        pipe_graph_path = pipe_graph_fd.name
+        pipe_graph_fd.close()
+        os.environ["TTLANG_PIPE_GRAPH_JSON"] = pipe_graph_path
         try:
-            pipe_graph_fd = tempfile.NamedTemporaryFile(
-                mode="w", suffix=".json", delete=False
-            )
-            pipe_graph_path = pipe_graph_fd.name
-            pipe_graph_fd.close()
-            os.environ["TTLANG_PIPE_GRAPH_JSON"] = pipe_graph_path
-
             # Run the pass manager with error handling for source-aware diagnostics
             pm.run(module.operation)
         except Exception as e:
@@ -1360,9 +1356,12 @@ def _compile_kernel(
             formatted = f"ttlang {__version__}\n{format_mlir_error(error_msg, source_lines, source_file)}"
             raise RuntimeError(formatted) from None
         finally:
-            # Restore original environment variable if it was set
-            if original_env is not None:
-                os.environ["TTLANG_PIPE_GRAPH_JSON"] = original_env
+            os.environ.pop("TTLANG_PIPE_GRAPH_JSON", None)
+            if pipe_graph_path:
+                try:
+                    os.unlink(pipe_graph_path)
+                except OSError:
+                    pass
 
         final_mlir_path = os.environ.get("TTLANG_FINAL_MLIR")
         if final_mlir_path:

@@ -16,6 +16,7 @@ from ._generated_elementwise import *  # noqa: F401,F403
 from ._generated_elementwise import __all__ as _generated_all
 from ._src.ttl_ast import syntax
 from ttl.dialects import ttl
+from .pipe import Pipe
 
 
 def _get_constant_int(val):
@@ -317,25 +318,15 @@ def _process_tensor_subscript(subscript_tuple, cb_shape):
 
 def _is_pipe(val):
     """Check if a value is a pipe (either MLIR PipeType or Python Pipe with MLIR value)."""
-    # Check for MLIR PipeType value
-    if hasattr(val, "type"):
-        type_str = str(val.type)
-        if "ttl.pipe" in type_str:
-            return True
-    # Check for Python Pipe object with MLIR value
-    from .pipe import Pipe
-
+    if hasattr(val, "type") and ttl.PipeType.maybe_downcast(val.type):
+        return True
     return isinstance(val, Pipe) and hasattr(val, "_mlir_value")
 
 
 def _get_pipe_mlir_value(pipe):
     """Get the MLIR value for a pipe (either MLIR value or Python Pipe object)."""
-    # If it's already an MLIR value, return it
-    if hasattr(pipe, "type"):
-        type_str = str(pipe.type)
-        if "ttl.pipe" in type_str:
-            return pipe
-    # If it's a Python Pipe object, get its MLIR value
+    if hasattr(pipe, "type") and ttl.PipeType.maybe_downcast(pipe.type):
+        return pipe
     return pipe._mlir_value
 
 

@@ -97,8 +97,8 @@ def load_pipe_graph(json_path: Optional[str] = None) -> Optional[List[PipeConnec
                 )
             )
         return pipes
-    except (json.JSONDecodeError, KeyError, TypeError):
-        return None
+    except (KeyError, TypeError) as e:
+        raise ValueError(f"malformed pipe graph JSON in {json_path}: {e}") from e
 
 
 @dataclass
@@ -191,22 +191,6 @@ def build_kernel_descriptors(
             )
 
     for spec in kernel_specs:
-        # runtime_args structure: [x][y][args_per_core].
-        # Each core gets an empty arg list (we use my_x/my_y for indexing).
-        runtime_args = [[[] for _ in range(grid_rows)] for _ in range(grid_cols)]
-
-        # Populate runtime args for sender cores based on pipe graph.
-        # For gather patterns, senders need the receiver's CB info.
-        if pipe_graph and spec.thread_type != "compute":
-            for p in pipe_graph:
-                if 0 <= p.srcX < grid_cols and 0 <= p.srcY < grid_rows:
-                    # Add receiver CB index to sender's runtime args.
-                    # The kernel will use this to look up the CB address.
-                    # Ensure runtime_args[x][y] has enough slots
-                    while len(runtime_args[p.srcX][p.srcY]) <= p.runtimeArgSlot:
-                        runtime_args[p.srcX][p.srcY].append(0)
-                    runtime_args[p.srcX][p.srcY][p.runtimeArgSlot] = p.receiverCBIndex
-
         # Build common_runtime_args using tensor_indices.
         # C++ indexes by function-local position, we provide addresses in that order.
         common_runtime_args = [

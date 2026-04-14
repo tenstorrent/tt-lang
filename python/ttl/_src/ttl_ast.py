@@ -327,7 +327,11 @@ class TTLGenericCompiler(TTCompilerBase):
             return False
         if not isinstance(node.func.value, ast.Name):
             return False
-        # Check if the variable is a PipeNet
+        # Check if the variable is a PipeNet.
+        # Only plain name LHS is supported (e.g., `net.if_src`), not
+        # attribute/subscript expressions (e.g., `self.net.if_src`).
+        if not isinstance(node.func.value, ast.Name):
+            return False
         var_name = node.func.value.id
         tbl = self._var_exists(var_name)
         if not tbl:
@@ -404,10 +408,11 @@ class TTLGenericCompiler(TTCompilerBase):
             # Create body block and compile callback inside
             block = Block.create_at_start(op.body)
             with InsertionPoint(block):
-                # Bind the pipe parameter to the pipe value
+                # Bind the pipe parameter to the MLIR pipe value.
+                # TODO: bind to PipeIdentity instead so .src/.dst work
+                # on the callback parameter per the spec.
                 self.symbol_tables.append({})
                 self.symbol_tables[-1][pipe_param_name] = pipe_val
-                # Also store the identity object for property access
                 self.symbol_tables[-1][f"__{pipe_param_name}_identity"] = pipe_identity
 
                 if isinstance(callback_body, list):
