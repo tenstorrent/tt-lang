@@ -100,7 +100,8 @@ struct ReceiverCBInfo {
 class PipeGraph {
 public:
   /// Analyze a module to find all pipe receivers and build the graph.
-  /// Returns failure if validation detects an error (e.g., gather CB too small).
+  /// Returns failure if validation detects an error (e.g., gather CB too
+  /// small).
   static FailureOr<PipeGraph> build(ModuleOp mod);
 
   /// Get the next receiver CB info for a pipe. Multiple PipeNets with the
@@ -215,13 +216,15 @@ public:
   /// number of senders targeting that CB.
   LogicalResult verifyGatherBlockCounts() const {
     for (auto &[dk, numSenders] : gatherDstCounts) {
-      if (numSenders <= 1)
+      if (numSenders <= 1) {
         continue;
+      }
       // Find a receiver entry matching this destination to get block_count.
       for (auto &[pk, infos] : receiverCBs) {
         if (pk.dstStartX != dk.dstX || pk.dstStartY != dk.dstY ||
-            pk.pipeNetId != dk.pipeNetId)
+            pk.pipeNetId != dk.pipeNetId) {
           continue;
+        }
         const auto &info = infos[0];
         if (info.blockCount < numSenders) {
           return emitError(info.loc)
@@ -711,8 +714,9 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   graph.assignGatherSlotIndices();
   graph.assignRuntimeArgIndices();
 
-  if (failed(graph.verifyGatherBlockCounts()))
+  if (failed(graph.verifyGatherBlockCounts())) {
     return failure();
+  }
 
   return graph;
 }
@@ -1772,8 +1776,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // Build pipe graph to track receiver CB addresses for gather patterns.
   // This must happen before lowering so we can look up receiver info.
   auto pipeGraphOrErr = PipeGraph::build(mod);
-  if (failed(pipeGraphOrErr))
+  if (failed(pipeGraphOrErr)) {
     return signalPassFailure();
+  }
   PipeGraph pipeGraph = std::move(*pipeGraphOrErr);
 
   // Emit pipe graph JSON for Python to read (controlled by env var).
