@@ -128,7 +128,7 @@ The pipeline runs these passes in order:
 10. `ttl-annotate-cb-associations` — annotate block args with CB indices
 11. `convert-ttl-to-ttkernel` — lower TTL DMA ops to TTKernel
 12. `ttkernel-insert-inits` — insert hardware init ops before compute ops
-13. `ttkernel-insert-l1-accumulation` — insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops; errors if `strict-f32-acc=true` and output block exceeds f32 DST capacity
+13. `ttkernel-insert-l1-accumulation` — insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
 14. `ttkernel-combine-pack-tiles` — combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
 15. Canonicalization and CSE cleanup
 16. *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
@@ -173,6 +173,7 @@ Partition `ttl.compute` into DST-sized subblocks.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `subblock-sync` | bool | `false` | Refine DFB reserve/push to per-subblock granularity, enabling `pack_tile_block` for contiguous subblocks. When disabled, user-placed reserve/push is preserved. |
+| `strict-f32-acc` | bool | `false` | Error if a `+=` accumulation loop with non-f32 output requires subblocking. Subblocking reduces accumulation precision because bf16 L1 intermediates truncate f32 DST values. |
 
 ```bash
 ttlang-opt input.mlir -p 'func.func(ttl-subblock-compute-for-dst{subblock-sync=true})'
@@ -190,14 +191,3 @@ Analyze circular buffer producer/consumer relationships and dump the flow graph.
 ttlang-opt input.mlir -p 'ttl-dump-cb-flow-graph{output="/tmp/cb_graph.json"}'
 ```
 
-#### `ttkernel-insert-l1-accumulation`
-
-Insert `pack_reconfig_l1_acc` guards around reduction and accumulation loops.
-
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `strict-f32-acc` | bool | `false` | Error if a user-written `+=` accumulation loop requires subblocking because the output block exceeds f32 DST capacity (4 tiles with double-buffering). |
-
-```bash
-ttlang-opt input.mlir -p 'builtin.module(ttkernel-insert-l1-accumulation{strict-f32-acc=true})'
-```

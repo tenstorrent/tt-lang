@@ -1231,8 +1231,9 @@ def _compile_kernel(
         ]
         if compiler_options.maximize_dst:
             subblock_sync = "true" if compiler_options.auto_sync else "false"
+            strict_f32 = "true" if compiler_options.strict_f32_acc else "false"
             pipeline_passes.append(
-                f"func.func(ttl-subblock-compute-for-dst{{subblock-sync={subblock_sync}}})"
+                f"func.func(ttl-subblock-compute-for-dst{{subblock-sync={subblock_sync} strict-f32-acc={strict_f32}}})"
             )
         if compiler_options.use_block_matmul:
             pipeline_passes.append("func.func(ttl-lower-matmul-block)")
@@ -1267,12 +1268,11 @@ def _compile_kernel(
             pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
 
         reduce_fp32_flag = int(compiler_options.reduce_full_fp32)
-        strict_f32_flag = int(compiler_options.strict_f32_acc)
         pipeline_passes += [
             "ttl-lower-dprint-to-emitc",
             f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag}}}",
             "ttkernel-insert-inits",
-            f"ttkernel-insert-l1-accumulation{{strict-f32-acc={strict_f32_flag}}}",
+            "ttkernel-insert-l1-accumulation",
         ]
         if compiler_options.combine_pack_tiles:
             pipeline_passes.append("func.func(ttkernel-combine-pack-tiles)")

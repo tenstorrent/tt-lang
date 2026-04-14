@@ -33,6 +33,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   if (options.maximizeDST) {
     TTLSubblockComputeForDSTOptions subblockOpts;
     subblockOpts.subblockSync = options.autoSync;
+    subblockOpts.strictF32Acc = options.strictF32Acc;
     pm.addPass(createTTLSubblockComputeForDST(subblockOpts));
   }
   if (options.useBlockMatmul) {
@@ -53,11 +54,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addPass(createTTLConvertTTLToTTKernel(ttkOpts));
   }
   pm.addPass(createTTKernelInsertInits());
-  {
-    TTKernelInsertL1AccumulationOptions l1AccOpts;
-    l1AccOpts.strictF32Acc = options.strictF32Acc;
-    pm.addPass(createTTKernelInsertL1Accumulation(l1AccOpts));
-  }
+  pm.addPass(createTTKernelInsertL1Accumulation());
   if (options.combinePackTiles) {
     pm.addNestedPass<func::FuncOp>(createTTKernelCombinePackTiles());
   }

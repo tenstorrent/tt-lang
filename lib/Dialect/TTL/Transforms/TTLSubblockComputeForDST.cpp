@@ -17,6 +17,8 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
+#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -187,6 +189,38 @@ private:
       computeOp->setAttr(kFullLinStridesAttrName,
                          b.getDenseI64ArrayAttr(blockStrides));
       return success();
+    }
+
+    // When --strict-f32-acc is set and this compute is inside a user-written
+    // accumulation loop (+=), error if the output type is not f32. Subblocking
+    // a non-f32 accumulating compute reduces precision: the f32 DST partial
+    // sums are truncated to bf16 when packed to L1 per K step.
+    // TODO(ttl): Instead of erroring, allocate an f32 L1 temporary and
+    // emit a cast to bf16 after the loop, giving full f32 precision at
+    // the cost of 2x L1 per tile.
+    if (strictF32Acc) {
+      bool insideL1AccLoop = false;
+      for (Operation *parent = computeOp->getParentOp(); parent;
+           parent = parent->getParentOp()) {
+        if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+          if (forOp->hasAttr(kL1AccLoopAttrName)) {
+            insideL1AccLoop = true;
+            break;
+          }
+        }
+      }
+      if (insideL1AccLoop) {
+        auto outType =
+            cast<RankedTensorType>(computeOp.getDpsInits()[0].getType());
+        auto tileType = cast<ttcore::TileType>(outType.getElementType());
+        if (tileType.getDataType() != ttcore::DataType::Float32) {
+          return computeOp.emitError(
+              "subblocking accumulation loop reduces precision: bf16 L1 "
+              "intermediates truncate f32 DST partial sums per K step; "
+              "reduce block dimensions to fit in f32 DST, use f32 output "
+              "type, or compile without --ttl-strict-f32-acc");
+        }
+      }
     }
 
     // Only parallel dimensions are candidates for subblocking; reduction

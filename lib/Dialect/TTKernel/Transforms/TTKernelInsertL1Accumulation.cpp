@@ -63,10 +63,6 @@ static scf::ForOp findOutermostL1AccLoop(Operation *op) {
 struct TTKernelInsertL1AccumulationPass
     : public impl::TTKernelInsertL1AccumulationBase<
           TTKernelInsertL1AccumulationPass> {
-  using Base =
-      impl::TTKernelInsertL1AccumulationBase<TTKernelInsertL1AccumulationPass>;
-  using Base::Base;
-
   void runOnOperation() override {
     auto moduleOp = getOperation();
 
@@ -89,31 +85,6 @@ struct TTKernelInsertL1AccumulationPass
         l1AccLoops.push_back(loop);
       }
     });
-
-    // When --strict-f32-acc is set, error if any user-written accumulation
-    // loop (kL1AccLoopAttrName, from +=) contains subblock loops, which
-    // indicates the output block exceeds f32 DST capacity.
-    // TODO(ttl): Instead of erroring, allocate an f32 L1 temporary and
-    // emit a cast to bf16 after the loop. This would give full f32
-    // precision regardless of block size, at the cost of 2x L1 per tile.
-    if (strictF32Acc) {
-      for (auto loop : l1AccLoops) {
-        if (!loop->hasAttr(kL1AccLoopAttrName)) {
-          continue;
-        }
-        bool hasSubblockLoop = false;
-        loop->walk([&](scf::ForOp inner) {
-          if (inner->hasAttr(kSubblockLoopStrideAttrName)) {
-            hasSubblockLoop = true;
-          }
-        });
-        if (hasSubblockLoop) {
-          loop->emitError("output block exceeds f32 DST capacity; reduce block "
-                          "dimensions or compile without --ttl-strict-f32-acc");
-          return signalPassFailure();
-        }
-      }
-    }
 
     // L1 accumulation guard placement. For any loop that
     // accumulates in L1 (matmul K loop or reduce loop), the pattern is:
@@ -190,11 +161,13 @@ struct TTKernelInsertL1AccumulationPass
         outermostLoop = loop;
       }
       if (disabledLoops.insert(outermostLoop.getOperation()).second) {
+        Location disableLoc = outermostLoop->getLoc();
         // Disable before the loop.
         builder.setInsertionPoint(outermostLoop);
-        Value disablePre = arith::ConstantOp::create(
-            builder, loc, builder.getI32Type(), builder.getI32IntegerAttr(0));
-        ttk::PackReconfigL1AccOp::create(builder, loc, disablePre);
+        Value disablePre =
+            arith::ConstantOp::create(builder, disableLoc, builder.getI32Type(),
+                                      builder.getI32IntegerAttr(0));
+        ttk::PackReconfigL1AccOp::create(builder, disableLoc, disablePre);
 
         // Disable after any consecutive cb_push_back ops that follow the
         // loop. Multi-output computes produce one push per output CB.
@@ -208,9 +181,10 @@ struct TTKernelInsertL1AccumulationPass
         } else {
           builder.setInsertionPointAfter(outermostLoop);
         }
-        Value disablePost = arith::ConstantOp::create(
-            builder, loc, builder.getI32Type(), builder.getI32IntegerAttr(0));
-        ttk::PackReconfigL1AccOp::create(builder, loc, disablePost);
+        Value disablePost =
+            arith::ConstantOp::create(builder, disableLoc, builder.getI32Type(),
+                                      builder.getI32IntegerAttr(0));
+        ttk::PackReconfigL1AccOp::create(builder, disableLoc, disablePost);
       }
     }
   }

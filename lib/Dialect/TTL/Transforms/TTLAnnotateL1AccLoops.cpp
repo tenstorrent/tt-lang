@@ -46,15 +46,17 @@ struct TTLAnnotateL1AccLoopsPass
       // Only count stores whose nearest enclosing scf.for is this forOp,
       // so that nested inner loops are not attributed to outer loops.
       bool hasAccumulatingStore = false;
-      forOp.getBody()->walk([&](StoreOp store) {
+      forOp.getBody()->walk([&](StoreOp store) -> WalkResult {
         if (store.getAccumulate() &&
             store->getParentOfType<scf::ForOp>() == forOp) {
           hasAccumulatingStore = true;
+          return WalkResult::interrupt();
         }
+        return WalkResult::advance();
       });
 
       if (hasAccumulatingStore) {
-        forOp->setAttr(kL1AccLoopAttrName, OpBuilder(forOp).getUnitAttr());
+        forOp->setAttr(kL1AccLoopAttrName, UnitAttr::get(forOp->getContext()));
       }
     });
   }

@@ -52,18 +52,7 @@ def TTKernelInsertL1Accumulation
     or `ttl.reduction_loop` (compiler-generated) attributes on `scf.for`
     ops, with `ttl.l1_acc_loop` taking precedence.
 
-    When `strict-f32-acc` is enabled, the pass errors if a user-written
-    accumulation loop (`+=`, marked `ttl.l1_acc_loop`) contains subblock
-    loops, indicating the output block exceeds f32 DST capacity. This
-    guarantees each K iteration fits in a single DST section.
   }];
-
-  let options = [
-    Option<"strictF32Acc", "strict-f32-acc", "bool", "false",
-           "Error if a user-written accumulation loop requires subblocking "
-           "(output exceeds f32 DST capacity). Guarantees full f32 "
-           "precision per accumulation step.">
-  ];
 
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
@@ -225,7 +214,11 @@ def TTLSubblockComputeForDST
     Option<"subblockSync", "subblock-sync", "bool", "false",
            "Refine DFB reserve/push to per-subblock granularity, enabling "
            "pack_tile_block for contiguous subblocks. When disabled (default), "
-           "user-placed reserve/push is preserved.">
+           "user-placed reserve/push is preserved.">,
+    Option<"strictF32Acc", "strict-f32-acc", "bool", "false",
+           "Error if a user-written accumulation loop (+=) with non-f32 "
+           "output requires subblocking. Subblocking reduces accumulation "
+           "precision because bf16 L1 intermediates are narrower than f32 DST.">
   ];
 
   let dependentDialects = [
