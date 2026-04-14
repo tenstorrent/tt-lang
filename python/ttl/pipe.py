@@ -153,11 +153,47 @@ class PipeNet:
     def __init__(self, pipes: List[Pipe]):
         if not pipes:
             raise ValueError("PipeNet requires at least one pipe")
+        self._validate_no_overlapping_destinations(pipes)
         self.pipe_net_id = PipeNet._next_id
         PipeNet._next_id += 1
         self.pipes = pipes
         for pipe in self.pipes:
             pipe.pipe_net_id = self.pipe_net_id
+
+    @staticmethod
+    def _validate_no_overlapping_destinations(pipes: List[Pipe]):
+        """Check that no core is the destination of more than one multicast pipe.
+
+        All pipes in a PipeNet share a single semaphore pair. For multicast
+        pipes, the handshake protocol cannot handle a core receiving from
+        multiple sources. Use separate PipeNets for patterns where multicast
+        destinations overlap (e.g., scatter-gather/all-to-all).
+
+        Unicast gather (multiple unicast pipes to one destination) is allowed
+        because the receiver uses cumulative semaphore waits.
+        """
+        mcast_pipes = [(i, p) for i, p in enumerate(pipes) if p.is_multicast]
+        if len(mcast_pipes) < 2:
+            return
+        seen = {}  # (x, y) -> pipe index
+        for i, pipe in mcast_pipes:
+            sx, sy = pipe.dst_start
+            ex, ey = pipe.dst_end
+            min_x, max_x = min(sx, ex), max(sx, ex)
+            min_y, max_y = min(sy, ey), max(sy, ey)
+            for x in range(min_x, max_x + 1):
+                for y in range(min_y, max_y + 1):
+                    if (x, y) in seen:
+                        j = seen[(x, y)]
+                        raise ValueError(
+                            f"PipeNet has overlapping multicast destinations: "
+                            f"pipe {j} (src={pipes[j].src}) and "
+                            f"pipe {i} (src={pipe.src}) both target "
+                            f"core ({x}, {y}). Use separate PipeNets "
+                            f"for patterns where a core receives from "
+                            f"multiple multicast sources."
+                        )
+                    seen[(x, y)] = i
 
     def if_src(self, callback: Callable[["SrcPipeIdentity"], None]) -> None:
         """
