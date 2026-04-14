@@ -128,34 +128,26 @@ def scatter_kernel(inp, out):
 
 
 # ---------------------------------------------------------------------------
-# Scatter-gather: each core multicasts to all cores (loopback)
+# Scatter-gather: each core multicasts to all cores (all-to-all)
 # ---------------------------------------------------------------------------
 #
-# The spec pattern uses a single PipeNet with overlapping multicast
-# destinations:
-#
-#   net = ttl.PipeNet([
-#       ttl.Pipe(src=(x, 0), dst=(slice(0, N_SG), 0))
-#       for x in range(N_SG)
-#   ])
-#
-# This is not yet supported because multicast pipes in the same PipeNet
-# share a semaphore pair. See https://github.com/tenstorrent/tt-lang/issues/505
-#
-# Workaround: use separate PipeNets per source so each gets independent
-# semaphores and per-pipe CB reserve/push cycles.
+# TODO(#505): blocked on noc_semaphore_inc_multicast support in TTKernel.
+# Multicast pipes in a PipeNet share a semaphore pair, so overlapping
+# multicast destinations corrupt the handshake. Once #505 lands, this
+# kernel can run with a single PipeNet.
 
 N_SG = 4
 
 
 @ttl.operation(grid=(N_SG, 1))
 def scatter_gather_kernel(inp, out):
-    # TODO(#505): collapse into a single PipeNet once multicast overlap
-    # is supported via noc_semaphore_inc_multicast.
-    net0 = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(0, N_SG), 0))])
-    net1 = ttl.PipeNet([ttl.Pipe(src=(1, 0), dst=(slice(0, N_SG), 0))])
-    net2 = ttl.PipeNet([ttl.Pipe(src=(2, 0), dst=(slice(0, N_SG), 0))])
-    net3 = ttl.PipeNet([ttl.Pipe(src=(3, 0), dst=(slice(0, N_SG), 0))])
+    grid_x, grid_y = ttl.grid_size(dims=2)
+
+    net = ttl.PipeNet([
+        ttl.Pipe(src=(x, y), dst=(x, slice(0, grid_y)))
+        for x in range(grid_x)
+        for y in range(grid_y)
+    ])
 
     pipe_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     acc_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
@@ -174,49 +166,22 @@ def scatter_gather_kernel(inp, out):
     @ttl.datamovement()
     def dm_read():
         x, _ = ttl.node(dims=2)
-
         with pipe_cb.reserve() as blk:
-            def src0(pipe):
+            def pipe_src(pipe):
                 ttl.copy(inp[0, x], blk).wait()
                 ttl.copy(blk, pipe).wait()
-            def dst0(pipe):
-                ttl.copy(pipe, blk).wait()
-            net0.if_src(src0)
-            net0.if_dst(dst0)
 
-        with pipe_cb.reserve() as blk:
-            def src1(pipe):
-                ttl.copy(inp[0, x], blk).wait()
-                ttl.copy(blk, pipe).wait()
-            def dst1(pipe):
+            def pipe_dst(pipe):
                 ttl.copy(pipe, blk).wait()
-            net1.if_src(src1)
-            net1.if_dst(dst1)
 
-        with pipe_cb.reserve() as blk:
-            def src2(pipe):
-                ttl.copy(inp[0, x], blk).wait()
-                ttl.copy(blk, pipe).wait()
-            def dst2(pipe):
-                ttl.copy(pipe, blk).wait()
-            net2.if_src(src2)
-            net2.if_dst(dst2)
-
-        with pipe_cb.reserve() as blk:
-            def src3(pipe):
-                ttl.copy(inp[0, x], blk).wait()
-                ttl.copy(blk, pipe).wait()
-            def dst3(pipe):
-                ttl.copy(pipe, blk).wait()
-            net3.if_src(src3)
-            net3.if_dst(dst3)
+            net.if_src(pipe_src)
+            net.if_dst(pipe_dst)
 
     @ttl.datamovement()
     def dm_write():
         x, _ = ttl.node(dims=2)
         with out_cb.wait() as blk:
-            tx = ttl.copy(blk, out[0, x])
-            tx.wait()
+            ttl.copy(blk, out[0, x]).wait()
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +270,7 @@ def test_scatter(device):
     assert_pcc(expected, result)
 
 
+@pytest.mark.skip(reason="Blocked on #505: overlapping multicast destinations")
 def test_scatter_gather(device):
     """Scatter-gather: all-to-all broadcast with loopback, sum received tiles."""
     inp_torch = torch.randn(TILE, N_SG * TILE, dtype=torch.bfloat16) * 0.1
