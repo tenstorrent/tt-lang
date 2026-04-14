@@ -189,7 +189,34 @@ struct TTKernelInsertL1AccumulationPass
       groups.push_back(std::move(group));
     }
 
-    // Step 2: Emit guards per group.
+    // Step 2: For the 2nd+ loop in each group, downgrade full
+    // MatmulBlockInitOp to MatmulBlockInitShortOp. The full init
+    // writes config.val[3]=0 which clobbers the Pack_L1_Acc register
+    // bits on Wormhole. init_short only reconfigures UNPACK+MATH,
+    // leaving the PACK configuration (including L1 acc) intact.
+    for (auto &group : groups) {
+      for (size_t idx = 1; idx < group.loops.size(); ++idx) {
+        scf::ForOp loop = group.loops[idx];
+        // The init was hoisted before the loop by InsertInits.
+        for (Operation *op = loop->getPrevNode(); op; op = op->getPrevNode()) {
+          if (auto fullInit = dyn_cast<ttk::MatmulBlockInitOp>(op)) {
+            OpBuilder builder(fullInit);
+            ttk::MatmulBlockInitShortOp::create(
+                builder, fullInit->getLoc(), fullInit.getIn0Cb(),
+                fullInit.getIn1Cb(), fullInit.getTranspose(),
+                fullInit.getCtDim(), fullInit.getRtDim(), fullInit.getKtDim());
+            fullInit->erase();
+            break;
+          }
+          // Stop at a loop or other boundary.
+          if (isa<scf::ForOp>(op)) {
+            break;
+          }
+        }
+      }
+    }
+
+    // Step 3: Emit guards per group.
     for (auto &group : groups) {
       OpBuilder builder(group.rootLoop->getContext());
       Location disableLoc = group.rootLoop->getLoc();
