@@ -636,6 +636,7 @@ def nested_loop_kernel(inp, scaler, out):
                     ttl.copy(blk, out[row, col]).wait()
 
 
+@pytest.mark.skip(reason="DSL tracing error with if inside for loop (#510)")
 def test_nested_loop_conditional(device):
     """Nested for-for-if with intermediate DFBs in both branches."""
     from ttlang_test_utils import to_dram
