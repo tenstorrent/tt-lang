@@ -40,6 +40,7 @@ def compile_ttl_to_ttkernel(
 
     # Build per-function passes.
     func_passes = [
+        "ttl-insert-intermediate-dfbs",
         "ttl-insert-cb-sync",
         "convert-ttl-to-compute",
         assign_dst_pass,
@@ -57,6 +58,7 @@ def compile_ttl_to_ttkernel(
     pipeline_str = (
         f"builtin.module("
         f"func.func({func_pipeline}),"
+        f"ttl-finalize-dfb-indices,"
         f"convert-ttl-to-ttkernel,"
         f"ttkernel-insert-inits,"
         f"canonicalize,"

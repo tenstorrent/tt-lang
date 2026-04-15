@@ -179,9 +179,8 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
 
   // Emit the matmul_block with full tensor operands and DST index 0.
   Value dstZero = arith::ConstantIndexOp::create(secBuilder, loc, 0);
-  auto mmResultOp = TileMatmulBlockOp::create(secBuilder, loc, tileType,
-                                              lhsTensor, rhsTensor, accTensor,
-                                              dstZero);
+  auto mmResultOp = TileMatmulBlockOp::create(
+      secBuilder, loc, tileType, lhsTensor, rhsTensor, accTensor, dstZero);
 
   // Placeholder for referencing DST-resident values. Downstream passes
   // (ConvertTTLToTTKernel) resolve tile references via dst_index operands.
@@ -273,8 +272,8 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
     for (int64_t colIdx = 0; colIdx < numCols; ++colIdx) {
       Value mIdx = arith::ConstantIndexOp::create(storeBuilder, loc, rowIdx);
       Value nIdx = arith::ConstantIndexOp::create(storeBuilder, loc, colIdx);
-      Value dstIdx = arith::ConstantIndexOp::create(
-          storeBuilder, loc, rowIdx * numCols + colIdx);
+      Value dstIdx = arith::ConstantIndexOp::create(storeBuilder, loc,
+                                                    rowIdx * numCols + colIdx);
       TileStoreOp::create(storeBuilder, loc, placeholder, outView,
                           ValueRange{mIdx, nIdx}, dstIdx);
     }

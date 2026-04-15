@@ -190,54 +190,76 @@ struct TTLInsertCBSyncPass
     // Track erased ops so later iterations don't access dangling pointers.
     DenseSet<Operation *> erased;
 
+    // Find the next op on the same CB, in the same block, after `after`.
+    auto findNextOnCB = [](Value cb, Operation *after, auto &candidates) {
+      Operation *next = nullptr;
+      for (auto candidate : candidates) {
+        if (candidate.getCb() != cb) {
+          continue;
+        }
+        if (candidate->getBlock() != after->getBlock()) {
+          continue;
+        }
+        if (!isBefore(after, candidate)) {
+          continue;
+        }
+        if (!next || isBefore(candidate, next)) {
+          next = candidate;
+        }
+      }
+      return next;
+    };
+
     auto insertMissingReleases = [&](auto acquires, auto &releases,
-                                     auto createRelease) {
+                                     auto createRelease,
+                                     auto &extraBoundCandidates) {
       for (auto acquire : acquires) {
         Value cb = acquire.getCb();
 
-        Operation *nextAcquire = nullptr;
-        for (auto other : acquires) {
-          if (other == acquire || other.getCb() != cb) {
-            continue;
-          }
-          if (other->getBlock() != acquire->getBlock()) {
-            continue;
-          }
-          if (!isBefore(acquire, other)) {
-            continue;
-          }
-          if (!nextAcquire || isBefore(other, nextAcquire)) {
-            nextAcquire = other;
-          }
+        // Bound = earliest of next same-type acquire and next
+        // extra-bound candidate (e.g., next cb_wait for reserves).
+        Operation *bound = findNextOnCB(cb, acquire, acquires);
+        Operation *extra = findNextOnCB(cb, acquire, extraBoundCandidates);
+        if (extra) {
+          bound = bound ? (isBefore(bound, extra) ? bound : extra) : extra;
         }
 
         using ReleaseOpTy =
             typename std::remove_reference_t<decltype(releases)>::value_type;
         SmallVector<ReleaseOpTy> nested;
-        if (findReleases(cb, acquire, nextAcquire, releases, nested, erased)) {
+        if (findReleases(cb, acquire, bound, releases, nested, erased)) {
           continue;
         }
 
-        for (auto n : nested) {
-          erased.insert(n);
-          n.erase();
+        for (auto nestedOp : nested) {
+          erased.insert(nestedOp);
+          nestedOp.erase();
         }
 
-        Operation *last = findLastTransitiveUse(cb, acquire, nextAcquire);
+        Operation *last = findLastTransitiveUse(cb, acquire, bound);
         builder.setInsertionPointAfter(last);
         createRelease(builder, acquire.getLoc(), cb);
       }
     };
 
+    // For reserves, bound push placement by the next cb_wait on the same
+    // CB. Intra-thread DFBs use the same CB for both reserve and wait,
+    // so push must precede wait to avoid deadlock.
     insertMissingReleases(
-        reserves, pushes, [](OpBuilder &b, Location loc, Value cb) {
+        reserves, pushes,
+        [](OpBuilder &b, Location loc, Value cb) {
           CBPushOp::create(b, loc, cb, /*num_tiles=*/IntegerAttr{});
-        });
+        },
+        waits);
 
-    insertMissingReleases(waits, pops,
-                          [](OpBuilder &b, Location loc, Value cb) {
-                            CBPopOp::create(b, loc, cb);
-                          });
+    // For waits, only bound by the next same-CB wait (no extra bound).
+    SmallVector<CBWaitOp> noExtraBound;
+    insertMissingReleases(
+        waits, pops,
+        [](OpBuilder &b, Location loc, Value cb) {
+          CBPopOp::create(b, loc, cb);
+        },
+        noExtraBound);
   }
 };
 

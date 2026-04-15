@@ -34,7 +34,12 @@ def _ensure_ttnn():
     return ttnn
 
 
-from .dtype_utils import tile_bytes_from_dtype, torch_dtype_to_ttnn_datatype
+from .circular_buffer import CompilerAllocatedDFBConfig
+from .dtype_utils import (
+    format_name_to_ttnn_dtype,
+    tile_bytes_from_dtype,
+    torch_dtype_to_ttnn_datatype,
+)
 
 
 @dataclass
@@ -170,16 +175,22 @@ def build_cb_descriptors(
                 f"All CB indices must have associated CircularBuffer configurations."
             )
 
-        # Get dtype from CB's reference tensor.
-        ref_tensor = cb.tensor
-        if hasattr(ref_tensor, "dtype") and hasattr(ref_tensor.dtype, "name"):
-            data_format = ref_tensor.dtype
+        if isinstance(cb, CompilerAllocatedDFBConfig):
+            # Compiler-allocated DFB: dtype from attribute string.
+            data_format = format_name_to_ttnn_dtype(cb.data_format)
+            page_size = tile_bytes_from_dtype(data_format)
+            total_size = cb.num_tiles * cb.block_count * page_size
         else:
-            data_format = torch_dtype_to_ttnn_datatype(ref_tensor.dtype)
+            # User-declared DFB: dtype from reference tensor.
+            ref_tensor = cb.tensor
+            if hasattr(ref_tensor, "dtype") and hasattr(ref_tensor.dtype, "name"):
+                data_format = ref_tensor.dtype
+            else:
+                data_format = torch_dtype_to_ttnn_datatype(ref_tensor.dtype)
 
-        page_size = tile_bytes_from_dtype(data_format)
-        num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
-        total_size = num_tiles * page_size
+            page_size = tile_bytes_from_dtype(data_format)
+            num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
+            total_size = num_tiles * page_size
 
         cb_format = ttnn.CBFormatDescriptor(
             buffer_index=i,

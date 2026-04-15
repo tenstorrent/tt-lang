@@ -289,8 +289,9 @@ def matmul_div_kernel(A, B, scale_tile, out):
 
 
 @ttl.operation(grid=(1, 1))
-def matmul_gated_gelu_residual_kernel(A, B, scale_tile, bias_tile, gate_tile,
-                                      residual_tile, out):
+def matmul_gated_gelu_residual_kernel(
+    A, B, scale_tile, bias_tile, gate_tile, residual_tile, out
+):
     """residual + gelu(scale * (A @ B) + bias) * gate
 
     6 post-ops after matmul: mul, add, gelu, mul, add (with residual).
@@ -301,8 +302,7 @@ def matmul_gated_gelu_residual_kernel(A, B, scale_tile, bias_tile, gate_tile,
     sc_dfb = ttl.make_dataflow_buffer_like(scale_tile, shape=(1, 1), block_count=1)
     bi_dfb = ttl.make_dataflow_buffer_like(bias_tile, shape=(1, 1), block_count=1)
     gt_dfb = ttl.make_dataflow_buffer_like(gate_tile, shape=(1, 1), block_count=1)
-    res_dfb = ttl.make_dataflow_buffer_like(residual_tile, shape=(1, 1),
-                                            block_count=1)
+    res_dfb = ttl.make_dataflow_buffer_like(residual_tile, shape=(1, 1), block_count=1)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
@@ -411,9 +411,7 @@ def _make_multinode_gated_gelu_residual(m_blk, k_blk, n_blk):
                             with gt_dfb.reserve() as blk:
                                 ttl.copy(gate_tensor[sm:em, sn:en], blk).wait()
                             with res_dfb.reserve() as blk:
-                                ttl.copy(
-                                    residual_tensor[sm:em, sn:en], blk
-                                ).wait()
+                                ttl.copy(residual_tensor[sm:em, sn:en], blk).wait()
                             for kb in range(k_blocks):
                                 sk = kb * k_blk
                                 ek = (kb + 1) * k_blk
@@ -421,12 +419,8 @@ def _make_multinode_gated_gelu_residual(m_blk, k_blk, n_blk):
                                     a_dfb.reserve() as a_blk,
                                     b_dfb.reserve() as b_blk,
                                 ):
-                                    ttl.copy(
-                                        a_tensor[sm:em, sk:ek], a_blk
-                                    ).wait()
-                                    ttl.copy(
-                                        b_tensor[sk:ek, sn:en], b_blk
-                                    ).wait()
+                                    ttl.copy(a_tensor[sm:em, sk:ek], a_blk).wait()
+                                    ttl.copy(b_tensor[sk:ek, sn:en], b_blk).wait()
 
         @ttl.compute()
         def compute():
@@ -462,10 +456,7 @@ def _make_multinode_gated_gelu_residual(m_blk, k_blk, n_blk):
                                 res_dfb.wait() as res,
                             ):
                                 with y_dfb.reserve() as y_blk:
-                                    y_blk.store(
-                                        res
-                                        + ttl.gelu(sc * acc_blk + bi) * gt
-                                    )
+                                    y_blk.store(res + ttl.gelu(sc * acc_blk + bi) * gt)
 
         @ttl.datamovement()
         def write():
@@ -717,7 +708,6 @@ class TestSubtractionOrdering:
         _run_and_compare(out_dev, golden)
 
 
-
 # ---------------------------------------------------------------------------
 # Tests: self-binary and division
 # ---------------------------------------------------------------------------
@@ -767,9 +757,10 @@ class TestEdgeCases:
         )
 
         mm = a_pt.float() @ b_pt.float()
-        golden = res_pt.float() + torch.nn.functional.gelu(
-            scale_val * mm + bias_val
-        ) * gate_val
+        golden = (
+            res_pt.float()
+            + torch.nn.functional.gelu(scale_val * mm + bias_val) * gate_val
+        )
         _run_and_compare(out_dev, golden, threshold=0.998)
 
 
@@ -785,9 +776,9 @@ MULTINODE_SHAPES = [
     pytest.param((2, 2, 2), id="2x2x2"),
     pytest.param((1, 2, 4), id="1x2x4"),
     pytest.param((4, 2, 1), id="4x2x1"),
-    pytest.param((4, 2, 4), id="4x2x4-subblock"),   # 16 output tiles
-    pytest.param((3, 2, 4), id="3x2x4-subblock"),   # 12 output tiles
-    pytest.param((4, 4, 4), id="4x4x4-subblock"),   # 16 output tiles, larger K
+    pytest.param((4, 2, 4), id="4x2x4-subblock"),  # 16 output tiles
+    pytest.param((3, 2, 4), id="3x2x4-subblock"),  # 12 output tiles
+    pytest.param((4, 4, 4), id="4x4x4-subblock"),  # 16 output tiles, larger K
 ]
 
 
@@ -808,15 +799,13 @@ class TestMultiNode:
         a_dev = to_dram(a_pt, device)
         b_dev = to_dram(b_pt, device)
         bias_dev = to_dram(bias_pt, device)
-        y_dev = to_dram(
-            torch.zeros((total_m, total_n), dtype=torch.bfloat16), device
-        )
+        y_dev = to_dram(torch.zeros((total_m, total_n), dtype=torch.bfloat16), device)
 
         kernel = _make_multinode_matmul_relu_bias(m_blk, k_blk, n_blk)
         kernel(a_dev, b_dev, bias_dev, y_dev)
 
         result = ttnn.to_torch(y_dev).float()
-        expected = (torch.relu(a_pt.float() @ b_pt.float()) + bias_pt.float())
+        expected = torch.relu(a_pt.float() @ b_pt.float()) + bias_pt.float()
         assert_pcc(expected, result, threshold=0.99)
 
     @pytest.mark.parametrize("block_shape", MULTINODE_SHAPES)
@@ -841,16 +830,16 @@ class TestMultiNode:
         bias_dev = to_dram(bias_pt, device)
         gate_dev = to_dram(gate_pt, device)
         residual_dev = to_dram(residual_pt, device)
-        y_dev = to_dram(
-            torch.zeros((total_m, total_n), dtype=torch.bfloat16), device
-        )
+        y_dev = to_dram(torch.zeros((total_m, total_n), dtype=torch.bfloat16), device)
 
         kernel = _make_multinode_gated_gelu_residual(m_blk, k_blk, n_blk)
         kernel(a_dev, b_dev, scale_dev, bias_dev, gate_dev, residual_dev, y_dev)
 
         mm = a_pt.float() @ b_pt.float()
-        expected = residual_pt.float() + torch.nn.functional.gelu(
-            scale_pt.float() * mm + bias_pt.float()
-        ) * gate_pt.float()
+        expected = (
+            residual_pt.float()
+            + torch.nn.functional.gelu(scale_pt.float() * mm + bias_pt.float())
+            * gate_pt.float()
+        )
         result = ttnn.to_torch(y_dev).float()
         assert_pcc(expected, result, threshold=0.99)

@@ -871,7 +871,8 @@ defm TTL_Trunc : TTL_UnaryElementwisePair<"trunc", "trunc_tile">;
 // Broadcast Operation
 //===----------------------------------------------------------------------===//
 
-def TTL_BcastOp : TTL_Op<"bcast", []> {
+def TTL_BcastOp : TTL_Op<"bcast", [
+    DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
   let summary = "Broadcast a row/column/scalar tensor to full tiles";
   let description = [{
     Broadcasts the input tensor to full tiles based on bcast_type.
@@ -905,7 +906,8 @@ def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait, TTL_DstR
 // Reduce Operation
 //===----------------------------------------------------------------------===//
 
-def TTL_ReduceOp : TTL_Op<"reduce", [Pure]> {
+def TTL_ReduceOp : TTL_Op<"reduce", [Pure,
+    DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
   let summary = "Reduce a tensor along specified dimensions with a scaling factor";
   let description = [{
     Performs a scaled reduction (sum or max) along the specified dimensions.
@@ -955,7 +957,8 @@ def TTL_TileReduceOp : TTL_TileOp<"tile_reduce",
 // Transpose Operation
 //===----------------------------------------------------------------------===//
 
-def TTL_TransposeOp : TTL_Op<"transpose", [Pure]> {
+def TTL_TransposeOp : TTL_Op<"transpose", [Pure,
+    DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
   let summary = "Transpose a 2D tensor of tiles";
   let description = [{
     Transposes a rank-2 tensor: shape (M, N) becomes (N, M).
@@ -1011,7 +1014,8 @@ def TTL_TileFillOp : TTL_TileOp<"tile_fill", [TTL_DstResultOpTrait]> {
 // Matrix Multiplication
 //===----------------------------------------------------------------------===//
 
-def TTL_MatmulOp : TTL_Op<"matmul", [Pure]> {
+def TTL_MatmulOp : TTL_Op<"matmul", [Pure,
+    DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
   let summary = "Matrix multiply two tensors of tiles";
   let description = [{
     Block-level matrix multiply: result[i, j] = sum_k(lhs[i, k] * rhs[k, j]).
