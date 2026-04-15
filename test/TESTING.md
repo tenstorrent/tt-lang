@@ -231,7 +231,8 @@ pytest test/sim/
 ```
 
 Some simulator tests are marked `slow` and are skipped by default.  Pass
-`--run-slow` to include them (CI always does):
+`--run-slow` to include them (the hardware CI always does; the GitHub-hosted
+sim CI does not):
 ```bash
 pytest test/sim/ --run-slow
 ```

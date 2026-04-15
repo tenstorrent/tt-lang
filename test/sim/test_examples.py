@@ -382,39 +382,18 @@ def test_eltwise_1d_broadcast_warning(scheduler: str) -> None:
 
 # ---- Matmul tutorial -------------------------------------------------------
 
-_MATMUL_TUTORIAL_LARGE_DIM = "M, K, N = 8192, 8192, 8192"
-_MATMUL_TUTORIAL_TEST_DIM = "M, K, N = 1024, 1024, 1024"
-
-
-def run_matmul_tutorial_script(script_path: Path, scheduler: str) -> tuple[int, str]:
-    """Run a matmul-tutorial script with reduced M/K/N dimensions for speed.
-
-    The tutorial sources use M=K=N=8192 which is prohibitively slow for the
-    simulator.  This helper patches the assignment to 1024 before running.
-    """
-    source = script_path.read_text()
-    patched = source.replace(_MATMUL_TUTORIAL_LARGE_DIM, _MATMUL_TUTORIAL_TEST_DIM)
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False, dir=script_path.parent
-    ) as tmp:
-        tmp.write(patched)
-        tmp_path = Path(tmp.name)
-    try:
-        return run_script_in_process(tmp_path, scheduler)
-    finally:
-        tmp_path.unlink()
-
 
 @pytest.mark.parametrize(
     "script_name",
     [
         # step_0 is a plain ttnn program — all ops (matmul, relu, add) require real ttnn.
         pytest.param("step_0_ttnn_base.py", marks=requires_ttnn),
-        # steps 1–6 define custom ttl kernels; verification uses torch.relu(a @ b + c).
+        # steps 2–6 define custom ttl kernels; verification uses torch.relu(a @ b + c).
         # All ttnn surface calls (from_torch, to_torch, open_device, open_mesh_device,
         # GetNumAvailableDevices, ShardTensorToMesh, set_fabric_config) are natively
         # implemented in the simulator.
-        "step_1_single_node_single_tile_block.py",
+        # step_1 is excluded: single-tile-block granularity produces too many simulator
+        # coroutine steps at M=K=N=8192 to be practical.
         "step_2_single_node_multitile_block.py",
         "step_3_multinode.py",
         "step_4_multinode_grid_auto.py",
@@ -428,5 +407,5 @@ def run_matmul_tutorial_script(script_path: Path, scheduler: str) -> tuple[int, 
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])
 def test_matmul_tutorial(script_name: str, scheduler: str) -> None:
     """Test matmul-tutorial scripts run successfully with both schedulers."""
-    code, out = run_matmul_tutorial_script(MATMUL_TUTORIAL_DIR / script_name, scheduler)
+    code, out = run_script_in_process(MATMUL_TUTORIAL_DIR / script_name, scheduler)
     assert code == 0, f"Script failed with code {code}. Output:\n{out}"

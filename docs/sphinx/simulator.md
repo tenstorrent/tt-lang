@@ -30,7 +30,7 @@ python -m pytest test/sim/
 ```
 
 Some tests are marked `slow` and skipped by default.  Pass `--run-slow` to
-include them:
+include them (the hardware CI always does; the GitHub-hosted sim CI does not):
 
 ```bash
 python -m pytest test/sim/ --run-slow
