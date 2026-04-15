@@ -23,6 +23,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
@@ -348,18 +349,18 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
 }
 
 /// Find the outermost enclosing insertion point by walking up through
-/// compiler-generated loops (marked with ttl.tile_loop_stride or
-/// ttl.subblock_loop_stride). By construction, these loops iterate over tiles
-/// within a single ttl.compute whose input/output CBs are fixed, so the
-/// CB configuration is invariant across iterations and hoisting is safe.
-/// Stops at unmarked loops to avoid hoisting past user loops that could
-/// contain multiple sync regions with different CB configurations.
+/// loops with invariant CB configurations: compiler-generated tile/subblock
+/// loops (ttl.tile_loop_stride, ttl.subblock_loop_stride) and L1
+/// accumulation loops (ttl.l1_acc_loop). All use fixed CBs across
+/// iterations, so init hoisting is safe. Stops at unmarked loops to avoid
+/// hoisting past user loops with varying CB configurations.
 static Operation *hoistAboveCompilerLoops(Operation *op) {
   Operation *insertBefore = op;
   while (auto *parentOp = insertBefore->getParentOp()) {
     if (isa<scf::ForOp>(parentOp) &&
         (parentOp->hasAttr(kTileLoopStrideAttrName) ||
-         parentOp->hasAttr(kSubblockLoopStrideAttrName))) {
+         parentOp->hasAttr(kSubblockLoopStrideAttrName) ||
+         parentOp->hasAttr(kL1AccLoopAttrName))) {
       insertBefore = parentOp;
     } else {
       break;
@@ -403,8 +404,36 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
       inputCB = outputCB;
     }
 
-    if (analysis.hasMatmul && in0CB && in1CB) {
-      // mm_block_init configures UNPACK + MATH + PACK for matmul_block.
+    // When a matmul init is hoisted before a loop that shares an
+    // output CB with a preceding sibling annotated loop, use
+    // init_short. The full init reconfigures the PACK pipeline
+    // which clobbers packer state (including L1 acc on Wormhole).
+    // init_short only reconfigures UNPACK+MATH.
+    bool useInitShort = false;
+    if (analysis.hasMatmul) {
+      if (auto forOp = dyn_cast<scf::ForOp>(insertBefore)) {
+        if (forOp->hasAttr(kL1AccLoopAttrName) ||
+            forOp->hasAttr(kReductionLoopAttrName)) {
+          for (Operation *prev = forOp->getPrevNode(); prev;
+               prev = prev->getPrevNode()) {
+            if (auto prevFor = dyn_cast<scf::ForOp>(prev)) {
+              if ((prevFor->hasAttr(kL1AccLoopAttrName) ||
+                   prevFor->hasAttr(kReductionLoopAttrName)) &&
+                  sharePackCB(prevFor, forOp)) {
+                useInitShort = true;
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    if (analysis.hasMatmul && in0CB && in1CB && useInitShort) {
+      ttk::MatmulBlockInitShortOp::create(
+          builder, loc, in0CB, in1CB, analysis.matmulTranspose,
+          analysis.matmulCt, analysis.matmulRt, analysis.matmulKt);
+    } else if (analysis.hasMatmul && in0CB && in1CB) {
       ttk::MatmulBlockInitOp::create(
           builder, loc, in0CB, in1CB, outputCB, analysis.matmulTranspose,
           analysis.matmulCt, analysis.matmulRt, analysis.matmulKt);

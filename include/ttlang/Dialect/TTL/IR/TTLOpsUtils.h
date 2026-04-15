@@ -12,9 +12,11 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/SetVector.h"
+
 #include <cstdint>
 #include <optional>
 
@@ -426,6 +428,24 @@ inline TileOp createTileOpWithPlaceholderDstIndex(OpBuilder &builder,
   addPlaceholderDstIndexAttr(tileOp.getOperation());
   return tileOp;
 }
+
+/// Collect the CB values targeted by pack_tile ops inside a loop.
+llvm::SmallDenseSet<Value, 2> getPackTileCBs(scf::ForOp loop);
+
+/// Returns true if two loops share any pack_tile CB target.
+bool sharePackCB(scf::ForOp loopA, scf::ForOp loopB);
+
+/// A group of consecutive sibling loops that pack to the same output CB.
+struct LoopGroup {
+  scf::ForOp rootLoop;
+  SmallVector<scf::ForOp> loops;
+  Operation *scopeEnd = nullptr;
+};
+
+/// Collect groups of annotated sibling loops that share a pack CB target.
+SmallVector<LoopGroup> collectLoopGroups(
+    ArrayRef<scf::ForOp> l1AccLoops,
+    const llvm::SmallDenseMap<Operation *, Operation *> &enablePointPerLoop);
 
 } // namespace mlir::tt::ttl
 

@@ -470,6 +470,121 @@ def TTL_CoreYOp : TTL_Op<"core_y", [Pure]> {
 }
 
 //===----------------------------------------------------------------------===//
+// Pipe operations (for multi-core communication)
+//===----------------------------------------------------------------------===//
+
+def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
+  let summary = "Create a pipe for core-to-core communication";
+  let description = [{
+    Creates a pipe that defines a communication channel from a source core to
+    one or more destination cores.
+
+    For unicast (single destination), only specify `dst(x, y)`.
+    For multicast (rectangular grid), specify `dst(x1, y1) to (x2, y2)`.
+
+    Example:
+    ```mlir
+    // Unicast: (0,0) -> (1,0)
+    %p = ttl.create_pipe src(0, 0) dst(1, 0) : !ttl.pipe
+
+    // Multicast: (0,0) -> rectangular region (1,0)-(1,3)
+    %p = ttl.create_pipe src(0, 0) dst(1, 0) to (1, 3) : !ttl.pipe
+    ```
+  }];
+  let arguments = (ins
+    I64Attr:$srcX,
+    I64Attr:$srcY,
+    I64Attr:$dstStartX,
+    I64Attr:$dstStartY,
+    I64Attr:$dstEndX,
+    I64Attr:$dstEndY,
+    I64Attr:$pipeNetId
+  );
+  let results = (outs TTL_Pipe:$result);
+  let assemblyFormat = [{
+    `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)` `net` $pipeNetId attr-dict `:` type($result)
+  }];
+  let hasVerifier = 1;
+
+  let builders = [
+    // Builder for unicast pipe (single destination, pipeNetId = 0)
+    OpBuilder<(ins "int64_t":$srcX, "int64_t":$srcY,
+                   "int64_t":$dstX, "int64_t":$dstY), [{
+      build($_builder, $_state, srcX, srcY, dstX, dstY, dstX, dstY, 0);
+    }]>,
+    // Builder with all coordinates
+    OpBuilder<(ins "int64_t":$srcX, "int64_t":$srcY,
+                   "int64_t":$dstStartX, "int64_t":$dstStartY,
+                   "int64_t":$dstEndX, "int64_t":$dstEndY,
+                   "int64_t":$pipeNetId), [{
+      auto pipeType = PipeType::get($_builder.getContext(),
+                                    srcX, srcY, dstStartX, dstStartY,
+                                    dstEndX, dstEndY, pipeNetId);
+      build($_builder, $_state, pipeType,
+            $_builder.getI64IntegerAttr(srcX),
+            $_builder.getI64IntegerAttr(srcY),
+            $_builder.getI64IntegerAttr(dstStartX),
+            $_builder.getI64IntegerAttr(dstStartY),
+            $_builder.getI64IntegerAttr(dstEndX),
+            $_builder.getI64IntegerAttr(dstEndY),
+            $_builder.getI64IntegerAttr(pipeNetId));
+    }]>
+  ];
+}
+
+def TTL_IfSrcOp : TTL_Op<"if_src", [SingleBlock, NoTerminator]> {
+  let summary = "Execute region if current core is the source of a pipe";
+  let description = [{
+    Executes the body region if the current core's coordinates match the
+    source coordinates of the given pipe. Used for implementing pipe-based
+    communication patterns where the source core sends data.
+
+    The body region has no block arguments. Inside the body, the pipe's
+    destination coordinates can be accessed from the pipe type directly.
+
+    Example:
+    ```mlir
+    %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) : !ttl.pipe<...>
+    ttl.if_src %p : !ttl.pipe<...> {
+      // Only executes on core (0, 0)
+      // Can use ttl.copy to send data through the pipe
+    }
+    ```
+  }];
+  let arguments = (ins TTL_Pipe:$pipe);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{
+    $pipe `:` type($pipe) $body attr-dict
+  }];
+}
+
+def TTL_IfDstOp : TTL_Op<"if_dst", [SingleBlock, NoTerminator]> {
+  let summary = "Execute region if current core is a destination of a pipe";
+  let description = [{
+    Executes the body region if the current core's coordinates fall within
+    the destination range of the given pipe. Used for implementing pipe-based
+    communication patterns where destination cores receive data.
+
+    The body region has no block arguments. Inside the body, the pipe's
+    source coordinates can be accessed from the pipe type directly.
+
+    Example:
+    ```mlir
+    %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) : !ttl.pipe<...>
+    ttl.if_dst %p : !ttl.pipe<...> {
+      // Executes on cores (1, 0), (1, 1), (1, 2), (1, 3)
+      // Can use ttl.copy to receive data from the pipe
+    }
+    ```
+  }];
+  let arguments = (ins TTL_Pipe:$pipe);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{
+    $pipe `:` type($pipe) $body attr-dict
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // Profiling operations
 //===----------------------------------------------------------------------===//
 
@@ -723,6 +838,7 @@ multiclass TTL_UnaryElementwisePair<string mnemonic, string kernelOp> {
 
 // Define all unary elementwise ops using the multiclass
 defm TTL_Exp : TTL_UnaryElementwisePair<"exp", "exp_tile">;
+defm TTL_Exp2 : TTL_UnaryElementwisePair<"exp2", "exp2_tile">;
 defm TTL_Log : TTL_UnaryElementwisePair<"log", "log_tile">;
 defm TTL_Sqrt : TTL_UnaryElementwisePair<"sqrt", "sqrt_tile">;
 defm TTL_Rsqrt : TTL_UnaryElementwisePair<"rsqrt", "rsqrt_tile">;
@@ -739,6 +855,17 @@ defm TTL_Tan : TTL_UnaryElementwisePair<"tan", "tan_tile">;
 defm TTL_Asin : TTL_UnaryElementwisePair<"asin", "asin_tile">;
 defm TTL_Acos : TTL_UnaryElementwisePair<"acos", "acos_tile">;
 defm TTL_Atan : TTL_UnaryElementwisePair<"atan", "atan_tile">;
+defm TTL_Ceil : TTL_UnaryElementwisePair<"ceil", "ceil_tile">;
+defm TTL_Sign : TTL_UnaryElementwisePair<"sign", "sign_tile">;
+defm TTL_Gelu : TTL_UnaryElementwisePair<"gelu", "gelu_tile">;
+defm TTL_Silu : TTL_UnaryElementwisePair<"silu", "silu_tile">;
+defm TTL_Hardsigmoid : TTL_UnaryElementwisePair<"hardsigmoid", "hardsigmoid_tile">;
+defm TTL_Expm1 : TTL_UnaryElementwisePair<"expm1", "expm1_tile">;
+defm TTL_Square : TTL_UnaryElementwisePair<"square", "square_tile">;
+defm TTL_Softsign : TTL_UnaryElementwisePair<"softsign", "softsign_tile">;
+defm TTL_Signbit : TTL_UnaryElementwisePair<"signbit", "signbit_tile">;
+defm TTL_Frac : TTL_UnaryElementwisePair<"frac", "frac_tile">;
+defm TTL_Trunc : TTL_UnaryElementwisePair<"trunc", "trunc_tile">;
 
 //===----------------------------------------------------------------------===//
 // Broadcast Operation
@@ -1039,8 +1166,13 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
     `ttl.store` represents the user's intent to store a computed tensor into
     an output circular buffer.
 
-    Emitted by Python's `o.store(result)`. During `convert-ttl-to-compute`,
-    this op is transformed into a `ttl.tile_store` inside the compute body.
+    Emitted by Python's `o.store(result)` (overwrite) or `o += result`
+    (accumulate). During `convert-ttl-to-compute`, this op is transformed
+    into a `ttl.tile_store` inside the compute body.
+
+    When `accumulate` is set, the enclosing loop is annotated for L1
+    packer accumulation so that each iteration adds to the existing L1
+    value instead of overwriting.
 
     Example:
     ```mlir
@@ -1048,11 +1180,14 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
     %result = ttl.add %a, %b : ...
     ttl.store %result, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>,
                                   tensor<1x1x!ttcore.tile<32x32, bf16>>
+    // Accumulating store (from +=):
+    ttl.store %result, %reserve {accumulate} : ...
     ```
   }];
   let arguments = (ins
     AnyRankedTensor:$tensor,
-    AnyRankedTensor:$view
+    AnyRankedTensor:$view,
+    OptionalAttr<UnitAttr>:$accumulate
   );
   let assemblyFormat = "$tensor `,` $view attr-dict `:` type($tensor) `,` type($view)";
   let hasVerifier = 1;

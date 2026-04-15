@@ -9,10 +9,8 @@ Tracks tensor read/write operations and provides summary reporting.
 
 from typing import Any, Union
 
-from .ttnnsim import Tensor
-
+from .ttnnsim import Tensor, tile_count_from_tensor
 from .context import get_context
-from .ttnnsim import tile_count_from_tensor
 from .pipe import AnyPipe
 from .typedefs import CoreCoord, CoreRange
 

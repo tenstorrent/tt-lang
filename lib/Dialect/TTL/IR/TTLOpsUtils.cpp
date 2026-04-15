@@ -4,6 +4,8 @@
 
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
+#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
+
 namespace mlir::tt::ttl {
 
 //===----------------------------------------------------------------------===//
@@ -130,6 +132,109 @@ llvm::StringRef describeTraceFailure(TraceFailureReason reason) {
     return "cannot trace through non-fusable op";
   }
   llvm_unreachable("unhandled TraceFailureReason");
+}
+
+//===----------------------------------------------------------------------===//
+// Loop grouping for L1 accumulation and init selection
+//===----------------------------------------------------------------------===//
+
+namespace ttk = mlir::tt::ttkernel;
+
+llvm::SmallDenseSet<Value, 2> getPackTileCBs(scf::ForOp loop) {
+  llvm::SmallDenseSet<Value, 2> cbs;
+  loop->walk([&](ttk::PackTileOp packOp) { cbs.insert(packOp.getOutCb()); });
+  return cbs;
+}
+
+bool sharePackCB(scf::ForOp loopA, scf::ForOp loopB) {
+  auto cbsA = getPackTileCBs(loopA);
+  auto cbsB = getPackTileCBs(loopB);
+  for (auto cb : cbsA) {
+    if (cbsB.contains(cb)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+SmallVector<LoopGroup> collectLoopGroups(
+    ArrayRef<scf::ForOp> l1AccLoops,
+    const llvm::SmallDenseMap<Operation *, Operation *> &enablePointPerLoop) {
+  // Find the outermost annotated ancestor of a loop.
+  auto findRoot = [](scf::ForOp loop) -> scf::ForOp {
+    scf::ForOp outermost = loop;
+    for (Operation *parent = loop->getParentOp(); parent;
+         parent = parent->getParentOp()) {
+      if (auto parentFor = dyn_cast<scf::ForOp>(parent)) {
+        if (parentFor->hasAttr(kL1AccLoopAttrName) ||
+            parentFor->hasAttr(kReductionLoopAttrName)) {
+          outermost = parentFor;
+        }
+      }
+    }
+    return outermost;
+  };
+
+  SmallVector<LoopGroup> groups;
+  llvm::SmallDenseSet<Operation *> assigned;
+
+  for (auto loop : l1AccLoops) {
+    if (!enablePointPerLoop.count(loop.getOperation())) {
+      continue;
+    }
+    if (assigned.contains(loop.getOperation())) {
+      continue;
+    }
+
+    scf::ForOp rootLoop = findRoot(loop);
+
+    LoopGroup group;
+    group.rootLoop = rootLoop;
+    group.loops.push_back(loop);
+    assigned.insert(loop.getOperation());
+
+    // Collect sibling annotated loops that share a pack CB target.
+    // sharePackCB walks recursively, so for nested loops (rootLoop
+    // wrapping loop), it finds pack_tile ops inside the inner loop.
+    for (Operation *op = rootLoop->getNextNode(); op; op = op->getNextNode()) {
+      if (isa<ttk::CBPushBackOp>(op)) {
+        break;
+      }
+      auto sibling = dyn_cast<scf::ForOp>(op);
+      if (!sibling) {
+        continue;
+      }
+      if (!sibling->hasAttr(kL1AccLoopAttrName) &&
+          !sibling->hasAttr(kReductionLoopAttrName)) {
+        break;
+      }
+      if (!sharePackCB(rootLoop, sibling)) {
+        break;
+      }
+      group.loops.push_back(sibling);
+      assigned.insert(sibling.getOperation());
+    }
+
+    // Find scope end: scan forward from rootLoop past grouped siblings,
+    // init ops between them, and trailing cb_push_back ops. Only stop
+    // at a non-grouped ForOp or a cb_reserve_back.
+    group.scopeEnd = rootLoop;
+    for (Operation *op = rootLoop->getNextNode(); op; op = op->getNextNode()) {
+      if (isa<ttk::CBPushBackOp>(op)) {
+        group.scopeEnd = op;
+      } else if (isa<ttk::CBReserveBackOp>(op)) {
+        break;
+      } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+        if (!assigned.contains(forOp)) {
+          break;
+        }
+      }
+    }
+
+    groups.push_back(std::move(group));
+  }
+
+  return groups;
 }
 
 } // namespace mlir::tt::ttl
