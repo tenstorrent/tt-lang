@@ -457,6 +457,65 @@ def two_reduces_kernel(a, b, scaler, out):
             ttl.copy(blk, out[0, 0]).wait()
 
 
+# --- multi-tile elementwise -> reduce (reproducer for #474) ---
+
+
+TILE = 32
+HEAD_TILES = 4
+
+
+@ttl.operation(grid=(1, 1))
+def multitile_mul_reduce_kernel(inp_a, inp_b, scaler, out):
+    a_dfb = ttl.make_dataflow_buffer_like(inp_a, shape=(1, HEAD_TILES), block_count=2)
+    b_dfb = ttl.make_dataflow_buffer_like(inp_b, shape=(1, HEAD_TILES), block_count=2)
+    sc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=1)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with sc_dfb.wait() as sc:
+            with a_dfb.wait() as av, b_dfb.wait() as bv:
+                with out_dfb.reserve() as o:
+                    o.store(ttl.math.reduce_sum(av * bv, sc, dims=[0, 1]))
+
+    @ttl.datamovement()
+    def dm_read():
+        with sc_dfb.reserve() as blk:
+            ttl.copy(scaler[0, 0], blk).wait()
+        with a_dfb.reserve() as blk:
+            ttl.copy(inp_a[0:1, 0:HEAD_TILES], blk).wait()
+        with b_dfb.reserve() as blk:
+            ttl.copy(inp_b[0:1, 0:HEAD_TILES], blk).wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as blk:
+            ttl.copy(blk, out[0, 0]).wait()
+
+
+def test_multitile_mul_reduce(device):
+    """Multi-tile elementwise mul feeds reduce_sum (regression for #474)."""
+    from ttlang_test_utils import to_dram
+
+    hd = HEAD_TILES * TILE
+    a_torch = torch.randn(TILE, hd, dtype=torch.bfloat16)
+    b_torch = torch.randn(TILE, hd, dtype=torch.bfloat16)
+    scaler_torch = torch.ones(TILE, TILE, dtype=torch.bfloat16)
+    out_torch = torch.zeros(TILE, TILE, dtype=torch.bfloat16)
+
+    inp_a = to_dram(a_torch, device)
+    inp_b = to_dram(b_torch, device)
+    scaler = to_l1(scaler_torch, device)
+    out = to_dram(out_torch, device)
+
+    expected = (a_torch.float() * b_torch.float()).sum()
+
+    multitile_mul_reduce_kernel(inp_a, inp_b, scaler, out)
+    result = ttnn.to_torch(out).float()
+
+    assert_allclose(result[0, 0], expected, rtol=0.01, atol=1.0)
+
+
 @pytest.mark.xfail(reason="Requires result DFB materialization (#508)")
 def test_two_reduces(device):
     """Two reduces on same input, results feed sub; requires result DFBs (#508)."""
