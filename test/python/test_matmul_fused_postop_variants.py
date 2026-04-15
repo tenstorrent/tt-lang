@@ -344,6 +344,148 @@ def matmul_gated_gelu_residual_kernel(A, B, scale_tile, bias_tile, gate_tile,
 # ---------------------------------------------------------------------------
 
 
+def _make_multinode_gated_gelu_residual(m_blk, k_blk, n_blk):
+    """residual + gelu(scale * (A @ B) + bias) * gate, multi-node."""
+
+    @ttl.operation(grid="auto")
+    def kernel(
+        a_tensor: ttnn.Tensor,
+        b_tensor: ttnn.Tensor,
+        scale_tensor: ttnn.Tensor,
+        bias_tensor: ttnn.Tensor,
+        gate_tensor: ttnn.Tensor,
+        residual_tensor: ttnn.Tensor,
+        y_tensor: ttnn.Tensor,
+    ) -> None:
+        grid_n, grid_m = ttl.grid_size(dims=2)
+
+        m_blocks = a_tensor.shape[0] // TILE // m_blk
+        n_blocks = b_tensor.shape[1] // TILE // n_blk
+        k_blocks = a_tensor.shape[1] // TILE // k_blk
+
+        m_blocks_per_node = -(-m_blocks // grid_m)
+        n_blocks_per_node = -(-n_blocks // grid_n)
+
+        a_dfb = ttl.make_dataflow_buffer_like(
+            a_tensor, shape=(m_blk, k_blk), block_count=2
+        )
+        b_dfb = ttl.make_dataflow_buffer_like(
+            b_tensor, shape=(k_blk, n_blk), block_count=2
+        )
+        sc_dfb = ttl.make_dataflow_buffer_like(
+            scale_tensor, shape=(m_blk, n_blk), block_count=1
+        )
+        bi_dfb = ttl.make_dataflow_buffer_like(
+            bias_tensor, shape=(m_blk, n_blk), block_count=1
+        )
+        gt_dfb = ttl.make_dataflow_buffer_like(
+            gate_tensor, shape=(m_blk, n_blk), block_count=1
+        )
+        res_dfb = ttl.make_dataflow_buffer_like(
+            residual_tensor, shape=(m_blk, n_blk), block_count=1
+        )
+        acc_dfb = ttl.make_dataflow_buffer_like(
+            y_tensor, shape=(m_blk, n_blk), block_count=2
+        )
+        y_dfb = ttl.make_dataflow_buffer_like(
+            y_tensor, shape=(m_blk, n_blk), block_count=2
+        )
+
+        @ttl.datamovement()
+        def read():
+            node_n, node_m = ttl.node(dims=2)
+            for local_m in range(m_blocks_per_node):
+                mb = node_m * m_blocks_per_node + local_m
+                if mb < m_blocks:
+                    sm = mb * m_blk
+                    em = (mb + 1) * m_blk
+                    for local_n in range(n_blocks_per_node):
+                        nb = node_n * n_blocks_per_node + local_n
+                        if nb < n_blocks:
+                            sn = nb * n_blk
+                            en = (nb + 1) * n_blk
+                            with sc_dfb.reserve() as blk:
+                                ttl.copy(scale_tensor[sm:em, sn:en], blk).wait()
+                            with bi_dfb.reserve() as blk:
+                                ttl.copy(bias_tensor[sm:em, sn:en], blk).wait()
+                            with gt_dfb.reserve() as blk:
+                                ttl.copy(gate_tensor[sm:em, sn:en], blk).wait()
+                            with res_dfb.reserve() as blk:
+                                ttl.copy(
+                                    residual_tensor[sm:em, sn:en], blk
+                                ).wait()
+                            for kb in range(k_blocks):
+                                sk = kb * k_blk
+                                ek = (kb + 1) * k_blk
+                                with (
+                                    a_dfb.reserve() as a_blk,
+                                    b_dfb.reserve() as b_blk,
+                                ):
+                                    ttl.copy(
+                                        a_tensor[sm:em, sk:ek], a_blk
+                                    ).wait()
+                                    ttl.copy(
+                                        b_tensor[sk:ek, sn:en], b_blk
+                                    ).wait()
+
+        @ttl.compute()
+        def compute():
+            node_n, node_m = ttl.node(dims=2)
+            for local_m in range(m_blocks_per_node):
+                mb = node_m * m_blocks_per_node + local_m
+                if mb < m_blocks:
+                    for local_n in range(n_blocks_per_node):
+                        nb = node_n * n_blocks_per_node + local_n
+                        if nb < n_blocks:
+                            # First K iteration
+                            with (
+                                a_dfb.wait() as a_blk,
+                                b_dfb.wait() as b_blk,
+                            ):
+                                with acc_dfb.reserve() as acc_blk:
+                                    acc_blk.store(a_blk @ b_blk)
+                            # Remaining K iterations: accumulate
+                            for _ in range(k_blocks - 1):
+                                with (
+                                    a_dfb.wait() as a_blk,
+                                    b_dfb.wait() as b_blk,
+                                    acc_dfb.wait() as pre_acc,
+                                ):
+                                    with acc_dfb.reserve() as acc_blk:
+                                        acc_blk.store(pre_acc + a_blk @ b_blk)
+                            # Apply full post-op chain after accumulation
+                            with (
+                                acc_dfb.wait() as acc_blk,
+                                sc_dfb.wait() as sc,
+                                bi_dfb.wait() as bi,
+                                gt_dfb.wait() as gt,
+                                res_dfb.wait() as res,
+                            ):
+                                with y_dfb.reserve() as y_blk:
+                                    y_blk.store(
+                                        res
+                                        + ttl.gelu(sc * acc_blk + bi) * gt
+                                    )
+
+        @ttl.datamovement()
+        def write():
+            node_n, node_m = ttl.node(dims=2)
+            for local_m in range(m_blocks_per_node):
+                mb = node_m * m_blocks_per_node + local_m
+                if mb < m_blocks:
+                    sm = mb * m_blk
+                    em = (mb + 1) * m_blk
+                    for local_n in range(n_blocks_per_node):
+                        nb = node_n * n_blocks_per_node + local_n
+                        if nb < n_blocks:
+                            sn = nb * n_blk
+                            en = (nb + 1) * n_blk
+                            with y_dfb.wait() as y_blk:
+                                ttl.copy(y_blk, y_tensor[sm:em, sn:en]).wait()
+
+    return kernel
+
+
 def _make_multinode_matmul_relu_bias(m_blk, k_blk, n_blk):
     """relu(A @ B) + bias with multi-node grid and K-loop accumulation."""
 
@@ -574,31 +716,6 @@ class TestSubtractionOrdering:
         golden = 7.0 - (a_pt.float() @ b_pt.float())
         _run_and_compare(out_dev, golden)
 
-    def test_sub_ordering_differs(self, device):
-        """Verify LHS and RHS subtraction produce different results.
-
-        If operand order were swapped, both tests above would produce
-        the same output. This test confirms they are numerically distinct:
-        (mm - bias) + (bias - mm) = 0, so result_lhs = -result_rhs.
-        """
-        a_pt, b_pt, a_dev, b_dev = _random_inputs(device)
-        bi_pt, bi_dev = _scalar_tile(7.0, device)
-        out_lhs = to_dram(torch.zeros(TILE, TILE, dtype=torch.bfloat16), device)
-        out_rhs = to_dram(torch.zeros(TILE, TILE, dtype=torch.bfloat16), device)
-
-        # Need fresh device tensors for each call
-        a_dev2 = to_dram(a_pt, device)
-        b_dev2 = to_dram(b_pt, device)
-        bi_dev2 = to_dram(bi_pt, device)
-
-        matmul_sub_lhs_kernel(a_dev, b_dev, bi_dev, out_lhs)
-        matmul_sub_rhs_kernel(a_dev2, b_dev2, bi_dev2, out_rhs)
-
-        lhs_result = ttnn.to_torch(out_lhs).reshape(TILE, TILE).float()
-        rhs_result = ttnn.to_torch(out_rhs).reshape(TILE, TILE).float()
-
-        # result_lhs = mm - 7, result_rhs = 7 - mm => result_rhs = -result_lhs
-        assert_pcc(-lhs_result, rhs_result, threshold=0.999)
 
 
 # ---------------------------------------------------------------------------
@@ -661,14 +778,24 @@ class TestEdgeCases:
 # ---------------------------------------------------------------------------
 
 
-class TestMultiNode:
-    def test_multinode_relu_bias(self, device):
-        """relu(A @ B) + bias with grid="auto" and K-loop accumulation.
+# (M_blk, K_blk, N_blk) — block dimensions in tiles.
+# Shapes where m_blk * n_blk > 8 trigger DST subblocking (bf16 capacity = 8).
+MULTINODE_SHAPES = [
+    pytest.param((1, 1, 1), id="1x1x1"),
+    pytest.param((2, 2, 2), id="2x2x2"),
+    pytest.param((1, 2, 4), id="1x2x4"),
+    pytest.param((4, 2, 1), id="4x2x1"),
+    pytest.param((4, 2, 4), id="4x2x4-subblock"),   # 16 output tiles
+    pytest.param((3, 2, 4), id="3x2x4-subblock"),   # 12 output tiles
+    pytest.param((4, 4, 4), id="4x4x4-subblock"),   # 16 output tiles, larger K
+]
 
-        Exercises fused post-ops (relu + binary add) in a multi-node
-        context where each core processes a different output tile block.
-        """
-        m_blk, k_blk, n_blk = 2, 2, 2
+
+class TestMultiNode:
+    @pytest.mark.parametrize("block_shape", MULTINODE_SHAPES)
+    def test_multinode_relu_bias(self, device, block_shape):
+        """relu(A @ B) + bias with grid="auto" and K-loop accumulation."""
+        m_blk, k_blk, n_blk = block_shape
         total_m = m_blk * 4 * TILE
         total_k = k_blk * 2 * TILE
         total_n = n_blk * 4 * TILE
@@ -690,4 +817,40 @@ class TestMultiNode:
 
         result = ttnn.to_torch(y_dev).float()
         expected = (torch.relu(a_pt.float() @ b_pt.float()) + bias_pt.float())
+        assert_pcc(expected, result, threshold=0.99)
+
+    @pytest.mark.parametrize("block_shape", MULTINODE_SHAPES)
+    def test_multinode_gated_gelu_residual(self, device, block_shape):
+        """residual + gelu(scale * (A @ B) + bias) * gate, multi-node."""
+        m_blk, k_blk, n_blk = block_shape
+        total_m = m_blk * 4 * TILE
+        total_k = k_blk * 2 * TILE
+        total_n = n_blk * 4 * TILE
+
+        torch.manual_seed(42)
+        a_pt = torch.randn((total_m, total_k), dtype=torch.bfloat16)
+        b_pt = torch.randn((total_k, total_n), dtype=torch.bfloat16)
+        scale_pt = torch.full((total_m, total_n), 0.5, dtype=torch.bfloat16)
+        bias_pt = torch.randn((total_m, total_n), dtype=torch.bfloat16)
+        gate_pt = torch.full((total_m, total_n), 0.8, dtype=torch.bfloat16)
+        residual_pt = torch.randn((total_m, total_n), dtype=torch.bfloat16)
+
+        a_dev = to_dram(a_pt, device)
+        b_dev = to_dram(b_pt, device)
+        scale_dev = to_dram(scale_pt, device)
+        bias_dev = to_dram(bias_pt, device)
+        gate_dev = to_dram(gate_pt, device)
+        residual_dev = to_dram(residual_pt, device)
+        y_dev = to_dram(
+            torch.zeros((total_m, total_n), dtype=torch.bfloat16), device
+        )
+
+        kernel = _make_multinode_gated_gelu_residual(m_blk, k_blk, n_blk)
+        kernel(a_dev, b_dev, scale_dev, bias_dev, gate_dev, residual_dev, y_dev)
+
+        mm = a_pt.float() @ b_pt.float()
+        expected = residual_pt.float() + torch.nn.functional.gelu(
+            scale_pt.float() * mm + bias_pt.float()
+        ) * gate_pt.float()
+        result = ttnn.to_torch(y_dev).float()
         assert_pcc(expected, result, threshold=0.99)
