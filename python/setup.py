@@ -88,6 +88,19 @@ class CMakeBuild(build_ext):
             except Exception as exc:
                 print(f"Warning: failed to fix RPATH for {so_file}: {exc}")
 
+    def _sanitize_env_for_cmake(self):
+        """Remove pip build-isolation env vars that break cmake's nested pip calls.
+
+        When pip builds a wheel with PEP 517 isolation it sets variables
+        (PIP_*, PYTHONPATH overrides, etc.) that propagate into cmake's
+        execute_process() calls and can cause the toolchain-venv python to
+        fail importing its own pip.  Clearing them here is safe because
+        cmake uses absolute paths to the toolchain python.
+        """
+        for key in list(os.environ):
+            if key.startswith("PIP_"):
+                del os.environ[key]
+
     def build_(self, ext):
         build_lib = self.build_lib
         if not os.path.exists(build_lib):
@@ -96,52 +109,72 @@ class CMakeBuild(build_ext):
         extension_path = pathlib.Path(self.get_ext_fullpath(ext.name))
         print(f"Running cmake to install ttlang at {extension_path}")
 
+        self._sanitize_env_for_cmake()
+
         cwd = pathlib.Path().absolute()
-        build_dir = cwd.parent / "build"
+        source_dir = cwd.parent
+        build_dir = source_dir / "build"
 
         install_dir = pathlib.Path(self.build_lib)
 
         if self.in_ci():
             install_dir = cwd / "build" / install_dir.name
 
-        cmake_args = [
-            "-G",
-            "Ninja",
-            "-B",
-            str(build_dir),
-            "-DCMAKE_BUILD_TYPE=Release",
-            "-DCMAKE_INSTALL_PREFIX=" + str(install_dir),
-            "-DCMAKE_C_COMPILER=clang",
-            "-DCMAKE_CXX_COMPILER=clang++",
-        ]
+        # Configure only when no prior cmake configuration exists.  Local
+        # developer builds already have a configured build/ directory; re-
+        # running configure just to change the install prefix is unnecessary
+        # and can fail when the cached toolchain venv lacks pip.
+        cmake_cache = build_dir / "CMakeCache.txt"
+        if not cmake_cache.exists():
+            cmake_args = [
+                "cmake",
+                "-G",
+                "Ninja",
+                "-S",
+                str(source_dir),
+                "-B",
+                str(build_dir),
+                "-DCMAKE_BUILD_TYPE=Release",
+                "-DCMAKE_C_COMPILER=clang",
+                "-DCMAKE_CXX_COMPILER=clang++",
+            ]
 
-        if not self.in_ci():
-            cmake_args.extend(["-S", str(cwd.parent)])
+            # Forward toolchain env vars (set by cibuildwheel) as cmake -D
+            # flags.  cmake option() does not read the environment, so the
+            # vars must be forwarded explicitly.
+            if os.environ.get("TTLANG_USE_TOOLCHAIN") == "ON":
+                cmake_args.append("-DTTLANG_USE_TOOLCHAIN=ON")
+                toolchain_dir = os.environ.get("TTLANG_TOOLCHAIN_DIR", "")
+                if toolchain_dir:
+                    cmake_args.append(f"-DTTLANG_TOOLCHAIN_DIR={toolchain_dir}")
 
-        if self.in_ci():
-            subprocess.run(
-                " ".join(
-                    [
-                        "cd",
-                        str(cwd.parent),
-                        "&&",
-                        ".",
-                        "env/activate",
-                        "&&",
-                        "cmake",
-                        *cmake_args,
-                    ]
-                ),
-                shell=True,
-                check=True,
-            )
-        else:
-            self.spawn(["cmake", *cmake_args])
-
-        self.spawn(["cmake", "--build", str(build_dir), "--", "TTLangPythonModules"])
+            self.spawn(cmake_args)
 
         self.spawn(
-            ["cmake", "--install", str(build_dir), "--component", "TTLangPythonWheel"]
+            ["cmake", "--build", str(build_dir), "--target", "TTLangPythonModules"]
+        )
+
+        # The cmake install copies build/python_packages/ which includes a
+        # ttl/sim symlink (from TTLangSimPackage).  setuptools' build_py
+        # step already copied the real sim/ directory into install_dir,
+        # so remove it before the cmake install to avoid a conflict.
+        sim_dir = install_dir / "ttl" / "sim"
+        if sim_dir.is_dir() and not sim_dir.is_symlink():
+            shutil.rmtree(sim_dir)
+
+        # Use --prefix to override the install location at install time.
+        # This avoids reconfiguring the build just to change
+        # CMAKE_INSTALL_PREFIX.
+        self.spawn(
+            [
+                "cmake",
+                "--install",
+                str(build_dir),
+                "--component",
+                "TTLangPythonWheel",
+                "--prefix",
+                str(install_dir),
+            ]
         )
 
         # Post-install: strip binaries and fix RPATH for wheel distribution
@@ -159,6 +192,17 @@ with open(str(readme_path), "r", encoding="utf-8") as readme_file:
 setup(
     name="tt-lang",
     version=version,
+    python_requires=">=3.11",
+    install_requires=[
+        "pydantic<3",
+        "torch>=1.9.0",
+        "numpy>=1.20.0",
+        "greenlet>=3.0.0",
+        "PyYAML>=5.4.0,<=6.0.1",
+        "typing_extensions>=4.12.2",
+        "ml_dtypes>=0.1.0,<=0.6.0; python_version<'3.13'",
+        "ml_dtypes>=0.5.0,<=0.6.0; python_version>='3.13'",
+    ],
     packages=[
         "ttl",
         "ttl._src",
