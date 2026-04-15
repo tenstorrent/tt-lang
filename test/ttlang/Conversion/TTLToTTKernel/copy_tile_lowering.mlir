@@ -34,9 +34,10 @@ func.func @copy_tile_in_compute(
   ^bb0(%tile_in: !ttcore.tile<32x32, f32>, %tile_out: !ttcore.tile<32x32, f32>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %dst, %dst_tile = ttl.copy_tile %tile_in[%i, %j], %dst_idx
-        : !ttcore.tile<32x32, f32>, index -> !ttl.dst, !ttcore.tile<32x32, f32>
-    ttl.tile_store %dst_tile, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+    %dst, %dst_tile = ttl.copy_tile %tile_in[%i, %j] into dst[%dst_idx]
+        : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
+    %c0 = arith.constant 0 : index
+    ttl.tile_store %dst_tile, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, f32>>
 

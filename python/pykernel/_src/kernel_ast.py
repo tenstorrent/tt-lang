@@ -211,8 +211,8 @@ class TTCompilerBase(PyKernelAstBase):
         with InsertionPoint(for_op.body), Location.unknown():
             self.symbol_tables.append({})
 
-            # Add the iterator into the symbol_table
-            self.symbol_tables[-1][node.target.id] = for_op.induction_variable
+            # Add the iterator into the symbol table.
+            self._set_var(node.target.id, for_op.induction_variable)
 
             for stmt in node.body:
                 self.visit(stmt)
@@ -259,17 +259,15 @@ class TTCompilerBase(PyKernelAstBase):
                     raise ValueError(
                         f"Not enough values to unpack from rt_args slice (expected {len(_vars)}, got {len(values)})"
                     )
-                # Since we are unpacking a tuple, types can't be assigned here:
-                sym_table = self.symbol_tables[-1]
+                # Since we are unpacking a tuple, types can't be assigned here.
                 for i in range(len(_vars)):
-                    sym_table[_tuple.elts[i].id] = values[i]
+                    self._set_var(_tuple.elts[i].id, values[i])
 
                 # Exit out of function now
                 return
 
         var = self.visit(node.targets[0])
         value = self.visit(node.value)
-        sym_table = self.symbol_tables[-1]
 
         # Handle Subscript Assignment here
         if isinstance(node.targets[0], ast.Subscript):
@@ -282,13 +280,12 @@ class TTCompilerBase(PyKernelAstBase):
         if hasattr(var, "type") and isinstance(var.type, MemRefType):
             memref.StoreOp(value, var, [arith.ConstantOp(IndexType.get(self.ctx), 0)])
         else:
-            sym_table[var_name] = value
+            self._set_var(var_name, value)
 
     def visit_AnnAssign(self, node):
         # NOTE: TTKernel types can not be used with memrefs
         var = self.visit(node.target)
         value = self.visit(node.value)
-        sym_table = self.symbol_tables[-1]
         var_name = node.target.id
 
         # Check the annotation for array creation
@@ -308,7 +305,7 @@ class TTCompilerBase(PyKernelAstBase):
                 memref_type = MemRefType.get(
                     [elt.value for elt in node.annotation.elts[1:]], var_type
                 )
-                sym_table[var_name] = memref.alloca(memref_type, [], [])
+                self._set_var(var_name, memref.alloca(memref_type, [], []))
                 return
             else:
                 raise NotImplementedError(
@@ -324,7 +321,7 @@ class TTCompilerBase(PyKernelAstBase):
             var_type = value.type
             memref_type = MemRefType.get([1], var_type)
             var = memref.alloca(memref_type, [], [])
-            sym_table[var_name] = var
+            self._set_var(var_name, var)
         else:
             assert isinstance(var, MemRefType), "Can not AnnAssign to non-memref types"
 

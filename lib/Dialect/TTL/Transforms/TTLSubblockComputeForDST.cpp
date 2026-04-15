@@ -17,6 +17,8 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
+#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -103,24 +105,32 @@ struct TTLSubblockComputeForDSTPass
     func::FuncOp funcOp = getOperation();
 
     // Collect compute ops to subblock (avoid modifying while walking).
-    // Skip accumulating computes -- subblocking would break reduction
-    // accumulation by splitting the reduction loop across subblocks.
+    // Skip non-matmul accumulating computes (e.g., reduce_tile) because
+    // subblocking would break their reduction accumulation semantics.
+    // Matmul accumulating computes are safe: K accumulates in-place in
+    // DST without consuming DST slots (effectiveTiles already excludes
+    // reduction dims for matmul -- see hasMatmulBlock logic below).
     SmallVector<ComputeOp> opsToSubblock;
     funcOp.walk([&](ComputeOp computeOp) {
       auto unrollAttr =
           computeOp->getAttrOfType<IntegerAttr>(kUnrollFactorAttrName);
       if (unrollAttr && unrollAttr.getInt() > 1) {
         bool hasAccumulating = false;
+        bool hasMatmulBlock = false;
         computeOp.getBody().walk([&](Operation *op) {
           if (op->hasTrait<TTLAccumulatingOpTrait>()) {
             hasAccumulating = true;
-            return WalkResult::interrupt();
           }
-          return WalkResult::advance();
+          if (isa<TileMatmulBlockOp>(op)) {
+            hasMatmulBlock = true;
+          }
+          return (hasAccumulating && hasMatmulBlock) ? WalkResult::interrupt()
+                                                     : WalkResult::advance();
         });
-        if (!hasAccumulating) {
-          opsToSubblock.push_back(computeOp);
+        if (hasAccumulating && !hasMatmulBlock) {
+          return;
         }
+        opsToSubblock.push_back(computeOp);
       }
     });
 
@@ -181,6 +191,38 @@ private:
       return success();
     }
 
+    // When --strict-f32-acc is set and this compute is inside a user-written
+    // accumulation loop (+=), error if the output type is not f32. Subblocking
+    // a non-f32 accumulating compute reduces precision: the f32 DST partial
+    // sums are truncated to bf16 when packed to L1 per K step.
+    // TODO(ttl): Instead of erroring, allocate an f32 L1 temporary and
+    // emit a cast to bf16 after the loop, giving full f32 precision at
+    // the cost of 2x L1 per tile.
+    if (strictF32Acc) {
+      bool insideL1AccLoop = false;
+      for (Operation *parent = computeOp->getParentOp(); parent;
+           parent = parent->getParentOp()) {
+        if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+          if (forOp->hasAttr(kL1AccLoopAttrName)) {
+            insideL1AccLoop = true;
+            break;
+          }
+        }
+      }
+      if (insideL1AccLoop) {
+        auto outType =
+            cast<RankedTensorType>(computeOp.getDpsInits()[0].getType());
+        auto tileType = cast<ttcore::TileType>(outType.getElementType());
+        if (tileType.getDataType() != ttcore::DataType::Float32) {
+          return computeOp.emitError(
+              "subblocking accumulation loop reduces precision: bf16 L1 "
+              "intermediates truncate f32 DST partial sums per K step; "
+              "reduce block dimensions to fit in f32 DST, use f32 output "
+              "type, or compile without --ttl-strict-f32-acc");
+        }
+      }
+    }
+
     // Only parallel dimensions are candidates for subblocking; reduction
     // dimensions must be fully included in each subblock. Matmul K is
     // excluded because it accumulates in-place (see hasMatmulBlock above).
@@ -210,8 +252,10 @@ private:
     SmallVector<int64_t> parallelSubblockSizes =
         computeMultiDimSubblockSizes(parallelDimSizes, parallelBudget);
 
-    // Expand back to full-rank subblock sizes: reduction dims get their full
-    // size, parallel dims get the computed subblock size.
+    // Reduction dims keep their full size. For matmul, K accumulates
+    // in-place in DST via matmul_block(kt=K_block). L1 accumulation
+    // across user-managed outer K iterations is handled separately by
+    // TTKernelInsertL1Accumulation (kL1AccLoopAttrName).
     SmallVector<int64_t> subblockSizes(rank);
     int64_t parallelIdx = 0;
     for (int64_t d = 0; d < rank; ++d) {

@@ -106,8 +106,9 @@ func.func @single_type_already_sorted(
        %out_tile: !ttcore.tile<32x32, bf16>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
-    %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %sum, %result_view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
+    %c0 = arith.constant 0 : index
+    %sum = ttl.tile_add %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    ttl.tile_store %sum, %result_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> tensor<2x1x!ttcore.tile<32x32, bf16>>
 
@@ -250,12 +251,13 @@ func.func @copy_before_sfpu_reorder(
        %o1: !ttcore.tile<32x32, bf16>):
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
+    %c0 = arith.constant 0 : index
     // Binary at depth 0: reads from CB
-    %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, bf16>
+    %sum = ttl.tile_add %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
     // Unary: exp of c (needs copy_tile, independent of add)
-    %exp = ttl.tile_exp %c_tile : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %sum, %rv0[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
-    ttl.tile_store %exp, %rv1[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
+    %exp = ttl.tile_exp %c_tile into dst[%c0] : !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    ttl.tile_store %sum, %rv0[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %exp, %rv1[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<2x1x!ttcore.tile<32x32, bf16>>
     ttl.yield
   } -> (tensor<2x1x!ttcore.tile<32x32, bf16>>, tensor<2x1x!ttcore.tile<32x32, bf16>>)
 

@@ -81,12 +81,13 @@ The indexing maps encode the broadcast pattern: `A[2x1]` broadcasts along `d1` (
 
 Pass: [lib/Dialect/TTL/Transforms/TTLAssignDST.cpp](../lib/Dialect/TTL/Transforms/TTLAssignDST.cpp)
 
-Assigns DST register indices. The matmul's accumulator operand and output are merged to the same DST slot (both must occupy `DST[0]` since `matmul_block` accumulates in-place). The relu shares `DST[0]` via `InPlaceOpTrait`. The `unroll_factor = 4` indicates the `2x2` output (4 tiles) fits in `bf16` DST capacity (8 tiles).
+Sets DST register indices as `dst_index` operands. The matmul's accumulator operand and output are merged to the same DST slot (both must occupy `DST[0]` since `matmul_block` accumulates in-place). The relu shares `DST[0]` via `InPlaceOpTrait`. The `unroll_factor = 4` indicates the `2x2` output (4 tiles) fits in `bf16` DST capacity (8 tiles).
 
 ```mlir
 ^bb0(%a_t: tile, %b_t: tile, %c_t: tile, %out_t: tile):
-  %mm = ttl.tile_matmul_block %a_t, %b_t, %c_t {dst_idx = 0 : i32} : ...
-  %r = ttl.tile_relu %mm {dst_idx = 0 : i32} : tile
+  %c0 = arith.constant 0 : index
+  %mm = ttl.tile_matmul_block %a_t, %b_t, %c_t into dst[%c0] : ...
+  %r = ttl.tile_relu %mm into dst[%c0] : tile -> tile
   ttl.tile_store %r, %view[%i, %j] : ...
   ttl.yield
 ```
@@ -95,31 +96,36 @@ Assigns DST register indices. The matmul's accumulator operand and output are me
 
 Pass: [lib/Dialect/TTL/Transforms/TTLLowerMatmulBlock.cpp](../lib/Dialect/TTL/Transforms/TTLLowerMatmulBlock.cpp)
 
-Replaces the `ttl.compute` region with a linear sequence of tile-level ops. The matmul block dimensions (`rt=2`, `ct=2`) are derived from the operand tensor shapes. The accumulator tensor is passed as the 3rd operand of `tile_matmul_block`; TTKernel lowering emits `rt*ct` `copy_tile` ops from it. Per-tile unary ops and stores are expanded to `M*N` copies with distinct `dst_idx` values.
+Replaces the `ttl.compute` region with a linear sequence of tile-level ops. The matmul block dimensions (`rt=2`, `ct=2`) are derived from the operand tensor shapes. The accumulator tensor is passed as the 3rd operand of `tile_matmul_block`; TTKernel lowering emits `rt*ct` `copy_tile` ops from it. Per-tile unary ops and stores are expanded to `M*N` copies with distinct `dst_index` values.
 
 `insert-tile-regs-sync` skips matmul computes (detected via `containsOp<TileMatmulBlockOp>`); sync ops are emitted here instead.
 
 ```mlir
+%c0 = arith.constant 0 : index
+%c1 = arith.constant 1 : index
+%c2 = arith.constant 2 : index
+%c3 = arith.constant 3 : index
+
 ttl.tile_regs_acquire
 
 // Single matmul_block call — accumulator %c passed as 3rd operand.
-%mm = ttl.tile_matmul_block %a, %b, %c {dst_idx = 0 : i32}
+%mm = ttl.tile_matmul_block %a, %b, %c into dst[%c0]
     : tensor<2x1x...>, tensor<1x2x...>, tensor<2x2x...> -> tile
 
 // Per-tile relu expansion (M*N = 4 copies).
-ttl.tile_relu %placeholder {dst_idx = 0 : i32} : tile
-ttl.tile_relu %placeholder {dst_idx = 1 : i32} : tile
-ttl.tile_relu %placeholder {dst_idx = 2 : i32} : tile
-ttl.tile_relu %placeholder {dst_idx = 3 : i32} : tile
+ttl.tile_relu %placeholder into dst[%c0] : tile -> tile
+ttl.tile_relu %placeholder into dst[%c1] : tile -> tile
+ttl.tile_relu %placeholder into dst[%c2] : tile -> tile
+ttl.tile_relu %placeholder into dst[%c3] : tile -> tile
 
 ttl.tile_regs_commit
 ttl.tile_regs_wait
 
 // Per-tile store expansion (M*N = 4 copies).
-ttl.tile_store %placeholder, %view[0, 0] {dst_idx = 0 : i32} : ...
-ttl.tile_store %placeholder, %view[0, 1] {dst_idx = 1 : i32} : ...
-ttl.tile_store %placeholder, %view[1, 0] {dst_idx = 2 : i32} : ...
-ttl.tile_store %placeholder, %view[1, 1] {dst_idx = 3 : i32} : ...
+ttl.tile_store %placeholder, %view[0, 0] from dst[%c0] : ...
+ttl.tile_store %placeholder, %view[0, 1] from dst[%c1] : ...
+ttl.tile_store %placeholder, %view[1, 0] from dst[%c2] : ...
+ttl.tile_store %placeholder, %view[1, 1] from dst[%c3] : ...
 
 ttl.tile_regs_release
 ```

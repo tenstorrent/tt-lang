@@ -12,9 +12,11 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/SetVector.h"
+
 #include <cstdint>
 #include <optional>
 
@@ -350,6 +352,100 @@ inline FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
   bool isFloat32 = sawF32 || fp32DestAccEn;
   return getDstCapacity(isFloat32, fullSyncEn);
 }
+
+/// Fold a Value through constant integer arithmetic to resolve its value.
+/// Handles arith.constant directly, and recursively folds arith.addi and
+/// arith.muli where both operands are foldable.
+inline std::optional<int64_t> foldIndexToConstant(Value val) {
+  if (auto constIdx = getConstantIntValue(val)) {
+    return constIdx;
+  }
+  auto *defOp = val.getDefiningOp();
+  if (!defOp) {
+    return std::nullopt;
+  }
+  auto foldBinOp = [](auto binOp, auto combine) -> std::optional<int64_t> {
+    auto lhs = foldIndexToConstant(binOp.getLhs());
+    auto rhs = foldIndexToConstant(binOp.getRhs());
+    if (lhs && rhs) {
+      return combine(*lhs, *rhs);
+    }
+    return std::nullopt;
+  };
+  if (auto addOp = dyn_cast<arith::AddIOp>(defOp)) {
+    return foldBinOp(addOp, std::plus<int64_t>{});
+  }
+  if (auto mulOp = dyn_cast<arith::MulIOp>(defOp)) {
+    return foldBinOp(mulOp, std::multiplies<int64_t>{});
+  }
+  return std::nullopt;
+}
+
+/// Get the dst_index Value from a tile op, or std::nullopt if the op
+/// does not have TTLDstResultOpTrait.
+inline std::optional<Value> getTileOpDstIndex(Operation *op) {
+  if (op->hasTrait<TTLDstResultOpTrait>()) {
+    return op->getOperand(op->getNumOperands() - 1);
+  }
+  return std::nullopt;
+}
+
+/// Set the dst_index Value on a tile op with TTLDstResultOpTrait.
+inline void setTileOpDstIndex(Operation *op, Value newDstIndex) {
+  assert(op->hasTrait<TTLDstResultOpTrait>() &&
+         "setTileOpDstIndex called on op without TTLDstResultOpTrait");
+  op->setOperand(op->getNumOperands() - 1, newDstIndex);
+}
+
+/// Temporary marker attribute for tile ops whose dst_index has not been
+/// assigned yet.
+constexpr llvm::StringLiteral kDstPlaceholderAttrName("ttl.dst_placeholder");
+
+/// Sentinel value for unassigned DST indices. Obviously invalid so any
+/// accidental use fails loudly at TTKernel lowering or on hardware.
+constexpr int64_t kUnassignedDstIndex = -1;
+
+/// Create a placeholder dst_index constant (-1).
+inline Value createPlaceholderDstIndex(OpBuilder &builder, Location loc) {
+  auto constant =
+      arith::ConstantIndexOp::create(builder, loc, kUnassignedDstIndex);
+  return constant.getResult();
+}
+
+/// Mark a tile op as having an unassigned dst_index.
+inline void addPlaceholderDstIndexAttr(Operation *op) {
+  op->setAttr(kDstPlaceholderAttrName, UnitAttr::get(op->getContext()));
+}
+
+/// Create a tile op with a placeholder dst_index and mark the op.
+template <typename TileOp, typename... Args>
+inline TileOp createTileOpWithPlaceholderDstIndex(OpBuilder &builder,
+                                                  Location loc,
+                                                  Args &&...args) {
+  Value dstIndex = createPlaceholderDstIndex(builder, loc);
+  TileOp tileOp =
+      TileOp::create(builder, loc, std::forward<Args>(args)..., dstIndex);
+  addPlaceholderDstIndexAttr(tileOp.getOperation());
+  return tileOp;
+}
+
+/// Collect the CB values targeted by pack_tile ops inside a loop.
+llvm::SmallDenseSet<Value, 2> getPackTileCBs(scf::ForOp loop);
+
+/// Returns true if two loops share any pack_tile CB target.
+bool sharePackCB(scf::ForOp loopA, scf::ForOp loopB);
+
+/// A group of consecutive sibling loops that pack to the same output CB.
+struct LoopGroup {
+  scf::ForOp rootLoop;
+  SmallVector<scf::ForOp> loops;
+  Operation *scopeEnd = nullptr;
+};
+
+/// Collect groups of annotated sibling loops that share a pack CB target.
+SmallVector<LoopGroup> collectLoopGroups(
+    ArrayRef<scf::ForOp> l1AccLoops,
+    const llvm::SmallDenseMap<Operation *, Operation *> &enablePointPerLoop);
 
 } // namespace mlir::tt::ttl
 

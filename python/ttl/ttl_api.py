@@ -47,6 +47,7 @@ from ttl.passes import (
 )
 from ttl.passmanager import PassManager
 
+
 from ._src.auto_profile import (
     build_cb_wait_to_dma_map,
     build_dma_producer_to_cb_map,
@@ -66,6 +67,7 @@ from ._src.tensor_registry import (
 )
 from ._src.ttl_ast import TTLGenericCompiler
 from .circular_buffer import CircularBuffer, get_cb_count
+from .pipe import Pipe, PipeNet
 from .constants import SUPPORTED_MEMORY_SPACES
 from .diagnostics import (
     TTLangCompileError,
@@ -81,6 +83,7 @@ from .dtype_utils import (
 from .kernel_runner import (
     KernelSpec,
     run_kernel_on_device,
+    emit_runner_file,
 )
 from .operators import CopyTransferHandler, TensorBlock, copy
 from .compiler_options import CompilerOptions
@@ -236,10 +239,9 @@ def _run_perf_dump(tensors: tuple, kernel_name: str):
     Run NOC profiler summary and print CB flow / pipe graph after execution.
 
     Called after kernel execution when TTLANG_PERF_DUMP=1 is set.
-    Reads NOC traces from $TT_METAL_HOME/generated/profiler/.logs/,
+    Reads NOC traces from $TT_METAL_HOME/generated/profiler/.logs/ and
     CB flow graph from /tmp/ttlang_cb_flow_graph.json (written by
-    ttl-dump-cb-flow-graph pass), and pipe graph from
-    /tmp/ttlang_pipe_graph.json (copied from compiler temp file).
+    ttl-dump-cb-flow-graph pass).
     """
     _ensure_ttnn()
     from ._src.perf_summary import run as perf_summary_run
@@ -282,14 +284,6 @@ def _run_perf_dump(tensors: tuple, kernel_name: str):
         raise ValueError(f"CB flow graph not found: {cb_flow_path}")
     print("=== CB FLOW GRAPH ===")
     print(cb_flow_path.read_text())
-
-    # Pipe graph (copied from compiler temp file)
-    pipe_graph_path = Path("/tmp/ttlang_pipe_graph.json")
-    if not pipe_graph_path.exists():
-        print(f"[perf_dump] WARNING: Pipe graph not found: {pipe_graph_path}")
-    else:
-        print("=== PIPE GRAPH ===")
-        print(pipe_graph_path.read_text())
 
 
 def _run_signpost_profile(tensors: tuple):
@@ -403,20 +397,41 @@ def _has_float32_args(args) -> bool:
     return False
 
 
+def _require_device(args):
+    """Extract the device from tensor arguments, raising if none are on-device.
+
+    Returns the first non-None device found. Raises ValueError with
+    a message listing which arguments are host tensors and suggesting
+    ttnn.to_device().
+    """
+    for i, arg in enumerate(args):
+        if is_ttnn_tensor(arg):
+            device = arg.device()
+            if device is not None:
+                return device
+    host_args = [
+        f"  arg[{i}]: {arg.shape}" for i, arg in enumerate(args) if is_ttnn_tensor(arg)
+    ]
+    if not host_args:
+        raise ValueError("No device found: no ttnn tensor arguments were provided.")
+    raise ValueError(
+        "No device found on any tensor argument. "
+        "All ttnn tensor inputs are on host:\n"
+        + "\n".join(host_args)
+        + "\nPlace tensors on device before calling the operation, e.g.:\n"
+        "  ttnn.to_device(tensor, device)\n"
+        "  ttnn.from_torch(tensor, ..., device=device)"
+    )
+
+
 def _resolve_grid(grid, args, kwargs):
     """Resolve grid, evaluating callable or 'auto' if needed."""
     if callable(grid):
         return grid(*args, **kwargs)
     if grid == "auto":
-        for arg in args:
-            if is_ttnn_tensor(arg) and hasattr(arg, "device"):
-                device = arg.device()
-                device_grid = device.compute_with_storage_grid_size()
-                return (device_grid.x, device_grid.y)
-        raise ValueError(
-            "grid='auto' requires at least one ttnn tensor argument "
-            "to determine device compute grid"
-        )
+        device = _require_device(args)
+        device_grid = device.compute_with_storage_grid_size()
+        return (device_grid.x, device_grid.y)
     return grid
 
 
@@ -491,6 +506,7 @@ class CompiledTTNNKernel:
         all_source_lines=None,
         thread_to_kernel=None,
         kernel_line_offsets=None,
+        num_pipe_nets=0,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -508,6 +524,7 @@ class CompiledTTNNKernel:
             all_source_lines: Dict mapping kernel name to source lines
             thread_to_kernel: Dict mapping RISC thread name to kernel name
             kernel_line_offsets: Dict mapping kernel name to line offset
+            num_pipe_nets: Number of PipeNets used by this kernel
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -521,6 +538,7 @@ class CompiledTTNNKernel:
         self.all_source_lines = all_source_lines or {}
         self.thread_to_kernel = thread_to_kernel or {}
         self.kernel_line_offsets = kernel_line_offsets or {}
+        self.num_pipe_nets = num_pipe_nets
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
@@ -528,7 +546,7 @@ class CompiledTTNNKernel:
             raise ValueError(f"Expected {self.num_tensors} tensors, got {len(args)}")
 
         # Validate grid against device's compute grid.
-        device = args[0].device()
+        device = _require_device(args)
         device_grid = device.compute_with_storage_grid_size()
         kernel_grid = self.core_ranges.bounding_box().grid_size()
         if kernel_grid.x > device_grid.x or kernel_grid.y > device_grid.y:
@@ -558,6 +576,7 @@ class CompiledTTNNKernel:
             cb_configs=self.cb_configs,
             core_ranges=self.core_ranges,
             program_hash=self.program_hash,
+            num_pipe_nets=self.num_pipe_nets,
         )
 
 
@@ -752,18 +771,48 @@ def _compile_ttnn_kernel(
         all_source_lines=all_source_lines,
         thread_to_kernel=thread_to_kernel,
         kernel_line_offsets=kernel_line_offsets,
+        num_pipe_nets=PipeNet._next_id,
     )
 
     if verbose:
         print(f"\nCompiled kernel ready (compiled {len(kernel_paths)} threads)")
         print("=" * 60)
 
+    emit_runner_path = os.environ.get("TTLANG_EMIT_RUNNER")
+    if emit_runner_path:
+        kernel_specs_for_emit = []
+        for kernel_idx, (kernel_path, thread_type) in enumerate(kernel_paths):
+            tensor_indices = thread_tensor_indices[kernel_idx]
+            spec = KernelSpec(
+                path=kernel_path,
+                thread_type=thread_type,
+                tensor_indices=tensor_indices,
+                config=kernel_configs[kernel_idx],
+            )
+            kernel_specs_for_emit.append(spec)
+
+        if emit_runner_path == "1":
+            first_kernel_path = kernel_paths[0][0]
+            runner_path = first_kernel_path.replace(".cpp", "_runner.py")
+        else:
+            runner_path = emit_runner_path
+
+        emit_runner_file(
+            kernel_specs=kernel_specs_for_emit,
+            cb_configs=cb_configs,
+            grid_cols=grid_cols,
+            grid_rows=grid_rows,
+            num_tensors=len(args),
+            output_path=runner_path,
+            kernel_name="ttlang_kernel",
+        )
+
     return compiled_kernel
 
 
 def _collect_captures(
     f: Callable,
-) -> Dict[str, Union[int, CircularBuffer]]:
+) -> Dict[str, Union[int, CircularBuffer, Pipe]]:
     """
     Collect and convert captured variables from function closure.
 
@@ -785,6 +834,10 @@ def _collect_captures(
         elif is_ttnn_tensor(val):
             return val
         elif isinstance(val, CircularBuffer):
+            return val
+        elif isinstance(val, Pipe):
+            return val
+        elif isinstance(val, PipeNet):
             return val
         else:
             raise TypeError(f"Unhandled capture for vars of type({type(val)})")
@@ -996,6 +1049,7 @@ def _compile_kernel(
     Returns:
         CompiledTTNNKernel ready for execution
     """
+    PipeNet._next_id = 0
     f_params = inspect.signature(f).parameters
 
     # Get kernel source location for error reporting
@@ -1085,6 +1139,7 @@ def _compile_kernel(
 
         # Track per-kernel line offsets for correct display
         kernel_line_offsets = {}
+        noc_kernel_idx = 0
 
         for compile_thread in program.threads:
             try:
@@ -1114,6 +1169,14 @@ def _compile_kernel(
                 ],
                 ctx,
             )
+
+            # Tag noc functions with their index so pipe semaphore
+            # allocation can distinguish threads.
+            if ct.kernel_type == "datamovement":
+                ct.func_entry.attributes["ttl.noc_index"] = IntegerAttr.get(
+                    IntegerType.get_signless(32, ctx), noc_kernel_idx
+                )
+                noc_kernel_idx += 1
 
             # Collect source info for error reporting
             if hasattr(ct, "source_file") and hasattr(ct, "source_lines"):
@@ -1173,14 +1236,17 @@ def _compile_kernel(
         assign_dst_pass = f"ttl-assign-dst{{enable-fpu-binary-ops={fpu_flag}}}"
 
         pipeline_passes = [
+            "func.func(ttl-insert-cb-sync)",
+            "func.func(ttl-annotate-l1-acc-loops)",
             "func.func(convert-ttl-to-compute)",
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",
         ]
         if compiler_options.maximize_dst:
             subblock_sync = "true" if compiler_options.auto_sync else "false"
+            strict_f32 = "true" if compiler_options.strict_f32_acc else "false"
             pipeline_passes.append(
-                f"func.func(ttl-subblock-compute-for-dst{{subblock-sync={subblock_sync}}})"
+                f"func.func(ttl-subblock-compute-for-dst{{subblock-sync={subblock_sync} strict-f32-acc={strict_f32}}})"
             )
         dst_acc_str = "true" if compiler_options.maximize_dst else "false"
         block_mm_str = "true" if compiler_options.use_block_matmul else "false"
@@ -1195,7 +1261,7 @@ def _compile_kernel(
         perf_dump = os.environ.get("TTLANG_PERF_DUMP") == "1"
         if perf_dump:
             # Remove stale outputs from previous runs
-            for stale in ("/tmp/ttlang_cb_flow_graph.json", "/tmp/ttlang_pipe_graph.json"):
+            for stale in ("/tmp/ttlang_cb_flow_graph.json",):
                 try:
                     os.remove(stale)
                 except FileNotFoundError:
@@ -1259,8 +1325,8 @@ def _compile_kernel(
                 enable_debug_info=True,
             )
 
-        # Run the pass manager with error handling for source-aware diagnostics
         try:
+            # Run the pass manager with error handling for source-aware diagnostics
             pm.run(module.operation)
         except Exception as e:
             error_msg = str(e)

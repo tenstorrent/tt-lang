@@ -44,6 +44,10 @@ struct TTLToTTKernelPipelineOptions
       *this, "reduce-full-fp32",
       llvm::cl::desc("Enable FP32 accumulation for reduce operations."),
       llvm::cl::init(true)};
+  Option<bool> strictF32Acc{
+      *this, "strict-f32-acc",
+      llvm::cl::desc("Error if accumulation output exceeds f32 DST capacity."),
+      llvm::cl::init(false)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,
