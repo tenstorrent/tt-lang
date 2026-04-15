@@ -913,6 +913,20 @@ def close_mesh_device(mesh: MeshDevice) -> None:
     """Close a simulated mesh device (no-op)."""
 
 
+@dataclass
+class MeshShardInfo:
+    """Mesh-level partition metadata attached to a Tensor by ShardTensorToMesh.
+
+    Records which axis of the full tensor is partitioned across devices and
+    how many device partitions exist.  Kept separate from MemoryConfig to
+    avoid conflating inter-device distribution with intra-device sharding
+    strategies (HEIGHT_SHARDED, WIDTH_SHARDED, etc.).
+    """
+
+    dim: int
+    num_devices: int
+
+
 class TensorToMesh:
     """Base class for mesh mappers passed to :func:`from_torch` (mirrors ``ttnn.TensorToMesh``)."""
 
@@ -921,43 +935,14 @@ class ShardTensorToMesh(TensorToMesh):
     """Mapper for from_torch: shards a tensor across mesh devices along ``dim``.
 
     When passed to :func:`from_torch`, the resulting :class:`Tensor` carries a
-    :class:`MemoryConfig` that encodes the per-device partition so that
-    :func:`all_reduce` can determine the partition structure from the tensor
-    itself rather than from global device-count state.
+    :class:`MeshShardInfo` recording the partition axis and device count.
+    :func:`all_reduce` reads this metadata to perform the reduction without
+    consulting global device-count state or intra-device sharding strategies.
     """
 
     def __init__(self, mesh: MeshDevice, dim: int) -> None:
         self.mesh = mesh
         self.dim = dim
-
-    def memory_config_for_shape(self, shape: Shape) -> "MemoryConfig":
-        """Return the MemoryConfig that represents this device-level partitioning.
-
-        For a tensor of ``shape``, ``mesh.num_devices`` equal partitions are
-        made along ``dim``.  The result is HEIGHT_SHARDED when ``dim`` is the
-        second-to-last axis of the tensor, WIDTH_SHARDED when it is the last
-        axis, and INTERLEAVED (no sharding recorded) otherwise.
-        """
-        n = self.mesh.num_devices
-        ndim = len(shape)
-        d = self.dim % ndim
-        if shape[d] % n != 0:
-            return DRAM_MEMORY_CONFIG
-        shard_list = list(shape)
-        shard_list[d] //= n
-        shard_h = shard_list[-2] if ndim >= 2 else shard_list[0]
-        shard_w = shard_list[-1] if ndim >= 2 else 1
-        if ndim >= 2 and d == ndim - 2:
-            spec = ShardSpec(shard_grid=(n,), shard_shape=(shard_h, shard_w))
-            return MemoryConfig(
-                strategy=ShardingStrategy.HEIGHT_SHARDED, shard_spec=spec
-            )
-        if ndim >= 2 and d == ndim - 1:
-            spec = ShardSpec(shard_grid=(n,), shard_shape=(shard_h, shard_w))
-            return MemoryConfig(
-                strategy=ShardingStrategy.WIDTH_SHARDED, shard_spec=spec
-            )
-        return DRAM_MEMORY_CONFIG
 
 
 class ReplicateTensorToMesh(TensorToMesh):
@@ -1100,6 +1085,7 @@ class Tensor:
         self.memory_config: MemoryConfig = _maybe_resolve_nd_shard_spec_for_tensor(
             tuple(tensor.shape), memory_config
         )
+        self.mesh_shard_info: Optional[MeshShardInfo] = None
 
     @property
     def shape(self) -> Shape:
@@ -1505,12 +1491,13 @@ def from_torch(
         layout: Layout for the resulting Tensor (overridden by ``spec.layout``
             when ``spec`` is given)
         device: Device parameter (no-op in simulator)
-        memory_config: MemoryConfig to attach (ignored when ``spec`` or
-            ``mesh_mapper`` is given).
-        mesh_mapper: When a :class:`ShardTensorToMesh`, derives and attaches a
-            HEIGHT_SHARDED or WIDTH_SHARDED :class:`MemoryConfig` encoding the
-            per-device partition.  :class:`ReplicateTensorToMesh` is accepted
-            for API compatibility but has no effect.
+        memory_config: MemoryConfig to attach (ignored when ``spec`` is given;
+            used as-is when ``mesh_mapper`` is given alongside an explicit config).
+        mesh_mapper: When a :class:`ShardTensorToMesh`, records the partition
+            axis and device count in the tensor's :attr:`~Tensor.mesh_shard_info`
+            attribute so that :func:`all_reduce` can determine the partition
+            structure without consulting global state.  :class:`ReplicateTensorToMesh`
+            is accepted for API compatibility but has no effect.
         spec: Optional :class:`TensorSpec` from ``TensorSpec(...).width_sharded`` /
             ``nd_sharded`` / etc.; when set, shape must match ``tensor`` and
             sharding metadata is applied.
@@ -1530,7 +1517,7 @@ def from_torch(
         )
     elif isinstance(mesh_mapper, ShardTensorToMesh):
         eff_dtype = dtype
-        eff_mc = mesh_mapper.memory_config_for_shape(tuple(tensor.shape))
+        eff_mc = memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
     else:
         eff_dtype = dtype
         eff_mc = memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
@@ -1538,7 +1525,13 @@ def from_torch(
     if eff_dtype is not None and tensor.dtype != eff_dtype:
         tensor = tensor.to(eff_dtype)
 
-    return Tensor(tensor, layout, memory_config=eff_mc)
+    result = Tensor(tensor, layout, memory_config=eff_mc)
+    if isinstance(mesh_mapper, ShardTensorToMesh):
+        result.mesh_shard_info = MeshShardInfo(
+            dim=mesh_mapper.dim % tensor.ndim,
+            num_devices=mesh_mapper.mesh.num_devices,
+        )
+    return result
 
 
 # Strategy-to-ShardingStrategy mapping for create_sharded_memory_config.
@@ -1848,19 +1841,18 @@ def all_reduce(
 ) -> Tensor:
     """Sum-reduce across all simulated devices.
 
-    The partition structure is read from the tensor's own :class:`MemoryConfig`
-    when it was created with :func:`from_torch` and a
-    :class:`ShardTensorToMesh` mapper.  HEIGHT_SHARDED and WIDTH_SHARDED
-    configs carry ``shard_spec.shard_grid[0]`` (the device count) and
-    ``shard_spec.shard_shape`` (per-device dimensions).  When the tensor has no
-    such metadata the device count falls back to :func:`GetNumAvailableDevices`.
+    The partition structure is read from the tensor's :attr:`~Tensor.mesh_shard_info`
+    attribute, which is set by :func:`from_torch` when a :class:`ShardTensorToMesh`
+    mapper is provided.  This attribute records the partition axis (``dim``) and
+    device count directly, keeping inter-device distribution separate from
+    intra-device sharding strategies stored in :class:`MemoryConfig`.
 
     The correct output for the all-reduce collective is: sum each group of
-    corresponding rows element-wise across all partitions, then give every
+    corresponding slices element-wise across all partitions, then give every
     partition that same sum.
 
     Args:
-        input_tensor: Input tensor.
+        input_tensor: Input tensor (must have been created with ShardTensorToMesh).
         cluster_axis: Ignored (accepted for API compatibility).
         mesh_device: Ignored (accepted for API compatibility).
         memory_config: Optional output memory config.
@@ -1871,35 +1863,22 @@ def all_reduce(
         Tensor where every partition contains the element-wise sum of all
         partitions.
     """
-    mc = input_tensor.memory_config
+    msi = input_tensor.mesh_shard_info
+    if msi is None:
+        raise ValueError("Mesh device is required for all_reduce operation")
+
     t = input_tensor.to_torch()
+    d = msi.dim % t.ndim
+    n = msi.num_devices
+    shard = t.shape[d] // n
 
-    if (
-        mc.strategy
-        in (
-            ShardingStrategy.HEIGHT_SHARDED,
-            ShardingStrategy.WIDTH_SHARDED,
-        )
-        and mc.shard_spec is not None
-    ):
-        n = mc.shard_spec.shard_grid[0]
-        if mc.strategy == ShardingStrategy.HEIGHT_SHARDED:
-            shard = mc.shard_spec.shard_shape[-2]
-        else:
-            shard = mc.shard_spec.shard_shape[-1]
-    else:
-        n = GetNumAvailableDevices()
-        if t.shape[0] % n != 0:
-            return input_tensor
-        shard = t.shape[0] // n
-
-    if t.shape[0] != n * shard:
+    if t.shape[d] != n * shard:
         return input_tensor
 
-    # Sum corresponding rows across all n partitions.
-    reduced = sum(t[i * shard : (i + 1) * shard] for i in range(n))
+    # Sum corresponding slices across all n partitions.
+    reduced = sum(t.narrow(d, i * shard, shard) for i in range(n))
     # Every partition gets the same reduced result.
-    result = torch.cat([reduced] * n).contiguous()  # type: ignore[arg-type]
+    result = torch.cat([reduced] * n, dim=d).contiguous()  # type: ignore[arg-type]
 
     if dtype is not None and result.dtype != dtype:
         result = result.to(dtype)
@@ -1908,6 +1887,7 @@ def all_reduce(
         memory_config if memory_config is not None else input_tensor.memory_config
     )
     result_tensor = Tensor(result, input_tensor.layout, out_memory_config)
+    result_tensor.mesh_shard_info = msi
     if hasattr(input_tensor, "_name"):
         result_tensor._name = input_tensor._name  # type: ignore[attr-defined]
     return result_tensor

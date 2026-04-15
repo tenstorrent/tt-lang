@@ -2127,38 +2127,39 @@ class TestRowMajorLayout:
 class TestAllReduce:
     """Tests for :func:`~sim.ttnnsim.all_reduce`.
 
-    Covers both the primary path (tensor created with ShardTensorToMesh, so the
-    partition structure is read from MemoryConfig) and the fallback path (plain
-    tensor, partition determined by GetNumAvailableDevices).
+    Partition structure is communicated via the tensor's ``mesh_shard_info``
+    attribute, which is set by :func:`from_torch` when a
+    :class:`~ttnnsim.ShardTensorToMesh` mapper is provided.  This is kept
+    separate from the intra-device sharding strategies stored in
+    :class:`~ttnnsim.MemoryConfig`.
     """
-
-    # ---- Primary path: ShardTensorToMesh sets MemoryConfig ----
 
     def _mesh(self, n: int) -> ttnn.MeshDevice:
         return ttnn.open_mesh_device(ttnn.MeshShape(1, n))
 
-    def test_shard_to_mesh_sets_height_sharded_config(self) -> None:
-        """from_torch with ShardTensorToMesh attaches HEIGHT_SHARDED MemoryConfig."""
+    def test_shard_to_mesh_sets_mesh_shard_info(self) -> None:
+        """from_torch with ShardTensorToMesh records dim and device count in mesh_shard_info."""
         mesh = self._mesh(4)
         t = ttnn.from_torch(
             torch.zeros(8, 6),
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
         )
-        assert t.memory_config.strategy == ShardingStrategy.HEIGHT_SHARDED
-        assert t.memory_config.shard_spec is not None
-        assert t.memory_config.shard_spec.shard_grid == (4,)
-        assert t.memory_config.shard_spec.shard_shape == (2, 6)
+        assert t.mesh_shard_info is not None
+        assert t.mesh_shard_info.dim == 0
+        assert t.mesh_shard_info.num_devices == 4
+        assert t.memory_config == ttnn.DRAM_MEMORY_CONFIG
 
-    def test_shard_to_mesh_width_sharded(self) -> None:
-        """ShardTensorToMesh along the last dim produces WIDTH_SHARDED config."""
+    def test_shard_to_mesh_records_width_dim(self) -> None:
+        """ShardTensorToMesh along the last dim records dim=1 in mesh_shard_info."""
         mesh = self._mesh(3)
         t = ttnn.from_torch(
             torch.zeros(4, 9),
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=1),
         )
-        assert t.memory_config.strategy == ShardingStrategy.WIDTH_SHARDED
-        assert t.memory_config.shard_spec.shard_grid == (3,)
-        assert t.memory_config.shard_spec.shard_shape == (4, 3)
+        assert t.mesh_shard_info is not None
+        assert t.mesh_shard_info.dim == 1
+        assert t.mesh_shard_info.num_devices == 3
+        assert t.memory_config == ttnn.DRAM_MEMORY_CONFIG
 
     def test_all_reduce_via_mesh_sums_shards(self) -> None:
         """all_reduce over a ShardTensorToMesh tensor sums the shards."""
@@ -2225,34 +2226,38 @@ class TestAllReduce:
         )
         ttnn.all_reduce(t, cluster_axis=0, mesh_device=mesh)
 
-    # ---- Fallback path: plain tensor, device count from GetNumAvailableDevices ----
+    # ---- Error on unsharded tensor ----
 
-    def test_fallback_sums_shards(self) -> None:
-        """Without mesh metadata, partition count comes from GetNumAvailableDevices."""
-        ttnn.set_num_devices(4)
-        data = torch.zeros(8, 4)
-        data[0:2, :] = 1.0
-        t = ttnn.Tensor(data)
-        result = ttnn.all_reduce(t)
-        expected_shard = torch.ones(2, 4)
-        for i in range(4):
-            assert torch.allclose(
-                result.to_torch()[i * 2 : (i + 1) * 2], expected_shard
-            )
+    def test_all_reduce_requires_shard_metadata(self) -> None:
+        """all_reduce raises ValueError when the tensor has no mesh sharding metadata."""
+        t = ttnn.Tensor(torch.ones(8, 4))
+        with pytest.raises(
+            ValueError, match="Mesh device is required for all_reduce operation"
+        ):
+            ttnn.all_reduce(t)
 
-    def test_fallback_not_divisible_returns_unchanged(self) -> None:
-        """Tensor not divisible by device count is returned unchanged."""
-        ttnn.set_num_devices(3)
-        data = torch.ones(8, 4)
-        t = ttnn.Tensor(data)
-        result = ttnn.all_reduce(t)
-        assert torch.allclose(result.to_torch(), data)
-
-    def test_shard_tensor_not_divisible_returns_dram_config(self) -> None:
-        """from_torch with ShardTensorToMesh falls back to DRAM when indivisible."""
+    def test_shard_tensor_not_divisible_still_sets_mesh_shard_info(self) -> None:
+        """from_torch with ShardTensorToMesh records mesh_shard_info even when indivisible."""
         mesh = self._mesh(3)
         t = ttnn.from_torch(
             torch.zeros(8, 4),
             mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
         )
-        assert t.memory_config.strategy == ShardingStrategy.INTERLEAVED
+        assert t.mesh_shard_info is not None
+        assert t.mesh_shard_info.num_devices == 3
+        assert t.mesh_shard_info.dim == 0
+
+    def test_all_reduce_3d_partitioned_along_middle_dim(self) -> None:
+        """all_reduce on a 3-D tensor partitioned along dim 1 reduces along that axis."""
+        mesh = self._mesh(2)
+        # Shape (B, H*n, W) — partitioned along dim 1.
+        data = torch.zeros(3, 4, 5)
+        data[:, 0:2, :] = 1.0  # first device's shard
+        data[:, 2:4, :] = 3.0  # second device's shard
+        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=1))
+        assert t.mesh_shard_info is not None
+        assert t.mesh_shard_info.dim == 1
+        result = ttnn.all_reduce(t)
+        expected_shard = torch.full((3, 2, 5), 4.0)
+        assert torch.allclose(result.to_torch()[:, 0:2, :], expected_shard)
+        assert torch.allclose(result.to_torch()[:, 2:4, :], expected_shard)
