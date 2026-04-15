@@ -245,15 +245,20 @@ class NdShardSpec:
     constructed as ``tensor_shape[i] // shard_shape[i]`` (each full tensor
     dimension must divide evenly by ``shard_shape[i]``).
 
-    For low-level or round-robin tests, pass ``shard_grid`` explicitly and/or
-    set ``distribution`` to :data:`ShardDistributionStrategy.ROUND_ROBIN_1D`.
+    ``distribution`` defaults to :data:`ShardDistributionStrategy.ROUND_ROBIN_1D`,
+    matching tt-metal's Python binding for ``NdShardSpec`` (see ``tensor.cpp``).
+    When ``shard_grid`` is omitted and derived from tensor shape in
+    :meth:`with_resolved_shard_grid`, the result uses :data:`ShardDistributionStrategy.GRID_2D`
+    (dense N-D shard boxes), which matches the tensor sharding tech report examples
+    that only specify ``shard_shape``.
+
     ``num_cores`` applies only to ROUND_ROBIN (modulus for shard assignment).
     """
 
     shard_shape: Shape
     core_ranges: Optional["CoreRangeSet"] = None
     shard_grid: Optional[Shape] = None
-    distribution: ShardDistributionStrategy = ShardDistributionStrategy.GRID_2D
+    distribution: ShardDistributionStrategy = ShardDistributionStrategy.ROUND_ROBIN_1D
     num_cores: Optional[int] = None
 
     def __post_init__(self) -> None:
@@ -279,7 +284,12 @@ class NdShardSpec:
                     f"tensor dimension {i} size {ts} is not divisible by shard_shape[{i}]={ss}"
                 )
             grid.append(ts // ss)
-        return replace(self, shard_grid=tuple(grid))
+        # Implicit shard_grid from tensor shape implies dense grid semantics (tech report).
+        return replace(
+            self,
+            shard_grid=tuple(grid),
+            distribution=ShardDistributionStrategy.GRID_2D,
+        )
 
 
 class MemoryConfig:
