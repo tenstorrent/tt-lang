@@ -4,6 +4,8 @@
 
 #include "ttlang/Dialect/TTL/Passes.h" // IWYU pragma: keep
 
+#include "PipeGraph.h"
+#include "PipeLowering.h"
 #include "ttlang/Dialect/TTKernel/Transforms/TTKernelCleanupPatterns.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -15,6 +17,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LogicalResult.h"
@@ -32,8 +35,12 @@
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/JSON.h"
+#include "llvm/Support/raw_ostream.h"
+#include <cstdlib>
 
 namespace mlir::tt::ttl {
 #define GEN_PASS_DEF_TTLCONVERTTTLTOTTKERNEL
@@ -52,6 +59,8 @@ constexpr llvm::StringLiteral kBaseCTAIndexAttr = "ttl.base_cta_index";
 // addresses). CRTA is filtered per-thread, containing only addresses for
 // tensors this thread uses.
 constexpr llvm::StringLiteral kCRTAIndicesAttr = "ttl.crta_indices";
+
+// PipeGraph is defined in PipeGraph.h.
 
 class TTLToTTKernelTypeConverter : public TypeConverter {
 public:
@@ -410,11 +419,74 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
   }
 };
 
-enum class CopyOperandKind { TensorSlice, CircularBuffer, Unknown };
+} // namespace
+
+//===----------------------------------------------------------------------===//
+// PipeGraph implementation
+//===----------------------------------------------------------------------===//
+
+FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
+  PipeGraph graph;
+
+  // Find all Pipe->CB copies (receiver side) and extract CB index
+  LogicalResult walkResult = success();
+  mod.walk([&](CopyOp copyOp) {
+    if (failed(walkResult)) {
+      return;
+    }
+    auto srcPipeType = dyn_cast<PipeType>(copyOp.getSrc().getType());
+    if (!srcPipeType) {
+      return;
+    }
+
+    // Found Pipe->CB copy: this is the receiver side
+    Value dstCB = copyOp.getDst();
+    auto cbType = dyn_cast<CircularBufferType>(dstCB.getType());
+    if (!cbType) {
+      copyOp.emitWarning("pipe copy destination is not a circular buffer");
+      return;
+    }
+
+    // Trace to the BindCBOp to get the CB index
+    Value cbVal = traceUnrealizedCasts(dstCB);
+    auto bindOp = cbVal.getDefiningOp<BindCBOp>();
+    if (!bindOp) {
+      copyOp.emitWarning("could not trace pipe receiver to a BindCBOp");
+      return;
+    }
+
+    int64_t cbIndex = bindOp.getCbIndex().getSExtValue();
+    walkResult = graph.addReceiverCB(
+        srcPipeType.getSrcX(), srcPipeType.getSrcY(),
+        srcPipeType.getDstStartX(), srcPipeType.getDstStartY(),
+        srcPipeType.getDstEndX(), srcPipeType.getDstEndY(),
+        srcPipeType.getPipeNetId(), cbIndex, cbType.getBlockCount(),
+        copyOp.getLoc(), copyOp);
+  });
+
+  if (failed(walkResult)) {
+    return failure();
+  }
+
+  graph.assignGatherSlotIndices();
+
+  if (failed(graph.verifyGatherBlockCounts())) {
+    return failure();
+  }
+
+  return graph;
+}
+
+namespace {
+
+enum class CopyOperandKind { TensorSlice, CircularBuffer, Pipe, Unknown };
 
 static CopyOperandKind classifyOperand(Value v) {
   if (llvm::isa<CircularBufferType>(v.getType())) {
     return CopyOperandKind::CircularBuffer;
+  }
+  if (llvm::isa<PipeType>(v.getType())) {
+    return CopyOperandKind::Pipe;
   }
   if (v.getDefiningOp<TensorSliceOp>()) {
     return CopyOperandKind::TensorSlice;
@@ -716,7 +788,9 @@ struct TensorSliceLowering : OpConversionPattern<TensorSliceOp> {
 };
 
 struct CopyLowering : OpConversionPattern<CopyOp> {
-  using OpConversionPattern::OpConversionPattern;
+  CopyLowering(const TypeConverter &typeConverter, MLIRContext *context,
+               const PipeGraph *pipeGraph)
+      : OpConversionPattern(typeConverter, context), pipeGraph(pipeGraph) {}
 
   LogicalResult
   matchAndRewrite(CopyOp op, OpAdaptor adaptor,
@@ -731,12 +805,49 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     auto srcKind = classifyOperand(src);
     auto dstKind = classifyOperand(dst);
 
-    // Validate: copy requires exactly one TensorSlice and one CircularBuffer.
     bool srcIsSlice = srcKind == CopyOperandKind::TensorSlice;
     bool srcIsCB = srcKind == CopyOperandKind::CircularBuffer;
+    bool srcIsPipe = srcKind == CopyOperandKind::Pipe;
     bool dstIsSlice = dstKind == CopyOperandKind::TensorSlice;
     bool dstIsCB = dstKind == CopyOperandKind::CircularBuffer;
+    bool dstIsPipe = dstKind == CopyOperandKind::Pipe;
 
+    // Pipe transfers: CB <-> Pipe
+    if (srcIsCB && dstIsPipe) {
+      // CB -> Pipe: source core multicasts data to destination cores
+      // Look up receiver CB info for gather patterns
+      const ReceiverCBInfo *receiverInfo = nullptr;
+      if (pipeGraph) {
+        auto pipeType = llvm::cast<PipeType>(adaptor.getDst().getType());
+        receiverInfo = pipeGraph->getReceiverInfo(
+            pipeType.getSrcX(), pipeType.getSrcY(), pipeType.getDstStartX(),
+            pipeType.getDstStartY(), pipeType.getDstEndX(),
+            pipeType.getDstEndY(), pipeType.getPipeNetId());
+      }
+      // Determine CB access context: consumer (cb_wait/cb_pop) vs producer
+      // (cb_reserve/cb_push). This controls whether we read from the CB's
+      // read pointer or write pointer for the pipe source address.
+      // Use dominance to correctly handle CBs in nested regions (e.g.,
+      // inside scf.if from pipe callbacks) and CBs used in both roles.
+      DominanceInfo domInfo(op->getParentOfType<func::FuncOp>());
+      bool isConsumerCB = llvm::any_of(src.getUsers(), [&](Operation *user) {
+        return isa<CBWaitOp>(user) && user->getOperand(0) == src &&
+               domInfo.dominates(user, op);
+      });
+      return lowerCBToPipe(op, adaptor.getSrc(), adaptor.getDst(), receiverInfo,
+                           isConsumerCB, rewriter);
+    }
+    if (srcIsPipe && dstIsCB) {
+      // Pipe -> CB: destination receives data via multicast from source
+      return lowerPipeToCB(op, adaptor.getSrc(), adaptor.getDst(), pipeGraph,
+                           rewriter);
+    }
+    if (srcIsPipe || dstIsPipe) {
+      return rewriter.notifyMatchFailure(
+          op, "pipe copy requires CB <-> Pipe, got invalid combination");
+    }
+
+    // Non-pipe transfers: validate exactly one TensorSlice and one CB.
     if (!((srcIsSlice && dstIsCB) || (srcIsCB && dstIsSlice))) {
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
         diag << "ttl.copy requires one tensor_slice and one circular_buffer, "
@@ -765,6 +876,9 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     return lowerTensorCBCopy(op, sliceOp, adaptor.getSrc(),
                              NocCopyDirection::Write, rewriter, *typeConverter);
   }
+
+private:
+  const PipeGraph *pipeGraph;
 };
 
 struct WaitLowering : OpConversionPattern<WaitOp> {
@@ -776,13 +890,15 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
     // TODO(ttl): Lower ttl.wait to TRID-specific barriers keyed by the transfer
     // handle (read vs write barrier based on transfer direction). Issue: #87.
     //
-    // MVP behavior: require a direction-typed handle and emit the
-    // corresponding global barrier. Untyped handles are rejected by the
-    // verifier, but we also fail the rewrite defensively.
+    // MVP behavior: emit the corresponding global barrier based on transfer
+    // direction. Untyped handles (no kind) are no-ops - used for pipe receives
+    // where data arrives via multicast and no local barrier is needed.
     auto kind = getTransferKindFromHandleType(adaptor.getXf().getType());
     if (!kind) {
-      return rewriter.notifyMatchFailure(
-          op, "requires direction-typed !ttl.transfer_handle<read|write>");
+      // No transfer kind means no barrier needed (e.g., pipe receive where
+      // data arrives via multicast from source core).
+      rewriter.eraseOp(op);
+      return success();
     }
     if (*kind == TransferKind::read) {
       ttk::NocAsyncReadBarrierOp::create(rewriter, op.getLoc());
@@ -852,6 +968,7 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
       return failure();
     }
     op->removeAttr("ttl.kernel_thread");
+    op->removeAttr("ttl.noc_index");
     op->setAttr("ttkernel.thread", ttlAttr);
 
     // If function has arguments, we need to transform them
@@ -932,11 +1049,22 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
            typeConverter.isLegal(&op.getBody());
   });
 
+  // Build pipe graph to track receiver CB addresses for gather patterns.
+  // This must happen before lowering so we can look up receiver info.
+  auto pipeGraphOrErr = PipeGraph::build(mod);
+  if (failed(pipeGraphOrErr)) {
+    return failure();
+  }
+  PipeGraph pipeGraph = std::move(*pipeGraphOrErr);
+
   RewritePatternSet patterns(&ctx);
-  patterns.add<BindCBLowering, TensorSliceLowering, CopyLowering, WaitLowering,
+  // CopyLowering needs the pipe graph for gather pattern receiver CB lookup
+  patterns.add<CopyLowering>(typeConverter, &ctx, &pipeGraph);
+  patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
                TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering>(
       typeConverter, &ctx);
+  populatePipeLoweringPatterns(patterns, typeConverter);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 

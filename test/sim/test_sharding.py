@@ -162,7 +162,11 @@ class TestNdSharding:
     """Tests for ND_SHARDED counting (NdShardSpec / ShardDistributionStrategy)."""
 
     def test_nd_shard_origin_from_key_full_rank(self) -> None:
-        spec = NdShardSpec(shard_shape=(64, 64), shard_grid=(2, 4))
+        spec = NdShardSpec(
+            shard_shape=(64, 64),
+            shard_grid=(2, 4),
+            distribution=ShardDistributionStrategy.GRID_2D,
+        )
         mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=spec)
         t = ttnn.Tensor(torch.zeros(128, 256), memory_config=mc)
         assert shard_origin_from_key(t, (slice(2, 4), slice(4, 6))) == (64, 128)
@@ -480,7 +484,11 @@ class TestRowMajorShardingParity:
             ) == count_local_remote_l1_dram_for_getitem(t_rm, kr, core)
 
     def test_shard_origin_from_key_row_major_2d(self) -> None:
-        spec = NdShardSpec(shard_shape=(64, 64), shard_grid=(2, 4))
+        spec = NdShardSpec(
+            shard_shape=(64, 64),
+            shard_grid=(2, 4),
+            distribution=ShardDistributionStrategy.GRID_2D,
+        )
         mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=spec)
         t = ttnn.Tensor(torch.zeros(128, 256), ttnn.ROW_MAJOR_LAYOUT, memory_config=mc)
         assert shard_origin_from_key(t, (slice(64, 128), slice(128, 192))) == (64, 128)

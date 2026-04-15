@@ -11,12 +11,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Pass/Pass.h"
 
@@ -63,6 +65,19 @@ struct TTKernelCombinePackTilesPass
 
   void runOnOperation() override {
     getOperation().walk([](Block *block) {
+      // Skip blocks inside reduction loops: pack_tile_block is
+      // incompatible with L1 accumulation (pack_reconfig_l1_acc).
+      // L1 acc requires individual pack_tile calls so each K iteration
+      // can independently add to the existing L1 value.
+      for (Operation *parent = block->getParentOp(); parent;
+           parent = parent->getParentOp()) {
+        if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+          if (forOp->hasAttr(kReductionLoopAttrName) ||
+              forOp->hasAttr(kL1AccLoopAttrName)) {
+            return;
+          }
+        }
+      }
       // Collect all combinable runs first, then replace them. Replacing
       // during iteration would invalidate the block's operation list.
       SmallVector<SmallVector<ttk::PackTileOp>> runs;

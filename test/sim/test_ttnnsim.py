@@ -1118,9 +1118,9 @@ class TestShardingTypes:
         assert spec.distribution == ShardDistributionStrategy.GRID_2D
 
     def test_nd_shard_spec_default_distribution(self) -> None:
-        """NdShardSpec defaults to GRID_2D (tech report ND style)."""
+        """NdShardSpec defaults to ROUND_ROBIN_1D (matches tt-metal ``NdShardSpec`` binding)."""
         spec = NdShardSpec(shard_shape=(1, 1), shard_grid=(4, 4))
-        assert spec.distribution == ShardDistributionStrategy.GRID_2D
+        assert spec.distribution == ShardDistributionStrategy.ROUND_ROBIN_1D
 
     def test_memory_config_interleaved(self) -> None:
         """MemoryConfig without shard_spec defaults to INTERLEAVED."""
@@ -1137,7 +1137,11 @@ class TestShardingTypes:
 
     def test_memory_config_nd_sharded(self) -> None:
         """MemoryConfig accepts an NdShardSpec for ND_SHARDED strategy."""
-        spec = NdShardSpec(shard_shape=(2, 2), shard_grid=(2, 4))
+        spec = NdShardSpec(
+            shard_shape=(2, 2),
+            shard_grid=(2, 4),
+            distribution=ShardDistributionStrategy.GRID_2D,
+        )
         mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=spec)
         assert mc.strategy == ShardingStrategy.ND_SHARDED
         assert mc.nd_shard_spec is spec
@@ -1249,7 +1253,11 @@ class TestTensorMemoryConfig:
 
     def test_nd_sharded_propagated_through_getitem(self) -> None:
         """Slicing an ND_SHARDED Tensor propagates memory_config."""
-        spec = NdShardSpec(shard_shape=(64, 64), shard_grid=(2, 4))
+        spec = NdShardSpec(
+            shard_shape=(64, 64),
+            shard_grid=(2, 4),
+            distribution=ShardDistributionStrategy.GRID_2D,
+        )
         mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=spec)
         t = ttnn.Tensor(torch.zeros(128, 256), memory_config=mc)
         sliced = t[0:2, 0:2]
@@ -1861,6 +1869,7 @@ class TestTensorShardingTechReportExamples:
         assert ttnn.is_sharded(advanced_nd_sharded)
         nd = advanced_nd_sharded.memory_config.nd_shard_spec
         assert nd is not None
+        assert nd.distribution == ShardDistributionStrategy.GRID_2D
         total_nd = math.prod(advanced_nd_sharded.shape)
         loc0_nd, rem0_nd, _ = count_local_remote_l1_dram(advanced_nd_sharded, 0)
         loc1_nd, rem1_nd, _ = count_local_remote_l1_dram(advanced_nd_sharded, 1)

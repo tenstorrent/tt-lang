@@ -31,6 +31,7 @@ from ttl.ttl_api import (
     CopyTransferHandler,
     TensorBlock,
 )
+from ttl.pipe import Pipe, PipeNet
 
 __all__ = [
     "operation",
@@ -41,6 +42,8 @@ __all__ = [
     "CompilerOptions",
     "TensorBlock",
     "CopyTransferHandler",
+    "Pipe",
+    "PipeNet",
     "make_dataflow_buffer_like",
     "copy",
     "node",
