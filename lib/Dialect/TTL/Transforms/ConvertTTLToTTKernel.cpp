@@ -13,11 +13,11 @@
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/Dominance.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LogicalResult.h"
@@ -830,11 +830,10 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
       // Use dominance to correctly handle CBs in nested regions (e.g.,
       // inside scf.if from pipe callbacks) and CBs used in both roles.
       DominanceInfo domInfo(op->getParentOfType<func::FuncOp>());
-      bool isConsumerCB = llvm::any_of(
-          src.getUsers(), [&](Operation *user) {
-            return isa<CBWaitOp>(user) && user->getOperand(0) == src &&
-                   domInfo.dominates(user, op);
-          });
+      bool isConsumerCB = llvm::any_of(src.getUsers(), [&](Operation *user) {
+        return isa<CBWaitOp>(user) && user->getOperand(0) == src &&
+               domInfo.dominates(user, op);
+      });
       return lowerCBToPipe(op, adaptor.getSrc(), adaptor.getDst(), receiverInfo,
                            isConsumerCB, rewriter);
     }
