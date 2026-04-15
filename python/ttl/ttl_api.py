@@ -66,7 +66,7 @@ from ._src.tensor_registry import (
     register_tensor_source,
 )
 from ._src.ttl_ast import TTLGenericCompiler
-from .circular_buffer import CircularBuffer, ScratchDFBConfig, get_cb_count
+from .circular_buffer import CircularBuffer, CompilerAllocatedDFBConfig, get_cb_count
 from .pipe import Pipe, PipeNet
 from .constants import SUPPORTED_MEMORY_SPACES
 from .diagnostics import (
@@ -871,45 +871,59 @@ def _collect_cb_configs(threads):
     return [cb_configs_dict.get(i) for i in range(max_idx + 1)]
 
 
-# Map MLIR element type strings to ttnn-compatible data format names.
+# Map MLIR element type names to ttnn-compatible data format names.
+# Keyed by exact MLIR type mnemonic (no substring matching).
 _MLIR_TYPE_TO_FORMAT = {
     "bf16": "bfloat16",
     "f16": "float16",
     "f32": "float32",
+    "i32": "int32",
+    "ui32": "uint32",
+    "ui16": "uint16",
 }
 
 
-def _extract_scratch_dfbs(module):
-    """Read ttl.scratch_dfbs module attribute and return ScratchDFBConfig list.
+def _parse_mlir_element_type(type_str: str) -> str:
+    """Extract the base data format name from an MLIR TypeAttr string.
+
+    The TypeAttr prints as e.g. "bf16" or "!ttcore.tile<32x32, bf16>".
+    This function extracts the trailing type mnemonic and maps it to a
+    ttnn-compatible format name.
+    """
+    # For compound types like "!ttcore.tile<32x32, bf16>", extract the
+    # type after the last comma. For bare types like "bf16", use as-is.
+    token = type_str.strip()
+    if "," in token:
+        token = token.rsplit(",", 1)[1].strip().rstrip(">").strip()
+    fmt = _MLIR_TYPE_TO_FORMAT.get(token)
+    if fmt is not None:
+        return fmt
+    raise ValueError(
+        f"Unrecognized MLIR element type '{token}' (from '{type_str}'). "
+        f"Known types: {list(_MLIR_TYPE_TO_FORMAT.keys())}"
+    )
+
+
+def _extract_compiler_allocated_dfbs(module):
+    """Read ttl.compiler_allocated_dfbs module attribute.
 
     Returns an empty list when the attribute is absent (no compiler-allocated
-    DFBs). Each entry in the attribute is a DictionaryAttr with dfb_index,
-    num_tiles, element_type, and block_count.
+    DFBs). Each entry is a DictionaryAttr with dfb_index, num_tiles,
+    element_type, and block_count.
     """
-    scratch_attr = module.operation.attributes.get("ttl.scratch_dfbs", None)
-    if scratch_attr is None:
+    attr = module.operation.attributes.get("ttl.compiler_allocated_dfbs", None)
+    if attr is None:
         return []
 
     configs = []
-    for entry in scratch_attr:
+    for entry in attr:
         dfb_index = int(entry["dfb_index"])
         num_tiles = int(entry["num_tiles"])
         block_count = int(entry["block_count"])
-
-        # element_type is a TypeAttr; extract its string representation.
-        element_type_attr = entry["element_type"]
-        type_str = str(element_type_attr).strip()
-        # The TypeAttr prints as e.g. "bf16" or "!ttcore.tile<32x32, bf16>".
-        # Extract the base data format from the type string.
-        for mlir_name, fmt_name in _MLIR_TYPE_TO_FORMAT.items():
-            if mlir_name in type_str:
-                data_format = fmt_name
-                break
-        else:
-            data_format = type_str
+        data_format = _parse_mlir_element_type(str(entry["element_type"]))
 
         configs.append(
-            ScratchDFBConfig(
+            CompilerAllocatedDFBConfig(
                 dfb_index=dfb_index,
                 num_tiles=num_tiles,
                 data_format=data_format,
@@ -919,26 +933,27 @@ def _extract_scratch_dfbs(module):
     return configs
 
 
-def _merge_dfb_configs(cb_configs, scratch_dfbs):
-    """Merge compiler-allocated scratch DFBs into the CB config list.
+def _merge_dfb_configs(cb_configs, compiler_allocated_dfbs):
+    """Merge compiler-allocated DFBs into the CB config list.
 
-    Extends cb_configs to cover max(user_dfb_index, scratch_dfb_index) + 1
-    entries. Scratch DFBs are placed at their dfb_index positions.
+    Extends cb_configs to cover all DFB indices. Compiler-allocated DFBs
+    are placed at their dfb_index positions.
     """
-    if not scratch_dfbs:
+    if not compiler_allocated_dfbs:
         return cb_configs
 
     user_max = len(cb_configs) - 1 if cb_configs else -1
-    scratch_max = max(sc.dfb_index for sc in scratch_dfbs)
-    total = max(user_max, scratch_max) + 1
+    alloc_max = max(dfb.dfb_index for dfb in compiler_allocated_dfbs)
+    total = max(user_max, alloc_max) + 1
 
     merged = list(cb_configs) + [None] * (total - len(cb_configs))
-    for sc in scratch_dfbs:
-        if merged[sc.dfb_index] is not None:
+    for dfb in compiler_allocated_dfbs:
+        if merged[dfb.dfb_index] is not None:
             raise ValueError(
-                f"Scratch DFB index {sc.dfb_index} collides with an existing DFB."
+                f"Compiler-allocated DFB index {dfb.dfb_index} collides with "
+                f"an existing DFB."
             )
-        merged[sc.dfb_index] = sc
+        merged[dfb.dfb_index] = dfb
     return merged
 
 
@@ -1433,9 +1448,9 @@ def _compile_kernel(
             first_thread = next(iter(all_source_lines.keys()))
             profile_source_lines = all_source_lines[first_thread]
 
-        # Merge compiler-allocated scratch DFBs into the CB config list.
-        scratch_dfbs = _extract_scratch_dfbs(module)
-        cb_configs = _merge_dfb_configs(cb_configs, scratch_dfbs)
+        # Merge compiler-allocated DFBs into the CB config list.
+        compiler_allocated_dfbs = _extract_compiler_allocated_dfbs(module)
+        cb_configs = _merge_dfb_configs(cb_configs, compiler_allocated_dfbs)
 
         # Compile to CompiledTTNNKernel for ttnn.generic_op
         compiled_kernel = _compile_ttnn_kernel(

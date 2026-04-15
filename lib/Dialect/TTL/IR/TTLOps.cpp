@@ -1068,7 +1068,7 @@ mlir::tt::ttl::ReduceOp::getDFBInputOperandIndices() {
 
 llvm::SmallVector<unsigned>
 mlir::tt::ttl::BcastOp::getDFBInputOperandIndices() {
-  return {0}; // input only; output is shape-donor
+  return {0, 1}; // input and output both require CB-attached values
 }
 
 llvm::SmallVector<unsigned>

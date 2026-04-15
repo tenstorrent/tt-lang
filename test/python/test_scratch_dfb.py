@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Tests for compiler-allocated scratch dataflow buffers.
+Tests for compiler-allocated intermediate dataflow buffers.
 
 The ttl-insert-intermediate-dfbs pass automatically creates DFBs when a
 fused expression chain feeds into an op that requires DFB-attached inputs
@@ -33,7 +33,7 @@ def add_then_reduce_kernel(a, b, scaler, out):
     @ttl.compute()
     def compute():
         with a_dfb.wait() as av, b_dfb.wait() as bv, scaler_dfb.wait() as sv:
-            # add result is not DFB-attached; compiler inserts scratch DFB.
+            # add result is not DFB-attached; compiler inserts intermediate DFB.
             added = ttl.add(av, bv)
             with out_dfb.reserve() as o:
                 o.store(ttl.math.reduce_sum(added, sv, dims=[0, 1]))
@@ -54,7 +54,7 @@ def add_then_reduce_kernel(a, b, scaler, out):
 
 
 def test_add_then_reduce(device):
-    """Elementwise add feeds reduce_sum; compiler inserts scratch DFB."""
+    """Elementwise add feeds reduce_sum; compiler inserts intermediate DFB."""
     a_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     b_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     scaler_torch = torch.ones(32, 32, dtype=torch.bfloat16)
@@ -91,7 +91,7 @@ def matmul_then_reduce_kernel(a, b, scaler, out):
             b_dfb.wait() as bv,
             scaler_dfb.wait() as sv,
         ):
-            # matmul result is not DFB-attached; compiler inserts scratch DFB.
+            # matmul result is not DFB-attached; compiler inserts intermediate DFB.
             product = av @ bv  # matmul via __matmul__
             with out_dfb.reserve() as o:
                 o.store(ttl.math.reduce_sum(product, sv, dims=[0, 1]))
@@ -112,7 +112,7 @@ def matmul_then_reduce_kernel(a, b, scaler, out):
 
 
 def test_matmul_then_reduce(device):
-    """Matmul result feeds reduce_sum; compiler inserts scratch DFB."""
+    """Matmul result feeds reduce_sum; compiler inserts intermediate DFB."""
     a_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     b_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     scaler_torch = torch.ones(32, 32, dtype=torch.bfloat16)

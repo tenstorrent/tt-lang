@@ -83,17 +83,18 @@ constexpr llvm::StringLiteral
 /// Replaced with a proper copy in Phase 2b.
 constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
 
-/// Module attribute carrying compiler-allocated scratch DFB metadata.
-/// Each entry is a DictionaryAttr with: dfb_index, num_tiles, element_type,
-/// block_count. The Python runtime reads this after compilation to build
-/// CBDescriptor entries for scratch DFBs not declared in the user program.
-constexpr llvm::StringLiteral kScratchDFBsAttrName("ttl.scratch_dfbs");
+/// Module attribute carrying compiler-allocated DFB metadata.
+constexpr llvm::StringLiteral
+    kCompilerAllocatedDFBsAttrName("ttl.compiler_allocated_dfbs");
 
 /// Marker on BindCBOp to distinguish compiler-allocated DFBs from user-declared
-/// ones. The ttl-finalize-dfb-indices pass uses this to build the scratch_dfbs
-/// module attribute.
+/// ones.
 constexpr llvm::StringLiteral
     kCompilerAllocatedAttrName("ttl.compiler_allocated");
+
+/// Function attribute recording the base compile-time argument index.
+/// CTA layout is [CBs, TAs], so this equals the number of CBs.
+constexpr llvm::StringLiteral kBaseCTAIndexAttrName("ttl.base_cta_index");
 
 /// Trait for data movement operations (copy_tile, copy_dst).
 template <typename ConcreteType>
@@ -203,20 +204,13 @@ inline std::optional<int64_t> getCBIndexAttr(mlir::Operation *compute,
 }
 
 //===----------------------------------------------------------------------===//
-// Scratch DFB Utilities
+// Compiler-Allocated DFB Utilities
 //===----------------------------------------------------------------------===//
 
 /// Return the next available DFB index for the module. Scans all BindCBOp
-/// indices across all functions and the existing ttl.scratch_dfbs attribute
-/// to find the current maximum, then returns max + 1.
+/// indices across all functions to find the current maximum, then returns
+/// max + 1.
 int32_t getNextAvailableDFBIndex(mlir::ModuleOp mod);
-
-/// Record a compiler-allocated scratch DFB in the module attribute.
-/// Reads the existing ttl.scratch_dfbs array (if any), appends a new entry
-/// with the given index, tile count, element type, and block count, and
-/// writes the updated array back.
-void registerScratchDFB(mlir::ModuleOp mod, int32_t dfbIndex, int32_t numTiles,
-                        mlir::Type elementType, int32_t blockCount);
 
 } // namespace mlir::tt::ttl
 

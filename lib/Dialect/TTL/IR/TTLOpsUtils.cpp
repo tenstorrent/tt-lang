@@ -238,13 +238,12 @@ SmallVector<LoopGroup> collectLoopGroups(
 }
 
 //===----------------------------------------------------------------------===//
-// Scratch DFB utilities
+// Compiler-allocated DFB utilities
 //===----------------------------------------------------------------------===//
 
 int32_t getNextAvailableDFBIndex(ModuleOp mod) {
   int32_t maxIndex = -1;
 
-  // Scan all BindCBOp indices across all functions.
   mod->walk([&](BindCBOp bindOp) {
     int64_t idx = bindOp.getCbIndex().getSExtValue();
     if (idx > maxIndex) {
@@ -252,46 +251,7 @@ int32_t getNextAvailableDFBIndex(ModuleOp mod) {
     }
   });
 
-  // Also check the existing scratch_dfbs module attribute.
-  if (auto scratchAttr = mod->getAttrOfType<ArrayAttr>(kScratchDFBsAttrName)) {
-    for (Attribute entry : scratchAttr) {
-      auto dict = mlir::cast<DictionaryAttr>(entry);
-      if (auto idxAttr = dict.getAs<IntegerAttr>("dfb_index")) {
-        int32_t idx = static_cast<int32_t>(idxAttr.getInt());
-        if (idx > maxIndex) {
-          maxIndex = idx;
-        }
-      }
-    }
-  }
-
   return maxIndex + 1;
-}
-
-void registerScratchDFB(ModuleOp mod, int32_t dfbIndex, int32_t numTiles,
-                        Type elementType, int32_t blockCount) {
-  MLIRContext *ctx = mod.getContext();
-  OpBuilder builder(ctx);
-
-  // Build the entry dictionary.
-  SmallVector<NamedAttribute> entryAttrs;
-  entryAttrs.push_back(
-      builder.getNamedAttr("dfb_index", builder.getI32IntegerAttr(dfbIndex)));
-  entryAttrs.push_back(
-      builder.getNamedAttr("num_tiles", builder.getI32IntegerAttr(numTiles)));
-  entryAttrs.push_back(
-      builder.getNamedAttr("element_type", TypeAttr::get(elementType)));
-  entryAttrs.push_back(builder.getNamedAttr(
-      "block_count", builder.getI32IntegerAttr(blockCount)));
-  auto entryDict = DictionaryAttr::get(ctx, entryAttrs);
-
-  // Read existing array, append, write back.
-  SmallVector<Attribute> entries;
-  if (auto existing = mod->getAttrOfType<ArrayAttr>(kScratchDFBsAttrName)) {
-    entries.append(existing.begin(), existing.end());
-  }
-  entries.push_back(entryDict);
-  mod->setAttr(kScratchDFBsAttrName, ArrayAttr::get(ctx, entries));
 }
 
 } // namespace mlir::tt::ttl

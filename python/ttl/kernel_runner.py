@@ -34,7 +34,7 @@ def _ensure_ttnn():
     return ttnn
 
 
-from .circular_buffer import ScratchDFBConfig
+from .circular_buffer import CompilerAllocatedDFBConfig
 from .dtype_utils import (
     format_name_to_ttnn_dtype,
     tile_bytes_from_dtype,
@@ -175,8 +175,8 @@ def build_cb_descriptors(
                 f"All CB indices must have associated CircularBuffer configurations."
             )
 
-        if isinstance(cb, ScratchDFBConfig):
-            # Compiler-allocated scratch DFB: dtype from attribute string.
+        if isinstance(cb, CompilerAllocatedDFBConfig):
+            # Compiler-allocated DFB: dtype from attribute string.
             data_format = format_name_to_ttnn_dtype(cb.data_format)
             page_size = tile_bytes_from_dtype(data_format)
             total_size = cb.num_tiles * cb.block_count * page_size

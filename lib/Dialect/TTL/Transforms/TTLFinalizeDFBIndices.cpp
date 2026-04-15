@@ -8,8 +8,8 @@
 //
 // Module-level pass that runs after all DFB-creating passes. Computes the
 // true DFB count, updates ttl.base_cta_index on every function, and
-// collects compiler-allocated DFBs into the ttl.scratch_dfbs module
-// attribute for the Python runtime.
+// collects compiler-allocated DFBs into the ttl.compiler_allocated_dfbs
+// module attribute for the Python runtime.
 //
 //===----------------------------------------------------------------------===//
 
@@ -40,7 +40,6 @@ struct TTLFinalizeDFBIndicesPass
     int32_t maxDFBIndex = -1;
     SmallVector<BindCBOp> compilerAllocatedOps;
 
-    // Walk all BindCBOps across all functions.
     moduleOp->walk([&](BindCBOp bindOp) {
       int64_t idx = bindOp.getCbIndex().getSExtValue();
       if (static_cast<int32_t>(idx) > maxDFBIndex) {
@@ -51,22 +50,19 @@ struct TTLFinalizeDFBIndicesPass
       }
     });
 
-    // No DFBs at all -- nothing to do.
     if (maxDFBIndex < 0) {
       return;
     }
 
     int32_t numDFBs = maxDFBIndex + 1;
 
-    // Update ttl.base_cta_index on every function that has it.
     moduleOp->walk([&](func::FuncOp funcOp) {
-      if (funcOp->hasAttr("ttl.base_cta_index")) {
-        funcOp->setAttr("ttl.base_cta_index",
+      if (funcOp->hasAttr(kBaseCTAIndexAttrName)) {
+        funcOp->setAttr(kBaseCTAIndexAttrName,
                         builder.getI32IntegerAttr(numDFBs));
       }
     });
 
-    // Build ttl.scratch_dfbs module attribute from compiler-allocated DFBs.
     if (compilerAllocatedOps.empty()) {
       return;
     }
@@ -76,10 +72,7 @@ struct TTLFinalizeDFBIndicesPass
 
     for (BindCBOp bindOp : compilerAllocatedOps) {
       auto cbType =
-          mlir::dyn_cast<CircularBufferType>(bindOp.getResult().getType());
-      if (!cbType) {
-        continue;
-      }
+          mlir::cast<CircularBufferType>(bindOp.getResult().getType());
 
       int32_t dfbIndex =
           static_cast<int32_t>(bindOp.getCbIndex().getSExtValue());
@@ -99,7 +92,8 @@ struct TTLFinalizeDFBIndicesPass
       entries.push_back(DictionaryAttr::get(ctx, entryAttrs));
     }
 
-    moduleOp->setAttr(kScratchDFBsAttrName, ArrayAttr::get(ctx, entries));
+    moduleOp->setAttr(kCompilerAllocatedDFBsAttrName,
+                      ArrayAttr::get(ctx, entries));
   }
 };
 

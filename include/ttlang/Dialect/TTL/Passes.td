@@ -96,22 +96,19 @@ def TTLInsertIntermediateDFBs
     : Pass<"ttl-insert-intermediate-dfbs", "::mlir::func::FuncOp"> {
   let summary = "Insert intermediate dataflow buffers at fusion split points";
   let description = [{
-    Walks tensor-level ops that require CB-attached inputs (reduce, bcast,
-    matmul, transpose) and checks whether their operands are CB-attached.
-    When an operand comes from a fused expression chain (not CB-attached),
-    the pass inserts a compiler-allocated scratch DFB to materialize the
-    intermediate value:
+    Walks ops implementing `DFBInputOpInterface` and checks whether the
+    operands they declare as requiring DFB-attached values are satisfied.
+    When an operand comes from a fused expression chain (not DFB-attached),
+    the pass inserts a compiler-allocated DFB:
 
-      bind_cb -> cb_reserve -> attach_cb -> store -> cb_wait -> attach_cb
+      bind_cb -> cb_reserve -> store -> cb_wait -> attach_cb
 
-    The `cb_push` and `cb_pop` are omitted; `ttl-insert-cb-sync` inserts
-    them automatically based on transitive use analysis.
+    `cb_push` and `cb_pop` are omitted; `ttl-insert-cb-sync` inserts them
+    based on transitive use analysis.
 
-    After this pass, every CB-input op sees CB-attached operands, and
-    `convert-ttl-to-compute` proceeds without errors.
-
-    Scratch DFBs are marked with `ttl.compiler_allocated` so that
-    `ttl-finalize-dfb-indices` can register them for the Python runtime.
+    Compiler-allocated DFBs are marked with `ttl.compiler_allocated` so
+    that `ttl-finalize-dfb-indices` can register them for the Python
+    runtime.
   }];
 
   let dependentDialects = [
@@ -440,7 +437,7 @@ def TTLLowerSignpostToEmitC
 
 def TTLFinalizeDFBIndices
     : Pass<"ttl-finalize-dfb-indices", "::mlir::ModuleOp"> {
-  let summary = "Finalize DFB indices and emit scratch DFB metadata";
+  let summary = "Finalize DFB indices and emit compiler-allocated DFB metadata";
   let description = [{
     Module-level pass that runs after all DFB-creating passes, before
     convert-ttl-to-ttkernel. Performs three tasks:
@@ -450,8 +447,8 @@ def TTLFinalizeDFBIndices
     2. Updates the `ttl.base_cta_index` attribute on every function to
        this value, ensuring compile-time arg layout is correct.
     3. Collects all BindCBOps marked with `ttl.compiler_allocated` and
-       builds the `ttl.scratch_dfbs` module attribute so the Python
-       runtime can create the corresponding CBDescriptor entries.
+       builds the `ttl.compiler_allocated_dfbs` module attribute so the
+       Python runtime can create the corresponding CBDescriptor entries.
 
     This pass is a no-op when no compiler-allocated DFBs exist.
   }];

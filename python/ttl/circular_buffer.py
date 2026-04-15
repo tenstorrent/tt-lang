@@ -117,11 +117,11 @@ class CircularBuffer:
 
 
 @dataclass
-class ScratchDFBConfig:
-    """Configuration for a compiler-allocated scratch dataflow buffer.
+class CompilerAllocatedDFBConfig:
+    """Configuration for a compiler-allocated dataflow buffer.
 
-    These are created by the Python runtime after reading the ttl.scratch_dfbs
-    module attribute produced by the ttl-finalize-dfb-indices pass. They carry
+    Created by the Python runtime after reading the ttl.compiler_allocated_dfbs
+    module attribute produced by the ttl-finalize-dfb-indices pass. Carries
     the same information as a user-declared CircularBuffer but without a
     backing tensor -- the data format comes directly from the MLIR attribute.
     """
