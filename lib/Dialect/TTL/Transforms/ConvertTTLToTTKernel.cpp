@@ -827,8 +827,14 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
       // Determine CB access context: consumer (cb_wait/cb_pop) vs producer
       // (cb_reserve/cb_push). This controls whether we read from the CB's
       // read pointer or write pointer for the pipe source address.
+      // Use dominance to correctly handle CBs in nested regions (e.g.,
+      // inside scf.if from pipe callbacks) and CBs used in both roles.
+      DominanceInfo domInfo(op->getParentOfType<func::FuncOp>());
       bool isConsumerCB = llvm::any_of(
-          src.getUsers(), [](Operation *user) { return isa<CBWaitOp>(user); });
+          src.getUsers(), [&](Operation *user) {
+            return isa<CBWaitOp>(user) && user->getOperand(0) == src &&
+                   domInfo.dominates(user, op);
+          });
       return lowerCBToPipe(op, adaptor.getSrc(), adaptor.getDst(), receiverInfo,
                            isConsumerCB, rewriter);
     }
