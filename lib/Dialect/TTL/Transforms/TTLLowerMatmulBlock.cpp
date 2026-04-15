@@ -204,10 +204,14 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
       }
     }
 
-    // Replace compute with placeholder tensor.
-    Value emptyTensor = tensor::EmptyOp::create(
-        rewriter, loc, outType.getShape(), outType.getElementType());
-    rewriter.replaceOp(computeOp, emptyTensor);
+    // Replace compute results with placeholder tensors.
+    SmallVector<Value> replacements;
+    for (auto resultType : computeOp->getResultTypes()) {
+      auto tensorType = mlir::cast<RankedTensorType>(resultType);
+      replacements.push_back(tensor::EmptyOp::create(
+          rewriter, loc, tensorType.getShape(), tensorType.getElementType()));
+    }
+    rewriter.replaceOp(computeOp, replacements);
     return success();
   }
 };

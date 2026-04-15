@@ -513,7 +513,160 @@ def test_multitile_mul_reduce(device):
     multitile_mul_reduce_kernel(inp_a, inp_b, scaler, out)
     result = ttnn.to_torch(out).float()
 
-    assert_allclose(result[0, 0], expected, rtol=0.01, atol=1.0)
+    assert_allclose(result[0, 0], expected, rtol=0.01, atol=0.5)
+
+
+# --- intermediate DFB inside a loop with implicit pop ---
+# Iterates over DRAM tiles in a loop. Each iteration: read tile, add with
+# a running scaler, reduce_sum the add result. The compiler-allocated DFB
+# for the add->reduce intermediate is created inside the loop body and
+# must get correct push/pop from the sync pass within the with-scope.
+
+STREAM_TILES = 4
+
+
+@ttl.operation(grid=(1, 1))
+def loop_reduce_kernel(inp, scaler, out):
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        for _ in range(STREAM_TILES):
+            with (
+                inp_dfb.wait() as x,
+                scaler_dfb.wait() as s,
+                out_dfb.reserve() as o,
+            ):
+                # add result is not CB-attached; compiler inserts
+                # intermediate DFB inside the loop body.
+                added = ttl.add(x, x)
+                o.store(ttl.math.reduce_sum(added, s, dims=[0, 1]))
+
+    @ttl.datamovement()
+    def dm_read():
+        for tile_idx in range(STREAM_TILES):
+            with inp_dfb.reserve() as blk:
+                ttl.copy(inp[0, tile_idx], blk).wait()
+            with scaler_dfb.reserve() as blk:
+                ttl.copy(scaler[0, 0], blk).wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        for tile_idx in range(STREAM_TILES):
+            with out_dfb.wait() as blk:
+                ttl.copy(blk, out[0, tile_idx]).wait()
+
+
+def test_loop_reduce(device):
+    """Intermediate DFB inside a loop with implicit pop via with-statement."""
+    from ttlang_test_utils import to_dram
+
+    inp_torch = torch.randn(32, STREAM_TILES * 32, dtype=torch.bfloat16)
+    scaler_torch = torch.ones(32, 32, dtype=torch.bfloat16)
+    out_torch = torch.zeros(32, STREAM_TILES * 32, dtype=torch.bfloat16)
+
+    inp = to_dram(inp_torch, device)
+    scaler = to_l1(scaler_torch, device)
+    out = to_dram(out_torch, device)
+
+    # Each iteration: reduce_sum(inp_tile + inp_tile) = 2 * sum(inp_tile).
+    expected = torch.zeros(32, STREAM_TILES * 32)
+    for tile_idx in range(STREAM_TILES):
+        c0 = tile_idx * 32
+        c1 = c0 + 32
+        tile = inp_torch[:, c0:c1].float()
+        expected[0, c0] = (tile + tile).sum()
+
+    loop_reduce_kernel(inp, scaler, out)
+    result = ttnn.to_torch(out).float()
+
+    for tile_idx in range(STREAM_TILES):
+        c0 = tile_idx * 32
+        assert_allclose(result[0, c0], expected[0, c0], rtol=0.01, atol=0.5)
+
+
+# --- intermediate DFB inside nested loops with conditional ---
+# Streams tiles from a 2D grid. On even columns, the compute does
+# add -> reduce_sum; on odd columns, mul -> reduce_sum. Both branches
+# require a compiler-allocated intermediate DFB. The Python if/for
+# unrolls into straight-line IR with different elementwise ops per
+# iteration.
+
+GRID_ROWS = 2
+GRID_COLS = 2
+
+
+@ttl.operation(grid=(1, 1))
+def nested_loop_kernel(inp, scaler, out):
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    scaler_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        for _ in range(GRID_ROWS):
+            for col in range(GRID_COLS):
+                with (
+                    inp_dfb.wait() as x,
+                    scaler_dfb.wait() as s,
+                    out_dfb.reserve() as o,
+                ):
+                    if col % 2 == 0:
+                        intermediate = ttl.add(x, x)
+                    else:
+                        intermediate = ttl.mul(x, x)
+                    o.store(ttl.math.reduce_sum(intermediate, s, dims=[0, 1]))
+
+    @ttl.datamovement()
+    def dm_read():
+        for row in range(GRID_ROWS):
+            for col in range(GRID_COLS):
+                with inp_dfb.reserve() as blk:
+                    ttl.copy(inp[row, col], blk).wait()
+                with scaler_dfb.reserve() as blk:
+                    ttl.copy(scaler[0, 0], blk).wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        for row in range(GRID_ROWS):
+            for col in range(GRID_COLS):
+                with out_dfb.wait() as blk:
+                    ttl.copy(blk, out[row, col]).wait()
+
+
+def test_nested_loop_conditional(device):
+    """Nested for-for-if with intermediate DFBs in both branches."""
+    from ttlang_test_utils import to_dram
+
+    inp_torch = torch.randn(GRID_ROWS * 32, GRID_COLS * 32, dtype=torch.bfloat16)
+    scaler_torch = torch.ones(32, 32, dtype=torch.bfloat16)
+    out_torch = torch.zeros(GRID_ROWS * 32, GRID_COLS * 32, dtype=torch.bfloat16)
+
+    inp = to_dram(inp_torch, device)
+    scaler = to_l1(scaler_torch, device)
+    out = to_dram(out_torch, device)
+
+    expected = torch.zeros(GRID_ROWS * 32, GRID_COLS * 32)
+    for row in range(GRID_ROWS):
+        for col in range(GRID_COLS):
+            r0, r1 = row * 32, (row + 1) * 32
+            c0, c1 = col * 32, (col + 1) * 32
+            tile = inp_torch[r0:r1, c0:c1].float()
+            if col % 2 == 0:
+                expected[r0, c0] = (tile + tile).sum()
+            else:
+                expected[r0, c0] = (tile * tile).sum()
+
+    nested_loop_kernel(inp, scaler, out)
+    result = ttnn.to_torch(out).float()
+
+    for row in range(GRID_ROWS):
+        for col in range(GRID_COLS):
+            r0 = row * 32
+            c0 = col * 32
+            assert_allclose(result[r0, c0], expected[r0, c0], rtol=0.01, atol=1.0)
 
 
 @pytest.mark.xfail(reason="Requires result DFB materialization (#508)")
