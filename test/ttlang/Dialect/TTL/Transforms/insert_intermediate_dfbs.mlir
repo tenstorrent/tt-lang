@@ -1,19 +1,19 @@
 // Tests for ttl-insert-intermediate-dfbs pass.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs))' | FileCheck %s --check-prefix=PASS
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs))' | FileCheck %s
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs,ttl-insert-cb-sync,convert-ttl-to-compute))' | FileCheck %s --check-prefix=PIPELINE
 
 // -----
 
 // Elementwise result feeds into reduce: pass should insert a scratch DFB.
 
-// PASS-LABEL: func.func @elementwise_into_reduce
-// PASS: ttl.add
-// PASS: ttl.bind_cb{cb_index = 3, block_count = 2} {ttl.compiler_allocated}
-// PASS: ttl.cb_reserve
-// PASS: ttl.store
-// PASS: ttl.cb_wait
-// PASS: ttl.attach_cb
-// PASS: ttl.reduce {{.*}} 0 : i32
+// CHECK-LABEL: func.func @elementwise_into_reduce
+// CHECK: ttl.add
+// CHECK: ttl.bind_cb{cb_index = 3, block_count = 2} {ttl.compiler_allocated}
+// CHECK: ttl.cb_reserve
+// CHECK: ttl.store
+// CHECK: ttl.cb_wait
+// CHECK: ttl.attach_cb
+// CHECK: ttl.reduce {{.*}} 0 : i32
 func.func @elementwise_into_reduce()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 4], !ttcore.tile<32x32, bf16>, 2>
@@ -37,9 +37,9 @@ func.func @elementwise_into_reduce()
 
 // Already CB-attached input: no materialization needed.
 
-// PASS-LABEL: func.func @already_cb_attached
-// PASS-NOT: ttl.compiler_allocated
-// PASS: return
+// CHECK-LABEL: func.func @already_cb_attached
+// CHECK-NOT: ttl.compiler_allocated
+// CHECK: return
 func.func @already_cb_attached()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 4], !ttcore.tile<32x32, bf16>, 2>
