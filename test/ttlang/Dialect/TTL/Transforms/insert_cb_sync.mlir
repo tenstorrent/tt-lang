@@ -125,8 +125,8 @@ func.func @mixed_explicit_implicit(
 // CHECK: ttl.cb_wait %[[CB0]]
 // CHECK: ttl.cb_wait %[[CB1]]
 // CHECK: ttl.add
-// CHECK: ttl.cb_pop
-// CHECK: ttl.cb_pop
+// CHECK: ttl.cb_pop %[[CB1]]
+// CHECK: ttl.cb_pop %[[CB0]]
 // CHECK-NOT: ttl.cb_pop
 // CHECK: return
 func.func @multiple_waits(

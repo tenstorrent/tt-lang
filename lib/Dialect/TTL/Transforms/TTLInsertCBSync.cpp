@@ -44,7 +44,7 @@ static bool isBefore(Operation *a, Operation *b) {
 /// Nested releases are collected into `toHoist` for erasure.
 template <typename ReleaseOpTy>
 static bool findReleases(Value cb, Operation *acquire, Operation *bound,
-                         SmallVectorImpl<ReleaseOpTy> &allReleases,
+                         const SmallVectorImpl<ReleaseOpTy> &allReleases,
                          SmallVectorImpl<ReleaseOpTy> &toHoist,
                          const DenseSet<Operation *> &erased) {
   Block *block = acquire->getBlock();
@@ -95,23 +95,16 @@ static Operation *findLastTransitiveUse(Value cb, Operation *acquire,
   if (acquire->getNumResults() > 0)
     worklist.push_back(acquire->getResult(0));
 
-  auto updateLast = [&](Operation *op) {
+  // Returns the ancestor in the acquire's block, or nullptr if out of range.
+  auto getInRangeAncestor = [&](Operation *op) -> Operation * {
     Operation *ancestor = block->findAncestorOpInBlock(*op);
     if (!ancestor)
-      return;
-    if (isBefore(last, ancestor))
-      last = ancestor;
-  };
-
-  auto inRange = [&](Operation *op) {
-    Operation *ancestor = block->findAncestorOpInBlock(*op);
-    if (!ancestor)
-      return false;
+      return nullptr;
     if (!isBefore(acquire, ancestor) && ancestor != acquire)
-      return false;
+      return nullptr;
     if (bound && !isBefore(ancestor, bound))
-      return false;
-    return true;
+      return nullptr;
+    return ancestor;
   };
 
   for (auto &use : cb.getUses()) {
@@ -120,9 +113,11 @@ static Operation *findLastTransitiveUse(Value cb, Operation *acquire,
       continue;
     if (isa<CBPushOp, CBPopOp, CBReserveOp, CBWaitOp>(user))
       continue;
-    if (!inRange(user))
+    Operation *ancestor = getInRangeAncestor(user);
+    if (!ancestor)
       continue;
-    updateLast(user);
+    if (isBefore(last, ancestor))
+      last = ancestor;
     for (auto result : user->getResults())
       worklist.push_back(result);
   }
@@ -135,9 +130,11 @@ static Operation *findLastTransitiveUse(Value cb, Operation *acquire,
         continue;
       if (isa<CBPushOp, CBPopOp>(user))
         continue;
-      if (!inRange(user))
+      Operation *ancestor = getInRangeAncestor(user);
+      if (!ancestor)
         continue;
-      updateLast(user);
+      if (isBefore(last, ancestor))
+        last = ancestor;
       for (auto result : user->getResults())
         worklist.push_back(result);
     }
@@ -172,65 +169,49 @@ struct TTLInsertCBSyncPass
     // Track erased ops so later iterations don't access dangling pointers.
     DenseSet<Operation *> erased;
 
-    for (auto reserve : reserves) {
-      Value cb = reserve.getCb();
+    auto insertMissingReleases = [&](auto acquires, auto &releases,
+                                     auto createRelease) {
+      for (auto acquire : acquires) {
+        Value cb = acquire.getCb();
 
-      Operation *nextReserve = nullptr;
-      for (auto other : reserves) {
-        if (other == reserve || other.getCb() != cb)
+        Operation *nextAcquire = nullptr;
+        for (auto other : acquires) {
+          if (other == acquire || other.getCb() != cb)
+            continue;
+          if (other->getBlock() != acquire->getBlock())
+            continue;
+          if (!isBefore(acquire, other))
+            continue;
+          if (!nextAcquire || isBefore(other, nextAcquire))
+            nextAcquire = other;
+        }
+
+        using ReleaseOpTy =
+            typename std::remove_reference_t<decltype(releases)>::value_type;
+        SmallVector<ReleaseOpTy> nested;
+        if (findReleases(cb, acquire, nextAcquire, releases, nested, erased))
           continue;
-        if (other->getBlock() != reserve->getBlock())
-          continue;
-        if (!isBefore(reserve, other))
-          continue;
-        if (!nextReserve || isBefore(other, nextReserve))
-          nextReserve = other;
+
+        for (auto n : nested) {
+          erased.insert(n);
+          n.erase();
+        }
+
+        Operation *last = findLastTransitiveUse(cb, acquire, nextAcquire);
+        builder.setInsertionPointAfter(last);
+        createRelease(builder, acquire.getLoc(), cb);
       }
+    };
 
-      SmallVector<CBPushOp> nestedPushes;
-      if (findReleases(cb, reserve, nextReserve, pushes, nestedPushes,
-                       erased))
-        continue;
+    insertMissingReleases(reserves, pushes, [](OpBuilder &b, Location loc,
+                                               Value cb) {
+      CBPushOp::create(b, loc, cb, /*num_tiles=*/IntegerAttr{});
+    });
 
-      for (auto nested : nestedPushes) {
-        erased.insert(nested);
-        nested.erase();
-      }
-
-      Operation *last = findLastTransitiveUse(cb, reserve, nextReserve);
-      builder.setInsertionPointAfter(last);
-      CBPushOp::create(builder, reserve.getLoc(), cb,
-                       /*num_tiles=*/IntegerAttr{});
-    }
-
-    for (auto wait : waits) {
-      Value cb = wait.getCb();
-
-      Operation *nextWait = nullptr;
-      for (auto other : waits) {
-        if (other == wait || other.getCb() != cb)
-          continue;
-        if (other->getBlock() != wait->getBlock())
-          continue;
-        if (!isBefore(wait, other))
-          continue;
-        if (!nextWait || isBefore(other, nextWait))
-          nextWait = other;
-      }
-
-      SmallVector<CBPopOp> nestedPops;
-      if (findReleases(cb, wait, nextWait, pops, nestedPops, erased))
-        continue;
-
-      for (auto nested : nestedPops) {
-        erased.insert(nested);
-        nested.erase();
-      }
-
-      Operation *last = findLastTransitiveUse(cb, wait, nextWait);
-      builder.setInsertionPointAfter(last);
-      CBPopOp::create(builder, wait.getLoc(), cb);
-    }
+    insertMissingReleases(waits, pops,
+                          [](OpBuilder &b, Location loc, Value cb) {
+                            CBPopOp::create(b, loc, cb);
+                          });
   }
 };
 
