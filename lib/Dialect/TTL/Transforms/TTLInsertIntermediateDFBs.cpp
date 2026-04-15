@@ -48,10 +48,12 @@ static Value materializeToDFB(Value intermediate, ModuleOp moduleOp,
   Location loc = intermediate.getLoc();
   MLIRContext *ctx = builder.getContext();
 
-  // Build the CB type: shape from tensor, block_count = 1.
+  // Build the CB type: shape from tensor, block_count = 2.
+  // Intra-thread push/wait requires double-buffering so the packer and
+  // unpacker can operate on different buffer halves simultaneously.
   SmallVector<int64_t> shape(tensorType.getShape());
   Type elementType = tensorType.getElementType();
-  int64_t blockCount = 1;
+  int64_t blockCount = 2;
   auto cbType = CircularBufferType::get(ctx, shape, elementType, blockCount);
 
   // Allocate the next available DFB index.
@@ -65,8 +67,8 @@ static Value materializeToDFB(Value intermediate, ModuleOp moduleOp,
   // bind_cb with compiler_allocated marker.
   auto indexAttr = builder.getIndexAttr(dfbIndex);
   auto blockCountAttr = builder.getI64IntegerAttr(blockCount);
-  auto bindCB = BindCBOp::create(builder, loc, cbType, indexAttr,
-                                 blockCountAttr);
+  auto bindCB =
+      BindCBOp::create(builder, loc, cbType, indexAttr, blockCountAttr);
   bindCB->setAttr(kCompilerAllocatedAttrName, builder.getUnitAttr());
 
   // cb_reserve -> tensor view.
@@ -75,13 +77,14 @@ static Value materializeToDFB(Value intermediate, ModuleOp moduleOp,
 
   // store the intermediate to the reserved view.
   // The store verifier requires the view to come directly from cb_reserve.
-  insertedStore = StoreOp::create(builder, loc, intermediate,
-                                  reserve.getResult(),
-                                  /*accumulate=*/nullptr);
+  insertedStore =
+      StoreOp::create(builder, loc, intermediate, reserve.getResult(),
+                      /*accumulate=*/nullptr);
+
+  // cb_push is inserted by ttl-insert-cb-sync which runs after this pass.
 
   // cb_wait -> tensor view (consumer side).
-  auto wait =
-      CBWaitOp::create(builder, loc, tensorType, bindCB.getResult());
+  auto wait = CBWaitOp::create(builder, loc, tensorType, bindCB.getResult());
 
   // attach_cb on the wait result.
   auto attachWait = AttachCBOp::create(builder, loc, tensorType,
@@ -113,9 +116,7 @@ struct TTLInsertIntermediateDFBsPass
 
     // Collect ops that implement DFBInputOpInterface.
     SmallVector<DFBInputOpInterface> candidates;
-    funcOp.walk([&](DFBInputOpInterface op) {
-      candidates.push_back(op);
-    });
+    funcOp.walk([&](DFBInputOpInterface op) { candidates.push_back(op); });
 
     for (DFBInputOpInterface dfbInputOp : candidates) {
       Operation *op = dfbInputOp.getOperation();

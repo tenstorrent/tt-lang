@@ -1061,15 +1061,18 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
 // DFBInputOpInterface implementations
 //===----------------------------------------------------------------------===//
 
-llvm::SmallVector<unsigned> mlir::tt::ttl::ReduceOp::getDFBInputOperandIndices() {
+llvm::SmallVector<unsigned>
+mlir::tt::ttl::ReduceOp::getDFBInputOperandIndices() {
   return {0, 1}; // input and scaler
 }
 
-llvm::SmallVector<unsigned> mlir::tt::ttl::BcastOp::getDFBInputOperandIndices() {
+llvm::SmallVector<unsigned>
+mlir::tt::ttl::BcastOp::getDFBInputOperandIndices() {
   return {0}; // input only; output is shape-donor
 }
 
-llvm::SmallVector<unsigned> mlir::tt::ttl::MatmulOp::getDFBInputOperandIndices() {
+llvm::SmallVector<unsigned>
+mlir::tt::ttl::MatmulOp::getDFBInputOperandIndices() {
   return {0, 1}; // lhs and rhs
 }
 

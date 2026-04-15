@@ -33,7 +33,6 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-
 /// Return true if `a` is before `b` in their common block.
 static bool isBefore(Operation *a, Operation *b) {
   return a->isBeforeInBlock(b);
@@ -51,29 +50,36 @@ static bool findReleases(Value cb, Operation *acquire, Operation *bound,
   bool hasSameLevelRelease = false;
 
   for (auto release : allReleases) {
-    if (erased.contains(release))
+    if (erased.contains(release)) {
       continue;
-    if (release.getCb() != cb)
+    }
+    if (release.getCb() != cb) {
       continue;
+    }
 
     // Same-level: release is directly in the acquire's block.
     if (release->getBlock() == block) {
-      if (!isBefore(acquire, release))
+      if (!isBefore(acquire, release)) {
         continue;
-      if (bound && !isBefore(release, bound))
+      }
+      if (bound && !isBefore(release, bound)) {
         continue;
+      }
       hasSameLevelRelease = true;
       continue;
     }
 
     // Nested: release is inside a structured op in the acquire's block.
     Operation *ancestor = block->findAncestorOpInBlock(*release);
-    if (!ancestor)
+    if (!ancestor) {
       continue;
-    if (!isBefore(acquire, ancestor))
+    }
+    if (!isBefore(acquire, ancestor)) {
       continue;
-    if (bound && !isBefore(ancestor, bound))
+    }
+    if (bound && !isBefore(ancestor, bound)) {
       continue;
+    }
     toHoist.push_back(release);
   }
 
@@ -92,54 +98,68 @@ static Operation *findLastTransitiveUse(Value cb, Operation *acquire,
   DenseSet<Operation *> visited;
   SmallVector<Value, 8> worklist;
 
-  if (acquire->getNumResults() > 0)
+  if (acquire->getNumResults() > 0) {
     worklist.push_back(acquire->getResult(0));
+  }
 
   auto updateLast = [&](Operation *op) {
     Operation *ancestor = block->findAncestorOpInBlock(*op);
-    if (!ancestor)
+    if (!ancestor) {
       return;
-    if (isBefore(last, ancestor))
+    }
+    if (isBefore(last, ancestor)) {
       last = ancestor;
+    }
   };
 
   auto inRange = [&](Operation *op) {
     Operation *ancestor = block->findAncestorOpInBlock(*op);
-    if (!ancestor)
+    if (!ancestor) {
       return false;
-    if (!isBefore(acquire, ancestor) && ancestor != acquire)
+    }
+    if (!isBefore(acquire, ancestor) && ancestor != acquire) {
       return false;
-    if (bound && !isBefore(ancestor, bound))
+    }
+    if (bound && !isBefore(ancestor, bound)) {
       return false;
+    }
     return true;
   };
 
   for (auto &use : cb.getUses()) {
     Operation *user = use.getOwner();
-    if (user == acquire)
+    if (user == acquire) {
       continue;
-    if (isa<CBPushOp, CBPopOp, CBReserveOp, CBWaitOp>(user))
+    }
+    if (isa<CBPushOp, CBPopOp, CBReserveOp, CBWaitOp>(user)) {
       continue;
-    if (!inRange(user))
+    }
+    if (!inRange(user)) {
       continue;
+    }
     updateLast(user);
-    for (auto result : user->getResults())
+    for (auto result : user->getResults()) {
       worklist.push_back(result);
+    }
   }
 
   while (!worklist.empty()) {
     Value v = worklist.pop_back_val();
     for (auto &use : v.getUses()) {
       Operation *user = use.getOwner();
-      if (!visited.insert(user).second)
+      if (!visited.insert(user).second) {
         continue;
-      if (isa<CBPushOp, CBPopOp>(user))
+      }
+      if (isa<CBPushOp, CBPopOp>(user)) {
         continue;
-      if (!inRange(user))
+      }
+      if (!inRange(user)) {
         continue;
+      }
       updateLast(user);
-      for (auto result : user->getResults())
+      for (auto result : user->getResults()) {
         worklist.push_back(result);
+      }
     }
   }
 
@@ -157,14 +177,15 @@ struct TTLInsertCBSyncPass
     SmallVector<CBPopOp> pops;
 
     func.walk([&](Operation *op) {
-      if (auto r = dyn_cast<CBReserveOp>(op))
+      if (auto r = dyn_cast<CBReserveOp>(op)) {
         reserves.push_back(r);
-      else if (auto w = dyn_cast<CBWaitOp>(op))
+      } else if (auto w = dyn_cast<CBWaitOp>(op)) {
         waits.push_back(w);
-      else if (auto p = dyn_cast<CBPushOp>(op))
+      } else if (auto p = dyn_cast<CBPushOp>(op)) {
         pushes.push_back(p);
-      else if (auto p = dyn_cast<CBPopOp>(op))
+      } else if (auto p = dyn_cast<CBPopOp>(op)) {
         pops.push_back(p);
+      }
     });
 
     OpBuilder builder(func.getContext());
@@ -177,27 +198,57 @@ struct TTLInsertCBSyncPass
 
       Operation *nextReserve = nullptr;
       for (auto other : reserves) {
-        if (other == reserve || other.getCb() != cb)
+        if (other == reserve || other.getCb() != cb) {
           continue;
-        if (other->getBlock() != reserve->getBlock())
+        }
+        if (other->getBlock() != reserve->getBlock()) {
           continue;
-        if (!isBefore(reserve, other))
+        }
+        if (!isBefore(reserve, other)) {
           continue;
-        if (!nextReserve || isBefore(other, nextReserve))
+        }
+        if (!nextReserve || isBefore(other, nextReserve)) {
           nextReserve = other;
+        }
+      }
+
+      // For intra-thread DFBs (same CB used for both reserve and wait),
+      // the push must come before the wait. Find the next wait on the
+      // same CB and use the earlier of nextReserve/nextWait as the bound.
+      Operation *nextWait = nullptr;
+      for (auto wait : waits) {
+        if (wait.getCb() != cb) {
+          continue;
+        }
+        if (wait->getBlock() != reserve->getBlock()) {
+          continue;
+        }
+        if (!isBefore(reserve, wait)) {
+          continue;
+        }
+        if (!nextWait || isBefore(wait, nextWait)) {
+          nextWait = wait;
+        }
+      }
+
+      Operation *bound = nullptr;
+      if (nextReserve && nextWait) {
+        bound = isBefore(nextReserve, nextWait) ? nextReserve : nextWait;
+      } else {
+        bound = nextReserve ? nextReserve : nextWait;
       }
 
       SmallVector<CBPushOp> nestedPushes;
-      if (findReleases(cb, reserve, nextReserve, pushes, nestedPushes,
-                       erased))
+      if (findReleases(cb, reserve, bound, pushes, nestedPushes, erased)) {
         continue;
+      }
 
       for (auto nested : nestedPushes) {
         erased.insert(nested);
         nested.erase();
       }
 
-      Operation *last = findLastTransitiveUse(cb, reserve, nextReserve);
+      Operation *last = findLastTransitiveUse(cb, reserve, bound);
       builder.setInsertionPointAfter(last);
       CBPushOp::create(builder, reserve.getLoc(), cb,
                        /*num_tiles=*/IntegerAttr{});
@@ -208,19 +259,24 @@ struct TTLInsertCBSyncPass
 
       Operation *nextWait = nullptr;
       for (auto other : waits) {
-        if (other == wait || other.getCb() != cb)
+        if (other == wait || other.getCb() != cb) {
           continue;
-        if (other->getBlock() != wait->getBlock())
+        }
+        if (other->getBlock() != wait->getBlock()) {
           continue;
-        if (!isBefore(wait, other))
+        }
+        if (!isBefore(wait, other)) {
           continue;
-        if (!nextWait || isBefore(other, nextWait))
+        }
+        if (!nextWait || isBefore(other, nextWait)) {
           nextWait = other;
+        }
       }
 
       SmallVector<CBPopOp> nestedPops;
-      if (findReleases(cb, wait, nextWait, pops, nestedPops, erased))
+      if (findReleases(cb, wait, nextWait, pops, nestedPops, erased)) {
         continue;
+      }
 
       for (auto nested : nestedPops) {
         erased.insert(nested);
