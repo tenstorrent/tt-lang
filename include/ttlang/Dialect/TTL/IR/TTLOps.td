@@ -723,6 +723,7 @@ multiclass TTL_UnaryElementwisePair<string mnemonic, string kernelOp> {
 
 // Define all unary elementwise ops using the multiclass
 defm TTL_Exp : TTL_UnaryElementwisePair<"exp", "exp_tile">;
+defm TTL_Exp2 : TTL_UnaryElementwisePair<"exp2", "exp2_tile">;
 defm TTL_Log : TTL_UnaryElementwisePair<"log", "log_tile">;
 defm TTL_Sqrt : TTL_UnaryElementwisePair<"sqrt", "sqrt_tile">;
 defm TTL_Rsqrt : TTL_UnaryElementwisePair<"rsqrt", "rsqrt_tile">;
@@ -739,6 +740,17 @@ defm TTL_Tan : TTL_UnaryElementwisePair<"tan", "tan_tile">;
 defm TTL_Asin : TTL_UnaryElementwisePair<"asin", "asin_tile">;
 defm TTL_Acos : TTL_UnaryElementwisePair<"acos", "acos_tile">;
 defm TTL_Atan : TTL_UnaryElementwisePair<"atan", "atan_tile">;
+defm TTL_Ceil : TTL_UnaryElementwisePair<"ceil", "ceil_tile">;
+defm TTL_Sign : TTL_UnaryElementwisePair<"sign", "sign_tile">;
+defm TTL_Gelu : TTL_UnaryElementwisePair<"gelu", "gelu_tile">;
+defm TTL_Silu : TTL_UnaryElementwisePair<"silu", "silu_tile">;
+defm TTL_Hardsigmoid : TTL_UnaryElementwisePair<"hardsigmoid", "hardsigmoid_tile">;
+defm TTL_Expm1 : TTL_UnaryElementwisePair<"expm1", "expm1_tile">;
+defm TTL_Square : TTL_UnaryElementwisePair<"square", "square_tile">;
+defm TTL_Softsign : TTL_UnaryElementwisePair<"softsign", "softsign_tile">;
+defm TTL_Signbit : TTL_UnaryElementwisePair<"signbit", "signbit_tile">;
+defm TTL_Frac : TTL_UnaryElementwisePair<"frac", "frac_tile">;
+defm TTL_Trunc : TTL_UnaryElementwisePair<"trunc", "trunc_tile">;
 
 //===----------------------------------------------------------------------===//
 // Broadcast Operation
@@ -1039,8 +1051,13 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
     `ttl.store` represents the user's intent to store a computed tensor into
     an output circular buffer.
 
-    Emitted by Python's `o.store(result)`. During `convert-ttl-to-compute`,
-    this op is transformed into a `ttl.tile_store` inside the compute body.
+    Emitted by Python's `o.store(result)` (overwrite) or `o += result`
+    (accumulate). During `convert-ttl-to-compute`, this op is transformed
+    into a `ttl.tile_store` inside the compute body.
+
+    When `accumulate` is set, the enclosing loop is annotated for L1
+    packer accumulation so that each iteration adds to the existing L1
+    value instead of overwriting.
 
     Example:
     ```mlir
@@ -1048,11 +1065,14 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
     %result = ttl.add %a, %b : ...
     ttl.store %result, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>,
                                   tensor<1x1x!ttcore.tile<32x32, bf16>>
+    // Accumulating store (from +=):
+    ttl.store %result, %reserve {accumulate} : ...
     ```
   }];
   let arguments = (ins
     AnyRankedTensor:$tensor,
-    AnyRankedTensor:$view
+    AnyRankedTensor:$view,
+    OptionalAttr<UnitAttr>:$accumulate
   );
   let assemblyFormat = "$tensor `,` $view attr-dict `:` type($tensor) `,` type($view)";
   let hasVerifier = 1;

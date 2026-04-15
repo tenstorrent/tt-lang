@@ -1224,14 +1224,16 @@ def _compile_kernel(
         assign_dst_pass = f"ttl-assign-dst{{enable-fpu-binary-ops={fpu_flag}}}"
 
         pipeline_passes = [
+            "func.func(ttl-annotate-l1-acc-loops)",
             "func.func(convert-ttl-to-compute)",
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",
         ]
         if compiler_options.maximize_dst:
             subblock_sync = "true" if compiler_options.auto_sync else "false"
+            strict_f32 = "true" if compiler_options.strict_f32_acc else "false"
             pipeline_passes.append(
-                f"func.func(ttl-subblock-compute-for-dst{{subblock-sync={subblock_sync}}})"
+                f"func.func(ttl-subblock-compute-for-dst{{subblock-sync={subblock_sync} strict-f32-acc={strict_f32}}})"
             )
         if compiler_options.use_block_matmul:
             pipeline_passes.append("func.func(ttl-lower-matmul-block)")

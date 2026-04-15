@@ -215,6 +215,7 @@ BINARY_OPS = {
 
 UNARY_OPS = {
     "exp": (make_unary_kernel("exp", "exp"), torch.exp),
+    "exp2": (make_unary_kernel("exp2", "exp2"), torch.exp2),
     "log": (make_unary_kernel("log", "log"), torch.log),
     "sqrt": (make_unary_kernel("sqrt", "sqrt"), torch.sqrt),
     "rsqrt": (make_unary_kernel("rsqrt", "rsqrt"), torch.rsqrt),
@@ -231,6 +232,27 @@ UNARY_OPS = {
     "asin": (make_unary_kernel("asin", "asin"), torch.asin),
     "acos": (make_unary_kernel("acos", "acos"), torch.acos),
     "atan": (make_unary_kernel("atan", "atan"), torch.atan),
+    "ceil": (make_unary_kernel("ceil", "ceil"), torch.ceil),
+    "sign": (make_unary_kernel("sign", "sign"), torch.sign),
+    "gelu": (make_unary_kernel("gelu", "gelu"), torch.nn.functional.gelu),
+    "silu": (make_unary_kernel("silu", "silu"), torch.nn.functional.silu),
+    "hardsigmoid": (
+        make_unary_kernel("hardsigmoid", "hardsigmoid"),
+        torch.nn.functional.hardsigmoid,
+    ),
+    "expm1": (make_unary_kernel("expm1", "expm1"), torch.expm1),
+    "square": (make_unary_kernel("square", "square"), torch.square),
+    "softsign": (
+        make_unary_kernel("softsign", "softsign"),
+        torch.nn.functional.softsign,
+    ),
+    # torch.signbit returns bool tensor; cast to float for numeric comparison.
+    "signbit": (
+        make_unary_kernel("signbit", "signbit"),
+        lambda x: torch.signbit(x).float(),
+    ),
+    "frac": (make_unary_kernel("frac", "frac"), torch.frac),
+    "trunc": (make_unary_kernel("trunc", "trunc"), torch.trunc),
 }
 
 
@@ -259,13 +281,29 @@ def test_binary_op(device, op_name):
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
 
+# Per-op input tensors for ops where constant 0.5 only exercises one code path.
+# sign/signbit need negative+zero+positive; ceil/trunc/frac need non-integer
+# values across the number line; hardsigmoid is piecewise over (-3, 3).
+UNARY_TEST_INPUTS: dict = {
+    "sign": torch.linspace(-2.0, 2.0, 32 * 32, dtype=torch.bfloat16).reshape(32, 32),
+    "signbit": torch.linspace(-2.0, 2.0, 32 * 32, dtype=torch.bfloat16).reshape(32, 32),
+    "ceil": torch.linspace(-100, 100, 32 * 32, dtype=torch.bfloat16).reshape(32, 32),
+    "trunc": torch.linspace(-100, 100, 32 * 32, dtype=torch.bfloat16).reshape(32, 32),
+    "frac": torch.linspace(-100, 100, 32 * 32, dtype=torch.bfloat16).reshape(32, 32),
+    "hardsigmoid": torch.linspace(-4.0, 4.0, 32 * 32, dtype=torch.bfloat16).reshape(
+        32, 32
+    ),
+}
+
+
 @pytest.mark.parametrize("op_name", UNARY_OPS.keys())
 def test_unary_op(device, op_name):
     """Test unary elementwise operation with L1 memory."""
     kernel, torch_fn = UNARY_OPS[op_name]
 
-    # Use values appropriate for all ops (positive for log/sqrt, bounded for exp)
-    inp_torch = torch.full((32, 32), 0.5, dtype=torch.bfloat16)
+    inp_torch = UNARY_TEST_INPUTS.get(
+        op_name, torch.full((32, 32), 0.5, dtype=torch.bfloat16)
+    )
     out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
     expected = torch_fn(inp_torch)
 

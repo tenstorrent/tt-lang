@@ -76,6 +76,13 @@ def _make_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         help="Enable FP32 accumulation for matmul operations (default: enabled).",
     )
+    p.add_argument(
+        "--ttl-strict-f32-acc",
+        default=None,
+        dest="strict_f32_acc",
+        action=argparse.BooleanOptionalAction,
+        help="Error if accumulation (+=) output block exceeds f32 DST capacity (default: disabled).",
+    )
     return p
 
 
@@ -121,6 +128,7 @@ class CompilerOptions:
     combine_pack_tiles: bool = True
     reduce_full_fp32: bool = True
     matmul_full_fp32: bool = True
+    strict_f32_acc: bool = False
 
     # Fields that were explicitly provided (not defaulted). Excluded from
     # equality and hashing so two instances with the same bool values are
