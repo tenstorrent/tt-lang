@@ -8,10 +8,10 @@
 A rows are multicast horizontally (one pipe per row of the grid).
 B columns are multicast vertically (one pipe per column of the grid).
 
-Shape 10240x8192x13312 uses 130 cores (13x10 grid) with 4x4 blocks per core.
+Uses grid="auto" to adapt to the available device grid.
 
-Tests: multi-tile 8x8 blocks, full Wormhole grid, mcast and balanced
-(two-NOC) patterns with PipeNet named-function callbacks.
+Tests: multi-tile 8x8 blocks, mcast and balanced (two-NOC) patterns
+with PipeNet named-function callbacks.
 """
 
 # REQUIRES: ttnn
@@ -32,9 +32,6 @@ BLOCK_N = 8
 BLOCK_K = 8
 BLOCK_SIZE = BLOCK_M * TILE  # 256
 
-MAX_GRID_N = 13
-MAX_GRID_M = 10
-
 
 def _even_split(n_blocks, max_grid):
     """Pick blocks_per_node that divides n_blocks evenly."""
@@ -48,13 +45,12 @@ def make_mcast_kernel(M_DIM, K_DIM, N_DIM):
     M_BLOCKS = M_DIM // BLOCK_SIZE
     N_BLOCKS = N_DIM // BLOCK_SIZE
     K_BLOCKS = K_DIM // BLOCK_SIZE
-    M_BPN, NUM_ROWS = _even_split(M_BLOCKS, MAX_GRID_M)
-    N_BPN, NUM_COLS = _even_split(N_BLOCKS, MAX_GRID_N)
 
-    @ttl.operation(grid=(NUM_COLS, NUM_ROWS))
+    @ttl.operation(grid="auto")
     def mcast_matmul(a, w, out):
-        m_blocks_per_node = M_BPN
-        n_blocks_per_node = N_BPN
+        NUM_COLS, NUM_ROWS = ttl.grid_size(dims=2)
+        m_blocks_per_node, _ = _even_split(M_BLOCKS, NUM_ROWS)
+        n_blocks_per_node, _ = _even_split(N_BLOCKS, NUM_COLS)
 
         a_pipes = [
             ttl.Pipe(src=(0, row), dst=(slice(0, NUM_COLS), row))
@@ -152,13 +148,12 @@ def make_balanced_kernel(M_DIM, K_DIM, N_DIM):
     M_BLOCKS = M_DIM // BLOCK_SIZE
     N_BLOCKS = N_DIM // BLOCK_SIZE
     K_BLOCKS = K_DIM // BLOCK_SIZE
-    M_BPN, NUM_ROWS = _even_split(M_BLOCKS, MAX_GRID_M)
-    N_BPN, NUM_COLS = _even_split(N_BLOCKS, MAX_GRID_N)
 
-    @ttl.operation(grid=(NUM_COLS, NUM_ROWS))
+    @ttl.operation(grid="auto")
     def balanced_matmul(a, w, out):
-        m_blocks_per_node = M_BPN
-        n_blocks_per_node = N_BPN
+        NUM_COLS, NUM_ROWS = ttl.grid_size(dims=2)
+        m_blocks_per_node, _ = _even_split(M_BLOCKS, NUM_ROWS)
+        n_blocks_per_node, _ = _even_split(N_BLOCKS, NUM_COLS)
 
         a_pipes = [
             ttl.Pipe(src=(0, row), dst=(slice(0, NUM_COLS), row))
@@ -257,13 +252,12 @@ def make_balanced_relu_kernel(M_DIM, K_DIM, N_DIM):
     M_BLOCKS = M_DIM // BLOCK_SIZE
     N_BLOCKS = N_DIM // BLOCK_SIZE
     K_BLOCKS = K_DIM // BLOCK_SIZE
-    M_BPN, NUM_ROWS = _even_split(M_BLOCKS, MAX_GRID_M)
-    N_BPN, NUM_COLS = _even_split(N_BLOCKS, MAX_GRID_N)
 
-    @ttl.operation(grid=(NUM_COLS, NUM_ROWS))
+    @ttl.operation(grid="auto")
     def balanced_matmul_relu(a, w, out):
-        m_blocks_per_node = M_BPN
-        n_blocks_per_node = N_BPN
+        NUM_COLS, NUM_ROWS = ttl.grid_size(dims=2)
+        m_blocks_per_node, _ = _even_split(M_BLOCKS, NUM_ROWS)
+        n_blocks_per_node, _ = _even_split(N_BLOCKS, NUM_COLS)
 
         a_pipes = [
             ttl.Pipe(src=(0, row), dst=(slice(0, NUM_COLS), row))
@@ -387,17 +381,17 @@ def _run_matmul(make_kernel, M, K, N, device, golden_fn=None):
 
 
 def test_mcast_matmul(device):
-    """2D mcast matmul (both A+B on dm_read): 130 cores, 4x4 blocks/core."""
+    """2D mcast matmul (both A+B on dm_read)."""
     _run_matmul(make_mcast_kernel, 10240, 8192, 13312, device)
 
 
 def test_balanced_matmul(device):
-    """Balanced matmul (A on dm_read, B on dm_write): 130 cores, 4x4 blocks/core."""
+    """Balanced matmul (A on dm_read, B on dm_write)."""
     _run_matmul(make_balanced_kernel, 10240, 8192, 13312, device)
 
 
 def test_balanced_matmul_relu(device):
-    """Balanced matmul + fused relu: 130 cores, 4x4 blocks/core."""
+    """Balanced matmul + fused relu."""
 
     def golden_relu(a_tt, w_tt):
         return ttnn.to_torch(ttnn.relu(ttnn.matmul(a_tt, w_tt)))

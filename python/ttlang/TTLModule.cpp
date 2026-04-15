@@ -126,6 +126,7 @@ void populateTTLModule(nb::module_ &m) {
       .def_prop_ro("dst_start_y", &PipeType::getDstStartY)
       .def_prop_ro("dst_end_x", &PipeType::getDstEndX)
       .def_prop_ro("dst_end_y", &PipeType::getDstEndY)
+      .def_prop_ro("pipe_net_id", &PipeType::getPipeNetId)
       .def("is_unicast", &PipeType::isUnicast)
       .def("is_multicast", &PipeType::isMulticast);
 }

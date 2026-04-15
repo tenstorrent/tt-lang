@@ -17,6 +17,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LogicalResult.h"
@@ -424,7 +425,11 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   PipeGraph graph;
 
   // Find all Pipe->CB copies (receiver side) and extract CB index
+  LogicalResult walkResult = success();
   mod.walk([&](CopyOp copyOp) {
+    if (failed(walkResult)) {
+      return;
+    }
     auto srcPipeType = dyn_cast<PipeType>(copyOp.getSrc().getType());
     if (!srcPipeType) {
       return;
@@ -447,12 +452,17 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
     }
 
     int64_t cbIndex = bindOp.getCbIndex().getSExtValue();
-    graph.addReceiverCB(srcPipeType.getSrcX(), srcPipeType.getSrcY(),
-                        srcPipeType.getDstStartX(), srcPipeType.getDstStartY(),
-                        srcPipeType.getDstEndX(), srcPipeType.getDstEndY(),
-                        srcPipeType.getPipeNetId(), cbIndex,
-                        cbType.getBlockCount(), copyOp.getLoc(), copyOp);
+    walkResult = graph.addReceiverCB(
+        srcPipeType.getSrcX(), srcPipeType.getSrcY(),
+        srcPipeType.getDstStartX(), srcPipeType.getDstStartY(),
+        srcPipeType.getDstEndX(), srcPipeType.getDstEndY(),
+        srcPipeType.getPipeNetId(), cbIndex, cbType.getBlockCount(),
+        copyOp.getLoc(), copyOp);
   });
+
+  if (failed(walkResult)) {
+    return failure();
+  }
 
   graph.assignGatherSlotIndices();
 
@@ -814,8 +824,13 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
       // Determine CB access context: consumer (cb_wait/cb_pop) vs producer
       // (cb_reserve/cb_push). This controls whether we read from the CB's
       // read pointer or write pointer for the pipe source address.
-      bool isConsumerCB = llvm::any_of(
-          src.getUsers(), [](Operation *user) { return isa<CBWaitOp>(user); });
+      // Use dominance to correctly handle CBs in nested regions (e.g.,
+      // inside scf.if from pipe callbacks) and CBs used in both roles.
+      DominanceInfo domInfo(op->getParentOfType<func::FuncOp>());
+      bool isConsumerCB = llvm::any_of(src.getUsers(), [&](Operation *user) {
+        return isa<CBWaitOp>(user) && user->getOperand(0) == src &&
+               domInfo.dominates(user, op);
+      });
       return lowerCBToPipe(op, adaptor.getSrc(), adaptor.getDst(), receiverInfo,
                            isConsumerCB, rewriter);
     }

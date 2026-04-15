@@ -96,16 +96,19 @@ public:
   bool hasPipes() const { return !receiverCBs.empty(); }
 
   /// Add a receiver CB mapping for a pipe.
-  void addReceiverCB(int64_t srcX, int64_t srcY, int64_t dstStartX,
-                     int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
-                     int64_t pipeNetId, int64_t cbIndex, int64_t blockCount,
-                     Location loc, Operation *receiverCopyOp) {
+  LogicalResult addReceiverCB(int64_t srcX, int64_t srcY, int64_t dstStartX,
+                              int64_t dstStartY, int64_t dstEndX,
+                              int64_t dstEndY, int64_t pipeNetId,
+                              int64_t cbIndex, int64_t blockCount, Location loc,
+                              Operation *receiverCopyOp) {
     PipeKey key{srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY, pipeNetId};
-    assert(receiverCBs.count(key) == 0 &&
-           "duplicate receiver CB for the same pipe");
+    if (receiverCBs.count(key) != 0) {
+      return emitError(loc) << "duplicate receiver CB for the same pipe";
+    }
     receiverCBs.insert({key, {cbIndex, 0, blockCount, loc}});
     receiverCopyToKey[receiverCopyOp] = key;
     receiverCopyOrder.push_back({receiverCopyOp, key});
+    return success();
   }
 
   /// Assign gather slot indices for pipes sharing a destination.
@@ -126,13 +129,22 @@ public:
                cbIndex == o.cbIndex;
       }
     };
-    struct DstCBKeyHash {
-      std::size_t operator()(const DstCBKey &k) const {
+    struct DstCBKeyInfo {
+      static DstCBKey getEmptyKey() {
+        return {llvm::DenseMapInfo<int64_t>::getEmptyKey(), 0, 0, 0, 0};
+      }
+      static DstCBKey getTombstoneKey() {
+        return {llvm::DenseMapInfo<int64_t>::getTombstoneKey(), 0, 0, 0, 0};
+      }
+      static unsigned getHashValue(const DstCBKey &k) {
         return llvm::hash_combine(k.dstStartX, k.dstStartY, k.dstEndX,
                                   k.dstEndY, k.cbIndex);
       }
+      static bool isEqual(const DstCBKey &a, const DstCBKey &b) {
+        return a == b;
+      }
     };
-    std::unordered_map<DstCBKey, SmallVector<PipeKey>, DstCBKeyHash> groups;
+    llvm::DenseMap<DstCBKey, SmallVector<PipeKey>, DstCBKeyInfo> groups;
     for (auto &[key, info] : receiverCBs) {
       DstCBKey dk{key.dstStartX, key.dstStartY, key.dstEndX, key.dstEndY,
                   info.cbIndex};
@@ -169,7 +181,7 @@ public:
     // Uses receiverCopyOrder (insertion-ordered) instead of the DenseMap
     // receiverCopyToKey, because the cumulative wait protocol requires
     // the last CopyOp in program order to reset the semaphore.
-    std::unordered_map<GatherDstKey, int64_t, GatherDstKeyHash> dstCounters;
+    llvm::DenseMap<GatherDstKey, int64_t, GatherDstKeyInfo> dstCounters;
     for (auto &[copyOp, key] : receiverCopyOrder) {
       GatherDstKey dk{key.dstStartX, key.dstStartY, key.pipeNetId};
       if (gatherDstCounts.count(dk) == 0) {
@@ -187,7 +199,7 @@ public:
       if (numSenders <= 1) {
         continue;
       }
-      // Find a receiver entry matching this destination to get block_count.
+      // Check all receiver entries matching this destination.
       for (auto &[pk, info] : receiverCBs) {
         if (pk.dstStartX != dk.dstX || pk.dstStartY != dk.dstY ||
             pk.pipeNetId != dk.pipeNetId) {
@@ -200,7 +212,6 @@ public:
                  << " senders target it; "
                  << "block_count must be >= number of senders";
         }
-        break;
       }
     }
     return success();
@@ -239,12 +250,21 @@ private:
       return dstX == o.dstX && dstY == o.dstY && pipeNetId == o.pipeNetId;
     }
   };
-  struct GatherDstKeyHash {
-    std::size_t operator()(const GatherDstKey &k) const {
+  struct GatherDstKeyInfo {
+    static GatherDstKey getEmptyKey() {
+      return {llvm::DenseMapInfo<int64_t>::getEmptyKey(), 0, 0};
+    }
+    static GatherDstKey getTombstoneKey() {
+      return {llvm::DenseMapInfo<int64_t>::getTombstoneKey(), 0, 0};
+    }
+    static unsigned getHashValue(const GatherDstKey &k) {
       return llvm::hash_combine(k.dstX, k.dstY, k.pipeNetId);
     }
+    static bool isEqual(const GatherDstKey &a, const GatherDstKey &b) {
+      return a == b;
+    }
   };
-  std::unordered_map<GatherDstKey, int64_t, GatherDstKeyHash> gatherDstCounts;
+  llvm::DenseMap<GatherDstKey, int64_t, GatherDstKeyInfo> gatherDstCounts;
 
   // Maps receiver CopyOp -> PipeKey for CopyOp-keyed lookups.
   llvm::DenseMap<Operation *, PipeKey> receiverCopyToKey;

@@ -43,7 +43,7 @@ static bool isBefore(Operation *a, Operation *b) {
 /// Nested releases are collected into `toHoist` for erasure.
 template <typename ReleaseOpTy>
 static bool findReleases(Value cb, Operation *acquire, Operation *bound,
-                         SmallVectorImpl<ReleaseOpTy> &allReleases,
+                         const SmallVectorImpl<ReleaseOpTy> &allReleases,
                          SmallVectorImpl<ReleaseOpTy> &toHoist,
                          const DenseSet<Operation *> &erased) {
   Block *block = acquire->getBlock();
@@ -102,28 +102,19 @@ static Operation *findLastTransitiveUse(Value cb, Operation *acquire,
     worklist.push_back(acquire->getResult(0));
   }
 
-  auto updateLast = [&](Operation *op) {
+  // Returns the ancestor in the acquire's block, or nullptr if out of range.
+  auto getInRangeAncestor = [&](Operation *op) -> Operation * {
     Operation *ancestor = block->findAncestorOpInBlock(*op);
     if (!ancestor) {
-      return;
-    }
-    if (isBefore(last, ancestor)) {
-      last = ancestor;
-    }
-  };
-
-  auto inRange = [&](Operation *op) {
-    Operation *ancestor = block->findAncestorOpInBlock(*op);
-    if (!ancestor) {
-      return false;
+      return nullptr;
     }
     if (!isBefore(acquire, ancestor) && ancestor != acquire) {
-      return false;
+      return nullptr;
     }
     if (bound && !isBefore(ancestor, bound)) {
-      return false;
+      return nullptr;
     }
-    return true;
+    return ancestor;
   };
 
   for (auto &use : cb.getUses()) {
@@ -134,10 +125,13 @@ static Operation *findLastTransitiveUse(Value cb, Operation *acquire,
     if (isa<CBPushOp, CBPopOp, CBReserveOp, CBWaitOp>(user)) {
       continue;
     }
-    if (!inRange(user)) {
+    Operation *ancestor = getInRangeAncestor(user);
+    if (!ancestor) {
       continue;
     }
-    updateLast(user);
+    if (isBefore(last, ancestor)) {
+      last = ancestor;
+    }
     for (auto result : user->getResults()) {
       worklist.push_back(result);
     }
@@ -153,10 +147,13 @@ static Operation *findLastTransitiveUse(Value cb, Operation *acquire,
       if (isa<CBPushOp, CBPopOp>(user)) {
         continue;
       }
-      if (!inRange(user)) {
+      Operation *ancestor = getInRangeAncestor(user);
+      if (!ancestor) {
         continue;
       }
-      updateLast(user);
+      if (isBefore(last, ancestor)) {
+        last = ancestor;
+      }
       for (auto result : user->getResults()) {
         worklist.push_back(result);
       }
@@ -193,100 +190,76 @@ struct TTLInsertCBSyncPass
     // Track erased ops so later iterations don't access dangling pointers.
     DenseSet<Operation *> erased;
 
-    for (auto reserve : reserves) {
-      Value cb = reserve.getCb();
-
-      Operation *nextReserve = nullptr;
-      for (auto other : reserves) {
-        if (other == reserve || other.getCb() != cb) {
+    // Find the next op on the same CB, in the same block, after `after`.
+    auto findNextOnCB = [](Value cb, Operation *after, auto &candidates) {
+      Operation *next = nullptr;
+      for (auto candidate : candidates) {
+        if (candidate.getCb() != cb) {
           continue;
         }
-        if (other->getBlock() != reserve->getBlock()) {
+        if (candidate->getBlock() != after->getBlock()) {
           continue;
         }
-        if (!isBefore(reserve, other)) {
+        if (!isBefore(after, candidate)) {
           continue;
         }
-        if (!nextReserve || isBefore(other, nextReserve)) {
-          nextReserve = other;
+        if (!next || isBefore(candidate, next)) {
+          next = candidate;
         }
       }
+      return next;
+    };
 
-      // For intra-thread DFBs (same CB used for both reserve and wait),
-      // the push must come before the wait. Find the next wait on the
-      // same CB and use the earlier of nextReserve/nextWait as the bound.
-      Operation *nextWait = nullptr;
-      for (auto wait : waits) {
-        if (wait.getCb() != cb) {
+    auto insertMissingReleases = [&](auto acquires, auto &releases,
+                                     auto createRelease,
+                                     auto &extraBoundCandidates) {
+      for (auto acquire : acquires) {
+        Value cb = acquire.getCb();
+
+        // Bound = earliest of next same-type acquire and next
+        // extra-bound candidate (e.g., next cb_wait for reserves).
+        Operation *bound = findNextOnCB(cb, acquire, acquires);
+        Operation *extra = findNextOnCB(cb, acquire, extraBoundCandidates);
+        if (extra) {
+          bound = bound ? (isBefore(bound, extra) ? bound : extra) : extra;
+        }
+
+        using ReleaseOpTy =
+            typename std::remove_reference_t<decltype(releases)>::value_type;
+        SmallVector<ReleaseOpTy> nested;
+        if (findReleases(cb, acquire, bound, releases, nested, erased)) {
           continue;
         }
-        if (wait->getBlock() != reserve->getBlock()) {
-          continue;
+
+        for (auto nested_op : nested) {
+          erased.insert(nested_op);
+          nested_op.erase();
         }
-        if (!isBefore(reserve, wait)) {
-          continue;
-        }
-        if (!nextWait || isBefore(wait, nextWait)) {
-          nextWait = wait;
-        }
+
+        Operation *last = findLastTransitiveUse(cb, acquire, bound);
+        builder.setInsertionPointAfter(last);
+        createRelease(builder, acquire.getLoc(), cb);
       }
+    };
 
-      Operation *bound = nullptr;
-      if (nextReserve && nextWait) {
-        bound = isBefore(nextReserve, nextWait) ? nextReserve : nextWait;
-      } else {
-        bound = nextReserve ? nextReserve : nextWait;
-      }
+    // For reserves, bound push placement by the next cb_wait on the same
+    // CB. Intra-thread DFBs use the same CB for both reserve and wait,
+    // so push must precede wait to avoid deadlock.
+    insertMissingReleases(
+        reserves, pushes,
+        [](OpBuilder &b, Location loc, Value cb) {
+          CBPushOp::create(b, loc, cb, /*num_tiles=*/IntegerAttr{});
+        },
+        waits);
 
-      SmallVector<CBPushOp> nestedPushes;
-      if (findReleases(cb, reserve, bound, pushes, nestedPushes, erased)) {
-        continue;
-      }
-
-      for (auto nested : nestedPushes) {
-        erased.insert(nested);
-        nested.erase();
-      }
-
-      Operation *last = findLastTransitiveUse(cb, reserve, bound);
-      builder.setInsertionPointAfter(last);
-      CBPushOp::create(builder, reserve.getLoc(), cb,
-                       /*num_tiles=*/IntegerAttr{});
-    }
-
-    for (auto wait : waits) {
-      Value cb = wait.getCb();
-
-      Operation *nextWait = nullptr;
-      for (auto other : waits) {
-        if (other == wait || other.getCb() != cb) {
-          continue;
-        }
-        if (other->getBlock() != wait->getBlock()) {
-          continue;
-        }
-        if (!isBefore(wait, other)) {
-          continue;
-        }
-        if (!nextWait || isBefore(other, nextWait)) {
-          nextWait = other;
-        }
-      }
-
-      SmallVector<CBPopOp> nestedPops;
-      if (findReleases(cb, wait, nextWait, pops, nestedPops, erased)) {
-        continue;
-      }
-
-      for (auto nested : nestedPops) {
-        erased.insert(nested);
-        nested.erase();
-      }
-
-      Operation *last = findLastTransitiveUse(cb, wait, nextWait);
-      builder.setInsertionPointAfter(last);
-      CBPopOp::create(builder, wait.getLoc(), cb);
-    }
+    // For waits, only bound by the next same-CB wait (no extra bound).
+    SmallVector<CBWaitOp> noExtraBound;
+    insertMissingReleases(
+        waits, pops,
+        [](OpBuilder &b, Location loc, Value cb) {
+          CBPopOp::create(b, loc, cb);
+        },
+        noExtraBound);
   }
 };
 
