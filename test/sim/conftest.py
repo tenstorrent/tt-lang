@@ -48,10 +48,11 @@ def setup_scheduler_and_thread_context(thread_type: ThreadType) -> GreenletSched
     # Set the main greenlet to the current greenlet (for switching back)
     scheduler._main_greenlet = greenlet.getcurrent()
 
-    # Simulate being within a thread by adding to _active
+    # Simulate being within core 0 by using a valid core thread name so that
+    # get_current_core_id() returns "core0" and shard-locality stats work in tests.
     test_greenlet = greenlet(lambda: None)
-    scheduler._current_name = "test-thread"
-    scheduler._active["test-thread"] = (
+    scheduler._current_name = "core0-compute"
+    scheduler._active["core0-compute"] = (
         test_greenlet,
         None,  # blocking_obj
         "",  # operation
@@ -59,7 +60,7 @@ def setup_scheduler_and_thread_context(thread_type: ThreadType) -> GreenletSched
         "",  # location
         None,  # raw_loc
     )
-    scheduler._has_made_progress["test-thread"] = False
+    scheduler._has_made_progress["core0-compute"] = False
 
     return scheduler
 

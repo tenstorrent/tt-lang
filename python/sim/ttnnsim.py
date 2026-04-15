@@ -13,15 +13,28 @@ Scope:
 - Random/empty tensor creation
 - Helpers to convert to native torch tensors
 - Constants for tile layout and tile size
-- Core coordinate and range classes for multinode operations
+- Core coordinate / range / grid types, ``TensorSpec``, ``BufferType``,
+  ``TensorMemoryLayout`` (aligned with tt-metal / tensor sharding examples)
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from enum import Enum, auto
-from typing import Any, Callable, List, Optional, Tuple, Union, cast
+from typing import (
+    Any,
+    Callable,
+    FrozenSet,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    Union,
+    cast,
+)
 
 import torch
 
@@ -89,56 +102,294 @@ class ShardDistributionStrategy(Enum):
     GRID_2D = auto()
 
 
-@dataclass
-class ShardSpec:
-    """Shard grid and per-shard tile shape for 2-D sharding strategies.
+class BufferType(Enum):
+    """Buffer placement for tensor storage (mirrors ``ttnn.BufferType``)."""
 
-    Attributes:
-        shard_grid: Core grid shape.
-            HEIGHT_SHARDED / WIDTH_SHARDED: 1-element tuple (num_cores,).
-            BLOCK_SHARDED: 2-element tuple (num_core_rows, num_core_cols).
-        shard_shape: Tile-grid shape of each individual shard.
-        orientation: Core traversal order (stored for metadata; currently
-            unused by the functional simulator).
+    DRAM = auto()
+    L1 = auto()
+
+
+class TensorMemoryLayout(Enum):
+    """How tensor data is laid out in memory (mirrors ``ttnn.TensorMemoryLayout``).
+
+    See the `tensor sharding tech report
+    <https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/tensor_sharding/tensor_sharding.md>`__.
     """
 
-    shard_grid: Shape
-    shard_shape: Shape
-    orientation: ShardOrientation = ShardOrientation.ROW_MAJOR
+    INTERLEAVED = auto()
+    HEIGHT_SHARDED = auto()
+    WIDTH_SHARDED = auto()
+    BLOCK_SHARDED = auto()
+    ND_SHARDED = auto()
+
+
+class ShardSpec:
+    """Shard grid and per-shard shape (ttnn / tt-metal API).
+
+    Supported forms:
+
+    - Legacy simulator: ``ShardSpec(shard_grid=(n,), shard_shape=(h, w), ...)``
+    - tt-metal positional: ``ShardSpec(core_range_set, (h, w), ShardOrientation.ROW_MAJOR)``
+    - tt-metal keywords: ``ShardSpec(grid=..., shard_shape=[h, w], shard_orientation=...)``
+      (``shard_grid`` is derived from ``grid`` and :class:`TensorMemoryLayout` when using
+      :class:`MemoryConfig`).
+
+    ``shard_shape`` uses **element** units; see the `tensor sharding tech report
+    <https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/tensor_sharding/tensor_sharding.md>`__.
+    """
+
+    __slots__ = ("_shard_grid", "shard_shape", "orientation", "grid")
+
+    def __init__(
+        self,
+        *args: Any,
+        shard_grid: Optional[Shape] = None,
+        shard_shape: Optional[Sequence[int]] = None,
+        orientation: ShardOrientation = ShardOrientation.ROW_MAJOR,
+        grid: Optional["CoreRangeSet"] = None,
+        shard_orientation: Optional[ShardOrientation] = None,
+    ) -> None:
+        ori = shard_orientation if shard_orientation is not None else orientation
+        # CoreRangeSet is defined later in this module; avoid isinstance forward-ref.
+        if args and type(args[0]).__name__ == "CoreRangeSet":
+            self.grid = args[0]
+            self.shard_shape = tuple(args[1])
+            self.orientation = args[2] if len(args) > 2 else ori
+            self._shard_grid = None
+            return
+        sg = shard_grid
+        ss = shard_shape
+        gr = grid
+        if args:
+            if sg is None:
+                sg = args[0]
+            if ss is None and len(args) > 1:
+                ss = args[1]
+            if len(args) > 2 and isinstance(args[2], ShardOrientation):
+                ori = args[2]
+        if ss is None:
+            raise TypeError("shard_shape is required")
+        self.shard_shape = tuple(int(x) for x in ss)
+        self.orientation = ori
+        self.grid = gr
+        self._shard_grid = tuple(int(x) for x in sg) if sg is not None else None
+        if self._shard_grid is None and self.grid is None:
+            raise TypeError(
+                "ShardSpec requires shard_grid=, or grid=, or CoreRangeSet as first arg"
+            )
+
+    @property
+    def shard_grid(self) -> Shape:
+        if self._shard_grid is None:
+            raise ValueError(
+                "ShardSpec uses a CoreRangeSet grid; build MemoryConfig(TensorMemoryLayout, BufferType, spec) to resolve shard_grid"
+            )
+        return self._shard_grid
+
+    def with_resolved_shard_grid(self, layout: "TensorMemoryLayout") -> ShardSpec:
+        """Return a spec with ``shard_grid`` set from ``grid`` and layout (tt-metal path)."""
+        if self._shard_grid is not None:
+            return self
+        if self.grid is None:
+            raise ValueError("ShardSpec has no CoreRangeSet grid to resolve")
+        cg = core_range_set_to_core_grid(self.grid)
+        if layout in (
+            TensorMemoryLayout.HEIGHT_SHARDED,
+            TensorMemoryLayout.WIDTH_SHARDED,
+        ):
+            sg: Shape = (cg.num_cores,)
+        elif layout == TensorMemoryLayout.BLOCK_SHARDED:
+            sg = (cg.y, cg.x)
+        else:
+            raise ValueError(
+                f"Cannot resolve ShardSpec shard_grid for TensorMemoryLayout {layout}"
+            )
+        return ShardSpec(
+            shard_grid=sg,
+            shard_shape=self.shard_shape,
+            orientation=self.orientation,
+            grid=self.grid,
+        )
+
+    def __eq__(self, other: object) -> bool:
+        match other:
+            case ShardSpec():
+                return (
+                    self._shard_grid == other._shard_grid
+                    and self.shard_shape == other.shard_shape
+                    and self.orientation == other.orientation
+                    and self.grid == other.grid
+                )
+            case _:
+                return False
+
+    def __repr__(self) -> str:
+        return (
+            f"ShardSpec(shard_grid={self._shard_grid!r}, shard_shape={self.shard_shape!r}, "
+            f"orientation={self.orientation!r}, grid={self.grid!r})"
+        )
 
 
 @dataclass
 class NdShardSpec:
-    """Shard specification for ND_SHARDED tensors.
+    """Shard specification for ND_SHARDED tensors (simulator + tech report style).
 
-    Attributes:
-        shard_grid: N-D tuple with one entry per tensor dimension.  For
-            GRID_2D this is the spatial core grid; for ROUND_ROBIN_1D
-            it encodes the number of shards per dimension (total cores =
-            math.prod(shard_grid)).
-        shard_shape: N-D tile-grid shape of each individual shard.
-        distribution: How shards are assigned to cores.
+    Matches the tensor sharding tech report surface API:
+
+    - ``shard_shape``: extent of one shard along each tensor dimension in
+      **element** units.
+    - ``core_ranges``: which device cores participate (optional in the simulator
+      when only locality math is needed).
+
+    If ``shard_grid`` is omitted, it is derived when a :class:`Tensor` is
+    constructed as ``tensor_shape[i] // shard_shape[i]`` (each full tensor
+    dimension must divide evenly by ``shard_shape[i]``).
+
+    ``distribution`` defaults to :data:`ShardDistributionStrategy.ROUND_ROBIN_1D`,
+    matching tt-metal's Python binding for ``NdShardSpec`` (see ``tensor.cpp``).
+    When ``shard_grid`` is omitted and derived from tensor shape in
+    :meth:`with_resolved_shard_grid`, the result uses :data:`ShardDistributionStrategy.GRID_2D`
+    (dense N-D shard boxes), which matches the tensor sharding tech report examples
+    that only specify ``shard_shape``.
+
+    ``num_cores`` applies only to ROUND_ROBIN (modulus for shard assignment).
     """
 
-    shard_grid: Shape
     shard_shape: Shape
+    core_ranges: Optional["CoreRangeSet"] = None
+    shard_grid: Optional[Shape] = None
     distribution: ShardDistributionStrategy = ShardDistributionStrategy.ROUND_ROBIN_1D
+    num_cores: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        # Accept list inputs like the tech report (``shard_shape=[...]``).
+        object.__setattr__(self, "shard_shape", tuple(self.shard_shape))
+        if self.shard_grid is not None:
+            object.__setattr__(self, "shard_grid", tuple(self.shard_grid))
+
+    def with_resolved_shard_grid(self, tensor_shape: Shape) -> NdShardSpec:
+        """Return a copy with ``shard_grid`` set from ``tensor_shape`` and ``shard_shape``."""
+        if self.shard_grid is not None:
+            return self
+        if len(tensor_shape) != len(self.shard_shape):
+            raise ValueError(
+                f"tensor rank {len(tensor_shape)} does not match shard_shape rank {len(self.shard_shape)}"
+            )
+        grid: list[int] = []
+        for i, (ts, ss) in enumerate(zip(tensor_shape, self.shard_shape)):
+            if ss < 1:
+                raise ValueError(f"shard_shape[{i}] must be positive, got {ss}")
+            if ts % ss != 0:
+                raise ValueError(
+                    f"tensor dimension {i} size {ts} is not divisible by shard_shape[{i}]={ss}"
+                )
+            grid.append(ts // ss)
+        # Implicit shard_grid from tensor shape implies dense grid semantics (tech report).
+        return replace(
+            self,
+            shard_grid=tuple(grid),
+            distribution=ShardDistributionStrategy.GRID_2D,
+        )
 
 
-@dataclass
 class MemoryConfig:
-    """Memory configuration for a tensor.
+    """Memory configuration for a tensor (simulator + tt-metal style).
 
-    Attributes:
-        strategy: Sharding strategy for this tensor.
-        shard_spec: Shard spec for HEIGHT_SHARDED, WIDTH_SHARDED, or
-            BLOCK_SHARDED (None otherwise).
-        nd_shard_spec: Shard spec for ND_SHARDED (None otherwise).
+    Simulator style::
+
+        MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED, shard_spec=...)
+
+    tt-metal style (three positional args; see tensor sharding tech report)::
+
+        MemoryConfig(
+            TensorMemoryLayout.HEIGHT_SHARDED,
+            BufferType.L1,
+            ShardSpec(...),
+        )
     """
 
-    strategy: ShardingStrategy
-    shard_spec: Optional[ShardSpec] = None
-    nd_shard_spec: Optional[NdShardSpec] = None
+    __slots__ = (
+        "strategy",
+        "shard_spec",
+        "nd_shard_spec",
+        "buffer_type",
+        "tensor_memory_layout",
+    )
+
+    def __init__(
+        self,
+        *args: Any,
+        strategy: Optional[ShardingStrategy] = None,
+        shard_spec: Optional[ShardSpec] = None,
+        nd_shard_spec: Optional[NdShardSpec] = None,
+        buffer_type: BufferType = BufferType.DRAM,
+        tensor_memory_layout: Optional[TensorMemoryLayout] = None,
+    ) -> None:
+        if (
+            len(args) == 3
+            and isinstance(args[0], TensorMemoryLayout)
+            and isinstance(args[1], BufferType)
+        ):
+            layout_tt, buf, spec = args[0], args[1], args[2]
+            self.buffer_type = buf
+            self.tensor_memory_layout = layout_tt
+            if isinstance(spec, ShardSpec):
+                resolved = spec.with_resolved_shard_grid(layout_tt)
+                self.strategy = _tensor_memory_layout_to_sharding_strategy(layout_tt)
+                self.shard_spec = resolved
+                self.nd_shard_spec = None
+            elif isinstance(spec, NdShardSpec):
+                self.strategy = ShardingStrategy.ND_SHARDED
+                self.shard_spec = None
+                self.nd_shard_spec = spec
+            else:
+                raise TypeError(
+                    f"Third argument must be ShardSpec or NdShardSpec, got {type(spec)}"
+                )
+            return
+
+        st = strategy if strategy is not None else (args[0] if len(args) == 1 else None)
+        if st is None:
+            raise TypeError(
+                "MemoryConfig requires strategy=... or (TensorMemoryLayout, BufferType, ShardSpec|NdShardSpec)"
+            )
+        self.strategy = st
+        self.shard_spec = shard_spec
+        self.nd_shard_spec = nd_shard_spec
+        self.buffer_type = buffer_type
+        self.tensor_memory_layout = tensor_memory_layout
+
+    def __eq__(self, other: object) -> bool:
+        match other:
+            case MemoryConfig():
+                return (
+                    self.strategy == other.strategy
+                    and self.shard_spec == other.shard_spec
+                    and self.nd_shard_spec == other.nd_shard_spec
+                    and self.buffer_type == other.buffer_type
+                    and self.tensor_memory_layout == other.tensor_memory_layout
+                )
+            case _:
+                return False
+
+    def __repr__(self) -> str:
+        return (
+            f"MemoryConfig(strategy={self.strategy!r}, shard_spec={self.shard_spec!r}, "
+            f"nd_shard_spec={self.nd_shard_spec!r}, buffer_type={self.buffer_type!r}, "
+            f"tensor_memory_layout={self.tensor_memory_layout!r})"
+        )
+
+
+def _tensor_memory_layout_to_sharding_strategy(
+    layout: TensorMemoryLayout,
+) -> ShardingStrategy:
+    return {
+        TensorMemoryLayout.INTERLEAVED: ShardingStrategy.INTERLEAVED,
+        TensorMemoryLayout.HEIGHT_SHARDED: ShardingStrategy.HEIGHT_SHARDED,
+        TensorMemoryLayout.WIDTH_SHARDED: ShardingStrategy.WIDTH_SHARDED,
+        TensorMemoryLayout.BLOCK_SHARDED: ShardingStrategy.BLOCK_SHARDED,
+        TensorMemoryLayout.ND_SHARDED: ShardingStrategy.ND_SHARDED,
+    }[layout]
 
 
 @dataclass
@@ -221,19 +472,21 @@ TensorOrScalar = Union["Tensor", float, int]
 
 
 class CoreCoord:
-    """Coordinate representation for a core in a grid.
+    """Logical core coordinate (ttnn API).
 
-    Attributes:
-        x: X coordinate (column) of the core
-        y: Y coordinate (row) of the core
+    Mirrors tt-metal ``CoreCoord``: first component is the X (column) index,
+    second is the Y (row) index, consistent with :class:`CoreGrid` ``(y, x)``
+    sizing elsewhere in this module.
     """
 
-    def __init__(self, x: int, y: int):
+    __slots__ = ("x", "y")
+
+    def __init__(self, x: int, y: int) -> None:
         self.x = x
         self.y = y
 
     def __repr__(self) -> str:
-        return f"CoreCoord(x={self.x}, y={self.y})"
+        return f"CoreCoord({self.x}, {self.y})"
 
     def __eq__(self, other: object) -> bool:
         match other:
@@ -242,52 +495,321 @@ class CoreCoord:
             case _:
                 return False
 
+    def __hash__(self) -> int:
+        return hash((self.x, self.y))
+
 
 class CoreRange:
-    """Represents a rectangular range of cores from start to end (inclusive).
+    """Inclusive rectangular range of cores (ttnn API)."""
 
-    Attributes:
-        start: Starting core coordinate (inclusive)
-        end: Ending core coordinate (inclusive)
-    """
+    __slots__ = ("start", "end")
 
-    def __init__(self, start: CoreCoord, end: CoreCoord):
+    def __init__(self, start: CoreCoord, end: CoreCoord) -> None:
         self.start = start
         self.end = end
 
     def __repr__(self) -> str:
-        return f"CoreRange(start={self.start}, end={self.end})"
+        return f"CoreRange({self.start!r}, {self.end!r})"
+
+    def __eq__(self, other: object) -> bool:
+        match other:
+            case CoreRange():
+                return self.start == other.start and self.end == other.end
+            case _:
+                return False
+
+    def __hash__(self) -> int:
+        return hash((self.start, self.end))
 
     def num_cores(self) -> Count:
-        """Calculate the total number of cores in this range."""
+        """Number of cores in this range."""
         x_range = self.end.x - self.start.x + 1
         y_range = self.end.y - self.start.y + 1
         return x_range * y_range
 
 
 class CoreRangeSet:
-    """Set of core ranges representing a collection of cores.
+    """Collection of :class:`CoreRange` regions (ttnn API).
 
-    This can represent non-contiguous sets of cores by combining
-    multiple CoreRange objects.
-
-    Attributes:
-        _ranges: List of CoreRange objects
+    Construct with a list or a ``set`` of ranges, e.g.
+    ``CoreRangeSet({CoreRange(CoreCoord(0, 0), CoreCoord(0, 3))})``.
     """
 
-    def __init__(self, ranges: List[CoreRange]):
-        self._ranges = ranges
+    __slots__ = ("_ranges",)
+
+    def __init__(
+        self,
+        ranges: Union[
+            List[CoreRange],
+            Set[CoreRange],
+            FrozenSet[CoreRange],
+            Iterable[CoreRange],
+        ],
+    ) -> None:
+        if isinstance(ranges, list):
+            self._ranges = ranges
+        else:
+            self._ranges = sorted(
+                ranges,
+                key=lambda r: (r.start.y, r.start.x, r.end.y, r.end.x),
+            )
 
     def ranges(self) -> List[CoreRange]:
-        """Get the list of core ranges."""
+        """Core ranges (deterministic order)."""
         return self._ranges
 
     def num_cores(self) -> Count:
-        """Calculate the total number of cores across all ranges."""
+        """Total cores across all ranges."""
         return sum(r.num_cores() for r in self._ranges)
 
     def __repr__(self) -> str:
-        return f"CoreRangeSet(ranges={self._ranges})"
+        return f"CoreRangeSet({self._ranges!r})"
+
+    def __eq__(self, other: object) -> bool:
+        match other:
+            case CoreRangeSet():
+                return self._ranges == other._ranges
+            case _:
+                return False
+
+
+def num_cores_to_corerangeset(
+    target_num_cores: int,
+    grid_size: Sequence[int],
+    row_wise: bool = True,
+) -> CoreRangeSet:
+    """Pick ``target_num_cores`` cores in a logical grid (ttnn API subset).
+
+    ``grid_size`` is ``[num_rows, num_cols]`` (Y then X in :class:`CoreCoord`).
+    Prefer a single row of cores along X when ``target_num_cores <= num_cols``;
+    otherwise a single column along Y when ``target_num_cores <= num_rows``;
+    otherwise take a bounding box over cores visited in row-major order (sim
+    approximation).
+    """
+    if len(grid_size) != 2:
+        raise ValueError("grid_size must be a sequence of two ints")
+    rows, cols = int(grid_size[0]), int(grid_size[1])
+    if target_num_cores < 1:
+        raise ValueError("target_num_cores must be at least 1")
+    capacity = rows * cols
+    if target_num_cores > capacity:
+        raise ValueError(
+            f"target_num_cores {target_num_cores} exceeds grid capacity {capacity}"
+        )
+    if row_wise and target_num_cores <= cols:
+        return CoreRangeSet(
+            [
+                CoreRange(
+                    CoreCoord(0, 0),
+                    CoreCoord(target_num_cores - 1, 0),
+                )
+            ]
+        )
+    if row_wise and target_num_cores <= rows:
+        return CoreRangeSet(
+            [
+                CoreRange(
+                    CoreCoord(0, 0),
+                    CoreCoord(0, target_num_cores - 1),
+                )
+            ]
+        )
+    coords: List[CoreCoord] = []
+    for y in range(rows):
+        for x in range(cols):
+            if len(coords) >= target_num_cores:
+                break
+            coords.append(CoreCoord(x, y))
+        if len(coords) >= target_num_cores:
+            break
+    min_x = min(c.x for c in coords)
+    max_x = max(c.x for c in coords)
+    min_y = min(c.y for c in coords)
+    max_y = max(c.y for c in coords)
+    return CoreRangeSet([CoreRange(CoreCoord(min_x, min_y), CoreCoord(max_x, max_y))])
+
+
+def core_range_set_to_core_grid(core_ranges: CoreRangeSet) -> CoreGrid:
+    """Bounding :class:`CoreGrid` for a :class:`CoreRangeSet` (single-box case).
+
+    Uses the axis-aligned bounding box of all ranges.  For sharding helpers
+    this matches typical tt-metal examples with one rectangular ``CoreRange``.
+    """
+    ranges = core_ranges.ranges()
+    if not ranges:
+        raise ValueError("CoreRangeSet is empty")
+    min_x = min(r.start.x for r in ranges)
+    max_x = max(r.end.x for r in ranges)
+    min_y = min(r.start.y for r in ranges)
+    max_y = max(r.end.y for r in ranges)
+    return CoreGrid(y=max_y - min_y + 1, x=max_x - min_x + 1)
+
+
+def _distribute_cores_across_dims(num_cores: int, k: int) -> Tuple[int, ...]:
+    """Split ``num_cores`` into ``k`` positive integers whose product is ``num_cores``."""
+    if k <= 0:
+        return ()
+    if k == 1:
+        return (num_cores,)
+    factors = [1] * k
+    n = num_cores
+    p = 2
+    i = 0
+    while n > 1:
+        if p * p > n:
+            factors[i % k] *= n
+            break
+        if n % p == 0:
+            factors[i % k] *= p
+            n //= p
+            i += 1
+        else:
+            p += 1
+    return tuple(factors)
+
+
+def _nd_shard_spec_for_dims(
+    shape: Shape,
+    shard_dims: Sequence[int],
+    core_ranges: CoreRangeSet,
+) -> NdShardSpec:
+    """Build :class:`NdShardSpec` for experimental ND sharding (GRID_2D)."""
+    ndim = len(shape)
+    dims_sorted = sorted(shard_dims)
+    for d in dims_sorted:
+        if d < 0 or d >= ndim:
+            raise ValueError(f"shard dim {d} out of range for rank {ndim}")
+    num_cores = core_ranges.num_cores()
+    if num_cores < 1:
+        raise ValueError("core range must include at least one core")
+    k = len(dims_sorted)
+    factors = sorted(_distribute_cores_across_dims(num_cores, k), reverse=True)
+    shard_grid_list = [1] * ndim
+    for dim, factor in zip(dims_sorted, factors):
+        shard_grid_list[dim] = factor
+    shard_grid_t = tuple(shard_grid_list)
+    shard_shape = tuple(
+        (
+            (shape[i] + shard_grid_t[i] - 1) // shard_grid_t[i]
+            if shard_grid_t[i] > 1
+            else shape[i]
+        )
+        for i in range(ndim)
+    )
+    return NdShardSpec(
+        shard_shape=shard_shape,
+        shard_grid=shard_grid_t,
+        distribution=ShardDistributionStrategy.GRID_2D,
+        core_ranges=core_ranges,
+    )
+
+
+@dataclass(frozen=True)
+class TensorSpec:
+    """Tensor shape/dtype/layout/buffer metadata with optional sharding (ttnn API).
+
+    Use ``height_sharded`` / ``width_sharded`` / ``block_sharded`` /
+    ``sharded_across_dims`` / ``nd_sharded`` to attach a :class:`MemoryConfig`,
+    then pass the spec to :func:`from_torch` (see tt-metal tensor sharding examples).
+    """
+
+    shape: Tuple[int, ...]
+    dtype: torch.dtype = torch.float32
+    layout: IndexType = TILE_LAYOUT
+    buffer_type: BufferType = BufferType.DRAM
+    memory_layout: TensorMemoryLayout = TensorMemoryLayout.INTERLEAVED
+    memory_config: Optional[MemoryConfig] = None
+    core_ranges: Optional[CoreRangeSet] = None
+
+    def height_sharded(self, core_ranges: CoreRangeSet) -> TensorSpec:
+        """2-D height sharding: collapse leading dims to height, shard along height."""
+        cg = core_range_set_to_core_grid(core_ranges)
+        mc = create_sharded_memory_config(
+            self.shape,
+            cg,
+            ShardStrategy.HEIGHT,
+            orientation=ShardOrientation.ROW_MAJOR,
+            use_height_and_width_as_shard_shape=False,
+        )
+        return replace(
+            self,
+            memory_layout=TensorMemoryLayout.HEIGHT_SHARDED,
+            memory_config=mc,
+            core_ranges=core_ranges,
+        )
+
+    def width_sharded(self, core_ranges: CoreRangeSet) -> TensorSpec:
+        """2-D width sharding: collapse leading dims to height, shard along width."""
+        cg = core_range_set_to_core_grid(core_ranges)
+        mc = create_sharded_memory_config(
+            self.shape,
+            cg,
+            ShardStrategy.WIDTH,
+            orientation=ShardOrientation.ROW_MAJOR,
+            use_height_and_width_as_shard_shape=False,
+        )
+        return replace(
+            self,
+            memory_layout=TensorMemoryLayout.WIDTH_SHARDED,
+            memory_config=mc,
+            core_ranges=core_ranges,
+        )
+
+    def block_sharded(self, core_ranges: CoreRangeSet) -> TensorSpec:
+        """2-D block sharding on a core grid."""
+        cg = core_range_set_to_core_grid(core_ranges)
+        mc = create_sharded_memory_config(
+            self.shape,
+            cg,
+            ShardStrategy.BLOCK,
+            orientation=ShardOrientation.ROW_MAJOR,
+            use_height_and_width_as_shard_shape=False,
+        )
+        return replace(
+            self,
+            memory_layout=TensorMemoryLayout.BLOCK_SHARDED,
+            memory_config=mc,
+            core_ranges=core_ranges,
+        )
+
+    def sharded_across_dims(
+        self,
+        dims: Sequence[int],
+        core_ranges: CoreRangeSet,
+    ) -> TensorSpec:
+        """Experimental ND sharding across the given tensor dimensions."""
+        nd = _nd_shard_spec_for_dims(self.shape, dims, core_ranges)
+        mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=nd)
+        return replace(
+            self,
+            memory_layout=TensorMemoryLayout.ND_SHARDED,
+            memory_config=mc,
+            core_ranges=core_ranges,
+        )
+
+    def nd_sharded(
+        self,
+        shard_shape: Shape,
+        core_ranges: CoreRangeSet,
+    ) -> TensorSpec:
+        """ND sharding with explicit per-dimension shard sizes (element units).
+
+        Matches the tensor sharding tech report style: ``shard_shape`` gives the
+        extent of one shard along each dimension of :attr:`shape`; device
+        placement is ``core_ranges``. The logical shard count per dimension is
+        ``shape[i] // shard_shape[i]`` (each tensor dimension must divide evenly).
+
+        For ND sharding derived from ``shard_dims`` and core count instead, use
+        :meth:`sharded_across_dims`.
+        """
+        nd = NdShardSpec(shard_shape=tuple(shard_shape), core_ranges=core_ranges)
+        mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=nd)
+        return replace(
+            self,
+            memory_layout=TensorMemoryLayout.ND_SHARDED,
+            memory_config=mc,
+            core_ranges=core_ranges,
+        )
 
 
 # Dtype aliases
@@ -476,6 +998,38 @@ def check_count_match(
     )
 
 
+def normalize_selector_to_slice(selector: Selector) -> slice:
+    """Convert an integer index to a unit slice, or return slice as-is.
+
+    Shared by :meth:`Tensor._normalize_index` and :mod:`sim.sharding` when
+    interpreting :class:`~sim.typedefs.Selector` values.
+    """
+    match selector:
+        case int():
+            return slice(selector, selector + 1)
+        case _:
+            return selector
+
+
+def _maybe_resolve_nd_shard_spec_for_tensor(
+    tensor_shape: Shape, memory_config: MemoryConfig
+) -> MemoryConfig:
+    """Fill ``NdShardSpec.shard_grid`` from tensor shape when it was omitted."""
+    if memory_config.strategy != ShardingStrategy.ND_SHARDED:
+        return memory_config
+    nd = memory_config.nd_shard_spec
+    if nd is None or nd.shard_grid is not None:
+        return memory_config
+    resolved_nd = nd.with_resolved_shard_grid(tensor_shape)
+    return MemoryConfig(
+        strategy=memory_config.strategy,
+        shard_spec=memory_config.shard_spec,
+        nd_shard_spec=resolved_nd,
+        buffer_type=memory_config.buffer_type,
+        tensor_memory_layout=memory_config.tensor_memory_layout,
+    )
+
+
 class Tensor:
     """TTNN-like Tensor wrapper built on torch.Tensor.
 
@@ -494,7 +1048,9 @@ class Tensor:
             raise ValueError(f"Tensor must have at least 1 dimension, got 0-d scalar")
         self._tensor: torch.Tensor = tensor
         self._layout: IndexType = layout
-        self.memory_config: MemoryConfig = memory_config
+        self.memory_config: MemoryConfig = _maybe_resolve_nd_shard_spec_for_tensor(
+            tuple(tensor.shape), memory_config
+        )
 
     @property
     def shape(self) -> Shape:
@@ -555,11 +1111,7 @@ class Tensor:
     @staticmethod
     def _normalize_index(selector: Selector) -> slice:
         """Convert an integer index to a unit slice, or return slice as-is."""
-        match selector:
-            case int():
-                return slice(selector, selector + 1)
-            case _:
-                return selector
+        return normalize_selector_to_slice(selector)
 
     @staticmethod
     def _validate_tile_slice(s: slice, dim_name: str) -> None:
@@ -639,6 +1191,28 @@ class Tensor:
             slice(row_s.start * TILE_SHAPE[0], row_s.stop * TILE_SHAPE[0]),
             slice(col_s.start * TILE_SHAPE[1], col_s.stop * TILE_SHAPE[1]),
         )
+
+    def element_slice_starts(self, key: TensorKey) -> Shape:
+        """Element-space start offset per dimension for ``key`` (``slice.start`` values).
+
+        Uses the same rules as :meth:`__getitem__`: tile indices for
+        ``TILE_LAYOUT`` are converted to element bounds; ``ROW_MAJOR_LAYOUT`` keys
+        are already element-space.
+        """
+        match key:
+            case tuple():
+                normalized: Tuple[Selector, ...] = key
+            case _:
+                normalized = (key,)
+        ek = self._to_element_key(normalized)
+        starts: list[int] = []
+        for i, s in enumerate(ek):
+            if not isinstance(s, slice) or s.start is None:
+                raise ValueError(
+                    f"element_slice_starts requires explicit slice bounds on dimension {i}, got {s!r}"
+                )
+            starts.append(s.start)
+        return tuple(starts)
 
     def __getitem__(self, key: TensorKey) -> "Tensor":
         # Python passes a bare int/slice (not a tuple) for single-element indexing.
@@ -869,26 +1443,46 @@ def from_torch(
     dtype: Optional[torch.dtype] = None,
     layout: IndexType = TILE_LAYOUT,
     device: Optional[Union[Device, MeshDevice]] = None,
-    memory_config: MemoryConfig = DRAM_MEMORY_CONFIG,
+    memory_config: Optional[MemoryConfig] = None,
     mesh_mapper: Optional[Union[ShardTensorToMesh, ReplicateTensorToMesh]] = None,
+    spec: Optional[TensorSpec] = None,
 ) -> Tensor:
     """Convert a torch.Tensor to a TTNN simulator Tensor.
 
     Args:
         tensor: Input torch tensor to wrap
-        dtype: Optional dtype to convert to (defaults to tensor's dtype)
-        layout: Layout for the resulting Tensor (TILE_LAYOUT or ROW_MAJOR_LAYOUT)
+        dtype: Optional dtype to convert to (defaults to tensor's dtype, or
+            ``spec.dtype`` when ``spec`` is given)
+        layout: Layout for the resulting Tensor (overridden by ``spec.layout``
+            when ``spec`` is given)
         device: Device parameter (no-op in simulator)
-        memory_config: Optional MemoryConfig to attach to the tensor.
+        memory_config: MemoryConfig to attach (ignored when ``spec`` is given)
         mesh_mapper: Ignored in the simulator; accepted for API compatibility.
+        spec: Optional :class:`TensorSpec` from ``TensorSpec(...).width_sharded`` /
+            ``nd_sharded`` / etc.; when set, shape must match ``tensor`` and
+            sharding metadata is applied.
 
     Returns:
         Tensor wrapping the input (potentially dtype-converted) torch tensor.
     """
-    if dtype is not None and tensor.dtype != dtype:
-        tensor = tensor.to(dtype)
+    if spec is not None:
+        if tuple(tensor.shape) != tuple(spec.shape):
+            raise ValueError(
+                f"tensor shape {tuple(tensor.shape)} does not match spec.shape {spec.shape}"
+            )
+        layout = spec.layout
+        eff_dtype = spec.dtype if dtype is None else dtype
+        eff_mc = (
+            spec.memory_config if spec.memory_config is not None else DRAM_MEMORY_CONFIG
+        )
+    else:
+        eff_dtype = dtype
+        eff_mc = memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
 
-    return Tensor(tensor, layout, memory_config=memory_config)
+    if eff_dtype is not None and tensor.dtype != eff_dtype:
+        tensor = tensor.to(eff_dtype)
+
+    return Tensor(tensor, layout, memory_config=eff_mc)
 
 
 # Strategy-to-ShardingStrategy mapping for create_sharded_memory_config.
@@ -931,27 +1525,21 @@ def create_sharded_memory_config(
         orientation if orientation is not None else ShardOrientation.ROW_MAJOR
     )
 
-    def _to_tile(n: int, tile_dim: int) -> int:
-        return 1 if n == 1 else n // tile_dim
-
     if use_height_and_width_as_shard_shape:
-        shard_h = _to_tile(shape_t[-2], TILE_SHAPE[0])
-        shard_w = _to_tile(shape_t[-1], TILE_SHAPE[1])
+        shard_h, shard_w = shape_t[-2], shape_t[-1]
     else:
         total_h = math.prod(shape_t[:-1])
         total_w = shape_t[-1]
-        total_h_tiles = _to_tile(total_h, TILE_SHAPE[0])
-        total_w_tiles = _to_tile(total_w, TILE_SHAPE[1])
         match strategy:
             case ShardStrategy.HEIGHT:
-                shard_h = total_h_tiles // core_grid.num_cores
-                shard_w = total_w_tiles
+                shard_h = total_h // core_grid.num_cores
+                shard_w = total_w
             case ShardStrategy.WIDTH:
-                shard_h = total_h_tiles
-                shard_w = total_w_tiles // core_grid.num_cores
+                shard_h = total_h
+                shard_w = total_w // core_grid.num_cores
             case ShardStrategy.BLOCK:
-                shard_h = total_h_tiles // core_grid.y
-                shard_w = total_w_tiles // core_grid.x
+                shard_h = total_h // core_grid.y
+                shard_w = total_w // core_grid.x
 
     match strategy:
         case ShardStrategy.HEIGHT | ShardStrategy.WIDTH:
@@ -1260,6 +1848,8 @@ def _create_golden_wrapper(
 
 # Functions that should NOT be auto-wrapped (already implemented or would break things)
 _EXCLUDE_FROM_WRAPPING = {
+    # Names here are skipped in addition to any symbol already in this module's
+    # globals() (those are never overwritten by the golden-function loop).
     # Core infrastructure functions that are already implemented
     "from_torch",
     "to_torch",
