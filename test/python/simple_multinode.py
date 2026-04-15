@@ -61,7 +61,7 @@ def multinode_add(lhs, rhs, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @dm_read
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0 : i32, 1 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0 : i32, 1 : i32], ttl.kernel_thread = #ttkernel.thread<noc>, ttl.noc_index = 0 : i32}
 
 # Verify core_x() and core_y() ops appear in the IR (from x, y = ttl.node(dims=2))
 # CHECK: ttl.core_x

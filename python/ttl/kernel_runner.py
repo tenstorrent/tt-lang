@@ -14,7 +14,8 @@ building and execution.
 """
 
 from dataclasses import dataclass
-from typing import Any, List, Optional, Tuple
+import os
+from typing import Any, Dict, List, Optional, Tuple
 
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
@@ -33,7 +34,12 @@ def _ensure_ttnn():
     return ttnn
 
 
-from .dtype_utils import tile_bytes_from_dtype, torch_dtype_to_ttnn_datatype
+from .circular_buffer import CompilerAllocatedDFBConfig
+from .dtype_utils import (
+    format_name_to_ttnn_dtype,
+    tile_bytes_from_dtype,
+    torch_dtype_to_ttnn_datatype,
+)
 
 
 @dataclass
@@ -169,16 +175,22 @@ def build_cb_descriptors(
                 f"All CB indices must have associated CircularBuffer configurations."
             )
 
-        # Get dtype from CB's reference tensor.
-        ref_tensor = cb.tensor
-        if hasattr(ref_tensor, "dtype") and hasattr(ref_tensor.dtype, "name"):
-            data_format = ref_tensor.dtype
+        if isinstance(cb, CompilerAllocatedDFBConfig):
+            # Compiler-allocated DFB: dtype from attribute string.
+            data_format = format_name_to_ttnn_dtype(cb.data_format)
+            page_size = tile_bytes_from_dtype(data_format)
+            total_size = cb.num_tiles * cb.block_count * page_size
         else:
-            data_format = torch_dtype_to_ttnn_datatype(ref_tensor.dtype)
+            # User-declared DFB: dtype from reference tensor.
+            ref_tensor = cb.tensor
+            if hasattr(ref_tensor, "dtype") and hasattr(ref_tensor.dtype, "name"):
+                data_format = ref_tensor.dtype
+            else:
+                data_format = torch_dtype_to_ttnn_datatype(ref_tensor.dtype)
 
-        page_size = tile_bytes_from_dtype(data_format)
-        num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
-        total_size = num_tiles * page_size
+            page_size = tile_bytes_from_dtype(data_format)
+            num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
+            total_size = num_tiles * page_size
 
         cb_format = ttnn.CBFormatDescriptor(
             buffer_index=i,
@@ -201,6 +213,7 @@ def run_kernel_on_device(
     cb_configs: List[Any],
     core_ranges: Any,
     program_hash: int = None,
+    num_pipe_nets: int = 0,
 ) -> Any:
     """
     Execute kernels on device using ttnn.generic_op.
@@ -218,6 +231,7 @@ def run_kernel_on_device(
             block_count, tensor (for dtype), and _cb_index attributes.
         core_ranges: ttnn.CoreRangeSet for kernel execution.
         program_hash: Hash for tt-metal program cache (not yet used).
+        num_pipe_nets: Number of PipeNets used by this kernel (for semaphore allocation).
 
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
@@ -252,6 +266,19 @@ def run_kernel_on_device(
         core_ranges=core_ranges,
     )
 
+    # Build semaphore descriptors for pipe synchronization.
+    # Each PipeNet uses 2 semaphores: sender_sem and receiver_sem.
+    # Index: pipeNetId * 2 (sender), pipeNetId * 2 + 1 (receiver).
+    semaphore_descriptors = []
+    if num_pipe_nets > 0:
+        num_sems = num_pipe_nets * 2
+        for sem_id in range(num_sems):
+            semaphore_descriptors.append(
+                ttnn.SemaphoreDescriptor(
+                    sem_id, core_ranges=core_ranges, initial_value=0
+                )
+            )
+
     # Build and execute program.
     # TODO: Enable custom_program_hash once tt-metal exposes it in Python bindings.
     # See tt-metal/ttnn/cpp/ttnn-nanobind/program_descriptors.cpp - needs to add
@@ -259,7 +286,7 @@ def run_kernel_on_device(
     program = ttnn.ProgramDescriptor(
         kernels=kernel_descriptors,
         cbs=cb_descriptors,
-        semaphores=[],
+        semaphores=semaphore_descriptors,
         # custom_program_hash=program_hash,
     )
 

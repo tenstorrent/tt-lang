@@ -21,7 +21,7 @@ import ttnn
 import ttl
 
 
-# CHECK: cannot call .push() on '{{.*}}store{{.*}}': expression does not produce a value
+# CHECK: Chained call returned no value
 @ttl.operation(grid=(1, 1))
 def invalid_chain_kernel(a, out):
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)

@@ -1,12 +1,17 @@
 add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLToTTKernel.cpp
+  PipeLowering.cpp
   ConvertTTLToCompute.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp
   LowerDPrintToEmitC.cpp
   LowerSignpostToEmitC.cpp
   TTLAnnotateCBAssociations.cpp
+  TTLAnnotateL1AccLoops.cpp
   TTLDumpCBFlowGraph.cpp
+  TTLFinalizeDFBIndices.cpp
+  TTLInsertCBSync.cpp
+  TTLInsertIntermediateDFBs.cpp
   TTLLowerMatmulBlock.cpp
   TTLAssignDST.cpp
   TTLScheduleOperations.cpp

@@ -4,6 +4,7 @@
 
 """Circular buffer operations for inter-thread communication."""
 
+from dataclasses import dataclass
 from typing import Any, Tuple
 
 from ttl.ir import *
@@ -113,6 +114,22 @@ class CircularBuffer:
         tensor_type = _get_cb_tensor_type(ast_self)
         tensor = ttl.cb_reserve(tensor_type, ast_self)
         return ttl.attach_cb(tensor.type, tensor, ast_self)
+
+
+@dataclass
+class CompilerAllocatedDFBConfig:
+    """Configuration for a compiler-allocated dataflow buffer.
+
+    Created by the Python runtime after reading the ttl.compiler_allocated_dfbs
+    module attribute produced by the ttl-finalize-dfb-indices pass. Carries
+    the same information as a user-declared CircularBuffer but without a
+    backing tensor -- the data format comes directly from the MLIR attribute.
+    """
+
+    dfb_index: int
+    num_tiles: int
+    data_format: str  # e.g., "bf16", "f32", "f16"
+    block_count: int
 
 
 def make_dataflow_buffer_like(

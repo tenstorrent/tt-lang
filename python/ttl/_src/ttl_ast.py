@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Set
 
 from ttl.pykernel._src.kernel_ast import TTCompilerBase
+from ttl.pykernel._src.utils import _get_type_str
 from ttl.dialects import arith, func, ttcore, ttkernel
 from ttl.ir import *
 
@@ -181,11 +182,10 @@ class TTLGenericCompiler(TTCompilerBase):
                 f"Cannot unpack {len(value)} values into {len(targets)} variables"
             )
 
-        sym_table = self.symbol_tables[-1]
         for elt, val in zip(targets, value):
             if not isinstance(elt, ast.Name):
                 raise ValueError("Tuple unpacking requires simple variable names")
-            sym_table[elt.id] = val
+            self._set_var(elt.id, val)
 
     def _loc_for_node(self, node):
         """Return file location for node if debug_locations enabled, else name location."""
@@ -288,6 +288,11 @@ class TTLGenericCompiler(TTCompilerBase):
                     and node.func.id == "print"
                 ):
                     return self.visit_Print(node.args, node.keywords)
+
+                # Check for PipeNet.if_src/if_dst calls
+                if self._is_pipenet_callback_call(node):
+                    return self._handle_pipenet_callback(node)
+
                 return self._try_emit_auto_signposts(
                     node, lambda: super(TTLGenericCompiler, self).visit_Call(node)
                 )
@@ -295,6 +300,130 @@ class TTLGenericCompiler(TTCompilerBase):
                 if isinstance(e, TTLangCompileError):
                     raise
                 self._raise_error(node, str(e))
+
+    def visit_AugAssign(self, node):
+        """Handle += on tensor blocks via the registered __iadd__ method."""
+        with self._loc_for_node(node):
+            target = self.visit(node.target)
+            if (
+                isinstance(node.op, ast.Add)
+                and hasattr(target, "type")
+                and isinstance(target.type, RankedTensorType)
+            ):
+                rhs = self.visit(node.value)
+                mlir_type = _get_type_str(target.type)
+                iadd_fn = self._fn_map.get(f"{mlir_type}.__iadd__")
+                if iadd_fn:
+                    result = iadd_fn(target, rhs)
+                    self._set_var(node.target.id, result)
+                    return
+            return super().visit_AugAssign(node)
+
+    def _is_pipenet_callback_call(self, node):
+        """Check if this is a pipenet.if_src(fn) or pipenet.if_dst(fn) call."""
+        if not isinstance(node.func, ast.Attribute):
+            return False
+        if node.func.attr not in ("if_src", "if_dst"):
+            return False
+        if not isinstance(node.func.value, ast.Name):
+            self._raise_error(
+                node,
+                f"PipeNet.{node.func.attr}() requires a plain variable name "
+                f"as receiver (e.g., `net.{node.func.attr}(...)`), "
+                f"not an expression",
+            )
+        var_name = node.func.value.id
+        tbl = self._var_exists(var_name)
+        if not tbl:
+            return False
+        val = tbl[var_name]
+        from ..pipe import PipeNet
+
+        return isinstance(val, PipeNet)
+
+    def _handle_pipenet_callback(self, node):
+        """Handle pipenet.if_src(callback) or pipenet.if_dst(callback) calls."""
+        from ..pipe import PipeNet, SrcPipeIdentity, DstPipeIdentity
+
+        method_name = node.func.attr
+        var_name = node.func.value.id
+        tbl = self._var_exists(var_name)
+        pipenet = tbl[var_name]
+
+        # Get the callback argument
+        if len(node.args) != 1:
+            self._raise_error(
+                node, f"PipeNet.{method_name}() requires exactly one callback argument"
+            )
+        callback_node = node.args[0]
+
+        # Support lambda or named function reference
+        if isinstance(callback_node, ast.Lambda):
+            callback_body = callback_node.body
+            if len(callback_node.args.args) != 1:
+                self._raise_error(
+                    callback_node,
+                    f"PipeNet.{method_name}() callback must take exactly one argument (pipe)",
+                )
+            pipe_param_name = callback_node.args.args[0].arg
+        elif isinstance(callback_node, ast.Name):
+            fn_name = callback_node.id
+            fn_table = self._var_exists(fn_name)
+            if not fn_table:
+                self._raise_error(callback_node, f"'{fn_name}' not found in scope")
+            fn_def = fn_table[fn_name]
+            if not isinstance(fn_def, ast.FunctionDef):
+                self._raise_error(
+                    callback_node,
+                    f"PipeNet.{method_name}() requires a function, "
+                    f"got {type(fn_def).__name__}",
+                )
+            if len(fn_def.args.args) != 1:
+                self._raise_error(
+                    callback_node,
+                    f"PipeNet.{method_name}() callback must take exactly one argument (pipe)",
+                )
+            pipe_param_name = fn_def.args.args[0].arg
+            callback_body = fn_def.body
+        else:
+            self._raise_error(
+                callback_node,
+                f"PipeNet.{method_name}() requires a lambda or function reference",
+            )
+
+        # Iterate over all pipes and emit if_src/if_dst for each
+        for pipe in pipenet.pipes:
+            # Emit the pipe MLIR value
+            pipe_val = self._emit_pipe_from_capture(pipe)
+            pipe._mlir_value = pipe_val
+
+            # Create the appropriate PipeIdentity
+            if method_name == "if_src":
+                pipe_identity = SrcPipeIdentity(pipe)
+                op = ttl.if_src(pipe_val)
+            else:
+                pipe_identity = DstPipeIdentity(pipe)
+                op = ttl.if_dst(pipe_val)
+
+            # Create body block and compile callback inside
+            block = Block.create_at_start(op.body)
+            with InsertionPoint(block):
+                # Bind the pipe parameter to the MLIR pipe value.
+                # TODO: bind to PipeIdentity instead so .src/.dst work
+                # on the callback parameter per the spec.
+                self.symbol_tables.append({})
+                self.symbol_tables[-1][pipe_param_name] = pipe_val
+                self.symbol_tables[-1][f"__{pipe_param_name}_identity"] = pipe_identity
+
+                if isinstance(callback_body, list):
+                    for stmt in callback_body:
+                        self.visit(stmt)
+                else:
+                    self.visit(callback_body)
+
+                self.symbol_tables.pop()
+
+        return None  # Statement, no return value
 
     def visit_BinOp(self, node):
         """Override to inject auto-profiling and provide better error messages."""
@@ -354,6 +483,18 @@ class TTLGenericCompiler(TTCompilerBase):
             self._raise_error(node, f"Unknown function: {namespace}.{node.attr}")
         return fn(*func_args, **kwargs)
 
+    def _resolve_chained_method_call(self, node, func_args, kwargs):
+        """Handle chained calls like foo().bar() where node.value is a Call."""
+        mlir_value = self.visit(node.value)
+        if mlir_value is None:
+            self._raise_error(node, "Chained call returned no value")
+        mlir_type = _get_type_str(mlir_value.type)
+        qualified_object_syntax = f"{mlir_type}.{node.attr}"
+        fn = self._fn_map.get(qualified_object_syntax, None)
+        if fn is None:
+            self._raise_error(node, f"No method '{node.attr}' on type {mlir_type}")
+        return fn(mlir_value, *func_args, **kwargs)
+
     def visit_Attribute(self, node, func_args=[], kwargs={}):
         """Override to set location context and catch errors for method calls."""
         with self._loc_for_node(node):
@@ -361,6 +502,9 @@ class TTLGenericCompiler(TTCompilerBase):
                 # Handle ttl.XXX and ttl.math.XXX attribute access
                 if self._is_ttl_module_access(node) or self._is_ttl_math_access(node):
                     return self._resolve_ttl_function(node, func_args, kwargs)
+                # Handle chained method calls: expr().method()
+                if isinstance(node.value, ast.Call):
+                    return self._resolve_chained_method_call(node, func_args, kwargs)
                 return super().visit_Attribute(node, func_args, kwargs)
             except (ValueError, TypeError, NotImplementedError) as e:
                 if isinstance(e, TTLangCompileError):
@@ -487,6 +631,29 @@ class TTLGenericCompiler(TTCompilerBase):
         # Emit: %cb = ttl.bind_cb {cb_index = N, block_count = M} : !ttl.cb<...>
         return ttl.bind_cb(cb_type, cb._cb_index, block_count=cb.block_count)
 
+    def _emit_pipe_from_capture(self, pipe):
+        """Emit ttl.create_pipe for a captured Pipe instance."""
+        pipe_type = ttl.PipeType.get(
+            self.ctx,
+            pipe.src[0],
+            pipe.src[1],
+            pipe.dst_start[0],
+            pipe.dst_start[1],
+            pipe.dst_end[0],
+            pipe.dst_end[1],
+            pipe.pipe_net_id,
+        )
+        return ttl.create_pipe(
+            pipe_type,
+            pipe.src[0],
+            pipe.src[1],
+            pipe.dst_start[0],
+            pipe.dst_start[1],
+            pipe.dst_end[0],
+            pipe.dst_end[1],
+            pipe.pipe_net_id,
+        )
+
     def _emit_entry(self, node):
         assert not self.func_entry, "Cannot declare function within a function"
 
@@ -526,8 +693,8 @@ class TTLGenericCompiler(TTCompilerBase):
         self.symbol_tables.append({})
         func_bb = self.func_entry.add_entry_block()
 
-        # Add ttl module to symbol table
-        self.symbol_tables[-1]["ttl"] = ttl
+        # Add ttl module to symbol table.
+        self._set_var("ttl", ttl)
 
         # Ensure TTL dialect is registered for type parsing
         ttl.ensure_dialects_registered(self.ctx)
@@ -536,29 +703,31 @@ class TTLGenericCompiler(TTCompilerBase):
 
         # Emit function body
         with InsertionPoint(func_bb):
-            # Map TensorAccessor function arguments to symbol table
+            # Map TensorAccessor function arguments to symbol table.
             for i, name in enumerate(self._tensor_accessor_names):
-                self.symbol_tables[-1][name] = func_bb.arguments[i]
+                self._set_var(name, func_bb.arguments[i])
                 self.streams.add(name)
 
-            # Prepopulate other captures (non-tensor)
+            # Prepopulate other captures (non-tensor).
             from ..circular_buffer import CircularBuffer
+            from ..pipe import Pipe, PipeNet
 
             for name, val in self.captures.items():
                 if is_ttnn_tensor(val):
                     continue  # Already handled via function arguments
                 assert isinstance(name, str)
                 if isinstance(val, int):
-                    self.symbol_tables[-1][name] = arith.ConstantOp(
-                        IndexType.get(self.ctx), val
-                    )
+                    self._set_var(name, arith.ConstantOp(IndexType.get(self.ctx), val))
                 elif isinstance(val, float):
-                    self.symbol_tables[-1][name] = arith.ConstantOp(
-                        F32Type.get(self.ctx), val
-                    )
+                    self._set_var(name, arith.ConstantOp(F32Type.get(self.ctx), val))
                 elif isinstance(val, CircularBuffer):
-                    cb_val = self._emit_cb_from_capture(val)
-                    self.symbol_tables[-1][name] = cb_val
+                    self._set_var(name, self._emit_cb_from_capture(val))
+                elif isinstance(val, Pipe):
+                    pipe_val = self._emit_pipe_from_capture(val)
+                    self._set_var(name, pipe_val)
+                    val._mlir_value = pipe_val
+                elif isinstance(val, PipeNet):
+                    self._set_var(name, val)
                 else:
                     self._raise_error(
                         node, f"Invalid capture type for var {name}: {type(val)}"
@@ -574,6 +743,10 @@ class TTLGenericCompiler(TTCompilerBase):
 
     def visit_FunctionDef(self, node):
         with self._loc_for_node(node):
+            # Nested function defs are stored as callback ASTs for PipeNet
+            if self._is_nested_function_def():
+                self._store_callback_def(node)
+                return
             return self._emit_entry(node)
 
     def visit_AsyncFunctionDef(self, node):
@@ -781,6 +954,14 @@ class TTLGenericCompiler(TTCompilerBase):
             num_pages=None,
         )
 
+    def _is_nested_function_def(self):
+        """Check if we're inside a function body (nested def, not entry)."""
+        return self.func_entry is not None
+
+    def _store_callback_def(self, node):
+        """Store a nested function def AST for use as a PipeNet callback."""
+        self.symbol_tables[-1][node.name] = node
+
     def _get_cb_tensor_type(self, cb_val, node=None):
         """Extract the tensor type from a TTL CB type."""
         cb_type = ttl.CircularBufferType.maybe_downcast(cb_val.type)
@@ -944,7 +1125,7 @@ class TTLGenericCompiler(TTCompilerBase):
                             optional_vars,
                             "'with ... as var' requires a simple variable name",
                         )
-                    self.symbol_tables[-1][optional_vars.id] = acquire_result
+                    self._set_var(optional_vars.id, acquire_result)
 
             for stmt in node.body:
                 self.visit(stmt)

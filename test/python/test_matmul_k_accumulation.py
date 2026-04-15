@@ -175,13 +175,30 @@ def test_matmul_k_accumulation_streaming(k_tiles, block_n, device):
 @pytest.mark.parametrize("k_tiles", K_TILES, ids=[f"K{k}" for k in K_TILES])
 @pytest.mark.requires_device
 def test_matmul_k_accumulation_single_fill(k_tiles, block_n, device):
-    """Kt>1 single-fill accumulation: tighter bounds (f32 DST)."""
+    """Kt>1 single-fill accumulation.
+
+    When the output block fits in DST (block_n <= 4 for f32), matmul_block
+    accumulates all K tiles in f32 DST with one bf16 truncation at the end
+    (tighter bounds). When the output exceeds DST capacity (block_n > 4
+    for f32), the compiler tiles K to 1 for L1 accumulation, producing one
+    bf16 truncation per K step (same bounds as the streaming test).
+    """
     scale = math.sqrt(k_tiles)
+    # DST capacity with fp32_dest_acc_en=true is 4. Output block is
+    # 1 x block_n. When block_n > 4, L1 acc activates with per-K-step
+    # bf16 truncation, requiring relaxed error bounds.
+    uses_l1_acc = block_n > 4
+    if uses_l1_acc:
+        max_err = 0.5 * scale
+        mean_err = 0.05 * scale
+    else:
+        max_err = 0.1 * scale
+        mean_err = 0.01 * scale
     _run(
         _make_matmul_kn,
         k_tiles,
         block_n,
         device,
-        max_err_limit=0.1 * scale,
-        mean_err_limit=0.01 * scale,
+        max_err_limit=max_err,
+        mean_err_limit=mean_err,
     )

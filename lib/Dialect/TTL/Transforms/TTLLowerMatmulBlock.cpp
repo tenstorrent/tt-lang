@@ -122,17 +122,21 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
     int64_t M = outType.getDimSize(0);
     int64_t N = outType.getDimSize(1);
 
-    // Get the store view from the body's tile_store. For non-subblocked
-    // computes, this is the cb_reserve result. For subblocked computes,
-    // this is the per-subblock cb_reserve result (inside the subblock
-    // loop), which has the subblock shape for correct local linearization.
+    // Collect unique output views from the body's tile_stores.
     SmallVector<TileStoreOp> stores;
     computeOp.getBody().walk(
         [&](TileStoreOp store) { stores.push_back(store); });
     if (stores.empty()) {
       return rewriter.notifyMatchFailure(computeOp, "no tile_store in body");
     }
-    Value outView = stores[0].getView();
+    SmallVector<Value> outViews;
+    DenseSet<Value> seenViews;
+    for (auto store : stores) {
+      Value view = store.getView();
+      if (seenViews.insert(view).second) {
+        outViews.push_back(view);
+      }
+    }
 
     // Collect in-place unary ops between matmul and store for M*N expansion.
     SmallVector<Operation *> postMatmulUnaryOps;
@@ -192,22 +196,32 @@ struct LowerMatmulBlockCompute : OpRewritePattern<ComputeOp> {
       emitPerTileUnaryOps(secBuilder, loc, unaryOp, placeholder, M, N);
     }
 
-    // M*N individual tile_store ops.
-    for (int64_t m = 0; m < M; ++m) {
-      for (int64_t n = 0; n < N; ++n) {
-        Value mIdx = arith::ConstantIndexOp::create(secBuilder, loc, m);
-        Value nIdx = arith::ConstantIndexOp::create(secBuilder, loc, n);
-        Value dstIdx =
-            arith::ConstantIndexOp::create(secBuilder, loc, m * N + n);
-        TileStoreOp::create(secBuilder, loc, placeholder, outView,
-                            ValueRange{mIdx, nIdx}, dstIdx);
+    // Emit M*N tile_store ops for each output view.
+    // TODO(#486): This pass will be removed once matmul lowering is
+    // merged into TTLLowerToLoops, which handles multi-output natively.
+    for (Value view : outViews) {
+      for (int64_t m = 0; m < M; ++m) {
+        for (int64_t n = 0; n < N; ++n) {
+          Value mIdx = arith::ConstantIndexOp::create(secBuilder, loc, m);
+          Value nIdx = arith::ConstantIndexOp::create(secBuilder, loc, n);
+          Value dstIdx =
+              arith::ConstantIndexOp::create(secBuilder, loc, m * N + n);
+          TileStoreOp::create(secBuilder, loc, placeholder, view,
+                              ValueRange{mIdx, nIdx}, dstIdx);
+        }
       }
     }
 
-    // Replace compute with placeholder tensor.
-    Value emptyTensor = tensor::EmptyOp::create(
-        rewriter, loc, outType.getShape(), outType.getElementType());
-    rewriter.replaceOp(computeOp, emptyTensor);
+    // The compute's SSA results are dead after lowering — tile_stores
+    // already packed data to CBs. Replace with placeholder tensors to
+    // satisfy SSA constraints. (#486 removes this pass entirely.)
+    SmallVector<Value> replacements;
+    for (auto resultType : computeOp->getResultTypes()) {
+      auto tensorType = mlir::cast<RankedTensorType>(resultType);
+      replacements.push_back(tensor::EmptyOp::create(
+          rewriter, loc, tensorType.getShape(), tensorType.getElementType()));
+    }
+    rewriter.replaceOp(computeOp, replacements);
     return success();
   }
 };

@@ -373,13 +373,18 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
                               })
                               .wasInterrupted();
 
-    assert(!(isSubblocked && isAccumulating) &&
-           "SubblockComputeForDST must skip accumulating computes");
-
     SmallVector<StringAttr> iterTypes;
     for (Attribute attr : op.getIteratorTypes()) {
       iterTypes.push_back(mlir::cast<StringAttr>(attr));
     }
+
+    // Subblocked accumulating computes (matmul K>1 with output > DST) are
+    // handled by LowerMatmulBlock, which generates the K reduction loop
+    // with per-K DstSections. By the time LowerToLoops runs, the ComputeOp
+    // has been replaced. This assert catches unexpected cases.
+    assert(!(isSubblocked && isAccumulating) &&
+           "subblocked accumulating computes should be handled by "
+           "LowerMatmulBlock before LowerToLoops");
 
     // Side-effect-only loops: no iter_args, no tensor.insert, no scf.yield
     // with tensor values. Stores are explicit side effects (tile_store).

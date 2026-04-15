@@ -83,6 +83,10 @@ class PyKernelAstBase(ast.NodeVisitor):
                 return sym_table
         return {}
 
+    def _set_var(self, var_name, value):
+        """Bind a variable in the current (innermost) scope."""
+        self.symbol_tables[-1][var_name] = value
+
     def visit_Module(self, node):
         # Set default basic block
         with InsertionPoint(self.insert_point), Location.unknown():

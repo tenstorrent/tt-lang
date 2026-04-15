@@ -3,6 +3,12 @@ add_mlir_doc(TTLBase TTLDialect src/autogen/md/Dialect/ -gen-dialect-doc)
 add_mlir_doc(TTLOps TTLOp src/autogen/md/Dialect/ -gen-op-doc)
 add_mlir_doc(TTLOpsTypes TTLType src/autogen/md/Dialect/ -gen-typedef-doc)
 
+set(LLVM_TARGET_DEFINITIONS TTLInterfaces.td)
+mlir_tablegen(TTLInterfaces.h.inc -gen-op-interface-decls)
+mlir_tablegen(TTLInterfaces.cpp.inc -gen-op-interface-defs)
+add_public_tablegen_target(MLIRTTLInterfacesIncGen)
+add_dependencies(mlir-headers MLIRTTLInterfacesIncGen)
+
 set(LLVM_TARGET_DEFINITIONS TTLOpsEnums.td)
 mlir_tablegen(TTLOpsEnums.h.inc -gen-enum-decls)
 mlir_tablegen(TTLOpsEnums.cpp.inc -gen-enum-defs)
