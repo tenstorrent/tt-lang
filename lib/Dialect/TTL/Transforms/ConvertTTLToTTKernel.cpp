@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinDialect.h"
@@ -428,7 +429,11 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
   PipeGraph graph;
 
   // Find all Pipe->CB copies (receiver side) and extract CB index
+  LogicalResult walkResult = success();
   mod.walk([&](CopyOp copyOp) {
+    if (failed(walkResult)) {
+      return;
+    }
     auto srcPipeType = dyn_cast<PipeType>(copyOp.getSrc().getType());
     if (!srcPipeType) {
       return;
@@ -451,12 +456,17 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
     }
 
     int64_t cbIndex = bindOp.getCbIndex().getSExtValue();
-    graph.addReceiverCB(srcPipeType.getSrcX(), srcPipeType.getSrcY(),
-                        srcPipeType.getDstStartX(), srcPipeType.getDstStartY(),
-                        srcPipeType.getDstEndX(), srcPipeType.getDstEndY(),
-                        srcPipeType.getPipeNetId(), cbIndex,
-                        cbType.getBlockCount(), copyOp.getLoc(), copyOp);
+    walkResult = graph.addReceiverCB(
+        srcPipeType.getSrcX(), srcPipeType.getSrcY(),
+        srcPipeType.getDstStartX(), srcPipeType.getDstStartY(),
+        srcPipeType.getDstEndX(), srcPipeType.getDstEndY(),
+        srcPipeType.getPipeNetId(), cbIndex, cbType.getBlockCount(),
+        copyOp.getLoc(), copyOp);
   });
+
+  if (failed(walkResult)) {
+    return failure();
+  }
 
   graph.assignGatherSlotIndices();
 
