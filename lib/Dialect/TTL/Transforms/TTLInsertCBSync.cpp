@@ -33,7 +33,6 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-
 /// Return true if `a` is before `b` in their common block.
 static bool isBefore(Operation *a, Operation *b) {
   return a->isBeforeInBlock(b);
@@ -51,29 +50,36 @@ static bool findReleases(Value cb, Operation *acquire, Operation *bound,
   bool hasSameLevelRelease = false;
 
   for (auto release : allReleases) {
-    if (erased.contains(release))
+    if (erased.contains(release)) {
       continue;
-    if (release.getCb() != cb)
+    }
+    if (release.getCb() != cb) {
       continue;
+    }
 
     // Same-level: release is directly in the acquire's block.
     if (release->getBlock() == block) {
-      if (!isBefore(acquire, release))
+      if (!isBefore(acquire, release)) {
         continue;
-      if (bound && !isBefore(release, bound))
+      }
+      if (bound && !isBefore(release, bound)) {
         continue;
+      }
       hasSameLevelRelease = true;
       continue;
     }
 
     // Nested: release is inside a structured op in the acquire's block.
     Operation *ancestor = block->findAncestorOpInBlock(*release);
-    if (!ancestor)
+    if (!ancestor) {
       continue;
-    if (!isBefore(acquire, ancestor))
+    }
+    if (!isBefore(acquire, ancestor)) {
       continue;
-    if (bound && !isBefore(ancestor, bound))
+    }
+    if (bound && !isBefore(ancestor, bound)) {
       continue;
+    }
     toHoist.push_back(release);
   }
 
@@ -92,51 +98,65 @@ static Operation *findLastTransitiveUse(Value cb, Operation *acquire,
   DenseSet<Operation *> visited;
   SmallVector<Value, 8> worklist;
 
-  if (acquire->getNumResults() > 0)
+  if (acquire->getNumResults() > 0) {
     worklist.push_back(acquire->getResult(0));
+  }
 
   // Returns the ancestor in the acquire's block, or nullptr if out of range.
   auto getInRangeAncestor = [&](Operation *op) -> Operation * {
     Operation *ancestor = block->findAncestorOpInBlock(*op);
-    if (!ancestor)
+    if (!ancestor) {
       return nullptr;
-    if (!isBefore(acquire, ancestor) && ancestor != acquire)
+    }
+    if (!isBefore(acquire, ancestor) && ancestor != acquire) {
       return nullptr;
-    if (bound && !isBefore(ancestor, bound))
+    }
+    if (bound && !isBefore(ancestor, bound)) {
       return nullptr;
+    }
     return ancestor;
   };
 
   for (auto &use : cb.getUses()) {
     Operation *user = use.getOwner();
-    if (user == acquire)
+    if (user == acquire) {
       continue;
-    if (isa<CBPushOp, CBPopOp, CBReserveOp, CBWaitOp>(user))
+    }
+    if (isa<CBPushOp, CBPopOp, CBReserveOp, CBWaitOp>(user)) {
       continue;
+    }
     Operation *ancestor = getInRangeAncestor(user);
-    if (!ancestor)
+    if (!ancestor) {
       continue;
-    if (isBefore(last, ancestor))
+    }
+    if (isBefore(last, ancestor)) {
       last = ancestor;
-    for (auto result : user->getResults())
+    }
+    for (auto result : user->getResults()) {
       worklist.push_back(result);
+    }
   }
 
   while (!worklist.empty()) {
     Value v = worklist.pop_back_val();
     for (auto &use : v.getUses()) {
       Operation *user = use.getOwner();
-      if (!visited.insert(user).second)
+      if (!visited.insert(user).second) {
         continue;
-      if (isa<CBPushOp, CBPopOp>(user))
+      }
+      if (isa<CBPushOp, CBPopOp>(user)) {
         continue;
+      }
       Operation *ancestor = getInRangeAncestor(user);
-      if (!ancestor)
+      if (!ancestor) {
         continue;
-      if (isBefore(last, ancestor))
+      }
+      if (isBefore(last, ancestor)) {
         last = ancestor;
-      for (auto result : user->getResults())
+      }
+      for (auto result : user->getResults()) {
         worklist.push_back(result);
+      }
     }
   }
 
@@ -154,14 +174,15 @@ struct TTLInsertCBSyncPass
     SmallVector<CBPopOp> pops;
 
     func.walk([&](Operation *op) {
-      if (auto r = dyn_cast<CBReserveOp>(op))
+      if (auto r = dyn_cast<CBReserveOp>(op)) {
         reserves.push_back(r);
-      else if (auto w = dyn_cast<CBWaitOp>(op))
+      } else if (auto w = dyn_cast<CBWaitOp>(op)) {
         waits.push_back(w);
-      else if (auto p = dyn_cast<CBPushOp>(op))
+      } else if (auto p = dyn_cast<CBPushOp>(op)) {
         pushes.push_back(p);
-      else if (auto p = dyn_cast<CBPopOp>(op))
+      } else if (auto p = dyn_cast<CBPopOp>(op)) {
         pops.push_back(p);
+      }
     });
 
     OpBuilder builder(func.getContext());
@@ -176,21 +197,26 @@ struct TTLInsertCBSyncPass
 
         Operation *nextAcquire = nullptr;
         for (auto other : acquires) {
-          if (other == acquire || other.getCb() != cb)
+          if (other == acquire || other.getCb() != cb) {
             continue;
-          if (other->getBlock() != acquire->getBlock())
+          }
+          if (other->getBlock() != acquire->getBlock()) {
             continue;
-          if (!isBefore(acquire, other))
+          }
+          if (!isBefore(acquire, other)) {
             continue;
-          if (!nextAcquire || isBefore(other, nextAcquire))
+          }
+          if (!nextAcquire || isBefore(other, nextAcquire)) {
             nextAcquire = other;
+          }
         }
 
         using ReleaseOpTy =
             typename std::remove_reference_t<decltype(releases)>::value_type;
         SmallVector<ReleaseOpTy> nested;
-        if (findReleases(cb, acquire, nextAcquire, releases, nested, erased))
+        if (findReleases(cb, acquire, nextAcquire, releases, nested, erased)) {
           continue;
+        }
 
         for (auto n : nested) {
           erased.insert(n);
@@ -203,10 +229,10 @@ struct TTLInsertCBSyncPass
       }
     };
 
-    insertMissingReleases(reserves, pushes, [](OpBuilder &b, Location loc,
-                                               Value cb) {
-      CBPushOp::create(b, loc, cb, /*num_tiles=*/IntegerAttr{});
-    });
+    insertMissingReleases(
+        reserves, pushes, [](OpBuilder &b, Location loc, Value cb) {
+          CBPushOp::create(b, loc, cb, /*num_tiles=*/IntegerAttr{});
+        });
 
     insertMissingReleases(waits, pops,
                           [](OpBuilder &b, Location loc, Value cb) {
