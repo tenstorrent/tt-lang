@@ -161,6 +161,42 @@ def torch_dtype_to_ttnn_datatype(torch_dtype):
             )
 
 
+def format_name_to_ttnn_dtype(name: str):
+    """Convert a data format name string to a ttnn.DataType enum value.
+
+    Accepts names produced by the compiler's scratch DFB metadata, e.g.,
+    "bfloat16", "float32", "float16".
+
+    Args:
+        name: Data format name string.
+
+    Returns:
+        ttnn.DataType enum value.
+
+    Raises:
+        ValueError: If the name is not recognized.
+    """
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    lookup = {
+        "bfloat16": ttnn.DataType.BFLOAT16,
+        "float32": ttnn.DataType.FLOAT32,
+        "float16": ttnn.DataType.BFLOAT16,  # hardware uses bf16 for f16
+        "int32": ttnn.DataType.INT32,
+        "uint32": ttnn.DataType.UINT32,
+        "uint16": ttnn.DataType.UINT16,
+    }
+    result = lookup.get(name)
+    if result is None:
+        raise ValueError(
+            f"Unrecognized data format name '{name}' for ttnn.DataType. "
+            f"Known formats: {list(lookup.keys())}"
+        )
+    return result
+
+
 def tile_bytes_from_dtype(dtype) -> int:
     """
     Calculate tile size in bytes from ttnn dtype.

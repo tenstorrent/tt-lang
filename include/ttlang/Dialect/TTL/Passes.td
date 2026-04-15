@@ -411,6 +411,25 @@ def TTLLowerSignpostToEmitC
   }];
 }
 
+def TTLFinalizeDFBIndices
+    : Pass<"ttl-finalize-dfb-indices", "::mlir::ModuleOp"> {
+  let summary = "Finalize DFB indices and emit scratch DFB metadata";
+  let description = [{
+    Module-level pass that runs after all DFB-creating passes, before
+    convert-ttl-to-ttkernel. Performs three tasks:
+
+    1. Walks all BindCBOp instances across all functions and computes the
+       true DFB count (max_dfb_index + 1).
+    2. Updates the `ttl.base_cta_index` attribute on every function to
+       this value, ensuring compile-time arg layout is correct.
+    3. Collects all BindCBOps marked with `ttl.compiler_allocated` and
+       builds the `ttl.scratch_dfbs` module attribute so the Python
+       runtime can create the corresponding CBDescriptor entries.
+
+    This pass is a no-op when no compiler-allocated DFBs exist.
+  }];
+}
+
 def TTLDumpCBFlowGraph
     : Pass<"ttl-dump-cb-flow-graph", "::mlir::ModuleOp"> {
   let summary = "Analyze and dump CB producer/consumer flow graph";

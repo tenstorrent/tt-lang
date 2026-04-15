@@ -6,6 +6,7 @@
 #define TTLANG_DIALECT_TTL_IR_TTL_H
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
 #include "llvm/ADT/StringRef.h"
@@ -81,6 +82,18 @@ constexpr llvm::StringLiteral
 /// Marks a copy_tile as a placeholder inserted during DST assignment Phase 1.
 /// Replaced with a proper copy in Phase 2b.
 constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
+
+/// Module attribute carrying compiler-allocated scratch DFB metadata.
+/// Each entry is a DictionaryAttr with: dfb_index, num_tiles, element_type,
+/// block_count. The Python runtime reads this after compilation to build
+/// CBDescriptor entries for scratch DFBs not declared in the user program.
+constexpr llvm::StringLiteral kScratchDFBsAttrName("ttl.scratch_dfbs");
+
+/// Marker on BindCBOp to distinguish compiler-allocated DFBs from user-declared
+/// ones. The ttl-finalize-dfb-indices pass uses this to build the scratch_dfbs
+/// module attribute.
+constexpr llvm::StringLiteral
+    kCompilerAllocatedAttrName("ttl.compiler_allocated");
 
 /// Trait for data movement operations (copy_tile, copy_dst).
 template <typename ConcreteType>
@@ -188,6 +201,22 @@ inline std::optional<int64_t> getCBIndexAttr(mlir::Operation *compute,
   }
   return std::nullopt;
 }
+
+//===----------------------------------------------------------------------===//
+// Scratch DFB Utilities
+//===----------------------------------------------------------------------===//
+
+/// Return the next available DFB index for the module. Scans all BindCBOp
+/// indices across all functions and the existing ttl.scratch_dfbs attribute
+/// to find the current maximum, then returns max + 1.
+int32_t getNextAvailableDFBIndex(mlir::ModuleOp mod);
+
+/// Record a compiler-allocated scratch DFB in the module attribute.
+/// Reads the existing ttl.scratch_dfbs array (if any), appends a new entry
+/// with the given index, tile count, element type, and block count, and
+/// writes the updated array back.
+void registerScratchDFB(mlir::ModuleOp mod, int32_t dfbIndex, int32_t numTiles,
+                        mlir::Type elementType, int32_t blockCount);
 
 } // namespace mlir::tt::ttl
 
