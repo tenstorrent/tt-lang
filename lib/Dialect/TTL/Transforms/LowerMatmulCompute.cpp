@@ -159,9 +159,10 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
   // Needed for M*N > 1 expansion to offset DST indices per tile.
   int64_t maxBodyDstIdx = 0;
   for (Operation *postOp : postMatmulOps) {
-    if (auto attr = postOp->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-      maxBodyDstIdx =
-          std::max(maxBodyDstIdx, static_cast<int64_t>(attr.getInt()));
+    if (auto dstVal = getTileOpDstIndex(postOp)) {
+      if (auto constIdx = foldIndexToConstant(*dstVal)) {
+        maxBodyDstIdx = std::max(maxBodyDstIdx, *constIdx);
+      }
     }
   }
   int64_t dstPerIteration = maxBodyDstIdx + 1;
@@ -176,19 +177,17 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
   OpBuilder secBuilder(&sectionBody,
                        Block::iterator(sectionBody.getTerminator()));
 
-  // Emit the matmul_block with full tensor operands.
+  // Emit the matmul_block with full tensor operands and DST index 0.
+  Value dstZero = arith::ConstantIndexOp::create(secBuilder, loc, 0);
   auto mmResultOp = TileMatmulBlockOp::create(secBuilder, loc, tileType,
-                                              lhsTensor, rhsTensor, accTensor);
-  mmResultOp->setAttr(kDstIdxAttrName, secBuilder.getI32IntegerAttr(0));
+                                              lhsTensor, rhsTensor, accTensor,
+                                              dstZero);
 
   // Placeholder for referencing DST-resident values. Downstream passes
-  // (ConvertTTLToTTKernel) resolve tile references via dst_idx attributes.
-  // The dst_idx on the placeholder allows getDstIndexFromValue to find the
-  // matmul result's DST register when processing SFPU binary post-ops.
-  auto placeholderOp = UnrealizedConversionCastOp::create(
-      secBuilder, loc, tileType, ValueRange{});
-  placeholderOp->setAttr(kDstIdxAttrName, secBuilder.getI32IntegerAttr(0));
-  Value placeholder = placeholderOp.getResult(0);
+  // (ConvertTTLToTTKernel) resolve tile references via dst_index operands.
+  // The matmul result itself carries the dst_index; post-ops that consume
+  // the placeholder trace through to the matmul's dst_index.
+  Value placeholder = mmResultOp.getResult();
 
   // Emit post-matmul ops expanded M*N times. For each output tile (m, n),
   // clone the post-ops with extracted tile operands from CBs and remapped
@@ -253,18 +252,14 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
       for (Operation *postOp : postMatmulOps) {
         auto *cloned = secBuilder.clone(*postOp, mapping);
 
-        if (auto attr = cloned->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-          cloned->setAttr(kDstIdxAttrName, secBuilder.getI32IntegerAttr(
-                                               attr.getInt() + dstBase));
-        }
-
-        if (auto copyTile = dyn_cast<CopyTileOp>(cloned)) {
-          if (dstBase != 0) {
+        // Offset the DST index for ops with TTLDstResultOpTrait.
+        if (dstBase != 0) {
+          if (auto dstVal = getTileOpDstIndex(cloned)) {
             Value offsetVal =
                 arith::ConstantIndexOp::create(secBuilder, loc, dstBase);
-            Value newDstIndex = arith::AddIOp::create(
-                secBuilder, loc, copyTile.getDstIndex(), offsetVal);
-            copyTile.getDstIndexMutable().assign(newDstIndex);
+            Value newDstIndex =
+                arith::AddIOp::create(secBuilder, loc, *dstVal, offsetVal);
+            setTileOpDstIndex(cloned, newDstIndex);
           }
         }
       }
@@ -278,10 +273,10 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
     for (int64_t colIdx = 0; colIdx < numCols; ++colIdx) {
       Value mIdx = arith::ConstantIndexOp::create(storeBuilder, loc, rowIdx);
       Value nIdx = arith::ConstantIndexOp::create(storeBuilder, loc, colIdx);
-      auto store = TileStoreOp::create(storeBuilder, loc, placeholder, outView,
-                                       ValueRange{mIdx, nIdx});
-      store->setAttr(kDstIdxAttrName,
-                     storeBuilder.getI32IntegerAttr(rowIdx * numCols + colIdx));
+      Value dstIdx = arith::ConstantIndexOp::create(
+          storeBuilder, loc, rowIdx * numCols + colIdx);
+      TileStoreOp::create(storeBuilder, loc, placeholder, outView,
+                          ValueRange{mIdx, nIdx}, dstIdx);
     }
   }
 

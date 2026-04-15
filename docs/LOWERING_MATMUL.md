@@ -37,7 +37,7 @@ def matmul_add_relu_kernel(a, b, c, out):
 
 ## Pass Pipeline
 
-The TTL pipeline is defined in [lib/Dialect/TTL/Pipelines/TTLPipelines.cpp](../lib/Dialect/TTL/Pipelines/TTLPipelines.cpp). The matmul fusion path goes through `convert-ttl-to-compute` (fusion), `ttl-assign-dst`, and `ttl-lower-matmul-block` (block expansion). The matmul compute bypasses `ttl-insert-tile-regs-sync` and `ttl-lower-to-loops`; sync and tile expansion are handled by `lower-matmul-block`.
+The TTL pipeline is defined in [lib/Dialect/TTL/Pipelines/TTLPipelines.cpp](../lib/Dialect/TTL/Pipelines/TTLPipelines.cpp). The matmul fusion goes through `convert-ttl-to-compute` (fusion), `ttl-assign-dst`, and `ttl-lower-to-loops` (which detects `tile_matmul_block` and delegates to `generateMatmulCompute` for block expansion, sync, and store emission).
 
 ### Stage 1: Initial IR
 
@@ -92,13 +92,11 @@ Sets DST register indices as `dst_index` operands. The matmul's accumulator oper
   ttl.yield
 ```
 
-### Stage 4: `ttl-lower-matmul-block`
+### Stage 4: `ttl-lower-to-loops` (matmul compute)
 
-Pass: [lib/Dialect/TTL/Transforms/TTLLowerMatmulBlock.cpp](../lib/Dialect/TTL/Transforms/TTLLowerMatmulBlock.cpp)
+Pass: [lib/Dialect/TTL/Transforms/LowerMatmulCompute.cpp](../lib/Dialect/TTL/Transforms/LowerMatmulCompute.cpp)
 
-Replaces the `ttl.compute` region with a linear sequence of tile-level ops. The matmul block dimensions (`rt=2`, `ct=2`) are derived from the operand tensor shapes. The accumulator tensor is passed as the 3rd operand of `tile_matmul_block`; TTKernel lowering emits `rt*ct` `copy_tile` ops from it. Per-tile unary ops and stores are expanded to `M*N` copies with distinct `dst_index` values.
-
-`insert-tile-regs-sync` skips matmul computes (detected via `containsOp<TileMatmulBlockOp>`); sync ops are emitted here instead.
+When `ttl-lower-to-loops` encounters a `ComputeOp` containing `tile_matmul_block`, it delegates to `generateMatmulCompute`. This replaces the `ttl.compute` region with a `DstSectionOp` containing the matmul call, all post-matmul ops (binary elementwise, copy_tile, etc.), and per-tile stores. The matmul block dimensions (`rt=2`, `ct=2`) are derived from the operand tensor shapes. The accumulator tensor is passed as the 3rd operand of `tile_matmul_block`; TTKernel lowering emits `rt*ct` `copy_tile` ops from it. Per-tile post-ops and stores are expanded to `M*N` copies with distinct `dst_index` values.
 
 ```mlir
 %c0 = arith.constant 0 : index
