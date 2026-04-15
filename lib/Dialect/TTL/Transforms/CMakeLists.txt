@@ -11,6 +11,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLDumpCBFlowGraph.cpp
   TTLFinalizeDFBIndices.cpp
   TTLInsertCBSync.cpp
+  TTLInsertIntermediateDFBs.cpp
   TTLLowerMatmulBlock.cpp
   TTLAssignDST.cpp
   TTLScheduleOperations.cpp

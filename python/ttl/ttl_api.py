@@ -1309,6 +1309,7 @@ def _compile_kernel(
         pipeline_passes = [
             "func.func(ttl-insert-cb-sync)",
             "func.func(ttl-annotate-l1-acc-loops)",
+            "func.func(ttl-insert-intermediate-dfbs)",
             "func.func(convert-ttl-to-compute)",
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",
