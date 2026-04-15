@@ -8,10 +8,9 @@
 //
 // Inserts compiler-allocated intermediate dataflow buffers at fusion split
 // points. Tensor-level ops whose tile-level lowerings require DFB inputs
-// (reduce, bcast, matmul, transpose) may receive operands from fused
-// expression chains that are not DFB-attached. This pass materializes those
-// intermediates to L1 via DFBs so that convert-ttl-to-compute sees all
-// required operands as CB-attached.
+// may receive operands from fused expression chains that are not
+// DFB-attached. This pass materializes those intermediates to L1 via DFBs
+// so that convert-ttl-to-compute sees all required operands as CB-attached.
 //
 //===----------------------------------------------------------------------===//
 
@@ -39,9 +38,10 @@ namespace mlir::tt::ttl {
 namespace {
 
 /// Materialize a value to a compiler-allocated DFB. Inserts bind_cb,
-/// cb_reserve, store, cb_wait, attach_cb. Returns the CB-attached result.
-static Value materializeToDFB(Value intermediate, ModuleOp moduleOp,
-                              OpBuilder &builder, StoreOp &insertedStore) {
+/// cb_reserve, store, cb_wait, attach_cb. Returns the CB-attached result,
+/// or failure if the maximum CB count would be exceeded.
+FailureOr<Value> materializeToDFB(Value intermediate, ModuleOp moduleOp,
+                                  OpBuilder &builder) {
   auto tensorType = mlir::cast<RankedTensorType>(intermediate.getType());
   Location loc = intermediate.getLoc();
   MLIRContext *ctx = builder.getContext();
@@ -54,6 +54,15 @@ static Value materializeToDFB(Value intermediate, ModuleOp moduleOp,
   auto cbType = CircularBufferType::get(ctx, shape, elementType, blockCount);
 
   int32_t dfbIndex = getNextAvailableDFBIndex(moduleOp);
+  // TODO: Move this check to TTLFinalizeDFBIndices after DFB index reuse
+  // is implemented (see docs/development/DFB_Index_Reuse.md). Reuse will
+  // reduce the physical DFB count, so checking here over-reports.
+  if (dfbIndex >= kMaxCircularBuffers) {
+    return intermediate.getDefiningOp()->emitError()
+           << "compiler-allocated DFB would exceed the maximum of "
+           << kMaxCircularBuffers << " circular buffers (need index "
+           << dfbIndex << ")";
+  }
 
   Operation *defOp = intermediate.getDefiningOp();
   assert(defOp && "intermediate must have a defining op");
@@ -68,9 +77,8 @@ static Value materializeToDFB(Value intermediate, ModuleOp moduleOp,
   auto reserve =
       CBReserveOp::create(builder, loc, tensorType, bindCB.getResult());
 
-  insertedStore =
-      StoreOp::create(builder, loc, intermediate, reserve.getResult(),
-                      /*accumulate=*/nullptr);
+  StoreOp::create(builder, loc, intermediate, reserve.getResult(),
+                  /*accumulate=*/nullptr);
 
   // cb_push is inserted by ttl-insert-cb-sync which runs after this pass.
 
@@ -118,16 +126,18 @@ struct TTLInsertIntermediateDFBsPass
           continue;
         }
 
-        StoreOp insertedStore;
-        Value replacement =
-            materializeToDFB(operand, moduleOp, builder, insertedStore);
+        auto replacement = materializeToDFB(operand, moduleOp, builder);
+        if (failed(replacement)) {
+          signalPassFailure();
+          return;
+        }
 
         // Replace only this specific operand. Elementwise consumers of
         // the same value retain the original SSA value and fuse with
         // the producer in a single compute block.
-        op->setOperand(idx, replacement);
+        op->setOperand(idx, *replacement);
 
-        materialized[operand] = replacement;
+        materialized[operand] = *replacement;
       }
     }
   }

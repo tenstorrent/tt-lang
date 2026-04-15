@@ -28,7 +28,7 @@ except ImportError:
     exit(0)
 
 import torch
-from ttlang_test_utils import to_dram, to_l1
+from ttlang_test_utils import assert_pcc, to_dram, to_l1
 
 TILE = 32
 ROWS = 2
@@ -120,27 +120,23 @@ if __name__ == "__main__":
         softmax_kernel(inp, scaler, out)
         result = ttnn.to_torch(out).float()
 
-        # Per-tile softmax: each core processes one 32x32 tile independently.
+        # Scalar softmax per tile: reduce_max/reduce_sum use dims=[0,1],
+        # so each 32x32 tile is normalized over all 1024 elements.
         expected = torch.zeros_like(inp_torch, dtype=torch.float32)
         for row_idx in range(ROWS):
             for col_idx in range(COLS):
                 r0, r1 = row_idx * TILE, (row_idx + 1) * TILE
                 c0, c1 = col_idx * TILE, (col_idx + 1) * TILE
-                expected[r0:r1, c0:c1] = torch.softmax(
-                    inp_torch[r0:r1, c0:c1].float(), dim=-1
+                tile = inp_torch[r0:r1, c0:c1].float()
+                expected[r0:r1, c0:c1] = torch.softmax(tile.flatten(), dim=0).reshape(
+                    TILE, TILE
                 )
-
-        pcc = torch.corrcoef(torch.stack([result.flatten(), expected.flatten()]))[
-            0, 1
-        ].item()
 
         # Six chained bf16 operations (reduce_max, sub, exp, reduce_sum,
         # recip, mul) each truncate to bf16, compounding precision loss.
         # Measured PCC ~0.96 on Blackhole.
-        if pcc > 0.95:
-            print("PASS")
-        else:
-            print(f"FAIL: PCC {pcc:.6f} < 0.95")
+        assert_pcc(expected, result, threshold=0.999)
+        print("PASS")
 
     finally:
         ttnn.close_device(device)

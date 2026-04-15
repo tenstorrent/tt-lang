@@ -450,7 +450,7 @@ def TTLFinalizeDFBIndices
        builds the `ttl.compiler_allocated_dfbs` module attribute so the
        Python runtime can create the corresponding CBDescriptor entries.
 
-    This pass is a no-op when no compiler-allocated DFBs exist.
+    This pass is a no-op when no BindCBOps exist in the module.
   }];
 }
 

@@ -37,25 +37,21 @@ struct TTLFinalizeDFBIndicesPass
     auto moduleOp = getOperation();
     OpBuilder builder(moduleOp.getContext());
 
-    int32_t maxDFBIndex = -1;
-    SmallVector<BindCBOp> compilerAllocatedOps;
+    // Reuse the shared utility to find the DFB count.
+    int32_t numDFBs = getNextAvailableDFBIndex(moduleOp);
+    if (numDFBs <= 0) {
+      return;
+    }
 
+    // Collect compiler-allocated BindCBOps.
+    SmallVector<BindCBOp> compilerAllocatedOps;
     moduleOp->walk([&](BindCBOp bindOp) {
-      int64_t idx = bindOp.getCbIndex().getSExtValue();
-      if (static_cast<int32_t>(idx) > maxDFBIndex) {
-        maxDFBIndex = static_cast<int32_t>(idx);
-      }
       if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
         compilerAllocatedOps.push_back(bindOp);
       }
     });
 
-    if (maxDFBIndex < 0) {
-      return;
-    }
-
-    int32_t numDFBs = maxDFBIndex + 1;
-
+    // Update ttl.base_cta_index on every function that has it.
     moduleOp->walk([&](func::FuncOp funcOp) {
       if (funcOp->hasAttr(kBaseCTAIndexAttrName)) {
         funcOp->setAttr(kBaseCTAIndexAttrName,

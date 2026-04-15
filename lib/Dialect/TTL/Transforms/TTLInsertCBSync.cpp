@@ -231,9 +231,9 @@ struct TTLInsertCBSyncPass
           continue;
         }
 
-        for (auto nested_op : nested) {
-          erased.insert(nested_op);
-          nested_op.erase();
+        for (auto nestedOp : nested) {
+          erased.insert(nestedOp);
+          nestedOp.erase();
         }
 
         Operation *last = findLastTransitiveUse(cb, acquire, bound);
