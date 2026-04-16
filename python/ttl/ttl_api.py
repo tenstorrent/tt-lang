@@ -1342,8 +1342,8 @@ def _compile_kernel(
         )
         if compiler_options.maximize_dst:
             pipeline_passes.append("func.func(ttl-schedule-operations)")
-        pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
         pipeline_passes.append("ttl-finalize-dfb-indices")
+        pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
 
         # Add CB flow graph dump if auto-profiling or perf dump is enabled
         perf_dump = os.environ.get("TTLANG_PERF_DUMP") == "1"

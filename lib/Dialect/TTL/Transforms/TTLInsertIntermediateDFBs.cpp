@@ -54,15 +54,6 @@ FailureOr<Value> materializeToDFB(Value intermediate, ModuleOp moduleOp,
   auto cbType = CircularBufferType::get(ctx, shape, elementType, blockCount);
 
   int32_t dfbIndex = getNextAvailableDFBIndex(moduleOp);
-  // TODO: Move this check to TTLFinalizeDFBIndices after DFB index reuse
-  // is implemented (see docs/development/DFB_Index_Reuse.md). Reuse will
-  // reduce the physical DFB count, so checking here over-reports.
-  if (dfbIndex >= kMaxCircularBuffers) {
-    return intermediate.getDefiningOp()->emitError()
-           << "compiler-allocated DFB would exceed the maximum of "
-           << kMaxCircularBuffers << " circular buffers (need index "
-           << dfbIndex << ")";
-  }
 
   Operation *defOp = intermediate.getDefiningOp();
   assert(defOp && "intermediate must have a defining op");
