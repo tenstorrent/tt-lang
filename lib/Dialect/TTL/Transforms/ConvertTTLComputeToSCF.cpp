@@ -52,33 +52,15 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
                                             ComputeOp op,
                                             ArrayRef<AffineMap> indexingMaps,
                                             ValueRange ivs) {
-  SmallVector<Value> extractedInputs;
-  for (auto [idx, input] : llvm::enumerate(op.getInputs())) {
-    SmallVector<Value> indices =
-        applyIndexingMap(b, loc, indexingMaps[idx], ivs);
-    Value tile = tensor::ExtractOp::create(b, loc, input, indices);
-    extractedInputs.push_back(tile);
-  }
-
-  // Output block args get a dummy extract from the output tensor. These are
-  // needed for SSA mapping but unused in the body (stores write via DST).
-  SmallVector<Value> extractedOutputs;
   size_t numInputs = op.getInputs().size();
-  for (auto [idx, output] : llvm::enumerate(op.getOutputs())) {
-    SmallVector<Value> indices =
-        applyIndexingMap(b, loc, indexingMaps[numInputs + idx], ivs);
-    Value tile = tensor::ExtractOp::create(b, loc, output, indices);
-    extractedOutputs.push_back(tile);
-  }
+  auto extractedInputs =
+      extractTilesAtIndices(b, loc, op.getInputs(), indexingMaps, ivs);
+  auto extractedOutputs = extractTilesAtIndices(b, loc, op.getOutputs(),
+                                                indexingMaps, ivs, numInputs);
 
   Block &bodyBlock = op.getBody().front();
   IRMapping mapping;
-  for (auto [idx, arg] : llvm::enumerate(op.getInputs())) {
-    mapping.map(bodyBlock.getArgument(idx), extractedInputs[idx]);
-  }
-  for (auto [idx, arg] : llvm::enumerate(op.getOutputs())) {
-    mapping.map(bodyBlock.getArgument(numInputs + idx), extractedOutputs[idx]);
-  }
+  mapComputeBodyArgs(mapping, op, extractedInputs, extractedOutputs, ivs);
 
   // Resolve iter_index ops to loop IVs via the IRMapping.
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
@@ -187,37 +169,14 @@ static scf::LoopNest generateAccumulatingLoops(
   // Generate tile ops (excluding stores) inside the reduction loop body.
   auto generateTileOpsOnly = [&](OpBuilder &builder, Location bodyLoc,
                                  ValueRange fullIVs) {
-    SmallVector<Value> extractedInputs;
-    for (auto [idx, input] : llvm::enumerate(op.getInputs())) {
-      SmallVector<Value> indices =
-          applyIndexingMap(builder, bodyLoc, indexingMaps[idx], fullIVs);
-      Value tile = tensor::ExtractOp::create(builder, bodyLoc, input, indices);
-      extractedInputs.push_back(tile);
-    }
-
-    SmallVector<Value> extractedOutputs;
     size_t numInputs = op.getInputs().size();
-    for (auto [idx, output] : llvm::enumerate(op.getOutputs())) {
-      SmallVector<Value> indices = applyIndexingMap(
-          builder, bodyLoc, indexingMaps[numInputs + idx], fullIVs);
-      Value tile = tensor::ExtractOp::create(builder, bodyLoc, output, indices);
-      extractedOutputs.push_back(tile);
-    }
+    auto extractedInputs = extractTilesAtIndices(
+        builder, bodyLoc, op.getInputs(), indexingMaps, fullIVs);
+    auto extractedOutputs = extractTilesAtIndices(
+        builder, bodyLoc, op.getOutputs(), indexingMaps, fullIVs, numInputs);
 
     IRMapping mapping;
-    for (auto [idx, arg] : llvm::enumerate(op.getInputs())) {
-      mapping.map(bodyBlock.getArgument(idx), extractedInputs[idx]);
-    }
-    for (auto [idx, arg] : llvm::enumerate(op.getOutputs())) {
-      mapping.map(bodyBlock.getArgument(numInputs + idx),
-                  extractedOutputs[idx]);
-    }
-
-    for (Operation &bodyOp : bodyBlock.without_terminator()) {
-      if (auto iterIdx = dyn_cast<IterIndexOp>(&bodyOp)) {
-        mapping.map(iterIdx.getResult(), fullIVs[iterIdx.getDim()]);
-      }
-    }
+    mapComputeBodyArgs(mapping, op, extractedInputs, extractedOutputs, fullIVs);
 
     for (Operation &bodyOp : bodyBlock.without_terminator()) {
       if (isa<IterIndexOp, TileStoreOp>(&bodyOp)) {

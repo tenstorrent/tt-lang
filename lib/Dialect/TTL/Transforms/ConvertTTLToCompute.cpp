@@ -141,7 +141,7 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
     }
     AffineMap outputMap = indexingMaps[numInputs + outputIdx];
     SmallVector<Value> indices =
-        applyIndexingMapToIterIndices(rewriter, loc, outputMap, iterIndices);
+        applyIndexingMap(rewriter, loc, outputMap, iterIndices);
 
     createTileOpWithPlaceholderDstIndex<TileStoreOp>(
         rewriter, loc, tileResult, storeOp.getView(), indices);
@@ -1215,7 +1215,7 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
     SmallVector<Value> iterIndices =
         getOrCreateIterIndices(rewriter, computeOp);
     SmallVector<Value> storeIndices =
-        applyIndexingMapToIterIndices(rewriter, loc, identityMap, iterIndices);
+        applyIndexingMap(rewriter, loc, identityMap, iterIndices);
     createTileOpWithPlaceholderDstIndex<TileStoreOp>(
         rewriter, loc, body->getArgument(0), reserveView, storeIndices);
     YieldOp::create(rewriter, loc);

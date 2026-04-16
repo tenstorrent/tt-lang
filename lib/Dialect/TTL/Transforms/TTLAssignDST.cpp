@@ -918,8 +918,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
           AffineMap inputMap = indexingMaps[argIdx];
 
           builder.setInsertionPoint(ct);
-          SmallVector<Value> cbIndices = applyIndexingMapToIterIndices(
-              builder, ct.getLoc(), inputMap, iterIndices);
+          SmallVector<Value> cbIndices =
+              applyIndexingMap(builder, ct.getLoc(), inputMap, iterIndices);
 
           auto newCopy = CopyTileOp::create(
               builder, ct.getLoc(),

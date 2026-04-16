@@ -30,19 +30,6 @@
 
 namespace mlir::tt::ttl {
 
-/// Trace a value through copy_tile (inserted by assign-dst) to its source
-/// block argument. Returns the block arg index, or std::nullopt if the value
-/// does not trace to a block argument.
-static std::optional<unsigned> traceToBlockArgIndex(Value val) {
-  if (auto copyOp = val.getDefiningOp<CopyTileOp>()) {
-    val = copyOp.getSrc();
-  }
-  if (auto blockArg = dyn_cast<BlockArgument>(val)) {
-    return blockArg.getArgNumber();
-  }
-  return std::nullopt;
-}
-
 /// Validate that the compute's total DST usage fits within capacity.
 /// The output shape determines the number of output tiles; dstSlotsPerTile
 /// is the number of DST registers each output tile requires (1 for the
@@ -189,40 +176,14 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
         }
       }
 
-      // Extract tiles from input tensors at indexing map positions.
-      SmallVector<Value> extractedInputs;
-      for (auto [idx, input] : llvm::enumerate(op.getInputs())) {
-        SmallVector<Value> indices =
-            applyIndexingMap(secBuilder, loc, indexingMaps[idx], fullIVs);
-        Value tile = tensor::ExtractOp::create(secBuilder, loc, input, indices);
-        extractedInputs.push_back(tile);
-      }
+      auto extractedInputs = extractTilesAtIndices(
+          secBuilder, loc, op.getInputs(), indexingMaps, fullIVs);
+      auto extractedOutputs = extractTilesAtIndices(
+          secBuilder, loc, op.getOutputs(), indexingMaps, fullIVs, numInputs);
 
-      SmallVector<Value> extractedOutputs;
-      for (auto [idx, output] : llvm::enumerate(op.getOutputs())) {
-        SmallVector<Value> indices = applyIndexingMap(
-            secBuilder, loc, indexingMaps[numInputs + idx], fullIVs);
-        Value tile =
-            tensor::ExtractOp::create(secBuilder, loc, output, indices);
-        extractedOutputs.push_back(tile);
-      }
-
-      // Build the operand mapping for cloning body ops.
       IRMapping mapping;
-      for (auto [idx, arg] : llvm::enumerate(op.getInputs())) {
-        mapping.map(bodyBlock.getArgument(idx), extractedInputs[idx]);
-      }
-      for (auto [idx, arg] : llvm::enumerate(op.getOutputs())) {
-        mapping.map(bodyBlock.getArgument(numInputs + idx),
-                    extractedOutputs[idx]);
-      }
-
-      // Map iter_index ops to the constant IVs.
-      for (Operation &bodyOp : bodyBlock.without_terminator()) {
-        if (auto iterIdx = dyn_cast<IterIndexOp>(&bodyOp)) {
-          mapping.map(iterIdx.getResult(), fullIVs[iterIdx.getDim()]);
-        }
-      }
+      mapComputeBodyArgs(mapping, op, extractedInputs, extractedOutputs,
+                         fullIVs);
 
       mapping.map(mmOp.getResult(), mmResult);
 

@@ -11,11 +11,12 @@
 """
 Fused matmul + bias + SiLU: store(silu(A @ B + bias)).
 
-Models the SwiGLU gate path in transformer FFNs with a non-trivial shape:
-A[2x4] @ B[4x2] = C[2x2] (4 output tiles, K=4). The matmul has a K-loop,
-the bias folds into the accumulator, and SiLU is applied per-tile after
-the M*N expansion. Verifies initial IR structure, generated C++ op
-sequence, and numerical correctness on hardware.
+Models the SwiGLU gate path in transformer FFNs with a shape that triggers
+DST subblocking: A[4x6] @ B[6x4] = C[4x4] (16 output tiles, bf16 DST
+capacity = 8). The subblocking pass splits the 4x4 output into 1x4
+subblocks, each with its own sync region. Verifies initial IR structure,
+generated C++ op sequence (including the subblock loop), and numerical
+correctness on hardware.
 """
 
 import ttl
@@ -29,7 +30,7 @@ except ImportError:
 import torch
 
 TILE = 32
-M_BLK, K_BLK, N_BLK = 2, 4, 2
+M_BLK, K_BLK, N_BLK = 4, 6, 4
 
 
 @ttl.operation(grid=(1, 1))
@@ -70,7 +71,7 @@ def swiglu_gate_kernel(a_tensor, b_tensor, bias_tensor, out_tensor):
 
 # =============================================================================
 # Initial IR: matmul feeds into add (bias), then silu, then store.
-# Shapes: A[2x4] @ B[4x2] -> [2x2], bias[2x2].
+# Shapes: A[4x6] @ B[6x4] -> [4x4], bias[4x4].
 # =============================================================================
 
 # CHECK-LABEL: func.func @compute_fn
@@ -78,40 +79,46 @@ def swiglu_gate_kernel(a_tensor, b_tensor, bias_tensor, out_tensor):
 # CHECK:         %[[B:.*]] = ttl.attach_cb
 # CHECK:         %[[BI:.*]] = ttl.attach_cb
 # CHECK:         %[[MM:.*]] = ttl.matmul %[[A]], %[[B]]
-# CHECK-SAME:      tensor<2x4x!ttcore.tile<32x32, bf16>>
+# CHECK-SAME:      tensor<4x6x!ttcore.tile<32x32, bf16>>
 # CHECK:         %[[ADD:.*]] = ttl.add %[[MM]], %[[BI]]
 # CHECK:         %[[SILU:.*]] = ttl.silu %[[ADD]]
 # CHECK:         ttl.store %[[SILU]]
 
 
 # =============================================================================
-# C++ output: bias preloaded via copy_tile (4 tiles for 2x2 output),
-# matmul_block with K-loop (kt=4), SiLU on each DST tile, then 4 pack_tiles.
+# C++ output: 4x4 output (16 tiles) exceeds bf16 DST capacity (8), so
+# subblocking splits into an outer loop over M rows. Each iteration
+# processes a 1x4 subblock: bias preload, K-loop matmul, SiLU, pack.
 # =============================================================================
 
 # CHECK-CPP:       mm_block_init(
-# CHECK-CPP:       tile_regs_acquire
-#   Bias preload: 4 copy_tile ops for the 2x2 output.
-# CHECK-CPP:       copy_tile_init(
-# CHECK-CPP:       copy_tile(
-# CHECK-CPP:       copy_tile(
-# CHECK-CPP:       copy_tile(
-# CHECK-CPP:       copy_tile(
-#   Matmul with K-loop (kt=4).
-# CHECK-CPP:       mm_block_init_short(
+#   Outer subblock loop over M rows.
 # CHECK-CPP:       for
-# CHECK-CPP:         matmul_block(
-#   SiLU on each of the 4 output tiles.
-# CHECK-CPP:       silu_tile_init(
-# CHECK-CPP-NEXT:  silu_tile(
-# CHECK-CPP-NEXT:  silu_tile(
-# CHECK-CPP-NEXT:  silu_tile(
-# CHECK-CPP-NEXT:  silu_tile(
-#   Pack (combined into pack_tile_block for contiguous DST).
-# CHECK-CPP:       tile_regs_commit
-# CHECK-CPP-NEXT:  tile_regs_wait
-# CHECK-CPP-NEXT:  pack_tile_block(
-# CHECK-CPP-NEXT:  tile_regs_release
+# CHECK-CPP:         tile_regs_acquire
+#   Bias preload: 4 copy_tile ops per subblock row.
+# CHECK-CPP:         copy_tile_init(
+# CHECK-CPP:         copy_tile(
+# CHECK-CPP:         copy_tile(
+# CHECK-CPP:         copy_tile(
+# CHECK-CPP:         copy_tile(
+#   Matmul with K-loop (kt=6).
+# CHECK-CPP:         mm_block_init_short(
+# CHECK-CPP:         for
+# CHECK-CPP:           matmul_block(
+#   SiLU on each of the 4 subblock tiles.
+# CHECK-CPP:         silu_tile_init(
+# CHECK-CPP-NEXT:    silu_tile(
+# CHECK-CPP-NEXT:    silu_tile(
+# CHECK-CPP-NEXT:    silu_tile(
+# CHECK-CPP-NEXT:    silu_tile(
+#   Pack 4 tiles from this subblock.
+# CHECK-CPP:         tile_regs_commit
+# CHECK-CPP-NEXT:    tile_regs_wait
+# CHECK-CPP:         pack_tile
+# CHECK-CPP:         pack_tile
+# CHECK-CPP:         pack_tile
+# CHECK-CPP:         pack_tile
+# CHECK-CPP:         tile_regs_release
 #   No explicit add -- folded into matmul accumulator.
 # CHECK-CPP-NOT:   add_tiles
 # CHECK-CPP-NOT:   add_binary_tile
