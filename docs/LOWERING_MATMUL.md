@@ -96,7 +96,7 @@ Sets DST register indices as `dst_index` operands. The matmul's accumulator oper
 
 Pass: [lib/Dialect/TTL/Transforms/LowerMatmulCompute.cpp](../lib/Dialect/TTL/Transforms/LowerMatmulCompute.cpp)
 
-When `ttl-lower-to-loops` encounters a `ComputeOp` containing `tile_matmul_block`, it delegates to `generateMatmulCompute`. This replaces the `ttl.compute` region with a `DstSectionOp` containing the matmul call, all post-matmul ops (binary elementwise, copy_tile, etc.), and per-tile stores. The matmul block dimensions (`rt=2`, `ct=2`) are derived from the operand tensor shapes. The accumulator tensor is passed as the 3rd operand of `tile_matmul_block`; TTKernel lowering emits `rt*ct` `copy_tile` ops from it. Per-tile post-ops and stores are expanded to `M*N` copies with distinct `dst_index` values.
+When `ttl-lower-to-loops` encounters a `ComputeOp` containing `tile_matmul_block`, it delegates to `generateMatmulCompute`. This replaces the `ttl.compute` region with a `DstSectionOp` containing the matmul call, all cloned body ops (elementwise, copy_tile, etc.), and per-output-view stores. The matmul block dimensions (`rt=2`, `ct=2`) are derived from the operand tensor shapes. The accumulator tensor is passed as the 3rd operand of `tile_matmul_block`; TTKernel lowering emits `rt*ct` `copy_tile` ops from it. Body ops and stores are expanded to `M*N` copies with distinct `dst_index` values.
 
 ```mlir
 %c0 = arith.constant 0 : index

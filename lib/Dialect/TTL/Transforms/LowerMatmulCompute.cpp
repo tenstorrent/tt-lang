@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 //
 // Lowers a ComputeOp containing tile_matmul_block into a single DstSectionOp
-// with the matmul call, per-tile post-ops (binary elementwise, copy_tile,
-// etc.), and per-tile stores. Called from LowerComputeToLoops when the
+// with the matmul call, cloned body ops (elementwise, copy_tile, etc.),
+// and per-output-view stores. Called from LowerComputeToLoops when the
 // compute body contains a matmul.
 //
 // CB lifecycle (wait/pop for inputs, reserve/push for output) is NOT emitted
@@ -33,7 +33,7 @@ namespace mlir::tt::ttl {
 /// Validate that the compute's total DST usage fits within capacity.
 /// The output shape determines the number of output tiles; dstSlotsPerTile
 /// is the number of DST registers each output tile requires (1 for the
-/// result plus any scratch slots for post-ops).
+/// result plus any scratch slots for other body ops).
 static LogicalResult validateDSTCapacity(ComputeOp computeOp,
                                          int64_t dstSlotsPerTile) {
   auto capacityOrErr = computeDSTCapacity(computeOp);
