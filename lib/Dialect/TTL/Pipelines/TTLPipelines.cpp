@@ -32,7 +32,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   if (options.maximizeDST) {
     TTLSubblockComputeForDSTOptions subblockOpts;
-    subblockOpts.subblockSync = options.autoSync;
+    subblockOpts.subblockSync = options.subblockSync;
     subblockOpts.strictF32Acc = options.strictF32Acc;
     pm.addPass(createTTLSubblockComputeForDST(subblockOpts));
   }

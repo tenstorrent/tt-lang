@@ -9,7 +9,7 @@
 // RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-subblock-compute-for-dst{subblock-sync=true}, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   | FileCheck %s --check-prefix=SFPU
 
-// auto-sync disabled (default): reserve/push stays at outer level.
+// subblock-sync disabled (default): reserve/push stays at outer level.
 // RUN: ttlang-opt %s \
 // RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-subblock-compute-for-dst{subblock-sync=false}, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   | FileCheck %s --check-prefix=MANUAL
@@ -109,7 +109,7 @@
 // SFPU-NOT: ttkernel.add_tiles
 
 // =============================================================================
-// Manual sync (auto-sync disabled): reserve/push at outer level, pack_tile
+// Manual sync (subblock-sync disabled): reserve/push at outer level, pack_tile
 // uses linearized global indices (not local subblock indices).
 // =============================================================================
 // MANUAL-LABEL: func.func @add_exp_scheduled
