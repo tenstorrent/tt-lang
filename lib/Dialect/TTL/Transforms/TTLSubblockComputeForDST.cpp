@@ -377,7 +377,7 @@ private:
       outputInfos.push_back(std::move(info));
     }
 
-    // When auto-sync is enabled, refine reserve/push to per-subblock
+    // When subblock-sync is enabled, refine reserve/push to per-subblock
     // granularity for contiguous outputs, enabling pack_tile_block.
     // L1 allocation is unchanged: CB size is fixed at program creation;
     // reserve/push only synchronize access within that region.

@@ -30,10 +30,10 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::desc("Lower matmul to block-level hardware calls "
                      "(experimental::matmul_block) instead of per-tile loops."),
       llvm::cl::init(true)};
-  Option<bool> autoSync{
-      *this, "auto-sync",
-      llvm::cl::desc("Let the compiler insert and move DFB synchronization "
-                     "ops. When disabled (default), user-placed reserve/push "
+  Option<bool> subblockSync{
+      *this, "subblock-sync",
+      llvm::cl::desc("Refine DFB reserve/push to per-subblock granularity. "
+                     "When disabled (default), user-placed reserve/push "
                      "is preserved."),
       llvm::cl::init(false)};
   Option<bool> combinePackTiles{
