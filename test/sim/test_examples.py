@@ -105,6 +105,7 @@ def run_script_in_process(
         ),
         "broadcast_demo.py",
         "group_transfer_upsample.py",
+        "height_shard_gather.py",
         pytest.param(
             "general_broadcast.py",
             marks=requires_ttnn,

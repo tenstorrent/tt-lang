@@ -672,8 +672,8 @@ class TestSimStats:
             stats = self._run_stats(trace_path)
             assert stats.returncode == 0, f"sim-stats failed: {stats.stderr}"
             assert "Tensor Access Statistics" in stats.stdout
-            assert "Reads" in stats.stdout
-            assert "Writes" in stats.stdout
+            assert "Tensor Access Statistics" in stats.stdout
+            assert "Tiles R" in stats.stdout
             assert "TOTAL" in stats.stdout
         finally:
             trace_path.unlink(missing_ok=True)

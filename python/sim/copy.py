@@ -17,27 +17,43 @@ from .copyhandlers import (
     HANDLER_REGISTRY,
 )
 from .ttnnsim import Tensor, tile_count_from_tensor
+from .sharding import try_count_locality
 from .trace import trace
 import math
 
 
 def _copy_trace_fields(src: CopyEndpoint, dst: CopyEndpoint) -> dict:
-    """Return extra fields for copy_start/copy_end when a Tensor is involved."""
+    """Return extra fields for copy_start/copy_end when a Tensor is involved.
+
+    When called from within a kernel (greenlet tagged with _sim_core), adds
+    element-level locality fields: local_l1, remote_l1, dram.
+    """
     match (src, dst):
         case (Tensor(), Block()):
-            return {
-                "tensor": getattr(src, "_name", None) or type(src).__name__,
-                "tiles": tile_count_from_tensor(src),
-                "direction": "read",
-            }
+            tensor, direction, tiles = src, "read", tile_count_from_tensor(src)
         case (Block(), Tensor()):
-            return {
-                "tensor": getattr(dst, "_name", None) or type(dst).__name__,
-                "tiles": math.prod(src.shape),
-                "direction": "write",
-            }
+            tensor, direction, tiles = dst, "write", math.prod(src.shape)
         case _:
             return {}
+
+    fields: dict = {
+        "tensor": getattr(tensor, "_name", None) or type(tensor).__name__,
+        "tiles": tiles,
+        "direction": direction,
+    }
+    locality = try_count_locality(tensor)
+    if locality is not None:
+        local_elems, remote_elems, dram_elems = locality
+        # Convert element counts to tile counts using the same ratio as `tiles`.
+        # For TILE_LAYOUT: elements_per_tile = prod(shape) / tile_count.
+        # For ROW_MAJOR_LAYOUT: elements_per_tile = 1 (each element is a unit).
+        # Integer division is exact for standard tile-aligned sharding.
+        total_elems = math.prod(tensor.shape)
+        if total_elems > 0:
+            fields["local_l1"] = local_elems * tiles // total_elems
+            fields["remote_l1"] = remote_elems * tiles // total_elems
+            fields["dram"] = dram_elems * tiles // total_elems
+    return fields
 
 
 class CopyTransaction:

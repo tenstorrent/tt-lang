@@ -75,7 +75,18 @@ _DfbPerCoreStats = Dict[str, Dict[str, Dict[str, int]]]
 
 
 def _new_rw() -> Dict[str, int]:
-    return {"reads": 0, "writes": 0, "tiles_read": 0, "tiles_written": 0}
+    return {
+        "reads": 0,
+        "writes": 0,
+        "tiles_read": 0,
+        "tiles_written": 0,
+        "local_l1_read": 0,
+        "local_l1_write": 0,
+        "remote_l1_read": 0,
+        "remote_l1_write": 0,
+        "dram_read": 0,
+        "dram_write": 0,
+    }
 
 
 def _new_dfb() -> Dict[str, int]:
@@ -99,12 +110,21 @@ def _accumulate(
                 tensor = ev.get("tensor")
                 tiles = ev.get("tiles", 0)
                 direction = ev.get("direction")
+                local_l1 = ev.get("local_l1", 0)
+                remote_l1 = ev.get("remote_l1", 0)
+                dram = ev.get("dram", 0)
                 if tensor and direction == "read":
                     tensor_stats[tensor]["reads"] += 1
                     tensor_stats[tensor]["tiles_read"] += tiles
+                    tensor_stats[tensor]["local_l1_read"] += local_l1
+                    tensor_stats[tensor]["remote_l1_read"] += remote_l1
+                    tensor_stats[tensor]["dram_read"] += dram
                 elif tensor and direction == "write":
                     tensor_stats[tensor]["writes"] += 1
                     tensor_stats[tensor]["tiles_written"] += tiles
+                    tensor_stats[tensor]["local_l1_write"] += local_l1
+                    tensor_stats[tensor]["remote_l1_write"] += remote_l1
+                    tensor_stats[tensor]["dram_write"] += dram
 
             case "pipe_send":
                 pipe = ev.get("pipe")
@@ -159,31 +179,82 @@ _W = 84  # total table width for DFB section
 
 
 def _print_tensor_stats(stats: _TensorStats) -> None:
-    print("\n" + "=" * 64)
-    print("Tensor Access Statistics")
-    print("=" * 64)
-    print(
-        f"{'Tensor':<20} {'Reads':>8} {'Writes':>8} {'Tiles Read':>12} {'Tiles Written':>12}"
+    has_locality = any(
+        s["local_l1_read"]
+        + s["local_l1_write"]
+        + s["remote_l1_read"]
+        + s["remote_l1_write"]
+        + s["dram_read"]
+        + s["dram_write"]
+        > 0
+        for s in stats.values()
     )
-    print("-" * 64)
 
-    total_reads = total_writes = total_tiles_read = total_tiles_written = 0
+    if has_locality:
+        # Columns: Tensor | Local L1 R | Local L1 W | Remote L1 R | Remote L1 W | DRAM R | DRAM W | Tiles R | Tiles W
+        width = 132
+        header = (
+            f"{'Tensor':<20}"
+            f" {'Local L1 R':>12} {'Local L1 W':>12}"
+            f" {'Remote L1 R':>13} {'Remote L1 W':>13}"
+            f" {'DRAM R':>9} {'DRAM W':>9}"
+            f" {'Tiles R':>9} {'Tiles W':>9}"
+        )
+    else:
+        width = 64
+        header = f"{'Tensor':<20} {'Reads':>8} {'Writes':>8} {'Tiles Read':>12} {'Tiles Written':>12}"
+
+    print("\n" + "=" * width)
+    print("Tensor Access Statistics")
+    print("=" * width)
+    print(header)
+    print("-" * width)
+
+    totals: Dict[str, int] = {
+        "reads": 0,
+        "writes": 0,
+        "tiles_read": 0,
+        "tiles_written": 0,
+        "local_l1_read": 0,
+        "local_l1_write": 0,
+        "remote_l1_read": 0,
+        "remote_l1_write": 0,
+        "dram_read": 0,
+        "dram_write": 0,
+    }
 
     for name, s in sorted(stats.items()):
-        reads, writes = s["reads"], s["writes"]
-        tiles_read, tiles_written = s["tiles_read"], s["tiles_written"]
-        total_reads += reads
-        total_writes += writes
-        total_tiles_read += tiles_read
-        total_tiles_written += tiles_written
-        print(f"{name:<20} {reads:>8} {writes:>8} {tiles_read:>12} {tiles_written:>12}")
+        for key in totals:
+            totals[key] += s[key]
+        if has_locality:
+            print(
+                f"{name:<20}"
+                f" {s['local_l1_read']:>12} {s['local_l1_write']:>12}"
+                f" {s['remote_l1_read']:>13} {s['remote_l1_write']:>13}"
+                f" {s['dram_read']:>9} {s['dram_write']:>9}"
+                f" {s['tiles_read']:>9} {s['tiles_written']:>9}"
+            )
+        else:
+            print(
+                f"{name:<20} {s['reads']:>8} {s['writes']:>8}"
+                f" {s['tiles_read']:>12} {s['tiles_written']:>12}"
+            )
 
-    print("-" * 64)
-    print(
-        f"{'TOTAL':<20} {total_reads:>8} {total_writes:>8}"
-        f" {total_tiles_read:>12} {total_tiles_written:>12}"
-    )
-    print("=" * 64)
+    print("-" * width)
+    if has_locality:
+        print(
+            f"{'TOTAL':<20}"
+            f" {totals['local_l1_read']:>12} {totals['local_l1_write']:>12}"
+            f" {totals['remote_l1_read']:>13} {totals['remote_l1_write']:>13}"
+            f" {totals['dram_read']:>9} {totals['dram_write']:>9}"
+            f" {totals['tiles_read']:>9} {totals['tiles_written']:>9}"
+        )
+    else:
+        print(
+            f"{'TOTAL':<20} {totals['reads']:>8} {totals['writes']:>8}"
+            f" {totals['tiles_read']:>12} {totals['tiles_written']:>12}"
+        )
+    print("=" * width)
 
 
 def _print_pipe_stats(stats: _PipeStats) -> None:

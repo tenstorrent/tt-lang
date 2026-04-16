@@ -14,6 +14,8 @@ import types
 import warnings
 from typing import Any, Dict, List
 
+from greenlet import getcurrent
+
 from .dfb import DataflowBuffer
 from .typedefs import BindableTemplate, Shape
 from .blockstate import ThreadType
@@ -239,9 +241,15 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                         # Bind template to core context
                         bound_func = tmpl.bind(core_context)
 
+                        # Wrap to tag the greenlet with its linear core index so
+                        # locality analysis in copy.py can read it via getcurrent().
+                        def _tagged(fn=bound_func, c=core):
+                            getcurrent()._sim_core = c  # type: ignore[attr-defined]
+                            fn()
+
                         # Add to scheduler
                         thread_name = f"core{core}-{tmpl.__name__}"
-                        scheduler.add_thread(thread_name, bound_func, thread_type)
+                        scheduler.add_thread(thread_name, _tagged, thread_type)
 
                 # Emit operation_start for each node before the scheduler runs.
                 for core in range(total_cores):
