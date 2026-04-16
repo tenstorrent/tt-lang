@@ -51,10 +51,6 @@ namespace {
 using mlir::func::FuncOp;
 namespace ttk = mlir::tt::ttkernel;
 
-// Start index in compile-time args for TA static metadata (is_sharded,
-// is_dram). CTA layout is [CBs, TAs], so this is the number of CBs.
-constexpr llvm::StringLiteral kBaseCTAIndexAttr = "ttl.base_cta_index";
-
 // Maps local args to global tensor indices for common runtime args (buffer
 // addresses). CRTA is filtered per-thread, containing only addresses for
 // tensors this thread uses.
@@ -517,10 +513,11 @@ getBaseCTAAndGlobalTensorIdx(unsigned argIdx, Operation *op) {
     return op->emitError("operation must be inside a function");
   }
 
-  auto baseCTAAttr = parentFunc->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttr);
+  auto baseCTAAttr =
+      parentFunc->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName);
   if (!baseCTAAttr) {
     return op->emitError("function missing ")
-           << kBaseCTAIndexAttr << " attribute";
+           << kBaseCTAIndexAttrName << " attribute";
   }
 
   auto crtaIndicesAttr = parentFunc->getAttrOfType<ArrayAttr>(kCRTAIndicesAttr);

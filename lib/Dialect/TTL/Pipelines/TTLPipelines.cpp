@@ -18,6 +18,7 @@ namespace mlir::tt::ttl {
 
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
+  pm.addNestedPass<func::FuncOp>(createTTLInsertIntermediateDFBs());
   pm.addNestedPass<func::FuncOp>(createTTLInsertCBSync());
   pm.addPass(createTTLAnnotateL1AccLoops());
   pm.addPass(createTTLConvertTTLToCompute());
@@ -49,6 +50,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addPass(createTTLScheduleOperations());
   }
   pm.addPass(createTTLAnnotateCBAssociations());
+  pm.addPass(createTTLFinalizeDFBIndices());
   {
     TTLConvertTTLToTTKernelOptions ttkOpts;
     ttkOpts.reduceFullFp32 = options.reduceFullFp32;
