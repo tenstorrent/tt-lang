@@ -33,11 +33,11 @@ struct TTLInsertCopyWaitPass
 
     func.walk([&](CopyOp copy) {
       Value handle = copy.getXf();
-      bool hasWait = llvm::any_of(handle.getUsers(), [](Operation *user) {
-        return isa<WaitOp>(user);
-      });
-      if (hasWait)
+      bool hasWait = llvm::any_of(
+          handle.getUsers(), [](Operation *user) { return isa<WaitOp>(user); });
+      if (hasWait) {
         return;
+      }
 
       builder.setInsertionPointAfter(copy);
       WaitOp::create(builder, copy.getLoc(), handle);
