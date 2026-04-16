@@ -7,22 +7,21 @@ name: Build Wheels
 on:
   workflow_call:
     inputs:
-      python_versions:
+      docker_tag:
         type: string
-        default: "cp311-manylinux_x86_64* cp312-manylinux_x86_64*"
+        default: "v0.1.7"
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
-  build-toolchain:
-    uses: ./.github/workflows/call-build-toolchain.yml
-
   build-wheels:
     name: "Build tt-lang wheel"
-    needs: build-toolchain
     runs-on: ubuntu-22.04
     timeout-minutes: 120
+    container:
+      image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:${{ inputs.docker_tag }}
 
     defaults:
       run:
@@ -33,42 +32,39 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          submodules: recursive
 
-      - name: Restore toolchain cache
-        uses: actions/cache/restore@v5
-        with:
-          path: /opt/ttlang-toolchain
-          key: ${{ needs.build-toolchain.outputs.cache-key }}
+      - name: Fix git safe directory
+        run: git config --global --add safe.directory '*'
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
+      - name: Configure tt-lang
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          cmake -G Ninja -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTTLANG_USE_TOOLCHAIN=ON
 
-      - name: Build wheels
-        uses: pypa/cibuildwheel@v2.23.2
-        env:
-          CIBW_BUILD: ${{ inputs.python_versions }}
-          CIBW_SKIP: "*-musllinux_*"
-          CIBW_ENVIRONMENT: >-
-            IN_CIBW_ENV=ON
-            TTLANG_USE_TOOLCHAIN=ON
-            TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
-            CC=gcc
-            CXX=g++
-          CIBW_BEFORE_BUILD: "pip install cmake ninja nanobind"
-          CIBW_REPAIR_WHEEL_COMMAND_LINUX: ""
-          CIBW_TEST_COMMAND: >-
-            python -c "import ttl; print('tt-lang', ttl.__version__)" &&
-            python -c "from ttl import operation, compute, datamovement" &&
-            python -c "from ttl.pykernel._src.kernel_ast import TTCompilerBase"
-        with:
-          output-dir: ./dist
-          package-dir: ./python
+      - name: Build wheel
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          pip wheel ./python --wheel-dir=dist-raw --no-deps --no-build-isolation
+
+      - name: Repair wheel
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          pip install auditwheel patchelf
+          auditwheel repair dist-raw/*.whl --wheel-dir=dist
+
+      - name: Test wheel
+        run: |
+          python3.12 -m venv /tmp/test-venv
+          source /tmp/test-venv/bin/activate
+          pip install dist/*.whl --extra-index-url https://download.pytorch.org/whl/cpu
+          python -c "import ttl; print('tt-lang', ttl.__version__)"
+          python -c "from ttl import operation, compute, datamovement"
+          python -c "from ttl.pykernel._src.kernel_ast import TTCompilerBase"
 
       - name: Report wheel size
-        run: ls -lh dist/*.whl
+        run: ls -lh dist-raw/*.whl dist/*.whl
 
       - name: Upload wheels
         uses: actions/upload-artifact@v5

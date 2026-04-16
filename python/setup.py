@@ -53,13 +53,6 @@ class CMakeBuild(build_ext):
             else:
                 raise Exception("Unknown extension")
 
-    def rmdir(self, _dir: pathlib.Path):
-        if _dir.exists():
-            shutil.rmtree(_dir)
-
-    def in_ci(self) -> bool:
-        return os.environ.get("IN_CIBW_ENV") == "ON"
-
     def _strip_binaries(self, install_dir):
         """Strip debug symbols from .so/.dylib files to reduce wheel size."""
         if platform.system() == "Darwin":
@@ -118,9 +111,6 @@ class CMakeBuild(build_ext):
 
         install_dir = pathlib.Path(self.build_lib)
 
-        if self.in_ci():
-            install_dir = cwd / "build" / install_dir.name
-
         # Configure only when no prior cmake configuration exists.  Local
         # developer builds already have a configured build/ directory; re-
         # running configure just to change the install prefix is unnecessary
@@ -138,9 +128,9 @@ class CMakeBuild(build_ext):
                 "-DCMAKE_BUILD_TYPE=Release",
             ]
 
-            # Forward toolchain env vars (set by cibuildwheel) as cmake -D
-            # flags.  cmake option() does not read the environment, so the
-            # vars must be forwarded explicitly.
+            # Forward toolchain env vars as cmake -D flags.  cmake
+            # option() does not read the environment, so the vars must be
+            # forwarded explicitly.
             if os.environ.get("TTLANG_USE_TOOLCHAIN") == "ON":
                 cmake_args.append("-DTTLANG_USE_TOOLCHAIN=ON")
                 toolchain_dir = os.environ.get("TTLANG_TOOLCHAIN_DIR", "")
