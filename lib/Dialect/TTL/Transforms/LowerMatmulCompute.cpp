@@ -132,9 +132,9 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
   int64_t maxBodyDstIdx = 0;
   for (Operation *bodyOp : bodyOpsToClone) {
     if (auto dstVal = getTileOpDstIndex(bodyOp)) {
-      if (auto constIdx = foldIndexToConstant(*dstVal)) {
-        maxBodyDstIdx = std::max(maxBodyDstIdx, *constIdx);
-      }
+      auto constIdx = foldIndexToConstant(*dstVal);
+      assert(constIdx && "DST index must be a constant after assignment");
+      maxBodyDstIdx = std::max(maxBodyDstIdx, *constIdx);
     }
   }
   int64_t dstPerIteration = maxBodyDstIdx + 1;
