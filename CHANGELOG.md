@@ -87,7 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SPMD and mesh device simulation support
 - Support for `ttnn.all_reduce` CCLs
 - Use tracing to report statistics with `ttlang-sim-stats`
-- L1 sharding NOC statistics
+- Remote L1 reads/writes statistics
 
 ### Examples and documentation
 - Matmul tutorial
