@@ -24,39 +24,17 @@ Usage::
 
 Expected Tensor Access Statistics (locality columns)::
 
-    inp   2 reads  ...  Local L1: 4096   Remote L1: 4096   DRAM: 0
-    out   2 writes ...  Local L1: 0      Remote L1: 0      DRAM: 8192
+    inp   2 reads  ...  Local L1 R: 4   Remote L1 R: 4   DRAM R: 0
+    out   2 writes ...  Local L1 W: 0   Remote L1 W: 0   DRAM W: 8
 """
 
 import torch
-import ttnn
 import ttl
+import ttnn
 
 TILE = 32
 CORES = 2  # number of cores / tile-rows
 COLS = 2  # tile-columns wide
-
-# ---------------------------------------------------------------------------
-# Input: height-sharded across CORES cores (one tile-row per core in L1).
-# Each shard: TILE x (COLS * TILE) = 32 x 64 elements = 2048 elements.
-# ---------------------------------------------------------------------------
-inp_mc = ttnn.create_sharded_memory_config(
-    shape=(CORES * TILE, COLS * TILE),
-    core_grid=ttnn.CoreGrid(y=1, x=CORES),
-    strategy=ttnn.ShardStrategy.HEIGHT,
-)
-inp = ttnn.from_torch(
-    torch.arange(CORES * TILE * COLS * TILE, dtype=torch.float32)
-    .reshape(CORES * TILE, COLS * TILE)
-    .to(torch.bfloat16),
-    dtype=ttnn.bfloat16,
-    layout=ttnn.TILE_LAYOUT,
-    memory_config=inp_mc,
-)
-
-# Output: DRAM (non-sharded). Both cores write the same gathered result;
-# the last write wins but both gather identical data so output == input.
-out = ttnn.empty((CORES * TILE, COLS * TILE))
 
 
 @ttl.operation(grid=(CORES, 1))
@@ -90,15 +68,42 @@ def height_shard_gather(inp, out):
             tx.wait()
 
 
-height_shard_gather(inp, out)
+def main() -> None:
+    device = ttnn.open_device(device_id=0)
+    try:
+        inp_mc = ttnn.create_sharded_memory_config(
+            shape=(CORES * TILE, COLS * TILE),
+            core_grid=ttnn.CoreGrid(y=1, x=CORES),
+            strategy=ttnn.ShardStrategy.HEIGHT,
+        )
+        inp = ttnn.from_torch(
+            torch.arange(CORES * TILE * COLS * TILE, dtype=torch.float32)
+            .reshape(CORES * TILE, COLS * TILE)
+            .to(torch.bfloat16),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=inp_mc,
+        )
+        out = ttnn.empty(
+            (CORES * TILE, COLS * TILE),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+        )
 
-# ---------------------------------------------------------------------------
-# Verify: output must equal input (modulo bfloat16 round-trip).
-# ---------------------------------------------------------------------------
-inp_torch = inp.to_torch()
-out_torch = out.to_torch()
-if torch.allclose(inp_torch.float(), out_torch.float()):
-    print("height_shard_gather: PASS (output matches input)")
-else:
-    max_err = (inp_torch.float() - out_torch.float()).abs().max().item()
-    print(f"height_shard_gather: FAIL (max abs error = {max_err:.6f})")
+        height_shard_gather(inp, out)
+
+        inp_torch = ttnn.to_torch(inp)
+        out_torch = ttnn.to_torch(out)
+        if torch.allclose(inp_torch.float(), out_torch.float()):
+            print("height_shard_gather: PASS (output matches input)")
+        else:
+            max_err = (inp_torch.float() - out_torch.float()).abs().max().item()
+            print(f"height_shard_gather: FAIL (max abs error = {max_err:.6f})")
+    finally:
+        ttnn.close_device(device)
+
+
+if __name__ == "__main__":
+    main()
