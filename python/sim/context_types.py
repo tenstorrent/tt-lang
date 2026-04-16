@@ -17,10 +17,10 @@ from .pipe import AnyPipe
 from .ttnnsim import Tensor
 from .typedefs import Count, Shape, BindableTemplate
 from .blockstate import ThreadType
+from ttl.constants import DEFAULT_L1_CB_BUDGET_BYTES
 
-# Default L1 memory limit per core: Blackhole/Wormhole L1 (1464K) minus
-# large-program reserved space (128K).
-DEFAULT_MAX_L1_BYTES: int = (1464 - 128) * 1024  # 1336 KiB = 1_368_064 bytes
+# Default L1 memory limit per core (simulator): same as runtime CB budget helper.
+DEFAULT_MAX_L1_BYTES: int = DEFAULT_L1_CB_BUDGET_BYTES
 
 
 @dataclass

@@ -435,6 +435,45 @@ def TTLFinalizeDFBIndices
   }];
 }
 
+def TTLValidateCBBudget
+    : Pass<"ttl-validate-cb-budget", "::mlir::ModuleOp"> {
+  let summary = "Validate total CB allocation fits within per-core L1 budget";
+  let description = [{
+    Module-level pass that runs after `ttl-finalize-dfb-indices`, before
+    `convert-ttl-to-ttkernel`. Sums the static backing-store size of every
+    circular buffer declared in the module and compares against a per-core
+    L1 budget.
+
+    For each `BindCBOp`, the pass computes:
+      cb_bytes = total_elements * tile_size_bytes
+
+    When the same `cb_index` appears in multiple functions (e.g. compute
+    and data-movement kernels sharing a CB slot), only the largest
+    allocation for that index is counted.
+
+    On overflow the pass emits an error with a per-CB breakdown and a
+    hint to reduce block shapes or block counts.
+
+    L1 budget is taken from the module's TTCore system descriptor and
+    default device when present (`ChipDescAttr::getUsableL1Size()` for the
+    selected chip). When the module has no system descriptor, the pass uses
+    the same static per-core CB region limit as Wormhole and Blackhole
+    (total L1 minus reserved kernel space).
+
+    An optional warning fires when usage exceeds a configurable percentage
+    of that budget (default 90 percent).
+
+    This is a static "CB region vs budget" check. It does not model
+    other L1 consumers (kernel binaries, stack, runtime buffers).
+  }];
+
+  let options = [
+    Option<"warnThresholdPct", "warn-threshold-pct", "uint32_t", "90",
+           "Emit warning when CB usage exceeds this percentage of the "
+           "architecture-derived L1 CB budget (0 disables the warning).">
+  ];
+}
+
 def TTLDumpCBFlowGraph
     : Pass<"ttl-dump-cb-flow-graph", "::mlir::ModuleOp"> {
   let summary = "Analyze and dump CB producer/consumer flow graph";

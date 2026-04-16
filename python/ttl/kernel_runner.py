@@ -35,6 +35,7 @@ def _ensure_ttnn():
 
 
 from .circular_buffer import CompilerAllocatedDFBConfig
+from .constants import DEFAULT_L1_CB_BUDGET_BYTES
 from .dtype_utils import (
     format_name_to_ttnn_dtype,
     tile_bytes_from_dtype,
@@ -167,7 +168,9 @@ def build_cb_descriptors(
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 
-    cb_descriptors = []
+    # Compute sizes first so we fail before allocating ttnn descriptors on overflow.
+    rows = []
+    total_cb_bytes = 0
     for i, cb in enumerate(cb_configs):
         if cb is None:
             raise ValueError(
@@ -176,12 +179,19 @@ def build_cb_descriptors(
             )
 
         if isinstance(cb, CompilerAllocatedDFBConfig):
-            # Compiler-allocated DFB: dtype from attribute string.
             data_format = format_name_to_ttnn_dtype(cb.data_format)
             page_size = tile_bytes_from_dtype(data_format)
             total_size = cb.num_tiles * cb.block_count * page_size
+            rows.append(
+                (
+                    data_format,
+                    page_size,
+                    total_size,
+                    f"  CB[{i}]: compiler-allocated num_tiles={cb.num_tiles} "
+                    f"block_count={cb.block_count} format={cb.data_format} -> {total_size} bytes",
+                )
+            )
         else:
-            # User-declared DFB: dtype from reference tensor.
             ref_tensor = cb.tensor
             if hasattr(ref_tensor, "dtype") and hasattr(ref_tensor.dtype, "name"):
                 data_format = ref_tensor.dtype
@@ -191,7 +201,31 @@ def build_cb_descriptors(
             page_size = tile_bytes_from_dtype(data_format)
             num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
             total_size = num_tiles * page_size
+            rows.append(
+                (
+                    data_format,
+                    page_size,
+                    total_size,
+                    f"  CB[{i}]: shape={cb.shape} block_count={cb.block_count} -> {total_size} bytes",
+                )
+            )
 
+        total_cb_bytes += total_size
+
+    # Must stay aligned with MLIR ttl-validate-cb-budget (TileType::getSizeBytes) and
+    # tile_bytes_from_dtype; see issue #511.
+    if total_cb_bytes > DEFAULT_L1_CB_BUDGET_BYTES:
+        breakdown = "\n".join(r[3] for r in rows)
+        raise ValueError(
+            "Total circular buffer allocation ("
+            f"{total_cb_bytes} bytes) exceeds L1 budget ({DEFAULT_L1_CB_BUDGET_BYTES} bytes). "
+            "This checks static CB backing store only (not all L1 on core).\n"
+            + breakdown
+            + "\n  hint: reduce DFB shapes or block_count."
+        )
+
+    cb_descriptors = []
+    for i, (data_format, page_size, total_size, _) in enumerate(rows):
         cb_format = ttnn.CBFormatDescriptor(
             buffer_index=i,
             data_format=data_format,

@@ -59,6 +59,7 @@ def compile_ttl_to_ttkernel(
         f"builtin.module("
         f"func.func({func_pipeline}),"
         f"ttl-finalize-dfb-indices,"
+        f"ttl-validate-cb-budget,"
         f"convert-ttl-to-ttkernel,"
         f"ttkernel-insert-inits,"
         f"canonicalize,"
