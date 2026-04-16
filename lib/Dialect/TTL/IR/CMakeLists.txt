@@ -10,6 +10,7 @@ add_mlir_dialect_library(MLIRTTLDialect
 
     DEPENDS
     MLIRTTLOpsIncGen
+    MLIRTTLInterfacesIncGen
 
     LINK_LIBS PUBLIC
     MLIRIndexingMapOpInterface

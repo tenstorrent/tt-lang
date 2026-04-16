@@ -76,14 +76,14 @@ def make_mcast_kernel(M_DIM, K_DIM, N_DIM):
                 mb = node_m * m_blocks_per_node + local_mb
                 for local_nb in range(n_blocks_per_node):
                     nb = node_n * n_blocks_per_node + local_nb
-                    out_blk = out_cb.reserve()
-                    for _ in range(K_BLOCKS):
-                        a_blk = a_cb.wait()
-                        b_blk = b_cb.wait()
-                        out_blk += a_blk @ b_blk
-                        a_blk.pop()
-                        b_blk.pop()
-                    out_blk.push()
+                    with out_cb.reserve() as out_blk:
+                        out_blk.store(ttl.math.fill(out_blk, 0))
+                        for _ in range(K_BLOCKS):
+                            a_blk = a_cb.wait()
+                            b_blk = b_cb.wait()
+                            out_blk += a_blk @ b_blk
+                            a_blk.pop()
+                            b_blk.pop()
 
         @ttl.datamovement()
         def dm_read():
@@ -179,14 +179,14 @@ def make_balanced_kernel(M_DIM, K_DIM, N_DIM):
                 mb = node_m * m_blocks_per_node + local_mb
                 for local_nb in range(n_blocks_per_node):
                     nb = node_n * n_blocks_per_node + local_nb
-                    out_blk = out_cb.reserve()
-                    for _ in range(K_BLOCKS):
-                        a_blk = a_cb.wait()
-                        b_blk = b_cb.wait()
-                        out_blk += a_blk @ b_blk
-                        a_blk.pop()
-                        b_blk.pop()
-                    out_blk.push()
+                    with out_cb.reserve() as out_blk:
+                        out_blk.store(ttl.math.fill(out_blk, 0))
+                        for _ in range(K_BLOCKS):
+                            a_blk = a_cb.wait()
+                            b_blk = b_cb.wait()
+                            out_blk += a_blk @ b_blk
+                            a_blk.pop()
+                            b_blk.pop()
 
         @ttl.datamovement()
         def dm_read():

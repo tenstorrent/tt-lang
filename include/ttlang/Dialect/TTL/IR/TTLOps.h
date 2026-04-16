@@ -20,6 +20,8 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
+#include "ttlang/Dialect/TTL/IR/TTLInterfaces.h.inc"
+
 #define GET_OP_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOps.h.inc"
 

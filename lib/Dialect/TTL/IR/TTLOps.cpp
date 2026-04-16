@@ -23,6 +23,8 @@
 #include <functional>
 #include <numeric>
 
+#include "ttlang/Dialect/TTL/IR/TTLInterfaces.cpp.inc"
+
 #define GET_OP_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOps.cpp.inc"
 
@@ -1054,6 +1056,34 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
 
   return success();
 }
+
+//===----------------------------------------------------------------------===//
+// DFBInputOpInterface implementations
+//===----------------------------------------------------------------------===//
+
+llvm::SmallVector<unsigned>
+mlir::tt::ttl::ReduceOp::getDFBInputOperandIndices() {
+  return {0, 1}; // input and scaler
+}
+
+llvm::SmallVector<unsigned>
+mlir::tt::ttl::BcastOp::getDFBInputOperandIndices() {
+  return {0, 1}; // input and output both require CB-attached values
+}
+
+llvm::SmallVector<unsigned>
+mlir::tt::ttl::MatmulOp::getDFBInputOperandIndices() {
+  return {0, 1}; // lhs and rhs
+}
+
+llvm::SmallVector<unsigned>
+mlir::tt::ttl::TransposeOp::getDFBInputOperandIndices() {
+  return {0}; // input
+}
+
+//===----------------------------------------------------------------------===//
+// MatmulOp
+//===----------------------------------------------------------------------===//
 
 mlir::LogicalResult mlir::tt::ttl::MatmulOp::verify() {
   auto lhsType = mlir::cast<RankedTensorType>(getLhs().getType());

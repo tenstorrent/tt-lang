@@ -92,6 +92,30 @@ def TTLAnnotateL1AccLoops
   ];
 }
 
+def TTLInsertIntermediateDFBs
+    : Pass<"ttl-insert-intermediate-dfbs", "::mlir::func::FuncOp"> {
+  let summary = "Insert intermediate dataflow buffers at fusion split points";
+  let description = [{
+    Walks ops implementing `DFBInputOpInterface` and checks whether the
+    operands they declare as requiring DFB-attached values are satisfied.
+    When an operand comes from a fused expression chain (not DFB-attached),
+    the pass inserts a compiler-allocated DFB:
+
+      bind_cb -> cb_reserve -> store -> cb_wait -> attach_cb
+
+    `cb_push` and `cb_pop` are omitted; `ttl-insert-cb-sync` inserts them
+    based on transitive use analysis.
+
+    Compiler-allocated DFBs are marked with `ttl.compiler_allocated` so
+    that `ttl-finalize-dfb-indices` can register them for the Python
+    runtime.
+  }];
+
+  let dependentDialects = [
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
 def TTLConvertTTLToCompute
     : Pass<"convert-ttl-to-compute", "::mlir::func::FuncOp"> {
   let summary = "Lower TTL elementwise tensor ops to ttl.compute with tile ops";
@@ -408,6 +432,25 @@ def TTLLowerSignpostToEmitC
     DeviceZoneScopedN markers for Tracy profiling. This pass runs after
     convert-ttl-to-ttkernel to keep profiling concerns separate from
     the main dialect conversion.
+  }];
+}
+
+def TTLFinalizeDFBIndices
+    : Pass<"ttl-finalize-dfb-indices", "::mlir::ModuleOp"> {
+  let summary = "Finalize DFB indices and emit compiler-allocated DFB metadata";
+  let description = [{
+    Module-level pass that runs after all DFB-creating passes, before
+    convert-ttl-to-ttkernel. Performs three tasks:
+
+    1. Walks all BindCBOp instances across all functions and computes the
+       true DFB count (max_dfb_index + 1).
+    2. Updates the `ttl.base_cta_index` attribute on every function to
+       this value, ensuring compile-time arg layout is correct.
+    3. Collects all BindCBOps marked with `ttl.compiler_allocated` and
+       builds the `ttl.compiler_allocated_dfbs` module attribute so the
+       Python runtime can create the corresponding CBDescriptor entries.
+
+    This pass is a no-op when no BindCBOps exist in the module.
   }];
 }
 
