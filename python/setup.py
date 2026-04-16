@@ -147,6 +147,16 @@ class CMakeBuild(build_ext):
                 if toolchain_dir:
                     cmake_args.append(f"-DTTLANG_TOOLCHAIN_DIR={toolchain_dir}")
 
+            # Forward CC/CXX as cmake -D flags.  CMakeLists.txt defaults
+            # to clang before project(), which runs before cmake reads the
+            # CC/CXX env vars — so the env vars alone have no effect.
+            cc = os.environ.get("CC")
+            cxx = os.environ.get("CXX")
+            if cc:
+                cmake_args.append(f"-DCMAKE_C_COMPILER={cc}")
+            if cxx:
+                cmake_args.append(f"-DCMAKE_CXX_COMPILER={cxx}")
+
             self.spawn(cmake_args)
 
         self.spawn(
