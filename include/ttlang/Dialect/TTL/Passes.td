@@ -3,6 +3,26 @@
 
 include "mlir/Pass/PassBase.td"
 
+def TTLInsertCBSync
+    : Pass<"ttl-insert-cb-sync", "::mlir::func::FuncOp"> {
+  let summary = "Insert missing cb_push/cb_pop for unmatched cb_reserve/cb_wait";
+  let description = [{
+    Finds `ttl.cb_reserve` ops without a matching `ttl.cb_push` and
+    `ttl.cb_wait` ops without a matching `ttl.cb_pop`, then inserts the
+    missing release op after the last operation that accesses the CB's data.
+
+    The pass computes a transitive use closure starting from the acquire op:
+    direct uses of the CB value and the acquire result, plus uses of values
+    those ops produce (e.g. copy -> transfer_handle -> wait). The release is
+    inserted after the last op in this closure.
+
+    Explicit push/pop calls and context-manager-generated push/pop are
+    preserved: the pass only fills in what is missing.
+  }];
+
+  let dependentDialects = [];
+}
+
 def TTLConvertTTLToTTKernel
     : Pass<"convert-ttl-to-ttkernel", "::mlir::ModuleOp"> {
   let summary = "Lower TTL DMA ops to TTKernel using global barriers (temporary)";
@@ -69,6 +89,30 @@ def TTLAnnotateL1AccLoops
   }];
   let dependentDialects = [
     "::mlir::scf::SCFDialect"
+  ];
+}
+
+def TTLInsertIntermediateDFBs
+    : Pass<"ttl-insert-intermediate-dfbs", "::mlir::func::FuncOp"> {
+  let summary = "Insert intermediate dataflow buffers at fusion split points";
+  let description = [{
+    Walks ops implementing `DFBInputOpInterface` and checks whether the
+    operands they declare as requiring DFB-attached values are satisfied.
+    When an operand comes from a fused expression chain (not DFB-attached),
+    the pass inserts a compiler-allocated DFB:
+
+      bind_cb -> cb_reserve -> store -> cb_wait -> attach_cb
+
+    `cb_push` and `cb_pop` are omitted; `ttl-insert-cb-sync` inserts them
+    based on transitive use analysis.
+
+    Compiler-allocated DFBs are marked with `ttl.compiler_allocated` so
+    that `ttl-finalize-dfb-indices` can register them for the Python
+    runtime.
+  }];
+
+  let dependentDialects = [
+    "::mlir::tt::ttl::TTLDialect"
   ];
 }
 
@@ -224,28 +268,6 @@ def TTLSubblockComputeForDST
   ];
 }
 
-def TTLLowerMatmulBlock
-    : Pass<"ttl-lower-matmul-block", "::mlir::func::FuncOp"> {
-  let summary = "Lower matmul computes to block-level hardware calls";
-  let description = [{
-    Marks `ttl.compute` ops containing `ttl.tile_matmul_block` for block-level
-    lowering by setting the `ttl.block_matmul` attribute. This attribute tells
-    `ttl-lower-to-loops` to collapse the iteration domain to a single point
-    (no per-tile loops), since matmul_block handles the full block atomically.
-
-    The pass also expands the single `tile_store` in the body into M*N stores
-    (one per output tile in the block), since matmul_block writes M*N DST
-    registers that each need to be packed.
-
-    The output must fit in DST (M*N <= capacity). Subblocking for larger
-    outputs is not yet implemented.
-  }];
-
-  let dependentDialects = [
-    "::mlir::arith::ArithDialect",
-    "::mlir::tt::ttl::TTLDialect"
-  ];
-}
 
 def TTLLowerToLoops
     : Pass<"ttl-lower-to-loops", "::mlir::func::FuncOp"> {
@@ -288,7 +310,10 @@ def TTLLowerToLoops
            "Use DST register accumulation for reduction loops. Reorders "
            "loops (parallel-outer, reduction-inner) so DST persists across "
            "reduction iterations. When disabled, uses per-tile L1 "
-           "accumulation. reduce_max always uses DST accumulation.">
+           "accumulation. reduce_max always uses DST accumulation.">,
+    Option<"useBlockMatmul", "use-block-matmul", "bool", "true",
+           "Lower matmul to block-level hardware calls "
+           "(experimental::matmul_block) instead of per-tile loops.">
   ];
 
   let dependentDialects = [
@@ -388,6 +413,25 @@ def TTLLowerSignpostToEmitC
     DeviceZoneScopedN markers for Tracy profiling. This pass runs after
     convert-ttl-to-ttkernel to keep profiling concerns separate from
     the main dialect conversion.
+  }];
+}
+
+def TTLFinalizeDFBIndices
+    : Pass<"ttl-finalize-dfb-indices", "::mlir::ModuleOp"> {
+  let summary = "Finalize DFB indices and emit compiler-allocated DFB metadata";
+  let description = [{
+    Module-level pass that runs after all DFB-creating passes, before
+    convert-ttl-to-ttkernel. Performs three tasks:
+
+    1. Walks all BindCBOp instances across all functions and computes the
+       true DFB count (max_dfb_index + 1).
+    2. Updates the `ttl.base_cta_index` attribute on every function to
+       this value, ensuring compile-time arg layout is correct.
+    3. Collects all BindCBOps marked with `ttl.compiler_allocated` and
+       builds the `ttl.compiler_allocated_dfbs` module attribute so the
+       Python runtime can create the corresponding CBDescriptor entries.
+
+    This pass is a no-op when no BindCBOps exist in the module.
   }];
 }
 

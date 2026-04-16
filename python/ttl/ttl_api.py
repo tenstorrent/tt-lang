@@ -47,6 +47,7 @@ from ttl.passes import (
 )
 from ttl.passmanager import PassManager
 
+
 from ._src.auto_profile import (
     build_cb_wait_to_dma_map,
     build_dma_producer_to_cb_map,
@@ -65,7 +66,8 @@ from ._src.tensor_registry import (
     register_tensor_source,
 )
 from ._src.ttl_ast import TTLGenericCompiler
-from .circular_buffer import CircularBuffer, get_cb_count
+from .circular_buffer import CircularBuffer, CompilerAllocatedDFBConfig, get_cb_count
+from .pipe import Pipe, PipeNet
 from .constants import SUPPORTED_MEMORY_SPACES
 from .diagnostics import (
     TTLangCompileError,
@@ -237,10 +239,9 @@ def _run_perf_dump(tensors: tuple, kernel_name: str):
     Run NOC profiler summary and print CB flow / pipe graph after execution.
 
     Called after kernel execution when TTLANG_PERF_DUMP=1 is set.
-    Reads NOC traces from $TT_METAL_HOME/generated/profiler/.logs/,
+    Reads NOC traces from $TT_METAL_HOME/generated/profiler/.logs/ and
     CB flow graph from /tmp/ttlang_cb_flow_graph.json (written by
-    ttl-dump-cb-flow-graph pass), and pipe graph from
-    /tmp/ttlang_pipe_graph.json (copied from compiler temp file).
+    ttl-dump-cb-flow-graph pass).
     """
     _ensure_ttnn()
     from ._src.perf_summary import run as perf_summary_run
@@ -283,14 +284,6 @@ def _run_perf_dump(tensors: tuple, kernel_name: str):
         raise ValueError(f"CB flow graph not found: {cb_flow_path}")
     print("=== CB FLOW GRAPH ===")
     print(cb_flow_path.read_text())
-
-    # Pipe graph (copied from compiler temp file)
-    pipe_graph_path = Path("/tmp/ttlang_pipe_graph.json")
-    if not pipe_graph_path.exists():
-        print(f"[perf_dump] WARNING: Pipe graph not found: {pipe_graph_path}")
-    else:
-        print("=== PIPE GRAPH ===")
-        print(pipe_graph_path.read_text())
 
 
 def _run_signpost_profile(tensors: tuple):
@@ -513,6 +506,7 @@ class CompiledTTNNKernel:
         all_source_lines=None,
         thread_to_kernel=None,
         kernel_line_offsets=None,
+        num_pipe_nets=0,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -530,6 +524,7 @@ class CompiledTTNNKernel:
             all_source_lines: Dict mapping kernel name to source lines
             thread_to_kernel: Dict mapping RISC thread name to kernel name
             kernel_line_offsets: Dict mapping kernel name to line offset
+            num_pipe_nets: Number of PipeNets used by this kernel
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -543,6 +538,7 @@ class CompiledTTNNKernel:
         self.all_source_lines = all_source_lines or {}
         self.thread_to_kernel = thread_to_kernel or {}
         self.kernel_line_offsets = kernel_line_offsets or {}
+        self.num_pipe_nets = num_pipe_nets
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
@@ -580,6 +576,7 @@ class CompiledTTNNKernel:
             cb_configs=self.cb_configs,
             core_ranges=self.core_ranges,
             program_hash=self.program_hash,
+            num_pipe_nets=self.num_pipe_nets,
         )
 
 
@@ -774,6 +771,7 @@ def _compile_ttnn_kernel(
         all_source_lines=all_source_lines,
         thread_to_kernel=thread_to_kernel,
         kernel_line_offsets=kernel_line_offsets,
+        num_pipe_nets=PipeNet._next_id,
     )
 
     if verbose:
@@ -814,7 +812,7 @@ def _compile_ttnn_kernel(
 
 def _collect_captures(
     f: Callable,
-) -> Dict[str, Union[int, CircularBuffer]]:
+) -> Dict[str, Union[int, CircularBuffer, Pipe]]:
     """
     Collect and convert captured variables from function closure.
 
@@ -836,6 +834,10 @@ def _collect_captures(
         elif is_ttnn_tensor(val):
             return val
         elif isinstance(val, CircularBuffer):
+            return val
+        elif isinstance(val, Pipe):
+            return val
+        elif isinstance(val, PipeNet):
             return val
         else:
             raise TypeError(f"Unhandled capture for vars of type({type(val)})")
@@ -867,6 +869,92 @@ def _collect_cb_configs(threads):
         return []
     max_idx = max(cb_configs_dict.keys())
     return [cb_configs_dict.get(i) for i in range(max_idx + 1)]
+
+
+# Map MLIR element type names to ttnn-compatible data format names.
+# Keyed by exact MLIR type mnemonic (no substring matching).
+_MLIR_TYPE_TO_FORMAT = {
+    "bf16": "bfloat16",
+    "f16": "float16",
+    "f32": "float32",
+    "i32": "int32",
+    "ui32": "uint32",
+    "ui16": "uint16",
+}
+
+
+def _parse_mlir_element_type(type_str: str) -> str:
+    """Extract the base data format name from an MLIR TypeAttr string.
+
+    The TypeAttr prints as e.g. "bf16" or "!ttcore.tile<32x32, bf16>".
+    This function extracts the trailing type mnemonic and maps it to a
+    ttnn-compatible format name.
+    """
+    # For compound types like "!ttcore.tile<32x32, bf16>", extract the
+    # type after the last comma. For bare types like "bf16", use as-is.
+    token = type_str.strip()
+    if "," in token:
+        token = token.rsplit(",", 1)[1].strip().rstrip(">").strip()
+    fmt = _MLIR_TYPE_TO_FORMAT.get(token)
+    if fmt is not None:
+        return fmt
+    raise ValueError(
+        f"Unrecognized MLIR element type '{token}' (from '{type_str}'). "
+        f"Known types: {list(_MLIR_TYPE_TO_FORMAT.keys())}"
+    )
+
+
+def _extract_compiler_allocated_dfbs(module):
+    """Read ttl.compiler_allocated_dfbs module attribute.
+
+    Returns an empty list when the attribute is absent (no compiler-allocated
+    DFBs). Each entry is a DictionaryAttr with dfb_index, num_tiles,
+    element_type, and block_count.
+    """
+    attr = module.operation.attributes.get("ttl.compiler_allocated_dfbs", None)
+    if attr is None:
+        return []
+
+    configs = []
+    for entry in attr:
+        dfb_index = int(entry["dfb_index"])
+        num_tiles = int(entry["num_tiles"])
+        block_count = int(entry["block_count"])
+        data_format = _parse_mlir_element_type(str(entry["element_type"]))
+
+        configs.append(
+            CompilerAllocatedDFBConfig(
+                dfb_index=dfb_index,
+                num_tiles=num_tiles,
+                data_format=data_format,
+                block_count=block_count,
+            )
+        )
+    return configs
+
+
+def _merge_dfb_configs(cb_configs, compiler_allocated_dfbs):
+    """Merge compiler-allocated DFBs into the CB config list.
+
+    Extends cb_configs to cover all DFB indices. Compiler-allocated DFBs
+    are placed at their dfb_index positions.
+    """
+    if not compiler_allocated_dfbs:
+        return cb_configs
+
+    user_max = len(cb_configs) - 1 if cb_configs else -1
+    alloc_max = max(dfb.dfb_index for dfb in compiler_allocated_dfbs)
+    total = max(user_max, alloc_max) + 1
+
+    merged = list(cb_configs) + [None] * (total - len(cb_configs))
+    for dfb in compiler_allocated_dfbs:
+        if merged[dfb.dfb_index] is not None:
+            raise ValueError(
+                f"Compiler-allocated DFB index {dfb.dfb_index} collides with "
+                f"an existing DFB."
+            )
+        merged[dfb.dfb_index] = dfb
+    return merged
 
 
 def _compile(
@@ -1047,6 +1135,7 @@ def _compile_kernel(
     Returns:
         CompiledTTNNKernel ready for execution
     """
+    PipeNet._next_id = 0
     f_params = inspect.signature(f).parameters
 
     # Get kernel source location for error reporting
@@ -1136,6 +1225,7 @@ def _compile_kernel(
 
         # Track per-kernel line offsets for correct display
         kernel_line_offsets = {}
+        noc_kernel_idx = 0
 
         for compile_thread in program.threads:
             try:
@@ -1165,6 +1255,14 @@ def _compile_kernel(
                 ],
                 ctx,
             )
+
+            # Tag noc functions with their index so pipe semaphore
+            # allocation can distinguish threads.
+            if ct.kernel_type == "datamovement":
+                ct.func_entry.attributes["ttl.noc_index"] = IntegerAttr.get(
+                    IntegerType.get_signless(32, ctx), noc_kernel_idx
+                )
+                noc_kernel_idx += 1
 
             # Collect source info for error reporting
             if hasattr(ct, "source_file") and hasattr(ct, "source_lines"):
@@ -1224,6 +1322,8 @@ def _compile_kernel(
         assign_dst_pass = f"ttl-assign-dst{{enable-fpu-binary-ops={fpu_flag}}}"
 
         pipeline_passes = [
+            "func.func(ttl-insert-intermediate-dfbs)",
+            "func.func(ttl-insert-cb-sync)",
             "func.func(ttl-annotate-l1-acc-loops)",
             "func.func(convert-ttl-to-compute)",
             set_compute_config_pass,
@@ -1235,21 +1335,21 @@ def _compile_kernel(
             pipeline_passes.append(
                 f"func.func(ttl-subblock-compute-for-dst{{subblock-sync={subblock_sync} strict-f32-acc={strict_f32}}})"
             )
-        if compiler_options.use_block_matmul:
-            pipeline_passes.append("func.func(ttl-lower-matmul-block)")
         dst_acc_str = "true" if compiler_options.maximize_dst else "false"
+        block_mm_str = "true" if compiler_options.use_block_matmul else "false"
         pipeline_passes.append(
-            f"func.func(ttl-lower-to-loops{{dst-accumulation={dst_acc_str}}})"
+            f"func.func(ttl-lower-to-loops{{dst-accumulation={dst_acc_str} use-block-matmul={block_mm_str}}})"
         )
         if compiler_options.maximize_dst:
             pipeline_passes.append("func.func(ttl-schedule-operations)")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
+        pipeline_passes.append("ttl-finalize-dfb-indices")
 
         # Add CB flow graph dump if auto-profiling or perf dump is enabled
         perf_dump = os.environ.get("TTLANG_PERF_DUMP") == "1"
         if perf_dump:
             # Remove stale outputs from previous runs
-            for stale in ("/tmp/ttlang_cb_flow_graph.json", "/tmp/ttlang_pipe_graph.json"):
+            for stale in ("/tmp/ttlang_cb_flow_graph.json",):
                 try:
                     os.remove(stale)
                 except FileNotFoundError:
@@ -1313,8 +1413,8 @@ def _compile_kernel(
                 enable_debug_info=True,
             )
 
-        # Run the pass manager with error handling for source-aware diagnostics
         try:
+            # Run the pass manager with error handling for source-aware diagnostics
             pm.run(module.operation)
         except Exception as e:
             error_msg = str(e)
@@ -1346,6 +1446,10 @@ def _compile_kernel(
         if all_source_lines:
             first_thread = next(iter(all_source_lines.keys()))
             profile_source_lines = all_source_lines[first_thread]
+
+        # Merge compiler-allocated DFBs into the CB config list.
+        compiler_allocated_dfbs = _extract_compiler_allocated_dfbs(module)
+        cb_configs = _merge_dfb_configs(cb_configs, compiler_allocated_dfbs)
 
         # Compile to CompiledTTNNKernel for ttnn.generic_op
         compiled_kernel = _compile_ttnn_kernel(

@@ -2,7 +2,6 @@ add_mlir_dialect_library(MLIRTTLDialect
     TTLDialect.cpp
     TTLOps.cpp
     TTLOpsEnums.cpp
-    TTLOpsTypes.cpp
     TTLOpsUtils.cpp
     TTLOpsVerifyUtils.cpp
 
@@ -11,6 +10,7 @@ add_mlir_dialect_library(MLIRTTLDialect
 
     DEPENDS
     MLIRTTLOpsIncGen
+    MLIRTTLInterfacesIncGen
 
     LINK_LIBS PUBLIC
     MLIRIndexingMapOpInterface

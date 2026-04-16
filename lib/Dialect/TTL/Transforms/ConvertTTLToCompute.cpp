@@ -141,13 +141,28 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
     }
     AffineMap outputMap = indexingMaps[numInputs + outputIdx];
     SmallVector<Value> indices =
-        applyIndexingMapToIterIndices(rewriter, loc, outputMap, iterIndices);
+        applyIndexingMap(rewriter, loc, outputMap, iterIndices);
 
     createTileOpWithPlaceholderDstIndex<TileStoreOp>(
         rewriter, loc, tileResult, storeOp.getView(), indices);
     storesToErase.push_back(storeOp);
   }
+  // The DSL emits cb_push after each store. When multiple stores are
+  // absorbed into a single compute body, earlier pushes end up before
+  // the compute and execute before data is packed. Move them after the
+  // compute so the push executes after pack_tile writes the data.
   for (StoreOp s : storesToErase) {
+    Value viewCB = getAttachedCB(s.getView());
+    if (viewCB) {
+      for (auto &use : viewCB.getUses()) {
+        if (auto pushOp = dyn_cast<CBPushOp>(use.getOwner())) {
+          if (pushOp->getBlock() == computeOp->getBlock() &&
+              pushOp->isBeforeInBlock(computeOp)) {
+            pushOp->moveAfter(computeOp);
+          }
+        }
+      }
+    }
     rewriter.eraseOp(s);
   }
 }
@@ -1200,7 +1215,7 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
     SmallVector<Value> iterIndices =
         getOrCreateIterIndices(rewriter, computeOp);
     SmallVector<Value> storeIndices =
-        applyIndexingMapToIterIndices(rewriter, loc, identityMap, iterIndices);
+        applyIndexingMap(rewriter, loc, identityMap, iterIndices);
     createTileOpWithPlaceholderDstIndex<TileStoreOp>(
         rewriter, loc, body->getArgument(0), reserveView, storeIndices);
     YieldOp::create(rewriter, loc);

@@ -6,6 +6,7 @@
 #define TTLANG_DIALECT_TTL_IR_TTL_H
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
 #include "llvm/ADT/StringRef.h"
@@ -81,6 +82,19 @@ constexpr llvm::StringLiteral
 /// Marks a copy_tile as a placeholder inserted during DST assignment Phase 1.
 /// Replaced with a proper copy in Phase 2b.
 constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
+
+/// Module attribute carrying compiler-allocated DFB metadata.
+constexpr llvm::StringLiteral
+    kCompilerAllocatedDFBsAttrName("ttl.compiler_allocated_dfbs");
+
+/// Marker on BindCBOp to distinguish compiler-allocated DFBs from user-declared
+/// ones.
+constexpr llvm::StringLiteral
+    kCompilerAllocatedAttrName("ttl.compiler_allocated");
+
+/// Function attribute recording the base compile-time argument index.
+/// CTA layout is [CBs, TAs], so this equals the number of CBs.
+constexpr llvm::StringLiteral kBaseCTAIndexAttrName("ttl.base_cta_index");
 
 /// Trait for data movement operations (copy_tile, copy_dst).
 template <typename ConcreteType>
@@ -188,6 +202,15 @@ inline std::optional<int64_t> getCBIndexAttr(mlir::Operation *compute,
   }
   return std::nullopt;
 }
+
+//===----------------------------------------------------------------------===//
+// Compiler-Allocated DFB Utilities
+//===----------------------------------------------------------------------===//
+
+/// Return the next available DFB index for the module. Scans all BindCBOp
+/// indices across all functions to find the current maximum, then returns
+/// max + 1.
+int32_t getNextAvailableDFBIndex(mlir::ModuleOp mod);
 
 } // namespace mlir::tt::ttl
 
