@@ -91,14 +91,15 @@ class CMakeBuild(build_ext):
     def _sanitize_env_for_cmake(self):
         """Remove pip build-isolation env vars that break cmake's nested pip calls.
 
-        When pip builds a wheel with PEP 517 isolation it sets variables
-        (PIP_*, PYTHONPATH overrides, etc.) that propagate into cmake's
-        execute_process() calls and can cause the toolchain-venv python to
-        fail importing its own pip.  Clearing them here is safe because
-        cmake uses absolute paths to the toolchain python.
+        When pip builds a wheel with PEP 517 isolation it sets PYTHONPATH
+        to a temporary overlay directory.  This propagates into cmake's
+        execute_process() calls and causes the toolchain-venv python to
+        fail importing its own modules (including pip).  Clearing these
+        vars is safe because cmake uses absolute paths to the toolchain
+        python, which has its own site-packages.
         """
         for key in list(os.environ):
-            if key.startswith("PIP_"):
+            if key.startswith("PIP_") or key in ("PYTHONNOUSERSITE", "PYTHONPATH"):
                 del os.environ[key]
 
     def build_(self, ext):
@@ -135,8 +136,6 @@ class CMakeBuild(build_ext):
                 "-B",
                 str(build_dir),
                 "-DCMAKE_BUILD_TYPE=Release",
-                "-DCMAKE_C_COMPILER=clang",
-                "-DCMAKE_CXX_COMPILER=clang++",
             ]
 
             # Forward toolchain env vars (set by cibuildwheel) as cmake -D

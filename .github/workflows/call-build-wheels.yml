@@ -55,6 +55,8 @@ jobs:
             IN_CIBW_ENV=ON
             TTLANG_USE_TOOLCHAIN=ON
             TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
+            CC=gcc
+            CXX=g++
           CIBW_BEFORE_BUILD: "pip install cmake ninja nanobind"
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: ""
           CIBW_TEST_COMMAND: >-
