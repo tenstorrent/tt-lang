@@ -10,7 +10,6 @@ separated from the context management functions to avoid import cycles.
 
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Deque, Dict, FrozenSet, Optional, Set, Tuple, TypedDict
 from .pipe import AnyPipe
@@ -45,29 +44,6 @@ class TraceEvent:
     tick: int
     kernel: Optional[str]
     data: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class SimulatorStats:
-    """Statistics collection state."""
-
-    enabled: bool = False
-    stats_by_name: Dict[str, Dict[str, int]] = field(
-        default_factory=lambda: defaultdict(
-            lambda: {"reads": 0, "writes": 0, "tiles_read": 0, "tiles_written": 0}
-        )
-    )
-    pipe_stats_by_name: Dict[str, Dict[str, int]] = field(
-        default_factory=lambda: defaultdict(
-            lambda: {"reads": 0, "writes": 0, "tiles_read": 0, "tiles_written": 0}
-        )
-    )
-    dfb_stats_by_name: Dict[str, Dict[str, int]] = field(
-        default_factory=lambda: defaultdict(
-            lambda: {"reserves": 0, "waits": 0, "tiles_reserved": 0, "tiles_waited": 0}
-        )
-    )
-    dfb_name_counter: int = 0
 
 
 class PipeEntry(TypedDict):
@@ -107,7 +83,6 @@ class SimulatorContext:
     """Complete simulator runtime context stored per-greenlet."""
 
     config: SimulatorConfig = field(default_factory=SimulatorConfig)
-    stats: SimulatorStats = field(default_factory=SimulatorStats)
     copy_state: CopySystemState = field(default_factory=CopySystemState)
     warnings: WarningState = field(default_factory=WarningState)
     scheduler: Any = None  # Optional[GreenletScheduler] - avoid import cycle

@@ -18,7 +18,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .stats import enable_stats, print_stats
 from .operation import set_default_grid
 from .greenlet_scheduler import set_scheduler_algorithm
 
@@ -235,7 +234,6 @@ def main() -> None:
         description="Run tt-lang kernels on the simulator backend",
         epilog="Examples:\n"
         "  ttlang-sim examples/eltwise_add.py\n"
-        "  ttlang-sim examples/single_node_matmul.py --show-stats\n"
         "  ttlang-sim examples/elementwise-tutorial/step_3_multinode.py --grid 4,4\n"
         "  ttlang-sim examples/eltwise_add.py --max-l1 1572864",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -258,13 +256,6 @@ def main() -> None:
         type=str,
         metavar="ROWS,COLS",
         help="Default grid size for kernels with grid='auto' (e.g., --grid 4,4). Defaults to 8,8",
-    )
-
-    parser.add_argument(
-        "--show-stats",
-        action="store_true",
-        dest="show_stats",
-        help="Print tensor read/write statistics after execution",
     )
 
     parser.add_argument(
@@ -379,10 +370,6 @@ def main() -> None:
         set_scheduler_algorithm(args.scheduler)
 
     # Enable tensor statistics collection if requested
-    if args.show_stats:
-
-        enable_stats()
-
     # Configure default grid if specified
     if args.grid:
         try:
@@ -450,9 +437,6 @@ def main() -> None:
             sys.exit(1)
         run_file(args.target, args.script_args)
     finally:
-        # Print tensor statistics if enabled
-        if args.show_stats:
-            print_stats()
         # Write trace events to file if requested
         if args.trace:
             from .context import get_context

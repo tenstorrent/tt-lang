@@ -32,12 +32,6 @@ from .pipe import (
     Pipe,
     SrcPipeIdentity,
 )
-from .stats import (
-    record_tensor_read,
-    record_tensor_write,
-    record_pipe_read,
-    record_pipe_write,
-)
 from .trace import get_pipe_name, trace
 from .ttnnsim import Tensor, tile_count_from_tensor
 from .typedefs import CoreCoord
@@ -169,9 +163,6 @@ class BlockToPipeHandler:
         """Pipe send: store data in shared buffer accessible by all cores."""
         src_data = src.raw_tensor
 
-        # Record pipe write statistics
-        record_pipe_write(dst, src_data)
-
         # Get or create pipe entry atomically
         entry = _get_or_create_pipe_entry(dst)
         # Calculate number of receivers based on dst_core_range type
@@ -240,7 +231,6 @@ class TensorToBlockHandler:
 
     def transfer(self, src: Tensor, dst: Block) -> None:
         """Transfer tensor data into Block."""
-        record_tensor_read(src)
         dst.copy_as_dest(src)
 
     def can_wait(self, src: Tensor, dst: Block) -> bool:
@@ -273,7 +263,6 @@ class BlockToTensorHandler:
 
     def transfer(self, src: Block, dst: Tensor) -> None:
         """Transfer Block data into tensor."""
-        record_tensor_write(dst)
         dst_raw = dst.to_torch()
         src_raw = src.raw_tensor.to_torch()
         dst_raw.copy_(src_raw.reshape(dst_raw.shape))
@@ -341,7 +330,6 @@ class PipeToBlockHandler:
                     )
 
                 dst.copy_as_dest(msg_data)
-                record_pipe_read(src, msg_data)
                 trace(
                     "pipe_recv",
                     pipe=get_pipe_name(src),

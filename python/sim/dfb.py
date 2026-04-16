@@ -39,7 +39,6 @@ from .context import get_current_thread_type
 from .dfbstate import DFBState
 from .constants import TILE_SHAPE
 from .errors import DFBContractError
-from .stats import record_dfb_reserve, record_dfb_wait
 from .ttnnsim import (
     ROW_MAJOR_LAYOUT,
     TILE_LAYOUT,
@@ -1101,8 +1100,6 @@ class DataflowBuffer:
         self._pending_waited_block = block
 
         tiles = math.prod(state.shape)
-        record_dfb_wait(self, tiles)
-
         trace(
             "dfb_wait_end", dfb=get_dfb_name(self), occupied=state.visible, tiles=tiles
         )
@@ -1182,8 +1179,6 @@ class DataflowBuffer:
         self._pending_reserved_block = block
 
         tiles = math.prod(state.shape)
-        record_dfb_reserve(self, tiles)
-
         trace(
             "dfb_reserve_end",
             dfb=get_dfb_name(self),

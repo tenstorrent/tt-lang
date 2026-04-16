@@ -19,7 +19,6 @@ from python.sim.context import (
 from python.sim.context_types import (
     SimulatorContext,
     SimulatorConfig,
-    SimulatorStats,
     CopySystemState,
     WarningState,
 )
@@ -39,7 +38,6 @@ class TestContextCreation:
         ctx1 = get_context()
         assert isinstance(ctx1, SimulatorContext)
         assert isinstance(ctx1.config, SimulatorConfig)
-        assert isinstance(ctx1.stats, SimulatorStats)
         assert isinstance(ctx1.copy_state, CopySystemState)
         assert isinstance(ctx1.warnings, WarningState)
 
@@ -54,8 +52,6 @@ class TestContextCreation:
 
         assert ctx.config.max_dfbs == 32
         assert ctx.config.scheduler_algorithm == "fair"
-        assert ctx.stats.enabled is False
-        assert ctx.stats.dfb_name_counter == 0
         assert len(ctx.copy_state.pipe_buffer) == 0
         assert ctx.scheduler is None
 
@@ -82,8 +78,7 @@ class TestContextCreation:
 
         # Modify the context
         ctx.config.max_dfbs = 100
-        ctx.stats.enabled = True
-        ctx.stats.dfb_name_counter = 42
+        ctx.config.scheduler_algorithm = "greedy"
         ctx.copy_state.pipe_buffer["test"] = "value"
 
         # Reset should create new context with defaults
@@ -92,8 +87,7 @@ class TestContextCreation:
 
         assert new_ctx is not ctx
         assert new_ctx.config.max_dfbs == 32
-        assert new_ctx.stats.enabled is False
-        assert new_ctx.stats.dfb_name_counter == 0
+        assert new_ctx.config.scheduler_algorithm == "fair"
         assert len(new_ctx.copy_state.pipe_buffer) == 0
 
 
@@ -154,19 +148,19 @@ class TestGreenletInheritance:
         """Test that child modifications affect parent's context."""
         reset_context()
         parent_ctx = get_context()
-        parent_ctx.stats.dfb_name_counter = 10
+        parent_ctx.config.max_dfbs = 10
 
         def child_function():
             ctx = get_context()
-            ctx.stats.dfb_name_counter = 20
-            ctx.stats.enabled = True
+            ctx.config.max_dfbs = 20
+            ctx.config.scheduler_algorithm = "greedy"
 
         child = greenlet(child_function)
         child.switch()
 
-        # Parent sees child's modifications
-        assert parent_ctx.stats.dfb_name_counter == 20
-        assert parent_ctx.stats.enabled is True
+        # Parent sees child's modifications (shared context)
+        assert parent_ctx.config.max_dfbs == 20
+        assert parent_ctx.config.scheduler_algorithm == "greedy"
 
     def test_child_with_own_context_is_isolated(self):
         """Test that child with its own context doesn't affect parent."""
@@ -197,32 +191,32 @@ class TestGreenletInheritance:
 class TestStateIsolation:
     """Test that state is properly isolated between execution contexts."""
 
-    def test_stats_isolation(self):
-        """Test that stats are isolated per context."""
+    def test_config_isolation_between_resets(self):
+        """Test that config is isolated per independent context."""
         reset_context()
         ctx1 = get_context()
-        ctx1.stats.enabled = True
-        ctx1.stats.stats_by_name["tensor1"]["reads"] = 5
+        ctx1.config.max_dfbs = 16
+        ctx1.config.scheduler_algorithm = "greedy"
 
-        # Create new context in different greenlet
         other_ctx = None
 
         def other_greenlet():
             nonlocal other_ctx
             reset_context()  # Create fresh context
             other_ctx = get_context()
-            other_ctx.stats.stats_by_name["tensor2"]["writes"] = 10
+            other_ctx.config.max_dfbs = 64
+            other_ctx.config.scheduler_algorithm = "fair"
 
         g = greenlet(other_greenlet)
         g.switch()
 
         # Original context unchanged
-        assert ctx1.stats.stats_by_name["tensor1"]["reads"] == 5
-        assert "tensor2" not in ctx1.stats.stats_by_name
+        assert ctx1.config.max_dfbs == 16
+        assert ctx1.config.scheduler_algorithm == "greedy"
 
-        # Other context has its own stats
-        assert other_ctx.stats.stats_by_name["tensor2"]["writes"] == 10
-        assert "tensor1" not in other_ctx.stats.stats_by_name
+        # Other context has its own config
+        assert other_ctx.config.max_dfbs == 64
+        assert other_ctx.config.scheduler_algorithm == "fair"
 
     def test_copy_buffer_isolation(self):
         """Test that pipe buffers are isolated per context."""
@@ -247,12 +241,13 @@ class TestStateIsolation:
         assert "pipe2" in other_ctx.copy_state.pipe_buffer
         assert "pipe1" not in other_ctx.copy_state.pipe_buffer
 
-    def test_config_isolation(self):
-        """Test that config is isolated per context."""
+    def test_trace_events_isolation(self):
+        """Test that trace_events are isolated per context."""
+        from python.sim.context_types import TraceEvent
+
         reset_context()
         ctx1 = get_context()
-        ctx1.config.max_dfbs = 16
-        ctx1.config.scheduler_algorithm = "greedy"
+        ctx1.trace_events.append(TraceEvent(event="test", tick=0, kernel=None))
 
         other_ctx = None
 
@@ -260,17 +255,17 @@ class TestStateIsolation:
             nonlocal other_ctx
             reset_context()
             other_ctx = get_context()
-            other_ctx.config.max_dfbs = 64
-            other_ctx.config.scheduler_algorithm = "fair"
+            other_ctx.trace_events.append(
+                TraceEvent(event="other", tick=1, kernel=None)
+            )
 
         g = greenlet(other_greenlet)
         g.switch()
 
-        # Each context has its own config
-        assert ctx1.config.max_dfbs == 16
-        assert ctx1.config.scheduler_algorithm == "greedy"
-        assert other_ctx.config.max_dfbs == 64
-        assert other_ctx.config.scheduler_algorithm == "fair"
+        assert len(ctx1.trace_events) == 1
+        assert ctx1.trace_events[0].event == "test"
+        assert len(other_ctx.trace_events) == 1
+        assert other_ctx.trace_events[0].event == "other"
 
 
 class TestConcurrentExecution:
@@ -280,16 +275,16 @@ class TestConcurrentExecution:
         """Test multiple children sharing parent context."""
         reset_context()
         root_ctx = get_context()
-        root_ctx.stats.dfb_name_counter = 0
+        root_ctx.config.max_dfbs = 0
 
         results = []
 
         def worker(worker_id):
             ctx = get_context()
-            # Increment counter (simulates generating unique names)
+            # Increment counter (simulates accumulating shared state)
             for _ in range(3):
-                ctx.stats.dfb_name_counter += 1
-            results.append((worker_id, ctx.stats.dfb_name_counter))
+                ctx.config.max_dfbs += 1
+            results.append((worker_id, ctx.config.max_dfbs))
 
         # Run three workers
         for i in range(3):
@@ -297,8 +292,7 @@ class TestConcurrentExecution:
             g.switch()
 
         # Counter was incremented 9 times total (3 workers x 3 increments)
-        assert root_ctx.stats.dfb_name_counter == 9
-        # All workers saw the shared counter incrementing
+        assert root_ctx.config.max_dfbs == 9
         assert len(results) == 3
 
     def test_sequential_programs_with_reset(self):
@@ -309,7 +303,7 @@ class TestConcurrentExecution:
             reset_context()
             ctx = get_context()
             ctx.config.max_dfbs = 10 * (program_id + 1)
-            ctx.stats.dfb_name_counter = program_id
+            ctx.config.scheduler_algorithm = "greedy" if program_id % 2 == 0 else "fair"
 
             def program():
                 ctx = get_context()
@@ -317,7 +311,7 @@ class TestConcurrentExecution:
                     {
                         "id": program_id,
                         "max_dfbs": ctx.config.max_dfbs,
-                        "counter": ctx.stats.dfb_name_counter,
+                        "scheduler": ctx.config.scheduler_algorithm,
                     }
                 )
 
@@ -328,9 +322,9 @@ class TestConcurrentExecution:
         assert results[0]["max_dfbs"] == 10
         assert results[1]["max_dfbs"] == 20
         assert results[2]["max_dfbs"] == 30
-        assert results[0]["counter"] == 0
-        assert results[1]["counter"] == 1
-        assert results[2]["counter"] == 2
+        assert results[0]["scheduler"] == "greedy"
+        assert results[1]["scheduler"] == "fair"
+        assert results[2]["scheduler"] == "greedy"
 
 
 class TestWarningState:
@@ -378,11 +372,9 @@ class TestEdgeCases:
 
     def test_context_without_parent_greenlet(self):
         """Test getting context when there's no parent (main greenlet)."""
-        # This test runs in main greenlet
         reset_context()
         ctx = get_context()
 
-        # Should successfully create and return context
         assert isinstance(ctx, SimulatorContext)
         assert ctx.config.max_dfbs == 32
 
@@ -391,23 +383,21 @@ class TestEdgeCases:
         for i in range(5):
             reset_context()
             ctx = get_context()
-            ctx.stats.dfb_name_counter = i
+            ctx.config.max_dfbs = i * 10
 
-            # Each reset creates fresh context
             reset_context()
             new_ctx = get_context()
             assert new_ctx is not ctx
-            assert new_ctx.stats.dfb_name_counter == 0
+            assert new_ctx.config.max_dfbs == 32
 
     def test_context_dataclass_independence(self):
         """Test that nested dataclasses are independent between contexts."""
         reset_context()
         ctx1 = get_context()
-        ctx1.stats.stats_by_name["key1"]["reads"] = 100
+        ctx1.copy_state.pipe_buffer["key1"] = {"data": "value"}
 
         reset_context()
         ctx2 = get_context()
 
-        # ctx2 should have fresh defaultdict
-        assert "key1" not in ctx2.stats.stats_by_name
-        assert ctx2.stats.stats_by_name["key2"]["reads"] == 0
+        assert "key1" not in ctx2.copy_state.pipe_buffer
+        assert len(ctx2.copy_state.pipe_buffer) == 0
