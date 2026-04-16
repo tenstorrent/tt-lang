@@ -155,9 +155,6 @@ def gdn_step(state_in, q_in, k_in, v_in, alpha_in, beta_in, state_out, out):
 import pytest
 
 
-@pytest.mark.xfail(
-    reason="Multi-output compute not yet supported in TTLLowerMatmulBlock (#509)"
-)
 def test_gdn():
     device = ttnn.open_device(device_id=0)
     try:
@@ -232,12 +229,11 @@ def test_gdn():
         sp = pcc(S_ref_tile, S_tile.float())
         print(f"  final state PCC: {sp:.6f}")
 
-        if all_pass and overall > 0.95:
+        if all_pass and overall > 0.92:
             print("\nPASS")
         else:
             print("\nFAIL")
-
-        assert overall > 0.90, f"overall PCC too low: {overall:.6f}"
+        assert overall > 0.92, f"overall PCC too low: {overall:.6f}"
 
     finally:
         ttnn.close_device(device)

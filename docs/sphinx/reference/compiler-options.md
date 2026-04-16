@@ -116,22 +116,23 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 
 The pipeline runs these passes in order:
 
-1. `ttl-annotate-l1-acc-loops` — detect `+=` accumulation loops and annotate for L1 packer accumulation
-2. `convert-ttl-to-compute` — lower TTL elementwise tensor ops to `ttl.compute` with tile ops
-3. `ttl-set-compute-kernel-config` — set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
-4. `ttl-assign-dst` — DST register allocation (linear scan with copy insertion)
-5. `ttl-subblock-compute-for-dst` — tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `auto-sync=true`)*
-6. `ttl-insert-tile-regs-sync` — insert math/pack thread synchronization
-7. `ttl-lower-matmul-block` — mark block-matmul computes and expand stores *(only if `use-block-matmul=true`)*
-8. `ttl-lower-to-loops` — lower `ttl.compute` to `scf.for` loops
-9. `ttl-schedule-operations` — reorder tile ops by dependency depth and kind *(only if `maximize-dst=true`)*
-10. `ttl-annotate-cb-associations` — annotate block args with CB indices
-11. `convert-ttl-to-ttkernel` — lower TTL DMA ops to TTKernel
-12. `ttkernel-insert-inits` — insert hardware init ops before compute ops
-13. `ttkernel-insert-l1-accumulation` — insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
-14. `ttkernel-combine-pack-tiles` — combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
-15. Canonicalization and CSE cleanup
-16. *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
+- `ttl-insert-intermediate-dfbs` — allocate compiler-managed DFBs for intermediate values (transposes, etc.)
+- `ttl-insert-cb-sync` — insert CB wait/pop/reserve/push around compute regions
+- `ttl-annotate-l1-acc-loops` — detect `+=` accumulation loops and annotate for L1 packer accumulation
+- `convert-ttl-to-compute` — lower TTL elementwise tensor ops to `ttl.compute` with tile ops
+- `ttl-set-compute-kernel-config` — set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
+- `ttl-assign-dst` — DST register allocation (linear scan with copy insertion)
+- `ttl-subblock-compute-for-dst` — tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `auto-sync=true`)*
+- `ttl-insert-tile-regs-sync` — insert math/pack thread synchronization
+- `ttl-lower-to-loops` — lower `ttl.compute` to `scf.for` loops; matmul computes are expanded inline via `generateMatmulCompute`
+- `ttl-schedule-operations` — reorder tile ops by dependency depth and kind *(only if `maximize-dst=true`)*
+- `ttl-annotate-cb-associations` — annotate block args with CB indices
+- `convert-ttl-to-ttkernel` — lower TTL DMA ops to TTKernel
+- `ttkernel-insert-inits` — insert hardware init ops before compute ops
+- `ttkernel-insert-l1-accumulation` — insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
+- `ttkernel-combine-pack-tiles` — combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
+- Canonicalization and CSE cleanup
+- *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
 
 ### Individual Pass Options
 
