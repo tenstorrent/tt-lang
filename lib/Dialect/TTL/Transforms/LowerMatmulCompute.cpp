@@ -59,34 +59,15 @@ static LogicalResult validateDSTCapacity(ComputeOp computeOp,
   int64_t totalDstSlots = outM * outN * dstSlotsPerTile;
   int64_t dstCapacity = static_cast<int64_t>(*capacityOrErr);
   if (totalDstSlots > dstCapacity) {
-    computeOp.emitOpError()
-        << "output " << outM << "x" << outN << " with " << dstSlotsPerTile
-        << " DST slots per tile = " << totalDstSlots
-        << " total slots exceeds DST capacity of " << dstCapacity
-        << "; enable maximize_dst to auto-subblock";
+    computeOp.emitError() << "output " << outM << "x" << outN << " with "
+                          << dstSlotsPerTile
+                          << " DST slots per tile = " << totalDstSlots
+                          << " total slots exceeds DST capacity of "
+                          << dstCapacity
+                          << "; enable maximize_dst to auto-subblock";
     return failure();
   }
   return success();
-}
-
-/// Apply an indexing map to constant index values, producing index-typed
-/// Values via affine composition and folding.
-static SmallVector<Value> applyIndexingMap(OpBuilder &builder, Location loc,
-                                           AffineMap map, ValueRange ivs) {
-  SmallVector<OpFoldResult> operands(ivs.begin(), ivs.end());
-  assert(operands.size() == map.getNumDims() &&
-         "IV count must match map dimensions");
-
-  SmallVector<Value> mapped;
-  mapped.reserve(map.getNumResults());
-  for (AffineExpr expr : map.getResults()) {
-    AffineMap singleResultMap =
-        AffineMap::get(map.getNumDims(), map.getNumSymbols(), expr);
-    OpFoldResult result = affine::makeComposedFoldedAffineApply(
-        builder, loc, singleResultMap, operands);
-    mapped.push_back(getValueOrCreateConstantIndexOp(builder, loc, result));
-  }
-  return mapped;
 }
 
 LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
@@ -113,12 +94,12 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
   // Map matmul body operands to compute input tensors via block arg indices.
   auto getInputForBodyOperand = [&](Value bodyVal) -> Value {
     auto idx = traceToBlockArgIndex(bodyVal);
-    return idx ? op.getInputs()[*idx] : Value();
+    assert(idx && "body operand must trace to a block argument");
+    return op.getInputs()[*idx];
   };
 
   Value lhsTensor = getInputForBodyOperand(mmOp.getLhs());
   Value rhsTensor = getInputForBodyOperand(mmOp.getRhs());
-  assert(lhsTensor && rhsTensor && "matmul operands must trace to inputs");
 
   Value accTensor;
   if (Value acc = mmOp.getAccumulator()) {
@@ -128,12 +109,17 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
     accTensor = op.getInputs()[*accIdx];
   }
 
-  // Collect store ops and their distinct output views.
-  SmallVector<TileStoreOp> bodyStores;
+  // Collect distinct output views from tile_store ops.
   SmallVector<Value> outputViews;
+  Value storedTile;
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (auto store = dyn_cast<TileStoreOp>(&bodyOp)) {
-      bodyStores.push_back(store);
+      if (!storedTile) {
+        storedTile = store.getTile();
+      } else {
+        assert(store.getTile() == storedTile &&
+               "all body stores must reference the same tile value");
+      }
       Value view = store.getView();
       if (!llvm::is_contained(outputViews, view)) {
         outputViews.push_back(view);
@@ -170,22 +156,17 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
     return failure();
   }
 
-  // Create the DstSectionOp that wraps matmul + post-ops + stores.
+  // Create the DstSectionOp that wraps the expanded matmul computation.
   auto dstSection = DstSectionOp::create(rewriter, loc);
   Block &sectionBody = dstSection.getBody().front();
   OpBuilder secBuilder(&sectionBody,
                        Block::iterator(sectionBody.getTerminator()));
 
-  // Emit the matmul_block with full tensor operands and DST index 0.
   Value dstZero = arith::ConstantIndexOp::create(secBuilder, loc, 0);
-  auto mmResultOp = TileMatmulBlockOp::create(
-      secBuilder, loc, tileType, lhsTensor, rhsTensor, accTensor, dstZero);
-
-  // Placeholder for referencing DST-resident values. Downstream passes
-  // (ConvertTTLToTTKernel) resolve tile references via dst_index operands.
-  // The matmul result itself carries the dst_index; post-ops that consume
-  // the placeholder trace through to the matmul's dst_index.
-  Value placeholder = mmResultOp.getResult();
+  Value mmResult =
+      TileMatmulBlockOp::create(secBuilder, loc, tileType, lhsTensor, rhsTensor,
+                                accTensor, dstZero)
+          .getResult();
 
   // Clone body ops expanded M*N times. For each output tile (m, n),
   // clone all non-matmul/non-store ops with extracted tile operands from
@@ -243,8 +224,7 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
         }
       }
 
-      // Map the matmul result to the placeholder.
-      mapping.map(mmOp.getResult(), placeholder);
+      mapping.map(mmOp.getResult(), mmResult);
 
       // Clone body ops in original order.
       for (Operation *bodyOp : bodyOpsToClone) {
@@ -274,7 +254,7 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
         Value nIdx = arith::ConstantIndexOp::create(storeBuilder, loc, colIdx);
         Value dstIdx = arith::ConstantIndexOp::create(
             storeBuilder, loc, rowIdx * numCols + colIdx);
-        TileStoreOp::create(storeBuilder, loc, placeholder, outView,
+        TileStoreOp::create(storeBuilder, loc, mmResult, outView,
                             ValueRange{mIdx, nIdx}, dstIdx);
       }
     }

@@ -447,6 +447,26 @@ SmallVector<LoopGroup> collectLoopGroups(
     ArrayRef<scf::ForOp> l1AccLoops,
     const llvm::SmallDenseMap<Operation *, Operation *> &enablePointPerLoop);
 
+/// Apply an indexing map to induction variables, producing index-typed
+/// Values via affine composition and folding.
+inline SmallVector<Value> applyIndexingMap(OpBuilder &builder, Location loc,
+                                           AffineMap map, ValueRange ivs) {
+  SmallVector<OpFoldResult> operands(ivs.begin(), ivs.end());
+  assert(operands.size() == map.getNumDims() &&
+         "IV count must match map dimensions");
+
+  SmallVector<Value> mapped;
+  mapped.reserve(map.getNumResults());
+  for (AffineExpr expr : map.getResults()) {
+    AffineMap singleResultMap =
+        AffineMap::get(map.getNumDims(), map.getNumSymbols(), expr);
+    OpFoldResult result = affine::makeComposedFoldedAffineApply(
+        builder, loc, singleResultMap, operands);
+    mapped.push_back(getValueOrCreateConstantIndexOp(builder, loc, result));
+  }
+  return mapped;
+}
+
 } // namespace mlir::tt::ttl
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSUTILS_H

@@ -186,27 +186,27 @@ void kernel_main() {
 
   tile_regs_acquire();
 
-  // Phase 1: Pre-load bias C into DST[0..3]
+  // Pre-load bias C into DST[0..3]
   copy_tile_init(c_cb);
   copy_tile(c_cb, 0, 0);                  // C[0,0] -> DST[0]
   copy_tile(c_cb, 1, 1);                  // C[0,1] -> DST[1]
   copy_tile(c_cb, 2, 2);                  // C[1,0] -> DST[2]
   copy_tile(c_cb, 3, 3);                  // C[1,1] -> DST[3]
 
-  // Phase 2: Matmul accumulates (DST += A * B)
+  // Matmul accumulates (DST += A * B)
   mm_block_init_short(a_cb, b_cb, /*transpose=*/0,
                       /*ct=*/2, /*rt=*/2, /*kt=*/1);
   experimental::matmul_block(a_cb, b_cb, 0, 0, 0,
       /*transpose=*/0, /*ct=*/2, /*rt=*/2, /*kt=*/1, /*nt=*/2);
 
-  // Phase 3: Relu in-place on each DST tile
+  // Relu in-place on each DST tile
   relu_tile_init();
   relu_tile(1);
   relu_tile(2);
   relu_tile(3);
   relu_tile(0);
 
-  // Phase 4: Pack all 4 tiles to output CB
+  // Pack all 4 tiles to output CB
   tile_regs_commit();
   tile_regs_wait();
   pack_tile<true>(0, out_cb, 0);           // DST[0] -> out[0,0]

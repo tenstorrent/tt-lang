@@ -46,27 +46,6 @@ static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
   return op.getIterationDomain(b);
 }
 
-/// Apply an indexing map to the induction variables using MLIR's
-/// makeComposedFoldedAffineApply utility for automatic composition and folding.
-static SmallVector<Value> applyIndexingMap(OpBuilder &b, Location loc,
-                                           AffineMap map, ValueRange ivs) {
-  SmallVector<OpFoldResult> operands(ivs.begin(), ivs.end());
-  assert(operands.size() == map.getNumDims() &&
-         "IV count must match map dimensions (verifier ensures this)");
-
-  SmallVector<Value> mapped;
-  mapped.reserve(map.getNumResults());
-
-  for (AffineExpr expr : map.getResults()) {
-    AffineMap singleResultMap =
-        AffineMap::get(map.getNumDims(), map.getNumSymbols(), expr);
-    OpFoldResult result = affine::makeComposedFoldedAffineApply(
-        b, loc, singleResultMap, operands);
-    mapped.push_back(getValueOrCreateConstantIndexOp(b, loc, result));
-  }
-  return mapped;
-}
-
 /// Generate side-effect-only loop body. Extracts tiles from inputs, clones
 /// compute body ops, and returns nothing (stores are explicit side effects).
 static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
