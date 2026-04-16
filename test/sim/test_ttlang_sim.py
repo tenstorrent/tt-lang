@@ -7,6 +7,7 @@
 Tests for ttlang_sim.py module (simulator launcher).
 """
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -173,7 +174,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -189,7 +190,7 @@ if __name__ == "__main__":
             result = subprocess.run(
                 [sys.executable, "-m", "sim.ttlang_sim", str(script)],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -212,7 +213,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -236,7 +237,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -260,7 +261,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -276,7 +277,7 @@ if __name__ == "__main__":
             result = subprocess.run(
                 [sys.executable, "-m", "sim.ttlang_sim", "--grid", "4", str(script)],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -300,7 +301,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -380,7 +381,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -407,7 +408,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -432,7 +433,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -450,7 +451,7 @@ if __name__ == "__main__":
             result = subprocess.run(
                 [sys.executable, "-m", "sim.ttlang_sim", str(script)],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -475,7 +476,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -500,7 +501,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -576,7 +577,7 @@ if __name__ == "__main__":
             return subprocess.run(
                 [sys.executable, "-m", "sim.ttlang_sim", *extra_args, str(script)],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -754,7 +755,7 @@ class TestSchedulerAlgorithmOption:
                 "greedy",
             ],
             cwd=Path(__file__).parent.parent.parent,
-            env={"PYTHONPATH": "python"},
+            env={**os.environ, "PYTHONPATH": "python"},
             capture_output=True,
             text=True,
         )
@@ -775,7 +776,7 @@ class TestSchedulerAlgorithmOption:
                 "fair",
             ],
             cwd=Path(__file__).parent.parent.parent,
-            env={"PYTHONPATH": "python"},
+            env={**os.environ, "PYTHONPATH": "python"},
             capture_output=True,
             text=True,
         )
@@ -793,7 +794,7 @@ class TestSchedulerAlgorithmOption:
                 "nonexistent.py",
             ],
             cwd=Path(__file__).parent.parent.parent,
-            env={"PYTHONPATH": "python"},
+            env={**os.environ, "PYTHONPATH": "python"},
             capture_output=True,
             text=True,
         )
@@ -817,7 +818,7 @@ print(f"Algorithm: {get_scheduler_algorithm()}")
             result = subprocess.run(
                 [sys.executable, "-m", "sim.ttlang_sim", str(script_path)],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )

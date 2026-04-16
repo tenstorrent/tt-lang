@@ -13,6 +13,7 @@ Tests cover:
 """
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -64,6 +65,74 @@ def _run_simple_kernel_with_tracing(
                 tx.wait()
 
     trace_kernel(inp, out)
+
+    return [
+        {"event": ev.event, "tick": ev.tick, "kernel": ev.kernel, **ev.data}
+        for ev in ctx.trace_events
+    ]
+
+
+def _run_pipe_kernel_with_tracing(
+    trace_set: frozenset[str] | None = None,
+) -> list[dict]:
+    """Run a minimal 2-node kernel that transfers one tile via a pipe.
+
+    Node (0,0) reads a tile from inp and sends it through a pipe to node (0,1).
+    Node (0,1) receives the tile from the pipe and writes it to out.
+
+    Args:
+        trace_set: Categories to record. Defaults to ALL_CATEGORIES.
+
+    Returns the collected trace events as a list of dicts.
+    """
+    ctx = get_context()
+    ctx.config.trace_set = trace_set if trace_set is not None else ALL_CATEGORIES
+
+    inp = ttnn.rand((32, 32))
+    out = ttnn.empty((32, 32))
+
+    @ttl.operation(grid=(1, 2))
+    def pipe_kernel(a: ttnn.Tensor, o: ttnn.Tensor):
+        pipe = ttl.Pipe((0, 0), (0, 1))
+        pipe_net = ttl.PipeNet([pipe])
+        dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1))
+        out_dfb = ttl.make_dataflow_buffer_like(o, shape=(1, 1))
+
+        @ttl.compute()
+        def compute():
+            if not pipe.has_current_node():
+                return
+            with dfb.wait() as blk, out_dfb.reserve() as out_blk:
+                out_blk.store(blk)
+
+        @ttl.datamovement()
+        def dm_read():
+            if not pipe.has_current_node():
+                return
+            with dfb.reserve() as blk:
+
+                def pipe_src(pipe_id):
+                    tx = ttl.copy(a[0, 0], blk)
+                    tx.wait()
+                    tx2 = ttl.copy(blk, pipe_id)
+                    tx2.wait()
+
+                def pipe_dst(pipe_id):
+                    tx = ttl.copy(pipe_id, blk)
+                    tx.wait()
+
+                pipe_net.if_src(pipe_src)
+                pipe_net.if_dst(pipe_dst)
+
+        @ttl.datamovement()
+        def dm_write():
+            if not pipe.has_current_node():
+                return
+            with out_dfb.wait() as blk:
+                tx = ttl.copy(blk, o[0, 0])
+                tx.wait()
+
+    pipe_kernel(inp, out)
 
     return [
         {"event": ev.event, "tick": ev.tick, "kernel": ev.kernel, **ev.data}
@@ -152,6 +221,22 @@ class TestTraceEventTypes:
         for ev in events:
             assert isinstance(ev["tick"], int)
             assert ev["tick"] >= 0
+
+    def test_pipe_events_emitted(self) -> None:
+        """pipe_send and pipe_recv are emitted when a pipe transfers data."""
+        events = _run_pipe_kernel_with_tracing(frozenset({"pipe"}))
+        event_names = {e["event"] for e in events}
+        assert "pipe_send" in event_names
+        assert "pipe_recv" in event_names
+
+    def test_pipe_events_carry_pipe_and_tiles(self) -> None:
+        """pipe_send and pipe_recv carry 'pipe' and 'tiles' fields with tile count > 0."""
+        events = _run_pipe_kernel_with_tracing(frozenset({"pipe"}))
+        for ev in events:
+            if ev["event"] in ("pipe_send", "pipe_recv"):
+                assert "pipe" in ev, f"Missing 'pipe' field in {ev}"
+                assert "tiles" in ev, f"Missing 'tiles' field in {ev}"
+                assert ev["tiles"] > 0, f"Expected tiles > 0 in {ev}"
 
     def test_no_events_when_tracing_disabled(self) -> None:
         """No trace events are recorded when trace_set is empty."""
@@ -277,7 +362,7 @@ kernel(a, o)
             return subprocess.run(
                 [sys.executable, "-m", "sim.ttlang_sim", *extra_args, str(script)],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )

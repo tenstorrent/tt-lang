@@ -378,7 +378,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    path = Path(args.trace)
+    path = Path(args.trace).resolve()
     if not path.exists():
         print(f"Error: trace file not found: {path}", file=sys.stderr)
         sys.exit(1)
