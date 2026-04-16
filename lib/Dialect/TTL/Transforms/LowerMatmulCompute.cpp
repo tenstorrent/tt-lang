@@ -145,33 +145,20 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
   size_t numDims = iterTypes.size();
   size_t numInputs = op.getInputs().size();
 
-  // Collect all non-store body ops except the matmul itself. Pre-matmul
-  // ops (e.g., elementwise ops whose results feed into post-matmul adds)
-  // must be cloned alongside post-matmul ops so that the DstSectionOp
-  // body is self-contained.
-  SmallVector<Operation *> preMatmulOps;
-  SmallVector<Operation *> postMatmulOps;
-  bool foundMM = false;
+  // Collect body ops to clone: everything except the matmul, stores,
+  // and iter_index (which are handled separately via the IRMapping).
+  SmallVector<Operation *> bodyOpsToClone;
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
-    if (isa<TileMatmulBlockOp>(&bodyOp)) {
-      foundMM = true;
+    if (isa<TileMatmulBlockOp, TileStoreOp, IterIndexOp>(&bodyOp)) {
       continue;
     }
-    if (isa<TileStoreOp, IterIndexOp>(&bodyOp)) {
-      continue;
-    }
-    if (foundMM) {
-      postMatmulOps.push_back(&bodyOp);
-    } else {
-      preMatmulOps.push_back(&bodyOp);
-    }
+    bodyOpsToClone.push_back(&bodyOp);
   }
 
-  // Determine the number of DST slots used per iteration by post-ops.
-  // Needed for M*N > 1 expansion to offset DST indices per tile.
+  // Determine the maximum DST index used by body ops.
   int64_t maxBodyDstIdx = 0;
-  for (Operation *postOp : postMatmulOps) {
-    if (auto dstVal = getTileOpDstIndex(postOp)) {
+  for (Operation *bodyOp : bodyOpsToClone) {
+    if (auto dstVal = getTileOpDstIndex(bodyOp)) {
       if (auto constIdx = foldIndexToConstant(*dstVal)) {
         maxBodyDstIdx = std::max(maxBodyDstIdx, *constIdx);
       }
@@ -200,9 +187,9 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
   // the placeholder trace through to the matmul's dst_index.
   Value placeholder = mmResultOp.getResult();
 
-  // Emit post-matmul ops expanded M*N times. For each output tile (m, n),
-  // clone the post-ops with extracted tile operands from CBs and remapped
-  // DST indices. For M=N=1, this is a single iteration (no loop overhead).
+  // Clone body ops expanded M*N times. For each output tile (m, n),
+  // clone all non-matmul/non-store ops with extracted tile operands from
+  // CBs and remapped DST indices. For M=N=1, this is a single iteration.
   for (int64_t rowIdx = 0; rowIdx < numRows; ++rowIdx) {
     for (int64_t colIdx = 0; colIdx < numCols; ++colIdx) {
       int64_t tileIdx = rowIdx * numCols + colIdx;
@@ -256,18 +243,12 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
         }
       }
 
-      // Clone pre-matmul ops (e.g., elementwise ops whose results are
-      // consumed by post-matmul ops like s_scaled in s_new = s_scaled + ...).
-      for (Operation *preOp : preMatmulOps) {
-        secBuilder.clone(*preOp, mapping);
-      }
-
       // Map the matmul result to the placeholder.
       mapping.map(mmOp.getResult(), placeholder);
 
-      // Clone post-matmul ops with DST index remapping.
-      for (Operation *postOp : postMatmulOps) {
-        auto *cloned = secBuilder.clone(*postOp, mapping);
+      // Clone body ops in original order.
+      for (Operation *bodyOp : bodyOpsToClone) {
+        auto *cloned = secBuilder.clone(*bodyOp, mapping);
 
         // Offset the DST index for ops with TTLDstResultOpTrait.
         if (dstBase != 0) {
@@ -299,7 +280,8 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
     }
   }
 
-  // Replace the compute op with one placeholder tensor per result.
+  // The compute op's SSA results may still have users (e.g., cb_push).
+  // Replace each result with an empty tensor to satisfy those uses.
   SmallVector<Value> replacements;
   for (auto result : op.getResults()) {
     auto resultType = cast<RankedTensorType>(result.getType());
