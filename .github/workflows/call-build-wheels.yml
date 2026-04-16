@@ -8,8 +8,9 @@ on:
   workflow_call:
     inputs:
       docker_tag:
+        description: "Docker image tag for the ird container."
         type: string
-        default: "v0.1.8"
+        required: true
 
 permissions:
   contents: read

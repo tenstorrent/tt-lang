@@ -5,21 +5,12 @@
 name: Publish to PyPI
 
 on:
-  # TODO: Remove pull_request trigger once TestPyPI publishing is validated.
-  pull_request:
-    branches: [main]
-  push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
     inputs:
-      target:
-        description: "Publish target"
-        type: choice
-        options:
-          - testpypi
-          - pypi
-        default: testpypi
+      docker_tag:
+        description: "Docker image tag for the ird container."
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -28,18 +19,17 @@ permissions:
 jobs:
   build-wheels:
     uses: ./.github/workflows/call-build-wheels.yml
+    with:
+      docker_tag: ${{ inputs.docker_tag }}
 
   publish:
     name: "Publish to PyPI"
     needs: build-wheels
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # TODO: Switch to production PyPI once publishing is validated.
-    # Change environment name to use the target selection logic:
-    #   name: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')) && 'pypi' || 'testpypi' }}
     environment:
-      name: testpypi
-      url: https://test.pypi.org/project/tt-lang/
+      name: pypi
+      url: https://pypi.org/project/tt-lang/
     permissions:
       id-token: write
 
@@ -53,9 +43,5 @@ jobs:
       - name: List wheels
         run: ls -lh dist/
 
-      # TODO: Remove hardcoded repository-url once validated; the target
-      # selection logic in the environment block will handle it.
-      - name: Publish to TestPyPI
+      - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
