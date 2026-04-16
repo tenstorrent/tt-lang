@@ -80,7 +80,7 @@ jobs:
               -DTTLANG_ENABLE_PERF_TRACE=ON
 
       - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.3
+        uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: Linux-ttlang-hw-${{ inputs.runs-on }}
           max-size: 200M
