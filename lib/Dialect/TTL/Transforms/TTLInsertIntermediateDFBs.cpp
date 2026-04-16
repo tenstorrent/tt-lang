@@ -84,6 +84,8 @@ FailureOr<Value> materializeToDFB(Value intermediate, ModuleOp moduleOp,
 struct TTLInsertIntermediateDFBsPass
     : public impl::TTLInsertIntermediateDFBsBase<
           TTLInsertIntermediateDFBsPass> {
+  using TTLInsertIntermediateDFBsBase::TTLInsertIntermediateDFBsBase;
+
   void runOnOperation() override {
     auto funcOp = getOperation();
     auto moduleOp = funcOp->getParentOfType<ModuleOp>();
@@ -91,13 +93,39 @@ struct TTLInsertIntermediateDFBsPass
       return;
     }
 
+    SmallVector<DFBInputOpInterface> candidates;
+    funcOp.walk([&](DFBInputOpInterface op) { candidates.push_back(op); });
+
+    // When compiler DFBs are disabled, verify that no operations require
+    // them and emit an actionable error if any do.
+    if (!enable) {
+      for (DFBInputOpInterface dfbInputOp : candidates) {
+        Operation *op = dfbInputOp.getOperation();
+        auto requiredIndices = dfbInputOp.getDFBInputOperandIndices();
+
+        for (unsigned idx : requiredIndices) {
+          Value operand = op->getOperand(idx);
+          if (getAttachedCB(operand)) {
+            continue;
+          }
+
+          op->emitOpError("operand #")
+              << idx
+              << " requires a DFB-attached value but compiler-allocated DFBs "
+                 "are disabled (--no-ttl-compiler-dfbs); either enable "
+                 "compiler DFBs or store the intermediate to a user-declared "
+                 "DFB before this operation";
+          signalPassFailure();
+          return;
+        }
+      }
+      return;
+    }
+
     // Track values already materialized to avoid duplicate DFBs when
     // multiple DFBInputOpInterface ops consume the same intermediate.
     llvm::DenseMap<Value, Value> materialized;
     OpBuilder builder(funcOp.getContext());
-
-    SmallVector<DFBInputOpInterface> candidates;
-    funcOp.walk([&](DFBInputOpInterface op) { candidates.push_back(op); });
 
     for (DFBInputOpInterface dfbInputOp : candidates) {
       Operation *op = dfbInputOp.getOperation();

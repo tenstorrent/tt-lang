@@ -1321,8 +1321,9 @@ def _compile_kernel(
         fpu_flag = int(compiler_options.enable_fpu_binary_ops)
         assign_dst_pass = f"ttl-assign-dst{{enable-fpu-binary-ops={fpu_flag}}}"
 
+        compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
         pipeline_passes = [
-            "func.func(ttl-insert-intermediate-dfbs)",
+            f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(ttl-insert-cb-sync)",
             "func.func(ttl-annotate-l1-acc-loops)",
             "func.func(convert-ttl-to-compute)",

@@ -109,7 +109,18 @@ def TTLInsertIntermediateDFBs
     Compiler-allocated DFBs are marked with `ttl.compiler_allocated` so
     that `ttl-finalize-dfb-indices` can register them for the Python
     runtime.
+
+    When `enable` is false, the pass verifies that no operations require
+    compiler-allocated DFBs. If any `DFBInputOpInterface` op has a
+    non-DFB-attached operand, the pass emits an error diagnostic and
+    signals failure.
   }];
+
+  let options = [
+    Option<"enable", "enable", "bool", "true",
+           "Insert compiler-allocated intermediate DFBs. When false, "
+           "emit an error if any operation requires a compiler-allocated DFB.">
+  ];
 
   let dependentDialects = [
     "::mlir::tt::ttl::TTLDialect"

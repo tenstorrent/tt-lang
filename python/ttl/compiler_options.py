@@ -83,6 +83,13 @@ def _make_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         help="Error if accumulation (+=) output block exceeds f32 DST capacity (default: disabled).",
     )
+    p.add_argument(
+        "--ttl-compiler-dfbs",
+        default=None,
+        dest="compiler_dfbs",
+        action=argparse.BooleanOptionalAction,
+        help="Insert compiler-allocated intermediate DFBs for fused computations (default: enabled).",
+    )
     return p
 
 
@@ -129,6 +136,7 @@ class CompilerOptions:
     reduce_full_fp32: bool = True
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
+    compiler_dfbs: bool = True
 
     # Fields that were explicitly provided (not defaulted). Excluded from
     # equality and hashing so two instances with the same bool values are
