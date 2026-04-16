@@ -418,20 +418,21 @@ def TTLLowerSignpostToEmitC
 
 def TTLFinalizeDFBIndices
     : Pass<"ttl-finalize-dfb-indices", "::mlir::ModuleOp"> {
-  let summary = "Finalize DFB indices and emit compiler-allocated DFB metadata";
+  let summary = "Reuse compiler-allocated DFB indices and emit DFB metadata";
   let description = [{
-    Module-level pass that runs after all DFB-creating passes, before
-    convert-ttl-to-ttkernel. Performs three tasks:
+    Module-level pass that runs after all DFB-creating passes. Must
+    precede ttl-annotate-cb-associations (which copies cb_index onto
+    tile ops and would capture stale pre-reuse indices).
 
-    1. Walks all BindCBOp instances across all functions and computes the
-       true DFB count (max_dfb_index + 1).
-    2. Updates the `ttl.base_cta_index` attribute on every function to
-       this value, ensuring compile-time arg layout is correct.
-    3. Collects all BindCBOps marked with `ttl.compiler_allocated` and
-       builds the `ttl.compiler_allocated_dfbs` module attribute so the
-       Python runtime can create the corresponding CBDescriptor entries.
+    Applies lifetime-based index reuse to compiler-allocated DFBs via
+    linear scan allocation, partitioned by CircularBufferType. DFBs
+    whose lifetimes (bind_cb to last cb_pop) do not overlap are assigned
+    the same physical index. See docs/development/DFBManagement.md.
 
-    This pass is a no-op when no BindCBOps exist in the module.
+    After reuse, verifies the total DFB count does not exceed
+    kMaxCircularBuffers (32), updates ttl.base_cta_index on every
+    function, and builds the ttl.compiler_allocated_dfbs module
+    attribute for the Python runtime.
   }];
 }
 

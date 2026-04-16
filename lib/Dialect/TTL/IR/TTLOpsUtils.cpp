@@ -246,7 +246,6 @@ int32_t getNextAvailableDFBIndex(ModuleOp mod) {
 
   mod->walk([&](BindCBOp bindOp) {
     int64_t idx = bindOp.getCbIndex().getSExtValue();
-    assert(idx < kMaxCircularBuffers && "CB index exceeds hardware limit");
     if (static_cast<int32_t>(idx) > maxIndex) {
       maxIndex = static_cast<int32_t>(idx);
     }
