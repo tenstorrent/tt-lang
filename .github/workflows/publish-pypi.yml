@@ -5,6 +5,9 @@
 name: Publish to PyPI
 
 on:
+  # TODO: Remove pull_request trigger after validating PyPI publishing.
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       docker_tag:
@@ -20,7 +23,7 @@ jobs:
   build-wheels:
     uses: ./.github/workflows/call-build-wheels.yml
     with:
-      docker_tag: ${{ inputs.docker_tag }}
+      docker_tag: ${{ inputs.docker_tag || 'v0.1.8' }}
 
   publish:
     name: "Publish to PyPI"
