@@ -1321,8 +1321,9 @@ def _compile_kernel(
         fpu_flag = int(compiler_options.enable_fpu_binary_ops)
         assign_dst_pass = f"ttl-assign-dst{{enable-fpu-binary-ops={fpu_flag}}}"
 
+        compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
         pipeline_passes = [
-            "func.func(ttl-insert-intermediate-dfbs)",
+            f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(ttl-insert-cb-sync)",
             "func.func(ttl-annotate-l1-acc-loops)",
             "func.func(convert-ttl-to-compute)",
@@ -1330,7 +1331,7 @@ def _compile_kernel(
             f"func.func({assign_dst_pass})",
         ]
         if compiler_options.maximize_dst:
-            subblock_sync = "true" if compiler_options.auto_sync else "false"
+            subblock_sync = "true" if compiler_options.subblock_sync else "false"
             strict_f32 = "true" if compiler_options.strict_f32_acc else "false"
             pipeline_passes.append(
                 f"func.func(ttl-subblock-compute-for-dst{{subblock-sync={subblock_sync} strict-f32-acc={strict_f32}}})"
@@ -1342,8 +1343,8 @@ def _compile_kernel(
         )
         if compiler_options.maximize_dst:
             pipeline_passes.append("func.func(ttl-schedule-operations)")
-        pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
         pipeline_passes.append("ttl-finalize-dfb-indices")
+        pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
 
         # Add CB flow graph dump if auto-profiling or perf dump is enabled
         perf_dump = os.environ.get("TTLANG_PERF_DUMP") == "1"
