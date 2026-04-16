@@ -76,18 +76,34 @@ static void reuseDFBIndices(func::FuncOp funcOp, ArrayRef<BindCBOp> dfbOps) {
            "compiler-allocated BindCBOp must be in function body block");
 
     Value cbVal = bindOp.getResult();
-    int64_t start = opIndex[bindOp];
-    int64_t end = start;
+    // Lifetime starts at the first acquire (reserve/wait) on this CB, not
+    // at the bind_cb itself: bind_cb is just a declaration, and hoisting
+    // it to the function body entry would otherwise collapse all compiler-
+    // allocated DFB starts together and defeat reuse. If there is no
+    // acquire (synthetic IR, pop-only), fall back to the bind_cb position.
+    int64_t start = lastOpIdx;
+    int64_t end = opIndex[bindOp];
+    bool sawAcquire = false;
 
     for (OpOperand &use : cbVal.getUses()) {
-      if (isa<CBPopOp>(use.getOwner())) {
-        end = std::max(end, getBodyIndex(use.getOwner()));
+      Operation *user = use.getOwner();
+      int64_t useIdx = getBodyIndex(user);
+      if (isa<CBReserveOp, CBWaitOp>(user)) {
+        start = std::min(start, useIdx);
+        sawAcquire = true;
       }
+      if (isa<CBPopOp>(user)) {
+        end = std::max(end, useIdx);
+      }
+    }
+
+    if (!sawAcquire) {
+      start = opIndex[bindOp];
     }
 
     // No cb_pop means the DFB's L1 is never explicitly released --
     // conservatively treat it as live for the entire function.
-    if (end == start) {
+    if (end <= start) {
       end = lastOpIdx;
     }
 

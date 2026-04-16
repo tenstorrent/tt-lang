@@ -9,8 +9,8 @@
 // Elementwise result feeds into reduce: pass should insert a compiler-allocated DFB.
 
 // CHECK-LABEL: func.func @elementwise_into_reduce
-// CHECK: ttl.add
 // CHECK: ttl.bind_cb{cb_index = 3, block_count = 2} {ttl.compiler_allocated}
+// CHECK: ttl.add
 // CHECK: ttl.cb_reserve
 // CHECK: ttl.store
 // CHECK: ttl.cb_wait
@@ -91,10 +91,10 @@ func.func @add_then_reduce()
 // only one compiler-allocated DFB and reuse it for the second consumer.
 
 // CHECK-LABEL: func.func @shared_materialization
-// CHECK: ttl.add
 // Only one compiler-allocated bind_cb should be created.
 // CHECK-COUNT-1: ttl.compiler_allocated
 // CHECK-NOT: ttl.compiler_allocated
+// CHECK: ttl.add
 // Both reduces should appear.
 // CHECK: ttl.reduce
 // CHECK: ttl.reduce
@@ -127,13 +127,14 @@ func.func @shared_materialization()
 // DBG: DFB reuse: 2 compiler-allocated DFBs -> 1 physical slot(s)
 // DBG: Total DFB count: 5
 
-// After insert: two compiler-allocated DFBs at indices 4, 5.
+// After insert: two compiler-allocated DFBs at indices 4, 5, both at
+// function body entry.
 // CHECK-LABEL: func.func @sequential_intermediates_reuse
-// CHECK: ttl.add
 // CHECK: ttl.bind_cb{cb_index = 4, block_count = 2} {ttl.compiler_allocated}
+// CHECK: ttl.bind_cb{cb_index = 5, block_count = 2} {ttl.compiler_allocated}
+// CHECK: ttl.add
 // CHECK: ttl.reduce
 // CHECK: ttl.mul
-// CHECK: ttl.bind_cb{cb_index = 5, block_count = 2} {ttl.compiler_allocated}
 // CHECK: ttl.reduce
 
 // After finalize with reuse: both DFBs get index 4 (one physical slot).
