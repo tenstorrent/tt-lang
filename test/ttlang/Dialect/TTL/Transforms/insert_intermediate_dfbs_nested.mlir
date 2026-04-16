@@ -1,8 +1,8 @@
-// Regression tests for issue #518: compiler-allocated BindCBOp must be
-// hoisted to the function body entry block even when the intermediate's
-// defining op sits inside a structured region (scf.for, scf.if). Without
-// the fix, TTLFinalizeDFBIndices asserts:
-//   "compiler-allocated BindCBOp must be in function body block"
+// Compiler-allocated bind_cb must live at the function body entry so its
+// cb_index is function-scoped and dominates every nested reserve/wait.
+// When the intermediate's defining op sits inside a structured region
+// (scf.for, scf.if), only bind_cb hoists; reserve/store/wait/attach
+// stay at the def site to keep per-invocation accounting intact.
 
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs,ttl-insert-cb-sync),ttl-finalize-dfb-indices)' | FileCheck %s
 
