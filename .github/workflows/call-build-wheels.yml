@@ -9,7 +9,7 @@ on:
     inputs:
       docker_tag:
         type: string
-        default: "v0.1.7"
+        default: "v0.1.8"
 
 permissions:
   contents: read
