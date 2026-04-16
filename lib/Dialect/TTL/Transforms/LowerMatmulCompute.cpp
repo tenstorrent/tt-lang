@@ -128,21 +128,28 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
     accTensor = op.getInputs()[*accIdx];
   }
 
-  // Collect store ops from the body.
+  // Collect store ops and their distinct output views.
   SmallVector<TileStoreOp> bodyStores;
+  SmallVector<Value> outputViews;
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (auto store = dyn_cast<TileStoreOp>(&bodyOp)) {
       bodyStores.push_back(store);
+      Value view = store.getView();
+      if (!llvm::is_contained(outputViews, view)) {
+        outputViews.push_back(view);
+      }
     }
   }
-  assert(!bodyStores.empty() && "matmul compute must have tile_store(s)");
-  Value outView = bodyStores[0].getView();
+  assert(!outputViews.empty() && "matmul compute must have tile_store(s)");
 
   size_t numDims = iterTypes.size();
   size_t numInputs = op.getInputs().size();
 
-  // Collect post-matmul non-store body ops (the ops between matmul and
-  // stores: copy_tile, binary ops, constants, etc.).
+  // Collect all non-store body ops except the matmul itself. Pre-matmul
+  // ops (e.g., elementwise ops whose results feed into post-matmul adds)
+  // must be cloned alongside post-matmul ops so that the DstSectionOp
+  // body is self-contained.
+  SmallVector<Operation *> preMatmulOps;
   SmallVector<Operation *> postMatmulOps;
   bool foundMM = false;
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
@@ -150,8 +157,13 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
       foundMM = true;
       continue;
     }
-    if (foundMM && !isa<TileStoreOp>(&bodyOp)) {
+    if (isa<TileStoreOp, IterIndexOp>(&bodyOp)) {
+      continue;
+    }
+    if (foundMM) {
       postMatmulOps.push_back(&bodyOp);
+    } else {
+      preMatmulOps.push_back(&bodyOp);
     }
   }
 
@@ -244,6 +256,12 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
         }
       }
 
+      // Clone pre-matmul ops (e.g., elementwise ops whose results are
+      // consumed by post-matmul ops like s_scaled in s_new = s_scaled + ...).
+      for (Operation *preOp : preMatmulOps) {
+        secBuilder.clone(*preOp, mapping);
+      }
+
       // Map the matmul result to the placeholder.
       mapping.map(mmOp.getResult(), placeholder);
 
@@ -265,24 +283,31 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
     }
   }
 
-  // Emit M*N individual tile_store ops with explicit DST indices.
+  // Emit M*N individual tile_store ops per output view.
   OpBuilder storeBuilder(&sectionBody,
                          Block::iterator(sectionBody.getTerminator()));
-  for (int64_t rowIdx = 0; rowIdx < numRows; ++rowIdx) {
-    for (int64_t colIdx = 0; colIdx < numCols; ++colIdx) {
-      Value mIdx = arith::ConstantIndexOp::create(storeBuilder, loc, rowIdx);
-      Value nIdx = arith::ConstantIndexOp::create(storeBuilder, loc, colIdx);
-      Value dstIdx = arith::ConstantIndexOp::create(storeBuilder, loc,
-                                                    rowIdx * numCols + colIdx);
-      TileStoreOp::create(storeBuilder, loc, placeholder, outView,
-                          ValueRange{mIdx, nIdx}, dstIdx);
+  for (Value outView : outputViews) {
+    for (int64_t rowIdx = 0; rowIdx < numRows; ++rowIdx) {
+      for (int64_t colIdx = 0; colIdx < numCols; ++colIdx) {
+        Value mIdx = arith::ConstantIndexOp::create(storeBuilder, loc, rowIdx);
+        Value nIdx = arith::ConstantIndexOp::create(storeBuilder, loc, colIdx);
+        Value dstIdx = arith::ConstantIndexOp::create(
+            storeBuilder, loc, rowIdx * numCols + colIdx);
+        TileStoreOp::create(storeBuilder, loc, placeholder, outView,
+                            ValueRange{mIdx, nIdx}, dstIdx);
+      }
     }
   }
 
-  // Replace the compute op with a placeholder tensor.
-  Value emptyTensor = tensor::EmptyOp::create(rewriter, loc, outType.getShape(),
-                                              outType.getElementType());
-  rewriter.replaceOp(op, emptyTensor);
+  // Replace the compute op with one placeholder tensor per result.
+  SmallVector<Value> replacements;
+  for (auto result : op.getResults()) {
+    auto resultType = cast<RankedTensorType>(result.getType());
+    Value emptyTensor = tensor::EmptyOp::create(
+        rewriter, loc, resultType.getShape(), resultType.getElementType());
+    replacements.push_back(emptyTensor);
+  }
+  rewriter.replaceOp(op, replacements);
   return success();
 }
 
