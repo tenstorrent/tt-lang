@@ -16,10 +16,9 @@ from .pipe import AnyPipe
 from .ttnnsim import Tensor
 from .typedefs import Count, Shape, BindableTemplate
 from .blockstate import ThreadType
-from ttl.constants import DEFAULT_L1_CB_BUDGET_BYTES
 
 # Default L1 memory limit per core (simulator): same as runtime CB budget helper.
-DEFAULT_MAX_L1_BYTES: int = DEFAULT_L1_CB_BUDGET_BYTES
+DEFAULT_MAX_L1_BYTES: int = 1432 * 1024
 
 
 @dataclass
