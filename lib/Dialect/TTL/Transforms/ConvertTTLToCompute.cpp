@@ -147,18 +147,18 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
         rewriter, loc, tileResult, storeOp.getView(), indices);
     storesToErase.push_back(storeOp);
   }
-  // The DSL emits cb_push after each store. When multiple stores are
-  // absorbed into a single compute body, earlier pushes end up before
-  // the compute and execute before data is packed. Move them after the
-  // compute so the push executes after pack_tile writes the data.
+  // Move each store's cb_push after the compute so the push executes
+  // after pack_tile writes the data. Walk forward from each store to
+  // find the first matching CBPushOp on the same CB.
   for (StoreOp s : storesToErase) {
     Value viewCB = getAttachedCB(s.getView());
     if (viewCB) {
-      for (auto &use : viewCB.getUses()) {
-        if (auto pushOp = dyn_cast<CBPushOp>(use.getOwner())) {
-          if (pushOp->getBlock() == computeOp->getBlock() &&
-              pushOp->isBeforeInBlock(computeOp)) {
+      for (Operation *op = s->getNextNode(); op != nullptr;
+           op = op->getNextNode()) {
+        if (auto pushOp = dyn_cast<CBPushOp>(op)) {
+          if (pushOp.getCb() == viewCB) {
             pushOp->moveAfter(computeOp);
+            break;
           }
         }
       }
