@@ -1251,34 +1251,33 @@ func.func @zero_trip_wrapper_not_credited() attributes {ttkernel.thread = #ttker
 
 // -----
 
-// Two annotated L1-acc loops share one CB reservation with a bare
-// non-annotated scf.for between them. The bare for packs nothing, but its
-// presence breaks `collectLoopGroups` so A and B end up in separate
-// groups. A's post-scope DISABLE finalizes A's accumulated value, then
-// B's pre-group DISABLE plus iteration-0 overwrite clobbers it — only B's
-// packs end up in L1.
-//
-// This test pins the current emission shape. The underlying fix belongs
-// in `collectLoopGroups` (grouping should span a bare non-annotated
-// scf.for that packs nothing to the shared CB) and is out of scope for
-// the prior-value change.
+// Two annotated L1-acc loops sharing one CB reservation with a bare
+// non-annotated scf.for between them that packs nothing to the shared
+// CB. `collectLoopGroups` must span the bare for and place both
+// annotated loops in one group; the bare for is transparent.
 
 // CHECK-LABEL: func.func @annotated_siblings_split_by_bare_for
 // CHECK: ttkernel.cb_reserve_back
-// CHECK: ttkernel.pack_reconfig_l1_acc
+// CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]])
 // CHECK: scf.for {{.*}} {
 // CHECK:   ttkernel.pack_tile
 // CHECK:   scf.if
 // CHECK:     ttkernel.pack_reconfig_l1_acc
 // CHECK: } {ttl.l1_acc_loop}
-// CHECK: ttkernel.pack_reconfig_l1_acc
+// CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]])
+// Bare non-annotated scf.for — transparent to the group.
 // CHECK: scf.for
 // CHECK: }
-// CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
-// CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]])
+// CHECK: %[[ENABLE:.*]] = arith.constant 1 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[ENABLE]])
 // CHECK: scf.for {{.*}} {
 // CHECK:   ttkernel.pack_tile
+// CHECK:   scf.if
+// CHECK:     ttkernel.pack_reconfig_l1_acc
 // CHECK: } {ttl.l1_acc_loop}
+// CHECK: ttkernel.cb_push_back
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]])
 func.func @annotated_siblings_split_by_bare_for() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
   %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
   %c0 = arith.constant 0 : index
