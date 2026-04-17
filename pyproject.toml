@@ -58,6 +58,12 @@ reportPrivateUsage = "error"
 reportImportCycles = "error"
 reportUnnecessaryIsInstance = "warning"
 
+[tool.pytest.ini_options]
+markers = [
+    "matmul_tutorial_ttnn: marks matmul-tutorial tests requiring real ttnn, steps 0 and 7 (deselected by default; enable with --run-matmul-tutorial-ttnn)",
+    "matmul_tutorial_no_ttnn: marks matmul-tutorial simulator tests, steps 2-6 (deselected by default; enable with --run-matmul-tutorial-no-ttnn)",
+]
+
 [tool.isort]
 profile = "black"
 line_length = 88
