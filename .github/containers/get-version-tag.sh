@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Print the Docker version tag derived from the nearest git version tag.
-# E.g., if the nearest tag is v0.1.8, prints "v0.1.8".
+# E.g., if the nearest tag is v0.1.9, prints "v0.1.9".
 #
 # Usage: .github/containers/get-version-tag.sh
 # Must be run from a git repository with version tags (v[0-9]*).

@@ -223,7 +223,7 @@ CI uses two caching layers that must be rebuilt when submodule SHAs change:
    toolchain.
 
 2. **Docker images** -- `ird` and `dist` container images tagged by the nearest
-   git version tag (e.g. `v0.1.8`, see `.github/containers/get-version-tag.sh`).
+   git version tag (e.g. `v0.1.9`, see `.github/containers/get-version-tag.sh`).
    Rebuilds overwrite the same tag. A `latest` tag is also pushed alongside
    each versioned tag. After building, `call-build-docker.yml` runs the
    tutorial examples in the dist container to verify the image works.
@@ -241,7 +241,7 @@ build:
   secrets: inherit
   with:
     build_toolchain: true
-    docker_tag: "v0.1.8"
+    docker_tag: "v0.1.9"
 ```
 
 When `build_toolchain` is true, the workflow:
@@ -270,8 +270,8 @@ on version tags (`v*.*.*`) or manual dispatch. The workflow:
 After an uplift merges, create a new version tag to trigger image rebuilds:
 
 ```bash
-git tag v0.1.8
-git push origin v0.1.8
+git tag v0.1.9
+git push origin v0.1.9
 ```
 
 Once the new images are published, update the `docker_tag` parameter in
