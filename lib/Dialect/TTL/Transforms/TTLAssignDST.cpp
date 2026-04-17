@@ -85,16 +85,6 @@ static SmallVector<Value> getMergedValues(MergedClasses &merged, Value v) {
   return SmallVector<Value>(merged.members(v));
 }
 
-//===----------------------------------------------------------------------===//
-// Live Interval
-//===----------------------------------------------------------------------===//
-
-struct Interval {
-  int64_t start; // Operation index where value becomes live
-  int64_t end;   // Operation index of last use
-  Value value;   // SSA value this interval represents
-};
-
 /// Allocate a DST register and create a CopyTileOp for a block argument.
 /// Looks up assignment first; falls back to allocating a free register.
 /// If dstIndexOverride is provided, it takes precedence over the assignment

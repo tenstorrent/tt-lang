@@ -99,9 +99,8 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
   auto cbTy = mlir::cast<CircularBufferType>(getResult().getType());
 
   int64_t idx = getCbIndexAttr().getInt();
-  if (idx < 0 || idx >= kMaxCircularBuffers) {
-    return emitOpError() << "cb_index must be in [0, "
-                         << kMaxCircularBuffers - 1 << "]";
+  if (idx < 0) {
+    return emitOpError() << "cb_index must be non-negative";
   }
 
   // Validate block count against type for consistency.

@@ -10,9 +10,8 @@ separated from the context management functions to avoid import cycles.
 
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Deque, Dict, Optional, Set, Tuple, TypedDict
+from typing import Any, Deque, Dict, FrozenSet, Optional, Set, Tuple, TypedDict
 from .pipe import AnyPipe
 from .ttnnsim import Tensor
 from .typedefs import Count, Shape, BindableTemplate
@@ -32,29 +31,19 @@ class SimulatorConfig:
     default_auto_grid: Shape = (8, 8)
     max_l1_bytes: int = DEFAULT_MAX_L1_BYTES
     num_devices: int = 4
+    # Set of event categories to record. Empty means tracing is disabled.
+    # Use trace.ALL_CATEGORIES to enable all categories.
+    trace_set: FrozenSet[str] = field(default_factory=frozenset)
 
 
 @dataclass
-class SimulatorStats:
-    """Statistics collection state."""
+class TraceEvent:
+    """A single recorded trace event."""
 
-    enabled: bool = False
-    stats_by_name: Dict[str, Dict[str, int]] = field(
-        default_factory=lambda: defaultdict(
-            lambda: {"reads": 0, "writes": 0, "tiles_read": 0, "tiles_written": 0}
-        )
-    )
-    pipe_stats_by_name: Dict[str, Dict[str, int]] = field(
-        default_factory=lambda: defaultdict(
-            lambda: {"reads": 0, "writes": 0, "tiles_read": 0, "tiles_written": 0}
-        )
-    )
-    dfb_stats_by_name: Dict[str, Dict[str, int]] = field(
-        default_factory=lambda: defaultdict(
-            lambda: {"reserves": 0, "waits": 0, "tiles_reserved": 0, "tiles_waited": 0}
-        )
-    )
-    dfb_name_counter: int = 0
+    event: str
+    tick: int
+    kernel: Optional[str]
+    data: Dict[str, Any] = field(default_factory=dict)
 
 
 class PipeEntry(TypedDict):
@@ -94,7 +83,6 @@ class SimulatorContext:
     """Complete simulator runtime context stored per-greenlet."""
 
     config: SimulatorConfig = field(default_factory=SimulatorConfig)
-    stats: SimulatorStats = field(default_factory=SimulatorStats)
     copy_state: CopySystemState = field(default_factory=CopySystemState)
     warnings: WarningState = field(default_factory=WarningState)
     scheduler: Any = None  # Optional[GreenletScheduler] - avoid import cycle
@@ -106,3 +94,4 @@ class SimulatorContext:
     kernel_l1_bytes: int = (
         0  # Total L1 capacity of DFBs created in the current kernel body
     )
+    trace_events: list[TraceEvent] = field(default_factory=list)

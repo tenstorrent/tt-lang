@@ -1227,6 +1227,18 @@ class Tensor:
         if hasattr(self, "_name"):
             result._name = self._name  # type: ignore
         result.memory_config = self.memory_config
+        # Accumulate the element-space origin so locality analysis can find the
+        # position of this slice within the original (root) sharded tensor.
+        # Open-ended slices (e.g. tensor[:]) have no computable start, so fall
+        # back to the parent's origin (which is correct when selecting the full extent).
+        parent_origin: Tuple[int, ...] = getattr(
+            self, "_element_origin", (0,) * len(self.shape)
+        )
+        try:
+            slice_origin = self.element_slice_starts(normalized)
+            result._element_origin = tuple(p + s for p, s in zip(parent_origin, slice_origin))  # type: ignore[attr-defined]
+        except ValueError:
+            result._element_origin = parent_origin  # type: ignore[attr-defined]
         return result
 
     def __setitem__(self, key: TensorKey, value: "Tensor") -> None:

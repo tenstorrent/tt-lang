@@ -27,7 +27,6 @@ except ImportError:
 from python.sim.context import reset_context
 from python.sim.greenlet_scheduler import set_scheduler_algorithm
 from python.sim.program import set_max_l1_bytes
-from python.sim.stats import reset_stats
 from python.sim.ttlang_sim import execute_script_with_simulator
 from python import sim
 
@@ -49,7 +48,6 @@ EXAMPLES_METAL_DIR = REPO_ROOT / "examples" / "metal_examples"
 def reset_simulator_context():
     """Reset simulator context before each test for isolation."""
     reset_context()
-    reset_stats()
     yield
 
 
@@ -107,6 +105,7 @@ def run_script_in_process(
         ),
         "broadcast_demo.py",
         "group_transfer_upsample.py",
+        "height_shard_gather.py",
         pytest.param(
             "general_broadcast.py",
             marks=requires_ttnn,
