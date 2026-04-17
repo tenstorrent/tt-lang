@@ -11,7 +11,7 @@ compiler annotates and lowers to L1 packer accumulation
 `test_matmul_l1_acc.py` exercises the matmul and passthrough RHS shapes;
 this file exercises non-matmul RHS shapes: FPU binary, SFPU unary, fused
 binary+unary, op-chains, subblocked elementwise, mixed FPU/matmul
-transitions, and the `.store()` init then `+=` accumulate pattern.
+transitions, and the `.store()` followed by `+=` accumulate pattern.
 """
 
 # REQUIRES: ttnn
@@ -52,6 +52,7 @@ def _make_binary_add_kernel():
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
+            out_blk.store(ttl.math.fill(out_blk, 0))
             for _ in range(Kt):
                 a_blk = a_dfb.wait()
                 b_blk = b_dfb.wait()
@@ -89,6 +90,7 @@ def _make_binary_mul_kernel():
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
+            out_blk.store(ttl.math.fill(out_blk, 0))
             for _ in range(Kt):
                 a_blk = a_dfb.wait()
                 b_blk = b_dfb.wait()
@@ -125,6 +127,7 @@ def _make_unary_relu_kernel():
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
+            out_blk.store(ttl.math.fill(out_blk, 0))
             for _ in range(Kt):
                 a_blk = a_dfb.wait()
                 out_blk += ttl.math.relu(a_blk)
@@ -158,6 +161,7 @@ def _make_binary_then_unary_kernel():
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
+            out_blk.store(ttl.math.fill(out_blk, 0))
             for _ in range(Kt):
                 a_blk = a_dfb.wait()
                 b_blk = b_dfb.wait()
@@ -196,6 +200,7 @@ def _make_fpu_chain_kernel():
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
+            out_blk.store(ttl.math.fill(out_blk, 0))
             for _ in range(Kt):
                 a_blk = a_dfb.wait()
                 b_blk = b_dfb.wait()
@@ -236,6 +241,7 @@ def _make_sfpu_chain_kernel():
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
+            out_blk.store(ttl.math.fill(out_blk, 0))
             for _ in range(Kt):
                 a_blk = a_dfb.wait()
                 out_blk += ttl.math.exp(ttl.math.relu(a_blk))
@@ -275,6 +281,7 @@ def _make_subblocked_add_kernel(block_m, block_n):
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
+            out_blk.store(ttl.math.fill(out_blk, 0))
             for _ in range(Kt):
                 a_blk = a_dfb.wait()
                 b_blk = b_dfb.wait()
@@ -318,6 +325,7 @@ def _make_mixed_elem_matmul_kernel(K1, K2):
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
+            out_blk.store(ttl.math.fill(out_blk, 0))
             for _ in range(K1):
                 a_blk = a_dfb.wait()
                 b_blk = b_dfb.wait()
@@ -393,6 +401,7 @@ def _make_fused_linear_relu_kernel(block_m, block_n, grid="auto"):
                         nb = node_n * n_per + ln
                         if nb < N_num:
                             out_blk = out_dfb.reserve()
+                            out_blk.store(ttl.math.fill(out_blk, 0))
                             c_blk = c_dfb.wait()
                             for _ in range(Kt):
                                 a_blk = a_dfb.wait()
@@ -458,8 +467,8 @@ def _make_fused_linear_relu_kernel(block_m, block_n, grid="auto"):
     return kernel
 
 
-def _make_store_init_then_acc_kernel(Kt):
-    """.store(a[0]+b[0]) init, then += (a[k]+b[k]) for K-1 iterations."""
+def _make_store_then_acc_kernel(Kt):
+    """.store(a[0]+b[0]), then += (a[k]+b[k]) for K-1 iterations."""
 
     @ttl.operation(grid=(1, 1))
     def kernel(a, b, out):
@@ -707,7 +716,7 @@ def test_fused_linear_relu_multinode(Mt, Kt, Nt, block_m, block_n, device):
 
 
 # ---------------------------------------------------------------------------
-# 10. `.store()` init then elementwise += accumulate. First iteration writes
+# 10. `.store()` then elementwise += accumulate. First iteration writes
 # a[0]+b[0] with .store(); remaining K-1 iterations accumulate a[k]+b[k]
 # with +=. Total is sum over K of (a[k]+b[k]).
 # ---------------------------------------------------------------------------
@@ -715,11 +724,55 @@ def test_fused_linear_relu_multinode(Mt, Kt, Nt, block_m, block_n, device):
 
 @pytest.mark.parametrize("Kt", [2, 4], ids=[f"K{k}" for k in [2, 4]])
 @pytest.mark.requires_device
-def test_store_init_then_elementwise_acc(Kt, device):
-    """.store(a+b) init then += (a+b) loop. Result = sum over K of (a+b)."""
+def test_store_then_elementwise_acc(Kt, device):
+    """.store(a+b) then += (a+b) loop. Result = sum over K of (a+b)."""
     a = torch.randn(Kt * TILE, TILE, dtype=torch.bfloat16)
     b = torch.randn(Kt * TILE, TILE, dtype=torch.bfloat16)
     golden = (a.float() + b.float()).reshape(Kt, TILE, TILE).sum(dim=0)
-    _run_acc_test(
-        _make_store_init_then_acc_kernel(Kt), [a, b], (TILE, TILE), golden, device
-    )
+    _run_acc_test(_make_store_then_acc_kernel(Kt), [a, b], (TILE, TILE), golden, device)
+
+
+# ---------------------------------------------------------------------------
+# 11. `+=` loop with no prior pack before it.
+# ---------------------------------------------------------------------------
+
+
+def _make_no_prior_value_kernel():
+    """sum over K of a[k] with no prior pack before the loop."""
+
+    @ttl.operation(grid=(1, 1))
+    def kernel(a, out):
+        Kt = a.shape[0] // TILE
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            out_blk = out_dfb.reserve()
+            for _ in range(Kt):
+                a_blk = a_dfb.wait()
+                out_blk += a_blk
+                a_blk.pop()
+            out_blk.push()
+
+        @ttl.datamovement()
+        def reader():
+            for kt in range(Kt):
+                with a_dfb.reserve() as blk:
+                    ttl.copy(a[kt : kt + 1, 0:1], blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_dfb.wait() as blk:
+                ttl.copy(blk, out[0:1, 0:1]).wait()
+
+    return kernel
+
+
+@pytest.mark.parametrize("Kt", [2, 4, 8], ids=[f"K{k}" for k in [2, 4, 8]])
+@pytest.mark.requires_device
+def test_no_prior_value_iter0_overwrite(Kt, device):
+    """`+=` loop with no prior pack before it."""
+    a = torch.randn(Kt * TILE, TILE, dtype=torch.bfloat16)
+    golden = a.float().reshape(Kt, TILE, TILE).sum(dim=0)
+    _run_acc_test(_make_no_prior_value_kernel(), [a], (TILE, TILE), golden, device)

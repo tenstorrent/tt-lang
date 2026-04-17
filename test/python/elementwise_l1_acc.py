@@ -10,7 +10,7 @@
 """
 Elementwise L1 packer accumulation: `out_blk += a_blk + b_blk` across K.
 
-Pins the generated compute kernel structure for the non-matmul `+=` path:
+Pins the generated compute kernel structure for the non-matmul `+=` lowering:
 - `llk_pack_reconfig_l1_acc(DISABLE)` before the K loop
 - FPU binary `add_tiles` + `pack_tile` inside the loop body
 - first-iteration `if (iv == lb)` guard containing

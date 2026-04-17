@@ -340,7 +340,7 @@ func.func @nested_reduction_loops() attributes {ttkernel.thread = #ttkernel.thre
 // CHECK:   scf.if
 // CHECK:     ttkernel.pack_reconfig_l1_acc
 // CHECK: }
-// No disable between the loops. Unconditional enable re-arms L1 acc
+// No disable between the loops. Unconditional enable re-enables L1 acc
 // after any init ops that may reset packer state.
 // CHECK-NOT: pack_reconfig_l1_acc(%{{.*}}0
 // CHECK: ttkernel.pack_reconfig_l1_acc
@@ -1197,5 +1197,116 @@ func.func @unrelated_scf_if_skipped_to_prior_pack(%cond: i1) attributes {ttkerne
     ttkernel.tile_regs_release() : () -> ()
   } {ttl.l1_acc_loop}
   ttkernel.cb_push_back(%cb_out, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  return
+}
+
+// -----
+
+// A non-annotated scf.for with lb == ub packs to the L1-acc loop's CB but
+// never executes, so its pack does not reach L1. The walk must not credit
+// such a for as a prior-value contributor; the lowering falls back to the
+// no-prior-pack pattern (DISABLE before, per-iteration ENABLE, DISABLE
+// after).
+
+// CHECK-LABEL: func.func @zero_trip_wrapper_not_credited
+// CHECK: scf.for %{{.*}} = %[[LBU:.*]] to %[[LBU]]
+// CHECK:   ttkernel.pack_tile
+// CHECK: } {ttl.tile_loop_stride
+// CHECK-NOT: ttkernel.pack_reconfig_l1_acc(%c1_i32
+// CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
+// CHECK: scf.for %[[IV:.*]] = %[[LB:.*]] to
+// CHECK:   ttkernel.pack_tile
+// CHECK:   arith.cmpi eq, %[[IV]], %[[LB]]
+// CHECK:   scf.if
+// CHECK:     ttkernel.pack_reconfig_l1_acc
+// CHECK: }
+// CHECK: ttkernel.cb_push_back
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]])
+func.func @zero_trip_wrapper_not_credited() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c4_i32 = arith.constant 4 : i32
+  ttkernel.cb_reserve_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  // Non-annotated scf.for with lb == ub: zero-trip, pack never runs.
+  scf.for %iv0 = %c0 to %c0 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.tile_loop_stride = 1 : index}
+  scf.for %iv = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_loop}
+  ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  return
+}
+
+// -----
+
+// Two annotated L1-acc loops share one CB reservation with a bare
+// non-annotated scf.for between them. The bare for packs nothing, but its
+// presence breaks `collectLoopGroups` so A and B end up in separate
+// groups. A's post-scope DISABLE finalizes A's accumulated value, then
+// B's pre-group DISABLE plus iteration-0 overwrite clobbers it — only B's
+// packs end up in L1.
+//
+// This test pins the current emission shape. The underlying fix belongs
+// in `collectLoopGroups` (grouping should span a bare non-annotated
+// scf.for that packs nothing to the shared CB) and is out of scope for
+// the prior-value change.
+
+// CHECK-LABEL: func.func @annotated_siblings_split_by_bare_for
+// CHECK: ttkernel.cb_reserve_back
+// CHECK: ttkernel.pack_reconfig_l1_acc
+// CHECK: scf.for {{.*}} {
+// CHECK:   ttkernel.pack_tile
+// CHECK:   scf.if
+// CHECK:     ttkernel.pack_reconfig_l1_acc
+// CHECK: } {ttl.l1_acc_loop}
+// CHECK: ttkernel.pack_reconfig_l1_acc
+// CHECK: scf.for
+// CHECK: }
+// CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]])
+// CHECK: scf.for {{.*}} {
+// CHECK:   ttkernel.pack_tile
+// CHECK: } {ttl.l1_acc_loop}
+func.func @annotated_siblings_split_by_bare_for() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c4_i32 = arith.constant 4 : i32
+  ttkernel.cb_reserve_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  // Annotated loop A: accumulates sum_{ivA} pack(cb) into L1.
+  scf.for %ivA = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_loop}
+  // Bare non-annotated scf.for with no packs — splits A and B into
+  // separate loop groups.
+  scf.for %ivU = %c0 to %c1 step %c1 {
+  }
+  // Annotated loop B: should accumulate onto A's L1 value in the same
+  // reservation, but overwrites it on iteration 0.
+  scf.for %ivB = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_loop}
+  ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }

@@ -34,7 +34,7 @@ The compiler surface covers three accumulation sources:
   `TTKernelInsertL1Accumulation` pass brackets each annotated loop
   group with `pack_reconfig_l1_acc` calls.
 
-- The init-then-accumulate pattern (`out_blk.store(v); for K-1: out_blk
+- The store-then-accumulate pattern (`out_blk.store(v); for K-1: out_blk
   += ...`) is lowered via L1 acc with a modified guard sequence: the
   pre-group reconfig enables L1 acc so iteration 0 accumulates onto the
   prior-pack value rather than overwriting it. `precededByNonAccumulatingPack`

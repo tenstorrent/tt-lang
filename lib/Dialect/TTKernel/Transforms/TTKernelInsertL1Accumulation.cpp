@@ -14,6 +14,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/IR/Builders.h"
 
 #define DEBUG_TYPE "ttkernel-insert-l1-accumulation"
@@ -95,15 +96,22 @@ precededByNonAccumulatingPack(scf::ForOp rootLoop,
       // An annotated scf.for has its own L1 acc lifecycle; its packs do
       // not provide a prior value to us. A non-annotated scf.for (e.g., a
       // compiler-generated tile-loop wrapper) packs with L1 acc disabled,
-      // so each pack to one of `packCBs` covers that CB.
+      // but only reaches L1 when it actually executes. Require a
+      // provably-positive trip count (both bounds constant with lb < ub);
+      // otherwise fall back to the no-prior-pack lowering.
       bool isAnnotated = forOp->hasAttr(kL1AccLoopAttrName) ||
                          forOp->hasAttr(kReductionLoopAttrName);
+      bool executes = false;
+      if (!isAnnotated) {
+        auto tripCounts = getConstLoopTripCounts(forOp);
+        executes = !tripCounts.empty() && !tripCounts.front().isZero();
+      }
       bool touchedOurs = false;
       for (Value cb : getPackTileCBs(forOp)) {
         if (!packCBs.contains(cb)) {
           continue;
         }
-        if (isAnnotated) {
+        if (!executes) {
           return false;
         }
         covered.insert(cb);
