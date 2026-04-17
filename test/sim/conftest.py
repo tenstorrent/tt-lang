@@ -9,22 +9,37 @@ import pytest
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
-        "--run-slow",
+        "--run-matmul-tutorial-ttnn",
         action="store_true",
         default=False,
-        help="Run tests marked as slow (skipped by default).",
+        help="Run matmul-tutorial tests that require real ttnn (steps 0 and 7); skipped by default.",
+    )
+    parser.addoption(
+        "--run-matmul-tutorial-no-ttnn",
+        action="store_true",
+        default=False,
+        help="Run matmul-tutorial simulator tests that do not require ttnn (steps 2-6); skipped by default.",
     )
 
 
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    if config.getoption("--run-slow"):
-        return
-    skip_slow = pytest.mark.skip(reason="slow test; pass --run-slow to enable")
+    skip_ttnn = pytest.mark.skip(
+        reason="matmul-tutorial test requiring ttnn; pass --run-matmul-tutorial-ttnn to enable"
+    )
+    skip_no_ttnn = pytest.mark.skip(
+        reason="matmul-tutorial simulator test; pass --run-matmul-tutorial-no-ttnn to enable"
+    )
     for item in items:
-        if item.get_closest_marker("slow"):
-            item.add_marker(skip_slow)
+        if item.get_closest_marker("matmul_tutorial_ttnn") and not config.getoption(
+            "--run-matmul-tutorial-ttnn"
+        ):
+            item.add_marker(skip_ttnn)
+        if item.get_closest_marker("matmul_tutorial_no_ttnn") and not config.getoption(
+            "--run-matmul-tutorial-no-ttnn"
+        ):
+            item.add_marker(skip_no_ttnn)
 
 
 from greenlet import greenlet

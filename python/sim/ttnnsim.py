@@ -814,8 +814,31 @@ class TensorSpec:
 
 
 # Dtype aliases
-bfloat16 = torch.bfloat16
-float32 = torch.float32
+bfloat16: torch.dtype = torch.bfloat16
+float32: torch.dtype = torch.float32
+
+# Original value saved so set_matmul_promote_bf16 can restore it.
+_original_bfloat16: torch.dtype = torch.bfloat16
+
+
+def set_matmul_promote_bf16(value: bool) -> None:
+    """Redirect bfloat16 to float32 for the entire process when the flag is active.
+
+    When enabled, both ``torch.bfloat16`` and the module-level ``bfloat16``
+    alias are rebound to ``torch.float32``.  Any subsequent use of
+    ``dtype=torch.bfloat16`` or ``dtype=ttnn.bfloat16`` in the user script
+    therefore creates float32 tensors natively, with no dispatch overhead or
+    casting.  Note: this doubles tensor memory usage; avoid for very large
+    examples on memory-constrained machines.  When disabled the originals are
+    restored.
+    """
+    global bfloat16
+    if value:
+        torch.bfloat16 = torch.float32
+        bfloat16 = torch.float32
+    else:
+        torch.bfloat16 = _original_bfloat16
+        bfloat16 = _original_bfloat16
 
 
 class Device:

@@ -226,12 +226,6 @@ def main() -> None:
     )
 
     parser.add_argument(
-        "target",
-        nargs="?",
-        help="Python file (.py) to run",
-    )
-
-    parser.add_argument(
         "--grid",
         type=str,
         metavar="ROWS,COLS",
@@ -280,12 +274,24 @@ def main() -> None:
     )
 
     parser.add_argument(
-        "script_args",
-        nargs=argparse.REMAINDER,
-        help="Arguments to pass to the script",
+        "--promote-bf16",
+        action="store_true",
+        dest="promote_bf16",
+        help="Redirect bfloat16 to float32 for faster computation on hardware without native bfloat16 support (e.g. Apple Silicon). Doubles tensor memory usage.",
     )
 
-    args = parser.parse_args()
+    # Use parse_known_args so that ttlang-sim flags are recognised regardless
+    # of whether they appear before or after the script name.  The positional
+    # .py target and any remaining tokens are collected in `remaining`.
+    args, remaining = parser.parse_known_args()
+    # First non-flag token in remaining is the target script; the rest are
+    # forwarded verbatim to the script.
+    if remaining and not remaining[0].startswith("-"):
+        args.target = remaining[0]
+        args.script_args = remaining[1:]
+    else:
+        args.target = getattr(args, "target", None)
+        args.script_args = remaining
 
     if not args.target:
         parser.print_help()
@@ -328,6 +334,12 @@ def main() -> None:
     if args.scheduler:
 
         set_scheduler_algorithm(args.scheduler)
+
+    # Enable bfloat16-to-float32 promotion if requested
+    if args.promote_bf16:
+        from .ttnnsim import set_matmul_promote_bf16
+
+        set_matmul_promote_bf16(True)
 
     # Enable tensor statistics collection if requested
     if args.show_stats:

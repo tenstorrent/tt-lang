@@ -141,9 +141,10 @@ def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
 def main() -> None:
     # Test with matrices that are multiples of tile size
     M, K, N = 128, 256, 64
-    a = ttnn.rand((M, K), dtype=ttnn.float32)
-    b = ttnn.rand((K, N), dtype=ttnn.float32)
-    out = ttnn.empty((M, N), dtype=ttnn.float32)
+    M, K, N = 2048, 2048, 2048
+    a = ttnn.rand((M, K), dtype=ttnn.bfloat16)
+    b = ttnn.rand((K, N), dtype=ttnn.bfloat16)
+    out = ttnn.empty((M, N), dtype=ttnn.bfloat16)
 
     print(f"Matrix multiplication: ({M}, {K}) @ ({K}, {N}) = ({M}, {N})")
     print(f"Tiles: A={M//32}x{K//32}, B={K//32}x{N//32}, Out={M//32}x{N//32}")

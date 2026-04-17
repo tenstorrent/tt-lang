@@ -230,11 +230,15 @@ Simulations (software simulation of runtime behavior):
 pytest test/sim/
 ```
 
-Some simulator tests are marked `slow` and are skipped by default.  Pass
-`--run-slow` to include them (the hardware CI always does; the GitHub-hosted
-sim CI does not):
+Matmul-tutorial simulator tests (steps 2-6) are skipped by default.  Pass
+`--run-matmul-tutorial-no-ttnn` to include them (the GitHub-hosted sim CI
+does this automatically).  Steps 0 and 7 require real ttnn and are skipped
+by default; pass `--run-matmul-tutorial-ttnn` to include them (the hardware
+CI does this automatically).
+
 ```bash
-pytest test/sim/ --run-slow
+pytest test/sim/ --run-matmul-tutorial-no-ttnn  # steps 2-6, no ttnn required
+pytest test/sim/ --run-matmul-tutorial-ttnn     # steps 0 and 7, requires ttnn
 ```
 
 ### Running with Simulator
