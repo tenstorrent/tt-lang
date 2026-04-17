@@ -51,14 +51,13 @@ def compile_ttl_to_ttkernel(
     func_passes.append(f"ttl-lower-to-loops{{dst-accumulation={dst_acc_str}}}")
     if maximize_dst:
         func_passes.append("ttl-schedule-operations")
-    func_passes.append("ttl-annotate-cb-associations")
-
     func_pipeline = ",".join(func_passes)
 
     pipeline_str = (
         f"builtin.module("
         f"func.func({func_pipeline}),"
         f"ttl-finalize-dfb-indices,"
+        f"func.func(ttl-annotate-cb-associations),"
         f"convert-ttl-to-ttkernel,"
         f"ttkernel-insert-inits,"
         f"canonicalize,"

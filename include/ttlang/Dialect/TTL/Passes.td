@@ -109,7 +109,18 @@ def TTLInsertIntermediateDFBs
     Compiler-allocated DFBs are marked with `ttl.compiler_allocated` so
     that `ttl-finalize-dfb-indices` can register them for the Python
     runtime.
+
+    When `enable` is false, the pass verifies that no operations require
+    compiler-allocated DFBs. If any `DFBInputOpInterface` op has a
+    non-DFB-attached operand, the pass emits an error diagnostic and
+    signals failure.
   }];
+
+  let options = [
+    Option<"enable", "enable", "bool", "true",
+           "Insert compiler-allocated intermediate DFBs. When false, "
+           "emit an error if any operation requires a compiler-allocated DFB.">
+  ];
 
   let dependentDialects = [
     "::mlir::tt::ttl::TTLDialect"
@@ -268,28 +279,6 @@ def TTLSubblockComputeForDST
   ];
 }
 
-def TTLLowerMatmulBlock
-    : Pass<"ttl-lower-matmul-block", "::mlir::func::FuncOp"> {
-  let summary = "Lower matmul computes to block-level hardware calls";
-  let description = [{
-    Marks `ttl.compute` ops containing `ttl.tile_matmul_block` for block-level
-    lowering by setting the `ttl.block_matmul` attribute. This attribute tells
-    `ttl-lower-to-loops` to collapse the iteration domain to a single point
-    (no per-tile loops), since matmul_block handles the full block atomically.
-
-    The pass also expands the single `tile_store` in the body into M*N stores
-    (one per output tile in the block), since matmul_block writes M*N DST
-    registers that each need to be packed.
-
-    The output must fit in DST (M*N <= capacity). Subblocking for larger
-    outputs is not yet implemented.
-  }];
-
-  let dependentDialects = [
-    "::mlir::arith::ArithDialect",
-    "::mlir::tt::ttl::TTLDialect"
-  ];
-}
 
 def TTLLowerToLoops
     : Pass<"ttl-lower-to-loops", "::mlir::func::FuncOp"> {
@@ -332,7 +321,10 @@ def TTLLowerToLoops
            "Use DST register accumulation for reduction loops. Reorders "
            "loops (parallel-outer, reduction-inner) so DST persists across "
            "reduction iterations. When disabled, uses per-tile L1 "
-           "accumulation. reduce_max always uses DST accumulation.">
+           "accumulation. reduce_max always uses DST accumulation.">,
+    Option<"useBlockMatmul", "use-block-matmul", "bool", "true",
+           "Lower matmul to block-level hardware calls "
+           "(experimental::matmul_block) instead of per-tile loops.">
   ];
 
   let dependentDialects = [
@@ -437,20 +429,21 @@ def TTLLowerSignpostToEmitC
 
 def TTLFinalizeDFBIndices
     : Pass<"ttl-finalize-dfb-indices", "::mlir::ModuleOp"> {
-  let summary = "Finalize DFB indices and emit compiler-allocated DFB metadata";
+  let summary = "Reuse compiler-allocated DFB indices and emit DFB metadata";
   let description = [{
-    Module-level pass that runs after all DFB-creating passes, before
-    convert-ttl-to-ttkernel. Performs three tasks:
+    Module-level pass that runs after all DFB-creating passes. Must
+    precede ttl-annotate-cb-associations (which copies cb_index onto
+    tile ops and would capture stale pre-reuse indices).
 
-    1. Walks all BindCBOp instances across all functions and computes the
-       true DFB count (max_dfb_index + 1).
-    2. Updates the `ttl.base_cta_index` attribute on every function to
-       this value, ensuring compile-time arg layout is correct.
-    3. Collects all BindCBOps marked with `ttl.compiler_allocated` and
-       builds the `ttl.compiler_allocated_dfbs` module attribute so the
-       Python runtime can create the corresponding CBDescriptor entries.
+    Applies lifetime-based index reuse to compiler-allocated DFBs via
+    linear scan allocation, partitioned by CircularBufferType. DFBs
+    whose lifetimes (bind_cb to last cb_pop) do not overlap are assigned
+    the same physical index. See docs/development/DFBManagement.md.
 
-    This pass is a no-op when no BindCBOps exist in the module.
+    After reuse, verifies the total DFB count does not exceed
+    kMaxCircularBuffers (32), updates ttl.base_cta_index on every
+    function, and builds the ttl.compiler_allocated_dfbs module
+    attribute for the Python runtime.
   }];
 }
 

@@ -49,11 +49,11 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Lower matmul to block-level hardware calls (default: enabled).",
     )
     p.add_argument(
-        "--ttl-auto-sync",
+        "--ttl-subblock-sync",
         default=None,
-        dest="auto_sync",
+        dest="subblock_sync",
         action=argparse.BooleanOptionalAction,
-        help="Let the compiler insert and move DFB synchronization ops (default: disabled).",
+        help="Refine DFB reserve/push to per-subblock granularity (default: disabled).",
     )
     p.add_argument(
         "--ttl-combine-pack-tiles",
@@ -82,6 +82,13 @@ def _make_parser() -> argparse.ArgumentParser:
         dest="strict_f32_acc",
         action=argparse.BooleanOptionalAction,
         help="Error if accumulation (+=) output block exceeds f32 DST capacity (default: disabled).",
+    )
+    p.add_argument(
+        "--ttl-compiler-dfbs",
+        default=None,
+        dest="compiler_dfbs",
+        action=argparse.BooleanOptionalAction,
+        help="Insert compiler-allocated intermediate DFBs for fused computations (default: enabled).",
     )
     return p
 
@@ -124,11 +131,12 @@ class CompilerOptions:
     maximize_dst: bool = True
     enable_fpu_binary_ops: bool = True
     use_block_matmul: bool = True
-    auto_sync: bool = False
+    subblock_sync: bool = False
     combine_pack_tiles: bool = True
     reduce_full_fp32: bool = True
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
+    compiler_dfbs: bool = True
 
     # Fields that were explicitly provided (not defaulted). Excluded from
     # equality and hashing so two instances with the same bool values are

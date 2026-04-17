@@ -56,13 +56,7 @@ struct TTLAnnotateCBAssociationsPass
           continue;
         }
 
-        // BindCBOp verifier rejects cb_index outside [0, 31].
-        int64_t cbIndex = bindOp.getCbIndexAttr().getInt();
-        assert(cbIndex >= 0 && cbIndex < kMaxCircularBuffers &&
-               "cb_index out of range (BindCBOp verifier bug?)");
-
-        // Store the mapping on the compute op itself using an attribute.
-        setCBIndexAttr(compute, idx, cbIndex);
+        setCBIndexAttr(compute, idx, bindOp.getCbIndexAttr().getInt());
       }
     });
 
@@ -86,11 +80,6 @@ struct TTLAnnotateCBAssociationsPass
         signalPassFailure();
         return;
       }
-
-      // BindCBOp verifier rejects cb_index outside [0, 31].
-      int64_t cbIndex = bindOp.getCbIndexAttr().getInt();
-      assert(cbIndex >= 0 && cbIndex < kMaxCircularBuffers &&
-             "cb_index out of range (BindCBOp verifier bug?)");
 
       bcast->setAttr(kBcastOutputCBIndexAttrName, bindOp.getCbIndexAttr());
     });

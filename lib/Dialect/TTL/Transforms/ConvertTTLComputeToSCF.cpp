@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include "ttlang/Dialect/TTL/Transforms/LowerMatmulCompute.h"
+
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -44,60 +46,21 @@ static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
   return op.getIterationDomain(b);
 }
 
-/// Apply an indexing map to the induction variables using MLIR's
-/// makeComposedFoldedAffineApply utility for automatic composition and folding.
-static SmallVector<Value> applyIndexingMap(OpBuilder &b, Location loc,
-                                           AffineMap map, ValueRange ivs) {
-  SmallVector<OpFoldResult> operands(ivs.begin(), ivs.end());
-  assert(operands.size() == map.getNumDims() &&
-         "IV count must match map dimensions (verifier ensures this)");
-
-  SmallVector<Value> mapped;
-  mapped.reserve(map.getNumResults());
-
-  for (AffineExpr expr : map.getResults()) {
-    AffineMap singleResultMap =
-        AffineMap::get(map.getNumDims(), map.getNumSymbols(), expr);
-    OpFoldResult result = affine::makeComposedFoldedAffineApply(
-        b, loc, singleResultMap, operands);
-    mapped.push_back(getValueOrCreateConstantIndexOp(b, loc, result));
-  }
-  return mapped;
-}
-
 /// Generate side-effect-only loop body. Extracts tiles from inputs, clones
 /// compute body ops, and returns nothing (stores are explicit side effects).
 static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
                                             ComputeOp op,
                                             ArrayRef<AffineMap> indexingMaps,
                                             ValueRange ivs) {
-  SmallVector<Value> extractedInputs;
-  for (auto [idx, input] : llvm::enumerate(op.getInputs())) {
-    SmallVector<Value> indices =
-        applyIndexingMap(b, loc, indexingMaps[idx], ivs);
-    Value tile = tensor::ExtractOp::create(b, loc, input, indices);
-    extractedInputs.push_back(tile);
-  }
-
-  // Output block args get a dummy extract from the output tensor. These are
-  // needed for SSA mapping but unused in the body (stores write via DST).
-  SmallVector<Value> extractedOutputs;
   size_t numInputs = op.getInputs().size();
-  for (auto [idx, output] : llvm::enumerate(op.getOutputs())) {
-    SmallVector<Value> indices =
-        applyIndexingMap(b, loc, indexingMaps[numInputs + idx], ivs);
-    Value tile = tensor::ExtractOp::create(b, loc, output, indices);
-    extractedOutputs.push_back(tile);
-  }
+  auto extractedInputs =
+      extractTilesAtIndices(b, loc, op.getInputs(), indexingMaps, ivs);
+  auto extractedOutputs = extractTilesAtIndices(b, loc, op.getOutputs(),
+                                                indexingMaps, ivs, numInputs);
 
   Block &bodyBlock = op.getBody().front();
   IRMapping mapping;
-  for (auto [idx, arg] : llvm::enumerate(op.getInputs())) {
-    mapping.map(bodyBlock.getArgument(idx), extractedInputs[idx]);
-  }
-  for (auto [idx, arg] : llvm::enumerate(op.getOutputs())) {
-    mapping.map(bodyBlock.getArgument(numInputs + idx), extractedOutputs[idx]);
-  }
+  mapComputeBodyArgs(mapping, op, extractedInputs, extractedOutputs, ivs);
 
   // Resolve iter_index ops to loop IVs via the IRMapping.
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
@@ -206,37 +169,14 @@ static scf::LoopNest generateAccumulatingLoops(
   // Generate tile ops (excluding stores) inside the reduction loop body.
   auto generateTileOpsOnly = [&](OpBuilder &builder, Location bodyLoc,
                                  ValueRange fullIVs) {
-    SmallVector<Value> extractedInputs;
-    for (auto [idx, input] : llvm::enumerate(op.getInputs())) {
-      SmallVector<Value> indices =
-          applyIndexingMap(builder, bodyLoc, indexingMaps[idx], fullIVs);
-      Value tile = tensor::ExtractOp::create(builder, bodyLoc, input, indices);
-      extractedInputs.push_back(tile);
-    }
-
-    SmallVector<Value> extractedOutputs;
     size_t numInputs = op.getInputs().size();
-    for (auto [idx, output] : llvm::enumerate(op.getOutputs())) {
-      SmallVector<Value> indices = applyIndexingMap(
-          builder, bodyLoc, indexingMaps[numInputs + idx], fullIVs);
-      Value tile = tensor::ExtractOp::create(builder, bodyLoc, output, indices);
-      extractedOutputs.push_back(tile);
-    }
+    auto extractedInputs = extractTilesAtIndices(
+        builder, bodyLoc, op.getInputs(), indexingMaps, fullIVs);
+    auto extractedOutputs = extractTilesAtIndices(
+        builder, bodyLoc, op.getOutputs(), indexingMaps, fullIVs, numInputs);
 
     IRMapping mapping;
-    for (auto [idx, arg] : llvm::enumerate(op.getInputs())) {
-      mapping.map(bodyBlock.getArgument(idx), extractedInputs[idx]);
-    }
-    for (auto [idx, arg] : llvm::enumerate(op.getOutputs())) {
-      mapping.map(bodyBlock.getArgument(numInputs + idx),
-                  extractedOutputs[idx]);
-    }
-
-    for (Operation &bodyOp : bodyBlock.without_terminator()) {
-      if (auto iterIdx = dyn_cast<IterIndexOp>(&bodyOp)) {
-        mapping.map(iterIdx.getResult(), fullIVs[iterIdx.getDim()]);
-      }
-    }
+    mapComputeBodyArgs(mapping, op, extractedInputs, extractedOutputs, fullIVs);
 
     for (Operation &bodyOp : bodyBlock.without_terminator()) {
       if (isa<IterIndexOp, TileStoreOp>(&bodyOp)) {
@@ -334,11 +274,12 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
   /// Populated during pattern application, consumed by runOnOperation.
   SmallVector<scf::ForOp> &loopsToUnroll;
   bool dstAccumulation;
+  bool useBlockMatmul;
 
   LowerComputeToLoops(MLIRContext *ctx, SmallVector<scf::ForOp> &loopsToUnroll,
-                      bool dstAccumulation)
+                      bool dstAccumulation, bool useBlockMatmul)
       : OpRewritePattern<ComputeOp>(ctx), loopsToUnroll(loopsToUnroll),
-        dstAccumulation(dstAccumulation) {}
+        dstAccumulation(dstAccumulation), useBlockMatmul(useBlockMatmul) {}
 
   LogicalResult matchAndRewrite(ComputeOp op,
                                 PatternRewriter &rewriter) const override {
@@ -378,13 +319,12 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       iterTypes.push_back(mlir::cast<StringAttr>(attr));
     }
 
-    // Subblocked accumulating computes (matmul K>1 with output > DST) are
-    // handled by LowerMatmulBlock, which generates the K reduction loop
-    // with per-K DstSections. By the time LowerToLoops runs, the ComputeOp
-    // has been replaced. This assert catches unexpected cases.
-    assert(!(isSubblocked && isAccumulating) &&
-           "subblocked accumulating computes should be handled by "
-           "LowerMatmulBlock before LowerToLoops");
+    // Block-level matmul: a single DstSectionOp with the matmul_block call,
+    // per-tile post-ops, and per-tile stores. When useBlockMatmul is false,
+    // the compute falls through to per-tile loop lowering (matmul_tile).
+    if (useBlockMatmul && op.containsOp<TileMatmulBlockOp>()) {
+      return generateMatmulCompute(rewriter, loc, op, indexingMaps, iterTypes);
+    }
 
     // Side-effect-only loops: no iter_args, no tensor.insert, no scf.yield
     // with tensor values. Stores are explicit side effects (tile_store).
@@ -706,7 +646,7 @@ struct TTLLowerToLoopsPass
     SmallVector<scf::ForOp> loopsToUnroll;
     RewritePatternSet patterns(func.getContext());
     patterns.add<LowerComputeToLoops>(func.getContext(), loopsToUnroll,
-                                      dstAccumulation);
+                                      dstAccumulation, useBlockMatmul);
     FrozenRewritePatternSet frozen(std::move(patterns));
     if (failed(applyPatternsGreedily(func, frozen))) {
       return signalPassFailure();
