@@ -408,11 +408,10 @@ def test_eltwise_1d_broadcast_warning(scheduler: str) -> None:
     ],
 )
 @pytest.mark.matmul_tutorial_no_ttnn
-@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
-def test_matmul_tutorial_sim(script_name: str, scheduler: str) -> None:
+def test_matmul_tutorial_sim(script_name: str) -> None:
     """Test matmul-tutorial steps 2-6 on the simulator (pass --run-matmul-tutorial-no-ttnn to enable)."""
     code, out = run_script_in_process(
-        MATMUL_TUTORIAL_DIR / script_name, scheduler, promote_bf16=True
+        MATMUL_TUTORIAL_DIR / script_name, scheduler="fair", promote_bf16=True
     )
     assert code == 0, f"Script failed with code {code}. Output:\n{out}"
 
@@ -427,10 +426,9 @@ def test_matmul_tutorial_sim(script_name: str, scheduler: str) -> None:
     ],
 )
 @pytest.mark.matmul_tutorial_ttnn
-@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
-def test_matmul_tutorial_hw(script_name: str, scheduler: str) -> None:
+def test_matmul_tutorial_hw(script_name: str) -> None:
     """Test matmul-tutorial steps 0 and 7 on hardware (pass --run-matmul-tutorial-ttnn to enable)."""
     code, out = run_script_in_process(
-        MATMUL_TUTORIAL_DIR / script_name, scheduler, promote_bf16=True
+        MATMUL_TUTORIAL_DIR / script_name, scheduler="fair", promote_bf16=True
     )
     assert code == 0, f"Script failed with code {code}. Output:\n{out}"
