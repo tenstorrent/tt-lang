@@ -5,6 +5,43 @@
 """Shared pytest fixtures for simulator tests."""
 
 import pytest
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--run-matmul-tutorial-ttnn",
+        action="store_true",
+        default=False,
+        help="Run matmul-tutorial tests that require real ttnn (steps 0 and 7); skipped by default.",
+    )
+    parser.addoption(
+        "--run-matmul-tutorial-no-ttnn",
+        action="store_true",
+        default=False,
+        help="Run matmul-tutorial simulator tests that do not require ttnn (steps 2-6); skipped by default.",
+    )
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    skip_ttnn = pytest.mark.skip(
+        reason="matmul-tutorial test requiring ttnn; pass --run-matmul-tutorial-ttnn to enable"
+    )
+    skip_no_ttnn = pytest.mark.skip(
+        reason="matmul-tutorial simulator test; pass --run-matmul-tutorial-no-ttnn to enable"
+    )
+    for item in items:
+        if item.get_closest_marker("matmul_tutorial_ttnn") and not config.getoption(
+            "--run-matmul-tutorial-ttnn"
+        ):
+            item.add_marker(skip_ttnn)
+        if item.get_closest_marker("matmul_tutorial_no_ttnn") and not config.getoption(
+            "--run-matmul-tutorial-no-ttnn"
+        ):
+            item.add_marker(skip_no_ttnn)
+
+
 from greenlet import greenlet
 from python.sim.blockstate import ThreadType
 from python.sim.context import set_current_thread_type, reset_context
