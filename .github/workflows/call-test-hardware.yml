@@ -124,7 +124,7 @@ jobs:
       - name: Simulator tests
         run: |
           source build/env/activate
-          python3 -m pytest test/sim -v -n auto --run-matmul-tutorial-ttnn --tb=short --junitxml=build/test/sim-report.xml
+          python3 -m pytest test/sim -v -n auto --tb=short --junitxml=build/test/sim-report.xml
 
       - name: Hardware compiler example scripts
         run: |
