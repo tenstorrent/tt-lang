@@ -330,6 +330,18 @@ inline void mapComputeBodyArgs(IRMapping &mapping, ComputeOp op,
 }
 
 //===----------------------------------------------------------------------===//
+// Live interval for register/resource allocation
+//===----------------------------------------------------------------------===//
+
+/// A live interval representing the lifetime of a value or resource.
+/// Used by linear scan allocators in TTLAssignDST and TTLFinalizeDFBIndices.
+struct Interval {
+  int64_t start; // Operation index where value becomes live
+  int64_t end;   // Operation index of last use
+  Value value;   // SSA value this interval represents
+};
+
+//===----------------------------------------------------------------------===//
 // DST capacity computation
 //===----------------------------------------------------------------------===//
 

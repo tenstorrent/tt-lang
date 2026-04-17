@@ -54,25 +54,42 @@ FailureOr<Value> materializeToDFB(Value intermediate, ModuleOp moduleOp,
   auto cbType = CircularBufferType::get(ctx, shape, elementType, blockCount);
 
   int32_t dfbIndex = getNextAvailableDFBIndex(moduleOp);
-  // TODO: Move this check to TTLFinalizeDFBIndices after DFB index reuse
-  // is implemented (see docs/development/DFB_Index_Reuse.md). Reuse will
-  // reduce the physical DFB count, so checking here over-reports.
-  if (dfbIndex >= kMaxCircularBuffers) {
-    return intermediate.getDefiningOp()->emitError()
-           << "compiler-allocated DFB would exceed the maximum of "
-           << kMaxCircularBuffers << " circular buffers (need index "
-           << dfbIndex << ")";
-  }
 
   Operation *defOp = intermediate.getDefiningOp();
   assert(defOp && "intermediate must have a defining op");
-  builder.setInsertionPointAfter(defOp);
+
+  // Hoist BindCBOp to the function body entry: its cb_index is function-
+  // scoped and TTLFinalizeDFBIndices requires every compiler-allocated
+  // BindCBOp to live there. Only BindCBOp hoists; reserve/store/wait/attach
+  // stay at the def site to preserve per-invocation accounting inside
+  // loops and conditional branches.
+  auto funcOp = defOp->getParentOfType<func::FuncOp>();
+  assert(funcOp && "intermediate must be inside a func::FuncOp");
+  Block &body = funcOp.getBody().front();
+
+  // Place after the last leading BindCBOp so ordering is deterministic.
+  Operation *insertAfter = nullptr;
+  for (Operation &op : body) {
+    if (isa<BindCBOp>(&op)) {
+      insertAfter = &op;
+    } else if (insertAfter) {
+      break;
+    }
+  }
+  if (insertAfter) {
+    builder.setInsertionPointAfter(insertAfter);
+  } else {
+    builder.setInsertionPointToStart(&body);
+  }
 
   auto indexAttr = builder.getIndexAttr(dfbIndex);
   auto blockCountAttr = builder.getI64IntegerAttr(blockCount);
   auto bindCB =
       BindCBOp::create(builder, loc, cbType, indexAttr, blockCountAttr);
   bindCB->setAttr(kCompilerAllocatedAttrName, builder.getUnitAttr());
+
+  // Remaining ops bind to the intermediate's def site.
+  builder.setInsertionPointAfter(defOp);
 
   auto reserve =
       CBReserveOp::create(builder, loc, tensorType, bindCB.getResult());
@@ -93,6 +110,8 @@ FailureOr<Value> materializeToDFB(Value intermediate, ModuleOp moduleOp,
 struct TTLInsertIntermediateDFBsPass
     : public impl::TTLInsertIntermediateDFBsBase<
           TTLInsertIntermediateDFBsPass> {
+  using TTLInsertIntermediateDFBsBase::TTLInsertIntermediateDFBsBase;
+
   void runOnOperation() override {
     auto funcOp = getOperation();
     auto moduleOp = funcOp->getParentOfType<ModuleOp>();
@@ -100,13 +119,39 @@ struct TTLInsertIntermediateDFBsPass
       return;
     }
 
+    SmallVector<DFBInputOpInterface> candidates;
+    funcOp.walk([&](DFBInputOpInterface op) { candidates.push_back(op); });
+
+    // When compiler DFBs are disabled, verify that no operations require
+    // them and emit an actionable error if any do.
+    if (!enable) {
+      for (DFBInputOpInterface dfbInputOp : candidates) {
+        Operation *op = dfbInputOp.getOperation();
+        auto requiredIndices = dfbInputOp.getDFBInputOperandIndices();
+
+        for (unsigned idx : requiredIndices) {
+          Value operand = op->getOperand(idx);
+          if (getAttachedCB(operand)) {
+            continue;
+          }
+
+          op->emitOpError("operand #")
+              << idx
+              << " requires a DFB-attached value but compiler-allocated DFBs "
+                 "are disabled (--no-ttl-compiler-dfbs); either enable "
+                 "compiler DFBs or store the intermediate to a user-declared "
+                 "DFB before this operation";
+          signalPassFailure();
+          return;
+        }
+      }
+      return;
+    }
+
     // Track values already materialized to avoid duplicate DFBs when
     // multiple DFBInputOpInterface ops consume the same intermediate.
     llvm::DenseMap<Value, Value> materialized;
     OpBuilder builder(funcOp.getContext());
-
-    SmallVector<DFBInputOpInterface> candidates;
-    funcOp.walk([&](DFBInputOpInterface op) { candidates.push_back(op); });
 
     for (DFBInputOpInterface dfbInputOp : candidates) {
       Operation *op = dfbInputOp.getOperation();

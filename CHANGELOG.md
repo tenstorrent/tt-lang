@@ -69,3 +69,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Examples and documentation
 - Elementwise tutorial
 - Image upsample with row-major tensors
+
+## Version 1.0.0
+
+### Compiler
+
+- Support `+=` syntax in conjunction with dot product (`@`) lowered to packer L1 accumulation
+- Support implicit temporary compute-kernel-local DFBs
+- Support `ttl.Pipenet`
+- Support implicit `ttl.Block.push` and `ttl.Block.pop`
+- Support implicit `ttl.Transfer.wait`
+- Support for `expm1`, `exp2`, `ceil`, `sign`, `gelu`, `silu`, `hardsigmoid`, `square`, `softsign`, `signbit`, `frac`, `trunc` in `ttl.math`
+
+### Simulator
+
+- Support for `ttl.GroupTransfer`
+- SPMD and mesh device simulation support
+- Support for `ttnn.all_reduce` CCLs
+- Use tracing to report statistics with `ttlang-sim-stats`
+- Remote L1 reads/writes statistics
+
+### Examples and documentation
+- Matmul tutorial

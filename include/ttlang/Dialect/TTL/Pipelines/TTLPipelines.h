@@ -48,6 +48,12 @@ struct TTLToTTKernelPipelineOptions
       *this, "strict-f32-acc",
       llvm::cl::desc("Error if accumulation output exceeds f32 DST capacity."),
       llvm::cl::init(false)};
+  Option<bool> compilerDFBs{
+      *this, "compiler-dfbs",
+      llvm::cl::desc("Insert compiler-allocated intermediate DFBs for fused "
+                     "computations. When disabled, emit an error if any "
+                     "operation requires a compiler-allocated DFB."),
+      llvm::cl::init(true)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,
