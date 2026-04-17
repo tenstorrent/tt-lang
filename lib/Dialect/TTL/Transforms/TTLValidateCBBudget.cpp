@@ -45,12 +45,12 @@ namespace mlir::tt::ttl {
 namespace {
 
 /// Fallback when the module has no `system_desc` / device: same static CB
-/// region per core as Wormhole and Blackhole (1464 KiB L1 minus 128 KiB
+/// region per core as Wormhole and Blackhole (1464 KiB L1 minus 32 KiB
 /// reserved in tt-metal dev_mem_map). Matches
 /// `ttl.constants.DEFAULT_L1_CB_BUDGET_BYTES` and
 /// `ChipDescAttr::getUsableL1Size()` for those chips when IR carries attrs.
 static constexpr uint32_t fallbackUsableL1Bytes =
-    static_cast<uint32_t>((1464 - 128) * 1024);
+    static_cast<uint32_t>(1432 * 1024);
 
 static std::string formatShape(llvm::ArrayRef<int64_t> shape) {
   std::string s;
