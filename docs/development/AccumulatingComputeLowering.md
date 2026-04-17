@@ -82,6 +82,74 @@ Reduction loops are annotated with `ttl.reduction_loop`.
 `TTKernelInsertL1Accumulation` inserts the guard after
 `tile_regs_acquire` inside reduction loops.
 
+### Guard placement around L1 accumulation loops
+
+`TTKernelInsertL1Accumulation` brackets each loop group (consecutive
+sibling loops sharing a pack CB, collected by `collectLoopGroups`) with
+`pack_reconfig_l1_acc` calls. The default sequence is:
+
+```
+pack_reconfig_l1_acc(0)              // before group: disable
+for iv = lb..ub:
+    ...pack...
+    if iv == lb: pack_reconfig_l1_acc(1)   // per-iteration enable
+pack_reconfig_l1_acc(0)              // after group: disable
+```
+
+Iteration 0 packs with L1 acc disabled (overwrites stale L1); the
+per-iteration enable arms subsequent iterations to accumulate.
+
+When a non-accumulating pack into the loop's pack CB precedes the loop in
+the same parent block, L1 already holds a value the loop must accumulate
+onto. The pre-group reconfig becomes ENABLE and the per-iteration enable
+on the root loop is suppressed:
+
+```
+pack_tile(...)                       // prior pack — L1 acc off, writes V0
+pack_reconfig_l1_acc(1)              // before group: enable (was 0)
+for iv = lb..ub:
+    ...pack...                       // every iteration accumulates
+pack_reconfig_l1_acc(0)              // after group: disable
+```
+
+`precededByNonAccumulatingPack` detects the prior pack via a backward
+walk over the L1-acc loop's parent block. The walk recognizes:
+
+- `pack_tile` to one of the loop's pack CBs: contributes a prior value.
+- `cb_reserve_back` / `cb_push_back` on one of those CBs: boundary —
+  resets the L1 slot for that CB.
+- An annotated `scf.for` (`ttl.l1_acc_loop` or `ttl.reduction_loop`)
+  packing to one of those CBs: boundary — has its own enable scope.
+- A non-annotated `scf.for` packing to one of those CBs (e.g., the
+  compiler-generated tile-loop wrappers carrying `ttl.tile_loop_stride`):
+  contributes a prior value, since its packs run with L1 acc disabled.
+- Any other region-bearing op (`scf.if`, `scf.while`, custom ops with
+  regions) whose body packs to one of those CBs: boundary — the
+  helper does not reason about its execution semantics.
+
+Same-block adjacency matters because the walk depends on deterministic
+execution ordering immediately before the loop. A pack in an outer
+region (e.g., the loop is wrapped by another `scf.for`) executes only
+once relative to multiple iterations of the wrapper, so its value is
+not the most recent on iterations after the first.
+
+Multi-output requirement: returns true only when *every* CB in the
+loop's pack-CB set is covered by some preceding non-accumulating pack.
+Partial coverage falls back to the standard pattern because L1 acc is
+enabled or disabled for the entire sync region — there is no per-CB
+switch, and enabling pre-group with a partially uncovered set would
+corrupt the uncovered CBs' first iteration.
+
+Sibling loops (idx > 0) in a group always emit an unconditional pre-loop
+enable plus a per-iteration enable, regardless of whether the root has a
+prior pack. The per-iteration enable on the sibling becomes a redundant
+no-op if the root's pre-group enable already armed L1 acc.
+
+Idempotency: the pass detects a prior run by either finding a
+`pack_reconfig_l1_acc` inside the L1-acc loop body (standard pattern) or
+immediately preceding the loop (prior-value pattern) and skipping the
+loop in that case.
+
 ## Per-op init insertion
 
 `TTKernelInsertInits` uses two targeted walks instead of a block walk:

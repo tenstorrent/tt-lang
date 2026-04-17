@@ -573,9 +573,7 @@ def test_fpu_chain_mul_add(Kt, device):
     b = torch.randn(Kt * TILE, TILE, dtype=torch.bfloat16)
     c = torch.randn(Kt * TILE, TILE, dtype=torch.bfloat16)
     golden = (a.float() * b.float() + c.float()).reshape(Kt, TILE, TILE).sum(dim=0)
-    _run_acc_test(
-        _make_fpu_chain_kernel(), [a, b, c], (TILE, TILE), golden, device
-    )
+    _run_acc_test(_make_fpu_chain_kernel(), [a, b, c], (TILE, TILE), golden, device)
 
 
 # ---------------------------------------------------------------------------
@@ -590,9 +588,7 @@ def test_sfpu_chain_exp_relu(Kt, device):
     # Inputs scaled down: exp(relu(x)) grows fast; N(0,1) tails blow up bf16.
     a = torch.randn(Kt * TILE, TILE, dtype=torch.bfloat16) * 0.5
     golden = torch.exp(torch.relu(a.float())).reshape(Kt, TILE, TILE).sum(dim=0)
-    _run_acc_test(
-        _make_sfpu_chain_kernel(), [a], (TILE, TILE), golden, device, threshold=0.99
-    )
+    _run_acc_test(_make_sfpu_chain_kernel(), [a], (TILE, TILE), golden, device)
 
 
 # ---------------------------------------------------------------------------
@@ -623,9 +619,7 @@ def test_subblocked_binary_add(block_m, block_n, Kt, device):
     a = torch.randn(M, N, dtype=torch.bfloat16)
     b = torch.randn(M, N, dtype=torch.bfloat16)
     golden = (
-        (a.float() + b.float())
-        .reshape(Kt, block_m * TILE, block_n * TILE)
-        .sum(dim=0)
+        (a.float() + b.float()).reshape(Kt, block_m * TILE, block_n * TILE).sum(dim=0)
     )
     _run_acc_test(
         _make_subblocked_add_kernel(block_m, block_n),
@@ -682,7 +676,8 @@ FUSED_LINEAR_PARAMS = [
     "Mt,Kt,Nt,block_m,block_n",
     FUSED_LINEAR_PARAMS,
     ids=[
-        f"tiles{mt}x{kt}x{nt}_blk{bm}x{bn}" for mt, kt, nt, bm, bn in FUSED_LINEAR_PARAMS
+        f"tiles{mt}x{kt}x{nt}_blk{bm}x{bn}"
+        for mt, kt, nt, bm, bn in FUSED_LINEAR_PARAMS
     ],
 )
 @pytest.mark.requires_device
@@ -708,8 +703,6 @@ def test_fused_linear_relu_multinode(Mt, Kt, Nt, block_m, block_n, device):
         (M, N),
         golden,
         device,
-        # Deeper op chain accumulates more bf16 rounding across K; relax slightly.
-        threshold=0.99,
     )
 
 

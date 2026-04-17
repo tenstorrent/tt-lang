@@ -27,6 +27,107 @@ namespace ttk = mlir::tt::ttkernel;
 
 namespace {
 
+/// Returns true if every CB in `packCBs` has a prior value in L1 from a
+/// non-accumulating pack that precedes `rootLoop` in its parent block.
+/// When true, the reconfig before the group must enable L1 acc instead of
+/// disabling it.
+///
+/// See `docs/development/AccumulatingComputeLowering.md` ("Guard placement
+/// around L1 accumulation loops") for the full set of detection rules,
+/// boundary conditions, and the multi-output coverage requirement.
+static bool
+precededByNonAccumulatingPack(scf::ForOp rootLoop,
+                              const llvm::SmallDenseSet<Value, 2> &packCBs) {
+  Block *block = rootLoop->getBlock();
+  if (!block) {
+    return false;
+  }
+  auto it = Block::iterator(rootLoop);
+  if (it == block->begin()) {
+    return false;
+  }
+
+  // Track which of `packCBs` have been confirmed by a preceding pack.
+  // Return true only when all are covered.
+  llvm::SmallDenseSet<Value, 2> covered;
+  auto record = [&](Value cb) {
+    if (packCBs.contains(cb)) {
+      covered.insert(cb);
+    }
+  };
+  auto allCovered = [&] { return covered.size() == packCBs.size(); };
+
+  for (auto revIt = Block::reverse_iterator(it); revIt != block->rend();
+       ++revIt) {
+    Operation *op = &*revIt;
+    if (auto pack = dyn_cast<ttk::PackTileOp>(op)) {
+      record(pack.getOutCb());
+      if (allCovered()) {
+        return true;
+      }
+      continue;
+    }
+    if (auto reserve = dyn_cast<ttk::CBReserveBackOp>(op)) {
+      if (packCBs.contains(reserve.getCb())) {
+        return false;
+      }
+      continue;
+    }
+    if (auto push = dyn_cast<ttk::CBPushBackOp>(op)) {
+      if (packCBs.contains(push.getCb())) {
+        return false;
+      }
+      continue;
+    }
+    if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+      auto innerCBs = getPackTileCBs(forOp);
+      bool packsOurs = false;
+      for (auto cb : innerCBs) {
+        if (packCBs.contains(cb)) {
+          packsOurs = true;
+          break;
+        }
+      }
+      if (!packsOurs) {
+        continue;
+      }
+      // An annotated scf.for has its own L1 acc lifecycle; its packs do
+      // not provide a prior value to us. A non-annotated scf.for (e.g., a
+      // compiler-generated tile-loop wrapper) packs with L1 acc disabled,
+      // so each pack to one of `packCBs` covers that CB.
+      if (forOp->hasAttr(kL1AccLoopAttrName) ||
+          forOp->hasAttr(kReductionLoopAttrName)) {
+        return false;
+      }
+      for (Value cb : innerCBs) {
+        record(cb);
+      }
+      if (allCovered()) {
+        return true;
+      }
+      continue;
+    }
+    // Conservative fallback for any other region-bearing op (scf.if,
+    // scf.while, custom region ops): if its body packs to one of our CBs
+    // we cannot reason about its execution semantics, so treat as a
+    // boundary.
+    if (op->getNumRegions() > 0) {
+      bool packsOurs = false;
+      op->walk([&](ttk::PackTileOp pack) {
+        if (packCBs.contains(pack.getOutCb())) {
+          packsOurs = true;
+          return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
+      });
+      if (packsOurs) {
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
 /// Find the innermost enclosing L1 acc or reduction loop.
 /// User-written += loops (kL1AccLoopAttrName) take precedence over
 /// compiler-generated reduction loops because the user-specified loop
@@ -62,12 +163,22 @@ struct TTKernelInsertL1AccumulationPass
       if (!loop || !visitedLoops.insert(loop).second) {
         return;
       }
-      // Skip if this pass already ran (idempotency).
+      // Skip if this pass already ran. The signal is a PackReconfigL1AccOp
+      // either inside the loop (per-iteration enable, emitted in the
+      // standard pattern) or immediately preceding the loop (the reconfig
+      // emitted before every group, present in both patterns).
       bool alreadyProcessed = false;
       loop->walk([&](ttk::PackReconfigL1AccOp) {
         alreadyProcessed = true;
         return WalkResult::interrupt();
       });
+      if (!alreadyProcessed) {
+        if (auto *prev = loop->getPrevNode()) {
+          if (isa<ttk::PackReconfigL1AccOp>(prev)) {
+            alreadyProcessed = true;
+          }
+        }
+      }
       if (alreadyProcessed) {
         return;
       }
@@ -109,12 +220,20 @@ struct TTKernelInsertL1AccumulationPass
       OpBuilder builder(group.rootLoop->getContext());
       Location disableLoc = group.rootLoop->getLoc();
 
-      // Disable before the group.
+      // Reconfig L1 acc immediately before the first loop in the group:
+      // ENABLE when L1 already holds a prior value from a non-accumulating
+      // pack ahead of the group (so iteration 0 accumulates onto it),
+      // DISABLE otherwise (so iteration 0 overwrites stale L1). See
+      // precededByNonAccumulatingPack for the structural detection rules.
+      auto rootPackCBs = getPackTileCBs(group.rootLoop);
+      bool l1HasPriorValue =
+          precededByNonAccumulatingPack(group.rootLoop, rootPackCBs);
+
       builder.setInsertionPoint(group.rootLoop);
-      Value disableFlag =
-          arith::ConstantOp::create(builder, disableLoc, builder.getI32Type(),
-                                    builder.getI32IntegerAttr(0));
-      ttk::PackReconfigL1AccOp::create(builder, disableLoc, disableFlag);
+      Value beforeGroupFlag = arith::ConstantOp::create(
+          builder, disableLoc, builder.getI32Type(),
+          builder.getI32IntegerAttr(l1HasPriorValue ? 1 : 0));
+      ttk::PackReconfigL1AccOp::create(builder, disableLoc, beforeGroupFlag);
 
       for (size_t idx = 0; idx < group.loops.size(); ++idx) {
         scf::ForOp loop = group.loops[idx];
@@ -123,8 +242,15 @@ struct TTKernelInsertL1AccumulationPass
           continue;
         }
 
-        // For the 2nd+ loop in a group, re-enable L1 acc before
-        // the loop because init ops between loops reset packer state.
+        // The root loop's per-iteration enable is redundant when the
+        // reconfig before the group already enabled L1 acc.
+        if (idx == 0 && l1HasPriorValue) {
+          continue;
+        }
+
+        // Sibling loops (not the first in the group) need an
+        // unconditional enable immediately before the loop because the
+        // init ops between sibling loops reset packer state.
         if (idx > 0) {
           builder.setInsertionPoint(loop);
           Value enableFlag = arith::ConstantOp::create(
@@ -133,7 +259,8 @@ struct TTKernelInsertL1AccumulationPass
           ttk::PackReconfigL1AccOp::create(builder, loop->getLoc(), enableFlag);
         }
 
-        // Conditional enable after the first iteration's last pack.
+        // Per-iteration enable: fires once after the first iteration's
+        // last pack so subsequent iterations accumulate.
         Operation *afterOp = iter->second;
         Location loc = afterOp->getLoc();
         builder.setInsertionPointAfter(afterOp);
@@ -147,9 +274,17 @@ struct TTKernelInsertL1AccumulationPass
         ttk::PackReconfigL1AccOp::create(builder, loc, enableFlag);
       }
 
-      // Disable after the scope end.
+      // Reconfig L1 acc to disabled immediately after the group's scope
+      // end (typically the cb_push_back). Reuse the before-group constant
+      // when it already holds 0; otherwise create a fresh 0 constant.
       builder.setInsertionPointAfter(group.scopeEnd);
-      ttk::PackReconfigL1AccOp::create(builder, disableLoc, disableFlag);
+      Value afterGroupFlag =
+          l1HasPriorValue
+              ? arith::ConstantOp::create(builder, disableLoc,
+                                          builder.getI32Type(),
+                                          builder.getI32IntegerAttr(0))
+              : beforeGroupFlag;
+      ttk::PackReconfigL1AccOp::create(builder, disableLoc, afterGroupFlag);
     }
   }
 };

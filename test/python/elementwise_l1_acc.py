@@ -30,6 +30,8 @@ except ImportError:
 
 import torch
 
+from utils.correctness import assert_pcc
+
 TILE = 32
 
 
@@ -88,9 +90,7 @@ if __name__ == "__main__":
         Kt = 4
         a_torch = torch.randn(Kt * TILE, TILE, dtype=torch.bfloat16)
         b_torch = torch.randn(Kt * TILE, TILE, dtype=torch.bfloat16)
-        golden = (a_torch.float() + b_torch.float()).reshape(
-            Kt, TILE, TILE
-        ).sum(dim=0)
+        golden = (a_torch.float() + b_torch.float()).reshape(Kt, TILE, TILE).sum(dim=0)
 
         a_dev = ttnn.from_torch(
             a_torch, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device
@@ -108,12 +108,10 @@ if __name__ == "__main__":
         elementwise_add_acc(a_dev, b_dev, out_dev)
 
         result = ttnn.to_torch(out_dev).float()
-        pcc = torch.corrcoef(
-            torch.stack([result.flatten(), golden.flatten()])
-        )[0, 1].item()
-        if pcc > 0.99:
+        try:
+            assert_pcc(golden, result)
             print("PASS")
-        else:
-            print(f"FAIL: PCC {pcc:.6f} < 0.99")
+        except AssertionError as e:
+            print(f"FAIL: {e}")
     finally:
         ttnn.close_device(device)

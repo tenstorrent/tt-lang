@@ -354,7 +354,14 @@ def test_l1_acc_consecutive_loops(device):
 
 
 def _make_store_then_acc_kernel(total_k):
-    """.store() before the += loop, then K-1 iterations accumulate via +=."""
+    """.store() before the += loop, then K-1 iterations accumulate via +=.
+
+    Each iteration reads a distinct K-tile slice so that the result is the
+    full K-accumulation `sum_k (a[:, kt] @ b[kt, :])` rather than a scalar
+    multiple of a single matmul. Reading the same tile every iteration
+    masks bugs where the .store() value is overwritten by the loop's first
+    iteration: assert_pcc is scale-invariant, so K * X and 1 * X both pass.
+    """
 
     @ttl.operation(grid=(1, 1))
     def kernel(a, b, out):
@@ -380,11 +387,11 @@ def _make_store_then_acc_kernel(total_k):
 
         @ttl.datamovement()
         def reader():
-            for _ in range(total_k):
+            for kt in range(total_k):
                 with a_dfb.reserve() as blk:
-                    ttl.copy(a[0:1, 0:1], blk).wait()
+                    ttl.copy(a[0:1, kt : kt + 1], blk).wait()
                 with b_dfb.reserve() as blk:
-                    ttl.copy(b[0:1, 0:1], blk).wait()
+                    ttl.copy(b[kt : kt + 1, 0:1], blk).wait()
 
         @ttl.datamovement()
         def writer():
@@ -397,14 +404,15 @@ def _make_store_then_acc_kernel(total_k):
 @pytest.mark.parametrize("total_k", [2, 4], ids=[f"K{k}" for k in [2, 4]])
 @pytest.mark.requires_device
 def test_l1_acc_store_then_acc(total_k, device):
-    """.store() before loop, += inside loop. Result = K * (a @ b)."""
-    a_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
-    b_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
-    golden = (total_k * (a_torch.float() @ b_torch.float())).float()
+    """.store() before loop, += inside loop. Result = full K-accumulation."""
+    M, K, N = TILE, total_k * TILE, TILE
+    a_torch = torch.randn(M, K, dtype=torch.bfloat16)
+    b_torch = torch.randn(K, N, dtype=torch.bfloat16)
+    golden = (a_torch.float() @ b_torch.float()).float()
 
     a_dev = to_dram(a_torch, device)
     b_dev = to_dram(b_torch, device)
-    out_dev = to_dram(torch.zeros(TILE, TILE, dtype=torch.bfloat16), device)
+    out_dev = to_dram(torch.zeros(M, N, dtype=torch.bfloat16), device)
 
     kernel = _make_store_then_acc_kernel(total_k)
     kernel(a_dev, b_dev, out_dev)

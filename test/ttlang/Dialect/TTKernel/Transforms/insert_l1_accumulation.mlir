@@ -565,3 +565,392 @@ func.func @consecutive_with_init_between() attributes {ttkernel.thread = #ttkern
   ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
   return
 }
+
+// -----
+
+// A non-accumulating pack into the same CB precedes the L1 acc loop, so L1
+// already holds a prior value when the loop starts. The pre-group reconfig
+// must be ENABLE (1) instead of DISABLE (0) so iteration 0 accumulates onto
+// that value, and the per-iteration conditional ENABLE on the root loop must
+// be omitted.
+
+// CHECK-LABEL: func.func @prior_value_then_l1_acc_loop
+// CHECK: ttkernel.tile_regs_acquire
+// CHECK: ttkernel.pack_tile
+// CHECK: ttkernel.tile_regs_release
+// CHECK: %[[ENABLE:.*]] = arith.constant 1 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[ENABLE]]) : (i32)
+// CHECK: scf.for
+// CHECK:   ttkernel.tile_regs_acquire
+// CHECK:   ttkernel.pack_tile
+// CHECK:   ttkernel.tile_regs_release
+// CHECK-NOT: arith.cmpi
+// CHECK-NOT: scf.if
+// CHECK: }
+// CHECK: ttkernel.cb_push_back
+// CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
+// CHECK-NOT: ttkernel.pack_reconfig_l1_acc
+func.func @prior_value_then_l1_acc_loop() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c4_i32 = arith.constant 4 : i32
+  ttkernel.cb_reserve_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  // Non-accumulating pack (corresponds to user's `.store(...)` before the loop).
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.tile_regs_commit() : () -> ()
+  ttkernel.tile_regs_wait() : () -> ()
+  ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  // L1 acc loop (corresponds to user's `+=` loop).
+  scf.for %iv = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_loop}
+  ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  return
+}
+
+// -----
+
+// A pack into a DIFFERENT CB (cb_other) leaves the loop's pack CB without a
+// prior value. The standard DISABLE-before / per-iter ENABLE / DISABLE-after
+// pattern must be preserved.
+
+// CHECK-LABEL: func.func @prior_pack_different_cb_ignored
+// CHECK: ttkernel.pack_tile(%{{.*}}, %[[OTHER:.*]],
+// CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
+// CHECK: scf.for %[[IV:.*]] = %[[LB:.*]] to
+// CHECK:   ttkernel.pack_tile
+// CHECK:   arith.cmpi eq, %[[IV]], %[[LB]]
+// CHECK:   scf.if
+// CHECK:     %[[ENABLE:.*]] = arith.constant 1 : i32
+// CHECK:     ttkernel.pack_reconfig_l1_acc(%[[ENABLE]]) : (i32)
+// CHECK: }
+// CHECK: ttkernel.cb_push_back
+// CHECK: ttkernel.pack_reconfig_l1_acc
+func.func @prior_pack_different_cb_ignored() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb_out = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %cb_other = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c4_i32 = arith.constant 4 : i32
+  ttkernel.cb_reserve_back(%cb_other, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  ttkernel.cb_reserve_back(%cb_out, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  // Pack into cb_other, NOT cb_out — must not be treated as init for cb_out.
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.tile_regs_commit() : () -> ()
+  ttkernel.tile_regs_wait() : () -> ()
+  ttkernel.pack_tile(%c0, %cb_other, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  ttkernel.cb_push_back(%cb_other, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  scf.for %iv = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb_out, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_loop}
+  ttkernel.cb_push_back(%cb_out, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  return
+}
+
+// -----
+
+// An intervening cb_reserve_back on the loop's pack CB resets the L1 slot,
+// so a pack before that boundary does not provide a prior value to the loop.
+// The standard DISABLE-before / per-iter ENABLE / DISABLE-after pattern must
+// be preserved.
+
+// CHECK-LABEL: func.func @cb_reserve_back_blocks_prior_value_detection
+// CHECK: ttkernel.pack_tile
+// CHECK: ttkernel.cb_push_back
+// CHECK: ttkernel.cb_reserve_back
+// CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
+// CHECK: scf.for %[[IV:.*]] = %[[LB:.*]] to
+// CHECK:   ttkernel.pack_tile
+// CHECK:   arith.cmpi eq, %[[IV]], %[[LB]]
+// CHECK:   scf.if
+// CHECK:     ttkernel.pack_reconfig_l1_acc
+// CHECK: }
+// CHECK: ttkernel.cb_push_back
+// CHECK: ttkernel.pack_reconfig_l1_acc
+func.func @cb_reserve_back_blocks_prior_value_detection() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c4_i32 = arith.constant 4 : i32
+  ttkernel.cb_reserve_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.tile_regs_commit() : () -> ()
+  ttkernel.tile_regs_wait() : () -> ()
+  ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  // New reservation on the same CB resets the L1 slot for the loop.
+  ttkernel.cb_reserve_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  scf.for %iv = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_loop}
+  ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  return
+}
+
+// -----
+
+// A non-accumulating pack precedes a group of two consecutive L1 acc loops
+// sharing the same pack CB. The root loop suppresses its per-iteration
+// enable (the pre-group enable already covers it); the sibling keeps both
+// its unconditional pre-loop enable and its per-iteration enable.
+
+// CHECK-LABEL: func.func @prior_value_root_then_plain_acc_sibling
+// CHECK: ttkernel.pack_tile
+// CHECK: %[[ENABLE0:.*]] = arith.constant 1 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[ENABLE0]]) : (i32)
+// CHECK: scf.for
+// CHECK:   ttkernel.pack_tile
+// CHECK-NOT: arith.cmpi
+// CHECK-NOT: scf.if
+// CHECK: }
+// CHECK: %[[ENABLE1:.*]] = arith.constant 1 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[ENABLE1]]) : (i32)
+// CHECK: scf.for %[[IV:.*]] = %[[LB:.*]] to
+// CHECK:   ttkernel.pack_tile
+// CHECK:   arith.cmpi eq, %[[IV]], %[[LB]]
+// CHECK:   scf.if
+// CHECK:     ttkernel.pack_reconfig_l1_acc
+// CHECK: }
+// CHECK: ttkernel.cb_push_back
+// CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
+func.func @prior_value_root_then_plain_acc_sibling() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c4_i32 = arith.constant 4 : i32
+  ttkernel.cb_reserve_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.tile_regs_commit() : () -> ()
+  ttkernel.tile_regs_wait() : () -> ()
+  ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  scf.for %iv1 = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_loop}
+  scf.for %iv2 = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_loop}
+  ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  return
+}
+
+// -----
+
+// The prior pack is wrapped in a non-annotated scf.for (mirrors the
+// compiler-generated tile-loop wrapper that the real pipeline produces
+// around the user's `.store(...)`). The pre-group reconfig must still be
+// ENABLE because the wrapper runs with L1 acc disabled.
+
+// CHECK-LABEL: func.func @prior_pack_inside_tile_loop_wrapper
+// CHECK: scf.for
+// CHECK:   ttkernel.pack_tile
+// CHECK: } {ttl.tile_loop_stride
+// CHECK: %[[ENABLE:.*]] = arith.constant 1 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[ENABLE]]) : (i32)
+// CHECK: scf.for
+// CHECK:   ttkernel.pack_tile
+// CHECK-NOT: arith.cmpi
+// CHECK-NOT: scf.if
+// CHECK: } {ttl.l1_acc_loop}
+// CHECK: ttkernel.cb_push_back
+// CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
+func.func @prior_pack_inside_tile_loop_wrapper() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c4_i32 = arith.constant 4 : i32
+  ttkernel.cb_reserve_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  scf.for %iv0 = %c0 to %c1 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.tile_loop_stride = 1 : index}
+  scf.for %iv = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_loop}
+  ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  return
+}
+
+// -----
+
+// A pack inside an scf.if conditionally writes to L1, so the pre-group
+// reconfig cannot assume L1 holds a prior value. The conservative fallback
+// in precededByNonAccumulatingPack treats any region-bearing op (other
+// than scf.for that we recurse into) that packs to our CB as a boundary.
+
+// CHECK-LABEL: func.func @prior_pack_inside_scf_if_not_treated_as_prior
+// CHECK: scf.if
+// CHECK:   ttkernel.pack_tile
+// CHECK: }
+// CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
+// CHECK: scf.for %[[IV:.*]] = %[[LB:.*]] to
+// CHECK:   ttkernel.pack_tile
+// CHECK:   arith.cmpi eq, %[[IV]], %[[LB]]
+// CHECK:   scf.if
+// CHECK:     ttkernel.pack_reconfig_l1_acc
+// CHECK: }
+// CHECK: ttkernel.cb_push_back
+// CHECK: ttkernel.pack_reconfig_l1_acc
+func.func @prior_pack_inside_scf_if_not_treated_as_prior(%cond: i1) attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c4_i32 = arith.constant 4 : i32
+  ttkernel.cb_reserve_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  scf.if %cond {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  }
+  scf.for %iv = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_loop}
+  ttkernel.cb_push_back(%cb, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  return
+}
+
+// -----
+
+// Multi-output L1 acc loop with a prior pack for only one of its CBs. L1
+// acc is enabled or disabled for the entire sync region — there is no
+// per-CB switch. The standard pattern (overwrite + per-iter enable) must
+// be preserved.
+
+// CHECK-LABEL: func.func @multi_output_partial_prior_falls_back_to_standard
+// CHECK: ttkernel.pack_tile
+// CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
+// CHECK: scf.for %[[IV:.*]] = %[[LB:.*]] to
+// CHECK:   ttkernel.pack_tile
+// CHECK:   ttkernel.pack_tile
+// CHECK:   arith.cmpi eq, %[[IV]], %[[LB]]
+// CHECK:   scf.if
+// CHECK:     ttkernel.pack_reconfig_l1_acc
+// CHECK: }
+// CHECK: ttkernel.cb_push_back
+// CHECK: ttkernel.cb_push_back
+// CHECK: ttkernel.pack_reconfig_l1_acc
+func.func @multi_output_partial_prior_falls_back_to_standard() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb_a = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %cb_b = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c4_i32 = arith.constant 4 : i32
+  ttkernel.cb_reserve_back(%cb_a, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  ttkernel.cb_reserve_back(%cb_b, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  // Prior pack only for cb_a — cb_b has no prior value.
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.tile_regs_commit() : () -> ()
+  ttkernel.tile_regs_wait() : () -> ()
+  ttkernel.pack_tile(%c0, %cb_a, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  scf.for %iv = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb_a, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.pack_tile(%c0, %cb_b, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_loop}
+  ttkernel.cb_push_back(%cb_a, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  ttkernel.cb_push_back(%cb_b, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  return
+}
+
+// -----
+
+// Multi-output L1 acc loop where BOTH pack CBs have prior packs. All
+// covered → enable pre-group, suppress per-iter enable on the root.
+
+// CHECK-LABEL: func.func @multi_output_full_prior_enables_pre_group
+// CHECK: ttkernel.pack_tile
+// CHECK: ttkernel.pack_tile
+// CHECK: %[[ENABLE:.*]] = arith.constant 1 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[ENABLE]]) : (i32)
+// CHECK: scf.for
+// CHECK:   ttkernel.pack_tile
+// CHECK:   ttkernel.pack_tile
+// CHECK-NOT: arith.cmpi
+// CHECK-NOT: scf.if
+// CHECK: }
+// CHECK: ttkernel.cb_push_back
+// CHECK: ttkernel.cb_push_back
+// CHECK: %[[DISABLE:.*]] = arith.constant 0 : i32
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[DISABLE]]) : (i32)
+func.func @multi_output_full_prior_enables_pre_group() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %cb_a = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %cb_b = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c4_i32 = arith.constant 4 : i32
+  ttkernel.cb_reserve_back(%cb_a, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  ttkernel.cb_reserve_back(%cb_b, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.tile_regs_commit() : () -> ()
+  ttkernel.tile_regs_wait() : () -> ()
+  ttkernel.pack_tile(%c0, %cb_a, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.pack_tile(%c0, %cb_b, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  scf.for %iv = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %cb_a, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.pack_tile(%c0, %cb_b, %c0, true) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.l1_acc_loop}
+  ttkernel.cb_push_back(%cb_a, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  ttkernel.cb_push_back(%cb_b, %c4_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, i32) -> ()
+  return
+}
