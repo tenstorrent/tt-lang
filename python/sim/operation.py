@@ -8,7 +8,6 @@ This module provides decorators and utilities for generating kernels with
 specified grid configurations.
 """
 
-import inspect
 import types
 from typing import Any, Callable, Union, cast
 
@@ -83,29 +82,6 @@ def operation(
             # Import here to avoid circular dependency
             from .decorators import clear_thread_registry, get_registered_threads
             from .program import Program
-            from .stats import is_stats_enabled, register_tensor_name
-            from .ttnnsim import Tensor
-
-            # If stats are enabled, register tensor names from parameter names
-            if is_stats_enabled():
-                sig = inspect.signature(func)
-                params = list(sig.parameters.keys())
-
-                # Register positional arguments
-                for i, arg in enumerate(args):
-                    match arg:
-                        case Tensor() if i < len(params):
-                            register_tensor_name(arg, params[i])
-                        case _:
-                            pass
-
-                # Register keyword arguments
-                for param_name, arg in kwargs.items():
-                    match arg:
-                        case Tensor():
-                            register_tensor_name(arg, param_name)
-                        case _:
-                            pass
 
             # Clear thread registry and resource counters before kernel execution
             clear_thread_registry()

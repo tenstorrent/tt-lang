@@ -14,10 +14,10 @@ Usage:
 
 import sys
 import argparse
+import json
 from pathlib import Path
 from typing import Any
 
-from .stats import enable_stats, print_stats
 from .operation import set_default_grid
 from .greenlet_scheduler import set_scheduler_algorithm
 
@@ -207,13 +207,33 @@ def _get_version() -> str:
         return "unknown"
 
 
+def _write_jsonl_trace(path: Path, events: list) -> None:
+    """Write trace events to a JSON Lines file.
+
+    Each line is a self-contained JSON object with flat fields:
+    event, tick, kernel, and any event-specific data.
+
+    Args:
+        path: Output file path.
+        events: List of TraceEvent objects to serialise.
+    """
+    with path.open("w", encoding="utf-8") as f:
+        for ev in events:
+            record: dict[str, Any] = {
+                "tick": ev.tick,
+                "kernel": ev.kernel,
+                "event": ev.event,
+            }
+            record.update(ev.data)
+            f.write(json.dumps(record) + "\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="ttlang-sim",
         description="Run tt-lang kernels on the simulator backend",
         epilog="Examples:\n"
         "  ttlang-sim examples/eltwise_add.py\n"
-        "  ttlang-sim examples/single_node_matmul.py --show-stats\n"
         "  ttlang-sim examples/elementwise-tutorial/step_3_multinode.py --grid 4,4\n"
         "  ttlang-sim examples/eltwise_add.py --max-l1 1572864",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -236,13 +256,6 @@ def main() -> None:
         type=str,
         metavar="ROWS,COLS",
         help="Default grid size for kernels with grid='auto' (e.g., --grid 4,4). Defaults to 8,8",
-    )
-
-    parser.add_argument(
-        "--show-stats",
-        action="store_true",
-        dest="show_stats",
-        help="Print tensor read/write statistics after execution",
     )
 
     parser.add_argument(
@@ -280,12 +293,39 @@ def main() -> None:
     )
 
     parser.add_argument(
-        "script_args",
-        nargs=argparse.REMAINDER,
-        help="Arguments to pass to the script",
+        "--trace",
+        nargs="?",
+        const="trace.jsonl",
+        metavar="FILE",
+        dest="trace",
+        help="Write trace events to FILE in JSON Lines format (default: trace.jsonl)",
     )
 
-    args = parser.parse_args()
+    parser.add_argument(
+        "--trace-events",
+        type=str,
+        metavar="CATEGORIES",
+        dest="trace_events",
+        help=(
+            "Comma-separated list of event categories to record "
+            "(operation, kernel, dfb, copy, pipe). "
+            "Mutually exclusive with --no-trace-events. Requires --trace."
+        ),
+    )
+
+    parser.add_argument(
+        "--no-trace-events",
+        type=str,
+        metavar="CATEGORIES",
+        dest="no_trace_events",
+        help=(
+            "Comma-separated list of event categories to suppress. "
+            "Mutually exclusive with --trace-events. Requires --trace."
+        ),
+    )
+
+    args, script_args = parser.parse_known_intermixed_args()
+    args.script_args = script_args
 
     if not args.target:
         parser.print_help()
@@ -330,10 +370,6 @@ def main() -> None:
         set_scheduler_algorithm(args.scheduler)
 
     # Enable tensor statistics collection if requested
-    if args.show_stats:
-
-        enable_stats()
-
     # Configure default grid if specified
     if args.grid:
         try:
@@ -349,6 +385,51 @@ def main() -> None:
             print(f"Error: Invalid grid specification: {e}", file=sys.stderr)
             sys.exit(1)
 
+    # Validate and configure tracing
+    if args.trace_events and not args.trace:
+        print("Error: --trace-events requires --trace", file=sys.stderr)
+        sys.exit(1)
+    if args.no_trace_events and not args.trace:
+        print("Error: --no-trace-events requires --trace", file=sys.stderr)
+        sys.exit(1)
+    if args.trace_events and args.no_trace_events:
+        print(
+            "Error: --trace-events and --no-trace-events are mutually exclusive",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if args.trace:
+        from .trace import ALL_CATEGORIES
+        from .context import get_context
+
+        if args.trace_events:
+            cats = {c.strip() for c in args.trace_events.split(",")}
+            unknown = cats - ALL_CATEGORIES
+            if unknown:
+                print(
+                    f"Error: Unknown trace categories: {', '.join(sorted(unknown))}. "
+                    f"Known: {', '.join(sorted(ALL_CATEGORIES))}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            trace_set: frozenset[str] = frozenset(cats)
+        elif args.no_trace_events:
+            cats = {c.strip() for c in args.no_trace_events.split(",")}
+            unknown = cats - ALL_CATEGORIES
+            if unknown:
+                print(
+                    f"Error: Unknown trace categories: {', '.join(sorted(unknown))}. "
+                    f"Known: {', '.join(sorted(ALL_CATEGORIES))}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            trace_set = ALL_CATEGORIES - frozenset(cats)
+        else:
+            trace_set = ALL_CATEGORIES
+
+        get_context().config.trace_set = trace_set
+
     # Run the target
     try:
         if not args.target.endswith(".py"):
@@ -356,9 +437,11 @@ def main() -> None:
             sys.exit(1)
         run_file(args.target, args.script_args)
     finally:
-        # Print tensor statistics if enabled
-        if args.show_stats:
-            print_stats()
+        # Write trace events to file if requested
+        if args.trace:
+            from .context import get_context
+
+            _write_jsonl_trace(Path(args.trace), get_context().trace_events)
 
 
 if __name__ == "__main__":

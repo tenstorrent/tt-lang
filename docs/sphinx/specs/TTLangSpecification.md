@@ -774,13 +774,7 @@ def writer():
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.copy(src: ttl.Block, dst: ttl.TensorSlice) -> ttl.Transfer`<br><br>
-
-`ttl.copy(src: ttl.TensorSlice, dst: ttl.Block) -> ttl.Transfer`<br><br>
-
-`ttl.copy(src: ttl.Block, dst: ttl.PipeIdentity) -> ttl.Transfer`<br><br>
-
-`ttl.copy(src: ttl.PipeIdentity, dst: ttl.Block) -> ttl.Transfer` | Copy data between a block, a tensor slice, or a pipe. **This function is non-blocking.** The compiler statically checks if the shape of block and tensor slice are compatible and if the shape of block sent to a pipe is compatible with the shape of block received from the same pipe. When a pipe is used as a destination there must be a corresponding `ttl.copy` where the same pipe is used as source. Furthermore, `ttl.copy` with pipe must be guarded by pipe net’s `if_src` and `is_dst` where this pipe is destination and source correspondingly. |
+| `ttl.copy(src: ttl.Block, dst: ttl.TensorSlice) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.TensorSlice, dst: ttl.Block) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.Block, dst: ttl.PipeIdentity) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.PipeIdentity, dst: ttl.Block) -> ttl.Transfer` | Copy data between a block, a tensor slice, or a pipe. **This function is non-blocking.** The compiler statically checks if the shape of block and tensor slice are compatible and if the shape of block sent to a pipe is compatible with the shape of block received from the same pipe. When a pipe is used as a destination there must be a corresponding `ttl.copy` where the same pipe is used as source. Furthermore, `ttl.copy` with pipe must be guarded by pipe net’s `if_src` and `is_dst` where this pipe is destination and source correspondingly. |
 | `ttl.Transfer.wait()` | Wait for data transfer to complete. Transfer handle cannot be used after this function is called.  **This function is blocking.** |
 | `ttl.GroupTransfer.add(xf: ttl.Transfer)` | Add transfer handle to a group. This function cannot be called after `ttl.GroupTransfer.wait_all` was called. |
 | `ttl.GroupTransfer.wait_all()` | Wait for all data transfers in group to complete. Group transfer cannot be used after this function is called. **This function is blocking.** |
@@ -1081,21 +1075,9 @@ def matmul_read():
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.math.reduce_sum(expr: ttl.BlockExpr, scaler: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Scaled sum reduction over specified dimensions.<br><br>
-
-Example for reduction over dimension -1 (innermost): `y.store(ttl.math.reduce_sum(a, s, dims=[-1]))`. Here if `a` has shape of `(N, M)` then `y` must have shape of `(N, 1)`, and if `a` has shape of `(I, N, M)` then `y` must have shape of `(I, N, 1)`, and so on.<br><br>
-
-Example for reduction over dimension 1 (next to outermost): `y.store(ttl.math.reduce_max(a, s, dims=[1]))`. Here if `a` has shape of `(N, M)` then `y` must have shape of `(N, 1)`, and if `a` has shape of `(I, N, M)` then `y` must have shape of `(I, 1, M)`, and so on.<br><br>
-
-Example for reduction over two innermost dimensions: `y.store(ttl.math.reduce_sum(a, s, dims=[-1, -2]))`. Here if `a` has shape of `(N, M)` then `y` must have shape of `(1, 1)`, and if `a` has shape of `(I, N, M)` then `y` must have shape of `(I, 1, 1)`, and so on. |
+| `ttl.math.reduce_sum(expr: ttl.BlockExpr, scaler: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Scaled sum reduction over specified dimensions.<br><br>Example for reduction over dimension -1 (innermost): `y.store(ttl.math.reduce_sum(a, s, dims=[-1]))`. Here if `a` has shape of `(N, M)` then `y` must have shape of `(N, 1)`, and if `a` has shape of `(I, N, M)` then `y` must have shape of `(I, N, 1)`, and so on.<br><br>Example for reduction over dimension 1 (next to outermost): `y.store(ttl.math.reduce_max(a, s, dims=[1]))`. Here if `a` has shape of `(N, M)` then `y` must have shape of `(N, 1)`, and if `a` has shape of `(I, N, M)` then `y` must have shape of `(I, 1, M)`, and so on.<br><br>Example for reduction over two innermost dimensions: `y.store(ttl.math.reduce_sum(a, s, dims=[-1, -2]))`. Here if `a` has shape of `(N, M)` then `y` must have shape of `(1, 1)`, and if `a` has shape of `(I, N, M)` then `y` must have shape of `(I, 1, 1)`, and so on. |
 | `ttl.math.reduce_max(expr: ttl.BlockExpr, scaler: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Scaled maximum reduction over specified dimensions.  See examples for `ttl.math.reduce_sum`. |
-| `ttl.math.broadcast(expr: ttl.BlockExpr, out_blk: ttl.Block, dims: List[int]) -> ttl.BlockExpr` | Broadcast a block over specified dimensions. Produces block with shape expanded to be compatible with `out_blk`[^1].<br><br>
-
-Example for broadcast over dimension -1  (innermost): `y.store(ttl.math.broadcast(a, y, dims=[-1]))`. Here the `store` is the outer expression and therefore if `y` has shape of `(N, M)` then `a` must have shape of `(N, 1)`, and if `y` has shape of `(I, N, M)` then `a` must have shape of `(I, N, 1)`, and so on.<br><br>
-
-Example for broadcast over dimension 1 (next to outermost): `y.store(b * ttl.math.broadcast(a, y, dims=[1]))`. Here the `*` is the outer expression and therefore if `b` has shape of `(N, M)` then `a` must have shape of `(N, 1)`, and if `b` has shape of `(I, N, M)` then `a` must have shape of `(I, 1, M)`, and so on.<br><br>
-
-Example for broadcast over two innermost dimensions: `y.store(b + ttl.math.broadcast(a, y, dims=[-1, -2]))`. Here the `+` is the outer expression, but because the broadcast is on `dims=[-1, -2]` if `b` has shape of `(N, M)` then `a` must have shape of `(1, 1)`, and if `b` has shape of `(I, N, M)` then `a` must have shape of `(I, 1, 1)`, and so on. |
+| `ttl.math.broadcast(expr: ttl.BlockExpr, out_blk: ttl.Block, dims: List[int]) -> ttl.BlockExpr` | Broadcast a block over specified dimensions. Produces block with shape expanded to be compatible with `out_blk`[^1].<br><br>Example for broadcast over dimension -1  (innermost): `y.store(ttl.math.broadcast(a, y, dims=[-1]))`. Here the `store` is the outer expression and therefore if `y` has shape of `(N, M)` then `a` must have shape of `(N, 1)`, and if `y` has shape of `(I, N, M)` then `a` must have shape of `(I, N, 1)`, and so on.<br><br>Example for broadcast over dimension 1 (next to outermost): `y.store(b * ttl.math.broadcast(a, y, dims=[1]))`. Here the `*` is the outer expression and therefore if `b` has shape of `(N, M)` then `a` must have shape of `(N, 1)`, and if `b` has shape of `(I, N, M)` then `a` must have shape of `(I, 1, M)`, and so on.<br><br>Example for broadcast over two innermost dimensions: `y.store(b + ttl.math.broadcast(a, y, dims=[-1, -2]))`. Here the `+` is the outer expression, but because the broadcast is on `dims=[-1, -2]` if `b` has shape of `(N, M)` then `a` must have shape of `(1, 1)`, and if `b` has shape of `(I, N, M)` then `a` must have shape of `(I, 1, 1)`, and so on. |
 | `ttl.math.transpose(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Transpose a block. For argument block of shape `(M, N)` produces resulting block with shape `(N, M)`. Supported only for 2-dimensional blocks. |
 
 ### Rounding functions
@@ -1137,9 +1119,9 @@ Example for broadcast over two innermost dimensions: `y.store(b + ttl.math.broad
 
 | Functionality | Simulator | Compiler |
 | :---- | :---- | :---- |
-| 2D grid `ttl.grid_size` and `ttl.node` with `dims=2`| 0.1.7 | 0.1.7 |
-| 2D grid `ttl.grid_size` and `ttl.node` with any `dims` | 0.1.7 | N/S |
-| 4D grid `ttl.grid_size` and `ttl.node` | N/S | N/S |
+| Single-device grid `ttl.grid_size` and `ttl.node` with `dims=2`| 0.1.7 | 0.1.7 |
+| Single-device grid `ttl.grid_size` and `ttl.node` with any `dims` | 0.1.7 | N/S |
+| Multidevice grid `ttl.grid_size` and `ttl.node` | N/S | N/S |
 | [TT-NN Mesh Devices](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/Programming_Mesh_of_Devices/Programming_Mesh_of_Devices_with_TT-NN.md) | 0.1.8 | 0.1.8 |
 | [TT-NN L1 Sharded Tensors](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/tensor_sharding/tensor_sharding.md) | 0.1.8 | 0.1.8 |
 | `ttl.make_dataflow_buffer_like` with 2D+ `shape` | 0.1.7 | 0.1.7 |
@@ -1147,13 +1129,13 @@ Example for broadcast over two innermost dimensions: `y.store(b + ttl.math.broad
 | `ttl.make_dataflow_buffer_like` for tilized tensors | 0.1.7 | 0.1.7 |
 | `ttl.make_dataflow_buffer_like` for row-major tensors | 0.1.8 | N/S |
 | `ttl.Block.store` | 0.1.7 | 0.1.7 |
-| Overwriting and accumulation through summation (`+=`) for block expressions | 0.1.7 | N/S |
+| Overwriting and accumulation through summation (`+=`) for block expressions | 0.1.7 | 1.0.0 |
 | `ttl.copy` and `ttl.Transfer` | 0.1.7 | 0.1.7 |
-| `ttl.GroupTransfer` | N/S | N/S |
+| `ttl.GroupTransfer` | 1.0.0 | N/S |
 | `ttl.Semaphore` on 2D grid | N/S | N/S |
 | `ttl.Semaphore` on 4D grid | N/S | N/S |
-| `ttl.PipeNet` and `ttl.Pipe` on 2D grid | 0.1.7 | N/S |
-| `ttl.PipeNet` and `ttl.Pipe` on 4D grid | N/S | N/S |
+| `ttl.PipeNet` and `ttl.Pipe` on single-device grid | 0.1.7 | 1.0.0 |
+| `ttl.PipeNet` and `ttl.Pipe` on multidevice grid | N/S | N/S |
 | `ttl.signpost` (ignored in simulator) | 0.1.7 | 0.1.7 |
 | Debug printing with `print` | 0.1.7 | 0.1.7 |
 | Built-in unary math operators: `-`, `abs` | 0.1.7 | 0.1.7 |
@@ -1162,7 +1144,8 @@ Example for broadcast over two innermost dimensions: `y.store(b + ttl.math.broad
 | Built-in binary math operators: `%`, `//`, `^`, | 0.1.7 | N/S |
 | `ttl.math` unary math functions: `exp`, `log`, `sqrt`, `rsqrt`, `tanh`, `sigmoid`, `relu`, `floor`, `recip` | 0.1.7 | 0.1.7 |
 | `ttl.math` unary math functions: `sin`, `cos`, `tan`, `asin`, `acos`, `atan` | 0.1.7 | 0.1.8 |
-| `ttl.math` unary math functions: `exp2`, `expm1`, `logp1`, `square`, `atanh`, `asinh`, `acosh`, `gelu`, `silu`, `softsign`, `hardsigmoid`, `selu`, `ceil`, `frac`, `trunc`, `sign`, `signbit`, `rsub`, `relu_max`, `relu_min`, `leaky_relu`, `elu`, `celu`, `prelu`, `softplus`, `hardtanh`, `round`, `clamp`, `threshold` | 0.1.7 | N/S |
+| `ttl.math` unary math functions: `expm1`, `exp2`, `ceil`, `sign`, `gelu`, `silu`, `hardsigmoid`, `square`, `softsign`, `signbit`, `frac`, `trunc` | 0.1.7 | 1.0.0 |
+| `ttl.math` unary math functions: `logp1`, `atanh`, `asinh`, `acosh`, `selu`, `rsub`, `relu_max`, `relu_min`, `leaky_relu`, `elu`, `celu`, `prelu`, `softplus`, `hardtanh`, `round`, `clamp`, `threshold` | 0.1.7 | N/S |
 | `ttl.math` binary math functions: `min`, `max` | 0.1.7 | 0.1.7 |
 | `ttl.math` binary math functions: `mask`, `mask_posinf` | 0.1.7 | N/S |
 | `ttl.math.where` | 0.1.7 | N/S |

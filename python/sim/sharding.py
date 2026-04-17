@@ -18,14 +18,16 @@ import itertools
 import math
 from typing import Callable, Optional, Tuple
 
-from sim.ttnnsim import (
+from greenlet import getcurrent
+
+from .ttnnsim import (
     NdShardSpec,
     ShardDistributionStrategy,
     ShardSpec,
     ShardingStrategy,
     Tensor,
 )
-from sim.typedefs import Count, Index, Selector, Shape, TensorKey
+from .typedefs import Count, Index, Selector, Shape, TensorKey
 
 
 def normalize_tensor_key(key: TensorKey) -> Tuple[Selector, ...]:
@@ -249,6 +251,20 @@ def count_local_remote_l1_dram(
     if counter is None:
         raise ValueError(f"Unsupported sharding strategy: {mc.strategy}")
     return counter(current_core_linear, mc.shard_spec, origin, eshape)
+
+
+def try_count_locality(t: Tensor) -> Optional[Tuple[int, int, int]]:
+    """Return (local_l1, remote_l1, dram) element counts for the current kernel core.
+
+    Returns ``None`` when called outside a kernel context (no ``_sim_core`` tag on
+    the current greenlet) or when the tensor has no memory config information.
+    The returned counts are in **elements**, not tiles.
+    """
+    core: Optional[int] = getattr(getcurrent(), "_sim_core", None)
+    if core is None:
+        return None
+    origin: Optional[Tuple[int, ...]] = getattr(t, "_element_origin", None)
+    return count_local_remote_l1_dram(t, core, origin_in_parent_elements=origin)
 
 
 def count_local_remote_l1_dram_for_getitem(

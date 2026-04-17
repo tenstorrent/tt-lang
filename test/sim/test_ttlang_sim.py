@@ -7,6 +7,7 @@
 Tests for ttlang_sim.py module (simulator launcher).
 """
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -173,7 +174,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -189,7 +190,7 @@ if __name__ == "__main__":
             result = subprocess.run(
                 [sys.executable, "-m", "sim.ttlang_sim", str(script)],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -212,7 +213,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -236,7 +237,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -260,7 +261,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -276,7 +277,7 @@ if __name__ == "__main__":
             result = subprocess.run(
                 [sys.executable, "-m", "sim.ttlang_sim", "--grid", "4", str(script)],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -300,7 +301,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -380,7 +381,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -407,7 +408,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -432,7 +433,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -450,7 +451,7 @@ if __name__ == "__main__":
             result = subprocess.run(
                 [sys.executable, "-m", "sim.ttlang_sim", str(script)],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -475,7 +476,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -500,7 +501,7 @@ if __name__ == "__main__":
                     str(script),
                 ],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -576,7 +577,7 @@ if __name__ == "__main__":
             return subprocess.run(
                 [sys.executable, "-m", "sim.ttlang_sim", *extra_args, str(script)],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
@@ -630,94 +631,110 @@ if __name__ == "__main__":
         assert "exceeds the L1 memory limit" not in result.stderr
 
 
-class TestTensorStatsOption:
-    """Test --show-stats command-line option."""
+class TestSimStats:
+    """Test ttlang-sim-stats post-processing tool."""
 
-    def test_tensor_stats_flag_basic(self):
-        """Test that --show-stats prints statistics."""
-        result = subprocess.run(
+    _REPO = Path(__file__).parent.parent.parent
+    _ENV = {"PYTHONPATH": "python"}
+
+    def _run_sim(self, *args: str, trace_path: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
             [
                 sys.executable,
                 "-m",
                 "sim.ttlang_sim",
-                "--show-stats",
-                "examples/single_node_matmul.py",
+                "--trace",
+                str(trace_path),
+                *args,
             ],
-            cwd=Path(__file__).parent.parent.parent,
-            env={"PYTHONPATH": "python"},
+            cwd=self._REPO,
+            env=self._ENV,
             capture_output=True,
             text=True,
         )
-        assert result.returncode == 0, f"Script failed: {result.stderr}"
-        assert "Tensor Access Statistics" in result.stdout
-        assert "Tensor" in result.stdout
-        assert "Reads" in result.stdout
-        assert "Writes" in result.stdout
-        assert "TOTAL" in result.stdout
+
+    def _run_stats(self, trace_path: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-m", "sim_stats", str(trace_path)],
+            cwd=self._REPO,
+            env=self._ENV,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_tensor_stats_basic(self):
+        """ttlang-sim-stats prints tensor access statistics from a trace."""
+        with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
+            trace_path = Path(f.name)
+        try:
+            sim = self._run_sim("examples/single_node_matmul.py", trace_path=trace_path)
+            assert sim.returncode == 0, f"Sim failed: {sim.stderr}"
+
+            stats = self._run_stats(trace_path)
+            assert stats.returncode == 0, f"sim-stats failed: {stats.stderr}"
+            assert "Tensor Access Statistics" in stats.stdout
+            assert "Tensor Access Statistics" in stats.stdout
+            assert "Tiles R" in stats.stdout
+            assert "TOTAL" in stats.stdout
+        finally:
+            trace_path.unlink(missing_ok=True)
 
     def test_tensor_stats_shows_tensor_names(self):
-        """Test that tensor statistics show parameter names."""
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "sim.ttlang_sim",
-                "--show-stats",
-                "examples/single_node_matmul.py",
-            ],
-            cwd=Path(__file__).parent.parent.parent,
-            env={"PYTHONPATH": "python"},
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0, f"Script failed: {result.stderr}"
-        # Check that statistics contain tensor names
-        assert "a" in result.stdout
-        assert "b" in result.stdout
-        assert "out" in result.stdout
+        """ttlang-sim-stats shows tensor parameter names from the trace."""
+        with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
+            trace_path = Path(f.name)
+        try:
+            sim = self._run_sim("examples/single_node_matmul.py", trace_path=trace_path)
+            assert sim.returncode == 0, f"Sim failed: {sim.stderr}"
 
-    def test_tensor_stats_without_flag(self):
-        """Test that statistics are not printed without --show-stats flag."""
+            stats = self._run_stats(trace_path)
+            assert stats.returncode == 0, f"sim-stats failed: {stats.stderr}"
+            assert "a" in stats.stdout
+            assert "b" in stats.stdout
+            assert "out" in stats.stdout
+        finally:
+            trace_path.unlink(missing_ok=True)
+
+    def test_dfb_stats_per_core(self):
+        """ttlang-sim-stats shows per-core DFB breakdown with a subtotal."""
+        with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
+            trace_path = Path(f.name)
+        try:
+            sim = self._run_sim("examples/single_node_matmul.py", trace_path=trace_path)
+            assert sim.returncode == 0, f"Sim failed: {sim.stderr}"
+
+            stats = self._run_stats(trace_path)
+            assert stats.returncode == 0, f"sim-stats failed: {stats.stderr}"
+            assert "Dataflow Buffer Statistics" in stats.stdout
+            assert "Core" in stats.stdout
+            assert "Reserves" in stats.stdout
+            assert "Waits" in stats.stdout
+        finally:
+            trace_path.unlink(missing_ok=True)
+
+    def test_no_stats_without_trace(self):
+        """Running ttlang-sim without --trace produces no trace file to post-process."""
         result = subprocess.run(
             [sys.executable, "-m", "sim.ttlang_sim", "examples/single_node_matmul.py"],
-            cwd=Path(__file__).parent.parent.parent,
-            env={"PYTHONPATH": "python"},
+            cwd=self._REPO,
+            env=self._ENV,
             capture_output=True,
             text=True,
         )
-        assert result.returncode == 0, f"Script failed: {result.stderr}"
+        assert result.returncode == 0, f"Sim failed: {result.stderr}"
         assert "Tensor Access Statistics" not in result.stdout
         assert "TOTAL" not in result.stdout
 
-    def test_tensor_stats_no_data(self):
-        """Test that --show-stats handles programs with no tensor operations gracefully."""
-        script = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)
-        script.write(
-            """
-# Simple program with no kernel calls
-print("No kernels here!")
-"""
-        )
-        script.close()
-        script_path = Path(script.name)
+    def test_no_stats_events_in_empty_trace(self):
+        """ttlang-sim-stats reports no statistics when the trace has no relevant events."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            trace_path = Path(f.name)
         try:
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "sim.ttlang_sim",
-                    "--show-stats",
-                    str(script_path),
-                ],
-                cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
-                capture_output=True,
-                text=True,
-            )
-            assert result.returncode == 0, f"Script failed: {result.stderr}"
-            assert "No statistics collected" in result.stdout
+            stats = self._run_stats(trace_path)
+            assert stats.returncode == 0, f"sim-stats failed: {stats.stderr}"
+            assert "No statistics found in trace" in stats.stdout
         finally:
-            script_path.unlink()
+            trace_path.unlink(missing_ok=True)
 
 
 class TestSchedulerAlgorithmOption:
@@ -738,7 +755,7 @@ class TestSchedulerAlgorithmOption:
                 "greedy",
             ],
             cwd=Path(__file__).parent.parent.parent,
-            env={"PYTHONPATH": "python"},
+            env={**os.environ, "PYTHONPATH": "python"},
             capture_output=True,
             text=True,
         )
@@ -759,7 +776,7 @@ class TestSchedulerAlgorithmOption:
                 "fair",
             ],
             cwd=Path(__file__).parent.parent.parent,
-            env={"PYTHONPATH": "python"},
+            env={**os.environ, "PYTHONPATH": "python"},
             capture_output=True,
             text=True,
         )
@@ -777,7 +794,7 @@ class TestSchedulerAlgorithmOption:
                 "nonexistent.py",
             ],
             cwd=Path(__file__).parent.parent.parent,
-            env={"PYTHONPATH": "python"},
+            env={**os.environ, "PYTHONPATH": "python"},
             capture_output=True,
             text=True,
         )
@@ -801,7 +818,7 @@ print(f"Algorithm: {get_scheduler_algorithm()}")
             result = subprocess.run(
                 [sys.executable, "-m", "sim.ttlang_sim", str(script_path)],
                 cwd=Path(__file__).parent.parent.parent,
-                env={"PYTHONPATH": "python"},
+                env={**os.environ, "PYTHONPATH": "python"},
                 capture_output=True,
                 text=True,
             )
