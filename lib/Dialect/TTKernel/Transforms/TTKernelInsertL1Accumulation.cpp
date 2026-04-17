@@ -27,6 +27,12 @@ namespace ttk = mlir::tt::ttkernel;
 
 namespace {
 
+/// Build an i32 constant at the builder's insertion point.
+static Value buildI32Const(OpBuilder &builder, Location loc, int32_t value) {
+  return arith::ConstantOp::create(builder, loc, builder.getI32Type(),
+                                   builder.getI32IntegerAttr(value));
+}
+
 /// Returns true if every CB in `packCBs` has a prior value in L1 from a
 /// non-accumulating pack that precedes `rootLoop` in its parent block.
 /// When true, the reconfig before the group must enable L1 acc instead of
@@ -38,6 +44,7 @@ namespace {
 static bool
 precededByNonAccumulatingPack(scf::ForOp rootLoop,
                               const llvm::SmallDenseSet<Value, 2> &packCBs) {
+  assert(!packCBs.empty() && "L1-acc loop must have at least one pack CB");
   Block *block = rootLoop->getBlock();
   if (!block) {
     return false;
@@ -47,8 +54,9 @@ precededByNonAccumulatingPack(scf::ForOp rootLoop,
     return false;
   }
 
-  // Track which of `packCBs` have been confirmed by a preceding pack.
-  // Return true only when all are covered.
+  // Track which of `packCBs` are confirmed by a preceding pack; return true
+  // only when all are covered. Invariant: covered ⊆ packCBs (enforced by
+  // `record`).
   llvm::SmallDenseSet<Value, 2> covered;
   auto record = [&](Value cb) {
     if (packCBs.contains(cb)) {
@@ -80,29 +88,24 @@ precededByNonAccumulatingPack(scf::ForOp rootLoop,
       continue;
     }
     if (auto forOp = dyn_cast<scf::ForOp>(op)) {
-      auto innerCBs = getPackTileCBs(forOp);
-      bool packsOurs = false;
-      for (auto cb : innerCBs) {
-        if (packCBs.contains(cb)) {
-          packsOurs = true;
-          break;
-        }
-      }
-      if (!packsOurs) {
-        continue;
-      }
       // An annotated scf.for has its own L1 acc lifecycle; its packs do
       // not provide a prior value to us. A non-annotated scf.for (e.g., a
       // compiler-generated tile-loop wrapper) packs with L1 acc disabled,
       // so each pack to one of `packCBs` covers that CB.
-      if (forOp->hasAttr(kL1AccLoopAttrName) ||
-          forOp->hasAttr(kReductionLoopAttrName)) {
-        return false;
+      bool isAnnotated = forOp->hasAttr(kL1AccLoopAttrName) ||
+                         forOp->hasAttr(kReductionLoopAttrName);
+      bool touchedOurs = false;
+      for (Value cb : getPackTileCBs(forOp)) {
+        if (!packCBs.contains(cb)) {
+          continue;
+        }
+        if (isAnnotated) {
+          return false;
+        }
+        covered.insert(cb);
+        touchedOurs = true;
       }
-      for (Value cb : innerCBs) {
-        record(cb);
-      }
-      if (allCovered()) {
+      if (touchedOurs && allCovered()) {
         return true;
       }
       continue;
@@ -163,21 +166,21 @@ struct TTKernelInsertL1AccumulationPass
       if (!loop || !visitedLoops.insert(loop).second) {
         return;
       }
-      // Skip if this pass already ran. The signal is a PackReconfigL1AccOp
-      // either inside the loop (per-iteration enable, emitted in the
-      // standard pattern) or immediately preceding the loop (the reconfig
-      // emitted before every group, present in both patterns).
+      // Skip if this pass already ran. Check the cheap signal first: every
+      // prior run leaves a PackReconfigL1AccOp immediately before the loop
+      // (both the standard pattern and the prior-value pattern). Fall back
+      // to a body walk for the standard pattern's per-iteration enable in
+      // case the pre-loop reconfig has been moved or deleted by a later
+      // pass.
       bool alreadyProcessed = false;
-      loop->walk([&](ttk::PackReconfigL1AccOp) {
-        alreadyProcessed = true;
-        return WalkResult::interrupt();
-      });
+      if (auto *prev = loop->getPrevNode()) {
+        alreadyProcessed = isa<ttk::PackReconfigL1AccOp>(prev);
+      }
       if (!alreadyProcessed) {
-        if (auto *prev = loop->getPrevNode()) {
-          if (isa<ttk::PackReconfigL1AccOp>(prev)) {
-            alreadyProcessed = true;
-          }
-        }
+        loop->walk([&](ttk::PackReconfigL1AccOp) {
+          alreadyProcessed = true;
+          return WalkResult::interrupt();
+        });
       }
       if (alreadyProcessed) {
         return;
@@ -230,9 +233,8 @@ struct TTKernelInsertL1AccumulationPass
           precededByNonAccumulatingPack(group.rootLoop, rootPackCBs);
 
       builder.setInsertionPoint(group.rootLoop);
-      Value beforeGroupFlag = arith::ConstantOp::create(
-          builder, disableLoc, builder.getI32Type(),
-          builder.getI32IntegerAttr(l1HasPriorValue ? 1 : 0));
+      Value beforeGroupFlag =
+          buildI32Const(builder, disableLoc, l1HasPriorValue ? 1 : 0);
       ttk::PackReconfigL1AccOp::create(builder, disableLoc, beforeGroupFlag);
 
       for (size_t idx = 0; idx < group.loops.size(); ++idx) {
@@ -253,9 +255,7 @@ struct TTKernelInsertL1AccumulationPass
         // init ops between sibling loops reset packer state.
         if (idx > 0) {
           builder.setInsertionPoint(loop);
-          Value enableFlag = arith::ConstantOp::create(
-              builder, loop->getLoc(), builder.getI32Type(),
-              builder.getI32IntegerAttr(1));
+          Value enableFlag = buildI32Const(builder, loop->getLoc(), 1);
           ttk::PackReconfigL1AccOp::create(builder, loop->getLoc(), enableFlag);
         }
 
@@ -269,8 +269,7 @@ struct TTKernelInsertL1AccumulationPass
                                   loop.getInductionVar(), loop.getLowerBound());
         auto ifOp = scf::IfOp::create(builder, loc, firstIter);
         builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
-        Value enableFlag = arith::ConstantOp::create(
-            builder, loc, builder.getI32Type(), builder.getI32IntegerAttr(1));
+        Value enableFlag = buildI32Const(builder, loc, 1);
         ttk::PackReconfigL1AccOp::create(builder, loc, enableFlag);
       }
 
@@ -278,12 +277,9 @@ struct TTKernelInsertL1AccumulationPass
       // end (typically the cb_push_back). Reuse the before-group constant
       // when it already holds 0; otherwise create a fresh 0 constant.
       builder.setInsertionPointAfter(group.scopeEnd);
-      Value afterGroupFlag =
-          l1HasPriorValue
-              ? arith::ConstantOp::create(builder, disableLoc,
-                                          builder.getI32Type(),
-                                          builder.getI32IntegerAttr(0))
-              : beforeGroupFlag;
+      Value afterGroupFlag = l1HasPriorValue
+                                 ? buildI32Const(builder, disableLoc, 0)
+                                 : beforeGroupFlag;
       ttk::PackReconfigL1AccOp::create(builder, disableLoc, afterGroupFlag);
     }
   }

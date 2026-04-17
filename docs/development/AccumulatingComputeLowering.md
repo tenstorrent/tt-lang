@@ -1,12 +1,49 @@
 # Accumulating Compute Lowering
 
-## Problem
+This document describes how the tt-lang compiler lowers operations that
+accumulate results across multiple invocations — reductions, matmul
+K-accumulation, and user-written `+=` loops — onto the Tenstorrent
+compute engines.
 
-Several tile operations accumulate results in DST registers across
-multiple invocations: `reduce_tile` sums/maxes across a reduction
-dimension, `matmul_tiles` accumulates C += A * B across the K
-dimension. The hardware requirement: DST must remain live (not
-re-acquired) across the full accumulation scope.
+## Overview
+
+Tenstorrent hardware supports two accumulation mechanisms, and the
+compiler maps each accumulation source to one of them.
+
+**DST register accumulation.** The compute engines hold partial results
+in a destination register file (DST) that persists across tile ops as
+long as it stays acquired (not released). Per-tile accumulation (matmul
+K-reduction, reduce across a reduction dim) happens inside one
+acquire/release cycle.
+
+**L1 packer accumulation.** The pack unit can add each packed tile to
+the existing L1 value instead of overwriting, controlled by
+`pack_reconfig_l1_acc(1)` (enable) and `pack_reconfig_l1_acc(0)`
+(disable). Accumulation across separate acquire/release cycles uses
+this mechanism because DST is released between iterations.
+
+The compiler surface covers three accumulation sources:
+
+- `reduce_tile` and `matmul_tiles` accumulate per-tile over a reduction
+  dim. The `dst-accumulation` pass option on `ttl-lower-to-loops`
+  selects DST (loops reordered so DST spans the reduction) or L1 (loops
+  in declaration order with per-iteration pack acc). `reduce_max` is
+  L1-incompatible (L1 acc only adds) and is always lowered to DST acc.
+
+- User-written `out_blk += ...` loops lower to L1 accumulation. The
+  `TTKernelInsertL1Accumulation` pass brackets each annotated loop
+  group with `pack_reconfig_l1_acc` calls.
+
+- The init-then-accumulate pattern (`out_blk.store(v); for K-1: out_blk
+  += ...`) is lowered via L1 acc with a modified guard sequence: the
+  pre-group reconfig enables L1 acc so iteration 0 accumulates onto the
+  prior-pack value rather than overwriting it. `precededByNonAccumulatingPack`
+  detects the preceding non-accumulating pack.
+
+The rest of this document details each piece: `DstSectionOp` as the IR
+primitive that keeps DST live, the choice between DST and L1
+accumulation, the emitted loop structure, per-op init insertion, and
+the L1-acc guard placement (standard and prior-value variants).
 
 ## DstSectionOp
 
@@ -40,7 +77,10 @@ but holds the output DFB reserve longer.
 **L1 accumulation** (`dst-accumulation=false`): Loops in declaration
 order with per-tile `DstSectionOp`. Each iteration acquires DST,
 computes, packs. `pack_reconfig_l1_acc(1)` makes the packer add to
-the existing L1 value from the second iteration onward.
+the existing L1 value from the second iteration onward. See the
+"Guard placement around L1 accumulation loops" section below for the
+full enable/disable sequence and how it changes when a non-accumulating
+pack precedes the loop.
 
 Selection: the `dst-accumulation` pass option on `ttl-lower-to-loops`
 controls the mode. The pipeline maps `maximize_dst` to this option.
