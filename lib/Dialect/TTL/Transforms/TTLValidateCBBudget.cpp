@@ -7,8 +7,10 @@
 // TTL Validate CB Budget
 //
 // Validates that the sum of static circular-buffer backing stores (per unique
-// cb_index) does not exceed a per-core L1 budget. Tile sizes come from
-// ttcore::TileType::getSizeBytes() (same source as tt-mlir allocation); Python
+// cb_index) does not exceed a per-core L1 budget. Per-slot sizes use
+// ttcore::TileType::getSizeBytes() when the CB already carries a tile type, and
+// ttcore::TileType::get(elemTy).getSizeBytes() for row-wise / scalar element
+// types (same rule as tt-mlir DeviceAttr::getMemrefCBPageSizeBytes). Python
 // uses ttl.dtype_utils.tile_bytes_from_dtype — if those ever diverge, align
 // them or share one implementation (see issue #511).
 //
@@ -85,22 +87,26 @@ static std::optional<uint32_t> tryBudgetFromModule(ModuleOp moduleOp) {
   return static_cast<uint32_t>(chip.getUsableL1Size());
 }
 
+/// Bytes per CB slot: explicit ttcore.tile uses its shape/dtype; row-wise
+/// (scalar/builtin) element types use the default tile layout for that dtype,
+/// matching tt-mlir CB page sizing.
+static uint64_t bytesPerCbElement(mlir::Type elemTy) {
+  if (auto tileTy = mlir::dyn_cast<mlir::tt::ttcore::TileType>(elemTy)) {
+    return tileTy.getSizeBytes();
+  }
+  return mlir::tt::ttcore::TileType::get(elemTy).getSizeBytes();
+}
+
 static FailureOr<uint64_t> cbBytesForBind(BindCBOp bindOp) {
   auto cbTy = mlir::cast<CircularBufferType>(bindOp.getResult().getType());
   mlir::Type elemTy = cbTy.getElementType();
-  auto tileTy = dyn_cast<mlir::tt::ttcore::TileType>(elemTy);
-  if (!tileTy) {
-    bindOp.emitOpError() << "CB element type must be ttcore.tile, got "
-                         << elemTy;
-    return failure();
-  }
-  const uint64_t tileBytes = tileTy.getSizeBytes();
+  const uint64_t slotBytes = bytesPerCbElement(elemTy);
   const int64_t totalEl = cbTy.getTotalElements();
   if (totalEl < 0) {
-    bindOp.emitOpError() << "invalid negative total tile count for CB";
+    bindOp.emitOpError() << "invalid negative total element count for CB";
     return failure();
   }
-  return static_cast<uint64_t>(totalEl) * tileBytes;
+  return static_cast<uint64_t>(totalEl) * slotBytes;
 }
 
 struct TTLValidateCBBudgetPass
