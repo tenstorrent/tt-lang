@@ -45,6 +45,8 @@ static bool
 precededByNonAccumulatingPack(scf::ForOp rootLoop,
                               const llvm::SmallDenseSet<Value, 2> &packCBs) {
   assert(!packCBs.empty() && "L1-acc loop must have at least one pack CB");
+  // Same-block only: an outer-scope pack wouldn't re-execute on each
+  // iteration if `rootLoop` is nested, so its value would go stale.
   Block *block = rootLoop->getBlock();
   if (!block) {
     return false;
@@ -55,8 +57,10 @@ precededByNonAccumulatingPack(scf::ForOp rootLoop,
   }
 
   // Track which of `packCBs` are confirmed by a preceding pack; return true
-  // only when all are covered. Invariant: covered ⊆ packCBs (enforced by
-  // `record`).
+  // only when all are covered, because L1 acc is a single switch for the
+  // whole sync region — partial coverage would corrupt iteration 0 of the
+  // uncovered CBs (acc onto stale L1). Invariant: covered ⊆ packCBs
+  // (enforced by `record`).
   llvm::SmallDenseSet<Value, 2> covered;
   auto record = [&](Value cb) {
     if (packCBs.contains(cb)) {
@@ -166,12 +170,9 @@ struct TTKernelInsertL1AccumulationPass
       if (!loop || !visitedLoops.insert(loop).second) {
         return;
       }
-      // Skip if this pass already ran. Check the cheap signal first: every
-      // prior run leaves a PackReconfigL1AccOp immediately before the loop
-      // (both the standard pattern and the prior-value pattern). Fall back
-      // to a body walk for the standard pattern's per-iteration enable in
-      // case the pre-loop reconfig has been moved or deleted by a later
-      // pass.
+      // Idempotent: skip if a PackReconfigL1AccOp sits immediately
+      // before the loop (pre-group reconfig) or inside the loop body
+      // (per-iteration enable).
       bool alreadyProcessed = false;
       if (auto *prev = loop->getPrevNode()) {
         alreadyProcessed = isa<ttk::PackReconfigL1AccOp>(prev);

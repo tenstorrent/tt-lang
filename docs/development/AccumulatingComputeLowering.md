@@ -153,41 +153,16 @@ for iv = lb..ub:
 pack_reconfig_l1_acc(0)
 ```
 
-`precededByNonAccumulatingPack` detects the prior pack via a backward
-walk over the L1-acc loop's parent block. A `pack_tile` into one of the
-loop's pack CBs contributes a prior value, as does any pack inside a
-non-annotated `scf.for` (the compiler-generated tile-loop wrappers
-carrying `ttl.tile_loop_stride` produce this shape around a user
-`.store(...)`). The walk stops at any op that resets or shadows the L1
-slot: `cb_reserve_back` or `cb_push_back` on one of the pack CBs, an
-annotated `scf.for` (`ttl.l1_acc_loop` or `ttl.reduction_loop`) that
-packs to one of them (it has its own enable scope), and any other
-region-bearing op (`scf.if`, `scf.while`, custom region ops) whose body
-packs to one of them (the walk does not reason about their execution
-semantics).
-
-The walk requires the prior pack to sit in the L1-acc loop's parent
-block because L1 acc enablement depends on deterministic execution
-ordering immediately before the loop. A pack in an outer region
-executes only once relative to multiple iterations of an enclosing
-wrapper, so its value is not the most recent on iterations after the
-first.
-
-For multi-output loops, the walk returns true only when every CB in the
-loop's pack-CB set is covered by some preceding non-accumulating pack.
-L1 acc is a single switch for the whole sync region, so partial coverage
-must fall back to the standard pattern; enabling before the group with
-some CBs uncovered would corrupt their iteration 0 (acc onto stale L1).
-
-Sibling loops in a group always emit an unconditional enable before the
-loop and a per-iteration enable inside it, regardless of whether the
-root has a prior pack. The per-iteration enable on a sibling is a
-redundant no-op when the root's reconfig already enabled L1 acc.
+`precededByNonAccumulatingPack` selects between the two sequences by
+walking backward over the L1-acc loop's parent block and classifying
+each predecessor op as a contributor (a pack that leaves a prior value
+in L1) or a boundary (an op that resets or shadows the L1 slot, or one
+whose execution semantics the walk cannot model). See the helper's
+implementation for the exact classification rules.
 
 The pass is idempotent: a prior run leaves a `pack_reconfig_l1_acc`
-either inside the L1-acc loop body (standard pattern) or immediately
-preceding the loop (prior-value pattern), and the second run detects
-either signal and returns without re-emitting.
+either inside the L1-acc loop body or immediately preceding the loop,
+and the second run detects either signal and returns.
 
 ## Per-op init insertion
 
