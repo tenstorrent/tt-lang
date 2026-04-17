@@ -29,6 +29,13 @@ Run the simulator test suite:
 python -m pytest test/sim/
 ```
 
+Some tests are marked `slow` and skipped by default.  Pass `--run-slow` to
+include them (the hardware CI always does; the GitHub-hosted sim CI does not):
+
+```bash
+python -m pytest test/sim/ --run-slow
+```
+
 ## Debugging
 
 The simulator runs as standard Python code, so any Python debugger works with it.

@@ -293,6 +293,13 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--promote-bf16",
+        action="store_true",
+        dest="promote_bf16",
+        help="Redirect bfloat16 to float32 for faster computation on hardware without native bfloat16 support (e.g. Apple Silicon). Doubles tensor memory usage.",
+    )
+
+    parser.add_argument(
         "--trace",
         nargs="?",
         const="trace.jsonl",
@@ -368,6 +375,12 @@ def main() -> None:
     if args.scheduler:
 
         set_scheduler_algorithm(args.scheduler)
+
+    # Enable bfloat16-to-float32 promotion if requested
+    if args.promote_bf16:
+        from .ttnnsim import set_matmul_promote_bf16
+
+        set_matmul_promote_bf16(True)
 
     # Enable tensor statistics collection if requested
     # Configure default grid if specified

@@ -11,6 +11,7 @@ between tests for isolation. This is much faster than subprocess-based testing.
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,7 @@ REPO_ROOT = THIS_DIR.parent.parent
 EXAMPLES_DIR = REPO_ROOT / "examples"
 ERRORS_DIR = REPO_ROOT / "examples" / "errors"
 EXAMPLES_METAL_DIR = REPO_ROOT / "examples" / "metal_examples"
+MATMUL_TUTORIAL_DIR = EXAMPLES_DIR / "matmul-tutorial"
 
 
 @pytest.fixture(autouse=True)
@@ -62,6 +64,7 @@ def run_script_in_process(
     script_path: Path,
     scheduler: str = "fair",
     max_l1_bytes: int | None = None,
+    promote_bf16: bool = False,
 ) -> tuple[int, str]:
     """Run a script in-process with simulator backend.
 
@@ -70,13 +73,19 @@ def run_script_in_process(
         scheduler: Scheduler algorithm ('greedy' or 'fair')
         max_l1_bytes: Optional L1 memory limit override in bytes; uses the
             simulator default when None
+        promote_bf16: If True, redirect bfloat16 to float32 for faster
+            computation on hardware without native bfloat16 support
 
     Returns:
         (exit_code, output) tuple where exit_code is 0 on success, 1 on error
     """
+    from python.sim.ttnnsim import set_matmul_promote_bf16
+
     set_scheduler_algorithm(scheduler)
     if max_l1_bytes is not None:
         set_max_l1_bytes(max_l1_bytes)
+    if promote_bf16:
+        set_matmul_promote_bf16(True)
 
     # Shadow sys.modules locally (same as ttlang_sim.setup_simulator_imports())
     # Done here so it doesn't interfere with other tests in parallel execution
@@ -94,6 +103,8 @@ def run_script_in_process(
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = original
+        if promote_bf16:
+            set_matmul_promote_bf16(False)
 
 
 @pytest.mark.parametrize(
@@ -375,3 +386,49 @@ def test_eltwise_1d_broadcast_warning(scheduler: str) -> None:
     assert (
         "examples/eltwise_1d_broadcast.py:" in out
     ), f"Expected source location not found in output:\n{out}"
+
+
+# ---- Matmul tutorial -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "script_name",
+    [
+        # steps 2–6 define custom ttl kernels; verification uses torch.relu(a @ b + c).
+        # All ttnn surface calls (from_torch, to_torch, open_device, open_mesh_device,
+        # GetNumAvailableDevices, ShardTensorToMesh, set_fabric_config) are natively
+        # implemented in the simulator.
+        # step_1 is excluded: single-tile-block granularity produces too many simulator
+        # coroutine steps at M=K=N=8192 to be practical.
+        "step_2_single_node_multitile_block.py",
+        "step_3_multinode.py",
+        "step_4_multinode_grid_auto.py",
+        "step_5_multidevice_shard_m.py",
+        "step_6_multidevice_shard_k.py",
+    ],
+)
+@pytest.mark.matmul_tutorial_no_ttnn
+def test_matmul_tutorial_sim(script_name: str) -> None:
+    """Test matmul-tutorial steps 2-6 on the simulator (pass --run-matmul-tutorial-no-ttnn to enable)."""
+    code, out = run_script_in_process(
+        MATMUL_TUTORIAL_DIR / script_name, scheduler="fair", promote_bf16=True
+    )
+    assert code == 0, f"Script failed with code {code}. Output:\n{out}"
+
+
+@pytest.mark.parametrize(
+    "script_name",
+    [
+        # step_0 is a plain ttnn program — requires real ttnn hardware.
+        pytest.param("step_0_ttnn_base.py", marks=requires_ttnn),
+        # step_7 uses ttnn.all_reduce and ttnn.relu — requires real ttnn hardware.
+        pytest.param("step_7_multidevice_shard_k_all_reduce.py", marks=requires_ttnn),
+    ],
+)
+@pytest.mark.matmul_tutorial_ttnn
+def test_matmul_tutorial_hw(script_name: str) -> None:
+    """Test matmul-tutorial steps 0 and 7 on hardware (pass --run-matmul-tutorial-ttnn to enable)."""
+    code, out = run_script_in_process(
+        MATMUL_TUTORIAL_DIR / script_name, scheduler="fair", promote_bf16=True
+    )
+    assert code == 0, f"Script failed with code {code}. Output:\n{out}"

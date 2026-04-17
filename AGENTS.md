@@ -13,7 +13,7 @@
 - **ME2E tests**: `pytest test/me2e/`(requires ttnn and a TT device)
 - **Pytest tests**: `pytest test/python` (requires ttnn and a TT device)
 - **Python lit tests**: `llvm-lit test/python/` (hardware execution tests)
-- **Simulation tests**: `pytest test/sim/` (software simulation of runtime behavior)
+- **Simulation tests**: `pytest test/sim/` (software simulation of runtime behavior); add `--run-slow` to include slow tests (hardware CI always passes this flag; GitHub-hosted CI does not)
 
 ## Code Style Guidelines
 - **C++ Style**: LLVM style (see .clang-format, .clang-tidy)

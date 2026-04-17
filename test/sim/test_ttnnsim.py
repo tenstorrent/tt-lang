@@ -2131,3 +2131,142 @@ class TestRowMajorLayout:
         """Tile count for tiled tensors is unchanged (regression guard)."""
         t = ttnn.Tensor(torch.zeros(64, 64))  # 2x2 tiles
         assert ttnn.tile_count_from_tensor(t) == 4
+
+
+class TestAllReduce:
+    """Tests for :func:`~sim.ttnnsim.all_reduce`.
+
+    Partition structure is communicated via the tensor's ``mesh_shard_info``
+    attribute, which is set by :func:`from_torch` when a
+    :class:`~ttnnsim.ShardTensorToMesh` mapper is provided.  This is kept
+    separate from the intra-device sharding strategies stored in
+    :class:`~ttnnsim.MemoryConfig`.
+    """
+
+    def _mesh(self, n: int) -> ttnn.MeshDevice:
+        return ttnn.open_mesh_device(ttnn.MeshShape(1, n))
+
+    def test_shard_to_mesh_sets_mesh_shard_info(self) -> None:
+        """from_torch with ShardTensorToMesh records dim and device count in mesh_shard_info."""
+        mesh = self._mesh(4)
+        t = ttnn.from_torch(
+            torch.zeros(8, 6),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        assert t.mesh_shard_info is not None
+        assert t.mesh_shard_info.dim == 0
+        assert t.mesh_shard_info.num_devices == 4
+        assert t.memory_config == ttnn.DRAM_MEMORY_CONFIG
+
+    def test_shard_to_mesh_records_width_dim(self) -> None:
+        """ShardTensorToMesh along the last dim records dim=1 in mesh_shard_info."""
+        mesh = self._mesh(3)
+        t = ttnn.from_torch(
+            torch.zeros(4, 9),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=1),
+        )
+        assert t.mesh_shard_info is not None
+        assert t.mesh_shard_info.dim == 1
+        assert t.mesh_shard_info.num_devices == 3
+        assert t.memory_config == ttnn.DRAM_MEMORY_CONFIG
+
+    def test_all_reduce_via_mesh_sums_shards(self) -> None:
+        """all_reduce over a ShardTensorToMesh tensor sums the shards."""
+        mesh = self._mesh(4)
+        # Build a tensor where each shard-row block holds a different value.
+        data = torch.zeros(8, 4)
+        data[0:2, :] = 1.0
+        data[2:4, :] = 2.0
+        data[4:6, :] = 3.0
+        data[6:8, :] = 4.0
+        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        result = ttnn.all_reduce(t)
+        expected_shard = torch.full((2, 4), 10.0)
+        for i in range(4):
+            assert torch.allclose(
+                result.to_torch()[i * 2 : (i + 1) * 2], expected_shard
+            )
+
+    def test_all_reduce_single_device_identity(self) -> None:
+        """With a single-device mesh, all_reduce is an identity."""
+        mesh = self._mesh(1)
+        data = torch.arange(12, dtype=torch.float32).reshape(4, 3)
+        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        result = ttnn.all_reduce(t)
+        assert torch.allclose(result.to_torch(), data)
+
+    def test_all_reduce_preserves_layout(self) -> None:
+        """Output layout matches input layout."""
+        mesh = self._mesh(2)
+        t = ttnn.from_torch(
+            torch.ones(4, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        assert ttnn.all_reduce(t).layout == ttnn.ROW_MAJOR_LAYOUT
+
+    def test_all_reduce_dtype_conversion(self) -> None:
+        """Output is cast when dtype is given."""
+        mesh = self._mesh(2)
+        t = ttnn.from_torch(
+            torch.ones(4, 4, dtype=torch.float32),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        result = ttnn.all_reduce(t, dtype=torch.float16)
+        assert result.to_torch().dtype == torch.float16
+
+    def test_all_reduce_memory_config_override(self) -> None:
+        """Explicit memory_config is applied to the output."""
+        mesh = self._mesh(2)
+        t = ttnn.from_torch(
+            torch.ones(4, 4),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        custom_mc = MemoryConfig(strategy=ShardingStrategy.INTERLEAVED)
+        result = ttnn.all_reduce(t, memory_config=custom_mc)
+        assert result.memory_config == custom_mc
+
+    def test_all_reduce_kwargs_accepted(self) -> None:
+        """Extra keyword arguments are accepted without error."""
+        mesh = self._mesh(2)
+        t = ttnn.from_torch(
+            torch.ones(4, 4),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        ttnn.all_reduce(t, cluster_axis=0, mesh_device=mesh)
+
+    # ---- Error on unsharded tensor ----
+
+    def test_all_reduce_requires_shard_metadata(self) -> None:
+        """all_reduce raises ValueError when the tensor has no mesh sharding metadata."""
+        t = ttnn.Tensor(torch.ones(8, 4))
+        with pytest.raises(
+            ValueError, match="Mesh device is required for all_reduce operation"
+        ):
+            ttnn.all_reduce(t)
+
+    def test_shard_tensor_not_divisible_still_sets_mesh_shard_info(self) -> None:
+        """from_torch with ShardTensorToMesh records mesh_shard_info even when indivisible."""
+        mesh = self._mesh(3)
+        t = ttnn.from_torch(
+            torch.zeros(8, 4),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        assert t.mesh_shard_info is not None
+        assert t.mesh_shard_info.num_devices == 3
+        assert t.mesh_shard_info.dim == 0
+
+    def test_all_reduce_3d_partitioned_along_middle_dim(self) -> None:
+        """all_reduce on a 3-D tensor partitioned along dim 1 reduces along that axis."""
+        mesh = self._mesh(2)
+        # Shape (B, H*n, W) — partitioned along dim 1.
+        data = torch.zeros(3, 4, 5)
+        data[:, 0:2, :] = 1.0  # first device's shard
+        data[:, 2:4, :] = 3.0  # second device's shard
+        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=1))
+        assert t.mesh_shard_info is not None
+        assert t.mesh_shard_info.dim == 1
+        result = ttnn.all_reduce(t)
+        expected_shard = torch.full((3, 2, 5), 4.0)
+        assert torch.allclose(result.to_torch()[:, 0:2, :], expected_shard)
+        assert torch.allclose(result.to_torch()[:, 2:4, :], expected_shard)
