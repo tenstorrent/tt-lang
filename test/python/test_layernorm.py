@@ -58,37 +58,17 @@ def make_layernorm_kernel(dim_tiles):
         seq_tiles = x.shape[0] // TILE
         tiles_per_core = -(-seq_tiles // grid_cols)
         x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
-        sc_dfb = ttl.make_dataflow_buffer_like(
-            scaler, shape=(1, 1), block_count=1
-        )
-        ms_dfb = ttl.make_dataflow_buffer_like(
-            mean_scale, shape=(1, 1), block_count=1
-        )
-        red_dfb = ttl.make_dataflow_buffer_like(
-            scaler, shape=(1, 1), block_count=2
-        )
-        acc_dfb = ttl.make_dataflow_buffer_like(
-            scaler, shape=(1, 1), block_count=2
-        )
-        bcast_dfb = ttl.make_dataflow_buffer_like(
-            x, shape=(1, 1), block_count=2
-        )
+        sc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=1)
+        ms_dfb = ttl.make_dataflow_buffer_like(mean_scale, shape=(1, 1), block_count=1)
+        red_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+        acc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+        bcast_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
         sq_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
-        mean_dfb = ttl.make_dataflow_buffer_like(
-            x, shape=(1, 1), block_count=2
-        )
-        istd_dfb = ttl.make_dataflow_buffer_like(
-            x, shape=(1, 1), block_count=2
-        )
-        w_dfb = ttl.make_dataflow_buffer_like(
-            weight, shape=(1, 1), block_count=2
-        )
-        b_dfb = ttl.make_dataflow_buffer_like(
-            ln_bias, shape=(1, 1), block_count=2
-        )
-        out_dfb = ttl.make_dataflow_buffer_like(
-            out, shape=(1, 1), block_count=2
-        )
+        mean_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
+        istd_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
+        w_dfb = ttl.make_dataflow_buffer_like(weight, shape=(1, 1), block_count=2)
+        b_dfb = ttl.make_dataflow_buffer_like(ln_bias, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
         @ttl.compute()
         def compute():
@@ -149,9 +129,7 @@ def make_layernorm_kernel(dim_tiles):
                     var_bc = bcast_dfb.wait()
                     istd = istd_dfb.reserve()
                     istd.store(
-                        ttl.math.rsqrt(
-                            var_bc * ms + ttl.math.fill(var_bc, 1e-6)
-                        )
+                        ttl.math.rsqrt(var_bc * ms + ttl.math.fill(var_bc, 1e-6))
                     )
                     # Pass 3: normalize + affine
                     inv_std = istd_dfb.wait()
@@ -172,16 +150,10 @@ def make_layernorm_kernel(dim_tiles):
                 if tile_idx < seq_tiles:
                     for _pass in range(3):
                         for j in range(dim_tiles):
-                            ttl.copy(
-                                x[tile_idx, j], x_dfb.reserve()
-                            ).wait()
+                            ttl.copy(x[tile_idx, j], x_dfb.reserve()).wait()
                     for j in range(dim_tiles):
-                        ttl.copy(
-                            weight[tile_idx, j], w_dfb.reserve()
-                        ).wait()
-                        ttl.copy(
-                            ln_bias[tile_idx, j], b_dfb.reserve()
-                        ).wait()
+                        ttl.copy(weight[tile_idx, j], w_dfb.reserve()).wait()
+                        ttl.copy(ln_bias[tile_idx, j], b_dfb.reserve()).wait()
 
         @ttl.datamovement()
         def dm_write():
@@ -206,37 +178,17 @@ def make_layernorm_kernel_explicit(dim_tiles):
         seq_tiles = x.shape[0] // TILE
         tiles_per_core = -(-seq_tiles // grid_cols)
         x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
-        sc_dfb = ttl.make_dataflow_buffer_like(
-            scaler, shape=(1, 1), block_count=1
-        )
-        ms_dfb = ttl.make_dataflow_buffer_like(
-            mean_scale, shape=(1, 1), block_count=1
-        )
-        red_dfb = ttl.make_dataflow_buffer_like(
-            scaler, shape=(1, 1), block_count=2
-        )
-        acc_dfb = ttl.make_dataflow_buffer_like(
-            scaler, shape=(1, 1), block_count=2
-        )
-        bcast_dfb = ttl.make_dataflow_buffer_like(
-            x, shape=(1, 1), block_count=2
-        )
+        sc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=1)
+        ms_dfb = ttl.make_dataflow_buffer_like(mean_scale, shape=(1, 1), block_count=1)
+        red_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+        acc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=2)
+        bcast_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
         sq_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
-        mean_dfb = ttl.make_dataflow_buffer_like(
-            x, shape=(1, 1), block_count=2
-        )
-        istd_dfb = ttl.make_dataflow_buffer_like(
-            x, shape=(1, 1), block_count=2
-        )
-        w_dfb = ttl.make_dataflow_buffer_like(
-            weight, shape=(1, 1), block_count=2
-        )
-        b_dfb = ttl.make_dataflow_buffer_like(
-            ln_bias, shape=(1, 1), block_count=2
-        )
-        out_dfb = ttl.make_dataflow_buffer_like(
-            out, shape=(1, 1), block_count=2
-        )
+        mean_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
+        istd_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
+        w_dfb = ttl.make_dataflow_buffer_like(weight, shape=(1, 1), block_count=2)
+        b_dfb = ttl.make_dataflow_buffer_like(ln_bias, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
         @ttl.compute()
         def compute():
@@ -325,9 +277,7 @@ def make_layernorm_kernel_explicit(dim_tiles):
                     var_bc = bcast_dfb.wait()
                     istd = istd_dfb.reserve()
                     istd.store(
-                        ttl.math.rsqrt(
-                            var_bc * ms + ttl.math.fill(var_bc, 1e-6)
-                        )
+                        ttl.math.rsqrt(var_bc * ms + ttl.math.fill(var_bc, 1e-6))
                     )
                     istd.push()
                     var_bc.pop()
@@ -356,16 +306,10 @@ def make_layernorm_kernel_explicit(dim_tiles):
                 if tile_idx < seq_tiles:
                     for _pass in range(3):
                         for j in range(dim_tiles):
-                            ttl.copy(
-                                x[tile_idx, j], x_dfb.reserve()
-                            ).wait()
+                            ttl.copy(x[tile_idx, j], x_dfb.reserve()).wait()
                     for j in range(dim_tiles):
-                        ttl.copy(
-                            weight[tile_idx, j], w_dfb.reserve()
-                        ).wait()
-                        ttl.copy(
-                            ln_bias[tile_idx, j], b_dfb.reserve()
-                        ).wait()
+                        ttl.copy(weight[tile_idx, j], w_dfb.reserve()).wait()
+                        ttl.copy(ln_bias[tile_idx, j], b_dfb.reserve()).wait()
 
         @ttl.datamovement()
         def dm_write():
@@ -391,29 +335,15 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
         tiles_per_core = -(-seq_tiles // grid_cols)
 
         x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
-        sc_dfb = ttl.make_dataflow_buffer_like(
-            scaler, shape=(1, 1), block_count=1
-        )
-        ms_dfb = ttl.make_dataflow_buffer_like(
-            mean_scale, shape=(1, 1), block_count=1
-        )
-        w_dfb = ttl.make_dataflow_buffer_like(
-            weight, shape=(1, 1), block_count=2
-        )
-        b_dfb = ttl.make_dataflow_buffer_like(
-            ln_bias, shape=(1, 1), block_count=2
-        )
-        out_dfb = ttl.make_dataflow_buffer_like(
-            out, shape=(1, 1), block_count=2
-        )
+        sc_dfb = ttl.make_dataflow_buffer_like(scaler, shape=(1, 1), block_count=1)
+        ms_dfb = ttl.make_dataflow_buffer_like(mean_scale, shape=(1, 1), block_count=1)
+        w_dfb = ttl.make_dataflow_buffer_like(weight, shape=(1, 1), block_count=2)
+        b_dfb = ttl.make_dataflow_buffer_like(ln_bias, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
         # Intra-compute DFBs for cross-pass carry.
-        mean_dfb = ttl.make_dataflow_buffer_like(
-            x, shape=(1, 1), block_count=2
-        )
-        istd_dfb = ttl.make_dataflow_buffer_like(
-            x, shape=(1, 1), block_count=2
-        )
+        mean_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
+        istd_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
 
         @ttl.compute()
         def compute():
@@ -428,14 +358,9 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
                             mean_blk.store(ttl.math.fill(mean_blk, 0))
                             for _ in range(dim_tiles):
                                 with x_dfb.wait() as xj:
-                                    mean_blk += ttl.math.reduce_sum(
-                                        xj, sc, dims=[1]
-                                    )
+                                    mean_blk += ttl.math.reduce_sum(xj, sc, dims=[1])
                             mean_blk.store(
-                                ttl.math.broadcast(
-                                    mean_blk, mean_blk, dims=[1]
-                                )
-                                * ms
+                                ttl.math.broadcast(mean_blk, mean_blk, dims=[1]) * ms
                             )
 
                         # Pass 2 + Pass 3 share one mean wait scope.
@@ -451,9 +376,7 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
                                         )
                                 var_blk.store(
                                     ttl.math.rsqrt(
-                                        ttl.math.broadcast(
-                                            var_blk, var_blk, dims=[1]
-                                        )
+                                        ttl.math.broadcast(var_blk, var_blk, dims=[1])
                                         * ms
                                         + ttl.math.fill(var_blk, 1e-6)
                                     )
@@ -468,10 +391,7 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
                                         b_dfb.wait() as bj,
                                         out_dfb.reserve() as o,
                                     ):
-                                        o.store(
-                                            (xj - mean_val) * inv_std * wj
-                                            + bj
-                                        )
+                                        o.store((xj - mean_val) * inv_std * wj + bj)
 
         @ttl.datamovement()
         def dm_read():
@@ -550,9 +470,7 @@ def test_layernorm(seq_tiles, dim_tiles, device):
 def test_layernorm_explicit(seq_tiles, dim_tiles, device):
     """Hand-synced reference — push/pop written by the user bypass the
     sync pass."""
-    _run_layernorm(
-        make_layernorm_kernel_explicit, seq_tiles, dim_tiles, device
-    )
+    _run_layernorm(make_layernorm_kernel_explicit, seq_tiles, dim_tiles, device)
 
 
 @pytest.mark.parametrize("seq_tiles,dim_tiles", [(2, 2)], ids=["2x2"])
@@ -561,6 +479,4 @@ def test_layernorm_minimal_dfbs(seq_tiles, dim_tiles, device):
     """`with:` + `+=` L1 accumulation. Exercises the
     multi-store-per-reserve pattern that `ConvertTTLToCompute`'s
     `cb_push` relocation must not move ahead of subsequent stores."""
-    _run_layernorm(
-        make_layernorm_kernel_minimal_dfbs, seq_tiles, dim_tiles, device
-    )
+    _run_layernorm(make_layernorm_kernel_minimal_dfbs, seq_tiles, dim_tiles, device)

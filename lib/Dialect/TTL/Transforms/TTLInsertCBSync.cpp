@@ -99,7 +99,7 @@ static bool findReleases(Value cb, Operation *acquire,
 /// waited slot. Two sources feed the interval:
 ///
 ///   1. SSA uses of `acquire->getResult(0)` — the acquire's tensor value
-///      (attach_cb → ttl.store → compute ops).
+///      (attach_cb -> ttl.store -> compute ops).
 ///   2. Non-attach-cb users of the CB itself — e.g., `ttl.copy` in
 ///      dm_read / dm_write takes the CB as an operand directly, bypassing
 ///      the attach_cb chain.
