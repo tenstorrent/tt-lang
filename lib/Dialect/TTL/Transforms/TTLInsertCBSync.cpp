@@ -111,6 +111,9 @@ static bool findReleases(Value cb, Operation *acquire,
 ///
 /// Uses in descendant regions project up to their ancestor in the
 /// acquire's block.
+///
+/// Returns `acquire` itself when no tensor users exist; callers treat
+/// that as "insert the release immediately after the acquire".
 static Operation *findLastTensorUse(Value cb, Operation *acquire) {
   Operation *last = acquire;
   Block *block = acquire->getBlock();
@@ -187,7 +190,9 @@ struct TTLInsertCBSyncPass
 
     OpBuilder builder(func.getContext());
 
-    // Track erased ops so later iterations don't access dangling pointers.
+    // Track erased ops so later iterations skip them before any accessor
+    // call. The set holds raw pointers to freed ops — `findReleases` must
+    // check `erased.contains(...)` before touching any op wrapper method.
     DenseSet<Operation *> erased;
 
     auto insertMissingReleases = [&](auto acquires, auto &releases,

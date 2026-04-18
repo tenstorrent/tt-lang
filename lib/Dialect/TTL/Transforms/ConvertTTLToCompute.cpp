@@ -157,14 +157,14 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
   // placed and must not be moved forward, or they'd commit before the
   // later stores pack their data.
   for (StoreOp s : storesToErase) {
+    assert(s->getBlock() == computeOp->getBlock() &&
+           "stores absorbed into a compute must be siblings of that compute");
     Value viewCB = getAttachedCB(s.getView());
     if (viewCB) {
       for (Operation *op = s->getNextNode(); op != nullptr;
            op = op->getNextNode()) {
         if (auto pushOp = dyn_cast<CBPushOp>(op)) {
-          if (pushOp.getCb() == viewCB &&
-              pushOp->getBlock() == computeOp->getBlock() &&
-              pushOp->isBeforeInBlock(computeOp)) {
+          if (pushOp.getCb() == viewCB && pushOp->isBeforeInBlock(computeOp)) {
             pushOp->moveAfter(computeOp);
             break;
           }
