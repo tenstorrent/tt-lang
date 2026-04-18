@@ -52,18 +52,12 @@ def _make_hang_kernel():
         seq_tiles = inp.shape[0] // TILE
         tiles_per_core = -(-seq_tiles // grid_cols)
 
-        inp_dfb = ttl.make_dataflow_buffer_like(
-            inp, shape=(1, 1), block_count=2
-        )
-        out_dfb = ttl.make_dataflow_buffer_like(
-            out, shape=(1, 1), block_count=2
-        )
+        inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
         # Intra-thread DFB: compute reserves + stores OUTSIDE the loop,
         # the loop body waits on the same DFB. Without the fix, the sync
         # pass places cb_push after scf.for and the wait inside deadlocks.
-        tmp_dfb = ttl.make_dataflow_buffer_like(
-            inp, shape=(1, 1), block_count=2
-        )
+        tmp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
 
         @ttl.compute()
         def compute():

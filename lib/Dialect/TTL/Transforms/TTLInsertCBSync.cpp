@@ -94,42 +94,69 @@ static bool findReleases(Value cb, Operation *acquire,
   return hasSameLevelRelease;
 }
 
-/// Live-interval endpoint for `acquire->getResult(0)`: the last op in
-/// `acquire->getBlock()` that transitively consumes the tensor value. Uses
-/// in descendant regions project up to their ancestor in the acquire's
-/// block. If the tensor has no uses, returns `acquire`.
-static Operation *findLastTensorUse(Operation *acquire) {
+/// Live-interval endpoint for the slot of `acquire`: the last op in
+/// `acquire->getBlock()` that transitively consumes the reserved or
+/// waited slot. Two sources feed the interval:
+///
+///   1. SSA uses of `acquire->getResult(0)` — the acquire's tensor value
+///      (attach_cb → ttl.store → compute ops).
+///   2. Non-attach-cb users of the CB itself — e.g., `ttl.copy` in
+///      dm_read / dm_write takes the CB as an operand directly, bypassing
+///      the attach_cb chain.
+///
+/// attach_cb ops on the same CB for *other* acquires are deliberately
+/// excluded to avoid over-approximating across independent slots. They
+/// would be reached via (1) for this acquire's own tensor, and they
+/// belong to other acquires' intervals otherwise.
+///
+/// Uses in descendant regions project up to their ancestor in the
+/// acquire's block.
+static Operation *findLastTensorUse(Value cb, Operation *acquire) {
   Operation *last = acquire;
-  if (acquire->getNumResults() == 0) {
-    return last;
-  }
-
   Block *block = acquire->getBlock();
   DenseSet<Operation *> visited;
   SmallVector<Value, 8> worklist;
-  worklist.push_back(acquire->getResult(0));
 
+  auto extend = [&](Operation *user) {
+    if (!visited.insert(user).second) {
+      return;
+    }
+    Operation *ancestor = block->findAncestorOpInBlock(*user);
+    if (!ancestor) {
+      return;
+    }
+    if (isBefore(last, ancestor)) {
+      last = ancestor;
+    }
+    for (Value result : user->getResults()) {
+      worklist.push_back(result);
+    }
+  };
+
+  // Direct users of the CB value that aren't sync ops or attach_cb.
+  for (OpOperand &use : cb.getUses()) {
+    Operation *user = use.getOwner();
+    if (user == acquire) {
+      continue;
+    }
+    if (isa<CBPushOp, CBPopOp, CBReserveOp, CBWaitOp, AttachCBOp>(user)) {
+      continue;
+    }
+    extend(user);
+  }
+
+  // Tensor-value chain from this acquire's result.
+  if (acquire->getNumResults() > 0) {
+    worklist.push_back(acquire->getResult(0));
+  }
   while (!worklist.empty()) {
     Value v = worklist.pop_back_val();
     for (OpOperand &use : v.getUses()) {
       Operation *user = use.getOwner();
-      if (!visited.insert(user).second) {
-        continue;
-      }
-      // Sync ops don't extend the live interval.
       if (isa<CBPushOp, CBPopOp>(user)) {
         continue;
       }
-      Operation *ancestor = block->findAncestorOpInBlock(*user);
-      if (!ancestor) {
-        continue;
-      }
-      if (isBefore(last, ancestor)) {
-        last = ancestor;
-      }
-      for (Value result : user->getResults()) {
-        worklist.push_back(result);
-      }
+      extend(user);
     }
   }
 
@@ -180,7 +207,7 @@ struct TTLInsertCBSyncPass
           nestedOp.erase();
         }
 
-        Operation *last = findLastTensorUse(acquire);
+        Operation *last = findLastTensorUse(cb, acquire);
         builder.setInsertionPointAfter(last);
         createRelease(builder, acquire.getLoc(), cb);
       }
