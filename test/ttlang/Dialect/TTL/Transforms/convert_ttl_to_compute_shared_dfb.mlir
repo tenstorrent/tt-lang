@@ -121,3 +121,56 @@ func.func @multi_store_single_reserve()
   ttl.cb_pop  %x   : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
 }
+
+// -----
+
+// Test 3: two reserves on two different CBs with stores interleaved,
+// cb_push ops in REVERSE order (push for y, then push for x). Both
+// pushes are already past the generated compute ops, so the push-move
+// guard (`isBeforeInBlock(computeOp)`) correctly leaves them in place.
+// Each CB is still pushed exactly once and each push follows the
+// corresponding pack, so the emitted ordering is functionally correct
+// even though the pushes are not "tightly" paired with their compute
+// op.
+
+// CHECK-LABEL: func.func @interleaved_pushes_wrong_order
+// CHECK:       %[[IN:.*]] = ttl.bind_cb{cb_index = 0
+// CHECK:       %[[X:.*]] = ttl.bind_cb{cb_index = 1
+// CHECK:       %[[Y:.*]] = ttl.bind_cb{cb_index = 2
+//
+// Two separate compute ops (one per store), followed by the two pushes
+// in their original order.
+// CHECK:       ttl.compute
+// CHECK:         ttl.tile_add
+// CHECK:       ttl.compute
+// CHECK:         ttl.tile_mul
+// CHECK:       ttl.cb_push %[[Y]]
+// CHECK:       ttl.cb_push %[[X]]
+// CHECK:       ttl.cb_pop %[[IN]]
+// CHECK:       return
+func.func @interleaved_pushes_wrong_order()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %in = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %x  = ttl.bind_cb{cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %y  = ttl.bind_cb{cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+
+  %a_t = ttl.cb_wait %in : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %a   = ttl.attach_cb %a_t, %in : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  %rx_t = ttl.cb_reserve %x : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %rx   = ttl.attach_cb %rx_t, %x : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %ry_t = ttl.cb_reserve %y : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %ry   = ttl.attach_cb %ry_t, %y : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  %vx = ttl.add %a, %a : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %vx, %rx_t : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %vy = ttl.mul %a, %a : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %vy, %ry_t : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  // Pushes in the OPPOSITE order of the stores — the walk must still
+  // pair each store with the push whose CB matches its view.
+  ttl.cb_push %y : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_push %x : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop  %in : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}

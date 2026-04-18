@@ -535,3 +535,42 @@ func.func @dm_reserve_copy_inside_loop(
   }
   func.return
 }
+
+// -----
+
+// Test 20: outer cb_reserve + store with a cb_wait on the same CB
+// consuming the slot in only the ELSE branch of a subsequent scf.if
+// (the then branch does nothing with this CB). The scf.if is a sibling
+// region — not a descendant of the reserve's block in the structured-
+// control-flow sense the bug originally exercised. Regardless, the
+// push must land before scf.if so the else branch's wait is satisfied
+// on the control-flow paths that reach it.
+
+// CHECK-LABEL: func.func @reserve_then_if_else_branch_wait
+// CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
+// CHECK: ttl.cb_reserve %[[CB]]
+// CHECK: ttl.store
+// CHECK-NEXT: ttl.cb_push %[[CB]]
+// CHECK: scf.if
+// CHECK: } else {
+// CHECK:   ttl.cb_wait %[[CB]]
+// CHECK:   ttl.add
+// CHECK-NEXT: ttl.cb_pop %[[CB]]
+// CHECK: }
+// CHECK-NOT: ttl.cb_push
+// CHECK: return
+func.func @reserve_then_if_else_branch_wait(
+    %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+    %cond: i1)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %reserve = ttl.cb_reserve %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %arg0, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  scf.if %cond {
+  } else {
+    %w = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %b = ttl.attach_cb %w, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %r = ttl.add %b, %arg0 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  func.return
+}
