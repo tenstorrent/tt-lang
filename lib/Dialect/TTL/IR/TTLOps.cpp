@@ -186,11 +186,6 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
              << "pipe transfers require one operand to be !ttl.cb";
     }
     // Valid combinations: CB->Pipe (send) or Pipe->CB (receive)
-    // MVP: require explicit wait for all transfers.
-    if (failed(mlir::tt::ttl::verify::isEventuallyWaitedOn(getOperation(),
-                                                           getXf()))) {
-      return failure();
-    }
     return success();
   }
 
@@ -233,13 +228,6 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
 
   // TODO(#89): Verify that the tensor tile/block shape and element type match
   // the CB element_type and shape/block_count semantics.
-
-  // MVP: every transfer must be synchronized explicitly. Requiring a `ttl.wait`
-  // use ensures we do not silently drop transfers.
-  if (failed(mlir::tt::ttl::verify::isEventuallyWaitedOn(getOperation(),
-                                                         getXf()))) {
-    return failure();
-  }
 
   return success();
 }

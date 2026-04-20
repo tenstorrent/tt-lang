@@ -1324,6 +1324,7 @@ def _compile_kernel(
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
         pipeline_passes = [
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
+            "func.func(ttl-insert-copy-wait)",
             "func.func(ttl-insert-cb-sync)",
             "func.func(ttl-annotate-l1-acc-loops)",
             "func.func(convert-ttl-to-compute)",

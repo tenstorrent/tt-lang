@@ -59,22 +59,6 @@ module {
 
 // -----
 
-#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
-                      buffer = dram, grid = [1, 1], memory = interleaved>
-
-// Copy without a corresponding wait is invalid in the MVP.
-module {
-  func.func @copy_without_wait_invalid(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %c0 = arith.constant 0 : index
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
-    // expected-error @below {{expects transfer handle to be synchronized with ttl.wait}}
-    %xf = ttl.copy %t, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
-    func.return
-  }
-}
-
-// -----
-
 // Wait without a corresponding copy is invalid.
 module {
   func.func @wait_without_copy_invalid(%xf: !ttl.transfer_handle<read>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -97,80 +81,6 @@ module {
     %loaded = tensor.extract %handles[%c0] : tensor<?x!ttl.transfer_handle<read>>
     // expected-error @below {{expects operand to be the result of ttl.copy}}
     ttl.wait %loaded : !ttl.transfer_handle<read>
-    func.return
-  }
-}
-
-// -----
-
-#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
-                      buffer = dram, grid = [1, 1], memory = interleaved>
-
-// Two-phase loops with fewer wait iterations than copy iterations is invalid.
-// This exercises the verifier's loop iteration space comparison.
-module {
-  func.func @two_phase_loops_missing_wait_invalid(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %c0 = arith.constant 0 : index
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
-    %c3 = arith.constant 3 : index
-    %c4 = arith.constant 4 : index
-    %c1 = arith.constant 1 : index
-    %handles0 = tensor.empty(%c4) : tensor<?x!ttl.transfer_handle<read>>
-
-    %handles = scf.for %i = %c0 to %c4 step %c1 iter_args(%h = %handles0) -> tensor<?x!ttl.transfer_handle<read>> {
-      // expected-error @below {{expects transfer handle to be synchronized with ttl.wait}}
-      %xf = ttl.copy %t, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
-      %h2 = tensor.insert %xf into %h[%i] : tensor<?x!ttl.transfer_handle<read>>
-      scf.yield %h2 : tensor<?x!ttl.transfer_handle<read>>
-    }
-
-    // Wait loop covers only [0, 3) while copy loop covers [0, 4).
-    scf.for %i = %c0 to %c3 step %c1 {
-      %xf = tensor.extract %handles[%i] : tensor<?x!ttl.transfer_handle<read>>
-      ttl.wait %xf : !ttl.transfer_handle<read>
-    }
-    func.return
-  }
-}
-
-// -----
-
-#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
-                      buffer = dram, grid = [1, 1], memory = interleaved>
-
-// An untyped transfer handle that is never waited on is invalid.
-module {
-  func.func @unwaited_transfer_handle_invalid(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %c0 = arith.constant 0 : index
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
-    // expected-error @below {{expects transfer handle to be synchronized with ttl.wait}}
-    %xf = ttl.copy %t, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle
-    func.return
-  }
-}
-
-// -----
-
-#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
-                      buffer = dram, grid = [1, 1], memory = interleaved>
-
-// Pipelined loop with a loop-carried handle but no wait in the loop body is
-// invalid: it drops intermediate transfers without synchronization.
-module {
-  func.func @pipelined_loop_missing_wait_invalid(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %c0 = arith.constant 0 : index
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
-    %c2 = arith.constant 2 : index
-    %c1 = arith.constant 1 : index
-
-    // expected-error @below {{expects transfer handle to be synchronized with ttl.wait}}
-    %xf_init = ttl.copy %t, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
-    %last = scf.for %i = %c0 to %c2 step %c1 iter_args(%prev = %xf_init) -> (!ttl.transfer_handle<read>) {
-      %xf_next = ttl.copy %t, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
-      // Intentionally missing: ttl.wait %prev
-      scf.yield %xf_next : !ttl.transfer_handle<read>
-    }
-    ttl.wait %last : !ttl.transfer_handle<read>
     func.return
   }
 }

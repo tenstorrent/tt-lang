@@ -147,18 +147,26 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
         rewriter, loc, tileResult, storeOp.getView(), indices);
     storesToErase.push_back(storeOp);
   }
-  // The DSL emits cb_push after each store. When multiple stores are
-  // absorbed into a single compute body, earlier pushes end up before
-  // the compute and execute before data is packed. Move them after the
-  // compute so the push executes after pack_tile writes the data.
+  // Some stores get absorbed into the compute body, pulling their data
+  // production past the cb_push that the frontend emitted right after the
+  // block-level store. When that happens, move the push to after the
+  // compute so the push executes after pack_tile writes the data. Only
+  // move pushes that are currently in the compute's block AND before the
+  // compute — pushes already positioned later (e.g., at the end of a
+  // `with reserve: ... multi-store ...` scope) are already correctly
+  // placed and must not be moved forward, or they'd commit before the
+  // later stores pack their data.
   for (StoreOp s : storesToErase) {
+    assert(s->getBlock() == computeOp->getBlock() &&
+           "stores absorbed into a compute must be siblings of that compute");
     Value viewCB = getAttachedCB(s.getView());
     if (viewCB) {
-      for (auto &use : viewCB.getUses()) {
-        if (auto pushOp = dyn_cast<CBPushOp>(use.getOwner())) {
-          if (pushOp->getBlock() == computeOp->getBlock() &&
-              pushOp->isBeforeInBlock(computeOp)) {
+      for (Operation *op = s->getNextNode(); op != nullptr;
+           op = op->getNextNode()) {
+        if (auto pushOp = dyn_cast<CBPushOp>(op)) {
+          if (pushOp.getCb() == viewCB && pushOp->isBeforeInBlock(computeOp)) {
             pushOp->moveAfter(computeOp);
+            break;
           }
         }
       }
