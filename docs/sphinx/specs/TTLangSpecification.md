@@ -236,9 +236,9 @@ a_dfb = ttl.make_dataflow_buffer_like(a, shape = (N_BLOCK_SIZE, M_BLOCK_SIZE))
 
 # When tiled the 1D vector b is placed in row 0 of each tile in a row of N_TILES tiles
 b_dfb = ttl.make_dataflow_buffer_like(b, shape = (N_BLOCK_SIZE, 1))
-# When tiled the scalar element is placed in column 0 of each tile in a column of M_TILES tiles
+# When tiled the 1D vector c is placed in column 0 of each tile in a column of M_TILES tiles
 c_dfb = ttl.make_dataflow_buffer_like(b, shape = (1, M_BLOCK_SIZE))
-# When tiled the scalar element d is placed at position (0, 0) of a single tile
+# When tiled the scalar value d is placed at position (0, 0) of a single tile
 d_dfb = ttl.make_dataflow_buffer_like(b, shape = (1, 1))
 # When untiled the 1D y vector is formed from row 0 of each tile in a row of N_TILES tiles
 y_dfb = ttl.make_dataflow_buffer_like(y, shape = (N_BLOCK_SIZE, 1))
@@ -248,28 +248,44 @@ z_dfb = ttl.make_dataflow_buffer_like(z, shape = (1, M_BLOCK_SIZE))
 @ttl.datamovement()
 def elwise_read():
 
-    # Reserve b_blk block
-    with b_dfb.reserve() as b_blk:
+    # Reserve d_blk block
+    with d_dfb.reserve() as d_blk:
 
-        # Load entire b
-        b_xf = ttl.copy(b[0], b_blk)
-        b_xf.wait()
+        # Load entire d
+        d_xf = ttl.copy(d[0, 0], d_blk)
+        d_xf.wait()
 
-        # Push b_blk to make it ready for elwise_compute
+        # Push d_blk to make it ready for elwise_compute
 
     for n_block in range(N_BLOCKS):
+        # Reserve b_blk
+        with b_dfb.reserve() as b_blk:
+
+            # Load N_BLOCK_SIZE×1 block of b
+            b_xf = ttl.copy(b[n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE, 0], b_blk)
+            b_xf.wait()
+
+            # Push b_blk to make it ready for elwise_compute
+
         for m_block in range(M_BLOCKS):
 
-            # Reserve a_blk
-            with a_dfb.reserve() as a_blk:
-
+            # Reserve a_blk and c_blk
+            with (
+                a_dfb.reserve() as a_blk,
+                c_dfb.reserve() as c_blk,
+            ):
                 # Load N_BLOCK_SIZE×M_BLOCK_SIZE block of a
                 a_xf = ttl.copy(a[
                     n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE,
                     m_block * M_BLOCK_SIZE : (m_block + 1) * M_BLOCK_SIZE], a_blk)
-                a_xf.wait()
 
-                # Push a_blk to make it ready for elwise_compute
+                # Load 1×M_BLOCK_SIZE block of c
+                c_xf = ttl.copy(c[0, m_block * M_BLOCK_SIZE : (m_block + 1) * M_BLOCK_SIZE], c_blk)
+
+                a_xf.wait()
+                c_xf.wait()
+
+                # Push a_blk and c_blk to make them ready for elwise_compute
 
 @ttl.compute()
 def elwise_compute():
