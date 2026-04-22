@@ -6,8 +6,8 @@
 Grid layout: (N_parts, M_parts). A core at logical (col_c, row_c) owns
 output block (row_c * M_BPN + i_m, col_c * N_BPN + i_n) for i_m in
 [0, M_BPN) and i_n in [0, N_BPN). No K-split, no gather: the compute
-loop reduces over K_BPN blocks and writes partial_cb straight to the
-output tensor.
+loop reduces over Kb blocks and writes out_cb straight to the output
+tensor.
 
 Use ksplit_kernel.py for K_parts > 1 configurations.
 """
@@ -95,9 +95,6 @@ def make_kernel(
                         a_blk = a_cb.wait()
                         b_blk = b_cb.wait()
                         p += a_blk @ b_blk
-                        a_blk.pop()
-                        b_blk.pop()
-                    p.push()
 
         @ttl.datamovement()
         def dm_read():
@@ -108,14 +105,14 @@ def make_kernel(
                 for _ in range(N_BPN):
                     for kb in range(Kb):
                         kc = kb * bk
-                        with a_cb.reserve() as a_blk:
-                            def read_a(pipe):
-                                ttl.copy(a[mr:mr + bm, kc:kc + bk], a_blk).wait()
-                                ttl.copy(a_blk, pipe).wait()
-                            mcast_a_net.if_src(read_a)
-                            mcast_a_net.if_dst(lambda pipe: (
-                                ttl.copy(pipe, a_blk).wait(),
-                            ))
+                        a_blk = a_cb.reserve()
+                        def read_a(pipe):
+                            ttl.copy(a[mr:mr + bm, kc:kc + bk], a_blk).wait()
+                            ttl.copy(a_blk, pipe).wait()
+                        mcast_a_net.if_src(read_a)
+                        mcast_a_net.if_dst(lambda pipe: (
+                            ttl.copy(pipe, a_blk).wait(),
+                        ))
 
         @ttl.datamovement()
         def dm_write():
@@ -128,15 +125,15 @@ def make_kernel(
                     nc = nb * bn
                     for kb in range(Kb):
                         kc = kb * bk
-                        with b_cb.reserve() as b_blk:
-                            def read_b(pipe):
-                                ttl.copy(w[kc:kc + bk, nc:nc + bn], b_blk).wait()
-                                ttl.copy(b_blk, pipe).wait()
-                            mcast_b_net.if_src(read_b)
-                            mcast_b_net.if_dst(lambda pipe: (
-                                ttl.copy(pipe, b_blk).wait(),
-                            ))
-                    with out_cb.wait() as o:
-                        ttl.copy(o, out[mr:mr + bm, nc:nc + bn]).wait()
+                        b_blk = b_cb.reserve()
+                        def read_b(pipe):
+                            ttl.copy(w[kc:kc + bk, nc:nc + bn], b_blk).wait()
+                            ttl.copy(b_blk, pipe).wait()
+                        mcast_b_net.if_src(read_b)
+                        mcast_b_net.if_dst(lambda pipe: (
+                            ttl.copy(pipe, b_blk).wait(),
+                        ))
+                    o = out_cb.wait()
+                    ttl.copy(o, out[mr:mr + bm, nc:nc + bn]).wait()
 
     return summa_matmul
