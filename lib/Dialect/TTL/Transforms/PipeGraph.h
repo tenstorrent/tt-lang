@@ -66,6 +66,7 @@ struct ReceiverCBInfo {
   int64_t cbIndex;       // CB index (0-31) used by receiver
   int64_t gatherSlotIdx; // Slot index for gather patterns (0 if not gather)
   int64_t blockCount;    // CB block_count (for gather validation)
+  int64_t numSenders;    // Total senders to this dst in this PipeNet (1 if not gather)
   Location loc;          // Source location for error reporting
 };
 
@@ -105,7 +106,7 @@ public:
     if (receiverCBs.count(key) != 0) {
       return emitError(loc) << "duplicate receiver CB for the same pipe";
     }
-    receiverCBs.insert({key, {cbIndex, 0, blockCount, loc}});
+    receiverCBs.insert({key, {cbIndex, 0, blockCount, 1, loc}});
     receiverCopyToKey[receiverCopyOp] = key;
     receiverCopyOrder.push_back({receiverCopyOp, key});
     return success();
@@ -173,6 +174,16 @@ public:
       }
       GatherDstKey dk{key.dstStartX, key.dstStartY, key.pipeNetId};
       gatherDstCounts[dk]++;
+    }
+
+    // Propagate sender counts back onto each receiver entry so senders can
+    // decide whether to insert the gather back-pressure ack handshake.
+    for (auto &[key, info] : receiverCBs) {
+      GatherDstKey dk{key.dstStartX, key.dstStartY, key.pipeNetId};
+      auto it = gatherDstCounts.find(dk);
+      if (it != gatherDstCounts.end()) {
+        info.numSenders = it->second;
+      }
     }
 
     // Assign 1-based receive indices per destination. receiver CopyOps

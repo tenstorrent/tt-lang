@@ -267,11 +267,13 @@ def run_kernel_on_device(
     )
 
     # Build semaphore descriptors for pipe synchronization.
-    # Each PipeNet uses 2 semaphores: sender_sem and receiver_sem.
-    # Index: pipeNetId * 2 (sender), pipeNetId * 2 + 1 (receiver).
+    # Each PipeNet uses 3 semaphores: sender_sem, receiver_sem, ack_sem.
+    # Index: pipeNetId * 3 (sender), * 3 + 1 (receiver), * 3 + 2 (ack).
+    # ack_sem is only active for gather (unicast N->1) to back-pressure
+    # senders from racing compute's consumption of fixed-slot recv_cb data.
     semaphore_descriptors = []
     if num_pipe_nets > 0:
-        num_sems = num_pipe_nets * 2
+        num_sems = num_pipe_nets * 3
         for sem_id in range(num_sems):
             semaphore_descriptors.append(
                 ttnn.SemaphoreDescriptor(

@@ -61,12 +61,20 @@ static int64_t getNocIndex(Operation *op) {
   return attr.getInt();
 }
 
+// Each PipeNet reserves 3 semaphore slots:
+//   +0 sender_sem:   senders signal receivers that data landed
+//   +1 receiver_sem: receivers signal sender "ready" (multicast handshake)
+//   +2 ack_sem:      receivers signal senders "slot is free" (gather unicast)
 static int64_t getSenderSemIdx(PipeType pipeType) {
-  return pipeType.getPipeNetId() * 2;
+  return pipeType.getPipeNetId() * 3;
 }
 
 static int64_t getReceiverSemIdx(PipeType pipeType) {
-  return pipeType.getPipeNetId() * 2 + 1;
+  return pipeType.getPipeNetId() * 3 + 1;
+}
+
+static int64_t getAckSemIdx(PipeType pipeType) {
+  return pipeType.getPipeNetId() * 3 + 2;
 }
 
 /// Lower CB -> Pipe copy: multicast tiles from source CB to destination cores.
@@ -235,6 +243,22 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
   Value dstAddr = arith::IndexCastOp::create(rewriter, loc, i32Ty, dstAddrIdx);
 
   if (pipeType.isUnicast()) {
+    // Gather back-pressure: senders write to fixed slots in the receiver's
+    // recv_cb, so a fast sender could overwrite slot data the receiver's
+    // compute has not yet consumed. The receiver increments our local
+    // ack_sem after its cb_reserve_back returns (i.e., after compute popped
+    // a slot), so waiting on ack_sem serializes the write to the next iter.
+    if (receiverInfo && receiverInfo->numSenders > 1) {
+      auto ackSemIdx = arith::ConstantIndexOp::create(
+          rewriter, loc, getAckSemIdx(pipeType));
+      auto ackSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, ackSemIdx);
+      auto ackSemPtr = ttk::CastToL1PtrOp::create(rewriter, loc, ackSemAddr);
+      auto oneVal = arith::ConstantOp::create(rewriter, loc, i32Ty,
+                                              rewriter.getI32IntegerAttr(1));
+      ttk::SemaphoreWaitMinOp::create(rewriter, loc, ackSemPtr, oneVal);
+      auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+      ttk::NocSemaphoreSetOp::create(rewriter, loc, ackSemPtr, zeroIdx);
+    }
     auto nocAddr = ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal,
                                              dstStartYVal, dstAddr);
     ttk::NocAsyncWriteOp::create(rewriter, loc, srcAddr, nocAddr.getResult(),
@@ -320,13 +344,39 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
     // For gather (N senders to 1 receiver), use cumulative waits:
     // 1st recv waits for sem >= 1, 2nd for >= 2, etc. Only reset after last.
     int64_t waitVal = 1;
+    int64_t numSenders = 1;
     bool resetAfterWait = true;
     if (pipeGraph) {
       auto [recvIdx, total] =
           pipeGraph->getGatherRecvProgress(op.getOperation());
       waitVal = recvIdx;
+      numSenders = total;
       resetAfterWait = (recvIdx == total);
     }
+
+    // Gather back-pressure: the caller emitted cb_reserve_back before this
+    // copy, so reaching here means the recv_cb has a free slot for this
+    // sender. Ack the sender on its local core so it can write the next
+    // iter's tile without racing compute's consumption of the current slot.
+    if (numSenders > 1) {
+      auto ackSemIdx = arith::ConstantIndexOp::create(
+          rewriter, loc, getAckSemIdx(pipeType));
+      auto ackSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, ackSemIdx);
+      auto srcXLogical =
+          arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcX());
+      auto srcYLogical =
+          arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcY());
+      auto srcXTranslated = ttk::ConvertLogicalXToTranslatedOp::create(
+          rewriter, loc, indexTy, srcXLogical);
+      auto srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
+          rewriter, loc, indexTy, srcYLogical);
+      auto ackNocAddr = ttk::GetNocAddrOp::create(
+          rewriter, loc, srcXTranslated, srcYTranslated, ackSemAddr);
+      auto incrVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
+      ttk::NocSemaphoreIncOp::create(rewriter, loc, ackNocAddr.getResult(),
+                                     incrVal, /*noc_id=*/Value());
+    }
+
     auto semIdx = arith::ConstantIndexOp::create(rewriter, loc,
                                                  getSenderSemIdx(pipeType));
     auto semAddr = ttk::GetSemaphoreOp::create(rewriter, loc, semIdx);
