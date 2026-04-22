@@ -206,10 +206,10 @@ A *block* represents memory acquired from a dataflow buffer. Block size is deter
 # ---------------------
 # Tiled element-wise with broadcast and reduce:
 #
-# y[i] = ∑(√(a[i, j]² + b[i]² + c[j]² + d²))
+# y[n] = ∑(√(a[n, m]² + b[n]² + c[m]² + d²))
 #        j 
 #
-# z[j] = ∑(√(a[i, j]² - b[i]² - c[j]² - d²))
+# z[m] = ∑(√(a[n, m]² - b[n]² - c[m]² - d²))
 #        i
 #
 # Tensor   Torch shape   Note
@@ -384,14 +384,16 @@ def elwise_write():
 
 ```py
 # ---------------------
-# Matmul with bias:
-# y = a @ b + c
+# Batched matrix multiplication with bias:
+#
+# y[i, m, n] = ∑(a[i, m, k] * b[k, n]) + c[m, n]
+#              k
 #
 # Tensor   Torch shape   Note
-# a        I, M, K       Batched A matrix (e.g. input activations)
-# b        K, N          Non-batched B matrix (e.g. weights)
-# c        M, N          Bias matrix C
-# y        I, M, N       Batched Y matrix (e.g. output activations)
+# a        I, M, K       Batched a matrix (e.g. input activations)
+# b        K, N          Non-batched b matrix (e.g. weights)
+# c        M, N          Non-batched bias matrix c (e.g. weights)
+# y        I, M, N       Batched y matrix (e.g. output activations)
 #
 # All tensors have tiled layout
 
