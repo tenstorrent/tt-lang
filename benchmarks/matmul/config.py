@@ -53,11 +53,10 @@ MAX_GRID_N = 13
 # divisors for shapes like 2.5k (80 tiles) and 3.3k (104 tiles).
 BLOCK_DIMS: Tuple[int, ...] = (8, 7, 6, 5, 4, 3, 2, 1)
 
-# Per-core L1 budget for circular buffers (bytes). Sweep opens the
-# device with `get_max_worker_l1_unreserved_size() - 131072`; on
-# Wormhole this comes out near 1.37 MiB, so 1.35 MiB is a safe planner
-# default that still admits (8,8,8) Kp=2 plans.
-DEFAULT_L1_BUDGET_BYTES = 1_350_000
+# Per-core L1 budget for circular buffers (bytes). Wormhole worker has
+# ~1.57 MiB SRAM per core; kernel program eats ~130 KiB, so CBs have
+# ~1.44 MiB to play with.
+DEFAULT_L1_BUDGET_BYTES = 1_440_000
 
 # bfloat16 tile = 32x32 half-precision = 2048 B (ignoring page padding;
 # tt-metal adds a small header per page but it's a rounding error here).
@@ -67,11 +66,24 @@ BF16_BYTES = 2
 # over real work are rejected. 1.25 = up to 25% waste allowed.
 MAX_PAD = 1.25
 
-# Per-block overhead in tile-matmul-equivalent units. Fit from the
-# 14-shape baseline sweep so that predicted throughput cores*bv/(bv+a)
-# tracks observed 1/ratio across bv in {8,16,64,256,512}. Retune if
-# kernel changes alter per-block setup cost.
-BLOCK_OVERHEAD_ALPHA = 128
+# Per-block overhead in tile-matmul-equivalent units. Refit from probe:
+# on 4k³ (8,4,8)/(8,12,1) Kp=1 96c (1.704ms) beats (8,8,8)/(8,6,2) Kp=2
+# 96c (1.820ms) -> smaller-bv configs are relatively more competitive
+# than α=128 predicted. α=64 puts the bv/(bv+α) factor for bv=256 at
+# 0.8 (vs 0.89 for bv=512), letting bn=4 variants win when pad/cores
+# are equal or favorable.
+BLOCK_OVERHEAD_ALPHA = 64
+
+# Per-gather cost as a fraction of block time. Scales with *total* gathers
+# per core = (Kp-1) * iter_per_core, not just Kp-1. A single linear-in-Kp
+# penalty couldn't satisfy both calibration points simultaneously:
+#   4k³   (8,4,8)/(8,12,1) iter=6 Kp=1 @ 1.704ms  vs
+#         (8,8,8)/(8, 6,2) iter=6 Kp=2 @ 1.820ms  → wants β(Kp-1)>0.21
+#   2k8k2k (8,8,8)/(8,3,4) iter=3 Kp=4 @ 0.953ms  vs
+#          (8,8,8)/(8,8,1) iter=1 Kp=1 @ 1.067ms  → wants β(Kp-1)<0.11
+# Scaling by total_gathers=(Kp-1)*iter resolves both (flip points are
+# gathers=6 and gathers=9), implying β≈0.035 per gather event.
+KP_PENALTY_BETA = 0.035
 
 
 @dataclass(frozen=True)
@@ -206,6 +218,7 @@ def plan_matmul(
     l1_budget_bytes: int = DEFAULT_L1_BUDGET_BYTES,
     max_pad: float = MAX_PAD,
     alpha: float = BLOCK_OVERHEAD_ALPHA,
+    kp_beta: float = KP_PENALTY_BETA,
     dtype_bytes: int = BF16_BYTES,
 ) -> MatmulPlan:
     """Plan a ksplit/SUMMA matmul for shape (M, K, N).
@@ -256,10 +269,18 @@ def plan_matmul(
                             continue
 
                         block_vol = bm * bn * bk
+                        iter_per_core = m_span * n_span
+                        total_gathers = (Kp - 1) * iter_per_core
+                        gather_penalty = 1.0 + kp_beta * total_gathers
                         throughput = cores * block_vol / (
-                            pad * (block_vol + alpha))
-                        # Tiebreak toward more cores, then less pad.
-                        score = (throughput, cores, -pad)
+                            pad * (block_vol + alpha) * gather_penalty)
+                        # Throughput ties (common when cores/pad normalizes
+                        # out): break on bv first (bigger blocks amortize
+                        # per-block overhead better than bv/(bv+α) predicts
+                        # for small bv — 4k³ (8,2,8) 117c ran 23% slower
+                        # than (8,4,8) 96c at matched predicted throughput),
+                        # then less pad, then more cores, then lower Kp.
+                        score = (throughput, block_vol, -pad, cores, -Kp)
 
                         if best_score is None or score > best_score:
                             best_score = score
@@ -302,7 +323,7 @@ _SWEEP_SHAPES: Tuple[Tuple[int, int, int, str], ...] = (
 def main() -> None:
     print("matmul planner spot check (sweep shapes)")
     print(f"grid={MAX_GRID_M}x{MAX_GRID_N}  L1_budget={DEFAULT_L1_BUDGET_BYTES/1024:.0f} KiB  "
-          f"max_pad={MAX_PAD}  alpha={BLOCK_OVERHEAD_ALPHA}")
+          f"max_pad={MAX_PAD}  alpha={BLOCK_OVERHEAD_ALPHA}  kp_beta={KP_PENALTY_BETA}")
     print("-" * 130)
     for (M, K, N, label) in _SWEEP_SHAPES:
         try:
