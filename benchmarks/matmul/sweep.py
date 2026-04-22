@@ -49,7 +49,19 @@ SHAPES_LARGE = (
     (10240, 8192,  13312, "10k x 8k x 13k (130 cores, 4x4)"),
 )
 
-SHAPES = SHAPES_SMALL + SHAPES_LARGE
+# Shapes predicted to favor us (130-core-friendly M/N, long K amortizes
+# per-core overhead) and shapes predicted to favor ttnn (short K on
+# medium-square outputs, limits our per-op amortization).
+SHAPES_PROBE = (
+    (2560,  16384, 3328,  "2.5k x 16k x 3.3k"),
+    (2560,  32768, 3328,  "2.5k x 32k x 3.3k"),
+    (10240, 16384, 13312, "10k x 16k x 13k"),
+    (5120,  32768, 6656,  "5k x 32k x 6.5k"),
+    (3072,  1024,  3072,  "3k x 1k x 3k (short K)"),
+    (6144,  2048,  6144,  "6k x 2k x 6k (short K)"),
+)
+
+SHAPES = SHAPES_SMALL + SHAPES_LARGE + SHAPES_PROBE
 
 WARMUP_RUNS = 3
 TIMED_RUNS = 5
