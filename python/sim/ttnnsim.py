@@ -1939,6 +1939,15 @@ def all_reduce(
     return result_tensor
 
 
+def synchronize_device(*args: Any, **kwargs: Any) -> None:
+    """No-op stub for ttnn.synchronize_device().
+
+    On real hardware this blocks the host until all pending device operations
+    have completed.  The simulator executes kernels synchronously, so there is
+    nothing to wait for.
+    """
+
+
 def squeeze(input_tensor: Tensor, dim: Optional[int] = None) -> Tensor:
     """Remove dimensions of size 1 from a tensor.
 
