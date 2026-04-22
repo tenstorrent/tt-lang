@@ -29,39 +29,32 @@ from plot import save_plot
 from summa_kernel import make_kernel as make_summa_kernel
 
 
-SHAPES_SMALL = (
+# Sorted by M*K*N (rough work size). Annotations in labels flag why a
+# shape is interesting (short K, long K, full grid, etc.).
+SHAPES = (
     (1024,  1024,  1024,  "1k^3"),
     (1024,  2048,  1024,  "1k x 2k x 1k"),
     (2048,  2048,  2048,  "2k^3"),
-    (2048,  4096,  2048,  "2k x 4k x 2k"),
+    (3072,  1024,  3072,  "3k x 1k x 3k (short K)"),
     (2560,  2048,  3072,  "2.5k x 2k x 3k"),
-)
-
-SHAPES_LARGE = (
-    (2048,  8192,  2048,  "2k x 8k x 2k (long K)"),
+    (2048,  4096,  2048,  "2k x 4k x 2k"),
     (2560,  4096,  3072,  "2.5k x 4k x 3k"),
-    (2560,  8192,  3072,  "2.5k x 8k x 3k (120 cores)"),
-    (2560,  8192,  3328,  "2.5k x 8k x 3.3k (130 cores)"),
+    (2048,  8192,  2048,  "2k x 8k x 2k (long K)"),
+    (3072,  4096,  3072,  "3k x 4k x 3k"),
     (1024,  16384, 2560,  "1k x 16k x 2.5k (tall K)"),
+    (5120,  2048,  5120,  "5k x 2k x 5k (short K)"),
+    (2560,  8192,  3072,  "2.5k x 8k x 3k (120 cores)"),
     (4096,  4096,  4096,  "4k^3"),
+    (2560,  8192,  3328,  "2.5k x 8k x 3.3k (130 cores)"),
+    (6144,  2048,  6144,  "6k x 2k x 6k (short K)"),
     (4096,  8192,  4096,  "4k x 8k x 4k"),
-    (8192,  8192,  8192,  "8k^3"),
-    (10240, 8192,  13312, "10k x 8k x 13k (130 cores, 4x4)"),
-)
-
-# Shapes predicted to favor us (130-core-friendly M/N, long K amortizes
-# per-core overhead) and shapes predicted to favor ttnn (short K on
-# medium-square outputs, limits our per-op amortization).
-SHAPES_PROBE = (
     (2560,  16384, 3328,  "2.5k x 16k x 3.3k"),
     (2560,  32768, 3328,  "2.5k x 32k x 3.3k"),
-    (10240, 16384, 13312, "10k x 16k x 13k"),
+    (8192,  8192,  8192,  "8k^3"),
+    (10240, 8192,  13312, "10k x 8k x 13k (130 cores, 4x4)"),
     (5120,  32768, 6656,  "5k x 32k x 6.5k"),
-    (3072,  1024,  3072,  "3k x 1k x 3k (short K)"),
-    (6144,  2048,  6144,  "6k x 2k x 6k (short K)"),
+    (10240, 16384, 13312, "10k x 16k x 13k"),
 )
-
-SHAPES = SHAPES_SMALL + SHAPES_LARGE + SHAPES_PROBE
 
 WARMUP_RUNS = 3
 TIMED_RUNS = 5
