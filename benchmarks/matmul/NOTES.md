@@ -88,10 +88,8 @@ Non-obvious things we learned while tuning the ksplit/SUMMA matmul against
 - **Biggest wins are long-K shapes.** 2.5k×32k×3.3k at ratio ~0.85. Tall
   K amortizes per-block and gather overhead across many K-iterations.
 - **1k×16k×2.5k** (tall K, narrow M×N) is also favorable.
-- **Square 4k³** is the hard one. Compute-bound at Wormhole DRAM
-  ceiling, plus ttnn's L1 staging advantage; we close to ~1.1 at best.
-  Anecdotally 4k³ is the shape ttnn benchmarks and tunes against, so
-  their curve is likely overfit here.
+- **Square 4k³** is the hard one. Anecdotally 4k³ is a primary shape ttnn benchmarks and tunes against, so
+  their curve is likely overfit here. However, it's also one of the lowest core-utilization shapes.
 
 ## Methodology
 
