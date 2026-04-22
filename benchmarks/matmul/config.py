@@ -48,9 +48,13 @@ TILE = 32
 MAX_GRID_M = 10
 MAX_GRID_N = 13
 
-# Block dims considered, in tiles. 8 is the hardware cap on tile matmul
-# block dim. Non-power-of-two candidates (7,6,5,3) let us hit exact
-# divisors for shapes like 2.5k (80 tiles) and 3.3k (104 tiles).
+# Block dims considered, in tiles. Dims above 8 (tried 10/12/14/16) run
+# slower empirically even when the bv/(bv+α) model predicts a win —
+# e.g. 4k³ (16,2,16)/(8,13,1) 104c bv=512 model-predicted 33% faster
+# but ran 25% slower than (8,4,8) 88c. LLK overhead grows non-linearly
+# for bm/bn/bk > 8 in ways the constant-α model doesn't capture. Keep
+# search bounded to 8. Non-power-of-two (7,6,5,3) hit exact divisors
+# for 2.5k (80 tiles) and 3.3k (104 tiles).
 BLOCK_DIMS: Tuple[int, ...] = (8, 7, 6, 5, 4, 3, 2, 1)
 
 # Per-core L1 budget for circular buffers (bytes). Wormhole worker has
