@@ -8,6 +8,9 @@ Bars show `ttlang / ttnn.matmul` wall time (lower is better). Green < 1.1,
 orange < 1.5, red otherwise. To regenerate: `python3 sweep.py` (writes
 `/tmp/ksplit_sweep.csv` and the PNG alongside it).
 
+Exclusively tested and tuned on single Blackhole card with 130 cores.
+
+
 ## Kernels
 
 Two kernels cover the `K_parts` axis:
