@@ -84,30 +84,39 @@ def run_case(device, label, M, K, N, block_cfg, part_cfg):
         ttnn.deallocate(t)
 
     print(
-        f"{label:<40}  {block_cfg}/{part_cfg}  "
+        f"{label:<50}  {block_cfg}/{part_cfg}  "
         f"t={min(times)*1000:>7.3f}ms  pcc={pcc:.6f}  max_err={max_err:.2e}",
         flush=True,
     )
 
 
+# Profile revealed 4k³ is compute-bound (not DRAM-bound), and ttnn uses 130
+# cores while our planner caps at 88 (pad budget rejects 110c). Test whether
+# relaxing pad to 1.3 and adding cores closes the gap.
 EXPERIMENTS = [
-    # Tight candidates around the new tiebreak on 4k³ (all (8,4,8) Kp=1,
-    # model ties them on throughput — pad/cores vary).
-    ("4k³  (8,4,8)/(8,11,1)  88c pad=1.03", 4096, 4096, 4096, (8, 4, 8), (8, 11, 1)),
-    ("4k³  (8,4,8)/(8,12,1)  96c pad=1.12", 4096, 4096, 4096, (8, 4, 8), (8, 12, 1)),
-    ("4k³  (8,4,8)/(9,11,1)  99c pad=1.16", 4096, 4096, 4096, (8, 4, 8), (9, 11, 1)),
-    ("4k³  (8,4,8)/(8,13,1) 104c pad=1.22", 4096, 4096, 4096, (8, 4, 8), (8, 13, 1)),
-    ("4k³  (8,4,8)/(9,12,1) 108c pad=1.27", 4096, 4096, 4096, (8, 4, 8), (9, 12, 1)),
-    ("4k³  (8,4,8)/(10,12,1) 120c pad=1.40", 4096, 4096, 4096, (8, 4, 8), (10, 12, 1)),
+    # 4k³: 88c current vs 110c via pad=1.29 (what baseline SUMMA picks).
+    ("4k³    (8,4,8)/(8,11,1)  88c iter=6 pad=1.03 current",
+     4096, 4096, 4096, (8, 4, 8), (8, 11, 1)),
+    ("4k³    (8,4,8)/(10,11,1) 110c iter=6 pad=1.29",
+     4096, 4096, 4096, (8, 4, 8), (10, 11, 1)),
+    ("4k³    (8,4,8)/(8,13,1)  104c iter=6 pad=1.22",
+     4096, 4096, 4096, (8, 4, 8), (8, 13, 1)),
+    ("4k³    (8,4,8)/(10,13,1) 130c iter=6 pad=1.52",
+     4096, 4096, 4096, (8, 4, 8), (10, 13, 1)),
 
-    # 8k³: test new 104c pad=1.02 pick vs previous 117c pad=1.14
-    ("8k³  (8,4,8)/(8,13,1) 104c pad=1.02", 8192, 8192, 8192, (8, 4, 8), (8, 13, 1)),
-    ("8k³  (8,4,8)/(9,13,1) 117c pad=1.14", 8192, 8192, 8192, (8, 4, 8), (9, 13, 1)),
-    ("8k³  (8,4,8)/(10,13,1) 130c pad=1.27", 8192, 8192, 8192, (8, 4, 8), (10, 13, 1)),
+    # 4k×8k×4k: same picks at longer K — iter should amortize gather better.
+    ("4k8k4k (8,4,8)/(8,11,1)  88c iter=6 pad=1.03 current",
+     4096, 8192, 4096, (8, 4, 8), (8, 11, 1)),
+    ("4k8k4k (8,4,8)/(10,11,1) 110c iter=6 pad=1.29",
+     4096, 8192, 4096, (8, 4, 8), (10, 11, 1)),
 
-    # 4k×8k×4k — follow same family
-    ("4k8k4k  (8,4,8)/(8,11,1) 88c pad=1.03", 4096, 8192, 4096, (8, 4, 8), (8, 11, 1)),
-    ("4k8k4k  (8,4,8)/(8,12,1) 96c pad=1.12", 4096, 8192, 4096, (8, 4, 8), (8, 12, 1)),
+    # 2k³: try more-core variants to see if core-count is the lever here too.
+    ("2k³    (8,4,8)/(8,6,2)  96c Kp=2 iter=3 current",
+     2048, 2048, 2048, (8, 4, 8), (8, 6, 2)),
+    ("2k³    (8,4,8)/(10,8,1) 80c iter=2 pad=1.25",
+     2048, 2048, 2048, (8, 4, 8), (10, 8, 1)),
+    ("2k³    (8,4,8)/(10,13,1)130c iter=2 pad=1.63",
+     2048, 2048, 2048, (8, 4, 8), (10, 13, 1)),
 ]
 
 
@@ -122,7 +131,7 @@ def main():
             try:
                 run_case(device, *args)
             except Exception as e:
-                print(f"{args[0]:<40}  FAIL: {e}", flush=True)
+                print(f"{args[0]:<50}  FAIL: {e}", flush=True)
     finally:
         ttnn.close_device(device)
 
