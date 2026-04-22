@@ -153,7 +153,7 @@ x, y, z = ttl.node(dims = 3)
 
 A *dataflow buffer* is a communication primitive for synchronizing the passing of data between kernel functions running on the same node. A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing TT-NN tensor, *shape* and *block count*.
 
-The shape is expressed as a tuple with outermost dimension first and innermost dimension last. For `ttl.math` functions that take dimension indexes, the outermost dimension is indexed as 0, next to outermost as 1. It is possible to use negative dimension indexes to index from innermost dimension. This way the innermost dimension is indexed as -1, next to innermost as -2. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. The shape unit affects two innermost dimensions and is a whole tile (32 by 32 scalar elements) if the tensor has a tiled layout. For example, if a TT-NN tensor is of tiled layout and has shape of `(2, 128, 32)`, the corresponding block that fits this entire tensor will have shape of `(2, 4, 1)`. If tensor has a row-major layout the shape unit is a scalar element. For the TT-NN tensor in the above example the corresponding block that fits this entire tensor will have shape of `(2, 128, 32)`.
+The shape is expressed as a tuple with outermost dimension first and innermost dimension last. For `ttl.math` functions that take dimension indexes, the outermost dimension is indexed as 0, next to outermost as 1. It is possible to use negative dimension indexes to index from innermost dimension. This way the innermost dimension is indexed as -1, next to innermost as -2. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. Shape unit can be either a tile (32 by 32 scalar elements) or a scalar element. In order for tensor to have tiled layout, it needs to have at least two dimensions. The shape unit affects two innermost dimensions and is a whole tile if the tensor has a tiled layout. For example, if a TT-NN tensor is of tiled layout and has shape of `(2, 128, 32)`, the corresponding block that fits this entire tensor will have shape of `(2, 4, 1)`. If tensor has a row-major layout the shape unit is a scalar element. For the TT-NN tensor in the above example the corresponding block that fits this entire tensor will have shape of `(2, 128, 32)`.
 
 Shape determines the shape of a *block* returned by one of the *acquisition functions*. The size of a block in L1 memory is determined by shape, shape unit and data type. For example, for a block with shape `(2, 4, 1)`, shape unit of a tile and BF16 data type, its size in L1 will be `2 * 4 * 32 * 1 * 32 * 2 = 16384` bytes. The block count determines the total size of L1 memory allocated for a dataflow buffer. This size as a product of a block size and block count. For the most common case block count defaults to 2 to support double buffering. With double buffered dataflow buffer one kernel can write to a block while another is reading from a block thus enabling enabling the pipelining. For the example above, this means there will be a total of 32768 bytes of L1 memory allocated for the dataflow buffer.
 
@@ -213,10 +213,10 @@ A *block* represents memory acquired from a dataflow buffer. Block size is deter
 #        i
 #
 # Tensor   Torch shape   Note
-# a        N, M
-# b        N             1D vector — broadcast to match a along N and M
-# c        M             1D vector — broadcast to match a along N and M
-# d        1             Scalar — broadcast to match a along N and M
+# a        N, M          N >> M
+# b        N             One-dimensional vector — broadcast to match a along M
+# c        M             One-dimensional vector — broadcast to match a along N
+# d        1             Scalar value — broadcast to match a along N and M
 # y        N
 # z        M
 #
@@ -226,141 +226,158 @@ A *block* represents memory acquired from a dataflow buffer. Block size is deter
 N_TILES = N // TILE_SIZE
 M_TILES = M // TILE_SIZE
 
-# Shape in blocks (N_TILES and M_TILES are evenly divisible by N_BLOCK_SIZE and M_BLOCK_SIZE)
+# Shape in blocks (N_TILES is evenly divisible by N_BLOCK_SIZE)
 N_BLOCKS = N_TILES // N_BLOCK_SIZE
-M_BLOCKS = M_TILES // M_BLOCK_SIZE
 
-a_dfb = ttl.make_dataflow_buffer_like(a, shape = (N_BLOCK_SIZE, M_BLOCK_SIZE))
+a_dfb = ttl.make_dataflow_buffer_like(a, shape = (N_BLOCK_SIZE, M_TILES))
 
-# Tiled DFBs need at least 2 dimensions in their shape, therefore:
-
-# When tiled the 1D vector b is placed in row 0 of each tile in a row of N_TILES tiles
+# Tiled DFB shape needs to be at least two-dimensional;
+# When tiled the one-dimensional vector b is placed in row 0
+# of each tile in a row of N_TILES tiles
 b_dfb = ttl.make_dataflow_buffer_like(b, shape = (N_BLOCK_SIZE, 1))
-# When tiled the 1D vector c is placed in column 0 of each tile in a column of M_TILES tiles
-c_dfb = ttl.make_dataflow_buffer_like(b, shape = (1, M_BLOCK_SIZE))
-# When tiled the scalar value d is placed at position (0, 0) of a single tile
+# When tiled the one-dimensional vector c is placed in column 0
+# of each tile in a column of M_TILES tiles
+c_dfb = ttl.make_dataflow_buffer_like(b, shape = (1, M_TILES))
+# When tiled the scalar value d is placed at position (0, 0)
+# of a single tile
 d_dfb = ttl.make_dataflow_buffer_like(b, shape = (1, 1))
-# When untiled the 1D y vector is formed from row 0 of each tile in a row of N_TILES tiles
+# When untiled the one-dimensional y vector is formed from row 0
+# of each tile in a row of N_TILES tiles
 y_dfb = ttl.make_dataflow_buffer_like(y, shape = (N_BLOCK_SIZE, 1))
-# When untiled the 1D z vector is formed from column 0 of each tile in a column of M_TILES tiles
-z_dfb = ttl.make_dataflow_buffer_like(z, shape = (1, M_BLOCK_SIZE))
+# When untiled the one-dimensional z vector is formed from column 0
+# of each tile in a column of M_TILES tiles
+z_dfb = ttl.make_dataflow_buffer_like(z, shape = (1, M_TILES))
 
 @ttl.datamovement()
 def elwise_read():
 
-    # Reserve d_blk block
-    with d_dfb.reserve() as d_blk:
+    # Reserve c_blk and d_blk blocks
+    with (
+        c_dfb.reserve() as c_blk,
+        d_dfb.reserve() as d_blk,
+    ):
+        # Load entire (1×M_TILES) c
+        c_xf = ttl.copy(c[0, :], c_blk)
 
-        # Load entire d
+        # Load entire (1×1) d
         d_xf = ttl.copy(d[0, 0], d_blk)
+
+        c_xf.wait()
         d_xf.wait()
 
-        # Push d_blk to make it ready for elwise_compute
+        # Push c_blk and d_blk to make them ready for elwise_compute
 
     for n_block in range(N_BLOCKS):
-        # Reserve b_blk
-        with b_dfb.reserve() as b_blk:
+
+        # Reserve a_blk and b_blk blocks
+        with (
+            a_dfb.reserve() as a_blk,
+            b_dfb.reserve() as b_blk,
+            
+        ):
+            # Load N_BLOCK_SIZE×M_TILES block of a
+            a_xf = ttl.copy(a[n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE, :], a_blk)
 
             # Load N_BLOCK_SIZE×1 block of b
             b_xf = ttl.copy(b[n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE, 0], b_blk)
+
+            a_xf.wait()
             b_xf.wait()
 
-            # Push b_blk to make it ready for elwise_compute
-
-        for m_block in range(M_BLOCKS):
-
-            # Reserve a_blk and c_blk
-            with (
-                a_dfb.reserve() as a_blk,
-                c_dfb.reserve() as c_blk,
-            ):
-                # Load N_BLOCK_SIZE×M_BLOCK_SIZE block of a
-                a_xf = ttl.copy(a[
-                    n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE,
-                    m_block * M_BLOCK_SIZE : (m_block + 1) * M_BLOCK_SIZE], a_blk)
-
-                # Load 1×M_BLOCK_SIZE block of c
-                c_xf = ttl.copy(c[0, m_block * M_BLOCK_SIZE : (m_block + 1) * M_BLOCK_SIZE], c_blk)
-
-                a_xf.wait()
-                c_xf.wait()
-
-                # Push a_blk and c_blk to make them ready for elwise_compute
+            # Push a_blk and b_blk to make them ready for elwise_compute
 
 @ttl.compute()
 def elwise_compute():
 
-    # Wait for b_blk to be loaded and pushed by elwise_read
-    with b_dfb.wait() as b_blk:
+    # Wait for c_blk and d_blk to be loaded and pushed by elwise_read;
+    # Reserve z_blk
+    with (
+        c_dfb.wait() as c_blk,
+        d_dfb.wait() as d_blk,
+        z_dfb.reserve() as z_blk,
+    ):
+        c_squared = c_blk ** 2
+        d_squared = d_blk ** 2
+
+        # Broadcast c_squared along dimension 0 (first) to get N_BLOCK_SIZE×M_TILES;
+        # This first broadcasts column 0 to fill each of M_TILES tiles
+        # then it broadcasts column of M_TILES tiles to get N_BLOCK_SIZE×M_TILES tiles
+        c_squared_bcast = ttl.math.broadcast(c_squared, dims=[0], shape=(N_BLOCK_SIZE, M_TILES))
+
+        # Broadcast d_squared along all dimensions (0 and 1) to N_BLOCK_SIZE×M_TILES;
+        # This first broadcasts single scalar element at position (0, 0) to fill a single tile
+        # then it broadcasts single tile to get N_BLOCK_SIZE×M_TILES tiles
+        d_squared_bcast = ttl.math.broadcast(d_squared, dims=[0, 1], shape=(N_BLOCK_SIZE, M_TILES))
+
+        # Zero-initialize the accumulator z before summing N_BLOCKS partial sums
+        z = ttl.math.fill(0, shape=(1, M_TILES))
 
         for _ in range(N_BLOCKS):
-            for _ in range(M_BLOCKS):
 
-                # Wait for a_blk to be loaded and pushed by elwise_read
-                # Reserve y_blk and z_dfb
-                with (
-                    a_dfb.wait() as a_blk,
-                    y_dfb.reserve() as y_blk,
-                    z_dfb.reserve() as z_blk,
-                ):
-                    a_squared = a_blk ** 2
-                    b_squared = b_blk ** 2
-                    c_squared = c_blk ** 2
-                    d_squared = d_blk ** 2
+            # Wait for a_blk and b_blk to be loaded and pushed by elwise_read;
+            # Reserve y_blk
+            with (
+                a_dfb.wait() as a_blk,
+                b_dfb.wait() as b_blk,
+                y_dfb.reserve() as y_blk,
+            ):
+                a_squared = a_blk ** 2
+                b_squared = b_blk ** 2
 
-                    # broadcast b_squared along dim -1 (last) to get N_BLOCK_SIZE×M_BLOCK_SIZE;
-                    # this first broadcasts row 0 to fill each of N_BLOCK_SIZE tiles
-                    # then it brodcasts row of N_BLOCK_SIZE tiles to get N_BLOCK_SIZE×M_BLOCK_SIZE tiles
-                    b_squared_bcast = ttl.math.broadcast(b_squared, dims=[-1], shape=(N_BLOCK_SIZE, M_BLOCK_SIZE))
+                # Broadcast b_squared along dim -1 (last) to get N_BLOCK_SIZE×M_TILES;
+                # This first broadcasts row 0 to fill each of N_BLOCK_SIZE tiles
+                # then it broadcasts row of N_BLOCK_SIZE tiles to get N_BLOCK_SIZE×M_TILES tiles
+                b_squared_bcast = ttl.math.broadcast(b_squared, dims=[-1], shape=(N_BLOCK_SIZE, M_TILES))
 
-                    # broadcast c_squared along dim 0 (first) to get N_BLOCK_SIZE×M_BLOCK_SIZE;
-                    # this first broadcasts column 0 to fill each of M_BLOCK_SIZE tiles
-                    # then it brodcasts column of M_BLOCK_SIZE tiles to get N_BLOCK_SIZE×M_BLOCK_SIZE tiles
-                    c_squared_bcast = ttl.math.broadcast(c_squared, dims=[0], shape=(N_BLOCK_SIZE, M_BLOCK_SIZE))
+                # Perform elementwise math on N_BLOCK_SIZE×M_TILES tiles
+                expanded_y = ttl.math.sqrt(a_squared + b_squared_bcast + c_squared_bcast + d_squared_bcast)
+                expanded_z = ttl.math.sqrt(a_squared - b_squared_bcast - c_squared_bcast - d_squared_bcast)
 
-                    # broadcast d_squared along dim 0 and 1 to N_BLOCK_SIZE×M_BLOCK_SIZE;
-                    # this first broadcasts single scalar element at position (0, 0) to fill a single tile
-                    # then it brodcasts single tile to get N_BLOCK_SIZE×M_BLOCK_SIZE tiles
-                    d_squared_bcast = ttl.math.broadcast(d_squared, dims=[0, 1], shape=(N_BLOCK_SIZE, M_BLOCK_SIZE))
+                # Reduce expanded_y along dim -1 (last) to get N_BLOCK_SIZE×1 row of tiles
+                y = ttl.math.reduce_sum(expanded_y, dims=[-1], shape=(N_BLOCK_SIZE, 1))
 
-                    # perform elementwise math on N_BLOCK_SIZE×M_BLOCK_SIZE tiles
-                    expanded_y = ttl.math.sqrt(a_squared + b_squared_bcast + c_squared_bcast + d_squared_bcast)
-                    expanded_z = ttl.math.sqrt(a_squared - b_squared_bcast - c_squared_bcast - d_squared_bcast)
+                # Reduce expanded_z along dim 0 (first) to get 1×M_TILES column of tiles;
+                z_partial = ttl.math.reduce_sum(expanded_z, dims=[0], shape=(1, M_TILES))
 
-                    # reduce expanded_y along dim -1 (last) to get N_BLOCK_SIZE×1 row of tiles
-                    y = ttl.math.reduce_sum(expanded_y, dims=[-1], shape=(N_BLOCK_SIZE, 1))
+                # Store y
+                y_blk.store(y)
 
-                    # reduce expanded_z along dim 0 (first) to get 1×M_BLOCK_SIZE column of tiles
-                    z = ttl.math.reduce_sum(expanded_z, dims=[0], shape=(1, M_BLOCK_SIZE))
+                # Accumulate-add partial z
+                z += z_partial
 
-                    y_blk.store(y)
-                    z_blk.store(z)
+                # Pop a_blk and b_dfb to make them available for elwise_read to load and push next blocks;
+                # Push y_blk to make it ready for elwise_write
 
-                    # Pop a_blk to make it available for elwise_read to load and push next block
-                    # Push y_blk and z_blk to make them ready for elwise_write
+        # Store z
+        z_blk.store(z)
 
-    # Pop b_blk
+    # Pop c_blk and d_blk;
+    # Push z_blk to make it ready for elwise_write
 
 @ttl.datamovement()
 def elwise_write():
+
+    # Wait for elwise_compute to store and push z_blk
+    with z_dfb.wait() as z_blk:
+
+        # Store entire (1xM_TILES) z
+        z_xf = ttl.copy(z_blk, z[0, :])
+        z_xf.wait()
+
+        # Pop z_blk
+
     for n_block in range(N_BLOCKS):
-        n_slice = slice(n_block * BLOCK_SIZE, (n_block + 1) * BLOCK_SIZE)
+        n_slice = slice(n_block * N_BLOCK_SIZE, (n_block + 1) * N_BLOCK_SIZE)
 
-        # Wait for elwise_compute to store and push y_blk and z_blk
+        # Wait for elwise_compute to store and push y_blk
+        with y_dfb.wait() as y_blk:
 
-        with (
-            y_dfb.wait() as y_blk,
-            z_dfb.wait() as z_blk,
-        ):
-
-            # Store BLOCK_SIZE of y and z
-
-            y_xf = ttl.copy(y_blk, y[n_slice])
-            z_xf = ttl.copy(z_blk, z[n_slice])
+            # Store N_BLOCK_SIZExM_TILES of y
+            y_xf = ttl.copy(y_blk, y[n_slice, :])
             y_xf.wait()
-            z_xf.wait()
 
-            # Pop y_blk and z_blk to make them available for elwise_compute to store and push next block
+            # Pop y_blk to make it available for elwise_compute to store and push next block
+
 ```
 
 #### Tiled matmul example
