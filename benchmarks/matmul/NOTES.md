@@ -5,6 +5,7 @@ Non-obvious things we learned while tuning the ksplit/SUMMA matmul against
 
 ## Planner / scoring
 
+- **Exclusively tested and tuned on single Blackhole card with 130 cores.**
 - **Block dims > 8 regress sharply, even with plenty of L1.** The
   profile is bimodal: when core utilization is good, pushing bm/bn/bk up
   toward 8 is monotonically profitable, but the moment any single dim
