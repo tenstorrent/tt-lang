@@ -1,24 +1,29 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unified matmul planner.
+"""Matmul planner for ksplit/SUMMA kernels.
 
 Picks block shape (bm, bn, bk) in tiles and grid partitioning
-(M_parts, N_parts, K_parts) for a single ksplit-style kernel that
-subsumes pure SUMMA (K_parts = 1).
+(M_parts, N_parts, K_parts). K_parts == 1 routes to summa_kernel,
+K_parts >= 2 to ksplit_kernel.
 
-Scoring (each step only breaks ties from the previous):
-    1. Maximize effective cores    (Mp * Np * Kp / pad)
-    2. Maximize A+B mcast volume   (bk * (bm + bn))
-    3. Maximize block compute volume (bm * bn * bk)
+Scoring: maximize an estimated throughput
+    throughput ~= cores * bv / (pad * (bv + ALPHA))
+where bv = bm*bn*bk and ALPHA is a per-block overhead constant in
+tile-matmul-equivalent units. For large blocks the factor bv/(bv+ALPHA)
+saturates near 1 and the objective reduces to cores/pad (classic
+effective-cores maximization). For small blocks overhead dominates and
+the factor pulls the objective toward fatter blocks even at the cost
+of cores.
+
+ALPHA was fit from the 14-shape baseline sweep: the observed
+throughput-vs-bv curve matches bv/(bv+128) closely across bv in
+{8, 16, 64, 256, 512}. Retune if block-overhead characteristics
+change (kernel refactor, different dtype, etc.).
 
 Hard rules that reject a plan outright:
     - L1 CB footprint exceeds budget.
     - `pad` > `max_pad` (default 1.25).
-    - MIN_CORES_MULTI_ITER: if any core processes more than one
-      output-block iter (m_span * n_span > 1), at least 100 cores must
-      be in use. Single-iter plans may fall below 100 cores freely --
-      that case cannot be improved by adding parallelism.
 
 `pad` is output-cell padding waste: with non-divisor Mp/Np the kernel
 runs on a Mp-by-Np grid of owners each responsible for m_span * n_span
@@ -43,15 +48,16 @@ TILE = 32
 MAX_GRID_M = 10
 MAX_GRID_N = 13
 
-# Block dims considered, in tiles. Power-of-two set is fine: block dims
-# must divide the shape in tiles, and 3/5/6/7-tile blocks rarely beat 4
-# or 8 after alignment. Iterated from fattest to thinnest.
-BLOCK_DIMS: Tuple[int, ...] = (8, 4, 2, 1)
+# Block dims considered, in tiles. 8 is the hardware cap on tile matmul
+# block dim. Non-power-of-two candidates (7,6,5,3) let us hit exact
+# divisors for shapes like 2.5k (80 tiles) and 3.3k (104 tiles).
+BLOCK_DIMS: Tuple[int, ...] = (8, 7, 6, 5, 4, 3, 2, 1)
 
-# Per-core L1 budget for circular buffers (bytes). Conservative default;
-# query ttnn.device.get_max_worker_l1_unreserved_size() at runtime for
-# device-accurate tuning.
-DEFAULT_L1_BUDGET_BYTES = 1_000_000
+# Per-core L1 budget for circular buffers (bytes). Sweep opens the
+# device with `get_max_worker_l1_unreserved_size() - 131072`; on
+# Wormhole this comes out near 1.37 MiB, so 1.35 MiB is a safe planner
+# default that still admits (8,8,8) Kp=2 plans.
+DEFAULT_L1_BUDGET_BYTES = 1_350_000
 
 # bfloat16 tile = 32x32 half-precision = 2048 B (ignoring page padding;
 # tt-metal adds a small header per page but it's a rounding error here).
@@ -61,10 +67,11 @@ BF16_BYTES = 2
 # over real work are rejected. 1.25 = up to 25% waste allowed.
 MAX_PAD = 1.25
 
-# If any core's output loop iterates more than once, require at least
-# this many cores total. Prevents single-iter plans from leaving half
-# the grid idle.
-MIN_CORES_MULTI_ITER = 100
+# Per-block overhead in tile-matmul-equivalent units. Fit from the
+# 14-shape baseline sweep so that predicted throughput cores*bv/(bv+a)
+# tracks observed 1/ratio across bv in {8,16,64,256,512}. Retune if
+# kernel changes alter per-block setup cost.
+BLOCK_OVERHEAD_ALPHA = 128
 
 
 @dataclass(frozen=True)
@@ -149,23 +156,26 @@ class MatmulPlan:
 
 
 def cb_layout(bm: int, bn: int, bk: int, k_parts: int) -> List[CBShape]:
-    """CBs allocated by the unified ksplit kernel.
+    """CBs allocated by the matmul kernels.
 
-    A+B mcast double-buffer is block_count=2. The K-reduce path adds recv_cb
-    sized to hold all concurrent gather slots (one per non-root k-rank), plus
-    a threaded accumulator (sum_cb) and a single-block handoff to dm_write.
+    Kp=1 uses summa_kernel: a_cb + b_cb mcast double-buffers plus a
+    single out_cb double-buffer that serves as both compute accumulator
+    and writer handoff.
+
+    Kp>=2 uses ksplit_kernel: partial_cb ping-pongs the reduce chain,
+    recv_cb holds Kp-1 gather slots (min 2 per PipeGraph constraint),
+    and out_cb is a single-block handoff to dm_write.
     """
     cbs = [
         CBShape("a_cb", bm * bk, 2),
         CBShape("b_cb", bk * bn, 2),
-        CBShape("partial_cb", bm * bn, 2),
     ]
-    if k_parts > 1:
-        # recv_cb block_count = num gather senders = K_parts - 1 (min 2).
-        # Matches the constraint enforced by PipeGraph::verifyGatherBlockCounts.
+    if k_parts == 1:
+        cbs.append(CBShape("out_cb", bm * bn, 2))
+    else:
         cbs.extend([
+            CBShape("partial_cb", bm * bn, 2),
             CBShape("recv_cb", bm * bn, max(2, k_parts - 1)),
-            CBShape("sum_cb", bm * bn, 2),
             CBShape("out_cb", bm * bn, 1),
         ])
     return cbs
@@ -195,14 +205,14 @@ def plan_matmul(
     grid_n: int = MAX_GRID_N,
     l1_budget_bytes: int = DEFAULT_L1_BUDGET_BYTES,
     max_pad: float = MAX_PAD,
-    min_cores_multi_iter: int = MIN_CORES_MULTI_ITER,
+    alpha: float = BLOCK_OVERHEAD_ALPHA,
     dtype_bytes: int = BF16_BYTES,
 ) -> MatmulPlan:
-    """Plan a unified-ksplit matmul for shape (M, K, N).
+    """Plan a ksplit/SUMMA matmul for shape (M, K, N).
 
-    See module docstring for priority/rules. Raises ValueError if any
-    dimension is not tile-aligned, or if no block shape admits a plan
-    that fits in L1 and respects the pad/multi-iter rules.
+    See module docstring for the throughput objective. Raises
+    ValueError if any dimension is not tile-aligned, or if no block
+    shape admits a plan that fits in L1 and respects the pad rule.
     """
     if any(d <= 0 for d in (M, K, N)):
         raise ValueError(f"dims must be positive: M={M} K={K} N={N}")
@@ -241,17 +251,15 @@ def plan_matmul(
                             continue
 
                         Kp = _largest_divisor(Kb, grid_n // Np)
-                        iters_per_core = m_span * n_span
                         cores = Mp * Np * Kp
-                        if iters_per_core > 1 and cores < min_cores_multi_iter:
-                            continue
                         if estimate_l1_bytes(bm, bn, bk, Kp, dtype_bytes) > l1_budget_bytes:
                             continue
 
-                        effective_cores = cores / pad
-                        mcast_volume = bk * (bm + bn)
-                        compute_volume = bm * bn * bk
-                        score = (effective_cores, mcast_volume, compute_volume)
+                        block_vol = bm * bn * bk
+                        throughput = cores * block_vol / (
+                            pad * (block_vol + alpha))
+                        # Tiebreak toward more cores, then less pad.
+                        score = (throughput, cores, -pad)
 
                         if best_score is None or score > best_score:
                             best_score = score
@@ -261,7 +269,6 @@ def plan_matmul(
         raise ValueError(
             f"no valid plan for M={M} K={K} N={N} "
             f"(block must divide dims; pad <= {max_pad}; "
-            f"if >1 iter/core then >= {min_cores_multi_iter} cores; "
             f"L1 <= {l1_budget_bytes} B)"
         )
     block_cfg, part_cfg = best_plan
@@ -295,7 +302,7 @@ _SWEEP_SHAPES: Tuple[Tuple[int, int, int, str], ...] = (
 def main() -> None:
     print("matmul planner spot check (sweep shapes)")
     print(f"grid={MAX_GRID_M}x{MAX_GRID_N}  L1_budget={DEFAULT_L1_BUDGET_BYTES/1024:.0f} KiB  "
-          f"max_pad={MAX_PAD}  min_cores_multi_iter={MIN_CORES_MULTI_ITER}")
+          f"max_pad={MAX_PAD}  alpha={BLOCK_OVERHEAD_ALPHA}")
     print("-" * 130)
     for (M, K, N, label) in _SWEEP_SHAPES:
         try:
