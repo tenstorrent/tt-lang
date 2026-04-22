@@ -22,9 +22,19 @@ import ttnn
 from ksplit_kernel import make_kernel as make_ksplit_kernel
 from plot import save_plot
 from summa_kernel import make_kernel as make_summa_kernel
-from sweep import SHAPES, WARMUP_RUNS, TIMED_RUNS, SLEEP_BETWEEN_MS, \
-    L1_BUDGET_REDUCTION_BYTES, FP32_ACC, TTNN_CFG, FIELDS, to_dev, pad_2d, \
-    time_runs
+from sweep import (
+    SHAPES,
+    WARMUP_RUNS,
+    TIMED_RUNS,
+    SLEEP_BETWEEN_MS,
+    L1_BUDGET_REDUCTION_BYTES,
+    FP32_ACC,
+    TTNN_CFG,
+    FIELDS,
+    to_dev,
+    pad_2d,
+    time_runs,
+)
 
 TILE = 32
 MAX_GRID_M = 10
@@ -161,8 +171,10 @@ def bench_shape(device, label, M, K, N):
     w_t = torch.randn(K, N, dtype=torch.bfloat16) * 0.02
 
     summa_block = choose_summa_block(M, K, N)
-    Mp_s, Np_s = _pad_split(M // (summa_block[0] * TILE), MAX_GRID_M)[1], \
-                 _pad_split(N // (summa_block[1] * TILE), MAX_GRID_N)[1]
+    Mp_s, Np_s = (
+        _pad_split(M // (summa_block[0] * TILE), MAX_GRID_M)[1],
+        _pad_split(N // (summa_block[1] * TILE), MAX_GRID_N)[1],
+    )
     summa_part = (Mp_s, Np_s, 1)
     summa_t = bench_variant(device, M, K, N, a_t, w_t, summa_block, summa_part)
 
@@ -190,9 +202,15 @@ def bench_shape(device, label, M, K, N):
     Mp, Np, Kp = part_cfg
     return {
         "label": label,
-        "M": M, "K": K, "N": N,
-        "bm": bm, "bn": bn, "bk": bk,
-        "Mp": Mp, "Np": Np, "Kp": Kp,
+        "M": M,
+        "K": K,
+        "N": N,
+        "bm": bm,
+        "bn": bn,
+        "bk": bk,
+        "Mp": Mp,
+        "Np": Np,
+        "Kp": Kp,
         "cores": Mp * Np * Kp,
         "iter_per_core": -(-(M // (bm * TILE)) // Mp) * -(-(N // (bn * TILE)) // Np),
         "pad": round(summa_t if pick == "summa" else ks_t, 4),
@@ -219,7 +237,7 @@ def main():
     )
     results = []
     try:
-        for (M, K, N, label) in SHAPES:
+        for M, K, N, label in SHAPES:
             try:
                 r = bench_shape(device, label, M, K, N)
             except Exception as e:

@@ -22,6 +22,7 @@ def save_plot(
 ) -> None:
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
@@ -44,8 +45,9 @@ def save_plot(
         for r in rows
     ]
     ratios = [float(r["ratio"]) for r in rows]
-    colors = ["#8fbf6e" if v < 1.1 else "#e8b05c" if v < 1.5 else "#d97a7a"
-              for v in ratios]
+    colors = [
+        "#8fbf6e" if v < 1.1 else "#e8b05c" if v < 1.5 else "#d97a7a" for v in ratios
+    ]
 
     fig, ax = plt.subplots(figsize=(max(14, len(rows) * 0.9), 7))
     x = range(len(labels))

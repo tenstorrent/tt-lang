@@ -69,22 +69,15 @@ def make_kernel(
 
     @ttl.operation(grid=(COL, ROW), fp32_dest_acc_en=fp32_dest_acc_en)
     def summa_matmul(a, w, out):
-        a_pipes = [
-            ttl.Pipe(src=(0, m_p), dst=(slice(0, Np), m_p))
-            for m_p in range(Mp)
-        ]
+        a_pipes = [ttl.Pipe(src=(0, m_p), dst=(slice(0, Np), m_p)) for m_p in range(Mp)]
         mcast_a_net = ttl.PipeNet(a_pipes)
 
-        b_pipes = [
-            ttl.Pipe(src=(n_p, 0), dst=(n_p, slice(0, Mp)))
-            for n_p in range(Np)
-        ]
+        b_pipes = [ttl.Pipe(src=(n_p, 0), dst=(n_p, slice(0, Mp))) for n_p in range(Np)]
         mcast_b_net = ttl.PipeNet(b_pipes)
 
         a_cb = ttl.make_dataflow_buffer_like(a, shape=(bm, bk), block_count=2)
         b_cb = ttl.make_dataflow_buffer_like(w, shape=(bk, bn), block_count=2)
-        out_cb = ttl.make_dataflow_buffer_like(
-            out, shape=(bm, bn), block_count=2)
+        out_cb = ttl.make_dataflow_buffer_like(out, shape=(bm, bn), block_count=2)
 
         @ttl.compute()
         def compute():
@@ -106,13 +99,13 @@ def make_kernel(
                     for kb in range(Kb):
                         kc = kb * bk
                         a_blk = a_cb.reserve()
+
                         def read_a(pipe):
-                            ttl.copy(a[mr:mr + bm, kc:kc + bk], a_blk).wait()
+                            ttl.copy(a[mr : mr + bm, kc : kc + bk], a_blk).wait()
                             ttl.copy(a_blk, pipe).wait()
+
                         mcast_a_net.if_src(read_a)
-                        mcast_a_net.if_dst(lambda pipe: (
-                            ttl.copy(pipe, a_blk).wait(),
-                        ))
+                        mcast_a_net.if_dst(lambda pipe: (ttl.copy(pipe, a_blk).wait(),))
 
         @ttl.datamovement()
         def dm_write():
@@ -126,14 +119,14 @@ def make_kernel(
                     for kb in range(Kb):
                         kc = kb * bk
                         b_blk = b_cb.reserve()
+
                         def read_b(pipe):
-                            ttl.copy(w[kc:kc + bk, nc:nc + bn], b_blk).wait()
+                            ttl.copy(w[kc : kc + bk, nc : nc + bn], b_blk).wait()
                             ttl.copy(b_blk, pipe).wait()
+
                         mcast_b_net.if_src(read_b)
-                        mcast_b_net.if_dst(lambda pipe: (
-                            ttl.copy(pipe, b_blk).wait(),
-                        ))
+                        mcast_b_net.if_dst(lambda pipe: (ttl.copy(pipe, b_blk).wait(),))
                     o = out_cb.wait()
-                    ttl.copy(o, out[mr:mr + bm, nc:nc + bn]).wait()
+                    ttl.copy(o, out[mr : mr + bm, nc : nc + bn]).wait()
 
     return summa_matmul

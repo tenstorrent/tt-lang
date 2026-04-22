@@ -50,26 +50,27 @@ TILE = 32
 # efficiency vs core count vs pad) so for benchmarked shapes we override
 # the search with the measured winner. Shapes not listed fall through to
 # plan_matmul's search. Regenerate when kernels or HW change.
-SHAPE_PLANS: Dict[Tuple[int, int, int],
-                  Tuple[Tuple[int, int, int], Tuple[int, int, int]]] = {
-    (1024,  1024,  1024):  ((4, 8, 8), (8,  4, 2)),
-    (1024,  2048,  1024):  ((4, 4, 8), (8,  8, 1)),
-    (2048,  2048,  2048):  ((8, 4, 8), (8,  6, 2)),
-    (2048,  4096,  2048):  ((8, 4, 8), (8,  6, 2)),
-    (2560,  2048,  3072):  ((8, 4, 8), (10, 13, 1)),
-    (2048,  8192,  2048):  ((8, 4, 8), (8,  6, 2)),
-    (2560,  4096,  3072):  ((8, 4, 8), (10, 13, 1)),
-    (2560,  8192,  3072):  ((8, 4, 8), (10, 13, 1)),
-    (2560,  8192,  3328):  ((8, 8, 8), (10, 13, 1)),
-    (1024,  16384, 2560):  ((4, 8, 8), (8,  10, 1)),
-    (4096,  4096,  4096):  ((8, 4, 8), (8,  11, 1)),
-    (4096,  8192,  4096):  ((8, 4, 8), (8,  11, 1)),
-    (8192,  8192,  8192):  ((8, 4, 8), (8,  13, 1)),
-    (10240, 8192,  13312): ((8, 8, 8), (10, 13, 1)),
-    (2560,  16384, 3328):  ((8, 8, 8), (10, 13, 1)),
-    (2560,  32768, 3328):  ((8, 8, 8), (10, 13, 1)),
+SHAPE_PLANS: Dict[
+    Tuple[int, int, int], Tuple[Tuple[int, int, int], Tuple[int, int, int]]
+] = {
+    (1024, 1024, 1024): ((4, 8, 8), (8, 4, 2)),
+    (1024, 2048, 1024): ((4, 4, 8), (8, 8, 1)),
+    (2048, 2048, 2048): ((8, 4, 8), (8, 6, 2)),
+    (2048, 4096, 2048): ((8, 4, 8), (8, 6, 2)),
+    (2560, 2048, 3072): ((8, 4, 8), (10, 13, 1)),
+    (2048, 8192, 2048): ((8, 4, 8), (8, 6, 2)),
+    (2560, 4096, 3072): ((8, 4, 8), (10, 13, 1)),
+    (2560, 8192, 3072): ((8, 4, 8), (10, 13, 1)),
+    (2560, 8192, 3328): ((8, 8, 8), (10, 13, 1)),
+    (1024, 16384, 2560): ((4, 8, 8), (8, 10, 1)),
+    (4096, 4096, 4096): ((8, 4, 8), (8, 11, 1)),
+    (4096, 8192, 4096): ((8, 4, 8), (8, 11, 1)),
+    (8192, 8192, 8192): ((8, 4, 8), (8, 13, 1)),
+    (10240, 8192, 13312): ((8, 8, 8), (10, 13, 1)),
+    (2560, 16384, 3328): ((8, 8, 8), (10, 13, 1)),
+    (2560, 32768, 3328): ((8, 8, 8), (10, 13, 1)),
     (10240, 16384, 13312): ((8, 8, 8), (10, 13, 1)),
-    (5120,  32768, 6656):  ((8, 8, 8), (10, 13, 1)),
+    (5120, 32768, 6656): ((8, 8, 8), (10, 13, 1)),
 }
 
 # Wormhole worker grid. (rows, cols); N dimension lives on cols.
@@ -135,7 +136,7 @@ class MatmulPlan:
     K: int
     N: int
     block_cfg: Tuple[int, int, int]  # (bm, bn, bk) in tiles
-    part_cfg: Tuple[int, int, int]   # (M_parts, N_parts, K_parts)
+    part_cfg: Tuple[int, int, int]  # (M_parts, N_parts, K_parts)
 
     @property
     def cores(self) -> int:
@@ -217,11 +218,13 @@ def cb_layout(bm: int, bn: int, bk: int, k_parts: int) -> List[CBShape]:
     if k_parts == 1:
         cbs.append(CBShape("out_cb", bm * bn, 2))
     else:
-        cbs.extend([
-            CBShape("partial_cb", bm * bn, 2),
-            CBShape("recv_cb", bm * bn, max(2, k_parts - 1)),
-            CBShape("out_cb", bm * bn, 1),
-        ])
+        cbs.extend(
+            [
+                CBShape("partial_cb", bm * bn, 2),
+                CBShape("recv_cb", bm * bn, max(2, k_parts - 1)),
+                CBShape("out_cb", bm * bn, 1),
+            ]
+        )
     return cbs
 
 
@@ -262,9 +265,7 @@ def plan_matmul(
     if any(d <= 0 for d in (M, K, N)):
         raise ValueError(f"dims must be positive: M={M} K={K} N={N}")
     if any(d % TILE for d in (M, K, N)):
-        raise ValueError(
-            f"dims must be tile-aligned (TILE={TILE}): M={M} K={K} N={N}"
-        )
+        raise ValueError(f"dims must be tile-aligned (TILE={TILE}): M={M} K={K} N={N}")
 
     if (M, K, N) in SHAPE_PLANS:
         block_cfg, part_cfg = SHAPE_PLANS[(M, K, N)]
@@ -301,15 +302,21 @@ def plan_matmul(
 
                         Kp = _largest_divisor(Kb, grid_n // Np)
                         cores = Mp * Np * Kp
-                        if estimate_l1_bytes(bm, bn, bk, Kp, dtype_bytes) > l1_budget_bytes:
+                        if (
+                            estimate_l1_bytes(bm, bn, bk, Kp, dtype_bytes)
+                            > l1_budget_bytes
+                        ):
                             continue
 
                         block_vol = bm * bn * bk
                         iter_per_core = m_span * n_span
                         total_gathers = (Kp - 1) * iter_per_core
                         gather_penalty = 1.0 + kp_beta * total_gathers
-                        throughput = cores * block_vol / (
-                            pad * (block_vol + alpha) * gather_penalty)
+                        throughput = (
+                            cores
+                            * block_vol
+                            / (pad * (block_vol + alpha) * gather_penalty)
+                        )
                         # Throughput ties (common when cores/pad normalizes
                         # out): break on bv first (bigger blocks amortize
                         # per-block overhead better than bv/(bv+α) predicts
@@ -339,29 +346,31 @@ def plan_matmul(
 # Shapes mirror benchmarks/matmul/sweep.py so the spot check reports plans
 # for exactly the inputs the bench sweeps over.
 _SWEEP_SHAPES: Tuple[Tuple[int, int, int, str], ...] = (
-    (1024,  1024,  1024,  "1k^3"),
-    (1024,  2048,  1024,  "1k x 2k x 1k"),
-    (2048,  2048,  2048,  "2k^3"),
-    (2048,  4096,  2048,  "2k x 4k x 2k"),
-    (2560,  2048,  3072,  "2.5k x 2k x 3k"),
-    (2048,  8192,  2048,  "2k x 8k x 2k (long K)"),
-    (2560,  4096,  3072,  "2.5k x 4k x 3k"),
-    (2560,  8192,  3072,  "2.5k x 8k x 3k (120 cores)"),
-    (2560,  8192,  3328,  "2.5k x 8k x 3.3k (130 cores)"),
-    (1024,  16384, 2560,  "1k x 16k x 2.5k (tall K)"),
-    (4096,  4096,  4096,  "4k^3"),
-    (4096,  8192,  4096,  "4k x 8k x 4k"),
-    (8192,  8192,  8192,  "8k^3"),
-    (10240, 8192,  13312, "10k x 8k x 13k (130 cores, 4x4)"),
+    (1024, 1024, 1024, "1k^3"),
+    (1024, 2048, 1024, "1k x 2k x 1k"),
+    (2048, 2048, 2048, "2k^3"),
+    (2048, 4096, 2048, "2k x 4k x 2k"),
+    (2560, 2048, 3072, "2.5k x 2k x 3k"),
+    (2048, 8192, 2048, "2k x 8k x 2k (long K)"),
+    (2560, 4096, 3072, "2.5k x 4k x 3k"),
+    (2560, 8192, 3072, "2.5k x 8k x 3k (120 cores)"),
+    (2560, 8192, 3328, "2.5k x 8k x 3.3k (130 cores)"),
+    (1024, 16384, 2560, "1k x 16k x 2.5k (tall K)"),
+    (4096, 4096, 4096, "4k^3"),
+    (4096, 8192, 4096, "4k x 8k x 4k"),
+    (8192, 8192, 8192, "8k^3"),
+    (10240, 8192, 13312, "10k x 8k x 13k (130 cores, 4x4)"),
 )
 
 
 def main() -> None:
     print("matmul planner spot check (sweep shapes)")
-    print(f"grid={MAX_GRID_M}x{MAX_GRID_N}  L1_budget={DEFAULT_L1_BUDGET_BYTES/1024:.0f} KiB  "
-          f"max_pad={MAX_PAD}  alpha={BLOCK_OVERHEAD_ALPHA}  kp_beta={KP_PENALTY_BETA}")
+    print(
+        f"grid={MAX_GRID_M}x{MAX_GRID_N}  L1_budget={DEFAULT_L1_BUDGET_BYTES/1024:.0f} KiB  "
+        f"max_pad={MAX_PAD}  alpha={BLOCK_OVERHEAD_ALPHA}  kp_beta={KP_PENALTY_BETA}"
+    )
     print("-" * 130)
-    for (M, K, N, label) in _SWEEP_SHAPES:
+    for M, K, N, label in _SWEEP_SHAPES:
         try:
             plan = plan_matmul(M, K, N)
             print(f"{label:<32}  {plan.describe()}")
