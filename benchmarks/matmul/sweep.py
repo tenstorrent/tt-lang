@@ -25,6 +25,7 @@ import ttnn
 
 from config import plan_matmul
 from ksplit_kernel import make_kernel as make_ksplit_kernel
+from plot import save_plot
 from summa_kernel import make_kernel as make_summa_kernel
 
 
@@ -190,6 +191,8 @@ def main():
         writer.writeheader()
         writer.writerows(results)
     print(f"\nwrote {len(results)} rows to {OUTPUT_CSV}", flush=True)
+
+    save_plot(results, path=str(OUTPUT_CSV.with_suffix(".png")))
 
 
 if __name__ == "__main__":
