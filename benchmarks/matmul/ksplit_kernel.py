@@ -85,7 +85,7 @@ def make_kernel(
         mcast_b_net = ttl.PipeNet(b_pipes)
 
         # Non-root k-ranks gather their partials to the root (k_p = 0) at the
-        # same (n_p, m_p). Empty when Kp == 1.
+        # same (n_p, m_p).
         reduce_pipes = [
             ttl.Pipe(src=(k_p * Np + n_p, m_p), dst=(n_p, m_p))
             for m_p in range(Mp) for n_p in range(Np)
@@ -101,8 +101,6 @@ def make_kernel(
         # at 2 because block_count must be >= 2.
         recv_cb = ttl.make_dataflow_buffer_like(
             out, shape=(bm, bn), block_count=max(2, Kp - 1))
-        sum_cb = ttl.make_dataflow_buffer_like(
-            out, shape=(bm, bn), block_count=2)
         out_cb = ttl.make_dataflow_buffer_like(
             out, shape=(bm, bn), block_count=1)
 
@@ -116,21 +114,24 @@ def make_kernel(
                         a_blk = a_cb.wait()
                         b_blk = b_cb.wait()
                         p += a_blk @ b_blk
-                        a_blk.pop()
-                        b_blk.pop()
-                    p.push()
 
                     if col_c < Np:
-                        # tt-lang #527: loop-reassignment drops the add.
-                        # Thread the accumulator through sum_cb.
-                        with partial_cb.wait() as local, sum_cb.reserve() as s:
-                            s.store(local)
+                        # Ideal form (would eliminate partial_cb ping-pong):
+                        #   for _ in range(Kp - 1):
+                        #       r = recv_cb.wait()
+                        #       p += r
+                        #   o = out_cb.reserve()
+                        #   o.store(p)
+                        # Blocked by loop-reassignment dropping the add; see
+                        # https://github.com/tenstorrent/tt-lang/issues/527.
                         for _ in range(Kp - 1):
-                            with sum_cb.wait() as prev, recv_cb.wait() as r, \
-                                    sum_cb.reserve() as s:
-                                s.store(prev + r)
-                        with sum_cb.wait() as final, out_cb.reserve() as o:
-                            o.store(final)
+                            prev = partial_cb.wait()
+                            r = recv_cb.wait()
+                            new = partial_cb.reserve()
+                            new.store(prev + r)
+                        final = partial_cb.wait()
+                        o = out_cb.reserve()
+                        o.store(final)
 
         @ttl.datamovement()
         def dm_read():
@@ -142,25 +143,25 @@ def make_kernel(
                 for _ in range(N_BPN):
                     for kb_local in range(K_BPN):
                         kc = (k_p * K_BPN + kb_local) * bk
-                        with a_cb.reserve() as a_blk:
-                            def read_a(pipe):
-                                ttl.copy(a[mr:mr + bm, kc:kc + bk], a_blk).wait()
-                                ttl.copy(a_blk, pipe).wait()
-                            mcast_a_net.if_src(read_a)
-                            mcast_a_net.if_dst(lambda pipe: (
-                                ttl.copy(pipe, a_blk).wait(),
-                            ))
+                        a_blk = a_cb.reserve()
+                        def read_a(pipe):
+                            ttl.copy(a[mr:mr + bm, kc:kc + bk], a_blk).wait()
+                            ttl.copy(a_blk, pipe).wait()
+                        mcast_a_net.if_src(read_a)
+                        mcast_a_net.if_dst(lambda pipe: (
+                            ttl.copy(pipe, a_blk).wait(),
+                        ))
 
                     if k_p == 0:
                         def recv(pipe):
-                            with recv_cb.reserve() as r:
-                                ttl.copy(pipe, r).wait()
+                            r = recv_cb.reserve()
+                            ttl.copy(pipe, r).wait()
                         reduce_net.if_dst(recv)
                     else:
-                        with partial_cb.wait() as p:
-                            def send(pipe):
-                                ttl.copy(p, pipe).wait()
-                            reduce_net.if_src(send)
+                        p = partial_cb.wait()
+                        def send(pipe):
+                            ttl.copy(p, pipe).wait()
+                        reduce_net.if_src(send)
 
         @ttl.datamovement()
         def dm_write():
@@ -175,16 +176,16 @@ def make_kernel(
                     nc = nb * bn
                     for kb_local in range(K_BPN):
                         kc = (k_p * K_BPN + kb_local) * bk
-                        with b_cb.reserve() as b_blk:
-                            def read_b(pipe):
-                                ttl.copy(w[kc:kc + bk, nc:nc + bn], b_blk).wait()
-                                ttl.copy(b_blk, pipe).wait()
-                            mcast_b_net.if_src(read_b)
-                            mcast_b_net.if_dst(lambda pipe: (
-                                ttl.copy(pipe, b_blk).wait(),
-                            ))
+                        b_blk = b_cb.reserve()
+                        def read_b(pipe):
+                            ttl.copy(w[kc:kc + bk, nc:nc + bn], b_blk).wait()
+                            ttl.copy(b_blk, pipe).wait()
+                        mcast_b_net.if_src(read_b)
+                        mcast_b_net.if_dst(lambda pipe: (
+                            ttl.copy(pipe, b_blk).wait(),
+                        ))
                     if k_p == 0:
-                        with out_cb.wait() as o:
-                            ttl.copy(o, out[mr:mr + bm, nc:nc + bn]).wait()
+                        o = out_cb.wait()
+                        ttl.copy(o, out[mr:mr + bm, nc:nc + bn]).wait()
 
     return ksplit_matmul
