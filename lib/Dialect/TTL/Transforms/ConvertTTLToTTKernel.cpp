@@ -1080,6 +1080,12 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     return failure();
   }
 
+  // Zero-init each pipe semaphore slot at thread entry to prevent stale L1
+  // state from a prior program's kernel from satisfying a cumulative wait in
+  // this kernel's first iteration (e.g. multicast receiver sem left at 1 on
+  // loopback senders since that branch skips the handshake reset).
+  emitPipeSemaphoreZeroInitPreamble(mod);
+
   return success();
 }
 

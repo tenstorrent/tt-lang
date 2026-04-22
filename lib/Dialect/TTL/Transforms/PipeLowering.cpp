@@ -542,4 +542,36 @@ void populatePipeLoweringPatterns(RewritePatternSet &patterns,
       typeConverter, patterns.getContext());
 }
 
+void emitPipeSemaphoreZeroInitPreamble(ModuleOp mod) {
+  mod.walk([&](FuncOp func) {
+    if (func.getBody().empty()) {
+      return;
+    }
+    llvm::DenseSet<int64_t> semIdxs;
+    func.walk([&](ttk::GetSemaphoreOp op) {
+      if (auto cst =
+              op.getSemaphore().getDefiningOp<arith::ConstantIndexOp>()) {
+        semIdxs.insert(cst.value());
+      }
+    });
+    if (semIdxs.empty()) {
+      return;
+    }
+
+    SmallVector<int64_t> sortedIdxs(semIdxs.begin(), semIdxs.end());
+    llvm::sort(sortedIdxs);
+
+    OpBuilder builder(func.getContext());
+    builder.setInsertionPointToStart(&func.getBody().front());
+    auto loc = func.getLoc();
+    auto zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
+    for (int64_t idx : sortedIdxs) {
+      auto idxConst = arith::ConstantIndexOp::create(builder, loc, idx);
+      auto semAddr = ttk::GetSemaphoreOp::create(builder, loc, idxConst);
+      auto semPtr = ttk::CastToL1PtrOp::create(builder, loc, semAddr);
+      ttk::NocSemaphoreSetOp::create(builder, loc, semPtr, zeroIdx);
+    }
+  });
+}
+
 } // namespace mlir::tt::ttl
