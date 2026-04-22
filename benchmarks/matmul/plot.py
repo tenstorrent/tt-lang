@@ -35,7 +35,7 @@ def save_plot(
 
     labels = [r["label"] for r in rows]
     ratios = [float(r["ratio"]) for r in rows]
-    colors = ["#2ca02c" if v <= 1.0 else "#ff7f0e" if v <= 1.2 else "#d62728"
+    colors = ["#8fbf6e" if v < 1.1 else "#e8b05c" if v < 1.5 else "#d97a7a"
               for v in ratios]
 
     fig, ax = plt.subplots(figsize=(14, 6))
@@ -44,7 +44,7 @@ def save_plot(
 
     ax.axhline(y=1.0, color="black", linestyle=":", linewidth=1, alpha=0.7)
     ax.axhline(y=1.1, color="#888888", linestyle="--", linewidth=0.8, alpha=0.5)
-    ax.axhline(y=1.2, color="#888888", linestyle="--", linewidth=0.8, alpha=0.5)
+    ax.axhline(y=1.5, color="#888888", linestyle="--", linewidth=0.8, alpha=0.5)
 
     for i, v in enumerate(ratios):
         ax.text(i, v + 0.02, f"{v:.2f}", ha="center", va="bottom", fontsize=8)

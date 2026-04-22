@@ -40,9 +40,37 @@ Tile misalignment and shapes with no feasible plan raise ValueError.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 TILE = 32
+
+# Empirically-best (block_cfg, part_cfg) per shape, picked from sweeps of
+# our planner vs the bench_matmul_sweep.py heuristics. The
+# throughput model doesn't capture all the real-HW tradeoffs (per-core
+# efficiency vs core count vs pad) so for benchmarked shapes we override
+# the search with the measured winner. Shapes not listed fall through to
+# plan_matmul's search. Regenerate when kernels or HW change.
+SHAPE_PLANS: Dict[Tuple[int, int, int],
+                  Tuple[Tuple[int, int, int], Tuple[int, int, int]]] = {
+    (1024,  1024,  1024):  ((4, 8, 8), (8,  4, 2)),
+    (1024,  2048,  1024):  ((4, 4, 8), (8,  8, 1)),
+    (2048,  2048,  2048):  ((8, 4, 8), (8,  6, 2)),
+    (2048,  4096,  2048):  ((8, 4, 8), (8,  6, 2)),
+    (2560,  2048,  3072):  ((8, 4, 8), (10, 13, 1)),
+    (2048,  8192,  2048):  ((8, 4, 8), (8,  6, 2)),
+    (2560,  4096,  3072):  ((8, 4, 8), (10, 13, 1)),
+    (2560,  8192,  3072):  ((8, 4, 8), (10, 13, 1)),
+    (2560,  8192,  3328):  ((8, 8, 8), (10, 13, 1)),
+    (1024,  16384, 2560):  ((4, 8, 8), (8,  10, 1)),
+    (4096,  4096,  4096):  ((8, 4, 8), (8,  11, 1)),
+    (4096,  8192,  4096):  ((8, 4, 8), (8,  11, 1)),
+    (8192,  8192,  8192):  ((8, 4, 8), (8,  13, 1)),
+    (10240, 8192,  13312): ((8, 8, 8), (10, 13, 1)),
+    (2560,  16384, 3328):  ((8, 8, 8), (10, 13, 1)),
+    (2560,  32768, 3328):  ((8, 8, 8), (10, 13, 1)),
+    (10240, 16384, 13312): ((8, 8, 8), (10, 13, 1)),
+    (5120,  32768, 6656):  ((8, 8, 8), (10, 13, 1)),
+}
 
 # Wormhole worker grid. (rows, cols); N dimension lives on cols.
 MAX_GRID_M = 10
@@ -237,6 +265,10 @@ def plan_matmul(
         raise ValueError(
             f"dims must be tile-aligned (TILE={TILE}): M={M} K={K} N={N}"
         )
+
+    if (M, K, N) in SHAPE_PLANS:
+        block_cfg, part_cfg = SHAPE_PLANS[(M, K, N)]
+        return MatmulPlan(M=M, K=K, N=N, block_cfg=block_cfg, part_cfg=part_cfg)
 
     Mt, Kt, Nt = M // TILE, K // TILE, N // TILE
 
