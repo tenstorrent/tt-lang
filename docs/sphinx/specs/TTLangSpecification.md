@@ -1257,8 +1257,8 @@ def matmul_read():
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.math.squeeze(expr: ttl.BlockExpr, dim: int) -> ttl.BlockExpr` | Remove shape dimension at position specified by `dim`. Removed shape dimension must be 1.<br><br>Example for squeeze over dimension 0 (outermost): `ttl.math.squeeze(a, dim=0)`. Here if the shape of `a` is `(N, M)` the shape of the result will be `(1, N, M)`.<br><br>Example for squeeze over dimension -1 (innermost): `ttl.math.squeeze(a, dim=-1)`. Here if the shape of `a` is `(N, M)` the shape of the result will be `(N, M, 1)`. |
-| `ttl.math.unsqueeze(expr: ttl.BlockExpr, dim: int) -> ttl.BlockExpr` | Add shape dimension of 1 at position specified by `dim`.br><br>Example for unsqueeze over dimension 0 (outermost): `ttl.math.unsqueeze(a, dim=0)`. Here if the shape of `a` is `(1, N, M)` the shape of the result will be `(N, M)`.<br><br>Example for unsqueeze over dimension -1 (innermost): `ttl.math.unsqueeze(a, dim=-1)`. Here if the shape of `a` is `(N, M, 1)` the shape of the result will be `(N, M)`. |
+| `ttl.math.squeeze(expr: ttl.BlockExpr, dim: int) -> ttl.BlockExpr` | Remove shape dimension at position specified by `dim`. Removed shape dimension must be 1.<br><br>Example for squeeze over dimension 0 (outermost): `ttl.math.squeeze(a, dim=0)`. Here if the shape of `a` is `(1, N, M)` the shape of the result will be `(N, M)`.<br><br>Example for squeeze over dimension -1 (innermost): `ttl.math.squeeze(a, dim=-1)`. Here if the shape of `a` is `(N, M, 1)` the shape of the result will be `(N, M)`. |
+| `ttl.math.unsqueeze(expr: ttl.BlockExpr, dim: int) -> ttl.BlockExpr` | Add shape dimension of 1 at position specified by `dim`.br><br>Example for unsqueeze over dimension 0 (outermost): `ttl.math.unsqueeze(a, dim=0)`. Here if the shape of `a` is `(N, M)` the shape of the result will be `(1, N, M)`.<br><br>Example for unsqueeze over dimension -1 (innermost): `ttl.math.unsqueeze(a, dim=-1)`. Here if the shape of `a` is `(N, M)` the shape of the result will be `(N, M, 1)`. |
 
 ## Appendix C. Naming guidelines
 
