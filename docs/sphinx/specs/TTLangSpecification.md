@@ -264,10 +264,10 @@ a_dfb = ttl.make_dataflow_buffer_like(a, shape = (N_BLOCK_SIZE, M_TILES))
 b_dfb = ttl.make_dataflow_buffer_like(b, shape = (N_BLOCK_SIZE, 1))
 # When tiled the one-dimensional vector c is placed in column 0
 # of each tile in a column of M_TILES tiles
-c_dfb = ttl.make_dataflow_buffer_like(b, shape = (1, M_TILES))
+c_dfb = ttl.make_dataflow_buffer_like(c, shape = (1, M_TILES))
 # When tiled the scalar value d is placed at position (0, 0)
 # of a single tile
-d_dfb = ttl.make_dataflow_buffer_like(b, shape = (1, 1))
+d_dfb = ttl.make_dataflow_buffer_like(d, shape = (1, 1))
 # When untiled the one-dimensional y vector is formed from row 0
 # of each tile in a row of N_TILES tiles
 y_dfb = ttl.make_dataflow_buffer_like(y, shape = (N_BLOCK_SIZE, 1))
