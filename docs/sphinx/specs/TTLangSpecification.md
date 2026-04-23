@@ -549,12 +549,8 @@ def matmul_write():
 | Function | Description |
 | :---- | :---- |
 | `ttl.Block.store(self, expr: ttl.BlockExpr)` | This function materializes the result of a *block expression* and stores it in the block. Block expression uses Python builtin math operators and `ttl.math.xxx` functions on block expression. **This function is blocking** so that block is safe to use immediately after the call. |
-| `ttl.BlockExpr.__pow__(self, exponent: ttl.NaturalInt) -> ttl.BlockExpr` | Example of Python built-in operator. See full list in [Appendix B. Block operators and math functions](#appendix-b-block-operators-and-math-functions). |
-| `ttl.BlockExpr.__add__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | 〃 |
-| `ttl.BlockExpr.__iadd__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | 〃 |
-| `ttl.math.sqrt(expr: ttl.BlockExpr) -> ttl.BlockExpr` | 〃 |
-| `ttl.math.fill(value: float) -> ttl.BlockExpr` | 〃 |
-| `ttl.BlockExpr.__matmul__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | 〃 |
+
+For `ttl.math` functions and block operators see [Appendix B](#appendix-b-block-operators-and-math-functions).
 
 ![ttl.Block diagram](ttl-block.png)
 
@@ -1248,7 +1244,7 @@ def matmul_read():
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.math.fill(shape: ttl.Shape, value: float) -> ttl.BlockExpr` | Fill a block of specified `shape` with specified `value`. |
+| `ttl.math.fill(value: float, shape: ttl.Shape) -> ttl.BlockExpr` | Fill a block of specified `shape` with specified `value`. |
 | `ttl.math.mask(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with 0. |
 | `ttl.math.mask_posinf(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with positive infinity. |
 | `ttl.math.where(condition: ttl.BlockExpr, true_value: ttl.BlockExpr, false_value: ttl.BlockExpr) -> ttl.BlockExpr` | For each element in specified condition block return the corresponding element from `true_value` if true (condition element equals to 1) or the element from `false_value` if false (condition element equals to 0) |
