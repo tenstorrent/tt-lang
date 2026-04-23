@@ -2272,6 +2272,109 @@ class TestAllReduce:
         assert torch.allclose(result.to_torch()[:, 2:4, :], expected_shard)
 
 
+class TestAllGather:
+    """Tests for :func:`~sim.ttnnsim.all_gather`.
+
+    The gather operation concatenates all per-device shards along ``dim``.
+    Every device ends up with the same result.  The simulator represents
+    n identical copies by stacking them along ``msi.dim``.
+    """
+
+    def _mesh(self, n: int) -> ttnn.MeshDevice:
+        return ttnn.open_mesh_device(ttnn.MeshShape(1, n))
+
+    def test_all_gather_same_dim_as_shard_dim(self) -> None:
+        """all_gather along shard_dim concatenates all shards; output is n times the input."""
+        mesh = self._mesh(4)
+        data = torch.arange(32, dtype=torch.float32).reshape(8, 4)
+        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        result = ttnn.all_gather(t, dim=0)
+        # Each shard is [2, 4]; gathered per device = [8, 4] = data itself.
+        # Output = 4 copies stacked along dim 0 = [32, 4].
+        assert result.to_torch().shape == (32, 4)
+        # Every [8, 4] block should equal the original data.
+        for i in range(4):
+            assert torch.allclose(result.to_torch()[i * 8 : (i + 1) * 8], data)
+
+    def test_all_gather_different_dim_from_shard_dim(self) -> None:
+        """all_gather along a non-shard dim grows that dim by num_devices."""
+        mesh = self._mesh(4)
+        # 4 devices, each with a [2, 6] shard; sharded along dim 0.
+        data = torch.arange(48, dtype=torch.float32).reshape(8, 6)
+        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        result = ttnn.all_gather(t, dim=1)
+        # Each shard is [2, 6]; gathered along dim 1 = [2, 24].
+        # Output = 4 copies stacked along dim 0 = [8, 24].
+        assert result.to_torch().shape == (8, 24)
+        # Device i's shard is data[i*2:(i+1)*2, :]; gathered along dim 1
+        # = cat([shard_0, shard_1, shard_2, shard_3], dim=1) = [2, 24].
+        expected_gathered_shard = torch.cat(
+            [data[i * 2 : (i + 1) * 2, :] for i in range(4)], dim=1
+        )
+        for i in range(4):
+            assert torch.allclose(
+                result.to_torch()[i * 2 : (i + 1) * 2, :], expected_gathered_shard
+            )
+
+    def test_all_gather_single_device_identity(self) -> None:
+        """With a single-device mesh, all_gather is an identity."""
+        mesh = self._mesh(1)
+        data = torch.arange(12, dtype=torch.float32).reshape(4, 3)
+        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        result = ttnn.all_gather(t, dim=0)
+        assert torch.allclose(result.to_torch(), data)
+
+    def test_all_gather_preserves_layout(self) -> None:
+        """Output layout matches input layout."""
+        mesh = self._mesh(2)
+        t = ttnn.from_torch(
+            torch.ones(4, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        assert ttnn.all_gather(t, dim=0).layout == ttnn.ROW_MAJOR_LAYOUT
+
+    def test_all_gather_memory_config_override(self) -> None:
+        """Explicit memory_config is applied to the output."""
+        mesh = self._mesh(2)
+        t = ttnn.from_torch(
+            torch.ones(4, 4),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        custom_mc = MemoryConfig(strategy=ShardingStrategy.INTERLEAVED)
+        result = ttnn.all_gather(t, dim=0, memory_config=custom_mc)
+        assert result.memory_config == custom_mc
+
+    def test_all_gather_preserves_mesh_shard_info(self) -> None:
+        """Output mesh_shard_info keeps the same dim and num_devices."""
+        mesh = self._mesh(4)
+        t = ttnn.from_torch(
+            torch.ones(8, 6),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        result = ttnn.all_gather(t, dim=0)
+        assert result.mesh_shard_info is not None
+        assert result.mesh_shard_info.dim == 0
+        assert result.mesh_shard_info.num_devices == 4
+
+    def test_all_gather_kwargs_accepted(self) -> None:
+        """Extra keyword arguments are accepted without error."""
+        mesh = self._mesh(2)
+        t = ttnn.from_torch(
+            torch.ones(4, 4),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        ttnn.all_gather(t, dim=0, cluster_axis=0, mesh_device=mesh)
+
+    def test_all_gather_requires_shard_metadata(self) -> None:
+        """all_gather raises ValueError when the tensor has no mesh sharding metadata."""
+        t = ttnn.Tensor(torch.ones(8, 4))
+        with pytest.raises(
+            ValueError, match="Mesh device is required for all_gather operation"
+        ):
+            ttnn.all_gather(t, dim=0)
+
+
 class TestSynchronizeDevice:
     """synchronize_device() is a no-op in the simulator."""
 

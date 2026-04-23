@@ -1939,6 +1939,71 @@ def all_reduce(
     return result_tensor
 
 
+def all_gather(
+    input_tensor: Tensor,
+    dim: int,
+    cluster_axis: Optional[int] = None,
+    mesh_device: Optional[Any] = None,
+    memory_config: Optional[MemoryConfig] = None,
+    **kwargs: Any,
+) -> Tensor:
+    """Gather shards from all simulated devices along ``dim``.
+
+    The partition structure is read from the tensor's :attr:`~Tensor.mesh_shard_info`
+    attribute, which is set by :func:`from_torch` when a :class:`ShardTensorToMesh`
+    mapper is provided.
+
+    Each device contributes its local shard (partitioned along ``msi.dim``).
+    After the gather every device holds an identical result: all shards
+    concatenated along ``dim``.  The simulator represents n identical copies
+    by stacking them along ``msi.dim``, matching the output of
+    ``ttnn.to_torch(..., mesh_composer=ConcatMeshToTensor(mesh, msi.dim))``.
+
+    Args:
+        input_tensor: Input tensor (must have been created with ShardTensorToMesh).
+        dim: Dimension along which to concatenate the gathered shards.
+        cluster_axis: Ignored (accepted for API compatibility).
+        mesh_device: Ignored (accepted for API compatibility).
+        memory_config: Optional output memory config.
+        **kwargs: Additional keyword arguments accepted for API compatibility.
+
+    Returns:
+        Tensor where every partition contains all shards concatenated along
+        ``dim``.  Output shape equals input shape on all dimensions except
+        ``dim``, which grows by a factor of ``num_devices``.
+    """
+    msi = input_tensor.mesh_shard_info
+    if msi is None:
+        raise ValueError("Mesh device is required for all_gather operation")
+
+    t = input_tensor.to_torch()
+    shard_dim = msi.dim % t.ndim
+    n = msi.num_devices
+    shard_size = t.shape[shard_dim] // n
+
+    if t.shape[shard_dim] != n * shard_size:
+        return input_tensor
+
+    gather_dim = dim % t.ndim
+
+    # Each device's shard, sliced along shard_dim.
+    shards = [t.narrow(shard_dim, i * shard_size, shard_size) for i in range(n)]
+    # All n devices get the same result: every shard concatenated along gather_dim.
+    gathered = torch.cat(shards, dim=gather_dim)
+    # Stack n identical copies along shard_dim to match the simulator's
+    # multi-device representation (same as ConcatMeshToTensor would produce).
+    result = torch.cat([gathered] * n, dim=shard_dim).contiguous()
+
+    out_memory_config = (
+        memory_config if memory_config is not None else input_tensor.memory_config
+    )
+    result_tensor = Tensor(result, input_tensor.layout, out_memory_config)
+    result_tensor.mesh_shard_info = MeshShardInfo(dim=msi.dim, num_devices=n)
+    if hasattr(input_tensor, "_name"):
+        result_tensor._name = input_tensor._name  # type: ignore[attr-defined]
+    return result_tensor
+
+
 def synchronize_device(*args: Any, **kwargs: Any) -> None:
     """No-op stub for ttnn.synchronize_device().
 
