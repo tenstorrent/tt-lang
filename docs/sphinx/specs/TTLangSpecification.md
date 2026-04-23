@@ -191,7 +191,7 @@ There are two acquisition functions on a dataflow buffer object: `wait` and `res
 ```py
 x_dfb = ttl.make_dataflow_buffer_like(x,
     shape = (2, 2),
-    block_count = 2)
+    block_count = 2) # This can be omitted since block_count defaults to 2
 
 @ttl.datamovement()
 def some_read():
