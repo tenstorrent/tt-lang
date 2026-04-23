@@ -234,7 +234,7 @@ A *block* represents memory acquired from a dataflow buffer. Block size is deter
 # Tiled element-wise with broadcast and reduce:
 #
 # y[n] = ∑(√(a[n, m]² + b[n]² + c[m]² + d²))
-#        j 
+#        j
 #
 # z[m] = ∑(√(a[n, m]² - b[n]² - c[m]² - d²))
 #        i
@@ -300,7 +300,6 @@ def elwise_read():
         with (
             a_dfb.reserve() as a_blk,
             b_dfb.reserve() as b_blk,
-            
         ):
             # Load N_BLOCK_SIZE×M_TILES block of a
             a_xf = ttl.copy(a[n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE, :], a_blk)
@@ -332,7 +331,7 @@ def elwise_compute():
         c_squared_bcast = ttl.math.broadcast(c_squared, dims=[0], shape=(N_BLOCK_SIZE, M_TILES))
 
         # Broadcast d_squared along all dimensions (0 and 1) to N_BLOCK_SIZE×M_TILES;
-        # This first broadcasts single scalar element at position (0, 0) to fill a single tile
+        # This first broadcasts single scalar value at position (0, 0) to fill a single tile
         # then it broadcasts single tile to get N_BLOCK_SIZE×M_TILES tiles
         d_squared_bcast = ttl.math.broadcast(d_squared, dims=[0, 1], shape=(N_BLOCK_SIZE, M_TILES))
 
@@ -430,7 +429,7 @@ M_TILES = M // TILE_SIZE
 N_TILES = N // TILE_SIZE
 K_TILES = K // TILE_SIZE
 
-# Shape in blocks (I_TILES, M_TILES, N_TILES and K_TILES are evenly 
+# Shape in blocks (I_TILES, M_TILES, N_TILES and K_TILES are evenly
 # divisible by I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE and K_BLOCK_SIZE)
 I_BLOCKS = I_TILES // I_BLOCK_SIZE
 M_BLOCKS = M_TILES // M_BLOCK_SIZE
@@ -506,7 +505,7 @@ def matmul_compute():
                             # broadcast it over dim 0 to I_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE
                             b = ttl.math.broadcast(ttl.math.unsqueeze(b_blk, dim=0), dims=[0], shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
 
-                            # Accumulate dot product of I_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE of a_blk and 
+                            # Accumulate dot product of I_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE of a_blk and
                             # I_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE of b in y
                             y += a_blk @ b
 
