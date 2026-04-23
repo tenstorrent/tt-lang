@@ -503,10 +503,10 @@ def matmul_compute():
                             # b_blk has shape K_BLOCK_SIZE×N_BLOCK_SIZE;
                             # Unsqueeze it to 1×K_BLOCK_SIZE×N_BLOCK_SIZE and then
                             # broadcast it over dim 0 to I_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE
-                            b = ttl.math.broadcast(ttl.math.unsqueeze(b_blk, dim=0), dims=[0], shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
+                            b = ttl.math.broadcast(ttl.math.unsqueeze(b_blk, dim=0), dims=[0], shape=(I_BLOCK_SIZE, K_BLOCK_SIZE, N_BLOCK_SIZE))
 
-                            # Accumulate dot product of I_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE of a_blk and
-                            # I_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE of b in y
+                            # Accumulate dot product between I_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE a_blk and
+                            # I_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE b in y
                             y += a_blk @ b
 
                             # Pop a_blk and b_blk to make them available for matmul_read to load and push next blocks
@@ -1155,7 +1155,7 @@ def matmul_read():
 | `ttl.BlockExpr.__sub__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | Two blocks subtracted second from first element-wise. Example: `a - b`. |
 | `ttl.BlockExpr.__mul__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | Multiply two blocks element-wise. Example: `a * b`. |
 | `ttl.BlockExpr.__truediv__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | Two blocks divided first by second element-wise. Example: `a / b`. |
-| `ttl.BlockExpr.__matmul__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | Dot product of two blocks. If `a` has shape `[M, K]` and `b` has shape `[K, N]` then the result will have shape `[M, N]`. Example: `a @ b`. |
+| `ttl.BlockExpr.__matmul__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | Dot product of two blocks. If `a` has shape `[I0, I1, ...M, K]` and `b` has shape `[I0, I1, ...K, N]` then the result will have the shape `[I0, I1, ...M, N]` where `I0`, `I1`, etc are optional outer dimensions. Example: `a @ b`. |
 | `ttl.math.max(a: ttl.BlockExpr, b: ttl.BlockExpr) -> ttl.BlockExpr` | Element-wise maximum |
 | `ttl.math.min(a: ttl.BlockExpr, b: ttl.BlockExpr) -> ttl.BlockExpr` | Element-wise minimum |
 
