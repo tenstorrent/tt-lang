@@ -241,10 +241,10 @@ A *block* represents memory acquired from a dataflow buffer. Block size is deter
 #
 # Tensor   Torch shape   Note
 # a        N, M          N >> M
-# b        N             One-dimensional vector — broadcast to match a along M
+# b        N, 1          One-dimensional vector — broadcast to match a along M
 # c        M             One-dimensional vector — broadcast to match a along N
 # d        1             Scalar value — broadcast to match a along N and M
-# y        N
+# y        N, 1
 # z        M
 #
 # All tensors have tiled layout
