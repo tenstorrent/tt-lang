@@ -45,6 +45,7 @@
 | 0.13 | 03/31/2026 | Rename `ttl.kernel` to `ttl.operation` |
 | 0.14 | 04/02/2026 | Add `ttl.math.abs`, `ttl.math.neg` and `ttl.math.pow` in addition to Python built-in operators. |
 | 0.15 | 04/06/2026 | Rename `buffer_factor` to `block_count` |
+| 0.16 | 04/22/2026 | Add `ttl.math.squeeze` and `ttl.math.unsqueeze` |
 
 
 ## Introduction
