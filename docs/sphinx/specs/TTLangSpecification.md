@@ -153,7 +153,33 @@ x, y, z = ttl.node(dims = 3)
 
 A *dataflow buffer* is a communication primitive for synchronizing the passing of data between kernel functions running on the same node. A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing TT-NN tensor, *shape* and *block count*.
 
-The shape is expressed as a tuple with outermost dimension first and innermost dimension last. For `ttl.math` functions that take dimension indexes, the outermost dimension is indexed as 0, next to outermost as 1. It is possible to use negative dimension indexes to index from innermost dimension. This way the innermost dimension is indexed as -1, next to innermost as -2. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. Shape unit can be either a tile (32 by 32 scalar elements) or a scalar element. In order for tensor to have tiled layout, it needs to have at least two dimensions. The shape unit affects two innermost dimensions and is a whole tile if the tensor has a tiled layout. For example, if a TT-NN tensor is of tiled layout and has shape of `(2, 128, 32)`, the corresponding block that fits this entire tensor will have shape of `(2, 4, 1)`. If tensor has a row-major layout the shape unit is a scalar element. For the TT-NN tensor in the above example the corresponding block that fits this entire tensor will have shape of `(2, 128, 32)`.
+The shape is expressed as a tuple with outermost dimension first and innermost dimension last. For `ttl.math` functions that take dimension indexes, the outermost dimension is indexed as 0, next to outermost as 1. It is possible to use negative dimension indexes to index from innermost dimension. This way the innermost dimension is indexed as -1, next to innermost as -2. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. Shape unit can be either a tile (32 by 32 scalar elements) or a scalar element. In order for tensor to have tiled layout, it needs to have at least two dimensions. The shape unit affects two innermost dimensions and is a whole tile if the tensor has a tiled layout. For example, if a TT-NN tensor is of tiled layout and has shape of `(2, 128, 32)`, the corresponding block that fits this entire tensor will have shape of `(2, 4, 1)`.
+
+#### Tiled tensor shape example
+
+```py
+def from_torch(tensor: torch.Tensor) -> ttnn.Tensor:
+    return ttnn.from_torch(
+        tensor,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+    )
+
+def shape_in_tiles(tensor: ttnn.Tensor) -> list[int]:
+    padded_shape = list(tensor.padded_shape)
+    tile_shape = list(tensor.tile.tile_shape)
+    return padded_shape[:-2] + [dim // tile_dim for dim, tile_dim in zip(padded_shape[-2:], tile_shape)]
+
+shape_in_tiles(from_torch(torch.randn((128)))) #           prints [1, 4]
+shape_in_tiles(from_torch(torch.randn((1, 128)))) #        prints [1, 4]
+shape_in_tiles(from_torch(torch.randn((32, 128)))) #       prints [1, 4]
+shape_in_tiles(from_torch(torch.randn((128, 1)))) #        prints [4, 1]
+shape_in_tiles(from_torch(torch.randn((128, 32)))) #       prints [4, 1]
+shape_in_tiles(from_torch(torch.randn((2, 128, 32)))) #    prints [2, 4, 1]
+shape_in_tiles(from_torch(torch.randn((2, 2, 128, 32)))) # prints [2, 2, 4, 1]
+```
+
+If tensor has a row-major layout the shape unit is a scalar element. For the TT-NN tensor in the above example the corresponding block that fits this entire tensor will have shape of `(2, 128, 32)`.
 
 Shape determines the shape of a *block* returned by one of the *acquisition functions*. The size of a block in L1 memory is determined by shape, shape unit and data type. For example, for a block with shape `(2, 4, 1)`, shape unit of a tile and BF16 data type, its size in L1 will be `2 * 4 * 32 * 1 * 32 * 2 = 16384` bytes. The block count determines the total size of L1 memory allocated for a dataflow buffer. This size as a product of a block size and block count. For the most common case block count defaults to 2 to support double buffering. With double buffered dataflow buffer one kernel can write to a block while another is reading from a block thus enabling enabling the pipelining. For the example above, this means there will be a total of 32768 bytes of L1 memory allocated for the dataflow buffer.
 
