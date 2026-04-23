@@ -792,7 +792,7 @@ def dm():
             # write data into blk_to_send
             # ...
 
-            # then copy blk to blk_to_send:
+            # then copy blk_to_send to pipe:
 
             xf = ttl.copy(blk_to_send, pipe)
             xf.wait()
