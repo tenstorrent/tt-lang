@@ -2270,3 +2270,19 @@ class TestAllReduce:
         expected_shard = torch.full((3, 2, 5), 4.0)
         assert torch.allclose(result.to_torch()[:, 0:2, :], expected_shard)
         assert torch.allclose(result.to_torch()[:, 2:4, :], expected_shard)
+
+
+class TestSynchronizeDevice:
+    """synchronize_device() is a no-op in the simulator."""
+
+    def test_no_args(self) -> None:
+        """Callable with no arguments."""
+        ttnn.synchronize_device()
+
+    def test_with_device_arg(self) -> None:
+        """Callable with a positional device argument, as in real hardware code."""
+        ttnn.synchronize_device("mock_device")
+
+    def test_returns_none(self) -> None:
+        """Return value is None."""
+        assert ttnn.synchronize_device() is None

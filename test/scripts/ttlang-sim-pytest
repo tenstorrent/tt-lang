@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+"""
+Run pytest test files under the tt-lang simulator.
+
+Patches sys.modules with simulator implementations of ttl/ttnn before pytest
+collects and runs tests, so kernel code executes on the simulator backend.
+
+Usage:
+    ttlang-sim-pytest test/python/test_matmul_simple.py
+    ttlang-sim-pytest test/python/test_matmul_simple.py -k test_matmul
+    ttlang-sim-pytest test/python/          # run all tests in a directory
+"""
+
+import os
+import sys
+import types
+from pathlib import Path
+
+# -----------------------------------------------------------------------
+# Set TT_METAL_SIMULATOR before any test utilities are imported so that
+# ttlang_test_utils.is_hardware_available() returns True and the
+# requires_device guard in the upstream conftest does not skip tests.
+# -----------------------------------------------------------------------
+os.environ["TT_METAL_SIMULATOR"] = "1"
+
+# Ensure the simulator package is importable.
+_repo_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_repo_root / "python"))
+# Add test/ so that ttlang_test_utils is importable.
+sys.path.insert(0, str(_repo_root / "test"))
+
+# -----------------------------------------------------------------------
+# Inject a minimal ttl.dtype_utils stub into sys.modules BEFORE
+# setup_simulator_imports() patches ttl.  The real dtype_utils imports
+# compiled C++ dialect bindings that are not available on the simulator.
+# In the simulator ttnn dtypes are the same objects as torch dtypes, so
+# torch_dtype_to_ttnn_datatype can be the identity function.
+# -----------------------------------------------------------------------
+import torch  # noqa: E402 -- must come after path setup
+
+_dtype_utils_stub = types.ModuleType("ttl.dtype_utils")
+
+
+def _torch_dtype_to_ttnn_datatype(dtype: torch.dtype) -> torch.dtype:
+    """Identity mapping: simulator ttnn dtypes equal torch dtypes."""
+    return dtype
+
+
+_dtype_utils_stub.torch_dtype_to_ttnn_datatype = _torch_dtype_to_ttnn_datatype  # type: ignore[attr-defined]
+sys.modules["ttl.dtype_utils"] = _dtype_utils_stub
+
+# -----------------------------------------------------------------------
+# Patch ttl/ttnn in sys.modules with simulator versions.
+# -----------------------------------------------------------------------
+from sim.ttlang_sim import setup_simulator_imports  # noqa: E402
+
+setup_simulator_imports()
+
+import pytest  # noqa: E402
+
+sys.exit(pytest.main(sys.argv[1:]))
