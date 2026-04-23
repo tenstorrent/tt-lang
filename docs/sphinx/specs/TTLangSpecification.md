@@ -227,7 +227,7 @@ def some_compute():
 
 A *block* represents memory acquired from a dataflow buffer. Block size is determined by the shape of a dataflow buffer and its memory is allocated when a dataflow buffer is created. Inside of a compute kernel a block can participate in a *block expression* with built-in Python operators and TT-Lang math functions as an operand. A block can also be a storage for the result of block expression by using `store` function. Inside of data movement kernels a block can participate in `ttl.copy` as a source or a destination.
 
-#### Tiled element-wise example
+#### Tiled element-wise with broadcast and reduce example
 
 ```py
 # ---------------------
@@ -407,7 +407,7 @@ def elwise_write():
 
 ```
 
-#### Tiled matmul example
+#### Batched matrix multiplication with bias example
 
 ```py
 # ---------------------
