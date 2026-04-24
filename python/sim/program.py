@@ -12,7 +12,7 @@ import copy
 import inspect
 import types
 import warnings
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 from greenlet import getcurrent
 
@@ -22,6 +22,7 @@ from .blockstate import ThreadType
 from .context import get_context
 from .greenlet_scheduler import GreenletScheduler, set_scheduler
 from .ttnnsim import Tensor
+from .auto_push_pop import analyze_thread_function, install_auto_push_pop
 from .debug_print import ttlang_print
 from .trace import trace
 
@@ -216,57 +217,75 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             scheduler = GreenletScheduler()
             set_scheduler(scheduler)
 
-            try:
-                # Track all per-core contexts for validation
-                all_core_contexts: List[Dict[str, Any]] = []
+            # Analyse all three thread functions once before iterating over
+            # cores. Results are stored in the simulation context so they
+            # are available for inspection and are not recomputed per core.
+            ctx = get_context()
+            for tmpl in [compute_func_tmpl, dm0_tmpl, dm1_tmpl]:
+                ctx.injection_points_cache[tmpl.__wrapped__] = analyze_thread_function(
+                    tmpl.__wrapped__
+                )
 
-                for core in range(total_cores):
-                    # Build per-core context
-                    core_context = self._build_core_context(core)
-                    all_core_contexts.append(core_context)
+            # Track all per-core contexts for validation
+            all_core_contexts: List[Dict[str, Any]] = []
 
-                    # Add threads to scheduler
-                    for tmpl in [compute_func_tmpl, dm0_tmpl, dm1_tmpl]:
-                        # Get ThreadType directly from template's thread_type attribute
-                        thread_type = getattr(tmpl, "thread_type", None)
-                        match thread_type:
-                            case ThreadType.COMPUTE | ThreadType.DM:
-                                pass
-                            case _:
-                                raise RuntimeError(
-                                    f"Template {tmpl} has invalid thread_type '{thread_type}'. "
-                                    f"Expected ThreadType enum (COMPUTE or DM)."
-                                )
+            for core in range(total_cores):
+                # Build per-core context
+                core_context = self._build_core_context(core)
+                all_core_contexts.append(core_context)
 
-                        # Bind template to core context
-                        bound_func = tmpl.bind(core_context)
+                # Add threads to scheduler
+                for tmpl in [compute_func_tmpl, dm0_tmpl, dm1_tmpl]:
+                    # Get ThreadType directly from template's thread_type attribute
+                    thread_type = getattr(tmpl, "thread_type", None)
+                    match thread_type:
+                        case ThreadType.COMPUTE | ThreadType.DM:
+                            pass
+                        case _:
+                            raise RuntimeError(
+                                f"Template {tmpl} has invalid thread_type '{thread_type}'. "
+                                f"Expected ThreadType enum (COMPUTE or DM)."
+                            )
 
-                        # Wrap to tag the greenlet with its linear core index so
-                        # locality analysis in copy.py can read it via getcurrent().
-                        def _tagged(fn=bound_func, c=core):
-                            getcurrent()._sim_core = c  # type: ignore[attr-defined]
-                            fn()
+                    # Bind template to core context
+                    bound_func = tmpl.bind(core_context)
 
-                        # Add to scheduler
-                        thread_name = f"core{core}-{tmpl.__name__}"
-                        scheduler.add_thread(thread_name, _tagged, thread_type)
+                    # Wrap to tag the greenlet with its linear core index so
+                    # locality analysis in copy.py can read it via getcurrent().
+                    def _tagged(
+                        fn: Callable[[], Any] = bound_func,
+                        c: int = core,
+                    ) -> None:
+                        getcurrent()._sim_core = c  # type: ignore[attr-defined]
+                        fn()
 
-                # Emit operation_start for each node before the scheduler runs.
-                for core in range(total_cores):
-                    trace("operation_start", node=core)
+                    # Add to scheduler
+                    thread_name = f"core{core}-{tmpl.__name__}"
+                    scheduler.add_thread(thread_name, _tagged, thread_type)
 
-                # Run scheduler
-                scheduler.run()
+            # Install injection hooks in the current context's active_hooks.
+            # The global tracer (_global_tracer in auto_push_pop.py) is
+            # installed once per session and reads active_hooks dynamically,
+            # so no sys.settrace bookkeeping is needed here.
+            injection_map = {
+                tmpl.__wrapped__.__code__: ctx.injection_points_cache[tmpl.__wrapped__]
+                for tmpl in [compute_func_tmpl, dm0_tmpl, dm1_tmpl]
+            }
+            install_auto_push_pop(injection_map)
 
-                # Emit operation_end for each node now that all kernels completed.
-                for core in range(total_cores):
-                    trace("operation_end", node=core)
+            # Emit operation_start for each node before the scheduler runs.
+            for core in range(total_cores):
+                trace("operation_start", node=core)
 
-                # Validate all DataflowBuffers have no pending blocks
-                self._validate_dataflow_buffers(all_core_contexts)
-            finally:
-                # Clear scheduler
-                set_scheduler(None)
+            # Run scheduler
+            scheduler.run()
+
+            # Emit operation_end for each node now that all kernels completed.
+            for core in range(total_cores):
+                trace("operation_end", node=core)
+
+            # Validate all DataflowBuffers have no pending blocks
+            self._validate_dataflow_buffers(all_core_contexts)
 
         def _validate_dataflow_buffers(
             self, all_core_contexts: List[Dict[str, Any]]

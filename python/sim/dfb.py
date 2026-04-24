@@ -1237,6 +1237,28 @@ class DataflowBuffer:
 
         trace("dfb_pop", dfb=get_dfb_name(self), occupied=state.visible)
 
+    def auto_push_block(self) -> None:
+        """Push the reserved block if one is pending; no-op otherwise.
+
+        Used by the simulator's auto-push injection to release inline DFB
+        acquires (``dfb.reserve()`` passed directly as a ``ttl.copy()``
+        argument).  Calling this when no block is pending is safe.
+        """
+        if self._pending_reserved_block is None:
+            return
+        self.push_block()
+
+    def auto_pop_block(self) -> None:
+        """Pop the waited block if one is pending; no-op otherwise.
+
+        Used by the simulator's auto-pop injection to release inline DFB
+        acquires (``dfb.wait()`` passed directly as a ``ttl.copy()``
+        argument).  Calling this when no block is pending is safe.
+        """
+        if self._pending_waited_block is None:
+            return
+        self.pop_block()
+
     @property
     def shape(self) -> Shape:
         """Get the shape (in tiles) for wait/reserve operations."""

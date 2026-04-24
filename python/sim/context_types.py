@@ -95,3 +95,18 @@ class SimulatorContext:
         0  # Total L1 capacity of DFBs created in the current kernel body
     )
     trace_events: list[TraceEvent] = field(default_factory=list)
+    # Maps thread function objects to their precomputed InjectionPoint tuples.
+    # Populated once per kernel invocation before the core loop runs.
+    # Typed as Any to avoid importing auto_push_pop (which imports dfb -> context).
+    injection_points_cache: Dict[Any, Any] = field(default_factory=dict)
+    # Active auto-push/pop hooks for this simulation run.
+    # Maps CodeType -> (by_lineno, return_ips) lookup tables used by
+    # _global_tracer in auto_push_pop.py.  Cleared automatically when the
+    # context is replaced by reset_context(), requiring no sys.settrace call.
+    # Typed as Any to avoid importing auto_push_pop.
+    active_hooks: Dict[Any, Any] = field(default_factory=dict)
+    # Set of (code_object, abs_lineno) pairs identifying bare ttl.copy() calls
+    # (i.e. calls whose return value is not assigned).  The copy() function
+    # checks this set to immediately call wait() for those call sites.
+    # Typed as Any to avoid importing types.CodeType here.
+    auto_wait_copy_lines: Set[Any] = field(default_factory=set)
