@@ -171,6 +171,7 @@ def shape_in_tiles(tensor: ttnn.Tensor) -> list[int]:
     tile_shape = list(tensor.tile.tile_shape)
     return padded_shape[:-2] + [dim // tile_dim for dim, tile_dim in zip(padded_shape[-2:], tile_shape)]
 
+shape_in_tiles(from_torch(torch.randn(()))) #              prints [1, 1]
 shape_in_tiles(from_torch(torch.randn((128)))) #           prints [1, 4]
 shape_in_tiles(from_torch(torch.randn((1, 128)))) #        prints [1, 4]
 shape_in_tiles(from_torch(torch.randn((32, 128)))) #       prints [1, 4]
@@ -243,7 +244,7 @@ A *block* represents memory acquired from a dataflow buffer. Block size is deter
 # a        N, M          N >> M
 # b        N, 1          One-dimensional vector — broadcast to match a along M
 # c        M             One-dimensional vector — broadcast to match a along N
-# d        1             Scalar value — broadcast to match a along N and M
+# d        ()            Scalar value — broadcast to match a along N and M
 # y        N, 1
 # z        M
 #
