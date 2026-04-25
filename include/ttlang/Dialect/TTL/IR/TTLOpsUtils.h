@@ -12,9 +12,11 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/SetVector.h"
+
 #include <cstdint>
 #include <optional>
 
@@ -256,25 +258,88 @@ inline SmallVector<Value> getOrCreateIterIndices(OpBuilder &builder,
   return existing;
 }
 
-/// Apply an indexing map to iter_index values to produce operand-space
-/// coordinates. For projected permutations this folds to a subset of
-/// iter_index values with no extra ops.
-inline SmallVector<Value>
-applyIndexingMapToIterIndices(OpBuilder &builder, Location loc, AffineMap map,
-                              ValueRange iterIndices) {
-  SmallVector<OpFoldResult> operands(iterIndices.begin(), iterIndices.end());
+/// Apply an indexing map to induction variables, producing index-typed
+/// Values via affine composition and folding.
+inline SmallVector<Value> applyIndexingMap(OpBuilder &builder, Location loc,
+                                           AffineMap map, ValueRange ivs) {
+  SmallVector<OpFoldResult> operands(ivs.begin(), ivs.end());
+  assert(operands.size() == map.getNumDims() &&
+         "IV count must match map dimensions");
+
   SmallVector<Value> mapped;
   mapped.reserve(map.getNumResults());
   for (AffineExpr expr : map.getResults()) {
-    AffineMap singleMap =
+    AffineMap singleResultMap =
         AffineMap::get(map.getNumDims(), map.getNumSymbols(), expr);
     OpFoldResult result = affine::makeComposedFoldedAffineApply(
-        builder, loc, singleMap, operands);
-    mapped.push_back(
-        mlir::getValueOrCreateConstantIndexOp(builder, loc, result));
+        builder, loc, singleResultMap, operands);
+    mapped.push_back(getValueOrCreateConstantIndexOp(builder, loc, result));
   }
   return mapped;
 }
+
+/// Trace a value through copy_tile (inserted by assign-dst) to its source
+/// block argument. Returns the block arg index, or std::nullopt if the value
+/// does not trace to a block argument.
+inline std::optional<unsigned> traceToBlockArgIndex(Value val) {
+  if (auto copyOp = val.getDefiningOp<CopyTileOp>()) {
+    val = copyOp.getSrc();
+  }
+  if (auto blockArg = dyn_cast<BlockArgument>(val)) {
+    return blockArg.getArgNumber();
+  }
+  return std::nullopt;
+}
+
+/// Extract tiles from tensors by applying indexing maps to induction variables.
+/// Returns one extracted tile per tensor.
+inline SmallVector<Value>
+extractTilesAtIndices(OpBuilder &builder, Location loc, ValueRange tensors,
+                      ArrayRef<AffineMap> indexingMaps, ValueRange ivs,
+                      size_t mapOffset = 0) {
+  SmallVector<Value> extracted;
+  extracted.reserve(tensors.size());
+  for (auto [idx, tensor] : llvm::enumerate(tensors)) {
+    SmallVector<Value> indices =
+        applyIndexingMap(builder, loc, indexingMaps[mapOffset + idx], ivs);
+    extracted.push_back(
+        tensor::ExtractOp::create(builder, loc, tensor, indices));
+  }
+  return extracted;
+}
+
+/// Map a ComputeOp's body block arguments to extracted tile values.
+/// Also maps iter_index results to the corresponding IV values.
+inline void mapComputeBodyArgs(IRMapping &mapping, ComputeOp op,
+                               ArrayRef<Value> extractedInputs,
+                               ArrayRef<Value> extractedOutputs,
+                               ValueRange ivs) {
+  Block &bodyBlock = op.getBody().front();
+  size_t numInputs = op.getInputs().size();
+  for (auto [idx, input] : llvm::enumerate(extractedInputs)) {
+    mapping.map(bodyBlock.getArgument(idx), input);
+  }
+  for (auto [idx, output] : llvm::enumerate(extractedOutputs)) {
+    mapping.map(bodyBlock.getArgument(numInputs + idx), output);
+  }
+  for (Operation &bodyOp : bodyBlock.without_terminator()) {
+    if (auto iterIdx = dyn_cast<IterIndexOp>(&bodyOp)) {
+      mapping.map(iterIdx.getResult(), ivs[iterIdx.getDim()]);
+    }
+  }
+}
+
+//===----------------------------------------------------------------------===//
+// Live interval for register/resource allocation
+//===----------------------------------------------------------------------===//
+
+/// A live interval representing the lifetime of a value or resource.
+/// Used by linear scan allocators in TTLAssignDST and TTLFinalizeDFBIndices.
+struct Interval {
+  int64_t start; // Operation index where value becomes live
+  int64_t end;   // Operation index of last use
+  Value value;   // SSA value this interval represents
+};
 
 //===----------------------------------------------------------------------===//
 // DST capacity computation
@@ -426,6 +491,24 @@ inline TileOp createTileOpWithPlaceholderDstIndex(OpBuilder &builder,
   addPlaceholderDstIndexAttr(tileOp.getOperation());
   return tileOp;
 }
+
+/// Collect the CB values targeted by pack_tile ops inside a loop.
+llvm::SmallDenseSet<Value, 2> getPackTileCBs(scf::ForOp loop);
+
+/// Returns true if two loops share any pack_tile CB target.
+bool sharePackCB(scf::ForOp loopA, scf::ForOp loopB);
+
+/// A group of consecutive sibling loops that pack to the same output CB.
+struct LoopGroup {
+  scf::ForOp rootLoop;
+  SmallVector<scf::ForOp> loops;
+  Operation *scopeEnd = nullptr;
+};
+
+/// Collect groups of annotated sibling loops that share a pack CB target.
+SmallVector<LoopGroup> collectLoopGroups(
+    ArrayRef<scf::ForOp> l1AccLoops,
+    const llvm::SmallDenseMap<Operation *, Operation *> &enablePointPerLoop);
 
 } // namespace mlir::tt::ttl
 

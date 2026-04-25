@@ -22,6 +22,7 @@ from .diagnostics import (
     format_core_ranges,
     extract_core_id_from_thread_name,
 )
+from .trace import get_dfb_name, trace
 
 
 def set_scheduler_algorithm(algorithm: str) -> None:
@@ -85,7 +86,9 @@ class GreenletScheduler:
 
         # Create greenlet that wraps the function
         def wrapped_func() -> None:
+            trace("kernel_start")
             func()
+            trace("kernel_end")
             # Thread completed successfully
             self._mark_completed(name)
 
@@ -131,7 +134,10 @@ class GreenletScheduler:
         # Switch back to scheduler
         if self._main_greenlet is None:
             raise RuntimeError("Main greenlet not set")
+
+        trace("kernel_block", op=operation, on=get_dfb_name(blocking_obj))
         self._main_greenlet.switch()
+        trace("kernel_unblock")
 
     def _mark_completed(self, name: str) -> None:
         """Mark a thread as completed and remove from active set.
@@ -174,6 +180,11 @@ class GreenletScheduler:
             Current thread name, or None if no thread is executing
         """
         return self._current_name
+
+    @property
+    def tick(self) -> int:
+        """Current logical tick (number of scheduler activations elapsed)."""
+        return self._timestamp
 
     def _format_and_raise_thread_error(
         self,
@@ -459,8 +470,8 @@ class GreenletScheduler:
                 name = getattr(obj, "_name", None)
                 return f" on DataflowBuffer({name})" if name else " on DataflowBuffer"
             case "Pipe":
-                src = getattr(obj, "src_core", "?")
-                dst = getattr(obj, "dst_core_range", "?")
+                src = getattr(obj, "src", "?")
+                dst = getattr(obj, "dst", "?")
                 return f" on Pipe({src}->{dst})"
             case "Tensor":
                 return " on Tensor"
@@ -494,16 +505,14 @@ def get_current_core_id() -> str:
     """Get the current core ID from the active thread.
 
     Returns:
-        Core ID like "core0", or "unknown" if no scheduler is active
-        (e.g., in unit tests)
+        Core ID like "core0".
+
+    Raises:
+        RuntimeError: If called outside a running kernel (no active scheduler).
     """
-    try:
-        scheduler = get_scheduler()
-        thread_name = scheduler.get_current_thread_name()
-        return extract_core_id_from_thread_name(thread_name)
-    except RuntimeError:
-        # No active scheduler (e.g., in unit tests)
-        return "unknown"
+    scheduler = get_scheduler()
+    thread_name = scheduler.get_current_thread_name()
+    return extract_core_id_from_thread_name(thread_name)
 
 
 def block_if_needed(obj: Any, operation: str) -> None:

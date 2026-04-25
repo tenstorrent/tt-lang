@@ -103,4 +103,30 @@ void populateTTLModule(nb::module_ &m) {
       .def_prop_ro("memory_layout", [](LayoutAttr &self) {
         return static_cast<uint32_t>(self.getMemoryLayout());
       });
+
+  //===--------------------------------------------------------------------===//
+  // PipeType
+  //===--------------------------------------------------------------------===//
+
+  tt_type_class<PipeType>(m, "PipeType")
+      .def_static(
+          "get",
+          [](MlirContext ctx, int64_t srcX, int64_t srcY, int64_t dstStartX,
+             int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
+             int64_t pipeNetId) {
+            return wrap(PipeType::get(unwrap(ctx), srcX, srcY, dstStartX,
+                                      dstStartY, dstEndX, dstEndY, pipeNetId));
+          },
+          nb::arg("context"), nb::arg("src_x"), nb::arg("src_y"),
+          nb::arg("dst_start_x"), nb::arg("dst_start_y"), nb::arg("dst_end_x"),
+          nb::arg("dst_end_y"), nb::arg("pipe_net_id"))
+      .def_prop_ro("src_x", &PipeType::getSrcX)
+      .def_prop_ro("src_y", &PipeType::getSrcY)
+      .def_prop_ro("dst_start_x", &PipeType::getDstStartX)
+      .def_prop_ro("dst_start_y", &PipeType::getDstStartY)
+      .def_prop_ro("dst_end_x", &PipeType::getDstEndX)
+      .def_prop_ro("dst_end_y", &PipeType::getDstEndY)
+      .def_prop_ro("pipe_net_id", &PipeType::getPipeNetId)
+      .def("is_unicast", &PipeType::isUnicast)
+      .def("is_multicast", &PipeType::isMulticast);
 }

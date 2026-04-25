@@ -47,7 +47,7 @@ html_theme = "furo"
 html_theme_options = {
     "announcement": (
         "This project is under active development. See the "
-        '<a href="specs/TTLangSpecification.html#appendix-d-functionality-matrix">'
+        '<a href="/tt-lang/specs/TTLangSpecification.html#appendix-d-functionality-matrix">'
         "functionality matrix</a> for current simulator and compiler support."
     ),
 }

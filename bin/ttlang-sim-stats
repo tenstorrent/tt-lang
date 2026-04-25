@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+# TT-Lang trace statistics tool (ttlang-trace-stats)
+#
+# Derives simulator statistics from a JSON Lines trace file produced by
+# ttlang-sim --trace.  Prints the same tables as ttlang-sim --show-stats.
+# Usage: ttlang-trace-stats trace.jsonl
+
+PYTHON="${PYTHON:-python}"
+
+exec "$PYTHON" -m sim_stats "$@"

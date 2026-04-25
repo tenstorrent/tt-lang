@@ -3,6 +3,38 @@
 
 include "mlir/Pass/PassBase.td"
 
+def TTLInsertCBSync
+    : Pass<"ttl-insert-cb-sync", "::mlir::func::FuncOp"> {
+  let summary = "Insert missing cb_push/cb_pop for unmatched cb_reserve/cb_wait";
+  let description = [{
+    Finds `ttl.cb_reserve` ops without a matching `ttl.cb_push` and
+    `ttl.cb_wait` ops without a matching `ttl.cb_pop`, then inserts the
+    missing release op after the last operation that accesses the CB's data.
+
+    The pass computes a transitive use closure starting from the acquire op:
+    direct uses of the CB value and the acquire result, plus uses of values
+    those ops produce (e.g. copy -> transfer_handle -> wait). The release is
+    inserted after the last op in this closure.
+
+    Explicit push/pop calls and context-manager-generated push/pop are
+    preserved: the pass only fills in what is missing.
+  }];
+
+  let dependentDialects = [];
+}
+
+def TTLInsertCopyWait
+    : Pass<"ttl-insert-copy-wait", "::mlir::func::FuncOp"> {
+  let summary = "Insert missing ttl.wait for unmatched ttl.copy ops";
+  let description = [{
+    Finds `ttl.copy` ops whose transfer handle result has no `ttl.wait` user
+    and inserts a `ttl.wait` immediately after the copy. Explicit `.wait()`
+    calls are preserved: the pass only fills in what is missing.
+  }];
+
+  let dependentDialects = [];
+}
+
 def TTLConvertTTLToTTKernel
     : Pass<"convert-ttl-to-ttkernel", "::mlir::ModuleOp"> {
   let summary = "Lower TTL DMA ops to TTKernel using global barriers (temporary)";
@@ -30,19 +62,80 @@ def TTKernelInsertL1Accumulation
     : Pass<"ttkernel-insert-l1-accumulation", "::mlir::ModuleOp"> {
   let summary = "Insert L1 accumulation guards for reduction loops";
   let description = [{
-    Inserts `pack_reconfig_l1_acc` guards inside reduction loops so that
-    pack operations accumulate into L1 instead of overwriting. On the first
-    iteration of a reduction loop, pack writes normally. On subsequent
-    iterations, the packer is reconfigured to add to the existing L1 value.
+    Inserts `pack_reconfig_l1_acc` guards so that pack operations inside
+    annotated loops accumulate into L1 instead of overwriting. Max-reduce
+    loops are excluded (max is not additive).
 
-    Reduction loops are identified by the `ttl.reduction_loop` attribute
-    on `scf.for` ops.
+    Loops are grouped into accumulation scopes: consecutive sibling loops
+    that pack to the same CB share a single disable pair. Nested annotated
+    loops are folded into the outermost ancestor. Each group gets:
+    - `pack_reconfig_l1_acc(0)` before the first loop.
+    - `if (iv == lb) pack_reconfig_l1_acc(1)` after each loop's first
+      iteration (the L1 acc state persists across `tile_regs` boundaries).
+    - For the second+ loop in a group, an enable before the loop to re-enable
+      L1 acc after init ops that may reset packer state.
+    - `pack_reconfig_l1_acc(0)` after the last `cb_push_back`.
+
+    Loops are identified by the `ttl.l1_acc_loop` (user-written) or
+    `ttl.reduction_loop` (compiler-generated) attributes on `scf.for`
+    ops, with `ttl.l1_acc_loop` taking precedence.
+
   }];
 
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
     "::mlir::scf::SCFDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
+def TTLAnnotateL1AccLoops
+    : Pass<"ttl-annotate-l1-acc-loops", "::mlir::func::FuncOp"> {
+  let summary = "Annotate user-written scf.for loops for L1 accumulation";
+  let description = [{
+    Detects user-written `scf.for` loops containing `ttl.store` ops with
+    the `accumulate` attribute (emitted by the `+=` operator) and annotates
+    them with `ttl.l1_acc_loop`. This enables `TTKernelInsertL1Accumulation`
+    to insert `pack_reconfig_l1_acc` guards so that packs accumulate across
+    iterations instead of overwriting.
+  }];
+  let dependentDialects = [
+    "::mlir::scf::SCFDialect"
+  ];
+}
+
+def TTLInsertIntermediateDFBs
+    : Pass<"ttl-insert-intermediate-dfbs", "::mlir::func::FuncOp"> {
+  let summary = "Insert intermediate dataflow buffers at fusion split points";
+  let description = [{
+    Walks ops implementing `DFBInputOpInterface` and checks whether the
+    operands they declare as requiring DFB-attached values are satisfied.
+    When an operand comes from a fused expression chain (not DFB-attached),
+    the pass inserts a compiler-allocated DFB:
+
+      bind_cb -> cb_reserve -> store -> cb_wait -> attach_cb
+
+    `cb_push` and `cb_pop` are omitted; `ttl-insert-cb-sync` inserts them
+    based on transitive use analysis.
+
+    Compiler-allocated DFBs are marked with `ttl.compiler_allocated` so
+    that `ttl-finalize-dfb-indices` can register them for the Python
+    runtime.
+
+    When `enable` is false, the pass verifies that no operations require
+    compiler-allocated DFBs. If any `DFBInputOpInterface` op has a
+    non-DFB-attached operand, the pass emits an error diagnostic and
+    signals failure.
+  }];
+
+  let options = [
+    Option<"enable", "enable", "bool", "true",
+           "Insert compiler-allocated intermediate DFBs. When false, "
+           "emit an error if any operation requires a compiler-allocated DFB.">
+  ];
+
+  let dependentDialects = [
+    "::mlir::tt::ttl::TTLDialect"
   ];
 }
 
@@ -184,7 +277,11 @@ def TTLSubblockComputeForDST
     Option<"subblockSync", "subblock-sync", "bool", "false",
            "Refine DFB reserve/push to per-subblock granularity, enabling "
            "pack_tile_block for contiguous subblocks. When disabled (default), "
-           "user-placed reserve/push is preserved.">
+           "user-placed reserve/push is preserved.">,
+    Option<"strictF32Acc", "strict-f32-acc", "bool", "false",
+           "Error if a user-written accumulation loop (+=) with non-f32 "
+           "output requires subblocking. Subblocking reduces accumulation "
+           "precision because bf16 L1 intermediates are narrower than f32 DST.">
   ];
 
   let dependentDialects = [
@@ -194,28 +291,6 @@ def TTLSubblockComputeForDST
   ];
 }
 
-def TTLLowerMatmulBlock
-    : Pass<"ttl-lower-matmul-block", "::mlir::func::FuncOp"> {
-  let summary = "Lower matmul computes to block-level hardware calls";
-  let description = [{
-    Marks `ttl.compute` ops containing `ttl.tile_matmul_block` for block-level
-    lowering by setting the `ttl.block_matmul` attribute. This attribute tells
-    `ttl-lower-to-loops` to collapse the iteration domain to a single point
-    (no per-tile loops), since matmul_block handles the full block atomically.
-
-    The pass also expands the single `tile_store` in the body into M*N stores
-    (one per output tile in the block), since matmul_block writes M*N DST
-    registers that each need to be packed.
-
-    The output must fit in DST (M*N <= capacity). Subblocking for larger
-    outputs is not yet implemented.
-  }];
-
-  let dependentDialects = [
-    "::mlir::arith::ArithDialect",
-    "::mlir::tt::ttl::TTLDialect"
-  ];
-}
 
 def TTLLowerToLoops
     : Pass<"ttl-lower-to-loops", "::mlir::func::FuncOp"> {
@@ -258,7 +333,10 @@ def TTLLowerToLoops
            "Use DST register accumulation for reduction loops. Reorders "
            "loops (parallel-outer, reduction-inner) so DST persists across "
            "reduction iterations. When disabled, uses per-tile L1 "
-           "accumulation. reduce_max always uses DST accumulation.">
+           "accumulation. reduce_max always uses DST accumulation.">,
+    Option<"useBlockMatmul", "use-block-matmul", "bool", "true",
+           "Lower matmul to block-level hardware calls "
+           "(experimental::matmul_block) instead of per-tile loops.">
   ];
 
   let dependentDialects = [
@@ -358,6 +436,26 @@ def TTLLowerSignpostToEmitC
     DeviceZoneScopedN markers for Tracy profiling. This pass runs after
     convert-ttl-to-ttkernel to keep profiling concerns separate from
     the main dialect conversion.
+  }];
+}
+
+def TTLFinalizeDFBIndices
+    : Pass<"ttl-finalize-dfb-indices", "::mlir::ModuleOp"> {
+  let summary = "Reuse compiler-allocated DFB indices and emit DFB metadata";
+  let description = [{
+    Module-level pass that runs after all DFB-creating passes. Must
+    precede ttl-annotate-cb-associations (which copies cb_index onto
+    tile ops and would capture stale pre-reuse indices).
+
+    Applies lifetime-based index reuse to compiler-allocated DFBs via
+    linear scan allocation, partitioned by CircularBufferType. DFBs
+    whose lifetimes (bind_cb to last cb_pop) do not overlap are assigned
+    the same physical index. See docs/development/DFBManagement.md.
+
+    After reuse, verifies the total DFB count does not exceed
+    kMaxCircularBuffers (32), updates ttl.base_cta_index on every
+    function, and builds the ttl.compiler_allocated_dfbs module
+    attribute for the Python runtime.
   }];
 }
 

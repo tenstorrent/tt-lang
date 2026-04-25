@@ -2,7 +2,7 @@
 
 ## Operation Function
 
-An operation function is a Python function decorated with `@ttl.operation()`. Kernel functions defined inside are automatically collected and compiled into a program.
+An operation function is a Python function decorated with `@ttl.operation()`. Kernel functions defined inside the operation function are automatically collected and compiled into a program.
 
 ```python
 @ttl.operation()
@@ -30,7 +30,7 @@ foo(x, y)
 
 Kernel functions are Python functions with no arguments, annotated by `@ttl.compute()` or `@ttl.datamovement()`. They are typically defined in the operation function scope to capture shared objects.
 
-**Compute kernels** execute compute operations on blocks. **Data movement (DM) kernels** handle memory transfers and synchronization. An analogy is a restaurant where the host program is the customer who places an order for a multi-course meal. Inside the kitchen (a node), the first data movement kernel acts as a worker fetching ingredients from storage, the compute kernel is the cook preparing each course as soon as the ingredients are available, and the second data movement kernel is the server that brings each finished course to the customer as soon as it's ready. Multiple courses move through this pipeline at once—while one dish is being plated, another is cooking, and a third is being prepped.
+**Compute kernels** execute computations (e.g., math) on blocks. **Data movement (DM) kernels** handle memory transfers and synchronization. An analogy is a restaurant where the host program is the customer who places an order for a multi-course meal. Inside the kitchen (a node), the first data movement kernel acts as a worker fetching ingredients from storage, the compute kernel is the cook preparing each course as soon as the ingredients are available, and the second data movement kernel is the server that brings each finished course to the customer as soon as it's ready. Multiple courses move through this pipeline at once—while one dish is being plated, another is cooking, and a third is being prepped.
 
 ```{mermaid}
 graph TB
