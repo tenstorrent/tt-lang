@@ -88,6 +88,12 @@ def test_bfloat8_b_capacity_bytes_statistics():
     assert bf8_tensor.size_in_bytes(TOTAL_ELEMENTS) == expected_bf8
     assert bf16_tensor.size_in_bytes(TOTAL_ELEMENTS) == expected_bf16
 
+    # Partial groups: 15 elements still require 1 exponent byte (ceiling division).
+    # Floor division would wrongly return 15 + 0 = 15.
+    assert ttnn.bfloat8_b.size_in_bytes(15) == 15 + 1
+    assert ttnn.bfloat8_b.size_in_bytes(16) == 16 + 1
+    assert ttnn.bfloat8_b.size_in_bytes(17) == 17 + 2
+
 
 def test_device_open_close():
     dev = ttnn.open_device(0)

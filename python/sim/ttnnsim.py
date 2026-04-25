@@ -866,8 +866,9 @@ class _BFloat8BDtype:
 
         Accounts for both the per-element mantissa byte and the shared
         exponent byte for every group of _EXPONENT_GROUP_SIZE elements.
+        Partial groups still require a full exponent byte (ceiling division).
         """
-        return n_elements + n_elements // self._EXPONENT_GROUP_SIZE
+        return n_elements + math.ceil(n_elements / self._EXPONENT_GROUP_SIZE)
 
     def __repr__(self) -> str:
         return "bfloat8_b"
