@@ -12,7 +12,7 @@ import torch
 
 from sim import ttl
 from sim.dfb import Block
-from sim.ttnnsim import Tensor
+from sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor
 
 
 def test_broadcast_basic():
@@ -1174,3 +1174,44 @@ def test_threshold_replaces_greater_than():
         f"Expected: {expected}\n"
         f"Got: {result_tensor}"
     )
+
+
+# Tests for Row-Major layout restriction on broadcast and reduce
+
+
+def _make_row_major_block(shape: tuple) -> Block:
+    """Create a block backed by Row-Major layout tensors."""
+    import math
+
+    total = math.prod(shape)
+    tiles = [Tensor(torch.tensor([[float(i)]]), ROW_MAJOR_LAYOUT) for i in range(total)]
+    return Block.from_list(tiles, shape=shape)
+
+
+def test_broadcast_row_major_rejected():
+    """Test that broadcast raises an error for Row-Major layout blocks."""
+    block = _make_row_major_block((1, 1))
+    with pytest.raises(
+        ValueError, match="broadcast is not supported for Row-Major layout"
+    ):
+        ttl.math.broadcast(block, dims=[0])
+
+
+def test_reduce_max_row_major_rejected():
+    """Test that reduce_max raises an error for Row-Major layout blocks."""
+    block = _make_row_major_block((2, 1))
+    scaler = _make_row_major_block((1, 1))
+    with pytest.raises(
+        ValueError, match="reduce is not supported for Row-Major layout"
+    ):
+        ttl.math.reduce_max(block, scaler, dims=[0])
+
+
+def test_reduce_sum_row_major_rejected():
+    """Test that reduce_sum raises an error for Row-Major layout blocks."""
+    block = _make_row_major_block((2, 1))
+    scaler = _make_row_major_block((1, 1))
+    with pytest.raises(
+        ValueError, match="reduce is not supported for Row-Major layout"
+    ):
+        ttl.math.reduce_sum(block, scaler, dims=[0])

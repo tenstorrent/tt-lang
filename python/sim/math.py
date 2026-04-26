@@ -24,7 +24,7 @@ from .diagnostics import warn_once_per_location
 from .greenlet_scheduler import get_current_core_id
 from .dfb import Block, track_source_blocks, matmul
 from .blockstate import BlockAcquisition, ThreadType
-from .ttnnsim import Tensor
+from .ttnnsim import ROW_MAJOR_LAYOUT, Tensor
 from .typedefs import PositiveInt
 
 _ = matmul
@@ -92,6 +92,9 @@ def broadcast(
     """
     if dims is None:
         raise ValueError("dims parameter is required for broadcast()")
+
+    if block.layout == ROW_MAJOR_LAYOUT:
+        raise ValueError("broadcast is not supported for Row-Major layout blocks")
 
     # Validate that the dimensions being broadcast have element size 1.
     # dims uses standard Python indexing: positive 0 = outermost, -1 = innermost.
@@ -688,6 +691,9 @@ def _reduce_impl(
     block_shape = block._shape  # type: ignore[attr-defined]
     ndim = len(block_shape)
     dims_set: Set[int] = set(dims)
+
+    if block.layout == ROW_MAJOR_LAYOUT:
+        raise ValueError("reduce is not supported for Row-Major layout blocks")
 
     for d in dims_set:
         if d >= ndim or d < -ndim:
