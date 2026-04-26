@@ -467,17 +467,30 @@ struct TTKernelInsertInitsPass
     // (tile_regs_acquire → tile_regs_release).
     auto computeToInit = buildComputeToInitMap();
 
+    // Mirror the prior reduce_tile's `full_fp32` attribute on the matching
+    // reduce_uninit so init and uninit agree. The asymmetry is required by
+    // tt-metal; see TTKernel_ReduceUninitOp description.
+    auto emitReduceUninit = [](OpBuilder &builder, Location loc,
+                               ttk::ReduceTileOp prevReduce) {
+      auto uninit = ttk::ReduceUninitOp::create(builder, loc);
+      if (prevReduce && prevReduce.getFullFp32()) {
+        uninit.setFullFp32(true);
+      }
+    };
+
     // Helper: process one direct child of the sync region block.
     // Walks into the op (which may be an scf.for) to find the first
     // compute op, and inserts an init before the op if the init key changed.
-    auto processOp = [&](Operation &topOp, std::optional<InitKey> &prevKey) {
+    auto processOp = [&](Operation &topOp, std::optional<InitKey> &prevKey,
+                         ttk::ReduceTileOp &prevReduce) {
       if (isSyncBoundary(&topOp)) {
         if (prevKey &&
             prevKey->typeId == mlir::TypeID::get<ttk::ReduceTileOp>()) {
           OpBuilder builder(&topOp);
-          ttk::ReduceUninitOp::create(builder, topOp.getLoc());
+          emitReduceUninit(builder, topOp.getLoc(), prevReduce);
         }
         prevKey = std::nullopt;
+        prevReduce = nullptr;
         return;
       }
 
@@ -492,12 +505,13 @@ struct TTKernelInsertInitsPass
               prevKey->typeId == mlir::TypeID::get<ttk::ReduceTileOp>() &&
               key.typeId != mlir::TypeID::get<ttk::ReduceTileOp>()) {
             OpBuilder builder(&topOp);
-            ttk::ReduceUninitOp::create(builder, topOp.getLoc());
+            emitReduceUninit(builder, topOp.getLoc(), prevReduce);
           }
           OpBuilder builder(&topOp);
           mapIt->second.createInit(builder, inner->getLoc(), inner);
         }
         prevKey = key;
+        prevReduce = dyn_cast<ttk::ReduceTileOp>(inner);
         inner->setAttr(kInitInserted, UnitAttr::get(inner->getContext()));
         return WalkResult::interrupt();
       });
@@ -508,12 +522,13 @@ struct TTKernelInsertInitsPass
     moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
       Block *block = acquireOp->getBlock();
       std::optional<InitKey> prevKey;
+      ttk::ReduceTileOp prevReduce;
       for (auto it = std::next(acquireOp->getIterator()); it != block->end();
            ++it) {
         if (isa<ttk::TileRegsReleaseOp>(&*it)) {
           break;
         }
-        processOp(*it, prevKey);
+        processOp(*it, prevKey, prevReduce);
       }
     });
 

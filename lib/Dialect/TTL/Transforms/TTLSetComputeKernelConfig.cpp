@@ -65,12 +65,17 @@ struct TTLSetComputeKernelConfigPass
           return WalkResult::interrupt();
         }
         if (reduceFullFp32) {
-          bool hasReduce = false;
-          computeOp->walk([&](TileReduceOp) -> WalkResult {
-            hasReduce = true;
-            return WalkResult::interrupt();
+          bool hasFullFp32Reduce = false;
+          computeOp->walk([&](TileReduceOp reduceOp) -> WalkResult {
+            // TODO(#533): Re-enable full-fp32 ROW reduce after the Blackhole
+            // LLK REDUCE_ROW path supports enforce_fp32_accumulation correctly.
+            if (reduceOp.getReduceDim() != ttkernel::ReduceDim::Row) {
+              hasFullFp32Reduce = true;
+              return WalkResult::interrupt();
+            }
+            return WalkResult::advance();
           });
-          if (hasReduce) {
+          if (hasFullFp32Reduce) {
             needsFp32 = true;
             return WalkResult::interrupt();
           }
