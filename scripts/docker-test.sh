@@ -94,7 +94,7 @@ case "$TARGET" in
         USER_CMD="pytest test/me2e/ -v"
         ;;
     sim)
-        USER_CMD="pytest test/sim/ -v"
+        USER_CMD="pytest test/sim/ -v --run-slow"
         ;;
     pytest)
         USER_CMD="pytest test/python/ -v --tb=short"

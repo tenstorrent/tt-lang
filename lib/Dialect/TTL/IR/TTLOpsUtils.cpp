@@ -187,6 +187,17 @@ SmallVector<LoopGroup> collectLoopGroups(
     }
 
     scf::ForOp rootLoop = findRoot(loop);
+    auto groupPackCBs = getPackTileCBs(rootLoop);
+
+    // A bare non-annotated scf.for between siblings does not break the
+    // group unless its body packs to one of the group's pack CBs — such
+    // a pack runs with L1 acc disabled and would overwrite the shared
+    // L1 slot before the next sibling accumulates onto it.
+    auto bareForMutatesSharedCB = [&](scf::ForOp forOp) {
+      auto innerCBs = getPackTileCBs(forOp);
+      return llvm::any_of(innerCBs,
+                          [&](Value cb) { return groupPackCBs.contains(cb); });
+    };
 
     LoopGroup group;
     group.rootLoop = rootLoop;
@@ -206,7 +217,10 @@ SmallVector<LoopGroup> collectLoopGroups(
       }
       if (!sibling->hasAttr(kL1AccLoopAttrName) &&
           !sibling->hasAttr(kReductionLoopAttrName)) {
-        break;
+        if (bareForMutatesSharedCB(sibling)) {
+          break;
+        }
+        continue;
       }
       if (!sharePackCB(rootLoop, sibling)) {
         break;
@@ -216,8 +230,10 @@ SmallVector<LoopGroup> collectLoopGroups(
     }
 
     // Find scope end: scan forward from rootLoop past grouped siblings,
-    // init ops between them, and trailing cb_push_back ops. Only stop
-    // at a non-grouped ForOp or a cb_reserve_back.
+    // init ops between them, and trailing cb_push_back ops. Stop at a
+    // cb_reserve_back, any annotated scf.for that is not in this group
+    // (belongs to a different scope), or a bare scf.for that packs to
+    // one of the group's pack CBs.
     group.scopeEnd = rootLoop;
     for (Operation *op = rootLoop->getNextNode(); op; op = op->getNextNode()) {
       if (isa<ttk::CBPushBackOp>(op)) {
@@ -225,7 +241,12 @@ SmallVector<LoopGroup> collectLoopGroups(
       } else if (isa<ttk::CBReserveBackOp>(op)) {
         break;
       } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
-        if (!assigned.contains(forOp)) {
+        if (assigned.contains(forOp)) {
+          continue;
+        }
+        bool isAnnotated = forOp->hasAttr(kL1AccLoopAttrName) ||
+                           forOp->hasAttr(kReductionLoopAttrName);
+        if (isAnnotated || bareForMutatesSharedCB(forOp)) {
           break;
         }
       }

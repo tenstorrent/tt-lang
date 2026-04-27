@@ -169,7 +169,7 @@ class BlockToPipeHandler:
         num_receivers: int = 1
 
         # dst_core_range can be either CoreCoord or CoreRange
-        dst_core_range: AnyDst = dst.dst_core_range
+        dst_core_range: AnyDst = dst.dst
 
         # Helper predicate for pattern matching
         def has_slices(t: Any) -> bool:

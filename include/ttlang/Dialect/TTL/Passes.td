@@ -23,6 +23,18 @@ def TTLInsertCBSync
   let dependentDialects = [];
 }
 
+def TTLInsertCopyWait
+    : Pass<"ttl-insert-copy-wait", "::mlir::func::FuncOp"> {
+  let summary = "Insert missing ttl.wait for unmatched ttl.copy ops";
+  let description = [{
+    Finds `ttl.copy` ops whose transfer handle result has no `ttl.wait` user
+    and inserts a `ttl.wait` immediately after the copy. Explicit `.wait()`
+    calls are preserved: the pass only fills in what is missing.
+  }];
+
+  let dependentDialects = [];
+}
+
 def TTLConvertTTLToTTKernel
     : Pass<"convert-ttl-to-ttkernel", "::mlir::ModuleOp"> {
   let summary = "Lower TTL DMA ops to TTKernel using global barriers (temporary)";

@@ -116,13 +116,13 @@ def get_pipe_name(pipe: Any) -> str:
     """Return a stable display name for a Pipe, matching the stats naming convention.
 
     Args:
-        pipe: A Pipe instance (or an object with src_core / dst_core_range attributes).
+        pipe: A Pipe instance (or an object with src / dst attributes).
 
     Returns:
         A string of the form 'pipe_<src>_to_<dst>'.
     """
-    src = getattr(pipe, "src_core", "?")
-    dst = getattr(pipe, "dst_core_range", "?")
+    src = getattr(pipe, "src", "?")
+    dst = getattr(pipe, "dst", "?")
 
     def _fmt(coord: Any) -> str:
         match coord:

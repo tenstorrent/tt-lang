@@ -1251,14 +1251,11 @@ class DataflowBuffer:
     def capacity_bytes(self) -> int:
         """Get the total L1 memory used by this buffer in bytes.
 
-        Computed as: block_count * elements_per_operation * bytes_per_element,
-        where elements_per_operation is the product of the element shape dimensions.
+        Delegates to Tensor.size_in_bytes so that dtypes with non-trivial
+        encoding (e.g. bfloat8_b shared exponents) are accounted for correctly.
         """
-        return (
-            self._block_count
-            * math.prod(self._element_shape)
-            * self.likeness_tensor.element_size
-        )
+        total_elements = self._block_count * math.prod(self._element_shape)
+        return self.likeness_tensor.size_in_bytes(total_elements)
 
     @property
     def block_count(self) -> Size:

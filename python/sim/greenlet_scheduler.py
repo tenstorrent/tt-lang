@@ -470,8 +470,8 @@ class GreenletScheduler:
                 name = getattr(obj, "_name", None)
                 return f" on DataflowBuffer({name})" if name else " on DataflowBuffer"
             case "Pipe":
-                src = getattr(obj, "src_core", "?")
-                dst = getattr(obj, "dst_core_range", "?")
+                src = getattr(obj, "src", "?")
+                dst = getattr(obj, "dst", "?")
                 return f" on Pipe({src}->{dst})"
             case "Tensor":
                 return " on Tensor"
