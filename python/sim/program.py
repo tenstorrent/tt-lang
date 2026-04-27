@@ -22,7 +22,12 @@ from .blockstate import ThreadType
 from .context import get_context
 from .greenlet_scheduler import GreenletScheduler, set_scheduler
 from .ttnnsim import Tensor
-from .auto_push_pop import analyze_thread_function, install_auto_push_pop
+from .auto_push_pop import (
+    analyze_thread_function,
+    install_auto_push_pop,
+    PatternViolation,
+)
+from .diagnostics import print_diagnostic_error
 from .debug_print import ttlang_print
 from .trace import trace
 
@@ -224,6 +229,28 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             for tmpl in [compute_func_tmpl, dm0_tmpl, dm1_tmpl]:
                 ctx.injection_points_cache[tmpl.__wrapped__] = analyze_thread_function(
                     tmpl.__wrapped__
+                )
+
+            # Report any unsupported DFB / copy patterns before running the
+            # kernel.  All violations across all three thread functions are
+            # collected first so the user sees every problem at once.
+            all_violations: List[PatternViolation] = []
+            for tmpl in [compute_func_tmpl, dm0_tmpl, dm1_tmpl]:
+                analysis = ctx.injection_points_cache[tmpl.__wrapped__]
+                all_violations.extend(analysis.violations)
+            if all_violations:
+                for v in all_violations:
+                    print_diagnostic_error(
+                        v.func_name,
+                        v.message,
+                        v.source_file,
+                        v.lineno,
+                        v.col,
+                    )
+                n = len(all_violations)
+                raise RuntimeError(
+                    f"Found {n} unsupported pattern{'s' if n > 1 else ''} in thread "
+                    "function(s). See errors above for details."
                 )
 
             # Track all per-core contexts for validation

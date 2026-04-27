@@ -18,8 +18,10 @@ import pytest
 from python.sim import ttl, ttnn
 from python.sim.auto_push_pop import (
     InjectionPoint,
+    PatternViolation,
     ThreadAnalysis,
     analyze_thread_function,
+    validate_thread_function,
 )
 from python.sim.context import get_context, reset_context
 
@@ -847,3 +849,175 @@ class TestInlineAcquireRuntime:
         op(inp, out)
         result = ttnn.to_torch(out).float()
         assert torch.allclose(result, torch.ones(32, 32).float())
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: pattern validation
+# ---------------------------------------------------------------------------
+
+
+class TestValidateThreadFunction:
+    """Verify that validate_thread_function catches unsupported patterns."""
+
+    # ---- DFB acquire violations ----
+
+    def test_bare_reserve_is_violation(self):
+        """dfb.reserve() as a bare statement (return value discarded) is flagged."""
+
+        def dm():
+            dfb.reserve()  # noqa: F821  bare — discards the block
+
+        violations = validate_thread_function(dm)
+        assert len(violations) == 1
+        assert "reserve()" in violations[0].message
+        assert isinstance(violations[0], PatternViolation)
+
+    def test_reserve_passed_to_function_is_violation(self):
+        """dfb.reserve() passed to a non-ttl.copy() function is flagged."""
+
+        def dm():
+            some_func(dfb.reserve())  # noqa: F821
+
+        violations = validate_thread_function(dm)
+        assert len(violations) == 1
+        assert "reserve()" in violations[0].message
+
+    def test_wait_passed_to_function_is_violation(self):
+        """dfb.wait() passed to a non-ttl.copy() function is flagged."""
+
+        def dm():
+            some_func(dfb.wait())  # noqa: F821
+
+        violations = validate_thread_function(dm)
+        assert len(violations) == 1
+        assert "wait()" in violations[0].message
+
+    def test_named_assign_reserve_is_ok(self):
+        """blk = dfb.reserve() is a supported pattern; no violation."""
+
+        def dm():
+            blk = dfb.reserve()  # noqa: F821
+            ttl.copy(src, blk).wait()  # noqa: F821
+
+        assert validate_thread_function(dm) == []
+
+    def test_with_reserve_is_ok(self):
+        """with dfb.reserve() as blk: is a supported pattern; no violation."""
+
+        def dm():
+            with dfb.reserve() as blk:  # noqa: F821
+                ttl.copy(src, blk).wait()  # noqa: F821
+
+        assert validate_thread_function(dm) == []
+
+    def test_inline_reserve_in_copy_is_ok(self):
+        """ttl.copy(src, dfb.reserve()) is a supported pattern; no violation."""
+
+        def dm():
+            ttl.copy(src, dfb.reserve())  # noqa: F821
+
+        assert validate_thread_function(dm) == []
+
+    def test_tx_wait_not_flagged(self):
+        """tx.wait() (CopyTransaction) shares the wait() shape but is not flagged."""
+
+        def dm():
+            tx = ttl.copy(src, dst)  # noqa: F821
+            tx.wait()  # noqa: F821
+
+        assert validate_thread_function(dm) == []
+
+    def test_multiple_violations_all_reported(self):
+        """All unsupported sites in a single function are returned."""
+
+        def dm():
+            some_func(dfb.reserve())  # noqa: F821  violation 1
+            some_other(dfb.wait())  # noqa: F821  violation 2
+
+        violations = validate_thread_function(dm)
+        assert len(violations) == 2
+
+    # ---- ttl.copy() violations ----
+
+    def test_copy_passed_to_function_is_violation(self):
+        """ttl.copy() nested inside another function call is flagged."""
+
+        def dm():
+            group.add(ttl.copy(src, dst))  # noqa: F821
+
+        violations = validate_thread_function(dm)
+        assert len(violations) == 1
+        assert "ttl.copy()" in violations[0].message
+
+    def test_bare_copy_is_ok(self):
+        """Bare ttl.copy(src, dst) is a supported pattern; no violation."""
+
+        def dm():
+            blk = dfb.reserve()  # noqa: F821
+            ttl.copy(src, blk)  # noqa: F821
+
+        assert validate_thread_function(dm) == []
+
+    def test_assigned_copy_is_ok(self):
+        """tx = ttl.copy(src, dst) is a supported pattern; no violation."""
+
+        def dm():
+            blk = dfb.reserve()  # noqa: F821
+            tx = ttl.copy(src, blk)  # noqa: F821
+            tx.wait()  # noqa: F821
+
+        assert validate_thread_function(dm) == []
+
+    def test_violation_contains_source_location(self):
+        """PatternViolation has a valid source file and line number."""
+
+        def dm():
+            some_func(dfb.reserve())  # noqa: F821
+
+        violations = validate_thread_function(dm)
+        assert len(violations) == 1
+        v = violations[0]
+        assert v.source_file.endswith(".py")
+        assert v.lineno > 0
+        assert v.col > 0
+        assert v.func_name == "dm"
+
+    def test_func_name_in_violation(self):
+        """PatternViolation.func_name matches the thread function name."""
+
+        def my_dm_thread():
+            some_func(dfb.reserve())  # noqa: F821
+
+        violations = validate_thread_function(my_dm_thread)
+        assert violations[0].func_name == "my_dm_thread"
+
+
+class TestValidationRaisesAtRuntime:
+    """Verify that kernels with unsupported patterns abort with diagnostics."""
+
+    def test_unsupported_pattern_raises_runtime_error(self, reset_simulator_context):
+        """A kernel with dfb.reserve() in an unsupported position raises RuntimeError."""
+
+        @ttl.operation(grid=(1, 1))
+        def op(inp, out):
+            dfb = ttl.make_dataflow_buffer_like(
+                inp, shape=(1, 1), block_count=2
+            )  # noqa: F841
+
+            @ttl.compute()
+            def compute():
+                pass  # noqa: F821
+
+            @ttl.datamovement()
+            def dm_read():
+                some_func(dfb.reserve())  # noqa: F821  unsupported
+
+            @ttl.datamovement()
+            def dm_write():
+                pass  # noqa: F821
+
+        inp = ttnn.from_torch(__import__("torch").ones(32, 32))
+        out = ttnn.from_torch(__import__("torch").zeros(32, 32))
+
+        with pytest.raises(RuntimeError, match="unsupported pattern"):
+            op(inp, out)

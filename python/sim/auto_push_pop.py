@@ -109,10 +109,30 @@ class ThreadAnalysis:
     ``ttl.copy(...)`` calls whose return value is not assigned to any
     variable (Case A).  These are forwarded to ``copy()`` via the simulator
     context so that ``copy()`` can call ``wait()`` immediately.
+
+    ``violations`` is the set of unsupported patterns found during static
+    analysis.  A non-empty set causes the simulator to print diagnostics and
+    abort before running the kernel.
     """
 
     injection_points: tuple[InjectionPoint, ...]
     bare_copy_linenos: frozenset[int]
+    violations: tuple["PatternViolation", ...] = ()
+
+
+@dataclass
+class PatternViolation:
+    """One unsupported DFB-acquire or ttl.copy() pattern found during analysis.
+
+    The simulator collects all violations across every thread function before
+    reporting them together, so the user sees every problem in a single run.
+    """
+
+    source_file: str
+    lineno: int  # absolute file line number (1-based)
+    col: int  # 1-based column number
+    message: str
+    func_name: str  # name of the thread function containing the violation
 
 
 @dataclass
@@ -319,6 +339,224 @@ def _find_next_stmt_lineno(
         if abs_lineno > after_lineno:
             return abs_lineno
     return None
+
+
+# ---------------------------------------------------------------------------
+# Pattern validation
+# ---------------------------------------------------------------------------
+
+
+def _collect_copy_handle_names(func_def: ast.FunctionDef) -> set[str]:
+    """Return variable names assigned from any copy-like function call.
+
+    Recognises both the high-level ``ttl.copy()`` form and bare ``copy()``
+    calls (from ``from python.sim.copy import copy``), as well as any other
+    call whose function name contains ``"copy"``.  These variables hold
+    ``CopyTransaction`` handles whose ``.wait()`` calls should NOT be treated
+    as DFB acquire calls during validation.
+    """
+    names: set[str] = set()
+    for node in ast.walk(func_def):
+        if not (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Call)
+        ):
+            continue
+        call = node.value
+        func = call.func
+        is_copy = (
+            _is_ttl_copy_call(call)
+            or (isinstance(func, ast.Name) and "copy" in func.id.lower())
+            or (isinstance(func, ast.Attribute) and "copy" in func.attr.lower())
+        )
+        if is_copy:
+            names.add(node.targets[0].id)
+    return names
+
+
+def _find_allowed_dfb_acquire_ids(func_def: ast.FunctionDef) -> set[int]:
+    """Return the ``id()``s of all DFB acquire call nodes in allowed positions.
+
+    Allowed positions for ``dfb.reserve()`` / ``dfb.wait()``:
+
+    * Named assignment: ``blk = dfb.reserve()``
+    * ``with`` context manager: ``with dfb.reserve() as blk:``
+    * Direct positional or keyword argument of ``ttl.copy()``
+    """
+    allowed: set[int] = set()
+    for node in ast.walk(func_def):
+        # Named assignment: blk = dfb.reserve() / blk = dfb.wait()
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Call)
+            and _is_inline_dfb_acquire(node.value) is not None
+        ):
+            allowed.add(id(node.value))
+
+        # with dfb.reserve() as blk:
+        elif isinstance(node, ast.With):
+            for item in node.items:
+                if (
+                    isinstance(item.context_expr, ast.Call)
+                    and _is_inline_dfb_acquire(item.context_expr) is not None
+                ):
+                    allowed.add(id(item.context_expr))
+
+        # Direct argument of ttl.copy(): ttl.copy(dfb.wait(), ...) etc.
+        elif isinstance(node, ast.Call) and _is_ttl_copy_call(node):
+            all_args = list(node.args) + [kw.value for kw in node.keywords]
+            for arg in all_args:
+                if (
+                    isinstance(arg, ast.Call)
+                    and _is_inline_dfb_acquire(arg) is not None
+                ):
+                    allowed.add(id(arg))
+
+    return allowed
+
+
+def _find_allowed_copy_ids(func_def: ast.FunctionDef) -> set[int]:
+    """Return the ``id()``s of all ``ttl.copy()`` call nodes in allowed positions.
+
+    Allowed positions for ``ttl.copy()``:
+
+    * Bare expression statement: ``ttl.copy(src, dst)``
+    * Simple named assignment: ``tx = ttl.copy(src, dst)``
+    * Immediate method-chain on the result: ``ttl.copy(src, dst).wait()``
+    """
+    allowed: set[int] = set()
+    for node in ast.walk(func_def):
+        # Bare call: ttl.copy(src, dst)
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            call = node.value
+            if _is_ttl_copy_call(call):
+                allowed.add(id(call))
+            # Immediate method chain: ttl.copy(src, dst).method()
+            elif (
+                isinstance(call.func, ast.Attribute)
+                and isinstance(call.func.value, ast.Call)
+                and _is_ttl_copy_call(call.func.value)
+            ):
+                allowed.add(id(call.func.value))
+
+        # Simple assignment: tx = ttl.copy(src, dst)
+        elif (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Call)
+            and _is_ttl_copy_call(node.value)
+        ):
+            allowed.add(id(node.value))
+
+    return allowed
+
+
+def validate_thread_function(func: types.FunctionType) -> list[PatternViolation]:
+    """Check that all DFB acquire and ``ttl.copy()`` calls use supported patterns.
+
+    Walks the full AST of ``func`` and compares every call site against the
+    set of positions the auto-injection analysis understands.  Returns a list
+    of ``PatternViolation`` objects (one per unsupported call site).  An empty
+    list means the function is valid.
+
+    Returns an empty list when the function source is unavailable (built-in,
+    dynamically generated, etc.).
+
+    Supported patterns for ``dfb.reserve()`` / ``dfb.wait()``:
+
+    * ``blk = dfb.reserve()`` / ``blk = dfb.wait()``
+    * ``with dfb.reserve() as blk:`` / ``with dfb.wait() as blk:``
+    * ``ttl.copy(dfb.wait(), ...)`` / ``ttl.copy(..., dfb.reserve())``
+
+    Supported patterns for ``ttl.copy()``:
+
+    * ``ttl.copy(src, dst)``  (bare call, auto-waited)
+    * ``tx = ttl.copy(src, dst)``  (simple assignment)
+    """
+    try:
+        source_lines, file_start_line = inspect.getsourcelines(func)
+        source_file = inspect.getfile(func)
+    except (OSError, TypeError):
+        return []
+
+    source = textwrap.dedent("".join(source_lines))
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+
+    func_def: Optional[ast.FunctionDef] = None
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef):
+            func_def = node
+            break
+    if func_def is None:
+        return []
+
+    func_name = func.__name__
+    violations: list[PatternViolation] = []
+
+    copy_handle_names = _collect_copy_handle_names(func_def)
+    allowed_acquire_ids = _find_allowed_dfb_acquire_ids(func_def)
+    allowed_copy_ids = _find_allowed_copy_ids(func_def)
+
+    for node in ast.walk(func_def):
+        if not isinstance(node, ast.Call):
+            continue
+
+        # Check DFB acquire calls (reserve/wait with no args on a Name).
+        result = _is_inline_dfb_acquire(node)
+        if result is not None:
+            dfb_name, method = result
+            # Skip CopyTransaction.wait() — tx.wait() has the same AST shape
+            # but the receiver is a known copy handle, not a DFB.
+            if dfb_name in copy_handle_names:
+                continue
+            if id(node) not in allowed_acquire_ids:
+                abs_lineno = file_start_line + node.lineno - 1
+                col = node.col_offset + 1
+                violations.append(
+                    PatternViolation(
+                        source_file=source_file,
+                        lineno=abs_lineno,
+                        col=col,
+                        message=(
+                            f"{dfb_name}.{method}() is used in an unsupported pattern. "
+                            f"Supported patterns: "
+                            f"'blk = {dfb_name}.{method}()', "
+                            f"'with {dfb_name}.{method}() as blk:', or "
+                            f"'ttl.copy({dfb_name}.{method}(), ...)'."
+                        ),
+                        func_name=func_name,
+                    )
+                )
+            continue
+
+        # Check ttl.copy() calls.
+        if _is_ttl_copy_call(node) and id(node) not in allowed_copy_ids:
+            abs_lineno = file_start_line + node.lineno - 1
+            col = node.col_offset + 1
+            violations.append(
+                PatternViolation(
+                    source_file=source_file,
+                    lineno=abs_lineno,
+                    col=col,
+                    message=(
+                        "ttl.copy() is used in an unsupported pattern. "
+                        "Supported patterns: "
+                        "'ttl.copy(src, dst)' (bare call) or "
+                        "'tx = ttl.copy(src, dst)' (simple assignment)."
+                    ),
+                    func_name=func_name,
+                )
+            )
+
+    return violations
 
 
 # ---------------------------------------------------------------------------
@@ -760,6 +998,7 @@ def analyze_thread_function(func: types.FunctionType) -> ThreadAnalysis:
     return ThreadAnalysis(
         injection_points=tuple(injection_points),
         bare_copy_linenos=frozenset(bare_linenos),
+        violations=tuple(validate_thread_function(func)),
     )
 
 
