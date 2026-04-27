@@ -1,0 +1,56 @@
+diff --git a/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td b/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td
+index c102c054f..28a0c17fe 100644
+--- a/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td
++++ b/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td
+@@ -617,9 +617,13 @@ def TTKernel_ReduceUninitOp : TTKernel_InitOp<"reduce_uninit"> {
+        same dimension, this call can be omitted. If this function is not called, the packer will continue to use the edge masks set
+        by the latest reduce_init call, which may lead to incorrect packing behavior in subsequent operations.
+
++       The `full_fp32` attribute must match the value passed to the corresponding reduce_init/reduce_tile.
++
+        This function is not in line with our programming mode. To be removed by end of 2025. tt-metal#22904.
+     }];
+
++    let arguments = (ins UnitAttr:$full_fp32);
++
+     let assemblyFormat = [{
+       `(` `)` attr-dict `:` functional-type(operands, results)
+     }];
+diff --git a/lib/Conversion/TTKernelToEmitC/TTKernelToEmitC.cpp b/lib/Conversion/TTKernelToEmitC/TTKernelToEmitC.cpp
+index 047936fe4..cff7c094e 100644
+--- a/lib/Conversion/TTKernelToEmitC/TTKernelToEmitC.cpp
++++ b/lib/Conversion/TTKernelToEmitC/TTKernelToEmitC.cpp
+@@ -289,6 +289,15 @@ public:
+       template_args.push_back(emitc::OpaqueAttr::get(
+           op.getContext(), op.getFullFp32() ? "true" : "false"));
+       return ArrayAttr::get(op.getContext(), template_args);
++    } else if constexpr (std::is_same_v<SourceOp, ttkernel::ReduceUninitOp>) {
++      // The default `reduce_uninit()` signature already resolves to <false>,
++      // so emit a template arg only when full_fp32 is set.
++      if (!op.getFullFp32()) {
++        return ArrayAttr::get(op.getContext(), {});
++      }
++      SmallVector<Attribute, 1> template_args;
++      template_args.push_back(emitc::OpaqueAttr::get(op.getContext(), "true"));
++      return ArrayAttr::get(op.getContext(), template_args);
+     } else if constexpr (std::is_same_v<SourceOp, ttkernel::UnaryBcastInitOp> ||
+                          std::is_same_v<SourceOp, ttkernel::UnaryBcastTileOp>) {
+       SmallVector<Attribute, 1> template_args;
+diff --git a/test/ttmlir/Conversion/TTKernelToEmitC/ttkernel.mlir b/test/ttmlir/Conversion/TTKernelToEmitC/ttkernel.mlir
+index 33f5456ed..91a9ffa48 100644
+--- a/test/ttmlir/Conversion/TTKernelToEmitC/ttkernel.mlir
++++ b/test/ttmlir/Conversion/TTKernelToEmitC/ttkernel.mlir
+@@ -524,6 +524,13 @@ module {
+       return
+     }
+
++    // CHECK-LABEL: func @reduce_uninit_full_fp32
++    func.func @reduce_uninit_full_fp32() -> () attributes {ttkernel.thread = #ttkernel.thread<compute>} {
++      // CHECK: emitc.call_opaque "reduce_uninit"() {template_args = [#emitc.opaque<"true">]}
++      "ttkernel.reduce_uninit"() <{full_fp32}> : () -> ()
++      return
++    }
++
+     // CHECK-LABEL: func @reduce_init_avg
+     func.func @reduce_init_avg() -> () attributes {ttkernel.arg_spec = #ttkernel.arg_spec< ct_args = [<arg_type = cb_port, operand_index = 0>, <arg_type = cb_port, operand_index = 1>, <arg_type = cb_port, operand_index = 2>]>, ttkernel.thread = #ttkernel.thread<compute>} {
+       %in_cb = "ttkernel.get_compile_time_arg_val"() <{arg_index = 0 : i32}> : () -> !cb0_tiles
