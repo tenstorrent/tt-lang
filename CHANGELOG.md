@@ -46,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Simplified dependency management, build, CI and reduced Docker container size from 9.48GB to 6.47GB.
 
-## Version 0.1.9
+## Version 0.1.8
 
 ### Compiler
 
