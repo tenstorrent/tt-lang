@@ -4,6 +4,8 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=1 dst-full-sync-en=1}))' --split-input-file | FileCheck %s --check-prefix=OVERRIDE
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{matmul-full-fp32=0}))' --split-input-file | FileCheck %s --check-prefix=NO-MATMUL-FP32
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{reduce-full-fp32=0}))' --split-input-file | FileCheck %s --check-prefix=NO-REDUCE-FP32
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --split-input-file | FileCheck %s --check-prefix=BLACKHOLE
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --split-input-file | FileCheck %s --check-prefix=WORMHOLE
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -166,14 +168,13 @@ func.func @bf16_reduce_col_auto_fp32(
 
 #map_reduce_row = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: bf16 ROW reduce does not trigger fp32_dest_acc_en while issue #533
-// keeps full-fp32 ROW reduce disabled.
+// Purpose: bf16 ROW reduce triggers fp32_dest_acc_en.
 // DEFAULT-LABEL: func.func @bf16_reduce_row_no_auto_fp32
-// DEFAULT-NOT: fp32_dest_acc_en
+// DEFAULT-SAME: fp32_dest_acc_en = true
 // OVERRIDE-LABEL: func.func @bf16_reduce_row_no_auto_fp32
 // OVERRIDE-SAME: fp32_dest_acc_en = true
 // NO-MATMUL-FP32-LABEL: func.func @bf16_reduce_row_no_auto_fp32
-// NO-MATMUL-FP32-NOT: fp32_dest_acc_en
+// NO-MATMUL-FP32-SAME: fp32_dest_acc_en = true
 // NO-REDUCE-FP32-LABEL: func.func @bf16_reduce_row_no_auto_fp32
 // NO-REDUCE-FP32-NOT: fp32_dest_acc_en
 func.func @bf16_reduce_row_no_auto_fp32(
@@ -214,6 +215,105 @@ func.func @bf16_reduce_row_no_auto_fp32(
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
 
   return %res : tensor<1x1x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
+#map_reduce_row = affine_map<(d0, d1) -> (d0, d1)>
+
+// Purpose: Blackhole ROW reduce does not trigger fp32_dest_acc_en while issue
+// #533 remains open.
+// BLACKHOLE-LABEL: func.func @blackhole_bf16_reduce_row_no_auto_fp32
+// BLACKHOLE-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<compute>}
+module attributes {ttl.target_arch = "blackhole"} {
+  func.func @blackhole_bf16_reduce_row_no_auto_fp32(
+      %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+      %scaler: tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %c0 = arith.constant 0 : index
+    %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+    %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+
+    %a_cb = ttl.attach_cb %a, %cb0
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %scaler_cb = ttl.attach_cb %scaler, %cb1
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %init_cb = ttl.attach_cb %init, %cb2
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+    %out_view = ttl.cb_reserve %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %res = ttl.compute
+        ins(%a_cb, %scaler_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                                tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        outs(%init_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        {indexing_maps = [#map_reduce_row, #map_reduce_row, #map_reduce_row],
+         iterator_types = ["parallel", "parallel"]} {
+      ^bb0(%a_tile: !ttcore.tile<32x32, bf16>, %scaler_tile: !ttcore.tile<32x32, bf16>, %out_tile: !ttcore.tile<32x32, bf16>):
+        %i = ttl.iter_index 0 : index
+        %j = ttl.iter_index 1 : index
+        %red = ttl.tile_reduce %a_tile, %scaler_tile, %out_tile 0 : i32 <reduce_dim_row> into dst[%c0] : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>) -> !ttcore.tile<32x32, bf16>
+        ttl.tile_store %red, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.yield
+    } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+    return %res : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+}
+
+// -----
+
+#map_reduce_row = affine_map<(d0, d1) -> (d0, d1)>
+
+// Purpose: Non-Blackhole ROW reduce still triggers fp32_dest_acc_en.
+// WORMHOLE-LABEL: func.func @wormhole_bf16_reduce_row_auto_fp32
+// WORMHOLE-SAME: fp32_dest_acc_en = true
+module attributes {ttl.target_arch = "wormhole_b0"} {
+  func.func @wormhole_bf16_reduce_row_auto_fp32(
+      %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+      %scaler: tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %c0 = arith.constant 0 : index
+    %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+    %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+
+    %a_cb = ttl.attach_cb %a, %cb0
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %scaler_cb = ttl.attach_cb %scaler, %cb1
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %init_cb = ttl.attach_cb %init, %cb2
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+    %out_view = ttl.cb_reserve %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %res = ttl.compute
+        ins(%a_cb, %scaler_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                                tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        outs(%init_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        {indexing_maps = [#map_reduce_row, #map_reduce_row, #map_reduce_row],
+         iterator_types = ["parallel", "parallel"]} {
+      ^bb0(%a_tile: !ttcore.tile<32x32, bf16>, %scaler_tile: !ttcore.tile<32x32, bf16>, %out_tile: !ttcore.tile<32x32, bf16>):
+        %i = ttl.iter_index 0 : index
+        %j = ttl.iter_index 1 : index
+        %red = ttl.tile_reduce %a_tile, %scaler_tile, %out_tile 0 : i32 <reduce_dim_row> into dst[%c0] : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>) -> !ttcore.tile<32x32, bf16>
+        ttl.tile_store %red, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.yield
+    } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+    return %res : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
 }
 
 // -----

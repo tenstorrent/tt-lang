@@ -689,9 +689,11 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
         ttk::ReduceTypeAttr::get(op.getContext(), ttkReduceType),
         ttk::ReduceDimAttr::get(op.getContext(), op.getReduceDim()));
 
-    // TODO(#533): Re-enable full-fp32 ROW reduce after the Blackhole LLK
-    // REDUCE_ROW path supports enforce_fp32_accumulation correctly.
-    bool useFullFp32 = fullFp32 && op.getReduceDim() != ttk::ReduceDim::Row;
+    bool useFullFp32 = fullFp32;
+    // TODO(#533): Blackhole REDUCE_ROW full-fp32 produces incorrect results.
+    if (isBlackholeTarget(op) && op.getReduceDim() == ttk::ReduceDim::Row) {
+      useFullFp32 = false;
+    }
     if (useFullFp32) {
       reduceOp->setAttr("full_fp32", rewriter.getUnitAttr());
     }

@@ -127,6 +127,7 @@ def _make_cache_key(
     args: tuple,
     fp32_dest_acc_en: Optional[bool],
     dst_full_sync_en: Optional[bool],
+    target_arch: Optional[str],
     compiler_options: CompilerOptions = CompilerOptions(),
 ) -> tuple:
     """Create cache key from tensor properties and runtime compute config parameters."""
@@ -140,7 +141,14 @@ def _make_cache_key(
         if is_ttnn_tensor(arg) and _is_mesh_tensor(arg):
             mesh_key = tuple(arg.device().shape)
             break
-    return (tensor_key, mesh_key, fp32_dest_acc_en, dst_full_sync_en, compiler_options)
+    return (
+        tensor_key,
+        mesh_key,
+        fp32_dest_acc_en,
+        dst_full_sync_en,
+        target_arch,
+        compiler_options,
+    )
 
 
 def _should_execute() -> bool:
@@ -444,12 +452,12 @@ def _detect_device_arch(device) -> Optional[str]:
                 arch_value = arch_value()
             except Exception:
                 continue
-        return str(arch_value).lower()
+        return str(arch_value).lower().rsplit(".", maxsplit=1)[-1]
     return None
 
 
-def _is_blackhole_device(args) -> Optional[bool]:
-    """Return whether tensor args are on Blackhole, or None if unknown."""
+def _device_target_arch(args) -> Optional[str]:
+    """Return the first detected tensor device architecture, or None."""
     for arg in args:
         if not is_ttnn_tensor(arg) or not hasattr(arg, "device"):
             continue
@@ -459,8 +467,16 @@ def _is_blackhole_device(args) -> Optional[bool]:
         arch = _detect_device_arch(device)
         if arch is None:
             continue
-        return "blackhole" in arch
+        return arch
     return None
+
+
+def _is_blackhole_device(args) -> Optional[bool]:
+    """Return whether tensor args are on Blackhole, or None if unknown."""
+    arch = _device_target_arch(args)
+    if arch is None:
+        return None
+    return arch == "blackhole"
 
 
 def _effective_compiler_options_for_device(
@@ -471,9 +487,6 @@ def _effective_compiler_options_for_device(
         return compiler_options
 
     is_blackhole = _is_blackhole_device(args)
-    # TODO(#533): Apply reduce full-fp32 mitigation only on Blackhole.
-    # Other architectures keep the default reduce lowering unless explicitly
-    # overridden by user options.
     if is_blackhole is False and compiler_options.reduce_full_fp32:
         return dataclasses.replace(compiler_options, reduce_full_fp32=False)
 
@@ -1168,6 +1181,7 @@ def _compile_kernel(
     program_hash: int,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    target_arch: Optional[str] = None,
     compiler_options: CompilerOptions = CompilerOptions(),
 ) -> Optional[CompiledTTNNKernel]:
     """
@@ -1186,6 +1200,7 @@ def _compile_kernel(
         program_hash: Hash for tt-metal program cache
         fp32_dest_acc_en: Optional override for fp32_dest_acc_en
         dst_full_sync_en: Optional override for dst_full_sync_en
+        target_arch: Optional TT device architecture for target-specific lowering
         compiler_options: Compiler pipeline options
 
     Returns:
@@ -1329,6 +1344,8 @@ def _compile_kernel(
                 kernel_line_offsets[ct.name] = ct.line_offset
 
         module = Module.create(loc)
+        if target_arch is not None:
+            module.operation.attributes["ttl.target_arch"] = StringAttr.get(target_arch)
 
         # Insert standalone thread functions directly into module
         with InsertionPoint(module.body):
@@ -1615,6 +1632,7 @@ def pykernel_gen(
             base = CompilerOptions.from_string(opts_str)
             argv_overrides = CompilerOptions.from_argv()
             compiler_options = base.merge(argv_overrides)
+            target_arch = _device_target_arch(args)
             compiler_options = _effective_compiler_options_for_device(
                 compiler_options, args
             )
@@ -1625,6 +1643,7 @@ def pykernel_gen(
                 # Runtime options:
                 fp32_dest_acc_en=fp32_override,
                 dst_full_sync_en=dst_sync_override,
+                target_arch=target_arch,
                 compiler_options=compiler_options,
             )
 
@@ -1649,6 +1668,7 @@ def pykernel_gen(
                     program_hash,
                     fp32_dest_acc_en=fp32_override,
                     dst_full_sync_en=dst_sync_override,
+                    target_arch=target_arch,
                     compiler_options=compiler_options,
                 )
 

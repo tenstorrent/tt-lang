@@ -13,6 +13,7 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
@@ -67,9 +68,10 @@ struct TTLSetComputeKernelConfigPass
         if (reduceFullFp32) {
           bool hasFullFp32Reduce = false;
           computeOp->walk([&](TileReduceOp reduceOp) -> WalkResult {
-            // TODO(#533): Re-enable full-fp32 ROW reduce after the Blackhole
-            // LLK REDUCE_ROW path supports enforce_fp32_accumulation correctly.
-            if (reduceOp.getReduceDim() != ttkernel::ReduceDim::Row) {
+            // TODO(#533): Blackhole REDUCE_ROW full-fp32 produces incorrect
+            // results, so it must not force fp32_dest_acc_en.
+            if (!isBlackholeTarget(reduceOp) ||
+                reduceOp.getReduceDim() != ttkernel::ReduceDim::Row) {
               hasFullFp32Reduce = true;
               return WalkResult::interrupt();
             }

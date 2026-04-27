@@ -6,6 +6,7 @@
 #define TTLANG_DIALECT_TTL_IR_TTL_H
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
@@ -31,8 +32,19 @@ class TTLTileOpTrait
 constexpr llvm::StringLiteral kCBIndexAttrPrefix("ttl.cb_index.");
 
 /// Runtime configuration attributes.
+constexpr llvm::StringLiteral kTargetArchAttrName("ttl.target_arch");
 constexpr llvm::StringLiteral kFp32DestAccEnAttrName("fp32_dest_acc_en");
 constexpr llvm::StringLiteral kDstFullSyncEnAttrName("dst_full_sync_en");
+
+inline bool isBlackholeTarget(Operation *op) {
+  ModuleOp moduleOp = op->getParentOfType<ModuleOp>();
+  if (!moduleOp) {
+    return false;
+  }
+
+  auto targetArch = moduleOp->getAttrOfType<StringAttr>(kTargetArchAttrName);
+  return targetArch && targetArch.getValue() == "blackhole";
+}
 
 /// Marks binary ops that use the FPU engine (reads from CB) instead of SFPU.
 constexpr llvm::StringLiteral kFPUBinaryAttrName("ttl.fpu_binary");

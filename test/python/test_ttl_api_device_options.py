@@ -63,6 +63,16 @@ class TestDeviceCompilerDefaults:
         )
         assert opts.reduce_full_fp32 is True
 
+    def test_device_target_arch_uses_arch_method(self):
+        device = _DeviceWithArchMethod("Arch.BLACKHOLE")
+        assert ttl_api._device_target_arch((_TensorWithDevice(device),)) == "blackhole"
+
+    def test_device_target_arch_uses_arch_attribute(self):
+        device = _DeviceWithArchAttribute("Arch.WORMHOLE_B0")
+        assert (
+            ttl_api._device_target_arch((_TensorWithDevice(device),)) == "wormhole_b0"
+        )
+
     def test_unknown_arch_preserves_default_options(self):
         opts = ttl_api._effective_compiler_options_for_device(
             CompilerOptions(), (_TensorWithDevice(object()),)
