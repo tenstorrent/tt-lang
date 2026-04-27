@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import functools
 import inspect
 import os
@@ -422,6 +423,61 @@ def _require_device(args):
         "  ttnn.to_device(tensor, device)\n"
         "  ttnn.from_torch(tensor, ..., device=device)"
     )
+
+
+def _detect_device_arch(device) -> Optional[str]:
+    """Return a normalized architecture string from a TTNN device if present."""
+    arch_attrs = (
+        "arch",
+        "architecture",
+        "chip_type",
+        "device_type",
+        "_arch",
+        "_architecture",
+    )
+    for attr in arch_attrs:
+        if not hasattr(device, attr):
+            continue
+        arch_value = getattr(device, attr)
+        if callable(arch_value):
+            try:
+                arch_value = arch_value()
+            except Exception:
+                continue
+        return str(arch_value).lower()
+    return None
+
+
+def _is_blackhole_device(args) -> Optional[bool]:
+    """Return whether tensor args are on Blackhole, or None if unknown."""
+    for arg in args:
+        if not is_ttnn_tensor(arg) or not hasattr(arg, "device"):
+            continue
+        device = arg.device()
+        if device is None:
+            continue
+        arch = _detect_device_arch(device)
+        if arch is None:
+            continue
+        return "blackhole" in arch
+    return None
+
+
+def _effective_compiler_options_for_device(
+    compiler_options: CompilerOptions, args: tuple
+) -> CompilerOptions:
+    """Apply hardware-derived defaults that are not user-facing options."""
+    if "reduce_full_fp32" in compiler_options._explicit:
+        return compiler_options
+
+    is_blackhole = _is_blackhole_device(args)
+    # TODO(#533): Apply reduce full-fp32 mitigation only on Blackhole.
+    # Other architectures keep the default reduce lowering unless explicitly
+    # overridden by user options.
+    if is_blackhole is False and compiler_options.reduce_full_fp32:
+        return dataclasses.replace(compiler_options, reduce_full_fp32=False)
+
+    return compiler_options
 
 
 def _resolve_grid(grid, args, kwargs):
@@ -1559,6 +1615,9 @@ def pykernel_gen(
             base = CompilerOptions.from_string(opts_str)
             argv_overrides = CompilerOptions.from_argv()
             compiler_options = base.merge(argv_overrides)
+            compiler_options = _effective_compiler_options_for_device(
+                compiler_options, args
+            )
 
             # Build cache key from tensor properties
             cache_key = _make_cache_key(
