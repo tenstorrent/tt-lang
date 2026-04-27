@@ -38,3 +38,8 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/python:${{ github.workspace }}/examples
         run: |
           pytest test/sim/ -v -n auto
+
+      - name: Run Python API tests under simulator
+        run: |
+          python test/scripts/ttlang-sim-pytest test/python/test_elementwise_ops.py -v -n auto
+          python test/scripts/ttlang-sim-pytest test/python/test_elementwise_shapes.py -v -n auto
