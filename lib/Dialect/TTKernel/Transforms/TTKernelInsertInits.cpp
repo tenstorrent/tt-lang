@@ -467,9 +467,8 @@ struct TTKernelInsertInitsPass
     // (tile_regs_acquire → tile_regs_release).
     auto computeToInit = buildComputeToInitMap();
 
-    // Mirror the prior reduce_tile's `full_fp32` attribute on the matching
-    // reduce_uninit so init and uninit agree. The asymmetry is required by
-    // tt-metal; see TTKernel_ReduceUninitOp description.
+    // reduce_uninit must use the same full-fp32 mode as the reduce sequence
+    // it closes; see TTKernel_ReduceUninitOp description.
     auto emitReduceUninit = [](OpBuilder &builder, Location loc,
                                ttk::ReduceTileOp prevReduce) {
       auto uninit = ttk::ReduceUninitOp::create(builder, loc);
