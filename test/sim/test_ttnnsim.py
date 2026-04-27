@@ -38,6 +38,61 @@ def test_constants_and_dtypes():
     assert hasattr(ttnn, "TILE_LAYOUT")
     assert ttnn.bfloat16 == torch.bfloat16
     assert ttnn.float32 == torch.float32
+    assert hasattr(ttnn, "bfloat8_b")
+    assert ttnn.bfloat8_b == ttnn.bfloat8_b
+    assert ttnn.bfloat8_b != ttnn.bfloat16
+    assert ttnn.bfloat8_b != torch.float32
+    assert ttnn.bfloat8_b.element_size == 1
+    t_bf8 = ttnn.rand((32, 32), dtype=ttnn.bfloat8_b)
+    assert t_bf8.dtype == ttnn.bfloat8_b
+    assert t_bf8.underlying_dtype == torch.bfloat16
+
+
+def test_bfloat8_b_capacity_bytes_statistics():
+    """capacity_bytes for bfloat8_b accounts for the BFP8B shared-exponent overhead.
+
+    BFP8B encodes n elements as n mantissa bytes plus one exponent byte per
+    group of 16 elements: size_in_bytes(n) = n + n // 16.
+
+    For a buffer with BLOCK_COUNT blocks of one 32x32 tile each:
+      total_elements = BLOCK_COUNT * 32 * 32 = 4096
+      bfloat16: 4096 * 2            = 8192 bytes
+      bfloat8_b: 4096 + 4096 // 16 = 4352 bytes  (4096 mantissa + 256 exponent)
+    """
+    from python.sim.dfb import DataflowBuffer
+
+    BLOCK_COUNT = 4
+    TILE_SHAPE = (1, 1)
+    TOTAL_ELEMENTS = BLOCK_COUNT * 32 * 32  # 4096
+
+    bf16_tensor = ttnn.rand((32, 32), dtype=ttnn.bfloat16)
+    bf8_tensor = ttnn.rand((32, 32), dtype=ttnn.bfloat8_b)
+
+    assert bf16_tensor.element_size == 2
+    assert bf8_tensor.element_size == 1  # mantissa only; exponent overhead is per-group
+
+    bf16_dfb = DataflowBuffer(
+        likeness_tensor=bf16_tensor, shape=TILE_SHAPE, block_count=BLOCK_COUNT
+    )
+    bf8_dfb = DataflowBuffer(
+        likeness_tensor=bf8_tensor, shape=TILE_SHAPE, block_count=BLOCK_COUNT
+    )
+
+    expected_bf16 = TOTAL_ELEMENTS * 2  # 8192
+    expected_bf8 = TOTAL_ELEMENTS + TOTAL_ELEMENTS // 16  # 4352
+
+    assert bf16_dfb.capacity_bytes == expected_bf16
+    assert bf8_dfb.capacity_bytes == expected_bf8
+
+    # Also verify size_in_bytes is accessible directly on the tensor
+    assert bf8_tensor.size_in_bytes(TOTAL_ELEMENTS) == expected_bf8
+    assert bf16_tensor.size_in_bytes(TOTAL_ELEMENTS) == expected_bf16
+
+    # Partial groups: 15 elements still require 1 exponent byte (ceiling division).
+    # Floor division would wrongly return 15 + 0 = 15.
+    assert ttnn.bfloat8_b.size_in_bytes(15) == 15 + 1
+    assert ttnn.bfloat8_b.size_in_bytes(16) == 16 + 1
+    assert ttnn.bfloat8_b.size_in_bytes(17) == 17 + 2
 
 
 def test_device_open_close():
