@@ -41,5 +41,5 @@ jobs:
 
       - name: Run Python API tests under simulator
         run: |
-          python test/scripts/ttlang-sim-pytest test/python/test_elementwise_ops.py -v -n auto
-          python test/scripts/ttlang-sim-pytest test/python/test_elementwise_shapes.py -v -n auto
+          python test/scripts/ttlang-sim-pytest test/python/test_elementwise_ops.py -v
+          python test/scripts/ttlang-sim-pytest test/python/test_elementwise_shapes.py -v
