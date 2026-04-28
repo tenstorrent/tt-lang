@@ -504,7 +504,7 @@ def matmul_compute():
                             # b_blk has shape K_BLOCK_SIZE×N_BLOCK_SIZE;
                             # Unsqueeze it to 1×K_BLOCK_SIZE×N_BLOCK_SIZE and then
                             # broadcast it over dim 0 to I_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE
-                            b = ttl.math.broadcast(ttl.math.unsqueeze(b_blk, dim=0), dims=[0], shape=(I_BLOCK_SIZE, K_BLOCK_SIZE, N_BLOCK_SIZE))
+                            b = ttl.math.broadcast(ttl.math.unsqueeze(b_blk, dims=[0]), dims=[0], shape=(I_BLOCK_SIZE, K_BLOCK_SIZE, N_BLOCK_SIZE))
 
                             # Accumulate dot product between I_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE a_blk and
                             # I_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE b in y
@@ -518,7 +518,7 @@ def matmul_compute():
                         # c_blk has shape M_BLOCK_SIZE×N_BLOCK_SIZE;
                         # Unsqueeze it to 1×M_BLOCK_SIZE×N_BLOCK_SIZE and then
                         # broadcast it over dim 0 to I_BLOCK_SIZE×M_BLOCK_SIZE×N_BLOCK_SIZE
-                        c = ttl.math.broadcast(ttl.math.unsqueeze(c_blk, dim=0), dims=[0], shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
+                        c = ttl.math.broadcast(ttl.math.unsqueeze(c_blk, dims=[0]), dims=[0], shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
 
                         y = y + c
 
@@ -1254,8 +1254,8 @@ def matmul_read():
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.math.squeeze(expr: ttl.BlockExpr, dim: int) -> ttl.BlockExpr` | Remove shape dimension at position specified by `dim`. Removed shape dimension must be 1.<br><br>Example for squeeze over dimension 0 (outermost): `ttl.math.squeeze(a, dim=0)`. Here if the shape of `a` is `(1, N, M)` the shape of the result will be `(N, M)`.<br><br>Example for squeeze over dimension -1 (innermost): `ttl.math.squeeze(a, dim=-1)`. Here if the shape of `a` is `(N, M, 1)` the shape of the result will be `(N, M)`. |
-| `ttl.math.unsqueeze(expr: ttl.BlockExpr, dim: int) -> ttl.BlockExpr` | Add shape dimension of 1 at position specified by `dim`. For positive `dim` the dimension is inserted before the position specified in `dim`. For negative `dim` the dimension is inserted after the position specified in `dim`. <br><br>Example for unsqueeze over dimension 0 (outermost): `ttl.math.unsqueeze(a, dim=0)`. Here if the shape of `a` is `(N, M)` the shape of the result will be `(1, N, M)`.<br><br>Example for unsqueeze over dimension -1 (innermost): `ttl.math.unsqueeze(a, dim=-1)`. Here if the shape of `a` is `(N, M)` the shape of the result will be `(N, M, 1)`. |
+| `ttl.math.squeeze(expr: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Remove shape dimension at positions specified by `dims`. Removed shape dimension must be 1.<br><br>Example for squeeze over dimensions 0 (outermost) and 2: `ttl.math.squeeze(a, dims=[0, 2])`. Here if the shape of `a` is `(1, N, 1, M)` the shape of the result will be `(N, M)`.<br><br>Example for squeeze over dimensions -1 (innermost) and -3: `ttl.math.squeeze(a, dim=[-1, -3])`. Here if the shape of `a` is `(N, 1, M, 1)` the shape of the result will be `(N, M)`. |
+| `ttl.math.unsqueeze(expr: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Add shape dimension of 1 at positions specified by `dims`. Position values in `dims` refer to a position in the resulting shape. <br><br>Example for unsqueeze over dimensions 0 (outermost) and 2: `ttl.math.unsqueeze(a, dims=[0, 2])`. Here if the shape of `a` is `(N, M)` the shape of the result will be `(1, N, 1, M)`.<br><br>Example for unsqueeze over dimensions -1 (innermost) and -3: `ttl.math.unsqueeze(a, dims=[-1, -3])`. Here if the shape of `a` is `(N, M)` the shape of the result will be `(N, 1, M, 1)`. |
 
 ## Appendix C. Naming guidelines
 
