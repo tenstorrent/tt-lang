@@ -267,8 +267,8 @@ A *block* represents memory acquired from a dataflow buffer. Block size is deter
 #
 # Tensor   Torch shape   Note
 # a        N, M          N >> M
-# b        N, 1          Vector — broadcast to match a along M
-# c        M             Vector — broadcast to match a along N
+# b        N, 1          Column-wise vector — broadcast to match a along M
+# c        M             Row-wise vector — broadcast to match a along N
 # d        ()            Scalar value — broadcast to match a along N and M
 # y        N, 1
 # z        M
@@ -285,20 +285,20 @@ N_BLOCKS = N_TILES // N_BLOCK_SIZE
 a_dfb = ttl.make_dataflow_buffer_like(a, shape = (N_BLOCK_SIZE, M_TILES))
 
 # Tiled DFB shape needs to be at least two-dimensional;
-# When tiled the vector b is placed in row 0
-# of each tile in a row of N_TILES tiles
+# When tiled, the vector b of shape (N, 1) is placed in column 0
+# of each tile in a column of N_TILES tiles
 b_dfb = ttl.make_dataflow_buffer_like(b, shape = (N_BLOCK_SIZE, 1))
-# When tiled the vector c is placed in column 0
-# of each tile in a column of M_TILES tiles
+# When tiled, the vector c of shape M is placed in row 0
+# of each tile in a row of M_TILES tiles
 c_dfb = ttl.make_dataflow_buffer_like(c, shape = (1, M_TILES))
-# When tiled the scalar value d is placed at position (0, 0)
+# When tiled, the scalar value d of shape () is placed at position (0, 0)
 # of a single tile
 d_dfb = ttl.make_dataflow_buffer_like(d, shape = (1, 1))
-# When untiled the vector y is formed from row 0
-# of each tile in a row of N_TILES tiles
+# When untiled, the vector y is formed from column 0
+# of each tile in a column of N_TILES tiles
 y_dfb = ttl.make_dataflow_buffer_like(y, shape = (N_BLOCK_SIZE, 1))
-# When untiled the vector z is formed from column 0
-# of each tile in a column of M_TILES tiles
+# When untiled, the vector z is formed from row 0
+# of each tile in a row of M_TILES tiles
 z_dfb = ttl.make_dataflow_buffer_like(z, shape = (1, M_TILES))
 
 @ttl.datamovement()
@@ -309,10 +309,14 @@ def elwise_read():
         c_dfb.reserve() as c_blk,
         d_dfb.reserve() as d_blk,
     ):
-        # Load entire (1×M_TILES) of c
+        # Load entire (1×M_TILES) of c;
+        # When tiled, the vector c of shape M is placed in row 0
+        # of each tile in a row of M_TILES tiles
         c_xf = ttl.copy(c[0, :], c_blk)
 
-        # Load entire (1×1) d
+        # Load entire (1×1) d;
+        # When tiled, the scalar value d of shape () is placed at position (0, 0)
+        # of a single tile
         d_xf = ttl.copy(d[0, 0], d_blk)
 
         c_xf.wait()
@@ -331,7 +335,9 @@ def elwise_read():
             # Load N_BLOCK_SIZE×M_TILES block of a
             a_xf = ttl.copy(a[n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE, :], a_blk)
 
-            # Load N_BLOCK_SIZE×1 block of b
+            # Load N_BLOCK_SIZE×1 block of b;
+            # When tiled, the vector b of shape (N, 1) is placed in column 0
+            # of each tile in a column of N_TILES tiles
             b_xf = ttl.copy(b[n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE, 0], b_blk)
 
             a_xf.wait()
@@ -416,7 +422,9 @@ def elwise_write():
     # Wait for elwise_compute to store and push z_blk
     with z_dfb.wait() as z_blk:
 
-        # Store entire (1xM_TILES) of z
+        # Store entire (1xM_TILES) of z;
+        # When untiled, the vector z is formed from row 0
+        # of each tile in a row of M_TILES tiles
         z_xf = ttl.copy(z_blk, z[0, :])
         z_xf.wait()
 
@@ -429,7 +437,9 @@ def elwise_write():
         # Wait for elwise_compute to store and push y_blk
         with y_dfb.wait() as y_blk:
 
-            # Store N_BLOCK_SIZExM_TILES of y
+            # Store N_BLOCK_SIZExM_TILES of y;
+            # When untiled, the vector y is formed from column 0
+            # of each tile in a column of N_TILES tiles
             y_xf = ttl.copy(y_blk, y[n_slice, :])
             y_xf.wait()
 
