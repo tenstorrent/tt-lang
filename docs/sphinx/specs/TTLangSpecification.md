@@ -45,6 +45,7 @@
 | 0.13 | 03/31/2026 | Rename `ttl.kernel` to `ttl.operation` |
 | 0.14 | 04/02/2026 | Add `ttl.math.abs`, `ttl.math.neg` and `ttl.math.pow` in addition to Python built-in operators. |
 | 0.15 | 04/06/2026 | Rename `buffer_factor` to `block_count` |
+| 0.16 | 04/22/2026 | Add `ttl.math.squeeze` and `ttl.math.unsqueeze` |
 
 
 ## Introduction
@@ -58,7 +59,7 @@ In addition to kernels, TT-Lang offers other abstractions familiar to [TT-Metali
 
 *Operation function* is a Python function with `ttl.operation` decorator. This function takes input and output [*TT-NN tensors*](https://docs.tenstorrent.com/tt-metal/latest/ttnn/ttnn/tensor.html) as arguments and returns `None`. An operation function contains definitions of *kernel functions* as well as objects shared by all kernel functions. A kernel function is a Python function with no arguments and returning `None` that is annotated by `ttl.compute` or `ttl.datamovement` decorators. The user can call TT-Lang operation function from a TT-NN program and is free to mix it with calling any of the built-in TT-NN operations.
 
-### Example
+#### Program example
 
 ```py
 @ttl.operation()
@@ -110,7 +111,7 @@ The `ttl.grid_size` function returns the size of the grid. The function takes an
 | `ttl.Shape = ttl.Size \| Tuple[ttl.Size, ...]` | A shape type. `ttl.Size` for 1D and tuple of `ttl.Size` otherwise. |
 | `ttl.grid_size(dims: ttl.Size) -> ttl.Shape` | Return grid size in specified dimensionality. Returns `ttl.Size` for `dims = 1` and a tuple of `ttl.Size` for other values of dims. |
 
-#### Example
+#### Grid size example
 
 ```py
 # for (8, 8) single chip or SPMD grid gets x_size = 64
@@ -135,7 +136,7 @@ The `ttl.node` function returns *node coordinates* of the current node. Node coo
 | `ttl.NodeCoord = ttl.Index \| Tuple[ttl.Index, ...]` | Node coordinates. `ttl.Index` for 1D and tuple of `ttl.Index` otherwise. |
 | `ttl.node(dims: ttl.Index) -> ttl.NodeCoord` | Return node coordinates in specified dimensionality. Returns `ttl.Index` for `dims = 1` and a tuple of `ttl.Index` for other values of dims. |
 
-#### Example
+#### Node example
 
 ```py
 # for (8, 8) single chip or SPMD grid gets x = [0, 64)
@@ -153,43 +154,95 @@ x, y, z = ttl.node(dims = 3)
 
 A *dataflow buffer* is a communication primitive for synchronizing the passing of data between kernel functions running on the same node. A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing TT-NN tensor, *shape* and *block count*.
 
-The shape is expressed as a tuple with outermost dimension first and innermost dimension last. For `ttl.math` functions that take dimension indexes, the outermost dimension is indexed as 0, next to outermost as 1. It is possible to use negative dimension indexes to index from innermost dimension. This way the innermost dimension is indexed as -1, next to innermost as -2. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. The shape unit affects two innermost dimensions and is a whole tile (32 by 32 scalars) if the tensor has a tiled layout. For example, if a TT-NN tensor is of tiled layout and has shape of `(2, 128, 32)`, the corresponding block that fits this entire tensor will have shape of `(2, 4, 1)`. If tensor has a row-major layout the shape unit is an scalar. For the TT-NN tensor in the above example the corresponding block that fits this entire tensor will have shape of `(2, 128, 32)`.
+The shape is expressed as a tuple with outermost dimension first and innermost dimension last. For `ttl.math` functions that take dimension indexes, the outermost dimension is indexed as 0, next to outermost as 1. It is possible to use negative dimension indexes to index from innermost dimension. This way the innermost dimension is indexed as -1, next to innermost as -2. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. Shape unit can be either a tile (32 by 32 scalar elements) or a scalar element. In order for block to be used with tiled tensor, it needs to have at least two dimensions (see example below). In this case, the translation from Torch shape affects two innermost dimensions. For example, if a TT-NN tensor is of tiled layout and has Torch shape of `(2, 2, 120, 30)`, the corresponding block that fits this entire tensor will have shape of `(2, 2, 4, 1)`.
 
-Shape determines the shape of a *block* returned by one of the *acquisition functions*. The size of a block in L1 memory is determined by shape, shape unit and data type. For example, for a block with shape `(2, 4, 1)`, shape unit of a tile and BF16 data type, its size in L1 will be `2 * 4 * 32 * 1 * 32 * 2 = 16384` bytes. The block count determines the total size of L1 memory allocated for a dataflow buffer. This size as a product of a block size and block count. For the most common case block count defaults to 2 to support double buffering. With double buffered dataflow buffer one kernel can write to a block while another is reading from a block thus enabling enabling the pipelining. For the example above, this means there will be a total of 32768 bytes of L1 memory allocated for the dataflow buffer.
+#### Tiled tensor shape example
 
-There are two acquisition functions on a dataflow buffer object: `wait` and `reserve`. A dataflow buffer is constructed in the scope of an operation function but its object functions can only be used inside of kernel functions. Acquisition functions can be used with Python `with` statement, which will automatically release acquired blocks at the end of the `with` scope. Alternatively, if acquisition functions are used without the `with` the user must explicitly call a corresponding release function on the acquired block: `pop` for `wait` and `push` for `reserve`.
+```py
+def from_torch(tensor: torch.Tensor) -> ttnn.Tensor:
+    return ttnn.from_torch(
+        tensor,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+    )
 
-#### Example
+def shape_in_tiles(tensor: ttnn.Tensor) -> list[int]:
+    padded_shape = list(tensor.padded_shape)
+    tile_shape = list(tensor.tile.tile_shape)
+    return padded_shape[:-2] + [dim // tile_dim for dim, tile_dim in zip(padded_shape[-2:], tile_shape)]
+
+shape_in_tiles(from_torch(torch.randn(()))) #              prints [1, 1]
+shape_in_tiles(from_torch(torch.randn((128)))) #           prints [1, 4]
+shape_in_tiles(from_torch(torch.randn((1, 128)))) #        prints [1, 4]
+shape_in_tiles(from_torch(torch.randn((32, 128)))) #       prints [1, 4]
+shape_in_tiles(from_torch(torch.randn((128, 1)))) #        prints [4, 1]
+shape_in_tiles(from_torch(torch.randn((128, 32)))) #       prints [4, 1]
+shape_in_tiles(from_torch(torch.randn((2, 128, 32)))) #    prints [2, 4, 1]
+shape_in_tiles(from_torch(torch.randn((2, 2, 128, 32)))) # prints [2, 2, 4, 1]
+shape_in_tiles(from_torch(torch.randn((2, 2, 120, 30)))) # prints [2, 2, 4, 1]
+```
+
+If tensor has a row-major layout the shape unit is a scalar element. For the TT-NN tensor with Torch shape of `(2, 2, 120, 30)` the corresponding block that fits this entire tensor will have shape of `(2, 2, 120, 30)`.
+
+#### Row-major tensor shape example
+
+```py
+def from_torch(tensor: torch.Tensor) -> ttnn.Tensor:
+    return ttnn.from_torch(
+        tensor,
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+        device=device,
+    )
+
+def row_major_shape(tensor: ttnn.Tensor) -> list[int]:
+    return list(tensor.padded_shape)
+
+row_major_shape(from_torch(torch.randn(()))) #              prints [1]
+row_major_shape(from_torch(torch.randn((128)))) #           prints [128]
+row_major_shape(from_torch(torch.randn((1, 128)))) #        prints [1, 128]
+row_major_shape(from_torch(torch.randn((32, 128)))) #       prints [32, 128]
+row_major_shape(from_torch(torch.randn((128, 1)))) #        prints [128, 1]
+row_major_shape(from_torch(torch.randn((128, 32)))) #       prints [128, 32]
+row_major_shape(from_torch(torch.randn((2, 128, 32)))) #    prints [2, 128, 32]
+row_major_shape(from_torch(torch.randn((2, 2, 128, 32)))) # prints [2, 2, 128, 32]
+row_major_shape(from_torch(torch.randn((2, 2, 120, 30)))) # prints [2, 2, 120, 30]
+```
+
+Shape determines the shape of a *block* returned by one of the *acquisition functions*: `wait` and `reserve`. The size of a block in L1 memory is determined by shape, shape unit and data type. For example, for a block with shape `(2, 2, 4, 1)`, shape unit of a tile (32 by 32 scalar elements) and BF16 data type (2 bytes), its size in L1 will be `2 * 2 * (4 * 32) * (1 * 32) * 2 = 32768` bytes. The block count determines the total size of L1 memory allocated for a dataflow buffer. This size is a product of a block size and block count. For the most common case block count defaults to 2 to support double buffering. With double buffered dataflow buffer one kernel can write to a block while another is reading from a block thus enabling the pipelining. For the example above, this means there will be a total of 32768 bytes of L1 memory allocated for the dataflow buffer.
+
+A dataflow buffer is constructed in the scope of an operation function but its object functions can only be used inside of kernel functions. Acquisition functions can be used with Python `with` statement, which will automatically release acquired blocks at the end of the `with` scope. Alternatively, if acquisition functions are used without the `with` the user must explicitly call a corresponding release function on the acquired block: `pop` for `wait` and `push` for `reserve`.
+
+#### Dataflow buffer example
 
 ```py
 x_dfb = ttl.make_dataflow_buffer_like(x,
     shape = (2, 2),
-    block_count = 2)
+    block_count = 2) # This can be omitted since block_count defaults to 2
 
 @ttl.datamovement()
 def some_read():
-    # acquire x_blk from x_dfb
+    # Reserve x_blk from x_dfb
     with x_dfb.reserve() as x_blk:
 
-        # produce data into x_blk
+        # Load data into x_blk
         # ...
 
-        # release x_blk implicitly by x_blk.push() at the end of the "with" scope
+        # Push x_blk implicitly at the end of the "with" scope
 
 @ttl.compute()
 def some_compute():
-    # acquire x_blk from x_dfb
+    # Wait for x_blk from x_dfb
     x_blk = x_dfb.wait()
 
-    # consume data in x_blk
+    # Consume data in x_blk
     # ...
 
-    x_blk.pop() # release x_blk explicitly
+    x_blk.pop() # Pop x_blk explicitly
 ```
 
 | Type alias/Function | Description |
 | :---- | :---- |
-|  `ttl.make_dataflow_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape,   block_count: ttl.Size) -> ttl.DataflowBuffer` | Create a dataflow buffer by inheriting basic properties from `likeness_tensor`. |
+|  `ttl.make_dataflow_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape, block_count: ttl.Size = 2) -> ttl.DataflowBuffer` | Create a dataflow buffer by inheriting basic properties from `likeness_tensor`. |
 |  `ttl.DataflowBuffer.reserve(self) -> ttl.Block` | Reserve and return a block from a dataflow buffer. **This function is blocking** and will wait until a *free* block is available. A free block is typically used by a producer to write the data into. |
 | `ttl.Block.push(self)` | Push a block to a dataflow buffer. This function is called by the producer to signal the consumer that a block *filled* with data is available. **This function is non-blocking.** |
 | `ttl.DataflowBuffer.wait(self) -> ttl.Block` | Wait for and return a block from a dataflow buffer. **This function is blocking** and will wait until a block filled with data is available. A filled block is typically used by a consumer to read data from. |
@@ -200,213 +253,352 @@ def some_compute():
 
 A *block* represents memory acquired from a dataflow buffer. Block size is determined by the shape of a dataflow buffer and its memory is allocated when a dataflow buffer is created. Inside of a compute kernel a block can participate in a *block expression* with built-in Python operators and TT-Lang math functions as an operand. A block can also be a storage for the result of block expression by using `store` function. Inside of data movement kernels a block can participate in `ttl.copy` as a source or a destination.
 
-#### Element-wise with broadcast example
+#### Tiled element-wise with broadcast and reduce example
 
 ```py
 # ---------------------
-# Element-wise with broadcast with two outputs: Y = sqrt(A^2 + B^2), Z = sqrt(A^2 - B^2)
+# Tiled element-wise with broadcast and reduce:
 #
-# Tensor   Torch shape  Shape in tiles
-# A        N            NT
-# B        1            1
-# Y        N            NT
-# Z        N            NT
+# y[n] = ∑(√(a[n, m]² + b[n]² + c[m]² + d²))
+#        j
 #
-# NT = N // TILE_SIZE
+# z[m] = ∑(√(a[n, m]² - b[n]² - c[m]² - d²))
+#        i
+#
+# Tensor   Torch shape   Note
+# a        N, M          N >> M
+# b        N, 1          Column-wise vector — broadcast to match a along M
+# c        M             Row-wise vector — broadcast to match a along N
+# d        ()            Scalar value — broadcast to match a along N and M
+# y        N, 1
+# z        M
+#
+# All tensors have tiled layout
 
-a_dfb = ttl.make_dataflow_buffer_like(A, shape = (1, ))
-b_dfb = ttl.make_dataflow_buffer_like(B, shape = (1, ))
-y_dfb = ttl.make_dataflow_buffer_like(Y, shape = (1, ))
-z_dfb = ttl.make_dataflow_buffer_like(Z, shape = (1, ))
+# Shape in tiles (N and M are evenly divisible by TILE_SIZE)
+N_TILES = N // TILE_SIZE
+M_TILES = M // TILE_SIZE
+
+# Shape in blocks (N_TILES is evenly divisible by N_BLOCK_SIZE)
+N_BLOCKS = N_TILES // N_BLOCK_SIZE
+
+a_dfb = ttl.make_dataflow_buffer_like(a, shape = (N_BLOCK_SIZE, M_TILES))
+
+# Tiled DFB shape needs to be at least two-dimensional;
+# When tiled, the vector b of shape (N, 1) is placed in column 0
+# of each tile in a column of N_TILES tiles
+b_dfb = ttl.make_dataflow_buffer_like(b, shape = (N_BLOCK_SIZE, 1))
+# When tiled, the vector c of shape M is placed in row 0
+# of each tile in a row of M_TILES tiles
+c_dfb = ttl.make_dataflow_buffer_like(c, shape = (1, M_TILES))
+# When tiled, the scalar value d of shape () is placed at position (0, 0)
+# of a single tile
+d_dfb = ttl.make_dataflow_buffer_like(d, shape = (1, 1))
+# When untiled, the vector y is formed from column 0
+# of each tile in a column of N_TILES tiles
+y_dfb = ttl.make_dataflow_buffer_like(y, shape = (N_BLOCK_SIZE, 1))
+# When untiled, the vector z is formed from row 0
+# of each tile in a row of M_TILES tiles
+z_dfb = ttl.make_dataflow_buffer_like(z, shape = (1, M_TILES))
 
 @ttl.datamovement()
 def elwise_read():
-    for nt in range(NT):
 
-        # acquire a_blk and b_blk from a_dfb and b_dfb:
+    # Reserve c_blk and d_blk blocks
+    with (
+        c_dfb.reserve() as c_blk,
+        d_dfb.reserve() as d_blk,
+    ):
+        # Load entire (1×M_TILES) of c;
+        # When tiled, the vector c of shape M is placed in row 0
+        # of each tile in a row of M_TILES tiles
+        c_xf = ttl.copy(c[0, :], c_blk)
 
+        # Load entire (1×1) d;
+        # When tiled, the scalar value d of shape () is placed at position (0, 0)
+        # of a single tile
+        d_xf = ttl.copy(d[0, 0], d_blk)
+
+        c_xf.wait()
+        d_xf.wait()
+
+        # End of "with" scope:
+        # Push c_blk and d_blk to make them ready for elwise_compute
+
+    for n_block in range(N_BLOCKS):
+
+        # Reserve a_blk and b_blk blocks
         with (
             a_dfb.reserve() as a_blk,
             b_dfb.reserve() as b_blk,
         ):
-            # then copy:
+            # Load N_BLOCK_SIZE×M_TILES block of a
+            a_xf = ttl.copy(a[n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE, :], a_blk)
 
-            a_xf = ttl.copy(A[nt], a_blk)
-            b_xf = ttl.copy(B[0], b_blk)
+            # Load N_BLOCK_SIZE×1 block of b;
+            # When tiled, the vector b of shape (N, 1) is placed in column 0
+            # of each tile in a column of N_TILES tiles
+            b_xf = ttl.copy(b[n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE, 0], b_blk)
 
             a_xf.wait()
             b_xf.wait()
 
-            # release a_blk and b_blk
+            # End of "with" scope:
+            # Push a_blk and b_blk to make them ready for elwise_compute
 
 @ttl.compute()
 def elwise_compute():
-    for _ in range(NT):
 
-        # acquire a_blk, b_blk, y_blk and z_blk from a_dfb, b_dfb, y_dfb and z_dfb:
+    # Wait for c_blk and d_blk to be loaded and pushed by elwise_read;
+    # Reserve z_blk
+    with (
+        c_dfb.wait() as c_blk,
+        d_dfb.wait() as d_blk,
+        z_dfb.reserve() as z_blk,
+    ):
+        c_squared = c_blk ** 2
+        d_squared = d_blk ** 2
 
-        with (
-            a_dfb.wait() as a_blk,
-            b_dfb.wait() as b_blk,
-            y_dfb.reserve() as y_blk,
-            z_dfb.reserve() as z_blk,
-        ):
-            # then compute y = sqrt(a^2 + b^2) and z = sqrt(a^2 - b^2):
+        # Broadcast c_squared along dimension 0 (first) to get N_BLOCK_SIZE×M_TILES;
+        # This first broadcasts column 0 to fill each of M_TILES tiles
+        # then it broadcasts column of M_TILES tiles to get N_BLOCK_SIZE×M_TILES tiles
+        c_squared_bcast = ttl.math.broadcast(c_squared, dims=[0], shape=(N_BLOCK_SIZE, M_TILES))
 
-            a_squared = a_blk ** 2
-            b_squared = b_blk ** 2
+        # Broadcast d_squared along all dimensions (0 and 1) to N_BLOCK_SIZE×M_TILES;
+        # This first broadcasts single scalar value at position (0, 0) to fill a single tile
+        # then it broadcasts single tile to get N_BLOCK_SIZE×M_TILES tiles
+        d_squared_bcast = ttl.math.broadcast(d_squared, dims=[0, 1], shape=(N_BLOCK_SIZE, M_TILES))
 
-            y = ttl.math.sqrt(a_squared + ttl.math.broadcast(b_squared, y_blk, dims=[0]))
-            z = ttl.math.sqrt(a_squared - ttl.math.broadcast(b_squared, z_blk, dims=[0]))
+        # Zero-initialize the accumulator z before summing N_BLOCKS partial sums
+        z_final = ttl.math.fill(0, shape=(1, M_TILES))
 
-            y_blk.store(y)
-            z_blk.store(z)
+        for _ in range(N_BLOCKS):
 
-            # release a_blk, b_blk and y_blk
+            # Wait for a_blk and b_blk to be loaded and pushed by elwise_read;
+            # Reserve y_blk
+            with (
+                a_dfb.wait() as a_blk,
+                b_dfb.wait() as b_blk,
+                y_dfb.reserve() as y_blk,
+            ):
+                a_squared = a_blk ** 2
+                b_squared = b_blk ** 2
 
+                # Broadcast b_squared along dim -1 (last) to get N_BLOCK_SIZE×M_TILES;
+                # This first broadcasts row 0 to fill each of N_BLOCK_SIZE tiles
+                # then it broadcasts row of N_BLOCK_SIZE tiles to get N_BLOCK_SIZE×M_TILES tiles
+                b_squared_bcast = ttl.math.broadcast(b_squared, dims=[-1], shape=(N_BLOCK_SIZE, M_TILES))
+
+                # Perform elementwise math on N_BLOCK_SIZE×M_TILES tiles
+                expanded_y = ttl.math.sqrt(a_squared + b_squared_bcast + c_squared_bcast + d_squared_bcast)
+                expanded_z = ttl.math.sqrt(a_squared - b_squared_bcast - c_squared_bcast - d_squared_bcast)
+
+                # Reduce expanded_y along dim -1 (last) to get N_BLOCK_SIZE×1 row of tiles
+                y_final = ttl.math.reduce_sum(expanded_y, dims=[-1], shape=(N_BLOCK_SIZE, 1))
+
+                # Reduce expanded_z along dim 0 (first) to get 1×M_TILES column of tiles;
+                z_partial = ttl.math.reduce_sum(expanded_z, dims=[0], shape=(1, M_TILES))
+
+                # Store y_final
+                y_blk.store(y_final)
+
+                # Accumulate-add partial z_final
+                z_final += z_partial
+
+                # End of "with" scope:
+                # Pop a_blk and b_dfb to make them available for elwise_read to load and push next blocks;
+                # Push y_blk to make it ready for elwise_write
+
+        # Store z_final
+        z_blk.store(z_final)
+
+        # End of "with" scope:
+        # Pop c_blk and d_blk;
+        # Push z_blk to make it ready for elwise_write
 
 @ttl.datamovement()
 def elwise_write():
-    for nt in range(NT):
 
-        # acquire y_blk and z_blk from y_dfb and z_dfb:
+    # Wait for elwise_compute to store and push z_blk
+    with z_dfb.wait() as z_blk:
 
-        with (
-            y_dfb.wait() as y_blk,
-            z_dfb.wait() as z_blk,
-        ):
+        # Store entire (1xM_TILES) of z;
+        # When untiled, the vector z is formed from row 0
+        # of each tile in a row of M_TILES tiles
+        z_xf = ttl.copy(z_blk, z[0, :])
+        z_xf.wait()
 
-            # then copy:
+        # End of "with" scope:
+        # Pop z_blk
 
-            y_xf = ttl.copy(y_blk, Y[nt])
-            z_xf = ttl.copy(z_blk, Z[nt])
+    for n_block in range(N_BLOCKS):
+        n_slice = slice(n_block * N_BLOCK_SIZE, (n_block + 1) * N_BLOCK_SIZE)
+
+        # Wait for elwise_compute to store and push y_blk
+        with y_dfb.wait() as y_blk:
+
+            # Store N_BLOCK_SIZExM_TILES of y;
+            # When untiled, the vector y is formed from column 0
+            # of each tile in a column of N_TILES tiles
+            y_xf = ttl.copy(y_blk, y[n_slice, :])
             y_xf.wait()
-            z_xf.wait()
 
-            # release y_blk and z_blk
+            # End of "with" scope:
+            # Pop y_blk to make it available for elwise_compute to store and push next block
+
 ```
 
-#### Matmul example
+#### Batched matrix multiplication with bias example
 
 ```py
 # ---------------------
-# Matmul with bias: Y = A @ B + C
+# Batched matrix multiplication with bias:
 #
-# Tensor   Torch shape  Shape in tiles
-# A        I, M, K      IT, MT, KT
-# B        K, N         KT, NT
-# C        M, N         MT, NT
-# Y        I, M, N      IT, MT, NT
+# y[i, m, n] = ∑(a[i, m, k] * b[k, n]) + c[m, n]
+#              k
 #
-# IT = I // TILE_SIZE
-# MT = M // TILE_SIZE
-# NT = N // TILE_SIZE
-# KT = K // TILE_SIZE
+# Tensor   Torch shape   Note
+# a        I, M, K       Batched a matrix (e.g. input activations)
+# b        K, N          Non-batched b matrix (e.g. weights)
+# c        M, N          Non-batched bias matrix c (e.g. weights)
+# y        I, M, N       Batched y matrix (e.g. output activations)
+#
+# All tensors have tiled layout
 
-a_dfb = ttl.make_dataflow_buffer_like(A, shape = (1, 1, 1))
-b_dfb = ttl.make_dataflow_buffer_like(B, shape = (1, 1))
-c_dfb = ttl.make_dataflow_buffer_like(C, shape = (1, 1))
-y_dfb = ttl.make_dataflow_buffer_like(Y, shape = (1, 1, 1))
+# Shape in tiles (I, M, N and K are evenly divisible by TILE_SIZE)
+I_TILES = I // TILE_SIZE
+M_TILES = M // TILE_SIZE
+N_TILES = N // TILE_SIZE
+K_TILES = K // TILE_SIZE
+
+# Shape in blocks (I_TILES, M_TILES, N_TILES and K_TILES are evenly
+# divisible by I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE and K_BLOCK_SIZE)
+I_BLOCKS = I_TILES // I_BLOCK_SIZE
+M_BLOCKS = M_TILES // M_BLOCK_SIZE
+N_BLOCKS = N_TILES // N_BLOCK_SIZE
+K_BLOCKS = K_TILES // K_BLOCK_SIZE
+
+a_dfb = ttl.make_dataflow_buffer_like(a, shape = (I_BLOCK_SIZE, M_BLOCK_SIZE, K_BLOCK_SIZE))
+b_dfb = ttl.make_dataflow_buffer_like(b, shape = (K_BLOCK_SIZE, N_BLOCK_SIZE))
+c_dfb = ttl.make_dataflow_buffer_like(c, shape = (M_BLOCK_SIZE, N_BLOCK_SIZE))
+y_dfb = ttl.make_dataflow_buffer_like(y, shape = (I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
 
 @ttl.datamovement()
 def matmul_read():
-    for it in range(IT):
-        for mt in range(MT):
-            for nt in range(NT):
+    for i_block in range(I_BLOCKS):
+        i_slice = slice(i_block * I_BLOCK_SIZE, (i_block + 1) * I_BLOCK_SIZE)
 
-                # acquire c_blk from c_dfb:
+        for m_block in range(M_BLOCKS):
+            m_slice = slice(m_block * M_BLOCK_SIZE, (m_block + 1) * M_BLOCK_SIZE)
 
+            for n_block in range(N_BLOCKS):
+                n_slice = slice(n_block * N_BLOCK_SIZE, (n_block + 1) * N_BLOCK_SIZE)
+
+                # Reserve c_blk
                 with c_dfb.reserve() as c_blk:
 
-                    # then copy:
-
-                    c_xf = ttl.copy(C[mt, nt], c_blk)
+                    # Load M_BLOCK_SIZE×N_BLOCK_SIZE block of c into c_blk
+                    c_xf = ttl.copy(c[m_slice, n_slice], c_blk)
                     c_xf.wait()
 
-                    # release c_blk
+                    # End of "with" scope:
+                    # Push c_blk to make it ready for matmul_compute
 
-                for kt in range(KT):
+                # Repeat for each K block
+                for k_block in range(K_BLOCKS):
+                    k_slice = slice(k_block * K_BLOCK_SIZE, (k_block + 1) * K_BLOCK_SIZE)
 
-                    # acquire a_blk and b_blk from a_dfb and b_dfb:
-
+                    # Reserve a_blk and b_blk
                     with (
                         a_dfb.reserve() as a_blk,
                         b_dfb.reserve() as b_blk,
                     ):
-                        # then copy:
-
-                        a_xf = ttl.copy(A[it, mt, kt], a_blk)
-                        b_xf = ttl.copy(B[kt, nt], b_blk)
+                        # Load I_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE of a into a_blk
+                        # and K_BLOCK_SIZE×N_BLOCK_SIZE of b into b_blk
+                        a_xf = ttl.copy(a[i_slice, m_slice, k_slice], a_blk)
+                        b_xf = ttl.copy(b[k_slice, n_slice], b_blk)
 
                         a_xf.wait()
                         b_xf.wait()
 
-                        # release a_blk and b_blk
+                        # End of "with" scope:
+                        # Push a_blk and b_blk to make it ready for matmul_compute
 
 @ttl.compute()
 def matmul_compute():
-    for _ in range(IT):
-        for _ in range(MT):
-            for _ in range(NT):
+    for _ in range(I_BLOCKS):
+        for _ in range(M_BLOCKS):
+            for _ in range(N_BLOCKS):
 
-                # acquire y_blk from y_dfb:
-
+                # Reserve y_blk
                 with y_dfb.reserve() as y_blk:
 
-                    # acquire c_blk from c_dfb:
+                    # Zero-initialize the accumulator y_final before summing K_BLOCKS partial products
+                    y_final = ttl.math.fill(0, shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
 
-                    y = ttl.math.fill(y_blk, 0)
+                    # Repeat for each K block
+                    for _ in range(K_BLOCKS):
 
-                    for _ in range(KT):
-
-                        # acquire a_blk and b_blk from a_dfb and b_dfb:
-
+                        # Wait for a_blk and b_blk to be loaded and pushed by matmul_read
                         with (
                             a_dfb.wait() as a_blk,
                             b_dfb.wait() as b_blk,
                         ):
+                            # b_blk has shape K_BLOCK_SIZE×N_BLOCK_SIZE;
+                            # Unsqueeze it to 1×K_BLOCK_SIZE×N_BLOCK_SIZE and then
+                            # broadcast it over dim 0 to I_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE
+                            b_bcast = ttl.math.broadcast(ttl.math.unsqueeze(b_blk, dims=[0]), dims=[0], shape=(I_BLOCK_SIZE, K_BLOCK_SIZE, N_BLOCK_SIZE))
 
-                            y += a_blk @ b_blk
+                            # Accumulate dot product between I_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE a_blk and
+                            # I_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE b_bcast in y_final
+                            y_final += a_blk @ b_bcast
 
-                            # release a_blk and b_blk
+                            # End of "with" scope:
+                            # Pop a_blk and b_blk to make them available for matmul_read to load and push next blocks
 
+                    # Wait for c_blk to be loaded and pushed by matmul_read
                     with c_dfb.wait() as c_blk:
 
-                        y = y + c_blk
+                        # c_blk has shape M_BLOCK_SIZE×N_BLOCK_SIZE;
+                        # Unsqueeze it to 1×M_BLOCK_SIZE×N_BLOCK_SIZE and then
+                        # broadcast it over dim 0 to I_BLOCK_SIZE×M_BLOCK_SIZE×N_BLOCK_SIZE
+                        c_bcast = ttl.math.broadcast(ttl.math.unsqueeze(c_blk, dims=[0]), dims=[0], shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
 
-                        # release c_blk
+                        y_final = y_final + c_bcast
 
-                    y_blk.store(y)
+                        # End of "with" scope:
+                        # Pop c_blk to make it available for matmul_read to load and push next block
 
-                    # release y_blk
+                    y_blk.store(y_final)
+
+                    # End of "with" scope:
+                    # Push y_blk to make it ready for matmul_write
 
 @ttl.datamovement()
 def matmul_write():
-    for it in range(IT):
-        for mt in range(MT):
-            for nt in range(NT):
+    for i_block in range(I_BLOCKS):
+        for m_block in range(M_BLOCKS):
+            for n_block in range(N_BLOCKS):
 
-                # acquire y_blk from y_dfb:
-
+                # Wait for matmul_compute to store and push y_blk
                 with y_dfb.wait() as y_blk:
 
-                    # then copy:
-
-                    y_xf = ttl.copy(y_blk, Y[it, mt, nt])
+                    # Store I_BLOCK_SIZE×M_BLOCK_SIZE×N_BLOCK_SIZE y_blk block into y
+                    y_xf = ttl.copy(y_blk, y[
+                        i_block * I_BLOCK_SIZE : (i_block + 1) * I_BLOCK_SIZE,
+                        m_block * M_BLOCK_SIZE : (m_block + 1) * M_BLOCK_SIZE,
+                        n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE])
                     y_xf.wait()
 
-                    # release y_blk
+                    # End of "with" scope:
+                    # Pop y_blk to make it available for matmul_compute to store and push next block
 ```
 
 | Function | Description |
 | :---- | :---- |
 | `ttl.Block.store(self, expr: ttl.BlockExpr)` | This function materializes the result of a *block expression* and stores it in the block. Block expression uses Python builtin math operators and `ttl.math.xxx` functions on block expression. **This function is blocking** so that block is safe to use immediately after the call. |
-| `ttl.BlockExpr.__pow__(self, exponent: ttl.NaturalInt) -> ttl.BlockExpr` | Example of Python built-in operator. See full list in [Appendix B. Block operators and math functions](#appendix-b-block-operators-and-math-functions). |
-| `ttl.BlockExpr.__add__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | 〃 |
-| `ttl.BlockExpr.__iadd__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | 〃 |
-| `ttl.math.sqrt(expr: ttl.BlockExpr) -> ttl.BlockExpr` | 〃 |
-| `ttl.math.fill(value: float) -> ttl.BlockExpr` | 〃 |
-| `ttl.BlockExpr.__matmul__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | 〃 |
+
+For `ttl.math` functions and block operators see [Appendix B](#appendix-b-block-operators-and-math-functions).
 
 ![ttl.Block diagram](ttl-block.png)
 
@@ -648,7 +840,7 @@ def dm():
             # write data into blk_to_send
             # ...
 
-            # then copy blk to blk_to_send:
+            # then copy blk_to_send to pipe:
 
             xf = ttl.copy(blk_to_send, pipe)
             xf.wait()
@@ -676,7 +868,7 @@ A *tensor slice* is a view into a TT-NN tensor defined in terms of a dimension s
 | :---- | :---- |
 | `ttnn.Tensor.__getitem__(self, *index: ttl.Index \| slice) -> ttl.TensorSlice` | Get a tensor slice from a TT-NN tensor. |
 
-#### Example
+#### Tensor slice example
 
 ```py
 g = 2 # granularity
@@ -718,7 +910,7 @@ The `ttl.copy` function expresses a variety of data movements that always have t
 
 When `ttl.copy` function is called multiple times, instead of waiting on each transfer handle, it is possible to group handles and wait on all handles at once. This is done by instantiating `ttl.GroupTransfer` object and then adding handles with its `add` function. Once all handles are added `wait_all` function is called to wait for all transfers to complete.
 
-#### Example
+#### Group transfer example
 
 ```py
 # ---------------------
@@ -728,8 +920,10 @@ When `ttl.copy` function is called multiple times, instead of waiting on each tr
 # input_images        N, HI, WI, C
 # output_images       N, HO, WO, C
 #
-# HO = HI * scale_factor[0]
-# WO = WI * scale_factor[1]
+# All tensors have row-major layout
+
+HO = HI * H_SCALE_FACTOR
+WO = WI * W_SCALE_FACTOR
 
 io_dfb = ttl.make_dataflow_buffer_like(
     input_images, shape=(C,), block_count=2
@@ -742,7 +936,7 @@ def reader():
             for wi in range(WI):
                 with io_dfb.reserve() as io_blk:
 
-                    # Copy input pixel channels
+                    # Load input pixel channels
 
                     xf = ttl.copy(input_t[n, hi, wi, :], io_blk)
 
@@ -756,12 +950,12 @@ def writer():
                 with io_dfb.wait() as io_blk:
                     gxf = ttl.GroupTransfer()
 
-                    for h_sf in range(scale_factor[0]):
-                        for w_sf in range(scale_factor[1]):
+                    for h_scale_index in range(H_SCALE_FACTOR):
+                        for w_scale_index in range(W_SCALE_FACTOR):
 
                             # Copy output pixel channels
 
-                            xf = ttl.copy(io_blk, output[n, hi * scale_factor[0] + h_sf, wi * scale_factor[1] + w_sf, :])
+                            xf = ttl.copy(io_blk, output[n, hi * H_SCALE_FACTOR + h_scale_index, wi * W_SCALE_FACTOR + w_scale_index, :])
 
                             # Add transfer handle to a group
 
@@ -849,14 +1043,14 @@ TT-Lang provides a range for facilities to aid performance analisys and debuggin
 
 Profiling signpost is a language construct that allows the user to specify a block of code that will be measured for performance during the program execution. This is achieved by using Python `with` statement in conjunction with `ttl.signpost` function. This function takes a string argument for a signpost name. This way the signpost will be identified in the profiling tool's user interface.
 
-#### Example
+#### Signpost example
 
 ```py
 @ttl.datamovement()
 def matmul_read():
-    for it in range(IT):
-        for mt in range(MT):
-            for nt in range(NT):
+    for i_tile in range(I_TILES):
+        for m_tile in range(M_TILES):
+            for n_tile in range(N_TILES):
 
                 # Measure the entire iteration
 
@@ -870,10 +1064,10 @@ def matmul_read():
                             # Measure only copy
 
                             with ttl.signpost("read c"):
-                                c_xf = ttl.copy(C[mt, nt], c_blk)
+                                c_xf = ttl.copy(c[m_tile, n_tile], c_blk)
                                 c_xf.wait()
 
-                    for kt in range(KT):
+                    for k_tile in range(K_TILES):
                         with ttl.signpost("push a and b"):
 
                             # Measure from reserve to push
@@ -886,8 +1080,8 @@ def matmul_read():
                                 # Measure only copy
 
                                 with ttl.signpost("read a and b"):
-                                    a_xf = ttl.copy(A[it, mt, kt], a_blk)
-                                    b_xf = ttl.copy(B[kt, nt], b_blk)
+                                    a_xf = ttl.copy(a[i_tile, m_tile, k_tile], a_blk)
+                                    b_xf = ttl.copy(b[k_tile, n_tile], b_blk)
 
                                     a_xf.wait()
                                     b_xf.wait()
@@ -902,23 +1096,23 @@ def matmul_read():
 
 TT-Lang includes ability to print information to the standard output for debugging purpose. This is achieved by using the standard Python `print` function. In TT-Lang this function can be used with string constants, scalar variables, such as loop indexes or calculated slice bounds, as well as with TT-Lang specific objects, such as tensors and blocks. When `print` is used with TT-Lang objects there are additional attribute arguments, which enabling better control of the output content. Beacause of this, `print` is limited to only one TT-Lang object to be printed in conjunction any number of string and scalar variables.
 
-#### Example
+#### Debug printing example
 
 ```py
 @ttl.datamovement()
 def matmul_read():
-    # Print first two pages of C
+    # Print first two pages of c
 
-    print("C: ", C, num_pages=2)
+    print("c: ", c, num_pages=2)
 
-    # Print first page of A and B
+    # Print first page of a and b
 
-    print("A: ", A)
-    print("B: ", B)
+    print("a: ", a)
+    print("b: ", b)
 
-    for it in range(IT):
-        for mt in range(MT):
-            for nt in range(NT):
+    for i_tile in range(I_TILES):
+        for m_tile in range(M_TILES):
+            for n_tile in range(N_TILES):
                 with c_dfb.reserve() as c_blk:
 
                     # Print state of c_dfb dataflow buffer after reserve
@@ -927,23 +1121,23 @@ def matmul_read():
 
                     # Print iteration state and the content of c_blk block
 
-                    print("it=", it, " mt=", mt, "nt=", nt, " c_blk: ", c_blk)
+                    print("i_tile=", i_tile, " m_tile=", m_tile, "n_tile=", n_tile, " c_blk: ", c_blk)
 
-                    c_xf = ttl.copy(C[mt, nt], c_blk)
+                    c_xf = ttl.copy(c[m_tile, n_tile], c_blk)
                     c_xf.wait()
 
                 # Print state of c_dfb dataflow buffer after push
 
                 print("c_dfb after push: ", c_dfb)
 
-                for kt in range(KT):
+                for k_tile in range(K_TILES):
                     with (
                         a_dfb.reserve() as a_blk,
                         b_dfb.reserve() as b_blk,
                     ):
                         # Print iteration state
 
-                        print("kt=", kt)
+                        print("k_tile=", k_tile)
 
                         # Print the content of a_blk block
 
@@ -955,8 +1149,8 @@ def matmul_read():
                         print("b_blk:")
                         print(b_blk)
 
-                        a_xf = ttl.copy(A[it, mt, kt], a_blk)
-                        b_xf = ttl.copy(B[kt, nt], b_blk)
+                        a_xf = ttl.copy(a[i_tile, m_tile, k_tile], a_blk)
+                        b_xf = ttl.copy(b[k_tile, n_tile], b_blk)
 
                         a_xf.wait()
                         b_xf.wait()
@@ -984,8 +1178,8 @@ def matmul_read():
 | *Node coordinates* | Coordinates of a given node within a grid. Each dimension is zero based and contiguous, which corresponds to logical indexing. |
 | *Dataflow buffer* | A communication primitive for synchronizing the passing of data between kernels on the same node. Maintains memory space that is written by a producer and read by a consumer as well as synchronization mechanism necessary to communicate between producer and consumer to avoid data races. |
 | *Dataflow buffer’s shape* | A shape of a block of memory acquired from a dataflow buffer to be either written by the producer or read by the consumer. |
-| *Dataflow buffer’s shape unit* | A unit in which dataflow buffer shape is expressed. When a dataflow buffer is created in likeness of tiled TT-NN Tensor the unit is a tile. If it is created in likeness of row-major TT-NN the unit is a scalar. |
-| *Dataflow buffer’s block count* | A block count determines how many block sized pages are allocated by the dataflow buffer. In the most case it is 2 pages to allow double buffering so that both consumer and producer can make progress by having one acquired block each to work with. |
+| *Dataflow buffer’s shape unit* | A unit in which dataflow buffer shape is expressed. When a dataflow buffer is created in likeness of tiled TT-NN Tensor the unit is a tile. If it is created in likeness of row-major TT-NN the unit is a scalar element. |
+| *Dataflow buffer’s block count* | A block count determines how many blocks are allocated by the dataflow buffer. In the most common case it is 2 blocks to allow double buffering so that both consumer and producer can make progress by having one acquired block each to work with. |
 | *Dataflow buffer’s acquisition function* | A blocking function that keeps a kernel waiting until a block becomes available in the dataflow buffer. |
 | *Dataflow buffer’s release function* | A non-blocking function that releases a block back to the dataflow buffer to make it available to other kernels. |
 | *Block* | A block of memory acquired from a dataflow buffer. In a compute kernel a block can participate in an expression as input, and also be used to store the expression's result. In a data movement kernel a block can participate in copy operation as a source or destination. |
@@ -1009,7 +1203,7 @@ def matmul_read():
 | `ttl.BlockExpr.__sub__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | Two blocks subtracted second from first element-wise. Example: `a - b`. |
 | `ttl.BlockExpr.__mul__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | Multiply two blocks element-wise. Example: `a * b`. |
 | `ttl.BlockExpr.__truediv__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | Two blocks divided first by second element-wise. Example: `a / b`. |
-| `ttl.BlockExpr.__matmul__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | Dot product of two blocks. If `a` has shape `[M, K]` and `b` has shape `[K, N]` then the result will have shape `[M, N]`. Example: `a @ b`. |
+| `ttl.BlockExpr.__matmul__(self, other: ttl.BlockExpr) -> ttl.BlockExpr` | Dot product of two blocks. If `a` has shape `[I0, I1, ...M, K]` and `b` has shape `[I0, I1, ...K, N]` then the result will have the shape `[I0, I1, ...M, N]` where `I0`, `I1`, etc are optional outer dimensions. Example: `a @ b`. |
 | `ttl.math.max(a: ttl.BlockExpr, b: ttl.BlockExpr) -> ttl.BlockExpr` | Element-wise maximum |
 | `ttl.math.min(a: ttl.BlockExpr, b: ttl.BlockExpr) -> ttl.BlockExpr` | Element-wise minimum |
 
@@ -1075,10 +1269,10 @@ def matmul_read():
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.math.reduce_sum(expr: ttl.BlockExpr, scaler: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Scaled sum reduction over specified dimensions.<br><br>Example for reduction over dimension -1 (innermost): `y.store(ttl.math.reduce_sum(a, s, dims=[-1]))`. Here if `a` has shape of `(N, M)` then `y` must have shape of `(N, 1)`, and if `a` has shape of `(I, N, M)` then `y` must have shape of `(I, N, 1)`, and so on.<br><br>Example for reduction over dimension 1 (next to outermost): `y.store(ttl.math.reduce_max(a, s, dims=[1]))`. Here if `a` has shape of `(N, M)` then `y` must have shape of `(N, 1)`, and if `a` has shape of `(I, N, M)` then `y` must have shape of `(I, 1, M)`, and so on.<br><br>Example for reduction over two innermost dimensions: `y.store(ttl.math.reduce_sum(a, s, dims=[-1, -2]))`. Here if `a` has shape of `(N, M)` then `y` must have shape of `(1, 1)`, and if `a` has shape of `(I, N, M)` then `y` must have shape of `(I, 1, 1)`, and so on. |
-| `ttl.math.reduce_max(expr: ttl.BlockExpr, scaler: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Scaled maximum reduction over specified dimensions.  See examples for `ttl.math.reduce_sum`. |
-| `ttl.math.broadcast(expr: ttl.BlockExpr, out_blk: ttl.Block, dims: List[int]) -> ttl.BlockExpr` | Broadcast a block over specified dimensions. Produces block with shape expanded to be compatible with `out_blk`[^1].<br><br>Example for broadcast over dimension -1  (innermost): `y.store(ttl.math.broadcast(a, y, dims=[-1]))`. Here the `store` is the outer expression and therefore if `y` has shape of `(N, M)` then `a` must have shape of `(N, 1)`, and if `y` has shape of `(I, N, M)` then `a` must have shape of `(I, N, 1)`, and so on.<br><br>Example for broadcast over dimension 1 (next to outermost): `y.store(b * ttl.math.broadcast(a, y, dims=[1]))`. Here the `*` is the outer expression and therefore if `b` has shape of `(N, M)` then `a` must have shape of `(N, 1)`, and if `b` has shape of `(I, N, M)` then `a` must have shape of `(I, 1, M)`, and so on.<br><br>Example for broadcast over two innermost dimensions: `y.store(b + ttl.math.broadcast(a, y, dims=[-1, -2]))`. Here the `+` is the outer expression, but because the broadcast is on `dims=[-1, -2]` if `b` has shape of `(N, M)` then `a` must have shape of `(1, 1)`, and if `b` has shape of `(I, N, M)` then `a` must have shape of `(I, 1, 1)`, and so on. |
-| `ttl.math.transpose(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Transpose a block. For argument block of shape `(M, N)` produces resulting block with shape `(N, M)`. Supported only for 2-dimensional blocks. |
+| `ttl.math.reduce_sum(expr: ttl.BlockExpr, dims: List[int], shape: ttl.Shape) -> ttl.BlockExpr` | Reduce a block by summation over specified dimensions. Produces block of specified `shape`. Input expression must have the same number of dimensions as `shape`. The `shape` must contain 1 in dimensions specified for reduction.<br><br>For tiled blocks reduction happens in two steps: (1) whole tiles get elementwise reduced along specified dimensions, but only for dimensions where the corresponding `shape` dimension is >1.; (2) scalar values within tiles get reduced along specified dimensions, but only if reduction specifies one or both of last (innermost) dimensions; <br><br>For row-major blocks reduction is not supported.<br><br>Example for reduction over dimension -1 (innermost): `ttl.math.reduce_sum(a, dims=[-1], shape=(N, 1))`. Here if `a` has shape of `(N, M)` then the result will have the shape of `(N, 1)`. In step (1) M rows of tiles in `a` are elementwise reduced to a single row of tiles. In step (2) each tile has all of its rows reduced to row 0.<br><br>Example for reduction over dimension 0 (outermost): `ttl.math.reduce_max(a, dims=[0], shape=(1, M))`. Here if `a` has shape of `(N, M)` then the result will have the shape of `(N, 1)`. In step (1) N columns of tiles in `a` are elementwise reduced to a single column of tiles. In step (2) each tile has all of its columns reduced to column 0.<br><br>Example for reduction over two innermost dimensions: `ttl.math.reduce_sum(a, dims=[-1, -2], shape=(1, 1))`. Here if `a` has shape of `(N, M)` then the result will have the shape of `(1, 1)`.  In step (1) M rows and N columns of tiles in `a` are elementwise reduced to a single tiles. In step (2) a tile has all of its scalar values reduced to a value in position (0, 0). |
+| `ttl.math.reduce_max(expr: ttl.BlockExpr, dims: List[int], shape: ttl.Shape) -> ttl.BlockExpr` | Reduce a block by finding maximum over specified dimensions. See details and examples for `ttl.math.reduce_sum`. |
+| `ttl.math.broadcast(expr: ttl.BlockExpr, dims: List[int], shape: ttl.Shape) -> ttl.BlockExpr` | Broadcast a block over specified dimensions (`dims`). Produces block of specified `shape`. Input expression must have the same number of dimensions as `shape`. Shape of `expr` must contain 1 in dimensions specified for broadcast.<br><br>For tiled blocks broadcast happens in two steps: (1) scalar values within tiles get broadcasted along specified dimensions, but only if broadcast specifies one or both of last (innermost) dimensions; (2) whole tiles get broadcasted along specified dimensions, but only for dimensions where the corresponding `shape` dimension is >1.<br><br>For row-major blocks broadcast is not supported.<br><br>Example for broadcast over dimension -1  (innermost): `ttl.math.broadcast(a, dims=[-1], shape=(N, M))`. Here the shape of the result is `(N, M)` and therefore `a` must have the shape of `(N, 1)`. In step (1) each tile in `a` has its row 0 broadcasted over the rest of rows. In step (2) whole row of tiles is broadcasted M times.<br><br>Example for broadcast over dimension 0 (outermost): `ttl.math.broadcast(a, dims=[0], shape=(N, M))`. Here the shape of the result is `(N, M)` and therefore `a` must have the shape of `(1, M)`. In step (1) each tile in `a` has its column 0 broadcasted over the rest of columns. In step (2) whole column of tiles is broadcasted N times.<br><br>Example for broadcast over two innermost dimensions: `ttl.math.broadcast(a, dims=[-1, -2], shape=(N, M))`. Here the shape of the result is `(N, M)` and therefore  `a` must have the shape of `(1, 1)`. In step (1) each tile in `a` has a scalar value in the position (0, 0) broadcasted over the rest positions. In step (2) whole tile is broadcasted N times column-wise and M times row-wise. |
+| `ttl.math.transpose(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Transpose a block. For argument block of shape `(M, N)` produces resulting block with shape `(N, M)`. Supported only for two-dimensional blocks. |
 
 ### Rounding functions
 
@@ -1098,11 +1292,17 @@ def matmul_read():
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.math.fill(out_blk: ttl.Block, value: float) -> ttl.BlockExpr` | Fill a block with shape expanded to be compatible with `out_blk`[^1] with specified `value`. |
+| `ttl.math.fill(value: float, shape: ttl.Shape) -> ttl.BlockExpr` | Fill a block of specified `shape` with specified `value`. |
 | `ttl.math.mask(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with 0. |
 | `ttl.math.mask_posinf(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with positive infinity. |
 | `ttl.math.where(condition: ttl.BlockExpr, true_value: ttl.BlockExpr, false_value: ttl.BlockExpr) -> ttl.BlockExpr` | For each element in specified condition block return the corresponding element from `true_value` if true (condition element equals to 1) or the element from `false_value` if false (condition element equals to 0) |
 
+### Shape manipulation functions
+
+| Function | Description |
+| :---- | :---- |
+| `ttl.math.squeeze(expr: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Remove shape dimension at positions specified by `dims`. Removed shape dimension must be 1.<br><br>Example for squeeze over dimensions 0 (outermost) and 2: `ttl.math.squeeze(a, dims=[0, 2])`. Here if the shape of `a` is `(1, N, 1, M)` the shape of the result will be `(N, M)`.<br><br>Example for squeeze over dimensions -1 (innermost) and -3: `ttl.math.squeeze(a, dim=[-1, -3])`. Here if the shape of `a` is `(N, 1, M, 1)` the shape of the result will be `(N, M)`. |
+| `ttl.math.unsqueeze(expr: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Add shape dimension of 1 at positions specified by `dims`. Position values in `dims` refer to a position in the resulting shape. <br><br>Example for unsqueeze over dimensions 0 (outermost) and 2: `ttl.math.unsqueeze(a, dims=[0, 2])`. Here if the shape of `a` is `(N, M)` the shape of the result will be `(1, N, 1, M)`.<br><br>Example for unsqueeze over dimensions -1 (innermost) and -3: `ttl.math.unsqueeze(a, dims=[-1, -3])`. Here if the shape of `a` is `(N, M)` the shape of the result will be `(N, 1, M, 1)`. |
 
 ## Appendix C. Naming guidelines
 
@@ -1124,9 +1324,8 @@ def matmul_read():
 | Multidevice grid `ttl.grid_size` and `ttl.node` | N/S | N/S |
 | [TT-NN Mesh Devices](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/Programming_Mesh_of_Devices/Programming_Mesh_of_Devices_with_TT-NN.md) | 0.1.8 | 0.1.8 |
 | [TT-NN L1 Sharded Tensors](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/tensor_sharding/tensor_sharding.md) | 0.1.8 | 0.1.8 |
-| `ttl.make_dataflow_buffer_like` with 2D+ `shape` | 0.1.7 | 0.1.7 |
-| `ttl.make_dataflow_buffer_like` with any `shape` | 0.1.7 | N/S |
-| `ttl.make_dataflow_buffer_like` for tilized tensors | 0.1.7 | 0.1.7 |
+| `ttl.make_dataflow_buffer_like` with higher than two-dimensional `shape` | 0.1.7 | 0.1.7 |
+| `ttl.make_dataflow_buffer_like` for tiled tensors | 0.1.7 | 0.1.7 |
 | `ttl.make_dataflow_buffer_like` for row-major tensors | 0.1.8 | N/S |
 | `ttl.Block.store` | 0.1.7 | 0.1.7 |
 | Overwriting and accumulation through summation (`+=`) for block expressions | 0.1.7 | 1.0.0 |
@@ -1163,7 +1362,7 @@ def matmul_read():
 
 | Description | Wormhole | Blackhole |
 | :---- | :---- | :---- |
-| Tile size in scalars | 32, 32 | 32, 32 |
+| Tile size in scalar elements | 32, 32 | 32, 32 |
 | Maximum single chip grid size (unharvested) | 8, 9 | 13, 10 |
 | Size of L1 memory (KB) | 1464 | 1464 |
 | Maximum number of dataflow buffers | 32 | 32 |
