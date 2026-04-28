@@ -52,19 +52,21 @@ static bool isBefore(Operation *a, Operation *b) {
   return a->isBeforeInBlock(b);
 }
 
-/// Find releases on `cb` at or after `acquire` in the acquire's block.
+/// Find releases on `cb` at or after `acquire` and before `boundary`.
 /// Same-level releases are "matching" (the acquire is already handled).
 /// Nested releases are collected into `toHoist` for erasure.
 template <typename ReleaseOpTy>
 static bool findReleases(Value cb, Operation *acquire,
                          const SmallVectorImpl<ReleaseOpTy> &allReleases,
                          SmallVectorImpl<ReleaseOpTy> &toHoist,
-                         const DenseSet<Operation *> &erased) {
+                         const DenseSet<Operation *> &erased,
+                         Operation *boundary) {
   Block *block = acquire->getBlock();
   bool hasSameLevelRelease = false;
 
   for (auto release : allReleases) {
-    if (erased.contains(release)) {
+    Operation *releaseOp = release.getOperation();
+    if (erased.contains(releaseOp)) {
       continue;
     }
     if (release.getCb() != cb) {
@@ -72,8 +74,11 @@ static bool findReleases(Value cb, Operation *acquire,
     }
 
     // Same-level: release is directly in the acquire's block.
-    if (release->getBlock() == block) {
-      if (!isBefore(acquire, release)) {
+    if (releaseOp->getBlock() == block) {
+      if (!isBefore(acquire, releaseOp)) {
+        continue;
+      }
+      if (boundary && !isBefore(releaseOp, boundary)) {
         continue;
       }
       hasSameLevelRelease = true;
@@ -81,17 +86,49 @@ static bool findReleases(Value cb, Operation *acquire,
     }
 
     // Nested: release is inside a structured op in the acquire's block.
-    Operation *ancestor = block->findAncestorOpInBlock(*release);
+    Operation *ancestor = block->findAncestorOpInBlock(*releaseOp);
     if (!ancestor) {
       continue;
     }
     if (!isBefore(acquire, ancestor)) {
       continue;
     }
+    if (boundary && !isBefore(ancestor, boundary)) {
+      continue;
+    }
     toHoist.push_back(release);
   }
 
   return hasSameLevelRelease;
+}
+
+/// Return the next same-kind acquire on this DFB, projected into
+/// `acquire`'s block.
+template <typename AcquireOpTy>
+static Operation *findNextSameKindAcquire(Value cb, Operation *acquire,
+                                          ArrayRef<AcquireOpTy> acquires) {
+  Block *block = acquire->getBlock();
+  Operation *boundary = nullptr;
+  for (auto other : acquires) {
+    Operation *otherOp = other.getOperation();
+    if (otherOp == acquire) {
+      continue;
+    }
+    if (other.getCb() != cb) {
+      continue;
+    }
+    Operation *ancestor = block->findAncestorOpInBlock(*otherOp);
+    if (!ancestor || ancestor == acquire) {
+      continue;
+    }
+    if (!isBefore(acquire, ancestor)) {
+      continue;
+    }
+    if (!boundary || isBefore(ancestor, boundary)) {
+      boundary = ancestor;
+    }
+  }
+  return boundary;
 }
 
 /// Live-interval endpoint for the slot of `acquire`: the last op in
@@ -112,9 +149,12 @@ static bool findReleases(Value cb, Operation *acquire,
 /// Uses in descendant regions project up to their ancestor in the
 /// acquire's block.
 ///
+/// `boundary` excludes uses owned by a later same-DFB acquire interval.
+///
 /// Returns `acquire` itself when no tensor users exist; callers treat
 /// that as "insert the release immediately after the acquire".
-static Operation *findLastTensorUse(Value cb, Operation *acquire) {
+static Operation *findLastTensorUse(Value cb, Operation *acquire,
+                                    Operation *boundary) {
   Operation *last = acquire;
   Block *block = acquire->getBlock();
   DenseSet<Operation *> visited;
@@ -126,6 +166,9 @@ static Operation *findLastTensorUse(Value cb, Operation *acquire) {
     }
     Operation *ancestor = block->findAncestorOpInBlock(*user);
     if (!ancestor) {
+      return;
+    }
+    if (boundary && !isBefore(ancestor, boundary)) {
       return;
     }
     if (isBefore(last, ancestor)) {
@@ -195,15 +238,19 @@ struct TTLInsertCBSyncPass
     // check `erased.contains(...)` before touching any op wrapper method.
     DenseSet<Operation *> erased;
 
-    auto insertMissingReleases = [&](auto acquires, auto &releases,
+    auto insertMissingReleases = [&](auto &acquires, auto &releases,
                                      auto createRelease) {
+      using AcquireOpTy =
+          typename std::remove_reference_t<decltype(acquires)>::value_type;
+      using ReleaseOpTy =
+          typename std::remove_reference_t<decltype(releases)>::value_type;
+      ArrayRef<AcquireOpTy> acquiresRef(acquires);
       for (auto acquire : acquires) {
         Value cb = acquire.getCb();
 
-        using ReleaseOpTy =
-            typename std::remove_reference_t<decltype(releases)>::value_type;
+        Operation *boundary = findNextSameKindAcquire(cb, acquire, acquiresRef);
         SmallVector<ReleaseOpTy> nested;
-        if (findReleases(cb, acquire, releases, nested, erased)) {
+        if (findReleases(cb, acquire, releases, nested, erased, boundary)) {
           continue;
         }
 
@@ -212,7 +259,7 @@ struct TTLInsertCBSyncPass
           nestedOp.erase();
         }
 
-        Operation *last = findLastTensorUse(cb, acquire);
+        Operation *last = findLastTensorUse(cb, acquire, boundary);
         builder.setInsertionPointAfter(last);
         createRelease(builder, acquire.getLoc(), cb);
       }

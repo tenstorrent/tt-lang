@@ -574,3 +574,137 @@ func.func @reserve_then_if_else_branch_wait(
   }
   func.return
 }
+
+// -----
+
+// Test 21: consecutive DM waits on the same DFB need a pop between waits.
+
+// CHECK-LABEL: func.func @two_waits_same_cb_dm_write
+// CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
+// CHECK: ttl.cb_wait %[[CB]]
+// CHECK: ttl.copy %[[CB]]
+// CHECK: ttl.wait
+// CHECK-NEXT: ttl.cb_pop %[[CB]]
+// CHECK: ttl.cb_wait %[[CB]]
+// CHECK: ttl.copy %[[CB]]
+// CHECK: ttl.wait
+// CHECK-NEXT: ttl.cb_pop %[[CB]]
+// CHECK-NOT: ttl.cb_pop
+// CHECK: return
+func.func @two_waits_same_cb_dm_write(
+    %arg0: tensor<2x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %w0 = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %slice0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<2x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>> -> tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+  %tx0 = ttl.copy %cb0, %slice0 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>) -> !ttl.transfer_handle<write>
+  ttl.wait %tx0 : !ttl.transfer_handle<write>
+  %w1 = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %slice1 = ttl.tensor_slice %arg0[%c1, %c0] : tensor<2x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>> -> tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+  %tx1 = ttl.copy %cb0, %slice1 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>) -> !ttl.transfer_handle<write>
+  ttl.wait %tx1 : !ttl.transfer_handle<write>
+  func.return
+}
+
+// -----
+
+// Test 22: consecutive DM reserves on the same DFB need a push between reserves.
+
+// CHECK-LABEL: func.func @two_reserves_same_cb_dm_read
+// CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
+// CHECK: ttl.cb_reserve %[[CB]]
+// CHECK: ttl.copy {{.*}}, %[[CB]]
+// CHECK: ttl.wait
+// CHECK-NEXT: ttl.cb_push %[[CB]]
+// CHECK: ttl.cb_reserve %[[CB]]
+// CHECK: ttl.copy {{.*}}, %[[CB]]
+// CHECK: ttl.wait
+// CHECK-NEXT: ttl.cb_push %[[CB]]
+// CHECK-NOT: ttl.cb_push
+// CHECK: return
+func.func @two_reserves_same_cb_dm_read(
+    %arg0: tensor<2x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %r0 = ttl.cb_reserve %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %slice0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<2x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>> -> tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+  %tx0 = ttl.copy %slice0, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> !ttl.transfer_handle<read>
+  ttl.wait %tx0 : !ttl.transfer_handle<read>
+  %r1 = ttl.cb_reserve %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %slice1 = ttl.tensor_slice %arg0[%c1, %c0] : tensor<2x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>> -> tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+  %tx1 = ttl.copy %slice1, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> !ttl.transfer_handle<read>
+  ttl.wait %tx1 : !ttl.transfer_handle<read>
+  func.return
+}
+
+// -----
+
+// Test 23: a later explicit pop does not satisfy an earlier wait.
+
+// CHECK-LABEL: func.func @same_cb_dm_write_later_explicit_pop
+// CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
+// CHECK: ttl.cb_wait %[[CB]]
+// CHECK: ttl.copy %[[CB]]
+// CHECK: ttl.wait
+// CHECK-NEXT: ttl.cb_pop %[[CB]]
+// CHECK: ttl.cb_wait %[[CB]]
+// CHECK: ttl.copy %[[CB]]
+// CHECK: ttl.wait
+// CHECK-NEXT: ttl.cb_pop %[[CB]]
+// CHECK-NOT: ttl.cb_pop
+// CHECK: return
+func.func @same_cb_dm_write_later_explicit_pop(
+    %arg0: tensor<2x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %w0 = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %slice0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<2x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>> -> tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+  %tx0 = ttl.copy %cb0, %slice0 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>) -> !ttl.transfer_handle<write>
+  ttl.wait %tx0 : !ttl.transfer_handle<write>
+  %w1 = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %slice1 = ttl.tensor_slice %arg0[%c1, %c0] : tensor<2x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>> -> tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+  %tx1 = ttl.copy %cb0, %slice1 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>) -> !ttl.transfer_handle<write>
+  ttl.wait %tx1 : !ttl.transfer_handle<write>
+  ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}
+
+// -----
+
+// Test 24: a later explicit push does not satisfy an earlier reserve.
+
+// CHECK-LABEL: func.func @same_cb_dm_read_later_explicit_push
+// CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
+// CHECK: ttl.cb_reserve %[[CB]]
+// CHECK: ttl.copy {{.*}}, %[[CB]]
+// CHECK: ttl.wait
+// CHECK-NEXT: ttl.cb_push %[[CB]]
+// CHECK: ttl.cb_reserve %[[CB]]
+// CHECK: ttl.copy {{.*}}, %[[CB]]
+// CHECK: ttl.wait
+// CHECK-NEXT: ttl.cb_push %[[CB]]
+// CHECK-NOT: ttl.cb_push
+// CHECK: return
+func.func @same_cb_dm_read_later_explicit_push(
+    %arg0: tensor<2x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %r0 = ttl.cb_reserve %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %slice0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<2x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>> -> tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+  %tx0 = ttl.copy %slice0, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> !ttl.transfer_handle<read>
+  ttl.wait %tx0 : !ttl.transfer_handle<read>
+  %r1 = ttl.cb_reserve %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %slice1 = ttl.tensor_slice %arg0[%c1, %c0] : tensor<2x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>> -> tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>
+  %tx1 = ttl.copy %slice1, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = l1, grid = [1, 1], memory = interleaved>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> !ttl.transfer_handle<read>
+  ttl.wait %tx1 : !ttl.transfer_handle<read>
+  ttl.cb_push %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}
