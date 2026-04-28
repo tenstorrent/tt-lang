@@ -12,9 +12,11 @@ def TTLInsertCBSync
     missing release op after the last operation that accesses the CB's data.
 
     The pass computes a transitive use closure starting from the acquire op:
-    direct uses of the CB value and the acquire result, plus uses of values
-    those ops produce (e.g. copy -> transfer_handle -> wait). The release is
-    inserted after the last op in this closure.
+    direct uses of the DFB value and the acquire result, plus uses of values
+    those ops produce (e.g. copy -> transfer_handle -> wait). Direct DFB uses
+    are bounded by the next acquire in the same DFB sync class (`cb_reserve`
+    for producer intervals, `cb_wait` for consumer intervals) because they do
+    not carry an SSA link to the acquire that owns the slot.
 
     Explicit push/pop calls and context-manager-generated push/pop are
     preserved: the pass only fills in what is missing.
