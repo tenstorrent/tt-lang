@@ -242,8 +242,8 @@ A *block* represents memory acquired from a dataflow buffer. Block size is deter
 #
 # Tensor   Torch shape   Note
 # a        N, M          N >> M
-# b        N, 1          One-dimensional vector — broadcast to match a along M
-# c        M             One-dimensional vector — broadcast to match a along N
+# b        N, 1          Vector — broadcast to match a along M
+# c        M             Vector — broadcast to match a along N
 # d        ()            Scalar value — broadcast to match a along N and M
 # y        N, 1
 # z        M
@@ -260,19 +260,19 @@ N_BLOCKS = N_TILES // N_BLOCK_SIZE
 a_dfb = ttl.make_dataflow_buffer_like(a, shape = (N_BLOCK_SIZE, M_TILES))
 
 # Tiled DFB shape needs to be at least two-dimensional;
-# When tiled the one-dimensional vector b is placed in row 0
+# When tiled the vector b is placed in row 0
 # of each tile in a row of N_TILES tiles
 b_dfb = ttl.make_dataflow_buffer_like(b, shape = (N_BLOCK_SIZE, 1))
-# When tiled the one-dimensional vector c is placed in column 0
+# When tiled the vector c is placed in column 0
 # of each tile in a column of M_TILES tiles
 c_dfb = ttl.make_dataflow_buffer_like(c, shape = (1, M_TILES))
 # When tiled the scalar value d is placed at position (0, 0)
 # of a single tile
 d_dfb = ttl.make_dataflow_buffer_like(d, shape = (1, 1))
-# When untiled the one-dimensional y vector is formed from row 0
+# When untiled the vector y is formed from row 0
 # of each tile in a row of N_TILES tiles
 y_dfb = ttl.make_dataflow_buffer_like(y, shape = (N_BLOCK_SIZE, 1))
-# When untiled the one-dimensional z vector is formed from column 0
+# When untiled the vector z is formed from column 0
 # of each tile in a column of M_TILES tiles
 z_dfb = ttl.make_dataflow_buffer_like(z, shape = (1, M_TILES))
 
@@ -284,7 +284,7 @@ def elwise_read():
         c_dfb.reserve() as c_blk,
         d_dfb.reserve() as d_blk,
     ):
-        # Load entire (1×M_TILES) c
+        # Load entire (1×M_TILES) of c
         c_xf = ttl.copy(c[0, :], c_blk)
 
         # Load entire (1×1) d
@@ -293,6 +293,7 @@ def elwise_read():
         c_xf.wait()
         d_xf.wait()
 
+        # End of "with" scope:
         # Push c_blk and d_blk to make them ready for elwise_compute
 
     for n_block in range(N_BLOCKS):
@@ -311,6 +312,7 @@ def elwise_read():
             a_xf.wait()
             b_xf.wait()
 
+            # End of "with" scope:
             # Push a_blk and b_blk to make them ready for elwise_compute
 
 @ttl.compute()
@@ -372,14 +374,16 @@ def elwise_compute():
                 # Accumulate-add partial z
                 z += z_partial
 
+                # End of "with" scope:
                 # Pop a_blk and b_dfb to make them available for elwise_read to load and push next blocks;
                 # Push y_blk to make it ready for elwise_write
 
         # Store z
         z_blk.store(z)
 
-    # Pop c_blk and d_blk;
-    # Push z_blk to make it ready for elwise_write
+        # End of "with" scope:
+        # Pop c_blk and d_blk;
+        # Push z_blk to make it ready for elwise_write
 
 @ttl.datamovement()
 def elwise_write():
@@ -387,10 +391,11 @@ def elwise_write():
     # Wait for elwise_compute to store and push z_blk
     with z_dfb.wait() as z_blk:
 
-        # Store entire (1xM_TILES) z
+        # Store entire (1xM_TILES) of z
         z_xf = ttl.copy(z_blk, z[0, :])
         z_xf.wait()
 
+        # End of "with" scope:
         # Pop z_blk
 
     for n_block in range(N_BLOCKS):
@@ -403,6 +408,7 @@ def elwise_write():
             y_xf = ttl.copy(y_blk, y[n_slice, :])
             y_xf.wait()
 
+            # End of "with" scope:
             # Pop y_blk to make it available for elwise_compute to store and push next block
 
 ```
@@ -460,6 +466,7 @@ def matmul_read():
                     c_xf = ttl.copy(c[m_slice, n_slice], c_blk)
                     c_xf.wait()
 
+                    # End of "with" scope:
                     # Push c_blk to make it ready for matmul_compute
 
                 # Repeat for each K block
@@ -479,6 +486,7 @@ def matmul_read():
                         a_xf.wait()
                         b_xf.wait()
 
+                        # End of "with" scope:
                         # Push a_blk and b_blk to make it ready for matmul_compute
 
 @ttl.compute()
@@ -510,6 +518,7 @@ def matmul_compute():
                             # I_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE b in y
                             y += a_blk @ b
 
+                            # End of "with" scope:
                             # Pop a_blk and b_blk to make them available for matmul_read to load and push next blocks
 
                     # Wait for c_blk to be loaded and pushed by matmul_read
@@ -522,10 +531,12 @@ def matmul_compute():
 
                         y = y + c
 
+                        # End of "with" scope:
                         # Pop c_blk to make it available for matmul_read to load and push next block
 
                     y_blk.store(y)
 
+                    # End of "with" scope:
                     # Push y_blk to make it ready for matmul_write
 
 @ttl.datamovement()
@@ -544,6 +555,7 @@ def matmul_write():
                         n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE])
                     y_xf.wait()
 
+                    # End of "with" scope:
                     # Pop y_blk to make it available for matmul_compute to store and push next block
 ```
 
