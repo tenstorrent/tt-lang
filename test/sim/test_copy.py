@@ -160,14 +160,17 @@ class TestCopySourceLocking:
         # But more fundamentally, wait() blocks don't support store() - they expect POP
         with pytest.raises(
             RuntimeError,
-            match="Cannot write to Block.*has no access.*ROR state",
+            match=r"(?s)Cannot write to this buffer block.*ROR",
         ):
             source_block.store(Block.from_tensor(make_rand_tensor(64, 32)))
 
         # After wait(), the block still doesn't support store() because it's a wait() block
         tx.wait()
         # wait() blocks cannot use store() per state machine - they expect STORE_SRC
-        with pytest.raises(RuntimeError, match="Cannot perform store.*Expected one of"):
+        with pytest.raises(
+            RuntimeError,
+            match=r"(?s)Cannot perform store\(\): not a valid next dataflow step.*expected one of",
+        ):
             source_block.store(Block.from_tensor(make_rand_tensor(64, 32)))
 
     # Removed: test_can_read_from_block_source_before_wait - covered by TestCopyWithStateMachine
@@ -221,7 +224,7 @@ class TestCopyDestinationLocking:
         # Attempt to write to destination should fail (dest is in NAW state)
         with pytest.raises(
             RuntimeError,
-            match="Cannot write to Block.*copy destination.*copy lock error.*NAW",
+            match=r"(?s)Cannot write to this buffer block.*NAW.*copy lock error",
         ):
             dest_block.store(Block.from_tensor(make_rand_tensor(64, 32)))
 
@@ -230,7 +233,7 @@ class TestCopyDestinationLocking:
         # Cannot store on DM block - only Compute blocks support store
         with pytest.raises(
             RuntimeError,
-            match="Cannot perform store.*Expected one of",
+            match=r"(?s)Cannot perform store\(\): not a valid next dataflow step.*expected one of",
         ):
             dest_block.store(Block.from_tensor(make_rand_tensor(64, 32)))
 
@@ -259,7 +262,7 @@ class TestMultipleCopyOperations:
         # wait() DM blocks cannot be used as copy destinations per state machine
         with pytest.raises(
             RuntimeError,
-            match="Expected one of \\[COPY_SRC, TX_WAIT\\], but got copy \\(as destination\\)",
+            match=r"(?s)Cannot perform copy \(as destination\): not a valid next dataflow step.*\[COPY_SRC, TX_WAIT\].*attempted COPY_DST",
         ):
             copy(tensor2, block)
 
