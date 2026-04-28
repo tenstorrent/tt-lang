@@ -1,7 +1,9 @@
 // Verifies ttl-insert-cb-sync: missing cb_push/cb_pop are inserted after
-// the last transitive use of the CB data.
+// the last transitive use of the CB data. The second RUN verifies that
+// applying the pass twice does not insert duplicate releases.
 
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-insert-cb-sync))' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-insert-cb-sync,ttl-insert-cb-sync))' --split-input-file | FileCheck %s
 
 // Test 1: compute reserve without push, auto-insert after store.
 
