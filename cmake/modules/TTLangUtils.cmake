@@ -4,15 +4,16 @@
 # TTLangUtils.cmake - Utility macros and functions for tt-lang.
 
 # ttlang_set_version(VERSION)
-# Sets tt-lang version from a version string (e.g., "0.2.0" or "0.2.0.dev5").
+# Sets tt-lang version from a version string. Accepts PEP 440-style versions
+# of the form MAJOR.MINOR.PATCH[.devN][+LOCAL] (e.g., "0.2.0", "0.2.0.dev5",
+# "1.0.0+uplift", "1.0.0.dev3+uplift").
 # Sets TTLANG_VERSION_MAJOR, TTLANG_VERSION_MINOR, TTLANG_VERSION_PATCH cache variables
-# and TTLANG_VERSION as the full version string (including dev suffix if present).
+# and TTLANG_VERSION as the full version string.
 macro(ttlang_set_version VERSION)
-  # Extract base version (MAJOR.MINOR.PATCH) from version string, handling .devX suffix
-  string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)" _match "${VERSION}")
+  string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)(\\.dev[0-9]+)?(\\+[A-Za-z0-9.]+)?$" _match "${VERSION}")
 
   if(NOT _match)
-    message(FATAL_ERROR "Invalid version format: ${VERSION}. Expected format: MAJOR.MINOR.PATCH[.devX] (e.g., 0.2.0 or 0.2.0.dev5)")
+    message(FATAL_ERROR "Invalid version format: ${VERSION}. Expected format: MAJOR.MINOR.PATCH[.devN][+LOCAL] (e.g., 0.2.0, 0.2.0.dev5, 1.0.0+uplift, 1.0.0.dev3+uplift)")
   endif()
 
   set(TTLANG_VERSION_MAJOR ${CMAKE_MATCH_1} CACHE STRING "tt-lang major version")

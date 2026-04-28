@@ -83,7 +83,7 @@ if [ -z "$TTLANG_VERSION" ]; then
 fi
 echo "tt-lang version: $TTLANG_VERSION"
 
-# Docker tag uses the nearest version tag (e.g., v0.1.8) so rebuilds overwrite
+# Docker tag uses the nearest version tag (e.g., v0.1.9) so rebuilds overwrite
 # the same tag rather than creating a new one per commit.
 DOCKER_TAG=$("${SCRIPT_DIR}/get-version-tag.sh")
 echo "Docker tag: $DOCKER_TAG"
