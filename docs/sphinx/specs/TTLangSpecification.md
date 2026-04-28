@@ -364,7 +364,7 @@ def elwise_compute():
         d_squared_bcast = ttl.math.broadcast(d_squared, dims=[0, 1], shape=(N_BLOCK_SIZE, M_TILES))
 
         # Zero-initialize the accumulator z before summing N_BLOCKS partial sums
-        z = ttl.math.fill(0, shape=(1, M_TILES))
+        z_final = ttl.math.fill(0, shape=(1, M_TILES))
 
         for _ in range(N_BLOCKS):
 
@@ -388,23 +388,23 @@ def elwise_compute():
                 expanded_z = ttl.math.sqrt(a_squared - b_squared_bcast - c_squared_bcast - d_squared_bcast)
 
                 # Reduce expanded_y along dim -1 (last) to get N_BLOCK_SIZE×1 row of tiles
-                y = ttl.math.reduce_sum(expanded_y, dims=[-1], shape=(N_BLOCK_SIZE, 1))
+                y_final = ttl.math.reduce_sum(expanded_y, dims=[-1], shape=(N_BLOCK_SIZE, 1))
 
                 # Reduce expanded_z along dim 0 (first) to get 1×M_TILES column of tiles;
                 z_partial = ttl.math.reduce_sum(expanded_z, dims=[0], shape=(1, M_TILES))
 
-                # Store y
-                y_blk.store(y)
+                # Store y_final
+                y_blk.store(y_final)
 
-                # Accumulate-add partial z
-                z += z_partial
+                # Accumulate-add partial z_final
+                z_final += z_partial
 
                 # End of "with" scope:
                 # Pop a_blk and b_dfb to make them available for elwise_read to load and push next blocks;
                 # Push y_blk to make it ready for elwise_write
 
-        # Store z
-        z_blk.store(z)
+        # Store z_final
+        z_blk.store(z_final)
 
         # End of "with" scope:
         # Pop c_blk and d_blk;
@@ -523,8 +523,8 @@ def matmul_compute():
                 # Reserve y_blk
                 with y_dfb.reserve() as y_blk:
 
-                    # Zero-initialize the accumulator y before summing K_BLOCKS partial products
-                    y = ttl.math.fill(0, shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
+                    # Zero-initialize the accumulator y_final before summing K_BLOCKS partial products
+                    y_final = ttl.math.fill(0, shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
 
                     # Repeat for each K block
                     for _ in range(K_BLOCKS):
@@ -537,11 +537,11 @@ def matmul_compute():
                             # b_blk has shape K_BLOCK_SIZE×N_BLOCK_SIZE;
                             # Unsqueeze it to 1×K_BLOCK_SIZE×N_BLOCK_SIZE and then
                             # broadcast it over dim 0 to I_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE
-                            b = ttl.math.broadcast(ttl.math.unsqueeze(b_blk, dims=[0]), dims=[0], shape=(I_BLOCK_SIZE, K_BLOCK_SIZE, N_BLOCK_SIZE))
+                            b_bcast = ttl.math.broadcast(ttl.math.unsqueeze(b_blk, dims=[0]), dims=[0], shape=(I_BLOCK_SIZE, K_BLOCK_SIZE, N_BLOCK_SIZE))
 
                             # Accumulate dot product between I_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE a_blk and
-                            # I_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE b in y
-                            y += a_blk @ b
+                            # I_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE b_bcast in y_final
+                            y_final += a_blk @ b_bcast
 
                             # End of "with" scope:
                             # Pop a_blk and b_blk to make them available for matmul_read to load and push next blocks
@@ -552,14 +552,14 @@ def matmul_compute():
                         # c_blk has shape M_BLOCK_SIZE×N_BLOCK_SIZE;
                         # Unsqueeze it to 1×M_BLOCK_SIZE×N_BLOCK_SIZE and then
                         # broadcast it over dim 0 to I_BLOCK_SIZE×M_BLOCK_SIZE×N_BLOCK_SIZE
-                        c = ttl.math.broadcast(ttl.math.unsqueeze(c_blk, dims=[0]), dims=[0], shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
+                        c_bcast = ttl.math.broadcast(ttl.math.unsqueeze(c_blk, dims=[0]), dims=[0], shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
 
-                        y = y + c
+                        y_final = y_final + c_bcast
 
                         # End of "with" scope:
                         # Pop c_blk to make it available for matmul_read to load and push next block
 
-                    y_blk.store(y)
+                    y_blk.store(y_final)
 
                     # End of "with" scope:
                     # Push y_blk to make it ready for matmul_write
