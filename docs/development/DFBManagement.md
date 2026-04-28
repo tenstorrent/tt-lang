@@ -53,6 +53,66 @@ When multiple `DFBInputOpInterface` operations consume the same non-CB-attached 
 
 Each DFB is created with `blockCount=2` (double-buffering) so the packer and unpacker can operate on different halves simultaneously within the same thread.
 
+## DFB Sync Insertion
+
+`TTLInsertCBSync` inserts missing releases for DFB acquire operations. A
+`cb_reserve` acquire requires a later `cb_push`; a `cb_wait` acquire requires a
+later `cb_pop`. The pass is also responsible for hoisting releases that were
+emitted inside structured regions to the acquire's block when that is the
+correct DFB interval boundary.
+
+The pass treats every acquire as opening a DFB live interval. The interval
+starts at `cb_reserve` or `cb_wait` and ends after the last operation that can
+use the acquired slot. A later same-kind acquire on the same DFB bounds release
+matching and use discovery, because its release belongs to a different live
+interval.
+
+The pass finds owned uses from two sources:
+
+- Tensor-form uses follow the result of `cb_reserve` or `cb_wait` through
+  `ttl.attach_cb`, `ttl.store`, and compute operations.
+- Direct DFB uses follow `ttl.copy` operations where the DFB operand direction
+  matches the acquire kind. `cb_reserve` live intervals include copies into the
+  DFB; `cb_wait` live intervals include copies from the DFB. This is required
+  for data movement kernels, where copies do not use the tensor value returned
+  by the acquire op.
+
+Uses inside descendant regions are projected to their ancestor operation in the
+acquire's block. This conservatively places the release after the enclosing
+structured op when the exact use is nested in an `scf.for` or `scf.if` body.
+
+### Algorithm
+
+```
+insertMissingReleases(func):
+  reserves = all cb_reserve ops in func
+  waits = all cb_wait ops in func
+  pushes = all cb_push ops in func
+  pops = all cb_pop ops in func
+
+  insertReleases(reserves, pushes, cb_push)
+  insertReleases(waits, pops, cb_pop)
+
+insertReleases(acquires, releases, releaseOp):
+  for acquire in acquires:
+    dfb = acquire.cb
+    boundary = next same-kind acquire on dfb, projected to acquire.block
+
+    matching = same-block release on dfb after acquire and before boundary
+    nested = nested releases on dfb after acquire and before boundary
+    if matching:
+      continue
+
+    erase nested releases
+    liveEnd = last transitive tensor or direction-matched direct DFB use
+              before boundary
+    insert releaseOp(dfb) after liveEnd
+```
+
+The same-block release check makes the pass idempotent. A release after the
+next same-kind acquire on the same DFB belongs to that later interval and does
+not satisfy the earlier acquire.
+
 ## Index Reuse
 
 `TTLFinalizeDFBIndices` reduces the physical DFB count by assigning the same index to compiler-allocated DFBs whose lifetimes do not overlap. The algorithm runs per function. Compiler-allocated DFBs are intra-thread (both producer and consumer are in the same compute function), so their lifetimes are independent across functions.
