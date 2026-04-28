@@ -119,6 +119,10 @@ def test_no_mutable_module_globals():
             "python.sim",
             "ttl",
         ),  # Custom namespace object (_TTLNamespace) for TTL API wrapper
+        (
+            "python.sim.ttnnsim",
+            "bfloat8_b",
+        ),  # Immutable singleton dtype sentinel (no native torch equivalent)
     }
 
     for module_name in simulator_modules:
