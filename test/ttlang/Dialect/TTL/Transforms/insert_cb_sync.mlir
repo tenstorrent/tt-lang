@@ -582,12 +582,12 @@ func.func @reserve_then_if_else_branch_wait(
 // CHECK-LABEL: func.func @two_waits_same_cb_dm_write
 // CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
 // CHECK: ttl.cb_wait %[[CB]]
-// CHECK: ttl.copy %[[CB]]
-// CHECK: ttl.wait
+// CHECK: %[[TX0:.+]] = ttl.copy %[[CB]],
+// CHECK-NEXT: ttl.wait %[[TX0]]
 // CHECK-NEXT: ttl.cb_pop %[[CB]]
-// CHECK: ttl.cb_wait %[[CB]]
-// CHECK: ttl.copy %[[CB]]
-// CHECK: ttl.wait
+// CHECK-NEXT: ttl.cb_wait %[[CB]]
+// CHECK: %[[TX1:.+]] = ttl.copy %[[CB]],
+// CHECK-NEXT: ttl.wait %[[TX1]]
 // CHECK-NEXT: ttl.cb_pop %[[CB]]
 // CHECK-NOT: ttl.cb_pop
 // CHECK: return
@@ -615,12 +615,12 @@ func.func @two_waits_same_cb_dm_write(
 // CHECK-LABEL: func.func @two_reserves_same_cb_dm_read
 // CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
 // CHECK: ttl.cb_reserve %[[CB]]
-// CHECK: ttl.copy {{.*}}, %[[CB]]
-// CHECK: ttl.wait
+// CHECK: %[[TX0:.+]] = ttl.copy {{.*}}, %[[CB]]
+// CHECK-NEXT: ttl.wait %[[TX0]]
 // CHECK-NEXT: ttl.cb_push %[[CB]]
-// CHECK: ttl.cb_reserve %[[CB]]
-// CHECK: ttl.copy {{.*}}, %[[CB]]
-// CHECK: ttl.wait
+// CHECK-NEXT: ttl.cb_reserve %[[CB]]
+// CHECK: %[[TX1:.+]] = ttl.copy {{.*}}, %[[CB]]
+// CHECK-NEXT: ttl.wait %[[TX1]]
 // CHECK-NEXT: ttl.cb_push %[[CB]]
 // CHECK-NOT: ttl.cb_push
 // CHECK: return
@@ -648,12 +648,12 @@ func.func @two_reserves_same_cb_dm_read(
 // CHECK-LABEL: func.func @same_cb_dm_write_later_explicit_pop
 // CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
 // CHECK: ttl.cb_wait %[[CB]]
-// CHECK: ttl.copy %[[CB]]
-// CHECK: ttl.wait
+// CHECK: %[[TX0:.+]] = ttl.copy %[[CB]],
+// CHECK-NEXT: ttl.wait %[[TX0]]
 // CHECK-NEXT: ttl.cb_pop %[[CB]]
-// CHECK: ttl.cb_wait %[[CB]]
-// CHECK: ttl.copy %[[CB]]
-// CHECK: ttl.wait
+// CHECK-NEXT: ttl.cb_wait %[[CB]]
+// CHECK: %[[TX1:.+]] = ttl.copy %[[CB]],
+// CHECK-NEXT: ttl.wait %[[TX1]]
 // CHECK-NEXT: ttl.cb_pop %[[CB]]
 // CHECK-NOT: ttl.cb_pop
 // CHECK: return
@@ -682,12 +682,12 @@ func.func @same_cb_dm_write_later_explicit_pop(
 // CHECK-LABEL: func.func @same_cb_dm_read_later_explicit_push
 // CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
 // CHECK: ttl.cb_reserve %[[CB]]
-// CHECK: ttl.copy {{.*}}, %[[CB]]
-// CHECK: ttl.wait
+// CHECK: %[[TX0:.+]] = ttl.copy {{.*}}, %[[CB]]
+// CHECK-NEXT: ttl.wait %[[TX0]]
 // CHECK-NEXT: ttl.cb_push %[[CB]]
-// CHECK: ttl.cb_reserve %[[CB]]
-// CHECK: ttl.copy {{.*}}, %[[CB]]
-// CHECK: ttl.wait
+// CHECK-NEXT: ttl.cb_reserve %[[CB]]
+// CHECK: %[[TX1:.+]] = ttl.copy {{.*}}, %[[CB]]
+// CHECK-NEXT: ttl.wait %[[TX1]]
 // CHECK-NEXT: ttl.cb_push %[[CB]]
 // CHECK-NOT: ttl.cb_push
 // CHECK: return
@@ -716,12 +716,12 @@ func.func @same_cb_dm_read_later_explicit_push(
 // CHECK-LABEL: func.func @dm_reserve_before_wait_same_dfb
 // CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
 // CHECK: ttl.cb_reserve %[[CB]]
-// CHECK: ttl.copy {{.*}}, %[[CB]]
-// CHECK: ttl.wait
+// CHECK: %[[TX0:.+]] = ttl.copy {{.*}}, %[[CB]]
+// CHECK-NEXT: ttl.wait %[[TX0]]
 // CHECK-NEXT: ttl.cb_push %[[CB]]
-// CHECK: ttl.cb_wait %[[CB]]
-// CHECK: ttl.copy %[[CB]]
-// CHECK: ttl.wait
+// CHECK-NEXT: ttl.cb_wait %[[CB]]
+// CHECK: %[[TX1:.+]] = ttl.copy %[[CB]],
+// CHECK-NEXT: ttl.wait %[[TX1]]
 // CHECK-NEXT: ttl.cb_pop %[[CB]]
 // CHECK-NOT: ttl.cb_push
 // CHECK-NOT: ttl.cb_pop
@@ -750,12 +750,12 @@ func.func @dm_reserve_before_wait_same_dfb(
 // CHECK-LABEL: func.func @dm_wait_before_reserve_same_dfb
 // CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
 // CHECK: ttl.cb_wait %[[CB]]
-// CHECK: ttl.copy %[[CB]]
-// CHECK: ttl.wait
+// CHECK: %[[TX0:.+]] = ttl.copy %[[CB]],
+// CHECK-NEXT: ttl.wait %[[TX0]]
 // CHECK-NEXT: ttl.cb_pop %[[CB]]
-// CHECK: ttl.cb_reserve %[[CB]]
-// CHECK: ttl.copy {{.*}}, %[[CB]]
-// CHECK: ttl.wait
+// CHECK-NEXT: ttl.cb_reserve %[[CB]]
+// CHECK: %[[TX1:.+]] = ttl.copy {{.*}}, %[[CB]]
+// CHECK-NEXT: ttl.wait %[[TX1]]
 // CHECK-NEXT: ttl.cb_push %[[CB]]
 // CHECK-NOT: ttl.cb_push
 // CHECK-NOT: ttl.cb_pop

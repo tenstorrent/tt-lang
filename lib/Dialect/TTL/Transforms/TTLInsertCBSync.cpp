@@ -38,13 +38,13 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-enum class AcquireKind { Reserve, Wait };
+enum class DFBSyncClass { Producer, Consumer };
 
 struct AcquireInterval {
   Operation *acquire;
   Value cb;
-  AcquireKind kind;
-  Operation *sameKindBoundary;
+  DFBSyncClass syncClass;
+  Operation *syncClassBoundary;
 };
 
 template <typename ReleaseOpTy>
@@ -59,13 +59,13 @@ static bool isBefore(Operation *a, Operation *b) {
 }
 
 template <typename AcquireOpTy>
-static AcquireKind getAcquireKind() {
+static DFBSyncClass getDFBSyncClass() {
   if constexpr (std::is_same_v<AcquireOpTy, CBReserveOp>) {
-    return AcquireKind::Reserve;
+    return DFBSyncClass::Producer;
   } else {
     static_assert(std::is_same_v<AcquireOpTy, CBWaitOp>,
                   "unsupported DFB acquire op");
-    return AcquireKind::Wait;
+    return DFBSyncClass::Consumer;
   }
 }
 
@@ -80,13 +80,13 @@ static bool directDFBUseMatchesAcquire(AcquireInterval interval,
     return true;
   }
 
-  switch (interval.kind) {
-  case AcquireKind::Reserve:
+  switch (interval.syncClass) {
+  case DFBSyncClass::Producer:
     return copy.getDst() == interval.cb;
-  case AcquireKind::Wait:
+  case DFBSyncClass::Consumer:
     return copy.getSrc() == interval.cb;
   }
-  llvm_unreachable("unknown acquire kind");
+  llvm_unreachable("unknown DFB sync class");
 }
 
 static bool projectToAcquireBlock(AcquireInterval interval, Operation *op,
@@ -99,8 +99,8 @@ static bool projectToAcquireBlock(AcquireInterval interval, Operation *op,
   if (!isBefore(interval.acquire, projected)) {
     return false;
   }
-  if (interval.sameKindBoundary &&
-      !isBefore(projected, interval.sameKindBoundary)) {
+  if (interval.syncClassBoundary &&
+      !isBefore(projected, interval.syncClassBoundary)) {
     return false;
   }
   return true;
@@ -163,7 +163,7 @@ static void updateBoundary(Value cb, Operation *acquire,
       continue;
     }
     Operation *ancestor = block->findAncestorOpInBlock(*otherOp);
-    if (!ancestor || ancestor == acquire) {
+    if (!ancestor) {
       continue;
     }
     if (!isBefore(acquire, ancestor)) {
@@ -175,11 +175,12 @@ static void updateBoundary(Value cb, Operation *acquire,
   }
 }
 
-/// Return the next same-kind acquire on this DFB, projected into `acquire`'s
-/// block.
+/// Return the closest later acquire in the same DFB sync class, projected into
+/// `acquire`'s block. Producer intervals use `cb_reserve` boundaries; consumer
+/// intervals use `cb_wait` boundaries.
 template <typename AcquireOpTy>
-static Operation *findNextSameKindAcquire(Value cb, Operation *acquire,
-                                          ArrayRef<AcquireOpTy> acquires) {
+static Operation *findNextSyncClassAcquire(Value cb, Operation *acquire,
+                                           ArrayRef<AcquireOpTy> acquires) {
   Operation *boundary = nullptr;
   updateBoundary(cb, acquire, acquires, boundary);
   return boundary;
@@ -187,7 +188,8 @@ static Operation *findNextSameKindAcquire(Value cb, Operation *acquire,
 
 /// Return the last op in `acquire`'s block that consumes the acquired slot.
 /// Tensor uses follow the acquire result; direct DFB copies use direction.
-/// `boundary` stops the scan at the next same-kind acquire.
+/// `boundary` stops the scan at the next `cb_reserve` for reserve intervals or
+/// the next `cb_wait` for wait intervals.
 static Operation *findLastOwnedUse(AcquireInterval interval) {
   Operation *last = interval.acquire;
   DenseSet<Operation *> visited;
@@ -244,8 +246,8 @@ static AcquireInterval makeAcquireInterval(AcquireOpTy acquire,
                                            ArrayRef<AcquireOpTy> acquires) {
   Value cb = acquire.getCb();
   Operation *acquireOp = acquire.getOperation();
-  return {acquireOp, cb, getAcquireKind<AcquireOpTy>(),
-          findNextSameKindAcquire(cb, acquireOp, acquires)};
+  return {acquireOp, cb, getDFBSyncClass<AcquireOpTy>(),
+          findNextSyncClassAcquire(cb, acquireOp, acquires)};
 }
 
 struct TTLInsertCBSyncPass
