@@ -11,3 +11,12 @@ index a0b002c0ca..2d3055f751 100644
 
      auto m_core = mod.def_submodule("core", "core operations");
      core::py_module_types(m_core);
+@@ -327,5 +327,6 @@ void py_module(nb::module_& mod) {
++    bool printLeakWarnings = nb::leak_warnings();
+     nb::set_leak_warnings(false);
+     mod.attr("CONFIG") = nb::cast(&ttnn::CONFIG, nb::rv_policy::reference);
+-    nb::set_leak_warnings(true);
++    nb::set_leak_warnings(printLeakWarnings);
+     mod.def(
+         "get_python_operation_id",
+         []() -> std::uint64_t { return ttnn::CoreIDs::instance().get_python_operation_id(); },
