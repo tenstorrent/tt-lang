@@ -15,9 +15,8 @@ on:
         default: 60
       docker_tag:
         description: 'Docker image tag for the ird container.'
-        required: false
+        required: true
         type: string
-        default: 'v0.1.7'
   workflow_call:
     inputs:
       runs-on:
@@ -32,9 +31,8 @@ on:
         default: 60
       docker_tag:
         description: 'Docker image tag for the ird container.'
-        required: false
+        required: true
         type: string
-        default: 'latest'
 
 permissions:
   checks: write

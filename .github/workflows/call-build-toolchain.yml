@@ -99,7 +99,8 @@ jobs:
           cmake -G Ninja -B build \
               -DCMAKE_BUILD_TYPE=Release \
               -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
-              -DTTLANG_ENABLE_PERF_TRACE=ON
+              -DTTLANG_ENABLE_PERF_TRACE=ON \
+              -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON
 
       - name: Install tt-metal into toolchain
         if: steps.cache-toolchain.outputs.cache-hit != 'true'

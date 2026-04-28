@@ -27,7 +27,7 @@ jobs:
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
     with:
-      docker_tag: "v0.1.8"
+      docker_tag: "v1.0.0-1"
 
   test-sim:
     uses: ./.github/workflows/call-test-sim.yml

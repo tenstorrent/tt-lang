@@ -14,7 +14,7 @@ on:
             docker_tag:
                 description: "Docker image tag for the ird container."
                 type: string
-                default: "v0.1.7"
+                required: true
     workflow_call:
         inputs:
             build_docs:
@@ -30,8 +30,7 @@ on:
             docker_tag:
                 description: "Docker image tag for the ird container."
                 type: string
-                required: false
-                default: "v0.1.7"
+                required: true
 
 permissions:
     checks: write
