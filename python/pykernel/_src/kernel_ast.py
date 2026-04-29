@@ -16,6 +16,142 @@ from .kernel_types import ClassRegistry
 from .utils import _cast, _get_type_str
 
 
+class _ReadVariableCollector(ast.NodeVisitor):
+    def __init__(self):
+        self.names = set()
+
+    def visit_Name(self, node):
+        if isinstance(node.ctx, ast.Load):
+            self.names.add(node.id)
+
+    def visit_FunctionDef(self, node):
+        return
+
+    def visit_AsyncFunctionDef(self, node):
+        return
+
+    def visit_Lambda(self, node):
+        return
+
+
+def _collect_read_variable_names(node):
+    collector = _ReadVariableCollector()
+    collector.visit(node)
+    return collector.names
+
+
+class _SelfRebindingLoopVarCollector(ast.NodeVisitor):
+    def __init__(self):
+        self.names = []
+        self._seen = set()
+
+    def _add_if_self_rebinding(self, target, value):
+        if not isinstance(target, ast.Name):
+            return
+        read_variable_names = _collect_read_variable_names(value)
+        if target.id not in read_variable_names or target.id in self._seen:
+            return
+        self.names.append(target.id)
+        self._seen.add(target.id)
+
+    def visit_Assign(self, node):
+        if len(node.targets) != 1:
+            return
+        self._add_if_self_rebinding(node.targets[0], node.value)
+
+    def visit_AnnAssign(self, node):
+        if node.value is not None:
+            self._add_if_self_rebinding(node.target, node.value)
+
+    def visit_For(self, node):
+        for stmt in node.body:
+            self.visit(stmt)
+
+    def visit_With(self, node):
+        for stmt in node.body:
+            self.visit(stmt)
+
+    def visit_If(self, node):
+        for stmt in node.body:
+            self.visit(stmt)
+        for stmt in node.orelse:
+            self.visit(stmt)
+
+    def visit_FunctionDef(self, node):
+        return
+
+    def visit_AsyncFunctionDef(self, node):
+        return
+
+    def visit_Lambda(self, node):
+        return
+
+
+class _AssignedVariableCollector(ast.NodeVisitor):
+    def __init__(self):
+        self.names = []
+        self._seen = set()
+
+    def _add_if_name(self, target):
+        if not isinstance(target, ast.Name):
+            return
+        if target.id in self._seen:
+            return
+        self.names.append(target.id)
+        self._seen.add(target.id)
+
+    def visit_Assign(self, node):
+        if len(node.targets) == 1:
+            self._add_if_name(node.targets[0])
+
+    def visit_AnnAssign(self, node):
+        self._add_if_name(node.target)
+
+    def visit_For(self, node):
+        for stmt in node.body:
+            self.visit(stmt)
+
+    def visit_With(self, node):
+        for stmt in node.body:
+            self.visit(stmt)
+
+    def visit_If(self, node):
+        for stmt in node.body:
+            self.visit(stmt)
+        for stmt in node.orelse:
+            self.visit(stmt)
+
+    def visit_FunctionDef(self, node):
+        return
+
+    def visit_AsyncFunctionDef(self, node):
+        return
+
+    def visit_Lambda(self, node):
+        return
+
+
+def _get_single_result(value):
+    if isinstance(value, OpView):
+        if len(value.results) != 1:
+            raise ValueError("Expected operation with exactly one result")
+        return value.result
+    if isinstance(value, Operation):
+        if len(value.results) != 1:
+            raise ValueError("Expected operation with exactly one result")
+        return value.results[0]
+    return value
+
+
+def _get_value_type(value):
+    if hasattr(value, "type"):
+        return value.type
+    value = _get_single_result(value)
+    if hasattr(value, "type"):
+        return value.type
+    return None
+
+
 class TTCompilerBase(PyKernelAstBase):
     def __init__(self, name, kernel_type=None, *args, **kwargs):
         assert kernel_type in [
@@ -145,25 +281,50 @@ class TTCompilerBase(PyKernelAstBase):
             if_cond = arith.cmpi(
                 arith.CmpIPredicate.ne, if_cond, arith.ConstantOp(cond_type, 0)
             )
-        if_exp = scf.IfOp(cond=if_cond, has_else=bool(node.orelse))
+        carried_var_names = self._get_if_carried_var_names(node)
+        carried_initial_values = [
+            _get_single_result(self._var_exists(var_name)[var_name])
+            for var_name in carried_var_names
+        ]
+        carried_types = [_get_value_type(value) for value in carried_initial_values]
+
+        if_exp = scf.IfOp(
+            cond=if_cond,
+            results_=carried_types,
+            has_else=bool(node.orelse) or bool(carried_var_names),
+        )
 
         self._on_scope_exit()
         with InsertionPoint(if_exp.then_block), Location.unknown():
-            self.symbol_tables.append({})
-            for stmt in node.body:
-                self.visit(stmt)
-            self._on_scope_exit()
-            scf.YieldOp([])
-            self.symbol_tables.pop()
+            self._visit_if_region(node.body, carried_var_names, carried_initial_values)
 
-        if node.orelse:
+        if node.orelse or carried_var_names:
             with InsertionPoint(if_exp.else_block), Location.unknown():
-                self.symbol_tables.append({})
-                for stmt in node.orelse:
-                    self.visit(stmt)
-                self._on_scope_exit()
-                scf.YieldOp([])
-                self.symbol_tables.pop()
+                self._visit_if_region(
+                    node.orelse, carried_var_names, carried_initial_values
+                )
+
+        for var_name, result in zip(carried_var_names, if_exp.results):
+            self._set_var(var_name, result)
+
+    def _visit_if_region(self, stmts, carried_var_names, carried_initial_values):
+        self.symbol_tables.append({})
+        for stmt in stmts:
+            self.visit(stmt)
+        self._on_scope_exit()
+
+        yield_values = []
+        for var_name, initial_value in zip(carried_var_names, carried_initial_values):
+            final_value = self.symbol_tables[-1].get(var_name, initial_value)
+            if _get_value_type(final_value) != _get_value_type(initial_value):
+                raise ValueError(
+                    f"If-carried variable '{var_name}' changes type from "
+                    f"{_get_value_type(initial_value)} to "
+                    f"{_get_value_type(final_value)}"
+                )
+            yield_values.append(_get_single_result(final_value))
+        scf.YieldOp(yield_values)
+        self.symbol_tables.pop()
 
     def visit_For(self, node):
         assert node.iter.func.id == "range", "Only range() supported in for loops"
@@ -206,19 +367,78 @@ class TTCompilerBase(PyKernelAstBase):
             comment = self._get_source_comment_block(node)
             emitc.verbatim(comment, [])
 
+        carried_var_names = self._get_loop_carried_var_names(node)
+        carried_initial_values = [
+            _get_single_result(self._var_exists(var_name)[var_name])
+            for var_name in carried_var_names
+        ]
+
         self._on_scope_exit()
-        for_op = scf.ForOp(lower_bound, upper_bound, step)
+        for_op = scf.ForOp(lower_bound, upper_bound, step, carried_initial_values)
         with InsertionPoint(for_op.body), Location.unknown():
             self.symbol_tables.append({})
 
             # Add the iterator into the symbol table.
             self._set_var(node.target.id, for_op.induction_variable)
+            for var_name, iter_arg in zip(carried_var_names, for_op.inner_iter_args):
+                self._set_var(var_name, iter_arg)
 
             for stmt in node.body:
                 self.visit(stmt)
             self._on_scope_exit()
-            scf.YieldOp([])
+            yield_values = []
+            for var_name, initial_value in zip(
+                carried_var_names, carried_initial_values
+            ):
+                final_value = self.symbol_tables[-1][var_name]
+                if _get_value_type(final_value) != _get_value_type(initial_value):
+                    raise ValueError(
+                        f"Loop-carried variable '{var_name}' changes type from "
+                        f"{_get_value_type(initial_value)} to "
+                        f"{_get_value_type(final_value)}"
+                    )
+                yield_values.append(_get_single_result(final_value))
+            scf.YieldOp(yield_values)
             self.symbol_tables.pop()
+
+        for var_name, result in zip(carried_var_names, for_op.results):
+            self._set_var(var_name, result)
+
+    def _get_loop_carried_var_names(self, node):
+        collector = _SelfRebindingLoopVarCollector()
+        for stmt in node.body:
+            collector.visit(stmt)
+
+        carried_var_names = []
+        for var_name in collector.names:
+            if var_name == node.target.id:
+                continue
+            var_table = self._var_exists(var_name)
+            if not var_table:
+                continue
+            var_type = _get_value_type(var_table[var_name])
+            if not isinstance(var_type, RankedTensorType):
+                continue
+            carried_var_names.append(var_name)
+        return carried_var_names
+
+    def _get_if_carried_var_names(self, node):
+        collector = _AssignedVariableCollector()
+        for stmt in node.body:
+            collector.visit(stmt)
+        for stmt in node.orelse:
+            collector.visit(stmt)
+
+        carried_var_names = []
+        for var_name in collector.names:
+            var_table = self._var_exists(var_name)
+            if not var_table:
+                continue
+            var_type = _get_value_type(var_table[var_name])
+            if not isinstance(var_type, RankedTensorType):
+                continue
+            carried_var_names.append(var_name)
+        return carried_var_names
 
     # Statements
     def visit_Name(self, node):
