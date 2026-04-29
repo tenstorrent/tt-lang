@@ -1,9 +1,10 @@
-# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-
-#!/usr/bin/env python3
-# tt-lang Python package setup
+#
+# tt-lang Python package setup. Project metadata lives in pyproject.toml; this
+# file only provides the CMake-driven extension build.
 
 import glob
 import os
@@ -16,6 +17,9 @@ from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
 
 
+REPO_ROOT = pathlib.Path(__file__).resolve().parent
+
+
 def get_version_from_git():
     """Get version from git tags, matching cmake/modules/GetVersionFromGit.cmake."""
     try:
@@ -24,6 +28,7 @@ def get_version_from_git():
                 ["git", "describe", "--tags", "--match", "v[0-9]*", "--abbrev=0"],
                 stderr=subprocess.DEVNULL,
                 text=True,
+                cwd=str(REPO_ROOT),
             )
             .strip()
             .lstrip("v")
@@ -32,6 +37,7 @@ def get_version_from_git():
             ["git", "rev-list", f"v{tag}..HEAD", "--count"],
             stderr=subprocess.DEVNULL,
             text=True,
+            cwd=str(REPO_ROOT),
         ).strip()
         if commits and commits != "0":
             return f"{tag}.dev{commits}"
@@ -105,8 +111,7 @@ class CMakeBuild(build_ext):
 
         self._sanitize_env_for_cmake()
 
-        cwd = pathlib.Path().absolute()
-        source_dir = cwd.parent
+        source_dir = REPO_ROOT
         build_dir = source_dir / "build"
 
         install_dir = pathlib.Path(self.build_lib)
@@ -181,27 +186,14 @@ class CMakeBuild(build_ext):
         self._fix_rpath(install_dir)
 
 
-version = get_version_from_git()
 ttlang_c = TTLangExtension("ttl")
 
-readme_path = pathlib.Path(__file__).absolute().parent.parent / "README.md"
+readme_path = REPO_ROOT / "README.md"
 with open(str(readme_path), "r", encoding="utf-8") as readme_file:
     readme = readme_file.read()
 
 setup(
-    name="tt-lang",
-    version=version,
-    python_requires=">=3.11",
-    install_requires=[
-        "pydantic<3",
-        "torch>=1.9.0",
-        "numpy>=1.20.0",
-        "greenlet>=3.0.0",
-        "PyYAML>=5.4.0,<=6.0.1",
-        "typing_extensions>=4.12.2",
-        "ml_dtypes>=0.1.0,<=0.6.0; python_version<'3.13'",
-        "ml_dtypes>=0.5.0,<=0.6.0; python_version>='3.13'",
-    ],
+    version=get_version_from_git(),
     packages=[
         "ttl",
         "ttl._src",
@@ -209,19 +201,14 @@ setup(
         "ttl.pykernel._src",
         "ttl.sim",
         "ttl.utils",
-        "ttl.examples",
     ],
     package_dir={
-        "ttl": "ttl",
-        "ttl._src": "ttl/_src",
-        "ttl.pykernel": "pykernel",
-        "ttl.pykernel._src": "pykernel/_src",
-        "ttl.sim": "sim",
-        "ttl.utils": "utils",
-        "ttl.examples": "../examples",
-    },
-    package_data={
-        "ttl.examples": ["**/*.py"],
+        "ttl": "python/ttl",
+        "ttl._src": "python/ttl/_src",
+        "ttl.pykernel": "python/pykernel",
+        "ttl.pykernel._src": "python/pykernel/_src",
+        "ttl.sim": "python/sim",
+        "ttl.utils": "python/utils",
     },
     ext_modules=[ttlang_c],
     cmdclass={"build_ext": CMakeBuild},

@@ -8,7 +8,7 @@ description = "Python Bindings and Package for TT-Lang Compiler Project"
 requires-python = ">=3.11"
 keywords = ["mlir", "tt-lang", "tt-mlir", "tenstorrent", "compiler", "dsl", "kernel"]
 license = "Apache-2.0"
-license-files = ["../LICENSE*"]
+license-files = ["LICENSE*"]
 authors = [
   {name = "Tenstorrent AI ULC"}
 ]

@@ -47,7 +47,7 @@ jobs:
       - name: Build wheel
         run: |
           source /opt/ttlang-toolchain/venv/bin/activate
-          pip wheel ./python --wheel-dir=dist-raw --no-deps --no-build-isolation
+          pip wheel . --wheel-dir=dist-raw --no-deps --no-build-isolation
 
       - name: Repair wheel
         run: |
