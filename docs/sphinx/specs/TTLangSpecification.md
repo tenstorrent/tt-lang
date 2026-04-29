@@ -1347,7 +1347,7 @@ def matmul_read():
 | `ttl.math` unary math functions: `expm1`, `exp2`, `ceil`, `sign`, `gelu`, `silu`, `hardsigmoid`, `square`, `softsign`, `signbit`, `frac`, `trunc` | 0.1.7 | 1.0.0 |
 | `ttl.math` unary math functions: `logp1`, `atanh`, `asinh`, `acosh`, `selu`, `rsub`, `relu_max`, `relu_min`, `leaky_relu`, `elu`, `celu`, `prelu`, `softplus`, `hardtanh`, `round`, `clamp`, `threshold` | 0.1.7 | N/S |
 | `ttl.math` binary math functions: `min`, `max` | 0.1.7 | 0.1.7 |
-| `ttl.block` binary functions: `mask`, `mask_posinf` | 0.1.7 | N/S |
+| `ttl.block` mask functions: `mask`, `mask_posinf` | 0.1.7 | N/S |
 | `ttl.block.where` | 0.1.7 | N/S |
 | `ttl.block.broadcast` (compiler requires target block as argument) | 0.1.7 | 0.1.7 |
 | `ttl.block.fill` (compiler requires target block as argument) | 0.1.7 | 0.1.8 |
