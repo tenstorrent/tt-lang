@@ -6,7 +6,7 @@
 Adversarial multinode test designed to stress compiler optimizations.
 
 Evil features:
-- Non-square grid (8x6) and tensors (512x384)
+- Tensor shape derived from device compute grid (non-square on most devices)
 - 2x2 DFB shape with multi-tile blocks
 - Variable reuse/shadowing
 - Interleaved operations in non-obvious order
@@ -27,20 +27,19 @@ import ttl
 
 TILE_SIZE = 32
 
-# Non-square grid: 6 cols x 8 rows
-GRID_COLS = 6
-GRID_ROWS = 8
-
-# All tensors same size: 2x2 tiles per core = 512x384 total
+# All tensors same size: 2x2 tiles per core. Total shape adapts to the
+# device's compute grid (read at test time so the test runs on devices
+# with any worker-row count).
 CB_ROWS = 2
 CB_COLS = 2
-TENSOR_SHAPE = (
-    GRID_ROWS * CB_ROWS * TILE_SIZE,  # 512 rows
-    GRID_COLS * CB_COLS * TILE_SIZE,  # 384 cols
-)
 
 
-@ttl.operation(grid=(6, 8))  # (cols, rows)
+def _shape_for_device(device):
+    g = device.compute_with_storage_grid_size()
+    return (g.y * CB_ROWS * TILE_SIZE, g.x * CB_COLS * TILE_SIZE), g.x, g.y
+
+
+@ttl.operation(grid="auto")
 def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
     """
     Adversarial kernel with 4 inputs and 4 outputs.
@@ -188,15 +187,17 @@ def compute_expected(a, b, c, d):
 
 def test_adversarial_multinode(device):
     """Test adversarial kernel designed to break compiler optimizations."""
+    tensor_shape, grid_cols, grid_rows = _shape_for_device(device)
+
     # Random inputs
-    a_torch = torch.rand(TENSOR_SHAPE, dtype=torch.bfloat16) * 2.0 - 1.0
-    b_torch = torch.rand(TENSOR_SHAPE, dtype=torch.bfloat16) * 2.0 - 1.0
-    c_torch = torch.rand(TENSOR_SHAPE, dtype=torch.bfloat16) * 2.0 - 1.0
-    d_torch = torch.rand(TENSOR_SHAPE, dtype=torch.bfloat16) * 2.0 - 1.0
-    out1_torch = torch.zeros(TENSOR_SHAPE, dtype=torch.bfloat16)
-    out2_torch = torch.zeros(TENSOR_SHAPE, dtype=torch.bfloat16)
-    out3_torch = torch.zeros(TENSOR_SHAPE, dtype=torch.bfloat16)
-    out4_torch = torch.zeros(TENSOR_SHAPE, dtype=torch.bfloat16)
+    a_torch = torch.rand(tensor_shape, dtype=torch.bfloat16) * 2.0 - 1.0
+    b_torch = torch.rand(tensor_shape, dtype=torch.bfloat16) * 2.0 - 1.0
+    c_torch = torch.rand(tensor_shape, dtype=torch.bfloat16) * 2.0 - 1.0
+    d_torch = torch.rand(tensor_shape, dtype=torch.bfloat16) * 2.0 - 1.0
+    out1_torch = torch.zeros(tensor_shape, dtype=torch.bfloat16)
+    out2_torch = torch.zeros(tensor_shape, dtype=torch.bfloat16)
+    out3_torch = torch.zeros(tensor_shape, dtype=torch.bfloat16)
+    out4_torch = torch.zeros(tensor_shape, dtype=torch.bfloat16)
 
     exp1, exp2, exp3, exp4 = compute_expected(a_torch, b_torch, c_torch, d_torch)
 
@@ -214,7 +215,7 @@ def test_adversarial_multinode(device):
 
     # Verify grid_size
     x_size, y_size = ttl.grid_size(dims=2)
-    assert (x_size, y_size) == (GRID_COLS, GRID_ROWS)
+    assert (x_size, y_size) == (grid_cols, grid_rows)
 
     # Verify results
     result1 = ttnn.to_torch(out1)

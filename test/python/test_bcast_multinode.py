@@ -31,27 +31,25 @@ from ttlang_test_utils import assert_allclose, to_dram, to_l1
 import ttl
 
 TILE_SIZE = 32
-GRID_ROWS = 8
-GRID_COLS = 8
 
-# DRAM tensors: 4x4 tiles per core = 1024x1024 total
+# DRAM tensors: 4x4 tiles per core. L1 tensors: 1x1 tile per core. Total
+# tensor shape depends on the device's compute grid (read at test time so
+# the test runs on devices with any worker-row count).
 DRAM_CB_ROWS = 4
 DRAM_CB_COLS = 4
-DRAM_SHAPE = (
-    GRID_ROWS * DRAM_CB_ROWS * TILE_SIZE,
-    GRID_COLS * DRAM_CB_COLS * TILE_SIZE,
-)
-
-# L1 tensors: 1x1 tile per core = 256x256 total
 L1_CB_ROWS = 1
 L1_CB_COLS = 1
-L1_SHAPE = (
-    GRID_ROWS * L1_CB_ROWS * TILE_SIZE,
-    GRID_COLS * L1_CB_COLS * TILE_SIZE,
-)
 
 
-@ttl.operation(grid=(8, 8))
+def _shapes_for_device(device):
+    """Compute (DRAM_SHAPE, L1_SHAPE, grid_cols, grid_rows) for the device."""
+    g = device.compute_with_storage_grid_size()
+    dram_shape = (g.y * DRAM_CB_ROWS * TILE_SIZE, g.x * DRAM_CB_COLS * TILE_SIZE)
+    l1_shape = (g.y * L1_CB_ROWS * TILE_SIZE, g.x * L1_CB_COLS * TILE_SIZE)
+    return dram_shape, l1_shape, g.x, g.y
+
+
+@ttl.operation(grid="auto")
 def bcast_kernel(a, b, c, out1, out2, out3):
     """
     Multinode kernel with 20 fused ops across 3 outputs.
@@ -204,15 +202,17 @@ def compute_expected_l1(c):
 
 def test_bcast_multinode(device):
     """Test scoping-based broadcast: L1 tile reused across DRAM iterations."""
+    dram_shape, l1_shape, grid_cols, grid_rows = _shapes_for_device(device)
+
     # Random DRAM inputs
-    a_torch = torch.rand(DRAM_SHAPE, dtype=torch.bfloat16) * 2.0 - 1.0
-    b_torch = torch.rand(DRAM_SHAPE, dtype=torch.bfloat16) * 2.0 - 1.0
-    out1_torch = torch.zeros(DRAM_SHAPE, dtype=torch.bfloat16)
-    out2_torch = torch.zeros(DRAM_SHAPE, dtype=torch.bfloat16)
+    a_torch = torch.rand(dram_shape, dtype=torch.bfloat16) * 2.0 - 1.0
+    b_torch = torch.rand(dram_shape, dtype=torch.bfloat16) * 2.0 - 1.0
+    out1_torch = torch.zeros(dram_shape, dtype=torch.bfloat16)
+    out2_torch = torch.zeros(dram_shape, dtype=torch.bfloat16)
 
     # Random L1 inputs
-    c_torch = torch.rand(L1_SHAPE, dtype=torch.bfloat16) * 2.0 - 1.0
-    out3_torch = torch.zeros(L1_SHAPE, dtype=torch.bfloat16)
+    c_torch = torch.rand(l1_shape, dtype=torch.bfloat16) * 2.0 - 1.0
+    out3_torch = torch.zeros(l1_shape, dtype=torch.bfloat16)
 
     exp1, exp2 = compute_expected_dram(a_torch, b_torch, c_torch)
     exp3 = compute_expected_l1(c_torch)
@@ -231,7 +231,7 @@ def test_bcast_multinode(device):
 
     # Verify grid_size
     x_size, y_size = ttl.grid_size(dims=2)
-    assert (x_size, y_size) == (GRID_COLS, GRID_ROWS)
+    assert (x_size, y_size) == (grid_cols, grid_rows)
 
     # Verify results
     result1 = ttnn.to_torch(out1)
@@ -255,7 +255,7 @@ def make_bcast_granularity_kernel(granularity: int):
     Uses row broadcast (dims=[0]) pattern.
     """
 
-    @ttl.operation(grid=(8, 8))
+    @ttl.operation(grid="auto")
     def bcast_granularity_kernel(inp, out):
         """multinode broadcast kernel with parameterized granularity."""
         block_rows = granularity
@@ -350,9 +350,14 @@ def test_bcast_multinode_granularity(device, granularity, kernel):
     Each test uses shape divisible by grid and granularity:
     - 8x8 grid * granularity * 32 tile_size
     """
-    # Shape must be divisible by grid_size * granularity * tile_size
-    shape_dim = GRID_ROWS * granularity * TILE_SIZE  # 256 for g=1, 512 for g=2
-    shape = (shape_dim, shape_dim)
+    # Shape must be divisible by grid_size * granularity * tile_size.
+    # The kernel uses grid_x for the row axis and grid_y for the col axis
+    # (see rows_per_core / cols_per_core formulas).
+    g = device.compute_with_storage_grid_size()
+    shape = (
+        g.x * granularity * TILE_SIZE,
+        g.y * granularity * TILE_SIZE,
+    )
 
     value = 3.5
     inp_torch = create_row_bcast_input_multitile(shape, value)
