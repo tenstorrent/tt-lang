@@ -291,8 +291,12 @@ target_include_directories(TTLangPythonModules.extension._ttmlir.dso PRIVATE
 )
 
 # ###############################################################################
-# Symlink sim package into the ttl namespace (pure Python, no C extensions).
-# Uses a symlink so that source edits are picked up without rebuilding.
+# Sim package: build-tree symlink for live edits, install-tree real files.
+#
+# Build tree gets a symlink (ttl/sim -> python/sim) so devs see source edits
+# in `import ttl.sim` without rebuilding. Wheels and install trees get a real
+# copy via a dedicated install rule below; the bulk install rule that copies
+# python_packages/ excludes ttl/sim to avoid shipping the symlink.
 # ###############################################################################
 add_custom_target(TTLangSimPackage ALL
   COMMAND ${CMAKE_COMMAND} -E create_symlink
@@ -307,4 +311,12 @@ add_custom_target(TTLangSimPackage ALL
 install(DIRECTORY ${CMAKE_BINARY_DIR}/python_packages/
   DESTINATION .
   COMPONENT TTLangPythonWheel
-  EXCLUDE_FROM_ALL)
+  EXCLUDE_FROM_ALL
+  REGEX "ttl/sim($|/)" EXCLUDE)
+
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/sim/
+  DESTINATION ttl/sim
+  COMPONENT TTLangPythonWheel
+  EXCLUDE_FROM_ALL
+  FILES_MATCHING PATTERN "*.py"
+  PATTERN "__pycache__" EXCLUDE)

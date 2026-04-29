@@ -168,14 +168,6 @@ class CMakeBuild(build_ext):
             ["cmake", "--build", str(build_dir), "--target", "TTLangPythonModules"]
         )
 
-        # The cmake install copies build/python_packages/ which includes a
-        # ttl/sim symlink (from TTLangSimPackage).  setuptools' build_py
-        # step already copied the real sim/ directory into install_dir,
-        # so remove it before the cmake install to avoid a conflict.
-        sim_dir = install_dir / "ttl" / "sim"
-        if sim_dir.is_dir() and not sim_dir.is_symlink():
-            shutil.rmtree(sim_dir)
-
         # Use --prefix to override the install location at install time.
         # This avoids reconfiguring the build just to change
         # CMAKE_INSTALL_PREFIX.

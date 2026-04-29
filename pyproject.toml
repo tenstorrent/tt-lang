@@ -56,7 +56,7 @@ Repository = "https://github.com/tenstorrent/tt-lang"
 Issues = "https://github.com/tenstorrent/tt-lang/issues"
 
 [tool.cibuildwheel]
-build = "cp311-manylinux_x86_64* cp312-manylinux_x86_64* cp311-macosx_x86_64* cp312-macosx_arm64*"
+build = "cp312-manylinux_x86_64* cp312-macosx_arm64*"
 skip = "*-musllinux_*"
 build-verbosity = 2
 
