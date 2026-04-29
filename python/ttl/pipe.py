@@ -56,6 +56,22 @@ class DstPipeIdentity:
         return self._pipe.src
 
 
+# Registry of PipeNets constructed during the current kernel trace.
+# _compile_kernel clears this before invoking the user closure and inspects
+# it afterwards to detect multicast usage (used to reject grid="auto").
+_pipe_net_registry: List["PipeNet"] = []
+
+
+def _clear_pipe_net_registry() -> None:
+    """Reset the PipeNet registry. Called before tracing each kernel."""
+    _pipe_net_registry.clear()
+
+
+def _kernel_uses_multicast_pipes() -> bool:
+    """Return True if any PipeNet registered during the current trace is multicast."""
+    return any(pipe.is_multicast for net in _pipe_net_registry for pipe in net.pipes)
+
+
 class Pipe:
     """
     A pipe for core-to-core data transfer.
@@ -185,6 +201,7 @@ class PipeNet:
         self.pipes = pipes
         for pipe in self.pipes:
             pipe.pipe_net_id = self.pipe_net_id
+        _pipe_net_registry.append(self)
 
     @staticmethod
     def _validate_no_overlapping_destinations(pipes: List[Pipe]):

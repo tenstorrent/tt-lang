@@ -12,8 +12,13 @@ import ttnn
 from utils.correctness import assert_with_ulp
 
 
+def _device_grid_2d(*tensors):
+    g = tensors[0].device().compute_with_storage_grid_size()
+    return (g.x, g.y)
+
+
 @ttl.operation(
-    grid="auto",  # NOTE: allow compiler to choose grid
+    grid=_device_grid_2d,  # use full device grid (callable so it adapts per device)
 )
 def eltwise_pipe(
     a_in: ttnn.Tensor,

@@ -67,7 +67,12 @@ from ._src.tensor_registry import (
 )
 from ._src.ttl_ast import TTLGenericCompiler
 from .circular_buffer import CircularBuffer, CompilerAllocatedDFBConfig, get_cb_count
-from .pipe import Pipe, PipeNet
+from .pipe import (
+    Pipe,
+    PipeNet,
+    _clear_pipe_net_registry,
+    _kernel_uses_multicast_pipes,
+)
 from .constants import SUPPORTED_MEMORY_SPACES
 from .diagnostics import (
     TTLangCompileError,
@@ -88,6 +93,30 @@ from .kernel_runner import (
 from .operators import CopyTransferHandler, TensorBlock, copy
 from .compiler_options import CompilerOptions
 from .ttl_utils import get_thread_type_string
+
+# Migration message for grid="auto" + multicast pipes (issue #541).
+# grid="auto" resolves to the device's full compute grid. For pipe kernels
+# whose work shape may not exactly fill the device, idle cores still execute
+# the kernel with out-of-bounds indices, corrupting DRAM and the multicast
+# handshake. Pass a callable that returns the active subgrid instead.
+_AUTO_MCAST_MIGRATION_MESSAGE = (
+    "@ttl.operation(grid='auto') is not supported for kernels that construct "
+    "multicast pipes (issue #541). With grid='auto', idle cores execute the "
+    "kernel with out-of-bounds indices when the work shape does not exactly "
+    "fill the device, corrupting DRAM and the multicast handshake.\n\n"
+    "Pass a callable that computes the active subgrid host-side:\n\n"
+    "    from ttlang_test_utils import even_split\n\n"
+    "    def _grid(*tensors):\n"
+    "        device_grid = tensors[0].device().compute_with_storage_grid_size()\n"
+    "        _, rows_used = even_split(M_BLOCKS, device_grid.y)\n"
+    "        _, cols_used = even_split(N_BLOCKS, device_grid.x)\n"
+    "        return (cols_used, rows_used)\n\n"
+    "    @ttl.operation(grid=_grid)\n"
+    "    def kernel(...): ...\n\n"
+    "Inside the closure, ttl.grid_size() then returns the active subgrid. "
+    "See test/python/pipe/test_mcast_matmul.py for a migrated example."
+)
+
 
 # Thread registry for automatic collection of @compute and @datamovement threads
 _thread_registry: List[Callable] = []
@@ -1113,6 +1142,7 @@ def _compile_kernel(
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
     compiler_options: CompilerOptions = CompilerOptions(),
+    original_grid=None,
 ) -> Optional[CompiledTTNNKernel]:
     """
     Compile kernel function to MLIR and return CompiledTTNNKernel.
@@ -1136,6 +1166,7 @@ def _compile_kernel(
         CompiledTTNNKernel ready for execution
     """
     PipeNet._next_id = 0
+    _clear_pipe_net_registry()
     f_params = inspect.signature(f).parameters
 
     # Get kernel source location for error reporting
@@ -1188,6 +1219,13 @@ def _compile_kernel(
     _clear_thread_registry()
     f(*compile_args, **kwargs)
     threads = _get_registered_threads()
+
+    # Reject grid="auto" combined with multicast pipes (issue #541). Idle
+    # cores in an auto-resolved device grid execute the kernel with OOB
+    # indices, corrupting DRAM and the multicast handshake. Use a callable
+    # grid resolver instead; see _AUTO_MCAST_MIGRATION_MESSAGE.
+    if original_grid == "auto" and _kernel_uses_multicast_pipes():
+        raise ValueError(_AUTO_MCAST_MIGRATION_MESSAGE)
 
     if not threads:
         raise ValueError(
@@ -1591,6 +1629,7 @@ def pykernel_gen(
                     fp32_dest_acc_en=fp32_override,
                     dst_full_sync_en=dst_sync_override,
                     compiler_options=compiler_options,
+                    original_grid=grid,
                 )
 
                 if compiled_kernel is not None:

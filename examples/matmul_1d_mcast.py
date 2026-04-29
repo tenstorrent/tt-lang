@@ -12,7 +12,14 @@ from utils import assert_with_ulp
 import ttl
 
 
-@ttl.operation(grid="auto")
+def _device_grid_2d(*tensors):
+    # Full device extent. Per-core gating inside the kernel
+    # (`if node_index < num_working_nodes`) handles inactive cores.
+    g = tensors[0].device().compute_with_storage_grid_size()
+    return (g.x, g.y)
+
+
+@ttl.operation(grid=_device_grid_2d)
 def matmul_1d(
     a: ttnn.Tensor,
     b: ttnn.Tensor,

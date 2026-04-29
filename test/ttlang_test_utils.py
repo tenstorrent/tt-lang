@@ -17,6 +17,7 @@ import glob
 import importlib.util
 import os
 import sys
+from typing import Tuple
 
 # =============================================================================
 # Feature detection
@@ -117,6 +118,19 @@ def require_hardware(message: str = "Skipping test - no hardware available"):
 # =============================================================================
 # Tensor creation utilities
 # =============================================================================
+
+
+def even_split(num_blocks: int, max_grid: int) -> Tuple[int, int]:
+    """Partition num_blocks across at most max_grid cores so that work divides evenly.
+
+    Returns (blocks_per_core, num_cores_used). num_cores_used is the largest
+    divisor of num_blocks that is <= max_grid. Used host-side by callable
+    grid resolvers to size the active subgrid for pipe kernels.
+    """
+    bpn = -(-num_blocks // max_grid)
+    while num_blocks % bpn != 0:
+        bpn += 1
+    return bpn, num_blocks // bpn
 
 
 def to_dram(torch_tensor, device):
@@ -303,6 +317,7 @@ __all__ = [
     "is_hardware_available",
     "require_ttnn",
     "require_hardware",
+    "even_split",
     "to_dram",
     "to_l1",
     "to_l1_sharded",

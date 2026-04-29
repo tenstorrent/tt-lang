@@ -3,11 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Scatter with grid="auto" -- the spec scatter example verbatim.
+Scatter on the full device grid -- the spec scatter example verbatim.
 
 Each column's row-0 core multicasts to all other rows in that column.
-Pipe construction uses ttl.grid_size() so it adapts to whatever
-device grid grid="auto" resolves to.
+Pipe construction uses ttl.grid_size() so it adapts to whatever the
+grid resolver returns. Uses a callable grid that resolves to the
+device's full compute extent (grid="auto" is rejected by the compiler
+for kernels that construct multicast pipes; see issue #541).
 """
 
 # REQUIRES: ttnn
@@ -25,7 +27,12 @@ from ttlang_test_utils import assert_pcc, to_dram
 TILE = 32
 
 
-@ttl.operation(grid="auto")
+def _device_grid(*tensors):
+    g = tensors[0].device().compute_with_storage_grid_size()
+    return (g.x, g.y)
+
+
+@ttl.operation(grid=_device_grid)
 def scatter_auto(inp, out):
     grid_x, grid_y = ttl.grid_size(dims=2)
 

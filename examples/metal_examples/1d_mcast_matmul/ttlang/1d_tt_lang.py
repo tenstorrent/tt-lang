@@ -10,7 +10,14 @@ from utils.correctness import assert_with_ulp
 TS = ttnn.TILE_SIZE  # 32
 
 
-@ttl.operation(grid="auto")
+def _device_grid_2d(*tensors):
+    # Full device extent. The kernel uses per-core gating to handle inactive
+    # cores (see `if node_index < num_working_nodes`).
+    g = tensors[0].device().compute_with_storage_grid_size()
+    return (g.x, g.y)
+
+
+@ttl.operation(grid=_device_grid_2d)
 def matmul_1d(
     a_tensor: ttnn.Tensor,
     b_tensor: ttnn.Tensor,
