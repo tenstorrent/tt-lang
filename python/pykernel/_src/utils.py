@@ -14,16 +14,57 @@ from ttl.dialects import arith
 from ttl.ir import *
 
 
+def _parse_tensor_type(ty_str: str):
+    """Extract shape and dtype from an MLIR tiled tensor type."""
+    match = re.match(r"tensor<(.+)x!ttcore\.tile<\d+x\d+,\s*(\w+)>>", ty_str)
+    if not match:
+        return None
+
+    shape_str, dtype = match.groups()
+    try:
+        shape = tuple(int(dim) for dim in shape_str.split("x"))
+    except ValueError:
+        return None
+    return shape, dtype
+
+
+def _format_tensor_shape(shape: tuple[int, ...]) -> str:
+    return f"({', '.join(str(dim) for dim in shape)})"
+
+
 def _format_tensor_type(ty_str: str) -> str:
-    """Convert MLIR tensor type to user-friendly format.
+    """Convert MLIR tiled tensor type to user-friendly format.
 
     Example: tensor<2x2x!ttcore.tile<32x32, bf16>> -> (2, 2) bf16 tensor
     """
-    match = re.match(r"tensor<(\d+)x(\d+)x!ttcore\.tile<\d+x\d+,\s*(\w+)>>", ty_str)
-    if match:
-        rows, cols, dtype = match.groups()
-        return f"({rows}, {cols}) {dtype} tensor"
+    parsed = _parse_tensor_type(ty_str)
+    if parsed:
+        shape, dtype = parsed
+        return f"{_format_tensor_shape(shape)} {dtype} tensor"
     return ty_str
+
+
+def _tensor_type_mismatch_message(val_type, ty, operation: str = "operation") -> str:
+    val_str, ty_str = str(val_type), str(ty)
+    if val_str.startswith("tensor<") and ty_str.startswith("tensor<"):
+        val_tensor = _parse_tensor_type(val_str)
+        ty_tensor = _parse_tensor_type(ty_str)
+        if val_tensor and ty_tensor:
+            val_shape, val_dtype = val_tensor
+            ty_shape, ty_dtype = ty_tensor
+            if val_dtype != ty_dtype:
+                return (
+                    f"incompatible tensor data types for {operation}: got "
+                    f"{_format_tensor_type(val_str)} and "
+                    f"{_format_tensor_type(ty_str)}; "
+                    f"{operation} requires matching data types"
+                )
+        return (
+            f"shape mismatch between {_format_tensor_type(val_str)} and "
+            f"{_format_tensor_type(ty_str)}; "
+            f"note: you can use ttl.math.broadcast() to expand the smaller tensor"
+        )
+    return f"Unhandled cast from {val_type} to {ty}"
 
 
 def _cleanup_source_code(f: Callable):
@@ -45,15 +86,8 @@ def _cast(val, ty):
     elif isinstance(val.type, IndexType) and isinstance(ty, IntegerType):
         return arith.index_cast(ty, val)
     else:
-        # Check for tensor shape mismatch and provide helpful error
-        val_str, ty_str = str(val.type), str(ty)
-        if val_str.startswith("tensor<") and ty_str.startswith("tensor<"):
-            raise TypeError(
-                f"shape mismatch between {_format_tensor_type(val_str)} and "
-                f"{_format_tensor_type(ty_str)}; "
-                f"note: you can use ttl.math.broadcast() to expand the smaller tensor"
-            )
-        raise TypeError(f"Unhandled cast from {val.type} to {ty}")
+        # Check for tensor mismatches and provide helpful errors.
+        raise TypeError(_tensor_type_mismatch_message(val.type, ty))
 
 
 def _asindex(val):

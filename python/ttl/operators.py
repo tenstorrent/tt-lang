@@ -15,6 +15,7 @@ from ttl.ir import RankedTensorType, Type, FloatAttr, F32Type
 from ._generated_elementwise import *  # noqa: F401,F403
 from ._generated_elementwise import __all__ as _generated_all
 from ._src.ttl_ast import syntax
+from pykernel._src.utils import _tensor_type_mismatch_message
 from ttl.dialects import ttl
 from .pipe import Pipe
 
@@ -55,6 +56,21 @@ def _set_current_grid(grid: Tuple[int, int]) -> None:
 def _get_current_grid() -> Tuple[int, int]:
     """Get the current grid dimensions."""
     return _current_grid
+
+
+def _require_matching_tensor_data_types(lhs, rhs, operation: str) -> None:
+    if not hasattr(lhs, "type") or not hasattr(rhs, "type"):
+        return
+
+    lhs_type = lhs.type
+    rhs_type = rhs.type
+    if not isinstance(lhs_type, RankedTensorType) or not isinstance(
+        rhs_type, RankedTensorType
+    ):
+        return
+
+    if lhs_type.element_type != rhs_type.element_type:
+        raise TypeError(_tensor_type_mismatch_message(lhs_type, rhs_type, operation))
 
 
 @syntax("!tensor")
@@ -103,6 +119,7 @@ class TensorBlock:
         """
         lhs_type = ast_self.type
         rhs_type = rhs.type
+        _require_matching_tensor_data_types(ast_self, rhs, "matmul")
         lhs_shape = list(lhs_type.shape)
         rhs_shape = list(rhs_type.shape)
         result_shape = [lhs_shape[0], rhs_shape[1]]
@@ -122,6 +139,7 @@ class TensorBlock:
                 "store() must be called on a block acquired from reserve(), not a regular tensor"
             )
         reserve = _get_reserve_from_block(ast_self)
+        _require_matching_tensor_data_types(rhs, reserve, "store")
         ttl.store(rhs, reserve)
 
     def __iadd__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
@@ -141,6 +159,7 @@ class TensorBlock:
                 "+= must be called on a block acquired from reserve(), not a regular tensor"
             )
         reserve = _get_reserve_from_block(ast_self)
+        _require_matching_tensor_data_types(rhs, reserve, "+=")
         ttl.store(rhs, reserve, accumulate=True)
         return ast_self
 
@@ -419,10 +438,12 @@ def copy(src, dst) -> CopyTransferHandler:
 
     if dst_is_block and not src_is_block:
         # Read: device tensor/slice -> block (CB)
+        _require_matching_tensor_data_types(src, dst, "copy")
         xf_type = Type.parse("!ttl.transfer_handle<read>", ctx)
         return ttl.copy(xf_type, src, dst_cb)
     elif src_is_block and not dst_is_block:
         # Write: block (CB) -> device tensor/slice
+        _require_matching_tensor_data_types(src, dst, "copy")
         xf_type = Type.parse("!ttl.transfer_handle<write>", ctx)
         return ttl.copy(xf_type, src_cb, dst)
     else:
