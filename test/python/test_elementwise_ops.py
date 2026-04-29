@@ -50,15 +50,15 @@ def {name}_kernel(lhs, rhs, out):
     @ttl.datamovement()
     def dm_read():
         lhs_blk = lhs_dfb.reserve()
-        ttl.copy(lhs[0, 0], lhs_blk).wait()
+        ttl.copy(lhs[0, 0], lhs_blk)
 
         rhs_blk = rhs_dfb.reserve()
-        ttl.copy(rhs[0, 0], rhs_blk).wait()
+        ttl.copy(rhs[0, 0], rhs_blk)
 
     @ttl.datamovement()
     def dm_write():
         out_blk = out_dfb.wait()
-        ttl.copy(out_blk, out[0, 0]).wait()
+        ttl.copy(out_blk, out[0, 0])
 
 '''
 
@@ -83,15 +83,15 @@ def {name}_kernel(lhs, rhs, out):
     @ttl.datamovement()
     def dm_read():
         lhs_blk = lhs_dfb.reserve()
-        ttl.copy(lhs[0, 0], lhs_blk).wait()
+        ttl.copy(lhs[0, 0], lhs_blk)
 
         rhs_blk = rhs_dfb.reserve()
-        ttl.copy(rhs[0, 0], rhs_blk).wait()
+        ttl.copy(rhs[0, 0], rhs_blk)
 
     @ttl.datamovement()
     def dm_write():
         out_blk = out_dfb.wait()
-        ttl.copy(out_blk, out[0, 0]).wait()
+        ttl.copy(out_blk, out[0, 0])
 
 '''
 
@@ -114,12 +114,12 @@ def {name}_kernel(inp, out):
     @ttl.datamovement()
     def dm_read():
         inp_blk = inp_dfb.reserve()
-        ttl.copy(inp[0, 0], inp_blk).wait()
+        ttl.copy(inp[0, 0], inp_blk)
 
     @ttl.datamovement()
     def dm_write():
         out_blk = out_dfb.wait()
-        ttl.copy(out_blk, out[0, 0]).wait()
+        ttl.copy(out_blk, out[0, 0])
 
 '''
 

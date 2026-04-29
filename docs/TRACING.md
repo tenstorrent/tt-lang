@@ -277,12 +277,18 @@ Several things to observe:
 Tracing is controlled by a `--trace` flag on `ttlang-sim`:
 
 ```
-ttlang-sim examples/matmul.py --trace trace.jsonl
+ttlang-sim examples/matmul.py --trace
 ```
 
-This enables tracing and writes the collected events to `trace.jsonl` on exit, in
-the same way that `--show-stats` enables statistics and prints them. When no
-`--trace` flag is given, `trace()` is a no-op and adds no overhead.
+This enables tracing and writes the collected events to `trace.jsonl` in the current
+directory on exit. An explicit path can be given when a different location is needed:
+
+```
+ttlang-sim examples/matmul.py --trace /tmp/matmul_trace.jsonl
+```
+
+This works in the same way that `--show-stats` enables statistics and prints them.
+When no `--trace` flag is given, `trace()` is a no-op and adds no overhead.
 
 ### Filtering
 

@@ -226,6 +226,7 @@ install(DIRECTORY python/pykernel DESTINATION python_packages/ttl
 
 # Install ttlang-sim script to bin directory
 install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/ttlang-sim" DESTINATION bin)
+install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/ttlang-sim-stats" DESTINATION bin)
 
 # ---------------------------------------------------------------------------
 # Configuration summary

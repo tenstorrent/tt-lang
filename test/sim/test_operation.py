@@ -1145,3 +1145,69 @@ class TestRowMajoroperation:
         assert torch.allclose(
             output_data, expected, atol=1e-5
         ), f"Expected exp(input), got {output_data}"
+
+
+def _make_passthrough_kernel(decorator):
+    """Build a simple copy kernel using the given @ttl.operation decorator."""
+
+    @decorator
+    def kernel(x, y):
+        x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1))
+        y_dfb = ttl.make_dataflow_buffer_like(y, shape=(1, 1))
+
+        @ttl.compute()
+        def compute():
+            with x_dfb.wait() as x_blk, y_dfb.reserve() as y_blk:
+                y_blk.store(x_blk)
+
+        @ttl.datamovement()
+        def reader():
+            with x_dfb.reserve() as blk:
+                ttl.copy(x[0, 0], blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with y_dfb.wait() as blk:
+                ttl.copy(blk, y[0, 0]).wait()
+
+    return kernel
+
+
+class TestHardwareKeywordsIgnored:
+    """Compiler-specific keyword arguments are silently ignored by the simulator."""
+
+    def test_fp32_dest_acc_en_accepted(self) -> None:
+        """fp32_dest_acc_en=True does not raise."""
+        a = ttnn.from_torch(torch.zeros(32, 32))
+        b = ttnn.from_torch(torch.zeros(32, 32))
+        kernel = _make_passthrough_kernel(
+            ttl.operation(grid=(1, 1), fp32_dest_acc_en=True)
+        )
+        kernel(a, b)
+
+    def test_dst_full_sync_en_accepted(self) -> None:
+        """dst_full_sync_en=False does not raise."""
+        a = ttnn.from_torch(torch.zeros(32, 32))
+        b = ttnn.from_torch(torch.zeros(32, 32))
+        kernel = _make_passthrough_kernel(
+            ttl.operation(grid=(1, 1), dst_full_sync_en=False)
+        )
+        kernel(a, b)
+
+    def test_multiple_hardware_kwargs_accepted(self) -> None:
+        """Multiple hardware kwargs together do not raise."""
+        a = ttnn.from_torch(torch.zeros(32, 32))
+        b = ttnn.from_torch(torch.zeros(32, 32))
+        kernel = _make_passthrough_kernel(
+            ttl.operation(
+                grid=(1, 1),
+                fp32_dest_acc_en=True,
+                dst_full_sync_en=False,
+            )
+        )
+        kernel(a, b)
+
+    def test_unknown_kwarg_raises(self) -> None:
+        """An unrecognised keyword argument raises TypeError."""
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            ttl.operation(grid=(1, 1), totally_unknown_option=42)

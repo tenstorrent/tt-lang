@@ -686,7 +686,7 @@ pipeline option to gate the optimization passes.
 | `maximize-dst` | true | Enable subblock partitioning and operation scheduling |
 | `enable-fpu-binary-ops` | true | Use FPU execution for binary add/sub/mul when both operands are CB-backed |
 | `use-block-matmul` | true | Lower matmul to block-level hardware calls (`experimental::matmul_block`) instead of per-tile loops |
-| `auto-sync` | false | Let the compiler insert and move DFB synchronization ops; when disabled, user-placed reserve/push is preserved |
+| `subblock-sync` | false | Refine DFB reserve/push to per-subblock granularity; when disabled, user-placed reserve/push is preserved |
 | `combine-pack-tiles` | true | Combine consecutive `pack_tile` ops into `pack_tile_block` |
 | `lower-to-emitc` | false | Lower TTKernel to EmitC (for C++ translation) |
 
@@ -698,7 +698,7 @@ Python API equivalents (`CompilerOptions` in
 | `maximize_dst` | `--ttl-maximize-dst` / `--no-ttl-maximize-dst` | `maximize-dst` |
 | `enable_fpu_binary_ops` | `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | `enable-fpu-binary-ops` |
 | `use_block_matmul` | `--ttl-block-matmul` / `--no-ttl-block-matmul` | `use-block-matmul` |
-| `auto_sync` | `--ttl-auto-sync` / `--no-ttl-auto-sync` | `auto-sync` |
+| `subblock_sync` | `--ttl-subblock-sync` / `--no-ttl-subblock-sync` | `subblock-sync` |
 | `combine_pack_tiles` | `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | `combine-pack-tiles` |
 
 Environment variable: `TTLANG_COMPILER_OPTIONS` (space-separated flags).

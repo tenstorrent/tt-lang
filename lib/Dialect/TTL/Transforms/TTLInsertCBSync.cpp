@@ -7,13 +7,18 @@
 //===----------------------------------------------------------------------===//
 //
 // Inserts missing cb_push / cb_pop for unmatched cb_reserve / cb_wait ops.
-// Computes a transitive use closure to find the last operation that touches
-// the CB's data, and inserts the release after that point.
 //
-// Releases nested inside structured control flow (scf.if branches) are
-// hoisted: the nested release is erased and a single release is placed
-// after the enclosing structured op. This keeps push/pop at the same
-// scope level as their acquire.
+// Each acquire opens a DFB live interval. The pass finds owned uses from two
+// sources: SSA users of the acquire result, and direction-matched direct DFB
+// copy operands. Uses in descendant regions project to their ancestor in the
+// acquire block.
+//
+// Nested releases are erased and reinserted at the acquire block scope.
+// Same-level releases make the pass idempotent.
+//
+// Legality invariants:
+//   P1. cb_push follows reserve-side writes before write pointer reuse.
+//   P2. cb_pop follows wait-side reads before read pointer reuse.
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,134 +38,248 @@ namespace mlir::tt::ttl {
 
 namespace {
 
+enum class DFBSyncClass { Producer, Consumer };
+
+struct ReleaseSearch {
+  bool hasSameLevelRelease = false;
+  SmallVector<Operation *> nestedReleases;
+};
+
+struct AcquireInterval {
+  Operation *acquire;
+  Value cb;
+  DFBSyncClass syncClass;
+  Operation *syncClassBoundary;
+};
+
 /// Return true if `a` is before `b` in their common block.
 static bool isBefore(Operation *a, Operation *b) {
   return a->isBeforeInBlock(b);
 }
 
-/// Find releases on `cb` between `acquire` and `bound` in the acquire's block.
-/// Same-level releases are "matching" (the acquire is already handled).
-/// Nested releases are collected into `toHoist` for erasure.
-template <typename ReleaseOpTy>
-static bool findReleases(Value cb, Operation *acquire, Operation *bound,
-                         const SmallVectorImpl<ReleaseOpTy> &allReleases,
-                         SmallVectorImpl<ReleaseOpTy> &toHoist,
-                         const DenseSet<Operation *> &erased) {
-  Block *block = acquire->getBlock();
-  bool hasSameLevelRelease = false;
+static bool isAcquireOp(Operation *op) {
+  return isa<CBReserveOp, CBWaitOp>(op);
+}
 
-  for (auto release : allReleases) {
+static bool isReleaseOp(Operation *op) { return isa<CBPushOp, CBPopOp>(op); }
+
+static Value getAcquireCB(Operation *op) {
+  if (auto reserve = dyn_cast<CBReserveOp>(op)) {
+    return reserve.getCb();
+  }
+  return cast<CBWaitOp>(op).getCb();
+}
+
+static Value getReleaseCB(Operation *op) {
+  if (auto push = dyn_cast<CBPushOp>(op)) {
+    return push.getCb();
+  }
+  return cast<CBPopOp>(op).getCb();
+}
+
+static DFBSyncClass getDFBSyncClass(Operation *op) {
+  if (isa<CBReserveOp>(op)) {
+    return DFBSyncClass::Producer;
+  }
+  assert(isa<CBWaitOp>(op) && "unsupported DFB acquire op");
+  return DFBSyncClass::Consumer;
+}
+
+static bool isLifecycleOrAttachOp(Operation *op) {
+  return isAcquireOp(op) || isReleaseOp(op) || isa<AttachCBOp>(op);
+}
+
+static bool directDFBUseMatchesAcquire(AcquireInterval interval,
+                                       Operation *user) {
+  auto copy = dyn_cast<CopyOp>(user);
+  if (!copy) {
+    return true;
+  }
+
+  switch (interval.syncClass) {
+  case DFBSyncClass::Producer:
+    return copy.getDst() == interval.cb;
+  case DFBSyncClass::Consumer:
+    return copy.getSrc() == interval.cb;
+  }
+  llvm_unreachable("unknown DFB sync class");
+}
+
+static bool projectToAcquireBlock(AcquireInterval interval, Operation *op,
+                                  Operation *&projected) {
+  Block *block = interval.acquire->getBlock();
+  projected = op->getBlock() == block ? op : block->findAncestorOpInBlock(*op);
+  if (!projected) {
+    return false;
+  }
+  if (!isBefore(interval.acquire, projected)) {
+    return false;
+  }
+  if (interval.syncClassBoundary &&
+      !isBefore(projected, interval.syncClassBoundary)) {
+    return false;
+  }
+  return true;
+}
+
+static void updateLatestUse(Operation *candidate, Operation *&latest) {
+  if (isBefore(latest, candidate)) {
+    latest = candidate;
+  }
+}
+
+/// Find releases owned by this acquire interval.
+static ReleaseSearch findOwnedReleases(AcquireInterval interval,
+                                       ArrayRef<Operation *> allReleases,
+                                       const DenseSet<Operation *> &erased) {
+  ReleaseSearch result;
+  Block *block = interval.acquire->getBlock();
+
+  for (Operation *release : allReleases) {
     if (erased.contains(release)) {
       continue;
     }
-    if (release.getCb() != cb) {
+    if (getReleaseCB(release) != interval.cb) {
       continue;
     }
 
-    // Same-level: release is directly in the acquire's block.
     if (release->getBlock() == block) {
-      if (!isBefore(acquire, release)) {
+      Operation *projected = nullptr;
+      if (!projectToAcquireBlock(interval, release, projected)) {
         continue;
       }
-      if (bound && !isBefore(release, bound)) {
-        continue;
-      }
-      hasSameLevelRelease = true;
+      result.hasSameLevelRelease = true;
       continue;
     }
 
-    // Nested: release is inside a structured op in the acquire's block.
-    Operation *ancestor = block->findAncestorOpInBlock(*release);
+    Operation *projected = nullptr;
+    if (!projectToAcquireBlock(interval, release, projected)) {
+      continue;
+    }
+    result.nestedReleases.push_back(release);
+  }
+
+  return result;
+}
+
+static void updateBoundary(Value cb, Operation *acquire,
+                           ArrayRef<Operation *> acquires,
+                           Operation *&boundary) {
+  Block *block = acquire->getBlock();
+  for (Operation *other : acquires) {
+    if (other == acquire) {
+      continue;
+    }
+    if (getAcquireCB(other) != cb) {
+      continue;
+    }
+    Operation *ancestor = block->findAncestorOpInBlock(*other);
     if (!ancestor) {
       continue;
     }
     if (!isBefore(acquire, ancestor)) {
       continue;
     }
-    if (bound && !isBefore(ancestor, bound)) {
-      continue;
+    if (!boundary || isBefore(ancestor, boundary)) {
+      boundary = ancestor;
     }
-    toHoist.push_back(release);
   }
-
-  return hasSameLevelRelease;
 }
 
-/// Compute the last operation (in the acquire's block) in the transitive
-/// use closure of an acquire.
-///
-/// Uses in nested regions are projected up to their ancestor in the
-/// acquire's block (e.g., an add inside an scf.if projects to the scf.if).
-static Operation *findLastTransitiveUse(Value cb, Operation *acquire,
-                                        Operation *bound) {
-  Block *block = acquire->getBlock();
-  Operation *last = acquire;
+/// Return the closest later acquire in the same DFB sync class, projected into
+/// `acquire`'s block. Producer intervals use `cb_reserve` boundaries; consumer
+/// intervals use `cb_wait` boundaries.
+static Operation *findNextSyncClassAcquire(Value cb, Operation *acquire,
+                                           ArrayRef<Operation *> acquires) {
+  Operation *boundary = nullptr;
+  updateBoundary(cb, acquire, acquires, boundary);
+  return boundary;
+}
+
+/// Return the last op in `acquire`'s block that consumes the acquired slot.
+/// Tensor uses follow the acquire result; direct DFB copies use direction.
+/// `boundary` stops the scan at the next `cb_reserve` for reserve intervals or
+/// the next `cb_wait` for wait intervals.
+static Operation *findLastOwnedUse(AcquireInterval interval) {
+  Operation *last = interval.acquire;
   DenseSet<Operation *> visited;
   SmallVector<Value, 8> worklist;
 
-  if (acquire->getNumResults() > 0) {
-    worklist.push_back(acquire->getResult(0));
-  }
-
-  // Returns the ancestor in the acquire's block, or nullptr if out of range.
-  auto getInRangeAncestor = [&](Operation *op) -> Operation * {
-    Operation *ancestor = block->findAncestorOpInBlock(*op);
-    if (!ancestor) {
-      return nullptr;
+  auto extend = [&](Operation *user) {
+    Operation *projected = nullptr;
+    if (!projectToAcquireBlock(interval, user, projected)) {
+      return false;
     }
-    if (!isBefore(acquire, ancestor) && ancestor != acquire) {
-      return nullptr;
+    if (!visited.insert(user).second) {
+      return false;
     }
-    if (bound && !isBefore(ancestor, bound)) {
-      return nullptr;
-    }
-    return ancestor;
-  };
-
-  for (auto &use : cb.getUses()) {
-    Operation *user = use.getOwner();
-    if (user == acquire) {
-      continue;
-    }
-    if (isa<CBPushOp, CBPopOp, CBReserveOp, CBWaitOp>(user)) {
-      continue;
-    }
-    Operation *ancestor = getInRangeAncestor(user);
-    if (!ancestor) {
-      continue;
-    }
-    if (isBefore(last, ancestor)) {
-      last = ancestor;
-    }
-    for (auto result : user->getResults()) {
+    updateLatestUse(projected, last);
+    for (Value result : user->getResults()) {
       worklist.push_back(result);
     }
+    return true;
+  };
+
+  for (OpOperand &use : interval.cb.getUses()) {
+    Operation *user = use.getOwner();
+    if (user == interval.acquire) {
+      continue;
+    }
+    if (isLifecycleOrAttachOp(user)) {
+      continue;
+    }
+    if (!directDFBUseMatchesAcquire(interval, user)) {
+      continue;
+    }
+    extend(user);
   }
 
+  if (interval.acquire->getNumResults() > 0) {
+    worklist.push_back(interval.acquire->getResult(0));
+  }
   while (!worklist.empty()) {
-    Value v = worklist.pop_back_val();
-    for (auto &use : v.getUses()) {
+    Value value = worklist.pop_back_val();
+    for (OpOperand &use : value.getUses()) {
       Operation *user = use.getOwner();
-      if (!visited.insert(user).second) {
-        continue;
-      }
       if (isa<CBPushOp, CBPopOp>(user)) {
         continue;
       }
-      Operation *ancestor = getInRangeAncestor(user);
-      if (!ancestor) {
-        continue;
-      }
-      if (isBefore(last, ancestor)) {
-        last = ancestor;
-      }
-      for (auto result : user->getResults()) {
-        worklist.push_back(result);
-      }
+      extend(user);
     }
   }
 
   return last;
+}
+
+static AcquireInterval makeAcquireInterval(Operation *acquire,
+                                           ArrayRef<Operation *> acquires) {
+  Value cb = getAcquireCB(acquire);
+  return {acquire, cb, getDFBSyncClass(acquire),
+          findNextSyncClassAcquire(cb, acquire, acquires)};
+}
+
+template <typename CreateReleaseFn>
+static void insertMissingReleases(ArrayRef<Operation *> acquires,
+                                  ArrayRef<Operation *> releases,
+                                  DenseSet<Operation *> &erased,
+                                  OpBuilder &builder,
+                                  CreateReleaseFn createRelease) {
+  for (Operation *acquire : acquires) {
+    AcquireInterval interval = makeAcquireInterval(acquire, acquires);
+    ReleaseSearch releaseSearch = findOwnedReleases(interval, releases, erased);
+    if (releaseSearch.hasSameLevelRelease) {
+      continue;
+    }
+
+    for (Operation *nestedRelease : releaseSearch.nestedReleases) {
+      erased.insert(nestedRelease);
+      nestedRelease->erase();
+    }
+
+    Operation *last = findLastOwnedUse(interval);
+    builder.setInsertionPointAfter(last);
+    createRelease(builder, acquire->getLoc(), interval.cb);
+  }
 }
 
 struct TTLInsertCBSyncPass
@@ -168,98 +287,40 @@ struct TTLInsertCBSyncPass
   void runOnOperation() override {
     func::FuncOp func = getOperation();
 
-    SmallVector<CBReserveOp> reserves;
-    SmallVector<CBWaitOp> waits;
-    SmallVector<CBPushOp> pushes;
-    SmallVector<CBPopOp> pops;
+    SmallVector<Operation *> reserves;
+    SmallVector<Operation *> waits;
+    SmallVector<Operation *> pushes;
+    SmallVector<Operation *> pops;
 
     func.walk([&](Operation *op) {
-      if (auto r = dyn_cast<CBReserveOp>(op)) {
-        reserves.push_back(r);
-      } else if (auto w = dyn_cast<CBWaitOp>(op)) {
-        waits.push_back(w);
-      } else if (auto p = dyn_cast<CBPushOp>(op)) {
-        pushes.push_back(p);
-      } else if (auto p = dyn_cast<CBPopOp>(op)) {
-        pops.push_back(p);
+      if (isa<CBReserveOp>(op)) {
+        reserves.push_back(op);
+      } else if (isa<CBWaitOp>(op)) {
+        waits.push_back(op);
+      } else if (isa<CBPushOp>(op)) {
+        pushes.push_back(op);
+      } else if (isa<CBPopOp>(op)) {
+        pops.push_back(op);
       }
     });
 
     OpBuilder builder(func.getContext());
 
-    // Track erased ops so later iterations don't access dangling pointers.
+    // Track erased ops so later iterations skip them before any accessor
+    // call. The set holds raw pointers to freed ops; `findOwnedReleases` must
+    // check `erased.contains(...)` before touching any op wrapper method.
     DenseSet<Operation *> erased;
 
-    // Find the next op on the same CB, in the same block, after `after`.
-    auto findNextOnCB = [](Value cb, Operation *after, auto &candidates) {
-      Operation *next = nullptr;
-      for (auto candidate : candidates) {
-        if (candidate.getCb() != cb) {
-          continue;
-        }
-        if (candidate->getBlock() != after->getBlock()) {
-          continue;
-        }
-        if (!isBefore(after, candidate)) {
-          continue;
-        }
-        if (!next || isBefore(candidate, next)) {
-          next = candidate;
-        }
-      }
-      return next;
-    };
+    insertMissingReleases(reserves, pushes, erased, builder,
+                          [](OpBuilder &b, Location loc, Value cb) {
+                            CBPushOp::create(b, loc, cb,
+                                             /*num_tiles=*/IntegerAttr{});
+                          });
 
-    auto insertMissingReleases = [&](auto acquires, auto &releases,
-                                     auto createRelease,
-                                     auto &extraBoundCandidates) {
-      for (auto acquire : acquires) {
-        Value cb = acquire.getCb();
-
-        // Bound = earliest of next same-type acquire and next
-        // extra-bound candidate (e.g., next cb_wait for reserves).
-        Operation *bound = findNextOnCB(cb, acquire, acquires);
-        Operation *extra = findNextOnCB(cb, acquire, extraBoundCandidates);
-        if (extra) {
-          bound = bound ? (isBefore(bound, extra) ? bound : extra) : extra;
-        }
-
-        using ReleaseOpTy =
-            typename std::remove_reference_t<decltype(releases)>::value_type;
-        SmallVector<ReleaseOpTy> nested;
-        if (findReleases(cb, acquire, bound, releases, nested, erased)) {
-          continue;
-        }
-
-        for (auto nestedOp : nested) {
-          erased.insert(nestedOp);
-          nestedOp.erase();
-        }
-
-        Operation *last = findLastTransitiveUse(cb, acquire, bound);
-        builder.setInsertionPointAfter(last);
-        createRelease(builder, acquire.getLoc(), cb);
-      }
-    };
-
-    // For reserves, bound push placement by the next cb_wait on the same
-    // CB. Intra-thread DFBs use the same CB for both reserve and wait,
-    // so push must precede wait to avoid deadlock.
-    insertMissingReleases(
-        reserves, pushes,
-        [](OpBuilder &b, Location loc, Value cb) {
-          CBPushOp::create(b, loc, cb, /*num_tiles=*/IntegerAttr{});
-        },
-        waits);
-
-    // For waits, only bound by the next same-CB wait (no extra bound).
-    SmallVector<CBWaitOp> noExtraBound;
-    insertMissingReleases(
-        waits, pops,
-        [](OpBuilder &b, Location loc, Value cb) {
-          CBPopOp::create(b, loc, cb);
-        },
-        noExtraBound);
+    insertMissingReleases(waits, pops, erased, builder,
+                          [](OpBuilder &b, Location loc, Value cb) {
+                            CBPopOp::create(b, loc, cb);
+                          });
   }
 };
 

@@ -99,9 +99,8 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
   auto cbTy = mlir::cast<CircularBufferType>(getResult().getType());
 
   int64_t idx = getCbIndexAttr().getInt();
-  if (idx < 0 || idx >= kMaxCircularBuffers) {
-    return emitOpError() << "cb_index must be in [0, "
-                         << kMaxCircularBuffers - 1 << "]";
+  if (idx < 0) {
+    return emitOpError() << "cb_index must be non-negative";
   }
 
   // Validate block count against type for consistency.
@@ -187,11 +186,6 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
              << "pipe transfers require one operand to be !ttl.cb";
     }
     // Valid combinations: CB->Pipe (send) or Pipe->CB (receive)
-    // MVP: require explicit wait for all transfers.
-    if (failed(mlir::tt::ttl::verify::isEventuallyWaitedOn(getOperation(),
-                                                           getXf()))) {
-      return failure();
-    }
     return success();
   }
 
@@ -234,13 +228,6 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
 
   // TODO(#89): Verify that the tensor tile/block shape and element type match
   // the CB element_type and shape/block_count semantics.
-
-  // MVP: every transfer must be synchronized explicitly. Requiring a `ttl.wait`
-  // use ensures we do not silently drop transfers.
-  if (failed(mlir::tt::ttl::verify::isEventuallyWaitedOn(getOperation(),
-                                                         getXf()))) {
-    return failure();
-  }
 
   return success();
 }

@@ -12,12 +12,26 @@ def TTLInsertCBSync
     missing release op after the last operation that accesses the CB's data.
 
     The pass computes a transitive use closure starting from the acquire op:
-    direct uses of the CB value and the acquire result, plus uses of values
-    those ops produce (e.g. copy -> transfer_handle -> wait). The release is
-    inserted after the last op in this closure.
+    direct uses of the DFB value and the acquire result, plus uses of values
+    those ops produce (e.g. copy -> transfer_handle -> wait). Direct DFB uses
+    are bounded by the next acquire in the same DFB sync class (`cb_reserve`
+    for producer intervals, `cb_wait` for consumer intervals) because they do
+    not carry an SSA link to the acquire that owns the slot.
 
     Explicit push/pop calls and context-manager-generated push/pop are
     preserved: the pass only fills in what is missing.
+  }];
+
+  let dependentDialects = [];
+}
+
+def TTLInsertCopyWait
+    : Pass<"ttl-insert-copy-wait", "::mlir::func::FuncOp"> {
+  let summary = "Insert missing ttl.wait for unmatched ttl.copy ops";
+  let description = [{
+    Finds `ttl.copy` ops whose transfer handle result has no `ttl.wait` user
+    and inserts a `ttl.wait` immediately after the copy. Explicit `.wait()`
+    calls are preserved: the pass only fills in what is missing.
   }];
 
   let dependentDialects = [];
@@ -109,7 +123,18 @@ def TTLInsertIntermediateDFBs
     Compiler-allocated DFBs are marked with `ttl.compiler_allocated` so
     that `ttl-finalize-dfb-indices` can register them for the Python
     runtime.
+
+    When `enable` is false, the pass verifies that no operations require
+    compiler-allocated DFBs. If any `DFBInputOpInterface` op has a
+    non-DFB-attached operand, the pass emits an error diagnostic and
+    signals failure.
   }];
+
+  let options = [
+    Option<"enable", "enable", "bool", "true",
+           "Insert compiler-allocated intermediate DFBs. When false, "
+           "emit an error if any operation requires a compiler-allocated DFB.">
+  ];
 
   let dependentDialects = [
     "::mlir::tt::ttl::TTLDialect"
@@ -418,20 +443,21 @@ def TTLLowerSignpostToEmitC
 
 def TTLFinalizeDFBIndices
     : Pass<"ttl-finalize-dfb-indices", "::mlir::ModuleOp"> {
-  let summary = "Finalize DFB indices and emit compiler-allocated DFB metadata";
+  let summary = "Reuse compiler-allocated DFB indices and emit DFB metadata";
   let description = [{
-    Module-level pass that runs after all DFB-creating passes, before
-    convert-ttl-to-ttkernel. Performs three tasks:
+    Module-level pass that runs after all DFB-creating passes. Must
+    precede ttl-annotate-cb-associations (which copies cb_index onto
+    tile ops and would capture stale pre-reuse indices).
 
-    1. Walks all BindCBOp instances across all functions and computes the
-       true DFB count (max_dfb_index + 1).
-    2. Updates the `ttl.base_cta_index` attribute on every function to
-       this value, ensuring compile-time arg layout is correct.
-    3. Collects all BindCBOps marked with `ttl.compiler_allocated` and
-       builds the `ttl.compiler_allocated_dfbs` module attribute so the
-       Python runtime can create the corresponding CBDescriptor entries.
+    Applies lifetime-based index reuse to compiler-allocated DFBs via
+    linear scan allocation, partitioned by CircularBufferType. DFBs
+    whose lifetimes (bind_cb to last cb_pop) do not overlap are assigned
+    the same physical index. See docs/development/DFBManagement.md.
 
-    This pass is a no-op when no BindCBOps exist in the module.
+    After reuse, verifies the total DFB count does not exceed
+    kMaxCircularBuffers (32), updates ttl.base_cta_index on every
+    function, and builds the ttl.compiler_allocated_dfbs module
+    attribute for the Python runtime.
   }];
 }
 

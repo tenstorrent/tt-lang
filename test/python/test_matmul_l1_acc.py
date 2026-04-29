@@ -60,6 +60,7 @@ def _make_l1_acc_kernel(block_m, block_n, grid="auto"):
                         nb = node_n * n_per + ln
                         if nb < N_num:
                             out_blk = out_dfb.reserve()
+                            out_blk.store(ttl.math.fill(out_blk, 0))
                             for _ in range(Kt):
                                 a_blk = a_dfb.wait()
                                 b_blk = b_dfb.wait()
@@ -208,6 +209,7 @@ def _make_sum_reduction_kernel():
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
+            out_blk.store(ttl.math.fill(out_blk, 0))
             for _ in range(Kt):
                 inp_blk = inp_dfb.wait()
                 out_blk += inp_blk
@@ -288,6 +290,7 @@ def _make_consecutive_acc_kernel(K1, K2):
         @ttl.compute()
         def compute():
             out_blk = out_dfb.reserve()
+            out_blk.store(ttl.math.fill(out_blk, 0))
             for _ in range(K1):
                 a_blk = a_dfb.wait()
                 b_blk = b_dfb.wait()
@@ -354,7 +357,14 @@ def test_l1_acc_consecutive_loops(device):
 
 
 def _make_store_then_acc_kernel(total_k):
-    """.store() before the += loop, then K-1 iterations accumulate via +=."""
+    """.store() before the += loop, then K-1 iterations accumulate via +=.
+
+    Each iteration reads a distinct K-tile slice so that the result is the
+    full K-accumulation `sum_k (a[:, kt] @ b[kt, :])` rather than a scalar
+    multiple of a single matmul. Reading the same tile every iteration
+    masks bugs where the .store() value is overwritten by the loop's first
+    iteration: assert_pcc is scale-invariant, so K * X and 1 * X both pass.
+    """
 
     @ttl.operation(grid=(1, 1))
     def kernel(a, b, out):
@@ -380,11 +390,11 @@ def _make_store_then_acc_kernel(total_k):
 
         @ttl.datamovement()
         def reader():
-            for _ in range(total_k):
+            for kt in range(total_k):
                 with a_dfb.reserve() as blk:
-                    ttl.copy(a[0:1, 0:1], blk).wait()
+                    ttl.copy(a[0:1, kt : kt + 1], blk).wait()
                 with b_dfb.reserve() as blk:
-                    ttl.copy(b[0:1, 0:1], blk).wait()
+                    ttl.copy(b[kt : kt + 1, 0:1], blk).wait()
 
         @ttl.datamovement()
         def writer():
@@ -397,14 +407,15 @@ def _make_store_then_acc_kernel(total_k):
 @pytest.mark.parametrize("total_k", [2, 4], ids=[f"K{k}" for k in [2, 4]])
 @pytest.mark.requires_device
 def test_l1_acc_store_then_acc(total_k, device):
-    """.store() before loop, += inside loop. Result = K * (a @ b)."""
-    a_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
-    b_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
-    golden = (total_k * (a_torch.float() @ b_torch.float())).float()
+    """.store() before loop, += inside loop. Result = full K-accumulation."""
+    M, K, N = TILE, total_k * TILE, TILE
+    a_torch = torch.randn(M, K, dtype=torch.bfloat16)
+    b_torch = torch.randn(K, N, dtype=torch.bfloat16)
+    golden = (a_torch.float() @ b_torch.float()).float()
 
     a_dev = to_dram(a_torch, device)
     b_dev = to_dram(b_torch, device)
-    out_dev = to_dram(torch.zeros(TILE, TILE, dtype=torch.bfloat16), device)
+    out_dev = to_dram(torch.zeros(M, N, dtype=torch.bfloat16), device)
 
     kernel = _make_store_then_acc_kernel(total_k)
     kernel(a_dev, b_dev, out_dev)
@@ -434,6 +445,8 @@ def _make_multi_output_kernel(Kt):
         def compute():
             blk_a = out_a_dfb.reserve()
             blk_b = out_b_dfb.reserve()
+            blk_a.store(ttl.math.fill(blk_a, 0))
+            blk_b.store(ttl.math.fill(blk_b, 0))
             for _ in range(Kt):
                 a_blk = a_dfb.wait()
                 b_blk = b_dfb.wait()
@@ -495,3 +508,68 @@ def test_l1_acc_multi_output(device):
     result_b = ttnn.to_torch(out_b_dev).float()
     assert_pcc(golden_a, result_a, threshold=0.999)
     assert_pcc(golden_b, result_b, threshold=0.999)
+
+
+# ---------------------------------------------------------------------------
+# `+=` matmul loop with no prior pack before it.
+# ---------------------------------------------------------------------------
+
+
+def _make_no_prior_value_matmul_kernel(Kt):
+    """C = A @ B via += with no prior pack.
+
+    Reads distinct per-K tiles so PCC validates the full K-accumulation
+    rather than a scalar multiple of a single matmul.
+    """
+
+    @ttl.operation(grid=(1, 1))
+    def kernel(a, b, out):
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+        b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            out_blk = out_dfb.reserve()
+            for _ in range(Kt):
+                a_blk = a_dfb.wait()
+                b_blk = b_dfb.wait()
+                out_blk += a_blk @ b_blk
+                a_blk.pop()
+                b_blk.pop()
+            out_blk.push()
+
+        @ttl.datamovement()
+        def reader():
+            for kt in range(Kt):
+                with a_dfb.reserve() as blk:
+                    ttl.copy(a[0:1, kt : kt + 1], blk).wait()
+                with b_dfb.reserve() as blk:
+                    ttl.copy(b[kt : kt + 1, 0:1], blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with out_dfb.wait() as blk:
+                ttl.copy(blk, out[0:1, 0:1]).wait()
+
+    return kernel
+
+
+@pytest.mark.parametrize("Kt", [2, 4, 8], ids=[f"K{k}" for k in [2, 4, 8]])
+@pytest.mark.requires_device
+def test_no_prior_value_iter0_overwrite(Kt, device):
+    """Matmul `+=` loop with no prior pack before it."""
+    M, K, N = TILE, Kt * TILE, TILE
+    a = torch.randn(M, K, dtype=torch.bfloat16)
+    b = torch.randn(K, N, dtype=torch.bfloat16)
+    golden = (a.float() @ b.float()).float()
+
+    a_dev = to_dram(a, device)
+    b_dev = to_dram(b, device)
+    out_dev = to_dram(torch.zeros(M, N, dtype=torch.bfloat16), device)
+
+    kernel = _make_no_prior_value_matmul_kernel(Kt)
+    kernel(a_dev, b_dev, out_dev)
+
+    result = ttnn.to_torch(out_dev).float()
+    assert_pcc(golden, result, threshold=0.999)

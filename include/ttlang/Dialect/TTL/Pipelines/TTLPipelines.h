@@ -30,10 +30,10 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::desc("Lower matmul to block-level hardware calls "
                      "(experimental::matmul_block) instead of per-tile loops."),
       llvm::cl::init(true)};
-  Option<bool> autoSync{
-      *this, "auto-sync",
-      llvm::cl::desc("Let the compiler insert and move DFB synchronization "
-                     "ops. When disabled (default), user-placed reserve/push "
+  Option<bool> subblockSync{
+      *this, "subblock-sync",
+      llvm::cl::desc("Refine DFB reserve/push to per-subblock granularity. "
+                     "When disabled (default), user-placed reserve/push "
                      "is preserved."),
       llvm::cl::init(false)};
   Option<bool> combinePackTiles{
@@ -48,6 +48,12 @@ struct TTLToTTKernelPipelineOptions
       *this, "strict-f32-acc",
       llvm::cl::desc("Error if accumulation output exceeds f32 DST capacity."),
       llvm::cl::init(false)};
+  Option<bool> compilerDFBs{
+      *this, "compiler-dfbs",
+      llvm::cl::desc("Insert compiler-allocated intermediate DFBs for fused "
+                     "computations. When disabled, emit an error if any "
+                     "operation requires a compiler-allocated DFB."),
+      llvm::cl::init(true)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,

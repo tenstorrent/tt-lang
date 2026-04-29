@@ -14,7 +14,7 @@ on:
             docker_tag:
                 description: "Docker image tag for the ird container."
                 type: string
-                default: "latest"
+                required: true
     workflow_call:
         inputs:
             build_docs:
