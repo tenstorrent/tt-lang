@@ -28,7 +28,6 @@ except ImportError:
 from sim.context import reset_context
 from sim.greenlet_scheduler import set_scheduler_algorithm
 from sim.program import set_max_l1_bytes
-from sim.stats import reset_stats
 from sim.ttlang_sim import execute_script_with_simulator
 import sim
 
