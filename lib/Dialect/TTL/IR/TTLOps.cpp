@@ -23,6 +23,8 @@
 #include <functional>
 #include <numeric>
 
+#include "ttlang/Dialect/TTL/IR/TTLInterfaces.cpp.inc"
+
 #define GET_OP_CLASSES
 #include "ttlang/Dialect/TTL/IR/TTLOps.cpp.inc"
 
@@ -97,9 +99,8 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
   auto cbTy = mlir::cast<CircularBufferType>(getResult().getType());
 
   int64_t idx = getCbIndexAttr().getInt();
-  if (idx < 0 || idx >= kMaxCircularBuffers) {
-    return emitOpError() << "cb_index must be in [0, "
-                         << kMaxCircularBuffers - 1 << "]";
+  if (idx < 0) {
+    return emitOpError() << "cb_index must be non-negative";
   }
 
   // Validate block count against type for consistency.
@@ -171,16 +172,30 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   const bool dstIsCb = mlir::isa<CircularBufferType>(dstTy);
   const bool srcIsSlice = getSrc().getDefiningOp<TensorSliceOp>() != nullptr;
   const bool dstIsSlice = getDst().getDefiningOp<TensorSliceOp>() != nullptr;
+  const bool srcIsPipe = mlir::isa<PipeType>(srcTy);
+  const bool dstIsPipe = mlir::isa<PipeType>(dstTy);
 
+  // Pipe transfers: CB <-> Pipe
+  if (srcIsPipe || dstIsPipe) {
+    // For pipe transfers, one side must be a pipe and the other must be a CB.
+    if (srcIsPipe && dstIsPipe) {
+      return emitOpError() << "cannot copy directly between pipes";
+    }
+    if (!srcIsCb && !dstIsCb) {
+      return emitOpError()
+             << "pipe transfers require one operand to be !ttl.cb";
+    }
+    // Valid combinations: CB->Pipe (send) or Pipe->CB (receive)
+    return success();
+  }
+
+  // Non-pipe transfers: CB <-> TensorSlice
   // Exactly one side must be a CB.
   if (srcIsCb == dstIsCb) {
     return emitOpError()
            << "expects exactly one operand to be !ttl.cb; got src=" << srcTy
            << " dst=" << dstTy;
   }
-
-  // TODO(#88): Add support for pipes and blocks as ttl.copy operands once those
-  // IR types/ops land.
 
   // Extract the underlying tensor type from the non-CB operand.
   // For slices, get the original tensor from the defining TensorSliceOp.
@@ -213,13 +228,6 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
 
   // TODO(#89): Verify that the tensor tile/block shape and element type match
   // the CB element_type and shape/block_count semantics.
-
-  // MVP: every transfer must be synchronized explicitly. Requiring a `ttl.wait`
-  // use ensures we do not silently drop transfers.
-  if (failed(mlir::tt::ttl::verify::isEventuallyWaitedOn(getOperation(),
-                                                         getXf()))) {
-    return failure();
-  }
 
   return success();
 }
@@ -1036,6 +1044,34 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
   return success();
 }
 
+//===----------------------------------------------------------------------===//
+// DFBInputOpInterface implementations
+//===----------------------------------------------------------------------===//
+
+llvm::SmallVector<unsigned>
+mlir::tt::ttl::ReduceOp::getDFBInputOperandIndices() {
+  return {0, 1}; // input and scaler
+}
+
+llvm::SmallVector<unsigned>
+mlir::tt::ttl::BcastOp::getDFBInputOperandIndices() {
+  return {0, 1}; // input and output both require CB-attached values
+}
+
+llvm::SmallVector<unsigned>
+mlir::tt::ttl::MatmulOp::getDFBInputOperandIndices() {
+  return {0, 1}; // lhs and rhs
+}
+
+llvm::SmallVector<unsigned>
+mlir::tt::ttl::TransposeOp::getDFBInputOperandIndices() {
+  return {0}; // input
+}
+
+//===----------------------------------------------------------------------===//
+// MatmulOp
+//===----------------------------------------------------------------------===//
+
 mlir::LogicalResult mlir::tt::ttl::MatmulOp::verify() {
   auto lhsType = mlir::cast<RankedTensorType>(getLhs().getType());
   auto rhsType = mlir::cast<RankedTensorType>(getRhs().getType());
@@ -1207,6 +1243,39 @@ mlir::LogicalResult mlir::tt::ttl::TransposeOp::verify() {
                          << resultType.getElementType()
                          << " must match input element type "
                          << inputType.getElementType();
+  }
+
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {
+  auto pipeType = mlir::cast<PipeType>(getResult().getType());
+
+  // Verify consistency between attributes and result type.
+  // Cast to int64_t to match the type's storage.
+  int64_t srcX = static_cast<int64_t>(getSrcX());
+  int64_t srcY = static_cast<int64_t>(getSrcY());
+  int64_t dstStartX = static_cast<int64_t>(getDstStartX());
+  int64_t dstStartY = static_cast<int64_t>(getDstStartY());
+  int64_t dstEndX = static_cast<int64_t>(getDstEndX());
+  int64_t dstEndY = static_cast<int64_t>(getDstEndY());
+
+  int64_t pipeNetId = static_cast<int64_t>(getPipeNetId());
+
+  if (pipeType.getSrcX() != srcX || pipeType.getSrcY() != srcY ||
+      pipeType.getDstStartX() != dstStartX ||
+      pipeType.getDstStartY() != dstStartY ||
+      pipeType.getDstEndX() != dstEndX || pipeType.getDstEndY() != dstEndY ||
+      pipeType.getPipeNetId() != pipeNetId) {
+    return emitOpError() << "attributes must match result pipe type";
+  }
+
+  // Validate coordinates are non-negative.
+  if (srcX < 0 || srcY < 0) {
+    return emitOpError() << "source coordinates must be non-negative";
+  }
+  if (dstStartX < 0 || dstStartY < 0 || dstEndX < 0 || dstEndY < 0) {
+    return emitOpError() << "destination coordinates must be non-negative";
   }
 
   return success();

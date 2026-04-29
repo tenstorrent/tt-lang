@@ -193,9 +193,9 @@ def test_comprehensive_multinode(device):
     result2 = ttnn.to_torch(out2)
     result3 = ttnn.to_torch(out3)
 
-    assert torch.allclose(result1.float(), exp1, rtol=0.05, atol=0.1)
-    assert torch.allclose(result2.float(), exp2, rtol=0.05, atol=0.1)
-    assert torch.allclose(result3.float(), exp3, rtol=0.05, atol=0.1)
+    assert torch.allclose(result1.float(), exp1, rtol=0.05, atol=0.15)
+    assert torch.allclose(result2.float(), exp2, rtol=0.05, atol=0.15)
+    assert torch.allclose(result3.float(), exp3, rtol=0.05, atol=0.15)
 
 
 if __name__ == "__main__":

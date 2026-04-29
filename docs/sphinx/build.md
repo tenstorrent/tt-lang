@@ -223,10 +223,17 @@ CI uses two caching layers that must be rebuilt when submodule SHAs change:
    toolchain.
 
 2. **Docker images** -- `ird` and `dist` container images tagged by the nearest
-   git version tag (e.g. `v0.1.8`, see `.github/containers/get-version-tag.sh`).
+   git version tag (e.g. `v0.1.9`, see `.github/containers/get-version-tag.sh`).
    Rebuilds overwrite the same tag. A `latest` tag is also pushed alongside
    each versioned tag. After building, `call-build-docker.yml` runs the
    tutorial examples in the dist container to verify the image works.
+
+   Tags may carry SemVer build metadata after `+` to mark uplift rebuilds of
+   an existing release (e.g. `v1.0.0+uplift`). Because Docker tags forbid `+`,
+   `get-version-tag.sh` translates `+` to `-` when forming the image tag, so
+   git tag `v1.0.0+uplift` produces Docker tag `v1.0.0-uplift`. Use the
+   sanitized form (`v1.0.0-uplift`) anywhere a `docker_tag` parameter is
+   passed to a workflow.
 
 #### Triggering a toolchain cache rebuild on PRs
 
@@ -241,7 +248,7 @@ build:
   secrets: inherit
   with:
     build_toolchain: true
-    docker_tag: "v0.1.8"
+    docker_tag: "v0.1.9"
 ```
 
 When `build_toolchain` is true, the workflow:
@@ -259,7 +266,7 @@ pre-built `ird` Docker container, which already contains the toolchain.
 #### Rebuilding Docker images
 
 Docker images are rebuilt automatically by `call-build-docker.yml`, which runs
-on version tags (`v*.*.*`) or manual dispatch. The workflow:
+on version tags (`v*.*.*` or `v*.*.*+<local>`) or manual dispatch. The workflow:
 
 1. Generates a deterministic tag from submodule SHAs and Dockerfile content
    hashes.
@@ -267,15 +274,25 @@ on version tags (`v*.*.*`) or manual dispatch. The workflow:
 3. On cache miss, builds the toolchain (or restores from GitHub Actions cache),
    then packages `base`, `ird`, and `dist` images.
 
-After an uplift merges, create a new version tag to trigger image rebuilds:
+After an uplift merges, create a new version tag to trigger image rebuilds.
+For uplifts that rebuild against a prior release (rather than advancing
+MAJOR/MINOR/PATCH), append `+uplift` (or another `+<local>` identifier) so the
+tag preserves SemVer ordering with the original release:
 
 ```bash
-git tag v0.1.8
-git push origin v0.1.8
+# Standard release bump:
+git tag v0.1.9
+git push origin v0.1.9
+
+# Uplift of an existing release (e.g., new submodule SHAs on top of v1.0.0):
+git tag v1.0.0+uplift
+git push origin v1.0.0+uplift
 ```
 
 Once the new images are published, update the `docker_tag` parameter in
-`on-pr.yml` and `on-push.yml` to reference the new tag.
+`on-pr.yml` and `on-push.yml` to reference the new tag. For `+`-suffixed
+tags, use the Docker-sanitized form: git tag `v1.0.0+uplift` -> docker_tag
+`v1.0.0-uplift`.
 
 ## CMake Options
 

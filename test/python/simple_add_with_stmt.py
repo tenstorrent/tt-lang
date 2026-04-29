@@ -102,7 +102,7 @@ def add_with_kernel(lhs, rhs, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @dm_read
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0 : i32, 1 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0 : i32, 1 : i32], ttl.kernel_thread = #ttkernel.thread<noc>, ttl.noc_index = 0 : i32}
 
 # First DFB: reserve (with DFB association), copy, push
 # CHECK: ttl.cb_reserve
@@ -119,7 +119,7 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK: ttl.cb_push
 
 # CHECK-LABEL: func.func @dm_write
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>, ttl.noc_index = 1 : i32}
 
 # Output DFB: wait (with DFB association), copy, pop
 # CHECK: ttl.cb_wait

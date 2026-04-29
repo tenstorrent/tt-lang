@@ -8,9 +8,8 @@ This module provides decorators and utilities for generating kernels with
 specified grid configurations.
 """
 
-import inspect
 import types
-from typing import Any, Callable, Union, cast
+from typing import Any, Callable, Optional, Union, cast
 
 from .blockstate import ThreadType
 from .typedefs import Shape
@@ -40,12 +39,21 @@ def get_default_grid() -> Shape:
 
 def operation(
     grid: Union[str, Shape] = "auto",
+    fp32_dest_acc_en: Optional[bool] = None,
+    dst_full_sync_en: Optional[bool] = None,
+    **unknown: Any,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
     Decorator that generates a kernel with specified grid.
 
+    fp32_dest_acc_en and dst_full_sync_en are accepted for compatibility with
+    compiler-side code but have no effect in the simulator.  Any other
+    unrecognised keyword argument raises TypeError to catch user errors early.
+
     Args:
         grid: Grid specification. If 'auto', uses the default grid (configurable via set_default_grid())
+        fp32_dest_acc_en: Ignored; accepted for compiler compatibility.
+        dst_full_sync_en: Ignored; accepted for compiler compatibility.
 
     Returns:
         Decorated function with grid configuration
@@ -56,6 +64,12 @@ def operation(
             # grid is available as a variable here
             pass
     """
+
+    if unknown:
+        raise TypeError(
+            f"ttl.operation() received unexpected keyword argument(s): "
+            f"{', '.join(sorted(unknown))}"
+        )
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         # Create a new function with grid in its closure
@@ -83,29 +97,6 @@ def operation(
             # Import here to avoid circular dependency
             from .decorators import clear_thread_registry, get_registered_threads
             from .program import Program
-            from .stats import is_stats_enabled, register_tensor_name
-            from .ttnnsim import Tensor
-
-            # If stats are enabled, register tensor names from parameter names
-            if is_stats_enabled():
-                sig = inspect.signature(func)
-                params = list(sig.parameters.keys())
-
-                # Register positional arguments
-                for i, arg in enumerate(args):
-                    match arg:
-                        case Tensor() if i < len(params):
-                            register_tensor_name(arg, params[i])
-                        case _:
-                            pass
-
-                # Register keyword arguments
-                for param_name, arg in kwargs.items():
-                    match arg:
-                        case Tensor():
-                            register_tensor_name(arg, param_name)
-                        case _:
-                            pass
 
             # Clear thread registry and resource counters before kernel execution
             clear_thread_registry()

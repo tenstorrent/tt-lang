@@ -19,6 +19,14 @@ namespace mlir::tt::ttl {
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   pm.addPass(createTTLAttachSignpostScopes());
+  {
+    TTLInsertIntermediateDFBsOptions dfbOpts;
+    dfbOpts.enable = options.compilerDFBs;
+    pm.addNestedPass<func::FuncOp>(createTTLInsertIntermediateDFBs(dfbOpts));
+  }
+  pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
+  pm.addNestedPass<func::FuncOp>(createTTLInsertCBSync());
+  pm.addPass(createTTLAnnotateL1AccLoops());
   pm.addPass(createTTLMaterializeBlockExprs());
   {
     TTLSetComputeKernelConfigOptions configOpts;
@@ -32,20 +40,20 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   if (options.maximizeDST) {
     TTLSubblockComputeForDSTOptions subblockOpts;
-    subblockOpts.subblockSync = options.autoSync;
+    subblockOpts.subblockSync = options.subblockSync;
+    subblockOpts.strictF32Acc = options.strictF32Acc;
     pm.addPass(createTTLSubblockComputeForDST(subblockOpts));
-  }
-  if (options.useBlockMatmul) {
-    pm.addPass(createTTLLowerMatmulBlock());
   }
   {
     TTLLowerToLoopsOptions loopOpts;
     loopOpts.dstAccumulation = options.maximizeDST;
+    loopOpts.useBlockMatmul = options.useBlockMatmul;
     pm.addPass(createTTLLowerToLoops(loopOpts));
   }
   if (options.maximizeDST) {
     pm.addPass(createTTLScheduleOperations());
   }
+  pm.addPass(createTTLFinalizeDFBIndices());
   pm.addPass(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLEmitSignpostScopes());
   {

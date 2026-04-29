@@ -2,11 +2,11 @@
 // is not in the pipeline. With subblocking enabled, these cases compile
 // successfully (tested by simple_matmul_subblock.py).
 // RUN: not ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-lower-matmul-block))' \
+// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-lower-to-loops))' \
 // RUN:   --split-input-file 2>&1 | FileCheck %s
 
 // bf16 DST capacity exceeded.
-// CHECK: matmul output 3x3 = 9 tiles exceeds DST capacity of 8
+// CHECK: output 3x3 with 1 DST slots per tile = 9 total slots exceeds DST capacity of 8
 func.func @matmul_3x3_bf16_dst_overflow(
     %arg0: tensor<3x1x!ttcore.tile<32x32, bf16>>,
     %arg1: tensor<1x3x!ttcore.tile<32x32, bf16>>) -> tensor<3x3x!ttcore.tile<32x32, bf16>> {
@@ -24,7 +24,7 @@ func.func @matmul_3x3_bf16_dst_overflow(
 // -----
 
 // f32 DST capacity exceeded.
-// CHECK: matmul output 2x3 = 6 tiles exceeds DST capacity of 4
+// CHECK: output 2x3 with 1 DST slots per tile = 6 total slots exceeds DST capacity of 4
 func.func @matmul_2x3_f32_dst_overflow(
     %arg0: tensor<2x1x!ttcore.tile<32x32, f32>>,
     %arg1: tensor<1x3x!ttcore.tile<32x32, f32>>) -> tensor<2x3x!ttcore.tile<32x32, f32>> {

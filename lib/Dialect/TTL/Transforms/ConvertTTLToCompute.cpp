@@ -141,12 +141,36 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
     }
     AffineMap outputMap = indexingMaps[numInputs + outputIdx];
     SmallVector<Value> indices =
-        applyIndexingMapToIterIndices(rewriter, loc, outputMap, iterIndices);
+        applyIndexingMap(rewriter, loc, outputMap, iterIndices);
 
-    TileStoreOp::create(rewriter, loc, tileResult, storeOp.getView(), indices);
+    createTileOpWithPlaceholderDstIndex<TileStoreOp>(
+        rewriter, loc, tileResult, storeOp.getView(), indices);
     storesToErase.push_back(storeOp);
   }
+  // Some stores get absorbed into the compute body, pulling their data
+  // production past the cb_push that the frontend emitted right after the
+  // block-level store. When that happens, move the push to after the
+  // compute so the push executes after pack_tile writes the data. Only
+  // move pushes that are currently in the compute's block AND before the
+  // compute — pushes already positioned later (e.g., at the end of a
+  // `with reserve: ... multi-store ...` scope) are already correctly
+  // placed and must not be moved forward, or they'd commit before the
+  // later stores pack their data.
   for (StoreOp s : storesToErase) {
+    assert(s->getBlock() == computeOp->getBlock() &&
+           "stores absorbed into a compute must be siblings of that compute");
+    Value viewCB = getAttachedCB(s.getView());
+    if (viewCB) {
+      for (Operation *op = s->getNextNode(); op != nullptr;
+           op = op->getNextNode()) {
+        if (auto pushOp = dyn_cast<CBPushOp>(op)) {
+          if (pushOp.getCb() == viewCB && pushOp->isBeforeInBlock(computeOp)) {
+            pushOp->moveAfter(computeOp);
+            break;
+          }
+        }
+      }
+    }
     rewriter.eraseOp(s);
   }
 }
@@ -159,19 +183,23 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
 /// Returns the result Value, or null on failure.
 static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *sourceOp,
                            ValueRange tileOperands, Type tileType) {
+
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
   if (isa<TTL_OP##Op>(sourceOp))                                               \
-    return TILE_OP::create(b, loc, tileType, tileOperands[0]);
+    return createTileOpWithPlaceholderDstIndex<TILE_OP>(b, loc, tileType,      \
+                                                        tileOperands[0]);
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
   if (isa<TTL_OP##Op>(sourceOp))                                               \
-    return TILE_OP::create(b, loc, tileType, tileOperands[0], tileOperands[1]);
+    return createTileOpWithPlaceholderDstIndex<TILE_OP>(                       \
+        b, loc, tileType, tileOperands[0], tileOperands[1]);
 #define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   // FillOp: no tile operands, just a value attribute.
   if (auto fillOp = dyn_cast<FillOp>(sourceOp)) {
-    return TileFillOp::create(b, loc, tileType, fillOp.getValueAttr());
+    return createTileOpWithPlaceholderDstIndex<TileFillOp>(
+        b, loc, tileType, fillOp.getValueAttr());
   }
 
   return nullptr;
@@ -506,8 +534,10 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     if (auto bcastOp = dyn_cast<BcastOp>(op)) {
       Value inputTile = tensorToTile[bcastOp.getInput()];
       Value outputTile = body->getArguments().back(); // output block arg
-      tileResult = TileBcastOp::create(rewriter, loc, tileType, inputTile,
-                                       outputTile, bcastOp.getBcastTypeAttr());
+      auto bcastTileOp = createTileOpWithPlaceholderDstIndex<TileBcastOp>(
+          rewriter, loc, tileType, inputTile, outputTile,
+          bcastOp.getBcastTypeAttr());
+      tileResult = bcastTileOp;
     } else if (auto matmulOp = dyn_cast<MatmulOp>(op)) {
       Value lhsTile = tensorToTile[matmulOp.getLhs()];
       Value rhsTile = tensorToTile[matmulOp.getRhs()];
@@ -522,8 +552,10 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
         }
       }
       if (!deferred) {
-        tileResult = TileMatmulBlockOp::create(rewriter, loc, tileType, lhsTile,
-                                               rhsTile, Value());
+        auto matmulTileOp =
+            createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
+                rewriter, loc, tileType, lhsTile, rhsTile, Value());
+        tileResult = matmulTileOp;
       }
     } else {
       // Check for matmul+add fold before falling through to elementwise.
@@ -540,8 +572,10 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
             return nullptr;
           }
           deferredMatmul.erase(dfIt);
-          return TileMatmulBlockOp::create(rewriter, loc, tileType, mmLhs,
-                                           mmRhs, accTile);
+          auto foldedMatmul =
+              createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
+                  rewriter, loc, tileType, mmLhs, mmRhs, accTile);
+          return foldedMatmul;
         };
         Value folded = tryFold(operands[0], operands[1]);
         if (!folded) {
@@ -561,9 +595,10 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
           auto dfIt = deferredMatmul.find(operand);
           if (dfIt != deferredMatmul.end()) {
             auto [mmLhs, mmRhs] = dfIt->second;
-            Value mmTile = TileMatmulBlockOp::create(rewriter, loc, tileType,
-                                                     mmLhs, mmRhs, Value());
-            tensorToTile[operand] = mmTile;
+            auto mmTileOp =
+                createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
+                    rewriter, loc, tileType, mmLhs, mmRhs, Value());
+            tensorToTile[operand] = mmTileOp;
             deferredMatmul.erase(dfIt);
           }
         }
@@ -734,8 +769,8 @@ static LogicalResult buildBinaryCompute(Operation *op,
   return buildComputeFromInputs(
       op, rewriter, ValueRange{lhs, rhs}, type, inputMaps, identityMap,
       iterTypes, [](OpBuilder &b, Location loc, Type tileType, Block *body) {
-        return TileOp::create(b, loc, tileType, body->getArgument(0),
-                              body->getArgument(1));
+        return createTileOpWithPlaceholderDstIndex<TileOp>(
+            b, loc, tileType, body->getArgument(0), body->getArgument(1));
       });
 }
 
@@ -764,7 +799,8 @@ static LogicalResult buildUnaryCompute(Operation *op, PatternRewriter &rewriter,
   return buildComputeFromInputs(
       op, rewriter, ValueRange{input}, type, inputMaps, identityMap, iterTypes,
       [](OpBuilder &b, Location loc, Type tileType, Block *body) {
-        return TileOp::create(b, loc, tileType, body->getArgument(0));
+        return createTileOpWithPlaceholderDstIndex<TileOp>(
+            b, loc, tileType, body->getArgument(0));
       });
 }
 
@@ -1044,10 +1080,10 @@ struct LowerBcastToCompute : OpRewritePattern<BcastOp> {
     body->addArgument(tileType, loc);
 
     rewriter.setInsertionPointToStart(body);
-    Value result =
-        TileBcastOp::create(rewriter, loc, tileType, body->getArgument(0),
-                            body->getArgument(1), bcastType);
-    emitTileStores(rewriter, loc, result, op.getOperation());
+    auto bcastTileOp = createTileOpWithPlaceholderDstIndex<TileBcastOp>(
+        rewriter, loc, tileType, body->getArgument(0), body->getArgument(1),
+        bcastType);
+    emitTileStores(rewriter, loc, bcastTileOp, op.getOperation());
     YieldOp::create(rewriter, loc);
     rewriter.replaceOp(op, computeOp.getResult(0));
     return success();
@@ -1104,9 +1140,9 @@ struct LowerMatmulToCompute : OpRewritePattern<MatmulOp> {
     return buildComputeFromInputs(
         op, rewriter, ValueRange{lhs, rhs}, resultType, inputMaps, outMap,
         iterTypes, [](OpBuilder &b, Location loc, Type tileType, Block *body) {
-          return TileMatmulBlockOp::create(b, loc, tileType,
-                                           body->getArgument(0),
-                                           body->getArgument(1), Value());
+          return createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
+              b, loc, tileType, body->getArgument(0), body->getArgument(1),
+              Value());
         });
   }
 };
@@ -1172,9 +1208,9 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
     SmallVector<Value> iterIndices =
         getOrCreateIterIndices(rewriter, computeOp);
     SmallVector<Value> storeIndices =
-        applyIndexingMapToIterIndices(rewriter, loc, identityMap, iterIndices);
-    TileStoreOp::create(rewriter, loc, body->getArgument(0), reserveView,
-                        storeIndices);
+        applyIndexingMap(rewriter, loc, identityMap, iterIndices);
+    createTileOpWithPlaceholderDstIndex<TileStoreOp>(
+        rewriter, loc, body->getArgument(0), reserveView, storeIndices);
     YieldOp::create(rewriter, loc);
 
     // make_early_inc_range: replaceOp erases attachOp, invalidating the
@@ -1309,7 +1345,7 @@ struct LowerReduceToCompute : OpRewritePattern<ReduceOp> {
         inputMaps, outputMap, iterTypes,
         [reduceType, reduceDim](OpBuilder &b, Location loc, Type tileType,
                                 Block *body) {
-          return TileReduceOp::create(
+          return createTileOpWithPlaceholderDstIndex<TileReduceOp>(
               b, loc, tileType, body->getArgument(0), body->getArgument(1),
               body->getArgument(2), reduceType, reduceDim);
         });
@@ -1375,9 +1411,9 @@ struct LowerFillToCompute : OpRewritePattern<FillOp> {
     }
 
     rewriter.setInsertionPointToStart(body);
-    Value result =
-        TileFillOp::create(rewriter, loc, tileType, op.getValueAttr());
-    emitTileStores(rewriter, loc, result, op);
+    auto fillTileOp = createTileOpWithPlaceholderDstIndex<TileFillOp>(
+        rewriter, loc, tileType, op.getValueAttr());
+    emitTileStores(rewriter, loc, fillTileOp, op);
     YieldOp::create(rewriter, loc);
     rewriter.replaceOp(op, computeOp.getResults());
     return success();
@@ -1419,8 +1455,8 @@ struct LowerTransposeToCompute : OpRewritePattern<TransposeOp> {
         op, rewriter, ValueRange{op.getInput()}, resultType, inputMaps,
         outputMap, iterTypes,
         [](OpBuilder &b, Location loc, Type tileType, Block *body) {
-          return TileTransposeOp::create(b, loc, tileType, body->getArgument(0),
-                                         body->getArgument(1));
+          return createTileOpWithPlaceholderDstIndex<TileTransposeOp>(
+              b, loc, tileType, body->getArgument(0), body->getArgument(1));
         });
   }
 };

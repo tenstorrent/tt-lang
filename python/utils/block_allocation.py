@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import itertools
 import math
-from collections import namedtuple
 from typing import List, Tuple
 from collections import namedtuple
 
@@ -20,6 +19,19 @@ def get_number_of_nodes(grid: Tuple[int, ...]) -> int:
         assert dim > 0, "grid dimensions must be positive"
         node_count *= dim
     return node_count
+
+
+def get_number_of_nodes_from_ranges(
+    ranges: List[Tuple[Tuple[int, ...], Tuple[int, ...]]],
+) -> int:
+    """Count the total number of nodes across a list of rectangular ranges."""
+    total = 0
+    for start, end in ranges:
+        count = 1
+        for s, e in zip(start, end):
+            count *= e - s + 1
+        total += count
+    return total
 
 
 def filter_factor_pairs_by_2d_grid(
@@ -153,13 +165,15 @@ def split_work_to_nodes(
     grid_size: Tuple[int, ...], units_to_divide: int, row_wise: bool = True
 ) -> Tuple[
     int,
-    Tuple[Tuple[int, ...], Tuple[int, ...]],
-    Tuple[Tuple[int, ...], Tuple[int, ...]],
+    List[Tuple[Tuple[int, ...], Tuple[int, ...]]],
+    List[Tuple[Tuple[int, ...], Tuple[int, ...]]],
     int,
     int,
 ]:
-    """Splits work units among nodes in a from a single device grid.
-    currently can produce work splits that cannot map to CoreRanges directly, particlarily in 1-d grids
+    """Splits work units among nodes from a single device grid.
+
+    Matches the semantics of ttnn.split_work_to_cores: each group is a list of
+    rectangular (start, end) coordinate ranges (like a CoreRangeSet).
 
     Args:
         grid_size: A tuple representing the dimensions of the node grid.
@@ -167,14 +181,14 @@ def split_work_to_nodes(
         row_wise: If True, split work in a row-wise manner; otherwise, column-wise.
 
     Returns: A tuple containing:
-            - total number of nodes
-            - node group 1 as a tuple of tuples, start coord to end coord rectangle [inclusive, inclusive]
-            - node group 2 as a tuple of tuples, start coord to end coord rectangle [inclusive, inclusive]
+            - total number of nodes used
+            - node group 1 as a list of (start_coord, end_coord) ranges [inclusive]
+            - node group 2 as a list of (start_coord, end_coord) ranges [inclusive]
             - work units per node in group 1
             - work units per node in group 2
     """
     if units_to_divide == 0:
-        return (0, (), (), 0, 0)
+        return (0, [], [], 0, 0)
     simplified_grid_size = remove_leading_ones(grid_size)
     assert len(simplified_grid_size) <= 2, "only supports grids with a single device"
     total_nodes = get_number_of_nodes(grid_size)
@@ -185,14 +199,12 @@ def split_work_to_nodes(
     ):  # more nodes than work units, assign 1 unit to first N nodes
         if len(simplified_grid_size) == 1:
             end_coord = ((0,) * (len(grid_size) - 1)) + (units_to_divide - 1,)
+            return (units_to_divide, [(start_coord, end_coord)], [], 1, 0)
         elif len(simplified_grid_size) == 2:
             ranges = num_nodes_to_grid_ranges(
                 start_coord, units_to_divide, grid_size, row_wise
             )
-            end_coord = ((0,) * (len(grid_size) - 2)) + ranges[-1][
-                1
-            ]  # Last range's end coordinate
-        return (units_to_divide, (start_coord, end_coord), (), 1, 0)
+            return (units_to_divide, ranges, [], 1, 0)
     else:
         # more work units than nodes, divide work as evenly as possible
         if len(simplified_grid_size) == 1:
@@ -202,8 +214,8 @@ def split_work_to_nodes(
             if remaining_work == 0:
                 return (
                     total_nodes,
-                    ((0,) * len(grid_size), end_coord_all),
-                    (),
+                    [((0,) * len(grid_size), end_coord_all)],
+                    [],
                     work_per_node,
                     0,
                 )
@@ -211,8 +223,8 @@ def split_work_to_nodes(
             start_coord_2 = ((0,) * (len(grid_size) - 1)) + (remaining_work,)
             return (
                 total_nodes,
-                ((0,) * len(grid_size), end_coord_1),
-                (start_coord_2, end_coord_all),
+                [((0,) * len(grid_size), end_coord_1)],
+                [(start_coord_2, end_coord_all)],
                 work_per_node + 1,
                 work_per_node,
             )
@@ -234,7 +246,7 @@ def split_work_to_nodes(
                 num_nodes_y = grid_size[-2]
                 prefix = (0,) * (len(grid_size) - 2)
                 end_coord = prefix + (num_nodes_y - 1, num_nodes_x - 1)
-                return (total_nodes, (start_coord, end_coord), (), work_per_node, 0)
+                return (total_nodes, [(start_coord, end_coord)], [], work_per_node, 0)
 
             # Uneven division - need two groups
             else:
@@ -280,18 +292,10 @@ def split_work_to_nodes(
                     start_coord_group2, num_nodes_group2, grid_size, row_wise
                 )
 
-                # For simplified return, we'll return the bounding boxes
-                # Group 1: from (0,0,...) to last coord of group 1
-                group1_bbox = (start_coord, last_coord_group1)
-
-                # Group 2: from start to last coord of group 2
-                last_coord_group2 = group2_ranges[-1][1]
-                group2_bbox = (start_coord_group2, last_coord_group2)
-
                 return (
                     total_nodes,
-                    group1_bbox,
-                    group2_bbox,
+                    group1_ranges,
+                    group2_ranges,
                     work_per_node + 1,
                     work_per_node,
                 )

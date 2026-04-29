@@ -6,6 +6,7 @@
 #define TTLANG_DIALECT_TTL_IR_TTL_H
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
 #include "llvm/ADT/StringRef.h"
@@ -27,7 +28,6 @@ class TTLTileOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileOpTrait> {};
 
 /// Attribute names.
-constexpr llvm::StringLiteral kDstIdxAttrName("dst_idx");
 constexpr llvm::StringLiteral kCBIndexAttrPrefix("ttl.cb_index.");
 
 /// Runtime configuration attributes.
@@ -65,6 +65,12 @@ constexpr llvm::StringLiteral kTileLoopStrideAttrName("ttl.tile_loop_stride");
 /// ComputeOp is lowered to loops.
 constexpr llvm::StringLiteral kReductionLoopAttrName("ttl.reduction_loop");
 
+/// Marks a user-written scf.for as an L1 accumulation loop. Each iteration
+/// packs to the same CB slot; pack_reconfig_l1_acc makes subsequent
+/// iterations additive. Distinct from kReductionLoopAttrName which marks
+/// compiler-generated reduction loops.
+constexpr llvm::StringLiteral kL1AccLoopAttrName("ttl.l1_acc_loop");
+
 /// Output CB index on tile ops that need it for init insertion.
 constexpr llvm::StringLiteral
     kBcastOutputCBIndexAttrName("ttl.bcast_output_cb_index");
@@ -76,6 +82,19 @@ constexpr llvm::StringLiteral
 /// Marks a copy_tile as a placeholder inserted during DST assignment Phase 1.
 /// Replaced with a proper copy in Phase 2b.
 constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
+
+/// Module attribute carrying compiler-allocated DFB metadata.
+constexpr llvm::StringLiteral
+    kCompilerAllocatedDFBsAttrName("ttl.compiler_allocated_dfbs");
+
+/// Marker on BindCBOp to distinguish compiler-allocated DFBs from user-declared
+/// ones.
+constexpr llvm::StringLiteral
+    kCompilerAllocatedAttrName("ttl.compiler_allocated");
+
+/// Function attribute recording the base compile-time argument index.
+/// CTA layout is [CBs, TAs], so this equals the number of CBs.
+constexpr llvm::StringLiteral kBaseCTAIndexAttrName("ttl.base_cta_index");
 
 /// Trait for data movement operations (copy_tile, copy_dst).
 template <typename ConcreteType>
@@ -129,6 +148,25 @@ template <typename ConcreteType>
 class TTLAccumulatingOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLAccumulatingOpTrait> {};
 
+/// Trait for tile operations that write to a DST register.
+template <typename ConcreteType>
+class TTLDstResultOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType, TTLDstResultOpTrait> {
+public:
+  static mlir::LogicalResult verifyTrait(mlir::Operation *op) {
+    if (op->getNumOperands() == 0) {
+      return op->emitOpError("expected at least one operand (dst_index)");
+    }
+    mlir::Value lastOperand = op->getOperand(op->getNumOperands() - 1);
+    if (!lastOperand.getType().isIndex()) {
+      return op->emitOpError("last operand (dst_index) must be index type, "
+                             "got ")
+             << lastOperand.getType();
+    }
+    return mlir::success();
+  }
+};
+
 /// Trait for tile operations that carry an explicit output CB operand.
 /// These operations' init functions configure the PACK thread and require
 /// the output CB identifier. Affects init consolidation ordering: full-init
@@ -164,6 +202,15 @@ inline std::optional<int64_t> getCBIndexAttr(mlir::Operation *compute,
   }
   return std::nullopt;
 }
+
+//===----------------------------------------------------------------------===//
+// Compiler-Allocated DFB Utilities
+//===----------------------------------------------------------------------===//
+
+/// Return the next available DFB index for the module. Scans all BindCBOp
+/// indices across all functions to find the current maximum, then returns
+/// max + 1.
+int32_t getNextAvailableDFBIndex(mlir::ModuleOp mod);
 
 } // namespace mlir::tt::ttl
 

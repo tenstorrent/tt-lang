@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include "ttlang/Dialect/TTL/Transforms/LowerMatmulCompute.h"
+
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -44,60 +46,21 @@ static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
   return op.getIterationDomain(b);
 }
 
-/// Apply an indexing map to the induction variables using MLIR's
-/// makeComposedFoldedAffineApply utility for automatic composition and folding.
-static SmallVector<Value> applyIndexingMap(OpBuilder &b, Location loc,
-                                           AffineMap map, ValueRange ivs) {
-  SmallVector<OpFoldResult> operands(ivs.begin(), ivs.end());
-  assert(operands.size() == map.getNumDims() &&
-         "IV count must match map dimensions (verifier ensures this)");
-
-  SmallVector<Value> mapped;
-  mapped.reserve(map.getNumResults());
-
-  for (AffineExpr expr : map.getResults()) {
-    AffineMap singleResultMap =
-        AffineMap::get(map.getNumDims(), map.getNumSymbols(), expr);
-    OpFoldResult result = affine::makeComposedFoldedAffineApply(
-        b, loc, singleResultMap, operands);
-    mapped.push_back(getValueOrCreateConstantIndexOp(b, loc, result));
-  }
-  return mapped;
-}
-
 /// Generate side-effect-only loop body. Extracts tiles from inputs, clones
 /// compute body ops, and returns nothing (stores are explicit side effects).
 static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
                                             ComputeOp op,
                                             ArrayRef<AffineMap> indexingMaps,
                                             ValueRange ivs) {
-  SmallVector<Value> extractedInputs;
-  for (auto [idx, input] : llvm::enumerate(op.getInputs())) {
-    SmallVector<Value> indices =
-        applyIndexingMap(b, loc, indexingMaps[idx], ivs);
-    Value tile = tensor::ExtractOp::create(b, loc, input, indices);
-    extractedInputs.push_back(tile);
-  }
-
-  // Output block args get a dummy extract from the output tensor. These are
-  // needed for SSA mapping but unused in the body (stores write via DST).
-  SmallVector<Value> extractedOutputs;
   size_t numInputs = op.getInputs().size();
-  for (auto [idx, output] : llvm::enumerate(op.getOutputs())) {
-    SmallVector<Value> indices =
-        applyIndexingMap(b, loc, indexingMaps[numInputs + idx], ivs);
-    Value tile = tensor::ExtractOp::create(b, loc, output, indices);
-    extractedOutputs.push_back(tile);
-  }
+  auto extractedInputs =
+      extractTilesAtIndices(b, loc, op.getInputs(), indexingMaps, ivs);
+  auto extractedOutputs = extractTilesAtIndices(b, loc, op.getOutputs(),
+                                                indexingMaps, ivs, numInputs);
 
   Block &bodyBlock = op.getBody().front();
   IRMapping mapping;
-  for (auto [idx, arg] : llvm::enumerate(op.getInputs())) {
-    mapping.map(bodyBlock.getArgument(idx), extractedInputs[idx]);
-  }
-  for (auto [idx, arg] : llvm::enumerate(op.getOutputs())) {
-    mapping.map(bodyBlock.getArgument(numInputs + idx), extractedOutputs[idx]);
-  }
+  mapComputeBodyArgs(mapping, op, extractedInputs, extractedOutputs, ivs);
 
   // Resolve iter_index ops to loop IVs via the IRMapping.
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
@@ -132,7 +95,7 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
 ///     dst_section {
 ///       for each reduction dim:
 ///         <tile ops from body>
-///       <stores with placeholder tile + explicit dst_idx>
+///       <stores with placeholder tile + explicit dst_index>
 ///     }
 static scf::LoopNest generateAccumulatingLoops(
     PatternRewriter &rewriter, Location loc, ComputeOp op,
@@ -176,14 +139,14 @@ static scf::LoopNest generateAccumulatingLoops(
   }
   SmallVector<int64_t> domainStrides = computeStrides(domainSizes);
 
-  // Collect store ops and their dst_idx from the compute body.
+  // Collect store ops and their dst_index from the compute body.
   Block &bodyBlock = op.getBody().front();
   SmallVector<std::pair<TileStoreOp, int32_t>> storeInfos;
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (auto store = dyn_cast<TileStoreOp>(&bodyOp)) {
-      auto dstAttr = store->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
-      int32_t dstIdx = dstAttr ? dstAttr.getInt() : 0;
-      storeInfos.emplace_back(store, dstIdx);
+      auto dstIdx = getConstantIntValue(store.getDstIndex());
+      storeInfos.emplace_back(store,
+                              dstIdx ? static_cast<int32_t>(*dstIdx) : 0);
     }
   }
 
@@ -206,37 +169,14 @@ static scf::LoopNest generateAccumulatingLoops(
   // Generate tile ops (excluding stores) inside the reduction loop body.
   auto generateTileOpsOnly = [&](OpBuilder &builder, Location bodyLoc,
                                  ValueRange fullIVs) {
-    SmallVector<Value> extractedInputs;
-    for (auto [idx, input] : llvm::enumerate(op.getInputs())) {
-      SmallVector<Value> indices =
-          applyIndexingMap(builder, bodyLoc, indexingMaps[idx], fullIVs);
-      Value tile = tensor::ExtractOp::create(builder, bodyLoc, input, indices);
-      extractedInputs.push_back(tile);
-    }
-
-    SmallVector<Value> extractedOutputs;
     size_t numInputs = op.getInputs().size();
-    for (auto [idx, output] : llvm::enumerate(op.getOutputs())) {
-      SmallVector<Value> indices = applyIndexingMap(
-          builder, bodyLoc, indexingMaps[numInputs + idx], fullIVs);
-      Value tile = tensor::ExtractOp::create(builder, bodyLoc, output, indices);
-      extractedOutputs.push_back(tile);
-    }
+    auto extractedInputs = extractTilesAtIndices(
+        builder, bodyLoc, op.getInputs(), indexingMaps, fullIVs);
+    auto extractedOutputs = extractTilesAtIndices(
+        builder, bodyLoc, op.getOutputs(), indexingMaps, fullIVs, numInputs);
 
     IRMapping mapping;
-    for (auto [idx, arg] : llvm::enumerate(op.getInputs())) {
-      mapping.map(bodyBlock.getArgument(idx), extractedInputs[idx]);
-    }
-    for (auto [idx, arg] : llvm::enumerate(op.getOutputs())) {
-      mapping.map(bodyBlock.getArgument(numInputs + idx),
-                  extractedOutputs[idx]);
-    }
-
-    for (Operation &bodyOp : bodyBlock.without_terminator()) {
-      if (auto iterIdx = dyn_cast<IterIndexOp>(&bodyOp)) {
-        mapping.map(iterIdx.getResult(), fullIVs[iterIdx.getDim()]);
-      }
-    }
+    mapComputeBodyArgs(mapping, op, extractedInputs, extractedOutputs, fullIVs);
 
     for (Operation &bodyOp : bodyBlock.without_terminator()) {
       if (isa<IterIndexOp, TileStoreOp>(&bodyOp)) {
@@ -277,7 +217,7 @@ static scf::LoopNest generateAccumulatingLoops(
         }
 
         // Stores after the reduction loop, inside the DstSectionOp.
-        // Use placeholder tile value + explicit dst_idx (same as matmul).
+        // Use placeholder tile value + explicit dst_index (same as matmul).
         OpBuilder storeBuilder(&sectionBody,
                                Block::iterator(sectionBody.getTerminator()));
         for (auto &[origStore, dstIdx] : storeInfos) {
@@ -308,11 +248,10 @@ static scf::LoopNest generateAccumulatingLoops(
               applyIndexingMap(storeBuilder, parLoc,
                                indexingMaps[numInputs + outputIdx], fullIVs);
 
-          auto newStore =
-              TileStoreOp::create(storeBuilder, parLoc, placeholder,
-                                  origStore.getView(), storeIndices);
-          newStore->setAttr(kDstIdxAttrName,
-                            storeBuilder.getI32IntegerAttr(dstIdx));
+          Value dstIdxVal =
+              arith::ConstantIndexOp::create(storeBuilder, parLoc, dstIdx);
+          TileStoreOp::create(storeBuilder, parLoc, placeholder,
+                              origStore.getView(), storeIndices, dstIdxVal);
         }
 
         return {};
@@ -335,11 +274,12 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
   /// Populated during pattern application, consumed by runOnOperation.
   SmallVector<scf::ForOp> &loopsToUnroll;
   bool dstAccumulation;
+  bool useBlockMatmul;
 
   LowerComputeToLoops(MLIRContext *ctx, SmallVector<scf::ForOp> &loopsToUnroll,
-                      bool dstAccumulation)
+                      bool dstAccumulation, bool useBlockMatmul)
       : OpRewritePattern<ComputeOp>(ctx), loopsToUnroll(loopsToUnroll),
-        dstAccumulation(dstAccumulation) {}
+        dstAccumulation(dstAccumulation), useBlockMatmul(useBlockMatmul) {}
 
   LogicalResult matchAndRewrite(ComputeOp op,
                                 PatternRewriter &rewriter) const override {
@@ -374,12 +314,16 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
                               })
                               .wasInterrupted();
 
-    assert(!(isSubblocked && isAccumulating) &&
-           "SubblockComputeForDST must skip accumulating computes");
-
     SmallVector<StringAttr> iterTypes;
     for (Attribute attr : op.getIteratorTypes()) {
       iterTypes.push_back(mlir::cast<StringAttr>(attr));
+    }
+
+    // Block-level matmul: a single DstSectionOp with the matmul_block call,
+    // per-tile post-ops, and per-tile stores. When useBlockMatmul is false,
+    // the compute falls through to per-tile loop lowering (matmul_tile).
+    if (useBlockMatmul && op.containsOp<TileMatmulBlockOp>()) {
+      return generateMatmulCompute(rewriter, loc, op, indexingMaps, iterTypes);
     }
 
     // Side-effect-only loops: no iter_args, no tensor.insert, no scf.yield
@@ -561,11 +505,8 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
   // tileIdx * dstPerIteration to avoid register collisions.
   int64_t maxDstIdx = 0;
   nest.back().getBody()->walk([&](Operation *op) {
-    if (auto attr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-      maxDstIdx = std::max(maxDstIdx, static_cast<int64_t>(attr.getInt()));
-    }
-    if (auto copyTile = dyn_cast<CopyTileOp>(op)) {
-      if (auto constIdx = getConstantIntValue(copyTile.getDstIndex())) {
+    if (auto dstVal = getTileOpDstIndex(op)) {
+      if (auto constIdx = foldIndexToConstant(*dstVal)) {
         maxDstIdx = std::max(maxDstIdx, *constIdx);
       }
     }
@@ -636,26 +577,16 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
 
     int64_t dstBase = tileIdx * dstPerIteration;
 
-    // Offset dst_idx so each unrolled tile occupies a unique DST register.
-    if (auto attr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-      if (dstBase != 0) {
-        int64_t newIdx = attr.getInt() + dstBase;
-        op->setAttr(kDstIdxAttrName,
-                    IntegerAttr::get(IntegerType::get(op->getContext(), 32),
-                                     static_cast<int32_t>(newIdx)));
-      }
-    }
-
-    // dst_idx attribute (above) covers tile compute ops. CopyTileOp's
-    // dst index is an SSA value, so we must emit an op to compute the offset.
-    if (auto copyTile = dyn_cast<CopyTileOp>(op)) {
-      if (dstBase != 0) {
-        OpBuilder b(copyTile);
+    // Offset dst_index SSA operand so each unrolled tile occupies a
+    // unique DST register.
+    if (dstBase != 0) {
+      if (auto oldDst = getTileOpDstIndex(op)) {
+        OpBuilder b(op);
         Value offsetVal =
-            arith::ConstantIndexOp::create(b, copyTile.getLoc(), dstBase);
-        Value newDstIndex = arith::AddIOp::create(
-            b, copyTile.getLoc(), copyTile.getDstIndex(), offsetVal);
-        copyTile.getDstIndexMutable().assign(newDstIndex);
+            arith::ConstantIndexOp::create(b, op->getLoc(), dstBase);
+        Value newDst =
+            arith::AddIOp::create(b, op->getLoc(), *oldDst, offsetVal);
+        setTileOpDstIndex(op, newDst);
       }
     }
 
@@ -715,7 +646,7 @@ struct TTLLowerToLoopsPass
     SmallVector<scf::ForOp> loopsToUnroll;
     RewritePatternSet patterns(func.getContext());
     patterns.add<LowerComputeToLoops>(func.getContext(), loopsToUnroll,
-                                      dstAccumulation);
+                                      dstAccumulation, useBlockMatmul);
     FrozenRewritePatternSet frozen(std::move(patterns));
     if (failed(applyPatternsGreedily(func, frozen))) {
       return signalPassFailure();
@@ -769,7 +700,11 @@ struct TTLLowerToLoopsPass
     // interleaved tile ops and stores. Safe because DST allocation
     // assigns distinct registers to each output tile.
     if (!loopsToUnroll.empty()) {
-      func.walk([](DstSectionOp dstSection) {
+      bool dstCheckFailed = false;
+      func.walk([&](DstSectionOp dstSection) {
+        if (dstCheckFailed) {
+          return;
+        }
         Block &body = dstSection.getBody().front();
         SmallVector<Operation *> packOps;
         for (Operation &op : body.without_terminator()) {
@@ -784,21 +719,14 @@ struct TTLLowerToLoopsPass
           return;
         }
 
-        // Verify DST allocation assigned distinct indices.
-        llvm::SmallDenseSet<int32_t> dstIndices;
-        for (Operation *op : packOps) {
-          if (auto attr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-            assert(dstIndices.insert(attr.getInt()).second &&
-                   "duplicate dst_idx in subblocked DstSectionOp body; "
-                   "reordering requires distinct DST slots per output tile");
-          }
-        }
-
         Operation *yield = body.getTerminator();
         for (Operation *packOp : packOps) {
           packOp->moveBefore(yield);
         }
       });
+      if (dstCheckFailed) {
+        return signalPassFailure();
+      }
     }
 
     // Verify no temporary unroll iteration attributes leaked past this pass.

@@ -7,6 +7,7 @@
 
 include "mlir/IR/OpBase.td"
 include "mlir/IR/AttrTypeBase.td"
+include "ttlang/Dialect/TTL/IR/TTLInterfaces.td"
 
 //===----------------------------------------------------------------------===//
 // TTL dialect definition
@@ -51,6 +52,7 @@ class TTL_Attr<string name, string attrMnemonic, list<Trait> traits = []>
 class TTL_Op<string mnemonic, list<Trait> traits = []>
     : Op<TTL_Dialect, mnemonic, traits>;
 
+
 //===----------------------------------------------------------------------===//
 // TTL traits
 //===----------------------------------------------------------------------===//
@@ -74,5 +76,6 @@ def TTL_DSTInputsTrait : TTL_Trait<"TTLDSTInputsTrait", []>;
 def TTL_InPlaceOpTrait : TTL_Trait<"TTLInPlaceOpTrait", []>;
 def TTL_AccumulatingOpTrait : TTL_Trait<"TTLAccumulatingOpTrait", []>;
 def TTL_CBOutputTileOpTrait : TTL_Trait<"TTLCBOutputTileOpTrait", []>;
+def TTL_DstResultOpTrait : TTL_Trait<"TTLDstResultOpTrait", []>;
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLBASE_TD

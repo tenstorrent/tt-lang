@@ -206,26 +206,18 @@ using TTLTileRegsReleaseToTTKernel =
 
 /// Extract the DST register index from a tile value. The index is obtained
 /// from either the copy_tile op that placed the tile in DST, or from the
-/// dst_idx attribute on the producing tile operation.
+/// dst_index operand on the producing tile operation.
 ///
 /// For block arguments (function parameters), returns the argument number as
 /// a fallback. This supports testing tile ops in isolation without copy_tile.
 static std::optional<int64_t> getDstIndexFromValue(Value v) {
-  // Handle block arguments (function parameters) - use arg number as dst_idx
   if (auto blockArg = dyn_cast<BlockArgument>(v)) {
     return blockArg.getArgNumber();
   }
-
-  auto opRes = dyn_cast<OpResult>(v);
-  if (!opRes) {
-    return std::nullopt;
-  }
-  Operation *owner = opRes.getOwner();
-  if (auto copy = dyn_cast<CopyTileOp>(owner)) {
-    return getConstantIntValue(copy.getDstIndex());
-  }
-  if (auto attr = owner->getAttrOfType<IntegerAttr>(kDstIdxAttrName)) {
-    return attr.getInt();
+  if (auto *defOp = v.getDefiningOp()) {
+    if (auto dstVal = getTileOpDstIndex(defOp)) {
+      return foldIndexToConstant(*dstVal);
+    }
   }
   return std::nullopt;
 }
@@ -235,7 +227,7 @@ static std::optional<int64_t> getDstIndexFromValue(Value v) {
 //===----------------------------------------------------------------------===//
 
 /// Generic pattern for lowering TTL unary tile ops to TTKernel SFPU ops.
-/// Unary SFPU ops: DST[dst_idx] = op(DST[dst_idx]) - operates in-place.
+/// Unary SFPU ops: DST[dst_index] = op(DST[dst_index]) - operates in-place.
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
 struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
   using OpConversionPattern<SourceOp>::OpConversionPattern;
@@ -245,27 +237,32 @@ struct TTLTileUnaryToTTKernel : OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>(kDstIdxAttrName);
-    if (!dstIdxAttr) {
-      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
-    }
-    int64_t dstIdx = dstIdxAttr.getInt();
-    Value dstIdxVal = arith::ConstantIndexOp::create(rewriter, loc, dstIdx);
-
+    Value dstIdxVal = adaptor.getDstIndex();
     TTKernelComputeOp::create(rewriter, loc, dstIdxVal);
-
-    // Replace all uses with a placeholder (the value is now in DST register)
-    // For tile ops, we pass through the input since the result is implicit
     rewriter.replaceOp(op, adaptor.getInput());
     return success();
   }
 };
 
+static FailureOr<Value> getSrcDstIndex(Value operand, Location loc,
+                                       ConversionPatternRewriter &rewriter) {
+  if (auto *defOp = operand.getDefiningOp()) {
+    if (auto dstVal = getTileOpDstIndex(defOp)) {
+      return *dstVal;
+    }
+  }
+  auto idx = getDstIndexFromValue(operand);
+  if (idx) {
+    return Value(arith::ConstantIndexOp::create(rewriter, loc, *idx));
+  }
+  return failure();
+}
+
 /// Generic pattern for lowering TTL binary tile ops to TTKernel SFPU ops.
 /// Binary SFPU ops: DST[odst] = DST[src0] op DST[src1]
 ///
-/// DST indices are extracted from operand-defining ops (copy_tile or tile ops
-/// with dst_idx attributes). The output index comes from this op's dst_idx.
+/// Source DST indices are resolved from the operand-defining ops' dst_index.
+/// The output index comes from this op's dst_index operand.
 /// Ops marked with kFPUBinaryAttrName are skipped (handled by FPU pattern).
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
 struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
@@ -281,32 +278,15 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
 
     Location loc = op.getLoc();
 
-    auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>(kDstIdxAttrName);
-    if (!dstIdxAttr) {
-      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
-    }
-    int64_t odstIdx = dstIdxAttr.getInt();
-
-    auto src0IdxOpt = getDstIndexFromValue(op.getLhs());
-    auto src1IdxOpt = getDstIndexFromValue(op.getRhs());
-
-    if (!src0IdxOpt) {
+    auto src0 = getSrcDstIndex(op.getLhs(), loc, rewriter);
+    auto src1 = getSrcDstIndex(op.getRhs(), loc, rewriter);
+    if (failed(src0) || failed(src1)) {
       return rewriter.notifyMatchFailure(
-          op, "failed to extract dst_idx from lhs operand");
+          op, "failed to extract dst_index from operands");
     }
-    if (!src1IdxOpt) {
-      return rewriter.notifyMatchFailure(
-          op, "failed to extract dst_idx from rhs operand");
-    }
+    Value odst = adaptor.getDstIndex();
 
-    int64_t src0Idx = *src0IdxOpt;
-    int64_t src1Idx = *src1IdxOpt;
-
-    Value src0 = arith::ConstantIndexOp::create(rewriter, loc, src0Idx);
-    Value src1 = arith::ConstantIndexOp::create(rewriter, loc, src1Idx);
-    Value odst = arith::ConstantIndexOp::create(rewriter, loc, odstIdx);
-
-    TTKernelComputeOp::create(rewriter, loc, src0, src1, odst);
+    TTKernelComputeOp::create(rewriter, loc, *src0, *src1, odst);
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
@@ -326,27 +306,20 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // Extract dst_idx from original (unconverted) operands, not adaptor
-    // operands
-    auto dst0IdxOpt = getDstIndexFromValue(op.getLhs());
-    auto dst1IdxOpt = getDstIndexFromValue(op.getRhs());
+    // Source DST indices from the defining ops of the operands.
+    auto dst0 = getSrcDstIndex(op.getLhs(), loc, rewriter);
+    auto dst1 = getSrcDstIndex(op.getRhs(), loc, rewriter);
 
-    if (!dst0IdxOpt) {
+    if (failed(dst0)) {
       return rewriter.notifyMatchFailure(
-          op, "failed to extract dst_idx from lhs operand");
+          op, "failed to extract dst_index from lhs operand");
     }
-    if (!dst1IdxOpt) {
+    if (failed(dst1)) {
       return rewriter.notifyMatchFailure(
-          op, "failed to extract dst_idx from rhs operand");
+          op, "failed to extract dst_index from rhs operand");
     }
 
-    int64_t dst0Idx = *dst0IdxOpt;
-    int64_t dst1Idx = *dst1IdxOpt;
-
-    Value dst0 = arith::ConstantIndexOp::create(rewriter, loc, dst0Idx);
-    Value dst1 = arith::ConstantIndexOp::create(rewriter, loc, dst1Idx);
-
-    TTKernelComputeOp::create(rewriter, loc, dst0, dst1, dst0);
+    TTKernelComputeOp::create(rewriter, loc, *dst0, *dst1, *dst0);
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
@@ -388,13 +361,8 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
                                          "FPU binary");
     }
 
-    // DST output index from attribute (assigned by TTLAssignDST).
-    auto dstIdxAttr = op->template getAttrOfType<IntegerAttr>(kDstIdxAttrName);
-    if (!dstIdxAttr) {
-      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
-    }
-    Value dstIdx =
-        arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
+    // DST output index from the SSA operand (assigned by TTLAssignDST).
+    Value dstIdx = adaptor.getDstIndex();
 
     // Verify matching per-block tile counts (via tensor shape, not
     // ttk::CBType::getNumTiles() which includes block_count).
@@ -511,27 +479,18 @@ struct TTLCopyDstToTTKernel : OpConversionPattern<CopyDstOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    // Get the source DST index from the input tile's producing operation.
-    auto srcDstIdx = getDstIndexFromValue(op.getSrcTile());
-    if (!srcDstIdx) {
+    auto srcIdx = getSrcDstIndex(op.getSrcTile(), loc, rewriter);
+    if (failed(srcIdx)) {
       return rewriter.notifyMatchFailure(
           op, "cannot determine src DST index from input tile");
     }
 
-    // Get the destination DST index from this op's dst_idx attribute.
-    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
-    if (!dstIdxAttr) {
-      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
-    }
-    int64_t dstDstIdx = dstIdxAttr.getInt();
-
-    // Create index constants for src and dst DST registers.
-    Value srcIdx = arith::ConstantIndexOp::create(rewriter, loc, *srcDstIdx);
-    Value dstIdx = arith::ConstantIndexOp::create(rewriter, loc, dstDstIdx);
+    // Get the destination DST index from the SSA operand.
+    Value dstIdx = adaptor.getDstIndex();
 
     // Emit copy_dest_values(idst_in, idst_out): copies DST[idst_in] ->
     // DST[idst_out].
-    ttk::CopyDestValuesOp::create(rewriter, loc, srcIdx, dstIdx);
+    ttk::CopyDestValuesOp::create(rewriter, loc, *srcIdx, dstIdx);
 
     // Replace with an unrealized conversion cast to preserve the tile value.
     // The tile is now in DST[dstIdx].
@@ -607,13 +566,8 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
       }
     }
 
-    // Get DST index from attribute (assigned by TTLAssignDST pass).
-    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
-    if (!dstIdxAttr) {
-      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
-    }
-    int64_t dstIdxVal = dstIdxAttr.getInt();
-    Value dstIdx = arith::ConstantIndexOp::create(rewriter, loc, dstIdxVal);
+    // Get DST index from the SSA operand (assigned by TTLAssignDST pass).
+    Value dstIdx = adaptor.getDstIndex();
 
     // Get input CB tile index.
     // For shape expansion (input CB smaller than output), use broadcast-aware
@@ -655,8 +609,11 @@ struct CBInputTileOpSetup {
   Value dstIdx;
   Value inCBIdx;
 
+  /// Create setup with an explicitly provided DST index value.
+  /// Use this for ops that have dst_index as an SSA operand.
   static FailureOr<CBInputTileOpSetup>
-  create(Operation *op, Value input, ConversionPatternRewriter &rewriter,
+  create(Operation *op, Value input, Value dstIdxVal,
+         ConversionPatternRewriter &rewriter,
          const TypeConverter *typeConverter) {
     Location loc = op->getLoc();
     auto funcOp = op->getParentOfType<func::FuncOp>();
@@ -669,13 +626,6 @@ struct CBInputTileOpSetup {
       return rewriter.notifyMatchFailure(op, "cannot find/convert input CB");
     }
 
-    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
-    if (!dstIdxAttr) {
-      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
-    }
-    Value dstIdx =
-        arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
-
     // Compute CB tile index by tracing back to the tensor.extract that
     // produced this operand. The extract indices encode the indexing map
     // application from loop lowering -- no map annotations needed.
@@ -686,7 +636,7 @@ struct CBInputTileOpSetup {
               "tensor.extract (loop lowering must run first)");
     }
 
-    return CBInputTileOpSetup{*cb, dstIdx, *cbIdx};
+    return CBInputTileOpSetup{*cb, dstIdxVal, *cbIdx};
   }
 };
 
@@ -705,8 +655,9 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
   LogicalResult
   matchAndRewrite(TileReduceOp op, TileReduceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto setup = CBInputTileOpSetup::create(op, op.getInput(), rewriter,
-                                            this->getTypeConverter());
+    auto setup =
+        CBInputTileOpSetup::create(op, op.getInput(), adaptor.getDstIndex(),
+                                   rewriter, this->getTypeConverter());
     if (failed(setup)) {
       return failure();
     }
@@ -763,8 +714,9 @@ struct TTLTileTransposeToTTKernel : OpConversionPattern<TileTransposeOp> {
   LogicalResult
   matchAndRewrite(TileTransposeOp op, TileTransposeOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto setup = CBInputTileOpSetup::create(op, op.getInput(), rewriter,
-                                            this->getTypeConverter());
+    auto setup =
+        CBInputTileOpSetup::create(op, op.getInput(), adaptor.getDstIndex(),
+                                   rewriter, this->getTypeConverter());
     if (failed(setup)) {
       return failure();
     }
@@ -841,13 +793,8 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
           op, "cannot find/convert input CBs for matmul_block");
     }
 
-    // DST output index from attribute (assigned by TTLAssignDST).
-    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
-    if (!dstIdxAttr) {
-      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
-    }
-    Value dstIdx =
-        arith::ConstantIndexOp::create(rewriter, loc, dstIdxAttr.getInt());
+    // DST output index from the SSA operand (assigned by TTLAssignDST).
+    Value dstIdx = adaptor.getDstIndex();
 
     // Derive block dimensions from the immediate operand shapes. For
     // subblocked computes, these are the subblock dimensions (e.g., 1x1
@@ -971,12 +918,7 @@ struct TTLTileFillToTTKernel : OpConversionPattern<TileFillOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    auto dstIdxAttr = op->getAttrOfType<IntegerAttr>(kDstIdxAttrName);
-    if (!dstIdxAttr) {
-      return rewriter.notifyMatchFailure(op, "missing dst_idx attribute");
-    }
-    int64_t dstIdx = dstIdxAttr.getInt();
-    Value dstIdxVal = arith::ConstantIndexOp::create(rewriter, loc, dstIdx);
+    Value dstIdxVal = adaptor.getDstIndex();
 
     Value fillValue = arith::ConstantOp::create(
         rewriter, loc,
@@ -984,11 +926,10 @@ struct TTLTileFillToTTKernel : OpConversionPattern<TileFillOp> {
 
     ttk::FillTileOp::create(rewriter, loc, dstIdxVal, fillValue);
 
-    // Replace with an unrealized cast carrying dst_idx for tile_store.
+    // Replace with an unrealized cast for tile_store consumption.
     auto cast = mlir::UnrealizedConversionCastOp::create(
         rewriter, loc, TypeRange{op.getResult().getType()},
         ValueRange{dstIdxVal});
-    cast->setAttr(kDstIdxAttrName, dstIdxAttr);
     rewriter.replaceOp(op, cast.getResult(0));
     return success();
   }

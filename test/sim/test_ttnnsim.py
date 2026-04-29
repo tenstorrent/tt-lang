@@ -1,12 +1,18 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+import math
 from typing import Any
 
 import pytest
 import torch
 
 from sim import ttnn, TTNN_AVAILABLE
+from sim.sharding import (
+    count_local_remote_l1_dram,
+    count_local_remote_l1_dram_for_getitem,
+    shard_origin_from_key,
+)
 from sim.ttnnsim import (
     CoreGrid,
     MemoryConfig,
@@ -16,6 +22,8 @@ from sim.ttnnsim import (
     ShardSpec,
     ShardStrategy,
     ShardingStrategy,
+    TensorMemoryLayout,
+    TensorSpec,
 )
 
 # Marker for tests that require ttnn golden functions
@@ -30,6 +38,61 @@ def test_constants_and_dtypes():
     assert hasattr(ttnn, "TILE_LAYOUT")
     assert ttnn.bfloat16 == torch.bfloat16
     assert ttnn.float32 == torch.float32
+    assert hasattr(ttnn, "bfloat8_b")
+    assert ttnn.bfloat8_b == ttnn.bfloat8_b
+    assert ttnn.bfloat8_b != ttnn.bfloat16
+    assert ttnn.bfloat8_b != torch.float32
+    assert ttnn.bfloat8_b.element_size == 1
+    t_bf8 = ttnn.rand((32, 32), dtype=ttnn.bfloat8_b)
+    assert t_bf8.dtype == ttnn.bfloat8_b
+    assert t_bf8.underlying_dtype == torch.bfloat16
+
+
+def test_bfloat8_b_capacity_bytes_statistics():
+    """capacity_bytes for bfloat8_b accounts for the BFP8B shared-exponent overhead.
+
+    BFP8B encodes n elements as n mantissa bytes plus one exponent byte per
+    group of 16 elements: size_in_bytes(n) = n + n // 16.
+
+    For a buffer with BLOCK_COUNT blocks of one 32x32 tile each:
+      total_elements = BLOCK_COUNT * 32 * 32 = 4096
+      bfloat16: 4096 * 2            = 8192 bytes
+      bfloat8_b: 4096 + 4096 // 16 = 4352 bytes  (4096 mantissa + 256 exponent)
+    """
+    from python.sim.dfb import DataflowBuffer
+
+    BLOCK_COUNT = 4
+    TILE_SHAPE = (1, 1)
+    TOTAL_ELEMENTS = BLOCK_COUNT * 32 * 32  # 4096
+
+    bf16_tensor = ttnn.rand((32, 32), dtype=ttnn.bfloat16)
+    bf8_tensor = ttnn.rand((32, 32), dtype=ttnn.bfloat8_b)
+
+    assert bf16_tensor.element_size == 2
+    assert bf8_tensor.element_size == 1  # mantissa only; exponent overhead is per-group
+
+    bf16_dfb = DataflowBuffer(
+        likeness_tensor=bf16_tensor, shape=TILE_SHAPE, block_count=BLOCK_COUNT
+    )
+    bf8_dfb = DataflowBuffer(
+        likeness_tensor=bf8_tensor, shape=TILE_SHAPE, block_count=BLOCK_COUNT
+    )
+
+    expected_bf16 = TOTAL_ELEMENTS * 2  # 8192
+    expected_bf8 = TOTAL_ELEMENTS + TOTAL_ELEMENTS // 16  # 4352
+
+    assert bf16_dfb.capacity_bytes == expected_bf16
+    assert bf8_dfb.capacity_bytes == expected_bf8
+
+    # Also verify size_in_bytes is accessible directly on the tensor
+    assert bf8_tensor.size_in_bytes(TOTAL_ELEMENTS) == expected_bf8
+    assert bf16_tensor.size_in_bytes(TOTAL_ELEMENTS) == expected_bf16
+
+    # Partial groups: 15 elements still require 1 exponent byte (ceiling division).
+    # Floor division would wrongly return 15 + 0 = 15.
+    assert ttnn.bfloat8_b.size_in_bytes(15) == 15 + 1
+    assert ttnn.bfloat8_b.size_in_bytes(16) == 16 + 1
+    assert ttnn.bfloat8_b.size_in_bytes(17) == 17 + 2
 
 
 def test_device_open_close():
@@ -406,8 +469,8 @@ def test_core_coord():
     assert c1.x == 3
     assert c1.y == 5
 
-    # Test repr
-    assert "CoreCoord(x=3, y=5)" == repr(c1)
+    # Test repr (positional, tt-metal style)
+    assert repr(c1) == "CoreCoord(3, 5)"
 
     # Test equality
     c2 = ttnn.CoreCoord(3, 5)
@@ -431,7 +494,8 @@ def test_core_range():
     # Test repr
     repr_str = repr(r)
     assert "CoreRange" in repr_str
-    assert "start" in repr_str
+    assert "CoreCoord(0, 0)" in repr_str
+    assert "CoreCoord(2, 3)" in repr_str
 
     # Test num_cores (3 x 4 grid = 12 cores)
     assert r.num_cores() == 12
@@ -1043,13 +1107,18 @@ class TestTensorTileIndexing:
     # --- N-D keys with mixed int/slice on last two dims ---
 
     def test_nd_mixed_key_reads_tile_region(self) -> None:
-        """Batch dim (int) + slice tile-row + int tile-col is valid tile indexing."""
+        """Batch dim (int) + slice tile-row + int tile-col is valid tile indexing.
+
+        Integer batch indices are normalized to unit slices so the batch
+        dimension is preserved in the output (shape includes a leading 1).
+        """
         raw = torch.zeros(2, 128, 64)
         raw[1, 0:32, 32:64] = 5.0  # batch=1, tile-row=0, tile-col=1
         t = ttnn.Tensor(raw)
-        # (batch=1, tile-row slice 0:1, tile-col 1) → element [1, 0:32, 32:64]
+        # (batch=1, tile-row slice 0:1, tile-col 1) → element [1:2, 0:32, 32:64]
+        # batch integer index is normalized to a unit slice, preserving the dimension.
         result = t[1, slice(0, 1), 1]
-        assert result.shape == (32, 32)
+        assert result.shape == (1, 32, 32)
         assert torch.all(result.to_torch() == 5.0)
 
     def test_nd_mixed_key_writes_tile_region(self) -> None:
@@ -1072,7 +1141,11 @@ class TestTensorTileIndexing:
 
 
 class TestShardingTypes:
-    """Tests for ShardingStrategy, ShardSpec, NdShardSpec, and MemoryConfig data types."""
+    """Tests for ShardingStrategy, ShardSpec, NdShardSpec, and MemoryConfig data types.
+
+    ``shard_shape`` tuples below are **element** extents (tt-metal style), not
+    tile-grid dimensions.
+    """
 
     def test_sharding_strategy_values(self) -> None:
         """All sharding strategies are defined."""
@@ -1083,16 +1156,16 @@ class TestShardingTypes:
         assert ShardingStrategy.ND_SHARDED
 
     def test_shard_spec_creation(self) -> None:
-        """ShardSpec stores shard_grid and shard_shape."""
+        """ShardSpec stores shard_grid and per-shard element shape."""
         spec = ShardSpec(shard_grid=(4,), shard_shape=(2, 8))
         assert spec.shard_grid == (4,)
         assert spec.shard_shape == (2, 8)
 
     def test_nd_shard_spec_creation(self) -> None:
-        """NdShardSpec stores shard_grid, shard_shape, and distribution."""
+        """NdShardSpec stores shard_shape, optional shard_grid, and distribution."""
         spec = NdShardSpec(
-            shard_grid=(2, 4),
             shard_shape=(2, 2),
+            shard_grid=(2, 4),
             distribution=ShardDistributionStrategy.GRID_2D,
         )
         assert spec.shard_grid == (2, 4)
@@ -1100,8 +1173,8 @@ class TestShardingTypes:
         assert spec.distribution == ShardDistributionStrategy.GRID_2D
 
     def test_nd_shard_spec_default_distribution(self) -> None:
-        """NdShardSpec defaults to ROUND_ROBIN_1D."""
-        spec = NdShardSpec(shard_grid=(4,), shard_shape=(1, 1))
+        """NdShardSpec defaults to ROUND_ROBIN_1D (matches tt-metal ``NdShardSpec`` binding)."""
+        spec = NdShardSpec(shard_shape=(1, 1), shard_grid=(4, 4))
         assert spec.distribution == ShardDistributionStrategy.ROUND_ROBIN_1D
 
     def test_memory_config_interleaved(self) -> None:
@@ -1119,7 +1192,11 @@ class TestShardingTypes:
 
     def test_memory_config_nd_sharded(self) -> None:
         """MemoryConfig accepts an NdShardSpec for ND_SHARDED strategy."""
-        spec = NdShardSpec(shard_grid=(2, 4), shard_shape=(2, 2))
+        spec = NdShardSpec(
+            shard_shape=(2, 2),
+            shard_grid=(2, 4),
+            distribution=ShardDistributionStrategy.GRID_2D,
+        )
         mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=spec)
         assert mc.strategy == ShardingStrategy.ND_SHARDED
         assert mc.nd_shard_spec is spec
@@ -1161,6 +1238,43 @@ class TestShardingTypes:
         assert ttnn.DRAM_MEMORY_CONFIG.strategy == ShardingStrategy.INTERLEAVED
         assert ttnn.L1_MEMORY_CONFIG.strategy == ShardingStrategy.INTERLEAVED
 
+    def test_tensor_spec_nd_sharded_matches_tech_report_inputs(self) -> None:
+        """TensorSpec.nd_sharded(shard_shape, core_ranges) sets ND shard_shape."""
+        core_ranges = ttnn.CoreRangeSet(
+            {
+                ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(1, 3)),
+            }
+        )
+        spec = TensorSpec(
+            shape=(2, 4, 256, 512),
+            dtype=torch.float32,
+            layout=ttnn.TILE_LAYOUT,
+            buffer_type=ttnn.BufferType.L1,
+        ).nd_sharded((1, 1, 64, 128), core_ranges)
+        assert spec.memory_layout == TensorMemoryLayout.ND_SHARDED
+        assert spec.memory_config.nd_shard_spec is not None
+        assert spec.memory_config.nd_shard_spec.shard_shape == (1, 1, 64, 128)
+
+    def test_tensor_spec_nd_sharded_requires_divisible_dims(self) -> None:
+        """from_torch raises when shard_shape does not divide tensor shape."""
+        core_ranges = ttnn.CoreRangeSet(
+            {
+                ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(1, 3)),
+            }
+        )
+        spec = TensorSpec(
+            shape=(2, 4, 256, 512),
+            dtype=torch.float32,
+            layout=ttnn.TILE_LAYOUT,
+            buffer_type=ttnn.BufferType.L1,
+        ).nd_sharded((1, 1, 63, 128), core_ranges)
+        with pytest.raises(ValueError, match="not divisible"):
+            ttnn.from_torch(
+                torch.randn(2, 4, 256, 512),
+                spec=spec,
+                device=ttnn.open_device(0),
+            )
+
 
 class TestTensorMemoryConfig:
     """Tests for Tensor.memory_config attribute and related behaviour."""
@@ -1194,7 +1308,11 @@ class TestTensorMemoryConfig:
 
     def test_nd_sharded_propagated_through_getitem(self) -> None:
         """Slicing an ND_SHARDED Tensor propagates memory_config."""
-        spec = NdShardSpec(shard_grid=(2, 4), shard_shape=(2, 2))
+        spec = NdShardSpec(
+            shard_shape=(64, 64),
+            shard_grid=(2, 4),
+            distribution=ShardDistributionStrategy.GRID_2D,
+        )
         mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=spec)
         t = ttnn.Tensor(torch.zeros(128, 256), memory_config=mc)
         sliced = t[0:2, 0:2]
@@ -1215,12 +1333,12 @@ class TestCreateShardedMemoryConfig:
         assert mc.strategy == ShardingStrategy.HEIGHT_SHARDED
         assert mc.shard_spec is not None
         assert mc.shard_spec.shard_grid == (4,)
-        assert mc.shard_spec.shard_shape == (1, 2)
+        assert mc.shard_spec.shard_shape == (32, 64)
         assert mc.shard_spec.orientation == ShardOrientation.ROW_MAJOR
 
     def test_width_sharded(self) -> None:
         """WIDTH strategy: each core owns a vertical slice."""
-        # 4 cores, 64x128 tensor (2x4 tiles), shard = (2, 1) tiles per core
+        # 4 cores, 64x128 elements (2x4 tiles); shard_shape (64, 32) elements per core
         mc = ttnn.create_sharded_memory_config(
             shape=(64, 128),
             core_grid=CoreGrid(y=2, x=2),
@@ -1229,11 +1347,11 @@ class TestCreateShardedMemoryConfig:
         assert mc.strategy == ShardingStrategy.WIDTH_SHARDED
         assert mc.shard_spec is not None
         assert mc.shard_spec.shard_grid == (4,)
-        assert mc.shard_spec.shard_shape == (2, 1)
+        assert mc.shard_spec.shard_shape == (64, 32)
 
     def test_block_sharded(self) -> None:
         """BLOCK strategy: 2-D core grid, each core owns a rectangular block."""
-        # 2x4 core grid, 128x256 tensor (4x8 tiles), shard = (2, 2) tiles per core
+        # 2x4 core grid, 128x256 elements (4x8 tiles); shard_shape (64, 64) elements per core
         mc = ttnn.create_sharded_memory_config(
             shape=(128, 256),
             core_grid=CoreGrid(y=2, x=4),
@@ -1242,7 +1360,7 @@ class TestCreateShardedMemoryConfig:
         assert mc.strategy == ShardingStrategy.BLOCK_SHARDED
         assert mc.shard_spec is not None
         assert mc.shard_spec.shard_grid == (2, 4)
-        assert mc.shard_spec.shard_shape == (2, 2)
+        assert mc.shard_spec.shard_shape == (64, 64)
 
     def test_use_height_and_width_as_shard_shape(self) -> None:
         """When use_height_and_width_as_shard_shape=True, shape is the shard shape."""
@@ -1254,8 +1372,7 @@ class TestCreateShardedMemoryConfig:
         )
         assert mc.strategy == ShardingStrategy.BLOCK_SHARDED
         assert mc.shard_spec is not None
-        # 64x32 elements = 2x1 tiles
-        assert mc.shard_spec.shard_shape == (2, 1)
+        assert mc.shard_spec.shard_shape == (64, 32)
 
     def test_orientation_stored(self) -> None:
         """Orientation is stored in the resulting ShardSpec."""
@@ -1270,14 +1387,581 @@ class TestCreateShardedMemoryConfig:
 
     def test_batch_dimensions_compressed_to_2d(self) -> None:
         """Higher-rank tensors are compressed to 2D before shard computation."""
-        # (2, 128, 64) -> 2D (256, 64) = (8, 2) tiles; 4 cores HEIGHT -> shard (2, 2)
+        # (2, 128, 64) -> flat 2D (256, 64) = (8, 2) tiles; 4 cores HEIGHT -> shard_shape (64, 64) elements
         mc = ttnn.create_sharded_memory_config(
             shape=(2, 128, 64),
             core_grid=CoreGrid(y=2, x=2),
             strategy=ShardStrategy.HEIGHT,
         )
         assert mc.shard_spec is not None
-        assert mc.shard_spec.shard_shape == (2, 2)
+        assert mc.shard_spec.shard_shape == (64, 64)
+
+
+class TestTensorSpecTtnnApi:
+    """tt-metal style TensorSpec / CoreRangeSet (tensor sharding tech report)."""
+
+    def test_core_range_set_accepts_set_of_ranges(self) -> None:
+        r = ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 3))
+        crs = ttnn.CoreRangeSet({r})
+        assert crs.num_cores() == 4
+        assert crs.ranges() == [r]
+
+    def test_width_sharded_tensor_spec_shard_shape(self) -> None:
+        """Width sharding: 512 / 4 = 128 columns per shard; height 64 full."""
+        core_ranges = ttnn.CoreRangeSet(
+            {ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(3, 0))}
+        )
+        spec = TensorSpec(
+            shape=(1, 64, 512),
+            dtype=ttnn.float32,
+            layout=ttnn.TILE_LAYOUT,
+            buffer_type=ttnn.BufferType.L1,
+        ).width_sharded(core_ranges)
+        assert spec.memory_layout == TensorMemoryLayout.WIDTH_SHARDED
+        assert spec.memory_config is not None
+        assert spec.memory_config.shard_spec is not None
+        assert spec.memory_config.shard_spec.shard_shape == (64, 128)
+
+    def test_from_torch_with_tensor_spec(self) -> None:
+        core_ranges = ttnn.CoreRangeSet(
+            {ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(3, 0))}
+        )
+        spec = TensorSpec(
+            shape=(1, 64, 512),
+            dtype=ttnn.float32,
+            layout=ttnn.TILE_LAYOUT,
+            buffer_type=ttnn.BufferType.L1,
+        ).width_sharded(core_ranges)
+        torch_tensor = torch.randn(tuple(spec.shape))
+        device = ttnn.open_device(0)
+        tt_tensor = ttnn.from_torch(torch_tensor, spec=spec, device=device)
+        assert tt_tensor.shape == (1, 64, 512)
+        assert ttnn.is_sharded(tt_tensor)
+
+    def test_from_torch_rejects_shape_mismatch_with_spec(self) -> None:
+        spec = TensorSpec(shape=(2, 64, 512), dtype=torch.float32).width_sharded(
+            ttnn.CoreRangeSet(
+                {ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(3, 0))}
+            )
+        )
+        with pytest.raises(ValueError, match="does not match spec.shape"):
+            ttnn.from_torch(torch.zeros(1, 64, 512), spec=spec)
+
+
+class TestTensorShardingTechReportExamples:
+    """Examples aligned with the tt-metal tensor sharding tech report.
+
+    https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/tensor_sharding/tensor_sharding.md
+
+    Locality uses :mod:`sim.sharding` (element coordinates): a view is **local**
+    on a core when its elements lie in that core's shard; otherwise access is
+    **remote** on that core.
+    """
+
+    @staticmethod
+    def _device():
+        return ttnn.open_device(0)
+
+    def test_height_sharding_tensor_spec(self) -> None:
+        """2D Height Sharding: ``TensorSpec`` + ``height_sharded`` (8 cores, 2x4 grid)."""
+        core_ranges = ttnn.CoreRangeSet(
+            {
+                ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(1, 3)),
+            }
+        )
+        tensor_spec = ttnn.TensorSpec(
+            shape=(2, 128, 256),
+            dtype=ttnn.float32,
+            layout=ttnn.TILE_LAYOUT,
+            buffer_type=ttnn.BufferType.L1,
+        ).height_sharded(core_ranges)
+        assert tensor_spec.memory_config.shard_spec is not None
+        sp = tensor_spec.memory_config.shard_spec
+        assert sp.shard_grid == (8,)
+        assert sp.shard_shape == (32, 256)
+        torch_tensor = torch.randn(tuple(tensor_spec.shape))
+        tt_tensor = ttnn.from_torch(
+            torch_tensor, spec=tensor_spec, device=self._device()
+        )
+        assert tt_tensor.shape == (2, 128, 256)
+        assert ttnn.is_sharded(tt_tensor)
+        loc0, rem0, _ = count_local_remote_l1_dram(tt_tensor, 0)
+        loc7, rem7, _ = count_local_remote_l1_dram(tt_tensor, 7)
+        # HEIGHT_SHARDED counts along the last two element dimensions only (batch
+        # stacked in the logical height used for shard_shape, not double-counted).
+        plane_el = tt_tensor.shape[-2] * tt_tensor.shape[-1]
+        assert loc0 + rem0 == plane_el and loc7 + rem7 == plane_el
+        shard_hw = sp.shard_shape[-2] * sp.shard_shape[-1]
+        assert loc0 == shard_hw
+        assert loc7 == 0
+        assert rem7 == plane_el
+        k_core0_rows = (slice(0, 1), slice(0, 1), slice(0, 8))
+        assert count_local_remote_l1_dram_for_getitem(tt_tensor, k_core0_rows, 0) == (
+            shard_hw,
+            0,
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(tt_tensor, k_core0_rows, 1) == (
+            0,
+            shard_hw,
+            0,
+        )
+        k_core1_rows = (slice(0, 1), slice(1, 2), slice(0, 8))
+        assert count_local_remote_l1_dram_for_getitem(tt_tensor, k_core1_rows, 1) == (
+            shard_hw,
+            0,
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(tt_tensor, k_core1_rows, 0) == (
+            0,
+            shard_hw,
+            0,
+        )
+        assert shard_origin_from_key(tt_tensor, k_core0_rows) == (0, 0, 0)
+        assert shard_origin_from_key(tt_tensor, k_core1_rows) == (0, 32, 0)
+
+    def test_advanced_height_sharding_memory_config(self) -> None:
+        """Advanced API: custom height sharding via ``MemoryConfig`` + ``ShardSpec``."""
+        memory_config = ttnn.MemoryConfig(
+            ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+            ttnn.BufferType.L1,
+            ttnn.ShardSpec(
+                ttnn.num_cores_to_corerangeset(
+                    target_num_cores=8,
+                    grid_size=[8, 7],
+                    row_wise=True,
+                ),
+                [64, 512],
+                ttnn.ShardOrientation.ROW_MAJOR,
+            ),
+        )
+        assert memory_config.shard_spec is not None
+        assert memory_config.shard_spec.shard_grid == (8,)
+        assert memory_config.shard_spec.shard_shape == (64, 512)
+        torch_tensor = torch.randn(512, 512)
+        height_sharded_tensor = ttnn.from_torch(
+            torch_tensor,
+            dtype=ttnn.float32,
+            device=self._device(),
+            layout=ttnn.TILE_LAYOUT,
+            memory_config=memory_config,
+        )
+        assert height_sharded_tensor.shape == (512, 512)
+        assert ttnn.is_sharded(height_sharded_tensor)
+        sp = memory_config.shard_spec
+        assert sp is not None
+        plane_el = height_sharded_tensor.shape[-2] * height_sharded_tensor.shape[-1]
+        loc0, rem0, _ = count_local_remote_l1_dram(height_sharded_tensor, 0)
+        loc7, rem7, _ = count_local_remote_l1_dram(height_sharded_tensor, 7)
+        assert loc0 + rem0 == plane_el and loc7 + rem7 == plane_el
+        shard_hw = sp.shard_shape[-2] * sp.shard_shape[-1]
+        assert loc0 == shard_hw and loc7 == shard_hw
+        assert rem0 == plane_el - shard_hw and rem7 == plane_el - shard_hw
+        k0 = (slice(0, 2), slice(0, 16))
+        assert count_local_remote_l1_dram_for_getitem(height_sharded_tensor, k0, 0) == (
+            sp.shard_shape[-2] * sp.shard_shape[-1],
+            0,
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(height_sharded_tensor, k0, 1) == (
+            0,
+            sp.shard_shape[-2] * sp.shard_shape[-1],
+            0,
+        )
+        assert shard_origin_from_key(height_sharded_tensor, k0) == (0, 0)
+
+    def test_width_sharding_tensor_spec(self) -> None:
+        """2D Width Sharding: ``TensorSpec`` + ``width_sharded`` (4 cores, 1x4 grid)."""
+        core_ranges = ttnn.CoreRangeSet(
+            {
+                ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 3)),
+            }
+        )
+        tensor_spec = ttnn.TensorSpec(
+            shape=(1, 64, 512),
+            dtype=ttnn.float32,
+            layout=ttnn.TILE_LAYOUT,
+            buffer_type=ttnn.BufferType.L1,
+        ).width_sharded(core_ranges)
+        sp = tensor_spec.memory_config.shard_spec
+        assert sp is not None
+        assert sp.shard_grid == (4,)
+        assert sp.shard_shape == (64, 128)
+        torch_tensor = torch.randn(tuple(tensor_spec.shape))
+        tt_tensor = ttnn.from_torch(
+            torch_tensor, spec=tensor_spec, device=self._device()
+        )
+        assert tt_tensor.shape == (1, 64, 512)
+        assert ttnn.is_sharded(tt_tensor)
+        plane_el = tt_tensor.shape[-2] * tt_tensor.shape[-1]
+        loc0, rem0, _ = count_local_remote_l1_dram(tt_tensor, 0)
+        loc3, rem3, _ = count_local_remote_l1_dram(tt_tensor, 3)
+        assert loc0 + rem0 == plane_el and loc3 + rem3 == plane_el
+        sw = sp.shard_shape[-1]
+        assert loc0 == tt_tensor.shape[-2] * sw
+        assert loc3 == loc0
+        k_w0 = (slice(0, 1), slice(0, 2), slice(0, 4))
+        assert count_local_remote_l1_dram_for_getitem(tt_tensor, k_w0, 0) == (
+            plane_el // sp.shard_grid[0],
+            0,
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(tt_tensor, k_w0, 3) == (
+            0,
+            plane_el // sp.shard_grid[0],
+            0,
+        )
+        k_w3 = (slice(0, 1), slice(0, 2), slice(12, 16))
+        assert count_local_remote_l1_dram_for_getitem(tt_tensor, k_w3, 3) == (
+            plane_el // sp.shard_grid[0],
+            0,
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(tt_tensor, k_w3, 0) == (
+            0,
+            plane_el // sp.shard_grid[0],
+            0,
+        )
+        assert shard_origin_from_key(tt_tensor, k_w0) == (0, 0, 0)
+        assert shard_origin_from_key(tt_tensor, k_w3) == (0, 0, 384)
+
+    def test_advanced_width_sharding_memory_config(self) -> None:
+        """Advanced API: width sharding via ``MemoryConfig`` + ``ShardSpec`` (keyword grid)."""
+        memory_config = ttnn.MemoryConfig(
+            ttnn.TensorMemoryLayout.WIDTH_SHARDED,
+            ttnn.BufferType.L1,
+            ttnn.ShardSpec(
+                grid=ttnn.CoreRangeSet(
+                    {
+                        ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(3, 1)),
+                    }
+                ),
+                shard_shape=[128, 64],
+                shard_orientation=ttnn.ShardOrientation.ROW_MAJOR,
+            ),
+        )
+        assert memory_config.shard_spec is not None
+        assert memory_config.shard_spec.shard_grid == (8,)
+        assert memory_config.shard_spec.shard_shape == (128, 64)
+        torch_tensor = torch.randn(128, 512)
+        width_sharded_tensor = ttnn.from_torch(
+            torch_tensor,
+            dtype=ttnn.float32,
+            device=self._device(),
+            layout=ttnn.TILE_LAYOUT,
+            memory_config=memory_config,
+        )
+        assert width_sharded_tensor.shape == (128, 512)
+        assert ttnn.is_sharded(width_sharded_tensor)
+        sp = memory_config.shard_spec
+        assert sp is not None
+        plane_el = width_sharded_tensor.shape[-2] * width_sharded_tensor.shape[-1]
+        loc0, rem0, _ = count_local_remote_l1_dram(width_sharded_tensor, 0)
+        assert loc0 + rem0 == plane_el
+        assert loc0 == width_sharded_tensor.shape[-2] * sp.shard_shape[-1]
+        k_w0 = (slice(0, 4), slice(0, 2))
+        assert count_local_remote_l1_dram_for_getitem(
+            width_sharded_tensor, k_w0, 0
+        ) == (
+            loc0,
+            0,
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(
+            width_sharded_tensor, k_w0, 1
+        ) == (
+            0,
+            loc0,
+            0,
+        )
+        assert shard_origin_from_key(width_sharded_tensor, k_w0) == (0, 0)
+
+    def test_block_sharding_tensor_spec(self) -> None:
+        """Block sharding: ``TensorSpec`` + ``block_sharded`` (16 cores, 4x4 grid)."""
+        core_ranges = ttnn.CoreRangeSet(
+            {
+                ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(3, 3)),
+            }
+        )
+        tensor_spec = ttnn.TensorSpec(
+            shape=(1, 256, 256),
+            dtype=ttnn.float32,
+            layout=ttnn.TILE_LAYOUT,
+            buffer_type=ttnn.BufferType.L1,
+        ).block_sharded(core_ranges)
+        sp = tensor_spec.memory_config.shard_spec
+        assert sp is not None
+        assert sp.shard_grid == (4, 4)
+        assert sp.shard_shape == (64, 64)
+        torch_tensor = torch.randn(tuple(tensor_spec.shape))
+        tt_tensor = ttnn.from_torch(
+            torch_tensor, spec=tensor_spec, device=self._device()
+        )
+        assert tt_tensor.shape == (1, 256, 256)
+        assert ttnn.is_sharded(tt_tensor)
+        plane_el = tt_tensor.shape[-2] * tt_tensor.shape[-1]
+        loc0, rem0, _ = count_local_remote_l1_dram(tt_tensor, 0)
+        loc15, rem15, _ = count_local_remote_l1_dram(tt_tensor, 15)
+        assert loc0 + rem0 == plane_el and loc15 + rem15 == plane_el
+        sh, sw = sp.shard_shape[-2], sp.shard_shape[-1]
+        assert loc0 == sh * sw
+        assert loc15 == sh * sw
+        k00 = (slice(0, 1), slice(0, 2), slice(0, 2))
+        assert count_local_remote_l1_dram_for_getitem(tt_tensor, k00, 0) == (
+            sh * sw,
+            0,
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(tt_tensor, k00, 5) == (
+            0,
+            sh * sw,
+            0,
+        )
+        k11 = (slice(0, 1), slice(2, 4), slice(2, 4))
+        assert count_local_remote_l1_dram_for_getitem(tt_tensor, k11, 5) == (
+            sh * sw,
+            0,
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(tt_tensor, k11, 0) == (
+            0,
+            sh * sw,
+            0,
+        )
+        assert shard_origin_from_key(tt_tensor, k00) == (0, 0, 0)
+        assert shard_origin_from_key(tt_tensor, k11) == (0, 64, 64)
+
+    def test_advanced_block_sharding_memory_config(self) -> None:
+        """Advanced API: block sharding via ``MemoryConfig`` + ``ShardSpec``."""
+        memory_config = ttnn.MemoryConfig(
+            ttnn.TensorMemoryLayout.BLOCK_SHARDED,
+            ttnn.BufferType.L1,
+            ttnn.ShardSpec(
+                grid=ttnn.CoreRangeSet(
+                    {
+                        ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(3, 3)),
+                    }
+                ),
+                shard_shape=[64, 64],
+                shard_orientation=ttnn.ShardOrientation.ROW_MAJOR,
+            ),
+        )
+        assert memory_config.shard_spec is not None
+        assert memory_config.shard_spec.shard_grid == (4, 4)
+        assert memory_config.shard_spec.shard_shape == (64, 64)
+        torch_tensor = torch.randn(192, 192)
+        block_sharded_tensor = ttnn.from_torch(
+            torch_tensor,
+            dtype=ttnn.float32,
+            device=self._device(),
+            layout=ttnn.TILE_LAYOUT,
+            memory_config=memory_config,
+        )
+        assert block_sharded_tensor.shape == (192, 192)
+        assert ttnn.is_sharded(block_sharded_tensor)
+        sp = memory_config.shard_spec
+        assert sp is not None
+        plane_el = block_sharded_tensor.shape[-2] * block_sharded_tensor.shape[-1]
+        sh, sw = sp.shard_shape[-2], sp.shard_shape[-1]
+        loc0, rem0, _ = count_local_remote_l1_dram(block_sharded_tensor, 0)
+        loc5, rem5, _ = count_local_remote_l1_dram(block_sharded_tensor, 5)
+        loc15, rem15, _ = count_local_remote_l1_dram(block_sharded_tensor, 15)
+        assert loc0 + rem0 == plane_el and loc5 + rem5 == plane_el
+        assert loc15 + rem15 == plane_el
+        assert loc0 == sh * sw and loc5 == sh * sw
+        assert loc15 == 0 and rem15 == plane_el
+        k00 = (slice(0, 2), slice(0, 2))
+        k55 = (slice(2, 4), slice(2, 4))
+        assert count_local_remote_l1_dram_for_getitem(block_sharded_tensor, k00, 0) == (
+            sh * sw,
+            0,
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(block_sharded_tensor, k00, 5) == (
+            0,
+            sh * sw,
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(block_sharded_tensor, k55, 5) == (
+            sh * sw,
+            0,
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(block_sharded_tensor, k55, 0) == (
+            0,
+            sh * sw,
+            0,
+        )
+        assert shard_origin_from_key(block_sharded_tensor, k00) == (0, 0)
+        assert shard_origin_from_key(block_sharded_tensor, k55) == (64, 64)
+
+    def test_nd_sharding_tensor_spec_batch_seq_and_features(self) -> None:
+        """ND sharding examples: ``sharded_across_dims`` for batch+seq and features."""
+        core_ranges = ttnn.CoreRangeSet(
+            {
+                ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(1, 3)),
+            }
+        )
+        nd_spec_batch_seq = ttnn.TensorSpec(
+            shape=(4, 512, 768),
+            dtype=ttnn.float32,
+            layout=ttnn.TILE_LAYOUT,
+            buffer_type=ttnn.BufferType.L1,
+        ).sharded_across_dims([0, 1], core_ranges)
+        assert nd_spec_batch_seq.memory_config.nd_shard_spec is not None
+        nd0 = nd_spec_batch_seq.memory_config.nd_shard_spec
+        assert nd0.shard_grid == (4, 2, 1)
+        assert nd0.shard_shape == (1, 256, 768)
+        torch_tensor = torch.randn(tuple(nd_spec_batch_seq.shape))
+        batch_seq_sharded = ttnn.from_torch(
+            torch_tensor, spec=nd_spec_batch_seq, device=self._device()
+        )
+        assert batch_seq_sharded.shape == (4, 512, 768)
+        assert ttnn.is_sharded(batch_seq_sharded)
+        total_bs = math.prod(batch_seq_sharded.shape)
+        loc0_bs, rem0_bs, _ = count_local_remote_l1_dram(batch_seq_sharded, 0)
+        loc7_bs, rem7_bs, _ = count_local_remote_l1_dram(batch_seq_sharded, 7)
+        assert loc0_bs + rem0_bs == total_bs and loc7_bs + rem7_bs == total_bs
+        assert loc0_bs == math.prod(nd0.shard_shape)
+        assert loc7_bs == math.prod(nd0.shard_shape)
+        k_bs0 = (0, slice(0, 8), slice(0, 24))
+        k_bs7 = (3, slice(8, 16), slice(0, 24))
+        assert count_local_remote_l1_dram_for_getitem(batch_seq_sharded, k_bs0, 0) == (
+            math.prod(nd0.shard_shape),
+            0,
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(batch_seq_sharded, k_bs0, 1) == (
+            0,
+            math.prod(nd0.shard_shape),
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(batch_seq_sharded, k_bs7, 7) == (
+            math.prod(nd0.shard_shape),
+            0,
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(batch_seq_sharded, k_bs7, 0) == (
+            0,
+            math.prod(nd0.shard_shape),
+            0,
+        )
+        assert shard_origin_from_key(batch_seq_sharded, k_bs0) == (0, 0, 0)
+        assert shard_origin_from_key(batch_seq_sharded, k_bs7) == (3, 256, 0)
+
+        nd_spec_features = ttnn.TensorSpec(
+            shape=(2, 256, 1024),
+            dtype=ttnn.float32,
+            layout=ttnn.TILE_LAYOUT,
+            buffer_type=ttnn.BufferType.L1,
+        ).sharded_across_dims([2], core_ranges)
+        nd1 = nd_spec_features.memory_config.nd_shard_spec
+        assert nd1 is not None
+        assert nd1.shard_grid == (1, 1, 8)
+        assert nd1.shard_shape == (2, 256, 128)
+        torch_tensor_b = torch.randn(tuple(nd_spec_features.shape))
+        feature_sharded = ttnn.from_torch(
+            torch_tensor_b, spec=nd_spec_features, device=self._device()
+        )
+        assert feature_sharded.shape == (2, 256, 1024)
+        assert ttnn.is_sharded(feature_sharded)
+        total_f = math.prod(feature_sharded.shape)
+        loc0_f, rem0_f, _ = count_local_remote_l1_dram(feature_sharded, 0)
+        loc7_f, rem7_f, _ = count_local_remote_l1_dram(feature_sharded, 7)
+        assert loc0_f + rem0_f == total_f and loc7_f + rem7_f == total_f
+        assert loc0_f == math.prod(nd1.shard_shape)
+        assert loc7_f == math.prod(nd1.shard_shape)
+        k_f0 = (slice(0, 2), slice(0, 8), slice(0, 4))
+        k_f7 = (slice(0, 2), slice(0, 8), slice(28, 32))
+        assert count_local_remote_l1_dram_for_getitem(feature_sharded, k_f0, 0) == (
+            math.prod(nd1.shard_shape),
+            0,
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(feature_sharded, k_f0, 7) == (
+            0,
+            math.prod(nd1.shard_shape),
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(feature_sharded, k_f7, 7) == (
+            math.prod(nd1.shard_shape),
+            0,
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(feature_sharded, k_f7, 0) == (
+            0,
+            math.prod(nd1.shard_shape),
+            0,
+        )
+        assert shard_origin_from_key(feature_sharded, k_f0) == (0, 0, 0)
+        assert shard_origin_from_key(feature_sharded, k_f7) == (0, 0, 896)
+
+    def test_advanced_nd_shard_spec_memory_config(self) -> None:
+        """Example 3: Advanced ND sharding with custom shard specification (tech report)."""
+        core_ranges = ttnn.CoreRangeSet(
+            {
+                ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(1, 3)),
+            }
+        )
+        nd_memory_config = ttnn.MemoryConfig(
+            ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+            ttnn.BufferType.L1,
+            NdShardSpec(
+                shard_shape=[1, 1, 64, 128],
+                core_ranges=core_ranges,
+            ),
+        )
+        torch_tensor = torch.randn(2, 4, 256, 512)
+        device = self._device()
+        advanced_nd_sharded = ttnn.from_torch(
+            torch_tensor,
+            dtype=ttnn.float32,
+            device=device,
+            layout=ttnn.TILE_LAYOUT,
+            memory_config=nd_memory_config,
+        )
+        assert advanced_nd_sharded.shape == (2, 4, 256, 512)
+        assert ttnn.is_sharded(advanced_nd_sharded)
+        nd = advanced_nd_sharded.memory_config.nd_shard_spec
+        assert nd is not None
+        assert nd.distribution == ShardDistributionStrategy.GRID_2D
+        total_nd = math.prod(advanced_nd_sharded.shape)
+        loc0_nd, rem0_nd, _ = count_local_remote_l1_dram(advanced_nd_sharded, 0)
+        loc1_nd, rem1_nd, _ = count_local_remote_l1_dram(advanced_nd_sharded, 1)
+        assert loc0_nd + rem0_nd == total_nd and loc1_nd + rem1_nd == total_nd
+        assert loc0_nd == math.prod(nd.shard_shape)
+        k_nd0 = (0, 0, slice(0, 2), slice(0, 4))
+        k_nd1 = (0, 0, slice(0, 2), slice(4, 8))
+        assert count_local_remote_l1_dram_for_getitem(
+            advanced_nd_sharded, k_nd0, 0
+        ) == (
+            math.prod(nd.shard_shape),
+            0,
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(
+            advanced_nd_sharded, k_nd0, 1
+        ) == (
+            0,
+            math.prod(nd.shard_shape),
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(
+            advanced_nd_sharded, k_nd1, 1
+        ) == (
+            math.prod(nd.shard_shape),
+            0,
+            0,
+        )
+        assert count_local_remote_l1_dram_for_getitem(
+            advanced_nd_sharded, k_nd1, 0
+        ) == (
+            0,
+            math.prod(nd.shard_shape),
+            0,
+        )
+        assert shard_origin_from_key(advanced_nd_sharded, k_nd0) == (0, 0, 0, 0)
+        assert shard_origin_from_key(advanced_nd_sharded, k_nd1) == (0, 0, 0, 128)
 
 
 class TestShardingHelpers:
@@ -1292,7 +1976,7 @@ class TestShardingHelpers:
         """Height-sharded tensors are considered sharded."""
         mc = MemoryConfig(
             strategy=ShardingStrategy.HEIGHT_SHARDED,
-            shard_spec=ShardSpec(shard_grid=(4,), shard_shape=(1, 2)),
+            shard_spec=ShardSpec(shard_grid=(4,), shard_shape=(32, 64)),
         )
         t = ttnn.from_torch(torch.zeros(128, 64), memory_config=mc)
         assert ttnn.is_sharded(t)
@@ -1301,7 +1985,7 @@ class TestShardingHelpers:
         """Block-sharded tensors are considered sharded."""
         mc = MemoryConfig(
             strategy=ShardingStrategy.BLOCK_SHARDED,
-            shard_spec=ShardSpec(shard_grid=(2, 2), shard_shape=(1, 1)),
+            shard_spec=ShardSpec(shard_grid=(2, 2), shard_shape=(32, 32)),
         )
         t = ttnn.from_torch(torch.zeros(64, 64), memory_config=mc)
         assert ttnn.is_sharded(t)
@@ -1310,7 +1994,7 @@ class TestShardingHelpers:
         """get_memory_config returns the MemoryConfig stored on the tensor."""
         mc = MemoryConfig(
             strategy=ShardingStrategy.HEIGHT_SHARDED,
-            shard_spec=ShardSpec(shard_grid=(4,), shard_shape=(1, 2)),
+            shard_spec=ShardSpec(shard_grid=(4,), shard_shape=(32, 64)),
         )
         t = ttnn.from_torch(torch.zeros(128, 64), memory_config=mc)
         assert ttnn.get_memory_config(t) is mc
@@ -1326,7 +2010,7 @@ class TestShardingHelpers:
         src = ttnn.from_torch(raw)
         mc = MemoryConfig(
             strategy=ShardingStrategy.HEIGHT_SHARDED,
-            shard_spec=ShardSpec(shard_grid=(4,), shard_shape=(1, 2)),
+            shard_spec=ShardSpec(shard_grid=(4,), shard_shape=(32, 64)),
         )
         dst = ttnn.to_memory_config(src, mc)
         assert ttnn.get_memory_config(dst) == mc
@@ -1502,3 +2186,261 @@ class TestRowMajorLayout:
         """Tile count for tiled tensors is unchanged (regression guard)."""
         t = ttnn.Tensor(torch.zeros(64, 64))  # 2x2 tiles
         assert ttnn.tile_count_from_tensor(t) == 4
+
+
+class TestAllReduce:
+    """Tests for :func:`~sim.ttnnsim.all_reduce`.
+
+    Partition structure is communicated via the tensor's ``mesh_shard_info``
+    attribute, which is set by :func:`from_torch` when a
+    :class:`~ttnnsim.ShardTensorToMesh` mapper is provided.  This is kept
+    separate from the intra-device sharding strategies stored in
+    :class:`~ttnnsim.MemoryConfig`.
+    """
+
+    def _mesh(self, n: int) -> ttnn.MeshDevice:
+        return ttnn.open_mesh_device(ttnn.MeshShape(1, n))
+
+    def test_shard_to_mesh_sets_mesh_shard_info(self) -> None:
+        """from_torch with ShardTensorToMesh records dim and device count in mesh_shard_info."""
+        mesh = self._mesh(4)
+        t = ttnn.from_torch(
+            torch.zeros(8, 6),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        assert t.mesh_shard_info is not None
+        assert t.mesh_shard_info.dim == 0
+        assert t.mesh_shard_info.num_devices == 4
+        assert t.memory_config == ttnn.DRAM_MEMORY_CONFIG
+
+    def test_shard_to_mesh_records_width_dim(self) -> None:
+        """ShardTensorToMesh along the last dim records dim=1 in mesh_shard_info."""
+        mesh = self._mesh(3)
+        t = ttnn.from_torch(
+            torch.zeros(4, 9),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=1),
+        )
+        assert t.mesh_shard_info is not None
+        assert t.mesh_shard_info.dim == 1
+        assert t.mesh_shard_info.num_devices == 3
+        assert t.memory_config == ttnn.DRAM_MEMORY_CONFIG
+
+    def test_all_reduce_via_mesh_sums_shards(self) -> None:
+        """all_reduce over a ShardTensorToMesh tensor sums the shards."""
+        mesh = self._mesh(4)
+        # Build a tensor where each shard-row block holds a different value.
+        data = torch.zeros(8, 4)
+        data[0:2, :] = 1.0
+        data[2:4, :] = 2.0
+        data[4:6, :] = 3.0
+        data[6:8, :] = 4.0
+        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        result = ttnn.all_reduce(t)
+        expected_shard = torch.full((2, 4), 10.0)
+        for i in range(4):
+            assert torch.allclose(
+                result.to_torch()[i * 2 : (i + 1) * 2], expected_shard
+            )
+
+    def test_all_reduce_single_device_identity(self) -> None:
+        """With a single-device mesh, all_reduce is an identity."""
+        mesh = self._mesh(1)
+        data = torch.arange(12, dtype=torch.float32).reshape(4, 3)
+        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        result = ttnn.all_reduce(t)
+        assert torch.allclose(result.to_torch(), data)
+
+    def test_all_reduce_preserves_layout(self) -> None:
+        """Output layout matches input layout."""
+        mesh = self._mesh(2)
+        t = ttnn.from_torch(
+            torch.ones(4, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        assert ttnn.all_reduce(t).layout == ttnn.ROW_MAJOR_LAYOUT
+
+    def test_all_reduce_dtype_conversion(self) -> None:
+        """Output is cast when dtype is given."""
+        mesh = self._mesh(2)
+        t = ttnn.from_torch(
+            torch.ones(4, 4, dtype=torch.float32),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        result = ttnn.all_reduce(t, dtype=torch.float16)
+        assert result.to_torch().dtype == torch.float16
+
+    def test_all_reduce_memory_config_override(self) -> None:
+        """Explicit memory_config is applied to the output."""
+        mesh = self._mesh(2)
+        t = ttnn.from_torch(
+            torch.ones(4, 4),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        custom_mc = MemoryConfig(strategy=ShardingStrategy.INTERLEAVED)
+        result = ttnn.all_reduce(t, memory_config=custom_mc)
+        assert result.memory_config == custom_mc
+
+    def test_all_reduce_kwargs_accepted(self) -> None:
+        """Extra keyword arguments are accepted without error."""
+        mesh = self._mesh(2)
+        t = ttnn.from_torch(
+            torch.ones(4, 4),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        ttnn.all_reduce(t, cluster_axis=0, mesh_device=mesh)
+
+    # ---- Error on unsharded tensor ----
+
+    def test_all_reduce_requires_shard_metadata(self) -> None:
+        """all_reduce raises ValueError when the tensor has no mesh sharding metadata."""
+        t = ttnn.Tensor(torch.ones(8, 4))
+        with pytest.raises(
+            ValueError, match="Mesh device is required for all_reduce operation"
+        ):
+            ttnn.all_reduce(t)
+
+    def test_shard_tensor_not_divisible_still_sets_mesh_shard_info(self) -> None:
+        """from_torch with ShardTensorToMesh records mesh_shard_info even when indivisible."""
+        mesh = self._mesh(3)
+        t = ttnn.from_torch(
+            torch.zeros(8, 4),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        assert t.mesh_shard_info is not None
+        assert t.mesh_shard_info.num_devices == 3
+        assert t.mesh_shard_info.dim == 0
+
+    def test_all_reduce_3d_partitioned_along_middle_dim(self) -> None:
+        """all_reduce on a 3-D tensor partitioned along dim 1 reduces along that axis."""
+        mesh = self._mesh(2)
+        # Shape (B, H*n, W) — partitioned along dim 1.
+        data = torch.zeros(3, 4, 5)
+        data[:, 0:2, :] = 1.0  # first device's shard
+        data[:, 2:4, :] = 3.0  # second device's shard
+        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=1))
+        assert t.mesh_shard_info is not None
+        assert t.mesh_shard_info.dim == 1
+        result = ttnn.all_reduce(t)
+        expected_shard = torch.full((3, 2, 5), 4.0)
+        assert torch.allclose(result.to_torch()[:, 0:2, :], expected_shard)
+        assert torch.allclose(result.to_torch()[:, 2:4, :], expected_shard)
+
+
+class TestAllGather:
+    """Tests for :func:`~sim.ttnnsim.all_gather`.
+
+    The gather operation concatenates all per-device shards along ``dim``.
+    Every device ends up with the same result.  The simulator represents
+    n identical copies by stacking them along ``msi.dim``.
+    """
+
+    def _mesh(self, n: int) -> ttnn.MeshDevice:
+        return ttnn.open_mesh_device(ttnn.MeshShape(1, n))
+
+    def test_all_gather_same_dim_as_shard_dim(self) -> None:
+        """all_gather along shard_dim concatenates all shards; output is n times the input."""
+        mesh = self._mesh(4)
+        data = torch.arange(32, dtype=torch.float32).reshape(8, 4)
+        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        result = ttnn.all_gather(t, dim=0)
+        # Each shard is [2, 4]; gathered per device = [8, 4] = data itself.
+        # Output = 4 copies stacked along dim 0 = [32, 4].
+        assert result.to_torch().shape == (32, 4)
+        # Every [8, 4] block should equal the original data.
+        for i in range(4):
+            assert torch.allclose(result.to_torch()[i * 8 : (i + 1) * 8], data)
+
+    def test_all_gather_different_dim_from_shard_dim(self) -> None:
+        """all_gather along a non-shard dim grows that dim by num_devices."""
+        mesh = self._mesh(4)
+        # 4 devices, each with a [2, 6] shard; sharded along dim 0.
+        data = torch.arange(48, dtype=torch.float32).reshape(8, 6)
+        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        result = ttnn.all_gather(t, dim=1)
+        # Each shard is [2, 6]; gathered along dim 1 = [2, 24].
+        # Output = 4 copies stacked along dim 0 = [8, 24].
+        assert result.to_torch().shape == (8, 24)
+        # Device i's shard is data[i*2:(i+1)*2, :]; gathered along dim 1
+        # = cat([shard_0, shard_1, shard_2, shard_3], dim=1) = [2, 24].
+        expected_gathered_shard = torch.cat(
+            [data[i * 2 : (i + 1) * 2, :] for i in range(4)], dim=1
+        )
+        for i in range(4):
+            assert torch.allclose(
+                result.to_torch()[i * 2 : (i + 1) * 2, :], expected_gathered_shard
+            )
+
+    def test_all_gather_single_device_identity(self) -> None:
+        """With a single-device mesh, all_gather is an identity."""
+        mesh = self._mesh(1)
+        data = torch.arange(12, dtype=torch.float32).reshape(4, 3)
+        t = ttnn.from_torch(data, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0))
+        result = ttnn.all_gather(t, dim=0)
+        assert torch.allclose(result.to_torch(), data)
+
+    def test_all_gather_preserves_layout(self) -> None:
+        """Output layout matches input layout."""
+        mesh = self._mesh(2)
+        t = ttnn.from_torch(
+            torch.ones(4, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        assert ttnn.all_gather(t, dim=0).layout == ttnn.ROW_MAJOR_LAYOUT
+
+    def test_all_gather_memory_config_override(self) -> None:
+        """Explicit memory_config is applied to the output."""
+        mesh = self._mesh(2)
+        t = ttnn.from_torch(
+            torch.ones(4, 4),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        custom_mc = MemoryConfig(strategy=ShardingStrategy.INTERLEAVED)
+        result = ttnn.all_gather(t, dim=0, memory_config=custom_mc)
+        assert result.memory_config == custom_mc
+
+    def test_all_gather_preserves_mesh_shard_info(self) -> None:
+        """Output mesh_shard_info keeps the same dim and num_devices."""
+        mesh = self._mesh(4)
+        t = ttnn.from_torch(
+            torch.ones(8, 6),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        result = ttnn.all_gather(t, dim=0)
+        assert result.mesh_shard_info is not None
+        assert result.mesh_shard_info.dim == 0
+        assert result.mesh_shard_info.num_devices == 4
+
+    def test_all_gather_kwargs_accepted(self) -> None:
+        """Extra keyword arguments are accepted without error."""
+        mesh = self._mesh(2)
+        t = ttnn.from_torch(
+            torch.ones(4, 4),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        ttnn.all_gather(t, dim=0, cluster_axis=0, mesh_device=mesh)
+
+    def test_all_gather_requires_shard_metadata(self) -> None:
+        """all_gather raises ValueError when the tensor has no mesh sharding metadata."""
+        t = ttnn.Tensor(torch.ones(8, 4))
+        with pytest.raises(
+            ValueError, match="Mesh device is required for all_gather operation"
+        ):
+            ttnn.all_gather(t, dim=0)
+
+
+class TestSynchronizeDevice:
+    """synchronize_device() is a no-op in the simulator."""
+
+    def test_no_args(self) -> None:
+        """Callable with no arguments."""
+        ttnn.synchronize_device()
+
+    def test_with_device_arg(self) -> None:
+        """Callable with a positional device argument, as in real hardware code."""
+        ttnn.synchronize_device("mock_device")
+
+    def test_returns_none(self) -> None:
+        """Return value is None."""
+        assert ttnn.synchronize_device() is None

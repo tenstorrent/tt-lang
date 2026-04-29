@@ -4,7 +4,7 @@
 // IS yielded. The fix ensures Phase 3 skips merged sets if ANY member is yielded.
 //
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{separate-output-region=1}))' -debug-only=ttl-assign-dst 2>&1 | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{separate-output-region=1}))' | FileCheck %s --check-prefix=IR
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{separate-output-region=1}), canonicalize, cse)' | FileCheck %s --check-prefix=IR
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -24,7 +24,7 @@
 // CHECK: Phase 2: Merged
 // CHECK-SAME: tile_mul
 // CHECK-SAME: tile_abs
-// CHECK: Merged set interval: [2, 4] for 2 values
+// CHECK: Merged set interval: [3, 5] for 2 values
 
 // Verify Phase 3 has no allocations (FPU binary block args don't need DST)
 // CHECK: === Phase 3: Linear Scan Allocation ===
@@ -43,9 +43,10 @@
 
 // Verify IR has correct dst_idx attributes
 // IR-LABEL: func.func @binary_unary_merged_output
+// IR-DAG: %[[C0:.*]] = arith.constant 0 : index
 // IR: ttl.compute
-// IR: ttl.tile_mul {{.*}} {dst_idx = 0 : i32, ttl.fpu_binary}
-// IR: ttl.tile_abs {{.*}} {dst_idx = 0 : i32}
+// IR: ttl.tile_mul {{.*}} into dst[%[[C0]]] {ttl.fpu_binary}
+// IR: ttl.tile_abs {{.*}} into dst[%[[C0]]]
 // IR: ttl.tile_store
 
 func.func @binary_unary_merged_output(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -74,10 +75,11 @@ func.func @binary_unary_merged_output(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
     // Binary operation: creates intermediate value (not yielded)
-    %mul = ttl.tile_mul %a_tile, %b_tile : !ttcore.tile<32x32, f32>
+    %c0 = arith.constant 0 : index
+    %mul = ttl.tile_mul %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     // Unary operation: merges with %mul, result IS yielded
-    %abs = ttl.tile_abs %mul : !ttcore.tile<32x32, f32>
-    ttl.tile_store %abs, %out_view[%i, %j] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
+    %abs = ttl.tile_abs %mul into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %abs, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<2x2x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 

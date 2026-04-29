@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: tt-device
-# RUN: %python %s --ttl-auto-sync > %t.output 2>&1
+# RUN: %python %s --ttl-subblock-sync > %t.output 2>&1
 # RUN: FileCheck %s < %t.output
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 

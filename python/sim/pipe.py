@@ -35,19 +35,19 @@ class Pipe(Generic[DstT]):
         DstT: The type of the destination - CoreCoord or CoreRange
 
     Attributes:
-        src_core: Core coordinates of the source/sender. Can be:
-                 - Index: Single 1D core (e.g., 0, 1, 2)
-                 - Tuple[Index, ...]: Multi-dimensional core (e.g., (0, 1), (1, 2, 3))
+        src: Core coordinates of the source/sender. Can be:
+             - Index: Single 1D core (e.g., 0, 1, 2)
+             - Tuple[Index, ...]: Multi-dimensional core (e.g., (0, 1), (1, 2, 3))
 
-        dst_core_range: Destination specification. Can be:
-                       - CoreCoord: Single destination core (unicast)
-                         Example: 5 or (1, 2)
-                       - CoreRange: Range of destination cores using slices (multicast)
-                         Example: (0, slice(1, 4)) means cores (0,1), (0,2), (0,3)
+        dst: Destination specification. Can be:
+             - CoreCoord: Single destination core (unicast)
+               Example: 5 or (1, 2)
+             - CoreRange: Range of destination cores using slices (multicast)
+               Example: (0, slice(1, 4)) means cores (0,1), (0,2), (0,3)
     """
 
-    src_core: CoreCoord
-    dst_core_range: DstT
+    src: CoreCoord
+    dst: DstT
 
     def has_current_node(self) -> bool:
         """Check if the current core participates in this pipe (either as source or destination).
@@ -60,11 +60,11 @@ class Pipe(Generic[DstT]):
         """
         # Check if current core is the source
         current_core_linear = node(dims=1)
-        pipe_src_linear = flatten_core_index(self.src_core)
+        pipe_src_linear = flatten_core_index(self.src)
         if current_core_linear == pipe_src_linear:
             return True
 
-        return core_in_dst_range(self.dst_core_range)
+        return core_in_dst_range(self.dst)
 
     def __hash__(self) -> int:
         """Custom hash implementation to handle slices and nested tuples."""
@@ -81,7 +81,7 @@ class Pipe(Generic[DstT]):
                 case _:
                     return obj
 
-        return hash((make_hashable(self.src_core), make_hashable(self.dst_core_range)))
+        return hash((make_hashable(self.src), make_hashable(self.dst)))
 
 
 # Union of Pipe instances with different destination types
@@ -112,7 +112,7 @@ class SrcPipeIdentity(Generic[DstT]):
         Returns:
             The destination specification from the pipe
         """
-        return self.pipe.dst_core_range
+        return self.pipe.dst
 
 
 # Union of SrcPipeIdentity instances with different destination types
@@ -143,7 +143,7 @@ class DstPipeIdentity:
         Returns:
             The source core coordinate from the pipe
         """
-        return self.pipe.src_core
+        return self.pipe.src
 
 
 def expand_core_range(core_range: CoreRange) -> List[CoreCoord]:
@@ -297,7 +297,7 @@ class PipeNet(Generic[DstT]):
         current_core_linear = node(dims=1)
 
         for pipe in self._pipes:
-            pipe_src_linear = flatten_core_index(pipe.src_core)
+            pipe_src_linear = flatten_core_index(pipe.src)
             if current_core_linear == pipe_src_linear:
                 identity = SrcPipeIdentity[DstT](pipe)
                 cond_fun(identity)
@@ -314,6 +314,6 @@ class PipeNet(Generic[DstT]):
                      source via its .dst property.
         """
         for pipe in self._pipes:
-            if core_in_dst_range(pipe.dst_core_range):
+            if core_in_dst_range(pipe.dst):
                 identity = DstPipeIdentity(pipe)
                 cond_fun(identity)

@@ -23,15 +23,15 @@
 // CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary mul: both operands are block args -> DST[0]
-// CHECK-NEXT:      %[[X:.*]] = ttl.tile_mul %[[A]], %[[B]] {dst_idx = 0 : i32, ttl.fpu_binary} : !ttcore.tile<32x32, bf16>
+// CHECK-NEXT:      %[[X:.*]] = ttl.tile_mul %[[A]], %[[B]] into dst[%c0] {ttl.fpu_binary} : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
 // copy_dst preserves x in DST[1] before destructive abs
-// CHECK-NEXT:      %[[COPY:.*]] = ttl.copy_dst %[[X]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, bf16>
+// CHECK-NEXT:      %[[COPY:.*]] = ttl.copy_dst %[[X]] into dst[%c1] : !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
 // abs overwrites DST[1] in-place
-// CHECK-NEXT:      %[[ABS:.*]] = ttl.tile_abs %[[COPY]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, bf16>
+// CHECK-NEXT:      %[[ABS:.*]] = ttl.tile_abs %[[COPY]] into dst[%c1] : !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
 // rsqrt overwrites DST[1] in-place
-// CHECK-NEXT:      %[[RSQRT:.*]] = ttl.tile_rsqrt %[[ABS]] {dst_idx = 1 : i32} : !ttcore.tile<32x32, bf16>
+// CHECK-NEXT:      %[[RSQRT:.*]] = ttl.tile_rsqrt %[[ABS]] into dst[%c1] : !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
 // SFPU binary mul: x at DST[0], rsqrt at DST[1] -> DST[0]
-// CHECK-NEXT:      %[[RESULT:.*]] = ttl.tile_mul %[[X]], %[[RSQRT]] {dst_idx = 0 : i32} : !ttcore.tile<32x32, bf16>
+// CHECK-NEXT:      %[[RESULT:.*]] = ttl.tile_mul %[[X]], %[[RSQRT]] into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
 // CHECK:           ttl.tile_store %[[RESULT]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield
 
@@ -64,13 +64,14 @@ func.func @dst_intermediate_reuse_unary_chain(
     %j = ttl.iter_index 1 : index
 
     // x = a * b (FPU binary, result is DST intermediate)
-    %x = ttl.tile_mul %a_tile, %b_tile : !ttcore.tile<32x32, bf16>
+    %c0 = arith.constant 0 : index
+    %x = ttl.tile_mul %a_tile, %b_tile into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
     // Unary chain on x: abs then rsqrt (both in-place, destructive)
-    %abs_x = ttl.tile_abs %x : !ttcore.tile<32x32, bf16>
-    %rsqrt_x = ttl.tile_rsqrt %abs_x : !ttcore.tile<32x32, bf16>
+    %abs_x = ttl.tile_abs %x into dst[%c0] : !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    %rsqrt_x = ttl.tile_rsqrt %abs_x into dst[%c0] : !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
     // Final SFPU binary consuming original x and chain result
-    %final = ttl.tile_mul %x, %rsqrt_x : !ttcore.tile<32x32, bf16>
-    ttl.tile_store %final, %out_view[%i, %j] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %final = ttl.tile_mul %x, %rsqrt_x into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    ttl.tile_store %final, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
 
     ttl.yield
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
