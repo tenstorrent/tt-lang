@@ -907,22 +907,11 @@ def TTL_BlockExprFillOp : TTL_Op<"block_expr.fill", [Pure]> {
       "$out_block attr-dict `:` type($out_block) `->` type($result)";
 }
 
-def TTL_TileFillOp : TTL_TileOp<"tile_fill", []> {
-  let summary = "Fill a DST tile with a constant value";
-  let description = [{
-    Fills a tile in the DST register with a constant f32 value.
-    Maps to ttkernel.fill_tile_init + ttkernel.fill_tile.
-  }];
-  let arguments = (ins F32Attr:$value);
-  let results = (outs TTL_TileType:$result);
-  let assemblyFormat = "attr-dict `:` type($result)";
-}
-
 //===----------------------------------------------------------------------===//
 // Broadcast Operation
 //===----------------------------------------------------------------------===//
 
-def TTL_BlockExprBcastOp : TTL_Op<"block_expr.bcast", [DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
+def TTL_BlockExprBcastOp : TTL_Op<"block_expr.bcast", [Pure]> {
   let summary = "Lazy broadcast block expression";
   let description = [{
     Lazy broadcast expression. The block argument provides the output
@@ -934,7 +923,8 @@ def TTL_BlockExprBcastOp : TTL_Op<"block_expr.bcast", [DeclareOpInterfaceMethods
   let assemblyFormat = "$input `,` $output $bcast_type attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
 }
 
-def TTL_BcastOp : TTL_Op<"bcast", []> {
+def TTL_BcastOp : TTL_Op<"bcast", [
+    DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
   let summary = "Broadcast a row/column/scalar tensor to full tiles";
   let description = [{
     Broadcasts the input tensor to full tiles based on bcast_type.
@@ -1076,7 +1066,7 @@ def TTL_TileFillOp : TTL_TileOp<"tile_fill", [TTL_DstResultOpTrait]> {
 // Matrix Multiplication
 //===----------------------------------------------------------------------===//
 
-def TTL_BlockExprMatmulOp : TTL_Op<"block_expr.matmul", [Pure, DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
+def TTL_BlockExprMatmulOp : TTL_Op<"block_expr.matmul", [Pure]> {
   let summary = "Lazy matmul block expression";
   let description = [{
     Lazy matrix multiply expression. Materialized to ttl.compute with
@@ -1090,7 +1080,8 @@ def TTL_BlockExprMatmulOp : TTL_Op<"block_expr.matmul", [Pure, DeclareOpInterfac
       "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
 }
 
-def TTL_MatmulOp : TTL_Op<"matmul", [Pure]> {
+def TTL_MatmulOp : TTL_Op<"matmul", [Pure,
+    DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
   let summary = "Matrix multiply two tensors of tiles";
   let description = [{
     Block-level matrix multiply: result[i, j] = sum_k(lhs[i, k] * rhs[k, j]).

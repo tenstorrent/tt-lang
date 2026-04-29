@@ -127,10 +127,12 @@ static Value emitTileOpForBlockExpr(OpBuilder &b, Location loc,
                                     ValueRange tileOperands, Type tileType) {
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
   if (isa<TTL_OP##BlockExprOp>(blockExprOp))                                   \
-    return TILE_OP::create(b, loc, tileType, tileOperands[0]);
+    return createTileOpWithPlaceholderDstIndex<TILE_OP>(                       \
+        b, loc, tileType, tileOperands[0]);
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
   if (isa<TTL_OP##BlockExprOp>(blockExprOp))                                   \
-    return TILE_OP::create(b, loc, tileType, tileOperands[0], tileOperands[1]);
+    return createTileOpWithPlaceholderDstIndex<TILE_OP>(                       \
+        b, loc, tileType, tileOperands[0], tileOperands[1]);
 #define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
@@ -323,13 +325,14 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
     Value tileResult;
 
     if (auto fillOp = dyn_cast<BlockExprFillOp>(op)) {
-      tileResult =
-          TileFillOp::create(builder, opLoc, tileType, fillOp.getValueAttr());
+      tileResult = createTileOpWithPlaceholderDstIndex<TileFillOp>(
+          builder, opLoc, tileType, fillOp.getValueAttr());
     } else if (auto bcastOp = dyn_cast<BlockExprBcastOp>(op)) {
       Value inputTile = tensorToTile[bcastOp.getInput()];
       Value outputTile = body->getArguments().back();
-      tileResult = TileBcastOp::create(builder, opLoc, tileType, inputTile,
-                                       outputTile, bcastOp.getBcastTypeAttr());
+      tileResult = createTileOpWithPlaceholderDstIndex<TileBcastOp>(
+          builder, opLoc, tileType, inputTile, outputTile,
+          bcastOp.getBcastTypeAttr());
     } else if (auto matmulOp = dyn_cast<BlockExprMatmulOp>(op)) {
       Value lhsTile = tensorToTile[matmulOp.getLhs()];
       Value rhsTile = tensorToTile[matmulOp.getRhs()];
@@ -342,8 +345,8 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
         }
       }
       if (!deferred) {
-        tileResult = TileMatmulBlockOp::create(builder, opLoc, tileType,
-                                               lhsTile, rhsTile, Value());
+        tileResult = createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
+            builder, opLoc, tileType, lhsTile, rhsTile, Value());
       }
     } else {
       if (isa<AddBlockExprOp>(op)) {
@@ -359,8 +362,8 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
             return nullptr;
           }
           deferredMatmul.erase(dfIt);
-          return TileMatmulBlockOp::create(builder, opLoc, tileType, mmLhs,
-                                           mmRhs, accTile);
+          return createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
+              builder, opLoc, tileType, mmLhs, mmRhs, accTile);
         };
         if (Value folded = tryFold(lhs, rhs)) {
           tileResult = folded;
@@ -374,8 +377,9 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
           auto dfIt = deferredMatmul.find(operand);
           if (dfIt != deferredMatmul.end()) {
             auto [mmLhs, mmRhs] = dfIt->second;
-            tensorToTile[operand] = TileMatmulBlockOp::create(
-                builder, opLoc, tileType, mmLhs, mmRhs, Value());
+            tensorToTile[operand] =
+                createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
+                    builder, opLoc, tileType, mmLhs, mmRhs, Value());
             deferredMatmul.erase(dfIt);
           }
         }
@@ -436,11 +440,11 @@ static LogicalResult materializeStoreGroup(SmallVectorImpl<StoreOp> &stores,
     }
     AffineMap outputMap = indexingMaps[numInputs + outputIdx];
     SmallVector<Value> indices =
-        applyIndexingMapToIterIndices(builder, loc, outputMap, iterIndices);
+        applyIndexingMap(builder, loc, outputMap, iterIndices);
 
     // Use the store's scoped location so tile_store carries the scope.
-    TileStoreOp::create(builder, store.getLoc(), tileVal, store.getView(),
-                        indices);
+    createTileOpWithPlaceholderDstIndex<TileStoreOp>(
+        builder, store.getLoc(), tileVal, store.getView(), indices);
   }
 
   // Emit collected dprints inside the compute body (after tile ops,
@@ -520,10 +524,10 @@ static LogicalResult materializePassthrough(StoreOp storeOp,
   builder.setInsertionPointToEnd(body);
   SmallVector<Value> iterIndices = getOrCreateIterIndices(builder, computeOp);
   SmallVector<Value> storeIndices =
-      applyIndexingMapToIterIndices(builder, loc, identityMap, iterIndices);
+      applyIndexingMap(builder, loc, identityMap, iterIndices);
 
-  TileStoreOp::create(builder, loc, body->getArgument(0), reserveView,
-                      storeIndices);
+  createTileOpWithPlaceholderDstIndex<TileStoreOp>(
+      builder, loc, body->getArgument(0), reserveView, storeIndices);
 
   YieldOp::create(builder, loc);
 
