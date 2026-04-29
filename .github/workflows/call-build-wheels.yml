@@ -60,9 +60,7 @@ jobs:
           python3.12 -m venv /tmp/test-venv
           source /tmp/test-venv/bin/activate
           pip install dist/*.whl --extra-index-url https://download.pytorch.org/whl/cpu
-          python -c "import ttl; print('tt-lang', ttl.__version__)"
-          python -c "from ttl import operation, compute, datamovement"
-          python -c "from ttl.pykernel._src.kernel_ast import TTCompilerBase"
+          python .github/scripts/smoke-test-wheel.py
 
       - name: Report wheel size
         run: ls -lh dist-raw/*.whl dist/*.whl

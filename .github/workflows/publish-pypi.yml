@@ -11,6 +11,10 @@ on:
         description: "Docker image tag for the ird container."
         type: string
         required: true
+      dry_run:
+        description: "Skip tag enforcement and the PyPI upload (for pipeline testing)."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -29,6 +33,7 @@ jobs:
 
       - name: Require release tag
         id: parse
+        if: ${{ !inputs.dry_run }}
         run: .github/scripts/require-release-tag.sh
 
   build-wheels:
@@ -42,9 +47,7 @@ jobs:
     needs: [preflight, build-wheels]
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment:
-      name: pypi
-      url: https://pypi.org/project/tt-lang/
+    environment: ${{ inputs.dry_run && '' || 'pypi' }}
     permissions:
       id-token: write
 
@@ -62,7 +65,16 @@ jobs:
         run: ls -lh dist/
 
       - name: Verify wheel version matches tag
+        if: ${{ !inputs.dry_run }}
         run: .github/scripts/verify-wheel-version.sh "${{ needs.preflight.outputs.tag_version }}" dist
 
       - name: Publish to PyPI
+        if: ${{ !inputs.dry_run }}
         uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Dry-run summary
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "::notice::Dry run complete; no upload performed."
+          echo "Wheels that would have been published:"
+          ls -lh dist/

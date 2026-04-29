@@ -69,23 +69,20 @@ class CMakeBuild(build_ext):
             strip_cmd = ["strip", "--strip-debug"]
 
         for lib_file in glob.glob(str(install_dir / pattern), recursive=True):
-            try:
-                self.spawn([*strip_cmd, lib_file])
-            except Exception as exc:
-                print(f"Warning: failed to strip {lib_file}: {exc}")
+            self.spawn([*strip_cmd, lib_file])
 
     def _fix_rpath(self, install_dir):
         """Remove absolute build paths from RUNPATH, keeping only $ORIGIN."""
         if platform.system() == "Darwin":
             return  # macOS uses @loader_path, handled by CMake
         if not shutil.which("patchelf"):
-            print("Warning: patchelf not found, skipping RPATH sanitization")
-            return
+            raise RuntimeError(
+                "patchelf is required to sanitize RUNPATH on Linux but was not "
+                "found on PATH. Install it (e.g. `pip install patchelf`) before "
+                "building the wheel."
+            )
         for so_file in glob.glob(str(install_dir / "**/*.so"), recursive=True):
-            try:
-                self.spawn(["patchelf", "--set-rpath", "$ORIGIN", so_file])
-            except Exception as exc:
-                print(f"Warning: failed to fix RPATH for {so_file}: {exc}")
+            self.spawn(["patchelf", "--set-rpath", "$ORIGIN", so_file])
 
     def _sanitize_env_for_cmake(self):
         """Remove pip build-isolation env vars that break cmake's nested pip calls.
