@@ -17,14 +17,29 @@ permissions:
   packages: read
 
 jobs:
+  preflight:
+    name: "Verify release tag"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag_version: ${{ steps.parse.outputs.tag_version }}
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v5
+
+      - name: Require release tag
+        id: parse
+        run: .github/scripts/require-release-tag.sh
+
   build-wheels:
+    needs: preflight
     uses: ./.github/workflows/call-build-wheels.yml
     with:
       docker_tag: ${{ inputs.docker_tag }}
 
   publish:
     name: "Publish to PyPI"
-    needs: build-wheels
+    needs: [preflight, build-wheels]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
@@ -34,6 +49,9 @@ jobs:
       id-token: write
 
     steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v5
+
       - name: Download wheels
         uses: actions/download-artifact@v5
         with:
@@ -42,6 +60,9 @@ jobs:
 
       - name: List wheels
         run: ls -lh dist/
+
+      - name: Verify wheel version matches tag
+        run: .github/scripts/verify-wheel-version.sh "${{ needs.preflight.outputs.tag_version }}" dist
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
