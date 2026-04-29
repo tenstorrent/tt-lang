@@ -22,16 +22,16 @@ from ttlang_test_utils import to_dram, to_l1
 import ttl
 
 TILE_SIZE = 32
-GRID_ROWS = 8
-GRID_COLS = 8
 CB_ROWS = 4
 CB_COLS = 4
 
-# 8x8 grid * 4x4 DFB = 32x32 tiles = 1024x1024 elements = 2MB per tensor
-TENSOR_SHAPE = (GRID_ROWS * CB_ROWS * TILE_SIZE, GRID_COLS * CB_COLS * TILE_SIZE)
+
+def _shape_for_device(device):
+    g = device.compute_with_storage_grid_size()
+    return (g.y * CB_ROWS * TILE_SIZE, g.x * CB_COLS * TILE_SIZE), g.x, g.y
 
 
-@ttl.operation(grid=(GRID_ROWS, GRID_COLS))
+@ttl.operation(grid="auto")
 def comprehensive_kernel(a, b, c, out1, out2, out3):
     """
     Multinode kernel with 20 fused ops across 3 outputs.
@@ -162,13 +162,15 @@ def compute_expected(a, b, c):
 
 def test_comprehensive_multinode(device):
     """Test comprehensive multinode kernel with mixed DRAM/L1 tensors."""
+    tensor_shape, grid_cols, grid_rows = _shape_for_device(device)
+
     # Random inputs
-    a_torch = torch.rand(TENSOR_SHAPE, dtype=torch.bfloat16) * 2.0 - 1.0
-    b_torch = torch.rand(TENSOR_SHAPE, dtype=torch.bfloat16) * 2.0 - 1.0
-    c_torch = torch.rand(TENSOR_SHAPE, dtype=torch.bfloat16) * 2.0 - 1.0
-    out1_torch = torch.zeros(TENSOR_SHAPE, dtype=torch.bfloat16)
-    out2_torch = torch.zeros(TENSOR_SHAPE, dtype=torch.bfloat16)
-    out3_torch = torch.zeros(TENSOR_SHAPE, dtype=torch.bfloat16)
+    a_torch = torch.rand(tensor_shape, dtype=torch.bfloat16) * 2.0 - 1.0
+    b_torch = torch.rand(tensor_shape, dtype=torch.bfloat16) * 2.0 - 1.0
+    c_torch = torch.rand(tensor_shape, dtype=torch.bfloat16) * 2.0 - 1.0
+    out1_torch = torch.zeros(tensor_shape, dtype=torch.bfloat16)
+    out2_torch = torch.zeros(tensor_shape, dtype=torch.bfloat16)
+    out3_torch = torch.zeros(tensor_shape, dtype=torch.bfloat16)
 
     exp1, exp2, exp3 = compute_expected(a_torch, b_torch, c_torch)
 
@@ -186,7 +188,7 @@ def test_comprehensive_multinode(device):
 
     # Verify grid_size
     x_size, y_size = ttl.grid_size(dims=2)
-    assert (x_size, y_size) == (GRID_COLS, GRID_ROWS)
+    assert (x_size, y_size) == (grid_cols, grid_rows)
 
     # Verify results
     result1 = ttnn.to_torch(out1)

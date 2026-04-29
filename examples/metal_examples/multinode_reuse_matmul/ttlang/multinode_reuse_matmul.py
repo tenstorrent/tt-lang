@@ -128,7 +128,7 @@ def test_multinode_reuse_matmul_tt_lang(M, K, N):
     ttnn.close_device(device)
 
 
-@ttl.operation(grid=(13, 10))
+@ttl.operation(grid="auto")
 def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
     M = a.shape[0]
     N = b.shape[1]

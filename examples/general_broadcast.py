@@ -26,7 +26,7 @@ TILE_SIZE = 32
 GRANULARITY = 4
 
 
-@ttl.operation(grid=(8, 8))
+@ttl.operation(grid="auto")
 def __demo_kernel(a, b, c, y):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY
@@ -172,9 +172,15 @@ def demo_kernel(a, b, c):
 torch.manual_seed(42)
 device = ttnn.open_device(device_id=0)
 try:
-    shape = (2048, 2048)
+    # Size tensor so each node owns 2*GRANULARITY tile blocks per axis.
+    g = device.compute_with_storage_grid_size()
+    blocks_per_node = 2
+    shape = (
+        g.x * GRANULARITY * blocks_per_node * TILE_SIZE,
+        g.y * GRANULARITY * blocks_per_node * TILE_SIZE,
+    )
     # Test 1: Broadcasting c with shape (shape[0], 1)
-    print("Test 1: Broadcasting c with shape (2048, 1)")
+    print(f"Test 1: Broadcasting c with shape ({shape[0]}, 1)")
     a = torch.rand(shape, dtype=torch.bfloat16)
     b = torch.rand(shape, dtype=torch.bfloat16)
     c = torch.rand((shape[0], 1), dtype=torch.bfloat16)
@@ -196,7 +202,7 @@ try:
     ), "Test 1: Tensors do not match"
 
     # Test 2: Broadcasting b with shape (1, shape[1])
-    print("\nTest 2: Broadcasting b with shape (1, 2048)")
+    print(f"\nTest 2: Broadcasting b with shape (1, {shape[1]})")
     a = torch.rand(shape, dtype=torch.bfloat16)
     b = torch.rand((1, shape[1]), dtype=torch.bfloat16)
     c = torch.rand((shape[0], 1), dtype=torch.bfloat16)

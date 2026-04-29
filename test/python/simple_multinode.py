@@ -11,8 +11,9 @@
 Multinode kernel lit test - verifies core(dims=2) lowers to
 get_absolute_logical_x() and get_absolute_logical_y() in generated C++.
 
-Tests an 8x8 grid kernel that uses dynamic core indices for tile indexing.
-Each core processes one tile from a 256x256 tensor (8x8 tiles).
+Tests a kernel using the device's full compute grid (grid="auto") with
+dynamic core indices for tile indexing. Each core processes one tile
+from a tensor sized to match the device's worker grid.
 """
 
 import os
@@ -23,7 +24,7 @@ import ttnn
 import ttl
 
 
-@ttl.operation(grid=(8, 8))
+@ttl.operation(grid="auto")
 def multinode_add(lhs, rhs, out):
     """Multinode add kernel - each core processes its own tile."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), block_count=2)
@@ -100,10 +101,13 @@ if __name__ == "__main__":
     device = ttnn.open_device(device_id=0)
 
     try:
-        # 8x8 grid = 256x256 tensor (8 tiles x 8 tiles, one tile per core)
-        lhs_torch = torch.full((256, 256), 2.0, dtype=torch.bfloat16)
-        rhs_torch = torch.full((256, 256), 3.0, dtype=torch.bfloat16)
-        out_torch = torch.zeros((256, 256), dtype=torch.bfloat16)
+        # Tensor sized to match the device's compute grid: one tile per core.
+        g = device.compute_with_storage_grid_size()
+        TILE = 32
+        shape = (g.y * TILE, g.x * TILE)
+        lhs_torch = torch.full(shape, 2.0, dtype=torch.bfloat16)
+        rhs_torch = torch.full(shape, 3.0, dtype=torch.bfloat16)
+        out_torch = torch.zeros(shape, dtype=torch.bfloat16)
 
         lhs = ttnn.from_torch(
             lhs_torch,

@@ -27,7 +27,7 @@ def get_number_of_nodes(node_range_set):
     return total_nodes
 
 
-@ttl.operation(grid=(13, 10))
+@ttl.operation(grid="auto")
 def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -> None:
     assert a.shape[1] == b.shape[0], "Incompatible matrix shapes for multiplication."
     assert a.shape[0] == out.shape[0], "Output matrix has incorrect number of rows."
@@ -149,7 +149,7 @@ def main() -> None:
     print(f"Matrix multiplication: ({M}, {K}) @ ({K}, {N}) = ({M}, {N})")
     print(f"Tiles: A={M//32}x{K//32}, B={K//32}x{N//32}, Out={M//32}x{N//32}")
     print(f"Total output tiles: {(M//32) * (N//32)}")
-    print(f"Grid: 8x8 = 64 nodes")
+    print(f"Grid: device-resolved (auto)")
 
     tt_lang_multinode_matmul(a, b, out)
 

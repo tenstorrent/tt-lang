@@ -12,7 +12,7 @@ from utils.correctness import assert_with_ulp
 from utils.block_allocation import get_number_of_nodes_from_ranges, split_work_to_nodes
 
 
-@ttl.operation(grid=(8, 8))
+@ttl.operation(grid="auto")
 def tt_lang_upsample_nearest_rowwise_interleaved(
     input_t: ttnn.Tensor,
     output: ttnn.Tensor,
