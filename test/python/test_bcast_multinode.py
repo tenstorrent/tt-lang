@@ -32,7 +32,7 @@ import ttl
 
 TILE_SIZE = 32
 
-# DRAM tensors: 4x4 tiles per core. L1 tensors: 1x1 tile per core. Total
+# DRAM tensors: 4x4 tiles per node. L1 tensors: 1x1 tile per node. Total
 # tensor shape depends on the device's compute grid (read at test time so
 # the test runs on devices with any worker-row count).
 DRAM_CB_ROWS = 4

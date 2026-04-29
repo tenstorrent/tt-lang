@@ -12,7 +12,7 @@ Multinode kernel lit test - verifies core(dims=2) lowers to
 get_absolute_logical_x() and get_absolute_logical_y() in generated C++.
 
 Tests a kernel using the device's full compute grid (grid="auto") with
-dynamic core indices for tile indexing. Each core processes one tile
+dynamic node indices for tile indexing. Each node processes one tile
 from a tensor sized to match the device's worker grid.
 """
 
@@ -101,7 +101,7 @@ if __name__ == "__main__":
     device = ttnn.open_device(device_id=0)
 
     try:
-        # Tensor sized to match the device's compute grid: one tile per core.
+        # Tensor sized to match the device's compute grid: one tile per node.
         g = device.compute_with_storage_grid_size()
         TILE = 32
         shape = (g.y * TILE, g.x * TILE)

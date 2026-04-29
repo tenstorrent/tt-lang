@@ -72,31 +72,33 @@ def operation(
         )
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        # Create a new function with grid in its closure
-        # This is achieved by modifying the function's globals to include this variable
-
-        # Set grid to default if 'auto'
-        actual_grid: Shape = cast(
-            Shape, get_context().config.default_auto_grid if grid == "auto" else grid
-        )
-
-        # Create new globals dict that includes grid
-        new_globals = func.__globals__.copy()
-        new_globals["grid"] = actual_grid
-
-        # Create a new function with the modified globals
-        modified_func = types.FunctionType(
-            func.__code__,
-            new_globals,
-            func.__name__,
-            func.__defaults__,
-            func.__closure__,
-        )
-
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             # Import here to avoid circular dependency
             from .decorators import clear_thread_registry, get_registered_threads
             from .program import Program
+
+            # Resolve grid at call time so callable resolvers see the actual
+            # tensor args (mirrors the compiler-side _resolve_grid). "auto"
+            # falls back to the configured default; a fixed tuple passes through.
+            if callable(grid):
+                actual_grid = cast(Shape, grid(*args, **kwargs))
+            elif grid == "auto":
+                actual_grid = cast(Shape, get_context().config.default_auto_grid)
+            else:
+                actual_grid = cast(Shape, grid)
+
+            # Inject the resolved grid into a per-call copy of the kernel's
+            # globals, then materialize a function bound to those globals so
+            # `grid` is visible inside the kernel body.
+            new_globals = func.__globals__.copy()
+            new_globals["grid"] = actual_grid
+            modified_func = types.FunctionType(
+                func.__code__,
+                new_globals,
+                func.__name__,
+                func.__defaults__,
+                func.__closure__,
+            )
 
             # Clear thread registry and resource counters before kernel execution
             clear_thread_registry()
@@ -106,6 +108,12 @@ def operation(
             # Call the modified function (grid is already in globals)
             # This executes the kernel body which defines and registers threads
             modified_func(*args, **kwargs)
+
+            # Drop wrapper-internal references before invoking Program so they
+            # are not captured via inspect.f_locals into the per-core context
+            # (Program deep-copies caller locals; new_globals contains modules
+            # which are not picklable).
+            del new_globals, modified_func
 
             # Get registered threads
             threads = get_registered_threads()

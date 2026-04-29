@@ -911,9 +911,17 @@ class Device:
         return CoreCoord(8, 8)
 
 
+_DEFAULT_DEVICE = Device()
+
+
 def open_device(device_id: int = 0) -> Device:
-    """Open a simulated device (no-op)."""
-    return Device(device_id)
+    """Open a simulated device (no-op).
+
+    Sim has no real per-device state, so all calls share the module-level
+    default device. The device_id argument is accepted for API parity with
+    real ttnn but ignored.
+    """
+    return _DEFAULT_DEVICE
 
 
 def close_device(device: Device) -> None:
@@ -1405,6 +1413,16 @@ class Tensor:
     def to_torch(self) -> torch.Tensor:
         """Public accessor for the underlying torch tensor."""
         return self._tensor
+
+    def device(self) -> "Device":
+        """Return a shared placeholder device handle.
+
+        Sim tensors are not bound to a specific device, but user code such as
+        callable grid resolvers calls `tensor.device().compute_with_storage_grid_size()`
+        on the real ttnn API. Return the module-level default device so the
+        same kernel decoration works under sim and on hardware.
+        """
+        return _DEFAULT_DEVICE
 
     # ---- Binary operations (element-wise) ----
 

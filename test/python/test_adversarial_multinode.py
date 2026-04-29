@@ -27,7 +27,7 @@ import ttl
 
 TILE_SIZE = 32
 
-# All tensors same size: 2x2 tiles per core. Total shape adapts to the
+# All tensors same size: 2x2 tiles per node. Total shape adapts to the
 # device's compute grid (read at test time so the test runs on devices
 # with any worker-row count).
 CB_ROWS = 2

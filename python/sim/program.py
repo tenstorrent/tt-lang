@@ -102,9 +102,15 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
         def __call__(self, *args: Any, **kwargs: Any) -> None:
             frame = inspect.currentframe()
             if frame and frame.f_back:
-                # Capture caller's locals for any remaining context variables
-                # Don't reset context - grid was already set in __init__
-                self.context.update(frame.f_back.f_locals)
+                # Capture caller's locals for any remaining context variables.
+                # Preserve the grid set in __init__: the caller (operation
+                # wrapper) keeps the unresolved `grid` closure (e.g., a callable
+                # resolver) in its f_locals, which would clobber the resolved
+                # tuple stored at construction time.
+                caller_locals = {
+                    k: v for k, v in frame.f_back.f_locals.items() if k != "grid"
+                }
+                self.context.update(caller_locals)
 
             # Extract closure variables from thread functions and add to context
             # This ensures variables like DFBs that were defined in the kernel function

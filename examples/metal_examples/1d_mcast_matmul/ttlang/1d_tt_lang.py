@@ -11,8 +11,8 @@ TS = ttnn.TILE_SIZE  # 32
 
 
 def _device_grid_2d(*tensors):
-    # Full device extent. The kernel uses per-core gating to handle inactive
-    # cores (see `if node_index < num_working_nodes`).
+    # Full device extent. The kernel uses per-node guards to handle inactive
+    # nodes (see `if node_index < num_working_nodes`).
     g = tensors[0].device().compute_with_storage_grid_size()
     return (g.x, g.y)
 
