@@ -103,10 +103,10 @@ def grid_size(dims: Size = 2) -> Union[Size, Shape]:
         RuntimeError: If called outside of a kernel function context
 
     Example:
-        # For grid=(8, 8):
-        grid_size(dims=1) -> 64 (flattened)
-        grid_size(dims=2) -> (8, 8)
-        grid_size(dims=3) -> (8, 8, 1) (padded)
+        # For grid=(4, 4):
+        grid_size(dims=1) -> 16 (flattened)
+        grid_size(dims=2) -> (4, 4)
+        grid_size(dims=3) -> (4, 4, 1) (padded)
     """
     if dims <= 0:
         raise ValueError(f"dims must be positive, got {dims}")

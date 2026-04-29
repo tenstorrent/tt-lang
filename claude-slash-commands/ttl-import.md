@@ -429,48 +429,63 @@ For tensors larger than 32x32, process multiple tiles. **Use multinode and loops
 
 ### IMPORTANT: Match the User's Target Data Size
 
-**If the user provides a specific model config or tensor shape, strive to support that size.** You can simplify to smaller tensors for initial testing and debugging, but the goal is a kernel that works on their actual data. Use loops and streaming to handle large inputs:
+**If the user provides a specific model config or tensor shape, strive to support that size.** You can simplify to smaller tensors for initial testing and debugging, but the goal is a kernel that works on their actual data. Use loops and streaming to handle large inputs.
+
+**Use `grid="auto"` and derive block counts from `ttl.grid_size`** so the kernel adapts to whichever device it runs on (wormhole_b0 = 8×7, blackhole = 13×10). The host caller must size the tensor so it divides evenly across the active grid:
 
 ```python
-# User wants to process 2048x2048 tensors (64x64 tiles)
-# Don't shrink to 32x32 for testing - make it work at target size!
+# Stream a large tensor through a small DFB on the full device grid.
 
-@ttl.operation(grid=(8, 8))  # Use multinode
+@ttl.operation(grid="auto")
 def large_tensor_kernel(inp, out):
-    # Each node handles 8x8 tiles worth of data
-    # But DFB only holds 2x2 tiles at a time - stream through with loops
+    BLOCK = 2  # tile blocks per DFB beat
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(BLOCK, BLOCK), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(BLOCK, BLOCK), block_count=2)
 
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(2, 2), block_count=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(2, 2), block_count=2)
-
-    BLOCKS_PER_NODE = 4  # 8x8 tiles / 2x2 block = 4x4 = 16 blocks... adjust per node
+    # Resolve per-node iteration counts from the active grid extent.
+    grid_x, grid_y = ttl.grid_size(dims=2)
+    rows_in_tiles = inp.shape[0] // 32
+    cols_in_tiles = inp.shape[1] // 32
+    blocks_per_node_y = rows_in_tiles // grid_y // BLOCK
+    blocks_per_node_x = cols_in_tiles // grid_x // BLOCK
 
     @ttl.compute()
     def compute():
-        for _ in range(BLOCKS_PER_NODE):
-            with inp_dfb.wait() as i, out_dfb.reserve() as o:
-                o.store(ttl.math.exp(i))
+        for _ in range(blocks_per_node_y):
+            for _ in range(blocks_per_node_x):
+                with inp_dfb.wait() as i, out_dfb.reserve() as o:
+                    o.store(ttl.math.exp(i))
 
     @ttl.datamovement()
     def dm_read():
         x, y = ttl.node(dims=2)
-        for block_idx in range(BLOCKS_PER_NODE):
-            # Calculate tile coordinates for this node and block
-            row = y * 8 + (block_idx // 4) * 2  # Example indexing
-            col = x * 8 + (block_idx % 4) * 2
-            with inp_dfb.reserve() as blk:
-                tx = ttl.copy(inp[row:row+2, col:col+2], blk)
-                tx.wait()
+        for by in range(blocks_per_node_y):
+            row = (y * blocks_per_node_y + by) * BLOCK
+            for bx in range(blocks_per_node_x):
+                col = (x * blocks_per_node_x + bx) * BLOCK
+                with inp_dfb.reserve() as blk:
+                    tx = ttl.copy(inp[row:row + BLOCK, col:col + BLOCK], blk)
+                    tx.wait()
 
     @ttl.datamovement()
     def dm_write():
         x, y = ttl.node(dims=2)
-        for block_idx in range(BLOCKS_PER_NODE):
-            row = y * 8 + (block_idx // 4) * 2
-            col = x * 8 + (block_idx % 4) * 2
-            with out_dfb.wait() as blk:
-                tx = ttl.copy(blk, out[row:row+2, col:col+2])
-                tx.wait()
+        for by in range(blocks_per_node_y):
+            row = (y * blocks_per_node_y + by) * BLOCK
+            for bx in range(blocks_per_node_x):
+                col = (x * blocks_per_node_x + bx) * BLOCK
+                with out_dfb.wait() as blk:
+                    tx = ttl.copy(blk, out[row:row + BLOCK, col:col + BLOCK])
+                    tx.wait()
+
+
+# Host: size the tensor so each axis divides evenly across the device grid.
+g = device.compute_with_storage_grid_size()
+TILE, BLOCK, BLOCKS_PER_NODE = 32, 2, 4
+shape = (
+    g.y * BLOCKS_PER_NODE * BLOCK * TILE,  # rows
+    g.x * BLOCKS_PER_NODE * BLOCK * TILE,  # cols
+)
 ```
 
 **Key streaming principles:**
@@ -615,9 +630,10 @@ def multitile_kernel(lhs, rhs, out):
 
 ### Option 2: Multinode (Parallel)
 
+Use `grid="auto"` to run on the full device grid, and size the tensor from the device extent so each node owns one tile:
+
 ```python
-# 256x256 tensor across 8x8 grid = 1 tile per node
-@ttl.operation(grid=(8, 8))
+@ttl.operation(grid="auto")
 def multinode_kernel(lhs, rhs, out):
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), block_count=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), block_count=2)
@@ -651,8 +667,15 @@ def multinode_kernel(lhs, rhs, out):
             tx = ttl.copy(blk, out[y, x])
             tx.wait()
 
+
+# Host: tensor sized so each node owns exactly one tile.
+g = device.compute_with_storage_grid_size()
+TILE = 32
+shape = (g.y * TILE, g.x * TILE)  # one tile per node
 # Call: multinode_kernel(lhs, rhs, out)
 ```
+
+**Never hard-code grid dimensions like `grid=(8, 8)`.** wormhole_b0 has an 8×7 worker grid (one harvested row), and blackhole has 13×10 — a hard-coded `(8, 8)` is rejected at compile time on wormhole and wastes capacity on blackhole. `grid="auto"` resolves to the device extent at compile time. (Exception: if your kernel constructs multicast pipes, the compiler rejects `grid="auto"` — use `grid=callable` instead; see the Pipes section.)
 
 ## Tensor Setup
 
