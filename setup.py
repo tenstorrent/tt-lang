@@ -102,9 +102,17 @@ class CMakeBuild(build_ext):
                 del os.environ[key]
 
     def build_(self, ext):
-        build_lib = self.build_lib
-        if not os.path.exists(build_lib):
+        if self.inplace:
+            # Editable install (`pip install -e .`): the cmake build is driven
+            # by the developer's existing build/ tree, not by setup.py.
             return
+
+        build_lib = pathlib.Path(self.build_lib)
+        if not build_lib.exists():
+            raise RuntimeError(
+                f"build_lib {build_lib} does not exist; setuptools should have "
+                f"created it before invoking build_ext."
+            )
 
         extension_path = pathlib.Path(self.get_ext_fullpath(ext.name))
         print(f"Running cmake to install ttlang at {extension_path}")
@@ -112,9 +120,14 @@ class CMakeBuild(build_ext):
         self._sanitize_env_for_cmake()
 
         source_dir = REPO_ROOT
-        build_dir = source_dir / "build"
-
-        install_dir = pathlib.Path(self.build_lib)
+        # Match the CMAKE_BINARY_DIR convention used by scripts/build-and-install.sh
+        # so a developer with build-docker/ or build-debug/ can build the wheel
+        # against their existing tree.
+        build_dir_setting = os.environ.get("CMAKE_BINARY_DIR", "build")
+        build_dir = pathlib.Path(build_dir_setting)
+        if not build_dir.is_absolute():
+            build_dir = source_dir / build_dir
+        install_dir = build_lib
 
         # Configure only when no prior cmake configuration exists.  Local
         # developer builds already have a configured build/ directory; re-
