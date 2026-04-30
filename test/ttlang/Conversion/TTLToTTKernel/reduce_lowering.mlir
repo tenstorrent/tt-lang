@@ -132,14 +132,16 @@ func.func @reduce_sum_dim1_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.c
 // -----
 
 // Single-tile Blackhole reduce_sum along dim 1 (REDUCE_ROW).
-// Verifies the issue #533 workaround only applies when the module target is
+// Verifies the issue #533 workaround drops full_fp32 from reduce_init,
+// reduce_tile, and the closing reduce_uninit when the module target is
 // Blackhole.
 // BLACKHOLE-LABEL: func.func @blackhole_reduce_sum_dim1_1x1
 // BLACKHOLE: ttkernel.reduce_init({{.*}}<reduce_sum>, <reduce_dim_row>)
 // BLACKHOLE-NOT: full_fp32
 // BLACKHOLE: ttkernel.reduce_tile({{.*}}<reduce_sum>, <reduce_dim_row>)
 // BLACKHOLE-NOT: full_fp32
-// BLACKHOLE: ttkernel.reduce_uninit
+// BLACKHOLE: ttkernel.reduce_uninit()
+// BLACKHOLE-NOT: full_fp32
 module attributes {ttl.target_arch = "blackhole"} {
   func.func @blackhole_reduce_sum_dim1_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
     %c1 = arith.constant 1 : index
@@ -164,6 +166,49 @@ module attributes {ttl.target_arch = "blackhole"} {
         ttl.tile_regs_commit
         ttl.tile_regs_wait
         ttl.tile_store %red, %reserve[%iv0, %c0] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.tile_regs_release
+      } {ttl.tile_loop_stride = 1 : index}
+    } {ttl.reduction_loop, ttl.tile_loop_stride = 1 : index}
+    ttl.cb_push %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.cb_pop %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+}
+
+// -----
+
+// Single-tile Blackhole reduce_sum along dim 0 (REDUCE_COL).
+// Confirms the issue #533 workaround is dim-specific: COL reduces on
+// Blackhole keep full_fp32.
+// BLACKHOLE-LABEL: func.func @blackhole_reduce_sum_dim0_1x1
+// BLACKHOLE: ttkernel.reduce_init({{.*}}<reduce_sum>, <reduce_dim_col>) {full_fp32}
+// BLACKHOLE: ttkernel.reduce_tile({{.*}}<reduce_sum>, <reduce_dim_col>) {full_fp32
+// BLACKHOLE: ttkernel.reduce_uninit() {full_fp32}
+module attributes {ttl.target_arch = "blackhole"} {
+  func.func @blackhole_reduce_sum_dim0_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %c1 = arith.constant 1 : index
+    %c0 = arith.constant 0 : index
+    %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %inp = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %inp_cb = ttl.attach_cb %inp, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %scaler = ttl.cb_wait %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %scaler_cb = ttl.attach_cb %scaler, %cb1 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %reserve = ttl.cb_reserve %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %empty = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %out_cb = ttl.attach_cb %empty, %cb2 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    scf.for %iv0 = %c0 to %c1 step %c1 {
+      scf.for %iv1 = %c0 to %c1 step %c1 {
+        %in_tile = tensor.extract %inp_cb[%iv0, %iv1] : tensor<1x1x!ttcore.tile<32x32, bf16>>
+        %sc_tile = tensor.extract %scaler_cb[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, bf16>>
+        %out_tile = tensor.extract %out_cb[%c0, %iv1] : tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.tile_regs_acquire
+        %red = ttl.tile_reduce %in_tile, %sc_tile, %out_tile 0 : i32 <reduce_dim_col> into dst[%c0] {ttl.reduce_output_cb_index = 2 : index} : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>) -> !ttcore.tile<32x32, bf16>
+        ttl.tile_regs_commit
+        ttl.tile_regs_wait
+        ttl.tile_store %red, %reserve[%c0, %iv1] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
         ttl.tile_regs_release
       } {ttl.tile_loop_stride = 1 : index}
     } {ttl.reduction_loop, ttl.tile_loop_stride = 1 : index}

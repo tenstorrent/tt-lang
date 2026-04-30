@@ -2,14 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for device-derived TTL compiler options."""
+"""Unit tests for device target-arch detection used by the TTL Python wrapper."""
 
 from unittest import mock
 
 import pytest
 
 import ttl.ttl_api as ttl_api
-from ttl.compiler_options import CompilerOptions
 
 
 class _TensorWithDevice:
@@ -33,7 +32,13 @@ class _DeviceWithArchAttribute:
         self.arch = arch
 
 
-class TestDeviceCompilerDefaults:
+class _DeviceWithRaisingArch:
+    @property
+    def arch(self):
+        raise RuntimeError("device handle closed")
+
+
+class TestDeviceTargetArch:
     @pytest.fixture(autouse=True)
     def _patch_tensor_detection(self):
         with mock.patch.object(
@@ -41,40 +46,37 @@ class TestDeviceCompilerDefaults:
         ):
             yield
 
-    def test_default_reduce_full_fp32_stays_enabled_on_blackhole(self):
-        device = _DeviceWithArchMethod("Arch.BLACKHOLE")
-        opts = ttl_api._effective_compiler_options_for_device(
-            CompilerOptions(), (_TensorWithDevice(device),)
-        )
-        assert opts.reduce_full_fp32 is True
-
-    def test_default_reduce_full_fp32_disabled_on_non_blackhole(self):
-        device = _DeviceWithArchAttribute("Arch.WORMHOLE_B0")
-        opts = ttl_api._effective_compiler_options_for_device(
-            CompilerOptions(), (_TensorWithDevice(device),)
-        )
-        assert opts.reduce_full_fp32 is False
-
-    def test_explicit_reduce_full_fp32_preserved_on_non_blackhole(self):
-        device = _DeviceWithArchAttribute("Arch.WORMHOLE_B0")
-        opts = ttl_api._effective_compiler_options_for_device(
-            CompilerOptions.from_string("--ttl-reduce-full-fp32"),
-            (_TensorWithDevice(device),),
-        )
-        assert opts.reduce_full_fp32 is True
-
-    def test_device_target_arch_uses_arch_method(self):
+    def test_arch_method(self):
         device = _DeviceWithArchMethod("Arch.BLACKHOLE")
         assert ttl_api._device_target_arch((_TensorWithDevice(device),)) == "blackhole"
 
-    def test_device_target_arch_uses_arch_attribute(self):
+    def test_arch_attribute(self):
         device = _DeviceWithArchAttribute("Arch.WORMHOLE_B0")
         assert (
             ttl_api._device_target_arch((_TensorWithDevice(device),)) == "wormhole_b0"
         )
 
-    def test_unknown_arch_preserves_default_options(self):
-        opts = ttl_api._effective_compiler_options_for_device(
-            CompilerOptions(), (_TensorWithDevice(object()),)
+    def test_arch_without_dot_prefix(self):
+        device = _DeviceWithArchAttribute("BLACKHOLE")
+        assert ttl_api._device_target_arch((_TensorWithDevice(device),)) == "blackhole"
+
+    def test_unknown_arch_returns_normalized_string(self):
+        device = _DeviceWithArchAttribute("future_arch")
+        assert (
+            ttl_api._device_target_arch((_TensorWithDevice(device),)) == "future_arch"
         )
-        assert opts == CompilerOptions()
+
+    def test_no_recognized_arch_attribute_returns_none(self):
+        assert ttl_api._device_target_arch((_TensorWithDevice(object()),)) is None
+
+    def test_no_tensor_args_returns_none(self):
+        assert ttl_api._device_target_arch(()) is None
+
+    def test_raising_arch_attribute_returns_none(self):
+        # hasattr() swallows the AttributeError-or-otherwise; detection
+        # falls through to the next attribute and ultimately returns None
+        # when none resolve.
+        assert (
+            ttl_api._device_target_arch((_TensorWithDevice(_DeviceWithRaisingArch()),))
+            is None
+        )

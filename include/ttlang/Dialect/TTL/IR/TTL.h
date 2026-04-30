@@ -36,6 +36,11 @@ constexpr llvm::StringLiteral kTargetArchAttrName("ttl.target_arch");
 constexpr llvm::StringLiteral kFp32DestAccEnAttrName("fp32_dest_acc_en");
 constexpr llvm::StringLiteral kDstFullSyncEnAttrName("dst_full_sync_en");
 
+/// Canonical target_arch values. The Python wrapper writes this exact
+/// string into ttl.target_arch when it detects a Blackhole device, so any
+/// rename here must be mirrored in python/ttl/ttl_api.py (_detect_device_arch).
+constexpr llvm::StringLiteral kBlackholeArchName("blackhole");
+
 inline bool isBlackholeTarget(Operation *op) {
   ModuleOp moduleOp = op->getParentOfType<ModuleOp>();
   if (!moduleOp) {
@@ -43,7 +48,7 @@ inline bool isBlackholeTarget(Operation *op) {
   }
 
   auto targetArch = moduleOp->getAttrOfType<StringAttr>(kTargetArchAttrName);
-  return targetArch && targetArch.getValue() == "blackhole";
+  return targetArch && targetArch.getValue() == kBlackholeArchName;
 }
 
 /// Marks binary ops that use the FPU engine (reads from CB) instead of SFPU.

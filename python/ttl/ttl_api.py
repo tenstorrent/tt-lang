@@ -444,9 +444,13 @@ def _detect_device_arch(device) -> Optional[str]:
         "_architecture",
     )
     for attr in arch_attrs:
-        if not hasattr(device, attr):
+        # Properties on device handles may raise for reasons other than
+        # AttributeError (e.g., closed handle); guard both attribute access
+        # and the optional method call.
+        try:
+            arch_value = getattr(device, attr)
+        except Exception:
             continue
-        arch_value = getattr(device, attr)
         if callable(arch_value):
             try:
                 arch_value = arch_value()

@@ -220,10 +220,14 @@ static InitKey computeInitKey(Operation *op) {
         typeId, {bcast.getInCb()}, static_cast<int64_t>(bcast.getBcastType())};
   }
 
-  // For ReduceTile: key includes in_cb, scaling_cb, reduce_type, and dim.
+  // For ReduceTile: key includes in_cb, scaling_cb, reduce_type, dim, and
+  // full_fp32. Two reduces with the same dim/type but different full_fp32
+  // require different reduce_init configurations (the LLK selects a
+  // different math kernel branch), so they must not share an init.
   if (auto reduce = dyn_cast<ttk::ReduceTileOp>(op)) {
-    int64_t disc = (static_cast<int64_t>(reduce.getReduceType()) << 8) |
-                   static_cast<int64_t>(reduce.getReduceDim());
+    int64_t disc = (static_cast<int64_t>(reduce.getReduceType()) << 16) |
+                   (static_cast<int64_t>(reduce.getReduceDim()) << 8) |
+                   static_cast<int64_t>(reduce.getFullFp32());
     return {typeId, {reduce.getInCb(), reduce.getScalingCb()}, disc};
   }
 
