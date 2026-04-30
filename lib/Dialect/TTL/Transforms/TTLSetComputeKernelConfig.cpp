@@ -13,6 +13,7 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
@@ -65,12 +66,15 @@ struct TTLSetComputeKernelConfigPass
           return WalkResult::interrupt();
         }
         if (reduceFullFp32) {
-          bool hasReduce = false;
-          computeOp->walk([&](TileReduceOp) -> WalkResult {
-            hasReduce = true;
-            return WalkResult::interrupt();
+          bool hasFullFp32Reduce = false;
+          computeOp->walk([&](TileReduceOp reduceOp) -> WalkResult {
+            if (shouldUseFullFp32Reduce(reduceOp, reduceFullFp32)) {
+              hasFullFp32Reduce = true;
+              return WalkResult::interrupt();
+            }
+            return WalkResult::advance();
           });
-          if (hasReduce) {
+          if (hasFullFp32Reduce) {
             needsFp32 = true;
             return WalkResult::interrupt();
           }

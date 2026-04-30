@@ -341,7 +341,61 @@ func.func @copy_tile_init_per_cb() {
   func.return
 }
 
-// Test 13: Multiple output CBs with same data format -> accepted, one common init.
+// Test 13: Two reduces in one sync region with the same dim/type but
+// different full_fp32 -> two separate reduce_init ops (one with full_fp32,
+// one without). Without full_fp32 in the InitKey discriminator they would
+// share an init and the second reduce would silently use the wrong LLK
+// math kernel branch.
+// FPU-LABEL: func.func @reduce_init_distinguishes_full_fp32
+// FPU-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// FPU-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// FPU: ttkernel.reduce_init(%[[CB0]], %[[CB1]], {{.*}}, <reduce_sum>, <reduce_dim_row>) {full_fp32}
+// FPU-NEXT: ttkernel.reduce_tile({{.*}}<reduce_sum>, <reduce_dim_row>) {full_fp32
+// FPU: ttkernel.reduce_init(%[[CB0]], %[[CB1]], {{.*}}, <reduce_sum>, <reduce_dim_row>)
+// FPU-NOT: full_fp32
+// FPU-NEXT: ttkernel.reduce_tile
+func.func @reduce_init_distinguishes_full_fp32() {
+  %cb0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %cb1 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %cb2 = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.reduce_tile(%cb0, %cb1, %c0, %c0, %c0, <reduce_sum>, <reduce_dim_row>) {full_fp32, ttl.reduce_output_cb_index = 2 : index} : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index, index) -> ()
+  ttkernel.reduce_tile(%cb0, %cb1, %c1, %c0, %c1, <reduce_sum>, <reduce_dim_row>) {ttl.reduce_output_cb_index = 2 : index} : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index, index) -> ()
+  ttkernel.tile_regs_commit() : () -> ()
+  ttkernel.tile_regs_wait() : () -> ()
+  ttkernel.pack_tile(%c0, %cb2, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index) -> ()
+  ttkernel.pack_tile(%c1, %cb2, %c1, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// Test 14: Two reduces with the same dim/type AND the same full_fp32 -> one
+// reduce_init.
+// FPU-LABEL: func.func @reduce_init_consolidates_same_full_fp32
+// FPU: ttkernel.reduce_init({{.*}}<reduce_sum>, <reduce_dim_row>) {full_fp32}
+// FPU-NEXT: ttkernel.reduce_tile({{.*}}<reduce_sum>, <reduce_dim_row>) {full_fp32
+// FPU-NOT: ttkernel.reduce_init
+// FPU: ttkernel.reduce_tile({{.*}}<reduce_sum>, <reduce_dim_row>) {full_fp32
+func.func @reduce_init_consolidates_same_full_fp32() {
+  %cb0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %cb1 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %cb2 = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.reduce_tile(%cb0, %cb1, %c0, %c0, %c0, <reduce_sum>, <reduce_dim_row>) {full_fp32, ttl.reduce_output_cb_index = 2 : index} : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index, index) -> ()
+  ttkernel.reduce_tile(%cb0, %cb1, %c1, %c0, %c1, <reduce_sum>, <reduce_dim_row>) {full_fp32, ttl.reduce_output_cb_index = 2 : index} : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index, index) -> ()
+  ttkernel.tile_regs_commit() : () -> ()
+  ttkernel.tile_regs_wait() : () -> ()
+  ttkernel.pack_tile(%c0, %cb2, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index) -> ()
+  ttkernel.pack_tile(%c1, %cb2, %c1, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// Test 15: Multiple output CBs with same data format -> accepted, one common init.
 // When two pack ops target different CBs that share the same element type,
 // PACK data format routing is identical and one common init suffices.
 // COMMON-LABEL: func.func @multi_output_cb_same_format
