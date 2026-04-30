@@ -28,7 +28,7 @@ jobs:
 
     steps:
       - name: Checkout tt-lang (without submodules)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Extract submodule SHAs for cache keys
         id: submodule-shas

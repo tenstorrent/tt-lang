@@ -29,7 +29,7 @@ jobs:
       tag_version: ${{ steps.parse.outputs.tag_version }}
     steps:
       - name: Checkout tt-lang
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Require release tag
         id: parse
@@ -53,7 +53,7 @@ jobs:
 
     steps:
       - name: Checkout tt-lang
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Download wheels
         uses: actions/download-artifact@v5
