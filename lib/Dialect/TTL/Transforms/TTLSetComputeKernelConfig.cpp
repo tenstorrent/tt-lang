@@ -68,10 +68,7 @@ struct TTLSetComputeKernelConfigPass
         if (reduceFullFp32) {
           bool hasFullFp32Reduce = false;
           computeOp->walk([&](TileReduceOp reduceOp) -> WalkResult {
-            // TODO(#533): Blackhole REDUCE_ROW full-fp32 produces incorrect
-            // results, so it must not force fp32_dest_acc_en.
-            if (!isBlackholeTarget(reduceOp) ||
-                reduceOp.getReduceDim() != ttkernel::ReduceDim::Row) {
+            if (shouldUseFullFp32Reduce(reduceOp, reduceFullFp32)) {
               hasFullFp32Reduce = true;
               return WalkResult::interrupt();
             }
