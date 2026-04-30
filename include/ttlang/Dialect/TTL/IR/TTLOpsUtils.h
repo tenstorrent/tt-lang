@@ -8,6 +8,7 @@
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
@@ -104,6 +105,24 @@ inline bool isUnaryElementwiseOp(mlir::Operation *op) {
 /// Check if an operation is a binary elementwise tensor op.
 inline bool isBinaryElementwiseOp(mlir::Operation *op) {
   return op->hasTrait<TTLBinaryElementwiseOpTrait>();
+}
+
+/// Return whether a reduce op may use full-fp32 accumulation on its target.
+inline bool isFullFp32ReduceSupported(TileReduceOp reduceOp) {
+  // Wormhole reduce lowering is validated in non-full-fp32 mode. Enabling
+  // full_fp32 also requires FP32 DST and changes existing reduce results.
+  if (isWormholeB0Target(reduceOp)) {
+    return false;
+  }
+
+  // TODO(#533): Blackhole REDUCE_ROW full-fp32 produces incorrect results.
+  return !isBlackholeTarget(reduceOp) ||
+         reduceOp.getReduceDim() != mlir::tt::ttkernel::ReduceDim::Row;
+}
+
+/// Apply the user request and target restrictions for reduce full-fp32.
+inline bool shouldUseFullFp32Reduce(TileReduceOp reduceOp, bool requested) {
+  return requested && isFullFp32ReduceSupported(reduceOp);
 }
 
 /// Check if an operation is a tile-level unary op (executes in-place on DST).

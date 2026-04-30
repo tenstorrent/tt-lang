@@ -220,10 +220,14 @@ static InitKey computeInitKey(Operation *op) {
         typeId, {bcast.getInCb()}, static_cast<int64_t>(bcast.getBcastType())};
   }
 
-  // For ReduceTile: key includes in_cb, scaling_cb, reduce_type, and dim.
+  // For ReduceTile: key includes in_cb, scaling_cb, reduce_type, dim, and
+  // full_fp32. Two reduces with the same dim/type but different full_fp32
+  // require different reduce_init configurations (the LLK selects a
+  // different math kernel branch), so they must not share an init.
   if (auto reduce = dyn_cast<ttk::ReduceTileOp>(op)) {
-    int64_t disc = (static_cast<int64_t>(reduce.getReduceType()) << 8) |
-                   static_cast<int64_t>(reduce.getReduceDim());
+    int64_t disc = (static_cast<int64_t>(reduce.getReduceType()) << 16) |
+                   (static_cast<int64_t>(reduce.getReduceDim()) << 8) |
+                   static_cast<int64_t>(reduce.getFullFp32());
     return {typeId, {reduce.getInCb(), reduce.getScalingCb()}, disc};
   }
 
@@ -467,17 +471,29 @@ struct TTKernelInsertInitsPass
     // (tile_regs_acquire → tile_regs_release).
     auto computeToInit = buildComputeToInitMap();
 
+    // reduce_uninit must use the same full-fp32 mode as the reduce sequence
+    // it closes; see TTKernel_ReduceUninitOp description.
+    auto emitReduceUninit = [](OpBuilder &builder, Location loc,
+                               ttk::ReduceTileOp prevReduce) {
+      auto uninit = ttk::ReduceUninitOp::create(builder, loc);
+      if (prevReduce && prevReduce.getFullFp32()) {
+        uninit.setFullFp32(true);
+      }
+    };
+
     // Helper: process one direct child of the sync region block.
     // Walks into the op (which may be an scf.for) to find the first
     // compute op, and inserts an init before the op if the init key changed.
-    auto processOp = [&](Operation &topOp, std::optional<InitKey> &prevKey) {
+    auto processOp = [&](Operation &topOp, std::optional<InitKey> &prevKey,
+                         ttk::ReduceTileOp &prevReduce) {
       if (isSyncBoundary(&topOp)) {
         if (prevKey &&
             prevKey->typeId == mlir::TypeID::get<ttk::ReduceTileOp>()) {
           OpBuilder builder(&topOp);
-          ttk::ReduceUninitOp::create(builder, topOp.getLoc());
+          emitReduceUninit(builder, topOp.getLoc(), prevReduce);
         }
         prevKey = std::nullopt;
+        prevReduce = nullptr;
         return;
       }
 
@@ -492,12 +508,13 @@ struct TTKernelInsertInitsPass
               prevKey->typeId == mlir::TypeID::get<ttk::ReduceTileOp>() &&
               key.typeId != mlir::TypeID::get<ttk::ReduceTileOp>()) {
             OpBuilder builder(&topOp);
-            ttk::ReduceUninitOp::create(builder, topOp.getLoc());
+            emitReduceUninit(builder, topOp.getLoc(), prevReduce);
           }
           OpBuilder builder(&topOp);
           mapIt->second.createInit(builder, inner->getLoc(), inner);
         }
         prevKey = key;
+        prevReduce = dyn_cast<ttk::ReduceTileOp>(inner);
         inner->setAttr(kInitInserted, UnitAttr::get(inner->getContext()));
         return WalkResult::interrupt();
       });
@@ -508,12 +525,13 @@ struct TTKernelInsertInitsPass
     moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
       Block *block = acquireOp->getBlock();
       std::optional<InitKey> prevKey;
+      ttk::ReduceTileOp prevReduce;
       for (auto it = std::next(acquireOp->getIterator()); it != block->end();
            ++it) {
         if (isa<ttk::TileRegsReleaseOp>(&*it)) {
           break;
         }
-        processOp(*it, prevKey);
+        processOp(*it, prevKey, prevReduce);
       }
     });
 

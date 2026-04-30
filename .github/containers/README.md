@@ -68,7 +68,7 @@ sudo .github/containers/build-docker-images.sh --image-type base --no-push
 ### How it works
 
 The `build-docker-images.sh` script:
-1. Determines the Docker tag from the nearest version tag (e.g. `v0.1.8`) via `get-version-tag.sh`
+1. Determines the Docker tag from the nearest version tag (e.g. `v0.1.9`) via `get-version-tag.sh`
 2. Runs `docker build` for each image type with appropriate tags
 3. For `ird`/`dist`, the Dockerfile COPYs the toolchain from a build context
 
@@ -184,7 +184,7 @@ docker run -it \
 - `activate-install.sh` -- environment activation for installed tt-lang (used in containers)
 - `build-docker-images.sh` -- build/push script with `--image-type` filter
 - `cleanup-toolchain.sh` -- normalizes toolchain venv (lib64 symlink fix), strips LLVM binaries, and optionally removes headers/static libs for dist
-- `get-version-tag.sh` -- extracts the Docker version tag from the nearest git version tag (e.g. `v0.1.8`)
+- `get-version-tag.sh` -- extracts the Docker version tag from the nearest git version tag (e.g. `v0.1.9`)
 - `get-docker-tag.sh` -- generates deterministic Docker tags from submodule SHAs and file hashes (content-based)
 - `test-docker-smoke.sh` -- quick smoke test for container functionality
 - `CONTAINER_README.md` -- welcome message shown inside dist container
