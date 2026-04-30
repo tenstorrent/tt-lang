@@ -66,7 +66,6 @@ class Block:
     __slots__ = (
         "_buf",
         "_shape",
-        "_element_shape",  # Element-level shape (for broadcast semantics)
         "_sm",  # BlockStateMachine: owns all access-state logic
         "_is_temporary",
         "_store_confirmation_pending",  # Set by assign_src; cleared by mark_store_read_complete
@@ -92,8 +91,6 @@ class Block:
     ):
         self._buf = tensor
         self._shape = shape
-        # Element shape is always derived from the tensor's actual shape
-        self._element_shape = tuple(tensor.shape)
         self._is_temporary = is_temporary
         self._store_confirmation_pending: bool = (
             False  # Set by assign_src; cleared by mark_store_read_complete
