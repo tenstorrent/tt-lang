@@ -15,6 +15,18 @@ import subprocess
 
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
+from setuptools.command.sdist import sdist as _sdist
+
+
+class NoSdist(_sdist):
+    """Reject source distribution builds; tt-lang only ships pre-built wheels."""
+
+    def run(self):
+        raise SystemExit(
+            "tt-lang does not publish source distributions. Build from a git "
+            "checkout (https://github.com/tenstorrent/tt-lang) or install a "
+            "pre-built wheel from PyPI."
+        )
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
@@ -213,7 +225,7 @@ setup(
         "ttl.utils": "python/utils",
     },
     ext_modules=[ttlang_c],
-    cmdclass={"build_ext": CMakeBuild},
+    cmdclass={"build_ext": CMakeBuild, "sdist": NoSdist},
     zip_safe=False,
     long_description=readme,
     long_description_content_type="text/markdown",
