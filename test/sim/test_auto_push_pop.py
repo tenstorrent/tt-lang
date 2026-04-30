@@ -479,6 +479,142 @@ class TestRuntimeAutoPushPop:
 
 
 # ---------------------------------------------------------------------------
+# Deadlock-resolution tests
+# ---------------------------------------------------------------------------
+
+
+class TestDeadlockResolution:
+    """Verify that auto-injection resolves scenarios that would otherwise deadlock."""
+
+    def test_sequential_reserves_same_dfb_single_pass(self, reset_simulator_context):
+        """Two sequential reserve() calls on the same DFB in a single pass (no loop).
+
+        dm_read reserves blk1 then blk2 from dfb_in sequentially without a loop.
+        Without auto-injection, blk1 is never pushed before blk2 = dfb_in.reserve()
+        is called, which blocks forever when block_count == 1.
+        With auto-injection the scope boundary (blk2 = dfb_in.reserve()) triggers
+        push(blk1) before the second reserve, allowing the pipeline to drain cleanly.
+        """
+        import torch
+
+        inp = ttnn.rand((32, 32))
+        out = ttnn.empty((2 * 32, 32))
+
+        @ttl.operation(grid=(1, 1))
+        def op(inp, out):
+            dfb_in = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            dfb_out = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+            @ttl.compute()
+            def compute():
+                # Consume two blocks in sequence.
+                blk1 = dfb_in.wait()
+                o1 = dfb_out.reserve()
+                o1.store(blk1)
+                blk2 = dfb_in.wait()
+                o2 = dfb_out.reserve()
+                o2.store(blk2)
+
+            @ttl.datamovement()
+            def dm_read():
+                blk1 = dfb_in.reserve()  # first reserve
+                ttl.copy(inp[0, 0], blk1).wait()
+                # push(blk1) auto-injected at the blk2 = dfb_in.reserve() line below
+                blk2 = dfb_in.reserve()  # second reserve on same DFB
+                ttl.copy(inp[0, 0], blk2).wait()
+                # push(blk2) auto-injected on return
+
+            @ttl.datamovement()
+            def dm_write():
+                for i in range(2):
+                    blk = dfb_out.wait()
+                    ttl.copy(blk, out[i, 0]).wait()
+
+        op(inp, out)
+        inp_t = ttnn.to_torch(inp).float()
+        out_t = ttnn.to_torch(out).float()
+        # Both output rows should match the input (pass-through compute).
+        assert torch.allclose(out_t[0:32], inp_t, atol=1e-2)
+        assert torch.allclose(out_t[32:64], inp_t, atol=1e-2)
+
+    def test_cross_dfb_dependency_resolves(self, reset_simulator_context):
+        """Cross-DFB dependency: last-use analysis places push before dfb_b.wait().
+
+        This is the canonical deadlock scenario where the naive scope-boundary
+        trigger would never fire:
+
+            dm_read:
+                blk1 = dfb_a.reserve()          # (A) reserve input slot
+                ttl.copy(inp, blk1).wait()       # (B) fill blk1 — LAST USE of blk1
+                result = dfb_b.wait()            # (C) push(blk1) fires HERE
+                blk2 = dfb_a.reserve()           # (D) scope boundary for blk1
+
+            compute:
+                in_blk = dfb_a.wait()            # needs blk1 pushed at (C) to unblock
+                out_blk = dfb_b.reserve()
+                out_blk.store(in_blk)            # echoes data back through dfb_b
+
+        Without last-use analysis: push(blk1) would trigger at line (D), but
+        dfb_b.wait() at line (C) blocks forever because compute is also blocked
+        waiting for blk1 to be pushed.
+
+        With last-use analysis: blk1's last use is at (B); the next statement (C)
+        is earlier than the scope boundary (D), so push(blk1) fires at the start
+        of line (C), BEFORE dfb_b.wait() executes.  compute can then proceed and
+        produce the dfb_b block that dm_read is waiting for.
+
+        blk2 exists solely to provide the scope boundary that enables the
+        last-use trigger for blk1.  It is filled and pushed on dm_read's return
+        (auto-push fires on return when scope_boundary is None for blk2).
+        """
+        import torch
+
+        inp = ttnn.rand((32, 32))
+        out = ttnn.empty((32, 32))
+
+        @ttl.operation(grid=(1, 1))
+        def op(inp, out):
+            # dfb_a: dm_read -> compute (input data)
+            dfb_a = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            # dfb_b: compute -> dm_read (echoed result, used as feedback)
+            dfb_b = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+
+            @ttl.compute()
+            def compute():
+                # One iteration: receive blk1 from dm_read and echo it back via dfb_b.
+                in_blk = dfb_a.wait()  # unblocks once push(blk1) fires at (C)
+                out_blk = dfb_b.reserve()
+                out_blk.store(in_blk)  # echo data back via dfb_b
+
+            @ttl.datamovement()
+            def dm_read():
+                # (A) Reserve input slot in dfb_a.
+                blk1 = dfb_a.reserve()
+                # (B) Fill blk1 — last use of blk1.
+                ttl.copy(inp[0, 0], blk1).wait()
+                # (C) push(blk1) fires at the start of THIS line (last-use analysis).
+                # Without auto-injection the naive trigger at (D) would never be
+                # reached because this wait blocks first.
+                result = dfb_b.wait()  # unblocks once compute echoes blk1
+                # (D) scope boundary for blk1 — triggers push earlier than return.
+                blk2 = dfb_a.reserve()
+                ttl.copy(inp[0, 0], blk2).wait()  # fill blk2
+                # Write the echoed result to the output tensor.
+                ttl.copy(result, out[0, 0]).wait()
+                # push(blk2) and pop(result) auto-fire on dm_read's return.
+
+            @ttl.datamovement()
+            def dm_write():
+                pass  # dm_read writes directly to out
+
+        op(inp, out)
+        inp_t = ttnn.to_torch(inp).float()
+        out_t = ttnn.to_torch(out).float()
+        # compute echoes inp back through dfb_b; dm_read copies that to out.
+        assert torch.allclose(out_t, inp_t, atol=1e-2)
+
+
+# ---------------------------------------------------------------------------
 # Copy-wait tests
 # ---------------------------------------------------------------------------
 
