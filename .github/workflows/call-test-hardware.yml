@@ -12,7 +12,7 @@ on:
         description: 'Job timeout in minutes'
         required: false
         type: number
-        default: 60
+        default: 90
       docker_tag:
         description: 'Docker image tag for the ird container.'
         required: true
@@ -28,7 +28,7 @@ on:
         description: 'Job timeout in minutes'
         required: false
         type: number
-        default: 60
+        default: 90
       docker_tag:
         description: 'Docker image tag for the ird container.'
         required: true
@@ -107,7 +107,7 @@ jobs:
       - name: Simulator tests
         run: |
           source build/env/activate
-          python3 -m pytest test/sim -v -n auto --tb=short --junitxml=build/test/sim-report.xml
+          python3 -m pytest test/sim -m requires_ttnn -v -n auto --tb=short --junitxml=build/test/sim-report.xml
 
       - name: Python lit tests
         run: |

@@ -30,11 +30,11 @@ from python.sim.program import set_max_l1_bytes
 from python.sim.ttlang_sim import execute_script_with_simulator
 from python import sim
 
-# Marker for tests that require ttnn
-requires_ttnn = pytest.mark.skipif(
+_requires_ttnn_skip = pytest.mark.skipif(
     not TTNN_AVAILABLE,
     reason="ttnn not available (required for tests using ttnn golden functions)",
 )
+requires_ttnn_marks = (pytest.mark.requires_ttnn, _requires_ttnn_skip)
 
 # Paths
 THIS_DIR = Path(__file__).resolve().parent
@@ -111,14 +111,14 @@ def run_script_in_process(
     [
         pytest.param(
             "broadcast.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
         "broadcast_demo.py",
         "group_transfer_upsample.py",
         "height_shard_gather.py",
         pytest.param(
             "general_broadcast.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
         "eltwise_add.py",
         "eltwise_add_3d.py",
@@ -136,35 +136,35 @@ def run_script_in_process(
         "eltwise_1d_broadcast.py",
         pytest.param(
             "elementwise-tutorial/step_0_ttnn_base.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
         pytest.param(
             "elementwise-tutorial/step_1_single_node_single_tile_block.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
         pytest.param(
             "elementwise-tutorial/step_2_single_node_multitile_block.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
         pytest.param(
             "elementwise-tutorial/step_3_multinode.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
         pytest.param(
             "elementwise-tutorial/step_4_multinode_grid_auto.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
         pytest.param(
             "tutorial/single_node_broadcast_single_tile_block.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
         pytest.param(
             "tutorial/single_node_broadcast_multitile_blocks.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
         pytest.param(
             "tt_upsample.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
     ],
 )
@@ -459,9 +459,11 @@ def test_matmul_tutorial_sim(script_name: str) -> None:
     "script_name",
     [
         # step_0 is a plain ttnn program — requires real ttnn hardware.
-        pytest.param("step_0_ttnn_base.py", marks=requires_ttnn),
+        pytest.param("step_0_ttnn_base.py", marks=requires_ttnn_marks),
         # step_7 uses ttnn.all_reduce and ttnn.relu — requires real ttnn hardware.
-        pytest.param("step_7_multidevice_shard_k_all_reduce.py", marks=requires_ttnn),
+        pytest.param(
+            "step_7_multidevice_shard_k_all_reduce.py", marks=requires_ttnn_marks
+        ),
     ],
 )
 @pytest.mark.matmul_tutorial_ttnn
