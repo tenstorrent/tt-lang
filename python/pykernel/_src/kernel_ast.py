@@ -537,14 +537,20 @@ class TTCompilerBase(PyKernelAstBase):
             return fn(lhs, rhs)
 
         types_differ = lhs.type != rhs.type
-        defer_tensor_type_check = types_differ and _same_shape_ranked_tensors(
+        same_shape_tensor_type_mismatch = types_differ and _same_shape_ranked_tensors(
             lhs.type, rhs.type
         )
-        if types_differ and not defer_tensor_type_check:
+        if same_shape_tensor_type_mismatch:
+            message = (
+                "binary operation requires matching tensor operand types; "
+                f"got lhs type {lhs.type} and rhs type {rhs.type}"
+            )
+            if hasattr(self, "_raise_error"):
+                self._raise_error(node, message)
+            raise TypeError(message)
+        if types_differ:
             rhs = _cast(rhs, lhs.type)
-        assert defer_tensor_type_check or lhs.type == rhs.type, (
-            f"{lhs.type} != {rhs.type}"
-        )
+        assert lhs.type == rhs.type, f"{lhs.type} != {rhs.type}"
         mlir_type = _get_type_str(lhs.type)
 
         def qualified_or(attr, otherwise, *args, **kwargs):
