@@ -33,7 +33,7 @@ from python.sim.dfb import (
     DataflowBuffer,
     make_dataflow_buffer_like,
 )
-from python.sim.math import broadcast
+from python.sim.block import broadcast
 from python.sim.blockstate import (
     ThreadType,
     BlockAcquisition,
@@ -759,9 +759,9 @@ def test_iadd_accumulates_into_temporary() -> None:
 
     with dfb.reserve() as block:
         # Use fill(0) as accumulator seed; += produces a temporary block each time.
-        from python.sim.math import fill
+        from python.sim.block import fill
 
-        acc = fill(block, 0)
+        acc = fill(0, shape=block.shape)
         acc += values1
         acc += values2
         block.store(acc)
@@ -1432,44 +1432,31 @@ def test_5d_grid_from_tensor_infers_shape():
 
 
 def test_store_broadcast_expansion():
-    """Test that store() expands source blocks to match destination shape when using broadcast()."""
-    # Create DFBs for testing broadcast expansion with element-based semantics
-
-    # Test 1: Broadcast (1, 2) -> (3, 2) with degenerate tiles (element size 1 in first dim)
-    # Source has full buffer shape (1, 64) - 1 row, 2×32=64 columns
-    # First dim (outermost/rows) has element size 1, broadcast along dim 0 (outermost)
-    src_elem = Tensor(
-        torch.zeros(1, 64, dtype=torch.bfloat16)
-    )  # Full buffer element shape
+    """Test that broadcast() eagerly replicates tiles and the result can be stored."""
+    # Test 1: Broadcast (1, 2) -> (3, 2): row dimension expanded.
+    # Source tiles are (32, 32); after broadcast, 3 rows of 2 tiles each.
+    src_elem = Tensor(torch.zeros(32, 64, dtype=torch.bfloat16))
     src_dfb = DataflowBuffer(likeness_tensor=src_elem, shape=(1, 2), block_count=2)
 
-    # Destination has full buffer shape (96, 64) - 3×32=96 rows, 2×32=64 columns
-    dst_elem = Tensor(
-        torch.zeros(96, 64, dtype=torch.bfloat16)
-    )  # Full buffer element shape
+    dst_elem = Tensor(torch.zeros(96, 64, dtype=torch.bfloat16))
     dst_dfb = DataflowBuffer(likeness_tensor=dst_elem, shape=(3, 2), block_count=2)
 
     with src_dfb.reserve() as src_blk:
-        # Fill source with degenerate tiles: first column = 10, second column = 20
         src_tiles = [
-            Tensor(torch.full((1, 32), 10.0, dtype=torch.bfloat16)),
-            Tensor(torch.full((1, 32), 20.0, dtype=torch.bfloat16)),
+            Tensor(torch.full((32, 32), 10.0, dtype=torch.bfloat16)),
+            Tensor(torch.full((32, 32), 20.0, dtype=torch.bfloat16)),
         ]
         src_temp = Block.from_list(src_tiles, shape=(1, 2))
         src_blk.store(src_temp)
 
     with dst_dfb.reserve() as dst_blk:
         with src_dfb.wait() as src_wait:
-            # Explicitly broadcast to expand row dimension (dims=[0] = outermost in standard Python indexing)
-            broadcast_src = broadcast(src_wait, dims=[0])
-            # Store with broadcast expansion
+            broadcast_src = broadcast(src_wait, dims=[0], shape=(3, 2))
             dst_blk.store(broadcast_src)
 
-            # Check that tiles were replicated correctly
             result = dst_blk.to_list()
             assert len(result) == 6
-            # Each row should have the same values: [10, 20]
-            for i in range(3):  # 3 rows
+            for i in range(3):
                 assert torch.allclose(
                     result[i * 2].to_torch(),
                     torch.full((32, 32), 10.0, dtype=torch.bfloat16),
@@ -1479,31 +1466,23 @@ def test_store_broadcast_expansion():
                     torch.full((32, 32), 20.0, dtype=torch.bfloat16),
                 )
 
-    # Test 2: Broadcast (1, 1) -> (2, 2) with proper element shapes
-    # Source has full buffer shape (1, 1) - broadcast along both dimensions
-    src2_elem = Tensor(
-        torch.zeros(1, 1, dtype=torch.bfloat16)
-    )  # Full buffer element shape
+    # Test 2: Broadcast (1, 1) -> (2, 2): both dimensions expanded.
+    src2_elem = Tensor(torch.zeros(32, 32, dtype=torch.bfloat16))
     src2_dfb = DataflowBuffer(likeness_tensor=src2_elem, shape=(1, 1), block_count=2)
 
-    # Destination has full buffer shape (64, 64) - 2×32=64 rows, 2×32=64 columns
-    dst2_elem = Tensor(
-        torch.zeros(64, 64, dtype=torch.bfloat16)
-    )  # Full buffer element shape
+    dst2_elem = Tensor(torch.zeros(64, 64, dtype=torch.bfloat16))
     dst2_dfb = DataflowBuffer(likeness_tensor=dst2_elem, shape=(2, 2), block_count=2)
 
     with src2_dfb.reserve() as src2_blk:
-        src2_tiles = [Tensor(torch.full((1, 1), 42.0, dtype=torch.bfloat16))]
+        src2_tiles = [Tensor(torch.full((32, 32), 42.0, dtype=torch.bfloat16))]
         src2_temp = Block.from_list(src2_tiles, shape=(1, 1))
         src2_blk.store(src2_temp)
 
     with dst2_dfb.reserve() as dst2_blk:
         with src2_dfb.wait() as src2_wait:
-            # Explicitly broadcast to expand both dimensions (dims=[0, 1])
-            broadcast_src2 = broadcast(src2_wait, dims=[0, 1])
+            broadcast_src2 = broadcast(src2_wait, dims=[0, 1], shape=(2, 2))
             dst2_blk.store(broadcast_src2)
 
-            # Check all tiles are 42.0
             result2 = dst2_blk.to_list()
             assert len(result2) == 4
             for tile in result2:

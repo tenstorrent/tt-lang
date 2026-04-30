@@ -71,7 +71,6 @@ class Block:
         "_is_temporary",
         "_store_confirmation_pending",  # Set by assign_src; cleared by mark_store_read_complete
         "_source_blocks",  # Track wait() blocks that contributed to this temporary block
-        "_broadcast_dims",  # Pending broadcast dimensions (None or tuple of ints)
         "dfb",  # Reference to DataflowBuffer for context manager cleanup
         "dfb_state",  # DFBState reference for updating ring-buffer slot on copy_as_dest
         "dfb_slot_idx",  # Index of this block's slot in the ring buffer
@@ -100,9 +99,6 @@ class Block:
             False  # Set by assign_src; cleared by mark_store_read_complete
         )
         self._source_blocks: List["Block"] = []  # Track source wait() blocks
-        self._broadcast_dims: Optional[tuple[int, ...]] = (
-            None  # Pending broadcast metadata
-        )
         self.dfb = dfb  # Reference to DataflowBuffer for context manager support
         self.dfb_state: Optional[DFBState] = None
         self.dfb_slot_idx: int = -1
@@ -567,68 +563,6 @@ class Block:
             if self.dfb_state is not None:
                 self.dfb_state.buf[self.dfb_slot_idx] = tensor
 
-    @staticmethod
-    def _infer_broadcast_shape(left_shape: Shape, right_shape: Shape) -> Shape:
-        """Infer the result shape from broadcasting two shapes.
-
-        Uses standard broadcasting rules: dimensions must match or one must be 1.
-        """
-        if len(left_shape) != len(right_shape):
-            # For now, require same number of dimensions
-            raise ValueError(f"Shape dimension mismatch: {left_shape} vs {right_shape}")
-
-        # Check compatibility using pattern matching
-        for l, r in zip(left_shape, right_shape):
-            match (l, r):
-                case (1, _) | (_, 1):
-                    # One dimension is 1: broadcasting compatible
-                    pass
-                case (x, y) if x == y:
-                    # Both dimensions equal: compatible
-                    pass
-                case _:
-                    # Incompatible dimensions
-                    raise ValueError(
-                        f"Incompatible shapes for broadcasting: {left_shape} and {right_shape}"
-                    )
-
-        # Now construct result_shape knowing all dimensions are compatible
-        result_shape: Shape = tuple(max(l, r) for l, r in zip(left_shape, right_shape))
-
-        return result_shape
-
-    @staticmethod
-    def _expand_broadcast_dims(
-        block: "Block",
-        target_shape: Shape,
-        target_element_shape: Shape,
-        broadcast_dims: tuple[int, ...],
-    ) -> Tensor:
-        """Expand a block along broadcast dimensions to match target shape.
-
-        Uses PyTorch broadcasting to expand the block's tensor from its current
-        element shape to the target element shape. All validation is performed
-        by broadcast() before setting _broadcast_dims metadata.
-
-        Uses innermost-first convention: dims=[0] = last dimension in shape.
-
-        Args:
-            block: Source block with broadcast metadata
-            target_shape: Target tile shape to expand to
-            target_element_shape: Target element shape to expand to
-            broadcast_dims: Dimensions to expand (innermost-first indexing)
-
-        Returns:
-            Tensor with expanded element shape
-        """
-
-        # Use PyTorch broadcasting to expand the tensor
-        src_tensor = block._buf.to_torch()
-        expanded_tensor = src_tensor.expand(*target_element_shape)
-
-        # Return tensor directly
-        return Tensor(expanded_tensor.contiguous())
-
     def store(self, items: "Block") -> None:
         """Store data into this block.
 
@@ -659,26 +593,18 @@ class Block:
                 or blk._store_confirmation_pending
             )
 
-        # Check if source has broadcast metadata - if so, expand it
+        # Validate that tile counts match (allows different dimensionality)
         src_shape = items._shape
         dst_shape = self._shape
-
-        if hasattr(items, "_broadcast_dims") and items._broadcast_dims is not None:
-            # Source came from broadcast() - expand using metadata
-            src_tensor = self._expand_broadcast_dims(
-                items, dst_shape, self._element_shape, items._broadcast_dims
+        src_tiles = math.prod(src_shape)
+        dst_tiles = math.prod(dst_shape)
+        if src_tiles != dst_tiles:
+            raise ValueError(
+                f"Shape mismatch in store(): "
+                f"source shape {src_shape} ({src_tiles} tiles) does not match "
+                f"destination shape {dst_shape} ({dst_tiles} tiles). "
+                f"Use broadcast() to expand the source before store()."
             )
-        else:
-            # No broadcast metadata - validate tile counts match (allows different dimensionality)
-            src_tiles = math.prod(src_shape)
-            dst_tiles = math.prod(dst_shape)
-            if src_tiles != dst_tiles:
-                raise ValueError(
-                    f"Shape mismatch in store(): "
-                    f"source shape {src_shape} ({src_tiles} tiles) does not match "
-                    f"destination shape {dst_shape} ({dst_tiles} tiles). "
-                    f"Use broadcast() to expand the source if needed."
-                )
 
         # Mark source wait() blocks as consumed
         for source_block in source_blocks_to_mark:
@@ -756,57 +682,23 @@ class Block:
     ) -> "Block":
         """Element-wise binary op: self (op) other.
 
-        Applies op on the underlying Tensors (PyTorch broadcasting applies).
-        Validates that tile-grid shapes are broadcast-compatible.
+        Applies op on the underlying Tensors. Both operands must have matching
+        grid shapes; use broadcast() to expand operands before combining them.
 
         Tracks wait() Compute blocks that contribute to the result.
         """
         left_shape = self._shape
         right_shape = other._shape
 
-        # Check if either operand has broadcast metadata
-        left_has_broadcast = (
-            hasattr(self, "_broadcast_dims") and self._broadcast_dims is not None
-        )
-        right_has_broadcast = (
-            hasattr(other, "_broadcast_dims") and other._broadcast_dims is not None
-        )
-
-        if left_has_broadcast and right_has_broadcast:
-            raise ValueError(
-                f"Cannot perform binary operation: both operands have pending broadcast. "
-                f"Materialize one operand first by storing it."
-            )
-
-        # Expand operand with broadcast metadata to match the other
-        left_buf = self._buf
-        right_buf = other._buf
-        result_shape = left_shape
-
-        if left_has_broadcast:
-            # Expand left to match right shape
-            assert self._broadcast_dims is not None  # Checked by left_has_broadcast
-            left_buf = self._expand_broadcast_dims(
-                self, right_shape, other._element_shape, self._broadcast_dims
-            )
-            result_shape = right_shape
-        elif right_has_broadcast:
-            # Expand right to match left shape
-            assert other._broadcast_dims is not None  # Checked by right_has_broadcast
-            right_buf = self._expand_broadcast_dims(
-                other, left_shape, self._element_shape, other._broadcast_dims
-            )
-            result_shape = left_shape
-        elif left_shape != right_shape:
-            # No broadcast metadata and shapes don't match - error
+        if left_shape != right_shape:
             raise ValueError(
                 f"Shape mismatch in binary operation: left shape {left_shape} does not match "
-                f"right shape {right_shape}. Use broadcast() to expand operands."
+                f"right shape {right_shape}. Use broadcast() to expand operands first."
             )
 
         # Perform operation
         return self._create_temporary_result(
-            op(left_buf, right_buf), result_shape, other
+            op(self._buf, other._buf), left_shape, other
         )
 
     # ---- forward operators ----
@@ -860,7 +752,7 @@ class Block:
         """In-place add for temporary accumulator blocks.
 
         Allows the pattern:
-            y = ttl.math.fill(0)
+            y = ttl.math.fill(0, shape=(...))
             y += a_blk @ b_blk   # repeated accumulation
             dst_blk.store(y)
 

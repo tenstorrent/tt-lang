@@ -339,7 +339,7 @@ def test_kernel(a: ttnn.Tensor):
     @ttl.compute()
     def compute():
         with cb0.reserve() as blk:
-            blk.store(ttl.math.fill(blk, 1.0))
+            blk.store(ttl.block.fill(1.0, shape=blk.shape))
         with cb0.wait() as a, {middle_cb}.reserve() as o:
             o.store(a)
         with {middle_cb}.wait() as a, {last_cb}.reserve() as o:
@@ -543,7 +543,7 @@ def test_kernel(a: ttnn.Tensor):
     @ttl.compute()
     def compute():
         with cb0.reserve() as blk:
-            blk.store(ttl.math.fill(blk, 1.0))
+            blk.store(ttl.block.fill(1.0, shape=blk.shape))
         with cb0.wait() as inp, cb1.reserve() as o:
             o.store(inp)
         with cb1.wait() as inp, cb2.reserve() as o:

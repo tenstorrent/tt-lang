@@ -125,10 +125,7 @@ def run_script_in_process(
         "eltwise_add_3d.py",
         "eltwise_pipe.py",
         "eltwise_pipe_core3.py",
-        pytest.param(
-            "matmul.py",
-            marks=pytest.mark.xfail(reason="Required broadcast not yet supported"),
-        ),
+        "matmul.py",
         "matmul_acc.py",
         "single_node_matmul.py",
         "multinode_matmul.py",
@@ -364,7 +361,7 @@ def test_eltwise_1d_broadcast_warning(scheduler: str) -> None:
 
     This example demonstrates broadcasting with 1D blocks. Since 1D broadcasts
     are not supported by current hardware, the simulator should emit warnings
-    when ttl.math.broadcast() is called on 1D blocks, but the script should
+    when ttl.block.broadcast() is called on 1D blocks, but the script should
     still execute successfully.
     """
     code, out = run_script_in_process(
