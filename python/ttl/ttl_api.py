@@ -126,6 +126,7 @@ def _make_cache_key(
     args: tuple,
     fp32_dest_acc_en: Optional[bool],
     dst_full_sync_en: Optional[bool],
+    target_arch: Optional[str],
     compiler_options: CompilerOptions = CompilerOptions(),
 ) -> tuple:
     """Create cache key from tensor properties and runtime compute config parameters."""
@@ -139,7 +140,14 @@ def _make_cache_key(
         if is_ttnn_tensor(arg) and _is_mesh_tensor(arg):
             mesh_key = tuple(arg.device().shape)
             break
-    return (tensor_key, mesh_key, fp32_dest_acc_en, dst_full_sync_en, compiler_options)
+    return (
+        tensor_key,
+        mesh_key,
+        fp32_dest_acc_en,
+        dst_full_sync_en,
+        target_arch,
+        compiler_options,
+    )
 
 
 def _should_execute() -> bool:
@@ -356,47 +364,6 @@ def _detect_memory_space_from_tensor(tensor, default: str) -> str:
     return default
 
 
-def _has_float32_args(args) -> bool:
-    """
-    Check if any input tensor uses float32 dtype.
-
-    Inspects the tensor arguments to detect float32. This is used to
-    automatically enable fp32_dest_acc_en configuration for compute kernels.
-
-    Args:
-        args: List of tensor arguments (torch or ttnn)
-
-    Returns:
-        True if any tensor uses float32 dtype, False otherwise
-    """
-    try:
-        for tensor in args:
-            if tensor is None:
-                continue
-
-            # Check ttnn tensor
-            if is_ttnn_tensor(tensor):
-                tensor_dtype = tensor.dtype
-                # ttnn.float32
-                if (
-                    hasattr(tensor_dtype, "name")
-                    and "float32" in str(tensor_dtype.name).lower()
-                ):
-                    return True
-                if "float32" in str(tensor_dtype).lower():
-                    return True
-            # Check torch tensor
-            elif hasattr(tensor, "dtype"):
-                import torch
-
-                if tensor.dtype == torch.float32:
-                    return True
-    except (AttributeError, TypeError, ImportError):
-        pass
-
-    return False
-
-
 def _require_device(args):
     """Extract the device from tensor arguments, raising if none are on-device.
 
@@ -422,6 +389,48 @@ def _require_device(args):
         "  ttnn.to_device(tensor, device)\n"
         "  ttnn.from_torch(tensor, ..., device=device)"
     )
+
+
+def _detect_device_arch(device) -> Optional[str]:
+    """Return a normalized architecture string from a TTNN device if present."""
+    arch_attrs = (
+        "arch",
+        "architecture",
+        "chip_type",
+        "device_type",
+        "_arch",
+        "_architecture",
+    )
+    for attr in arch_attrs:
+        # Properties on device handles may raise for reasons other than
+        # AttributeError (e.g., closed handle); guard both attribute access
+        # and the optional method call.
+        try:
+            arch_value = getattr(device, attr)
+        except Exception:
+            continue
+        if callable(arch_value):
+            try:
+                arch_value = arch_value()
+            except Exception:
+                continue
+        return str(arch_value).lower().rsplit(".", maxsplit=1)[-1]
+    return None
+
+
+def _device_target_arch(args) -> Optional[str]:
+    """Return the first detected tensor device architecture, or None."""
+    for arg in args:
+        if not is_ttnn_tensor(arg) or not hasattr(arg, "device"):
+            continue
+        device = arg.device()
+        if device is None:
+            continue
+        arch = _detect_device_arch(device)
+        if arch is None:
+            continue
+        return arch
+    return None
 
 
 def _resolve_grid(grid, args, kwargs):
@@ -597,6 +606,35 @@ def _write_kernel_to_tmp(name: str, source: str) -> str:
     return path
 
 
+def _lookup_kernel_func_op(module, kernel_name: str):
+    """Return the func.func operation for a kernel symbol."""
+    for op_view in module.body.operations:
+        operation = getattr(op_view, "operation", op_view)
+        if operation.name != "func.func":
+            continue
+        sym_name = operation.attributes.get("sym_name", None)
+        if sym_name is not None and str(sym_name).strip('"') == kernel_name:
+            return operation
+    raise RuntimeError(f"Could not find TTKernel function '{kernel_name}'")
+
+
+def _get_kernel_bool_attr(module, kernel_name: str, attr_name: str) -> bool:
+    """Read a boolean func.func attribute from a compiled kernel."""
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    attr = operation.attributes.get(attr_name, None)
+    if attr is None:
+        return False
+    attr_text = str(attr).strip()
+    if attr_text == "true":
+        return True
+    if attr_text == "false":
+        return False
+    raise ValueError(
+        f"Expected boolean attribute '{attr_name}' on kernel '{kernel_name}', "
+        f"got {attr_text!r}"
+    )
+
+
 def _compile_ttnn_kernel(
     module,
     args,
@@ -607,7 +645,6 @@ def _compile_ttnn_kernel(
     program_hash=None,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
-    compiler_options: CompilerOptions = CompilerOptions(),
     verbose=True,
     source_lines=None,
     all_source_lines=None,
@@ -699,9 +736,13 @@ def _compile_ttnn_kernel(
     kernel_configs = []
     kernel_arg_specs = []
     noc_kernel_idx = 0
-
-    # Check if input args use f32 to auto-configure compute kernels
-    has_f32 = _has_float32_args(args)
+    kernel_bool_attrs = {
+        name: {
+            "fp32_dest_acc_en": _get_kernel_bool_attr(module, name, "fp32_dest_acc_en"),
+            "dst_full_sync_en": _get_kernel_bool_attr(module, name, "dst_full_sync_en"),
+        }
+        for name, _ in kernel_info
+    }
 
     # Build thread-to-kernel mapping for profiling
     # Maps RISC thread names to kernel names
@@ -716,24 +757,12 @@ def _compile_ttnn_kernel(
             config = ttnn.ComputeConfigDescriptor()
             if fp32_dest_acc_en is not None:
                 config.fp32_dest_acc_en = fp32_dest_acc_en
+            elif kernel_bool_attrs[name]["fp32_dest_acc_en"]:
+                config.fp32_dest_acc_en = True
             if dst_full_sync_en is not None:
                 config.dst_full_sync_en = dst_full_sync_en
-            if fp32_dest_acc_en is None and has_f32:
-                config.fp32_dest_acc_en = True
-                if verbose:
-                    print(
-                        "  [fp32 detected] Enabling fp32_dest_acc_en for compute kernel"
-                    )
-            if fp32_dest_acc_en is None and compiler_options.reduce_full_fp32:
-                if "reduce_tile" in cpp_source:
-                    config.fp32_dest_acc_en = True
-            if fp32_dest_acc_en is None and compiler_options.matmul_full_fp32:
-                if "matmul_block" in cpp_source:
-                    # TODO(#454): Remove once tt-llk #1338 is fixed.
-                    # Suppress for any unary_bcast; f32 bcast kernels are
-                    # already covered by the has_f32 check above.
-                    if "unary_bcast" not in cpp_source:
-                        config.fp32_dest_acc_en = True
+            elif kernel_bool_attrs[name]["dst_full_sync_en"]:
+                config.dst_full_sync_en = True
             # Compute kernels run on TRISC threads
             thread_to_kernel["TRISC_0"] = name
             thread_to_kernel["TRISC_1"] = name
@@ -1112,6 +1141,7 @@ def _compile_kernel(
     program_hash: int,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    target_arch: Optional[str] = None,
     compiler_options: CompilerOptions = CompilerOptions(),
 ) -> Optional[CompiledTTNNKernel]:
     """
@@ -1130,6 +1160,7 @@ def _compile_kernel(
         program_hash: Hash for tt-metal program cache
         fp32_dest_acc_en: Optional override for fp32_dest_acc_en
         dst_full_sync_en: Optional override for dst_full_sync_en
+        target_arch: Optional TT device architecture for target-specific lowering
         compiler_options: Compiler pipeline options
 
     Returns:
@@ -1273,6 +1304,8 @@ def _compile_kernel(
                 kernel_line_offsets[ct.name] = ct.line_offset
 
         module = Module.create(loc)
+        if target_arch is not None:
+            module.operation.attributes["ttl.target_arch"] = StringAttr.get(target_arch)
 
         # Insert standalone thread functions directly into module
         with InsertionPoint(module.body):
@@ -1464,7 +1497,6 @@ def _compile_kernel(
             program_hash=program_hash,
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,
-            compiler_options=compiler_options,
             source_lines=profile_source_lines,
             all_source_lines=all_source_lines,
             kernel_line_offsets=kernel_line_offsets,
@@ -1559,6 +1591,7 @@ def pykernel_gen(
             base = CompilerOptions.from_string(opts_str)
             argv_overrides = CompilerOptions.from_argv()
             compiler_options = base.merge(argv_overrides)
+            target_arch = _device_target_arch(args)
 
             # Build cache key from tensor properties
             cache_key = _make_cache_key(
@@ -1566,6 +1599,7 @@ def pykernel_gen(
                 # Runtime options:
                 fp32_dest_acc_en=fp32_override,
                 dst_full_sync_en=dst_sync_override,
+                target_arch=target_arch,
                 compiler_options=compiler_options,
             )
 
@@ -1590,6 +1624,7 @@ def pykernel_gen(
                     program_hash,
                     fp32_dest_acc_en=fp32_override,
                     dst_full_sync_en=dst_sync_override,
+                    target_arch=target_arch,
                     compiler_options=compiler_options,
                 )
 
