@@ -11,9 +11,8 @@
 Validation test: frontend binary ops require matching data types.
 
 Trying to add DFB blocks with different element types should produce a
-dtype-specific diagnostic rather than a shape or broadcast diagnostic. Other
-ops, such as ttl.copy, ttl.store, and ttl.matmul, are verified by the TTL
-dialect.
+type diagnostic from the TTL dialect rather than a shape or broadcast
+diagnostic.
 """
 
 import os
@@ -27,7 +26,7 @@ import ttl
 from ttlang_test_utils import to_l1
 
 
-# CHECK: incompatible tensor data types for operation: got (1, 1) f32 tensor and (1, 1) bf16 tensor; operation requires matching data types
+# CHECK: requires all operands to have the same type
 @ttl.operation(grid=(1, 1))
 def mixed_dtype_add_kernel(lhs, rhs, out):
     """INVALID: add same-shaped tiles with different data types."""
