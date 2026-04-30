@@ -200,8 +200,7 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   // Extract the transfer tensor type from the non-CB operand. For slices, this
   // is the slice result type because ttl.copy moves one DFB block at a time.
   Type nonCbTy = srcIsCb ? dstTy : srcTy;
-  RankedTensorType transferTensorTy =
-      mlir::dyn_cast<RankedTensorType>(nonCbTy);
+  RankedTensorType transferTensorTy = mlir::dyn_cast<RankedTensorType>(nonCbTy);
   if (!transferTensorTy) {
     return emitOpError()
            << "expects the non-CB operand to be a ranked tensor or "
@@ -239,16 +238,18 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
 
   for (size_t i = 0; i < cbShape.size(); ++i) {
     if (cbShape[i] != tensorShape[i]) {
-      return emitOpError()
-             << "tensor shape dimension " << i << " (" << tensorShape[i]
-             << ") must match CB shape dimension (" << cbShape[i] << ")";
+      return emitOpError() << "tensor shape dimension " << i << " ("
+                           << tensorShape[i]
+                           << ") must match CB shape dimension (" << cbShape[i]
+                           << ")";
     }
   }
 
   if (transferTensorTy.getElementType() != cbTy.getElementType()) {
-    return emitOpError()
-           << "tensor element type (" << transferTensorTy.getElementType()
-           << ") must match CB element type (" << cbTy.getElementType() << ")";
+    return emitOpError() << "tensor element type ("
+                         << transferTensorTy.getElementType()
+                         << ") must match CB element type ("
+                         << cbTy.getElementType() << ")";
   }
 
   return success();
