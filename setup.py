@@ -33,7 +33,12 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent
 
 
 def get_version_from_git():
-    """Get version from git tags, matching cmake/modules/GetVersionFromGit.cmake."""
+    """Get version from git tags, matching cmake/modules/GetVersionFromGit.cmake.
+
+    Tag format: vMAJOR.MINOR.PATCH[+LOCAL]. Per PEP 440 the .devN segment must
+    sit between the public release and the +local label, so the tag is split
+    on '+' before the dev counter is inserted.
+    """
     try:
         tag = (
             subprocess.check_output(
@@ -51,9 +56,11 @@ def get_version_from_git():
             text=True,
             cwd=str(REPO_ROOT),
         ).strip()
+        base, sep, local = tag.partition("+")
+        local_suffix = f"+{local}" if sep else ""
         if commits and commits != "0":
-            return f"{tag}.dev{commits}"
-        return tag
+            return f"{base}.dev{commits}{local_suffix}"
+        return f"{base}{local_suffix}"
     except Exception:
         return "0.2.0.dev0"
 
