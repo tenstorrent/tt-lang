@@ -743,7 +743,7 @@ class TestSchedulerAlgorithmOption:
     def test_schedalg_option_greedy(self):
         """Test that --scheduler greedy is accepted."""
         examples_dir = Path(__file__).parent.parent.parent / "examples"
-        script_path = examples_dir / "broadcast_demo.py"
+        script_path = examples_dir / "eltwise_add.py"
 
         result = subprocess.run(
             [
@@ -764,7 +764,7 @@ class TestSchedulerAlgorithmOption:
     def test_schedalg_option_fair(self):
         """Test that --scheduler fair is accepted."""
         examples_dir = Path(__file__).parent.parent.parent / "examples"
-        script_path = examples_dir / "broadcast_demo.py"
+        script_path = examples_dir / "eltwise_add.py"
 
         result = subprocess.run(
             [

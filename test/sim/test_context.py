@@ -336,18 +336,17 @@ class TestWarningState:
         ctx = get_context()
 
         # Add warning locations
-        ctx.warnings.broadcast_1d_warnings[("file.py", 10)] = {"core0", "core1"}
+        ctx.warnings.block_print_warnings[("file.py", 10)] = {"core0", "core1"}
         ctx.warnings.block_print_warnings[("other.py", 20)] = {"core2"}
 
-        assert len(ctx.warnings.broadcast_1d_warnings) == 1
-        assert len(ctx.warnings.block_print_warnings) == 1
-        assert "core0" in ctx.warnings.broadcast_1d_warnings[("file.py", 10)]
+        assert len(ctx.warnings.block_print_warnings) == 2
+        assert "core0" in ctx.warnings.block_print_warnings[("file.py", 10)]
 
     def test_warning_isolation_between_contexts(self):
         """Test that warnings don't leak between contexts."""
         reset_context()
         ctx1 = get_context()
-        ctx1.warnings.broadcast_1d_warnings[("file.py", 10)] = {"core0"}
+        ctx1.warnings.block_print_warnings[("file.py", 10)] = {"core0"}
 
         other_ctx = None
 
@@ -355,16 +354,16 @@ class TestWarningState:
             nonlocal other_ctx
             reset_context()
             other_ctx = get_context()
-            other_ctx.warnings.broadcast_1d_warnings[("file.py", 20)] = {"core1"}
+            other_ctx.warnings.block_print_warnings[("file.py", 20)] = {"core1"}
 
         g = greenlet(other_greenlet)
         g.switch()
 
         # Warnings are isolated
-        assert ("file.py", 10) in ctx1.warnings.broadcast_1d_warnings
-        assert ("file.py", 20) not in ctx1.warnings.broadcast_1d_warnings
-        assert ("file.py", 20) in other_ctx.warnings.broadcast_1d_warnings
-        assert ("file.py", 10) not in other_ctx.warnings.broadcast_1d_warnings
+        assert ("file.py", 10) in ctx1.warnings.block_print_warnings
+        assert ("file.py", 20) not in ctx1.warnings.block_print_warnings
+        assert ("file.py", 20) in other_ctx.warnings.block_print_warnings
+        assert ("file.py", 10) not in other_ctx.warnings.block_print_warnings
 
 
 class TestEdgeCases:

@@ -451,7 +451,7 @@ def _reduce_impl(
     dims_set: Set[int] = set(dims)
     shape = tuple(shape)
 
-    if ndim >= 2 and block.layout == ROW_MAJOR_LAYOUT:
+    if block.layout == ROW_MAJOR_LAYOUT:
         raise ValueError("reduce is not supported for Row-Major layout blocks")
 
     if len(shape) != ndim:

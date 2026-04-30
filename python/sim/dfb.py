@@ -885,6 +885,10 @@ class DataflowBuffer:
             self._element_shape = shape
         else:
             # Tiled: validate tile alignment and derive element shape.
+            if len(shape) < 2:
+                raise ValueError(
+                    f"Tiled dataflow buffer shape must have at least 2 dimensions, got {shape}"
+                )
             if len(likeness_tensor.shape) != len(shape):
                 raise ValueError(
                     f"Element shape dimensionality {len(likeness_tensor.shape)} does not match "

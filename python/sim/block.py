@@ -17,20 +17,9 @@ from typing import Callable, List, Tuple
 import torch
 
 from .constants import TILE_SHAPE
-from .context import get_context
-from .diagnostics import warn_once_per_location
-from .greenlet_scheduler import get_current_core_id
 from .dfb import Block, track_source_blocks
 from .blockstate import BlockAcquisition, ThreadType
 from .ttnnsim import ROW_MAJOR_LAYOUT, Tensor
-
-
-def _warn_1d_broadcast_unsupported() -> None:
-    warn_once_per_location(
-        get_context().warnings.broadcast_1d_warnings,
-        "1D broadcast is not supported on current hardware",
-        get_current_core_id(),
-    )
 
 
 def _apply_binary_op(
@@ -117,9 +106,7 @@ def broadcast(
     ndim = len(block_shape)
     shape = tuple(shape)
 
-    if ndim == 1:
-        _warn_1d_broadcast_unsupported()
-    elif block.layout == ROW_MAJOR_LAYOUT:
+    if block.layout == ROW_MAJOR_LAYOUT:
         raise ValueError("broadcast is not supported for Row-Major layout blocks")
 
     if len(shape) != ndim:
@@ -150,37 +137,25 @@ def broadcast(
             )
 
     # Expand the element tensor to match the target shape.
+    # Block is guaranteed to be 2D+ here (1D is rejected above).
     elem = block._buf.to_torch()  # type: ignore[attr-defined]
 
-    if ndim == 1:
-        # 1D block: expand the single tile-vector dimension.
-        N_s = block_shape[0]
-        N_t = shape[0]
-        tile_size = elem.shape[0] // N_s if N_s > 0 else 1
-        result_elem = (
-            elem.reshape(N_s, tile_size)
-            .expand(N_t, tile_size)
-            .reshape(N_t * tile_size)
-            .contiguous()
-        )
-    else:
-        # 2D+ block: reshape to expose tile grid, expand at grid level, fuse back.
-        batch = block_shape[:-2]
-        TM_s, TK_s = block_shape[-2], block_shape[-1]
-        tile_h = elem.shape[-2] // TM_s if TM_s > 0 else 1
-        tile_w = elem.shape[-1] // TK_s if TK_s > 0 else 1
+    batch = block_shape[:-2]
+    TM_s, TK_s = block_shape[-2], block_shape[-1]
+    tile_h = elem.shape[-2] // TM_s if TM_s > 0 else 1
+    tile_w = elem.shape[-1] // TK_s if TK_s > 0 else 1
 
-        TM_t, TK_t = shape[-2], shape[-1]
-        target_batch = shape[:-2]
+    TM_t, TK_t = shape[-2], shape[-1]
+    target_batch = shape[:-2]
 
-        # Reshape: (*batch, TM_s, tile_h, TK_s, tile_w)
-        exposed = elem.reshape(*batch, TM_s, tile_h, TK_s, tile_w)
-        # Expand at grid level: (*target_batch, TM_t, tile_h, TK_t, tile_w)
-        expanded = exposed.expand(*target_batch, TM_t, tile_h, TK_t, tile_w)
-        # Fuse back: (*target_batch, TM_t*tile_h, TK_t*tile_w)
-        result_elem = expanded.reshape(
-            *target_batch, TM_t * tile_h, TK_t * tile_w
-        ).contiguous()
+    # Reshape: (*batch, TM_s, tile_h, TK_s, tile_w)
+    exposed = elem.reshape(*batch, TM_s, tile_h, TK_s, tile_w)
+    # Expand at grid level: (*target_batch, TM_t, tile_h, TK_t, tile_w)
+    expanded = exposed.expand(*target_batch, TM_t, tile_h, TK_t, tile_w)
+    # Fuse back: (*target_batch, TM_t*tile_h, TK_t*tile_w)
+    result_elem = expanded.reshape(
+        *target_batch, TM_t * tile_h, TK_t * tile_w
+    ).contiguous()
 
     result_block = Block(
         tensor=Tensor(result_elem),

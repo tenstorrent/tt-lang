@@ -1250,78 +1250,18 @@ def test_1d_block_from_list():
     assert torch.allclose(raw[32:], torch.ones(32) * 2.0)
 
 
-def test_1d_dataflow_buffer_reserve_push_wait_pop():
-    """DataflowBuffer with 1-D shape correctly reserves, pushes, and delivers data."""
-    from python.sim.blockstate import ThreadType
-    from python.sim.context import set_current_thread_type, clear_current_thread_type
-
+def test_1d_tiled_dataflow_buffer_rejected():
+    """DataflowBuffer rejects a 1-D tiled shape; tiled blocks must be at least 2-D."""
     element = Tensor(torch.zeros(32))
-    dfb = DataflowBuffer(likeness_tensor=element, shape=(1,), block_count=2)
-
-    assert dfb.shape == (1,)
-    assert dfb.capacity_tiles == 2
-
-    set_current_thread_type(ThreadType.COMPUTE)
-    try:
-        write = dfb.reserve()
-        assert len(write) == 1
-
-        data = Tensor(torch.arange(32, dtype=torch.float32))
-        write.store(Block.from_tensor(data))
-        write.push()
-
-        read = dfb.wait()
-        assert len(read) == 1
-        result = read.to_list()
-        assert len(result) == 1
-        assert result[0].to_torch().shape == (32,)
-        assert torch.allclose(result[0].to_torch(), data.to_torch())
-
-        out_dfb = DataflowBuffer(likeness_tensor=element, shape=(1,), block_count=2)
-        out_block = out_dfb.reserve()
-        out_block.store(read)
-        out_block.push()
-        read.pop()
-    finally:
-        clear_current_thread_type()
+    with pytest.raises(ValueError, match="at least 2 dimensions"):
+        DataflowBuffer(likeness_tensor=element, shape=(1,), block_count=2)
 
 
-def test_1d_multi_tile_dataflow_buffer():
-    """DataflowBuffer with 1-D shape (4,) operates over 4 tiles per operation."""
-    from python.sim.blockstate import ThreadType
-    from python.sim.context import set_current_thread_type, clear_current_thread_type
-
-    # Full buffer element shape for 4 tiles of size 32 each
+def test_1d_multi_tile_dataflow_buffer_rejected():
+    """DataflowBuffer rejects a 1-D tiled shape regardless of tile count."""
     element = Tensor(torch.zeros(128))
-    dfb = DataflowBuffer(likeness_tensor=element, shape=(4,), block_count=2)
-
-    assert dfb.shape == (4,)
-    assert dfb.capacity_tiles == 8
-
-    set_current_thread_type(ThreadType.COMPUTE)
-    try:
-        write = dfb.reserve()
-        assert len(write) == 4
-        # Element tensor should be (128,) = 4 * 32
-        assert write.to_tensor().to_torch().shape == (128,)
-
-        tiles = [Tensor(torch.full((32,), float(i))) for i in range(4)]
-        write.store(Block.from_list(tiles, shape=(4,)))
-        write.push()
-
-        read = dfb.wait()
-        result = read.to_list()
-        assert len(result) == 4
-        for i, tile in enumerate(result):
-            assert torch.allclose(tile.to_torch(), torch.full((32,), float(i)))
-
-        out_dfb = DataflowBuffer(likeness_tensor=element, shape=(4,), block_count=2)
-        out_block = out_dfb.reserve()
-        out_block.store(read)
-        out_block.push()
-        read.pop()
-    finally:
-        clear_current_thread_type()
+    with pytest.raises(ValueError, match="at least 2 dimensions"):
+        DataflowBuffer(likeness_tensor=element, shape=(4,), block_count=2)
 
 
 def test_1d_tensor_tile_aligned_validation():
