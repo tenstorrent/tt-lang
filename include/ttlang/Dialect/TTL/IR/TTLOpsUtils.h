@@ -109,6 +109,12 @@ inline bool isBinaryElementwiseOp(mlir::Operation *op) {
 
 /// Return whether a reduce op may use full-fp32 accumulation on its target.
 inline bool isFullFp32ReduceSupported(TileReduceOp reduceOp) {
+  // Wormhole reduce lowering is validated in non-full-fp32 mode. Enabling
+  // full_fp32 also requires FP32 DST and changes existing reduce results.
+  if (isWormholeB0Target(reduceOp)) {
+    return false;
+  }
+
   // TODO(#533): Blackhole REDUCE_ROW full-fp32 produces incorrect results.
   return !isBlackholeTarget(reduceOp) ||
          reduceOp.getReduceDim() != mlir::tt::ttkernel::ReduceDim::Row;

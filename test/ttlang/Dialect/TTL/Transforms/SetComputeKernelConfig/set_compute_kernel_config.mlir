@@ -325,11 +325,13 @@ module attributes {ttl.target_arch = "blackhole"} {
 
 #map_reduce_row = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: Non-Blackhole ROW reduce still triggers fp32_dest_acc_en.
-// WORMHOLE-LABEL: func.func @wormhole_bf16_reduce_row_auto_fp32
-// WORMHOLE-SAME: fp32_dest_acc_en = true
+// Purpose: Wormhole reduce does not trigger fp32_dest_acc_en from
+// reduce-full-fp32.
+// WORMHOLE-LABEL: func.func @wormhole_bf16_reduce_row_no_auto_fp32
+// WORMHOLE-NOT: fp32_dest_acc_en
+// WORMHOLE-SAME: attributes {ttl.kernel_thread = #ttkernel.thread<compute>}
 module attributes {ttl.target_arch = "wormhole_b0"} {
-  func.func @wormhole_bf16_reduce_row_auto_fp32(
+  func.func @wormhole_bf16_reduce_row_no_auto_fp32(
       %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
       %scaler: tensor<1x1x!ttcore.tile<32x32, bf16>>)
       -> tensor<1x1x!ttcore.tile<32x32, bf16>>
