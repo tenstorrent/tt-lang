@@ -6,6 +6,7 @@
 #define TTLANG_DIALECT_TTL_IR_TTL_H
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
@@ -31,8 +32,33 @@ class TTLTileOpTrait
 constexpr llvm::StringLiteral kCBIndexAttrPrefix("ttl.cb_index.");
 
 /// Runtime configuration attributes.
+constexpr llvm::StringLiteral kTargetArchAttrName("ttl.target_arch");
 constexpr llvm::StringLiteral kFp32DestAccEnAttrName("fp32_dest_acc_en");
 constexpr llvm::StringLiteral kDstFullSyncEnAttrName("dst_full_sync_en");
+
+/// Canonical target_arch values. The Python wrapper writes these exact
+/// strings into ttl.target_arch, so any rename here must be mirrored in
+/// python/ttl/ttl_api.py (_detect_device_arch).
+constexpr llvm::StringLiteral kBlackholeArchName("blackhole");
+constexpr llvm::StringLiteral kWormholeB0ArchName("wormhole_b0");
+
+inline bool hasTargetArch(Operation *op, llvm::StringRef archName) {
+  ModuleOp moduleOp = op->getParentOfType<ModuleOp>();
+  if (!moduleOp) {
+    return false;
+  }
+
+  auto targetArch = moduleOp->getAttrOfType<StringAttr>(kTargetArchAttrName);
+  return targetArch && targetArch.getValue() == archName;
+}
+
+inline bool isBlackholeTarget(Operation *op) {
+  return hasTargetArch(op, kBlackholeArchName);
+}
+
+inline bool isWormholeB0Target(Operation *op) {
+  return hasTargetArch(op, kWormholeB0ArchName);
+}
 
 /// Marks binary ops that use the FPU engine (reads from CB) instead of SFPU.
 constexpr llvm::StringLiteral kFPUBinaryAttrName("ttl.fpu_binary");
