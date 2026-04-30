@@ -24,7 +24,7 @@ import torch
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import assert_allclose, to_l1, to_dram
+from ttlang_test_utils import assert_allclose, assert_pcc, to_l1, to_dram
 
 import ttl
 
@@ -237,17 +237,41 @@ def create_scaler_tile(value: float = 1.0, dtype=torch.bfloat16):
 
 
 # =============================================================================
+# Dtype parameterization
+# =============================================================================
+
+# Tests parameterize over both bf16 and fp32 because the tt-metal LLK reduce
+# implementations diverge by dtype (different unpacker formats and, for
+# fp32_dest_acc_en, a different math kernel branch). One dtype passing does not
+# imply the other.
+DTYPES = [torch.bfloat16, torch.float32]
+DTYPE_IDS = ["bf16", "fp32"]
+
+
+def _tolerances(dtype):
+    """Per-dtype absolute and relative tolerances for reduction comparisons.
+
+    bf16 truncation accumulates noticeable error across 32+ tile reductions.
+    fp32 is much tighter but still accumulates truncation from device math.
+    """
+    if dtype == torch.float32:
+        return dict(rel=5e-3, abs=1e-2)
+    return dict(rel=0.05, abs=1.0)
+
+
+# =============================================================================
 # Test configurations
 # =============================================================================
 
 # (reduce_fn, inp_shape, dims, inp_factory, scaler_val, description)
+# inp_factory takes a dtype argument so the same config exercises bf16 and fp32.
 SINGLE_TILE_CONFIGS = [
     # reduce_sum dim 0 (reduce rows / height -> REDUCE_COL)
     (
         "reduce_sum",
         (1, 1),
         [0],
-        lambda: torch.ones(TILE, TILE, dtype=torch.bfloat16),
+        lambda dtype: torch.ones(TILE, TILE, dtype=dtype),
         1.0,
         "sum_dim0_ones",
     ),
@@ -255,7 +279,7 @@ SINGLE_TILE_CONFIGS = [
         "reduce_sum",
         (1, 1),
         [0],
-        lambda: torch.arange(TILE, dtype=torch.bfloat16)
+        lambda dtype: torch.arange(TILE, dtype=dtype)
         .unsqueeze(1)
         .expand(TILE, TILE)
         .contiguous(),
@@ -266,7 +290,7 @@ SINGLE_TILE_CONFIGS = [
         "reduce_sum",
         (1, 1),
         [0],
-        lambda: torch.ones(TILE, TILE, dtype=torch.bfloat16),
+        lambda dtype: torch.ones(TILE, TILE, dtype=dtype),
         0.5,
         "sum_dim0_scaler_half",
     ),
@@ -275,7 +299,7 @@ SINGLE_TILE_CONFIGS = [
         "reduce_sum",
         (1, 1),
         [1],
-        lambda: torch.ones(TILE, TILE, dtype=torch.bfloat16),
+        lambda dtype: torch.ones(TILE, TILE, dtype=dtype),
         1.0,
         "sum_dim1_ones",
     ),
@@ -283,7 +307,7 @@ SINGLE_TILE_CONFIGS = [
         "reduce_sum",
         (1, 1),
         [1],
-        lambda: torch.arange(TILE, dtype=torch.bfloat16)
+        lambda dtype: torch.arange(TILE, dtype=dtype)
         .unsqueeze(0)
         .expand(TILE, TILE)
         .contiguous(),
@@ -294,7 +318,7 @@ SINGLE_TILE_CONFIGS = [
         "reduce_sum",
         (1, 1),
         [1],
-        lambda: torch.ones(TILE, TILE, dtype=torch.bfloat16),
+        lambda dtype: torch.ones(TILE, TILE, dtype=dtype),
         0.5,
         "sum_dim1_scaler_half",
     ),
@@ -303,7 +327,7 @@ SINGLE_TILE_CONFIGS = [
         "reduce_sum",
         (1, 1),
         [0, 1],
-        lambda: torch.ones(TILE, TILE, dtype=torch.bfloat16),
+        lambda dtype: torch.ones(TILE, TILE, dtype=dtype),
         1.0,
         "sum_both_ones",
     ),
@@ -312,7 +336,7 @@ SINGLE_TILE_CONFIGS = [
         "reduce_sum",
         (1, 1),
         [-1],
-        lambda: torch.ones(TILE, TILE, dtype=torch.bfloat16),
+        lambda dtype: torch.ones(TILE, TILE, dtype=dtype),
         1.0,
         "sum_neg1_ones",
     ),
@@ -320,7 +344,7 @@ SINGLE_TILE_CONFIGS = [
         "reduce_sum",
         (1, 1),
         [-2],
-        lambda: torch.ones(TILE, TILE, dtype=torch.bfloat16),
+        lambda dtype: torch.ones(TILE, TILE, dtype=dtype),
         1.0,
         "sum_neg2_ones",
     ),
@@ -329,7 +353,7 @@ SINGLE_TILE_CONFIGS = [
         "reduce_max",
         (1, 1),
         [0],
-        lambda: torch.arange(TILE, dtype=torch.bfloat16)
+        lambda dtype: torch.arange(TILE, dtype=dtype)
         .unsqueeze(1)
         .expand(TILE, TILE)
         .contiguous(),
@@ -341,7 +365,7 @@ SINGLE_TILE_CONFIGS = [
         "reduce_max",
         (1, 1),
         [1],
-        lambda: torch.arange(TILE, dtype=torch.bfloat16)
+        lambda dtype: torch.arange(TILE, dtype=dtype)
         .unsqueeze(0)
         .expand(TILE, TILE)
         .contiguous(),
@@ -352,7 +376,7 @@ SINGLE_TILE_CONFIGS = [
         "reduce_max",
         (1, 1),
         [1],
-        lambda: torch.zeros(TILE, TILE, dtype=torch.bfloat16),
+        lambda dtype: torch.zeros(TILE, TILE, dtype=dtype),
         1.0,
         "max_dim1_zeros",
     ),
@@ -360,7 +384,7 @@ SINGLE_TILE_CONFIGS = [
         "reduce_max",
         (1, 1),
         [1],
-        lambda: (torch.arange(TILE, dtype=torch.bfloat16) - 16)
+        lambda dtype: (torch.arange(TILE, dtype=dtype) - 16)
         .unsqueeze(0)
         .expand(TILE, TILE)
         .contiguous(),
@@ -372,7 +396,7 @@ SINGLE_TILE_CONFIGS = [
         "reduce_sum",
         (1, 1),
         [0],
-        lambda: torch.rand(TILE, TILE, dtype=torch.bfloat16),
+        lambda dtype: torch.rand(TILE, TILE, dtype=dtype),
         1.0,
         "sum_dim0_random",
     ),
@@ -380,7 +404,7 @@ SINGLE_TILE_CONFIGS = [
         "reduce_sum",
         (1, 1),
         [1],
-        lambda: torch.rand(TILE, TILE, dtype=torch.bfloat16),
+        lambda dtype: torch.rand(TILE, TILE, dtype=dtype),
         1.0,
         "sum_dim1_random",
     ),
@@ -388,7 +412,7 @@ SINGLE_TILE_CONFIGS = [
         "reduce_sum",
         (1, 1),
         [0, 1],
-        lambda: torch.rand(TILE, TILE, dtype=torch.bfloat16),
+        lambda dtype: torch.rand(TILE, TILE, dtype=dtype),
         1.0,
         "sum_both_random",
     ),
@@ -396,7 +420,7 @@ SINGLE_TILE_CONFIGS = [
         "reduce_max",
         (1, 1),
         [0],
-        lambda: torch.rand(TILE, TILE, dtype=torch.bfloat16),
+        lambda dtype: torch.rand(TILE, TILE, dtype=dtype),
         1.0,
         "max_dim0_random",
     ),
@@ -404,7 +428,7 @@ SINGLE_TILE_CONFIGS = [
         "reduce_max",
         (1, 1),
         [1],
-        lambda: torch.rand(TILE, TILE, dtype=torch.bfloat16),
+        lambda dtype: torch.rand(TILE, TILE, dtype=dtype),
         1.0,
         "max_dim1_random",
     ),
@@ -412,7 +436,7 @@ SINGLE_TILE_CONFIGS = [
         "reduce_max",
         (1, 1),
         [0, 1],
-        lambda: torch.rand(TILE, TILE, dtype=torch.bfloat16),
+        lambda dtype: torch.rand(TILE, TILE, dtype=dtype),
         1.0,
         "max_both_random",
     ),
@@ -423,7 +447,7 @@ MULTI_TILE_CONFIGS = [
         "reduce_sum",
         (2, 2),
         [0],
-        lambda: torch.ones(64, 64, dtype=torch.bfloat16),
+        lambda dtype: torch.ones(64, 64, dtype=dtype),
         1.0,
         "sum_2x2_dim0",
     ),
@@ -431,7 +455,7 @@ MULTI_TILE_CONFIGS = [
         "reduce_sum",
         (2, 2),
         [1],
-        lambda: torch.ones(64, 64, dtype=torch.bfloat16),
+        lambda dtype: torch.ones(64, 64, dtype=dtype),
         1.0,
         "sum_2x2_dim1",
     ),
@@ -439,7 +463,7 @@ MULTI_TILE_CONFIGS = [
         "reduce_sum",
         (2, 2),
         [0, 1],
-        lambda: torch.ones(64, 64, dtype=torch.bfloat16),
+        lambda dtype: torch.ones(64, 64, dtype=dtype),
         1.0,
         "sum_2x2_both",
     ),
@@ -448,7 +472,7 @@ MULTI_TILE_CONFIGS = [
         "reduce_sum",
         (2, 2),
         [0],
-        lambda: torch.rand(64, 64, dtype=torch.bfloat16),
+        lambda dtype: torch.rand(64, 64, dtype=dtype),
         1.0,
         "sum_2x2_dim0_random",
     ),
@@ -456,7 +480,7 @@ MULTI_TILE_CONFIGS = [
         "reduce_max",
         (2, 2),
         [0],
-        lambda: torch.rand(64, 64, dtype=torch.bfloat16),
+        lambda dtype: torch.rand(64, 64, dtype=dtype),
         1.0,
         "max_2x2_dim0_random",
     ),
@@ -464,7 +488,7 @@ MULTI_TILE_CONFIGS = [
         "reduce_max",
         (2, 2),
         [1],
-        lambda: torch.rand(64, 64, dtype=torch.bfloat16),
+        lambda dtype: torch.rand(64, 64, dtype=dtype),
         1.0,
         "max_2x2_dim1_random",
     ),
@@ -472,7 +496,7 @@ MULTI_TILE_CONFIGS = [
         "reduce_max",
         (2, 2),
         [0, 1],
-        lambda: torch.rand(64, 64, dtype=torch.bfloat16),
+        lambda dtype: torch.rand(64, 64, dtype=dtype),
         1.0,
         "max_2x2_both_random",
     ),
@@ -481,7 +505,7 @@ MULTI_TILE_CONFIGS = [
         "reduce_sum",
         (4, 4),
         [0],
-        lambda: torch.ones(128, 128, dtype=torch.bfloat16),
+        lambda dtype: torch.ones(128, 128, dtype=dtype),
         1.0,
         "sum_4x4_dim0_ones",
     ),
@@ -489,7 +513,7 @@ MULTI_TILE_CONFIGS = [
         "reduce_sum",
         (4, 4),
         [0],
-        lambda: torch.rand(128, 128, dtype=torch.bfloat16),
+        lambda dtype: torch.rand(128, 128, dtype=dtype),
         1.0,
         "sum_4x4_dim0_random",
     ),
@@ -497,7 +521,7 @@ MULTI_TILE_CONFIGS = [
         "reduce_max",
         (4, 4),
         [0],
-        lambda: torch.rand(128, 128, dtype=torch.bfloat16),
+        lambda dtype: torch.rand(128, 128, dtype=dtype),
         1.0,
         "max_4x4_dim0_random",
     ),
@@ -505,7 +529,7 @@ MULTI_TILE_CONFIGS = [
         "reduce_max",
         (4, 4),
         [1],
-        lambda: torch.rand(128, 128, dtype=torch.bfloat16),
+        lambda dtype: torch.rand(128, 128, dtype=dtype),
         1.0,
         "max_4x4_dim1_random",
     ),
@@ -513,7 +537,7 @@ MULTI_TILE_CONFIGS = [
         "reduce_max",
         (4, 4),
         [0, 1],
-        lambda: torch.rand(128, 128, dtype=torch.bfloat16),
+        lambda dtype: torch.rand(128, 128, dtype=dtype),
         1.0,
         "max_4x4_both_random",
     ),
@@ -522,7 +546,7 @@ MULTI_TILE_CONFIGS = [
         "reduce_sum",
         (2, 1),
         [0],
-        lambda: torch.rand(64, 32, dtype=torch.bfloat16),
+        lambda dtype: torch.rand(64, 32, dtype=dtype),
         1.0,
         "sum_2x1_dim0_random",
     ),
@@ -530,7 +554,7 @@ MULTI_TILE_CONFIGS = [
         "reduce_sum",
         (1, 2),
         [1],
-        lambda: torch.rand(32, 64, dtype=torch.bfloat16),
+        lambda dtype: torch.rand(32, 64, dtype=dtype),
         1.0,
         "sum_1x2_dim1_random",
     ),
@@ -538,7 +562,7 @@ MULTI_TILE_CONFIGS = [
         "reduce_max",
         (2, 1),
         [0],
-        lambda: torch.rand(64, 32, dtype=torch.bfloat16),
+        lambda dtype: torch.rand(64, 32, dtype=dtype),
         1.0,
         "max_2x1_dim0_random",
     ),
@@ -546,7 +570,7 @@ MULTI_TILE_CONFIGS = [
         "reduce_max",
         (1, 2),
         [1],
-        lambda: torch.rand(32, 64, dtype=torch.bfloat16),
+        lambda dtype: torch.rand(32, 64, dtype=dtype),
         1.0,
         "max_1x2_dim1_random",
     ),
@@ -554,15 +578,15 @@ MULTI_TILE_CONFIGS = [
         "reduce_sum",
         (4, 4),
         [0, 1],
-        lambda: torch.rand(128, 128, dtype=torch.bfloat16),
+        lambda dtype: torch.rand(128, 128, dtype=dtype),
         1.0,
         "sum_4x4_both_random",
     ),
 ]
 
 
-def _expected_reduce_value(inp_torch, reduce_fn, dims, scaler_val):
-    """Compute expected value at position [0, 0] of the reduced output."""
+def _expected_reduce_tensor(inp_torch, reduce_fn, dims, scaler_val):
+    """Compute the full expected reduced tensor (fp32) for a reduction."""
     norm_dims = sorted({dim % 2 for dim in dims})
     val = inp_torch.float()
     if reduce_fn == "reduce_sum":
@@ -571,7 +595,25 @@ def _expected_reduce_value(inp_torch, reduce_fn, dims, scaler_val):
     else:
         for dim in norm_dims:
             val = val.amax(dim=dim, keepdim=True)
-    return (val * scaler_val).flatten()[0].item()
+    return val * scaler_val
+
+
+def _populated_slice(result, dims):
+    """Extract the reduced strip the packer actually writes.
+
+    The packer reduce mask leaves only row 0 (REDUCE_COL), column 0
+    (REDUCE_ROW), or position [0,0] (REDUCE_SCALAR) of each output tile
+    populated; remaining elements stay at their initial value. Reductions
+    spanning a multi-tile output reuse those same slots within each tile,
+    and because each output tile is `1 * TILE` along the reduced axis, the
+    populated strip is contiguous: `[:, :1]` for ROW, `[:1, :]` for COL.
+    """
+    norm = {d % 2 for d in dims}
+    if norm == {0, 1}:
+        return result[:1, :1].float().contiguous()
+    if 0 in norm:
+        return result[:1, :].float().contiguous()
+    return result[:, :1].float().contiguous()
 
 
 # =============================================================================
@@ -579,21 +621,22 @@ def _expected_reduce_value(inp_torch, reduce_fn, dims, scaler_val):
 # =============================================================================
 
 
+@pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
 @pytest.mark.parametrize(
     "reduce_fn, inp_shape, dims, inp_factory, scaler_val, test_id",
     SINGLE_TILE_CONFIGS,
     ids=[cfg[-1] for cfg in SINGLE_TILE_CONFIGS],
 )
 def test_reduce_single_tile(
-    device, reduce_fn, inp_shape, dims, inp_factory, scaler_val, test_id
+    device, reduce_fn, inp_shape, dims, inp_factory, scaler_val, test_id, dtype
 ):
     """Single-tile reduce with parameterized inputs."""
     inp_rows, inp_cols = inp_shape
     kernel = make_reduce_kernel(reduce_fn, inp_rows, inp_cols, dims)
 
-    inp_torch = inp_factory()
-    scaler_torch = create_scaler_tile(scaler_val)
-    out_torch = torch.zeros(TILE, TILE, dtype=torch.bfloat16)
+    inp_torch = inp_factory(dtype)
+    scaler_torch = create_scaler_tile(scaler_val, dtype=dtype)
+    out_torch = torch.zeros(TILE, TILE, dtype=dtype)
 
     inp = to_l1(inp_torch, device)
     scaler = to_l1(scaler_torch, device)
@@ -602,27 +645,30 @@ def test_reduce_single_tile(
     kernel(inp, scaler, out)
     result = ttnn.to_torch(out)
 
-    expected_val = _expected_reduce_value(inp_torch, reduce_fn, dims, scaler_val)
-    assert result[0, 0].float().item() == pytest.approx(expected_val, rel=0.05, abs=1.0)
+    expected = _expected_reduce_tensor(inp_torch, reduce_fn, dims, scaler_val)
+    actual = _populated_slice(result, dims)
+    tol = _tolerances(dtype)
+    assert_allclose(actual, expected, rtol=tol["rel"], atol=tol["abs"])
 
 
+@pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
 @pytest.mark.parametrize(
     "reduce_fn, inp_shape, dims, inp_factory, scaler_val, test_id",
     MULTI_TILE_CONFIGS,
     ids=[cfg[-1] for cfg in MULTI_TILE_CONFIGS],
 )
 def test_reduce_multi_tile(
-    device, reduce_fn, inp_shape, dims, inp_factory, scaler_val, test_id
+    device, reduce_fn, inp_shape, dims, inp_factory, scaler_val, test_id, dtype
 ):
     """Multi-tile reduce with parameterized grid shapes."""
     inp_rows, inp_cols = inp_shape
     out_rows, out_cols = _compute_out_shape(inp_rows, inp_cols, dims)
     kernel = make_reduce_kernel(reduce_fn, inp_rows, inp_cols, dims)
 
-    inp_torch = inp_factory()
-    scaler_torch = create_scaler_tile(scaler_val)
+    inp_torch = inp_factory(dtype)
+    scaler_torch = create_scaler_tile(scaler_val, dtype=dtype)
     out_shape = (out_rows * TILE, out_cols * TILE)
-    out_torch = torch.zeros(out_shape, dtype=torch.bfloat16)
+    out_torch = torch.zeros(out_shape, dtype=dtype)
 
     inp = to_l1(inp_torch, device)
     scaler = to_l1(scaler_torch, device)
@@ -631,8 +677,10 @@ def test_reduce_multi_tile(
     kernel(inp, scaler, out)
     result = ttnn.to_torch(out)
 
-    expected_val = _expected_reduce_value(inp_torch, reduce_fn, dims, scaler_val)
-    assert result[0, 0].float().item() == pytest.approx(expected_val, rel=0.05, abs=1.0)
+    expected = _expected_reduce_tensor(inp_torch, reduce_fn, dims, scaler_val)
+    actual = _populated_slice(result, dims)
+    tol = _tolerances(dtype)
+    assert_allclose(actual, expected, rtol=tol["rel"], atol=tol["abs"])
 
 
 # =============================================================================
@@ -640,6 +688,7 @@ def test_reduce_multi_tile(
 # =============================================================================
 
 
+@pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
 @pytest.mark.parametrize(
     "grid_rows, grid_cols, reduce_fn, dims, test_id",
     [
@@ -655,41 +704,50 @@ def test_reduce_multi_tile(
         "max_scalar_2x2_random",
     ],
 )
-def test_reduce_multicore(device, grid_rows, grid_cols, reduce_fn, dims, test_id):
+def test_reduce_multicore(
+    device, grid_rows, grid_cols, reduce_fn, dims, test_id, dtype
+):
     """Each core in the grid independently reduces its own tile."""
     kernel = make_multicore_reduce_kernel(reduce_fn, grid_rows, grid_cols, dims)
 
     tensor_rows = grid_rows * TILE
     tensor_cols = grid_cols * TILE
     if "random" in test_id:
-        inp_torch = torch.randn(tensor_rows, tensor_cols, dtype=torch.bfloat16)
+        inp_torch = torch.randn(tensor_rows, tensor_cols, dtype=dtype)
     else:
-        inp_torch = torch.ones(tensor_rows, tensor_cols, dtype=torch.bfloat16)
-    scaler_torch = create_scaler_tile(1.0)
-    out_torch = torch.zeros(tensor_rows, tensor_cols, dtype=torch.bfloat16)
+        inp_torch = torch.ones(tensor_rows, tensor_cols, dtype=dtype)
+    scaler_torch = create_scaler_tile(1.0, dtype=dtype)
+    out_torch = torch.zeros(tensor_rows, tensor_cols, dtype=dtype)
 
     inp = to_l1(inp_torch, device)
     scaler = to_l1(scaler_torch, device)
     out = to_l1(out_torch, device)
 
     kernel(inp, scaler, out)
-    result = ttnn.to_torch(out)
+    result = ttnn.to_torch(out).float()
 
+    # Each core writes its scalar reduction at the [0,0] of its output tile.
+    # Stack actual vs expected over all cores and compare in one shot.
+    expected_per_core = torch.zeros(grid_rows, grid_cols, dtype=torch.float32)
+    actual_per_core = torch.zeros(grid_rows, grid_cols, dtype=torch.float32)
     for tile_row in range(grid_rows):
         for tile_col in range(grid_cols):
             tile_inp = inp_torch[
                 tile_row * TILE : (tile_row + 1) * TILE,
                 tile_col * TILE : (tile_col + 1) * TILE,
-            ]
+            ].float()
             if reduce_fn == "reduce_sum":
-                expected_val = tile_inp.float().sum().item()
+                expected_per_core[tile_row, tile_col] = tile_inp.sum()
             else:
-                expected_val = tile_inp.float().max().item()
+                expected_per_core[tile_row, tile_col] = tile_inp.max()
+            actual_per_core[tile_row, tile_col] = result[
+                tile_row * TILE, tile_col * TILE
+            ]
 
-            actual = result[tile_row * TILE, tile_col * TILE].float().item()
-            assert actual == pytest.approx(
-                expected_val, rel=0.05
-            ), f"core ({tile_row},{tile_col}): got {actual}, expected {expected_val}"
+    tol = _tolerances(dtype)
+    assert_allclose(
+        actual_per_core, expected_per_core, rtol=tol["rel"], atol=tol["abs"]
+    )
 
 
 # =============================================================================
@@ -778,6 +836,7 @@ def _make_l1_acc_kernel(
     return kernel
 
 
+@pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
 @pytest.mark.parametrize(
     "reduce_fn, inp_shape, dims, inp_factory, scaler_val, test_id",
     [
@@ -785,7 +844,7 @@ def _make_l1_acc_kernel(
             "reduce_sum",
             (2, 2),
             [0],
-            lambda: torch.rand(64, 64, dtype=torch.bfloat16),
+            lambda dtype: torch.rand(64, 64, dtype=dtype),
             1.0,
             "l1_sum_2x2_dim0",
         ),
@@ -793,7 +852,7 @@ def _make_l1_acc_kernel(
             "reduce_sum",
             (2, 2),
             [1],
-            lambda: torch.rand(64, 64, dtype=torch.bfloat16),
+            lambda dtype: torch.rand(64, 64, dtype=dtype),
             1.0,
             "l1_sum_2x2_dim1",
         ),
@@ -801,7 +860,7 @@ def _make_l1_acc_kernel(
             "reduce_sum",
             (2, 2),
             [0, 1],
-            lambda: torch.rand(64, 64, dtype=torch.bfloat16),
+            lambda dtype: torch.rand(64, 64, dtype=dtype),
             1.0,
             "l1_sum_2x2_both",
         ),
@@ -809,7 +868,7 @@ def _make_l1_acc_kernel(
             "reduce_sum",
             (4, 4),
             [0],
-            lambda: torch.rand(128, 128, dtype=torch.bfloat16),
+            lambda dtype: torch.rand(128, 128, dtype=dtype),
             1.0,
             "l1_sum_4x4_dim0",
         ),
@@ -817,17 +876,17 @@ def _make_l1_acc_kernel(
     ids=["l1_sum_2x2_dim0", "l1_sum_2x2_dim1", "l1_sum_2x2_both", "l1_sum_4x4_dim0"],
 )
 def test_reduce_l1_accumulation(
-    device, reduce_fn, inp_shape, dims, inp_factory, scaler_val, test_id
+    device, reduce_fn, inp_shape, dims, inp_factory, scaler_val, test_id, dtype
 ):
     """Multi-tile reduce_sum with L1 accumulation (maximize_dst=false)."""
     inp_rows, inp_cols = inp_shape
     out_rows, out_cols = _compute_out_shape(inp_rows, inp_cols, dims)
     kernel = _make_l1_acc_kernel(reduce_fn, inp_rows, inp_cols, dims)
 
-    inp_torch = inp_factory()
-    scaler_torch = create_scaler_tile(scaler_val)
+    inp_torch = inp_factory(dtype)
+    scaler_torch = create_scaler_tile(scaler_val, dtype=dtype)
     out_shape = (out_rows * TILE, out_cols * TILE)
-    out_torch = torch.zeros(*out_shape, dtype=torch.bfloat16)
+    out_torch = torch.zeros(*out_shape, dtype=dtype)
 
     inp = to_l1(inp_torch, device)
     scaler = to_l1(scaler_torch, device)
@@ -836,8 +895,10 @@ def test_reduce_l1_accumulation(
     kernel(inp, scaler, out)
     result = ttnn.to_torch(out)
 
-    expected_val = _expected_reduce_value(inp_torch, reduce_fn, dims, scaler_val)
-    assert result[0, 0].float().item() == pytest.approx(expected_val, rel=0.05, abs=1.0)
+    expected = _expected_reduce_tensor(inp_torch, reduce_fn, dims, scaler_val)
+    actual = _populated_slice(result, dims)
+    tol = _tolerances(dtype)
+    assert_allclose(actual, expected, rtol=tol["rel"], atol=tol["abs"])
 
 
 # =============================================================================
@@ -951,14 +1012,15 @@ def _make_reduce_bcast_kernel(
         "sum_4x4_dim1",
     ],
 )
-def test_reduce_broadcast_chain(device, reduce_fn, inp_shape, dims, test_id):
+@pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
+def test_reduce_broadcast_chain(device, reduce_fn, inp_shape, dims, test_id, dtype):
     """Reduce then broadcast back to original shape."""
     inp_rows, inp_cols = inp_shape
     kernel = _make_reduce_bcast_kernel(reduce_fn, inp_rows, inp_cols, dims)
 
-    inp_torch = torch.rand(inp_rows * TILE, inp_cols * TILE, dtype=torch.bfloat16)
-    scaler_torch = create_scaler_tile(1.0)
-    out_torch = torch.zeros(inp_rows * TILE, inp_cols * TILE, dtype=torch.bfloat16)
+    inp_torch = torch.rand(inp_rows * TILE, inp_cols * TILE, dtype=dtype)
+    scaler_torch = create_scaler_tile(1.0, dtype=dtype)
+    out_torch = torch.zeros(inp_rows * TILE, inp_cols * TILE, dtype=dtype)
 
     inp = to_l1(inp_torch, device)
     scaler = to_l1(scaler_torch, device)
@@ -974,9 +1036,8 @@ def test_reduce_broadcast_chain(device, reduce_fn, inp_shape, dims, test_id):
         reduced = inp_f.amax(dim=dims, keepdim=True)
     expected = reduced.expand_as(inp_f)
 
-    from utils.correctness import assert_allclose
-
-    assert_allclose(result.float(), expected, rtol=0.1, atol=1.0)
+    tol = _tolerances(dtype)
+    assert_allclose(result.float(), expected, rtol=tol["rel"], atol=tol["abs"])
 
 
 # =============================================================================
@@ -984,6 +1045,7 @@ def test_reduce_broadcast_chain(device, reduce_fn, inp_shape, dims, test_id):
 # =============================================================================
 
 
+@pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
 @pytest.mark.parametrize(
     "reduce_fn, dims, test_id",
     [
@@ -992,13 +1054,13 @@ def test_reduce_broadcast_chain(device, reduce_fn, inp_shape, dims, test_id):
     ],
     ids=["sum_dram", "max_dram"],
 )
-def test_reduce_dram(device, reduce_fn, dims, test_id):
+def test_reduce_dram(device, reduce_fn, dims, test_id, dtype):
     """Single-tile reduce with DRAM-interleaved tensors."""
     kernel = make_reduce_kernel(reduce_fn, 1, 1, dims)
 
-    inp_torch = torch.rand(TILE, TILE, dtype=torch.bfloat16)
-    scaler_torch = create_scaler_tile(1.0)
-    out_torch = torch.zeros(TILE, TILE, dtype=torch.bfloat16)
+    inp_torch = torch.rand(TILE, TILE, dtype=dtype)
+    scaler_torch = create_scaler_tile(1.0, dtype=dtype)
+    out_torch = torch.zeros(TILE, TILE, dtype=dtype)
 
     inp = to_dram(inp_torch, device)
     scaler = to_dram(scaler_torch, device)
@@ -1007,8 +1069,10 @@ def test_reduce_dram(device, reduce_fn, dims, test_id):
     kernel(inp, scaler, out)
     result = ttnn.to_torch(out)
 
-    expected_val = _expected_reduce_value(inp_torch, reduce_fn, dims, 1.0)
-    assert result[0, 0].float().item() == pytest.approx(expected_val, rel=0.05, abs=1.0)
+    expected = _expected_reduce_tensor(inp_torch, reduce_fn, dims, 1.0)
+    actual = _populated_slice(result, dims)
+    tol = _tolerances(dtype)
+    assert_allclose(actual, expected, rtol=tol["rel"], atol=tol["abs"])
 
 
 # =============================================================================
@@ -1106,6 +1170,7 @@ def _make_multicore_row_col_kernel(
     return kernel
 
 
+@pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
 @pytest.mark.parametrize(
     "reduce_fn, grid_rows, grid_cols, inp_cols, dims, test_id",
     [
@@ -1115,7 +1180,7 @@ def _make_multicore_row_col_kernel(
     ids=["sum_col_1x2", "sum_scalar_multicore_distinct"],
 )
 def test_reduce_multicore_row_col(
-    device, reduce_fn, grid_rows, grid_cols, inp_cols, dims, test_id
+    device, reduce_fn, grid_rows, grid_cols, inp_cols, dims, test_id, dtype
 ):
     """Multicore reduce with row/col dimensions."""
     out_cols = 1 if 1 in dims else inp_cols
@@ -1125,10 +1190,10 @@ def test_reduce_multicore_row_col(
 
     total_rows = grid_rows * TILE
     total_cols = grid_cols * inp_cols * TILE
-    inp_torch = torch.rand(total_rows, total_cols, dtype=torch.bfloat16)
-    scaler_torch = create_scaler_tile(1.0)
+    inp_torch = torch.rand(total_rows, total_cols, dtype=dtype)
+    scaler_torch = create_scaler_tile(1.0, dtype=dtype)
     out_total_cols = grid_cols * out_cols * TILE
-    out_torch = torch.zeros(total_rows, out_total_cols, dtype=torch.bfloat16)
+    out_torch = torch.zeros(total_rows, out_total_cols, dtype=dtype)
 
     inp = to_l1(inp_torch, device)
     scaler = to_l1(scaler_torch, device)
@@ -1137,16 +1202,16 @@ def test_reduce_multicore_row_col(
     kernel(inp, scaler, out)
     result = ttnn.to_torch(out)
 
-    # Verify first core's output.
-    from utils.correctness import assert_allclose
-
+    # Verify first core's populated reduction slice.
     core_inp = inp_torch[:TILE, : inp_cols * TILE].float()
     if reduce_fn == "reduce_sum":
         expected = core_inp.sum(dim=dims, keepdim=True)
     else:
         expected = core_inp.amax(dim=dims, keepdim=True)
-    actual = result[:TILE, : out_cols * TILE].float()
-    assert_allclose(actual[0, 0], expected.flatten()[0], rtol=0.05, atol=1.0)
+    core_result = result[:TILE, : out_cols * TILE]
+    actual = _populated_slice(core_result, dims)
+    tol = _tolerances(dtype)
+    assert_allclose(actual, expected, rtol=tol["rel"], atol=tol["abs"])
 
 
 # =============================================================================
@@ -1249,6 +1314,7 @@ def _make_mc_mt_kernel(
     return kernel
 
 
+@pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
 @pytest.mark.parametrize(
     "reduce_fn, grid, tiles, dims, test_id",
     [
@@ -1262,7 +1328,9 @@ def _make_mc_mt_kernel(
         "max_2x2_grid_2x2_tiles_scalar",
     ],
 )
-def test_reduce_multicore_multitile(device, reduce_fn, grid, tiles, dims, test_id):
+def test_reduce_multicore_multitile(
+    device, reduce_fn, grid, tiles, dims, test_id, dtype
+):
     """Multicore with multi-tile blocks per core."""
     grid_rows, grid_cols = grid
     tile_rows, tile_cols = tiles
@@ -1272,14 +1340,14 @@ def test_reduce_multicore_multitile(device, reduce_fn, grid, tiles, dims, test_i
 
     total_rows = grid_rows * tile_rows * TILE
     total_cols = grid_cols * tile_cols * TILE
-    inp_torch = torch.rand(total_rows, total_cols, dtype=torch.bfloat16)
-    scaler_torch = create_scaler_tile(1.0)
+    inp_torch = torch.rand(total_rows, total_cols, dtype=dtype)
+    scaler_torch = create_scaler_tile(1.0, dtype=dtype)
 
     out_tile_rows = 1 if 0 in dims else tile_rows
     out_tile_cols = 1 if 1 in dims else tile_cols
     out_rows = grid_rows * out_tile_rows * TILE
     out_cols = grid_cols * out_tile_cols * TILE
-    out_torch = torch.zeros(out_rows, out_cols, dtype=torch.bfloat16)
+    out_torch = torch.zeros(out_rows, out_cols, dtype=dtype)
 
     inp = to_l1(inp_torch, device)
     scaler = to_l1(scaler_torch, device)
@@ -1288,16 +1356,16 @@ def test_reduce_multicore_multitile(device, reduce_fn, grid, tiles, dims, test_i
     kernel(inp, scaler, out)
     result = ttnn.to_torch(out)
 
-    # Check first core's output.
+    # Check first core's populated reduction slice.
     core_inp = inp_torch[: tile_rows * TILE, : tile_cols * TILE].float()
     if reduce_fn == "reduce_sum":
         expected = core_inp.sum(dim=dims, keepdim=True)
     else:
         expected = core_inp.amax(dim=dims, keepdim=True)
-
-    from utils.correctness import assert_allclose
-
-    assert_allclose(result[0, 0].float(), expected.flatten()[0], rtol=0.05, atol=1.0)
+    core_result = result[: out_tile_rows * TILE, : out_tile_cols * TILE]
+    actual = _populated_slice(core_result, dims)
+    tol = _tolerances(dtype)
+    assert_allclose(actual, expected, rtol=tol["rel"], atol=tol["abs"])
 
 
 # =============================================================================
@@ -1362,7 +1430,8 @@ def bcast_reduce_kernel(inp, bcast_in, scaler, out):
 """
 
 
-def test_bcast_then_reduce_multicore_multitile(device):
+@pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
+def test_bcast_then_reduce_multicore_multitile(device, dtype):
     """Broadcast scalar, add to input, then reduce. 2x2 grid, 2x2 tiles each."""
     grid_rows, grid_cols = 2, 2
     tile_rows, tile_cols = 2, 2
@@ -1387,12 +1456,12 @@ def test_bcast_then_reduce_multicore_multitile(device):
 
     total_rows = grid_rows * tile_rows * TILE
     total_cols = grid_cols * tile_cols * TILE
-    inp_torch = torch.ones(total_rows, total_cols, dtype=torch.bfloat16)
-    bcast_torch = torch.zeros(TILE, TILE, dtype=torch.bfloat16)
+    inp_torch = torch.ones(total_rows, total_cols, dtype=dtype)
+    bcast_torch = torch.zeros(TILE, TILE, dtype=dtype)
     bcast_torch[0, 0] = 2.0
     bcast_torch[16, 0] = 2.0
-    scaler_torch = create_scaler_tile(1.0)
-    out_torch = torch.zeros(grid_rows * TILE, grid_cols * TILE, dtype=torch.bfloat16)
+    scaler_torch = create_scaler_tile(1.0, dtype=dtype)
+    out_torch = torch.zeros(grid_rows * TILE, grid_cols * TILE, dtype=dtype)
 
     inp = to_l1(inp_torch, device)
     bcast_in = to_l1(bcast_torch, device)
@@ -1400,14 +1469,16 @@ def test_bcast_then_reduce_multicore_multitile(device):
     out = to_l1(out_torch, device)
 
     kernel(inp, bcast_in, scaler, out)
-    result = ttnn.to_torch(out)
+    result = ttnn.to_torch(out).float()
 
     # Each core: sum((1.0 + 2.0) * 2*2 tiles * 32*32 elements) = 3.0 * 4096 = 12288
     expected_val = 3.0 * tile_rows * tile_cols * TILE * TILE
-    actual = result[0, 0].float().item()
-    assert actual == pytest.approx(
-        expected_val, rel=0.05
-    ), f"core (0,0): got {actual}, expected {expected_val}"
+    expected = torch.full((grid_rows, grid_cols), expected_val, dtype=torch.float32)
+    actual = torch.stack(
+        [result[r * TILE, c * TILE] for r in range(grid_rows) for c in range(grid_cols)]
+    ).reshape(grid_rows, grid_cols)
+    tol = _tolerances(dtype)
+    assert_allclose(actual, expected, rtol=tol["rel"], atol=tol["abs"])
 
 
 # =============================================================================
@@ -1449,12 +1520,13 @@ def matmul_then_reduce_kernel(mat_a, mat_b, scaler, out):
         blk.pop()
 
 
-def test_matmul_then_reduce(device):
+@pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
+def test_matmul_then_reduce(device, dtype):
     """matmul(A, B) -> reduce_sum: single tile."""
-    a_torch = torch.rand(TILE, TILE, dtype=torch.bfloat16)
-    b_torch = torch.rand(TILE, TILE, dtype=torch.bfloat16)
-    scaler_torch = create_scaler_tile(1.0)
-    out_torch = torch.zeros(TILE, TILE, dtype=torch.bfloat16)
+    a_torch = torch.rand(TILE, TILE, dtype=dtype)
+    b_torch = torch.rand(TILE, TILE, dtype=dtype)
+    scaler_torch = create_scaler_tile(1.0, dtype=dtype)
+    out_torch = torch.zeros(TILE, TILE, dtype=dtype)
 
     a = to_l1(a_torch, device)
     b = to_l1(b_torch, device)
@@ -1462,13 +1534,17 @@ def test_matmul_then_reduce(device):
     out = to_l1(out_torch, device)
 
     matmul_then_reduce_kernel(a, b, scaler, out)
-    result = ttnn.to_torch(out)
+    result = ttnn.to_torch(out).float()
 
-    expected = (a_torch.float() @ b_torch.float()).sum().item()
-    actual = result[0, 0].float().item()
-    assert actual == pytest.approx(
-        expected, rel=0.1, abs=10.0
-    ), f"got {actual}, expected {expected}"
+    expected_val = (a_torch.float() @ b_torch.float()).sum().item()
+    expected = torch.tensor([[expected_val]], dtype=torch.float32)
+    actual = result[:1, :1]
+    # Matmul + reduce accumulates more error than a plain reduce because both
+    # operations use truncated device math before the final scalar comparison.
+    if dtype == torch.float32:
+        assert_allclose(actual, expected, rtol=5e-3, atol=20.0)
+    else:
+        assert_allclose(actual, expected, rtol=0.1, atol=10.0)
 
 
 # =============================================================================
@@ -1538,6 +1614,7 @@ def reduce_bcast_matmul_kernel(reduce_in, mat_b, scaler, out):
 """
 
 
+@pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
 @pytest.mark.parametrize(
     "mt, kt, nt, test_id",
     [
@@ -1549,7 +1626,7 @@ def reduce_bcast_matmul_kernel(reduce_in, mat_b, scaler, out):
     ],
     ids=["1x1x1", "2x1x2", "2x2x2", "2x4x2", "4x1x2"],
 )
-def test_reduce_bcast_matmul(device, mt, kt, nt, test_id):
+def test_reduce_bcast_matmul(device, mt, kt, nt, test_id, dtype):
     """reduce_sum -> scalar broadcast(Mt,1) -> K-loop matmul with accumulation.
 
     TODO: simplify once c += a @ b accumulation is supported.
@@ -1571,10 +1648,10 @@ def test_reduce_bcast_matmul(device, mt, kt, nt, test_id):
     kernel = module.reduce_bcast_matmul_kernel
 
     torch.manual_seed(12345)
-    r_torch = torch.randn(size_m, size_k, dtype=torch.bfloat16)
-    b_torch = torch.randn(size_k, size_n, dtype=torch.bfloat16)
-    scaler_torch = create_scaler_tile(1.0)
-    out_torch = torch.zeros(size_m, size_n, dtype=torch.bfloat16)
+    r_torch = torch.randn(size_m, size_k, dtype=dtype)
+    b_torch = torch.randn(size_k, size_n, dtype=dtype)
+    scaler_torch = create_scaler_tile(1.0, dtype=dtype)
+    out_torch = torch.zeros(size_m, size_n, dtype=dtype)
 
     r = to_l1(r_torch, device)
     b = to_l1(b_torch, device)
@@ -1587,8 +1664,6 @@ def test_reduce_bcast_matmul(device, mt, kt, nt, test_id):
     scalar_val = r_torch.float().sum().item()
     bcast_mat = torch.full((size_m, size_k), scalar_val, dtype=torch.float32)
     expected = bcast_mat @ b_torch.float()
-
-    from utils.correctness import assert_pcc
 
     assert_pcc(expected, result.float(), threshold=0.99)
 
@@ -1655,7 +1730,8 @@ def reduce_bcast_type_kernel(inp, scaler, out):
         "scalar_2x2_to_1x2_bcast_col",
     ],
 )
-def test_reduce_bcast_type(device, inp_shape, bcast_dims, out_shape, test_id):
+@pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
+def test_reduce_bcast_type(device, inp_shape, bcast_dims, out_shape, test_id, dtype):
     """Reduce to scalar then broadcast with specific type."""
     inp_rows, inp_cols = inp_shape
     out_rows, out_cols = out_shape
@@ -1681,9 +1757,9 @@ def test_reduce_bcast_type(device, inp_shape, bcast_dims, out_shape, test_id):
     spec.loader.exec_module(module)
     kernel = module.reduce_bcast_type_kernel
 
-    inp_torch = torch.rand(inp_rows * TILE, inp_cols * TILE, dtype=torch.bfloat16)
-    scaler_torch = create_scaler_tile(1.0)
-    out_torch = torch.zeros(out_rows * TILE, out_cols * TILE, dtype=torch.bfloat16)
+    inp_torch = torch.rand(inp_rows * TILE, inp_cols * TILE, dtype=dtype)
+    scaler_torch = create_scaler_tile(1.0, dtype=dtype)
+    out_torch = torch.zeros(out_rows * TILE, out_cols * TILE, dtype=dtype)
 
     inp = to_l1(inp_torch, device)
     scaler = to_l1(scaler_torch, device)
@@ -1695,6 +1771,5 @@ def test_reduce_bcast_type(device, inp_shape, bcast_dims, out_shape, test_id):
     scalar_val = inp_torch.float().sum().item()
     expected = torch.full_like(result.float(), scalar_val)
 
-    from utils.correctness import assert_allclose
-
-    assert_allclose(result.float(), expected, rtol=0.01, atol=10.0)
+    tol = _tolerances(dtype)
+    assert_allclose(result.float(), expected, rtol=tol["rel"], atol=10.0)

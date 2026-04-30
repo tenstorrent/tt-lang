@@ -104,25 +104,25 @@ jobs:
           source build/env/activate
           python test/python/simple_add.py
 
+      - name: Simulator tests
+        run: |
+          source build/env/activate
+          python3 -m pytest test/sim -v -n auto --tb=short --junitxml=build/test/sim-report.xml
+
       - name: Python lit tests
         run: |
           source build/env/activate
           cmake --build build --target check-ttlang-python-lit
-
-      - name: ME2E tests (MLIR input end-to-end tests)
-        run: |
-          source build/env/activate
-          python3 -m pytest test/me2e -v --tb=short --junitxml=build/test/me2e-report.xml
 
       - name: Pytests (Python DSL end-to-end tests)
         run: |
           source build/env/activate
           python3 -m pytest test/python -v --tb=long --junitxml=build/test/pytest-report.xml
 
-      - name: Simulator tests
+      - name: ME2E tests (MLIR input end-to-end tests)
         run: |
           source build/env/activate
-          python3 -m pytest test/sim -v -n auto --tb=short --junitxml=build/test/sim-report.xml
+          python3 -m pytest test/me2e -v --tb=short --junitxml=build/test/me2e-report.xml
 
       - name: Hardware compiler example scripts
         run: |
