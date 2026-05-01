@@ -25,11 +25,11 @@ except ImportError:
     TTNN_AVAILABLE = False
 
 # Import simulator modules
-from python.sim.context import reset_context
-from python.sim.greenlet_scheduler import set_scheduler_algorithm
-from python.sim.program import set_max_l1_bytes
-from python.sim.ttlang_sim import execute_script_with_simulator
-from python import sim
+from sim.context import reset_context
+from sim.greenlet_scheduler import set_scheduler_algorithm
+from sim.program import set_max_l1_bytes
+from sim.ttlang_sim import execute_script_with_simulator
+import sim
 
 # Marker for tests that require ttnn
 requires_ttnn = pytest.mark.skipif(

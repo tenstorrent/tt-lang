@@ -25,7 +25,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 
 import torch
 
-from sim import ttl, ttnn
+import ttl
+import ttnn
 
 TILE_SIZE = 32
 
