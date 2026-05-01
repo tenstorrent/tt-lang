@@ -172,7 +172,7 @@ def format_validate_mismatch(
     body.append(f"Next: {follow}.")
     body.append(
         f"Details: expected one of [{expected_names}], attempted {attempted.name}, "
-        f"acquisition={acquisition.name}, thread={thread.name}, access={access.name}."
+        f"acquisition={acquisition.name}, kernel={thread.name}, access={access.name}."
     )
     return "\n\n".join(body)
 
@@ -284,7 +284,7 @@ def format_cannot_write_block(
 
 # State machine transition table
 # Organized by (acquisition, thread_type) -> {(operation, access_state): (new_access_state, new_expected_ops)}
-# This structure makes it easy to see all transitions for a particular acquisition/thread combination
+# This structure makes it easy to see all transitions for a particular acquisition/kernel-role combination
 STATE_TRANSITIONS: Dict[
     Tuple[BlockAcquisition, ThreadType],
     Dict[
@@ -553,8 +553,8 @@ class BlockStateMachine:
 
         if context_transitions is None:
             raise RuntimeError(
-                f"No state-machine table for this acquisition/thread (simulator bug).\n\n"
-                f"Details: acquisition={self._acquisition.name}, thread={self._thread_type.name}."
+                f"No state-machine table for this acquisition/kernel role (simulator bug).\n\n"
+                f"Details: acquisition={self._acquisition.name}, kernel={self._thread_type.name}."
             )
 
         transition_key = (operation_key, self._access_state)
@@ -587,7 +587,7 @@ class BlockStateMachine:
         if self._acquisition != BlockAcquisition.RESERVE:
             raise RuntimeError(
                 f"push() only for reserve() blocks; wait() blocks use pop() on the consumer.\n\n"
-                f"Details: acquisition={self._acquisition.name}, thread={self._thread_type.name}, "
+                f"Details: acquisition={self._acquisition.name}, kernel={self._thread_type.name}, "
                 f"access={self._access_state.name}."
             )
         self._access_state = AccessState.OS
@@ -622,7 +622,7 @@ class BlockStateMachine:
         if self._acquisition != BlockAcquisition.WAIT:
             raise RuntimeError(
                 f"pop() only for wait() blocks; reserve() blocks use push() on the producer.\n\n"
-                f"Details: acquisition={self._acquisition.name}, thread={self._thread_type.name}, "
+                f"Details: acquisition={self._acquisition.name}, kernel={self._thread_type.name}, "
                 f"access={self._access_state.name}."
             )
         if self._access_state not in (AccessState.MR, AccessState.RW):

@@ -188,7 +188,7 @@ class Block:
             f"shape={self._shape}, "
             f"data={repr(self._buf.to_torch())}, "
             f"acq={acq}, "
-            f"thread={self._thread_type.name}, "
+            f"kernel={self._thread_type.name}, "
             f"access={self._access_state.name}, "
             f"expected={expected})"
         )
@@ -957,7 +957,7 @@ class Block:
 
     @property
     def thread_type(self) -> ThreadType:
-        """Get the thread type (DM or Compute) that acquired this block."""
+        """Get the kernel role (DM or Compute) that acquired this block."""
         return self._thread_type
 
     @property
@@ -1395,7 +1395,7 @@ class DataflowBuffer:
             nm = _name_phrase_for_error(block)
             errors.append(
                 f"Block{nm} is reserve() acquired at kernel exit; producer kernel needs to push() before exit.\n\n"
-                f"Details: block_name={block.name!r}, acquisition=RESERVE, thread={block.thread_type.name}, "
+                f"Details: block_name={block.name!r}, acquisition=RESERVE, kernel={block.thread_type.name}, "
                 f"access={block.access_state.name}, expected_ops={nxt}."
             )
 
@@ -1405,7 +1405,7 @@ class DataflowBuffer:
             nm = _name_phrase_for_error(block)
             errors.append(
                 f"Block{nm} is wait() acquired at kernel exit; consumer kernel needs to pop() before exit.\n\n"
-                f"Details: block_name={block.name!r}, acquisition=WAIT, thread={block.thread_type.name}, "
+                f"Details: block_name={block.name!r}, acquisition=WAIT, kernel={block.thread_type.name}, "
                 f"access={block.access_state.name}, expected_ops={nxt}."
             )
 

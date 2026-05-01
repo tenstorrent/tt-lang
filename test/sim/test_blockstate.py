@@ -403,7 +403,7 @@ def test_format_validate_mismatch_includes_what_to_do_and_details() -> None:
     assert "Details: expected one of" in msg
     assert "attempted STORE" in msg
     assert "acquisition=WAIT" in msg
-    assert "thread=COMPUTE" in msg
+    assert "kernel=COMPUTE" in msg
     assert "access=MR" in msg
 
 

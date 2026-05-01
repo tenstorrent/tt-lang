@@ -65,7 +65,7 @@ The `errors/` subdirectory contains examples with intentionally incorrect or ris
 | `errors/eltwise_add_error.py` | Copy tile count mismatch (single tile into a multi-tile block) | Failure with a shape mismatch message (tensor vs block tile counts) and a source location on the bad `copy` call |
 | `errors/copy_lock_error.py` | Store into a block while it is still a copy destination (before waiting on that copy) | Failure with NAW / copy-destination lock wording on `this buffer block`; diagnostics include the failing line and a **Where:** line pointing at the `copy(..., block)` callsite |
 | `errors/copy_source_lock_error.py` | Store into a block while it is still a live copy *source* (ROR, before waiting on `copy(block, ...)`) | Failure with ROR / copy-source wording; **Where:** points at the `copy(block, tensor)` callsite |
-| `errors/eltwise_add_deadlock.py` | Same layout as `eltwise_add.py` but read path uses `wait()` on producer buffers instead of `reserve()`, so nothing fills them | Failure with deadlock detection (`Deadlock detected: all generators blocked`) and blocked-thread diagnostics |
+| `errors/eltwise_add_deadlock.py` | Same layout as `eltwise_add.py` but read path uses `wait()` on producer buffers instead of `reserve()`, so nothing fills them | Failure with deadlock detection (`Deadlock detected: all generators blocked`) and blocked-kernel diagnostics |
 | `errors/max_dfbs_warning.py` | Allocates more DataflowBuffers than the default hardware limit | **Warning** (not fatal): `UserWarning` about the DFB limit; script still exits successfully |
 
 ## Metal Examples
