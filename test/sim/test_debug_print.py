@@ -5,7 +5,7 @@
 
 import pytest
 import torch
-from python.sim import ttl, ttnn
+from sim import ttl, ttnn
 
 
 def make_tensor_with_value(rows, cols, value, device):

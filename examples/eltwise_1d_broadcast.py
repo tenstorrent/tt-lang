@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """
+# TTLANG_HARDWARE_CI: skip-compiler
 Element-wise with broadcast using 1-D tensors.
 
 Direct simulator adaptation of the "Element-wise with broadcast" example from
@@ -25,7 +26,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 
 import torch
 
-from sim import ttl, ttnn
+import ttl
+import ttnn
 
 
 @ttl.operation(grid=(1, 1))

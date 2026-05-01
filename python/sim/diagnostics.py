@@ -16,6 +16,9 @@ from typing import Any, Optional, Tuple
 def lazy_import_diagnostics() -> Any:
     """Lazy import of ttl.diagnostics module to avoid circular dependency.
 
+    Uses file-based import rather than ``from ttl import diagnostics`` because
+    ttlang-sim shadows the ``ttl`` module with a simulator shim.
+
     Returns:
         The ttl.diagnostics module
 
@@ -26,9 +29,10 @@ def lazy_import_diagnostics() -> Any:
     import sys
     from pathlib import Path
 
-    # Direct import of diagnostics module without going through ttl package
-    # This avoids importing the full compiler infrastructure
-    diagnostics_path = Path(__file__).parent.parent / "ttl" / "diagnostics.py"
+    # Resolve the real path of this file (follows symlinks) to find the
+    # source tree, then locate diagnostics.py relative to it.
+    sim_dir = Path(__file__).resolve().parent  # python/sim/
+    diagnostics_path = sim_dir.parent / "ttl" / "diagnostics.py"
     spec = importlib.util.spec_from_file_location("ttl.diagnostics", diagnostics_path)
     if spec and spec.loader:
         diagnostics = importlib.util.module_from_spec(spec)
@@ -47,7 +51,11 @@ def is_simulator_frame(filename: str) -> bool:
     Returns:
         True if this is a simulator internal frame that should be skipped
     """
-    return "/python/sim/" in filename or "/greenlet/" in filename
+    return (
+        "/python/sim/" in filename
+        or "/ttl/sim/" in filename
+        or "/greenlet/" in filename
+    )
 
 
 def find_user_code_location() -> Tuple[str, int]:

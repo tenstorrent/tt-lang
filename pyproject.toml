@@ -3,12 +3,12 @@ requires = ["setuptools>=61.0", "cmake", "nanobind", "wheel", "pip", "ninja"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ttl"
+name = "tt-lang"
 description = "Python Bindings and Package for TT-Lang Compiler Project"
 requires-python = ">=3.11"
 keywords = ["mlir", "tt-lang", "tt-mlir", "tenstorrent", "compiler", "dsl", "kernel"]
 license = "Apache-2.0"
-license-files = ["../LICENSE*"]
+license-files = ["LICENSE*"]
 authors = [
   {name = "Tenstorrent AI ULC"}
 ]
@@ -20,7 +20,6 @@ classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: Apache Software License",
   "Operating System :: POSIX :: Linux",
   "Operating System :: MacOS",
   "Programming Language :: Python :: 3",
@@ -31,18 +30,21 @@ classifiers = [
   "Topic :: Software Development :: Code Generators"
 ]
 
-# We will dynamically provide `version` and `dependencies` in setup.py
-dynamic = ["version", "dependencies", "readme"]
+dynamic = ["version", "readme", "dependencies"]
+
+[project.optional-dependencies]
+device = ["ttnn"]
+
+[project.scripts]
+ttlang-sim = "ttl.sim.ttlang_sim:main"
 
 [project.urls]
 Homepage = "https://github.com/tenstorrent/tt-lang"
 Repository = "https://github.com/tenstorrent/tt-lang"
 Issues = "https://github.com/tenstorrent/tt-lang/issues"
 
-[tool.cibuildwheel]
-build = "cp311-manylinux_x86_64*"
-skip = "*-musllinux_*"
-build-verbosity = 2
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements-runtime.txt"]}
 
 [tool.pyright]
 typeCheckingMode = "strict"

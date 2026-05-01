@@ -4,8 +4,8 @@
 import pytest
 import torch
 import ttnn
-from ttl.utils.block_allocation import get_large_matmul_params
-from ttl.utils.correctness import assert_with_ulp
+from utils.block_allocation import get_large_matmul_params
+from utils.correctness import assert_with_ulp
 
 
 @pytest.mark.parametrize("M,K,N", [(3584, 768, 3072)])

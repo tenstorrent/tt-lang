@@ -18,10 +18,10 @@ import torch
 import torch.testing as tt_testing
 from test_utils import make_ones_tensor, make_zeros_tensor
 
-from python.sim import TILE_SHAPE, copy, ttl, ttnn
-from python.sim.dfb import Block
-from python.sim.decorators import _make_cell, rebind_func_with_ctx  # type: ignore[reportPrivateUsage]
-from python.sim.program import Program
+from sim import TILE_SHAPE, copy, ttl, ttnn
+from sim.dfb import Block
+from sim.decorators import _make_cell, rebind_func_with_ctx  # type: ignore[reportPrivateUsage]
+from sim.program import Program
 
 
 class TestBasicExecution:
@@ -560,7 +560,7 @@ class TestBlockCompletion:
 
         @ttl.operation(grid=(1,))
         def test_kernel(input_data: ttnn.Tensor):
-            from python.sim.dfb import DataflowBuffer
+            from sim.dfb import DataflowBuffer
 
             # Create multiple dataflow buffers
             element = make_ones_tensor(32, 32)
@@ -985,8 +985,8 @@ class TestProgramInternals:
 
     def test_empty_generator_completion(self) -> None:
         """Test that generators with only 'pass' are handled correctly."""
-        from python.sim import ttl
-        from python.sim.program import Program
+        from sim import ttl
+        from sim.program import Program
 
         @ttl.datamovement()
         def dm0() -> None:
