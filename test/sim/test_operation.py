@@ -11,9 +11,9 @@ from typing import cast
 import pytest
 from test_utils import make_zeros_tensor
 
-from python.sim import ttl, ttnn
-from python.sim.corecontext import flatten_core_index
-from python.sim.typedefs import Shape
+from sim import ttl, ttnn
+from sim.corecontext import flatten_core_index
+from sim.typedefs import Shape
 
 
 class TestGridSize:
@@ -1015,7 +1015,7 @@ class TestRowMajoroperation:
         DM writer copies each result row back to the output tensor.
         Verifies that layout is preserved end-to-end.
         """
-        from python.sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor as SimTensor
+        from sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor as SimTensor
 
         N, C = 4, 8
         input_data = torch.arange(N * C, dtype=torch.float32).reshape(N, C)
@@ -1066,7 +1066,7 @@ class TestRowMajoroperation:
         Distinct from test_row_major_double_rows by using a non-tile-aligned
         column count (C=6) and a single row.
         """
-        from python.sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor as SimTensor
+        from sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor as SimTensor
 
         C = 6
         input_data = torch.ones(1, C, dtype=torch.float32) * 3.0
@@ -1105,7 +1105,7 @@ class TestRowMajoroperation:
 
     def test_row_major_multirow_unary(self):
         """Row-major operation using a unary math op (exp) preserves layout and values."""
-        from python.sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor as SimTensor
+        from sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor as SimTensor
 
         N, C = 3, 5
         input_data = torch.tensor([[0.0, 1.0, 2.0, 3.0, 4.0]] * N, dtype=torch.float32)

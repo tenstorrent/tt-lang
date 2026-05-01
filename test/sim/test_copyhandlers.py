@@ -21,20 +21,20 @@ from test_utils import (
     tensors_equal,
 )
 
-from python.sim import ttnn
-from python.sim.blockstate import ThreadType
-from python.sim.context import set_current_thread_type
-from python.sim.copy import copy
-from python.sim.dfb import Block, DataflowBuffer
-from python.sim.copyhandlers import (
+from sim import ttnn
+from sim.blockstate import ThreadType
+from sim.context import set_current_thread_type
+from sim.copy import copy
+from sim.dfb import Block, DataflowBuffer
+from sim.copyhandlers import (
     BlockToPipeHandler,
     BlockToTensorHandler,
     PipeToBlockHandler,
     TensorToBlockHandler,
     HANDLER_REGISTRY,
 )
-from python.sim.pipe import Pipe
-from python.sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor
+from sim.pipe import Pipe
+from sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor
 
 if TYPE_CHECKING:
     pass
@@ -113,7 +113,7 @@ class TestPipeErrorHandling:
 
     def test_pipe_receive_timeout_no_sender(self) -> None:
         """Test that receiving from pipe with no sender is detected as deadlock."""
-        from python.sim.greenlet_scheduler import GreenletScheduler, set_scheduler
+        from sim.greenlet_scheduler import GreenletScheduler, set_scheduler
 
         # Create a minimal scheduler context for this test
         scheduler = GreenletScheduler()

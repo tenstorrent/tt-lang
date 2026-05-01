@@ -17,17 +17,17 @@ from test_utils import (
     make_zeros_tile,
 )
 
-from python.sim import TILE_SHAPE, copy, ttnn
-from python.sim.blockstate import (
+from sim import TILE_SHAPE, copy, ttnn
+from sim.blockstate import (
     BlockAcquisition,
     ExpectedOp,
     ThreadType,
 )
-from python.sim.context import (
+from sim.context import (
     clear_current_thread_type,
     set_current_thread_type,
 )
-from python.sim.dfb import Block, DataflowBuffer
+from sim.dfb import Block, DataflowBuffer
 
 
 @pytest.fixture(autouse=True)
@@ -114,7 +114,7 @@ def test_push_validates_expected_state() -> None:
 
         # Populate the DFB from a DM thread
         set_current_thread_type(ThreadType.DM)
-        from python.sim.copy import copy as dm_copy
+        from sim.copy import copy as dm_copy
 
         src = make_ones_tile()
         blk = dfb.reserve()
@@ -164,7 +164,7 @@ class TestAssignSrcTransition:
         set_current_thread_type(ThreadType.DM)
         element = make_ones_tile()
         dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
-        from python.sim.copy import copy as dm_copy
+        from sim.copy import copy as dm_copy
 
         src = make_ones_tile()
         blk = dfb.reserve()

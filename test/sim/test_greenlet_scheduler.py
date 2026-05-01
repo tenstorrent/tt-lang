@@ -7,8 +7,8 @@ Tests for greenlet-based cooperative scheduler.
 
 import pytest
 
-from python.sim.blockstate import ThreadType
-from python.sim.greenlet_scheduler import (
+from sim.blockstate import ThreadType
+from sim.greenlet_scheduler import (
     GreenletScheduler,
     block_if_needed,
     get_scheduler,

@@ -7,8 +7,8 @@ import inspect
 from dataclasses import dataclass
 from typing import List, Optional, Set
 
-from pykernel._src.kernel_ast import TTCompilerBase
-from pykernel._src.utils import _get_type_str
+from ttl.pykernel._src.kernel_ast import TTCompilerBase
+from ttl.pykernel._src.utils import _get_type_str
 from ttl.dialects import arith, func, ttcore, ttkernel
 from ttl.ir import *
 

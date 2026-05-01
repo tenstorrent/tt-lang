@@ -28,7 +28,7 @@ jobs:
 
     steps:
       - name: Checkout tt-lang (without submodules)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Extract submodule SHAs for cache keys
         id: submodule-shas
@@ -69,7 +69,7 @@ jobs:
 
       - name: Setup Python 3.12
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: 'pip'
