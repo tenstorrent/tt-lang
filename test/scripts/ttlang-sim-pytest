@@ -53,6 +53,22 @@ _dtype_utils_stub.torch_dtype_to_ttnn_datatype = _torch_dtype_to_ttnn_datatype  
 sys.modules["ttl.dtype_utils"] = _dtype_utils_stub
 
 # -----------------------------------------------------------------------
+# Register ttl.utils.correctness so that tests importing
+# ``from ttl.utils.correctness import assert_with_ulp`` work under the
+# simulator.  The real implementation lives in python/utils/correctness.py
+# (already on sys.path via the path setup above); we simply expose it
+# under the ttl.utils.* namespace that main merged into.
+# -----------------------------------------------------------------------
+import importlib as _importlib  # noqa: E402
+
+_correctness_mod = _importlib.import_module("utils.correctness")
+_correctness_mod.__name__ = "ttl.utils.correctness"
+_utils_ns = types.ModuleType("ttl.utils")
+_utils_ns.correctness = _correctness_mod  # type: ignore[attr-defined]
+sys.modules["ttl.utils"] = _utils_ns
+sys.modules["ttl.utils.correctness"] = _correctness_mod
+
+# -----------------------------------------------------------------------
 # Patch ttl/ttnn in sys.modules with simulator versions.
 # -----------------------------------------------------------------------
 from sim.ttlang_sim import setup_simulator_imports  # noqa: E402
