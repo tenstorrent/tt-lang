@@ -5,12 +5,17 @@
 name: Publish to PyPI
 
 on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+\+*'
   workflow_dispatch:
     inputs:
       docker_tag:
-        description: "Docker image tag for the ird container."
+        description: "Docker image tag for the ird container. If empty, the docker image is built first."
         type: string
-        required: true
+        required: false
+        default: ""
       dry_run:
         description: "Skip tag enforcement and the PyPI upload (for pipeline testing)."
         type: boolean
@@ -18,7 +23,8 @@ on:
 
 permissions:
   contents: read
-  packages: read
+  packages: write
+  checks: write
 
 jobs:
   preflight:
@@ -36,11 +42,18 @@ jobs:
         if: ${{ !inputs.dry_run }}
         run: .github/scripts/require-release-tag.sh
 
-  build-wheels:
+  build-docker:
     needs: preflight
+    if: ${{ inputs.docker_tag == '' }}
+    uses: ./.github/workflows/call-build-docker.yml
+    secrets: inherit
+
+  build-wheels:
+    needs: [preflight, build-docker]
+    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
     uses: ./.github/workflows/call-build-wheels.yml
     with:
-      docker_tag: ${{ inputs.docker_tag }}
+      docker_tag: ${{ inputs.docker_tag != '' && inputs.docker_tag || needs.build-docker.outputs.docker-tag }}
 
   publish:
     name: "Publish to PyPI"
