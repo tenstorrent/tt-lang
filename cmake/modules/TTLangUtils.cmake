@@ -266,7 +266,7 @@ function(ttlang_apply_patches SOURCE_DIR PATCHES_GLOB)
       RESULT_VARIABLE _result
     )
     if(NOT _result EQUAL 0)
-      message(WARNING "Failed to apply patch: ${_name}")
+      message(FATAL_ERROR "Failed to apply patch: ${_name}")
     endif()
   endforeach()
 endfunction()

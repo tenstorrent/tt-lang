@@ -1,0 +1,73 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Build Wheels
+
+on:
+  workflow_call:
+    inputs:
+      docker_tag:
+        description: "Docker image tag for the ird container."
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build-wheels:
+    name: "Build tt-lang wheel"
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:${{ inputs.docker_tag }}
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Fix git safe directory
+        run: git config --global --add safe.directory '*'
+
+      - name: Configure tt-lang
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          cmake -G Ninja -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTTLANG_USE_TOOLCHAIN=ON
+
+      - name: Build wheel
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          pip wheel . --wheel-dir=dist-raw --no-deps --no-build-isolation
+
+      - name: Repair wheel
+        run: |
+          source /opt/ttlang-toolchain/venv/bin/activate
+          pip install auditwheel patchelf
+          auditwheel repair dist-raw/*.whl --wheel-dir=dist
+
+      - name: Test wheel
+        run: |
+          python3.12 -m venv /tmp/test-venv
+          source /tmp/test-venv/bin/activate
+          pip install dist/*.whl --extra-index-url https://download.pytorch.org/whl/cpu
+          python .github/scripts/smoke-test-wheel.py
+
+      - name: Report wheel size
+        run: ls -lh dist-raw/*.whl dist/*.whl
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v5
+        with:
+          name: tt-lang-wheels
+          path: dist/*.whl
+          retention-days: 14

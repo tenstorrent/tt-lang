@@ -17,8 +17,12 @@
 #   --test-toolchain       Build in a separate dir using the installed toolchain, run tests
 #
 # Options:
-#   --force-rebuild        Force toolchain rebuild (LLVM + tt-metal) even if cached
-#   --remove-build-dir     Remove CMAKE_BINARY_DIR after finalize (for Docker builds)
+#   --force-rebuild               Force toolchain rebuild (LLVM + tt-metal) even if cached
+#   --remove-build-dir            Remove CMAKE_BINARY_DIR after finalize (for Docker builds)
+#   --accept-ttmetal-mismatch     Pass -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON to cmake
+#                                 configure to bypass the tt-metal SHA verification
+#   --python <path>               Python interpreter to use for the toolchain venv
+#                                 (forwarded as -DPython3_EXECUTABLE=<path>)
 #
 # Typical multi-stage usage (build outside Docker, copy results in):
 #   1. build-and-install.sh --configure-only               # Build LLVM + tt-metal
@@ -38,6 +42,8 @@ git config --global --add safe.directory '*'
 MODE="full"
 REMOVE_BUILD_DIR=false
 FORCE_REBUILD=false
+ACCEPT_TTMETAL_MISMATCH=false
+PYTHON_EXECUTABLE=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -73,6 +79,14 @@ while [[ $# -gt 0 ]]; do
             REMOVE_BUILD_DIR=true
             shift
             ;;
+        --accept-ttmetal-mismatch)
+            ACCEPT_TTMETAL_MISMATCH=true
+            shift
+            ;;
+        --python)
+            PYTHON_EXECUTABLE="$2"
+            shift 2
+            ;;
         *)
             echo "WARNING: Unknown argument: $1" >&2
             shift
@@ -104,6 +118,16 @@ do_configure() {
         _use_toolchain=OFF
     fi
 
+    local _accept_ttmetal_mismatch=OFF
+    if [ "$ACCEPT_TTMETAL_MISMATCH" = true ]; then
+        _accept_ttmetal_mismatch=ON
+    fi
+
+    local _python_args=()
+    if [ -n "$PYTHON_EXECUTABLE" ]; then
+        _python_args+=("-DPython3_EXECUTABLE=$PYTHON_EXECUTABLE")
+    fi
+
     cmake -G Ninja -B "$CMAKE_BINARY_DIR" \
         -DCMAKE_BUILD_TYPE=Release \
         -DTTLANG_USE_TOOLCHAIN=$_use_toolchain \
@@ -111,7 +135,9 @@ do_configure() {
         -DTTLANG_PYTHON_VENV=$TTLANG_TOOLCHAIN_DIR/venv \
         -DTTLANG_ENABLE_PERF_TRACE=ON \
         -DTTLANG_FORCE_TOOLCHAIN_REBUILD=$_force_rebuild \
-        -DTTLANG_BUILD_TOOLCHAIN=$_build_toolchain
+        -DTTLANG_BUILD_TOOLCHAIN=$_build_toolchain \
+        -DTTLANG_ACCEPT_TTMETAL_MISMATCH=$_accept_ttmetal_mismatch \
+        "${_python_args[@]}"
 
     echo "=== Disk space after configure ==="
     df -BM

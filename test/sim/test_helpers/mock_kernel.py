@@ -9,7 +9,7 @@ Since this file is NOT in /python/sim/, stack frames from these functions
 will be visible to find_user_code_location() and won't be filtered out.
 """
 
-from python.sim.greenlet_scheduler import block_if_needed
+from sim.greenlet_scheduler import block_if_needed
 
 
 def do_wait(obj):
