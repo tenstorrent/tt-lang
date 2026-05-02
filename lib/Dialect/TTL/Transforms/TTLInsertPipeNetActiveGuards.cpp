@@ -6,10 +6,11 @@
 // TTL Insert PipeNet Active Guards Pass
 //===----------------------------------------------------------------------===//
 //
-// Wraps each `ttl.kernel_thread` function body in an `scf.if` over
-// `ttl.core_x` / `ttl.core_y` so only cores that participate in some pipe
-// (as a source or a destination) execute the body. Inactive cores fall
-// through directly to the function terminator.
+// Wraps each kernel function body (any `func.func` carrying the
+// `ttl.kernel_thread` attribute) in an `scf.if` over `ttl.core_x` /
+// `ttl.core_y` so only nodes that participate in some pipe (as a source
+// or a destination) execute the body. Inactive nodes fall through
+// directly to the function terminator.
 //
 //===----------------------------------------------------------------------===//
 
@@ -187,7 +188,7 @@ bool hasExistingGuard(func::FuncOp func) {
   return found;
 }
 
-// Wrap the body of a single-block kernel-thread function in an scf.if guard.
+// Wrap the body of a single-block kernel function in an scf.if guard.
 LogicalResult wrapFunctionBody(func::FuncOp func, ArrayRef<ActiveRect> rects) {
   if (!func.getBody().hasOneBlock()) {
     return func.emitOpError(
@@ -196,7 +197,7 @@ LogicalResult wrapFunctionBody(func::FuncOp func, ArrayRef<ActiveRect> rects) {
 
   Block &block = func.getBody().front();
   if (block.empty()) {
-    return func.emitOpError("kernel-thread function has no terminator");
+    return func.emitOpError("kernel function has no terminator");
   }
   Operation *terminator = block.getTerminator();
   if (!isa<func::ReturnOp>(terminator)) {
@@ -259,14 +260,14 @@ struct TTLInsertPipeNetActiveGuardsPass
     }
     rects = coalesceContainedRects(rects);
 
-    SmallVector<func::FuncOp> threads;
+    SmallVector<func::FuncOp> kernels;
     module.walk([&](func::FuncOp func) {
       if (func->hasAttr(kKernelThreadAttrName)) {
-        threads.push_back(func);
+        kernels.push_back(func);
       }
     });
 
-    for (func::FuncOp func : threads) {
+    for (func::FuncOp func : kernels) {
       if (failed(wrapFunctionBody(func, rects))) {
         signalPassFailure();
         return;

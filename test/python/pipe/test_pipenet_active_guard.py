@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Regression for issue #541: nodes outside the PipeNet active set must skip
-every kernel-thread body even when grid="auto" launches a larger grid than
+every kernel function body even when grid="auto" launches a larger grid than
 the pipe-defined work extent.
 
 The kernels here define pipes against the work extent (M_BLOCKS, N_BLOCKS),

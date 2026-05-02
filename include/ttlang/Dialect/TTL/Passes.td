@@ -421,17 +421,18 @@ def TTLAnnotateCBAssociations
 
 def TTLInsertPipeNetActiveGuards
     : Pass<"ttl-insert-pipenet-active-guards", "::mlir::ModuleOp"> {
-  let summary = "Wrap kernel-thread bodies in scf.if guards over PipeNet active cores";
+  let summary = "Wrap kernel function bodies in scf.if guards over PipeNet active nodes";
   let description = [{
     Computes the union of every `ttl.create_pipe` source and destination
-    rectangle in a module, then wraps each `ttl.kernel_thread` function body in
-    an `scf.if` predicate over `ttl.core_x` / `ttl.core_y` so only participating
-    cores execute the body. Threads in modules without any `ttl.create_pipe`
-    are left unchanged.
+    rectangle in a module, then wraps the body of every kernel function
+    (any `func.func` carrying the `ttl.kernel_thread` attribute) in an
+    `scf.if` predicate over `ttl.core_x` / `ttl.core_y` so only
+    participating nodes execute the body. Modules without any
+    `ttl.create_pipe` are left unchanged.
 
     The pass relies on these invariants on input IR:
     - One MLIR module per `@ttl.operation` (one active set per module).
-    - Kernel-thread functions are single-block.
+    - Kernel functions are single-block.
     - `ttl.create_pipe` source/destination coordinates are static `I64Attr`.
 
     The pass is idempotent: an `scf.if` it already inserted is marked with

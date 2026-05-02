@@ -4,7 +4,7 @@ This document describes how the tt-lang compiler decouples the launch
 extent of an operation (the device grid that `@ttl.operation(grid=...)`
 schedules onto) from the work extent described by the user's PipeNets.
 Nodes launched outside the work extent are guarded out at the IR level so
-they do not execute kernel-thread bodies that were never meant to run on
+they do not execute kernel function bodies that were never meant to run on
 them.
 
 ## Overview
@@ -14,14 +14,16 @@ pipe carries data from a source coordinate (`src`) to either a single
 destination (unicast) or a contiguous coordinate range (multicast). When
 the launch grid is larger than the union of all pipe sources and
 destinations, the extra nodes have no role in the communication, but
-without explicit guards they still execute every kernel-thread body the
-operation defines, reading out-of-bounds tensor regions and corrupting
-the multicast handshake (issue #541).
+without explicit guards they still execute every kernel function body
+the operation defines, reading out-of-bounds tensor regions and
+corrupting the multicast handshake (issue #541).
 
 The compiler therefore computes the *active set* of an operation as the
 union of every pipe's source cell and destination range across every
-PipeNet, and wraps each `ttl.kernel_thread` function body in an
-`scf.if (core_x, core_y) in active_set` predicate. Inactive nodes fall
+PipeNet, and wraps the body of every kernel function (any `func.func`
+bearing the `ttl.kernel_thread` attribute, which marks compute and
+data-movement kernels) in an `scf.if` predicate over the node
+coordinates emitted by `ttl.core_x` / `ttl.core_y`. Inactive nodes fall
 through directly to the function terminator.
 
 ## Pass placement
@@ -77,13 +79,13 @@ Python frontend creates a fresh MLIR module per `@ttl.operation`
 invocation (`_compile_kernel` in `ttl_api.py` calls `Module.create(loc)`
 per kernel and resets `PipeNet._next_id`). If a future change ever
 co-compiles multiple operations into one module, the pass would need to
-scope the active set to the enclosing operation's thread group; the pass
-description in `Passes.td` documents this as an invariant.
+scope the active set to the enclosing operation's kernel functions;
+the pass description in `Passes.td` documents this as an invariant.
 
 ## Predicate construction
 
-For each function with the `ttl.kernel_thread` attribute, the pass
-inserts:
+For each kernel function (any `func.func` carrying the
+`ttl.kernel_thread` attribute), the pass inserts:
 
 ```mlir
 %x = ttl.core_x : index
@@ -138,7 +140,7 @@ pipeline review if they change.
 
 | Invariant | Rationale |
 | --- | --- |
-| Single-block kernel-thread function | Body movement is via block splice; multiple blocks would need region-level rewriting. The Python frontend never emits multi-block kernel-thread functions because user control flow lowers to `scf.if`/`scf.for`. |
+| Single-block kernel function | Body movement is via block splice; multiple blocks would need region-level rewriting. The Python frontend never emits multi-block kernel functions because user control flow lowers to `scf.if`/`scf.for`. |
 | `func.return` terminator | The pass anchors the `scf.if` immediately before the terminator. Any other terminator type indicates a structural change that warrants pass-level review. |
 | Static `I64Attr` pipe coordinates | The active set is computed at pass time. `TTLOps.td` declares the coordinates as attributes, and `CreatePipeOp` verifies consistency with the result pipe type. |
 | One operation per module | The pass walks all pipes in the module to compute one active set. Multiple operations in one module would require per-operation scoping. |
@@ -150,7 +152,7 @@ pipeline review if they change.
 * Empty function body: a function whose only operation is the terminator
   is left untouched, since there is nothing to guard.
 * Functions without `ttl.kernel_thread` (host helpers, utility functions
-  emitted alongside the kernel) are skipped; only thread functions need
+  emitted alongside the kernel) are skipped; only kernel functions need
   node-coordinate predicates.
 
 ## Simulator parity
@@ -160,12 +162,12 @@ behavior at scheduling time. PipeNet construction registers the
 PipeNet on `SimulatorContext.kernel_pipe_nets` (per-greenlet, cleared
 per operation). `Program._run_cooperative` reads the registry, expands
 each pipe's source coordinate and destination range into a set of
-linear node indices, and skips both thread registration and
-`operation_start`/`operation_end` trace events for nodes outside the
-set.
+linear node indices, and skips both kernel registration with the
+greenlet scheduler and `operation_start`/`operation_end` trace events
+for nodes outside the set.
 
 The simulator active-set computation lives in
-`python/sim/pipe._compute_active_linear_cores`, with grid passed
+`python/sim/pipe.compute_active_linear_nodes`, with grid passed
 explicitly so the function is independent of the caller's frame
 locals. It returns `None` when no PipeNets were registered, which makes
 every launched node active. The compiler and simulator both treat
@@ -197,7 +199,7 @@ Pipe sources contribute `{(0, 0), (0, 1), (0, 2), (0, 3), (0, 0), (1, 0),
 (2, 0)}` and destinations contribute the rectangles `[0,3) x {row}` for
 each row plus `{col} x [0,4)` for each col. The union covers exactly
 `[0, 3) x [0, 4)`, twelve nodes. The remaining 8x7 - 12 = 44 launched
-nodes have predicate `false` and skip every thread body.
+nodes have predicate `false` and skip every kernel function body.
 
 `canonicalizer` and `cse` after `convert-ttl-to-ttkernel` can collapse
 redundant constant ops in the predicate; the emitted C++ has one
@@ -217,7 +219,7 @@ active-set condition wrapping each kernel function.
   the PipeNet says, no more.
 * Non-pipe work outside the PipeNet active set is also skipped. For an
   operation that uses any PipeNet, every node that must run a kernel
-  thread body must appear as a pipe source or destination.
+  function body must appear as a pipe source or destination.
 * Inverted destination ranges are normalized, not rejected. The pass
   takes `min` / `max` of `dstStart` and `dstEnd`. Adding ordering to the
   `CreatePipeOp` verifier would let the pass assume `start <= end` and

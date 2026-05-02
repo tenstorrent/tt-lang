@@ -87,7 +87,7 @@ def test_scatter_subgrid(device):
     """Scatter from (0, 0) to (slice(1, 4), 0) under grid="auto".
 
     Active set: {(0,0), (1,0), (2,0), (3,0)}. Nodes outside skip every
-    thread body via the inserted scf.if guard.
+    kernel function body via the inserted scf.if guard.
     """
     inp_torch = torch.randn(TILE, N_SCATTER * TILE, dtype=torch.bfloat16)
     inp_tt = to_dram(inp_torch, device)

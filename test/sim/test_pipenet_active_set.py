@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests that the simulator skips threads on nodes outside the PipeNet active set."""
+"""Tests that the simulator skips kernel functions on nodes outside the PipeNet active set."""
 
 import pytest
 
@@ -66,7 +66,7 @@ def test_active_cores_none_when_no_pipenets():
 
 def test_inactive_cores_skip_thread_bodies():
     """Run a multicast kernel on an 8x8 grid where pipes only touch nodes
-    (0,0), (1,0), (2,0), (3,0). Verify only those nodes execute the threads.
+    (0,0), (1,0), (2,0), (3,0). Verify only those nodes run the kernel functions.
 
     Per-node context is deep-copied by the simulator, so closure-captured
     Python sets cannot accumulate across nodes. We use ttl.trace events
