@@ -1,11 +1,16 @@
-# PipeNet Active-Set Lowering
+# PipeNets
 
-This document describes how the tt-lang compiler decouples the launch
-extent of an operation (the device grid that `@ttl.operation(grid=...)`
-schedules onto) from the work extent described by the user's PipeNets.
-Nodes launched outside the work extent are guarded out at the IR level so
-they do not execute kernel function bodies that were never meant to run on
-them.
+This document describes how PipeNets are owned, validated, lowered, and
+scheduled in tt-lang. Both the compiler and the simulator consume the
+same operation-level PipeNet graph; this doc covers the data flow, the
+active-set guard pass that decouples launch extent from work extent, the
+simulator parity model, and the test surface.
+
+The launch grid (the device grid that `@ttl.operation(grid=...)`
+schedules onto) is decoupled from the work extent described by the
+user's PipeNets. Nodes launched outside the work extent are guarded out
+at the IR level so they do not execute kernel function bodies that were
+never meant to run on them.
 
 ## Overview
 
