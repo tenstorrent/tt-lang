@@ -86,6 +86,49 @@ SmallVector<ActiveRect> collectActiveRects(ModuleOp module) {
   return rects;
 }
 
+// True if every coordinate of `inner` lies within `outer` along every
+// dimension. Both rectangles must have the same rank.
+bool rectContains(const ActiveRect &outer, const ActiveRect &inner) {
+  if (outer.lo.size() != inner.lo.size()) {
+    return false;
+  }
+  for (size_t d = 0; d < outer.lo.size(); ++d) {
+    if (outer.lo[d] > inner.lo[d] || outer.hi[d] < inner.hi[d]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Drop rectangles fully contained in another rectangle. The most common
+// source of redundancy is loopback multicast pipes, where the source
+// unit cell sits inside the destination range; the pass would otherwise
+// emit two predicates whose union is just the destination rectangle.
+//
+// Equal rectangles each contain each other; tie-break by keeping the
+// earliest occurrence so deduplication is deterministic. O(N^2) in the
+// number of rectangles, which is fine because N is at most twice the
+// number of pipes in the module.
+SmallVector<ActiveRect> coalesceContainedRects(ArrayRef<ActiveRect> rects) {
+  SmallVector<ActiveRect> kept;
+  for (size_t i = 0; i < rects.size(); ++i) {
+    bool absorbed = false;
+    for (size_t j = 0; j < rects.size() && !absorbed; ++j) {
+      if (i == j || !rectContains(rects[j], rects[i])) {
+        continue;
+      }
+      // rects[j] contains rects[i]. Drop rects[i] unless they are equal
+      // and j is later — keep the first occurrence.
+      bool equal = rectContains(rects[i], rects[j]);
+      absorbed = !equal || j < i;
+    }
+    if (!absorbed) {
+      kept.push_back(rects[i]);
+    }
+  }
+  return kept;
+}
+
 // Build a single i1 predicate "coords lie in the union of rects" using
 // arith ops. `coords[d]` is the runtime coordinate along dimension d; all
 // rectangles must have the same rank as `coords`.
@@ -214,6 +257,7 @@ struct TTLInsertPipeNetActiveGuardsPass
       // No pipes in the module: nothing to guard.
       return;
     }
+    rects = coalesceContainedRects(rects);
 
     SmallVector<func::FuncOp> threads;
     module.walk([&](func::FuncOp func) {
