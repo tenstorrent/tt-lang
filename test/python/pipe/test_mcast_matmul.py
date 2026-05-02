@@ -49,17 +49,18 @@ def make_mcast_kernel(M_DIM, K_DIM, N_DIM):
     @ttl.operation(grid="auto")
     def mcast_matmul(a, w, out):
         NUM_COLS, NUM_ROWS = ttl.grid_size(dims=2)
-        m_blocks_per_node, _ = _even_split(M_BLOCKS, NUM_ROWS)
-        n_blocks_per_node, _ = _even_split(N_BLOCKS, NUM_COLS)
+        # Pipes must target the work subgrid (num_*_used), not the full launch grid.
+        m_blocks_per_node, num_rows_used = _even_split(M_BLOCKS, NUM_ROWS)
+        n_blocks_per_node, num_cols_used = _even_split(N_BLOCKS, NUM_COLS)
 
         a_pipes = [
-            ttl.Pipe(src=(0, row), dst=(slice(0, NUM_COLS), row))
-            for row in range(NUM_ROWS)
+            ttl.Pipe(src=(0, row), dst=(slice(0, num_cols_used), row))
+            for row in range(num_rows_used)
         ]
         mcast_a_net = ttl.PipeNet(a_pipes)
         b_pipes = [
-            ttl.Pipe(src=(col, 0), dst=(col, slice(0, NUM_ROWS)))
-            for col in range(NUM_COLS)
+            ttl.Pipe(src=(col, 0), dst=(col, slice(0, num_rows_used)))
+            for col in range(num_cols_used)
         ]
         mcast_b_net = ttl.PipeNet(b_pipes)
 
@@ -152,17 +153,17 @@ def make_balanced_kernel(M_DIM, K_DIM, N_DIM):
     @ttl.operation(grid="auto")
     def balanced_matmul(a, w, out):
         NUM_COLS, NUM_ROWS = ttl.grid_size(dims=2)
-        m_blocks_per_node, _ = _even_split(M_BLOCKS, NUM_ROWS)
-        n_blocks_per_node, _ = _even_split(N_BLOCKS, NUM_COLS)
+        m_blocks_per_node, num_rows_used = _even_split(M_BLOCKS, NUM_ROWS)
+        n_blocks_per_node, num_cols_used = _even_split(N_BLOCKS, NUM_COLS)
 
         a_pipes = [
-            ttl.Pipe(src=(0, row), dst=(slice(0, NUM_COLS), row))
-            for row in range(NUM_ROWS)
+            ttl.Pipe(src=(0, row), dst=(slice(0, num_cols_used), row))
+            for row in range(num_rows_used)
         ]
         mcast_a_net = ttl.PipeNet(a_pipes)
         b_pipes = [
-            ttl.Pipe(src=(col, 0), dst=(col, slice(0, NUM_ROWS)))
-            for col in range(NUM_COLS)
+            ttl.Pipe(src=(col, 0), dst=(col, slice(0, num_rows_used)))
+            for col in range(num_cols_used)
         ]
         mcast_b_net = ttl.PipeNet(b_pipes)
 
@@ -256,17 +257,17 @@ def make_balanced_relu_kernel(M_DIM, K_DIM, N_DIM):
     @ttl.operation(grid="auto")
     def balanced_matmul_relu(a, w, out):
         NUM_COLS, NUM_ROWS = ttl.grid_size(dims=2)
-        m_blocks_per_node, _ = _even_split(M_BLOCKS, NUM_ROWS)
-        n_blocks_per_node, _ = _even_split(N_BLOCKS, NUM_COLS)
+        m_blocks_per_node, num_rows_used = _even_split(M_BLOCKS, NUM_ROWS)
+        n_blocks_per_node, num_cols_used = _even_split(N_BLOCKS, NUM_COLS)
 
         a_pipes = [
-            ttl.Pipe(src=(0, row), dst=(slice(0, NUM_COLS), row))
-            for row in range(NUM_ROWS)
+            ttl.Pipe(src=(0, row), dst=(slice(0, num_cols_used), row))
+            for row in range(num_rows_used)
         ]
         mcast_a_net = ttl.PipeNet(a_pipes)
         b_pipes = [
-            ttl.Pipe(src=(col, 0), dst=(col, slice(0, NUM_ROWS)))
-            for col in range(NUM_COLS)
+            ttl.Pipe(src=(col, 0), dst=(col, slice(0, num_rows_used)))
+            for col in range(num_cols_used)
         ]
         mcast_b_net = ttl.PipeNet(b_pipes)
 
