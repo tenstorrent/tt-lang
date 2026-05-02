@@ -50,7 +50,9 @@ both consume. It holds:
 The compiler and the simulator both discover PipeNets by walking the
 closure cells of the operation function and each registered thread's
 wrapped function: body-local PipeNets show up through thread closures,
-captured ones through the operation function's closure (spec L647).
+captured ones through the operation function's closure ([spec][spec-pipenet-scope]).
+
+[spec-pipenet-scope]: https://github.com/tenstorrent/tt-lang/blob/<spec-commit>/docs/sphinx/specs/TTLangSpecification.md#L647
 
 Operation-local ids keep `ttl.create_pipe` ids stable across
 invocations and keep TTKernel semaphore allocation

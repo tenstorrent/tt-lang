@@ -846,19 +846,18 @@ def _build_operation_pipenets(f: Callable, threads):
     operation-local pipe-net id for AST emission.
 
     Discovery walks the operation function's closure plus each thread
-    function's closure. PipeNets are deduplicated by `id()`, so a captured
-    PipeNet referenced from multiple threads contributes one entry.
+    function's closure (matching the spec's "captured by the operation
+    function" wording). PipeNets are deduplicated by `id()`, so a
+    captured PipeNet referenced from multiple threads contributes one
+    entry.
     """
-    from _pipenets import (
-        NodeCoord,
-        NodeRange,
-        OperationPipeNets,
-        PipeUse,
-    )
+    from _pipenets import OperationPipeNets
+    from .pipe import _pipe_to_pipe_use
 
     seen: Dict[int, PipeNet] = {}
 
     def visit(func):
+        # Walk closure cells AND function globals
         if func is None:
             return
         closure = getattr(func, "__closure__", None) or ()
@@ -869,6 +868,10 @@ def _build_operation_pipenets(f: Callable, threads):
                 continue
             if isinstance(value, PipeNet) and id(value) not in seen:
                 seen[id(value)] = value
+        fn_globals = getattr(func, "__globals__", None) or {}
+        for value in fn_globals.values():
+            if isinstance(value, PipeNet) and id(value) not in seen:
+                seen[id(value)] = value
 
     visit(f)
     for thread in threads:
@@ -876,17 +879,7 @@ def _build_operation_pipenets(f: Callable, threads):
 
     graph = OperationPipeNets()
     for net in seen.values():
-        uses = []
-        for pipe in net.pipes:
-            src = NodeCoord(coords=tuple(pipe.src))
-            if pipe.is_unicast:
-                dst = NodeCoord(coords=tuple(pipe.dst_start))
-            else:
-                lo = (pipe.dst_start[0], pipe.dst_start[1])
-                hi = (pipe.dst_end[0] + 1, pipe.dst_end[1] + 1)
-                dst = NodeRange(lo=lo, hi=hi)
-            uses.append(PipeUse(src=src, dst=dst))
-        net_use = graph.add_pipe_net(uses)
+        net_use = graph.add_pipe_net(_pipe_to_pipe_use(p) for p in net.pipes)
         # Assign every Pipe in this net the operation-local id so the AST
         # visitor's create_pipe emission uses the same id space.
         for pipe in net.pipes:

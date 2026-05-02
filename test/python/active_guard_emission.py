@@ -2,10 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQUIRES: ttnn
+# REQUIRES: ttnn, tt-device
 # Frontend-pipeline regression check: catches a dropped
 # ttl-insert-pipenet-active-guards in the Python pipeline string.
-# Compile-only via TTLANG_COMPILE_ONLY=1 + host ttnn tensors, no device.
+# Compile-only via TTLANG_COMPILE_ONLY=1; tt-device REQUIRES because
+# `ttnn.from_torch(layout=TILE_LAYOUT)` triggers tt-metal cluster init
+# even without a device handle (sibling pattern: simple_add.py).
 #
 # RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_FINAL_MLIR=%t.with_pipenet.mlir TTLANG_OP=with_pipenet %python %s
 # RUN: FileCheck %s --input-file=%t.with_pipenet.mlir --check-prefix=WITH-PIPENET

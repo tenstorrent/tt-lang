@@ -381,27 +381,23 @@ def discover_pipe_nets_from_closures(*funcs: Any) -> List["PipeNet"]:
 
 
 def _iter_pipe_nets_in_func(func: Any) -> Iterable["PipeNet"]:
-    """Yield PipeNet objects reachable from a function's closure cells and globals."""
+    # The Python module is an enclosing scope of an @ttl.operation
+    # function, so module-scope PipeNets satisfy the spec's "enclosing
+    # scope" rule and must be discovered. Walks closure cells and the
+    # function's globals; the compiler's _build_operation_pipenets does
+    # the same so the active set agrees.
     closure = getattr(func, "__closure__", None) or ()
     for cell in closure:
         try:
             value = cell.cell_contents
         except ValueError:
             continue
-        yield from _iter_pipe_nets_in_value(value)
+        if isinstance(value, PipeNet):
+            yield value
     fn_globals = getattr(func, "__globals__", None) or {}
     for value in fn_globals.values():
-        yield from _iter_pipe_nets_in_value(value)
-
-
-def _iter_pipe_nets_in_value(value: Any) -> Iterable["PipeNet"]:
-    """Yield PipeNet objects directly held by `value`.
-
-    Only recognises top-level values (not nested inside lists/dicts) — a
-    captured PipeNet kept in a list does not happen in practice.
-    """
-    if isinstance(value, PipeNet):
-        yield value
+        if isinstance(value, PipeNet):
+            yield value
 
 
 class PipeNet(Generic[DstT]):

@@ -733,6 +733,18 @@ class TTLGenericCompiler(TTCompilerBase):
                         node, f"Invalid capture type for var {name}: {type(val)}"
                     )
 
+            # Module-scope PipeNets satisfy the spec's enclosing-scope rule
+            # (the module is an enclosing scope of the @ttl.operation
+            # function). Pre-bind them so `NAME.if_src(...)` resolves.
+            # Captures take precedence: a closure cell shadows a global
+            # of the same name.
+            for name, val in self.fn_globals.items():
+                if not isinstance(val, PipeNet):
+                    continue
+                if any(name in tbl for tbl in self.symbol_tables):
+                    continue
+                self._set_var(name, val)
+
             for target in node.body:
                 self.visit(target)
 
