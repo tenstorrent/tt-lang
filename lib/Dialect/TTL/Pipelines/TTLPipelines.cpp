@@ -54,6 +54,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   pm.addPass(createTTLFinalizeDFBIndices());
   pm.addPass(createTTLAnnotateCBAssociations());
+  pm.addPass(createTTLInsertPipeNetActiveGuards());
   {
     TTLConvertTTLToTTKernelOptions ttkOpts;
     ttkOpts.reduceFullFp32 = options.reduceFullFp32;

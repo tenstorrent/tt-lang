@@ -419,6 +419,32 @@ def TTLAnnotateCBAssociations
   let dependentDialects = [];
 }
 
+def TTLInsertPipeNetActiveGuards
+    : Pass<"ttl-insert-pipenet-active-guards", "::mlir::ModuleOp"> {
+  let summary = "Wrap kernel-thread bodies in scf.if guards over PipeNet active cores";
+  let description = [{
+    Computes the union of every `ttl.create_pipe` source and destination
+    rectangle in a module, then wraps each `ttl.kernel_thread` function body in
+    an `scf.if` predicate over `ttl.core_x` / `ttl.core_y` so only participating
+    cores execute the body. Threads in modules without any `ttl.create_pipe`
+    are left unchanged.
+
+    The pass relies on these invariants on input IR:
+    - One MLIR module per `@ttl.operation` (one active set per module).
+    - Kernel-thread functions are single-block.
+    - `ttl.create_pipe` source/destination coordinates are static `I64Attr`.
+
+    The pass is idempotent: an `scf.if` it already inserted is marked with
+    `ttl.pipenet_active_guard` and is not wrapped again on a second run.
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
 def TTLLowerDPrintToEmitC
     : Pass<"ttl-lower-dprint-to-emitc", "::mlir::ModuleOp"> {
   let summary = "Lower ttl.dprint ops to EmitC verbatim for debug printing";
