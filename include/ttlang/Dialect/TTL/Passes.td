@@ -423,9 +423,11 @@ def TTLInsertPipeNetActiveGuards
     : Pass<"ttl-insert-pipenet-active-guards", "::mlir::ModuleOp"> {
   let summary = "Wrap kernel function bodies in scf.if guards over PipeNet active nodes";
   let description = [{
-    Computes the union of every `ttl.create_pipe` source and destination
-    rectangle in a module, then wraps the body of every kernel function
-    (any `func.func` carrying the `ttl.kernel_thread` attribute) in an
+    Computes the union of every `ttl.create_pipe` source coordinate and
+    destination range — a set of axis-aligned half-open boxes (rectangles
+    in today's 2D dialect; the pass stores per-dimension lo/hi vectors and
+    is rank-agnostic) — then wraps the body of every kernel function (any
+    `func.func` carrying the `ttl.kernel_thread` attribute) in an
     `scf.if` predicate over `ttl.core_x` / `ttl.core_y` so only
     participating nodes execute the body. Modules without any
     `ttl.create_pipe` are left unchanged.

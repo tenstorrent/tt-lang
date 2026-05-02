@@ -10,6 +10,7 @@ This module provides:
 - PipeIdentity classes: Wrappers exposing pipe source/destination information
 """
 
+import itertools
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, List, Optional, Set, Tuple, TypeVar, Union
 
@@ -48,6 +49,12 @@ class Pipe(Generic[DstT]):
 
     src: CoreCoord
     dst: DstT
+
+    def __post_init__(self) -> None:
+        """Validate slice bounds in `dst`."""
+        if isinstance(self.dst, tuple):
+            for item, name in zip(self.dst, ("x", "y", "z")):
+                _validate_dst_slice(item, name)
 
     def has_current_node(self) -> bool:
         """Check if the current core participates in this pipe (either as source or destination).
@@ -343,6 +350,77 @@ def _expand_dst(dst: Any, grid: Tuple[int, ...]) -> List[Tuple[int, ...]]:
     return [tuple(dst)]
 
 
+def _axis_bounds(item: Any) -> Tuple[int, int]:
+    """Half-open `(lo, hi)` bounds for one axis of a destination tuple.
+
+    Slice bounds are assumed valid here — validated up front by
+    `Pipe.__post_init__` via `_validate_dst_slice`.
+    """
+    if isinstance(item, slice):
+        return (item.start, item.stop)
+    return (item, item + 1)
+
+
+def _validate_dst_slice(item: Any, name: str) -> None:
+    """Raise ValueError if `item` is a malformed slice; no-op for ints."""
+    if not isinstance(item, slice):
+        return
+    if item.start is None or item.stop is None:
+        raise ValueError(
+            f"dst {name} slice must have explicit start and stop, "
+            f"got slice({item.start}, {item.stop})"
+        )
+    if not isinstance(item.start, int) or not isinstance(item.stop, int):
+        raise ValueError(
+            f"dst {name} slice bounds must be integers, "
+            f"got slice({item.start}, {item.stop})"
+        )
+    if item.start >= item.stop:
+        raise ValueError(
+            f"dst {name} slice start must be < stop, "
+            f"got slice({item.start}, {item.stop})"
+        )
+
+
+def _normalize_dst_rect(dst: Any) -> Optional[Tuple[Tuple[int, int], ...]]:
+    """Half-open per-axis bounds for a multicast destination, or None if
+    `dst` is unicast (no slices)."""
+    if not isinstance(dst, tuple) or not any(isinstance(i, slice) for i in dst):
+        return None
+    return tuple(_axis_bounds(item) for item in dst)
+
+
+def _validate_no_overlapping_destinations(pipes: "List[Pipe]") -> None:
+    """Reject PipeNets where two multicast pipes share any destination node.
+
+    All pipes in a PipeNet share a single semaphore pair, so a node that
+    receives from multiple multicast sources cannot disambiguate the
+    handshake. Unicast gather (multiple unicast pipes to the same dst) is
+    allowed because the receiver uses cumulative semaphore waits.
+    """
+    mcast = [
+        (i, pipe, bounds)
+        for i, pipe in enumerate(pipes)
+        if (bounds := _normalize_dst_rect(pipe.dst)) is not None
+    ]
+    if len(mcast) < 2:
+        return
+    seen: dict = {}
+    for i, pipe, bounds in mcast:
+        for coord in itertools.product(*(range(lo, hi) for lo, hi in bounds)):
+            if coord in seen:
+                j = seen[coord]
+                raise ValueError(
+                    f"PipeNet has overlapping multicast destinations: "
+                    f"pipe {j} (src={pipes[j].src}) and "
+                    f"pipe {i} (src={pipe.src}) both target "
+                    f"node {coord}. Use separate PipeNets for patterns "
+                    f"where a node receives from multiple multicast "
+                    f"sources."
+                )
+            seen[coord] = i
+
+
 def compute_active_linear_nodes(
     grid: Tuple[int, ...],
 ) -> Optional[Set[int]]:
@@ -379,7 +457,14 @@ class PipeNet(Generic[DstT]):
 
         Args:
             pipes: List of Pipe objects defining the communication pattern
+
+        Raises:
+            ValueError: If `pipes` is empty, or if two multicast pipes
+                have overlapping destinations.
         """
+        if not pipes:
+            raise ValueError("PipeNet requires at least one pipe")
+        _validate_no_overlapping_destinations(pipes)
         self._pipes = pipes
         _register_pipe_net(self)
 

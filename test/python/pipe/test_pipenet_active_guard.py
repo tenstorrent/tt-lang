@@ -64,9 +64,6 @@ def _make_small_mcast_kernel(M_DIM, K_DIM, N_DIM):
 
         @ttl.compute()
         def compute():
-            node_n, node_m = ttl.node(dims=2)
-            mb = node_m
-            nb = node_n
             with out_cb.reserve() as out_blk:
                 out_blk.store(ttl.math.fill(out_blk, 0))
                 for _ in range(K_BLOCKS):

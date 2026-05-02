@@ -174,13 +174,15 @@ def test_per_row_scatter(device):
 
 
 # ---------------------------------------------------------------------------
-# Two PipeNets with overlapping destinations:
-#   net_a: src=(0,0) -> dst=slice(1,3),0   (nodes 1, 2)
-#   net_b: src=(3,0) -> dst=slice(1,3),0   (nodes 1, 2)
-# Nodes 1 and 2 are destinations of both. Within each PipeNet there is
-# one pipe with no internal overlap; the cross-PipeNet overlap at nodes
-# 1 and 2 is permitted and demonstrated working.
-# Each receiver sums its two received tiles.
+# Two PipeNets whose destination rectangles intersect.
+#
+#   net_a: src=(0,0) -> dst=slice(1,3),0     (multicast to nodes 1 and 2)
+#   net_b: src=(3,0) -> dst=slice(1,3),0     (multicast to nodes 1 and 2)
+#
+# Nodes 1 and 2 are destinations of both PipeNets. The within-PipeNet
+# overlap rule (issue #505) only forbids overlap inside a single
+# PipeNet; cross-PipeNet overlap is allowed because each PipeNet has
+# its own semaphore pair. Each receiver sums the two tiles it gets.
 # ---------------------------------------------------------------------------
 
 
@@ -195,42 +197,58 @@ def overlapping_pipenets_kernel(inp, out):
 
     @ttl.compute()
     def compute():
-        with a_cb.wait() as a, b_cb.wait() as b, out_cb.reserve() as o:
-            o.store(a + b)
+        # Only nodes 1 and 2 receive both inputs and produce output.
+        x, _ = ttl.node(dims=2)
+        if 1 <= x and x <= 2:
+            with a_cb.wait() as a, b_cb.wait() as b, out_cb.reserve() as o:
+                o.store(a + b)
 
     @ttl.datamovement()
     def dm_read():
-        with a_cb.reserve() as ablk:
+        # Reserve only the CBs that this node will actually write or read.
+        # The simulator (correctly) rejects a reserved CB that exits its
+        # `with` block in the MW state without ever being written; hardware
+        # is more permissive but the conditional structure is still valid.
+        x, _ = ttl.node(dims=2)
+        if x == 0:
+            # net_a source.
+            with a_cb.reserve() as ablk:
 
-            def src_a(pipe):
-                ttl.copy(inp[0, 0], ablk).wait()
-                ttl.copy(ablk, pipe).wait()
+                def src_a(pipe):
+                    ttl.copy(inp[0, 0], ablk).wait()
+                    ttl.copy(ablk, pipe).wait()
 
-            net_a.if_src(src_a)
+                net_a.if_src(src_a)
+        elif x == 3:
+            # net_b source.
+            with b_cb.reserve() as bblk:
 
-            def dst_a(pipe):
-                ttl.copy(pipe, ablk).wait()
+                def src_b(pipe):
+                    ttl.copy(inp[0, 3], bblk).wait()
+                    ttl.copy(bblk, pipe).wait()
 
-            net_a.if_dst(dst_a)
+                net_b.if_src(src_b)
+        elif 1 <= x and x <= 2:
+            # Destination of both: receive from each net into its own CB.
+            with a_cb.reserve() as ablk:
 
-        with b_cb.reserve() as bblk:
+                def dst_a(pipe):
+                    ttl.copy(pipe, ablk).wait()
 
-            def src_b(pipe):
-                ttl.copy(inp[0, 3], bblk).wait()
-                ttl.copy(bblk, pipe).wait()
+                net_a.if_dst(dst_a)
+            with b_cb.reserve() as bblk:
 
-            net_b.if_src(src_b)
+                def dst_b(pipe):
+                    ttl.copy(pipe, bblk).wait()
 
-            def dst_b(pipe):
-                ttl.copy(pipe, bblk).wait()
-
-            net_b.if_dst(dst_b)
+                net_b.if_dst(dst_b)
 
     @ttl.datamovement()
     def dm_write():
         x, _ = ttl.node(dims=2)
-        with out_cb.wait() as blk:
-            ttl.copy(blk, out[0, x]).wait()
+        if 1 <= x and x <= 2:
+            with out_cb.wait() as blk:
+                ttl.copy(blk, out[0, x]).wait()
 
 
 def test_overlapping_pipenets(device):

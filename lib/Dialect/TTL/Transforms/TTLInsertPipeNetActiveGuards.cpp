@@ -32,15 +32,18 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-// Rank-agnostic axis-aligned half-open rectangle. `lo[d]` and `hi[d]` give
-// the inclusive lower bound and exclusive upper bound along dimension d.
-// `lo.size() == hi.size()` defines the rectangle's rank.
+// Rank-agnostic axis-aligned half-open box. `lo[d]` and `hi[d]` give the
+// inclusive lower bound and exclusive upper bound along dimension d.
+// `lo.size() == hi.size()` defines the box's rank. With today's 2D
+// dialect this is a rectangle (hence the type name `ActiveRect`); a
+// 3D-or-higher dialect would yield a 3-D-or-higher box without
+// changing this type.
 //
 // Rank is set by the dialect's coordinate accessors (currently 2D — see
-// readPipeSourceBounds / readPipeDstBounds below). Predicate construction
-// (buildActivePredicate) and rectangle collection iterate over dimensions
-// generically, so n-D support reduces to extending those accessors when
-// the dialect grows beyond `core_x` / `core_y`.
+// readPipeSourceRect / readPipeDstRect below). Predicate construction
+// (buildActivePredicate) and box collection iterate over dimensions
+// generically, so n-D support reduces to extending those accessors
+// when the dialect grows beyond `core_x` / `core_y`.
 struct ActiveRect {
   SmallVector<int64_t> lo;
   SmallVector<int64_t> hi;

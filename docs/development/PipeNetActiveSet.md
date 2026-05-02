@@ -57,7 +57,12 @@ new pass at the same anchor.
 ## Active-set computation
 
 The pass walks every `ttl.create_pipe` op in the module. Each pipe
-contributes two half-open rectangles to a `SmallVector<ActiveRect>`:
+contributes two axis-aligned half-open boxes to a
+`SmallVector<ActiveRect>`. `ActiveRect` is `{SmallVector<int64_t> lo,
+SmallVector<int64_t> hi}`, one entry per dimension, so the
+representation is rank-agnostic (in today's 2D dialect lo and hi each
+have two entries; in 3D they would each have three). For 2D, each pipe
+contributes:
 
 1. A unit cell `[srcX, srcX+1) x [srcY, srcY+1)` for the source.
 2. A range `[min(dstStartX, dstEndX), max(...)+1) x [min(dstStartY,
@@ -204,6 +209,67 @@ nodes have predicate `false` and skip every kernel function body.
 `canonicalizer` and `cse` after `convert-ttl-to-ttkernel` can collapse
 redundant constant ops in the predicate; the emitted C++ has one
 active-set condition wrapping each kernel function.
+
+## Test coverage
+
+The same pytest file runs on both backends via
+`test/scripts/ttlang-sim-pytest`, which patches `sys.modules` with the
+simulator's `ttl` and `ttnn` before pytest collects, so dual-backend
+coverage is the default for any test under `test/python/`. Sim-only
+tests under `test/sim/` are reserved for sim-internal helpers that have
+no hardware analogue. Lit tests cover compile-time properties not
+runtime-observable.
+
+| #  | Behavior under test                                       | Dev | Sim | Lit |
+|----|-----------------------------------------------------------|:---:|:---:|:---:|
+|  1 | Empty PipeNet rejected at construction                    |  X  |  X  |     |
+|  2 | Within-PipeNet mcast dst overlap rejected (full)          |  X  |  X  |     |
+|  3 | Within-PipeNet mcast dst overlap rejected (partial)       |  X  |  X  |     |
+|  4 | Unicast gather to same dst allowed                        |  X  |  X  |     |
+|  5 | Nonoverlapping mcast pipes in one PipeNet allowed         |  X  |  X  |     |
+|  6 | Pipe rejects open-bounded slices                          |  X  |  X  |     |
+|  7 | Pipe rejects empty / inverted slices                      |  X  |  X  |     |
+|  8 | Scatter on subgrid (work < launch, single mcast)          |  X  |  X  |     |
+|  9 | Per-row scatter (multi-pipe disjoint dst, 2D active set)  |  X  |  X  |     |
+| 10 | Cross-PipeNet destination overlap permitted               |  X  |  X  |     |
+| 11 | Mixed unicast + multicast in one PipeNet                  |  X  |  X  |     |
+| 12 | Loopback mcast (src in dst range)                         |  X  |  X  |     |
+| 13 | Nested `if_src` / `if_dst` across two PipeNets (relay)    |  X  |  X  |     |
+| 14 | 1D scatter (existing pattern)                             |  X  |  X  |     |
+| 15 | 1D gather (existing pattern)                              |  X  |  X  |     |
+| 16 | 1D gather, multiple tiles per source (existing)           |  X  |  X  |     |
+| 17 | Ring forward (1D unicast +1, existing)                    |  X  |  X  |     |
+| 18 | 2D broadcast (existing)                                   |  X  |  X  |     |
+| 19 | Pipe chain / conv multi-stage (existing)                  |  X  |  X  |     |
+| 20 | 1D mcast matmul auto-grid baseline (existing)             |  X  |  X  |     |
+| 21 | Issue #541 regression: 4x3 work extent in auto launch     |  X  | (1) |     |
+| 22 | Issue #541 regression: 2x2 work extent in auto launch     |  X  | (1) |     |
+| 23 | 2D mcast matmul (work < launch via `_even_split`) [fixed] |  X  | (1) |     |
+| 24 | Balanced 2D matmul (A on dm_read, B on dm_write) [fixed]  |  X  | (1) |     |
+| 25 | Balanced 2D matmul + fused relu [fixed]                   |  X  | (1) |     |
+| 26 | sim active-set: src cell + dst range (mcast unit test)    |     |  X  |     |
+| 27 | sim active-set: union across PipeNets                     |     |  X  |     |
+| 28 | sim active-set: unicast pipe single dst                   |     |  X  |     |
+| 29 | sim active-set: None when no PipeNets                     |     |  X  |     |
+| 30 | sim trace event filtering for inactive nodes              |     |  X  |     |
+| 31 | sim PipeNet registers itself on construction              |     |  X  |     |
+| 32 | sim registry starts empty / cleared per operation         |     |  X  |     |
+| 33 | sim pipe deadlock detection (existing)                    |     |  X  |     |
+| 34 | Frontend pipeline emits the active-set guard              |     |     |  X  |
+| 35 | Pass collects rectangles + idempotent + skips no-pipe     |     |     |  X  |
+| 36 | Pass coalesces source box contained in dst (loopback)     |     |     |  X  |
+| 37 | Pass emits exact predicate constants for known src/dst    |     |     |  X  |
+| 38 | Pass rejects multi-block kernel function (negative)       |     |     |  X  |
+| 39 | Pass normalizes inverted destination ranges               |     |     |  X  |
+| 40 | Guard survives `convert-ttl-to-ttkernel` (pipeline lit)   |     |     |  X  |
+
+(1) Device-only due to a pre-existing simulator divergence: the
+simulator's block-state machine accepts in-place `+=` only on a
+*temporary* block (the result of a `fill` or a block expression), not
+on a CB block that has already been written via `store(...)`. Hardware
+accepts both. The matmul kernels in these tests use
+`out_blk += a @ b` after an initial `out_blk.store(fill(...))`, which
+the simulator rejects.
 
 ## Limitations
 
