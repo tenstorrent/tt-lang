@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests that the simulator skips threads on cores outside the PipeNet active set."""
+"""Tests that the simulator skips threads on nodes outside the PipeNet active set."""
 
 import pytest
 
@@ -65,11 +65,11 @@ def test_active_cores_none_when_no_pipenets():
 
 
 def test_inactive_cores_skip_thread_bodies():
-    """Run a multicast kernel on an 8x8 grid where pipes only touch cores
-    (0,0), (1,0), (2,0), (3,0). Verify only those cores execute the threads.
+    """Run a multicast kernel on an 8x8 grid where pipes only touch nodes
+    (0,0), (1,0), (2,0), (3,0). Verify only those nodes execute the threads.
 
-    Per-core context is deep-copied by the simulator, so closure-captured
-    Python sets cannot accumulate across cores. We use ttl.trace events
+    Per-node context is deep-copied by the simulator, so closure-captured
+    Python sets cannot accumulate across nodes. We use ttl.trace events
     instead, which are emitted by the program scheduler before deep-copy.
     """
     _clear_pipe_net_registry()
@@ -104,12 +104,12 @@ def test_inactive_cores_skip_thread_bodies():
         for ev in get_context().trace_events
         if ev.event == "operation_start"
     }
-    # On an 8x8 grid, cores at (x=0..3, y=0) -> linear 0, 8, 16, 24.
+    # On an 8x8 grid, nodes at (x=0..3, y=0) -> linear 0, 8, 16, 24.
     assert started == {0, 8, 16, 24}
 
 
 def test_no_pipes_means_all_cores_run():
-    """Without any PipeNet, the simulator must execute every core (legacy behavior)."""
+    """Without any PipeNet, the simulator must execute every node (legacy behavior)."""
     _clear_pipe_net_registry()
     reset_context()
     cfg = get_context().config

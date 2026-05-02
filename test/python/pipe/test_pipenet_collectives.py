@@ -10,7 +10,7 @@ gather, scatter, scatter-gather, and ring forward kernels with launch
 extent equal to work extent. The cases here cover the regimes that
 exercise `ttl-insert-pipenet-active-guards`:
 
-* Scatter on a subgrid (`grid="auto"`, work = 4 cores in row 0):
+* Scatter on a subgrid (`grid="auto"`, work = 4 nodes in row 0):
   single PipeNet, single multicast pipe, dst rectangle smaller than the
   launch grid.
 * Per-row scatter (`grid="auto"`, work = ROWS x COLS): single PipeNet
@@ -41,7 +41,7 @@ TILE = 32
 
 
 # ---------------------------------------------------------------------------
-# Scatter on a subgrid: core (0, 0) multicasts a tile to cores 1..N-1 in
+# Scatter on a subgrid: node (0, 0) multicasts a tile to nodes 1..N-1 in
 # row 0. Single PipeNet, single multicast pipe.
 # ---------------------------------------------------------------------------
 
@@ -86,7 +86,7 @@ def scatter_subgrid_kernel(inp, out):
 def test_scatter_subgrid(device):
     """Scatter from (0, 0) to (slice(1, 4), 0) under grid="auto".
 
-    Active set: {(0,0), (1,0), (2,0), (3,0)}. Cores outside skip every
+    Active set: {(0,0), (1,0), (2,0), (3,0)}. Nodes outside skip every
     thread body via the inserted scf.if guard.
     """
     inp_torch = torch.randn(TILE, N_SCATTER * TILE, dtype=torch.bfloat16)
@@ -105,7 +105,7 @@ def test_scatter_subgrid(device):
 # Per-row scatter on a subgrid: single PipeNet, ROWS multicast pipes whose
 # destination rectangles are disjoint (different rows). Each row r
 # multicasts inp's r-th tile from (0, r) to (slice(1, COLS), r).
-# Source cores (0, r) consume their own tile via dm_read directly.
+# Source nodes (0, r) consume their own tile via dm_read directly.
 # ---------------------------------------------------------------------------
 
 
@@ -153,7 +153,7 @@ def per_row_scatter_kernel(inp, out):
 def test_per_row_scatter(device):
     """ROWS independent scatters in one PipeNet, dst rectangles disjoint.
 
-    Active set is the ROWS x COLS rectangle; cores beyond skip the body.
+    Active set is the ROWS x COLS rectangle; nodes beyond skip the body.
     Each output row r holds abs(inp[r, 0]) tiled across COLS columns.
     """
     inp_torch = torch.randn(PR_ROWS * TILE, PR_COLS * TILE, dtype=torch.bfloat16)
@@ -175,10 +175,10 @@ def test_per_row_scatter(device):
 
 # ---------------------------------------------------------------------------
 # Two PipeNets with overlapping destinations:
-#   net_a: src=(0,0) -> dst=slice(1,3),0   (cores 1, 2)
-#   net_b: src=(3,0) -> dst=slice(1,3),0   (cores 1, 2)
-# Cores 1 and 2 are destinations of both. Within each PipeNet there is
-# one pipe with no internal overlap; the cross-PipeNet overlap at cores
+#   net_a: src=(0,0) -> dst=slice(1,3),0   (nodes 1, 2)
+#   net_b: src=(3,0) -> dst=slice(1,3),0   (nodes 1, 2)
+# Nodes 1 and 2 are destinations of both. Within each PipeNet there is
+# one pipe with no internal overlap; the cross-PipeNet overlap at nodes
 # 1 and 2 is permitted and demonstrated working.
 # Each receiver sums its two received tiles.
 # ---------------------------------------------------------------------------
@@ -234,10 +234,10 @@ def overlapping_pipenets_kernel(inp, out):
 
 
 def test_overlapping_pipenets(device):
-    """Two scatters whose dst rectangles share cores 1 and 2.
+    """Two scatters whose dst rectangles share nodes 1 and 2.
 
-    Active set is the union {(0,0), (1,0), (2,0), (3,0)}. Cores 1 and 2
-    receive from both PipeNets and sum the two tiles. Cores 0 and 3 are
+    Active set is the union {(0,0), (1,0), (2,0), (3,0)}. Nodes 1 and 2
+    receive from both PipeNets and sum the two tiles. Nodes 0 and 3 are
     pure sources; their compute outputs the sum of their own tile and
     whatever the unused other channel held (don't assert on those).
     """
@@ -249,7 +249,7 @@ def test_overlapping_pipenets(device):
 
     result = ttnn.to_torch(out_tt)
 
-    # Cores 1 and 2 should hold inp[:, 0:TILE] + inp[:, 3*TILE:4*TILE].
+    # Nodes 1 and 2 should hold inp[:, 0:TILE] + inp[:, 3*TILE:4*TILE].
     expected_mid = (
         inp_torch[:, 0:TILE].float() + inp_torch[:, 3 * TILE : 4 * TILE].float()
     )
@@ -258,6 +258,246 @@ def test_overlapping_pipenets(device):
         # bfloat16 addition; loose tolerance.
         diff = (expected_mid - actual).abs().max().item()
         assert diff < 0.05, (
-            f"core {col} mismatch: max diff {diff}, "
+            f"node {col} mismatch: max diff {diff}, "
             f"expected={expected_mid[:1, :4]}, actual={actual[:1, :4]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Mixed unicast + multicast within a single PipeNet:
+#   pipes[0]: unicast   src=(3,0) -> dst=(0,0)        (gather to corner)
+#   pipes[1]: multicast src=(0,0) -> dst=slice(1,3),0 (scatter to middle)
+# Different pipe kinds in one PipeNet share the same semaphore pair; the
+# within-PipeNet overlap rule only applies to multicast destinations,
+# which are disjoint here ({(0,0)} vs {(1,0),(2,0)}).
+# Active set is {(0,0), (1,0), (2,0), (3,0)}.
+# Each receiver writes the tile it received.
+# ---------------------------------------------------------------------------
+
+
+@ttl.operation(grid="auto")
+def mixed_unicast_multicast_kernel(inp, out):
+    net = ttl.PipeNet(
+        [
+            ttl.Pipe(src=(3, 0), dst=(0, 0)),  # unicast
+            ttl.Pipe(src=(0, 0), dst=(slice(1, 3), 0)),  # multicast
+        ]
+    )
+
+    inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with inp_cb.wait() as t, out_cb.reserve() as o:
+            o.store(ttl.math.abs(t))
+
+    @ttl.datamovement()
+    def dm_read():
+        x, _ = ttl.node(dims=2)
+        with inp_cb.reserve() as blk:
+
+            def src(pipe):
+                # Source role for whichever pipe matches: node 3 sends
+                # inp[:, 3*TILE:] via unicast; node 0 sends inp[:, 0:TILE]
+                # via multicast. Read the local tile based on x.
+                ttl.copy(inp[0, x], blk).wait()
+                ttl.copy(blk, pipe).wait()
+
+            net.if_src(src)
+
+            def dst(pipe):
+                ttl.copy(pipe, blk).wait()
+
+            net.if_dst(dst)
+
+    @ttl.datamovement()
+    def dm_write():
+        x, _ = ttl.node(dims=2)
+        with out_cb.wait() as blk:
+            ttl.copy(blk, out[0, x]).wait()
+
+
+def test_mixed_unicast_multicast(device):
+    """Single PipeNet with one unicast pipe and one multicast pipe.
+
+    Spec is silent on requiring all-same-kind in a PipeNet, and the
+    overlap validator only flags multicast-multicast destination
+    overlap. Verify a mixed PipeNet runs end-to-end.
+    """
+    inp_torch = torch.randn(TILE, 4 * TILE, dtype=torch.bfloat16)
+    inp_tt = to_dram(inp_torch, device)
+    out_tt = to_dram(torch.zeros(TILE, 4 * TILE, dtype=torch.bfloat16), device)
+
+    mixed_unicast_multicast_kernel(inp_tt, out_tt)
+
+    result = ttnn.to_torch(out_tt)
+    # Node 0 receives node 3's tile (unicast); nodes 1,2 receive node 0's
+    # tile (multicast); node 3 wrote out[:, 3*TILE:] from its own input.
+    expected = torch.empty_like(inp_torch)
+    expected[:, 0:TILE] = torch.abs(inp_torch[:, 3 * TILE : 4 * TILE])
+    expected[:, TILE : 2 * TILE] = torch.abs(inp_torch[:, 0:TILE])
+    expected[:, 2 * TILE : 3 * TILE] = torch.abs(inp_torch[:, 0:TILE])
+    expected[:, 3 * TILE : 4 * TILE] = torch.abs(inp_torch[:, 3 * TILE : 4 * TILE])
+    assert_pcc(expected, result)
+
+
+# ---------------------------------------------------------------------------
+# Nested if_src/if_dst across two PipeNets, per spec line 645:
+# "Calls into if_src and if_dst can be nested within condition functions
+#  for different pipe nets."
+#
+#   net_a: unicast (1, 0) -> (0, 0)
+#   net_b: unicast (0, 0) -> (2, 0)
+#
+# The dm_read on node 0 receives via net_a and, inside that callback,
+# forwards via net_b — exercising the nesting form.
+# ---------------------------------------------------------------------------
+
+
+@ttl.operation(grid="auto")
+def nested_if_callbacks_kernel(inp, out):
+    net_a = ttl.PipeNet([ttl.Pipe(src=(1, 0), dst=(0, 0))])
+    net_b = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(2, 0))])
+
+    inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with inp_cb.wait() as t, out_cb.reserve() as o:
+            o.store(ttl.math.abs(t))
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_cb.reserve() as blk:
+
+            # Node 1: source for net_a — read its tile and send.
+            def send_a(pipe_a):
+                ttl.copy(inp[0, 1], blk).wait()
+                ttl.copy(blk, pipe_a).wait()
+
+            net_a.if_src(send_a)
+
+            # Node 0: receives from net_a, then in the SAME callback acts as
+            # net_b source and forwards. The spec permits this nesting for
+            # different pipe nets.
+            def recv_a_then_send_b(pipe_a):
+                ttl.copy(pipe_a, blk).wait()
+
+                def send_b(pipe_b):
+                    ttl.copy(blk, pipe_b).wait()
+
+                net_b.if_src(send_b)
+
+            net_a.if_dst(recv_a_then_send_b)
+
+            # Node 2: net_b destination — receive.
+            def recv_b(pipe_b):
+                ttl.copy(pipe_b, blk).wait()
+
+            net_b.if_dst(recv_b)
+
+    @ttl.datamovement()
+    def dm_write():
+        x, _ = ttl.node(dims=2)
+        with out_cb.wait() as blk:
+            ttl.copy(blk, out[0, x]).wait()
+
+
+# ---------------------------------------------------------------------------
+# Loopback multicast: source (0, 0) is inside the destination range
+# (column 0, rows 0..3). Lowers to ttkernel.noc_async_write_multicast_loopback_src
+# (verified in convert_pipe_ops.mlir::copy_cb_to_pipe_multicast_loopback).
+# tt-metal supports this NOC variant (see
+# tests/tt_metal/tt_metal/data_movement/one_to_all/test_one_to_all.cpp
+# and sender_multicast.cpp's `loopback` compile-time arg).
+#
+# Each of the 4 nodes in column 0 receives the tile and writes it; the
+# source receives its own data via the loopback path, so we don't need a
+# separate read-first branch on it.
+# ---------------------------------------------------------------------------
+
+
+N_LB = 4
+
+
+@ttl.operation(grid="auto")
+def loopback_multicast_kernel(inp, out):
+    # src=(0,0); dst column 0 rows 0..3 (includes source).
+    net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(0, slice(0, N_LB)))])
+
+    inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with inp_cb.wait() as t, out_cb.reserve() as o:
+            o.store(ttl.math.abs(t))
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_cb.reserve() as blk:
+
+            def src(pipe):
+                ttl.copy(inp[0, 0], blk).wait()
+                ttl.copy(blk, pipe).wait()
+
+            net.if_src(src)
+
+            def dst(pipe):
+                ttl.copy(pipe, blk).wait()
+
+            net.if_dst(dst)
+
+    @ttl.datamovement()
+    def dm_write():
+        _, y = ttl.node(dims=2)
+        with out_cb.wait() as blk:
+            ttl.copy(blk, out[y, 0]).wait()
+
+
+def test_loopback_multicast(device):
+    """Source-in-destination-range multicast (loopback).
+
+    Lowers to noc_async_write_multicast_loopback_src in tt-metal. The
+    source receives its own data via the loopback route rather than
+    consuming the locally-read tile. All 4 destinations (including
+    source) hold abs(inp[0, 0:TILE]).
+    """
+    inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
+    inp_tt = to_dram(inp_torch, device)
+    out_tt = to_dram(torch.zeros(N_LB * TILE, TILE, dtype=torch.bfloat16), device)
+
+    loopback_multicast_kernel(inp_tt, out_tt)
+
+    result = ttnn.to_torch(out_tt)
+    src_tile = torch.abs(inp_torch[0:TILE, 0:TILE])
+    expected = src_tile.repeat(N_LB, 1)
+    assert_pcc(expected, result)
+
+
+def test_nested_if_callbacks(device):
+    """net_a.if_dst contains a nested net_b.if_src for relay forwarding.
+
+    Spec line 645 explicitly allows this nesting across different
+    PipeNets. Active set is {(0,0), (1,0), (2,0)}; the relay route is
+    node 1 -> node 0 -> node 2.
+    """
+    inp_torch = torch.randn(TILE, 3 * TILE, dtype=torch.bfloat16)
+    inp_tt = to_dram(inp_torch, device)
+    out_tt = to_dram(torch.zeros(TILE, 3 * TILE, dtype=torch.bfloat16), device)
+
+    nested_if_callbacks_kernel(inp_tt, out_tt)
+
+    result = ttnn.to_torch(out_tt)
+    # Node 0 received inp[:, 1*TILE:2*TILE] (forwarded from node 1).
+    # Node 1's compute output was never produced (it had no inp_cb push);
+    # so we only assert on node 0 and node 2.
+    tile1 = torch.abs(inp_torch[:, TILE : 2 * TILE])
+    actual_c0 = result[:, 0:TILE].float()
+    actual_c2 = result[:, 2 * TILE : 3 * TILE].float()
+    diff_c0 = (tile1.float() - actual_c0).abs().max().item()
+    diff_c2 = (tile1.float() - actual_c2).abs().max().item()
+    assert diff_c0 < 0.05, f"node 0 (net_a dst) diff: {diff_c0}"
+    assert diff_c2 < 0.05, f"node 2 (net_b dst, via relay) diff: {diff_c2}"

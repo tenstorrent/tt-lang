@@ -245,6 +245,18 @@ active-set condition wrapping each kernel function.
 * Consider a `CreatePipeOp` verifier addition for `dstStart <= dstEnd`
   and for coordinates within a known device extent, eliminating the
   defensive normalization in this pass.
-* Future spec extensions (e.g. n-D grids beyond 2D) will require
-  generalizing the predicate construction; the current implementation
-  hard-codes `core_x` / `core_y`.
+* Future spec extensions (e.g. n-D grids beyond 2D) need a dialect
+  refactor, not a pass refactor. The pass already represents rectangles
+  rank-agnostically (`ActiveRect.lo` / `ActiveRect.hi` are
+  `SmallVector<int64_t>`) and `buildActivePredicate` loops over
+  dimensions, so the rank is a property of how coordinates and pipe
+  bounds are read, not of the predicate logic. Two helpers isolate the
+  remaining 2D coupling: `readPipeSourceRect` /
+  `readPipeDstRect` (pulling six named `I64Attr`s off `CreatePipeOp`)
+  and `emitNodeCoords` (creating one `ttl.core_x` and one `ttl.core_y`
+  op). When the dialect grows beyond 2D — e.g., `CreatePipeOp` adopts
+  `DenseI64ArrayAttr` bounds and a single n-D node-coordinate op
+  replaces `core_x` / `core_y` — only those helpers change. Affine
+  maps are not the right tool here: the active set is a static union
+  of axis-aligned rectangles, so per-dimension bounds are simpler than
+  parameterized iteration domains and equally extensible.

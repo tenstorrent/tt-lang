@@ -1379,10 +1379,6 @@ def _compile_kernel(
             pipeline_passes.append("func.func(ttl-schedule-operations)")
         pipeline_passes.append("ttl-finalize-dfb-indices")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
-        # Wrap each kernel-thread body in scf.if guards over the PipeNet
-        # active set so cores outside the work extent skip the body.
-        # Must run before convert-ttl-to-ttkernel, which consumes
-        # ttl.create_pipe and ttl.core_x / ttl.core_y.
         pipeline_passes.append("ttl-insert-pipenet-active-guards")
 
         # Add CB flow graph dump if auto-profiling or perf dump is enabled

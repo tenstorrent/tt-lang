@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression for issue #541: cores outside the PipeNet active set must skip
+"""Regression for issue #541: nodes outside the PipeNet active set must skip
 every kernel-thread body even when grid="auto" launches a larger grid than
 the pipe-defined work extent.
 
 The kernels here define pipes against the work extent (M_BLOCKS, N_BLOCKS),
-not the launch grid extent. Without the active-set guard, cores outside the
+not the launch grid extent. Without the active-set guard, nodes outside the
 work rectangle execute the kernel body with out-of-bounds tensor indices and
 break the multicast handshake.
 """
@@ -36,7 +36,7 @@ def _make_small_mcast_kernel(M_DIM, K_DIM, N_DIM):
     than the auto-selected launch grid.
 
     Each node (col, row) with row < M_BLOCKS and col < N_BLOCKS computes one
-    output block. All other launched cores must be guarded out by the
+    output block. All other launched nodes must be guarded out by the
     active-set pass.
     """
     M_BLOCKS = M_DIM // BLOCK_SIZE

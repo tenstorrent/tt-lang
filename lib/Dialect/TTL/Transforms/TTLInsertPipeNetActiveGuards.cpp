@@ -31,51 +31,73 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-// Half-open rectangle [xLo, xHi) x [yLo, yHi).
+// Rank-agnostic axis-aligned half-open rectangle. `lo[d]` and `hi[d]` give
+// the inclusive lower bound and exclusive upper bound along dimension d.
+// `lo.size() == hi.size()` defines the rectangle's rank.
+//
+// Rank is set by the dialect's coordinate accessors (currently 2D — see
+// readPipeSourceBounds / readPipeDstBounds below). Predicate construction
+// (buildActivePredicate) and rectangle collection iterate over dimensions
+// generically, so n-D support reduces to extending those accessors when
+// the dialect grows beyond `core_x` / `core_y`.
 struct ActiveRect {
-  int64_t xLo;
-  int64_t xHi;
-  int64_t yLo;
-  int64_t yHi;
+  SmallVector<int64_t> lo;
+  SmallVector<int64_t> hi;
 };
 
 constexpr llvm::StringLiteral kActiveGuardAttrName = "ttl.pipenet_active_guard";
 constexpr llvm::StringLiteral kKernelThreadAttrName = "ttl.kernel_thread";
 
+// 2D-specific accessor for a pipe's source unit rectangle. The only place
+// the active-set pass reaches into named-X/Y attributes; generalize here
+// when CreatePipeOp moves to an n-D coordinate attribute.
+ActiveRect readPipeSourceRect(CreatePipeOp pipe) {
+  // CreatePipeOp accessors return uint64_t; match TTLOps.cpp's verifier
+  // pattern of explicit casts to the int64_t storage type.
+  int64_t srcX = static_cast<int64_t>(pipe.getSrcX());
+  int64_t srcY = static_cast<int64_t>(pipe.getSrcY());
+  return {{srcX, srcY}, {srcX + 1, srcY + 1}};
+}
+
+// 2D-specific accessor for a pipe's destination rectangle, normalized to
+// half-open form. Tolerates inverted ranges via min/max because
+// CreatePipeOp's verifier does not currently enforce dstStart <= dstEnd
+// ordering.
+ActiveRect readPipeDstRect(CreatePipeOp pipe) {
+  int64_t startX = static_cast<int64_t>(pipe.getDstStartX());
+  int64_t endX = static_cast<int64_t>(pipe.getDstEndX());
+  int64_t startY = static_cast<int64_t>(pipe.getDstStartY());
+  int64_t endY = static_cast<int64_t>(pipe.getDstEndY());
+  return {
+      {std::min(startX, endX), std::min(startY, endY)},
+      {std::max(startX, endX) + 1, std::max(startY, endY) + 1},
+  };
+}
+
 // Collect every active rectangle implied by `ttl.create_pipe` ops in the
-// module. Each pipe contributes:
-//   - A unit rectangle for its source coordinate.
-//   - A rectangle covering its destination range (inclusive bounds, expanded
-//     to half-open form).
+// module. Each pipe contributes a unit rectangle for its source coordinate
+// and a rectangle covering its destination range.
 SmallVector<ActiveRect> collectActiveRects(ModuleOp module) {
   SmallVector<ActiveRect> rects;
   module.walk([&](CreatePipeOp pipe) {
-    // CreatePipeOp accessors return uint64_t; match TTLOps.cpp's verifier
-    // pattern of explicit casts to the int64_t storage type.
-    int64_t srcX = static_cast<int64_t>(pipe.getSrcX());
-    int64_t srcY = static_cast<int64_t>(pipe.getSrcY());
-    rects.push_back({srcX, srcX + 1, srcY, srcY + 1});
-
-    int64_t startX = static_cast<int64_t>(pipe.getDstStartX());
-    int64_t endX = static_cast<int64_t>(pipe.getDstEndX());
-    int64_t startY = static_cast<int64_t>(pipe.getDstStartY());
-    int64_t endY = static_cast<int64_t>(pipe.getDstEndY());
-    // Tolerate inverted ranges: CreatePipeOp's verifier does not currently
-    // enforce dstStart <= dstEnd ordering.
-    int64_t xLo = std::min(startX, endX);
-    int64_t xHi = std::max(startX, endX) + 1;
-    int64_t yLo = std::min(startY, endY);
-    int64_t yHi = std::max(startY, endY) + 1;
-    rects.push_back({xLo, xHi, yLo, yHi});
+    rects.push_back(readPipeSourceRect(pipe));
+    rects.push_back(readPipeDstRect(pipe));
   });
   return rects;
 }
 
-// Build a single i1 predicate "(x, y) lies in the union of rects" using
-// arith ops.
-Value buildActivePredicate(OpBuilder &b, Location loc, Value coreX, Value coreY,
+// Build a single i1 predicate "coords lie in the union of rects" using
+// arith ops. `coords[d]` is the runtime coordinate along dimension d; all
+// rectangles must have the same rank as `coords`.
+Value buildActivePredicate(OpBuilder &b, Location loc, ValueRange coords,
                            ArrayRef<ActiveRect> rects) {
   assert(!rects.empty() && "predicate requires at least one rectangle");
+  const size_t rank = coords.size();
+  for (const ActiveRect &r : rects) {
+    (void)r;
+    assert(r.lo.size() == rank && r.hi.size() == rank &&
+           "rectangle rank must match coordinate rank");
+  }
 
   auto idxConst = [&](int64_t v) -> Value {
     return arith::ConstantIndexOp::create(b, loc, v);
@@ -83,24 +105,29 @@ Value buildActivePredicate(OpBuilder &b, Location loc, Value coreX, Value coreY,
 
   Value any;
   for (const ActiveRect &r : rects) {
-    Value xLo = idxConst(r.xLo);
-    Value xHi = idxConst(r.xHi);
-    Value yLo = idxConst(r.yLo);
-    Value yHi = idxConst(r.yHi);
-    Value xGe =
-        arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sge, coreX, xLo);
-    Value xLt =
-        arith::CmpIOp::create(b, loc, arith::CmpIPredicate::slt, coreX, xHi);
-    Value yGe =
-        arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sge, coreY, yLo);
-    Value yLt =
-        arith::CmpIOp::create(b, loc, arith::CmpIPredicate::slt, coreY, yHi);
-    Value xIn = arith::AndIOp::create(b, loc, xGe, xLt);
-    Value yIn = arith::AndIOp::create(b, loc, yGe, yLt);
-    Value inRect = arith::AndIOp::create(b, loc, xIn, yIn);
+    Value inRect;
+    for (size_t d = 0; d < rank; ++d) {
+      Value lo = idxConst(r.lo[d]);
+      Value hi = idxConst(r.hi[d]);
+      Value ge = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sge,
+                                       coords[d], lo);
+      Value lt = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::slt,
+                                       coords[d], hi);
+      Value dimIn = arith::AndIOp::create(b, loc, ge, lt);
+      inRect = inRect ? arith::AndIOp::create(b, loc, inRect, dimIn).getResult()
+                      : dimIn;
+    }
     any = any ? arith::OrIOp::create(b, loc, any, inRect).getResult() : inRect;
   }
   return any;
+}
+
+// 2D-specific node-coordinate emitter. Returns one Value per dimension,
+// matching the rank of every ActiveRect produced by collectActiveRects.
+// Generalize here when the dialect grows beyond `core_x` / `core_y`.
+SmallVector<Value> emitNodeCoords(OpBuilder &b, Location loc) {
+  Type idx = b.getIndexType();
+  return {CoreXOp::create(b, loc, idx), CoreYOp::create(b, loc, idx)};
 }
 
 // Returns true if `func` already contains an scf.if marked with the active
@@ -146,9 +173,8 @@ LogicalResult wrapFunctionBody(func::FuncOp func, ArrayRef<ActiveRect> rects) {
   OpBuilder builder(terminator);
   Location loc = func.getLoc();
 
-  Value coreX = CoreXOp::create(builder, loc, builder.getIndexType());
-  Value coreY = CoreYOp::create(builder, loc, builder.getIndexType());
-  Value pred = buildActivePredicate(builder, loc, coreX, coreY, rects);
+  SmallVector<Value> coords = emitNodeCoords(builder, loc);
+  Value pred = buildActivePredicate(builder, loc, coords, rects);
 
   auto ifOp = scf::IfOp::create(builder, loc, /*resultTypes=*/TypeRange{}, pred,
                                 /*withElseRegion=*/false);
@@ -161,12 +187,12 @@ LogicalResult wrapFunctionBody(func::FuncOp func, ArrayRef<ActiveRect> rects) {
   // The then block has an scf.yield inserted by the builder; preserve it.
   Operation *thenTerminator = thenBlock->getTerminator();
 
-  // Collect ops to move: everything strictly before coreX in the original
-  // block. coreX is the first newly inserted op.
-  Operation *coreXOp = coreX.getDefiningOp();
+  // Collect ops to move: everything strictly before the first inserted
+  // coordinate op in the original block.
+  Operation *firstNewOp = coords.front().getDefiningOp();
   SmallVector<Operation *> toMove;
   for (Operation &op : block) {
-    if (&op == coreXOp) {
+    if (&op == firstNewOp) {
       break;
     }
     toMove.push_back(&op);
