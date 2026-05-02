@@ -628,7 +628,9 @@ Blocks have a life cycle that starts with acquisition by using dataflow buffer's
 
 ## Pipe
 
-A *pipe* is a communication primitive for organizing the passing of data between data movement kernels on different nodes. A pipe is used as a source or a destination in the `ttl.copy`. The pipe is constructed with source node coordinate (`src`) and destination (`dst`), which is either a single node coordinate for unicast or *node range* for multicast. The node range uses a combination of dimension slices and values to describe a contiguous hypercube. The node range dimensions’ aspects will match the corresponding aspects returned by the `grid_size` function for the same number of dimensions.
+A *pipe* is a communication primitive for organizing the passing of data between data movement kernels on different nodes. A pipe is used as a source or a destination in the `ttl.copy`. The pipe is constructed with source node coordinate (`src`) and destination (`dst`), which is either a single node coordinate for unicast or *node range* for multicast. The node range uses a combination of dimension slices and values to describe a contiguous hypercube.
+
+A node range has the same number of dimensions as `grid_size(dims=N)`, and each coordinate `c_i` lies within the corresponding grid extent `G_i` (i.e. `0 <= c_i < G_i`). The range may be smaller than the grid: pipes are not required to span every node along any dimension. Pipe coordinates should be sized from the operation's *work extent*, which may be smaller than the launch extent given by `@ttl.operation(grid=...)`.
 
 | Type alias/Function | Description |
 | :---- | :---- |
@@ -643,6 +645,8 @@ A *pipe net* is a communication primitive that groups pipes into a network. A pi
 Condition body function is invoked for each pipe in case of `if_src` if the current node is a source, and in case of `if_dst` if the current node is a destination. The condition body function has a single argument: a pipe identity that satisfies the condition. Condition body function can identify the source and the destination by its `src` and `dst` read-only properties correspondingly.
 
 A pipe net is constructed in the scope of an operation function but can only be used with its `if_src` and `if_dst` functions inside of a data movement kernel function. The corresponding  `ttl.copy` where a pipe is a source or a destination can be called only inside of a condition body function. Calls into `if_src` and `if_dst` can be nested within condition functions for different pipe nets.
+
+The *active set* of an operation is the union, over every pipe in every pipe net constructed by the operation, of the pipe's source coordinate and its destination coordinate or range. Nodes outside the active set do not participate in pipe communication and the implementation must ensure they skip the bodies of every kernel thread function for that operation. This decouples pipe extent from launch extent: an operation launched with `grid="auto"` on a larger grid than its work shape executes only on the active subset.
 
 | Function | Description |
 | :---- | :---- |
@@ -669,13 +673,18 @@ A pipe net is constructed in the scope of an operation function but can only be 
 # (0, 3) (1, 3) (2, 3) (3, 3)
 
 # ---------------------
-# gather from row y to (0, y) with unicast
+# gather from row y to (0, y) with unicast.
+#
+# The pipe net is sized from the operation's work extent, not the launch
+# extent. ROWS and COLS describe the gather work shape. Nodes outside the
+# active rectangle (row 0..ROWS-1, column 0..COLS-1) skip the kernel body.
 
-grid_x, grid_y = ttl.grid_size()
+ROWS = ...  # rows participating in the gather
+COLS = ...  # columns participating in the gather
 
 net = ttl.PipeNet([ttl.Pipe(
     src = (x, y),
-    dst = (0, y)) for x in range(1, grid_x) for y in range(grid_y)])
+    dst = (0, y)) for x in range(1, COLS) for y in range(ROWS)])
 
 # (1, 0) -> (0, 0) |             |
 # (2, 0) -> (0, 0) | sequential  |

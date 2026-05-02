@@ -152,6 +152,12 @@ class PipeNet:
     PipeNet groups multiple pipes and provides if_src/if_dst methods
     for conditional execution based on core coordinates.
 
+    Active set: the union of every pipe's source coordinate and destination
+    range across all PipeNets in the operation. Cores outside the active set
+    do not participate in pipe communication and skip every kernel-thread
+    body, so pipe coordinates should be sized from the operation's work
+    extent (not the launch extent given by @ttl.operation(grid=...)).
+
     Limitation: overlapping multicast destinations (a core receiving
     from multiple multicast sources) within a single PipeNet are not
     yet supported. This will be fixed once noc_semaphore_inc_multicast
@@ -162,11 +168,11 @@ class PipeNet:
         pipes: List of Pipe objects defining the network
 
     Example:
-        # Gather pattern: all cores send to (0, y)
+        # Gather pattern from work extent ROWS x COLS:
         net = ttl.PipeNet([
             ttl.Pipe(src=(x, y), dst=(0, y))
-            for x in range(1, grid_x)
-            for y in range(grid_y)
+            for x in range(1, COLS)
+            for y in range(ROWS)
         ])
 
         # In datamovement thread:
