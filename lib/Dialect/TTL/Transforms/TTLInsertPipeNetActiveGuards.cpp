@@ -109,9 +109,11 @@ bool rectContains(const ActiveRect &outer, const ActiveRect &inner) {
 // unit cell sits inside the destination range; the pass would otherwise
 // emit two predicates whose union is just the destination rectangle.
 //
-// Equal rectangles each contain each other; tie-break by keeping the
-// earliest occurrence so deduplication is deterministic. O(N^2) in the
-// number of rectangles, which is fine because N is at most twice the
+// When N rectangles are equal, only the first occurrence (lowest index)
+// is kept, regardless of N. Equal rectangles each contain each other, so
+// the absorbed-when-strictly-contained-or-equal-and-later rule selects
+// exactly one survivor and is independent of duplication count. O(N^2) in
+// the number of rectangles, which is fine because N is at most twice the
 // number of pipes in the module.
 SmallVector<ActiveRect> coalesceContainedRects(ArrayRef<ActiveRect> rects) {
   SmallVector<ActiveRect> kept;
@@ -192,6 +194,10 @@ bool hasExistingGuard(func::FuncOp func) {
 }
 
 // Wrap the body of a single-block kernel function in an scf.if guard.
+// Multi-block kernel functions are reported as an op error; the single-block
+// shape and func.return terminator are MLIR-verifier guarantees on
+// func::FuncOp once a function is verified, so they are asserted rather
+// than rechecked.
 LogicalResult wrapFunctionBody(func::FuncOp func, ArrayRef<ActiveRect> rects) {
   if (!func.getBody().hasOneBlock()) {
     return func.emitOpError(
@@ -199,14 +205,10 @@ LogicalResult wrapFunctionBody(func::FuncOp func, ArrayRef<ActiveRect> rects) {
   }
 
   Block &block = func.getBody().front();
-  if (block.empty()) {
-    return func.emitOpError("kernel function has no terminator");
-  }
   Operation *terminator = block.getTerminator();
-  if (!isa<func::ReturnOp>(terminator)) {
-    return func.emitOpError(
-        "ttl-insert-pipenet-active-guards expects func.return terminator");
-  }
+  assert(terminator && "verified func::FuncOp must have a terminator");
+  assert(isa<func::ReturnOp>(terminator) &&
+         "kernel func::FuncOp must end in func.return");
 
   // Empty body (only terminator): nothing to guard.
   if (&block.front() == terminator) {
@@ -234,9 +236,14 @@ LogicalResult wrapFunctionBody(func::FuncOp func, ArrayRef<ActiveRect> rects) {
   // The then block has an scf.yield inserted by the builder; preserve it.
   Operation *thenTerminator = thenBlock->getTerminator();
 
-  // Collect ops to move: everything strictly before the first inserted
-  // coordinate op in the original block.
+  // Anchor on the defining op of the first emitted coordinate value.
+  // emitNodeCoords currently returns CoreXOp / CoreYOp results, both of
+  // which have defining ops in this block; the assert pins that
+  // assumption so a future n-D coordinate emitter cannot silently produce
+  // a block argument or detached value here.
   Operation *firstNewOp = coords.front().getDefiningOp();
+  assert(firstNewOp && firstNewOp->getBlock() == &block &&
+         "node-coordinate ops must define values in the kernel block");
   SmallVector<Operation *> toMove;
   for (Operation &op : block) {
     if (&op == firstNewOp) {

@@ -84,3 +84,13 @@ def test_pipe_dst_slice_start_must_be_less_than_stop():
         ttl.Pipe(src=(0, 0), dst=(slice(4, 4), 0))
     with pytest.raises(ValueError, match="start must be < stop"):
         ttl.Pipe(src=(0, 0), dst=(slice(4, 0), 0))
+
+
+def test_pipe_src_must_be_two_tuple():
+    """`Pipe.src` is declared `Tuple[int, int]`; non-2 lengths must be
+    rejected at construction so users see the error at the source line
+    rather than as a downstream MLIR-emission failure."""
+    with pytest.raises(ValueError, match="src must be a 2-tuple"):
+        ttl.Pipe(src=(0,), dst=(1, 0))
+    with pytest.raises(ValueError, match="src must be a 2-tuple"):
+        ttl.Pipe(src=(0, 1, 2), dst=(1, 0))
