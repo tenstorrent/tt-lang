@@ -6,6 +6,8 @@
 # but the read datamovement path uses wait() on a_dfb and b_dfb instead of reserve().
 # Nothing produces data into those buffers while compute and write block, so the
 # scheduler reports a deadlock.
+#
+# TTLANG_HARDWARE_CI: xfail-compiler
 import torch
 import ttl
 import ttnn
