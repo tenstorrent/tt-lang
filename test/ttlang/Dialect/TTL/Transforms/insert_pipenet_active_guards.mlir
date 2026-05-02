@@ -7,15 +7,20 @@
 //   * Skips functions when no pipes are present.
 //   * Skips empty bodies that contain only a terminator.
 //   * Is idempotent: running twice still produces a single guard per func.
+//   * Coalesces rectangles fully contained in another (e.g. loopback pipes
+//     where the source unit cell sits inside the destination range).
 
 // Single multicast pipe: src=(0,0), dst range x in [0,3], y=0.
+// The source unit cell (0,1)x(0,1) is contained in the destination
+// rectangle (0,4)x(0,1), so coalescing drops the source rect and the
+// predicate has a single conjunction (no arith.ori).
 
 // CHECK-LABEL: func.func @dm_thread_single_pipe
 // CHECK: ttl.core_x : index
 // CHECK: ttl.core_y : index
 // CHECK: arith.cmpi sge
 // CHECK: arith.cmpi slt
-// CHECK: arith.ori
+// CHECK-NOT: arith.ori
 // CHECK: scf.if {{.*}} {
 // CHECK:   ttl.create_pipe
 // CHECK:   ttl.if_src
@@ -56,16 +61,16 @@ func.func @compute_thread_with_module_pipe() attributes {ttl.kernel_thread = #tt
 
 // -----
 
-// Multi-pipe case: two pipes contribute distinct rectangles, predicate is
-// OR over all rectangles (4 total: 2 src + 2 dst).
+// Multi-pipe case: two pipes whose sources are each contained in their
+// own destination ranges. Coalescing drops both source rects, leaving
+// two destination rectangles combined by a single arith.ori.
 
 // CHECK-LABEL: func.func @dm_thread_multi_pipe
 // CHECK: ttl.core_x
 // CHECK: ttl.core_y
 // CHECK: arith.andi
 // CHECK: arith.ori
-// CHECK: arith.ori
-// CHECK: arith.ori
+// CHECK-NOT: arith.ori
 // CHECK: scf.if
 // CHECK: return
 
@@ -174,20 +179,16 @@ func.func @unicast_pipe() attributes {ttl.kernel_thread = #ttkernel.thread<noc>}
 // -----
 
 // Inverted destination range: dst_start > dst_end on x. The pass must
-// normalize via min/max so the rectangle is [0, 4) x [0, 1).
+// normalize via min/max so the rectangle is [0, 4) x [0, 1). The
+// source (3, 0) lies inside the normalized destination, so coalescing
+// drops the source rect and only the destination predicate remains.
 
 // CHECK-LABEL: func.func @inverted_dst_range
-// Source rectangle: src=(3,0) -> [3,4) x [0,1)
-// CHECK: arith.constant 3 : index
-// CHECK: arith.constant 4 : index
-// CHECK: arith.constant 0 : index
-// CHECK: arith.constant 1 : index
-// Destination rectangle (normalized): min(3,0)=0, max(3,0)+1=4 -> [0,4) x [0,1)
 // CHECK: arith.constant 0 : index
 // CHECK: arith.constant 4 : index
 // CHECK: arith.constant 0 : index
 // CHECK: arith.constant 1 : index
-// CHECK: arith.ori
+// CHECK-NOT: arith.ori
 // CHECK: scf.if
 // CHECK: return
 
@@ -195,6 +196,32 @@ func.func @inverted_dst_range() attributes {ttl.kernel_thread = #ttkernel.thread
   %p = ttl.create_pipe src(3, 0) dst(3, 0) to(0, 0) net 0
       : !ttl.pipe<src(3, 0) dst(3, 0) to(0, 0) net 0>
   ttl.if_dst %p : !ttl.pipe<src(3, 0) dst(3, 0) to(0, 0) net 0> {
+  }
+  func.return
+}
+
+// -----
+
+// Loopback multicast: source coordinate sits inside the destination
+// range. Without coalescing the predicate would be the OR of a unit
+// cell and a strictly larger rectangle that already covers it; the
+// pass drops the redundant source rect, leaving a single destination
+// rectangle predicate.
+
+// CHECK-LABEL: func.func @loopback_pipe_coalesces
+// CHECK: ttl.core_x
+// CHECK: ttl.core_y
+// CHECK: arith.cmpi sge
+// CHECK: arith.cmpi slt
+// CHECK-NOT: arith.ori
+// CHECK: scf.if
+// CHECK: return
+
+func.func @loopback_pipe_coalesces() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  // src=(0,0) is in column 0 row 0; dst is column 0 rows 0..3 (includes src).
+  %p = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 3) net 0
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 3) net 0>
+  ttl.if_src %p : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 3) net 0> {
   }
   func.return
 }

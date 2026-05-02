@@ -216,16 +216,16 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             scheduler = GreenletScheduler()
             set_scheduler(scheduler)
 
-            # Compute the PipeNet active set: linear core indices that
-            # participate in any pipe as source or destination. Inactive cores
+            # Compute the PipeNet active set: linear node indices that
+            # participate in any pipe as source or destination. Inactive nodes
             # skip every kernel thread, mirroring the compiler's scf.if guard.
-            from .pipe import _compute_active_linear_cores
+            from .pipe import compute_active_linear_nodes
 
             grid = self.context.get("grid", (1, 1))
-            active_linear_cores = _compute_active_linear_cores(tuple(grid))
+            active_nodes = compute_active_linear_nodes(tuple(grid))
 
-            def _is_active(core: int) -> bool:
-                return active_linear_cores is None or core in active_linear_cores
+            def _is_active(node: int) -> bool:
+                return active_nodes is None or node in active_nodes
 
             try:
                 # Track all per-core contexts for validation

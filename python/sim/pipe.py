@@ -272,7 +272,7 @@ def core_in_dst_range(
 # These helpers wrap that storage so callers don't need to import context internals.
 
 
-def _clear_pipe_net_registry() -> None:
+def clear_pipe_net_registry() -> None:
     """Reset the PipeNet registry. Called before each operation runs."""
     from .context import get_context
 
@@ -343,7 +343,7 @@ def _expand_dst(dst: Any, grid: Tuple[int, ...]) -> List[Tuple[int, ...]]:
     return [tuple(dst)]
 
 
-def _compute_active_linear_cores(
+def compute_active_linear_nodes(
     grid: Tuple[int, ...],
 ) -> Optional[Set[int]]:
     """Return the set of linear core indices active in any registered PipeNet.
