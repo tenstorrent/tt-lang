@@ -216,11 +216,23 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             scheduler = GreenletScheduler()
             set_scheduler(scheduler)
 
+            # Compute the PipeNet active set: linear core indices that
+            # participate in any pipe as source or destination. Inactive cores
+            # skip every kernel thread, mirroring the compiler's scf.if guard.
+            from .pipe import _compute_active_linear_cores
+
+            grid = self.context.get("grid", (1, 1))
+            active_linear_cores = _compute_active_linear_cores(tuple(grid))
+
             try:
                 # Track all per-core contexts for validation
                 all_core_contexts: List[Dict[str, Any]] = []
 
                 for core in range(total_cores):
+                    # Skip cores that are not in any PipeNet's active set.
+                    if active_linear_cores is not None and core not in active_linear_cores:
+                        continue
+
                     # Build per-core context
                     core_context = self._build_core_context(core)
                     all_core_contexts.append(core_context)
@@ -251,15 +263,23 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                         thread_name = f"core{core}-{tmpl.__name__}"
                         scheduler.add_thread(thread_name, _tagged, thread_type)
 
+                # Iterator over the cores that actually run threads. Inactive
+                # cores (filtered above) are not traced.
+                def _active_cores():
+                    for core in range(total_cores):
+                        if active_linear_cores is not None and core not in active_linear_cores:
+                            continue
+                        yield core
+
                 # Emit operation_start for each node before the scheduler runs.
-                for core in range(total_cores):
+                for core in _active_cores():
                     trace("operation_start", node=core)
 
                 # Run scheduler
                 scheduler.run()
 
                 # Emit operation_end for each node now that all kernels completed.
-                for core in range(total_cores):
+                for core in _active_cores():
                     trace("operation_end", node=core)
 
                 # Validate all DataflowBuffers have no pending blocks

@@ -94,4 +94,7 @@ class SimulatorContext:
     kernel_l1_bytes: int = (
         0  # Total L1 capacity of DFBs created in the current kernel body
     )
+    # PipeNets constructed in the current kernel body. Cleared per operation;
+    # consumed by the program scheduler to compute the active set of cores.
+    kernel_pipe_nets: list[Any] = field(default_factory=list)
     trace_events: list[TraceEvent] = field(default_factory=list)

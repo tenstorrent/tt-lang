@@ -11,7 +11,7 @@ This module provides:
 """
 
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, List, TypeVar, Union
+from typing import Any, Callable, Generic, List, Optional, Set, Tuple, TypeVar, Union
 
 from .corecontext import node, flatten_core_index, grid_size
 from .typedefs import CoreCoord, CoreRange
@@ -267,6 +267,73 @@ def core_in_dst_range(
             return current_core_coords == dst_core_range
 
 
+# PipeNets constructed during the current operation's kernel body live in the
+# per-greenlet SimulatorContext (see context_types.SimulatorContext.kernel_pipe_nets).
+# These helpers wrap that storage so callers don't need to import context internals.
+
+
+def _clear_pipe_net_registry() -> None:
+    """Reset the PipeNet registry. Called before each operation runs."""
+    from .context import get_context
+
+    get_context().kernel_pipe_nets.clear()
+
+
+def _register_pipe_net(net: "PipeNet") -> None:
+    """Append a constructed PipeNet to the active-set registry."""
+    from .context import get_context
+
+    get_context().kernel_pipe_nets.append(net)
+
+
+def _coord_to_tuple(coord: CoreCoord, dims: int) -> Tuple[int, ...]:
+    """Normalize a CoreCoord to a tuple of length `dims`."""
+    if isinstance(coord, int):
+        return (coord,) * dims if dims == 1 else (coord,)
+    return tuple(coord)
+
+
+def _linearize(coord_tuple: Tuple[int, ...], grid: Tuple[int, ...]) -> int:
+    """Linearize an n-d coord using the same row-major rule as flatten_core_index."""
+    linear = coord_tuple[0]
+    for i in range(1, len(coord_tuple)):
+        linear = linear * grid[i] + coord_tuple[i]
+    return linear
+
+
+def _expand_dst(dst: Any, grid: Tuple[int, ...]) -> List[Tuple[int, ...]]:
+    """Expand a pipe destination (CoreCoord or CoreRange) to a list of coord tuples."""
+    if isinstance(dst, int):
+        return [(dst,)]
+    if isinstance(dst, tuple) and any(isinstance(item, slice) for item in dst):
+        return [_coord_to_tuple(c, len(dst)) for c in expand_core_range(dst)]
+    return [tuple(dst)] if isinstance(dst, tuple) else [(dst,)]
+
+
+def _compute_active_linear_cores(
+    grid: Tuple[int, ...],
+) -> Optional[Set[int]]:
+    """Return the set of linear core indices active in any registered PipeNet.
+
+    Returns None when no PipeNets were registered, signaling that no active-set
+    filtering should be applied (every core is active).
+    """
+    from .context import get_context
+
+    registry = get_context().kernel_pipe_nets
+    if not registry:
+        return None
+
+    active: Set[int] = set()
+    for net in registry:
+        for pipe in net._pipes:
+            src_tuple = _coord_to_tuple(pipe.src, len(grid))
+            active.add(_linearize(src_tuple, grid))
+            for dst_tuple in _expand_dst(pipe.dst, grid):
+                active.add(_linearize(dst_tuple, grid))
+    return active
+
+
 class PipeNet(Generic[DstT]):
     """
     A network of pipes for organizing core-to-core communication patterns.
@@ -282,6 +349,7 @@ class PipeNet(Generic[DstT]):
             pipes: List of Pipe objects defining the communication pattern
         """
         self._pipes = pipes
+        _register_pipe_net(self)
 
     def if_src(self, cond_fun: Callable[[SrcPipeIdentity[DstT]], None]) -> None:
         """Execute condition function for each pipe where current core is source.

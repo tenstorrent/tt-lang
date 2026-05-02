@@ -98,8 +98,13 @@ def operation(
             from .decorators import clear_thread_registry, get_registered_threads
             from .program import Program
 
-            # Clear thread registry and resource counters before kernel execution
+            # Clear thread registry and resource counters before kernel execution.
+            # Also clear the PipeNet registry so the program scheduler can compute
+            # the active set of cores for this operation.
+            from .pipe import _clear_pipe_net_registry
+
             clear_thread_registry()
+            _clear_pipe_net_registry()
             get_context().kernel_dfb_count = 0
             get_context().kernel_l1_bytes = 0
 
