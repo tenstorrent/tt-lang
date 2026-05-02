@@ -56,18 +56,6 @@ class DstPipeIdentity:
         return self._pipe.src
 
 
-# Registry of PipeNets constructed during the current kernel trace.
-# Cleared by _compile_kernel before invoking the user closure; consulted
-# afterwards by the active-set guard emission to determine which cores
-# participate in pipe communication.
-_pipe_net_registry: List["PipeNet"] = []
-
-
-def _clear_pipe_net_registry() -> None:
-    """Reset the PipeNet registry. Called before tracing each kernel."""
-    _pipe_net_registry.clear()
-
-
 class Pipe:
     """
     A pipe for core-to-core data transfer.
@@ -197,7 +185,6 @@ class PipeNet:
         self.pipes = pipes
         for pipe in self.pipes:
             pipe.pipe_net_id = self.pipe_net_id
-        _pipe_net_registry.append(self)
 
     @staticmethod
     def _validate_no_overlapping_destinations(pipes: List[Pipe]):
