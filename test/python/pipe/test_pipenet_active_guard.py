@@ -119,9 +119,7 @@ def _make_small_mcast_kernel(M_DIM, K_DIM, N_DIM):
             nb = node_n
             nc = nb * BLOCK_N
             with out_cb.wait() as out_blk:
-                ttl.copy(
-                    out_blk, out[mr : mr + BLOCK_M, nc : nc + BLOCK_N]
-                ).wait()
+                ttl.copy(out_blk, out[mr : mr + BLOCK_M, nc : nc + BLOCK_N]).wait()
 
     return small_mcast_matmul
 

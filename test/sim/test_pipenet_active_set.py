@@ -49,6 +49,15 @@ def test_active_cores_unions_multiple_pipenets():
     assert active == {0, 8, 16, 17}
 
 
+def test_active_cores_unicast_single_dst():
+    """Unicast pipe contributes the source cell and the single dst cell."""
+    _clear_pipe_net_registry()
+    ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(2, 3))])
+    active = _compute_active_linear_cores(grid=(8, 8))
+    # src (0, 0) -> 0; dst (2, 3) -> 2*8 + 3 = 19.
+    assert active == {0, 19}
+
+
 def test_active_cores_none_when_no_pipenets():
     _clear_pipe_net_registry()
     active = _compute_active_linear_cores(grid=(4, 4))
@@ -63,9 +72,6 @@ def test_inactive_cores_skip_thread_bodies():
     Python sets cannot accumulate across cores. We use ttl.trace events
     instead, which are emitted by the program scheduler before deep-copy.
     """
-
-    from python.sim.context import get_context, reset_context
-
     _clear_pipe_net_registry()
     reset_context()
     cfg = get_context().config
@@ -104,9 +110,6 @@ def test_inactive_cores_skip_thread_bodies():
 
 def test_no_pipes_means_all_cores_run():
     """Without any PipeNet, the simulator must execute every core (legacy behavior)."""
-
-    from python.sim.context import get_context, reset_context
-
     _clear_pipe_net_registry()
     reset_context()
     cfg = get_context().config

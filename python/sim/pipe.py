@@ -286,10 +286,10 @@ def _register_pipe_net(net: "PipeNet") -> None:
     get_context().kernel_pipe_nets.append(net)
 
 
-def _coord_to_tuple(coord: CoreCoord, dims: int) -> Tuple[int, ...]:
-    """Normalize a CoreCoord to a tuple of length `dims`."""
+def _coord_to_tuple(coord: CoreCoord) -> Tuple[int, ...]:
+    """Normalize a CoreCoord (int or tuple) to a tuple of ints."""
     if isinstance(coord, int):
-        return (coord,) * dims if dims == 1 else (coord,)
+        return (coord,)
     return tuple(coord)
 
 
@@ -301,13 +301,46 @@ def _linearize(coord_tuple: Tuple[int, ...], grid: Tuple[int, ...]) -> int:
     return linear
 
 
+def _expand_range_with_grid(
+    core_range: Tuple[Any, ...], grid: Tuple[int, ...]
+) -> List[Tuple[int, ...]]:
+    """Expand a CoreRange (tuple of ints and slices) to a list of coord tuples,
+    using the explicit grid for slice bounds rather than relying on the
+    grid_size() frame lookup. This avoids depending on the caller having a
+    `grid` local variable."""
+    dims = len(core_range)
+    dim_ranges: List[List[int]] = []
+    for i, item in enumerate(core_range):
+        if isinstance(item, slice):
+            start = item.start if item.start is not None else 0
+            stop = item.stop if item.stop is not None else grid[i]
+            step = item.step if item.step is not None else 1
+            dim_ranges.append(list(range(start, stop, step)))
+        else:
+            dim_ranges.append([item])
+
+    result: List[Tuple[int, ...]] = []
+
+    def _cartesian(remaining: List[List[int]], current: List[int]) -> None:
+        if not remaining:
+            result.append(tuple(current) if dims > 1 else (current[0],))
+            return
+        for value in remaining[0]:
+            _cartesian(remaining[1:], current + [value])
+
+    _cartesian(dim_ranges, [])
+    return result
+
+
 def _expand_dst(dst: Any, grid: Tuple[int, ...]) -> List[Tuple[int, ...]]:
     """Expand a pipe destination (CoreCoord or CoreRange) to a list of coord tuples."""
     if isinstance(dst, int):
         return [(dst,)]
-    if isinstance(dst, tuple) and any(isinstance(item, slice) for item in dst):
-        return [_coord_to_tuple(c, len(dst)) for c in expand_core_range(dst)]
-    return [tuple(dst)] if isinstance(dst, tuple) else [(dst,)]
+    if not isinstance(dst, tuple):
+        raise TypeError(f"Pipe.dst must be int or tuple, got {type(dst).__name__}")
+    if any(isinstance(item, slice) for item in dst):
+        return _expand_range_with_grid(dst, grid)
+    return [tuple(dst)]
 
 
 def _compute_active_linear_cores(
@@ -327,8 +360,7 @@ def _compute_active_linear_cores(
     active: Set[int] = set()
     for net in registry:
         for pipe in net._pipes:
-            src_tuple = _coord_to_tuple(pipe.src, len(grid))
-            active.add(_linearize(src_tuple, grid))
+            active.add(_linearize(_coord_to_tuple(pipe.src), grid))
             for dst_tuple in _expand_dst(pipe.dst, grid):
                 active.add(_linearize(dst_tuple, grid))
     return active

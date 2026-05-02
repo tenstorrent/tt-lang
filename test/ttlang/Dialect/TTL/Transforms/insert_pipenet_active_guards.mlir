@@ -141,3 +141,60 @@ func.func @dm_thread_in_same_module() attributes {ttl.kernel_thread = #ttkernel.
   }
   func.return
 }
+
+// -----
+
+// Unicast pipe: dst_start == dst_end, so the destination rectangle is a
+// unit cell. Combined with the source unit cell, the predicate is two
+// disjoint single-core checks.
+
+// CHECK-LABEL: func.func @unicast_pipe
+// Source rectangle constants: src=(0,0) -> [0,1) x [0,1)
+// CHECK: arith.constant 0 : index
+// CHECK: arith.constant 1 : index
+// CHECK: arith.constant 0 : index
+// CHECK: arith.constant 1 : index
+// Destination rectangle constants: dst=(2,3) to (2,3) -> [2,3) x [3,4)
+// CHECK: arith.constant 2 : index
+// CHECK: arith.constant 3 : index
+// CHECK: arith.constant 3 : index
+// CHECK: arith.constant 4 : index
+// CHECK: arith.ori
+// CHECK: scf.if
+// CHECK: return
+
+func.func @unicast_pipe() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %p = ttl.create_pipe src(0, 0) dst(2, 3) to(2, 3) net 0
+      : !ttl.pipe<src(0, 0) dst(2, 3) to(2, 3) net 0>
+  ttl.if_src %p : !ttl.pipe<src(0, 0) dst(2, 3) to(2, 3) net 0> {
+  }
+  func.return
+}
+
+// -----
+
+// Inverted destination range: dst_start > dst_end on x. The pass must
+// normalize via min/max so the rectangle is [0, 4) x [0, 1).
+
+// CHECK-LABEL: func.func @inverted_dst_range
+// Source rectangle: src=(3,0) -> [3,4) x [0,1)
+// CHECK: arith.constant 3 : index
+// CHECK: arith.constant 4 : index
+// CHECK: arith.constant 0 : index
+// CHECK: arith.constant 1 : index
+// Destination rectangle (normalized): min(3,0)=0, max(3,0)+1=4 -> [0,4) x [0,1)
+// CHECK: arith.constant 0 : index
+// CHECK: arith.constant 4 : index
+// CHECK: arith.constant 0 : index
+// CHECK: arith.constant 1 : index
+// CHECK: arith.ori
+// CHECK: scf.if
+// CHECK: return
+
+func.func @inverted_dst_range() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %p = ttl.create_pipe src(3, 0) dst(3, 0) to(0, 0) net 0
+      : !ttl.pipe<src(3, 0) dst(3, 0) to(0, 0) net 0>
+  ttl.if_dst %p : !ttl.pipe<src(3, 0) dst(3, 0) to(0, 0) net 0> {
+  }
+  func.return
+}

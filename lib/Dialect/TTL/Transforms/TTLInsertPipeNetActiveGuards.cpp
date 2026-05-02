@@ -16,7 +16,6 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Builders.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
@@ -51,14 +50,18 @@ constexpr llvm::StringLiteral kKernelThreadAttrName = "ttl.kernel_thread";
 SmallVector<ActiveRect> collectActiveRects(ModuleOp module) {
   SmallVector<ActiveRect> rects;
   module.walk([&](CreatePipeOp pipe) {
-    int64_t srcX = pipe.getSrcX();
-    int64_t srcY = pipe.getSrcY();
+    // CreatePipeOp accessors return uint64_t; match TTLOps.cpp's verifier
+    // pattern of explicit casts to the int64_t storage type.
+    int64_t srcX = static_cast<int64_t>(pipe.getSrcX());
+    int64_t srcY = static_cast<int64_t>(pipe.getSrcY());
     rects.push_back({srcX, srcX + 1, srcY, srcY + 1});
 
-    int64_t startX = pipe.getDstStartX();
-    int64_t endX = pipe.getDstEndX();
-    int64_t startY = pipe.getDstStartY();
-    int64_t endY = pipe.getDstEndY();
+    int64_t startX = static_cast<int64_t>(pipe.getDstStartX());
+    int64_t endX = static_cast<int64_t>(pipe.getDstEndX());
+    int64_t startY = static_cast<int64_t>(pipe.getDstStartY());
+    int64_t endY = static_cast<int64_t>(pipe.getDstEndY());
+    // Tolerate inverted ranges: CreatePipeOp's verifier does not currently
+    // enforce dstStart <= dstEnd ordering.
     int64_t xLo = std::min(startX, endX);
     int64_t xHi = std::max(startX, endX) + 1;
     int64_t yLo = std::min(startY, endY);
@@ -68,7 +71,8 @@ SmallVector<ActiveRect> collectActiveRects(ModuleOp module) {
   return rects;
 }
 
-// Build a single i1 predicate `(x, y) ∈ ⋃ rects` using arith ops.
+// Build a single i1 predicate "(x, y) lies in the union of rects" using
+// arith ops.
 Value buildActivePredicate(OpBuilder &b, Location loc, Value coreX, Value coreY,
                            ArrayRef<ActiveRect> rects) {
   assert(!rects.empty() && "predicate requires at least one rectangle");
@@ -83,14 +87,14 @@ Value buildActivePredicate(OpBuilder &b, Location loc, Value coreX, Value coreY,
     Value xHi = idxConst(r.xHi);
     Value yLo = idxConst(r.yLo);
     Value yHi = idxConst(r.yHi);
-    Value xGe = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sge, coreX,
-                                      xLo);
-    Value xLt = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::slt, coreX,
-                                      xHi);
-    Value yGe = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sge, coreY,
-                                      yLo);
-    Value yLt = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::slt, coreY,
-                                      yHi);
+    Value xGe =
+        arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sge, coreX, xLo);
+    Value xLt =
+        arith::CmpIOp::create(b, loc, arith::CmpIPredicate::slt, coreX, xHi);
+    Value yGe =
+        arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sge, coreY, yLo);
+    Value yLt =
+        arith::CmpIOp::create(b, loc, arith::CmpIPredicate::slt, coreY, yHi);
     Value xIn = arith::AndIOp::create(b, loc, xGe, xLt);
     Value yIn = arith::AndIOp::create(b, loc, yGe, yLt);
     Value inRect = arith::AndIOp::create(b, loc, xIn, yIn);
@@ -114,8 +118,7 @@ bool hasExistingGuard(func::FuncOp func) {
 }
 
 // Wrap the body of a single-block kernel-thread function in an scf.if guard.
-LogicalResult wrapFunctionBody(func::FuncOp func,
-                               ArrayRef<ActiveRect> rects) {
+LogicalResult wrapFunctionBody(func::FuncOp func, ArrayRef<ActiveRect> rects) {
   if (!func.getBody().hasOneBlock()) {
     return func.emitOpError(
         "ttl-insert-pipenet-active-guards requires single-block functions");
@@ -147,8 +150,8 @@ LogicalResult wrapFunctionBody(func::FuncOp func,
   Value coreY = CoreYOp::create(builder, loc, builder.getIndexType());
   Value pred = buildActivePredicate(builder, loc, coreX, coreY, rects);
 
-  auto ifOp = scf::IfOp::create(builder, loc, /*resultTypes=*/TypeRange{},
-                                pred, /*withElseRegion=*/false);
+  auto ifOp = scf::IfOp::create(builder, loc, /*resultTypes=*/TypeRange{}, pred,
+                                /*withElseRegion=*/false);
   ifOp->setAttr(kActiveGuardAttrName, builder.getUnitAttr());
 
   // Move every operation that preceded the inserted ops (which now sit just
