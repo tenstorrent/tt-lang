@@ -2,12 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQUIRES: ttnn, tt-device
-# Compile two operations through the Python frontend pipeline and
-# FileCheck the final EmitC MLIR for evidence of the active-set guard.
-# Catches regressions where ttl-insert-pipenet-active-guards is silently
-# dropped from the frontend pipeline string in python/ttl/ttl_api.py —
-# a regression that lit tests against `ttlang-opt` alone would miss.
+# REQUIRES: ttnn
+# Frontend-pipeline regression check: catches a dropped
+# ttl-insert-pipenet-active-guards in the Python pipeline string.
+# Compile-only via TTLANG_COMPILE_ONLY=1 + host ttnn tensors, no device.
 #
 # RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_FINAL_MLIR=%t.with_pipenet.mlir TTLANG_OP=with_pipenet %python %s
 # RUN: FileCheck %s --input-file=%t.with_pipenet.mlir --check-prefix=WITH-PIPENET
@@ -17,16 +15,11 @@
 
 """Frontend-pipeline integration check for the PipeNet active-set guard.
 
-The pass marks each inserted scf.if with a unit attribute
-`ttl.pipenet_active_guard`. That attribute does not survive the
-scf-to-EmitC lowering, but the structural footprint does: the guard
-becomes an `emitc.if` whose predicate is built from `emitc.cmp` and
-`emitc.bitwise_or` (the OR across rectangles) on the node coordinates.
-
-An operation that constructs a PipeNet must produce at least one
-`emitc.if` in the final MLIR. A straight-line operation that
-constructs no PipeNet and contains no user-level conditional must
-produce none.
+The `ttl.pipenet_active_guard` attribute does not survive scf-to-EmitC,
+but the structural footprint does: the guard becomes an `emitc.if`
+whose predicate is built from `emitc.cmp` and `emitc.bitwise_or`. A
+PipeNet operation must produce one; a straight-line operation must
+not.
 """
 
 # WITH-PIPENET: emitc.bitwise_or
@@ -45,7 +38,16 @@ import ttnn  # noqa: E402
 import ttl  # noqa: E402
 
 
-@ttl.operation(grid="auto")
+def _host_ttnn(shape):
+    return ttnn.from_torch(
+        torch.zeros(shape, dtype=torch.bfloat16),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+    )
+
+
+# Hardcoded grid: `grid="auto"` resolves via the active device.
+@ttl.operation(grid=(8, 7))
 def with_pipenet_op(inp, out):
     net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 4), 0))])
 
@@ -102,38 +104,14 @@ def no_pipenet_op(inp, out):
 
 def main():
     op_name = os.environ.get("TTLANG_OP", "with_pipenet")
-    device = ttnn.open_device(device_id=0)
-    try:
-        if op_name == "with_pipenet":
-            inp_torch = torch.randn(32, 4 * 32, dtype=torch.bfloat16)
-            out_torch = torch.zeros(32, 4 * 32, dtype=torch.bfloat16)
-        else:
-            inp_torch = torch.randn(32, 32, dtype=torch.bfloat16)
-            out_torch = torch.zeros(32, 32, dtype=torch.bfloat16)
-
-        inp = ttnn.from_torch(
-            inp_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        out = ttnn.from_torch(
-            out_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=device,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-        )
-        inp = ttnn.to_memory_config(inp, memory_config=ttnn.L1_MEMORY_CONFIG)
-        out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
-
-        if op_name == "with_pipenet":
-            with_pipenet_op(inp, out)
-        else:
-            no_pipenet_op(inp, out)
-    finally:
-        ttnn.close_device(device)
+    if op_name == "with_pipenet":
+        inp = _host_ttnn((32, 4 * 32))
+        out = _host_ttnn((32, 4 * 32))
+        with_pipenet_op(inp, out)
+    else:
+        inp = _host_ttnn((32, 32))
+        out = _host_ttnn((32, 32))
+        no_pipenet_op(inp, out)
 
 
 if __name__ == "__main__":

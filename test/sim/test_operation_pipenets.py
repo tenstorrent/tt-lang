@@ -1,14 +1,14 @@
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for the backend-neutral OperationPipeGraph data type."""
+"""Unit tests for the backend-neutral OperationPipeNets data type."""
 
 import pytest
 
-from _pipenet_graph import (
+from _pipenets import (
     NodeCoord,
     NodeRange,
-    OperationPipeGraph,
+    OperationPipeNets,
     PipeNetUse,
     PipeUse,
 )
@@ -39,31 +39,31 @@ class TestNodeRange:
 
 class TestActiveNodeSet:
     def test_empty_graph_returns_none(self):
-        graph = OperationPipeGraph()
+        graph = OperationPipeNets()
         assert graph.active_node_set(grid=(8, 7)) is None
 
     def test_unicast_pipe_includes_src_and_dst(self):
-        graph = OperationPipeGraph()
+        graph = OperationPipeNets()
         graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_coord(2, 3))])
         # Row-major linearization: x * grid[1] + y on a (W, H) grid.
         # src (0,0) -> 0; dst (2,3) -> 2*7 + 3 = 17.
         assert graph.active_node_set(grid=(8, 7)) == {0, 17}
 
     def test_multicast_pipe_expands_destination_range(self):
-        graph = OperationPipeGraph()
+        graph = OperationPipeNets()
         graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_rng(lo=(1, 0), hi=(4, 1)))])
         # src (0,0) -> 0; dsts (1..3, 0) -> 7, 14, 21 on grid (8, 7).
         assert graph.active_node_set(grid=(8, 7)) == {0, 7, 14, 21}
 
     def test_union_across_multiple_pipenets(self):
-        graph = OperationPipeGraph()
+        graph = OperationPipeNets()
         graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_coord(0, 1))])
         graph.add_pipe_net([PipeUse(src=_coord(1, 0), dst=_coord(1, 1))])
         # Linearized on grid (4, 4): 0, 1, 4, 5.
         assert graph.active_node_set(grid=(4, 4)) == {0, 1, 4, 5}
 
     def test_pipenet_id_is_operation_local(self):
-        graph = OperationPipeGraph()
+        graph = OperationPipeNets()
         first = graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_coord(1, 0))])
         second = graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_coord(0, 1))])
         assert first.id == 0
@@ -73,17 +73,17 @@ class TestActiveNodeSet:
 
 class TestValidate:
     def test_empty_graph_is_valid(self):
-        OperationPipeGraph().validate()
+        OperationPipeNets().validate()
 
     def test_rejects_empty_pipenet(self):
         # `add_pipe_net` with no pipes is allowed for testing; validate catches it.
-        graph = OperationPipeGraph()
+        graph = OperationPipeNets()
         graph.pipe_nets.append(PipeNetUse(id=0, pipes=()))
         with pytest.raises(ValueError, match="at least one pipe"):
             graph.validate()
 
     def test_rejects_overlapping_multicast_destinations(self):
-        graph = OperationPipeGraph()
+        graph = OperationPipeNets()
         graph.add_pipe_net(
             [
                 PipeUse(src=_coord(0, 0), dst=_rng(lo=(1, 0), hi=(4, 1))),
@@ -94,7 +94,7 @@ class TestValidate:
             graph.validate()
 
     def test_unicast_gather_is_allowed(self):
-        graph = OperationPipeGraph()
+        graph = OperationPipeNets()
         graph.add_pipe_net(
             [
                 PipeUse(src=_coord(0, 0), dst=_coord(2, 2)),
@@ -104,7 +104,7 @@ class TestValidate:
         graph.validate()  # no exception
 
     def test_disjoint_multicast_pipes_are_allowed(self):
-        graph = OperationPipeGraph()
+        graph = OperationPipeNets()
         graph.add_pipe_net(
             [
                 PipeUse(src=_coord(0, 0), dst=_rng(lo=(1, 0), hi=(3, 1))),

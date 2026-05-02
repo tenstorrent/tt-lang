@@ -86,6 +86,36 @@ def test_pipe_dst_slice_start_must_be_less_than_stop():
         ttl.Pipe(src=(0, 0), dst=(slice(4, 0), 0))
 
 
+def test_mixed_unicast_multicast_in_one_pipenet_rejected():
+    # Spec types `PipeNet[DstT](pipes: List[Pipe[DstT]])` so every pipe
+    # shares one destination type; runtime validator pins the same rule.
+    with pytest.raises(ValueError, match="may not mix unicast and multicast"):
+        ttl.PipeNet(
+            [
+                ttl.Pipe(src=(3, 0), dst=(0, 0)),
+                ttl.Pipe(src=(0, 0), dst=(slice(1, 3), 0)),
+            ]
+        )
+
+
+def test_all_unicast_pipenet_allowed():
+    ttl.PipeNet(
+        [
+            ttl.Pipe(src=(0, 0), dst=(1, 0)),
+            ttl.Pipe(src=(0, 0), dst=(2, 0)),
+        ]
+    )
+
+
+def test_all_multicast_pipenet_allowed():
+    ttl.PipeNet(
+        [
+            ttl.Pipe(src=(0, 0), dst=(slice(1, 3), 0)),
+            ttl.Pipe(src=(0, 1), dst=(slice(1, 3), 1)),
+        ]
+    )
+
+
 def test_pipe_src_must_be_two_tuple():
     """`Pipe.src` is declared `Tuple[int, int]`; non-2 lengths must be
     rejected at construction so users see the error at the source line

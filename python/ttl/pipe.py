@@ -82,8 +82,8 @@ class Pipe:
 
         self.src = src
         self.dst = dst
-        # Operation-local id assigned by the OperationPipeGraph builder
-        # before AST emission (see _build_operation_pipe_graph).
+        # Operation-local id assigned by the OperationPipeNets builder
+        # before AST emission (see _build_operation_pipenets).
         self.pipe_net_id = 0
         self._parse_dst()
 
@@ -147,34 +147,19 @@ class Pipe:
         return self._is_multicast
 
 
-def _validate_no_overlapping_destinations(pipes: List[Pipe]):
-    """Reject two multicast pipes within one PipeNet that share any destination.
+def _pipe_to_pipe_use(pipe: Pipe):
+    """Convert a ttl.Pipe to a PipeUse for OperationPipeNets validation/build."""
+    from _pipenets import NodeCoord, NodeRange, PipeUse
 
-    All pipes in a PipeNet share a single semaphore pair, so a node that
-    receives from multiple multicast sources cannot disambiguate the
-    handshake. Unicast gather (multiple unicast pipes to one destination)
-    is allowed because the receiver uses cumulative semaphore waits.
-    """
-    mcast_pipes = [(i, p) for i, p in enumerate(pipes) if p.is_multicast]
-    if len(mcast_pipes) < 2:
-        return
-    seen: dict = {}
-    for i, pipe in mcast_pipes:
-        sx, sy = pipe.dst_start
-        ex, ey = pipe.dst_end
-        for x in range(min(sx, ex), max(sx, ex) + 1):
-            for y in range(min(sy, ey), max(sy, ey) + 1):
-                if (x, y) in seen:
-                    j = seen[(x, y)]
-                    raise ValueError(
-                        f"PipeNet has overlapping multicast destinations: "
-                        f"pipe {j} (src={pipes[j].src}) and "
-                        f"pipe {i} (src={pipe.src}) both target "
-                        f"core ({x}, {y}). Use separate PipeNets "
-                        f"for patterns where a core receives from "
-                        f"multiple multicast sources."
-                    )
-                seen[(x, y)] = i
+    src = NodeCoord(coords=tuple(pipe.src))
+    if pipe.is_unicast:
+        dst = NodeCoord(coords=tuple(pipe.dst_start))
+    else:
+        dst = NodeRange(
+            lo=(pipe.dst_start[0], pipe.dst_start[1]),
+            hi=(pipe.dst_end[0] + 1, pipe.dst_end[1] + 1),
+        )
+    return PipeUse(src=src, dst=dst)
 
 
 class PipeNet:
@@ -189,6 +174,12 @@ class PipeNet:
     do not participate in pipe communication and skip every kernel-thread
     body, so pipe coordinates should be sized from the operation's work
     extent (not the launch extent given by @ttl.operation(grid=...)).
+
+    A PipeNet's pipes must all be the same kind (all unicast or all
+    multicast). The TTKernel lowering allocates one semaphore pair per
+    PipeNet, and the unicast and multicast handshakes use the pair's
+    bits with incompatible semantics; mixing them in one PipeNet races
+    when the same node participates in both. Use separate PipeNets.
 
     Limitation: overlapping multicast destinations (a core receiving
     from multiple multicast sources) within a single PipeNet are not
@@ -213,17 +204,19 @@ class PipeNet:
     """
 
     def __init__(self, pipes: List[Pipe]):
-        """Initialize a PipeNet from a list of Pipe objects.
+        # Validate at construction time by building a one-net graph and
+        # delegating to OperationPipeNets.validate(). Single source of
+        # truth for empty/overlap/mixed-kind rules; the same graph is
+        # rebuilt and re-validated at operation build time.
+        from _pipenets import OperationPipeNets
 
-        Validates empty/overlapping-multicast invariants so user errors
-        surface at the construction source line; the same checks also run
-        on the operation's `OperationPipeGraph` before MLIR emission.
-        """
         if not pipes:
             raise ValueError("PipeNet requires at least one pipe")
-        _validate_no_overlapping_destinations(pipes)
-        # Operation-local id assigned by the OperationPipeGraph builder
-        # before AST emission (see _build_operation_pipe_graph).
+        graph = OperationPipeNets()
+        graph.add_pipe_net(_pipe_to_pipe_use(p) for p in pipes)
+        graph.validate()
+        # Operation-local id assigned by the OperationPipeNets builder
+        # before AST emission (see _build_operation_pipenets).
         self.pipe_net_id = 0
         self.pipes = pipes
 

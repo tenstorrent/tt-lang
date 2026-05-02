@@ -4,11 +4,11 @@
 
 """Captured PipeNet end-to-end coverage.
 
-A `ttl.PipeNet` constructed outside an `@ttl.operation` body and used
-inside it via closure capture must behave identically to one constructed
-in the body. Both backends discover PipeNets through the
-`OperationPipeGraph` walk, so the captured net contributes to the active
-set and to MLIR emission with the same id allocation as a body-local net.
+Spec L647: a pipe net may be constructed in an enclosing scope and
+captured by the operation function. This test pins that contract end
+to end on hardware and on the simulator — a captured PipeNet behaves
+identically to a body-local one in the active set and in MLIR
+emission.
 """
 
 # REQUIRES: ttnn

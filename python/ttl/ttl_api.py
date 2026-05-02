@@ -840,19 +840,19 @@ def _compile_ttnn_kernel(
     return compiled_kernel
 
 
-def _build_operation_pipe_graph(f: Callable, threads):
+def _build_operation_pipenets(f: Callable, threads):
     """Discover PipeNets reachable from the operation and its threads, build
-    the OperationPipeGraph, validate it, and assign each Pipe its
+    the OperationPipeNets, validate it, and assign each Pipe its
     operation-local pipe-net id for AST emission.
 
     Discovery walks the operation function's closure plus each thread
     function's closure. PipeNets are deduplicated by `id()`, so a captured
     PipeNet referenced from multiple threads contributes one entry.
     """
-    from _pipenet_graph import (
+    from _pipenets import (
         NodeCoord,
         NodeRange,
-        OperationPipeGraph,
+        OperationPipeNets,
         PipeUse,
     )
 
@@ -874,7 +874,7 @@ def _build_operation_pipe_graph(f: Callable, threads):
     for thread in threads:
         visit(getattr(thread, "__wrapped__", None))
 
-    graph = OperationPipeGraph()
+    graph = OperationPipeNets()
     for net in seen.values():
         uses = []
         for pipe in net.pipes:
@@ -1282,7 +1282,7 @@ def _compile_kernel(
             "@ttl.datamovement() function inside your kernel."
         )
 
-    pipe_graph = _build_operation_pipe_graph(f, threads)
+    pipenets = _build_operation_pipenets(f, threads)
 
     cb_configs = _collect_cb_configs(threads)
 
@@ -1559,7 +1559,7 @@ def _compile_kernel(
             source_lines=profile_source_lines,
             all_source_lines=all_source_lines,
             kernel_line_offsets=kernel_line_offsets,
-            num_pipe_nets=len(pipe_graph.pipe_nets),
+            num_pipe_nets=len(pipenets.pipe_nets),
         )
         return compiled_kernel
 

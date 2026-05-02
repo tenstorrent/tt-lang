@@ -305,14 +305,14 @@ add_custom_target(TTLangSimPackage ALL
   COMMENT "Symlinking sim package into ttl/sim/"
 )
 
-# Backend-neutral OperationPipeGraph package. Imported by both ttl and sim
+# Backend-neutral OperationPipeNets package. Imported by both ttl and sim
 # without either depending on the other; staged at the top of python_packages
-# so `import _pipenet_graph` works the same as in the source tree.
+# so `import _pipenets` works the same as in the source tree.
 add_custom_target(TTLangPipeNetGraphPackage ALL
   COMMAND ${CMAKE_COMMAND} -E create_symlink
-    "${CMAKE_CURRENT_SOURCE_DIR}/_pipenet_graph"
-    "${TTLANG_PYTHON_PACKAGES_DIR}/_pipenet_graph"
-  COMMENT "Symlinking _pipenet_graph package"
+    "${CMAKE_CURRENT_SOURCE_DIR}/_pipenets"
+    "${TTLANG_PYTHON_PACKAGES_DIR}/_pipenets"
+  COMMENT "Symlinking _pipenets package"
 )
 
 # ###############################################################################

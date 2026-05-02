@@ -2,9 +2,10 @@
 
 This document describes how PipeNets are owned, validated, lowered, and
 scheduled in tt-lang. Both the compiler and the simulator consume the
-same operation-level PipeNet graph; this doc covers the data flow, the
-active-set guard pass that decouples launch extent from work extent, the
-simulator parity model, and the test surface.
+same operation-level PipeNet collection; this doc covers the data flow, the
+active-set guard pass that decouples launch extent from work extent,
+how the simulator reproduces the compiler's active-set behavior at
+scheduling time without running the MLIR pass, and the test coverage.
 
 The launch grid (the device grid that `@ttl.operation(grid=...)`
 schedules onto) is decoupled from the work extent described by the
@@ -20,7 +21,7 @@ destination (unicast) or a contiguous coordinate range (multicast). When
 the launch grid is larger than the union of all pipe sources and
 destinations, the extra nodes have no role in the communication, but
 without explicit guards they still execute every kernel function body
-the operation defines, reading out-of-bounds tensor regions and
+the operation defines, potentially reading out-of-bounds tensor regions and
 corrupting the multicast handshake (issue #541).
 
 The compiler therefore computes the *active set* of an operation as the
@@ -30,6 +31,35 @@ bearing the `ttl.kernel_thread` attribute, which marks compute and
 data-movement kernels) in an `scf.if` predicate over the node
 coordinates emitted by `ttl.core_x` / `ttl.core_y`. Inactive nodes fall
 through directly to the function terminator.
+
+## Operation pipenets
+
+`OperationPipeNets` (defined in `python/_pipenets/__init__.py`)
+is the per-operation data structure the compiler and the simulator
+both consume. It holds:
+
+- A list of `PipeNetUse` entries, each with an operation-local id
+  (`0..N-1`, reset per invocation) and a tuple of `PipeUse` records
+  (source `NodeCoord`, destination `NodeCoord` for unicast or
+  `NodeRange` for multicast).
+- `validate()`: empty PipeNet, overlapping multicast destinations,
+  mixed unicast/multicast within one PipeNet.
+- `active_node_set(grid)`: linearized union of every pipe's source
+  and destination coordinates.
+
+The compiler and the simulator both discover PipeNets by walking the
+closure cells of the operation function and each registered thread's
+wrapped function: body-local PipeNets show up through thread closures,
+captured ones through the operation function's closure (spec L647).
+
+Operation-local ids keep `ttl.create_pipe` ids stable across
+invocations and keep TTKernel semaphore allocation
+(`pipeNetId * 2` / `pipeNetId * 2 + 1`) deterministic. The
+`OperationPipeNets` instance is built and validated before MLIR
+emission on the compiler side and before `Program(...)` runs on the
+simulator side. `PipeNet.__init__` also builds a one-PipeNet
+`OperationPipeNets` and runs the same `validate()` synchronously, so
+malformed PipeNets error at the construction source line.
 
 ## Pass placement
 
@@ -70,24 +100,21 @@ have two entries; in 3D they would each have three). For 2D, each pipe
 contributes:
 
 1. A unit cell `[srcX, srcX+1) x [srcY, srcY+1)` for the source.
-2. A range `[min(dstStartX, dstEndX), max(...)+1) x [min(dstStartY,
-   dstEndY), max(...)+1)` for the destination.
-
-The pass tolerates inverted destination bounds via `min`/`max` rather
-than rejecting them because `CreatePipeOp`'s verifier currently does not
-enforce ordering, so the pass normalizes defensively.
+2. A range `[dstStartX, dstEndX+1) x [dstStartY, dstEndY+1)` for the
+   destination.
 
 `ttl.create_pipe` source and destination coordinates are declared as
 `I64Attr` in `TTLOps.td`; the verifier checks that the attributes match
-the result `PipeType` and are non-negative. The active set is therefore
-static: the pass does not trace SSA values or fold constants.
+the result `PipeType`, are non-negative, and have `dstStart <= dstEnd`
+on each axis. The active set is therefore static: the pass does not
+trace SSA values or fold constants.
 
 ### Module scoping
 
 The pass walks the entire `ModuleOp`. This is correct because tt-lang's
 Python frontend creates a fresh MLIR module per `@ttl.operation`
 invocation (`_compile_kernel` in `ttl_api.py` calls `Module.create(loc)`
-per kernel and builds a fresh `OperationPipeGraph` whose ids reset to
+per kernel and builds a fresh `OperationPipeNets` whose ids reset to
 0..N-1). If a future change ever co-compiles multiple operations into
 one module, the pass would need to scope the active set to the
 enclosing operation's kernel functions; the pass description in
@@ -166,40 +193,18 @@ pipeline review if they change.
   emitted alongside the kernel) are skipped; only kernel functions need
   node-coordinate predicates.
 
-## Operation pipe graph
-
-The compiler frontend and the simulator both consume one backend-neutral
-data structure, `OperationPipeGraph`, defined in
-`python/_pipenet_graph/__init__.py`. The graph is the source of truth
-for which PipeNets one operation invocation owns; both backends discover
-PipeNets through the same closure walk (the operation function plus each
-registered thread's wrapped function), build the graph, and validate it.
-PipeNet ids are operation-local (allocated 0..N-1 per graph) and are
-assigned to each `Pipe` before MLIR emission so `ttl.create_pipe` and
-TTKernel semaphore allocation see a stable id space.
-
-Validation lives on the graph (`OperationPipeGraph.validate()`): empty
-PipeNets and within-PipeNet multicast destination overlap. The sim and
-hardware `PipeNet.__init__` repeat the same checks so user errors
-surface at the construction source line.
-
-Captured PipeNets — defined outside an `@ttl.operation` body and used
-inside via closure — are discovered identically to body-local ones, so
-they contribute to the active set on both backends and to MLIR emission
-through the AST visitor.
-
 ## Simulator parity
 
 The simulator does not run the MLIR pass, so it mirrors the same
 behavior at scheduling time. `operation()` builds the
-`OperationPipeGraph` from the operation's closure plus each thread's
+`OperationPipeNets` from the operation's closure plus each thread's
 wrapped function, validates it, and passes it to `Program(...)`.
-`Program._run_cooperative` calls `graph.active_node_set(grid)`, expands
-each pipe's source coordinate and destination range into a set of
-linear node indices, and skips both kernel registration with the
+`Program._run_cooperative` calls `pipenets.active_node_set(grid)`,
+expands each pipe's source coordinate and destination range into a set
+of linear node indices, and skips both kernel registration with the
 greenlet scheduler and `operation_start`/`operation_end` trace events
 for nodes outside the set. `active_node_set` returns `None` when the
-graph has no PipeNets, which makes every launched node active.
+collection has no PipeNets, which makes every launched node active.
 
 The compiler and simulator both treat coordinates the same way:
 row-major linearization (`coord[0] * grid[1] + coord[1]` in 2D),
@@ -240,10 +245,11 @@ active-set condition wrapping each kernel function.
 
 ## Test coverage
 
-The same pytest file runs on both backends via
+The same pytest file runs on hardware and on the simulator via
 `test/scripts/ttlang-sim-pytest`, which patches `sys.modules` with the
-simulator's `ttl` and `ttnn` before pytest collects, so dual-backend
-coverage is the default for any test under `test/python/`. Sim-only
+simulator's `ttl` and `ttnn` before pytest collects, so hardware and
+simulator coverage is the default for any test under `test/python/`.
+Sim-only
 tests under `test/sim/` are reserved for sim-internal helpers that have
 no hardware analogue. Lit tests cover compile-time properties not
 runtime-observable.
@@ -275,15 +281,15 @@ runtime-observable.
 | 23 | 2D mcast matmul (work < launch via `_even_split`) [fixed] |  X  | (1) |     |
 | 24 | Balanced 2D matmul (A on dm_read, B on dm_write) [fixed]  |  X  | (1) |     |
 | 25 | Balanced 2D matmul + fused relu [fixed]                   |  X  | (1) |     |
-| 26 | OperationPipeGraph: src cell + dst range (mcast unit test)|     |  X  |     |
-| 27 | OperationPipeGraph: union across PipeNets                 |     |  X  |     |
-| 28 | OperationPipeGraph: unicast pipe single dst               |     |  X  |     |
-| 29 | OperationPipeGraph: None when empty                       |     |  X  |     |
-| 30 | OperationPipeGraph: validate empty PipeNet                |     |  X  |     |
-| 31 | OperationPipeGraph: validate overlapping mcast            |     |  X  |     |
-| 32 | OperationPipeGraph: operation-local id allocation         |     |  X  |     |
+| 26 | OperationPipeNets: src cell + dst range (mcast unit test)|     |  X  |     |
+| 27 | OperationPipeNets: union across PipeNets                 |     |  X  |     |
+| 28 | OperationPipeNets: unicast pipe single dst               |     |  X  |     |
+| 29 | OperationPipeNets: None when empty                       |     |  X  |     |
+| 30 | OperationPipeNets: validate empty PipeNet                |     |  X  |     |
+| 31 | OperationPipeNets: validate overlapping mcast            |     |  X  |     |
+| 32 | OperationPipeNets: operation-local id allocation         |     |  X  |     |
 | 33 | sim pipe deadlock detection (existing)                    |     |  X  |     |
-| 33a| Captured PipeNet works on both backends (scatter)         |  X  |  X  |     |
+| 33a| Captured PipeNet works on hardware and sim (scatter)      |  X  |  X  |     |
 | 34 | Frontend pipeline emits the active-set guard              |     |     |  X  |
 | 35 | Pass collects rectangles + idempotent + skips no-pipe     |     |     |  X  |
 | 36 | Pass coalesces source box contained in dst (loopback)     |     |     |  X  |
@@ -336,11 +342,23 @@ the simulator rejects.
   guard, but unblocking it would let `test_scatter_gather` and a
   single-PipeNet all-to-all version of `test_overlapping_pipenets` come
   off `@pytest.mark.skip`.
-* Multi-device PipeNets: `OperationPipeGraph` is structured to grow a
-  `mesh_pipe_nets` list whose entries pair a mesh coordinate with the
-  intra-chip `NodeCoord` already used today. Lowering would target
-  fabric kernels rather than `noc_async_*` and is its own effort
-  (separate tt-mlir + tt-metal work).
+* Cross-chip (Galaxy / QuietBox / N300) PipeNets. tt-lang's
+  `@ttl.operation` is a per-chip program by contract today; PipeNet
+  coordinates are interpreted by the NoC, so they always refer to
+  cores on a single chip. Users running on Galaxy already do so by
+  composing per-chip operations and handling cross-chip data movement
+  outside tt-lang (typically via ttnn CCL ops over the `tt_fabric`
+  layer). There is no language construct for "this pipe crosses to
+  chip (i, j)"; adding one is a language extension, not a free
+  behavior change in the lowering. A future cross-chip PipeNet would
+  introduce an explicit inter-chip pipe variant (e.g. carrying a
+  `MeshCoordinate` for source and destination) that lowers to fabric
+  ops alongside the existing intra-chip lowering. The
+  `OperationPipeNets` data structure is small enough to grow that
+  variant without affecting today's intra-chip path. Verifier
+  bound-checking against the operation's grid extent (still future
+  work) would also reject out-of-chip coordinates that today silently
+  miscompile.
 * If multiple operations are ever co-compiled into one module, scope the
   active-set walk to the enclosing operation by a marker attribute or by
   using a per-operation pass driver.

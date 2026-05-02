@@ -1278,5 +1278,12 @@ mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {
     return emitOpError() << "destination coordinates must be non-negative";
   }
 
+  // Spec NodeRange (L633): each axis is `0 <= c_i < G_i`, so the
+  // destination is a non-empty contiguous hypercube with `start <= end`.
+  if (dstStartX > dstEndX || dstStartY > dstEndY) {
+    return emitOpError()
+           << "destination start must not exceed destination end on any axis";
+  }
+
   return success();
 }

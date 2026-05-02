@@ -83,13 +83,13 @@ def get_max_l1_bytes() -> int:
     return get_context().config.max_l1_bytes
 
 
-def Program(*funcs: BindableTemplate, grid: Shape, pipe_graph: Any = None) -> Any:
+def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
     """Program class that combines compute and data movement functions.
 
     Args:
         *funcs: Compute and data movement function templates
         grid: Grid size tuple
-        pipe_graph: Optional OperationPipeGraph used to compute the active
+        pipenets: Optional OperationPipeNets used to compute the active
             set of nodes. When None, every node participates.
     """
 
@@ -100,7 +100,7 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipe_graph: Any = None) -> An
         ):
             self.functions = functions
             self.context: Dict[str, Any] = {"grid": grid}
-            self.pipe_graph = pipe_graph
+            self.pipenets = pipenets
 
         def __call__(self, *args: Any, **kwargs: Any) -> None:
             frame = inspect.currentframe()
@@ -224,8 +224,8 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipe_graph: Any = None) -> An
             # skip every kernel thread, mirroring the compiler's scf.if guard.
             grid = self.context.get("grid", (1, 1))
             active_nodes = (
-                self.pipe_graph.active_node_set(tuple(grid))
-                if self.pipe_graph is not None
+                self.pipenets.active_node_set(tuple(grid))
+                if self.pipenets is not None
                 else None
             )
 

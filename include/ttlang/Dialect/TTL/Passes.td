@@ -437,11 +437,6 @@ def TTLInsertPipeNetActiveGuards
     - Kernel functions are single-block.
     - `ttl.create_pipe` source/destination coordinates are static `I64Attr`.
 
-    Inverted destination ranges (`dstStart > dstEnd` along an axis) are
-    tolerated and normalized via min/max, since `CreatePipeOp`'s verifier
-    does not currently order the bounds. Once the verifier enforces
-    `dstStart <= dstEnd`, the normalization in this pass becomes dead.
-
     The pass is idempotent: an `scf.if` it already inserted is marked with
     `ttl.pipenet_active_guard` and is not wrapped again on a second run.
   }];

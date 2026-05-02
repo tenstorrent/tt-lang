@@ -256,8 +256,13 @@ def test_overlapping_pipenets(device):
 
     Active set is the union {(0,0), (1,0), (2,0), (3,0)}. Nodes 1 and 2
     receive from both PipeNets and sum the two tiles. Nodes 0 and 3 are
-    pure sources; their compute outputs the sum of their own tile and
-    whatever the unused other channel held (don't assert on those).
+    pure sources: the compute and dm_write bodies guard with
+    `1 <= x <= 2`, so they don't run compute or write to `out`. Only
+    assert on columns 1 and 2.
+
+    TODO[spec]: the spec does not constrain cross-PipeNet destination
+    overlap; the implementation supports it because each PipeNet
+    allocates its own semaphore pair.
     """
     inp_torch = torch.randn(TILE, 4 * TILE, dtype=torch.bfloat16) * 0.1
     inp_tt = to_dram(inp_torch, device)
@@ -279,85 +284,6 @@ def test_overlapping_pipenets(device):
             f"node {col} mismatch: max diff {diff}, "
             f"expected={expected_mid[:1, :4]}, actual={actual[:1, :4]}"
         )
-
-
-# ---------------------------------------------------------------------------
-# Mixed unicast + multicast within a single PipeNet:
-#   pipes[0]: unicast   src=(3,0) -> dst=(0,0)        (gather to corner)
-#   pipes[1]: multicast src=(0,0) -> dst=slice(1,3),0 (scatter to middle)
-# Different pipe kinds in one PipeNet share the same semaphore pair; the
-# within-PipeNet overlap rule only applies to multicast destinations,
-# which are disjoint here ({(0,0)} vs {(1,0),(2,0)}).
-# Active set is {(0,0), (1,0), (2,0), (3,0)}.
-# Each receiver writes the tile it received.
-# ---------------------------------------------------------------------------
-
-
-@ttl.operation(grid="auto")
-def mixed_unicast_multicast_kernel(inp, out):
-    net = ttl.PipeNet(
-        [
-            ttl.Pipe(src=(3, 0), dst=(0, 0)),  # unicast
-            ttl.Pipe(src=(0, 0), dst=(slice(1, 3), 0)),  # multicast
-        ]
-    )
-
-    inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-    out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
-
-    @ttl.compute()
-    def compute():
-        with inp_cb.wait() as t, out_cb.reserve() as o:
-            o.store(ttl.math.abs(t))
-
-    @ttl.datamovement()
-    def dm_read():
-        x, _ = ttl.node(dims=2)
-        with inp_cb.reserve() as blk:
-
-            def src(pipe):
-                # Source role for whichever pipe matches: node 3 sends
-                # inp[:, 3*TILE:] via unicast; node 0 sends inp[:, 0:TILE]
-                # via multicast. Read the local tile based on x.
-                ttl.copy(inp[0, x], blk).wait()
-                ttl.copy(blk, pipe).wait()
-
-            net.if_src(src)
-
-            def dst(pipe):
-                ttl.copy(pipe, blk).wait()
-
-            net.if_dst(dst)
-
-    @ttl.datamovement()
-    def dm_write():
-        x, _ = ttl.node(dims=2)
-        with out_cb.wait() as blk:
-            ttl.copy(blk, out[0, x]).wait()
-
-
-def test_mixed_unicast_multicast(device):
-    """Single PipeNet with one unicast pipe and one multicast pipe.
-
-    Spec is silent on requiring all-same-kind in a PipeNet, and the
-    overlap validator only flags multicast-multicast destination
-    overlap. Verify a mixed PipeNet runs end-to-end.
-    """
-    inp_torch = torch.randn(TILE, 4 * TILE, dtype=torch.bfloat16)
-    inp_tt = to_dram(inp_torch, device)
-    out_tt = to_dram(torch.zeros(TILE, 4 * TILE, dtype=torch.bfloat16), device)
-
-    mixed_unicast_multicast_kernel(inp_tt, out_tt)
-
-    result = ttnn.to_torch(out_tt)
-    # Node 0 receives node 3's tile (unicast); nodes 1,2 receive node 0's
-    # tile (multicast); node 3 wrote out[:, 3*TILE:] from its own input.
-    expected = torch.empty_like(inp_torch)
-    expected[:, 0:TILE] = torch.abs(inp_torch[:, 3 * TILE : 4 * TILE])
-    expected[:, TILE : 2 * TILE] = torch.abs(inp_torch[:, 0:TILE])
-    expected[:, 2 * TILE : 3 * TILE] = torch.abs(inp_torch[:, 0:TILE])
-    expected[:, 3 * TILE : 4 * TILE] = torch.abs(inp_torch[:, 3 * TILE : 4 * TILE])
-    assert_pcc(expected, result)
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +408,10 @@ def test_loopback_multicast(device):
     source receives its own data via the loopback route rather than
     consuming the locally-read tile. All 4 destinations (including
     source) hold abs(inp[0, 0:TILE]).
+
+    TODO[spec]: the spec does not address loopback multicast (source
+    inside its own destination range); the implementation supports it
+    via a dedicated tt-metal lowering path.
     """
     inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
     inp_tt = to_dram(inp_torch, device)

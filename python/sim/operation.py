@@ -97,7 +97,7 @@ def operation(
             # Import here to avoid circular dependency
             from .decorators import clear_thread_registry, get_registered_threads
             from .program import Program
-            from .pipe import build_pipe_graph, discover_pipe_nets_from_closures
+            from .pipe import build_pipenets, discover_pipe_nets_from_closures
 
             clear_thread_registry()
             get_context().kernel_dfb_count = 0
@@ -145,11 +145,11 @@ def operation(
             # ones. Validation runs against the assembled graph.
             thread_funcs = [getattr(t, "__wrapped__", None) for t in ordered_threads]
             pipe_nets = discover_pipe_nets_from_closures(modified_func, *thread_funcs)
-            pipe_graph = build_pipe_graph(pipe_nets)
-            pipe_graph.validate()
+            pipenets = build_pipenets(pipe_nets)
+            pipenets.validate()
 
             # Execute the program with grid parameter
-            program = Program(*ordered_threads, grid=actual_grid, pipe_graph=pipe_graph)
+            program = Program(*ordered_threads, grid=actual_grid, pipenets=pipenets)
             program(*args, **kwargs)
 
         # Store the decorator parameters for later access

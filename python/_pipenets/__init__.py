@@ -2,18 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """
-Operation-level PipeNet graph: backend-neutral data type owned by an
-operation invocation and consumed by both the simulator and the compiler
-frontend.
+Operation-level PipeNet graph: a data type owned by an operation
+invocation and consumed by both the simulator and the compiler frontend
+without either depending on the other.
 
 The graph is the single source of truth for which PipeNets an operation
 uses. It is built from the operation's closure (captured PipeNets) plus
-its body (PipeNets constructed in-line). Both backends compute the active
-node set and run validation against this graph.
+its body (PipeNets constructed in-line). The compiler and the simulator
+both compute the active node set and run validation against this graph.
 
 Multi-device readiness: NodeCoord is intra-chip. Inter-chip pipes would
 be a separate type wrapping NodeCoord plus a mesh coordinate, and
-OperationPipeGraph would hold both lists.
+OperationPipeNets would hold both lists.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ class PipeUse:
 class PipeNetUse:
     """One PipeNet consumed by one operation invocation.
 
-    `id` is operation-local: allocated 0..N-1 per OperationPipeGraph and
+    `id` is operation-local: allocated 0..N-1 per OperationPipeNets and
     reset on each operation invocation.
     """
 
@@ -74,7 +74,7 @@ class PipeNetUse:
 
 
 @dataclass
-class OperationPipeGraph:
+class OperationPipeNets:
     """All PipeNets used by one operation invocation."""
 
     pipe_nets: List[PipeNetUse] = field(default_factory=list)
@@ -102,10 +102,12 @@ class OperationPipeGraph:
         return active
 
     def validate(self) -> None:
-        """Run cross-pipe validation: empty PipeNets, multicast overlap."""
+        """Run cross-pipe validation: empty PipeNets, mixed pipe kinds,
+        multicast destination overlap."""
         for net in self.pipe_nets:
             if not net.pipes:
                 raise ValueError("PipeNet requires at least one pipe")
+            _validate_homogeneous_pipe_kinds(net.pipes)
             _validate_no_overlapping_destinations(net.pipes)
 
 
@@ -135,6 +137,20 @@ def _expand_dst(dst: Union[NodeCoord, NodeRange]) -> Iterable[Tuple[int, ...]]:
     yield from itertools.product(*(range(lo, hi) for lo, hi in zip(dst.lo, dst.hi)))
 
 
+def _validate_homogeneous_pipe_kinds(pipes: Tuple[PipeUse, ...]) -> None:
+    # Spec: `ttl.PipeNet[DstT](pipes: List[ttl.Pipe[DstT]])`. The shared
+    # type variable means every pipe in a PipeNet has the same destination
+    # type — all unicast or all multicast.
+    has_unicast = any(isinstance(p.dst, NodeCoord) for p in pipes)
+    has_multicast = any(isinstance(p.dst, NodeRange) for p in pipes)
+    if has_unicast and has_multicast:
+        raise ValueError(
+            "PipeNet may not mix unicast and multicast pipes "
+            "(spec: PipeNet[DstT] requires all pipes to share DstT); "
+            "use separate PipeNets."
+        )
+
+
 def _validate_no_overlapping_destinations(pipes: Tuple[PipeUse, ...]) -> None:
     """Reject two multicast pipes within one PipeNet that share any destination.
 
@@ -142,6 +158,11 @@ def _validate_no_overlapping_destinations(pipes: Tuple[PipeUse, ...]) -> None:
     receives from multiple multicast sources cannot disambiguate the
     handshake. Unicast gather (multiple unicast pipes to the same dst) is
     allowed because the receiver uses cumulative semaphore waits.
+
+    TODO[spec]: the spec does not constrain within-PipeNet multicast
+    destination overlap; this rejection is an implementation constraint
+    tied to issue #505. Can be lifted once the lowering switches to
+    `noc_semaphore_inc_multicast`.
     """
     mcast = [(i, p) for i, p in enumerate(pipes) if isinstance(p.dst, NodeRange)]
     if len(mcast) < 2:
@@ -170,5 +191,5 @@ __all__ = [
     "NodeRange",
     "PipeUse",
     "PipeNetUse",
-    "OperationPipeGraph",
+    "OperationPipeNets",
 ]

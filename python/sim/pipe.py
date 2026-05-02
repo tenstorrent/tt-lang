@@ -24,7 +24,7 @@ from typing import (
     Union,
 )
 
-from _pipenet_graph import NodeCoord, NodeRange, OperationPipeGraph, PipeUse
+from _pipenets import NodeCoord, NodeRange, OperationPipeNets, PipeUse
 
 from .corecontext import node, flatten_core_index, grid_size
 from .typedefs import CoreCoord, CoreRange
@@ -333,41 +333,8 @@ def _normalize_dst_rect(dst: Any) -> Optional[Tuple[Tuple[int, int], ...]]:
     return tuple(_axis_bounds(item) for item in dst)
 
 
-def _validate_no_overlapping_destinations(pipes: "List[Pipe]") -> None:
-    """Reject PipeNets where two multicast pipes share any destination node.
-
-    All pipes in a PipeNet share a single semaphore pair, so a node that
-    receives from multiple multicast sources cannot disambiguate the
-    handshake. Unicast gather (multiple unicast pipes to the same dst) is
-    allowed because the receiver uses cumulative semaphore waits.
-    """
-    import itertools as _itertools
-
-    mcast = [
-        (i, pipe, bounds)
-        for i, pipe in enumerate(pipes)
-        if (bounds := _normalize_dst_rect(pipe.dst)) is not None
-    ]
-    if len(mcast) < 2:
-        return
-    seen: dict = {}
-    for i, pipe, bounds in mcast:
-        for coord in _itertools.product(*(range(lo, hi) for lo, hi in bounds)):
-            if coord in seen:
-                j = seen[coord]
-                raise ValueError(
-                    f"PipeNet has overlapping multicast destinations: "
-                    f"pipe {j} (src={pipes[j].src}) and "
-                    f"pipe {i} (src={pipe.src}) both target "
-                    f"node {coord}. Use separate PipeNets for patterns "
-                    f"where a node receives from multiple multicast "
-                    f"sources."
-                )
-            seen[coord] = i
-
-
 def _pipe_to_pipe_use(pipe: "Pipe") -> PipeUse:
-    """Convert a sim `Pipe` to a backend-neutral `PipeUse`.
+    """Convert a sim `Pipe` to a `PipeUse`.
 
     Slice bounds were already validated by `Pipe.__post_init__`; multicast
     rectangles are read directly from the `dst` slices without needing the
@@ -386,12 +353,12 @@ def _pipe_to_pipe_use(pipe: "Pipe") -> PipeUse:
     )
 
 
-def build_pipe_graph(pipe_nets: List["PipeNet"]) -> OperationPipeGraph:
-    """Build an OperationPipeGraph from a list of unique PipeNet objects.
+def build_pipenets(pipe_nets: List["PipeNet"]) -> OperationPipeNets:
+    """Build an OperationPipeNets from a list of unique PipeNet objects.
 
     Order is preserved: the first PipeNet in `pipe_nets` becomes id 0.
     """
-    graph = OperationPipeGraph()
+    graph = OperationPipeNets()
     for net in pipe_nets:
         graph.add_pipe_net(_pipe_to_pipe_use(p) for p in net._pipes)
     return graph
@@ -446,15 +413,15 @@ class PipeNet(Generic[DstT]):
     """
 
     def __init__(self, pipes: "List[Pipe[DstT]]"):
-        """Initialize pipe network with a list of pipes.
-
-        Validates empty/overlapping-multicast invariants so user errors
-        surface at the construction source line; the same checks also run
-        on the operation's `OperationPipeGraph` before scheduling.
-        """
+        # Validate at construction time by building a one-net graph and
+        # delegating to OperationPipeNets.validate(). Single source of
+        # truth for empty/overlap/mixed-kind rules; the same graph is
+        # rebuilt and re-validated at operation build time.
         if not pipes:
             raise ValueError("PipeNet requires at least one pipe")
-        _validate_no_overlapping_destinations(pipes)
+        graph = OperationPipeNets()
+        graph.add_pipe_net(_pipe_to_pipe_use(p) for p in pipes)
+        graph.validate()
         self._pipes = pipes
 
     def if_src(self, cond_fun: Callable[[SrcPipeIdentity[DstT]], None]) -> None:

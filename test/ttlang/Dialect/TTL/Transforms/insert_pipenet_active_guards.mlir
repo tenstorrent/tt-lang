@@ -219,41 +219,6 @@ func.func @unicast_pipe() attributes {ttl.kernel_thread = #ttkernel.thread<noc>}
 
 // -----
 
-// Inverted destination range: dst_start_x > dst_end_x. The pass must
-// normalize via min/max so the rectangle becomes [0, 4) x [0, 1). The
-// source (3, 0) lies inside the normalized destination, so coalescing
-// drops the source rect. Constants pin the normalized bounds (not the
-// raw 3 / 0 / 0 / 0 attributes on the pipe).
-
-// CHECK-LABEL: func.func @inverted_dst_range
-// CHECK: %[[X:.+]] = ttl.core_x
-// CHECK: %[[Y:.+]] = ttl.core_y
-// Surviving rect after min/max normalization: x in [0, 4), y in [0, 1).
-// CHECK: %[[XLO:.+]] = arith.constant 0 : index
-// CHECK: %[[XHI:.+]] = arith.constant 4 : index
-// CHECK: arith.cmpi sge, %[[X]], %[[XLO]]
-// CHECK: arith.cmpi slt, %[[X]], %[[XHI]]
-// CHECK: %[[YLO:.+]] = arith.constant 0 : index
-// CHECK: %[[YHI:.+]] = arith.constant 1 : index
-// CHECK: arith.cmpi sge, %[[Y]], %[[YLO]]
-// CHECK: arith.cmpi slt, %[[Y]], %[[YHI]]
-// CHECK-NOT: arith.ori
-// Raw inverted-bound constant 3 must not leak into the predicate
-// (would mean min/max normalization didn't run).
-// CHECK-NOT: arith.constant 3 : index
-// CHECK: scf.if
-// CHECK: return
-
-func.func @inverted_dst_range() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %p = ttl.create_pipe src(3, 0) dst(3, 0) to(0, 0) net 0
-      : !ttl.pipe<src(3, 0) dst(3, 0) to(0, 0) net 0>
-  ttl.if_dst %p : !ttl.pipe<src(3, 0) dst(3, 0) to(0, 0) net 0> {
-  }
-  func.return
-}
-
-// -----
-
 // Partial overlap: source cell at (2,0) sits inside the destination
 // rectangle [0,4) x [0,1) after normalization. The src unit cell is
 // strictly contained in the dst rect, so coalescing drops it and the

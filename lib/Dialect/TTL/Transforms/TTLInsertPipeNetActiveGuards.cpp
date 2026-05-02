@@ -63,19 +63,14 @@ ActiveRect readPipeSourceRect(CreatePipeOp pipe) {
   return {{srcX, srcY}, {srcX + 1, srcY + 1}};
 }
 
-// 2D-specific accessor for a pipe's destination rectangle, normalized to
-// half-open form. Tolerates inverted ranges via min/max because
-// CreatePipeOp's verifier does not currently enforce dstStart <= dstEnd
-// ordering.
+// 2D-specific accessor for a pipe's destination rectangle, in half-open
+// form. CreatePipeOp's verifier guarantees dstStart <= dstEnd on each axis.
 ActiveRect readPipeDstRect(CreatePipeOp pipe) {
   int64_t startX = static_cast<int64_t>(pipe.getDstStartX());
   int64_t endX = static_cast<int64_t>(pipe.getDstEndX());
   int64_t startY = static_cast<int64_t>(pipe.getDstStartY());
   int64_t endY = static_cast<int64_t>(pipe.getDstEndY());
-  return {
-      {std::min(startX, endX), std::min(startY, endY)},
-      {std::max(startX, endX) + 1, std::max(startY, endY) + 1},
-  };
+  return {{startX, startY}, {endX + 1, endY + 1}};
 }
 
 // Collect every active rectangle implied by `ttl.create_pipe` ops in the
