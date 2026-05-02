@@ -270,7 +270,8 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     auto dstSemNocAddr = ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal,
                                                    dstStartYVal, semAddr);
     ttk::NocSemaphoreIncOp::create(rewriter, loc, dstSemNocAddr.getResult(),
-                                   incrVal, /*noc_id=*/Value());
+                                   incrVal, /*noc_id=*/Value(),
+                                   /*posted=*/BoolAttr());
   } else {
     // Multicast: signal all receivers by setting receiver_sem = VALID (1).
     auto recvSemIdx = arith::ConstantIndexOp::create(
@@ -370,7 +371,8 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
       auto incrVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
       ttk::NocSemaphoreIncOp::create(rewriter, loc,
                                      senderSemNocAddr.getResult(), incrVal,
-                                     /*noc_id=*/Value());
+                                     /*noc_id=*/Value(),
+                                     /*posted=*/BoolAttr());
 
       // Wait for sender to set receiver_sem = VALID (1).
       auto validVal = arith::ConstantOp::create(rewriter, loc, i32Ty,
