@@ -10,9 +10,21 @@ This module provides:
 - PipeIdentity classes: Wrappers exposing pipe source/destination information
 """
 
-import itertools
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, List, Optional, Set, Tuple, TypeVar, Union
+from typing import (
+    Any,
+    Callable,
+    Generic,
+    Iterable,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    TypeVar,
+    Union,
+)
+
+from _pipenet_graph import NodeCoord, NodeRange, OperationPipeGraph, PipeUse
 
 from .corecontext import node, flatten_core_index, grid_size
 from .typedefs import CoreCoord, CoreRange
@@ -274,80 +286,11 @@ def core_in_dst_range(
             return current_core_coords == dst_core_range
 
 
-# PipeNets constructed during the current operation's kernel body live in the
-# per-greenlet SimulatorContext (see context_types.SimulatorContext.kernel_pipe_nets).
-# These helpers wrap that storage so callers don't need to import context internals.
-
-
-def clear_pipe_net_registry() -> None:
-    """Reset the PipeNet registry. Called before each operation runs."""
-    from .context import get_context
-
-    get_context().kernel_pipe_nets.clear()
-
-
-def _register_pipe_net(net: "PipeNet") -> None:
-    """Append a constructed PipeNet to the active-set registry."""
-    from .context import get_context
-
-    get_context().kernel_pipe_nets.append(net)
-
-
 def _coord_to_tuple(coord: CoreCoord) -> Tuple[int, ...]:
     """Normalize a CoreCoord (int or tuple) to a tuple of ints."""
     if isinstance(coord, int):
         return (coord,)
     return tuple(coord)
-
-
-def _linearize(coord_tuple: Tuple[int, ...], grid: Tuple[int, ...]) -> int:
-    """Linearize an n-d coord using the same row-major rule as flatten_core_index."""
-    linear = coord_tuple[0]
-    for i in range(1, len(coord_tuple)):
-        linear = linear * grid[i] + coord_tuple[i]
-    return linear
-
-
-def _expand_range_with_grid(
-    core_range: Tuple[Any, ...], grid: Tuple[int, ...]
-) -> List[Tuple[int, ...]]:
-    """Expand a CoreRange (tuple of ints and slices) to a list of coord tuples,
-    using the explicit grid for slice bounds rather than relying on the
-    grid_size() frame lookup. This avoids depending on the caller having a
-    `grid` local variable."""
-    dims = len(core_range)
-    dim_ranges: List[List[int]] = []
-    for i, item in enumerate(core_range):
-        if isinstance(item, slice):
-            start = item.start if item.start is not None else 0
-            stop = item.stop if item.stop is not None else grid[i]
-            step = item.step if item.step is not None else 1
-            dim_ranges.append(list(range(start, stop, step)))
-        else:
-            dim_ranges.append([item])
-
-    result: List[Tuple[int, ...]] = []
-
-    def _cartesian(remaining: List[List[int]], current: List[int]) -> None:
-        if not remaining:
-            result.append(tuple(current) if dims > 1 else (current[0],))
-            return
-        for value in remaining[0]:
-            _cartesian(remaining[1:], current + [value])
-
-    _cartesian(dim_ranges, [])
-    return result
-
-
-def _expand_dst(dst: Any, grid: Tuple[int, ...]) -> List[Tuple[int, ...]]:
-    """Expand a pipe destination (CoreCoord or CoreRange) to a list of coord tuples."""
-    if isinstance(dst, int):
-        return [(dst,)]
-    if not isinstance(dst, tuple):
-        raise TypeError(f"Pipe.dst must be int or tuple, got {type(dst).__name__}")
-    if any(isinstance(item, slice) for item in dst):
-        return _expand_range_with_grid(dst, grid)
-    return [tuple(dst)]
 
 
 def _axis_bounds(item: Any) -> Tuple[int, int]:
@@ -398,6 +341,8 @@ def _validate_no_overlapping_destinations(pipes: "List[Pipe]") -> None:
     handshake. Unicast gather (multiple unicast pipes to the same dst) is
     allowed because the receiver uses cumulative semaphore waits.
     """
+    import itertools as _itertools
+
     mcast = [
         (i, pipe, bounds)
         for i, pipe in enumerate(pipes)
@@ -407,7 +352,7 @@ def _validate_no_overlapping_destinations(pipes: "List[Pipe]") -> None:
         return
     seen: dict = {}
     for i, pipe, bounds in mcast:
-        for coord in itertools.product(*(range(lo, hi) for lo, hi in bounds)):
+        for coord in _itertools.product(*(range(lo, hi) for lo, hi in bounds)):
             if coord in seen:
                 j = seen[coord]
                 raise ValueError(
@@ -421,27 +366,75 @@ def _validate_no_overlapping_destinations(pipes: "List[Pipe]") -> None:
             seen[coord] = i
 
 
-def compute_active_linear_nodes(
-    grid: Tuple[int, ...],
-) -> Optional[Set[int]]:
-    """Return the set of linear core indices active in any registered PipeNet.
+def _pipe_to_pipe_use(pipe: "Pipe") -> PipeUse:
+    """Convert a sim `Pipe` to a backend-neutral `PipeUse`.
 
-    Returns None when no PipeNets were registered, signaling that no active-set
-    filtering should be applied (every core is active).
+    Slice bounds were already validated by `Pipe.__post_init__`; multicast
+    rectangles are read directly from the `dst` slices without needing the
+    operation grid.
     """
-    from .context import get_context
+    src = NodeCoord(coords=_coord_to_tuple(pipe.src))
+    rect = _normalize_dst_rect(pipe.dst)
+    if rect is None:
+        return PipeUse(src=src, dst=NodeCoord(coords=_coord_to_tuple(pipe.dst)))
+    return PipeUse(
+        src=src,
+        dst=NodeRange(
+            lo=tuple(lo for lo, _ in rect),
+            hi=tuple(hi for _, hi in rect),
+        ),
+    )
 
-    registry = get_context().kernel_pipe_nets
-    if not registry:
-        return None
 
-    active: Set[int] = set()
-    for net in registry:
-        for pipe in net._pipes:
-            active.add(_linearize(_coord_to_tuple(pipe.src), grid))
-            for dst_tuple in _expand_dst(pipe.dst, grid):
-                active.add(_linearize(dst_tuple, grid))
-    return active
+def build_pipe_graph(pipe_nets: List["PipeNet"]) -> OperationPipeGraph:
+    """Build an OperationPipeGraph from a list of unique PipeNet objects.
+
+    Order is preserved: the first PipeNet in `pipe_nets` becomes id 0.
+    """
+    graph = OperationPipeGraph()
+    for net in pipe_nets:
+        graph.add_pipe_net(_pipe_to_pipe_use(p) for p in net._pipes)
+    return graph
+
+
+def discover_pipe_nets_from_closures(*funcs: Any) -> List["PipeNet"]:
+    """Walk function closures and return unique PipeNet objects in encounter order.
+
+    PipeNets are deduplicated by `id()` so the same captured net referenced
+    from multiple threads contributes one entry.
+    """
+    seen: dict = {}
+    for func in funcs:
+        if func is None:
+            continue
+        for net in _iter_pipe_nets_in_func(func):
+            if id(net) not in seen:
+                seen[id(net)] = net
+    return list(seen.values())
+
+
+def _iter_pipe_nets_in_func(func: Any) -> Iterable["PipeNet"]:
+    """Yield PipeNet objects reachable from a function's closure cells and globals."""
+    closure = getattr(func, "__closure__", None) or ()
+    for cell in closure:
+        try:
+            value = cell.cell_contents
+        except ValueError:
+            continue
+        yield from _iter_pipe_nets_in_value(value)
+    fn_globals = getattr(func, "__globals__", None) or {}
+    for value in fn_globals.values():
+        yield from _iter_pipe_nets_in_value(value)
+
+
+def _iter_pipe_nets_in_value(value: Any) -> Iterable["PipeNet"]:
+    """Yield PipeNet objects directly held by `value`.
+
+    Only recognises top-level values (not nested inside lists/dicts) — a
+    captured PipeNet kept in a list does not happen in practice.
+    """
+    if isinstance(value, PipeNet):
+        yield value
 
 
 class PipeNet(Generic[DstT]):
@@ -455,18 +448,14 @@ class PipeNet(Generic[DstT]):
     def __init__(self, pipes: "List[Pipe[DstT]]"):
         """Initialize pipe network with a list of pipes.
 
-        Args:
-            pipes: List of Pipe objects defining the communication pattern
-
-        Raises:
-            ValueError: If `pipes` is empty, or if two multicast pipes
-                have overlapping destinations.
+        Validates empty/overlapping-multicast invariants so user errors
+        surface at the construction source line; the same checks also run
+        on the operation's `OperationPipeGraph` before scheduling.
         """
         if not pipes:
             raise ValueError("PipeNet requires at least one pipe")
         _validate_no_overlapping_destinations(pipes)
         self._pipes = pipes
-        _register_pipe_net(self)
 
     def if_src(self, cond_fun: Callable[[SrcPipeIdentity[DstT]], None]) -> None:
         """Execute condition function for each pipe where current core is source.

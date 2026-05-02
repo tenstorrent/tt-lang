@@ -83,12 +83,14 @@ def get_max_l1_bytes() -> int:
     return get_context().config.max_l1_bytes
 
 
-def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
+def Program(*funcs: BindableTemplate, grid: Shape, pipe_graph: Any = None) -> Any:
     """Program class that combines compute and data movement functions.
 
     Args:
         *funcs: Compute and data movement function templates
         grid: Grid size tuple
+        pipe_graph: Optional OperationPipeGraph used to compute the active
+            set of nodes. When None, every node participates.
     """
 
     class ProgramImpl:
@@ -98,6 +100,7 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
         ):
             self.functions = functions
             self.context: Dict[str, Any] = {"grid": grid}
+            self.pipe_graph = pipe_graph
 
         def __call__(self, *args: Any, **kwargs: Any) -> None:
             frame = inspect.currentframe()
@@ -219,10 +222,12 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             # Compute the PipeNet active set: linear node indices that
             # participate in any pipe as source or destination. Inactive nodes
             # skip every kernel thread, mirroring the compiler's scf.if guard.
-            from .pipe import compute_active_linear_nodes
-
             grid = self.context.get("grid", (1, 1))
-            active_nodes = compute_active_linear_nodes(tuple(grid))
+            active_nodes = (
+                self.pipe_graph.active_node_set(tuple(grid))
+                if self.pipe_graph is not None
+                else None
+            )
 
             def _is_active(node: int) -> bool:
                 return active_nodes is None or node in active_nodes

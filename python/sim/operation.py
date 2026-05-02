@@ -97,14 +97,9 @@ def operation(
             # Import here to avoid circular dependency
             from .decorators import clear_thread_registry, get_registered_threads
             from .program import Program
-
-            # Clear thread registry and resource counters before kernel execution.
-            # Also clear the PipeNet registry so the program scheduler can compute
-            # the active set of cores for this operation.
-            from .pipe import clear_pipe_net_registry
+            from .pipe import build_pipe_graph, discover_pipe_nets_from_closures
 
             clear_thread_registry()
-            clear_pipe_net_registry()
             get_context().kernel_dfb_count = 0
             get_context().kernel_l1_bytes = 0
 
@@ -144,8 +139,17 @@ def operation(
             # Arrange in expected order: compute, dm0, dm1
             ordered_threads = [compute_threads[0], dm_threads[0], dm_threads[1]]
 
+            # Build the operation-level PipeNet graph. PipeNets are discovered
+            # by walking closures of the operation function and each thread's
+            # body, so captured PipeNets show up identically to body-local
+            # ones. Validation runs against the assembled graph.
+            thread_funcs = [getattr(t, "__wrapped__", None) for t in ordered_threads]
+            pipe_nets = discover_pipe_nets_from_closures(modified_func, *thread_funcs)
+            pipe_graph = build_pipe_graph(pipe_nets)
+            pipe_graph.validate()
+
             # Execute the program with grid parameter
-            program = Program(*ordered_threads, grid=actual_grid)
+            program = Program(*ordered_threads, grid=actual_grid, pipe_graph=pipe_graph)
             program(*args, **kwargs)
 
         # Store the decorator parameters for later access

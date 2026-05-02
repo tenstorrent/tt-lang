@@ -649,6 +649,7 @@ def _compile_ttnn_kernel(
     source_lines=None,
     all_source_lines=None,
     kernel_line_offsets=None,
+    num_pipe_nets: int = 0,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -800,7 +801,7 @@ def _compile_ttnn_kernel(
         all_source_lines=all_source_lines,
         thread_to_kernel=thread_to_kernel,
         kernel_line_offsets=kernel_line_offsets,
-        num_pipe_nets=PipeNet._next_id,
+        num_pipe_nets=num_pipe_nets,
     )
 
     if verbose:
@@ -837,6 +838,62 @@ def _compile_ttnn_kernel(
         )
 
     return compiled_kernel
+
+
+def _build_operation_pipe_graph(f: Callable, threads):
+    """Discover PipeNets reachable from the operation and its threads, build
+    the OperationPipeGraph, validate it, and assign each Pipe its
+    operation-local pipe-net id for AST emission.
+
+    Discovery walks the operation function's closure plus each thread
+    function's closure. PipeNets are deduplicated by `id()`, so a captured
+    PipeNet referenced from multiple threads contributes one entry.
+    """
+    from _pipenet_graph import (
+        NodeCoord,
+        NodeRange,
+        OperationPipeGraph,
+        PipeUse,
+    )
+
+    seen: Dict[int, PipeNet] = {}
+
+    def visit(func):
+        if func is None:
+            return
+        closure = getattr(func, "__closure__", None) or ()
+        for cell in closure:
+            try:
+                value = cell.cell_contents
+            except ValueError:
+                continue
+            if isinstance(value, PipeNet) and id(value) not in seen:
+                seen[id(value)] = value
+
+    visit(f)
+    for thread in threads:
+        visit(getattr(thread, "__wrapped__", None))
+
+    graph = OperationPipeGraph()
+    for net in seen.values():
+        uses = []
+        for pipe in net.pipes:
+            src = NodeCoord(coords=tuple(pipe.src))
+            if pipe.is_unicast:
+                dst = NodeCoord(coords=tuple(pipe.dst_start))
+            else:
+                lo = (pipe.dst_start[0], pipe.dst_start[1])
+                hi = (pipe.dst_end[0] + 1, pipe.dst_end[1] + 1)
+                dst = NodeRange(lo=lo, hi=hi)
+            uses.append(PipeUse(src=src, dst=dst))
+        net_use = graph.add_pipe_net(uses)
+        # Assign every Pipe in this net the operation-local id so the AST
+        # visitor's create_pipe emission uses the same id space.
+        for pipe in net.pipes:
+            pipe.pipe_net_id = net_use.id
+
+    graph.validate()
+    return graph
 
 
 def _collect_captures(
@@ -1166,7 +1223,6 @@ def _compile_kernel(
     Returns:
         CompiledTTNNKernel ready for execution
     """
-    PipeNet._next_id = 0
     f_params = inspect.signature(f).parameters
 
     # Get kernel source location for error reporting
@@ -1225,6 +1281,8 @@ def _compile_kernel(
             "No threads found. Define at least one @ttl.compute() or "
             "@ttl.datamovement() function inside your kernel."
         )
+
+    pipe_graph = _build_operation_pipe_graph(f, threads)
 
     cb_configs = _collect_cb_configs(threads)
 
@@ -1501,6 +1559,7 @@ def _compile_kernel(
             source_lines=profile_source_lines,
             all_source_lines=all_source_lines,
             kernel_line_offsets=kernel_line_offsets,
+            num_pipe_nets=len(pipe_graph.pipe_nets),
         )
         return compiled_kernel
 
