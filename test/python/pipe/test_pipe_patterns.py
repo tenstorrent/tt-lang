@@ -131,61 +131,60 @@ def scatter_kernel(inp, out):
 
 
 # ---------------------------------------------------------------------------
-# Scatter-gather: each core multicasts to all cores (all-to-all)
+# Scatter-gather: each core multicasts to all cores (all-to-all).
 # ---------------------------------------------------------------------------
-#
-# TODO(#505): blocked on noc_semaphore_inc_multicast support in TTKernel.
-# Multicast pipes in a PipeNet share a semaphore pair, so overlapping
-# multicast destinations corrupt the handshake. Once #505 lands, this
-# kernel can run with a single PipeNet.
 
 N_SG = 4
 
 
 @ttl.operation(grid=(N_SG, 1))
 def scatter_gather_kernel(inp, out):
-    grid_x, grid_y = ttl.grid_size(dims=2)
-
+    # All-to-all: each core multicasts to all (loopback included).
     net = ttl.PipeNet(
-        [
-            ttl.Pipe(src=(x, y), dst=(x, slice(0, grid_y)))
-            for x in range(grid_x)
-            for y in range(grid_y)
-        ]
+        [ttl.Pipe(src=(x, 0), dst=(slice(0, N_SG), 0)) for x in range(N_SG)]
     )
 
-    pipe_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    send_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    # block_count == N_SG so each sender lands in a distinct block.
+    recv_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=N_SG)
     acc_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
-        with pipe_cb.wait() as t, acc_cb.reserve() as a:
+        with recv_cb.wait() as t, acc_cb.reserve() as a:
             a.store(t)
         for _ in range(N_SG - 1):
-            with pipe_cb.wait() as t, acc_cb.wait() as prev, acc_cb.reserve() as a:
+            with recv_cb.wait() as t, acc_cb.wait() as prev, acc_cb.reserve() as a:
                 a.store(prev + t)
         with acc_cb.wait() as a, out_cb.reserve() as o:
             o.store(a)
 
+    # Sender and receiver run on separate NOC threads. Combining them on
+    # one thread deadlocks: every core blocks on its own sender handshake
+    # (waiting for receivers to signal ready) before any if_dst block can
+    # run to issue those signals.
     @ttl.datamovement()
     def dm_read():
         x, _ = ttl.node(dims=2)
-        with pipe_cb.reserve() as blk:
+        with send_cb.reserve() as blk:
+            ttl.copy(inp[0, x], blk).wait()
 
-            def pipe_src(pipe):
-                ttl.copy(inp[0, x], blk).wait()
+            def send(pipe):
                 ttl.copy(blk, pipe).wait()
 
-            def pipe_dst(pipe):
-                ttl.copy(pipe, blk).wait()
-
-            net.if_src(pipe_src)
-            net.if_dst(pipe_dst)
+            net.if_src(send)
 
     @ttl.datamovement()
     def dm_write():
         x, _ = ttl.node(dims=2)
+
+        def recv(pipe):
+            with recv_cb.reserve() as blk:
+                ttl.copy(pipe, blk).wait()
+
+        net.if_dst(recv)
+
         with out_cb.wait() as blk:
             ttl.copy(blk, out[0, x]).wait()
 
@@ -278,9 +277,9 @@ def test_scatter(device):
     assert_pcc(expected, result)
 
 
-@pytest.mark.skip(reason="Blocked on #505: overlapping multicast destinations")
 def test_scatter_gather(device):
-    """Scatter-gather: all-to-all broadcast with loopback, sum received tiles."""
+    """All-to-all (issue #505): each core multicasts its tile to all cores
+    via one PipeNet; each receiver sums the N_SG tiles."""
     inp_torch = torch.randn(TILE, N_SG * TILE, dtype=torch.bfloat16) * 0.1
 
     inp_tt = to_dram(inp_torch, device)

@@ -181,12 +181,6 @@ class PipeNet:
     bits with incompatible semantics; mixing them in one PipeNet races
     when the same node participates in both. Use separate PipeNets.
 
-    Limitation: overlapping multicast destinations (a core receiving
-    from multiple multicast sources) within a single PipeNet are not
-    yet supported. This will be fixed once noc_semaphore_inc_multicast
-    is available in the TTKernel dialect. See:
-    https://github.com/tenstorrent/tt-lang/issues/505
-
     Args:
         pipes: List of Pipe objects defining the network
 

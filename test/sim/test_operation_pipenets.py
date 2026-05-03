@@ -82,7 +82,9 @@ class TestValidate:
         with pytest.raises(ValueError, match="at least one pipe"):
             graph.validate()
 
-    def test_rejects_overlapping_multicast_destinations(self):
+    def test_overlapping_multicast_destinations(self):
+        # Issue #505: validator no longer rejects multicast pipes whose
+        # destination ranges share receivers within one PipeNet.
         graph = OperationPipeNets()
         graph.add_pipe_net(
             [
@@ -90,8 +92,7 @@ class TestValidate:
                 PipeUse(src=_coord(0, 1), dst=_rng(lo=(2, 0), hi=(5, 1))),
             ]
         )
-        with pytest.raises(ValueError, match="overlapping multicast destinations"):
-            graph.validate()
+        graph.validate()  # no exception
 
     def test_unicast_gather_is_allowed(self):
         graph = OperationPipeNets()

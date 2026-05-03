@@ -7,7 +7,9 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
@@ -17,6 +19,7 @@
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
+#include "llvm/ADT/SmallSet.h"
 
 namespace mlir::tt::ttl {
 
@@ -67,6 +70,49 @@ static int64_t getSenderSemIdx(PipeType pipeType) {
 
 static int64_t getReceiverSemIdx(PipeType pipeType) {
   return pipeType.getPipeNetId() * 2 + 1;
+}
+
+//===----------------------------------------------------------------------===//
+// Per-PipeNet receiver counter allocation
+//===----------------------------------------------------------------------===//
+
+void allocatePipeNetCountersForMulticast(ModuleOp mod,
+                                         PipeNetCounterMap &counters) {
+  mod.walk([&](FuncOp func) {
+    // Collect unique pipeNetIds that have at least one multicast Pipe->CB
+    // CopyOp in this function.
+    llvm::SmallSet<int64_t, 4> pipeNetIds;
+    func.walk([&](CopyOp copy) {
+      auto pipeTy = mlir::dyn_cast<PipeType>(copy.getSrc().getType());
+      if (!pipeTy || !pipeTy.isMulticast()) {
+        return;
+      }
+      auto dstTy = copy.getDst().getType();
+      if (!mlir::isa<CircularBufferType>(dstTy)) {
+        return;
+      }
+      pipeNetIds.insert(pipeTy.getPipeNetId());
+    });
+    if (pipeNetIds.empty()) {
+      return;
+    }
+    // Allocas + zero-stores at function entry dominate every Pipe->CB
+    // CopyOp, including those inside scf.if from `if_dst`.
+    OpBuilder b(func.getContext());
+    b.setInsertionPointToStart(&func.getBody().front());
+    Location loc = func.getLoc();
+    auto memrefTy = MemRefType::get({1}, b.getI32Type());
+    auto i32Ty = b.getI32Type();
+    Value zeroIdx = arith::ConstantIndexOp::create(b, loc, 0);
+    Value zeroI32 =
+        arith::ConstantOp::create(b, loc, i32Ty, b.getI32IntegerAttr(0));
+    auto &perFunc = counters[func];
+    for (int64_t pipeNetId : pipeNetIds) {
+      auto alloca = memref::AllocaOp::create(b, loc, memrefTy);
+      memref::StoreOp::create(b, loc, zeroI32, alloca, ValueRange{zeroIdx});
+      perFunc[pipeNetId] = alloca.getResult();
+    }
+  });
 }
 
 /// Lower CB -> Pipe copy: multicast tiles from source CB to destination cores.
@@ -208,7 +254,8 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
 
   // For gather patterns (multiple sources to one destination), each source
   // writes to a different slot in the destination CB to avoid overwrites.
-  // Slot indices are assigned by PipeGraph based on actual destination sharing.
+  // Slot indices are assigned by PipeGraph based on actual destination
+  // sharing.
   int64_t slotIdx = receiverInfo ? receiverInfo->gatherSlotIdx : 0;
   int64_t cbNumTiles = 1;
   for (int64_t d : cbBounds) {
@@ -273,43 +320,62 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
                                    incrVal, /*noc_id=*/Value(),
                                    /*posted=*/BoolAttr());
   } else {
-    // Multicast: signal all receivers by setting receiver_sem = VALID (1).
+    // Multicast: atomic inc on every receiver's recvSem. Receiver pairs
+    // with cumulative wait_min via the per-PipeNet runtime counter.
     auto recvSemIdx = arith::ConstantIndexOp::create(
         rewriter, loc, getReceiverSemIdx(pipeType));
     auto recvSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, recvSemIdx);
-    auto recvSemPtr = ttk::CastToL1PtrOp::create(rewriter, loc, recvSemAddr);
-    auto validVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
-    ttk::NocSemaphoreSetOp::create(rewriter, loc, recvSemPtr, validVal);
+
+    // HW multicast auto-excludes the sender; num_dests counts only remote
+    // receivers. No inc_multicast_loopback in tt-metal — sender's own
+    // recvSem is incremented locally below.
+    int64_t numRemoteDests = pipeType.srcInDstRange() ? numDests - 1 : numDests;
+    auto numRemoteDestsVal = arith::ConstantOp::create(
+        rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(numRemoteDests));
 
     auto recvSemMcastAddr = ttk::ExperimentalGetNocMulticastAddrOp::create(
         rewriter, loc, dstStartXVal, dstStartYVal, dstEndXVal, dstEndYVal,
         recvSemAddr, nocVal);
 
+    auto incrVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    ttk::NocSemaphoreIncMulticastOp::create(
+        rewriter, loc, recvSemMcastAddr.getResult(), incrVal, numRemoteDestsVal,
+        /*noc_id=*/Value(), /*posted=*/BoolAttr());
+
     if (pipeType.srcInDstRange()) {
-      ttk::NocSemaphoreSetMulticastLoopbackOp::create(
-          rewriter, loc, recvSemAddr, recvSemMcastAddr.getResult(), numDestsVal,
-          /*linked=*/rewriter.getBoolAttr(false));
-    } else {
-      ttk::NocSemaphoreSetMulticastOp::create(
-          rewriter, loc, recvSemAddr, recvSemMcastAddr.getResult(), numDestsVal,
-          /*linked=*/nullptr, /*multicast_path_reserve=*/nullptr);
+      // Local self-inc: when sender is also a receiver of overlapping
+      // pipes, its own cumulative count must include this pipe.
+      auto srcXLogical =
+          arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcX());
+      auto srcYLogical =
+          arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcY());
+      auto srcXTranslated = ttk::ConvertLogicalXToTranslatedOp::create(
+          rewriter, loc, indexTy, srcXLogical);
+      auto srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
+          rewriter, loc, indexTy, srcYLogical);
+      auto selfRecvSemNocAddr = ttk::GetNocAddrOp::create(
+          rewriter, loc, srcXTranslated, srcYTranslated, recvSemAddr);
+      ttk::NocSemaphoreIncOp::create(rewriter, loc,
+                                     selfRecvSemNocAddr.getResult(), incrVal,
+                                     /*noc_id=*/Value(), /*posted=*/BoolAttr());
     }
+
+    // Flush the (non-posted) atomic increments before the kernel can move
+    // on. Without this barrier, receivers race with the sender on recvSem.
+    ttk::NocAsyncAtomicBarrierOp::create(rewriter, loc, /*noc_id=*/Value());
   }
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
   return success();
 }
 
-/// Lower Pipe -> CB copy: destination side of pipe transfer.
-/// At the destination, data arrives via multicast/unicast from source core.
-///
-/// For unicast: waits for sender's atomic increment signal.
-/// For multicast: performs handshake -- signals sender "ready", then waits
-/// for sender to set receiver_sem = VALID. On the sender core (loopback),
-/// the handshake is skipped since data is already in the CB from the
-/// DRAM read in if_src.
+/// Lower Pipe -> CB (receiver). Unicast gather: cumulative wait_min with
+/// static recvProgress. Multicast: cumulative wait_min via per-PipeNet
+/// runtime counter. Sender core in loopback skips the handshake (data
+/// already in the CB from the if_src DRAM read).
 LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
                             const PipeGraph *pipeGraph,
+                            const PipeNetCounterMap *counters,
                             ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   auto pipeType = llvm::cast<PipeType>(pipe.getType());
@@ -340,20 +406,32 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
       ttk::NocSemaphoreSetOp::create(rewriter, loc, semPtr, zeroIdx);
     }
   } else {
-    // Multicast handshake: signal sender "ready", wait for data.
-    // For loopback, skip on the sender core (data already in CB).
+    // Multicast: signal sender ready, ++counter, wait_min(recvSem,
+    // counter). Receiver hit by N pipes walks 1..N.
     auto recvSemIdx = arith::ConstantIndexOp::create(
         rewriter, loc, getReceiverSemIdx(pipeType));
     auto recvSemAddr = ttk::GetSemaphoreOp::create(rewriter, loc, recvSemIdx);
     auto recvSemPtr = ttk::CastToL1PtrOp::create(rewriter, loc, recvSemAddr);
 
-    // Build the handshake body as a lambda to avoid duplication.
-    auto emitHandshake = [&]() {
-      // Reset receiver_sem to 0 (prepare for sender's VALID signal).
-      auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
-      ttk::NocSemaphoreSetOp::create(rewriter, loc, recvSemPtr, zeroIdx);
+    // Counter is allocated by allocatePipeNetCountersForMulticast.
+    Value counter;
+    if (counters) {
+      auto func = op->getParentOfType<func::FuncOp>();
+      auto fIt = counters->find(func);
+      if (fIt != counters->end()) {
+        auto pIt = fIt->second.find(pipeType.getPipeNetId());
+        if (pIt != fIt->second.end()) {
+          counter = pIt->second;
+        }
+      }
+    }
+    if (!counter) {
+      return rewriter.notifyMatchFailure(
+          op, "multicast Pipe->CB CopyOp without per-PipeNet counter; "
+              "allocatePipeNetCountersForMulticast must run before lowering");
+    }
 
-      // Signal sender that this receiver is ready (atomic inc).
+    auto emitSignalSender = [&]() {
       auto senderSemIdx = arith::ConstantIndexOp::create(
           rewriter, loc, getSenderSemIdx(pipeType));
       auto senderSemAddr =
@@ -368,22 +446,30 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
           rewriter, loc, indexTy, srcYLogical);
       auto senderSemNocAddr = ttk::GetNocAddrOp::create(
           rewriter, loc, srcXTranslated, srcYTranslated, senderSemAddr);
-      auto incrVal = arith::ConstantIndexOp::create(rewriter, loc, 1);
+      auto readyIncr = arith::ConstantIndexOp::create(rewriter, loc, 1);
       ttk::NocSemaphoreIncOp::create(rewriter, loc,
-                                     senderSemNocAddr.getResult(), incrVal,
+                                     senderSemNocAddr.getResult(), readyIncr,
                                      /*noc_id=*/Value(),
                                      /*posted=*/BoolAttr());
+    };
 
-      // Wait for sender to set receiver_sem = VALID (1).
-      auto validVal = arith::ConstantOp::create(rewriter, loc, i32Ty,
-                                                rewriter.getI32IntegerAttr(1));
-      ttk::SemaphoreWaitOp::create(rewriter, loc, recvSemPtr, validVal);
+    auto emitCounterAndWait = [&]() {
+      auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+      auto loaded =
+          memref::LoadOp::create(rewriter, loc, counter, ValueRange{zeroIdx});
+      auto oneI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
+                                              rewriter.getI32IntegerAttr(1));
+      auto newCounter = arith::AddIOp::create(rewriter, loc, loaded, oneI32);
+      memref::StoreOp::create(rewriter, loc, newCounter, counter,
+                              ValueRange{zeroIdx});
+      ttk::SemaphoreWaitMinOp::create(rewriter, loc, recvSemPtr, newCounter);
     };
 
     if (pipeType.srcInDstRange()) {
-      // Loopback: skip handshake on the sender core. The sender already
-      // has data in its CB from the DRAM read, and will set receiver_sem
-      // via loopback multicast.
+      // Loopback: at the sender core, skip the senderSem signal but still
+      // do counter+=1 + wait_min. The local self-inc on recvSem (emitted
+      // by lowerCBToPipe) satisfies the wait and synchronizes the
+      // loopback data write with the receiver-side cb_push.
       auto myX = ttk::MyLogicalXOp::create(rewriter, loc, indexTy);
       auto myY = ttk::MyLogicalYOp::create(rewriter, loc, indexTy);
       auto srcXConst =
@@ -399,11 +485,12 @@ LogicalResult lowerPipeToCB(CopyOp op, Value pipe, Value dstCB,
           scf::IfOp::create(rewriter, loc, /*resultTypes=*/
                             TypeRange{}, notSender, /*withElseRegion=*/false);
       rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
-      emitHandshake();
+      emitSignalSender();
       rewriter.setInsertionPointAfter(ifOp);
     } else {
-      emitHandshake();
+      emitSignalSender();
     }
+    emitCounterAndWait();
   }
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));

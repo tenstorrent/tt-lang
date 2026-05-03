@@ -102,13 +102,11 @@ class OperationPipeNets:
         return active
 
     def validate(self) -> None:
-        """Run cross-pipe validation: empty PipeNets, mixed pipe kinds,
-        multicast destination overlap."""
+        """Run cross-pipe validation: empty PipeNets, mixed pipe kinds."""
         for net in self.pipe_nets:
             if not net.pipes:
                 raise ValueError("PipeNet requires at least one pipe")
             _validate_homogeneous_pipe_kinds(net.pipes)
-            _validate_no_overlapping_destinations(net.pipes)
 
 
 def _linearize(coords: Tuple[int, ...], grid: Tuple[int, ...]) -> int:
@@ -150,41 +148,6 @@ def _validate_homogeneous_pipe_kinds(pipes: Tuple[PipeUse, ...]) -> None:
             "(spec: PipeNet[DstT] requires all pipes to share DstT); "
             "use separate PipeNets."
         )
-
-
-def _validate_no_overlapping_destinations(pipes: Tuple[PipeUse, ...]) -> None:
-    """Reject two multicast pipes within one PipeNet that share any destination.
-
-    All pipes in a PipeNet share a single semaphore pair, so a node that
-    receives from multiple multicast sources cannot disambiguate the
-    handshake. Unicast gather (multiple unicast pipes to the same dst) is
-    allowed because the receiver uses cumulative semaphore waits.
-
-    TODO[spec]: the spec does not constrain within-PipeNet multicast
-    destination overlap; this rejection is an implementation constraint
-    tied to issue #505. Can be lifted once the lowering switches to
-    `noc_semaphore_inc_multicast`.
-    """
-    mcast = [(i, p) for i, p in enumerate(pipes) if isinstance(p.dst, NodeRange)]
-    if len(mcast) < 2:
-        return
-    seen: dict = {}
-    for i, pipe in mcast:
-        rng: NodeRange = pipe.dst  # type: ignore[assignment]
-        for coord in itertools.product(
-            *(range(lo, hi) for lo, hi in zip(rng.lo, rng.hi))
-        ):
-            if coord in seen:
-                j = seen[coord]
-                raise ValueError(
-                    f"PipeNet has overlapping multicast destinations: "
-                    f"pipe {j} (src={pipes[j].src.coords}) and "
-                    f"pipe {i} (src={pipe.src.coords}) both target "
-                    f"node {coord}. Use separate PipeNets for patterns "
-                    f"where a node receives from multiple multicast "
-                    f"sources."
-                )
-            seen[coord] = i
 
 
 __all__ = [

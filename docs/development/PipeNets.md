@@ -42,8 +42,7 @@ both consume. It holds:
   (`0..N-1`, reset per invocation) and a tuple of `PipeUse` records
   (source `NodeCoord`, destination `NodeCoord` for unicast or
   `NodeRange` for multicast).
-- `validate()`: empty PipeNet, overlapping multicast destinations,
-  mixed unicast/multicast within one PipeNet.
+- `validate()`: empty PipeNet, mixed unicast/multicast within one PipeNet.
 - `active_node_set(grid)`: linearized union of every pipe's source
   and destination coordinates.
 
@@ -314,8 +313,8 @@ runtime-observable.
 | #  | Behavior under test                                       | Dev | Sim | Lit |
 |----|-----------------------------------------------------------|:---:|:---:|:---:|
 |  1 | Empty PipeNet rejected at construction                    |  X  |  X  |     |
-|  2 | Within-PipeNet mcast dst overlap rejected (full)          |  X  |  X  |     |
-|  3 | Within-PipeNet mcast dst overlap rejected (partial)       |  X  |  X  |     |
+|  2 | Within-PipeNet mcast dst overlap allowed (full)           |  X  |  X  |     |
+|  3 | Within-PipeNet mcast dst overlap allowed (partial)        |  X  |  X  |     |
 |  4 | Unicast gather to same dst allowed                        |  X  |  X  |     |
 |  5 | Nonoverlapping mcast pipes in one PipeNet allowed         |  X  |  X  |     |
 |  6 | Pipe rejects open-bounded slices                          |  X  |  X  |     |
@@ -401,16 +400,6 @@ rejection contract; it `pytest.skip`s on the simulator runner.
 
 ## Future work
 
-* Issue #505: lift the within-PipeNet multicast destination overlap
-  restriction. Today a single PipeNet shares one semaphore pair across
-  all its pipes, so a node receiving from two multicast sources cannot
-  disambiguate the handshake. Per-source semaphore increments via
-  `noc_semaphore_inc_multicast` in TTKernel would let one PipeNet
-  describe true scatter-gather and all-to-all patterns. This is a
-  TTKernel dialect + tt-metal change; it is unrelated to the active-set
-  guard, but unblocking it would let `test_scatter_gather` and a
-  single-PipeNet all-to-all version of `test_overlapping_pipenets` come
-  off `@pytest.mark.skip`.
 * Cross-chip (Galaxy / QuietBox / N300) PipeNets. tt-lang's
   `@ttl.operation` is a per-chip program by contract today; PipeNet
   coordinates are interpreted by the NoC, so they always refer to

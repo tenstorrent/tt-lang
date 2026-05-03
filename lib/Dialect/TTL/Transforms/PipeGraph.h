@@ -13,6 +13,7 @@
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 namespace mlir::tt::ttl {
@@ -21,8 +22,8 @@ namespace mlir::tt::ttl {
 // Pipe Graph: Tracks sender->receiver CB associations for pipe copies.
 //
 // For gather patterns, senders must write to the receiver's CB address, not
-// their own. The PipeGraph identifies receiver CBs for each pipe and manages
-// gather slot/semaphore assignments.
+// their own. The PipeGraph identifies receiver CBs for each pipe and
+// manages gather slot/semaphore assignments.
 //===----------------------------------------------------------------------===//
 
 /// Key for identifying a pipe by its source, destination, and PipeNet ID.
@@ -111,60 +112,84 @@ public:
     return success();
   }
 
-  /// Assign gather slot indices for pipes sharing a destination.
-  /// When multiple sources send to the same unicast destination, each source
-  /// needs a different slot to avoid overwrites. Slot indices are assigned
-  /// sequentially (0-based) per destination group. Groups are keyed by
-  /// (destination coordinates, receiver CB index) so that separate PipeNets
-  /// sharing a destination get independent slot numbering.
-  ///
-  /// Also populates gatherDstCounts for receiver-side cumulative semaphore
-  /// waits: the count tells the receiver how many total senders target it.
+  /// Assign per-pipe slot indices via greedy coloring keyed by
+  /// (receiver, cbIndex). Pipes sharing a receiver+cbIndex get distinct
+  /// slots so their writes do not overwrite each other in that receiver's
+  /// CB. Pipes ordered by (srcX, srcY) for reproducibility. Also populates
+  /// gatherDstCounts for unicast receivers' cumulative wait_min.
   void assignGatherSlotIndices() {
-    struct DstCBKey {
-      int64_t dstStartX, dstStartY, dstEndX, dstEndY, cbIndex;
-      bool operator==(const DstCBKey &o) const {
-        return dstStartX == o.dstStartX && dstStartY == o.dstStartY &&
-               dstEndX == o.dstEndX && dstEndY == o.dstEndY &&
-               cbIndex == o.cbIndex;
+    // (receiver, cbIndex) -> slots already taken at that receiver.
+    struct ReceiverKey {
+      int64_t recvX, recvY, cbIndex;
+      bool operator==(const ReceiverKey &o) const {
+        return recvX == o.recvX && recvY == o.recvY && cbIndex == o.cbIndex;
       }
     };
-    struct DstCBKeyInfo {
-      static DstCBKey getEmptyKey() {
-        return {llvm::DenseMapInfo<int64_t>::getEmptyKey(), 0, 0, 0, 0};
+    struct ReceiverKeyInfo {
+      static ReceiverKey getEmptyKey() {
+        return {llvm::DenseMapInfo<int64_t>::getEmptyKey(), 0, 0};
       }
-      static DstCBKey getTombstoneKey() {
-        return {llvm::DenseMapInfo<int64_t>::getTombstoneKey(), 0, 0, 0, 0};
+      static ReceiverKey getTombstoneKey() {
+        return {llvm::DenseMapInfo<int64_t>::getTombstoneKey(), 0, 0};
       }
-      static unsigned getHashValue(const DstCBKey &k) {
-        return llvm::hash_combine(k.dstStartX, k.dstStartY, k.dstEndX,
-                                  k.dstEndY, k.cbIndex);
+      static unsigned getHashValue(const ReceiverKey &k) {
+        return llvm::hash_combine(k.recvX, k.recvY, k.cbIndex);
       }
-      static bool isEqual(const DstCBKey &a, const DstCBKey &b) {
+      static bool isEqual(const ReceiverKey &a, const ReceiverKey &b) {
         return a == b;
       }
     };
-    llvm::DenseMap<DstCBKey, SmallVector<PipeKey>, DstCBKeyInfo> groups;
+    llvm::DenseMap<ReceiverKey, llvm::SmallSet<int64_t, 4>, ReceiverKeyInfo>
+        usedAtReceiver;
+
+    // (srcX, srcY) order is stable and reproducible across runs.
+    SmallVector<PipeKey> orderedPipes;
+    orderedPipes.reserve(receiverCBs.size());
     for (auto &[key, info] : receiverCBs) {
-      DstCBKey dk{key.dstStartX, key.dstStartY, key.dstEndX, key.dstEndY,
-                  info.cbIndex};
-      groups[dk].push_back(key);
+      orderedPipes.push_back(key);
     }
-    for (auto &[dk, pipeKeys] : groups) {
-      if (pipeKeys.size() <= 1) {
-        continue;
+    llvm::sort(orderedPipes, [](const PipeKey &a, const PipeKey &b) {
+      return std::tie(a.srcX, a.srcY, a.dstStartX, a.dstStartY, a.pipeNetId) <
+             std::tie(b.srcX, b.srcY, b.dstStartX, b.dstStartY, b.pipeNetId);
+    });
+
+    for (const PipeKey &pk : orderedPipes) {
+      auto it = receiverCBs.find(pk);
+      const int64_t cbIndex = it->second.cbIndex;
+
+      // Slots taken by earlier pipes at any of this pipe's receivers
+      // (destination range is inclusive on both ends).
+      llvm::SmallSet<int64_t, 4> taken;
+      for (int64_t y = pk.dstStartY; y <= pk.dstEndY; ++y) {
+        for (int64_t x = pk.dstStartX; x <= pk.dstEndX; ++x) {
+          auto rIt = usedAtReceiver.find(ReceiverKey{x, y, cbIndex});
+          if (rIt == usedAtReceiver.end()) {
+            continue;
+          }
+          for (int64_t s : rIt->second) {
+            taken.insert(s);
+          }
+        }
       }
-      llvm::sort(pipeKeys, [](const PipeKey &a, const PipeKey &b) {
-        return std::tie(a.srcX, a.srcY) < std::tie(b.srcX, b.srcY);
-      });
-      for (int64_t i = 0; i < static_cast<int64_t>(pipeKeys.size()); ++i) {
-        receiverCBs.find(pipeKeys[i])->second.gatherSlotIdx = i;
+
+      // Lowest free slot.
+      int64_t slot = 0;
+      while (taken.count(slot)) {
+        ++slot;
+      }
+      it->second.gatherSlotIdx = slot;
+
+      // Reserve this slot at every receiver.
+      for (int64_t y = pk.dstStartY; y <= pk.dstEndY; ++y) {
+        for (int64_t x = pk.dstStartX; x <= pk.dstEndX; ++x) {
+          usedAtReceiver[ReceiverKey{x, y, cbIndex}].insert(slot);
+        }
       }
     }
 
-    // Count total senders per unicast destination for gather receive protocol.
-    // Keyed by (dstX, dstY, pipeNetId) since all unicast pipes to the same
-    // destination share a semaphore.
+    // Per-unicast-destination sender count, keyed by (dstX, dstY,
+    // pipeNetId). Multicast pipes use the runtime counter from
+    // allocatePipeNetCountersForMulticast / lowerPipeToCB.
     for (auto &[key, info] : receiverCBs) {
       bool isUnicast =
           key.dstStartX == key.dstEndX && key.dstStartY == key.dstEndY;
@@ -191,27 +216,20 @@ public:
     }
   }
 
-  /// Verify that gather receiver CBs have enough blocks for all senders.
-  /// Each sender writes to a different slot, so block_count must be >= the
-  /// number of senders targeting that CB.
+  /// Each pipe needs `block_count >= gatherSlotIdx + 1` in its receiver
+  /// CB. Covers unicast gather and multicast overlap uniformly.
   LogicalResult verifyGatherBlockCounts() const {
-    for (auto &[dk, numSenders] : gatherDstCounts) {
-      if (numSenders <= 1) {
-        continue;
-      }
-      // Check all receiver entries matching this destination.
-      for (auto &[pk, info] : receiverCBs) {
-        if (pk.dstStartX != dk.dstX || pk.dstStartY != dk.dstY ||
-            pk.pipeNetId != dk.pipeNetId) {
-          continue;
-        }
-        if (info.blockCount < numSenders) {
-          return emitError(info.loc)
-                 << "gather pipe receiver CB has block_count="
-                 << info.blockCount << " but " << numSenders
-                 << " senders target it; "
-                 << "block_count must be >= number of senders";
-        }
+    for (auto &[pk, info] : receiverCBs) {
+      int64_t requiredBlocks = info.gatherSlotIdx + 1;
+      if (info.blockCount < requiredBlocks) {
+        bool isUnicast =
+            pk.dstStartX == pk.dstEndX && pk.dstStartY == pk.dstEndY;
+        return emitError(info.loc)
+               << (isUnicast ? "gather" : "multicast overlap")
+               << " pipe receiver CB has block_count=" << info.blockCount
+               << " but slot " << info.gatherSlotIdx
+               << " is assigned to this pipe; "
+               << "block_count must be >= " << requiredBlocks;
       }
     }
     return success();

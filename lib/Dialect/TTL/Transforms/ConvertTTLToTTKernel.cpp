@@ -12,6 +12,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -786,8 +787,10 @@ struct TensorSliceLowering : OpConversionPattern<TensorSliceOp> {
 
 struct CopyLowering : OpConversionPattern<CopyOp> {
   CopyLowering(const TypeConverter &typeConverter, MLIRContext *context,
-               const PipeGraph *pipeGraph)
-      : OpConversionPattern(typeConverter, context), pipeGraph(pipeGraph) {}
+               const PipeGraph *pipeGraph,
+               const PipeNetCounterMap *pipeNetCounters)
+      : OpConversionPattern(typeConverter, context), pipeGraph(pipeGraph),
+        pipeNetCounters(pipeNetCounters) {}
 
   LogicalResult
   matchAndRewrite(CopyOp op, OpAdaptor adaptor,
@@ -837,7 +840,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     if (srcIsPipe && dstIsCB) {
       // Pipe -> CB: destination receives data via multicast from source
       return lowerPipeToCB(op, adaptor.getSrc(), adaptor.getDst(), pipeGraph,
-                           rewriter);
+                           pipeNetCounters, rewriter);
     }
     if (srcIsPipe || dstIsPipe) {
       return rewriter.notifyMatchFailure(
@@ -876,6 +879,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
 
 private:
   const PipeGraph *pipeGraph;
+  const PipeNetCounterMap *pipeNetCounters;
 };
 
 struct WaitLowering : OpConversionPattern<WaitOp> {
@@ -1013,8 +1017,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
-                         BuiltinDialect, scf::SCFDialect, func::FuncDialect,
-                         tensor::TensorDialect, ttkernel::TTKernelDialect>();
+                         BuiltinDialect, memref::MemRefDialect, scf::SCFDialect,
+                         func::FuncDialect, tensor::TensorDialect,
+                         ttkernel::TTKernelDialect>();
 
   // Structural ops remain legal (converted elsewhere or kept as-is).
   target.addLegalOp<ComputeOp, YieldOp, AttachCBOp>();
@@ -1046,17 +1051,21 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
            typeConverter.isLegal(&op.getBody());
   });
 
-  // Build pipe graph to track receiver CB addresses for gather patterns.
-  // This must happen before lowering so we can look up receiver info.
+  // Build the pipe graph to track receiver CB addresses for gather
+  // patterns. This must happen before lowering so we can look up receiver
+  // info.
   auto pipeGraphOrErr = PipeGraph::build(mod);
   if (failed(pipeGraphOrErr)) {
     return failure();
   }
   PipeGraph pipeGraph = std::move(*pipeGraphOrErr);
 
+  // Per-PipeNet runtime counters for multicast cumulative wait_min.
+  PipeNetCounterMap pipeNetCounters;
+  allocatePipeNetCountersForMulticast(mod, pipeNetCounters);
+
   RewritePatternSet patterns(&ctx);
-  // CopyLowering needs the pipe graph for gather pattern receiver CB lookup
-  patterns.add<CopyLowering>(typeConverter, &ctx, &pipeGraph);
+  patterns.add<CopyLowering>(typeConverter, &ctx, &pipeGraph, &pipeNetCounters);
   patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
                TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering>(
