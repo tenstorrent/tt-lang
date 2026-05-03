@@ -350,16 +350,11 @@ def nested_if_callbacks_kernel(inp, out):
 
 
 # ---------------------------------------------------------------------------
-# Loopback multicast: source (0, 0) is inside the destination range
-# (column 0, rows 0..3). Lowers to ttkernel.noc_async_write_multicast_loopback_src
-# (verified in convert_pipe_ops.mlir::copy_cb_to_pipe_multicast_loopback).
-# tt-metal supports this NOC variant (see
-# tests/tt_metal/tt_metal/data_movement/one_to_all/test_one_to_all.cpp
-# and sender_multicast.cpp's `loopback` compile-time arg).
-#
-# Each of the 4 nodes in column 0 receives the tile and writes it; the
-# source receives its own data via the loopback path, so we don't need a
-# separate read-first branch on it.
+# Loopback multicast: source (0, 0) is inside its own destination range
+# (column 0, rows 0..3). Each of the 4 nodes in column 0 receives the
+# tile and writes it; the source receives its own data through the
+# multicast handshake, so the kernel does not need a separate
+# read-first branch on it.
 # ---------------------------------------------------------------------------
 
 
@@ -404,14 +399,13 @@ def loopback_multicast_kernel(inp, out):
 def test_loopback_multicast(device):
     """Source-in-destination-range multicast (loopback).
 
-    Lowers to noc_async_write_multicast_loopback_src in tt-metal. The
-    source receives its own data via the loopback route rather than
-    consuming the locally-read tile. All 4 destinations (including
-    source) hold abs(inp[0, 0:TILE]).
+    The source is included in its own destination range, so all N_LB
+    destinations (including the source) end up holding the same tile.
+    Verifies the source receives via the multicast handshake rather
+    than retaining whatever it locally read.
 
     TODO[spec]: the spec does not address loopback multicast (source
-    inside its own destination range); the implementation supports it
-    via a dedicated tt-metal lowering path.
+    inside its own destination range).
     """
     inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
     inp_tt = to_dram(inp_torch, device)

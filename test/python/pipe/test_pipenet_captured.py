@@ -7,7 +7,7 @@
 Spec: a pipe net may be constructed in an enclosing scope and captured
 by the operation function. This test pins that contract end to end on
 hardware and on the simulator — a captured PipeNet behaves identically
-to a body-local one in the active set and in MLIR emission.
+to a body-local one (same active set, same data movement, same output).
 https://github.com/tenstorrent/tt-lang/blob/<spec-commit>/docs/sphinx/specs/TTLangSpecification.md#L647
 """
 

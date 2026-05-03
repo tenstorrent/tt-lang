@@ -4,10 +4,10 @@
 
 """Module-scope PipeNet end-to-end coverage.
 
-A `ttl.PipeNet` constructed at module top-level (resolved via
-LOAD_GLOBAL inside the kernel thread) satisfies the spec's
-"enclosing scope" rule and must behave identically to a body-local or
-closure-captured net. Tests both backends.
+A `ttl.PipeNet` constructed at module top-level (the module is an
+enclosing scope of the @ttl.operation function per spec L647) must
+behave identically to a body-local or closure-captured net. Tests
+hardware and simulator.
 
 https://github.com/tenstorrent/tt-lang/blob/<spec-commit>/docs/sphinx/specs/TTLangSpecification.md#L647
 """
@@ -26,8 +26,8 @@ from ttlang_test_utils import assert_pcc, to_dram
 
 TILE = 32
 
-# Module-scope PipeNet: referenced inside dm_read below via LOAD_GLOBAL,
-# not LOAD_DEREF. Discovery walks both compiler and sim function globals.
+# Module-scope PipeNet referenced from the operation's data-movement
+# thread by name.
 MODULE_SCATTER_NET = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 4), 0))])
 
 

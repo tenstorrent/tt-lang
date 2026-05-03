@@ -101,8 +101,9 @@ bool rectContains(const ActiveRect &outer, const ActiveRect &inner) {
 
 // Drop rectangles fully contained in another rectangle. The most common
 // source of redundancy is loopback multicast pipes, where the source
-// unit cell sits inside the destination range; the pass would otherwise
-// emit two predicates whose union is just the destination rectangle.
+// unit rectangle sits inside the destination range; the pass would
+// otherwise emit two predicates whose union is just the destination
+// rectangle.
 //
 // When N rectangles are equal, only the first occurrence (lowest index)
 // is kept, regardless of N. Equal rectangles each contain each other, so

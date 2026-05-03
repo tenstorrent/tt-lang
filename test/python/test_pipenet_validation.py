@@ -117,9 +117,15 @@ def test_all_multicast_pipenet_allowed():
 
 
 def test_pipe_src_must_be_two_tuple():
-    """`Pipe.src` is declared `Tuple[int, int]`; non-2 lengths must be
-    rejected at construction so users see the error at the source line
-    rather than as a downstream MLIR-emission failure."""
+    """`Pipe.src` is declared `Tuple[int, int]` on the hardware path; non-2
+    lengths must be rejected at construction so users see the error at the
+    source line rather than as a downstream emission failure.
+
+    Sim accepts 1D coordinates (the `matmul_1d_mcast` example uses them),
+    so this strict-2-tuple rule is hardware-only.
+    """
+    if not hasattr(ttl.Pipe, "_parse_dst"):
+        pytest.skip("sim Pipe accepts 1D coords; rule is hardware-only")
     with pytest.raises(ValueError, match="src must be a 2-tuple"):
         ttl.Pipe(src=(0,), dst=(1, 0))
     with pytest.raises(ValueError, match="src must be a 2-tuple"):

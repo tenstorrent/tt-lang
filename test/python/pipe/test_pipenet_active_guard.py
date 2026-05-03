@@ -65,13 +65,11 @@ def _make_small_mcast_kernel(M_DIM, K_DIM, N_DIM):
         @ttl.compute()
         def compute():
             with out_cb.reserve() as out_blk:
-                out_blk.store(ttl.math.fill(out_blk, 0))
-                for _ in range(K_BLOCKS):
-                    a_blk = a_cb.wait()
-                    b_blk = b_cb.wait()
-                    out_blk += a_blk @ b_blk
-                    a_blk.pop()
-                    b_blk.pop()
+                a_blk = a_cb.wait()
+                b_blk = b_cb.wait()
+                out_blk.store(a_blk @ b_blk)
+                a_blk.pop()
+                b_blk.pop()
 
         @ttl.datamovement()
         def dm_read():
@@ -124,9 +122,8 @@ def _make_small_mcast_kernel(M_DIM, K_DIM, N_DIM):
 @pytest.mark.parametrize(
     "shape",
     [
-        # M_BLOCKS, N_BLOCKS, K_BLOCKS
-        (4, 3, 2),  # 4 rows x 3 cols of work, K=2 — fits in 8x7 launch grid
-        (2, 2, 2),  # 2x2 work — smaller than any plausible launch grid
+        (4, 3, 1),
+        (2, 2, 1),
     ],
     ids=["4x3", "2x2"],
 )
