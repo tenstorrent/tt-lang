@@ -305,7 +305,7 @@ on PyPI. It triggers automatically on push of `v*.*.*` or `v*.*.*+<local>`
 tags, and can also be dispatched manually for re-runs and dry-runs.
 
 ```text
-   push tag v1.2.3
+   push release tag
  or workflow_dispatch
           |
           v
@@ -327,11 +327,15 @@ tags, and can also be dispatched manually for re-runs and dry-runs.
    | build-wheels |   call-build-wheels.yml
    +--------------+   (builds wheel inside ird container,
           |            uploads tt-lang-wheels artifact)
-          v
-   +--------------+
-   |   publish    |   download artifact, verify wheel version,
-   +--------------+   upload to PyPI via OIDC trusted publishing
-                      (skipped if dry_run=true)
+          |
+          +-----------------------+
+          v                       v
+   +--------------+        +------------------+
+   |   publish    |        | dry-run-summary  |
+   +--------------+        +------------------+
+   tag push or              workflow_dispatch
+   dry_run=false            with dry_run=true
+   (uploads to PyPI)        (lists artifacts only)
 ```
 
 Job-by-job:
@@ -340,26 +344,33 @@ Job-by-job:
    `GITHUB_REF` looks like `refs/tags/v[0-9]...`. Skipped under
    `dry_run: true`. Exposes `tag_version` (tag with leading `v` stripped) for
    the wheel-version check.
-2. **`build-docker`** — calls `call-build-docker.yml` only when the
-   `docker_tag` input is empty (always on tag push; on dispatch only when no
-   override is supplied). Outputs the freshly built ird tag.
+2. **`build-docker`** — calls `call-build-docker.yml` on tag push (where no
+   `docker_tag` input is supplied). Skipped on `workflow_dispatch`, which
+   requires `docker_tag`. Outputs the freshly built ird tag.
 3. **`build-wheels`** — calls `call-build-wheels.yml` against either the
-   user-supplied `docker_tag` or the `build-docker` output. Builds the wheel
-   inside the ird container and uploads it as the `tt-lang-wheels` artifact.
-4. **`publish`** — downloads the artifact, verifies every wheel filename's
-   version field matches `preflight.outputs.tag_version`, and uploads via
+   `docker_tag` input (manual dispatch) or the `build-docker` output (tag
+   push). Builds the wheel inside the ird container and uploads it as the
+   `tt-lang-wheels` artifact.
+4. **`publish`** — runs on tag push or when `dry_run` is false. Downloads the
+   artifact, verifies every wheel filename's version field matches
+   `preflight.outputs.tag_version`, and uploads via
    `pypa/gh-action-pypi-publish` using OIDC trusted publishing
-   (`environment: pypi`, `id-token: write`). Skipped on `dry_run: true`.
+   (`environment: pypi`, `id-token: write`).
+5. **`dry-run-summary`** — runs only on `workflow_dispatch` with
+   `dry_run: true`. Downloads the artifact and lists what would have been
+   uploaded. No `environment`, no PyPI credentials.
 
 Common scenarios:
 
-| Trigger                                                       | docker_tag input | Result                                                          |
-| ------------------------------------------------------------- | ---------------- | --------------------------------------------------------------- |
-| `git push origin v1.2.3`                                      | (n/a)            | Build docker, build wheel, publish to PyPI as `1.2.3`           |
-| Dispatch from a tag ref, leave `docker_tag` empty             | `""`             | Build docker, build wheel, publish to PyPI                      |
-| Dispatch from a tag ref, set `docker_tag: v1.0.0-1`           | `v1.0.0-1`       | Skip docker build, reuse `v1.0.0-1` ird image, publish to PyPI  |
-| Dispatch from a non-tag ref with `dry_run: true`              | empty or set     | Build everything, skip the PyPI upload (pipeline smoke test)    |
-| Dispatch from a non-tag ref with `dry_run: false`             | any              | Fails at `preflight` because `GITHUB_REF` is not a release tag  |
+Common scenarios (`<TAG>` denotes a release tag, `<DOCKER_TAG>` an existing
+ird image tag):
+
+| Trigger                                                       | docker_tag input | Result                                                              |
+| ------------------------------------------------------------- | ---------------- | ------------------------------------------------------------------- |
+| `git push origin <TAG>`                                       | (n/a)            | Build docker, build wheel, publish to PyPI as the tag's version     |
+| Dispatch from a tag ref with `docker_tag: <DOCKER_TAG>`       | required         | Skip docker build, reuse the supplied ird image, publish to PyPI    |
+| Dispatch from a non-tag ref with `dry_run: true`              | required         | Build wheel against the supplied tag, skip PyPI upload              |
+| Dispatch from a non-tag ref with `dry_run: false`             | required         | Fails at `preflight` because `GITHUB_REF` is not a release tag      |
 
 ## CMake Options
 

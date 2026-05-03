@@ -12,10 +12,9 @@ on:
   workflow_dispatch:
     inputs:
       docker_tag:
-        description: "Docker image tag for the ird container. If empty, the docker image is built first."
+        description: "Docker image tag for the ird container."
         type: string
-        required: false
-        default: ""
+        required: true
       dry_run:
         description: "Skip tag enforcement and the PyPI upload (for pipeline testing)."
         type: boolean
@@ -23,8 +22,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
-  checks: write
 
 jobs:
   preflight:
@@ -39,12 +36,16 @@ jobs:
 
       - name: Require release tag
         id: parse
-        if: ${{ !inputs.dry_run }}
+        if: ${{ github.event_name == 'push' || !inputs.dry_run }}
         run: .github/scripts/require-release-tag.sh
 
   build-docker:
     needs: preflight
-    if: ${{ inputs.docker_tag == '' }}
+    if: ${{ github.event_name == 'push' || inputs.docker_tag == '' }}
+    permissions:
+      contents: read
+      packages: write
+      checks: write
     uses: ./.github/workflows/call-build-docker.yml
     secrets: inherit
 
@@ -53,14 +54,15 @@ jobs:
     if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
     uses: ./.github/workflows/call-build-wheels.yml
     with:
-      docker_tag: ${{ inputs.docker_tag != '' && inputs.docker_tag || needs.build-docker.outputs.docker-tag }}
+      docker_tag: ${{ (github.event_name == 'workflow_dispatch' && inputs.docker_tag != '' && inputs.docker_tag) || needs.build-docker.outputs.docker-tag }}
 
   publish:
     name: "Publish to PyPI"
     needs: [preflight, build-wheels]
+    if: ${{ github.event_name == 'push' || !inputs.dry_run }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: ${{ inputs.dry_run && '' || 'pypi' }}
+    environment: pypi
     permissions:
       id-token: write
 
@@ -78,15 +80,25 @@ jobs:
         run: ls -lh dist/
 
       - name: Verify wheel version matches tag
-        if: ${{ !inputs.dry_run }}
         run: .github/scripts/verify-wheel-version.sh "${{ needs.preflight.outputs.tag_version }}" dist
 
       - name: Publish to PyPI
-        if: ${{ !inputs.dry_run }}
         uses: pypa/gh-action-pypi-publish@release/v1
 
-      - name: Dry-run summary
-        if: ${{ inputs.dry_run }}
+  dry-run-summary:
+    name: "Dry-run summary"
+    needs: [preflight, build-wheels]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download wheels
+        uses: actions/download-artifact@v6
+        with:
+          name: tt-lang-wheels
+          path: dist/
+
+      - name: Summarize
         run: |
           echo "::notice::Dry run complete; no upload performed."
           echo "Wheels that would have been published:"

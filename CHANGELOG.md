@@ -96,8 +96,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Compiler
 
-- Fixed live-interval boundary computation (issue#536)
-- Fixed all-zero results for fp32 reductionsqgq (issue #533)
+- Fixed live-interval boundary computation (issue #536)
+- Fixed all-zero results for fp32 reductions (issue #533)
 
 ### Examples and documentation
 
