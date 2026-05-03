@@ -195,6 +195,60 @@ pipeline review if they change.
   functions emitted alongside the operation's kernel functions) are
   skipped; only kernel functions need node-coordinate predicates.
 
+## Multi-PipeNet operations
+
+The kernel-level guard enforces one invariant: no kernel function
+executes on a node outside the operation's active set, where the
+active set is the union of every pipe's source coordinate and
+destination range across every PipeNet (per spec). Per-PipeNet role
+behavior inside the active set is the user's responsibility; the spec
+does not define per-PipeNet guards.
+
+Two mechanisms together preserve correctness inside the active set
+when an operation defines multiple PipeNets over different node
+groups:
+
+1. `ttl.if_src %pipe { ... }` and `ttl.if_dst %pipe { ... }` carry
+   their own per-node predicate: the inner block executes only when
+   the current node matches that pipe's source or is in its
+   destination range. Per-pipe data movement is therefore correctly
+   conditional without any per-PipeNet wrapper.
+
+2. Non-pipe work (dataflow-buffer reserves, compute, address
+   arithmetic) is guarded by the user with explicit role-based
+   predicates. The pass does not split the body per PipeNet: user
+   code is straight-line and interleaves references to multiple
+   PipeNets, dataflow buffers, and control flow, with no static
+   partitioning.
+
+An example is `test_overlapping_pipenets`: two PipeNets with disjoint
+source nodes and overlapping destination nodes, where the
+data-movement kernel routes work by node coordinate:
+
+```python
+@ttl.datamovement()
+def dm_read():
+    x, _ = ttl.node(dims=2)
+    if x == 0:                           # net_a source role
+        with a_cb.reserve() as ablk:
+            net_a.if_src(...)
+    elif x == 3:                         # net_b source role
+        with b_cb.reserve() as bblk:
+            net_b.if_src(...)
+    elif 1 <= x and x <= 2:              # destination role for both
+        with a_cb.reserve() as ablk: net_a.if_dst(...)
+        with b_cb.reserve() as bblk: net_b.if_dst(...)
+```
+
+A node in the union but with no role under one PipeNet must not
+execute that PipeNet's dataflow-buffer reserves or pushes. The pass
+does not check this; the user is responsible for guarding non-pipe
+work with role-based predicates such as the `if x == 0 / elif x == 3
+/ elif 1 <= x <= 2` form shown above. The simulator's pending-block
+assertion catches an omitted guard at end of execution before the
+kernel runs on hardware, so testing the operation through the
+simulator before device runs would help catch this class of error.
+
 ## Simulator parity
 
 The simulator does not run the MLIR pass, so it mirrors the same
@@ -313,10 +367,10 @@ runtime-observable.
 (1) Device-only due to a pre-existing simulator divergence: the
 simulator's block-state machine accepts in-place `+=` only on a
 *temporary* block (the result of a `fill` or a block expression), not
-on a CB block that has already been written via `store(...)`. Hardware
-accepts both. The matmul kernels in these tests use
-`out_blk += a @ b` after an initial `out_blk.store(fill(...))`, which
-the simulator rejects.
+on a dataflow-buffer block that has already been written via
+`store(...)`. Hardware accepts both. The matmul kernels in these
+tests use `out_blk += a @ b` after an initial
+`out_blk.store(fill(...))`, which the simulator rejects.
 
 (2) Hardware-only by design. The hardware-side `ttl.Pipe.src` is
 strictly `Tuple[int, int]` (the dialect is 2D), but the simulator's
