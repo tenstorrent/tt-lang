@@ -223,17 +223,16 @@ CI uses two caching layers that must be rebuilt when submodule SHAs change:
    toolchain.
 
 2. **Docker images** -- `ird` and `dist` container images tagged by the nearest
-   git version tag (e.g. `v0.1.9`, see `.github/containers/get-version-tag.sh`).
-   Rebuilds overwrite the same tag. A `latest` tag is also pushed alongside
-   each versioned tag. After building, `call-build-docker.yml` runs the
-   tutorial examples in the dist container to verify the image works.
+   git version tag (see `.github/containers/get-version-tag.sh`). Rebuilds
+   overwrite the same tag. A `latest` tag is also pushed alongside each
+   versioned tag. After building, `call-build-docker.yml` runs the tutorial
+   examples in the dist container to verify the image works.
 
    Tags may carry SemVer build metadata after `+` to mark uplift rebuilds of
-   an existing release (e.g. `v1.0.0+uplift`). Because Docker tags forbid `+`,
-   `get-version-tag.sh` translates `+` to `-` when forming the image tag, so
-   git tag `v1.0.0+uplift` produces Docker tag `v1.0.0-uplift`. Use the
-   sanitized form (`v1.0.0-uplift`) anywhere a `docker_tag` parameter is
-   passed to a workflow.
+   an existing release. Because Docker tags forbid `+`, `get-version-tag.sh`
+   translates `+` to `-` when forming the image tag (e.g. git tag
+   `<TAG>+<local>` produces Docker tag `<TAG>-<local>`). Use the sanitized
+   form anywhere a `docker_tag` parameter is passed to a workflow.
 
 #### Triggering a toolchain cache rebuild on PRs
 
@@ -248,7 +247,7 @@ build:
   secrets: inherit
   with:
     build_toolchain: true
-    docker_tag: "v0.1.9"
+    docker_tag: "<DOCKER_TAG>"
 ```
 
 When `build_toolchain` is true, the workflow:
@@ -284,18 +283,18 @@ ordering with the original release:
 
 ```bash
 # Standard release bump:
-git tag v0.1.9
-git push origin v0.1.9
+git tag <TAG>
+git push origin <TAG>
 
-# Uplift of an existing release (e.g., new submodule SHAs on top of v1.0.0):
-git tag v1.0.0+uplift
-git push origin v1.0.0+uplift
+# Uplift of an existing release (new submodule SHAs on top of an existing tag):
+git tag <TAG>+<local>
+git push origin <TAG>+<local>
 ```
 
 Once the new images are published, update the `docker_tag` parameter in
 `on-pr.yml` and `on-push.yml` to reference the new tag. For `+`-suffixed
-tags, use the Docker-sanitized form: git tag `v1.0.0+uplift` -> docker_tag
-`v1.0.0-uplift`.
+tags, use the Docker-sanitized form: git tag `<TAG>+<local>` -> docker_tag
+`<TAG>-<local>`.
 
 (publishing-to-pypi)=
 #### Publishing to PyPI
