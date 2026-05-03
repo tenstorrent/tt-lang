@@ -386,16 +386,10 @@ def test_row_rings_auto(device):
     expected = torch.zeros_like(inp_torch)
     for y in range(grid_y):
         for x in range(grid_x):
-            own = inp_torch[
-                y * TILE : (y + 1) * TILE, x * TILE : (x + 1) * TILE
-            ]
+            own = inp_torch[y * TILE : (y + 1) * TILE, x * TILE : (x + 1) * TILE]
             prev = (x - 1) % grid_x
-            nbr = inp_torch[
-                y * TILE : (y + 1) * TILE, prev * TILE : (prev + 1) * TILE
-            ]
-            expected[
-                y * TILE : (y + 1) * TILE, x * TILE : (x + 1) * TILE
-            ] = (own + nbr)
+            nbr = inp_torch[y * TILE : (y + 1) * TILE, prev * TILE : (prev + 1) * TILE]
+            expected[y * TILE : (y + 1) * TILE, x * TILE : (x + 1) * TILE] = own + nbr
     assert_pcc(expected, result)
 
 

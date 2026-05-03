@@ -97,9 +97,7 @@ def minimal_matmul_kernel(a, b, out):
 
     a_cb = ttl.make_dataflow_buffer_like(a, shape=(BLOCK_M, BLOCK_K), block_count=2)
     b_cb = ttl.make_dataflow_buffer_like(b, shape=(BLOCK_K, BLOCK_N), block_count=2)
-    out_cb = ttl.make_dataflow_buffer_like(
-        out, shape=(BLOCK_M, BLOCK_N), block_count=2
-    )
+    out_cb = ttl.make_dataflow_buffer_like(out, shape=(BLOCK_M, BLOCK_N), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -166,9 +164,7 @@ def minimal_matmul_kernel(a, b, out):
                         b_net.if_dst(recv_b)
 
                 with out_cb.wait() as out_blk:
-                    ttl.copy(
-                        out_blk, out[mr : mr + BLOCK_M, nc : nc + BLOCK_N]
-                    ).wait()
+                    ttl.copy(out_blk, out[mr : mr + BLOCK_M, nc : nc + BLOCK_N]).wait()
 
 
 def test_minimal_matmul_pipes(device):
