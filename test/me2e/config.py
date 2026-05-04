@@ -124,7 +124,7 @@ def validate_against_golden(
             ULP+PCC. Used for ops where random inputs near zero inflate ULP
             (ULP(0)=1.4e-45 for f32).
     """
-    from utils.correctness import assert_allclose, assert_pcc, assert_with_ulp
+    from ttl.utils.correctness import assert_allclose, assert_pcc, assert_with_ulp
 
     if use_allclose is not None:
         rtol, atol = use_allclose

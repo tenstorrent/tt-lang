@@ -32,9 +32,9 @@
 | 0.1 | 12/15/2025 | Initial version |
 | 0.2 | 01/20/2026 | Remove `ttl.Program` |
 | 0.3 | 01/23/2026 | Add specification for block operators and math functions |
-| 0.4 | 01/26/2026 | Add `ttl.math.broadcast` |
+| 0.4 | 01/26/2026 | Add `ttl.block.broadcast` |
 | 0.5 | 02/05/2026 | Use dataflow buffer instead of circular buffer term |
-| 0.6 | 02/06/2026 | Add rounding, mask, `ttl.math.transpose`, `ttl.math.fill` and `ttl.math.where` functions |
+| 0.6 | 02/06/2026 | Add rounding, mask, `ttl.block.transpose`, `ttl.block.fill` and `ttl.block.where` functions |
 | 0.7 | 02/09/2026 | Move `push` and `pop` from `ttl.DataflowBuffer` to `ttl.Block` |
 | 0.8 | 02/09/2026 | Formal block states |
 | 0.9 | 03/04/2026 | Add `ttl.GroupTransfer` |
@@ -45,7 +45,8 @@
 | 0.13 | 03/31/2026 | Rename `ttl.kernel` to `ttl.operation` |
 | 0.14 | 04/02/2026 | Add `ttl.math.abs`, `ttl.math.neg` and `ttl.math.pow` in addition to Python built-in operators. |
 | 0.15 | 04/06/2026 | Rename `buffer_factor` to `block_count` |
-| 0.16 | 04/22/2026 | Add `ttl.math.squeeze` and `ttl.math.unsqueeze` |
+| 0.16 | 04/22/2026 | Add `ttl.block.squeeze` and `ttl.block.unsqueeze` |
+| 0.17 | 04/28/2026 | Move `broadcast`, `transpose`, `where`, `mask`, `mask_posinf`, `fill`, `squeeze`, `unsqueeze` to `ttl.block` |
 
 
 ## Introduction
@@ -362,15 +363,15 @@ def elwise_compute():
         # Broadcast c_squared along dimension 0 (first) to get N_BLOCK_SIZE×M_TILES;
         # This first broadcasts column 0 to fill each of M_TILES tiles
         # then it broadcasts column of M_TILES tiles to get N_BLOCK_SIZE×M_TILES tiles
-        c_squared_bcast = ttl.math.broadcast(c_squared, dims=[0], shape=(N_BLOCK_SIZE, M_TILES))
+        c_squared_bcast = ttl.block.broadcast(c_squared, dims=[0], shape=(N_BLOCK_SIZE, M_TILES))
 
         # Broadcast d_squared along all dimensions (0 and 1) to N_BLOCK_SIZE×M_TILES;
         # This first broadcasts single scalar value at position (0, 0) to fill a single tile
         # then it broadcasts single tile to get N_BLOCK_SIZE×M_TILES tiles
-        d_squared_bcast = ttl.math.broadcast(d_squared, dims=[0, 1], shape=(N_BLOCK_SIZE, M_TILES))
+        d_squared_bcast = ttl.block.broadcast(d_squared, dims=[0, 1], shape=(N_BLOCK_SIZE, M_TILES))
 
         # Zero-initialize the accumulator z before summing N_BLOCKS partial sums
-        z_final = ttl.math.fill(0, shape=(1, M_TILES))
+        z_final = ttl.block.fill(0, shape=(1, M_TILES))
 
         for _ in range(N_BLOCKS):
 
@@ -387,7 +388,7 @@ def elwise_compute():
                 # Broadcast b_squared along dim -1 (last) to get N_BLOCK_SIZE×M_TILES;
                 # This first broadcasts row 0 to fill each of N_BLOCK_SIZE tiles
                 # then it broadcasts row of N_BLOCK_SIZE tiles to get N_BLOCK_SIZE×M_TILES tiles
-                b_squared_bcast = ttl.math.broadcast(b_squared, dims=[-1], shape=(N_BLOCK_SIZE, M_TILES))
+                b_squared_bcast = ttl.block.broadcast(b_squared, dims=[-1], shape=(N_BLOCK_SIZE, M_TILES))
 
                 # Perform elementwise math on N_BLOCK_SIZE×M_TILES tiles
                 expanded_y = ttl.math.sqrt(a_squared + b_squared_bcast + c_squared_bcast + d_squared_bcast)
@@ -534,7 +535,7 @@ def matmul_compute():
                 with y_dfb.reserve() as y_blk:
 
                     # Zero-initialize the accumulator y_final before summing K_BLOCKS partial products
-                    y_final = ttl.math.fill(0, shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
+                    y_final = ttl.block.fill(0, shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
 
                     # Repeat for each K block
                     for _ in range(K_BLOCKS):
@@ -547,7 +548,7 @@ def matmul_compute():
                             # b_blk has shape K_BLOCK_SIZE×N_BLOCK_SIZE;
                             # Unsqueeze it to 1×K_BLOCK_SIZE×N_BLOCK_SIZE and then
                             # broadcast it over dim 0 to I_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE
-                            b_bcast = ttl.math.broadcast(ttl.math.unsqueeze(b_blk, dims=[0]), dims=[0], shape=(I_BLOCK_SIZE, K_BLOCK_SIZE, N_BLOCK_SIZE))
+                            b_bcast = ttl.block.broadcast(ttl.block.unsqueeze(b_blk, dims=[0]), dims=[0], shape=(I_BLOCK_SIZE, K_BLOCK_SIZE, N_BLOCK_SIZE))
 
                             # Accumulate dot product between I_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE a_blk and
                             # I_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE b_bcast in y_final
@@ -562,7 +563,7 @@ def matmul_compute():
                         # c_blk has shape M_BLOCK_SIZE×N_BLOCK_SIZE;
                         # Unsqueeze it to 1×M_BLOCK_SIZE×N_BLOCK_SIZE and then
                         # broadcast it over dim 0 to I_BLOCK_SIZE×M_BLOCK_SIZE×N_BLOCK_SIZE
-                        c_bcast = ttl.math.broadcast(ttl.math.unsqueeze(c_blk, dims=[0]), dims=[0], shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
+                        c_bcast = ttl.block.broadcast(ttl.block.unsqueeze(c_blk, dims=[0]), dims=[0], shape=(I_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
 
                         y_final = y_final + c_bcast
 
@@ -1271,8 +1272,8 @@ def matmul_read():
 | :---- | :---- |
 | `ttl.math.reduce_sum(expr: ttl.BlockExpr, dims: List[int], shape: ttl.Shape) -> ttl.BlockExpr` | Reduce a block by summation over specified dimensions. Produces block of specified `shape`. Input expression must have the same number of dimensions as `shape`. The `shape` must contain 1 in dimensions specified for reduction.<br><br>For tiled blocks reduction happens in two steps: (1) whole tiles get elementwise reduced along specified dimensions, but only for dimensions where the corresponding `shape` dimension is >1.; (2) scalar values within tiles get reduced along specified dimensions, but only if reduction specifies one or both of last (innermost) dimensions; <br><br>For row-major blocks reduction is not supported.<br><br>Example for reduction over dimension -1 (innermost): `ttl.math.reduce_sum(a, dims=[-1], shape=(N, 1))`. Here if `a` has shape of `(N, M)` then the result will have the shape of `(N, 1)`. In step (1) M rows of tiles in `a` are elementwise reduced to a single row of tiles. In step (2) each tile has all of its rows reduced to row 0.<br><br>Example for reduction over dimension 0 (outermost): `ttl.math.reduce_max(a, dims=[0], shape=(1, M))`. Here if `a` has shape of `(N, M)` then the result will have the shape of `(N, 1)`. In step (1) N columns of tiles in `a` are elementwise reduced to a single column of tiles. In step (2) each tile has all of its columns reduced to column 0.<br><br>Example for reduction over two innermost dimensions: `ttl.math.reduce_sum(a, dims=[-1, -2], shape=(1, 1))`. Here if `a` has shape of `(N, M)` then the result will have the shape of `(1, 1)`.  In step (1) M rows and N columns of tiles in `a` are elementwise reduced to a single tiles. In step (2) a tile has all of its scalar values reduced to a value in position (0, 0). |
 | `ttl.math.reduce_max(expr: ttl.BlockExpr, dims: List[int], shape: ttl.Shape) -> ttl.BlockExpr` | Reduce a block by finding maximum over specified dimensions. See details and examples for `ttl.math.reduce_sum`. |
-| `ttl.math.broadcast(expr: ttl.BlockExpr, dims: List[int], shape: ttl.Shape) -> ttl.BlockExpr` | Broadcast a block over specified dimensions (`dims`). Produces block of specified `shape`. Input expression must have the same number of dimensions as `shape`. Shape of `expr` must contain 1 in dimensions specified for broadcast.<br><br>For tiled blocks broadcast happens in two steps: (1) scalar values within tiles get broadcasted along specified dimensions, but only if broadcast specifies one or both of last (innermost) dimensions; (2) whole tiles get broadcasted along specified dimensions, but only for dimensions where the corresponding `shape` dimension is >1.<br><br>For row-major blocks broadcast is not supported.<br><br>Example for broadcast over dimension -1  (innermost): `ttl.math.broadcast(a, dims=[-1], shape=(N, M))`. Here the shape of the result is `(N, M)` and therefore `a` must have the shape of `(N, 1)`. In step (1) each tile in `a` has its row 0 broadcasted over the rest of rows. In step (2) whole row of tiles is broadcasted M times.<br><br>Example for broadcast over dimension 0 (outermost): `ttl.math.broadcast(a, dims=[0], shape=(N, M))`. Here the shape of the result is `(N, M)` and therefore `a` must have the shape of `(1, M)`. In step (1) each tile in `a` has its column 0 broadcasted over the rest of columns. In step (2) whole column of tiles is broadcasted N times.<br><br>Example for broadcast over two innermost dimensions: `ttl.math.broadcast(a, dims=[-1, -2], shape=(N, M))`. Here the shape of the result is `(N, M)` and therefore  `a` must have the shape of `(1, 1)`. In step (1) each tile in `a` has a scalar value in the position (0, 0) broadcasted over the rest positions. In step (2) whole tile is broadcasted N times column-wise and M times row-wise. |
-| `ttl.math.transpose(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Transpose a block. For argument block of shape `(M, N)` produces resulting block with shape `(N, M)`. Supported only for two-dimensional blocks. |
+| `ttl.block.broadcast(expr: ttl.BlockExpr, dims: List[int], shape: ttl.Shape) -> ttl.BlockExpr` | Broadcast a block over specified dimensions (`dims`). Produces block of specified `shape`. Input expression must have the same number of dimensions as `shape`. Shape of `expr` must contain 1 in dimensions specified for broadcast.<br><br>For tiled blocks broadcast happens in two steps: (1) scalar values within tiles get broadcasted along specified dimensions, but only if broadcast specifies one or both of last (innermost) dimensions; (2) whole tiles get broadcasted along specified dimensions, but only for dimensions where the corresponding `shape` dimension is >1.<br><br>For row-major blocks broadcast is not supported.<br><br>Example for broadcast over dimension -1  (innermost): `ttl.block.broadcast(a, dims=[-1], shape=(N, M))`. Here the shape of the result is `(N, M)` and therefore `a` must have the shape of `(N, 1)`. In step (1) each tile in `a` has its row 0 broadcasted over the rest of rows. In step (2) whole row of tiles is broadcasted M times.<br><br>Example for broadcast over dimension 0 (outermost): `ttl.block.broadcast(a, dims=[0], shape=(N, M))`. Here the shape of the result is `(N, M)` and therefore `a` must have the shape of `(1, M)`. In step (1) each tile in `a` has its column 0 broadcasted over the rest of columns. In step (2) whole column of tiles is broadcasted N times.<br><br>Example for broadcast over two innermost dimensions: `ttl.block.broadcast(a, dims=[-1, -2], shape=(N, M))`. Here the shape of the result is `(N, M)` and therefore  `a` must have the shape of `(1, 1)`. In step (1) each tile in `a` has a scalar value in the position (0, 0) broadcasted over the rest positions. In step (2) whole tile is broadcasted N times column-wise and M times row-wise. |
+| `ttl.block.transpose(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Transpose a block. For argument block of shape `(M, N)` produces resulting block with shape `(N, M)`. Supported only for two-dimensional blocks. |
 
 ### Rounding functions
 
@@ -1292,17 +1293,17 @@ def matmul_read():
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.math.fill(value: float, shape: ttl.Shape) -> ttl.BlockExpr` | Fill a block of specified `shape` with specified `value`. |
-| `ttl.math.mask(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with 0. |
-| `ttl.math.mask_posinf(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with positive infinity. |
-| `ttl.math.where(condition: ttl.BlockExpr, true_value: ttl.BlockExpr, false_value: ttl.BlockExpr) -> ttl.BlockExpr` | For each element in specified condition block return the corresponding element from `true_value` if true (condition element equals to 1) or the element from `false_value` if false (condition element equals to 0) |
+| `ttl.block.fill(value: float, shape: ttl.Shape) -> ttl.BlockExpr` | Fill a block of specified `shape` with specified `value`. |
+| `ttl.block.mask(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with 0. |
+| `ttl.block.mask_posinf(expr: ttl.BlockExpr, mask: ttl.BlockExpr) -> ttl.BlockExpr` | Mask a block with specified `mask` by replacing masked (corresponding mask element equals to 1) elements with positive infinity. |
+| `ttl.block.where(condition: ttl.BlockExpr, true_value: ttl.BlockExpr, false_value: ttl.BlockExpr) -> ttl.BlockExpr` | For each element in specified condition block return the corresponding element from `true_value` if true (condition element equals to 1) or the element from `false_value` if false (condition element equals to 0) |
 
 ### Shape manipulation functions
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.math.squeeze(expr: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Remove shape dimension at positions specified by `dims`. Removed shape dimension must be 1.<br><br>Example for squeeze over dimensions 0 (outermost) and 2: `ttl.math.squeeze(a, dims=[0, 2])`. Here if the shape of `a` is `(1, N, 1, M)` the shape of the result will be `(N, M)`.<br><br>Example for squeeze over dimensions -1 (innermost) and -3: `ttl.math.squeeze(a, dim=[-1, -3])`. Here if the shape of `a` is `(N, 1, M, 1)` the shape of the result will be `(N, M)`. |
-| `ttl.math.unsqueeze(expr: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Add shape dimension of 1 at positions specified by `dims`. Position values in `dims` refer to a position in the resulting shape. <br><br>Example for unsqueeze over dimensions 0 (outermost) and 2: `ttl.math.unsqueeze(a, dims=[0, 2])`. Here if the shape of `a` is `(N, M)` the shape of the result will be `(1, N, 1, M)`.<br><br>Example for unsqueeze over dimensions -1 (innermost) and -3: `ttl.math.unsqueeze(a, dims=[-1, -3])`. Here if the shape of `a` is `(N, M)` the shape of the result will be `(N, 1, M, 1)`. |
+| `ttl.block.squeeze(expr: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Remove shape dimension at positions specified by `dims`. Removed shape dimension must be 1.<br><br>Example for squeeze over dimensions 0 (outermost) and 2: `ttl.block.squeeze(a, dims=[0, 2])`. Here if the shape of `a` is `(1, N, 1, M)` the shape of the result will be `(N, M)`.<br><br>Example for squeeze over dimensions -1 (innermost) and -3: `ttl.block.squeeze(a, dim=[-1, -3])`. Here if the shape of `a` is `(N, 1, M, 1)` the shape of the result will be `(N, M)`. |
+| `ttl.block.unsqueeze(expr: ttl.BlockExpr, dims: List[int]) -> ttl.BlockExpr` | Add shape dimension of 1 at positions specified by `dims`. Position values in `dims` refer to a position in the resulting shape. <br><br>Example for unsqueeze over dimensions 0 (outermost) and 2: `ttl.block.unsqueeze(a, dims=[0, 2])`. Here if the shape of `a` is `(N, M)` the shape of the result will be `(1, N, 1, M)`.<br><br>Example for unsqueeze over dimensions -1 (innermost) and -3: `ttl.block.unsqueeze(a, dims=[-1, -3])`. Here if the shape of `a` is `(N, M)` the shape of the result will be `(N, 1, M, 1)`. |
 
 ## Appendix C. Naming guidelines
 
@@ -1346,13 +1347,14 @@ def matmul_read():
 | `ttl.math` unary math functions: `expm1`, `exp2`, `ceil`, `sign`, `gelu`, `silu`, `hardsigmoid`, `square`, `softsign`, `signbit`, `frac`, `trunc` | 0.1.7 | 1.0.0 |
 | `ttl.math` unary math functions: `logp1`, `atanh`, `asinh`, `acosh`, `selu`, `rsub`, `relu_max`, `relu_min`, `leaky_relu`, `elu`, `celu`, `prelu`, `softplus`, `hardtanh`, `round`, `clamp`, `threshold` | 0.1.7 | N/S |
 | `ttl.math` binary math functions: `min`, `max` | 0.1.7 | 0.1.7 |
-| `ttl.math` binary math functions: `mask`, `mask_posinf` | 0.1.7 | N/S |
-| `ttl.math.where` | 0.1.7 | N/S |
-| `ttl.math.broadcast` (compiler requires target block as argument) | 0.1.7 | 0.1.7 |
-| `ttl.math.fill` (compiler requires target block as argument) | 0.1.7 | 0.1.8 |
+| `ttl.block` mask functions: `mask`, `mask_posinf` | 0.1.7 | N/S |
+| `ttl.block.where` | 0.1.7 | N/S |
+| `ttl.block.broadcast` (compiler requires target block as argument) | 0.1.7 | 0.1.7 |
+| `ttl.block.fill` (compiler requires target block as argument) | 0.1.7 | 0.1.8 |
 | `ttl.math.reduce_max` | 0.1.7 | 0.1.8 |
 | `ttl.math.reduce_sum` | 0.1.7 | 0.1.8 |
-| `ttl.math.transpose` | 0.1.7 | 0.1.8 |
+| `ttl.block.transpose` | 0.1.7 | 0.1.8 |
+| `ttl.block` shape manipulation functions: `squeeze`, `unsqueeze` | N/S | N/S |
 
 * N/S - Not Supported
 * N/A - Not Applicable

@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 
 import torch
-from utils.correctness import assert_with_ulp
+from ttl.utils.correctness import assert_with_ulp
 
 from ..builder.ttl_builder import build_ttl_module
 from ..config import E2EConfig
