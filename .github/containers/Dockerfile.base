@@ -14,6 +14,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 # tt-metal commit for install_dependencies.sh (must match the submodule pin)
 ARG TT_METAL_DEPENDENCIES_COMMIT=beccdb232ed7532b0748f8f97aba958ba43ddae1
 
+# Make apt resilient to slow/intermittent mirrors (launchpad.net in particular).
+# Applies to every apt-get invocation in this image and in any image built FROM
+# it (including the ird/dist stages in Dockerfile).
+RUN printf '%s\n' \
+      'Acquire::Retries "5";' \
+      'Acquire::http::Timeout "240";' \
+      'Acquire::https::Timeout "240";' \
+      > /etc/apt/apt.conf.d/99-retries-timeout
+
 # System packages (mirrors tt-mlir Dockerfile.base)
 RUN <<EOT
 set -e
@@ -57,13 +66,13 @@ apt-get update -qq
 apt-get install -y -qq python3.12 python3.12-dev python3.12-venv
 
 # Install tt-metal runtime dependencies (firmware, SFPI, etc.)
-wget -q https://raw.githubusercontent.com/tenstorrent/tt-metal/${TT_METAL_DEPENDENCIES_COMMIT}/{install_dependencies.sh,tt_metal/sfpi-info.sh,tt_metal/sfpi-version}
+wget -q --tries=5 --timeout=120 --waitretry=10 https://raw.githubusercontent.com/tenstorrent/tt-metal/${TT_METAL_DEPENDENCIES_COMMIT}/{install_dependencies.sh,tt_metal/sfpi-info.sh,tt_metal/sfpi-version}
 chmod u+x sfpi-info.sh
 bash install_dependencies.sh --docker
 EOT
 
 # Install Clang 18
-RUN wget https://apt.llvm.org/llvm.sh && \
+RUN wget --tries=5 --timeout=120 --waitretry=10 https://apt.llvm.org/llvm.sh && \
     chmod u+x llvm.sh && \
     ./llvm.sh 18 && \
     apt-get install -y libc++-18-dev libc++abi-18-dev && \
