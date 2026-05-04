@@ -26,9 +26,8 @@ import ttl
 from ttlang_test_utils import to_l1
 
 
-# CHECK: binary operation requires matching tensor operand types
-# CHECK-SAME: got lhs type
-# CHECK-SAME: and rhs type
+# CHECK: incompatible tensor data types
+# CHECK-SAME: requires matching data types
 @ttl.operation(grid=(1, 1))
 def mixed_dtype_add_kernel(lhs, rhs, out):
     """INVALID: add same-shaped tiles with different data types."""

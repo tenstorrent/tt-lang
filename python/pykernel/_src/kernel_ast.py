@@ -16,14 +16,6 @@ from .kernel_types import ClassRegistry
 from .utils import _cast, _get_type_str
 
 
-def _same_shape_ranked_tensors(lhs_type, rhs_type) -> bool:
-    if not isinstance(lhs_type, RankedTensorType) or not isinstance(
-        rhs_type, RankedTensorType
-    ):
-        return False
-    return tuple(lhs_type.shape) == tuple(rhs_type.shape)
-
-
 class TTCompilerBase(PyKernelAstBase):
     def __init__(self, name, kernel_type=None, *args, **kwargs):
         assert kernel_type in [
@@ -536,19 +528,7 @@ class TTCompilerBase(PyKernelAstBase):
             )
             return fn(lhs, rhs)
 
-        types_differ = lhs.type != rhs.type
-        same_shape_tensor_type_mismatch = types_differ and _same_shape_ranked_tensors(
-            lhs.type, rhs.type
-        )
-        if same_shape_tensor_type_mismatch:
-            message = (
-                "binary operation requires matching tensor operand types; "
-                f"got lhs type {lhs.type} and rhs type {rhs.type}"
-            )
-            if hasattr(self, "_raise_error"):
-                self._raise_error(node, message)
-            raise TypeError(message)
-        if types_differ:
+        if lhs.type != rhs.type:
             rhs = _cast(rhs, lhs.type)
         assert lhs.type == rhs.type, f"{lhs.type} != {rhs.type}"
         mlir_type = _get_type_str(lhs.type)
