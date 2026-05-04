@@ -38,7 +38,7 @@ jobs:
       docker-image-base: ${{ steps.build.outputs.docker-image-base }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ttlang_sha_override || github.sha }}
           fetch-depth: 0
@@ -82,7 +82,7 @@ jobs:
       docker-tag: ${{ steps.docker-tag.outputs.docker-tag }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ttlang_sha_override || github.sha }}
           submodules: recursive

@@ -11,7 +11,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 
 import torch
 
-from sim import ttl, ttnn
+import ttl
+import ttnn
 
 
 @ttl.operation(grid=(1, 1))

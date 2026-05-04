@@ -149,7 +149,7 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             core_context: Dict[str, Any] = {}
 
             for key, value in self.context.items():
-                # Skip module objects (e.g., local imports like `from python.sim import ttnn`)
+                # Skip module objects (e.g., local imports like `from ttl.sim import ttnn`)
                 match value:
                     case types.ModuleType():
                         core_context[key] = value

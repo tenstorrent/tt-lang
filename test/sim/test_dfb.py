@@ -26,19 +26,19 @@ from test_utils import (
     tensors_exact_equal,
 )
 
-from python.sim import TILE_SHAPE, copy, ttnn
-from python.sim.ttnnsim import ROW_MAJOR_LAYOUT, TILE_LAYOUT, Tensor
-from python.sim.dfb import (
+from sim import TILE_SHAPE, copy, ttnn
+from sim.ttnnsim import ROW_MAJOR_LAYOUT, TILE_LAYOUT, Tensor
+from sim.dfb import (
     Block,
     DataflowBuffer,
     make_dataflow_buffer_like,
 )
-from python.sim.math import broadcast
-from python.sim.blockstate import (
+from sim.math import broadcast
+from sim.blockstate import (
     ThreadType,
     BlockAcquisition,
 )
-from python.sim.context import (
+from sim.context import (
     set_current_thread_type,
     clear_current_thread_type,
 )
@@ -410,7 +410,7 @@ def test_single_pending_wait_constraint() -> None:
 def test_reserve_store_push_pop_workflow() -> None:
     """Test the complete reserve->store->push->wait->pop workflow."""
     import torch
-    from python.sim import ttnn, TILE_SHAPE
+    from sim import ttnn, TILE_SHAPE
 
     element = make_element_for_buffer_shape((2, 1))
     dfb = DataflowBuffer(likeness_tensor=element, shape=(2, 1), block_count=2)
@@ -462,7 +462,7 @@ def test_reserve_store_push_pop_workflow() -> None:
 
 def test_make_dataflow_buffer_like_basic() -> None:
     """Test make_dataflow_buffer_like with basic usage."""
-    from python.sim import ttl
+    from sim import ttl
 
     x = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
 
@@ -483,7 +483,7 @@ def test_make_dataflow_buffer_like_basic() -> None:
 
 def test_make_dataflow_buffer_like_infers_type() -> None:
     """Test that make_dataflow_buffer_like correctly infers the element type."""
-    from python.sim import ttl
+    from sim import ttl
 
     tensor = make_rand_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
 
@@ -498,7 +498,7 @@ def test_make_dataflow_buffer_like_infers_type() -> None:
 
 def test_make_dataflow_buffer_like_multiple_tensors() -> None:
     """Test make_dataflow_buffer_like with multiple different tensors."""
-    from python.sim import ttl
+    from sim import ttl
 
     a = make_rand_tensor(TILE_SHAPE[0] * 4, TILE_SHAPE[1] * 4)
     b = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1])
@@ -522,7 +522,7 @@ def test_make_dataflow_buffer_like_multiple_tensors() -> None:
 
 def test_make_dataflow_buffer_like_with_example_pattern() -> None:
     """Test make_dataflow_buffer_like with realistic example pattern."""
-    from python.sim import ttl
+    from sim import ttl
 
     a_in = make_rand_tensor(128, 128)
     b_in = make_rand_tensor(128, 128)
@@ -660,7 +660,7 @@ def test_can_methods_multi_tile() -> None:
 
 def test_can_methods_always_work() -> None:
     """Test that can_wait() and can_reserve() work on freshly created DFBs."""
-    from python.sim import ttl
+    from sim import ttl
 
     x = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
     dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
@@ -735,7 +735,7 @@ def test_context_manager_syntax() -> None:
 def test_iadd_accumulates_into_temporary() -> None:
     """Test that += on a temporary block accumulates values across iterations."""
     import torch
-    from python.sim import ttnn, TILE_SHAPE
+    from sim import ttnn, TILE_SHAPE
 
     element = make_element_for_buffer_shape((3, 1))
     dfb = DataflowBuffer(likeness_tensor=element, shape=(3, 1), block_count=2)
@@ -759,7 +759,7 @@ def test_iadd_accumulates_into_temporary() -> None:
 
     with dfb.reserve() as block:
         # Use fill(0) as accumulator seed; += produces a temporary block each time.
-        from python.sim.math import fill
+        from sim.math import fill
 
         acc = fill(block, 0)
         acc += values1
@@ -775,7 +775,7 @@ def test_iadd_accumulates_into_temporary() -> None:
 def test_iadd_raises_on_non_temporary() -> None:
     """Test that += on a reserved (non-temporary) block raises RuntimeError."""
     import torch
-    from python.sim import ttnn, TILE_SHAPE
+    from sim import ttnn, TILE_SHAPE
 
     element = make_element_for_buffer_shape((1, 1))
     dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
@@ -799,10 +799,10 @@ def test_iadd_raises_on_non_temporary() -> None:
 
 def test_pending_confirmation_cleared_when_result_is_stored() -> None:
     """Block used in arithmetic clears its pending confirmation when the result is stored."""
-    from python.sim import ttnn, TILE_SHAPE
-    from python.sim.blockstate import ThreadType
-    from python.sim.context import set_current_thread_type, clear_current_thread_type
-    from python.sim.copy import copy as dm_copy
+    from sim import ttnn, TILE_SHAPE
+    from sim.blockstate import ThreadType
+    from sim.context import set_current_thread_type, clear_current_thread_type
+    from sim.copy import copy as dm_copy
 
     element = make_element_for_buffer_shape((1, 1))
     src_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
@@ -839,10 +839,10 @@ def test_pending_confirmation_cleared_when_result_is_stored() -> None:
 
 def test_pending_confirmation_raises_at_termination_if_never_stored() -> None:
     """validate_no_pending_blocks() raises if block data was used in arithmetic but never stored."""
-    from python.sim import ttnn, TILE_SHAPE
-    from python.sim.blockstate import ThreadType
-    from python.sim.context import set_current_thread_type, clear_current_thread_type
-    from python.sim.copy import copy as dm_copy
+    from sim import ttnn, TILE_SHAPE
+    from sim.blockstate import ThreadType
+    from sim.context import set_current_thread_type, clear_current_thread_type
+    from sim.copy import copy as dm_copy
 
     element = make_element_for_buffer_shape((1, 1))
     src_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
@@ -972,8 +972,8 @@ def test_dfb_pages_nonblocking(configured_dfb8: DataflowBuffer) -> None:
 
 def test_per_core_dfb_limit_exceeds_max() -> None:
     """Test that exceeding the DFB limit emits a warning at definition time without aborting."""
-    from python.sim import ttl
-    from python.sim.program import set_max_dfbs
+    from sim import ttl
+    from sim.program import set_max_dfbs
 
     set_max_dfbs(2)
 
@@ -1009,8 +1009,8 @@ def test_l1_limit_counts_unreferenced_dfbs() -> None:
     DFBs (8192 bytes total) must still trigger the warning even though neither
     appears in any thread closure and would be invisible to self.context counting.
     """
-    from python.sim import ttl
-    from python.sim.program import set_max_l1_bytes
+    from sim import ttl
+    from sim.program import set_max_l1_bytes
 
     set_max_l1_bytes(4096)  # Allows exactly one 4096-byte DFB
 
@@ -1209,7 +1209,7 @@ def test_matmul_1x4_times_4x1_values():
 
 def test_1d_tile_count_from_tensor():
     """tile_count_from_tensor correctly counts tiles in a 1-D tensor."""
-    from python.sim.dfb import tile_count_from_tensor
+    from sim.dfb import tile_count_from_tensor
 
     assert tile_count_from_tensor(Tensor(torch.zeros(32))) == 1
     assert tile_count_from_tensor(Tensor(torch.zeros(64))) == 2
@@ -1252,8 +1252,8 @@ def test_1d_block_from_list():
 
 def test_1d_dataflow_buffer_reserve_push_wait_pop():
     """DataflowBuffer with 1-D shape correctly reserves, pushes, and delivers data."""
-    from python.sim.blockstate import ThreadType
-    from python.sim.context import set_current_thread_type, clear_current_thread_type
+    from sim.blockstate import ThreadType
+    from sim.context import set_current_thread_type, clear_current_thread_type
 
     element = Tensor(torch.zeros(32))
     dfb = DataflowBuffer(likeness_tensor=element, shape=(1,), block_count=2)
@@ -1288,8 +1288,8 @@ def test_1d_dataflow_buffer_reserve_push_wait_pop():
 
 def test_1d_multi_tile_dataflow_buffer():
     """DataflowBuffer with 1-D shape (4,) operates over 4 tiles per operation."""
-    from python.sim.blockstate import ThreadType
-    from python.sim.context import set_current_thread_type, clear_current_thread_type
+    from sim.blockstate import ThreadType
+    from sim.context import set_current_thread_type, clear_current_thread_type
 
     # Full buffer element shape for 4 tiles of size 32 each
     element = Tensor(torch.zeros(128))
@@ -1326,7 +1326,7 @@ def test_1d_multi_tile_dataflow_buffer():
 
 def test_1d_tensor_tile_aligned_validation():
     """1-D tensors that are not tile-aligned (or size 1) are rejected by from_tensor."""
-    from python.sim.dfb import Block
+    from sim.dfb import Block
 
     # Aligned: 32, 64, 1
     Block.from_tensor(Tensor(torch.zeros(32)))
