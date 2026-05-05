@@ -1,10 +1,14 @@
-// RUN: ttlang-opt --ttl-to-ttkernel-pipeline="use-trid-barriers=1" --canonicalize %s -o %t.ttkernel.mlir
+// RUN: ttlang-opt --ttl-to-ttkernel-pipeline --canonicalize %s -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
-// RUN: FileCheck %s --input-file=%t.cpp
+// RUN: FileCheck %s --check-prefix=CHECK --input-file=%t.cpp
+// RUN: ttlang-opt --ttl-to-ttkernel-pipeline="use-trid-barriers=1" --canonicalize %s -o %t.trid.ttkernel.mlir
+// RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.trid.ttkernel.mlir -o %t.trid.emitc.mlir
+// RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.trid.cpp %t.trid.emitc.mlir
+// RUN: FileCheck %s --check-prefix=TRID --input-file=%t.trid.cpp
 
-// Test: Single DMA write operation (CB → tensor)
-// Validates write barrier placement and ensures no read barrier
+// Test: Single DMA write operation (CB -> tensor)
+// Default RUN verifies global barrier lowering; TRID RUN verifies TRID-scoped barriers.
 
 #dram = #ttnn.buffer_type<dram>
 #layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
@@ -17,11 +21,17 @@
 // CHECK:   auto [[ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<1, 0>();
 // CHECK:   TensorAccessor [[ACCESSOR:v[0-9]+]] = TensorAccessor([[ARGS]], [[RT_ARG]], [[ADDR]]);
 // CHECK:   int32_t [[CB_PTR:v[0-9]+]] = get_read_ptr(get_compile_time_arg_val(0));
-// CHECK:   noc_async_write_set_trid({{.*}}, {{.*}});
 // CHECK:   noc_async_write_tile([[ZERO]], [[ACCESSOR]], [[CB_PTR]]);
-// CHECK:   noc_async_write_barrier_with_trid({{.*}}, {{.*}});
+// CHECK:   noc_async_write_barrier();
 // CHECK:   return;
 // CHECK-NEXT: }
+// CHECK-NOT: set_trid
+// CHECK-NOT: barrier_with_trid
+
+// TRID:   noc_async_write_set_trid({{.*}}, {{.*}});
+// TRID:   noc_async_write_tile(
+// TRID:   noc_async_write_barrier_with_trid({{.*}}, {{.*}});
+
 module {
   func.func @cb_to_tensor(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
