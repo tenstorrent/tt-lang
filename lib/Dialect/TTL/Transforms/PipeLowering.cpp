@@ -17,6 +17,7 @@
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
+#include "llvm/ADT/SmallSet.h"
 
 namespace mlir::tt::ttl {
 
@@ -515,6 +516,123 @@ struct IfDstLowering : OpConversionPattern<IfDstOp> {
   }
 };
 
+// Collect every pipe type whose net id matches `netId`. Walks the parent
+// module so it works regardless of whether matching `ttl.create_pipe` ops
+// have already been replaced by their unrealized-conversion-cast stand-ins.
+static SmallVector<PipeType> collectPipesForNet(Operation *op, int64_t netId) {
+  SmallVector<PipeType> result;
+  llvm::SmallSet<std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t>, 4>
+      seen;
+  op->getParentOfType<ModuleOp>().walk([&](Operation *o) {
+    for (Type t : o->getResultTypes()) {
+      auto pt = dyn_cast<PipeType>(t);
+      if (!pt || pt.getPipeNetId() != netId) {
+        continue;
+      }
+      auto key = std::make_tuple(pt.getSrcX(), pt.getSrcY(), pt.getDstStartX(),
+                                 pt.getDstStartY(),
+                                 pt.getDstEndX() * 256 + pt.getDstEndY());
+      if (seen.insert(key).second) {
+        result.push_back(pt);
+      }
+    }
+  });
+  return result;
+}
+
+static Value buildSrcMatch(OpBuilder &b, Location loc, Value coreX, Value coreY,
+                           PipeType pt) {
+  auto sx = arith::ConstantIndexOp::create(b, loc, pt.getSrcX());
+  auto sy = arith::ConstantIndexOp::create(b, loc, pt.getSrcY());
+  auto eqX = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::eq, coreX, sx);
+  auto eqY = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::eq, coreY, sy);
+  return arith::AndIOp::create(b, loc, eqX, eqY);
+}
+
+static Value buildDstMatch(OpBuilder &b, Location loc, Value coreX, Value coreY,
+                           PipeType pt) {
+  int64_t minX = std::min(pt.getDstStartX(), pt.getDstEndX());
+  int64_t maxX = std::max(pt.getDstStartX(), pt.getDstEndX());
+  int64_t minY = std::min(pt.getDstStartY(), pt.getDstEndY());
+  int64_t maxY = std::max(pt.getDstStartY(), pt.getDstEndY());
+  auto cMinX = arith::ConstantIndexOp::create(b, loc, minX);
+  auto cMaxX = arith::ConstantIndexOp::create(b, loc, maxX);
+  auto cMinY = arith::ConstantIndexOp::create(b, loc, minY);
+  auto cMaxY = arith::ConstantIndexOp::create(b, loc, maxY);
+  auto geX =
+      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sge, coreX, cMinX);
+  auto leX =
+      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sle, coreX, cMaxX);
+  auto geY =
+      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sge, coreY, cMinY);
+  auto leY =
+      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sle, coreY, cMaxY);
+  auto inX = arith::AndIOp::create(b, loc, geX, leX);
+  auto inY = arith::AndIOp::create(b, loc, geY, leY);
+  return arith::AndIOp::create(b, loc, inX, inY);
+}
+
+// Lower a per-pipe-role predicate op to the OR of per-pipe matches in the
+// named PipeNet. `roleBuilder` produces the i1 match for one pipe.
+template <typename Op>
+static LogicalResult lowerRolePredicate(
+    Op op, ConversionPatternRewriter &rewriter,
+    llvm::function_ref<Value(OpBuilder &, Location, Value, Value, PipeType)>
+        roleBuilder) {
+  auto loc = op.getLoc();
+  int64_t netId = op.getPipeNetId();
+  auto pipes = collectPipesForNet(op, netId);
+  if (pipes.empty()) {
+    return op->emitError() << op->getName() << " references unknown PipeNet "
+                           << netId;
+  }
+  auto coreX =
+      ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+  auto coreY =
+      ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+  Value result;
+  for (PipeType pt : pipes) {
+    Value match = roleBuilder(rewriter, loc, coreX, coreY, pt);
+    result = result ? Value(arith::OrIOp::create(rewriter, loc, result, match))
+                    : match;
+  }
+  rewriter.replaceOp(op, result);
+  return success();
+}
+
+struct IsSrcLowering : OpConversionPattern<IsSrcOp> {
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(IsSrcOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return lowerRolePredicate(op, rewriter, buildSrcMatch);
+  }
+};
+
+struct IsDstLowering : OpConversionPattern<IsDstOp> {
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(IsDstOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return lowerRolePredicate(op, rewriter, buildDstMatch);
+  }
+};
+
+struct IsActiveLowering : OpConversionPattern<IsActiveOp> {
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(IsActiveOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return lowerRolePredicate(
+        op, rewriter,
+        [](OpBuilder &b, Location loc, Value cx, Value cy, PipeType pt) {
+          Value src = buildSrcMatch(b, loc, cx, cy, pt);
+          Value dst = buildDstMatch(b, loc, cx, cy, pt);
+          return Value(arith::OrIOp::create(b, loc, src, dst));
+        });
+  }
+};
+
 struct CreatePipeLowering : OpConversionPattern<CreatePipeOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -540,8 +658,9 @@ struct CreatePipeLowering : OpConversionPattern<CreatePipeOp> {
 
 void populatePipeLoweringPatterns(RewritePatternSet &patterns,
                                   const TypeConverter &typeConverter) {
-  patterns.add<IfSrcLowering, IfDstLowering, CreatePipeLowering>(
-      typeConverter, patterns.getContext());
+  patterns.add<IfSrcLowering, IfDstLowering, IsSrcLowering, IsDstLowering,
+               IsActiveLowering, CreatePipeLowering>(typeConverter,
+                                                     patterns.getContext());
 }
 
 } // namespace mlir::tt::ttl

@@ -293,6 +293,10 @@ class TTLGenericCompiler(TTCompilerBase):
                 if self._is_pipenet_callback_call(node):
                     return self._handle_pipenet_callback(node)
 
+                # Check for PipeNet.is_src/is_dst/is_active predicate calls
+                if self._is_pipenet_predicate_call(node):
+                    return self._handle_pipenet_predicate(node)
+
                 return self._try_emit_auto_signposts(
                     node, lambda: super(TTLGenericCompiler, self).visit_Call(node)
                 )
@@ -340,6 +344,42 @@ class TTLGenericCompiler(TTCompilerBase):
         from ..pipe import PipeNet
 
         return isinstance(val, PipeNet)
+
+    _PIPENET_PREDICATE_OPS = {
+        "is_src": ttl.is_src,
+        "is_dst": ttl.is_dst,
+        "is_active": ttl.is_active,
+    }
+
+    def _is_pipenet_predicate_call(self, node):
+        if not isinstance(node.func, ast.Attribute):
+            return False
+        if node.func.attr not in self._PIPENET_PREDICATE_OPS:
+            return False
+        if not isinstance(node.func.value, ast.Name):
+            return False
+        tbl = self._var_exists(node.func.value.id)
+        if not tbl:
+            return False
+        from ..pipe import PipeNet
+
+        return isinstance(tbl[node.func.value.id], PipeNet)
+
+    def _handle_pipenet_predicate(self, node):
+        from ..pipe import PipeNet
+
+        method = node.func.attr
+        var_name = node.func.value.id
+        pipenet = self._var_exists(var_name)[var_name]
+        assert isinstance(pipenet, PipeNet)
+        if node.args or node.keywords:
+            self._raise_error(node, f"PipeNet.{method}() takes no arguments")
+        op = self._PIPENET_PREDICATE_OPS[method](
+            pipe_net_id=IntegerAttr.get(
+                IntegerType.get_signless(64, self.ctx), pipenet.pipe_net_id
+            )
+        )
+        return op
 
     def _handle_pipenet_callback(self, node):
         """Handle pipenet.if_src(callback) or pipenet.if_dst(callback) calls."""
@@ -1207,7 +1247,21 @@ class TTLGenericCompiler(TTCompilerBase):
                 self._emit_signpost(f"ttl_{name}", is_end=True)
                 return
 
-            roles = self._collect_pipenet_roles_in_body(node.body)
+            # Only `reserve()` blocks pipe-couple their CB: the body fills
+            # the reserved block on the role-gated nodes (sender writes
+            # locally then `if_src(send)`; receiver does `if_dst(recv)`
+            # which writes from the pipe). `wait()` blocks consume a CB
+            # filled by some other thread and may sit unguarded next to
+            # ancillary pipe ops, so wrapping them over-constrains.
+            has_reserve = any(
+                isinstance(item.context_expr, ast.Call)
+                and isinstance(item.context_expr.func, ast.Attribute)
+                and item.context_expr.func.attr == "reserve"
+                for item in node.items
+            )
+            roles = (
+                self._collect_pipenet_roles_in_body(node.body) if has_reserve else []
+            )
             if roles:
                 scope_op = self._emit_pipenet_scope(roles)
                 block = Block.create_at_start(scope_op.body)

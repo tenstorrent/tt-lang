@@ -6,17 +6,23 @@
 // TTL Verify PipeNet Guards Pass
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/IntegerSet.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -36,7 +42,7 @@ constexpr llvm::StringLiteral kLaunchGridAttrName = "ttl.launch_grid";
 constexpr llvm::StringLiteral kPipeNetIdsAttrName = "ttl.pipe_net_ids";
 constexpr llvm::StringLiteral kPipeNetRolesAttrName = "ttl.pipe_net_roles";
 
-enum class PipeRole : int64_t { Source = 0, Destination = 1 };
+enum class PipeRole : int64_t { Source = 0, Destination = 1, Active = 2 };
 
 struct Coord {
   int64_t x = 0;
@@ -189,7 +195,11 @@ public:
       return success();
     }
 
-    baseDomain = buildBaseDomain();
+    auto domain = tryBuildBaseDomain();
+    if (!domain) {
+      return failure();
+    }
+    baseDomain = *domain;
 
     SmallVector<func::FuncOp> kernels;
     module.walk([&](func::FuncOp func) {
@@ -199,28 +209,28 @@ public:
     });
 
     for (func::FuncOp func : kernels) {
-      if (failed(walkRegion(func.getBody(), baseDomain))) {
-        return failure();
-      }
+      walkRegion(func.getBody(), baseDomain);
     }
 
-    if (failed(verifyCBWaits())) {
-      return failure();
-    }
+    // Producer / consumer domains accumulate across every kernel walk
+    // before this check — CB indices are module-global, so pairing
+    // crosses thread boundaries.
+    verifyCBWaits();
 
     inlinePipeNetScopes();
-    return success();
+    return sawError ? failure() : success();
   }
 
 private:
   ModuleOp module;
   bool hasPipes = false;
-  int64_t fallbackGridX = 1;
-  int64_t fallbackGridY = 1;
+  bool sawError = false;
   Domain baseDomain;
   std::map<int64_t, Domain> netSourceDomains;
   std::map<int64_t, Domain> netDestinationDomains;
+  std::map<int64_t, SmallVector<Location>> pipeNetLocs;
   std::map<int64_t, Domain> cbProducerDomains;
+  Operation *lastUnanalyzableOp = nullptr;
 
   struct WaitUse {
     CBWaitOp op;
@@ -238,19 +248,22 @@ private:
           domainUnion(netSourceDomains[pipeNetId], pipeSourceDomain(pipeType));
       netDestinationDomains[pipeNetId] = domainUnion(
           netDestinationDomains[pipeNetId], pipeDestinationDomain(pipeType));
-
-      fallbackGridX = std::max(
-          {fallbackGridX, pipeType.getSrcX() + 1, pipeType.getDstEndX() + 1});
-      fallbackGridY = std::max(
-          {fallbackGridY, pipeType.getSrcY() + 1, pipeType.getDstEndY() + 1});
+      pipeNetLocs[pipeNetId].push_back(pipe.getLoc());
     });
   }
 
-  Domain buildBaseDomain() {
-    if (auto launchGrid = readLaunchGrid(module)) {
-      return fullGridDomain(launchGrid->first, launchGrid->second);
+  // Subset checks against an unbounded universe are meaningless, so an
+  // explicit launch grid is mandatory.
+  std::optional<Domain> tryBuildBaseDomain() {
+    auto launchGrid = readLaunchGrid(module);
+    if (!launchGrid) {
+      module.emitError()
+          << "ttl-verify-pipenet-guards requires a `ttl.launch_grid` "
+             "module attribute (an i64 array of length 2 with positive "
+             "entries)";
+      return std::nullopt;
     }
-    return fullGridDomain(fallbackGridX, fallbackGridY);
+    return fullGridDomain(launchGrid->first, launchGrid->second);
   }
 
   Domain getNetRoleDomain(int64_t pipeNetId, PipeRole role) {
@@ -366,11 +379,56 @@ private:
     return std::nullopt;
   }
 
+  // True if `v`'s expression tree transitively reads a `ttl.core_x` or
+  // `ttl.core_y` value. Conditions that don't are uniform across the
+  // launch grid and so can't narrow the node domain regardless of their
+  // runtime value.
+  bool dependsOnCoord(Value v) {
+    Operation *op = v.getDefiningOp();
+    if (!op) {
+      return false;
+    }
+    if (isa<CoreXOp, CoreYOp>(op)) {
+      return true;
+    }
+    for (Value operand : op->getOperands()) {
+      if (dependsOnCoord(operand)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   Domain getConditionDomain(Value condition) {
+    if (auto op = condition.getDefiningOp<IsSrcOp>()) {
+      return netSourceDomains[op.getPipeNetId()];
+    }
+    if (auto op = condition.getDefiningOp<IsDstOp>()) {
+      return netDestinationDomains[op.getPipeNetId()];
+    }
+    if (auto op = condition.getDefiningOp<IsActiveOp>()) {
+      int64_t netId = op.getPipeNetId();
+      return domainUnion(netSourceDomains[netId], netDestinationDomains[netId]);
+    }
+    // andi/ori decompose so a coord-independent operand (loop iv, runtime
+    // flag) acts as the identity instead of poisoning the whole domain
+    // with `unknown`.
+    if (auto andOp = condition.getDefiningOp<arith::AndIOp>()) {
+      return domainIntersect(getConditionDomain(andOp.getLhs()),
+                             getConditionDomain(andOp.getRhs()));
+    }
+    if (auto orOp = condition.getDefiningOp<arith::OrIOp>()) {
+      return domainUnion(getConditionDomain(orOp.getLhs()),
+                         getConditionDomain(orOp.getRhs()));
+    }
+    if (!dependsOnCoord(condition)) {
+      return baseDomain;
+    }
     Domain result;
     for (Coord coord : baseDomain.nodes) {
       std::optional<bool> value = evalBool(condition, coord);
       if (!value) {
+        lastUnanalyzableOp = condition.getDefiningOp();
         return Domain::unknown();
       }
       if (*value) {
@@ -380,95 +438,235 @@ private:
     return result;
   }
 
-  LogicalResult checkKnownSubset(Operation *op, const Domain &current,
-                                 const Domain &allowed, Twine message) {
-    if (!current.known) {
-      return op->emitOpError()
-             << "cannot prove PipeNet guard condition; use coordinate "
-                "comparisons over ttl.node(dims=2) or move pipe work under "
-                "the matching if_src/if_dst callback";
-    }
-    if (current.isSubsetOf(allowed)) {
-      return success();
-    }
-    Domain extra = domainSubtract(current, allowed);
-    InFlightDiagnostic diag =
-        op->emitOpError()
-        << message
-        << "; guard this DFB block with matching coordinate checks or move "
-           "pipe work under if_src/if_dst";
-    if (extra.known && !extra.nodes.empty()) {
-      Coord example = *extra.nodes.begin();
-      diag << " (example node: (" << example.x << ", " << example.y << "))";
-    }
-    return failure();
-  }
-
-  FailureOr<Domain> getPipeNetScopeDomain(PipeNetScopeOp scopeOp) {
-    SmallVector<int64_t> ids;
-    SmallVector<int64_t> roles;
-    if (!readI64Array(scopeOp.getOperation(), kPipeNetIdsAttrName, ids) ||
-        !readI64Array(scopeOp.getOperation(), kPipeNetRolesAttrName, roles)) {
-      scopeOp.emitOpError() << "requires " << kPipeNetIdsAttrName << " and "
-                            << kPipeNetRolesAttrName << " attributes";
-      return failure();
-    }
-    if (ids.size() != roles.size()) {
-      scopeOp.emitOpError()
-          << "requires equal-length PipeNet id and role arrays";
-      return failure();
-    }
+  // Each constraint is `expr(dim, sym) >= 0` (or `== 0` for equalities);
+  // evaluate them at every coord in the launch grid.
+  Domain getAffineIfDomain(affine::AffineIfOp ifOp) {
+    IntegerSet set = ifOp.getIntegerSet();
+    auto operands = ifOp.getOperands();
     Domain result;
-    for (auto [pipeNetId, roleValue] : llvm::zip_equal(ids, roles)) {
-      if (roleValue != static_cast<int64_t>(PipeRole::Source) &&
-          roleValue != static_cast<int64_t>(PipeRole::Destination)) {
-        scopeOp.emitOpError() << "has invalid PipeNet role " << roleValue;
-        return failure();
+    SmallVector<int64_t> values(set.getNumInputs(), 0);
+    for (Coord coord : baseDomain.nodes) {
+      bool resolved = true;
+      for (unsigned i = 0; i < set.getNumInputs(); ++i) {
+        auto v = evalIndex(operands[i], coord);
+        if (!v) {
+          resolved = false;
+          break;
+        }
+        values[i] = *v;
       }
-      result = domainUnion(
-          result,
-          getNetRoleDomain(pipeNetId, static_cast<PipeRole>(roleValue)));
+      if (!resolved) {
+        lastUnanalyzableOp = ifOp;
+        return Domain::unknown();
+      }
+      bool ok = true;
+      for (unsigned i = 0; i < set.getNumConstraints(); ++i) {
+        AffineExpr expr = set.getConstraint(i);
+        std::function<int64_t(AffineExpr)> eval = [&](AffineExpr e) -> int64_t {
+          if (auto c = dyn_cast<AffineConstantExpr>(e)) {
+            return c.getValue();
+          }
+          if (auto d = dyn_cast<AffineDimExpr>(e)) {
+            return values[d.getPosition()];
+          }
+          if (auto s = dyn_cast<AffineSymbolExpr>(e)) {
+            return values[set.getNumDims() + s.getPosition()];
+          }
+          if (auto bin = dyn_cast<AffineBinaryOpExpr>(e)) {
+            int64_t lhs = eval(bin.getLHS());
+            int64_t rhs = eval(bin.getRHS());
+            switch (bin.getKind()) {
+            case AffineExprKind::Add:
+              return lhs + rhs;
+            case AffineExprKind::Mul:
+              return lhs * rhs;
+            case AffineExprKind::Mod:
+              return rhs == 0 ? 0 : lhs % rhs;
+            case AffineExprKind::FloorDiv:
+              return rhs == 0
+                         ? 0
+                         : (lhs / rhs - (lhs % rhs && (lhs ^ rhs) < 0 ? 1 : 0));
+            case AffineExprKind::CeilDiv:
+              return rhs == 0
+                         ? 0
+                         : (lhs / rhs + (lhs % rhs && (lhs ^ rhs) > 0 ? 1 : 0));
+            default:
+              return 0;
+            }
+          }
+          return 0;
+        };
+        int64_t v = eval(expr);
+        if (set.isEq(i) ? v != 0 : v < 0) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) {
+        result.nodes.insert(coord);
+      }
     }
     return result;
   }
 
-  LogicalResult verifyCopy(CopyOp copyOp, const Domain &current) {
+  // Render `if net_<id>.is_<role>(): ...` for every (id, role) pair so
+  // diagnostics can paste the suggested guard verbatim.
+  std::string
+  formatSuggestedGuard(ArrayRef<std::pair<int64_t, PipeRole>> roles) {
+    std::string buffer;
+    llvm::raw_string_ostream os(buffer);
+    os << "suggested guard: ";
+    llvm::interleaveComma(roles, os, [&](auto pair) {
+      os << "`net_" << pair.first << ".is_";
+      switch (pair.second) {
+      case PipeRole::Source:
+        os << "src";
+        break;
+      case PipeRole::Destination:
+        os << "dst";
+        break;
+      case PipeRole::Active:
+        os << "active";
+        break;
+      }
+      os << "()`";
+    });
+    return std::move(os.str());
+  }
+
+  void attachWitnessNote(InFlightDiagnostic &diag, const Domain &extra) {
+    if (extra.known && !extra.nodes.empty()) {
+      Coord example = *extra.nodes.begin();
+      diag.attachNote() << "example node where the guard does not hold: "
+                        << "core_x=" << example.x << ", core_y=" << example.y;
+    }
+  }
+
+  void attachPipeNetNotes(InFlightDiagnostic &diag, ArrayRef<int64_t> netIds) {
+    for (int64_t netId : netIds) {
+      auto it = pipeNetLocs.find(netId);
+      if (it == pipeNetLocs.end() || it->second.empty()) {
+        continue;
+      }
+      diag.attachNote(it->second.front())
+          << "PipeNet " << netId << " declared here";
+    }
+  }
+
+  void checkKnownSubset(Operation *op, const Domain &current,
+                        const Domain &allowed, Twine primaryMessage,
+                        ArrayRef<std::pair<int64_t, PipeRole>> roles = {}) {
+    if (!current.known) {
+      auto diag = op->emitOpError()
+                  << "cannot prove PipeNet guard condition; use coordinate "
+                     "comparisons over `ttl.node(dims=2)` against integer "
+                     "constants, or `net.is_src()` / `net.is_dst()` / "
+                     "`net.is_active()`";
+      if (lastUnanalyzableOp) {
+        diag.attachNote(lastUnanalyzableOp->getLoc())
+            << "this expression is not statically analyzable";
+      }
+      sawError = true;
+      return;
+    }
+    if (current.isSubsetOf(allowed)) {
+      return;
+    }
+    Domain extra = domainSubtract(current, allowed);
+    auto diag = op->emitOpError() << primaryMessage;
+    attachWitnessNote(diag, extra);
+    SmallVector<int64_t> ids;
+    for (auto &p : roles) {
+      ids.push_back(p.first);
+    }
+    attachPipeNetNotes(diag, ids);
+    if (!roles.empty()) {
+      diag.attachNote() << formatSuggestedGuard(roles);
+    }
+    sawError = true;
+  }
+
+  // Returns std::nullopt and emits a diagnostic if the scope's attributes
+  // are missing or malformed.
+  std::optional<std::pair<Domain, SmallVector<std::pair<int64_t, PipeRole>>>>
+  getPipeNetScopeDomain(PipeNetScopeOp scopeOp) {
+    SmallVector<int64_t> ids;
+    SmallVector<int64_t> roles;
+    if (!readI64Array(scopeOp.getOperation(), kPipeNetIdsAttrName, ids) ||
+        !readI64Array(scopeOp.getOperation(), kPipeNetRolesAttrName, roles)) {
+      scopeOp.emitOpError() << "requires `" << kPipeNetIdsAttrName << "` and `"
+                            << kPipeNetRolesAttrName << "` attributes";
+      sawError = true;
+      return std::nullopt;
+    }
+    if (ids.size() != roles.size()) {
+      scopeOp.emitOpError()
+          << "requires equal-length PipeNet id and role arrays";
+      sawError = true;
+      return std::nullopt;
+    }
+    Domain result;
+    SmallVector<std::pair<int64_t, PipeRole>> declaredRoles;
+    for (auto [pipeNetId, roleValue] : llvm::zip_equal(ids, roles)) {
+      if (roleValue != static_cast<int64_t>(PipeRole::Source) &&
+          roleValue != static_cast<int64_t>(PipeRole::Destination)) {
+        scopeOp.emitOpError() << "has invalid PipeNet role " << roleValue
+                              << " (expected 0=src or 1=dst)";
+        sawError = true;
+        return std::nullopt;
+      }
+      auto role = static_cast<PipeRole>(roleValue);
+      result = domainUnion(result, getNetRoleDomain(pipeNetId, role));
+      declaredRoles.emplace_back(pipeNetId, role);
+    }
+    return std::make_pair(result, declaredRoles);
+  }
+
+  void verifyCopy(CopyOp copyOp, const Domain &current) {
     if (auto dstPipeType = dyn_cast<PipeType>(copyOp.getDst().getType())) {
-      return checkKnownSubset(
-          copyOp, current, pipeSourceDomain(dstPipeType),
-          "may copy to a pipe outside that pipe's source role");
+      int64_t netId = dstPipeType.getPipeNetId();
+      checkKnownSubset(copyOp, current, pipeSourceDomain(dstPipeType),
+                       "may copy to a pipe outside that pipe's source role",
+                       {{netId, PipeRole::Source}});
+      return;
     }
     if (auto srcPipeType = dyn_cast<PipeType>(copyOp.getSrc().getType())) {
-      return checkKnownSubset(
+      int64_t netId = srcPipeType.getPipeNetId();
+      checkKnownSubset(
           copyOp, current, pipeDestinationDomain(srcPipeType),
-          "may copy from a pipe outside that pipe's destination role");
+          "may copy from a pipe outside that pipe's destination role",
+          {{netId, PipeRole::Destination}});
     }
-    return success();
   }
 
-  LogicalResult walkRegion(Region &region, const Domain &current) {
+  void walkRegion(Region &region, const Domain &current) {
     for (Block &block : region) {
-      if (failed(walkBlock(block, current))) {
-        return failure();
-      }
+      walkBlock(block, current);
     }
-    return success();
   }
 
-  LogicalResult walkBlock(Block &block, const Domain &current) {
+  void walkBlock(Block &block, const Domain &current) {
     for (Operation &op : block) {
       if (auto ifOp = dyn_cast<scf::IfOp>(&op)) {
         Domain condDomain = getConditionDomain(ifOp.getCondition());
         Domain thenDomain = domainIntersect(current, condDomain);
-        if (failed(walkRegion(ifOp.getThenRegion(), thenDomain))) {
-          return failure();
-        }
+        walkRegion(ifOp.getThenRegion(), thenDomain);
         if (!ifOp.getElseRegion().empty()) {
           Domain elseDomain =
               domainIntersect(current, domainSubtract(baseDomain, condDomain));
-          if (failed(walkRegion(ifOp.getElseRegion(), elseDomain))) {
-            return failure();
-          }
+          walkRegion(ifOp.getElseRegion(), elseDomain);
+        }
+        continue;
+      }
+
+      if (auto affineIf = dyn_cast<affine::AffineIfOp>(&op)) {
+        Domain condDomain = getAffineIfDomain(affineIf);
+        Domain thenDomain = domainIntersect(current, condDomain);
+        walkRegion(affineIf.getThenRegion(), thenDomain);
+        if (!affineIf.getElseRegion().empty()) {
+          Domain elseDomain =
+              domainIntersect(current, domainSubtract(baseDomain, condDomain));
+          walkRegion(affineIf.getElseRegion(), elseDomain);
         }
         continue;
       }
@@ -477,9 +675,7 @@ private:
         auto pipeType = cast<PipeType>(ifSrcOp.getPipe().getType());
         Domain bodyDomain =
             domainIntersect(current, pipeSourceDomain(pipeType));
-        if (failed(walkRegion(ifSrcOp.getBody(), bodyDomain))) {
-          return failure();
-        }
+        walkRegion(ifSrcOp.getBody(), bodyDomain);
         continue;
       }
 
@@ -487,32 +683,25 @@ private:
         auto pipeType = cast<PipeType>(ifDstOp.getPipe().getType());
         Domain bodyDomain =
             domainIntersect(current, pipeDestinationDomain(pipeType));
-        if (failed(walkRegion(ifDstOp.getBody(), bodyDomain))) {
-          return failure();
-        }
+        walkRegion(ifDstOp.getBody(), bodyDomain);
         continue;
       }
 
       if (auto scopeOp = dyn_cast<PipeNetScopeOp>(&op)) {
-        FailureOr<Domain> scopeDomain = getPipeNetScopeDomain(scopeOp);
-        if (failed(scopeDomain)) {
-          return failure();
+        auto scope = getPipeNetScopeDomain(scopeOp);
+        if (!scope) {
+          continue;
         }
-        if (failed(checkKnownSubset(scopeOp, current, *scopeDomain,
-                                    "PipeNet scope may execute outside its "
-                                    "declared role domain"))) {
-          return failure();
-        }
-        if (failed(walkRegion(scopeOp.getBody(), current))) {
-          return failure();
-        }
+        checkKnownSubset(scopeOp, current, scope->first,
+                         "PipeNet scope may execute outside its "
+                         "declared role domain",
+                         scope->second);
+        walkRegion(scopeOp.getBody(), current);
         continue;
       }
 
       if (auto copyOp = dyn_cast<CopyOp>(&op)) {
-        if (failed(verifyCopy(copyOp, current))) {
-          return failure();
-        }
+        verifyCopy(copyOp, current);
       } else if (auto pushOp = dyn_cast<CBPushOp>(&op)) {
         if (auto cbIndex = getCBIndex(pushOp.getCb())) {
           cbProducerDomains[*cbIndex] =
@@ -525,28 +714,24 @@ private:
       }
 
       for (Region &nestedRegion : op.getRegions()) {
-        if (failed(walkRegion(nestedRegion, current))) {
-          return failure();
-        }
+        walkRegion(nestedRegion, current);
       }
     }
-    return success();
   }
 
-  LogicalResult verifyCBWaits() {
-    for (WaitUse &waitUse : waitUses) {
-      auto producerIt = cbProducerDomains.find(waitUse.cbIndex);
-      if (producerIt == cbProducerDomains.end()) {
-        return waitUse.op.emitOpError()
-               << "has no producer domain for DFB index " << waitUse.cbIndex;
+  void verifyCBWaits() {
+    for (WaitUse &use : waitUses) {
+      auto it = cbProducerDomains.find(use.cbIndex);
+      if (it == cbProducerDomains.end()) {
+        use.op.emitOpError()
+            << "no producer pushes to DFB index " << use.cbIndex;
+        sawError = true;
+        continue;
       }
-      if (failed(checkKnownSubset(
-              waitUse.op, waitUse.domain, producerIt->second,
-              "may wait on a DFB from nodes where no producer pushes it"))) {
-        return failure();
-      }
+      checkKnownSubset(use.op, use.domain, it->second,
+                       "may wait on a DFB from nodes where no producer "
+                       "pushes it");
     }
-    return success();
   }
 
   void inlinePipeNetScopes() {

@@ -7,7 +7,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @scope_erased_before_ttkernel_lowering
   // CHECK-NOT: ttl.pipenet_scope
   // CHECK: ttkernel.my_logical_x_
-  // CHECK: func.return
+  // CHECK: return
   func.func @scope_erased_before_ttkernel_lowering() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>

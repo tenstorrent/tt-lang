@@ -3,9 +3,9 @@
 This document describes how PipeNets are owned, validated, lowered, and
 scheduled in tt-lang. Both the compiler and the simulator consume the
 same operation-level PipeNet collection; this doc covers the data flow, the
-active-set guard pass that decouples launch extent from work extent,
-how the simulator reproduces the compiler's active-set behavior at
-scheduling time without running the MLIR pass, and the test coverage.
+PipeNet guard verification pass that catches missing user guards
+before lowering, how the simulator reproduces the active-set behavior
+at scheduling time, and the test coverage.
 
 The launch grid (the grid that `@ttl.operation(grid=...)` schedules
 onto) is decoupled from the *work extent* described by the user's
@@ -13,20 +13,23 @@ PipeNets — the per-axis bounding box of every pipe coordinate. The
 `grid=` argument selects how the launch relates to the work extent:
 
 - `grid="auto"` is an optimization that shrinks the launch to the work
-  extent when the operation
-  uses PipeNets, and resolves to the device compute grid otherwise. This
-  is the default and minimizes wasted kernel launches.
-- `grid="full"` always launches on the device compute grid; nodes
-  outside the work extent are guarded out at the IR level so they do
-  not execute kernel function bodies that were never meant to run on
-  them.
-- An explicit tuple is used verbatim; the same active-set guard handles
-  any over-launch.
+  extent when the operation uses PipeNets, and resolves to the device
+  compute grid otherwise. This is the default and minimizes wasted
+  kernel launches.
+- `grid="full"` always launches on the device compute grid. The user
+  must guard pipe-coupled regions with `net.is_src()` / `net.is_dst()`
+  / `net.is_active()` (or equivalent coordinate predicates) so that
+  nodes outside the work extent skip the pipe-coupled work; the
+  verifier rejects any pipe-coupled op that is reachable from a node
+  outside its declared role.
+- An explicit tuple is used verbatim; the verifier still requires
+  guards on any pipe-coupled op reachable from a non-role node.
 
-The active-set guard pass below makes both modes correct: under
-`grid="auto"` the guard is a no-op (every launched node is active);
-under `grid="full"` (or an over-large explicit tuple) the guard skips
-inactive launched nodes.
+Under `grid="auto"` every launched node is active and the verifier's
+checks are trivially satisfied. Under `grid="full"` (or an over-large
+explicit tuple) the verifier rejects unguarded pipe-coupled ops with a
+diagnostic that names the offending op, an example out-of-role
+coordinate, the contributing PipeNet(s), and a suggested guard.
 
 ## Overview
 
@@ -34,18 +37,28 @@ inactive launched nodes.
 pipe carries data from a source coordinate (`src`) to either a single
 destination (unicast) or a contiguous coordinate range (multicast). When
 the launch grid is larger than the union of all pipe sources and
-destinations, the extra nodes have no role in the communication, but
-without explicit guards they still execute every kernel function body
-the operation defines, potentially reading out-of-bounds tensor regions and
-corrupting the multicast handshake (issue #541).
+destinations, the extra nodes have no role in the communication. If the
+user fails to guard pipe-coupled work from those nodes, the kernel reads
+out-of-bounds tensor regions and corrupts the multicast handshake
+(issue #541).
 
-The compiler therefore computes the *active set* of an operation as the
-union of every pipe's source coordinate and destination range across every
-PipeNet, and wraps the body of every kernel function (any `func.func`
-bearing the `ttl.kernel_thread` attribute, which marks compute and
-data movement kernel functions) in an `scf.if` predicate over the
-node coordinates emitted by `ttl.core_x` / `ttl.core_y`. Inactive
-nodes fall through directly to the function terminator.
+The compiler verifies user-written guards: each pipe-coupled operation
+must be reachable only from the nodes permitted by its role
+(`ttl.copy(cb, pipe)` only from `pipe.src`; `ttl.copy(pipe, cb)` only
+from `pipe.dst`; `cb_wait` reachable only on a node where some
+producer pushes to that DFB). The verifier reads the IR and emits
+diagnostics; it does not rewrite the program.
+
+Three predicate ops — `ttl.is_src`, `ttl.is_dst`, `ttl.is_active`
+(the union of source and destination roles) — let user code carry
+per-PipeNet guards that the verifier recognizes structurally. Frontend
+methods `net.is_src()`, `net.is_dst()`, `net.is_active()` lower to
+these ops; coordinate comparisons over `ttl.node(dims=2)` against
+integer constants also work and are evaluated per coord.
+
+The verifier requires a `ttl.launch_grid` module attribute (an i64
+array of length 2 with positive entries). The frontend stamps this
+from the resolved grid; lit tests must declare it explicitly.
 
 ## Operation pipenets
 
@@ -83,145 +96,133 @@ malformed PipeNets error at the construction source line.
 ```
 ... -> ttl-finalize-dfb-indices
     -> ttl-annotate-cb-associations
-    -> ttl-insert-pipenet-active-guards          (module-scoped)
+    -> ttl-verify-pipenet-guards                 (module-scoped)
     -> convert-ttl-to-ttkernel
     -> ttkernel-insert-inits
     ...
 ```
 
-`ttl-insert-pipenet-active-guards` runs after DFB-index metadata
-annotation (`ttl-annotate-cb-associations`) because the pipeline records
-that metadata before the module-level guard pass moves the original body
-under an `scf.if`. It runs before `convert-ttl-to-ttkernel` because
-that pass:
-
-* Consumes `ttl.create_pipe`, `ttl.if_src`, and `ttl.if_dst` (so the
-  active-set guard must already exist around them).
-* Lowers `ttl.core_x` / `ttl.core_y` to TTKernel coordinate ops, which
-  the guard predicate uses.
+`ttl-verify-pipenet-guards` runs after DFB-index annotation
+(`ttl-annotate-cb-associations`) so producer-consumer pairing checks
+can resolve DFB indices. It runs before `convert-ttl-to-ttkernel` so
+diagnostics surface in TTL IR with TTL-level op names (`ttl.copy`,
+`ttl.cb_wait`, `ttl.is_src`, etc.) and so the structural marker
+`ttl.pipenet_scope` (see below) can be inlined out of existence
+before lowering.
 
 Three independent pipeline definitions need to stay in sync: the C++
 `createTTLToTTKernelPipeline` in `lib/Dialect/TTL/Pipelines/TTLPipelines.cpp`,
 the Python frontend pipeline string in `python/ttl/ttl_api.py`, and the
 me2e builder in `test/me2e/builder/pipeline.py`. All three insert the
-new pass at the same anchor.
+verifier at the same anchor.
 
-## Active-set computation
+## Domain analysis
 
-The pass walks every `ttl.create_pipe` op in the module. Each pipe
-contributes two axis-aligned half-open boxes to a
-`SmallVector<ActiveRect>`. `ActiveRect` is `{SmallVector<int64_t> lo,
-SmallVector<int64_t> hi}`, one entry per dimension, so the
-representation is rank-agnostic (in today's 2D dialect lo and hi each
-have two entries; in 3D they would each have three). For 2D, each pipe
-contributes:
+The verifier represents the set of nodes a region executes on as a
+`Domain` — an explicit `std::set<Coord>` over the launch grid. This
+enumeration is sufficient for current 2D grids (≤ ~200 nodes) and
+avoids an upstream Presburger dependency. It also matches the
+per-pipe role granularity the verifier needs: each PipeNet's source
+domain is the union of its pipes' source unit boxes; its destination
+domain is the union of its pipes' destination ranges.
 
-1. A unit rectangle `[srcX, srcX+1) x [srcY, srcY+1)` for the source coordinate.
-2. A range `[dstStartX, dstEndX+1) x [dstStartY, dstEndY+1)` for the
-   destination.
+Per-pipe role containment is the central check. For a pipe-coupled
+op, the verifier computes the current execution domain (the
+intersection of every enclosing predicate) and asserts it is a subset
+of the role required by the op:
 
-`ttl.create_pipe` source and destination coordinates are declared as
-`I64Attr` in `TTLOps.td`; the verifier checks that the attributes match
-the result `PipeType`, are non-negative, and have `dstStart <= dstEnd`
-on each axis. The active set is therefore static: the pass does not
-trace SSA values or fold constants.
+| Op | Required role |
+| --- | --- |
+| `ttl.copy(cb, pipe)` | `pipe.src` (single coord) |
+| `ttl.copy(pipe, cb)` | `pipe.dst` (mcast range) |
+| `ttl.if_src %pipe` body | `pipe.src` (op carries the predicate intrinsically) |
+| `ttl.if_dst %pipe` body | `pipe.dst` (op carries the predicate intrinsically) |
+| `cb_wait` on pipe-coupled DFB | union of producer domains across all `cb_push` to the same DFB index |
 
-### Module scoping
+Producer-consumer pairing is module-global: `cbProducerDomains`
+indexes by DFB index, so a `cb_wait` in one kernel function is
+matched against a `cb_push` in a different kernel function (compute
+waits for data movement, etc.). DFB indices are stable post-finalize.
 
-The pass walks the entire `ModuleOp`. This is correct because tt-lang's
-Python frontend creates a fresh MLIR module per `@ttl.operation`
-invocation (`_compile_kernel` in `ttl_api.py` calls `Module.create(loc)`
-per operation and builds a fresh `OperationPipeNets` whose ids reset
-to 0..N-1). If a future change ever co-compiles multiple operations
-into one module, the pass would need to scope the active set to the
-enclosing operation's kernel functions; the pass description in
-`Passes.td` documents this as an invariant.
+## Predicate recognition
 
-## Predicate construction
+The walker computes the current domain by intersecting predicates as
+it descends into nested regions. Recognized parents:
 
-For each kernel function (any `func.func` carrying the
-`ttl.kernel_thread` attribute), the pass inserts:
+| Parent op | Contribution to current domain |
+| --- | --- |
+| `scf.if` then-branch | intersect with condition domain |
+| `scf.if` else-branch | intersect with negated condition domain |
+| `affine.if` then/else | per-coord IntegerSet evaluation |
+| `ttl.if_src %pipe` body | intersect with `pipe.src` |
+| `ttl.if_dst %pipe` body | intersect with `pipe.dst` |
+| `ttl.pipenet_scope` body | intersect with declared role union; check current ⊆ scope domain |
+| `scf.for`/`scf.while`/`affine.for`/region-bearing ops | unchanged (no predication) |
 
-```mlir
-%x = ttl.core_x : index
-%y = ttl.core_y : index
-// For each rectangle r:
-%xLo = arith.constant ... : index
-%xHi = arith.constant ... : index
-%yLo = arith.constant ... : index
-%yHi = arith.constant ... : index
-%xGe = arith.cmpi sge, %x, %xLo : index
-%xLt = arith.cmpi slt, %x, %xHi : index
-%yGe = arith.cmpi sge, %y, %yLo : index
-%yLt = arith.cmpi slt, %y, %yHi : index
-%xIn = arith.andi %xGe, %xLt : i1
-%yIn = arith.andi %yGe, %yLt : i1
-%inRect = arith.andi %xIn, %yIn : i1
-// Combine across rectangles via arith.ori.
-%active = arith.ori %prev, %inRect : i1
-scf.if %active {
-  ... original body ...
-} {ttl.pipenet_active_guard}
-return
+For `scf.if`, the condition's domain is determined structurally:
+
+- `ttl.is_src %net` → that PipeNet's source domain.
+- `ttl.is_dst %net` → that PipeNet's destination domain.
+- `ttl.is_active %net` → union of source and destination domains.
+- `arith.andi` / `arith.ori` decompose: each operand contributes its
+  own domain (intersection or union). A coord-independent operand
+  (loop iv, runtime flag) acts as identity instead of poisoning the
+  result.
+- Other coord-dependent expressions (`arith.cmpi` over arithmetic on
+  `ttl.core_x` / `ttl.core_y`) are evaluated per coord.
+- A coord-independent expression contributes the universe (uniform
+  across the grid).
+- Unanalyzable coord-dependent expressions are flagged and the op is
+  diagnosed as unprovable.
+
+## Diagnostics
+
+Each violation produces one error with notes:
+
+```
+error: 'ttl.copy' op may copy outside source role of PipeNet 0
+note: example node where the guard does not hold: core_x=1, core_y=0
+note: PipeNet 0 declared here  (at create_pipe location)
+note: suggested guard: wrap in `if net_0.is_src(): ...` or
+      `net_0.if_src(lambda pipe: ...)`
 ```
 
-The marker attribute `ttl.pipenet_active_guard` makes the pass
-idempotent: a second run finds the existing guard via a function-scope
-walk and skips the function. Subsequent canonicalization and CSE can
-fold duplicated index constants from the rectangle predicates.
+`signalPassFailure()` is called once at the end so every site is
+reported in a single run rather than failing on the first.
 
-## Body movement
+## `ttl.pipenet_scope`
 
-The pass moves the original body operations into the `then` region in
-their original order rather than cloning them, preserving SSA values
-without rewriting any uses:
-
-1. Insert `ttl.core_x`, `ttl.core_y`, predicate ops, and `scf.if`
-   (with auto-generated `scf.yield`) immediately before the function
-   terminator.
-2. Identify the first newly inserted op (the `core_x` definer).
-3. Splice every operation from the start of the block up to (but not
-   including) that anchor into the `then` block before the inserted
-   `scf.yield`.
-
-The function's `func.return` terminator stays at the end of the function
-block, after the inserted `scf.if`.
+A region op the frontend emits around DFB-context blocks
+(`with cb.reserve()`) whose body contains pipe role work. It carries
+two parallel attributes: `ttl.pipe_net_ids` (`DenseI64ArrayAttr`) and
+`ttl.pipe_net_roles` (`DenseI64ArrayAttr`, one entry per id; 0 =
+Source, 1 = Destination, 2 = Active). The verifier checks that the
+scope's effective execution domain is a subset of the union of
+declared role domains, then walks its body with the union as the
+current domain. After verification the verifier inlines and erases
+the scope so downstream lowering sees a `pipenet_scope`-free IR.
 
 ## Invariants
 
-The pass relies on these input properties. Structural violations are
-reported at pass time; frontend and module-scope assumptions require
-pipeline review if they change.
+The verifier relies on these input properties.
 
 | Invariant | Rationale |
 | --- | --- |
-| Single-block kernel function | Body movement is via block splice; multiple blocks would need region-level rewriting. The Python frontend never emits multi-block kernel functions because user control flow lowers to `scf.if`/`scf.for`. |
-| `func.return` terminator | The pass anchors the `scf.if` immediately before the terminator. Any other terminator type indicates a structural change that warrants pass-level review. |
-| Static `I64Attr` pipe coordinates | The active set is computed at pass time. `TTLOps.td` declares the coordinates as attributes, and `CreatePipeOp` verifies consistency with the result pipe type. |
-| One operation per module | The pass walks all pipes in the module to compute one active set. Multiple operations in one module would require per-operation scoping. |
-
-## Skipping behavior
-
-* No pipes in the module: the pass returns early without modifying any
-  function. Operations that don't use PipeNet pay no cost.
-* Empty function body: a function whose only operation is the terminator
-  is left untouched, since there is nothing to guard.
-* Functions without `ttl.kernel_thread` (host helpers, utility
-  functions emitted alongside the operation's kernel functions) are
-  skipped; only kernel functions need node-coordinate predicates.
+| `ttl.launch_grid` module attribute present | Subset checks against an unbounded universe are meaningless. The pass emits a module-level error and fails if the attribute is missing. |
+| Static `I64Attr` pipe coordinates | Domain construction reads attributes directly from `ttl.create_pipe`; `CreatePipeOp` verifies consistency with the result pipe type. |
+| Pipe-coupled ops have stable DFB indices | Pairing requires `ttl-annotate-cb-associations` and `ttl-finalize-dfb-indices` to have run already. |
+| One operation per module | The verifier walks all pipes in the module to compute role domains; co-compiling multiple operations would require per-operation scoping. |
 
 ## Multi-PipeNet operations
 
-The kernel-level guard enforces one invariant: no kernel function
-executes on a node outside the operation's active set, where the
-active set is the union of every pipe's source coordinate and
-destination range across every PipeNet (per spec). Per-PipeNet role
-behavior inside the active set is the user's responsibility; the spec
-does not define per-PipeNet guards.
+The verifier checks each pipe-coupled op against the role of *its
+own* PipeNet, not against the union of all PipeNets' active sets.
+A `ttl.copy(cb, %pipe_a)` reachable from a node that is in
+`net_b.is_active()` but outside `net_a.src` is rejected with a
+diagnostic that names `net_a`, not "the active set".
 
-Two mechanisms together preserve correctness inside the active set
-when an operation defines multiple PipeNets over different node
-groups:
+Two mechanisms together carry per-PipeNet correctness in user code
+when an operation defines multiple PipeNets over different node groups:
 
 1. `ttl.if_src %pipe { ... }` and `ttl.if_dst %pipe { ... }` carry
    their own per-node predicate: the inner block executes only when
@@ -231,10 +232,9 @@ groups:
 
 2. Non-pipe work (dataflow-buffer reserves, compute, address
    arithmetic) is guarded by the user with explicit role-based
-   predicates. The pass does not split the body per PipeNet: user
-   code is straight-line and interleaves references to multiple
-   PipeNets, dataflow buffers, and control flow, with no static
-   partitioning.
+   predicates: `if net.is_src()`, `if net.is_dst()`,
+   `if net.is_active()`, or coordinate comparisons over
+   `ttl.node(dims=2)` against integer constants.
 
 An example is `test_overlapping_pipenets`: two PipeNets with disjoint
 source nodes and overlapping destination nodes, where the
@@ -254,15 +254,6 @@ def dm_read():
         with a_cb.reserve() as ablk: net_a.if_dst(...)
         with b_cb.reserve() as bblk: net_b.if_dst(...)
 ```
-
-A node in the union but with no role under one PipeNet must not
-execute that PipeNet's dataflow-buffer reserves or pushes. The pass
-does not check this; the user is responsible for guarding non-pipe
-work with role-based predicates such as the `if x == 0 / elif x == 3
-/ elif 1 <= x <= 2` form shown above. The simulator's pending-block
-assertion catches an omitted guard at end of execution before the
-kernel runs on hardware, so testing the operation through the
-simulator before device runs would help catch this class of error.
 
 ## Simulator parity
 
@@ -287,11 +278,10 @@ convention for kernels that schedule along a single dimension.
 ## Example: 2D mcast matmul
 
 A small mcast matmul with work shape M_BLOCKS=4, N_BLOCKS=3 launched
-under `grid="full"` on a Wormhole device (8x7 grid). Use `grid="full"`
-here because we want the launch to cover the full device grid and rely
-on the active-set guard to skip the inactive nodes; under
-`grid="auto"` the launch would instead shrink to the 3x4 work extent
-and the guard would be a no-op.
+under `grid="full"` on a Wormhole device (8x7 grid). The launch
+covers the entire device; the user wraps each pipe-coupled thread
+body in `if net.is_active():` so the verifier accepts it and so
+inactive nodes short-circuit at runtime.
 
 ```py
 @ttl.operation(grid="full")
@@ -300,24 +290,26 @@ def small_mcast_matmul(a, w, out):
         ttl.Pipe(src=(0, row), dst=(slice(0, 3), row))   # broadcast A row
         for row in range(4)
     ]
-    ttl.PipeNet(a_pipes)
+    a_net = ttl.PipeNet(a_pipes)
     b_pipes = [
         ttl.Pipe(src=(col, 0), dst=(col, slice(0, 4)))   # broadcast B col
         for col in range(3)
     ]
     ttl.PipeNet(b_pipes)
+
+    @ttl.compute()
+    def compute():
+        if a_net.is_active():
+            ...
     ...
 ```
 
 Pipe sources contribute `{(0, 0), (0, 1), (0, 2), (0, 3), (0, 0), (1, 0),
 (2, 0)}` and destinations contribute the rectangles `[0,3) x {row}` for
-each row plus `{col} x [0,4)` for each col. The union covers exactly
-`[0, 3) x [0, 4)`, twelve nodes. The remaining 8x7 - 12 = 44 launched
-nodes have predicate `false` and skip every kernel function body.
-
-`canonicalizer` and `cse` after `convert-ttl-to-ttkernel` can collapse
-redundant constant ops in the predicate; the emitted C++ has one
-active-set condition wrapping each kernel function.
+each row plus `{col} x [0,4)` for each col. `a_net.is_active()` covers
+exactly `[0, 3) x [0, 4)`, twelve nodes; the remaining 8x7 - 12 = 44
+launched nodes evaluate the predicate to `false` and skip the
+pipe-coupled work.
 
 ## Test coverage
 
@@ -371,17 +363,19 @@ runtime-observable.
 | 37 | OperationPipeNets: validate overlapping mcast             |     |  X  |     |
 | 38 | OperationPipeNets: operation-local id allocation          |     |  X  |     |
 | 39 | sim pipe deadlock detection (existing)                    |     |  X  |     |
-| 40 | Frontend pipeline emits the active-set guard              |     |     |  X  |
-| 41 | Pass collects rectangles + idempotent + skips no-pipe     |     |     |  X  |
-| 42 | Pass coalesces source box contained in dst (loopback)     |     |     |  X  |
-| 43 | Pass emits exact predicate constants for known src/dst    |     |     |  X  |
-| 44 | Pass rejects multi-block kernel function (negative)       |     |     |  X  |
-| 45 | Pass coalesces equal rectangles to one survivor           |     |     |  X  |
-| 46 | Pass coalesces partial src-in-dst overlap                 |     |     |  X  |
-| 47 | Guard survives `convert-ttl-to-ttkernel` (pipeline lit)   |     |     |  X  |
+| 40 | Verifier accepts `if net.is_src/is_dst/is_active()` guards |    |     |  X  |
+| 41 | Verifier accepts coordinate-compare guards over `core_x`/`core_y` |     |     |  X  |
+| 42 | Verifier accepts `affine.if` guards via IntegerSet eval   |     |     |  X  |
+| 43 | Verifier accepts `pipenet_scope` and inlines it post-check |     |     |  X  |
+| 44 | Verifier rejects `ttl.copy(cb, pipe)` outside source role |     |     |  X  |
+| 45 | Verifier rejects `ttl.copy(pipe, cb)` outside destination role |  |     |  X  |
+| 46 | Verifier rejects `cb_wait` with no producer domain coverage |   |     |  X  |
+| 47 | Verifier names per-PipeNet role in cross-net diagnostics  |     |     |  X  |
 | 48 | `CreatePipeOp::verify` rejects `dstStart > dstEnd` (x)    |     |     |  X  |
 | 49 | `CreatePipeOp::verify` rejects `dstStart > dstEnd` (y)    |     |     |  X  |
-| 50 | `ttl-insert-pipenet-active-guards` registered (Python)    |     |     |  X  |
+| 50 | Verifier rejects unanalyzable predicates with location note |   |     |  X  |
+| 50a| Verifier rejects missing `ttl.launch_grid` module attribute |   |     |  X  |
+| 50b| Pipeline lit confirms `pipenet_scope` is gone post-verifier |   |     |  X  |
 | 51 | OperationPipeNets.work_extent: empty / unicast / mcast    |     |  X  |     |
 | 52 | OperationPipeNets.work_extent: union, mixed-rank padding  |     |  X  |     |
 | 53 | grid="auto" shrinks launch + grid="full" keeps launch     |  X  |  X  |     |
@@ -402,23 +396,27 @@ rejection contract; it `pytest.skip`s on the simulator runner.
 
 ## Limitations
 
-* Work larger than launch: the pass only disables launched nodes that are
-  absent from all PipeNets. It does not add nodes or split work.
-  Existing operations that distribute more work than launched nodes
-  via per-node block tiling (e.g. `_even_split` in
-  `test_mcast_matmul.py`) are unaffected when every launched node
+* Work larger than launch: the verifier checks role containment but
+  does not add nodes or split work. Operations that distribute more
+  work than launched nodes via per-node block tiling (e.g. `_even_split`
+  in `test_mcast_matmul.py`) are unaffected when every launched node
   appears in the active set.
-* Typos in pipe coordinates change the active set. An operation
-  whose pipe writes `dst=(slice(0, 5), 0)` instead of
-  `dst=(slice(0, 4), 0)` has a one-node larger active set, and that
-  extra node will execute the body even if the user did not intend
-  it. The active set is exactly what the PipeNet says, no more.
-* Non-pipe work outside the PipeNet active set is also skipped. For an
-  operation that uses any PipeNet, every node that must run a kernel
-  function body must appear as a pipe source or destination.
-* Three pipeline definitions: the new pass is wired into three separate
-  strings (C++ pipeline, Python frontend, me2e builder). A future
-  refactor consolidating these would prevent future passes from
+* Typos in pipe coordinates change role domains. An operation whose
+  pipe writes `dst=(slice(0, 5), 0)` instead of `dst=(slice(0, 4), 0)`
+  has a one-node larger destination domain, and that extra node will
+  be accepted by the verifier even if the user did not intend it. The
+  domains are exactly what the PipeNet says, no more.
+* The verifier does not constrain non-pipe work. Under `grid="full"`,
+  nodes outside any PipeNet role may still execute compute, plain
+  DFB pushes, or other SPMD-over-the-full-device work. Only ops
+  coupled to a PipeNet (pipe-typed copies, pipe-coupled DFB waits,
+  `if_src` / `if_dst` bodies) require role containment.
+* Domain representation is `std::set<Coord>` over the launch grid.
+  Sufficient for current 2D grids (≤ ~200 nodes); revisit when grids
+  grow to 3D or thousands of nodes.
+* Three pipeline definitions: the verifier is wired into three
+  separate strings (C++ pipeline, Python frontend, me2e builder). A
+  future refactor consolidating these would prevent future passes from
   drifting between them.
 
 ## Future work
@@ -429,8 +427,8 @@ rejection contract; it `pytest.skip`s on the simulator runner.
   disambiguate the handshake. Per-source semaphore increments via
   `noc_semaphore_inc_multicast` in TTKernel would let one PipeNet
   describe true scatter-gather and all-to-all patterns. This is a
-  TTKernel dialect + tt-metal change; it is unrelated to the active-set
-  guard, but unblocking it would let `test_scatter_gather` and a
+  TTKernel dialect + tt-metal change; it is unrelated to PipeNet
+  guard verification, but unblocking it would let `test_scatter_gather` and a
   single-PipeNet all-to-all version of `test_overlapping_pipenets` come
   off `@pytest.mark.skip`.
 * Cross-chip (Galaxy / QuietBox / N300) PipeNets. tt-lang's
@@ -450,24 +448,13 @@ rejection contract; it `pytest.skip`s on the simulator runner.
   bound-checking against the operation's grid extent (still future
   work) would also reject out-of-chip coordinates that today silently
   miscompile.
-* If multiple operations are ever co-compiled into one module, scope the
-  active-set walk to the enclosing operation by a marker attribute or by
-  using a per-operation pass driver.
+* If multiple operations are ever co-compiled into one module, scope
+  the verifier walk to the enclosing operation by a marker attribute or
+  by using a per-operation pass driver.
 * `CreatePipeOp` verifier could additionally bound-check coordinates
   against the device grid extent (the `dstStart <= dstEnd` ordering is
   already enforced).
-* Future spec extensions (e.g. n-D grids beyond 2D) need a dialect
-  refactor, not a pass refactor. The pass already represents rectangles
-  rank-agnostically (`ActiveRect.lo` / `ActiveRect.hi` are
-  `SmallVector<int64_t>`) and `buildActivePredicate` loops over
-  dimensions, so the rank is a property of how coordinates and pipe
-  bounds are read, not of the predicate logic. Two helpers isolate the
-  remaining 2D coupling: `readPipeSourceRect` /
-  `readPipeDstRect` (pulling six named `I64Attr`s off `CreatePipeOp`)
-  and `emitNodeCoords` (creating one `ttl.core_x` and one `ttl.core_y`
-  op). When the dialect grows beyond 2D — e.g., `CreatePipeOp` adopts
-  `DenseI64ArrayAttr` bounds and a single n-D node-coordinate op
-  replaces `core_x` / `core_y` — only those helpers change. Affine
-  maps are not the right tool here: the active set is a static union
-  of axis-aligned rectangles, so per-dimension bounds are simpler than
-  parameterized iteration domains and equally extensible.
+* For larger grids (3D, thousands of nodes) the explicit
+  `std::set<Coord>` representation should be replaced with a Presburger
+  set or axis-aligned rectangle set so domain operations stay
+  tractable.

@@ -601,6 +601,42 @@ def TTL_PipeNetScopeOp : TTL_Op<"pipenet_scope", [SingleBlock, NoTerminator]> {
   let assemblyFormat = "attr-dict-with-keyword $body";
 }
 
+def TTL_IsSrcOp : TTL_Op<"is_src", [Pure]> {
+  let summary = "Predicate: current node is a source of any pipe in the PipeNet";
+  let description = [{
+    Returns `true` on nodes that match the `src` of at least one pipe in the
+    named PipeNet, `false` elsewhere. The value-returning sibling of
+    `ttl.if_src`; used as the condition of an `scf.if` to gate pipe-coupled
+    work without entering a region.
+  }];
+  let arguments = (ins I64Attr:$pipe_net_id);
+  let results = (outs I1:$result);
+  let assemblyFormat = "attr-dict";
+}
+
+def TTL_IsDstOp : TTL_Op<"is_dst", [Pure]> {
+  let summary = "Predicate: current node is a destination of any pipe in the PipeNet";
+  let description = [{
+    Returns `true` on nodes whose coordinate falls within the `dst` range of
+    at least one pipe in the named PipeNet, `false` elsewhere. The
+    value-returning sibling of `ttl.if_dst`.
+  }];
+  let arguments = (ins I64Attr:$pipe_net_id);
+  let results = (outs I1:$result);
+  let assemblyFormat = "attr-dict";
+}
+
+def TTL_IsActiveOp : TTL_Op<"is_active", [Pure]> {
+  let summary = "Predicate: current node is a source or destination in the PipeNet";
+  let description = [{
+    Returns `true` on nodes that are either a source or a destination of at
+    least one pipe in the named PipeNet (the union of `is_src` and `is_dst`).
+  }];
+  let arguments = (ins I64Attr:$pipe_net_id);
+  let results = (outs I1:$result);
+  let assemblyFormat = "attr-dict";
+}
+
 //===----------------------------------------------------------------------===//
 // Profiling operations
 //===----------------------------------------------------------------------===//

@@ -638,7 +638,7 @@ A node range has the same number of dimensions as `grid_size(dims=N)`, and each 
 | `"full"` | The device compute grid, regardless of pipe coordinates. |
 | Tuple | Used verbatim. |
 
-Under `grid="full"` (or any explicit tuple wider than the work extent), launched nodes outside the active set still skip every kernel function body via the active-set rule below. Under `grid="auto"`, the launch coincides with the active set and the rule is a no-op.
+Under `grid="full"` (or any explicit tuple wider than the work extent), the user must guard pipe-coupled regions with `net.is_src()` / `net.is_dst()` / `net.is_active()` (or equivalent coordinate predicates) so that nodes outside the corresponding role skip the pipe-coupled work. The implementation must verify these guards statically and reject programs in which a pipe-coupled operation is reachable from a node outside its declared role. Under `grid="auto"`, the launch coincides with the active set and the verification is trivially satisfied.
 
 | Type alias/Function | Description |
 | :---- | :---- |
@@ -654,13 +654,16 @@ Condition body function is invoked for each pipe in case of `if_src` if the curr
 
 A pipe net is constructed either in the scope of an operation function or in an enclosing scope and captured by the operation function. It can only be used with its `if_src` and `if_dst` functions inside of a data movement kernel function. The corresponding  `ttl.copy` where a pipe is a source or a destination can be called only inside of a condition body function. Calls into `if_src` and `if_dst` can be nested within condition functions for different pipe nets.
 
-The *active set* of an operation is the union, over every pipe in every pipe net in scope of the operation (constructed in its body or captured from an enclosing scope), of the pipe's source coordinate and its destination coordinate or range. Nodes outside the active set do not participate in pipe communication and the implementation must ensure they skip the bodies of every kernel thread function for that operation. This decouples pipe extent from launch extent: an operation launched with `grid="full"` (or an explicit tuple) on a larger grid than its work shape executes only on the active subset.
+The *active set* of an operation is the union, over every pipe in every pipe net in scope of the operation (constructed in its body or captured from an enclosing scope), of the pipe's source coordinate and its destination coordinate or range. The *role domain* of a pipe net is its per-net active set; `pipe_net.is_src()`, `pipe_net.is_dst()`, and `pipe_net.is_active()` are predicates that evaluate to `True` on the source role, destination role, and their union, respectively. Implementations must verify that user-written guards on pipe-coupled regions imply the correct pipe net role: a `ttl.copy` with a pipe source must be reachable only from the pipe's source coordinate; a `ttl.copy` with a pipe destination must be reachable only from the pipe's destination range; a dataflow buffer wait paired with a pipe-coupled push must be reachable only from a node where some producer pushes. Implementations are not required to skip non-pipe-coupled work outside the active set: under `grid="full"` users may legitimately run plain SPMD work over the full launch grid alongside pipe-coupled regions guarded by `is_src` / `is_dst` / `is_active`.
 
 | Function | Description |
 | :---- | :---- |
 | `ttl.PipeNet[DstT](pipes: List[ttl.Pipe[DstT]]) -> ttl.PipeNet[DstT]` | Constructs pipe net. |
 | `ttl.PipeNet[DstT].if_src(self, cond_fun: Callable[[ttl.SrcPipeIdentity[DstT]], None])` | Call condition function for each pipe in the pipe net that is a source. |
 | `ttl.PipeNet[DstT].if_dst(self, cond_fun: Callable[[ttl.DstPipeIdentity], None])` | Call condition function for each pipe in the pipe net that is a destination. |
+| `ttl.PipeNet[DstT].is_src(self) -> bool` | Predicate: `True` on the current node iff it is a source coordinate of any pipe in the pipe net. |
+| `ttl.PipeNet[DstT].is_dst(self) -> bool` | Predicate: `True` on the current node iff it is in the destination range of any pipe in the pipe net. |
+| `ttl.PipeNet[DstT].is_active(self) -> bool` | Predicate: `True` on the current node iff `is_src()` or `is_dst()` is `True`. |
 | `@property ttl.SrcPipeIdentity[DstT].dst(self) -> DstT` | Get destination node or node range for pipe in `if_src`. |
 | `@property ttl.DstPipeIdentity.src(self) -> ttl.NodeCoord` | Get source node for pipe in `if_dst`. |
 

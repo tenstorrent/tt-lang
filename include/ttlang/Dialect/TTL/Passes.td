@@ -421,13 +421,15 @@ def TTLAnnotateCBAssociations
 
 def TTLVerifyPipeNetGuards
     : Pass<"ttl-verify-pipenet-guards", "::mlir::ModuleOp"> {
-  let summary = "Verify PipeNet-dependent DFB and pipe operations are role-guarded";
+  let summary = "Verify PipeNet-coupled DFB and pipe operations are role-guarded";
   let description = [{
-    Verifies that PipeNet-dependent operations execute only on nodes whose
+    Verifies that PipeNet-coupled operations execute only on nodes whose
     roles permit the operation. The pass builds finite source and destination
     domains from `ttl.create_pipe`, tracks execution domains through supported
-    `scf.if` predicates, `ttl.if_src`, and `ttl.if_dst`, and reports user
-    diagnostics for:
+    `scf.if` and `affine.if` predicates, `ttl.if_src`, `ttl.if_dst`, and
+    `ttl.pipenet_scope`, and recognizes `ttl.is_src`, `ttl.is_dst`, and
+    `ttl.is_active` structurally as condition predicates. The pass reports
+    user diagnostics for:
 
     - `ttl.copy` from a DFB to a pipe outside that pipe's source domain.
     - `ttl.copy` from a pipe to a DFB outside that pipe's destination domain.
@@ -435,13 +437,30 @@ def TTLVerifyPipeNetGuards
       declared PipeNet role domain.
     - `ttl.cb_wait` whose execution domain is not covered by any producer
       domain for the same DFB index.
+    - Predicates that are coord-dependent but not statically analyzable.
 
-    The pass relies on these input properties:
+    Each violation produces one error with notes naming a witness coordinate,
+    the contributing PipeNet(s), and a suggested guard. The pass accumulates
+    errors and signals failure once at the end.
+
+    On success the pass inlines and erases `ttl.pipenet_scope` regions so
+    downstream lowering sees a scope-free IR. The pass does not otherwise
+    rewrite the program.
+
+    Required input properties:
     - One MLIR module per `@ttl.operation`.
     - `ttl.create_pipe` source/destination coordinates are static `I64Attr`.
-    - Python-emitted modules carry `ttl.launch_grid` as an integer array
-      attribute. Handwritten tests without it fall back to the PipeNet work
-      extent.
+    - The module carries a `ttl.launch_grid` attribute (an i64 array of
+      length 2 with positive entries). The pass emits a module-level error
+      and fails if the attribute is missing or malformed.
+    - DFB indices are stable: `ttl-annotate-cb-associations` and
+      `ttl-finalize-dfb-indices` have already run.
+
+    Tested by:
+    `test/ttlang/Dialect/TTL/Transforms/verify_pipenet_guards.mlir`
+    (positive cases),
+    `verify_pipenet_guards_invalid.mlir` (negative cases),
+    `verify_pipenet_guards_pipeline.mlir` (pipeline integration).
   }];
 
   let dependentDialects = [
