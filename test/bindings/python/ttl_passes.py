@@ -35,13 +35,13 @@ def test_ttl_passes_registered():
     # Module-level passes.
     module_passes = [
         "convert-ttl-to-ttkernel",
-        "ttl-insert-pipenet-active-guards",
+        "ttl-verify-pipenet-guards",
     ]
     for pass_name in module_passes:
         PassManager.parse(f"builtin.module({pass_name})", context=ctx)
         print(f"{pass_name} pass registered")
         # CHECK: convert-ttl-to-ttkernel pass registered
-        # CHECK: ttl-insert-pipenet-active-guards pass registered
+        # CHECK: ttl-verify-pipenet-guards pass registered
 
 
 if __name__ == "__main__":

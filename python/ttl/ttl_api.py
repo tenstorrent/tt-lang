@@ -887,6 +887,7 @@ def _build_operation_pipenets(f: Callable, threads):
     graph = OperationPipeNets()
     for net in seen.values():
         net_use = graph.add_pipe_net(_pipe_to_pipe_use(p) for p in net.pipes)
+        net.pipe_net_id = net_use.id
         # Assign every Pipe in this net the operation-local id so the AST
         # visitor's create_pipe emission uses the same id space.
         for pipe in net.pipes:
@@ -1380,6 +1381,13 @@ def _compile_kernel(
                 kernel_line_offsets[ct.name] = ct.line_offset
 
         module = Module.create(loc)
+        module.operation.attributes["ttl.launch_grid"] = ArrayAttr.get(
+            [
+                IntegerAttr.get(IntegerType.get_signless(64, ctx), dim)
+                for dim in launch_grid
+            ],
+            ctx,
+        )
         if target_arch is not None:
             module.operation.attributes["ttl.target_arch"] = StringAttr.get(target_arch)
 
@@ -1455,7 +1463,7 @@ def _compile_kernel(
             pipeline_passes.append("func.func(ttl-schedule-operations)")
         pipeline_passes.append("ttl-finalize-dfb-indices")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
-        pipeline_passes.append("ttl-insert-pipenet-active-guards")
+        pipeline_passes.append("ttl-verify-pipenet-guards")
 
         # Add CB flow graph dump if auto-profiling or perf dump is enabled
         perf_dump = os.environ.get("TTLANG_PERF_DUMP") == "1"

@@ -584,6 +584,23 @@ def TTL_IfDstOp : TTL_Op<"if_dst", [SingleBlock, NoTerminator]> {
   }];
 }
 
+def TTL_PipeNetScopeOp : TTL_Op<"pipenet_scope", [SingleBlock, NoTerminator]> {
+  let summary = "Mark a DFB region that depends on PipeNet roles";
+  let description = [{
+    Marks a region whose dataflow-buffer acquire/release sequence must execute
+    only on nodes with specific PipeNet roles. The operation does not change
+    runtime behavior; it records the role contract for the enclosed region.
+
+    Role requirements are stored in attributes:
+
+    - `ttl.pipe_net_ids`: array of PipeNet ids.
+    - `ttl.pipe_net_roles`: array of role ids, where 0 is source and 1 is
+      destination.
+  }];
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "attr-dict-with-keyword $body";
+}
+
 //===----------------------------------------------------------------------===//
 // Profiling operations
 //===----------------------------------------------------------------------===//

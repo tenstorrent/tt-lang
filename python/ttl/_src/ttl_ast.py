@@ -1024,6 +1024,142 @@ class TTLGenericCompiler(TTCompilerBase):
             )
         return name
 
+    def _collect_pipenet_roles_in_body(self, body):
+        """Return PipeNet role requirements referenced by if_src/if_dst calls."""
+        from ..pipe import PipeNet
+
+        roles = []
+        seen = set()
+        for stmt in body:
+            for child in ast.walk(stmt):
+                if not isinstance(child, ast.Call):
+                    continue
+                func = child.func
+                if not isinstance(func, ast.Attribute):
+                    continue
+                if func.attr not in ("if_src", "if_dst"):
+                    continue
+                if not isinstance(func.value, ast.Name):
+                    continue
+                table = self._var_exists(func.value.id)
+                if not table:
+                    continue
+                pipenet = table[func.value.id]
+                if not isinstance(pipenet, PipeNet):
+                    continue
+                role = 0 if func.attr == "if_src" else 1
+                item = (pipenet.pipe_net_id, role)
+                if item in seen:
+                    continue
+                seen.add(item)
+                roles.append(item)
+        return roles
+
+    def _emit_pipenet_scope(self, roles):
+        """Create a ttl.pipenet_scope op with role attributes."""
+        scope_op = ttl.pipenet_scope()
+        ids = [pipe_net_id for pipe_net_id, _ in roles]
+        role_values = [role for _, role in roles]
+        scope_op.operation.attributes["ttl.pipe_net_ids"] = ArrayAttr.get(
+            [
+                IntegerAttr.get(IntegerType.get_signless(64, self.ctx), value)
+                for value in ids
+            ],
+            self.ctx,
+        )
+        scope_op.operation.attributes["ttl.pipe_net_roles"] = ArrayAttr.get(
+            [
+                IntegerAttr.get(IntegerType.get_signless(64, self.ctx), value)
+                for value in role_values
+            ],
+            self.ctx,
+        )
+        return scope_op
+
+    def _emit_cb_with_body(self, node):
+        """Emit CB acquire/release ops for a with statement body."""
+        # Process each with-item: acquire resources and track for release
+        releases = []  # [(release_op, cb_val), ...] in acquisition order
+
+        self._on_scope_exit()
+
+        for item in node.items:
+            context_expr = item.context_expr
+            optional_vars = item.optional_vars
+
+            if not isinstance(context_expr, ast.Call):
+                self._raise_error(
+                    context_expr,
+                    "'with' requires a method call (e.g., cb.reserve())",
+                )
+
+            if not isinstance(context_expr.func, ast.Attribute):
+                self._raise_error(
+                    context_expr, "'with' requires a method call on an object"
+                )
+
+            method_name = context_expr.func.attr
+            cb_node = context_expr.func.value
+
+            if method_name not in ("reserve", "wait"):
+                self._raise_error(
+                    context_expr,
+                    f"'with' only supports 'reserve()' or 'wait()', got '{method_name}'",
+                )
+
+            if not isinstance(cb_node, ast.Name):
+                self._raise_error(
+                    context_expr,
+                    "'with' requires a simple variable (e.g., cb.reserve())",
+                )
+
+            cb_table = self._var_exists(cb_node.id)
+            if not cb_table:
+                self._raise_error(cb_node, f"'{cb_node.id}' not found in scope")
+            cb_val = cb_table[cb_node.id]
+
+            # Get tensor type from CB for reserve/wait result
+            tensor_type = self._get_cb_tensor_type(cb_val, node=context_expr)
+            if method_name == "reserve":
+                tensor = self._emit_op_signposts(
+                    "cb_reserve",
+                    context_expr,
+                    lambda tt=tensor_type, cv=cb_val: ttl.cb_reserve(tt, cv),
+                )
+                releases.append(("cb_push", ttl.cb_push, cb_val, context_expr))
+            else:  # wait
+                tensor = self._emit_op_signposts(
+                    "cb_wait",
+                    context_expr,
+                    lambda tt=tensor_type, cv=cb_val: ttl.cb_wait(tt, cv),
+                )
+                releases.append(("cb_pop", ttl.cb_pop, cb_val, context_expr))
+
+            # Attach CB to tensor so store() can find the CB association
+            acquire_result = ttl.attach_cb(tensor.type, tensor, cb_val)
+
+            if optional_vars is not None:
+                if not isinstance(optional_vars, ast.Name):
+                    self._raise_error(
+                        optional_vars,
+                        "'with ... as var' requires a simple variable name",
+                    )
+                self._set_var(optional_vars.id, acquire_result)
+
+        for stmt in node.body:
+            self.visit(stmt)
+
+        self._on_scope_exit()
+
+        # Release in reverse order (implicit ops from with statement)
+        for op_name, release_op, cb_val, expr_node in reversed(releases):
+            self._emit_op_signposts(
+                op_name,
+                expr_node,
+                lambda ro=release_op, cv=cb_val: ro(cv),
+                implicit=True,
+            )
+
     def visit_With(self, node):
         """
         Handle 'with' for CircularBuffer acquire/release or signpost scopes.
@@ -1071,87 +1207,15 @@ class TTLGenericCompiler(TTCompilerBase):
                 self._emit_signpost(f"ttl_{name}", is_end=True)
                 return
 
-            # Process each with-item: acquire resources and track for release
-            releases = []  # [(release_op, cb_val), ...] in acquisition order
+            roles = self._collect_pipenet_roles_in_body(node.body)
+            if roles:
+                scope_op = self._emit_pipenet_scope(roles)
+                block = Block.create_at_start(scope_op.body)
+                with InsertionPoint(block):
+                    self._emit_cb_with_body(node)
+                return
 
-            self._on_scope_exit()
-
-            for item in node.items:
-                context_expr = item.context_expr
-                optional_vars = item.optional_vars
-
-                if not isinstance(context_expr, ast.Call):
-                    self._raise_error(
-                        context_expr,
-                        "'with' requires a method call (e.g., cb.reserve())",
-                    )
-
-                if not isinstance(context_expr.func, ast.Attribute):
-                    self._raise_error(
-                        context_expr, "'with' requires a method call on an object"
-                    )
-
-                method_name = context_expr.func.attr
-                cb_node = context_expr.func.value
-
-                if method_name not in ("reserve", "wait"):
-                    self._raise_error(
-                        context_expr,
-                        f"'with' only supports 'reserve()' or 'wait()', got '{method_name}'",
-                    )
-
-                if not isinstance(cb_node, ast.Name):
-                    self._raise_error(
-                        context_expr,
-                        "'with' requires a simple variable (e.g., cb.reserve())",
-                    )
-
-                cb_table = self._var_exists(cb_node.id)
-                if not cb_table:
-                    self._raise_error(cb_node, f"'{cb_node.id}' not found in scope")
-                cb_val = cb_table[cb_node.id]
-
-                # Get tensor type from CB for reserve/wait result
-                tensor_type = self._get_cb_tensor_type(cb_val, node=context_expr)
-                if method_name == "reserve":
-                    tensor = self._emit_op_signposts(
-                        "cb_reserve",
-                        context_expr,
-                        lambda tt=tensor_type, cv=cb_val: ttl.cb_reserve(tt, cv),
-                    )
-                    releases.append(("cb_push", ttl.cb_push, cb_val, context_expr))
-                else:  # wait
-                    tensor = self._emit_op_signposts(
-                        "cb_wait",
-                        context_expr,
-                        lambda tt=tensor_type, cv=cb_val: ttl.cb_wait(tt, cv),
-                    )
-                    releases.append(("cb_pop", ttl.cb_pop, cb_val, context_expr))
-
-                # Attach CB to tensor so store() can find the CB association
-                acquire_result = ttl.attach_cb(tensor.type, tensor, cb_val)
-
-                if optional_vars is not None:
-                    if not isinstance(optional_vars, ast.Name):
-                        self._raise_error(
-                            optional_vars,
-                            "'with ... as var' requires a simple variable name",
-                        )
-                    self._set_var(optional_vars.id, acquire_result)
-
-            for stmt in node.body:
-                self.visit(stmt)
-
-            self._on_scope_exit()
-
-            # Release in reverse order (implicit ops from with statement)
-            for op_name, release_op, cb_val, expr_node in reversed(releases):
-                self._emit_op_signposts(
-                    op_name,
-                    expr_node,
-                    lambda ro=release_op, cv=cb_val: ro(cv),
-                    implicit=True,
-                )
+            self._emit_cb_with_body(node)
 
 
 def syntax(syntax_name):

@@ -419,26 +419,29 @@ def TTLAnnotateCBAssociations
   let dependentDialects = [];
 }
 
-def TTLInsertPipeNetActiveGuards
-    : Pass<"ttl-insert-pipenet-active-guards", "::mlir::ModuleOp"> {
-  let summary = "Wrap kernel function bodies in scf.if guards over PipeNet active nodes";
+def TTLVerifyPipeNetGuards
+    : Pass<"ttl-verify-pipenet-guards", "::mlir::ModuleOp"> {
+  let summary = "Verify PipeNet-dependent DFB and pipe operations are role-guarded";
   let description = [{
-    Computes the union of every `ttl.create_pipe` source coordinate and
-    destination range — a set of axis-aligned half-open boxes (rectangles
-    in today's 2D dialect; the pass stores per-dimension lo/hi vectors and
-    is rank-agnostic) — then wraps the body of every kernel function (any
-    `func.func` carrying the `ttl.kernel_thread` attribute) in an
-    `scf.if` predicate over `ttl.core_x` / `ttl.core_y` so only
-    participating nodes execute the body. Modules without any
-    `ttl.create_pipe` are left unchanged.
+    Verifies that PipeNet-dependent operations execute only on nodes whose
+    roles permit the operation. The pass builds finite source and destination
+    domains from `ttl.create_pipe`, tracks execution domains through supported
+    `scf.if` predicates, `ttl.if_src`, and `ttl.if_dst`, and reports user
+    diagnostics for:
 
-    The pass relies on these invariants on input IR:
-    - One MLIR module per `@ttl.operation` (one active set per module).
-    - Kernel functions are single-block.
+    - `ttl.copy` from a DFB to a pipe outside that pipe's source domain.
+    - `ttl.copy` from a pipe to a DFB outside that pipe's destination domain.
+    - `ttl.pipenet_scope` whose surrounding predicate is broader than the
+      declared PipeNet role domain.
+    - `ttl.cb_wait` whose execution domain is not covered by any producer
+      domain for the same DFB index.
+
+    The pass relies on these input properties:
+    - One MLIR module per `@ttl.operation`.
     - `ttl.create_pipe` source/destination coordinates are static `I64Attr`.
-
-    The pass is idempotent: an `scf.if` it already inserted is marked with
-    `ttl.pipenet_active_guard` and is not wrapped again on a second run.
+    - Python-emitted modules carry `ttl.launch_grid` as an integer array
+      attribute. Handwritten tests without it fall back to the PipeNet work
+      extent.
   }];
 
   let dependentDialects = [
