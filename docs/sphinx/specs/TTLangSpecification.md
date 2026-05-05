@@ -630,7 +630,15 @@ Blocks have a life cycle that starts with acquisition by using dataflow buffer's
 
 A *pipe* is a communication primitive for organizing the passing of data between data movement kernels on different nodes. A pipe is used as a source or a destination in the `ttl.copy`. The pipe is constructed with source node coordinate (`src`) and destination (`dst`), which is either a single node coordinate for unicast or *node range* for multicast. The node range uses a combination of dimension slices and values to describe a contiguous hypercube.
 
-A node range has the same number of dimensions as `grid_size(dims=N)`, and each coordinate `c_i` lies within the corresponding grid extent `G_i` (i.e. `0 <= c_i < G_i`). The range may be smaller than the grid: pipes are not required to span every node along any dimension. Pipe coordinates should be sized from the operation's *work extent*, which may be smaller than the launch extent given by `@ttl.operation(grid=...)`.
+A node range has the same number of dimensions as `grid_size(dims=N)`, and each coordinate `c_i` lies within the corresponding grid extent `G_i` (i.e. `0 <= c_i < G_i`). The range may be smaller than the grid: pipes are not required to span every node along any dimension. Pipe coordinates should be sized from the operation's *work extent*, which may be smaller than the launch extent given by `@ttl.operation(grid=...)`. The launch extent is selected by the value passed to `grid=`:
+
+| Value | Launch extent |
+| :---- | :---- |
+| `"auto"` | When the operation uses pipe nets, the per-axis bounding box of every pipe coordinate (the work extent); otherwise the device compute grid. |
+| `"full"` | The device compute grid, regardless of pipe coordinates. |
+| Tuple | Used verbatim. |
+
+Under `grid="full"` (or any explicit tuple wider than the work extent), launched nodes outside the active set still skip every kernel function body via the active-set rule below. Under `grid="auto"`, the launch coincides with the active set and the rule is a no-op.
 
 | Type alias/Function | Description |
 | :---- | :---- |
@@ -646,7 +654,7 @@ Condition body function is invoked for each pipe in case of `if_src` if the curr
 
 A pipe net is constructed either in the scope of an operation function or in an enclosing scope and captured by the operation function. It can only be used with its `if_src` and `if_dst` functions inside of a data movement kernel function. The corresponding  `ttl.copy` where a pipe is a source or a destination can be called only inside of a condition body function. Calls into `if_src` and `if_dst` can be nested within condition functions for different pipe nets.
 
-The *active set* of an operation is the union, over every pipe in every pipe net in scope of the operation (constructed in its body or captured from an enclosing scope), of the pipe's source coordinate and its destination coordinate or range. Nodes outside the active set do not participate in pipe communication and the implementation must ensure they skip the bodies of every kernel thread function for that operation. This decouples pipe extent from launch extent: an operation launched with `grid="auto"` on a larger grid than its work shape executes only on the active subset.
+The *active set* of an operation is the union, over every pipe in every pipe net in scope of the operation (constructed in its body or captured from an enclosing scope), of the pipe's source coordinate and its destination coordinate or range. Nodes outside the active set do not participate in pipe communication and the implementation must ensure they skip the bodies of every kernel thread function for that operation. This decouples pipe extent from launch extent: an operation launched with `grid="full"` (or an explicit tuple) on a larger grid than its work shape executes only on the active subset.
 
 | Function | Description |
 | :---- | :---- |

@@ -17,23 +17,20 @@ from .context import get_context
 
 
 def set_default_grid(grid: Shape) -> None:
-    """Set the default grid size used when kernel specifies grid='auto'.
+    """Set the default grid size used when a kernel specifies grid='auto'
+    or grid='full' (the simulator has no real device grid to query).
 
     Args:
         grid: Tuple of (rows, cols) specifying the grid size
 
     Example:
-        set_default_grid((4, 4))  # Use 4x4 grid for 'auto'
+        set_default_grid((4, 4))
     """
     get_context().config.default_auto_grid = grid
 
 
 def get_default_grid() -> Shape:
-    """Get the current default grid size for grid='auto'.
-
-    Returns:
-        Tuple of (rows, cols) specifying the default grid size
-    """
+    """Get the current default grid used for grid='auto' / 'full'."""
     return get_context().config.default_auto_grid
 
 
@@ -44,24 +41,30 @@ def operation(
     **unknown: Any,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
-    Decorator that generates a kernel with specified grid.
+    Decorator that generates a kernel with the specified grid.
 
     fp32_dest_acc_en and dst_full_sync_en are accepted for compatibility with
-    compiler-side code but have no effect in the simulator.  Any other
+    compiler-side code but have no effect in the simulator. Any other
     unrecognised keyword argument raises TypeError to catch user errors early.
 
     Args:
-        grid: Grid specification. If 'auto', uses the default grid (configurable via set_default_grid())
+        grid: Grid specification.
+            - "auto": launch grid shrinks to the PipeNet work extent when
+              the operation uses PipeNets; otherwise resolves to the
+              default grid (set via `set_default_grid`).
+            - "full": always resolves to the default grid, regardless of
+              PipeNet work extent.
+            - Tuple: used verbatim.
         fp32_dest_acc_en: Ignored; accepted for compiler compatibility.
         dst_full_sync_en: Ignored; accepted for compiler compatibility.
 
     Returns:
-        Decorated function with grid configuration
+        Decorated function with grid configuration.
 
     Example:
         @ttl.operation(grid="auto")
         def my_operation(a, b, out):
-            # grid is available as a variable here
+            # grid is available as a variable inside the body.
             pass
     """
 
@@ -71,13 +74,25 @@ def operation(
             f"{', '.join(sorted(unknown))}"
         )
 
-    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        # Create a new function with grid in its closure
-        # This is achieved by modifying the function's globals to include this variable
+    # Capture the auto flag here so `wrapper` does not have to reference
+    # the closure variable `grid`. Program._call copies the wrapper's
+    # f_locals into its execution context, and any direct reference to
+    # `grid` from inside `wrapper` would shadow the resolved launch tuple
+    # with the original string spec.
+    is_auto = grid == "auto"
 
-        # Set grid to default if 'auto'
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        # The body's view of `grid` is fixed at decoration time. For both
+        # "auto" and "full" we use the configured default; for "auto" the
+        # launch grid may later shrink to the PipeNet work extent (computed
+        # after the body has run and pipes are discovered).
         actual_grid: Shape = cast(
-            Shape, get_context().config.default_auto_grid if grid == "auto" else grid
+            Shape,
+            (
+                get_context().config.default_auto_grid
+                if grid in ("auto", "full")
+                else grid
+            ),
         )
 
         # Create new globals dict that includes grid
@@ -148,8 +163,20 @@ def operation(
             pipenets = build_pipenets(pipe_nets)
             pipenets.validate()
 
-            # Execute the program with grid parameter
-            program = Program(*ordered_threads, grid=actual_grid, pipenets=pipenets)
+            # For grid="auto" with PipeNets, shrink the launch grid to the
+            # per-axis pipe-coordinate bounding box; the body has already
+            # been executed with `actual_grid` baked in, so `ttl.grid_size()`
+            # keeps its compile-time value.
+            launch_grid: Shape = actual_grid
+            if is_auto:
+                work_extent = pipenets.work_extent()
+                if work_extent is not None:
+                    launch_grid = cast(
+                        Shape,
+                        tuple(min(w, g) for w, g in zip(work_extent, actual_grid)),
+                    )
+
+            program = Program(*ordered_threads, grid=launch_grid, pipenets=pipenets)
             program(*args, **kwargs)
 
         # Store the decorator parameters for later access

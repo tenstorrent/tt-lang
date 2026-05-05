@@ -7,11 +7,26 @@ active-set guard pass that decouples launch extent from work extent,
 how the simulator reproduces the compiler's active-set behavior at
 scheduling time without running the MLIR pass, and the test coverage.
 
-The launch grid (the device grid that `@ttl.operation(grid=...)`
-schedules onto) is decoupled from the work extent described by the
-user's PipeNets. Nodes launched outside the work extent are guarded out
-at the IR level so they do not execute kernel function bodies that were
-never meant to run on them.
+The launch grid (the grid that `@ttl.operation(grid=...)` schedules
+onto) is decoupled from the *work extent* described by the user's
+PipeNets — the per-axis bounding box of every pipe coordinate. The
+`grid=` argument selects how the launch relates to the work extent:
+
+- `grid="auto"` is an optimization that shrinks the launch to the work
+  extent when the operation
+  uses PipeNets, and resolves to the device compute grid otherwise. This
+  is the default and minimizes wasted kernel launches.
+- `grid="full"` always launches on the device compute grid; nodes
+  outside the work extent are guarded out at the IR level so they do
+  not execute kernel function bodies that were never meant to run on
+  them.
+- An explicit tuple is used verbatim; the same active-set guard handles
+  any over-launch.
+
+The active-set guard pass below makes both modes correct: under
+`grid="auto"` the guard is a no-op (every launched node is active);
+under `grid="full"` (or an over-large explicit tuple) the guard skips
+inactive launched nodes.
 
 ## Overview
 
@@ -269,13 +284,17 @@ consistent with `flatten_core_index`. A 1D coord on a 2D grid is
 treated as an already-linear node index, mirroring the existing tt-lang
 convention for kernels that schedule along a single dimension.
 
-## Worked example
+## Example: 2D mcast matmul
 
 A small mcast matmul with work shape M_BLOCKS=4, N_BLOCKS=3 launched
-under `grid="auto"` on a Wormhole device (8x7 grid):
+under `grid="full"` on a Wormhole device (8x7 grid). Use `grid="full"`
+here because we want the launch to cover the full device grid and rely
+on the active-set guard to skip the inactive nodes; under
+`grid="auto"` the launch would instead shrink to the 3x4 work extent
+and the guard would be a no-op.
 
 ```py
-@ttl.operation(grid="auto")
+@ttl.operation(grid="full")
 def small_mcast_matmul(a, w, out):
     a_pipes = [
         ttl.Pipe(src=(0, row), dst=(slice(0, 3), row))   # broadcast A row
@@ -339,8 +358,8 @@ runtime-observable.
 | 24 | 2D broadcast (existing)                                   |  X  |  X  |     |
 | 25 | Pipe chain / conv multi-stage (existing)                  |  X  |  X  |     |
 | 26 | 1D mcast matmul auto-grid baseline (existing)             |  X  |  X  |     |
-| 27 | Issue #541 regression: 4x3 work extent in auto launch     |  X  |  X  |     |
-| 28 | Issue #541 regression: 2x2 work extent in auto launch     |  X  |  X  |     |
+| 27 | Issue #541 regression: 4x3 work extent under grid="full"  |  X  |  X  |     |
+| 28 | Issue #541 regression: 2x2 work extent under grid="full"  |  X  |  X  |     |
 | 29 | 2D mcast matmul (work < launch via `_even_split`) [fixed] |  X  | (1) |     |
 | 30 | Balanced 2D matmul (A on dm_read, B on dm_write) [fixed]  |  X  | (1) |     |
 | 31 | Balanced 2D matmul + fused relu [fixed]                   |  X  | (1) |     |
@@ -363,6 +382,9 @@ runtime-observable.
 | 48 | `CreatePipeOp::verify` rejects `dstStart > dstEnd` (x)    |     |     |  X  |
 | 49 | `CreatePipeOp::verify` rejects `dstStart > dstEnd` (y)    |     |     |  X  |
 | 50 | `ttl-insert-pipenet-active-guards` registered (Python)    |     |     |  X  |
+| 51 | OperationPipeNets.work_extent: empty / unicast / mcast    |     |  X  |     |
+| 52 | OperationPipeNets.work_extent: union, mixed-rank padding  |     |  X  |     |
+| 53 | grid="auto" shrinks launch + grid="full" keeps launch     |  X  |  X  |     |
 
 (1) Device-only due to a pre-existing simulator divergence: the
 simulator's block-state machine accepts in-place `+=` only on a

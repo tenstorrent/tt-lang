@@ -3,13 +3,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Regression for issue #541: nodes outside the PipeNet active set must skip
-every kernel function body even when grid="auto" launches a larger grid than
-the pipe-defined work extent.
+every kernel function body when grid="full" launches a larger grid than the
+pipe-defined work extent.
 
 The kernels here define pipes against the work extent (M_BLOCKS, N_BLOCKS),
-not the launch grid extent. Without the active-set guard, nodes outside the
-work rectangle execute the kernel body with out-of-bounds tensor indices and
-break the multicast handshake.
+not the launch grid extent. Under grid="full" the launch covers the entire
+device compute grid; without the active-set guard, nodes outside the work
+rectangle would execute the kernel body with out-of-bounds tensor indices
+and break the multicast handshake. (Under grid="auto" the launch shrinks to
+the work extent and the guard becomes a no-op; this test specifically
+exercises the over-launch case.)
 """
 
 # REQUIRES: ttnn
@@ -43,7 +46,7 @@ def _make_small_mcast_kernel(M_DIM, K_DIM, N_DIM):
     N_BLOCKS = N_DIM // BLOCK_SIZE
     K_BLOCKS = K_DIM // BLOCK_SIZE
 
-    @ttl.operation(grid="auto")
+    @ttl.operation(grid="full")
     def small_mcast_matmul(a, w, out):
         a_pipes = [
             ttl.Pipe(src=(0, row), dst=(slice(0, N_BLOCKS), row))
@@ -127,7 +130,7 @@ def _make_small_mcast_kernel(M_DIM, K_DIM, N_DIM):
     ],
     ids=["4x3", "2x2"],
 )
-def test_pipenet_active_guard_under_auto_grid(shape, device):
+def test_pipenet_active_guard_under_full_grid(shape, device):
     M_BLOCKS, N_BLOCKS, K_BLOCKS = shape
     M = M_BLOCKS * BLOCK_SIZE
     N = N_BLOCKS * BLOCK_SIZE
