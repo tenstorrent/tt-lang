@@ -72,8 +72,8 @@ both consume. It holds:
   `NodeRange` for multicast).
 - `validate()`: empty PipeNet, overlapping multicast destinations,
   mixed unicast/multicast within one PipeNet.
-- `active_node_set(grid)`: linearized union of every pipe's source
-  and destination coordinates.
+- `work_extent()`: per-axis bounding box of every pipe's source and
+  destination coordinates.
 
 The compiler and the simulator both discover PipeNets by walking the
 closure cells of the operation function and each kernel function:
@@ -266,23 +266,16 @@ def dm_read():
 
 ## Simulator parity
 
-The simulator does not run the MLIR pass, so it mirrors the same
-behavior at scheduling time. `operation()` builds the
+The simulator does not run the MLIR verifier. It builds the
 `OperationPipeNets` from the operation's closure plus each kernel
-function's closure, validates it, and passes it to `Program(...)`.
-`Program._run_cooperative` calls `pipenets.active_node_set(grid)`,
-expands each pipe's source coordinate and destination range into a set
-of linear node indices, and skips both kernel-function registration
-with the greenlet scheduler and `operation_start`/`operation_end`
-trace events
-for nodes outside the set. `active_node_set` returns `None` when the
-collection has no PipeNets, which makes every launched node active.
+function's closure and validates it before execution. For `grid="auto"`,
+the simulator uses `work_extent()` to choose the same launch-grid
+bounding box as the compiler. For `grid="full"` and explicit tuple
+grids, the simulator launches every node in the resolved grid.
 
-The compiler and simulator both treat coordinates the same way:
-row-major linearization (`coord[0] * grid[1] + coord[1]` in 2D),
-consistent with `flatten_core_index`. A 1D coord on a 2D grid is
-treated as an already-linear node index, mirroring the existing tt-lang
-convention for kernels that schedule along a single dimension.
+The simulator does not skip nodes outside PipeNet roles. User guards
+such as `net.is_active()` or coordinate predicates decide which nodes
+execute pipe-coupled work, matching the compiler/runtime semantics.
 
 ## Example: 2D mcast matmul
 

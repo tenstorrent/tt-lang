@@ -37,31 +37,7 @@ class TestNodeRange:
         assert rng.hi == (1, 1)
 
 
-class TestActiveNodeSet:
-    def test_empty_graph_returns_none(self):
-        graph = OperationPipeNets()
-        assert graph.active_node_set(grid=(8, 7)) is None
-
-    def test_unicast_pipe_includes_src_and_dst(self):
-        graph = OperationPipeNets()
-        graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_coord(2, 3))])
-        # Row-major linearization: x * grid[1] + y on a (W, H) grid.
-        # src (0,0) -> 0; dst (2,3) -> 2*7 + 3 = 17.
-        assert graph.active_node_set(grid=(8, 7)) == {0, 17}
-
-    def test_multicast_pipe_expands_destination_range(self):
-        graph = OperationPipeNets()
-        graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_rng(lo=(1, 0), hi=(4, 1)))])
-        # src (0,0) -> 0; dsts (1..3, 0) -> 7, 14, 21 on grid (8, 7).
-        assert graph.active_node_set(grid=(8, 7)) == {0, 7, 14, 21}
-
-    def test_union_across_multiple_pipenets(self):
-        graph = OperationPipeNets()
-        graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_coord(0, 1))])
-        graph.add_pipe_net([PipeUse(src=_coord(1, 0), dst=_coord(1, 1))])
-        # Linearized on grid (4, 4): 0, 1, 4, 5.
-        assert graph.active_node_set(grid=(4, 4)) == {0, 1, 4, 5}
-
+class TestPipeNetIds:
     def test_pipenet_id_is_operation_local(self):
         graph = OperationPipeNets()
         first = graph.add_pipe_net([PipeUse(src=_coord(0, 0), dst=_coord(1, 0))])

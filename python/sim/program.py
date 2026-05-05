@@ -83,14 +83,12 @@ def get_max_l1_bytes() -> int:
     return get_context().config.max_l1_bytes
 
 
-def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
+def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
     """Program class that combines compute and data movement functions.
 
     Args:
         *funcs: Compute and data movement function templates
         grid: Grid size tuple
-        pipenets: Optional OperationPipeNets used to compute the active
-            set of nodes. When None, every node participates.
     """
 
     class ProgramImpl:
@@ -100,7 +98,6 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
         ):
             self.functions = functions
             self.context: Dict[str, Any] = {"grid": grid}
-            self.pipenets = pipenets
 
         def __call__(self, *args: Any, **kwargs: Any) -> None:
             frame = inspect.currentframe()
@@ -219,28 +216,11 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
             scheduler = GreenletScheduler()
             set_scheduler(scheduler)
 
-            # Compute the PipeNet active set: linear node indices that
-            # participate in any pipe as source or destination. Inactive nodes
-            # skip every kernel thread, mirroring the compiler's scf.if guard.
-            grid = self.context.get("grid", (1, 1))
-            active_nodes = (
-                self.pipenets.active_node_set(tuple(grid))
-                if self.pipenets is not None
-                else None
-            )
-
-            def _is_active(node: int) -> bool:
-                return active_nodes is None or node in active_nodes
-
             try:
                 # Track all per-core contexts for validation
                 all_core_contexts: List[Dict[str, Any]] = []
 
                 for core in range(total_cores):
-                    # Skip cores that are not in any PipeNet's active set.
-                    if not _is_active(core):
-                        continue
-
                     # Build per-core context
                     core_context = self._build_core_context(core)
                     all_core_contexts.append(core_context)
@@ -271,19 +251,15 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                         thread_name = f"core{core}-{tmpl.__name__}"
                         scheduler.add_thread(thread_name, _tagged, thread_type)
 
-                # Iterator over the cores that actually run threads.
-                # Inactive cores (filtered above) are not traced.
-                active_cores = [c for c in range(total_cores) if _is_active(c)]
-
                 # Emit operation_start for each node before the scheduler runs.
-                for core in active_cores:
+                for core in range(total_cores):
                     trace("operation_start", node=core)
 
                 # Run scheduler
                 scheduler.run()
 
                 # Emit operation_end for each node now that all kernels completed.
-                for core in active_cores:
+                for core in range(total_cores):
                     trace("operation_end", node=core)
 
                 # Validate all DataflowBuffers have no pending blocks

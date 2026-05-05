@@ -9,7 +9,7 @@ without either depending on the other.
 The graph is the single source of truth for which PipeNets an operation
 uses. It is built from the operation's closure (captured PipeNets) plus
 its body (PipeNets constructed in-line). The compiler and the simulator
-both compute the active node set and run validation against this graph.
+both compute the PipeNet work extent and run validation against this graph.
 
 Multi-device readiness: NodeCoord is intra-chip. Inter-chip pipes would
 be a separate type wrapping NodeCoord plus a mesh coordinate, and
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field
-from typing import Any, Iterable, List, Optional, Set, Tuple, Union
+from typing import Any, Iterable, List, Optional, Tuple, Union
 
 
 @dataclass(frozen=True)
@@ -85,22 +85,6 @@ class OperationPipeNets:
         self.pipe_nets.append(use)
         return use
 
-    def active_node_set(self, grid: Tuple[int, ...]) -> Optional[Set[int]]:
-        """Linearized active node set across every PipeNet in the graph.
-
-        Returns None when the graph is empty, signaling that no active-set
-        filtering should be applied (every node participates).
-        """
-        if not self.pipe_nets:
-            return None
-        active: Set[int] = set()
-        for net in self.pipe_nets:
-            for pipe in net.pipes:
-                active.add(_linearize(pipe.src.coords, grid))
-                for coord in _expand_dst(pipe.dst):
-                    active.add(_linearize(coord, grid))
-        return active
-
     def work_extent(self) -> Optional[Tuple[int, ...]]:
         """Per-axis bounding box of every pipe coordinate in the graph.
 
@@ -145,32 +129,6 @@ class OperationPipeNets:
                 raise ValueError("PipeNet requires at least one pipe")
             _validate_homogeneous_pipe_kinds(net.pipes)
             _validate_no_overlapping_destinations(net.pipes)
-
-
-def _linearize(coords: Tuple[int, ...], grid: Tuple[int, ...]) -> int:
-    """Row-major linearization matching sim's flatten_core_index.
-
-    A 1D coord on a 2D grid is treated as an already-linear node index
-    (see `flatten_core_index`): the loop body uses `grid[i]` only for the
-    dims the coord actually has.
-    """
-    if len(coords) > len(grid):
-        raise ValueError(
-            f"coord rank {len(coords)} exceeds grid rank {len(grid)}: "
-            f"coords={coords}, grid={grid}"
-        )
-    linear = coords[0]
-    for i in range(1, len(coords)):
-        linear = linear * grid[i] + coords[i]
-    return linear
-
-
-def _expand_dst(dst: Union[NodeCoord, NodeRange]) -> Iterable[Tuple[int, ...]]:
-    """Yield each node coordinate covered by a unicast or multicast destination."""
-    if isinstance(dst, NodeCoord):
-        yield dst.coords
-        return
-    yield from itertools.product(*(range(lo, hi) for lo, hi in zip(dst.lo, dst.hi)))
 
 
 def _validate_homogeneous_pipe_kinds(pipes: Tuple[PipeUse, ...]) -> None:

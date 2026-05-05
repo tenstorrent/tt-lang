@@ -154,10 +154,11 @@ def operation(
             # Arrange in expected order: compute, dm0, dm1
             ordered_threads = [compute_threads[0], dm_threads[0], dm_threads[1]]
 
-            # Build the operation-level PipeNet graph. PipeNets are discovered
-            # by walking closures of the operation function and each thread's
+            # Build the operation-level PipeNet graph for validation and
+            # grid="auto" launch-grid selection. PipeNets are discovered by
+            # walking closures of the operation function and each thread's
             # body, so captured PipeNets show up identically to body-local
-            # ones. Validation runs against the assembled graph.
+            # ones.
             thread_funcs = [getattr(t, "__wrapped__", None) for t in ordered_threads]
             pipe_nets = discover_pipe_nets_from_closures(modified_func, *thread_funcs)
             pipenets = build_pipenets(pipe_nets)
@@ -176,7 +177,7 @@ def operation(
                         tuple(min(w, g) for w, g in zip(work_extent, actual_grid)),
                     )
 
-            program = Program(*ordered_threads, grid=launch_grid, pipenets=pipenets)
+            program = Program(*ordered_threads, grid=launch_grid)
             program(*args, **kwargs)
 
         # Store the decorator parameters for later access
