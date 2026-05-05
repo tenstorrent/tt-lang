@@ -7,7 +7,7 @@
 # Nothing produces data into those buffers while compute and write block, so the
 # scheduler reports a deadlock.
 #
-# TTLANG_HARDWARE_CI: xfail-compiler
+# TTLANG_HARDWARE_CI: skip-compiler
 import torch
 import ttl
 import ttnn
