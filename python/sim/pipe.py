@@ -49,23 +49,6 @@ class Pipe(Generic[DstT]):
     src: CoreCoord
     dst: DstT
 
-    def has_current_node(self) -> bool:
-        """Check if the current core participates in this pipe (either as source or destination).
-
-        This is useful for early-exit patterns where non-participating cores should skip work.
-        Must be called within a kernel context.
-
-        Returns:
-            True if the current core is either the source or in the destination range.
-        """
-        # Check if current core is the source
-        current_core_linear = node(dims=1)
-        pipe_src_linear = flatten_core_index(self.src)
-        if current_core_linear == pipe_src_linear:
-            return True
-
-        return core_in_dst_range(self.dst)
-
     def __hash__(self) -> int:
         """Custom hash implementation to handle slices and nested tuples."""
 
@@ -282,6 +265,32 @@ class PipeNet(Generic[DstT]):
             pipes: List of Pipe objects defining the communication pattern
         """
         self._pipes = pipes
+
+    def is_active(self) -> bool:
+        """Return True if the current node participates in any pipe (source or destination).
+
+        Useful for early-exit when only PipeNet participants should run thread body code.
+        Must be called within a kernel context.
+
+        Returns:
+            True if the current core is a source or destination for at least one pipe.
+        """
+        return self.is_src() or self.is_dst()
+
+    def is_src(self) -> bool:
+        """Return True if the current node is the source of at least one pipe in this net."""
+        current_core_linear = node(dims=1)
+        for pipe in self._pipes:
+            if flatten_core_index(pipe.src) == current_core_linear:
+                return True
+        return False
+
+    def is_dst(self) -> bool:
+        """Return True if the current node lies in the destination of at least one pipe."""
+        for pipe in self._pipes:
+            if core_in_dst_range(pipe.dst):
+                return True
+        return False
 
     def if_src(self, cond_fun: Callable[[SrcPipeIdentity[DstT]], None]) -> None:
         """Execute condition function for each pipe where current core is source.

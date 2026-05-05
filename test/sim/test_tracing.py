@@ -100,14 +100,14 @@ def _run_pipe_kernel_with_tracing(
 
         @ttl.compute()
         def compute():
-            if not pipe.has_current_node():
+            if not pipe_net.is_active():
                 return
             with dfb.wait() as blk, out_dfb.reserve() as out_blk:
                 out_blk.store(blk)
 
         @ttl.datamovement()
         def dm_read():
-            if not pipe.has_current_node():
+            if not pipe_net.is_active():
                 return
             with dfb.reserve() as blk:
 
@@ -126,7 +126,7 @@ def _run_pipe_kernel_with_tracing(
 
         @ttl.datamovement()
         def dm_write():
-            if not pipe.has_current_node():
+            if not pipe_net.is_active():
                 return
             with out_dfb.wait() as blk:
                 tx = ttl.copy(blk, o[0, 0])
