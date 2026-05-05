@@ -38,7 +38,15 @@ def get_version_from_git():
     Tag format: vMAJOR.MINOR.PATCH[+LOCAL]. Per PEP 440 the .devN segment must
     sit between the public release and the +local label, so the tag is split
     on '+' before the dev counter is inserted.
+
+    Override mechanism: if TTLANG_PRETEND_VERSION is set in the environment, it
+    is returned verbatim. Used by the publish-pypi workflow to stamp wheels
+    built from a branch with a caller-supplied PEP 440 version (e.g. an rc/dev
+    pre-release) when no matching git tag exists.
     """
+    pretend = os.environ.get("TTLANG_PRETEND_VERSION", "").strip()
+    if pretend:
+        return pretend
     try:
         tag = (
             subprocess.check_output(
