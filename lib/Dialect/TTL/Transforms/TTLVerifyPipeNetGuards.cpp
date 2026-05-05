@@ -201,6 +201,8 @@ public:
     }
     baseDomain = *domain;
 
+    validatePipeNetReferences();
+
     SmallVector<func::FuncOp> kernels;
     module.walk([&](func::FuncOp func) {
       if (func->hasAttr(kKernelThreadAttrName)) {
@@ -209,6 +211,15 @@ public:
     });
 
     for (func::FuncOp func : kernels) {
+      if (!llvm::hasSingleElement(func.getBody())) {
+        func.emitOpError()
+            << "kernel function body has unstructured control flow "
+               "(early return, goto-style branching, or multiple basic "
+               "blocks); rewrite using structured `if` / `for` / `while` "
+               "so PipeNet guard verification can analyze it";
+        sawError = true;
+        continue;
+      }
       walkRegion(func.getBody(), baseDomain);
     }
 
@@ -249,6 +260,46 @@ private:
       netDestinationDomains[pipeNetId] = domainUnion(
           netDestinationDomains[pipeNetId], pipeDestinationDomain(pipeType));
       pipeNetLocs[pipeNetId].push_back(pipe.getLoc());
+    });
+  }
+
+  // Every `is_src` / `is_dst` / `is_active` / `pipenet_scope` op carries a
+  // PipeNet id; that id must match some `ttl.create_pipe` in the module.
+  //
+  // We must check this explicitly because role-domain lookups go through
+  // `std::map::operator[]`, which returns an empty `Domain` for missing
+  // ids. A scope or guard referencing a bogus id would then trivially
+  // satisfy `domain ⊆ ∅` checks (for empty execution domains) and the
+  // verifier would silently accept it.
+  void validatePipeNetReferences() {
+    auto reportUnknownId = [&](Operation *op, int64_t netId) {
+      op->emitOpError() << "references unknown PipeNet id " << netId
+                        << "; no `ttl.create_pipe` declares this net";
+      sawError = true;
+    };
+    module.walk([&](Operation *op) {
+      if (auto isSrc = dyn_cast<IsSrcOp>(op)) {
+        if (!pipeNetLocs.count(isSrc.getPipeNetId())) {
+          reportUnknownId(op, isSrc.getPipeNetId());
+        }
+      } else if (auto isDst = dyn_cast<IsDstOp>(op)) {
+        if (!pipeNetLocs.count(isDst.getPipeNetId())) {
+          reportUnknownId(op, isDst.getPipeNetId());
+        }
+      } else if (auto isActive = dyn_cast<IsActiveOp>(op)) {
+        if (!pipeNetLocs.count(isActive.getPipeNetId())) {
+          reportUnknownId(op, isActive.getPipeNetId());
+        }
+      } else if (isa<PipeNetScopeOp>(op)) {
+        SmallVector<int64_t> ids;
+        if (readI64Array(op, kPipeNetIdsAttrName, ids)) {
+          for (int64_t id : ids) {
+            if (!pipeNetLocs.count(id)) {
+              reportUnknownId(op, id);
+            }
+          }
+        }
+      }
     });
   }
 
@@ -473,7 +524,10 @@ private:
   }
 
   // Each constraint is `expr(dim, sym) >= 0` (or `== 0` for equalities);
-  // evaluate them at every coord in the launch grid.
+  // evaluate them at every coord in the launch grid. Unsupported
+  // AffineExprKinds and undefined evaluations (mod / floordiv / ceildiv
+  // by zero) propagate as `⊥`; accepting them with a substituted value
+  // would silently widen the true-domain.
   Domain getAffineIfDomain(affine::AffineIfOp ifOp) {
     IntegerSet set = ifOp.getIntegerSet();
     auto operands = ifOp.getOperands();
@@ -496,7 +550,11 @@ private:
       bool ok = true;
       for (unsigned i = 0; i < set.getNumConstraints(); ++i) {
         AffineExpr expr = set.getConstraint(i);
+        bool unsupported = false;
         std::function<int64_t(AffineExpr)> eval = [&](AffineExpr e) -> int64_t {
+          if (unsupported) {
+            return 0;
+          }
           if (auto c = dyn_cast<AffineConstantExpr>(e)) {
             return c.getValue();
           }
@@ -515,22 +573,36 @@ private:
             case AffineExprKind::Mul:
               return lhs * rhs;
             case AffineExprKind::Mod:
-              return rhs == 0 ? 0 : lhs % rhs;
+              if (rhs == 0) {
+                unsupported = true;
+                return 0;
+              }
+              return lhs % rhs;
             case AffineExprKind::FloorDiv:
-              return rhs == 0
-                         ? 0
-                         : (lhs / rhs - (lhs % rhs && (lhs ^ rhs) < 0 ? 1 : 0));
+              if (rhs == 0) {
+                unsupported = true;
+                return 0;
+              }
+              return lhs / rhs - (lhs % rhs && (lhs ^ rhs) < 0 ? 1 : 0);
             case AffineExprKind::CeilDiv:
-              return rhs == 0
-                         ? 0
-                         : (lhs / rhs + (lhs % rhs && (lhs ^ rhs) > 0 ? 1 : 0));
+              if (rhs == 0) {
+                unsupported = true;
+                return 0;
+              }
+              return lhs / rhs + (lhs % rhs && (lhs ^ rhs) > 0 ? 1 : 0);
             default:
+              unsupported = true;
               return 0;
             }
           }
+          unsupported = true;
           return 0;
         };
         int64_t v = eval(expr);
+        if (unsupported) {
+          lastUnanalyzableOp = ifOp;
+          return Domain::unknown();
+        }
         if (set.isEq(i) ? v != 0 : v < 0) {
           ok = false;
           break;
