@@ -72,6 +72,7 @@ class SourceDiagnostic:
         label: str = "error",
         span_length: int = 1,
         note: Optional[str] = None,
+        indent: int = 0,
     ) -> str:
         """Format an error with source context.
 
@@ -82,34 +83,38 @@ class SourceDiagnostic:
             label: Error label (e.g., "error", "warning")
             span_length: Length of the underline (^^^)
             note: Optional additional note
+            indent: Number of leading spaces to prepend to every line
+                of the rendered block, used to visually subordinate
+                child notes under their parent error.
 
         Returns:
             Formatted error string with source context
         """
+        prefix = " " * indent
         # Build header
-        result = [f"{label}: {message}"]
-        result.append(f"  --> {self.filename}:{line}:{col}")
+        result = [f"{prefix}{label}: {message}"]
+        result.append(f"{prefix}  --> {self.filename}:{line}:{col}")
 
         # Get line number width for alignment
         line_num_width = len(str(line))
         gutter = " " * line_num_width
 
-        result.append(f"{gutter} |")
+        result.append(f"{prefix}{gutter} |")
 
         # Show source line if available
         if 0 < line <= len(self.source_lines):
             source_line = self.source_lines[line - 1].rstrip()
-            result.append(f"{line:>{line_num_width}} | {source_line}")
+            result.append(f"{prefix}{line:>{line_num_width}} | {source_line}")
 
             # Build underline with carets
             underline_padding = " " * (col - 1)
             underline = "^" * max(1, span_length)
-            result.append(f"{gutter} | {underline_padding}{underline}")
+            result.append(f"{prefix}{gutter} | {underline_padding}{underline}")
 
-        result.append(f"{gutter} |")
+        result.append(f"{prefix}{gutter} |")
 
         if note:
-            result.append(f"{gutter} = note: {note}")
+            result.append(f"{prefix}{gutter} = note: {note}")
 
         return "\n".join(result)
 
@@ -204,6 +209,12 @@ def format_mlir_error(
 ) -> str:
     """Format an MLIR error with source context if location is available.
 
+    Splits the diagnostic stream into one group per error (each error
+    plus the notes attached to it) and renders each group as its own
+    `error:` + `note:` blocks. Multiple unrelated violations therefore
+    surface as multiple errors, not a single primary with the rest
+    folded into notes.
+
     Args:
         error_msg: The MLIR error message
         source_lines: Original Python source lines (optional, will read from file if needed)
@@ -212,25 +223,42 @@ def format_mlir_error(
     Returns:
         Formatted error message, with source context if available
     """
-    loc_info = extract_location_from_mlir_error(error_msg)
+    groups = _extract_diagnostic_groups(error_msg)
 
-    if loc_info is None:
+    if not groups:
         return error_msg
 
-    filename, line, col = loc_info
-    display_file = source_file if source_file else filename
+    blocks: List[str] = []
+    for primary, notes in groups:
+        primary_loc, primary_msg = primary
+        block = _render_diagnostic_block(
+            primary_loc, primary_msg, "error", source_lines, source_file
+        )
+        if block is not None:
+            blocks.append(block)
+        seen: List[Tuple[Optional[Tuple[str, int, int]], str]] = []
+        for note_loc, note_msg in notes:
+            # Drop the MLIR-internal `see current operation` note,
+            # which echoes the failing op's IR rather than adding user
+            # context.
+            if note_msg.startswith("see current operation"):
+                continue
+            # Drop duplicate notes (the verifier emits one
+            # `PipeNet <N> declared here` note per pipe; a multi-pipe
+            # PipeNet repeats the note at the same location).
+            key = (note_loc, note_msg)
+            if key in seen:
+                continue
+            seen.append(key)
+            # Indent notes 2 spaces so they read as visually subordinate
+            # to their parent error.
+            note_block = _render_diagnostic_block(
+                note_loc, note_msg, "note", source_lines, source_file, indent=2
+            )
+            if note_block is not None:
+                blocks.append(note_block)
 
-    # Read source from file if not provided or if line number exceeds provided lines
-    if source_lines is None or line > len(source_lines):
-        source_lines = _read_file_lines(filename)
-
-    if source_lines is None:
-        return error_msg
-
-    diag = SourceDiagnostic(source_lines, display_file)
-    core_msg = _extract_core_message(error_msg)
-
-    formatted = diag.format_error(line=line, col=col, message=core_msg)
+    formatted = "\n\n".join(blocks)
 
     if _verbose_errors_enabled():
         formatted += f"\n\nMLIR diagnostic:\n{error_msg}"
@@ -238,34 +266,109 @@ def format_mlir_error(
     return formatted
 
 
-def _extract_core_message(error_msg: str) -> str:
-    """Extract the core error message from MLIR diagnostic output.
+def _render_diagnostic_block(
+    loc_info: Optional[Tuple[str, int, int]],
+    message: str,
+    label: str,
+    source_lines: Optional[List[str]],
+    source_file: Optional[str],
+    indent: int = 0,
+) -> Optional[str]:
+    """Render one diagnostic (primary or note) with a source block.
 
-    MLIR errors often look like:
-        error: 'ttl.copy' op expects transfer handle to be synchronized with ttl.wait
-
-    This extracts: "expects transfer handle to be synchronized with ttl.wait"
+    Falls back to a `<label>: <message>` line if location resolution
+    fails — better than dropping the note entirely.
     """
-    # Look for the pattern: 'op_name' op <message>
-    match = re.search(r"'[^']+' op (.+?)(?:\n|$)", error_msg)
-    if match:
-        return match.group(1).strip()
+    prefix = " " * indent
+    if loc_info is None:
+        return f"{prefix}{label}: {message}"
 
-    # Look for error: <message> pattern
-    match = re.search(r"error: (.+?)(?:\n|$)", error_msg)
-    if match:
-        return match.group(1).strip()
+    filename, line, col = loc_info
+    display_file = source_file if source_file else filename
 
-    # Fall back to first line
-    return error_msg.split("\n")[0].strip()
+    block_lines = source_lines
+    if block_lines is None or line > len(block_lines):
+        block_lines = _read_file_lines(filename)
+
+    if block_lines is None:
+        return f"{prefix}{label}: {message}\n{prefix}  --> {filename}:{line}:{col}"
+
+    diag = SourceDiagnostic(block_lines, display_file)
+    return diag.format_error(
+        line=line, col=col, message=message, label=label, indent=indent
+    )
 
 
-def _extract_note(error_msg: str) -> Optional[str]:
-    """Extract any note from the MLIR error message."""
-    match = re.search(r"note: (.+?)(?:\n|$)", error_msg)
-    if match:
-        return match.group(1).strip()
-    return None
+_Diagnostic = Tuple[Optional[Tuple[str, int, int]], str]
+_DiagnosticGroup = Tuple[_Diagnostic, List[_Diagnostic]]
+
+
+def _extract_diagnostic_groups(error_msg: str) -> List[_DiagnosticGroup]:
+    """Split an MLIR error string into groups of (error, [notes]).
+
+    MLIR emits one diagnostic per line in the form
+        <file>:<line>:<col>: <kind>: <message>
+    with `<kind>` in {error, note, warning}. Notes are attached to the
+    most recent error/warning that preceded them, so a stream like
+        error: A
+        note: about A
+        error: B
+        note: about B
+    parses as two groups: (A, [note about A]) and (B, [note about B]).
+    Continuation lines (e.g. the IR dump under `see current operation`)
+    don't start with a recognized kind keyword and are skipped.
+    """
+    groups: List[_DiagnosticGroup] = []
+    current_notes: List[_Diagnostic] = []
+
+    # MLIR diagnostics from the Python pass manager surface as
+    #     <kind>: "path":line:col: <message>
+    # (notes sometimes carry a leading space). Raw `ttlang-opt` runs
+    # use
+    #     path:line:col: <kind>: <message>
+    # We accept both. The location segment is optional so notes
+    # without locations still parse.
+    kind_first = re.compile(
+        r"^\s*(?P<kind>error|note|warning):\s*"
+        r"(?:\"?(?P<file>[^\"\n]+?)\"?:(?P<line>\d+):(?P<col>\d+):\s*)?"
+        r"(?P<msg>.*)$"
+    )
+    loc_first = re.compile(
+        r"^(?:\"?(?P<file>[^\"\n]+?)\"?:(?P<line>\d+):(?P<col>\d+):\s*)"
+        r"(?P<kind>error|note|warning):\s*(?P<msg>.*)$"
+    )
+
+    for raw in error_msg.splitlines():
+        match = loc_first.match(raw) or kind_first.match(raw)
+        if not match:
+            continue
+        kind = match.group("kind")
+        msg = match.group("msg").strip()
+        # Strip the leading `'op_name' op ` prefix MLIR adds for op-level
+        # diagnostics so the user sees the message we wrote.
+        op_match = re.match(r"'[^']+'\s+op\s+(.*)$", msg)
+        if op_match:
+            msg = op_match.group(1).strip()
+
+        if match.group("file"):
+            loc = (
+                match.group("file"),
+                int(match.group("line")),
+                int(match.group("col")),
+            )
+        else:
+            loc = None
+
+        if kind in ("error", "warning"):
+            current_notes = []
+            groups.append(((loc, msg), current_notes))
+        else:  # note
+            # Notes before any error are dropped — there's nothing for
+            # them to attach to. In practice MLIR doesn't emit those.
+            if groups:
+                current_notes.append((loc, msg))
+
+    return groups
 
 
 def format_python_error(
