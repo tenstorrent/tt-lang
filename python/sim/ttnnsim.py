@@ -1790,6 +1790,22 @@ def multiply(
     return Tensor(a_t * b_t)
 
 
+def matmul(
+    a: Union[Tensor, torch.Tensor],
+    b: Union[Tensor, torch.Tensor],
+) -> Tensor:
+    """Matrix multiply (simulator shim for ttnn.matmul)."""
+    a_t = to_torch(a) if isinstance(a, Tensor) else a
+    b_t = to_torch(b) if isinstance(b, Tensor) else b
+    return Tensor(a_t @ b_t)
+
+
+def relu(a: Union[Tensor, torch.Tensor]) -> Tensor:
+    """Element-wise ReLU (simulator shim for ttnn.relu)."""
+    a_t = to_torch(a) if isinstance(a, Tensor) else a
+    return Tensor(torch.relu(a_t))
+
+
 def split_work_to_cores(
     core_grid: Union[CoreCoord, CoreRangeSet],
     units_to_divide: int,

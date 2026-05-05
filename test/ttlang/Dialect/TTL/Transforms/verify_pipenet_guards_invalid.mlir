@@ -265,3 +265,77 @@ module attributes {ttl.launch_grid = [8 : i64, 1 : i64]} {
     func.return
   }
 }
+
+// -----
+
+// `is_src` referencing a PipeNet id that no `ttl.create_pipe` declares is
+// rejected. Without this check, the empty role domain would silently accept
+// any pipe-coupled op nested under the bogus guard.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @unknown_pipenet_id() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{references unknown PipeNet id 7}}
+    %cond = ttl.is_src {pipe_net_id = 7 : i64}
+    scf.if %cond {
+      %send = ttl.copy %cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Multi-block kernel-thread bodies are rejected. The verifier walks each block
+// independently with the function-entry domain, which is unsound (it does not
+// model CFG-level control flow), so the pass refuses to proceed. The check
+// only applies when at least one `ttl.create_pipe` exists in the module
+// (otherwise the pass exits early without walking any function).
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @anchor() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    func.return
+  }
+  // expected-error @below {{kernel function body has unstructured control flow}}
+  func.func @multi_block_kernel(%flag: i1) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    cf.cond_br %flag, ^bb1, ^bb2
+  ^bb1:
+    cf.br ^bb2
+  ^bb2:
+    func.return
+  }
+}
+
+// -----
+
+// `affine.if` over `floordiv(d0, 0)` must be rejected as `⊥` rather than
+// silently substituting a value. A pipe-coupled op nested inside cannot be
+// verified, so the verifier emits the "cannot prove" diagnostic.
+
+#divByZero = affine_set<(d0) : (d0 floordiv 0 - 1 >= 0)>
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @affine_if_div_by_zero() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %x = ttl.core_x : index
+    // expected-note @below {{this expression is not statically analyzable}}
+    affine.if #divByZero(%x) {
+      // expected-error @below {{cannot prove PipeNet guard condition}}
+      %send = ttl.copy %cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
