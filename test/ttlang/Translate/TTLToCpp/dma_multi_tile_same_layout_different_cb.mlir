@@ -1,4 +1,4 @@
-// RUN: ttlang-opt --ttl-to-ttkernel-pipeline --canonicalize %s -o %t.ttkernel.mlir
+// RUN: ttlang-opt --ttl-to-ttkernel-pipeline="use-trid-barriers=1" --canonicalize %s -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.cpp
@@ -35,6 +35,7 @@
 // Cast CB ptr to size_t for index arithmetic
 // CHECK:   ptrdiff_t [[CB_PTR1_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB0]].get_write_ptr();
 // CHECK:   size_t [[CB_PTR1_IDX:v[0-9]+]] = (size_t) [[CB_PTR1_PTRDIFF]];
+// CHECK:   noc_async_read_set_trid({{.*}}, {{.*}});
 // Generated tile loops iterate over tensor grid (2x2)
 // CHECK:   for (size_t [[TILE1_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE1_Y]] < [[TILES_BOUND]]; [[TILE1_Y]] += [[TILE_STEP]]) {
 // CHECK:     for (size_t [[TILE1_X:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE1_X]] < [[TILES_BOUND]]; [[TILE1_X]] += [[TILE_STEP]]) {
@@ -51,7 +52,7 @@
 // CHECK:       noc_async_read_tile([[TILE1_OFFSET]], [[ACC1]], [[CB_ADDR1]]);
 // CHECK:     }
 // CHECK:   }
-// CHECK:   noc_async_read_barrier();
+// CHECK:   noc_async_read_barrier_with_trid({{.*}}, {{.*}});
 
 // Second copy: 64x64 (2x2 tiles) → CB [4,1] - SAME tensor layout, DIFFERENT CB shape
 // CHECK:   int32_t [[RT_ARG2:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_STEP]]);
@@ -60,6 +61,7 @@
 // Cast CB ptr to size_t for index arithmetic
 // CHECK:   ptrdiff_t [[CB_PTR2_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB1]].get_write_ptr();
 // CHECK:   size_t [[CB_PTR2_IDX:v[0-9]+]] = (size_t) [[CB_PTR2_PTRDIFF]];
+// CHECK:   noc_async_read_set_trid({{.*}}, {{.*}});
 // Generated tile loops still iterate over tensor grid (2x2), not CB shape (4x1)
 // CHECK:   for (size_t [[TILE2_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE2_Y]] < [[TILES_BOUND]]; [[TILE2_Y]] += [[TILE_STEP]]) {
 // CHECK:     for (size_t [[TILE2_X:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE2_X]] < [[TILES_BOUND]]; [[TILE2_X]] += [[TILE_STEP]]) {
@@ -76,7 +78,7 @@
 // CHECK:       noc_async_read_tile([[TILE2_OFFSET]], [[ACC2]], [[CB_ADDR2]]);
 // CHECK:     }
 // CHECK:   }
-// CHECK:   noc_async_read_barrier();
+// CHECK:   noc_async_read_barrier_with_trid({{.*}}, {{.*}});
 // CHECK:   return;
 // CHECK-NEXT: }
 

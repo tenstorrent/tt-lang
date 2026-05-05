@@ -1,4 +1,4 @@
-// RUN: ttlang-opt --ttl-to-ttkernel-pipeline --canonicalize %s -o %t.ttkernel.mlir
+// RUN: ttlang-opt --ttl-to-ttkernel-pipeline="use-trid-barriers=1" --canonicalize %s -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.cpp
@@ -6,28 +6,30 @@
 // Test: Batched DMA operations
 // Validates multiple async operations with proper barrier placement
 
-#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
-                      buffer = dram, grid = [1, 1], memory = interleaved>
+#dram = #ttnn.buffer_type<dram>
+#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 
 // CHECK: // dma_batched
 // CHECK: void kernel_main() {
 // CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 4096;
-// CB wrappers declared at top of kernel
-// CHECK:   experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
-// CHECK:   experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
-// Tensor 0: get runtime arg, create accessor, get CB write ptr, cast chain, async read
+// Tensor 0: get runtime arg, create accessor, get CB write ptr, async read
 // CHECK:   int32_t [[RT_ARG0:v[0-9]+]] = get_common_arg_val<uint32_t>({{v[0-9]+}});
-// CHECK:   auto [[ARGS0:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 2>(), 0>();
+// CHECK:   auto [[ARGS0:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<2, 0>();
 // CHECK:   TensorAccessor [[ACCESSOR0:v[0-9]+]] = TensorAccessor([[ARGS0]], [[RT_ARG0]], [[ADDR]]);
-// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR0]], [[CB0]].get_write_ptr());
-// Tensor 1: get runtime arg, create accessor, get CB write ptr, cast chain, async read
+// CHECK:   int32_t [[CB_PTR0:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
+// CHECK:   noc_async_read_set_trid({{.*}}, {{.*}});
+// CHECK:   noc_async_read_tile([[ZERO]], [[ACCESSOR0]], [[CB_PTR0]]);
+// Tensor 1: get runtime arg, create accessor, get CB write ptr, async read
 // CHECK:   int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>({{v[0-9]+}});
-// CHECK:   auto [[ARGS1:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<1, 2>(), 1>();
+// CHECK:   auto [[ARGS1:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<3, 1>();
 // CHECK:   TensorAccessor [[ACCESSOR1:v[0-9]+]] = TensorAccessor([[ARGS1]], [[RT_ARG1]], [[ADDR]]);
-// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR1]], [[CB1]].get_write_ptr());
-// Consecutive barriers deduplicated to single barrier.
-// CHECK:   noc_async_read_barrier();
+// CHECK:   int32_t [[CB_PTR1:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(1));
+// CHECK:   noc_async_read_set_trid({{.*}}, {{.*}});
+// CHECK:   noc_async_read_tile([[ZERO]], [[ACCESSOR1]], [[CB_PTR1]]);
+// Each wait lowers to a TRID barrier (no global barrier).
+// CHECK:   noc_async_read_barrier_with_trid({{.*}}, {{.*}});
+// CHECK:   noc_async_read_barrier_with_trid({{.*}}, {{.*}});
 // CHECK:   return;
 // CHECK-NEXT: }
 module {

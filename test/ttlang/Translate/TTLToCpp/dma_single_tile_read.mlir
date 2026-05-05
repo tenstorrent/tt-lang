@@ -1,4 +1,4 @@
-// RUN: ttlang-opt --ttl-to-ttkernel-pipeline --canonicalize %s -o %t.ttkernel.mlir
+// RUN: ttlang-opt --ttl-to-ttkernel-pipeline="use-trid-barriers=1" --canonicalize %s -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.cpp
@@ -6,19 +6,20 @@
 // Test: Single-tile DMA read operation (tensor → CB)
 // Validates TTL→TTKernel→EmitC→C++ pipeline for basic single-tile DMA read
 
-#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
-                      buffer = dram, grid = [1, 1], memory = interleaved>
+#dram = #ttnn.buffer_type<dram>
+#layout = #ttnn.ttnn_layout<(d0, d1) -> (d0, d1), <1x1>, memref<1x1x!ttcore.tile<32x32, f32>, #dram>, <interleaved>>
 
 // CHECK: // dma_single
 // CHECK: void kernel_main() {
 // CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 4096;
-// CHECK:   experimental::CircularBuffer [[CB:.*]](get_compile_time_arg_val(0));
 // CHECK:   int32_t [[RT_ARG:v[0-9]+]] = get_common_arg_val<uint32_t>([[RT_ARG_IDX:v[0-9]+]]);
-// CHECK:   auto [[ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
+// CHECK:   auto [[ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<1, 0>();
 // CHECK:   TensorAccessor [[ACCESSOR:v[0-9]+]] = TensorAccessor([[ARGS]], [[RT_ARG]], [[ADDR]]);
-// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR]], [[CB]].get_write_ptr());
-// CHECK:   noc_async_read_barrier();
+// CHECK:   int32_t [[CB_PTR:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
+// CHECK:   noc_async_read_set_trid({{.*}}, {{.*}});
+// CHECK:   noc_async_read_tile([[ZERO]], [[ACCESSOR]], [[CB_PTR]]);
+// CHECK:   noc_async_read_barrier_with_trid({{.*}}, {{.*}});
 // CHECK:   return;
 // CHECK-NEXT: }
 module {
