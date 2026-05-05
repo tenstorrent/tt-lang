@@ -499,7 +499,14 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
     I64Attr:$dstStartY,
     I64Attr:$dstEndX,
     I64Attr:$dstEndY,
-    I64Attr:$pipeNetId
+    I64Attr:$pipeNetId,
+    // Diagnostic-only: the Python variable name the user assigned the
+    // owning PipeNet to, when available. The Python frontend stamps
+    // this from the capture / global symbol where the PipeNet was
+    // bound. The verifier reads it to render diagnostics like
+    // `wrap the surrounding work in `if mcast_a_net.is_active(): ...``
+    // instead of falling back to `net_<id>`. Lowering ignores it.
+    OptionalAttr<StrAttr>:$pipeNetName
   );
   let results = (outs TTL_Pipe:$result);
   let assemblyFormat = [{
@@ -513,7 +520,7 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
                    "int64_t":$dstX, "int64_t":$dstY), [{
       build($_builder, $_state, srcX, srcY, dstX, dstY, dstX, dstY, 0);
     }]>,
-    // Builder with all coordinates
+    // Builder with all coordinates (no name)
     OpBuilder<(ins "int64_t":$srcX, "int64_t":$srcY,
                    "int64_t":$dstStartX, "int64_t":$dstStartY,
                    "int64_t":$dstEndX, "int64_t":$dstEndY,
@@ -528,7 +535,8 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
             $_builder.getI64IntegerAttr(dstStartY),
             $_builder.getI64IntegerAttr(dstEndX),
             $_builder.getI64IntegerAttr(dstEndY),
-            $_builder.getI64IntegerAttr(pipeNetId));
+            $_builder.getI64IntegerAttr(pipeNetId),
+            /*pipeNetName=*/StringAttr());
     }]>
   ];
 }

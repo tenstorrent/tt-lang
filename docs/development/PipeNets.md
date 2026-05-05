@@ -180,22 +180,58 @@ For `scf.if`, the condition's domain is determined structurally:
 
 ## Diagnostics
 
-Each violation produces one error with notes:
-
-```
-error: 'ttl.copy' op may copy outside source role of PipeNet 0
-note: example node where the guard does not hold: core_x=1, core_y=0
-note: PipeNet 0 declared here  (at create_pipe location)
-note: suggested guard: wrap in `if net_0.is_src(): ...` or
-      `net_0.if_src(lambda pipe: ...)`
-```
+Every user-facing diagnostic embeds the offending PipeNet id and a
+concrete suggested fix in the **primary** message. Structured notes
+are emitted alongside it: a witness coordinate, a `PipeNet <N>
+declared here` note pointing at the user's `ttl.PipeNet([...])` call
+site (or the first `if_src`/`if_dst` referencing it), and a
+`suggested guard:` line. The Python frontend's diagnostic formatter
+renders the primary error and each note as a separate source-context
+block, so the user can read the suggested fix and immediately see
+which `PipeNet` variable the integer id corresponds to without having
+to map ids back manually.
 
 `signalPassFailure()` is called once at the end so every site is
 reported in a single run rather than failing on the first.
 
+Sample MLIR-level rendering of one violation:
+
+```
+error: 'ttl.copy' op this `ttl.copy(buffer, pipe)` sends data on PipeNet 0
+       from a node that is not a source of any pipe in that net; wrap the
+       copy in `net_0.if_src(...)` or guard with `if net_0.is_src(): ...`
+note: example node where the guard does not hold: core_x=1, core_y=0
+note: PipeNet 0 declared here  (at create_pipe location)
+note: suggested guard: `net_0.is_src()`
+```
+
+### User-facing diagnostics
+
+| Diagnostic primary message | Triggered when | Suggested fix in message |
+|---|---|---|
+| this region exchanges data on PipeNet \<N\> on launched nodes that are not part of that net | A `with cb.reserve()` block containing PipeNet role traffic is reachable from launched nodes outside that net's source/destination union (the issue #541 case: launch grid larger than work extent). | wrap the surrounding work in `if net_<N>.is_active(): ...` |
+| this `ttl.copy(buffer, pipe)` sends data on PipeNet \<N\> from a node that is not a source of any pipe in that net | A DFB-to-pipe copy is reachable from a node that isn't the pipe's source coordinate. | wrap the copy in `net_<N>.if_src(...)` or guard with `if net_<N>.is_src(): ...` |
+| this `ttl.copy(pipe, buffer)` receives data from PipeNet \<N\> on a node that is not a destination of any pipe in that net | A pipe-to-DFB copy is reachable from a node outside the pipe's destination range. | wrap the copy in `net_<N>.if_dst(...)` or guard with `if net_<N>.is_dst(): ...` |
+| this `cb_wait` reads from a dataflow buffer that no other thread fills | A `cb_wait` references a DFB index that no `cb_push` anywhere in the module writes to. | check that another `@ttl.compute()` or `@ttl.datamovement()` thread reserves and pushes the same buffer |
+| this `cb_wait` runs on launched nodes where no thread pushes data to the buffer (would deadlock) | A `cb_wait` is reachable from nodes outside the union of `cb_push` producer domains for the same DFB index. | guard the wait with the same `if net.is_active(): ...` predicate the producer uses |
+| could not statically analyze the PipeNet guard around this op | A surrounding condition uses runtime values or arithmetic the verifier can't enumerate per coordinate (e.g. `arith.muli %core_x, %runtime_value`). | rewrite using `net.is_src()` / `net.is_dst()` / `net.is_active()`, or compare `ttl.node(dims=2)` coordinates against integer constants |
+
+Internal-invariant diagnostics also exist (`references unknown PipeNet
+id`, `kernel function body has unstructured control flow`, `requires a
+\`ttl.launch_grid\` module attribute`); these flag malformed input the
+frontend should never emit and are not expected in user code.
+
 ## `ttl.pipenet_scope`
 
-A region op the frontend emits around DFB-context blocks
+`ttl.pipenet_scope` is one of the IR additions this feature introduces
+(alongside the `ttl.is_src` / `ttl.is_dst` / `ttl.is_active` predicate
+ops described in [Predicate recognition](#predicate-recognition)). It
+exists only between frontend emission and verifier teardown so the
+verifier can recognize user code that performs PipeNet role traffic
+without re-deriving the role declarations from each pipe-coupled op
+individually; it never reaches TTL→TTKernel lowering.
+
+The frontend emits this region op around DFB-context blocks
 (`with cb.reserve()`) whose body contains pipe role work. It carries
 two parallel attributes: `ttl.pipe_net_ids` (`DenseI64ArrayAttr`) and
 `ttl.pipe_net_roles` (`DenseI64ArrayAttr`, one entry per id; 0 =
@@ -457,6 +493,15 @@ rejection contract; it `pytest.skip`s on the simulator runner.
 * If multiple operations are ever co-compiled into one module, scope
   the verifier walk to the enclosing operation by a marker attribute or
   by using a per-operation pass driver.
+* Interprocedural analysis. The verifier walks only `func.func`s
+  carrying `ttl.kernel_thread` and does not follow `func.call`. The
+  Python frontend currently inlines user helper functions into the
+  kernel body, so this gap is invisible today; if the frontend later
+  emits `func.call` for shared kernel-thread helpers (code reuse across
+  operations, recursion, larger kernels), the verifier needs either
+  cross-function propagation of the caller's execution domain into the
+  callee, or it must conservatively reject `func.call` from a
+  kernel-thread function whose callee contains PipeNet-coupled work.
 * `CreatePipeOp` verifier could additionally bound-check coordinates
   against the device grid extent (the `dstStart <= dstEnd` ordering is
   already enforced).

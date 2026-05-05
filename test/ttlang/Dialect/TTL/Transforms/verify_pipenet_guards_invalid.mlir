@@ -6,14 +6,13 @@
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unguarded_source_copy() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    // expected-note @below {{PipeNet 0 declared here}}
+    // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{may copy to a pipe outside that pipe's source role}}
+    // expected-error @below {{this `ttl.copy(buffer, pipe)` sends data on PipeNet net_0 from a node that is not a source}}
     // expected-note @below {{example node where the guard does not hold: core_x=1}}
-    // expected-note @below {{suggested guard: `net_0.is_src()`}}
     %send = ttl.copy %cb, %pipe
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
            !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
@@ -28,14 +27,13 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unguarded_destination_copy() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    // expected-note @below {{PipeNet 0 declared here}}
+    // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{may copy from a pipe outside that pipe's destination role}}
+    // expected-error @below {{this `ttl.copy(pipe, buffer)` receives data from PipeNet net_0 on a node that is not a destination}}
     // expected-note @below {{example node where the guard does not hold: core_x=0}}
-    // expected-note @below {{suggested guard: `net_0.is_dst()`}}
     %recv = ttl.copy %pipe, %cb
         : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
            !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
@@ -50,12 +48,11 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unguarded_scope() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    // expected-note @below {{PipeNet 0 declared here}}
+    // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    // expected-error @below {{PipeNet scope may execute outside its declared role domain}}
+    // expected-error @below {{this region exchanges data on PipeNet}}
     // expected-note @below {{example node where the guard does not hold: core_x=1}}
-    // expected-note @below {{suggested guard: `net_0.is_src()`}}
     ttl.pipenet_scope attributes {ttl.pipe_net_ids = [0 : i64], ttl.pipe_net_roles = [0 : i64]} {
       ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       }
@@ -72,16 +69,15 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @uniform_unknown_else(%flag: i1) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    // expected-note @below {{PipeNet 0 declared here}}
+    // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     scf.if %flag {
     } else {
-      // expected-error @below {{may copy to a pipe outside that pipe's source role}}
+      // expected-error @below {{this `ttl.copy(buffer, pipe)` sends data on PipeNet net_0 from a node that is not a source}}
       // expected-note @below {{example node where the guard does not hold: core_x=1, core_y=0}}
-      // expected-note @below {{suggested guard: `net_0.is_src()`}}
       %send = ttl.copy %cb, %pipe
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
              !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
@@ -107,7 +103,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     // expected-note @below {{this expression is not statically analyzable}}
     %cond = arith.cmpi eq, %scaled, %zero : index
     scf.if %cond {
-      // expected-error @below {{cannot prove PipeNet guard condition}}
+      // expected-error @below {{could not statically analyze the PipeNet guard}}
       %send = ttl.copy %cb, %pipe
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
              !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
@@ -127,7 +123,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{no producer pushes to DFB index 0}}
+    // expected-error @below {{this `cb_wait` reads from a dataflow buffer that no other thread fills}}
     %view = ttl.cb_wait %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -156,7 +152,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %cb = ttl.bind_cb {cb_index = 7, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{may wait on a DFB from nodes where no producer pushes it}}
+    // expected-error @below {{this `cb_wait` runs on launched nodes where no thread pushes data to the buffer}}
     // expected-note @below {{example node where the guard does not hold: core_x=1}}
     %view = ttl.cb_wait %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -167,23 +163,28 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
-// Cross-PipeNet: copy targets net_a from a region whose only guard is for
-// net_b. Diagnostic must name net_a, not "the active set".
+// Cross-PipeNet: copy targets `net_a` from a region whose only guard is
+// for `net_b`. Diagnostic names `net_a` specifically. The
+// `pipeNetName` attribute on each `ttl.create_pipe` exercises the
+// named-PipeNet diagnostic form: the verifier surfaces the user's
+// Python variable names (`net_a`, `net_b`) instead of synthesizing
+// `net_<id>`.
 
 module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
   func.func @cross_net_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    // expected-note @below {{PipeNet 0 declared here}}
+    // expected-note @below {{PipeNet net_a declared here}}
     %pa = ttl.create_pipe src(0, 0) dst(0, 1) to(0, 3) net 0
+        {pipeNetName = "net_a"}
         : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0>
     %pb = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 1
+        {pipeNetName = "net_b"}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 1>
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %cond = ttl.is_dst {pipe_net_id = 1 : i64}
     scf.if %cond {
-      // expected-error @below {{may copy from a pipe outside that pipe's destination role}}
+      // expected-error @below {{this `ttl.copy(pipe, buffer)` receives data from PipeNet net_a on a node that is not a destination}}
       // expected-note @below {{example node where the guard does not hold:}}
-      // expected-note @below {{suggested guard: `net_0.is_dst()`}}
       %r = ttl.copy %pa, %cb
           : (!ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0>,
              !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
@@ -218,7 +219,7 @@ module {
 
 module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
   func.func @nested_is_active_misses_role() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    // expected-note @below {{PipeNet 0 declared here}}
+    // expected-note @below {{PipeNet net_0 declared here}}
     %pa = ttl.create_pipe src(0, 0) dst(0, 1) to(0, 3) net 0
         : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0>
     %pb = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 1
@@ -229,9 +230,8 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
     scf.if %a_active {
       %b_active = ttl.is_active {pipe_net_id = 1 : i64}
       scf.if %b_active {
-        // expected-error @below {{may copy from a pipe outside that pipe's destination role}}
+        // expected-error @below {{this `ttl.copy(pipe, buffer)` receives data from PipeNet net_0 on a node that is not a destination}}
         // expected-note @below {{example node where the guard does not hold: core_x=0}}
-        // expected-note @below {{suggested guard: `net_0.is_dst()`}}
         %recv = ttl.copy %pa, %cb
             : (!ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0>,
                !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
@@ -247,16 +247,15 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
 #wideSet = affine_set<(d0) : (d0 - 4 >= 0)>
 module attributes {ttl.launch_grid = [8 : i64, 1 : i64]} {
   func.func @affine_if_too_wide() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    // expected-note @below {{PipeNet 0 declared here}}
+    // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #wideSet(%x) {
-      // expected-error @below {{may copy to a pipe outside that pipe's source role}}
+      // expected-error @below {{this `ttl.copy(buffer, pipe)` sends data on PipeNet net_0 from a node that is not a source}}
       // expected-note @below {{example node where the guard does not hold: core_x=4}}
-      // expected-note @below {{suggested guard: `net_0.is_src()`}}
       %send = ttl.copy %cb, %pipe
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
              !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>)
@@ -330,7 +329,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     %x = ttl.core_x : index
     // expected-note @below {{this expression is not statically analyzable}}
     affine.if #divByZero(%x) {
-      // expected-error @below {{cannot prove PipeNet guard condition}}
+      // expected-error @below {{could not statically analyze the PipeNet guard}}
       %send = ttl.copy %cb, %pipe
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
              !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)

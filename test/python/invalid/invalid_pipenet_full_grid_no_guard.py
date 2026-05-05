@@ -23,10 +23,11 @@ Hard-coded `grid=(8, 7)` to mirror the Wormhole compute grid; using
 `TTLANG_COMPILE_ONLY=1`.
 """
 
-# Note: detailed witness / declared-here / suggested-guard notes are
-# checked by the lit invalid suite; the Python frontend's diagnostic
-# formatter currently surfaces only the primary error string.
-# CHECK: PipeNet scope may execute outside its declared role domain
+# The Python frontend's diagnostic formatter renders the primary
+# error and each attached note with its own source-context block.
+# CHECK: error: this region exchanges data on PipeNet
+# CHECK: note: example node where the guard does not hold:
+# CHECK: note: PipeNet {{[A-Za-z0-9_]+}} declared here
 
 import os
 

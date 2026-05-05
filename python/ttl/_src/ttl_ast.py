@@ -167,6 +167,34 @@ class TTLGenericCompiler(TTCompilerBase):
         for name, val in TTLGenericCompiler._syntax.items():
             self._fn_map[name] = val
 
+        # Map id(PipeNet object) -> Python variable name the user assigned
+        # it to. Populated from captures/globals at function entry and
+        # from body-local PipeNet assignments. Read by `_emit_pipe_from_capture`
+        # to stamp the user's variable name onto each `ttl.create_pipe`
+        # so the verifier can name PipeNets by user-facing identifier.
+        self._pipe_net_names: dict[int, str] = {}
+
+    def _set_var(self, var_name, value):
+        # Capture PipeNet variable names so the verifier can render
+        # diagnostics in user-facing terms (e.g. `mcast_a_net.is_active()`
+        # instead of `net_0.is_active()`). Body-local PipeNet assignments
+        # land here too — `mcast_a_net = ttl.PipeNet(a_pipes)` evaluates
+        # the RHS at trace time and stores the resulting PipeNet object.
+        from ..pipe import PipeNet
+
+        if isinstance(value, PipeNet):
+            self._pipe_net_names.setdefault(id(value), var_name)
+        super()._set_var(var_name, value)
+
+    def _resolve_pipe_net_name(self, pipenet) -> str:
+        """User's Python variable name for `pipenet`, or a synthetic
+        `net_<id>` fallback so the IR attribute is always non-empty
+        and diagnostics never need a name-vs-no-name special case."""
+        name = self._pipe_net_names.get(id(pipenet))
+        if name:
+            return name
+        return f"net_{pipenet.pipe_net_id}"
+
     def visit_Assign(self, node):
         """Handle tuple unpacking for TTL functions like core(dims=2)."""
         if not isinstance(node.targets[0], ast.Tuple):
@@ -431,10 +459,17 @@ class TTLGenericCompiler(TTCompilerBase):
                 f"PipeNet.{method_name}() requires a lambda or function reference",
             )
 
+        # Resolve the user's variable name for this PipeNet so the
+        # verifier can render diagnostics in user-facing terms.
+        # `_resolve_pipe_net_name` falls back to `net_<id>` if the
+        # PipeNet wasn't bound to a named variable, so the attribute
+        # is always non-empty.
+        pipe_net_name = self._resolve_pipe_net_name(pipenet)
+
         # Iterate over all pipes and emit if_src/if_dst for each
         for pipe in pipenet.pipes:
             # Emit the pipe MLIR value
-            pipe_val = self._emit_pipe_from_capture(pipe)
+            pipe_val = self._emit_pipe_from_capture(pipe, pipe_net_name=pipe_net_name)
             pipe._mlir_value = pipe_val
 
             # Create the appropriate PipeIdentity
@@ -671,8 +706,14 @@ class TTLGenericCompiler(TTCompilerBase):
         # Emit: %cb = ttl.bind_cb {cb_index = N, block_count = M} : !ttl.cb<...>
         return ttl.bind_cb(cb_type, cb._cb_index, block_count=cb.block_count)
 
-    def _emit_pipe_from_capture(self, pipe):
-        """Emit ttl.create_pipe for a captured Pipe instance."""
+    def _emit_pipe_from_capture(self, pipe, pipe_net_name=None):
+        """Emit ttl.create_pipe for a captured Pipe instance.
+
+        `pipe_net_name`, when provided, becomes the `pipeNetName` attr
+        on `ttl.create_pipe` and is surfaced verbatim in verifier
+        diagnostics. Callers pass the user's Python variable name
+        (e.g. `mcast_a_net`) recovered from `_pipe_net_names`.
+        """
         pipe_type = ttl.PipeType.get(
             self.ctx,
             pipe.src[0],
@@ -683,6 +724,9 @@ class TTLGenericCompiler(TTCompilerBase):
             pipe.dst_end[1],
             pipe.pipe_net_id,
         )
+        kwargs = {}
+        if pipe_net_name:
+            kwargs["pipe_net_name"] = pipe_net_name
         return ttl.create_pipe(
             pipe_type,
             pipe.src[0],
@@ -692,6 +736,7 @@ class TTLGenericCompiler(TTCompilerBase):
             pipe.dst_end[0],
             pipe.dst_end[1],
             pipe.pipe_net_id,
+            **kwargs,
         )
 
     def _emit_entry(self, node):
@@ -768,6 +813,9 @@ class TTLGenericCompiler(TTCompilerBase):
                     val._mlir_value = pipe_val
                 elif isinstance(val, PipeNet):
                     self._set_var(name, val)
+                    # Stamp variable name (first-seen wins) so the
+                    # compiler can use it in diagnostics.
+                    self._pipe_net_names.setdefault(id(val), name)
                 else:
                     self._raise_error(
                         node, f"Invalid capture type for var {name}: {type(val)}"
@@ -784,6 +832,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 if any(name in tbl for tbl in self.symbol_tables):
                     continue
                 self._set_var(name, val)
+                self._pipe_net_names.setdefault(id(val), name)
 
             for target in node.body:
                 self.visit(target)

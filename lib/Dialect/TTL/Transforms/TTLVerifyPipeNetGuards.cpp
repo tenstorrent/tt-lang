@@ -240,6 +240,12 @@ private:
   std::map<int64_t, Domain> netSourceDomains;
   std::map<int64_t, Domain> netDestinationDomains;
   std::map<int64_t, SmallVector<Location>> pipeNetLocs;
+  // User variable name for each PipeNet id, populated from
+  // `pipeNetName` on the first `ttl.create_pipe` for that id.
+  // `netName()` synthesizes `net_<id>` for ids that didn't carry a
+  // name (e.g. handwritten lit IR), so callers can treat the name
+  // as always-present.
+  std::map<int64_t, std::string> pipeNetNames;
   std::map<int64_t, Domain> cbProducerDomains;
   Operation *lastUnanalyzableOp = nullptr;
 
@@ -260,7 +266,30 @@ private:
       netDestinationDomains[pipeNetId] = domainUnion(
           netDestinationDomains[pipeNetId], pipeDestinationDomain(pipeType));
       pipeNetLocs[pipeNetId].push_back(pipe.getLoc());
+      // Take the first non-empty name we see; subsequent pipes in the
+      // same net should agree but we don't enforce it.
+      auto &name = pipeNetNames[pipeNetId];
+      if (name.empty()) {
+        if (auto attr = pipe.getPipeNetNameAttr()) {
+          name = attr.getValue().str();
+        }
+      }
     });
+  }
+
+  // Identifier used for a PipeNet in every diagnostic. The frontend
+  // stamps the user's Python variable name (e.g. `mcast_a_net`);
+  // handwritten lit IR may omit it, in which case we synthesize
+  // `net_<id>` so callers never have to handle a name-vs-no-name
+  // special case. Same string is used in prose ("PipeNet X declared
+  // here") and inside code expressions (`X.is_active()`), so the
+  // suggested guard is always a valid Python expression.
+  std::string netName(int64_t netId) {
+    auto it = pipeNetNames.find(netId);
+    if (it != pipeNetNames.end() && !it->second.empty()) {
+      return it->second;
+    }
+    return "net_" + std::to_string(netId);
   }
 
   // Every `is_src` / `is_dst` / `is_active` / `pipenet_scope` op carries a
@@ -615,28 +644,61 @@ private:
     return result;
   }
 
-  // Render `if net_<id>.is_<role>(): ...` for every (id, role) pair so
-  // diagnostics can paste the suggested guard verbatim.
+  // Render the runtime predicate that matches the verifier's role
+  // domain for `roles`. Same input semantics as the verifier check
+  // (which unions all declared roles), so the rendered expression
+  // joins clauses with ` or `:
+  //
+  //   net_0.is_src()                    (one net, one role)
+  //   net_0.is_active()                 (one net, both src and dst → collapse)
+  //   net_0.is_dst() or net_1.is_src()  (different nets, joined by union)
+  //
+  // No leading `if `, no trailing `:`, no surrounding backticks —
+  // callers wrap as needed (the standalone `suggested guard:` note
+  // adds backticks; the in-code-span use in primary messages does
+  // not, since it already sits inside a backtick code span).
   std::string
-  formatSuggestedGuard(ArrayRef<std::pair<int64_t, PipeRole>> roles) {
+  formatGuardExpression(ArrayRef<std::pair<int64_t, PipeRole>> roles) {
+    // Group roles by net id, preserving first-seen order. Within a net,
+    // collect a flag set of {src, dst, active}.
+    SmallVector<int64_t> orderedIds;
+    std::map<int64_t, std::array<bool, 3>> rolesByNet;
+    for (auto [id, role] : roles) {
+      auto [it, inserted] = rolesByNet.try_emplace(
+          id, std::array<bool, 3>{false, false, false});
+      if (inserted) {
+        orderedIds.push_back(id);
+      }
+      it->second[static_cast<size_t>(role)] = true;
+    }
+
     std::string buffer;
     llvm::raw_string_ostream os(buffer);
-    os << "suggested guard: ";
-    llvm::interleaveComma(roles, os, [&](auto pair) {
-      os << "`net_" << pair.first << ".is_";
-      switch (pair.second) {
-      case PipeRole::Source:
-        os << "src";
-        break;
-      case PipeRole::Destination:
-        os << "dst";
-        break;
-      case PipeRole::Active:
-        os << "active";
-        break;
+    bool first = true;
+    for (int64_t id : orderedIds) {
+      auto &flags = rolesByNet[id];
+      bool hasSrc = flags[static_cast<size_t>(PipeRole::Source)];
+      bool hasDst = flags[static_cast<size_t>(PipeRole::Destination)];
+      bool hasActive = flags[static_cast<size_t>(PipeRole::Active)];
+
+      // src ∨ dst is exactly is_active; collapse so we don't emit the
+      // ambiguous `net_0.is_src() or net_0.is_dst()` form.
+      bool collapsedToActive = hasActive || (hasSrc && hasDst);
+      auto emit = [&](StringRef method) {
+        if (!first) {
+          os << " or ";
+        }
+        first = false;
+        os << netName(id) << "." << method << "()";
+      };
+      if (collapsedToActive) {
+        emit("is_active");
+      } else if (hasSrc) {
+        emit("is_src");
+      } else if (hasDst) {
+        emit("is_dst");
       }
-      os << "()`";
-    });
+    }
     return std::move(os.str());
   }
 
@@ -655,7 +717,7 @@ private:
         continue;
       }
       diag.attachNote(it->second.front())
-          << "PipeNet " << netId << " declared here";
+          << "PipeNet " << netName(netId) << " declared here";
     }
   }
 
@@ -664,10 +726,11 @@ private:
                         ArrayRef<std::pair<int64_t, PipeRole>> roles = {}) {
     if (!current.known) {
       auto diag = op->emitOpError()
-                  << "cannot prove PipeNet guard condition; use coordinate "
-                     "comparisons over `ttl.node(dims=2)` against integer "
-                     "constants, or `net.is_src()` / `net.is_dst()` / "
-                     "`net.is_active()`";
+                  << "could not statically analyze the PipeNet guard "
+                     "around this op; rewrite using `net.is_src()` / "
+                     "`net.is_dst()` / `net.is_active()`, or compare "
+                     "`ttl.node(dims=2)` coordinates against integer "
+                     "constants";
       if (lastUnanalyzableOp) {
         diag.attachNote(lastUnanalyzableOp->getLoc())
             << "this expression is not statically analyzable";
@@ -686,9 +749,10 @@ private:
       ids.push_back(p.first);
     }
     attachPipeNetNotes(diag, ids);
-    if (!roles.empty()) {
-      diag.attachNote() << formatSuggestedGuard(roles);
-    }
+    // The suggested guard is already embedded in `primaryMessage`
+    // (callers that pass roles render the same `is_src/is_dst/is_active`
+    // expression inline). Repeating it as a note would surface the
+    // same string twice in the user-facing diagnostic.
     sawError = true;
   }
 
@@ -731,17 +795,31 @@ private:
   void verifyCopy(CopyOp copyOp, const Domain &current) {
     if (auto dstPipeType = dyn_cast<PipeType>(copyOp.getDst().getType())) {
       int64_t netId = dstPipeType.getPipeNetId();
-      checkKnownSubset(copyOp, current, pipeSourceDomain(dstPipeType),
-                       "may copy to a pipe outside that pipe's source role",
+      std::string name = netName(netId);
+      std::string msg;
+      llvm::raw_string_ostream(msg)
+          << "this `ttl.copy(buffer, pipe)` sends data on PipeNet " << name
+          << " from a node that is not a source of any pipe in that net; "
+             "wrap the copy in `"
+          << name << ".if_src(...)` or guard with `if " << name
+          << ".is_src(): ...`";
+      checkKnownSubset(copyOp, current, pipeSourceDomain(dstPipeType), msg,
                        {{netId, PipeRole::Source}});
       return;
     }
     if (auto srcPipeType = dyn_cast<PipeType>(copyOp.getSrc().getType())) {
       int64_t netId = srcPipeType.getPipeNetId();
-      checkKnownSubset(
-          copyOp, current, pipeDestinationDomain(srcPipeType),
-          "may copy from a pipe outside that pipe's destination role",
-          {{netId, PipeRole::Destination}});
+      std::string name = netName(netId);
+      std::string msg;
+      llvm::raw_string_ostream(msg)
+          << "this `ttl.copy(pipe, buffer)` receives data from PipeNet "
+          << name
+          << " on a node that is not a destination of any pipe in that "
+             "net; wrap the copy in `"
+          << name << ".if_dst(...)` or guard with `if " << name
+          << ".is_dst(): ...`";
+      checkKnownSubset(copyOp, current, pipeDestinationDomain(srcPipeType), msg,
+                       {{netId, PipeRole::Destination}});
     }
   }
 
@@ -796,10 +874,32 @@ private:
         if (!scope) {
           continue;
         }
-        checkKnownSubset(scopeOp, current, scope->first,
-                         "PipeNet scope may execute outside its "
-                         "declared role domain",
-                         scope->second);
+        // Collect the unique PipeNet ids referenced by this scope so
+        // the diagnostic names every net the user must guard against.
+        SmallVector<int64_t> ids;
+        for (auto &p : scope->second) {
+          if (!llvm::is_contained(ids, p.first)) {
+            ids.push_back(p.first);
+          }
+        }
+        std::string msg;
+        {
+          llvm::raw_string_ostream os(msg);
+          os << "this region exchanges data on PipeNet";
+          if (ids.size() != 1) {
+            os << "s";
+          }
+          os << " ";
+          llvm::interleaveComma(ids, os, [&](int64_t id) {
+            os << netName(id);
+          });
+          os << " on launched nodes that are not part of "
+             << (ids.size() == 1 ? "that net" : "those nets")
+             << "; wrap the surrounding work in `if "
+             << formatGuardExpression(scope->second)
+             << ": ...` so non-participating nodes skip it";
+        }
+        checkKnownSubset(scopeOp, current, scope->first, msg, scope->second);
         walkRegion(scopeOp.getBody(), current);
         continue;
       }
@@ -828,13 +928,18 @@ private:
       auto it = cbProducerDomains.find(use.cbIndex);
       if (it == cbProducerDomains.end()) {
         use.op.emitOpError()
-            << "no producer pushes to DFB index " << use.cbIndex;
+            << "this `cb_wait` reads from a dataflow buffer that no other "
+               "thread fills; check that another `@ttl.compute()` or "
+               "`@ttl.datamovement()` thread reserves and pushes the same "
+               "buffer";
         sawError = true;
         continue;
       }
       checkKnownSubset(use.op, use.domain, it->second,
-                       "may wait on a DFB from nodes where no producer "
-                       "pushes it");
+                       "this `cb_wait` runs on launched nodes where no "
+                       "thread pushes data to the buffer (would deadlock); "
+                       "guard the wait with the same `if net.is_active(): "
+                       "...` predicate the producer uses");
     }
   }
 
