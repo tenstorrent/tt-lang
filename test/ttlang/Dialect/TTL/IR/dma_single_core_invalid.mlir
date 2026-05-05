@@ -59,6 +59,38 @@ module {
 
 // -----
 
+// Tensor element type must match the CB element type.
+#layout_f32 = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                          buffer = dram, grid = [1, 1], memory = interleaved>
+
+module {
+  func.func @copy_element_type_mismatch(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_f32>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{tensor element type ('!ttcore.tile<32x32, f32>') must match CB element type ('!ttcore.tile<32x32, bf16>')}}
+    %xf = ttl.copy %arg0, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout_f32>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> !ttl.transfer_handle<read>
+    ttl.wait %xf : !ttl.transfer_handle<read>
+    func.return
+  }
+}
+
+// -----
+
+// Tensor block shape must match the CB shape.
+#layout_2x1 = #ttl.layout<shape = [2, 1], element_type = !ttcore.tile<32x32, f32>,
+                          buffer = dram, grid = [1, 1], memory = interleaved>
+
+module {
+  func.func @copy_shape_mismatch(%arg0: tensor<2x1x!ttcore.tile<32x32, f32>, #layout_2x1>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    // expected-error @below {{tensor shape dimension 0 (2) must match CB shape dimension (1)}}
+    %xf = ttl.copy %arg0, %cb : (tensor<2x1x!ttcore.tile<32x32, f32>, #layout_2x1>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<read>
+    ttl.wait %xf : !ttl.transfer_handle<read>
+    func.return
+  }
+}
+
+// -----
+
 // Wait without a corresponding copy is invalid.
 module {
   func.func @wait_without_copy_invalid(%xf: !ttl.transfer_handle<read>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {

@@ -197,37 +197,60 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
            << " dst=" << dstTy;
   }
 
-  // Extract the underlying tensor type from the non-CB operand.
-  // For slices, get the original tensor from the defining TensorSliceOp.
+  // Extract the transfer tensor type from the non-CB operand. For slices, this
+  // is the slice result type because ttl.copy moves one DFB block at a time.
   Type nonCbTy = srcIsCb ? dstTy : srcTy;
-  RankedTensorType rankedTensorTy;
+  RankedTensorType transferTensorTy = mlir::dyn_cast<RankedTensorType>(nonCbTy);
+  if (!transferTensorTy) {
+    return emitOpError()
+           << "expects the non-CB operand to be a ranked tensor or "
+              "tensor_slice result; got "
+           << nonCbTy;
+  }
 
+  // TT-Lang programs require a TTL layout encoding on tensors so lowering can
+  // derive tile/addressing information. For slices, validate the source tensor
+  // too so malformed IR cannot hide a missing layout behind a typed slice.
+  RankedTensorType layoutTensorTy = transferTensorTy;
   if (srcIsSlice || dstIsSlice) {
     auto sliceOp = srcIsSlice ? getSrc().getDefiningOp<TensorSliceOp>()
                               : getDst().getDefiningOp<TensorSliceOp>();
-    rankedTensorTy =
+    layoutTensorTy =
         mlir::cast<RankedTensorType>(sliceOp.getTensor().getType());
-  } else {
-    rankedTensorTy = mlir::dyn_cast<RankedTensorType>(nonCbTy);
-    if (!rankedTensorTy) {
-      return emitOpError()
-             << "expects the non-CB operand to be a ranked tensor or "
-                "tensor_slice result; got "
-             << nonCbTy;
-    }
   }
 
-  // TT-Lang programs require a TTL layout encoding on tensors so lowering
-  // can derive tile/addressing information.
-  auto enc = rankedTensorTy.getEncoding();
+  auto enc = layoutTensorTy.getEncoding();
   if (!enc || !mlir::isa<LayoutAttr>(enc)) {
     return emitOpError()
            << "expects tensor operand to carry ttl.layout encoding; got "
-           << rankedTensorTy;
+           << layoutTensorTy;
   }
 
-  // TODO(#89): Verify that the tensor tile/block shape and element type match
-  // the CB element_type and shape/block_count semantics.
+  auto cbTy = mlir::cast<CircularBufferType>(srcIsCb ? srcTy : dstTy);
+  auto cbShape = cbTy.getShape();
+  auto tensorShape = transferTensorTy.getShape();
+
+  if (cbShape.size() != tensorShape.size()) {
+    return emitOpError() << "tensor rank (" << tensorShape.size()
+                         << ") must match CB shape rank (" << cbShape.size()
+                         << ")";
+  }
+
+  for (size_t i = 0; i < cbShape.size(); ++i) {
+    if (cbShape[i] != tensorShape[i]) {
+      return emitOpError() << "tensor shape dimension " << i << " ("
+                           << tensorShape[i]
+                           << ") must match CB shape dimension (" << cbShape[i]
+                           << ")";
+    }
+  }
+
+  if (transferTensorTy.getElementType() != cbTy.getElementType()) {
+    return emitOpError() << "tensor element type ("
+                         << transferTensorTy.getElementType()
+                         << ") must match CB element type ("
+                         << cbTy.getElementType() << ")";
+  }
 
   return success();
 }
