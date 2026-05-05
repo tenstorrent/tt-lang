@@ -48,6 +48,7 @@ def get_compute_kernel(
     cache_key = (
         f"{op.name}_{op.ttl_op}_{config.block_h}x{config.block_w}_{config.dtype}"
         f"_dst{config.maximize_dst}_fpu{config.enable_fpu_binary_ops}"
+        f"_trid{int(config.use_trid_barriers)}"
     )
     if cache_key in _kernel_cache:
         return _kernel_cache[cache_key]
@@ -62,6 +63,7 @@ def get_compute_kernel(
         device,
         maximize_dst=config.maximize_dst,
         enable_fpu_binary_ops=config.enable_fpu_binary_ops,
+        use_trid_barriers=config.use_trid_barriers,
     )
 
     # Translate to C++ kernels.
@@ -122,6 +124,7 @@ def run_compute_test(
         device,
         maximize_dst=config.maximize_dst,
         enable_fpu_binary_ops=config.enable_fpu_binary_ops,
+        use_trid_barriers=config.use_trid_barriers,
     )
     noc_kernels, compute_kernel_spec = translate_module_to_kernels(compiled_module)
 

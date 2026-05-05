@@ -114,6 +114,7 @@ class TestConfig:
     num_tiles: int = 64
     block_count: int = 2
     memory_layout: MemoryLayout = MemoryLayout.INTERLEAVED
+    use_trid_barriers: bool = False
 
     # Pipeline options.
     maximize_dst: bool = True
@@ -165,12 +166,15 @@ class TestConfig:
             dtype=self.dtype,
             block_count=self.block_count,
             memory_layout=self.memory_layout,
+            use_trid_barriers=self.use_trid_barriers,
         )
 
 
 CONFIGS = [
     # Single tile config.
     TestConfig(num_tiles=1, block_h=1, block_w=1),  # 1x1 grid (single tile)
+    # Single tile with TRID barriers (runtime coverage for use-trid-barriers).
+    TestConfig(num_tiles=1, block_h=1, block_w=1, use_trid_barriers=True),
     # Multi-tile configs with loop generation.
     TestConfig(num_tiles=4, block_h=2, block_w=2),  # 2x2 grid (4 tiles)
     # Maximize-DST disabled: no subblocking or scheduling (basic loop lowering).

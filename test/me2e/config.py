@@ -59,6 +59,9 @@ class E2EConfig:
     memory_layout: MemoryLayout = MemoryLayout.INTERLEAVED
     buffer_type: BufferType = BufferType.DRAM
 
+    # TTL-to-TTKernel: use TRID-aware DMA barriers (default matches pass default).
+    use_trid_barriers: bool = False
+
     @property
     def num_tiles(self) -> int:
         """Total number of tiles in the grid."""
