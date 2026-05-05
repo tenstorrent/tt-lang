@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinDialect.h"
@@ -68,17 +69,30 @@ public:
                               t.getElementType());
     });
     // Tensor -> TensorAccessor for TTKernel when TTL layout is present.
-    addConversion([](RankedTensorType t) -> Type {
+    addConversion([this](RankedTensorType t) -> Type {
       if (t.getEncoding() && mlir::isa<tt::ttl::LayoutAttr>(t.getEncoding())) {
         return ttk::TensorAccessorType::get(t.getContext());
       }
+      // Otherwise, preserve tensor shape/encoding but convert element type.
+      // This is required for cases like tensor<?x!ttl.transfer_handle<read>>
+      // becoming tensor<?xi32> once transfer handles are type-converted.
+      auto convertedElemTy = this->convertType(t.getElementType());
+      if (!convertedElemTy) {
+        return t;
+      }
+      if (convertedElemTy == t.getElementType()) {
+        return t;
+      }
+      return mlir::cast<RankedTensorType>(t.clone(convertedElemTy));
+    });
+    // Identity fallback must be last, but also handle conversion of transfer
+    // handles to TRID SSA values (i32).
+    addConversion([](Type t) -> Type {
+      if (llvm::isa<TransferHandleType>(t)) {
+        return IntegerType::get(t.getContext(), 32);
+      }
       return t;
     });
-    // Preserve transfer handle types so ttl.wait can inspect transfer
-    // direction. TRID-aware lowering will be added later.
-    addConversion([](TransferHandleType t) -> Type { return t; });
-    // Identity fallback must be last.
-    addConversion([](Type t) { return t; });
 
     auto castMaterialization = [](OpBuilder &builder, Type resultType,
                                   ValueRange inputs, Location loc) -> Value {
@@ -490,8 +504,8 @@ static CopyOperandKind classifyOperand(Value v) {
   return CopyOperandKind::Unknown;
 }
 
-static Value makeZeroI32(Location loc, ConversionPatternRewriter &rewriter) {
-  return arith::ConstantIntOp::create(rewriter, loc, 0, 32);
+static Value makeZeroI8(Location loc, ConversionPatternRewriter &rewriter) {
+  return rewriter.create<arith::ConstantIntOp>(loc, 0, 8);
 }
 
 static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
@@ -651,14 +665,58 @@ static Value linearizeNDIndex(OpBuilder &builder, Location loc,
   return result;
 }
 
+/// Allocates TRIDs for DMA barriers. TRIDs wrap at 16 (4-bit hardware limit).
+/// Tracks which TRIDs are in use by lowered copies and their transfer
+/// direction. This bookkeeping must stay independent of greedy pattern rewrite
+/// visitation order; therefore, it is only mutated during copy lowering.
+/// When a TRID would be reused while still in use, the caller must emit a
+/// barrier for the old transfer before reassigning.
+///
+/// TODO: Profile both modes on representative benchmarks and consider changing
+/// the default.
+class TridAllocator {
+public:
+  static constexpr uint32_t kNumTrids = 16;
+
+  struct AllocResult {
+    uint32_t trid;
+    /// If set, this TRID was still outstanding from a previous copy. The caller
+    /// must emit a barrier_with_trid for this direction before reusing.
+    std::optional<TransferKind> evictDirection;
+  };
+
+  AllocResult allocateTrid(TransferKind direction) {
+    uint32_t trid = nextTrid % kNumTrids;
+    AllocResult result{trid, std::nullopt};
+    if (outstanding[trid]) {
+      result.evictDirection = direction_[trid];
+    }
+    outstanding[trid] = true;
+    direction_[trid] = direction;
+    ++nextTrid;
+    return result;
+  }
+
+  void releaseTrid(uint32_t trid) { outstanding[trid % kNumTrids] = false; }
+
+private:
+  uint32_t nextTrid = 0;
+  bool outstanding[kNumTrids] = {};
+  TransferKind direction_[kNumTrids] = {};
+};
+
 /// Direction of a tensor<->CB tile copy for NOC operations.
 enum class NocCopyDirection { Read, Write };
 
 /// Lower a tensor_slice<->CB copy in the given direction.
 /// Read: tensor_slice -> CB (noc_async_read_tile, get_write_ptr)
 /// Write: CB -> tensor_slice (noc_async_write_tile, get_read_ptr)
+///
+/// When useTridBarriers is true, emits noc_async_{read,write}_set_trid before
+/// the tile loop to tag NOC operations with the given TRID.
 static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
                                        Value cb, NocCopyDirection direction,
+                                       Value tridVal, bool useTridBarriers,
                                        ConversionPatternRewriter &rewriter,
                                        const TypeConverter &typeConverter) {
   auto loc = op.getLoc();
@@ -727,6 +785,17 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
 
   SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
 
+  // Tag subsequent NOC operations with this copy's TRID.
+  // Currently fixed to NOC 0. TODO(ttl): Generalize NOC selection (issue #77).
+  if (useTridBarriers) {
+    Value nocVal = makeZeroI8(loc, rewriter);
+    if (isRead) {
+      rewriter.create<ttk::NocAsyncReadSetTridOp>(loc, tridVal, nocVal);
+    } else {
+      rewriter.create<ttk::NocAsyncWriteSetTridOp>(loc, tridVal, nocVal);
+    }
+  }
+
   emitTileLoop(
       rewriter, loc, cbBounds,
       [&](OpBuilder &b, Location bodyLoc, ValueRange cbIVs) {
@@ -763,7 +832,7 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
         }
       });
 
-  rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
+  rewriter.replaceOp(op, tridVal);
   return success();
 }
 
@@ -786,8 +855,10 @@ struct TensorSliceLowering : OpConversionPattern<TensorSliceOp> {
 
 struct CopyLowering : OpConversionPattern<CopyOp> {
   CopyLowering(const TypeConverter &typeConverter, MLIRContext *context,
-               const PipeGraph *pipeGraph)
-      : OpConversionPattern(typeConverter, context), pipeGraph(pipeGraph) {}
+               const PipeGraph *pipeGraph, TridAllocator *tridAllocator,
+               bool useTridBarriers)
+      : OpConversionPattern(typeConverter, context), pipeGraph(pipeGraph),
+        tridAllocator(tridAllocator), useTridBarriers(useTridBarriers) {}
 
   LogicalResult
   matchAndRewrite(CopyOp op, OpAdaptor adaptor,
@@ -852,6 +923,38 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
       });
     }
 
+    if (!tridAllocator) {
+      return rewriter.notifyMatchFailure(op, "missing TRID allocator");
+    }
+
+    TransferKind direction =
+        (srcIsSlice && dstIsCB) ? TransferKind::read : TransferKind::write;
+
+    Value tridVal;
+    if (useTridBarriers) {
+      auto allocResult = tridAllocator->allocateTrid(direction);
+      // If this TRID was still outstanding, emit a barrier to drain the old
+      // transfer before reusing the TRID.
+      if (allocResult.evictDirection) {
+        Value evictTrid = rewriter.create<arith::ConstantIntOp>(
+            op.getLoc(), allocResult.trid, 32);
+        Value nocVal = makeZeroI8(op.getLoc(), rewriter);
+        if (*allocResult.evictDirection == TransferKind::read) {
+          rewriter.create<ttk::NocAsyncReadBarrierWithTridOp>(
+              op.getLoc(), evictTrid, nocVal);
+        } else {
+          rewriter.create<ttk::NocAsyncWriteBarrierWithTridOp>(
+              op.getLoc(), evictTrid, nocVal);
+        }
+      }
+      tridVal = rewriter.create<arith::ConstantIntOp>(op.getLoc(),
+                                                      allocResult.trid, 32);
+    } else {
+      // In global-barrier mode, allocate but direction does not matter.
+      tridAllocator->allocateTrid(direction);
+      tridVal = rewriter.create<arith::ConstantIntOp>(op.getLoc(), 0, 32);
+    }
+
     // TensorSlice -> CB: read tiles from tensor into circular buffer.
     if (srcIsSlice && dstIsCB) {
       auto sliceOp = src.getDefiningOp<TensorSliceOp>();
@@ -860,8 +963,8 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
             op, "tensor_slice source must come from ttl.tensor_slice op");
       }
       return lowerTensorCBCopy(op, sliceOp, adaptor.getDst(),
-                               NocCopyDirection::Read, rewriter,
-                               *typeConverter);
+                               NocCopyDirection::Read, tridVal, useTridBarriers,
+                               rewriter, *typeConverter);
     }
 
     // CB -> TensorSlice: write tiles from circular buffer to tensor.
@@ -871,46 +974,69 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
           op, "tensor_slice destination must come from ttl.tensor_slice op");
     }
     return lowerTensorCBCopy(op, sliceOp, adaptor.getSrc(),
-                             NocCopyDirection::Write, rewriter, *typeConverter);
+                             NocCopyDirection::Write, tridVal, useTridBarriers,
+                             rewriter, *typeConverter);
   }
 
 private:
   const PipeGraph *pipeGraph;
+  TridAllocator *tridAllocator = nullptr;
+  bool useTridBarriers = false;
 };
 
 struct WaitLowering : OpConversionPattern<WaitOp> {
-  using OpConversionPattern::OpConversionPattern;
+  WaitLowering(const TypeConverter &typeConverter, MLIRContext *ctx,
+               bool useTridBarriers)
+      : OpConversionPattern(typeConverter, ctx),
+        useTridBarriers(useTridBarriers) {}
 
   LogicalResult
   matchAndRewrite(WaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // TODO(ttl): Lower ttl.wait to TRID-specific barriers keyed by the transfer
-    // handle (read vs write barrier based on transfer direction). Issue: #87.
-    //
-    // MVP behavior: emit the corresponding global barrier based on transfer
-    // direction. Untyped handles (no kind) are no-ops - used for pipe receives
-    // where data arrives via multicast and no local barrier is needed.
-    auto kind = getTransferKindFromHandleType(adaptor.getXf().getType());
+    // Emit TRID-specific barriers keyed by the transfer handle when enabled;
+    // otherwise emit global barriers. Transfer direction is read from the
+    // original operand type (not the converted i32). Untyped handles (no kind)
+    // are no-ops (e.g. pipe receive via multicast).
+    auto kind = getTransferKindFromHandleType(op.getXf().getType());
     if (!kind) {
       // No transfer kind means no barrier needed (e.g., pipe receive where
       // data arrives via multicast from source core).
       rewriter.eraseOp(op);
       return success();
     }
-    if (*kind == TransferKind::read) {
-      ttk::NocAsyncReadBarrierOp::create(rewriter, op.getLoc());
-    } else if (*kind == TransferKind::write) {
-      ttk::NocAsyncWriteBarrierOp::create(rewriter, op.getLoc());
+    if (useTridBarriers) {
+      Value tridVal = adaptor.getXf(); // i32 (type converter guarantees this)
+      assert(tridVal.getType().isInteger(32) &&
+             "transfer handle must be type-converted to i32 before ttl.wait");
+      Value nocVal = makeZeroI8(op.getLoc(), rewriter);
+      if (*kind == TransferKind::read) {
+        rewriter.create<ttk::NocAsyncReadBarrierWithTridOp>(op.getLoc(),
+                                                            tridVal, nocVal);
+      } else if (*kind == TransferKind::write) {
+        rewriter.create<ttk::NocAsyncWriteBarrierWithTridOp>(op.getLoc(),
+                                                             tridVal, nocVal);
+      } else {
+        return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+          diag << "unsupported TransferKind for ttl.wait lowering";
+        });
+      }
     } else {
-      // Future-proofing: TransferKind is currently {read, write}, but fail
-      // explicitly if it ever expands without updating the lowering.
-      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
-        diag << "unsupported TransferKind for ttl.wait lowering";
-      });
+      if (*kind == TransferKind::read) {
+        rewriter.create<ttk::NocAsyncReadBarrierOp>(op.getLoc());
+      } else if (*kind == TransferKind::write) {
+        rewriter.create<ttk::NocAsyncWriteBarrierOp>(op.getLoc());
+      } else {
+        return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+          diag << "unsupported TransferKind for ttl.wait lowering";
+        });
+      }
     }
     rewriter.eraseOp(op);
     return success();
   }
+
+private:
+  bool useTridBarriers = false;
 };
 
 //===----------------------------------------------------------------------===//
@@ -1009,7 +1135,7 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
 static LogicalResult
 lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                       TTLToTTKernelTypeConverter &typeConverter,
-                      StringRef passName) {
+                      bool useTridBarriers, StringRef passName) {
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
@@ -1055,13 +1181,23 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   PipeGraph pipeGraph = std::move(*pipeGraphOrErr);
 
   RewritePatternSet patterns(&ctx);
-  // CopyLowering needs the pipe graph for gather pattern receiver CB lookup
-  patterns.add<CopyLowering>(typeConverter, &ctx, &pipeGraph);
-  patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
-               CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering>(
+  TridAllocator tridAllocator;
+  patterns.add<BindCBLowering>(typeConverter, &ctx);
+  patterns.add<TensorSliceLowering>(typeConverter, &ctx);
+  patterns.add<CopyLowering>(typeConverter, &ctx, &pipeGraph, &tridAllocator,
+                             useTridBarriers);
+  patterns.add<WaitLowering>(typeConverter, &ctx, useTridBarriers);
+  patterns
+      .add<CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering>(
+          typeConverter, &ctx);
+  patterns.add<TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering>(
       typeConverter, &ctx);
   populatePipeLoweringPatterns(patterns, typeConverter);
+
+  // Convert scf.for/scf.if/etc region signatures when result/iter_arg types
+  // change due to the type converter.
+  mlir::scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter,
+                                                             patterns, target);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 
@@ -1075,7 +1211,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
 
   // Apply post-conversion cleanup patterns (e.g., barrier deduplication).
   RewritePatternSet cleanupPatterns(&ctx);
-  ttkernel::populateTTKernelCleanupPatterns(cleanupPatterns);
+  ttkernel::populateTTKernelCleanupPatterns(cleanupPatterns, useTridBarriers);
   if (failed(applyPatternsGreedily(mod, std::move(cleanupPatterns)))) {
     return failure();
   }
@@ -1297,7 +1433,8 @@ struct TTLConvertTTLToTTKernelPass
     expandDstSections(mod);
 
     // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)
-    if (failed(lowerTTLOpsToTTKernel(mod, ctx, typeConverter, getName()))) {
+    if (failed(lowerTTLOpsToTTKernel(mod, ctx, typeConverter, useTridBarriers,
+                                     getName()))) {
       signalPassFailure();
       return;
     }

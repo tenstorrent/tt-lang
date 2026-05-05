@@ -7,6 +7,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "llvm/ADT/STLExtras.h"
 
 namespace mlir::tt::ttkernel {
 
@@ -31,13 +32,57 @@ struct DeduplicateConsecutiveBarriers : OpRewritePattern<BarrierOp> {
   }
 };
 
+/// Deduplicate consecutive TRID barriers of the same type *only* when they
+/// target the same TRID (and optional NOC). Unlike global barriers, barriers
+/// with different TRIDs are not redundant and must not be removed.
+template <typename BarrierWithTridOp>
+struct DeduplicateConsecutiveTridBarriers
+    : OpRewritePattern<BarrierWithTridOp> {
+  using OpRewritePattern<BarrierWithTridOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(BarrierWithTridOp op,
+                                PatternRewriter &rewriter) const override {
+    auto *prev = op->getPrevNode();
+    if (!prev) {
+      return failure();
+    }
+    auto prevBarrier = dyn_cast<BarrierWithTridOp>(prev);
+    if (!prevBarrier) {
+      return failure();
+    }
+
+    if (op->getNumOperands() != prevBarrier->getNumOperands()) {
+      return failure();
+    }
+
+    for (auto [a, b] :
+         llvm::zip_equal(op->getOperands(), prevBarrier->getOperands())) {
+      if (a != b) {
+        return failure();
+      }
+    }
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 } // namespace
 
-void populateTTKernelCleanupPatterns(RewritePatternSet &patterns) {
+void populateTTKernelCleanupPatterns(RewritePatternSet &patterns,
+                                     bool useTridBarriers) {
   patterns.add<DeduplicateConsecutiveBarriers<NocAsyncReadBarrierOp>>(
       patterns.getContext());
   patterns.add<DeduplicateConsecutiveBarriers<NocAsyncWriteBarrierOp>>(
       patterns.getContext());
+  if (useTridBarriers) {
+    patterns
+        .add<DeduplicateConsecutiveTridBarriers<NocAsyncReadBarrierWithTridOp>>(
+            patterns.getContext());
+    patterns.add<
+        DeduplicateConsecutiveTridBarriers<NocAsyncWriteBarrierWithTridOp>>(
+        patterns.getContext());
+  }
 }
 
 } // namespace mlir::tt::ttkernel

@@ -54,6 +54,10 @@ struct TTLToTTKernelPipelineOptions
                      "computations. When disabled, emit an error if any "
                      "operation requires a compiler-allocated DFB."),
       llvm::cl::init(true)};
+  Option<bool> useTridBarriers{
+      *this, "use-trid-barriers",
+      llvm::cl::desc("Use TRID-aware DMA waits (barrier_with_trid)."),
+      llvm::cl::init(false)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,
