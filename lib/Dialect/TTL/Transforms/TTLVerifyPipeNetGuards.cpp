@@ -419,8 +419,7 @@ private:
     Domain elseDomain;
   };
 
-  BranchDomains exactBranches(const Domain &trueDomain,
-                              const Domain &current) {
+  BranchDomains exactBranches(const Domain &trueDomain, const Domain &current) {
     return {domainIntersect(current, trueDomain),
             domainIntersect(current, domainSubtract(baseDomain, trueDomain))};
   }

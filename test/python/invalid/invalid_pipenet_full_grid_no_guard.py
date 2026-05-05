@@ -63,13 +63,11 @@ def _host_ttnn(shape):
 @ttl.operation(grid=(8, 7))
 def small_mcast_matmul_no_guard(a, w, out):
     a_pipes = [
-        ttl.Pipe(src=(0, row), dst=(slice(0, N_BLOCKS), row))
-        for row in range(M_BLOCKS)
+        ttl.Pipe(src=(0, row), dst=(slice(0, N_BLOCKS), row)) for row in range(M_BLOCKS)
     ]
     mcast_a_net = ttl.PipeNet(a_pipes)
     b_pipes = [
-        ttl.Pipe(src=(col, 0), dst=(col, slice(0, M_BLOCKS)))
-        for col in range(N_BLOCKS)
+        ttl.Pipe(src=(col, 0), dst=(col, slice(0, M_BLOCKS))) for col in range(N_BLOCKS)
     ]
     mcast_b_net = ttl.PipeNet(b_pipes)
 
