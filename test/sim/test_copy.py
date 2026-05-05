@@ -19,12 +19,12 @@ from test_utils import (
     tensors_equal,
 )
 
-from python.sim.blockstate import BlockAcquisition, ThreadType
-from python.sim.context import set_current_thread_type
-from python.sim.dfb import Block, DataflowBuffer
-from python.sim.ttnnsim import Tensor
-from python.sim.copy import CopyTransaction, GroupTransfer, copy
-from python.sim.pipe import Pipe
+from sim.blockstate import BlockAcquisition, ThreadType
+from sim.context import set_current_thread_type
+from sim.dfb import Block, DataflowBuffer
+from sim.ttnnsim import Tensor
+from sim.copy import CopyTransaction, GroupTransfer, copy
+from sim.pipe import Pipe
 
 
 @pytest.fixture(autouse=True)
@@ -596,7 +596,7 @@ class TestCopyTransactionProperties:
 
     def test_is_completed_property(self) -> None:
         """Test that is_completed property correctly reflects transaction state."""
-        from python.sim.copy import copy
+        from sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -624,7 +624,7 @@ class TestCopyTransactionProperties:
 
     def test_multiple_wait_on_completed_transaction(self) -> None:
         """Test that calling wait() multiple times on completed transaction is safe."""
-        from python.sim.copy import copy
+        from sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -650,7 +650,7 @@ class TestCopyTransactionProperties:
 
     def test_can_wait_reflects_handler_behavior(self) -> None:
         """Test that can_wait() correctly delegates to handler."""
-        from python.sim.copy import copy
+        from sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -677,7 +677,7 @@ class TestCopyContextManagerExtraction:
 
     def test_copy_with_context_managers(self) -> None:
         """Test copy operations using context managers with Pipe."""
-        from python.sim.copy import copy
+        from sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -717,7 +717,7 @@ class TestCopyContextManagerExtraction:
 
     def test_mixed_context_managers_and_tensors(self) -> None:
         """Test mixing context managers with raw tensors."""
-        from python.sim.copy import copy
+        from sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -747,7 +747,7 @@ class TestCopyErrorConditions:
 
     def test_copy_creates_transaction_immediately(self) -> None:
         """Test that copy() creates transaction immediately, not on wait()."""
-        from python.sim.copy import copy, CopyTransaction
+        from sim.copy import copy, CopyTransaction
 
         set_current_thread_type(ThreadType.DM)
 
@@ -772,7 +772,7 @@ class TestCopyErrorConditions:
 
     def test_unsupported_type_combinations_raise_valueerror(self) -> None:
         """Test that unsupported copy type combinations raise ValueError."""
-        from python.sim.copy import copy
+        from sim.copy import copy
 
         tensor1 = make_ones_tile()
         tensor2 = make_zeros_tile()

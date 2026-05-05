@@ -216,8 +216,11 @@ install(FILES "${CMAKE_BINARY_DIR}/env/install-ttlang-version.txt"
         DESTINATION env
         RENAME version.txt)
 
-# Install pure Python packages (sim, pykernel) - simple copy
-install(DIRECTORY python/sim python/pykernel DESTINATION python_packages
+# Install pure Python packages (sim, pykernel) under ttl namespace
+install(DIRECTORY python/sim DESTINATION python_packages/ttl
+        FILES_MATCHING PATTERN "*.py"
+        PATTERN "__pycache__" EXCLUDE)
+install(DIRECTORY python/pykernel DESTINATION python_packages/ttl
         FILES_MATCHING PATTERN "*.py"
         PATTERN "__pycache__" EXCLUDE)
 

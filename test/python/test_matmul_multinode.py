@@ -16,7 +16,7 @@ import ttl
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from ttlang_test_utils import to_dram
-from utils.correctness import assert_pcc
+from ttl.utils.correctness import assert_pcc
 
 TILE = 32
 
