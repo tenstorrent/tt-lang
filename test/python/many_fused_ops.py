@@ -158,7 +158,7 @@ def fused_chain_kernel(a, b, c, out):
 # CHECK-CPP: tile_regs_wait();
 
 # Pack result
-# CHECK-CPP: pack_tile<true>(
+# CHECK-CPP: pack_tile<false>(
 
 # Pop inputs, push output
 # CHECK-CPP: [[CB0]].pop_front(

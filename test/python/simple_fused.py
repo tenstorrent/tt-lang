@@ -130,7 +130,7 @@ def fused_kernel(inp, bias, out):
 # CHECK-CPP: tile_regs_wait();
 
 # Pack result
-# CHECK-CPP: pack_tile<true>(
+# CHECK-CPP: pack_tile<false>(
 
 # Release regs
 # CHECK-CPP: tile_regs_release();

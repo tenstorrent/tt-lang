@@ -148,7 +148,7 @@ def add_dram_kernel(lhs, rhs, out):
 # CHECK-CPP: add_binary_tile(
 # CHECK-CPP: tile_regs_commit();
 # CHECK-CPP: tile_regs_wait();
-# CHECK-CPP: pack_tile<true>(
+# CHECK-CPP: pack_tile<false>(
 # CHECK-CPP: tile_regs_release();
 
 # DFB finalization
