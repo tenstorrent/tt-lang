@@ -7,8 +7,8 @@ extent larger than work extent.
 
 `test/python/pipe/test_pipe_patterns.py` already covers the basic
 gather, scatter, scatter-gather, and ring forward kernels with launch
-extent equal to work extent. The cases here cover the regimes that
-exercise `ttl-insert-pipenet-active-guards`:
+extent equal to work extent. The cases here cover regimes the
+`ttl-verify-pipenet-guards` verifier exercises under `grid="auto"`:
 
 * Scatter on a subgrid (`grid="auto"`, work = 4 nodes in row 0):
   single PipeNet, single multicast pipe, dst rectangle smaller than the
@@ -86,8 +86,9 @@ def scatter_subgrid_kernel(inp, out):
 def test_scatter_subgrid(device):
     """Scatter from (0, 0) to (slice(1, 4), 0) under grid="auto".
 
-    Active set: {(0,0), (1,0), (2,0), (3,0)}. Nodes outside skip every
-    kernel function body via the inserted scf.if guard.
+    Active set: {(0,0), (1,0), (2,0), (3,0)}. The launch extent equals
+    the active set, so every launched node carries a PipeNet role and
+    the verifier accepts the unguarded `if_src` / `if_dst` bodies.
     """
     inp_torch = torch.randn(TILE, N_SCATTER * TILE, dtype=torch.bfloat16)
     inp_tt = to_dram(inp_torch, device)

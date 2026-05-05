@@ -399,43 +399,78 @@ private:
     return false;
   }
 
-  Domain getConditionDomain(Value condition) {
+  // Compute upper bounds on the coords that may execute the then- and
+  // else-branches of a condition, both intersected with `current`. The
+  // abstraction is "branch execution domains" rather than a single
+  // "true domain": for a coord-independent predicate (runtime flag,
+  // loop iv) neither branch can be narrowed and both inherit `current`.
+  //
+  // Boolean composition follows the standard upper-bound rules:
+  //   A && B: then = A.then ∩ B.then,
+  //           else = A.else ∪ (A.then ∩ B.else)
+  //   A || B: then = A.then ∪ (A.else ∩ B.then),
+  //           else = A.else ∩ B.else
+  // These preserve precision for mixed predicates such as
+  //   `if runtime_flag and net.is_src(): ...`
+  // (then-branch still narrows to the source role; else-branch stays at
+  // current).
+  struct BranchDomains {
+    Domain thenDomain;
+    Domain elseDomain;
+  };
+
+  BranchDomains exactBranches(const Domain &trueDomain,
+                              const Domain &current) {
+    return {domainIntersect(current, trueDomain),
+            domainIntersect(current, domainSubtract(baseDomain, trueDomain))};
+  }
+
+  BranchDomains getBranchDomains(Value condition, const Domain &current) {
     if (auto op = condition.getDefiningOp<IsSrcOp>()) {
-      return netSourceDomains[op.getPipeNetId()];
+      return exactBranches(netSourceDomains[op.getPipeNetId()], current);
     }
     if (auto op = condition.getDefiningOp<IsDstOp>()) {
-      return netDestinationDomains[op.getPipeNetId()];
+      return exactBranches(netDestinationDomains[op.getPipeNetId()], current);
     }
     if (auto op = condition.getDefiningOp<IsActiveOp>()) {
       int64_t netId = op.getPipeNetId();
-      return domainUnion(netSourceDomains[netId], netDestinationDomains[netId]);
+      Domain active =
+          domainUnion(netSourceDomains[netId], netDestinationDomains[netId]);
+      return exactBranches(active, current);
     }
-    // andi/ori decompose so a coord-independent operand (loop iv, runtime
-    // flag) acts as the identity instead of poisoning the whole domain
-    // with `unknown`.
     if (auto andOp = condition.getDefiningOp<arith::AndIOp>()) {
-      return domainIntersect(getConditionDomain(andOp.getLhs()),
-                             getConditionDomain(andOp.getRhs()));
+      auto a = getBranchDomains(andOp.getLhs(), current);
+      auto b = getBranchDomains(andOp.getRhs(), current);
+      Domain thenDomain = domainIntersect(a.thenDomain, b.thenDomain);
+      Domain elseDomain = domainUnion(
+          a.elseDomain, domainIntersect(a.thenDomain, b.elseDomain));
+      return {thenDomain, elseDomain};
     }
     if (auto orOp = condition.getDefiningOp<arith::OrIOp>()) {
-      return domainUnion(getConditionDomain(orOp.getLhs()),
-                         getConditionDomain(orOp.getRhs()));
+      auto a = getBranchDomains(orOp.getLhs(), current);
+      auto b = getBranchDomains(orOp.getRhs(), current);
+      Domain thenDomain = domainUnion(
+          a.thenDomain, domainIntersect(a.elseDomain, b.thenDomain));
+      Domain elseDomain = domainIntersect(a.elseDomain, b.elseDomain);
+      return {thenDomain, elseDomain};
     }
     if (!dependsOnCoord(condition)) {
-      return baseDomain;
+      // Same value at every coord at runtime, but value unknown: either
+      // branch could execute on any coord in `current`.
+      return {current, current};
     }
-    Domain result;
+    Domain trueDomain;
     for (Coord coord : baseDomain.nodes) {
       std::optional<bool> value = evalBool(condition, coord);
       if (!value) {
         lastUnanalyzableOp = condition.getDefiningOp();
-        return Domain::unknown();
+        return {Domain::unknown(), Domain::unknown()};
       }
       if (*value) {
-        result.nodes.insert(coord);
+        trueDomain.nodes.insert(coord);
       }
     }
-    return result;
+    return exactBranches(trueDomain, current);
   }
 
   // Each constraint is `expr(dim, sym) >= 0` (or `== 0` for equalities);
@@ -648,12 +683,10 @@ private:
   void walkBlock(Block &block, const Domain &current) {
     for (Operation &op : block) {
       if (auto ifOp = dyn_cast<scf::IfOp>(&op)) {
-        Domain condDomain = getConditionDomain(ifOp.getCondition());
-        Domain thenDomain = domainIntersect(current, condDomain);
+        auto [thenDomain, elseDomain] =
+            getBranchDomains(ifOp.getCondition(), current);
         walkRegion(ifOp.getThenRegion(), thenDomain);
         if (!ifOp.getElseRegion().empty()) {
-          Domain elseDomain =
-              domainIntersect(current, domainSubtract(baseDomain, condDomain));
           walkRegion(ifOp.getElseRegion(), elseDomain);
         }
         continue;

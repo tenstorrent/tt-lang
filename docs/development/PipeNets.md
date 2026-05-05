@@ -196,11 +196,20 @@ A region op the frontend emits around DFB-context blocks
 (`with cb.reserve()`) whose body contains pipe role work. It carries
 two parallel attributes: `ttl.pipe_net_ids` (`DenseI64ArrayAttr`) and
 `ttl.pipe_net_roles` (`DenseI64ArrayAttr`, one entry per id; 0 =
-Source, 1 = Destination, 2 = Active). The verifier checks that the
-scope's effective execution domain is a subset of the union of
-declared role domains, then walks its body with the union as the
+Source, 1 = Destination — `Active` is a *predicate* via
+`ttl.is_active` and is not valid as a scope role). The verifier checks
+that the scope's effective execution domain is a subset of the union
+of declared role domains, then walks its body with the union as the
 current domain. After verification the verifier inlines and erases
 the scope so downstream lowering sees a `pipenet_scope`-free IR.
+
+The frontend emits the scope only around blocks whose context manager
+is `reserve()`. A `wait()` block consumes a CB filled by some other
+thread and may sit unguarded next to ancillary pipe ops, so wrapping
+it would over-constrain those ops to the wait's PipeNet roles. The
+producer-consumer pairing check (verifier walks `cb_wait` against
+union of `cb_push` domains) catches mismatches the absent scope would
+otherwise have flagged.
 
 ## Invariants
 

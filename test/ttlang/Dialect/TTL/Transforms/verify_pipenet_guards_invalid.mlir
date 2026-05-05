@@ -66,6 +66,33 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// Soundness: a uniform-unknown predicate (a runtime flag, not coord-dependent)
+// must not let the else-branch's domain collapse to empty. Without conservative
+// branch handling the verifier would silently accept the pipe op below.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @uniform_unknown_else(%flag: i1) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-note @below {{PipeNet 0 declared here}}
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    scf.if %flag {
+    } else {
+      // expected-error @below {{may copy to a pipe outside that pipe's source role}}
+      // expected-note @below {{example node where the guard does not hold: core_x=1, core_y=0}}
+      // expected-note @below {{suggested guard: `net_0.is_src()`}}
+      %send = ttl.copy %cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // Unsupported predicates are rejected instead of treated as valid guards.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {

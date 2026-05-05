@@ -170,10 +170,12 @@ class PipeNet:
     for conditional execution based on core coordinates.
 
     Active set: the union of every pipe's source coordinate and destination
-    range across all PipeNets in the operation. Cores outside the active set
-    do not participate in pipe communication and skip every kernel-thread
-    body, so pipe coordinates should be sized from the operation's work
-    extent (not the launch extent given by @ttl.operation(grid=...)).
+    range. Cores outside the active set do not participate in pipe
+    communication; under grid="full" or any explicit launch wider than the
+    work extent, the user must guard pipe-coupled regions with
+    `if net.is_src()`, `if net.is_dst()`, or `if net.is_active()` so the
+    `ttl-verify-pipenet-guards` pass accepts the program. Pipe coordinates
+    should be sized from the operation's work extent, not the launch extent.
 
     A PipeNet's pipes must all be the same kind (all unicast or all
     multicast). The TTKernel lowering allocates one semaphore pair per
