@@ -129,37 +129,13 @@ Open `http://localhost:8000` to browse the docs locally.
 
 `.gitmodules` pins three submodules:
 
-| Submodule                    | Purpose                                           |
-| ---------------------------- | ------------------------------------------------- |
-| `third-party/llvm-project` | LLVM/MLIR source (built at configure time)        |
-| `third-party/tt-mlir`      | tt-mlir source (only select directories compiled) |
-| `third-party/tt-metal`     | Runtime (built at configure time)                 |
+| Submodule                    | Purpose                                                                      |
+| ---------------------------- | ---------------------------------------------------------------------------- |
+| `third-party/llvm-project` | LLVM/MLIR source (built at configure time)                                   |
+| `third-party/tt-mlir`      | tt-mlir source (only select directories compiled)                            |
+| `third-party/tt-metal`     | Runtime (built at configure time). Canonical pin: `third-party/tt-metal-version` |
 
-### tt-metal canonical pin: `third-party/tt-metal-version`
-
-The `third-party/tt-metal` submodule SHA, the `ttnn` pin in
-`requirements-runtime.txt`, and the `--build-arg TT_METAL_TAG` passed to
-`Dockerfile.base` are all derived from a single source of truth: the file
-`third-party/tt-metal-version` (sits next to the submodule directory). It
-contains exactly one line — a tt-metal release tag, e.g. `v0.69.0`.
-
-The verifier `.github/scripts/check-tt-metal-pin.sh` runs in CI on every PR
-and asserts:
-
-- `third-party/tt-metal` HEAD equals the commit pointed to by the tag.
-- `requirements-runtime.txt` pins `ttnn == X.Y.Z` where `X.Y.Z = <tag minus 'v'>`.
-- `Dockerfile.base` does not hard-code a tt-metal SHA.
-
-To bump tt-metal, edit `third-party/tt-metal-version` and run:
-
-```bash
-.github/scripts/check-tt-metal-pin.sh --update
-```
-
-This rewrites `requirements-runtime.txt` and checks out the submodule at
-the tag's commit. Review the resulting diff and commit. Bumping tt-metal
-this way is mutually exclusive with the manual procedure in
-[Uplifting Submodules](#uplifting-submodules); use the script.
+To update any of these, see [Uplifting Submodules](#uplifting-submodules).
 
 ### Switching branches
 
@@ -210,34 +186,85 @@ mismatch.
 
 ## Uplifting Submodules
 
-Uplifting means updating submodule pins to newer commits. tt-mlir defines the
-compatible versions of LLVM and tt-metal, so when updating tt-mlir, update the
-other submodules to match. Note that you can specify other SHAs for LLVM
-or tt-metal, but then may have to bypass SHA mismatch checks by specifying the
-`TTLANG_ACCEPT_LLVM_MISMATCH` and `TTLANG_ACCEPT_TTMETAL_MISMATCH` options to cmake.
+Each submodule in `third-party`is pinned independently; the three pins are not derived
+from one another.
 
-### Local uplift procedure
+- The LLVM commit in `third-party/llvm-project` is typically newer than
+  `LLVM_PROJECT_VERSION` in `third-party/tt-mlir/env/CMakeLists.txt`, and
+  the tt-metal commit is on a release tag picked independently from the
+  one tt-mlir records in `TT_METAL_VERSION`. Both mismatches are the
+  expected steady state, not exceptions.
+- tt-lang compiles a subset of tt-mlir and applies patches in
+  `third-party/patches/` to make that subset build against the newer LLVM.
+- Because the LLVM and tt-metal mismatches are expected, every uplift
+  build must bypass cmake's SHA-match check. Pass
+  `-DTTLANG_ACCEPT_LLVM_MISMATCH=ON` and `-DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON`
+  to cmake. `scripts/build-and-install.sh` accepts the equivalent
+  `--accept-ttmetal-mismatch` flag.
+- tt-metal is pinned via `third-party/tt-metal-version`, a one-line file
+  holding a tt-metal release tag. See [Updating tt-metal](#updating-tt-metal).
+
+### Updating tt-metal
+
+Edit the canonical pin file and run the verifier in update mode. The
+verifier rewrites the `ttnn == X.Y.Z` line in `requirements-runtime.txt`
+and checks out `third-party/tt-metal` at the tag's commit:
 
 ```bash
-# Update tt-mlir to the desired commit
-cd third-party/tt-mlir && git fetch && git checkout <commit> && cd ../..
-
-# Update LLVM and tt-metal to the versions tt-mlir expects.
-# scripts/update-submodules.sh handles LLVM. For tt-metal, edit
-# third-party/tt-metal-version to a release tag (e.g. v0.69.0) and run:
+echo v0.69.0 > third-party/tt-metal-version
 .github/scripts/check-tt-metal-pin.sh --update
-
-# Rebuild
-cmake -G Ninja -B build
-cmake --build build
 ```
 
-Commit all submodule pointer changes together:
+Background: `third-party/tt-metal-version` is the single source of truth
+for the tt-metal pin (one tt-metal release tag, e.g. `v0.69.0`). The
+submodule SHA, the `ttnn` pin in `requirements-runtime.txt`, and the
+`--build-arg TT_METAL_TAG` passed to `Dockerfile.base` are all derived from
+it. CI runs `.github/scripts/check-tt-metal-pin.sh` on every PR to catch
+drift.
+
+### Updating LLVM
+
+```bash
+cd third-party/llvm-project && git fetch && git checkout <commit> && cd ../..
+```
+
+### Updating tt-mlir
+
+```bash
+cd third-party/tt-mlir && git fetch && git checkout <commit> && cd ../..
+```
+
+### Rebuilding and committing
+
+A submodule uplift changes what the toolchain (LLVM, tt-metal) is built
+from, so the toolchain must be rebuilt; rebuilding tt-lang alone against
+the old toolchain is wrong. Install the new toolchain to a separate
+directory so the working toolchain at `/opt/ttlang-toolchain` is preserved
+in case the uplift fails to build. `scripts/build-and-install.sh` uses
+`build-toolchain/` as its cmake build directory by default (set
+`CMAKE_BINARY_DIR` to override); use a parallel `build-uplift-toolchain/`
+to keep the existing `build-toolchain/` artifacts untouched.
+
+```bash
+CMAKE_BINARY_DIR=build-uplift-toolchain \
+TTLANG_TOOLCHAIN_DIR=$PWD/build-uplift/toolchain \
+  scripts/build-and-install.sh --toolchain-only --accept-ttmetal-mismatch
+
+TTLANG_TOOLCHAIN_DIR=$PWD/build-uplift/toolchain \
+  cmake -G Ninja -B build-uplift -DTTLANG_USE_TOOLCHAIN=ON \
+        -DTTLANG_ACCEPT_LLVM_MISMATCH=ON -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON
+cmake --build build-uplift
+```
+
+Once the uplift builds and tests cleanly, replace the system toolchain by
+re-running without the overrides (so `CMAKE_BINARY_DIR=build-toolchain` and
+`TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain`), then commit the submodule
+pointer changes together:
 
 ```bash
 git add third-party/llvm-project third-party/tt-mlir third-party/tt-metal \
         third-party/tt-metal-version requirements-runtime.txt
-git commit -m "Update submodules to tt-mlir <short-sha>"
+git commit -m "Uplift submodules"
 ```
 
 ### CI: toolchain cache and Docker images
