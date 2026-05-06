@@ -17,12 +17,12 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <set>
@@ -63,12 +63,8 @@ struct Domain {
     if (!known || !rhs.known) {
       return false;
     }
-    for (Coord coord : nodes) {
-      if (rhs.nodes.find(coord) == rhs.nodes.end()) {
-        return false;
-      }
-    }
-    return true;
+    return std::includes(rhs.nodes.begin(), rhs.nodes.end(), nodes.begin(),
+                         nodes.end());
   }
 };
 
@@ -77,8 +73,9 @@ Domain domainUnion(const Domain &lhs, const Domain &rhs) {
     return Domain::unknown();
   }
   Domain result;
-  result.nodes = lhs.nodes;
-  result.nodes.insert(rhs.nodes.begin(), rhs.nodes.end());
+  std::set_union(lhs.nodes.begin(), lhs.nodes.end(), rhs.nodes.begin(),
+                 rhs.nodes.end(),
+                 std::inserter(result.nodes, result.nodes.end()));
   return result;
 }
 
@@ -87,11 +84,9 @@ Domain domainIntersect(const Domain &lhs, const Domain &rhs) {
     return Domain::unknown();
   }
   Domain result;
-  for (Coord coord : lhs.nodes) {
-    if (rhs.nodes.find(coord) != rhs.nodes.end()) {
-      result.nodes.insert(coord);
-    }
-  }
+  std::set_intersection(lhs.nodes.begin(), lhs.nodes.end(), rhs.nodes.begin(),
+                        rhs.nodes.end(),
+                        std::inserter(result.nodes, result.nodes.end()));
   return result;
 }
 
@@ -100,11 +95,9 @@ Domain domainSubtract(const Domain &lhs, const Domain &rhs) {
     return Domain::unknown();
   }
   Domain result;
-  for (Coord coord : lhs.nodes) {
-    if (rhs.nodes.find(coord) == rhs.nodes.end()) {
-      result.nodes.insert(coord);
-    }
-  }
+  std::set_difference(lhs.nodes.begin(), lhs.nodes.end(), rhs.nodes.begin(),
+                      rhs.nodes.end(),
+                      std::inserter(result.nodes, result.nodes.end()));
   return result;
 }
 
@@ -344,13 +337,6 @@ private:
       return std::nullopt;
     }
     return fullGridDomain(launchGrid->first, launchGrid->second);
-  }
-
-  Domain getNetRoleDomain(int64_t pipeNetId, PipeRole role) {
-    if (role == PipeRole::Source) {
-      return netSourceDomains[pipeNetId];
-    }
-    return netDestinationDomains[pipeNetId];
   }
 
   std::optional<int64_t> evalIndex(Value value, Coord coord) {
@@ -645,61 +631,47 @@ private:
   }
 
   // Render the runtime predicate that matches the verifier's role
-  // domain for `roles`. Same input semantics as the verifier check
-  // (which unions all declared roles), so the rendered expression
-  // joins clauses with ` or `:
+  // domain for `roles`. The verifier unions all declared roles, so the
+  // rendered expression joins clauses with ` or `:
   //
   //   net_0.is_src()                    (one net, one role)
   //   net_0.is_active()                 (one net, both src and dst → collapse)
-  //   net_0.is_dst() or net_1.is_src()  (different nets, joined by union)
+  //   net_0.is_dst() or net_1.is_src()  (different nets)
   //
-  // No leading `if `, no trailing `:`, no surrounding backticks —
-  // callers wrap as needed (the standalone `suggested guard:` note
-  // adds backticks; the in-code-span use in primary messages does
-  // not, since it already sits inside a backtick code span).
+  // Callers receive only `Source` or `Destination` from the
+  // `pipenet_scope` validator; `Active` does not appear here.
   std::string
   formatGuardExpression(ArrayRef<std::pair<int64_t, PipeRole>> roles) {
-    // Group roles by net id, preserving first-seen order. Within a net,
-    // collect a flag set of {src, dst, active}.
     SmallVector<int64_t> orderedIds;
-    std::map<int64_t, std::array<bool, 3>> rolesByNet;
+    std::map<int64_t, std::pair<bool, bool>> rolesByNet; // (hasSrc, hasDst)
     for (auto [id, role] : roles) {
-      auto [it, inserted] =
-          rolesByNet.try_emplace(id, std::array<bool, 3>{false, false, false});
+      auto [it, inserted] = rolesByNet.try_emplace(id, std::pair{false, false});
       if (inserted) {
         orderedIds.push_back(id);
       }
-      it->second[static_cast<size_t>(role)] = true;
+      if (role == PipeRole::Source) {
+        it->second.first = true;
+      } else {
+        it->second.second = true;
+      }
     }
 
     std::string buffer;
     llvm::raw_string_ostream os(buffer);
     bool first = true;
     for (int64_t id : orderedIds) {
-      auto &flags = rolesByNet[id];
-      bool hasSrc = flags[static_cast<size_t>(PipeRole::Source)];
-      bool hasDst = flags[static_cast<size_t>(PipeRole::Destination)];
-      bool hasActive = flags[static_cast<size_t>(PipeRole::Active)];
-
+      auto [hasSrc, hasDst] = rolesByNet[id];
+      if (!first) {
+        os << " or ";
+      }
+      first = false;
       // src ∨ dst is exactly is_active; collapse so we don't emit the
       // ambiguous `net_0.is_src() or net_0.is_dst()` form.
-      bool collapsedToActive = hasActive || (hasSrc && hasDst);
-      auto emit = [&](StringRef method) {
-        if (!first) {
-          os << " or ";
-        }
-        first = false;
-        os << netName(id) << "." << method << "()";
-      };
-      if (collapsedToActive) {
-        emit("is_active");
-      } else if (hasSrc) {
-        emit("is_src");
-      } else if (hasDst) {
-        emit("is_dst");
-      }
+      StringRef method =
+          (hasSrc && hasDst) ? "is_active" : (hasSrc ? "is_src" : "is_dst");
+      os << netName(id) << "." << method << "()";
     }
-    return std::move(os.str());
+    return buffer;
   }
 
   void attachWitnessNote(InFlightDiagnostic &diag, const Domain &extra) {
@@ -786,7 +758,10 @@ private:
         return std::nullopt;
       }
       auto role = static_cast<PipeRole>(roleValue);
-      result = domainUnion(result, getNetRoleDomain(pipeNetId, role));
+      const Domain &roleDomain = (role == PipeRole::Source)
+                                     ? netSourceDomains[pipeNetId]
+                                     : netDestinationDomains[pipeNetId];
+      result = domainUnion(result, roleDomain);
       declaredRoles.emplace_back(pipeNetId, role);
     }
     return std::make_pair(result, declaredRoles);
