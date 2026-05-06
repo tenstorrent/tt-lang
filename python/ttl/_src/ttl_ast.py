@@ -467,9 +467,16 @@ class TTLGenericCompiler(TTCompilerBase):
         pipe_net_name = self._resolve_pipe_net_name(pipenet)
 
         # Iterate over all pipes and emit if_src/if_dst for each
+        decl_file = getattr(pipenet, "_source_file", None)
+        decl_line = getattr(pipenet, "_source_line", None)
         for pipe in pipenet.pipes:
             # Emit the pipe MLIR value
-            pipe_val = self._emit_pipe_from_capture(pipe, pipe_net_name=pipe_net_name)
+            pipe_val = self._emit_pipe_from_capture(
+                pipe,
+                pipe_net_name=pipe_net_name,
+                source_file=decl_file,
+                source_line=decl_line,
+            )
             pipe._mlir_value = pipe_val
 
             # Create the appropriate PipeIdentity
@@ -707,13 +714,21 @@ class TTLGenericCompiler(TTCompilerBase):
         # Emit: %cb = ttl.bind_cb {cb_index = N, block_count = M} : !ttl.cb<...>
         return ttl.bind_cb(cb_type, cb._cb_index, block_count=cb.block_count)
 
-    def _emit_pipe_from_capture(self, pipe, pipe_net_name=None):
+    def _emit_pipe_from_capture(
+        self, pipe, pipe_net_name=None, source_file=None, source_line=None
+    ):
         """Emit ttl.create_pipe for a captured Pipe instance.
 
         `pipe_net_name`, when provided, becomes the `pipeNetName` attr
-        on `ttl.create_pipe` and is surfaced verbatim in verifier
-        diagnostics. Callers pass the user's Python variable name
+        on `ttl.create_pipe` and renders in verifier diagnostics
+        verbatim. Callers pass the user's Python variable name
         (e.g. `mcast_a_net`) recovered from `_pipe_net_names`.
+
+        `source_file` / `source_line` come from the `PipeNet([...])`
+        construction site captured by `PipeNet.__init__`. When set, the
+        op carries that location so the verifier's "PipeNet declared
+        here" note points at the user's declaration rather than the
+        first `if_src`/`if_dst` call site.
         """
         pipe_type = ttl.PipeType.get(
             self.ctx,
@@ -728,6 +743,8 @@ class TTLGenericCompiler(TTCompilerBase):
         kwargs = {}
         if pipe_net_name:
             kwargs["pipe_net_name"] = pipe_net_name
+        if source_file and source_line is not None:
+            kwargs["loc"] = Location.file(source_file, source_line, 1, self.ctx)
         return ttl.create_pipe(
             pipe_type,
             pipe.src[0],

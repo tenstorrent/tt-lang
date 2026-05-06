@@ -13,7 +13,8 @@ PipeNet supports the spec's callback API:
     net.if_dst(lambda pipe: ttl.copy(pipe, blk))
 """
 
-from typing import Callable, List, Tuple, Union
+import inspect
+from typing import Callable, List, Optional, Tuple, Union
 
 # Type aliases matching the spec
 CoreCoord = Tuple[int, int]
@@ -221,6 +222,16 @@ class PipeNet:
         # before AST emission (see _build_operation_pipenets).
         self.pipe_net_id = 0
         self.pipes = pipes
+        # Capture the user's call site so `ttl.create_pipe` ops can carry
+        # the declaration location.
+        self._source_file: Optional[str] = None
+        self._source_line: Optional[int] = None
+        try:
+            frame = inspect.stack()[1]
+            self._source_file = frame.filename
+            self._source_line = frame.lineno
+        except (IndexError, AttributeError):
+            pass
 
     def if_src(self, callback: Callable[["SrcPipeIdentity"], None]) -> None:
         """
