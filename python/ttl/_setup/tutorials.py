@@ -63,7 +63,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = p.parse_args(argv)
 
-    target = Path(args.target).resolve()
+    target = Path(
+        args.target
+    ).resolve()  # noqa: SAST  user-supplied CLI destination, no trust boundary
     target.mkdir(parents=True, exist_ok=True)
 
     total = 0
