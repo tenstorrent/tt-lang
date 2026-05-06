@@ -58,29 +58,32 @@ def scatter_subgrid_kernel(inp, out):
 
     @ttl.compute()
     def compute():
-        with inp_cb.wait() as t, out_cb.reserve() as o:
-            o.store(ttl.math.abs(t))
+        if net.is_active():
+            with inp_cb.wait() as t, out_cb.reserve() as o:
+                o.store(ttl.math.abs(t))
 
     @ttl.datamovement()
     def dm_read():
-        with inp_cb.reserve() as blk:
+        if net.is_active():
+            with inp_cb.reserve() as blk:
 
-            def read_and_send(pipe):
-                ttl.copy(inp[0, 0], blk).wait()
-                ttl.copy(blk, pipe).wait()
+                def read_and_send(pipe):
+                    ttl.copy(inp[0, 0], blk).wait()
+                    ttl.copy(blk, pipe).wait()
 
-            net.if_src(read_and_send)
+                net.if_src(read_and_send)
 
-            def recv(pipe):
-                ttl.copy(pipe, blk).wait()
+                def recv(pipe):
+                    ttl.copy(pipe, blk).wait()
 
-            net.if_dst(recv)
+                net.if_dst(recv)
 
     @ttl.datamovement()
     def dm_write():
-        x, _ = ttl.node(dims=2)
-        with out_cb.wait() as blk:
-            ttl.copy(blk, out[0, x]).wait()
+        if net.is_active():
+            x, _ = ttl.node(dims=2)
+            with out_cb.wait() as blk:
+                ttl.copy(blk, out[0, x]).wait()
 
 
 def test_scatter_subgrid(device):
@@ -125,30 +128,33 @@ def per_row_scatter_kernel(inp, out):
 
     @ttl.compute()
     def compute():
-        with inp_cb.wait() as t, out_cb.reserve() as o:
-            o.store(ttl.math.abs(t))
+        if net.is_active():
+            with inp_cb.wait() as t, out_cb.reserve() as o:
+                o.store(ttl.math.abs(t))
 
     @ttl.datamovement()
     def dm_read():
-        x, y = ttl.node(dims=2)
-        with inp_cb.reserve() as blk:
+        if net.is_active():
+            x, y = ttl.node(dims=2)
+            with inp_cb.reserve() as blk:
 
-            def read_and_send(pipe):
-                ttl.copy(inp[y, 0], blk).wait()
-                ttl.copy(blk, pipe).wait()
+                def read_and_send(pipe):
+                    ttl.copy(inp[y, 0], blk).wait()
+                    ttl.copy(blk, pipe).wait()
 
-            net.if_src(read_and_send)
+                net.if_src(read_and_send)
 
-            def recv(pipe):
-                ttl.copy(pipe, blk).wait()
+                def recv(pipe):
+                    ttl.copy(pipe, blk).wait()
 
-            net.if_dst(recv)
+                net.if_dst(recv)
 
     @ttl.datamovement()
     def dm_write():
-        x, y = ttl.node(dims=2)
-        with out_cb.wait() as blk:
-            ttl.copy(blk, out[y, x]).wait()
+        if net.is_active():
+            x, y = ttl.node(dims=2)
+            with out_cb.wait() as blk:
+                ttl.copy(blk, out[y, x]).wait()
 
 
 def test_per_row_scatter(device):
@@ -199,10 +205,11 @@ def overlapping_pipenets_kernel(inp, out):
     @ttl.compute()
     def compute():
         # Only nodes 1 and 2 receive both inputs and produce output.
-        x, _ = ttl.node(dims=2)
-        if 1 <= x and x <= 2:
-            with a_cb.wait() as a, b_cb.wait() as b, out_cb.reserve() as o:
-                o.store(a + b)
+        if net_a.is_active() or net_b.is_active():
+            x, _ = ttl.node(dims=2)
+            if 1 <= x and x <= 2:
+                with a_cb.wait() as a, b_cb.wait() as b, out_cb.reserve() as o:
+                    o.store(a + b)
 
     @ttl.datamovement()
     def dm_read():
@@ -210,6 +217,8 @@ def overlapping_pipenets_kernel(inp, out):
         # The simulator (correctly) rejects a reserved CB that exits its
         # `with` block in the MW state without ever being written; hardware
         # is more permissive but the conditional structure is still valid.
+        if not (net_a.is_active() or net_b.is_active()):
+            return
         x, _ = ttl.node(dims=2)
         if x == 0:
             # net_a source.
@@ -246,10 +255,11 @@ def overlapping_pipenets_kernel(inp, out):
 
     @ttl.datamovement()
     def dm_write():
-        x, _ = ttl.node(dims=2)
-        if 1 <= x and x <= 2:
-            with out_cb.wait() as blk:
-                ttl.copy(blk, out[0, x]).wait()
+        if net_a.is_active() or net_b.is_active():
+            x, _ = ttl.node(dims=2)
+            if 1 <= x and x <= 2:
+                with out_cb.wait() as blk:
+                    ttl.copy(blk, out[0, x]).wait()
 
 
 def test_overlapping_pipenets(device):
@@ -310,44 +320,47 @@ def nested_if_callbacks_kernel(inp, out):
 
     @ttl.compute()
     def compute():
-        with inp_cb.wait() as t, out_cb.reserve() as o:
-            o.store(ttl.math.abs(t))
+        if net_a.is_active() or net_b.is_active():
+            with inp_cb.wait() as t, out_cb.reserve() as o:
+                o.store(ttl.math.abs(t))
 
     @ttl.datamovement()
     def dm_read():
-        with inp_cb.reserve() as blk:
+        if net_a.is_active() or net_b.is_active():
+            with inp_cb.reserve() as blk:
 
-            # Node 1: source for net_a — read its tile and send.
-            def send_a(pipe_a):
-                ttl.copy(inp[0, 1], blk).wait()
-                ttl.copy(blk, pipe_a).wait()
+                # Node 1: source for net_a — read its tile and send.
+                def send_a(pipe_a):
+                    ttl.copy(inp[0, 1], blk).wait()
+                    ttl.copy(blk, pipe_a).wait()
 
-            net_a.if_src(send_a)
+                net_a.if_src(send_a)
 
-            # Node 0: receives from net_a, then in the SAME callback acts as
-            # net_b source and forwards. The spec permits this nesting for
-            # different pipe nets.
-            def recv_a_then_send_b(pipe_a):
-                ttl.copy(pipe_a, blk).wait()
+                # Node 0: receives from net_a, then in the SAME callback acts as
+                # net_b source and forwards. The spec permits this nesting for
+                # different pipe nets.
+                def recv_a_then_send_b(pipe_a):
+                    ttl.copy(pipe_a, blk).wait()
 
-                def send_b(pipe_b):
-                    ttl.copy(blk, pipe_b).wait()
+                    def send_b(pipe_b):
+                        ttl.copy(blk, pipe_b).wait()
 
-                net_b.if_src(send_b)
+                    net_b.if_src(send_b)
 
-            net_a.if_dst(recv_a_then_send_b)
+                net_a.if_dst(recv_a_then_send_b)
 
-            # Node 2: net_b destination — receive.
-            def recv_b(pipe_b):
-                ttl.copy(pipe_b, blk).wait()
+                # Node 2: net_b destination — receive.
+                def recv_b(pipe_b):
+                    ttl.copy(pipe_b, blk).wait()
 
-            net_b.if_dst(recv_b)
+                net_b.if_dst(recv_b)
 
     @ttl.datamovement()
     def dm_write():
-        x, _ = ttl.node(dims=2)
-        with out_cb.wait() as blk:
-            ttl.copy(blk, out[0, x]).wait()
+        if net_a.is_active() or net_b.is_active():
+            x, _ = ttl.node(dims=2)
+            with out_cb.wait() as blk:
+                ttl.copy(blk, out[0, x]).wait()
 
 
 # ---------------------------------------------------------------------------
@@ -372,29 +385,32 @@ def loopback_multicast_kernel(inp, out):
 
     @ttl.compute()
     def compute():
-        with inp_cb.wait() as t, out_cb.reserve() as o:
-            o.store(ttl.math.abs(t))
+        if net.is_active():
+            with inp_cb.wait() as t, out_cb.reserve() as o:
+                o.store(ttl.math.abs(t))
 
     @ttl.datamovement()
     def dm_read():
-        with inp_cb.reserve() as blk:
+        if net.is_active():
+            with inp_cb.reserve() as blk:
 
-            def src(pipe):
-                ttl.copy(inp[0, 0], blk).wait()
-                ttl.copy(blk, pipe).wait()
+                def src(pipe):
+                    ttl.copy(inp[0, 0], blk).wait()
+                    ttl.copy(blk, pipe).wait()
 
-            net.if_src(src)
+                net.if_src(src)
 
-            def dst(pipe):
-                ttl.copy(pipe, blk).wait()
+                def dst(pipe):
+                    ttl.copy(pipe, blk).wait()
 
-            net.if_dst(dst)
+                net.if_dst(dst)
 
     @ttl.datamovement()
     def dm_write():
-        _, y = ttl.node(dims=2)
-        with out_cb.wait() as blk:
-            ttl.copy(blk, out[y, 0]).wait()
+        if net.is_active():
+            _, y = ttl.node(dims=2)
+            with out_cb.wait() as blk:
+                ttl.copy(blk, out[y, 0]).wait()
 
 
 def test_loopback_multicast(device):

@@ -72,6 +72,8 @@ def make_mcast_kernel(M_DIM, K_DIM, N_DIM):
 
         @ttl.compute()
         def compute():
+            if not (mcast_a_net.is_active() or mcast_b_net.is_active()):
+                return
             node_n, node_m = ttl.node(dims=2)
             for local_mb in range(m_blocks_per_node):
                 mb = node_m * m_blocks_per_node + local_mb
@@ -88,6 +90,8 @@ def make_mcast_kernel(M_DIM, K_DIM, N_DIM):
 
         @ttl.datamovement()
         def dm_read():
+            if not (mcast_a_net.is_active() or mcast_b_net.is_active()):
+                return
             node_n, node_m = ttl.node(dims=2)
             for local_mb in range(m_blocks_per_node):
                 mb = node_m * m_blocks_per_node + local_mb
@@ -129,6 +133,8 @@ def make_mcast_kernel(M_DIM, K_DIM, N_DIM):
 
         @ttl.datamovement()
         def dm_write():
+            if not (mcast_a_net.is_active() or mcast_b_net.is_active()):
+                return
             node_n, node_m = ttl.node(dims=2)
             for local_mb in range(m_blocks_per_node):
                 mb = node_m * m_blocks_per_node + local_mb
@@ -175,6 +181,8 @@ def make_balanced_kernel(M_DIM, K_DIM, N_DIM):
 
         @ttl.compute()
         def compute():
+            if not (mcast_a_net.is_active() or mcast_b_net.is_active()):
+                return
             node_n, node_m = ttl.node(dims=2)
             for local_mb in range(m_blocks_per_node):
                 mb = node_m * m_blocks_per_node + local_mb
@@ -191,6 +199,8 @@ def make_balanced_kernel(M_DIM, K_DIM, N_DIM):
 
         @ttl.datamovement()
         def dm_read():
+            if not (mcast_a_net.is_active() or mcast_b_net.is_active()):
+                return
             node_n, node_m = ttl.node(dims=2)
             for local_mb in range(m_blocks_per_node):
                 mb = node_m * m_blocks_per_node + local_mb
@@ -216,6 +226,8 @@ def make_balanced_kernel(M_DIM, K_DIM, N_DIM):
 
         @ttl.datamovement()
         def dm_write():
+            if not (mcast_a_net.is_active() or mcast_b_net.is_active()):
+                return
             node_n, node_m = ttl.node(dims=2)
             for local_mb in range(m_blocks_per_node):
                 mb = node_m * m_blocks_per_node + local_mb
@@ -282,6 +294,8 @@ def make_balanced_relu_kernel(M_DIM, K_DIM, N_DIM):
 
         @ttl.compute()
         def compute():
+            if not (mcast_a_net.is_active() or mcast_b_net.is_active()):
+                return
             node_n, node_m = ttl.node(dims=2)
             for local_mb in range(m_blocks_per_node):
                 mb = node_m * m_blocks_per_node + local_mb
@@ -305,6 +319,8 @@ def make_balanced_relu_kernel(M_DIM, K_DIM, N_DIM):
 
         @ttl.datamovement()
         def dm_read():
+            if not (mcast_a_net.is_active() or mcast_b_net.is_active()):
+                return
             node_n, node_m = ttl.node(dims=2)
             for local_mb in range(m_blocks_per_node):
                 mb = node_m * m_blocks_per_node + local_mb
@@ -330,6 +346,8 @@ def make_balanced_relu_kernel(M_DIM, K_DIM, N_DIM):
 
         @ttl.datamovement()
         def dm_write():
+            if not (mcast_a_net.is_active() or mcast_b_net.is_active()):
+                return
             node_n, node_m = ttl.node(dims=2)
             for local_mb in range(m_blocks_per_node):
                 mb = node_m * m_blocks_per_node + local_mb
