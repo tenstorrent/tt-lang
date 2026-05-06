@@ -135,6 +135,32 @@ Open `http://localhost:8000` to browse the docs locally.
 | `third-party/tt-mlir`      | tt-mlir source (only select directories compiled) |
 | `third-party/tt-metal`     | Runtime (built at configure time)                 |
 
+### tt-metal canonical pin: `third-party/tt-metal-version`
+
+The `third-party/tt-metal` submodule SHA, the `ttnn` pin in
+`requirements-runtime.txt`, and the `--build-arg TT_METAL_TAG` passed to
+`Dockerfile.base` are all derived from a single source of truth: the file
+`third-party/tt-metal-version` (sits next to the submodule directory). It
+contains exactly one line — a tt-metal release tag, e.g. `v0.69.0`.
+
+The verifier `.github/scripts/check-tt-metal-pin.sh` runs in CI on every PR
+and asserts:
+
+- `third-party/tt-metal` HEAD equals the commit pointed to by the tag.
+- `requirements-runtime.txt` pins `ttnn == X.Y.Z` where `X.Y.Z = <tag minus 'v'>`.
+- `Dockerfile.base` does not hard-code a tt-metal SHA.
+
+To bump tt-metal, edit `third-party/tt-metal-version` and run:
+
+```bash
+.github/scripts/check-tt-metal-pin.sh --update
+```
+
+This rewrites `requirements-runtime.txt` and checks out the submodule at
+the tag's commit. Review the resulting diff and commit. Bumping tt-metal
+this way is mutually exclusive with the manual procedure in
+[Uplifting Submodules](#uplifting-submodules); use the script.
+
 ### Switching branches
 
 Different branches may pin different submodule commits. After switching branches,
@@ -196,8 +222,10 @@ or tt-metal, but then may have to bypass SHA mismatch checks by specifying the
 # Update tt-mlir to the desired commit
 cd third-party/tt-mlir && git fetch && git checkout <commit> && cd ../..
 
-# Update LLVM and tt-metal to the versions tt-mlir expects
-scripts/update-submodules.sh
+# Update LLVM and tt-metal to the versions tt-mlir expects.
+# scripts/update-submodules.sh handles LLVM. For tt-metal, edit
+# third-party/tt-metal-version to a release tag (e.g. v0.69.0) and run:
+.github/scripts/check-tt-metal-pin.sh --update
 
 # Rebuild
 cmake -G Ninja -B build
@@ -207,7 +235,8 @@ cmake --build build
 Commit all submodule pointer changes together:
 
 ```bash
-git add third-party/llvm-project third-party/tt-mlir third-party/tt-metal
+git add third-party/llvm-project third-party/tt-mlir third-party/tt-metal \
+        third-party/tt-metal-version requirements-runtime.txt
 git commit -m "Update submodules to tt-mlir <short-sha>"
 ```
 

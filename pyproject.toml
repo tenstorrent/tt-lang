@@ -37,7 +37,9 @@ device = ["ttnn"]
 
 [project.scripts]
 ttlang-sim = "ttl.sim.ttlang_sim:main"
+tt-lang-setup = "ttl._setup.cli:main"
 tt-lang-setup-host = "ttl._setup.host:main"
+tt-lang-setup-tutorials = "ttl._setup.tutorials:main"
 
 [project.urls]
 Homepage = "https://github.com/tenstorrent/tt-lang"
