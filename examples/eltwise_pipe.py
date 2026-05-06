@@ -64,7 +64,7 @@ def eltwise_pipe(
 
     @ttl.compute()
     def compute_func():
-        if not pipe.has_current_node():
+        if not pipe_net.is_active():
             return  # This node is not participating in C multicast
         node_num = ttl.node(dims=1)  # linear node index
         start_col_tile = node_num * cols_per_node
@@ -101,7 +101,7 @@ def eltwise_pipe(
 
     @ttl.datamovement()
     def dm0():
-        if not pipe.has_current_node():
+        if not pipe_net.is_active():
             return  # This node is not participating in C multicast
 
         node_num = ttl.node(dims=1)  # linear node index
@@ -145,7 +145,7 @@ def eltwise_pipe(
 
     @ttl.datamovement()
     def dm1():
-        if not pipe.has_current_node():
+        if not pipe_net.is_active():
             return  # This node is not participating in C multicast
         node_num = ttl.node(dims=1)  # linear node index
         start_col_tile = node_num * cols_per_node
