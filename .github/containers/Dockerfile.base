@@ -81,8 +81,9 @@ RUN wget --tries=5 --timeout=120 --waitretry=10 https://apt.llvm.org/llvm.sh && 
     ln -sf /usr/bin/clangd-18 /usr/bin/clangd && \
     rm -f llvm.sh
 
-# Copy Python requirements
-COPY requirements.txt /tmp/requirements.txt
+# Copy Python requirements. requirements.txt does `-r requirements-runtime.txt`
+# so the sibling file must be present alongside it.
+COPY requirements.txt requirements-runtime.txt /tmp/
 
 # Bootstrap pip for Python 3.12 via ensurepip (not the system python3-pip which
 # conflicts with 3.12's removal of distutils), then install dependencies.
@@ -92,7 +93,7 @@ RUN python3.12 -m ensurepip --upgrade && \
     python3.12 -m pip install --index-url https://download.pytorch.org/whl/cpu \
         torch --no-cache-dir && \
     python3.12 -m pip install -r /tmp/requirements.txt --no-cache-dir && \
-    rm /tmp/requirements.txt
+    rm /tmp/requirements.txt /tmp/requirements-runtime.txt
 
 # Create python symlink for convenience (available in all images)
 RUN ln -sf /usr/bin/python3.12 /usr/local/bin/python && \
