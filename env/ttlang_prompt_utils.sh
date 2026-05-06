@@ -26,7 +26,7 @@ if [ -n "${ZSH_VERSION:-}" ]; then
   case "$PROMPT" in
     *'${TTLANG_ENV_ACTIVATED:+'*) ;;
     *) PROMPT='${TTLANG_ENV_ACTIVATED:+(ᴛᴛʟᴀɴɢ) }'$PROMPT ;;
-  esace
+  esac
 
   _ttlang_orig_deactivate="$(functions deactivate)"
   deactivate() {
