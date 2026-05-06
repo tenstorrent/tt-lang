@@ -217,41 +217,40 @@ def overlapping_pipenets_kernel(inp, out):
         # The simulator (correctly) rejects a reserved CB that exits its
         # `with` block in the MW state without ever being written; hardware
         # is more permissive but the conditional structure is still valid.
-        if not (net_a.is_active() or net_b.is_active()):
-            return
-        x, _ = ttl.node(dims=2)
-        if x == 0:
-            # net_a source.
-            with a_cb.reserve() as ablk:
+        if net_a.is_active() or net_b.is_active():
+            x, _ = ttl.node(dims=2)
+            if x == 0:
+                # net_a source.
+                with a_cb.reserve() as ablk:
 
-                def src_a(pipe):
-                    ttl.copy(inp[0, 0], ablk).wait()
-                    ttl.copy(ablk, pipe).wait()
+                    def src_a(pipe):
+                        ttl.copy(inp[0, 0], ablk).wait()
+                        ttl.copy(ablk, pipe).wait()
 
-                net_a.if_src(src_a)
-        elif x == 3:
-            # net_b source.
-            with b_cb.reserve() as bblk:
+                    net_a.if_src(src_a)
+            elif x == 3:
+                # net_b source.
+                with b_cb.reserve() as bblk:
 
-                def src_b(pipe):
-                    ttl.copy(inp[0, 3], bblk).wait()
-                    ttl.copy(bblk, pipe).wait()
+                    def src_b(pipe):
+                        ttl.copy(inp[0, 3], bblk).wait()
+                        ttl.copy(bblk, pipe).wait()
 
-                net_b.if_src(src_b)
-        elif 1 <= x and x <= 2:
-            # Destination of both: receive from each net into its own CB.
-            with a_cb.reserve() as ablk:
+                    net_b.if_src(src_b)
+            elif 1 <= x and x <= 2:
+                # Destination of both: receive from each net into its own CB.
+                with a_cb.reserve() as ablk:
 
-                def dst_a(pipe):
-                    ttl.copy(pipe, ablk).wait()
+                    def dst_a(pipe):
+                        ttl.copy(pipe, ablk).wait()
 
-                net_a.if_dst(dst_a)
-            with b_cb.reserve() as bblk:
+                    net_a.if_dst(dst_a)
+                with b_cb.reserve() as bblk:
 
-                def dst_b(pipe):
-                    ttl.copy(pipe, bblk).wait()
+                    def dst_b(pipe):
+                        ttl.copy(pipe, bblk).wait()
 
-                net_b.if_dst(dst_b)
+                    net_b.if_dst(dst_b)
 
     @ttl.datamovement()
     def dm_write():
