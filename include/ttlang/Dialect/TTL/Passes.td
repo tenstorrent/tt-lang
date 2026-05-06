@@ -423,13 +423,13 @@ def TTLVerifyPipeNetGuards
     : Pass<"ttl-verify-pipenet-guards", "::mlir::ModuleOp"> {
   let summary = "Verify PipeNet-coupled DFB and pipe operations are role-guarded";
   let description = [{
-    Verifies that PipeNet-coupled operations execute only on nodes whose
-    roles permit the operation. The pass builds finite source and destination
-    domains from `ttl.create_pipe`, tracks execution domains through supported
-    `scf.if` and `affine.if` predicates, `ttl.if_src`, `ttl.if_dst`, and
-    `ttl.pipenet_scope`, and recognizes `ttl.is_src`, `ttl.is_dst`, and
-    `ttl.is_active` structurally as condition predicates. The pass reports
-    user diagnostics for:
+    Read-only `DenseForwardDataFlowAnalysis` over launch coordinates: the
+    lattice at each program point is the set of coordinates that may execute
+    there. Predicate-bearing region ops (`scf.if`, `affine.if`,
+    `ttl.if_src`, `ttl.if_dst`, `ttl.pipenet_scope`) narrow the lattice on
+    region entry; pipe-coupled ops (`ttl.copy`, `ttl.cb_wait`,
+    `ttl.cb_push`) are checked or recorded against the narrowed lattice. The
+    pass reports diagnostics for:
 
     - `ttl.copy` from a DFB to a pipe outside that pipe's source domain.
     - `ttl.copy` from a pipe to a DFB outside that pipe's destination domain.
@@ -440,12 +440,8 @@ def TTLVerifyPipeNetGuards
     - Predicates that are coord-dependent but not statically analyzable.
 
     Each violation produces one error with notes naming a witness coordinate,
-    the contributing PipeNet(s), and a suggested guard. The pass accumulates
-    errors and signals failure once at the end.
-
-    On success the pass inlines and erases `ttl.pipenet_scope` regions so
-    downstream lowering sees a scope-free IR. The pass does not otherwise
-    rewrite the program.
+    the contributing PipeNet(s), and a suggested guard. Errors accumulate
+    and the pass signals failure once at the end.
 
     Required input properties:
     - One MLIR module per `@ttl.operation`.
@@ -468,6 +464,20 @@ def TTLVerifyPipeNetGuards
     "::mlir::scf::SCFDialect",
     "::mlir::tt::ttl::TTLDialect"
   ];
+}
+
+def TTLErasePipeNetScopes
+    : Pass<"ttl-erase-pipenet-scopes", "::mlir::ModuleOp"> {
+  let summary = "Inline and erase `ttl.pipenet_scope` regions";
+  let description = [{
+    `ttl.pipenet_scope` is a structural marker emitted by the frontend and
+    consumed by `ttl-verify-pipenet-guards`. After verification the markers
+    serve no further purpose; this pass inlines each scope's body into its
+    parent block and erases the scope op so downstream lowering sees a
+    scope-free IR. Runs after `ttl-verify-pipenet-guards`.
+  }];
+
+  let dependentDialects = ["::mlir::tt::ttl::TTLDialect"];
 }
 
 def TTLLowerDPrintToEmitC

@@ -451,8 +451,14 @@ struct IfSrcLowering : OpConversionPattern<IfSrcOp> {
 
     // Move ops from the original body into the then block (before the yield).
     // Using inlineBlockBefore moves rather than clones, preserving SSA.
+    // The original body's `ttl.yield` terminator is dropped — the new
+    // scf.if's own yield is what closes the region.
     Block &srcBlock = op.getBody().front();
     Block &thenBlock = ifOp.getThenRegion().front();
+    if (Operation *terminator = srcBlock.getTerminator();
+        terminator && isa<YieldOp>(terminator)) {
+      rewriter.eraseOp(terminator);
+    }
     rewriter.inlineBlockBefore(&srcBlock, thenBlock.getTerminator());
 
     rewriter.eraseOp(op);
@@ -507,8 +513,14 @@ struct IfDstLowering : OpConversionPattern<IfDstOp> {
 
     // Move ops from the original body into the then block (before the yield).
     // Using inlineBlockBefore moves rather than clones, preserving SSA.
+    // The original body's `ttl.yield` terminator is dropped — the new
+    // scf.if's own yield is what closes the region.
     Block &srcBlock = op.getBody().front();
     Block &thenBlock = ifOp.getThenRegion().front();
+    if (Operation *terminator = srcBlock.getTerminator();
+        terminator && isa<YieldOp>(terminator)) {
+      rewriter.eraseOp(terminator);
+    }
     rewriter.inlineBlockBefore(&srcBlock, thenBlock.getTerminator());
 
     rewriter.eraseOp(op);

@@ -317,10 +317,14 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 }
 
 def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
-    ParentOneOf<["ComputeOp", "DstSectionOp"]>]> {
-  let summary = "Terminate a ttl.compute or ttl.dst_section region";
+    ParentOneOf<["ComputeOp", "DstSectionOp", "IfSrcOp", "IfDstOp",
+                 "PipeNetScopeOp"]>]> {
+  let summary = "Terminate a TTL region body";
   let description = [{
-    `ttl.yield` terminates the body of `ttl.compute` or `ttl.dst_section`.
+    `ttl.yield` terminates the body of `ttl.compute`, `ttl.dst_section`,
+    `ttl.if_src`, `ttl.if_dst`, and `ttl.pipenet_scope`. It carries no
+    operands and produces no results; the trait
+    `SingleBlockImplicitTerminator` auto-inserts it.
   }];
   let assemblyFormat = "attr-dict";
   let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
@@ -541,7 +545,9 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
   ];
 }
 
-def TTL_IfSrcOp : TTL_Op<"if_src", [SingleBlock, NoTerminator]> {
+def TTL_IfSrcOp : TTL_Op<"if_src",
+    [SingleBlockImplicitTerminator<"YieldOp">,
+     DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
   let summary = "Execute region if current core is the source of a pipe";
   let description = [{
     Executes the body region if the current core's coordinates match the
@@ -567,7 +573,9 @@ def TTL_IfSrcOp : TTL_Op<"if_src", [SingleBlock, NoTerminator]> {
   }];
 }
 
-def TTL_IfDstOp : TTL_Op<"if_dst", [SingleBlock, NoTerminator]> {
+def TTL_IfDstOp : TTL_Op<"if_dst",
+    [SingleBlockImplicitTerminator<"YieldOp">,
+     DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
   let summary = "Execute region if current core is a destination of a pipe";
   let description = [{
     Executes the body region if the current core's coordinates fall within
@@ -593,7 +601,9 @@ def TTL_IfDstOp : TTL_Op<"if_dst", [SingleBlock, NoTerminator]> {
   }];
 }
 
-def TTL_PipeNetScopeOp : TTL_Op<"pipenet_scope", [SingleBlock, NoTerminator]> {
+def TTL_PipeNetScopeOp : TTL_Op<"pipenet_scope",
+    [SingleBlockImplicitTerminator<"YieldOp">,
+     DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
   let summary = "Mark a DFB region that depends on PipeNet roles";
   let description = [{
     Marks a region whose dataflow-buffer acquire/release sequence must execute
@@ -610,7 +620,8 @@ def TTL_PipeNetScopeOp : TTL_Op<"pipenet_scope", [SingleBlock, NoTerminator]> {
   let assemblyFormat = "attr-dict-with-keyword $body";
 }
 
-def TTL_IsSrcOp : TTL_Op<"is_src", [Pure]> {
+def TTL_IsSrcOp : TTL_Op<"is_src",
+    [Pure, DeclareOpInterfaceMethods<TTL_PipeNetPredicateOpInterface>]> {
   let summary = "Predicate: current node is a source of any pipe in the PipeNet";
   let description = [{
     Returns `true` on nodes that match the `src` of at least one pipe in the
@@ -623,7 +634,8 @@ def TTL_IsSrcOp : TTL_Op<"is_src", [Pure]> {
   let assemblyFormat = "attr-dict";
 }
 
-def TTL_IsDstOp : TTL_Op<"is_dst", [Pure]> {
+def TTL_IsDstOp : TTL_Op<"is_dst",
+    [Pure, DeclareOpInterfaceMethods<TTL_PipeNetPredicateOpInterface>]> {
   let summary = "Predicate: current node is a destination of any pipe in the PipeNet";
   let description = [{
     Returns `true` on nodes whose coordinate falls within the `dst` range of
@@ -635,7 +647,8 @@ def TTL_IsDstOp : TTL_Op<"is_dst", [Pure]> {
   let assemblyFormat = "attr-dict";
 }
 
-def TTL_IsActiveOp : TTL_Op<"is_active", [Pure]> {
+def TTL_IsActiveOp : TTL_Op<"is_active",
+    [Pure, DeclareOpInterfaceMethods<TTL_PipeNetPredicateOpInterface>]> {
   let summary = "Predicate: current node is a source or destination in the PipeNet";
   let description = [{
     Returns `true` on nodes that are either a source or a destination of at

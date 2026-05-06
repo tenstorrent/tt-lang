@@ -98,40 +98,64 @@ malformed PipeNets error at the construction source line.
 ```
 ... -> ttl-finalize-dfb-indices
     -> ttl-annotate-cb-associations
-    -> ttl-verify-pipenet-guards                 (module-scoped)
+    -> ttl-verify-pipenet-guards                 (read-only analysis)
+    -> ttl-erase-pipenet-scopes                  (transform)
     -> convert-ttl-to-ttkernel
     -> ttkernel-insert-inits
     ...
 ```
 
 `ttl-verify-pipenet-guards` runs after DFB-index annotation
-(`ttl-annotate-cb-associations`) so DFB wait checks can resolve producer
-DFB indices. It runs before `convert-ttl-to-ttkernel` so
-diagnostics surface in TTL IR with TTL-level op names (`ttl.copy`,
-`ttl.cb_wait`, `ttl.is_src`, etc.) and so the structural marker
-`ttl.pipenet_scope` (see below) can be inlined out of existence
-before lowering.
+(`ttl-annotate-cb-associations`) so DFB wait checks can resolve
+producer DFB indices. It runs before `convert-ttl-to-ttkernel` so
+diagnostics print at TTL IR with TTL-level op names (`ttl.copy`,
+`ttl.cb_wait`, `ttl.is_src`, etc.). `ttl-erase-pipenet-scopes` runs
+immediately after the verifier and inlines / erases the structural
+`ttl.pipenet_scope` markers so downstream lowering sees a scope-free
+IR.
 
-Three independent pipeline definitions need to stay in sync: the C++
-`createTTLToTTKernelPipeline` in `lib/Dialect/TTL/Pipelines/TTLPipelines.cpp`,
-the Python frontend pipeline string in `python/ttl/ttl_api.py`, and the
-me2e builder in `test/me2e/builder/pipeline.py`. All three insert the
-verifier at the same anchor.
+Three independent pipeline definitions stay in sync: the C++
+`createTTLToTTKernelPipeline` in
+`lib/Dialect/TTL/Pipelines/TTLPipelines.cpp`, the Python frontend
+pipeline string in `python/ttl/ttl_api.py`, and the me2e builder in
+`test/me2e/builder/pipeline.py`. All three insert verifier and
+eraser at the same anchor.
 
-## Domain analysis
+## Analysis structure
 
-The verifier represents the set of nodes a region executes on as a
-`Domain` — an explicit `std::set<Coord>` over the launch grid. This
-enumeration is sufficient for current 2D grids (≤ ~200 nodes) and
-avoids an upstream Presburger dependency. It also matches the
-per-pipe role granularity the verifier needs: each PipeNet's source
-domain is the union of its pipes' source unit boxes; its destination
-domain is the union of its pipes' destination ranges.
+`ttl-verify-pipenet-guards` is implemented as a
+`DenseForwardDataFlowAnalysis<DomainLattice>` over launch coordinates.
+The lattice value at each program point is the set of coordinates that
+may execute there.
 
-Per-pipe role containment is the central check. For a pipe-coupled
-op, the verifier computes the current execution domain (the
-intersection of every enclosing predicate) and asserts it is a subset
-of the role required by the op:
+- `setToEntryState`: the entry block of every kernel function starts
+  at the full launch grid (`ttl.launch_grid` module attribute).
+- `visitOperation`: identity for most ops; pipe-coupled ops
+  (`ttl.copy`, `ttl.cb_push`, `ttl.cb_wait`) check their `before`
+  domain against the pipe role / DFB producer set.
+- `visitRegionBranchControlFlowTransfer`: when entering a region of
+  `scf.if`, `affine.if`, `ttl.if_src`, `ttl.if_dst`, or
+  `ttl.pipenet_scope`, the lattice at the region entry is set to
+  `current ∩ predicate-domain`. The framework's
+  `RegionBranchOpInterface` machinery handles join points after the
+  op (the post-op lattice is the union of region exits and skip).
+
+The TTL custom region ops use a `ttl.yield` implicit terminator
+(`SingleBlockImplicitTerminator<"YieldOp">`) so the framework can
+detect region exits. The verifier loads
+`mlir::dataflow::loadBaselineAnalyses` (`DeadCodeAnalysis`,
+`SparseConstantPropagation`) before its own analysis, per the upstream
+convention.
+
+`Domain` is an explicit `std::set<Coord>` (Coord = `(x, y)`) over the
+launch grid — sufficient for current 2D grids (≤ ~200 nodes) and
+avoiding an upstream Presburger dependency. Set ops use the standard
+library (`std::set_union`, `std::set_intersection`,
+`std::set_difference`, `std::includes`).
+
+Per-pipe role containment is the central check. For each pipe-coupled
+op the verifier asserts the current execution domain is a subset of
+the role required by the op:
 
 | Op | Required role |
 | --- | --- |
@@ -141,31 +165,33 @@ of the role required by the op:
 | `ttl.if_dst %pipe` body | `pipe.dst` (op carries the predicate intrinsically) |
 | `cb_wait` on pipe-coupled DFB | union of producer domains across all `cb_push` to the same DFB index |
 
-DFB wait checking is module-global: `cbProducerDomains` indexes by DFB index,
-so a `cb_wait` in one kernel function is checked against `cb_push` domains
-from a different kernel function (compute waits for data movement, etc.).
-DFB indices are stable post-finalize.
+DFB wait checking is module-global: producer domains accumulate by
+DFB index across every `cb_push` the analysis visits, then a
+post-pass walks recorded `cb_wait` uses and checks each against the
+union. DFB indices are stable post-finalize, so a `cb_wait` in one
+kernel function is checked against `cb_push` domains from a
+different kernel function.
 
 ## Predicate recognition
 
-The walker computes the current domain by intersecting predicates as
-it descends into nested regions. Recognized parents:
+`visitRegionBranchControlFlowTransfer` narrows the lattice on entry to
+each region according to the parent op:
 
-| Parent op | Contribution to current domain |
+| Parent op | Narrowing rule |
 | --- | --- |
 | `scf.if` then-branch | intersect with condition domain |
 | `scf.if` else-branch | intersect with negated condition domain |
-| `affine.if` then/else | per-coord IntegerSet evaluation |
+| `affine.if` then/else | per-coord `AffineMap::constantFold` of the IntegerSet |
 | `ttl.if_src %pipe` body | intersect with `pipe.src` |
 | `ttl.if_dst %pipe` body | intersect with `pipe.dst` |
 | `ttl.pipenet_scope` body | unchanged after checking current domain is contained in declared role union |
-| `scf.for`/`scf.while`/`affine.for`/region-bearing ops | unchanged (no predication) |
+| `scf.for`/`scf.while`/`affine.for`/`scf.execute_region`/`linalg.generic`/multi-block via `cf.cond_br` | unchanged (no predication, framework default) |
 
 For `scf.if`, the condition's domain is determined structurally:
 
-- `ttl.is_src %net` → that PipeNet's source domain.
-- `ttl.is_dst %net` → that PipeNet's destination domain.
-- `ttl.is_active %net` → union of source and destination domains.
+- `PipeNetPredicateOpInterface` (i.e. `ttl.is_src` / `ttl.is_dst` /
+  `ttl.is_active`) → that PipeNet's role domain via the interface
+  methods `getReferencedPipeNetId` / `getReferencedRole`.
 - `arith.andi` / `arith.ori` decompose: each operand contributes its
   own domain (intersection or union). A coord-independent operand
   (loop iv, runtime flag) acts as identity instead of poisoning the
@@ -175,8 +201,14 @@ For `scf.if`, the condition's domain is determined structurally:
 - A coord-independent expression contributes the universe (uniform
   across the grid).
 - Unanalyzable coord-dependent expressions make the branch execution
-  domain unknown. Any PipeNet-coupled operation reached under that
-  domain is rejected as unprovable.
+  domain unknown; the unanalyzable op is threaded through the lattice
+  payload so a downstream pipe-coupled op's diagnostic can attach a
+  note pointing at the offending expression.
+
+For `affine.if`, the verifier builds an `AffineMap` from the
+IntegerSet's constraints (one result per constraint) and folds it per
+launch coord with `AffineMap::constantFold`, checking sign against
+each constraint's `isEq` flag.
 
 ## Diagnostics
 
@@ -217,9 +249,9 @@ note: suggested guard: `net_0.is_src()`
 | could not statically analyze the PipeNet guard around this op | A surrounding condition uses runtime values or arithmetic the verifier can't enumerate per coordinate (e.g. `arith.muli %core_x, %runtime_value`). | rewrite using `net.is_src()` / `net.is_dst()` / `net.is_active()`, or compare `ttl.node(dims=2)` coordinates against integer constants |
 
 Internal-invariant diagnostics also exist (`references unknown PipeNet
-id`, `kernel function body has unstructured control flow`, `requires a
-\`ttl.launch_grid\` module attribute`); these flag malformed input the
-frontend should never emit and are not expected in user code.
+id`, `requires a \`ttl.launch_grid\` module attribute`); these flag
+malformed input the frontend should never emit and are not expected in
+user code.
 
 ## `ttl.pipenet_scope`
 
@@ -421,6 +453,11 @@ runtime-observable.
 | 51 | OperationPipeNets.work_extent: empty / unicast / mcast    |     |  X  |     |
 | 52 | OperationPipeNets.work_extent: union, mixed-rank padding  |     |  X  |     |
 | 53 | grid="auto" shrinks launch + grid="full" keeps launch     |  X  |  X  |     |
+| 54 | Verifier accepts every `arith.cmpi` predicate kind, `andi`/`ori`/`xori` boolean composition, `subi`/`muli`/`index_cast` in `evalIndex` |  |  |  X  |
+| 55 | Verifier accepts `affine.if` over `Mul`, `Mod`, `FloorDiv` (non-zero), `CeilDiv`, `AffineSymbolExpr`, else-branch |  |  |  X  |
+| 56 | Verifier accepts pipe-coupled op inside `scf.while` / `scf.execute_region` / `affine.for` / multi-block `cf.cond_br` |  |  |  X  |
+| 57 | Verifier rejects malformed `pipenet_scope`: missing attrs, length mismatch, role out of {0, 1} |  |  |  X  |
+| 58 | Verifier rejects unguarded pipe-coupled op in `scf.for` / `scf.execute_region` |  |  |  X  |
 
 (1) Device-only due to a pre-existing simulator divergence orthogonal
 to PipeNet verification: the simulator's block-state machine accepts
@@ -456,10 +493,10 @@ rejection contract; it `pytest.skip`s on the simulator runner.
 * Domain representation is `std::set<Coord>` over the launch grid.
   Sufficient for current 2D grids (≤ ~200 nodes); revisit when grids
   grow to 3D or thousands of nodes.
-* Three pipeline definitions: the verifier is wired into three
-  separate strings (C++ pipeline, Python frontend, me2e builder). A
-  future refactor consolidating these would prevent future passes from
-  drifting between them.
+* Three pipeline definitions: verifier and eraser are registered in
+  three separate strings (C++ pipeline, Python frontend, me2e
+  builder). A future refactor consolidating these would prevent future
+  passes from drifting between them.
 
 ## Future work
 
