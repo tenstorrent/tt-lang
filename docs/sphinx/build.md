@@ -238,23 +238,41 @@ cd third-party/tt-mlir && git fetch && git checkout <commit> && cd ../..
 
 A submodule uplift changes what the toolchain (LLVM, tt-metal) is built
 from, so the toolchain must be rebuilt; rebuilding tt-lang alone against
-the old toolchain is wrong. Install the new toolchain to a separate
-directory so the working toolchain at `/opt/ttlang-toolchain` is preserved
+the old toolchain will not work. It is recommended to install 
+the new toolchain to a separate
+directory at least initially, so the working default toolchain at 
+`/opt/ttlang-toolchain` is preserved
 in case the uplift fails to build. `scripts/build-and-install.sh` uses
 `build-toolchain/` as its cmake build directory by default (set
-`CMAKE_BINARY_DIR` to override); use a parallel `build-uplift-toolchain/`
-to keep the existing `build-toolchain/` artifacts untouched.
+`CMAKE_BINARY_DIR` to override); you could use a `build-uplift-toolchain/`
+to keep the existing `build-toolchain/` artifacts untouched if desired. It
+is best to remove any pre-existing uplift-related toolchain build directory 
+before starting the new toolchain build.
+
+Build the toolchain (LLVM + tt-metal) into the parallel locations:
 
 ```bash
 CMAKE_BINARY_DIR=build-uplift-toolchain \
 TTLANG_TOOLCHAIN_DIR=$PWD/build-uplift/toolchain \
   scripts/build-and-install.sh --toolchain-only --accept-ttmetal-mismatch
-
-TTLANG_TOOLCHAIN_DIR=$PWD/build-uplift/toolchain \
-  cmake -G Ninja -B build-uplift -DTTLANG_USE_TOOLCHAIN=ON \
-        -DTTLANG_ACCEPT_LLVM_MISMATCH=ON -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON
-cmake --build build-uplift
 ```
+
+Then build tt-lang against that toolchain and run the test suites to
+validate the uplift before installing it to `/opt/ttlang-toolchain`:
+
+```bash
+TTLANG_TOOLCHAIN_DIR=$PWD/build-uplift/toolchain \
+  cmake -G Ninja -B build-uplift -DTTLANG_USE_TOOLCHAIN=ON
+cmake --build build-uplift
+
+source build-uplift/env/activate
+ninja -C build-uplift check-ttlang-mlir          # MLIR lit tests, no hardware
+ninja -C build-uplift check-ttlang-all           # full suite (Docker for hw)
+```
+
+Test failures here mean the new submodule combination is incompatible —
+fix patches under `third-party/patches/` or pick a different SHA before
+installing the uplifted toolchain to `/opt/ttlang-toolchain`.
 
 Once the uplift builds and tests cleanly, replace the system toolchain by
 re-running without the overrides (so `CMAKE_BINARY_DIR=build-toolchain` and
