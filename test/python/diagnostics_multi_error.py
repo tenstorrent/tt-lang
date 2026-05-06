@@ -8,14 +8,14 @@
 
 Feeds a synthetic MLIR diagnostic stream with two unrelated errors
 (each with attached notes) through the formatter and verifies the
-rendered output. Line numbers embedded in the diagnostic are surfaced
-via a preamble so CHECKs can capture them with `[[VAR]]` instead of
+rendered output. Line numbers embedded in the diagnostic are printed
+in a preamble so CHECKs can capture them with `[[VAR]]` instead of
 hardcoding.
 """
 
 import textwrap
 
-from ttl.diagnostics import format_mlir_error  # noqa: E402
+from ttl.diagnostics import format_mlir_error
 
 ANCHOR_FIRST = "FIRST_ERROR_ANCHOR"
 ANCHOR_FIRST_DECLARED = "FIRST_DECLARED_ANCHOR"
@@ -60,6 +60,27 @@ def main() -> None:
     )
     print(format_mlir_error(diagnostic_stream))
 
+    # ===== single error, no notes =====
+    print("=== SINGLE ===")
+    print(
+        format_mlir_error(
+            f'error: "{__file__}":{first_line}:1: lone error with no notes'
+        )
+    )
+
+    # ===== error with no location prefix =====
+    print("=== NOLOC ===")
+    print(format_mlir_error("error: bare error message with no location"))
+
+    # ===== leading note (before any error) is dropped =====
+    print("=== LEADING_NOTE ===")
+    print(
+        format_mlir_error(
+            f'note: "{__file__}":{first_line}:1: orphan note with no parent\n'
+            f'error: "{__file__}":{first_line}:1: real error after orphan note'
+        )
+    )
+
 
 if __name__ == "__main__":
     main()
@@ -93,3 +114,18 @@ if __name__ == "__main__":
 # CHECK: {{^  note: second thing declared here}}
 # CHECK: --> {{.*}}diagnostics_multi_error.py:[[SECOND_DECL_LINE]]:1
 # CHECK: SECOND_DECLARED_ANCHOR
+
+# Single error, no notes — base case.
+# CHECK: === SINGLE ===
+# CHECK: error: lone error with no notes
+# CHECK-NEXT: --> {{.*}}diagnostics_multi_error.py:[[FIRST_LINE]]:1
+
+# Error with no location prefix falls back to the bare label-and-message line.
+# CHECK: === NOLOC ===
+# CHECK-NEXT: error: bare error message with no location
+
+# A note before any error is dropped (no parent to attach to); the
+# subsequent error still renders.
+# CHECK: === LEADING_NOTE ===
+# CHECK-NOT: orphan note with no parent
+# CHECK: error: real error after orphan note

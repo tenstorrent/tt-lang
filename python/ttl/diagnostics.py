@@ -138,61 +138,6 @@ class SourceDiagnostic:
         return "\n\n".join(results)
 
 
-def parse_mlir_location(loc_str: str) -> Optional[Tuple[str, int, int]]:
-    """Parse an MLIR location string to extract file, line, and column.
-
-    MLIR locations can appear in several formats:
-    - loc("filename":line:col)
-    - loc("filename":line:col to :line:col)
-    - loc(#loc1) with #loc1 = loc("filename":line:col)
-
-    Args:
-        loc_str: MLIR location string
-
-    Returns:
-        Tuple of (filename, line, col) or None if not parseable
-    """
-    # Match loc("filename":line:col)
-    match = re.search(r'loc\("([^"]+)":(\d+):(\d+)', loc_str)
-    if match:
-        return match.group(1), int(match.group(2)), int(match.group(3))
-
-    # Match standalone "filename":line:col pattern
-    match = re.search(r'"([^"]+)":(\d+):(\d+)', loc_str)
-    if match:
-        return match.group(1), int(match.group(2)), int(match.group(3))
-
-    return None
-
-
-def extract_location_from_mlir_error(error_msg: str) -> Optional[Tuple[str, int, int]]:
-    """Extract source location from an MLIR error message.
-
-    MLIR errors often include location information like:
-        error: 'op' op some error message
-        note: see current operation: %0 = "op"(...) loc("file.py":42:10)
-
-    Args:
-        error_msg: Full MLIR error message
-
-    Returns:
-        Tuple of (filename, line, col) or None if no location found
-    """
-    # Look for location patterns in the error message
-    loc_info = parse_mlir_location(error_msg)
-    if loc_info:
-        return loc_info
-
-    # Try to find location in "note: see current operation" lines
-    for line in error_msg.split("\n"):
-        if "loc(" in line:
-            loc_info = parse_mlir_location(line)
-            if loc_info:
-                return loc_info
-
-    return None
-
-
 def _read_file_lines(filepath: str) -> Optional[List[str]]:
     """Read source lines from a file if it exists."""
     try:
@@ -211,8 +156,8 @@ def format_mlir_error(
 
     Splits the diagnostic stream into one group per error (each error
     plus the notes attached to it) and renders each group as its own
-    `error:` + `note:` blocks. Multiple unrelated violations therefore
-    surface as multiple errors, not a single primary with the rest
+    `error:` + `note:` blocks. Multiple unrelated violations are
+    rendered as multiple errors, not a single primary with the rest
     folded into notes.
 
     Args:
@@ -301,6 +246,10 @@ def _render_diagnostic_block(
 _Diagnostic = Tuple[Optional[Tuple[str, int, int]], str]
 _DiagnosticGroup = Tuple[_Diagnostic, List[_Diagnostic]]
 
+# Strip the leading `'op_name' op ` prefix MLIR adds for op-level
+# diagnostics so the user sees the message we wrote.
+_OP_PREFIX = re.compile(r"'[^']+'\s+op\s+(.*)$")
+
 
 def _extract_diagnostic_groups(error_msg: str) -> List[_DiagnosticGroup]:
     """Split an MLIR error string into groups of (error, [notes]).
@@ -318,15 +267,16 @@ def _extract_diagnostic_groups(error_msg: str) -> List[_DiagnosticGroup]:
     don't start with a recognized kind keyword and are skipped.
     """
     groups: List[_DiagnosticGroup] = []
-    current_notes: List[_Diagnostic] = []
 
-    # MLIR diagnostics from the Python pass manager surface as
+    # MLIR diagnostics from the Python pass manager are emitted as
     #     <kind>: "path":line:col: <message>
     # (notes sometimes carry a leading space). Raw `ttlang-opt` runs
-    # use
+    # emit
     #     path:line:col: <kind>: <message>
-    # We accept both. The location segment is optional so notes
-    # without locations still parse.
+    # Both forms are accepted. `loc_first` is tried before `kind_first`
+    # because its location segment is mandatory (most-specific match
+    # wins); reordering would silently change behavior on the
+    # path-first variant.
     kind_first = re.compile(
         r"^\s*(?P<kind>error|note|warning):\s*"
         r"(?:\"?(?P<file>[^\"\n]+?)\"?:(?P<line>\d+):(?P<col>\d+):\s*)?"
@@ -343,9 +293,7 @@ def _extract_diagnostic_groups(error_msg: str) -> List[_DiagnosticGroup]:
             continue
         kind = match.group("kind")
         msg = match.group("msg").strip()
-        # Strip the leading `'op_name' op ` prefix MLIR adds for op-level
-        # diagnostics so the user sees the message we wrote.
-        op_match = re.match(r"'[^']+'\s+op\s+(.*)$", msg)
+        op_match = _OP_PREFIX.match(msg)
         if op_match:
             msg = op_match.group(1).strip()
 
@@ -359,7 +307,7 @@ def _extract_diagnostic_groups(error_msg: str) -> List[_DiagnosticGroup]:
             loc = None
 
         if kind in ("error", "warning"):
-            current_notes = []
+            current_notes: List[_Diagnostic] = []
             groups.append(((loc, msg), current_notes))
         else:  # note
             # Notes before any error are dropped — there's nothing for
