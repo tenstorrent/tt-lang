@@ -33,11 +33,27 @@ jobs:
           submodules: false
       - run: .github/scripts/check-tt-metal-pin.sh
 
+  detect-uplift:
+    name: Detect submodule / base-image changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      uplift: ${{ steps.detect.outputs.uplift }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: false
+      - id: detect
+        run: .github/scripts/detect-uplift.sh "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
+
   build:
+    needs: detect-uplift
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
     with:
       docker_tag: "v1.0.0-1"
+      build_toolchain: ${{ needs.detect-uplift.outputs.uplift == 'true' }}
 
   test-sim:
     uses: ./.github/workflows/call-test-sim.yml
@@ -48,6 +64,7 @@ jobs:
     needs:
       - pre-commit
       - check-tt-metal-pin
+      - detect-uplift
       - build
       - test-sim
     runs-on: ubuntu-latest

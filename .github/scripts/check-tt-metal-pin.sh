@@ -80,23 +80,20 @@ if [[ "$PINNED" != "$VERSION" ]]; then
 fi
 
 # --- third-party/tt-metal submodule ---------------------------------------
-if [[ ! -d "$SUBMODULE/.git" ]] && [[ ! -f "$SUBMODULE/.git" ]]; then
+# Read the gitlink SHA recorded in the parent tree. This works without
+# the submodule being checked out (CI checks out submodules: false).
+GITLINK_SHA=$(git -C "$ROOT" ls-tree HEAD third-party/tt-metal | awk '{print $3}')
+[[ -n "$GITLINK_SHA" ]] \
+  || { echo "no gitlink for third-party/tt-metal in HEAD" >&2; exit 1; }
+
+if [[ "$GITLINK_SHA" != "$RESOLVED" ]]; then
   if (( UPDATE )); then
     git -C "$ROOT" submodule update --init "$SUBMODULE"
-  else
-    echo "drift: submodule $SUBMODULE not initialized; run: git submodule update --init $SUBMODULE" >&2
-    exit 1
-  fi
-fi
-
-SUBMODULE_SHA=$(git -C "$SUBMODULE" rev-parse HEAD 2>/dev/null || echo "")
-if [[ "$SUBMODULE_SHA" != "$RESOLVED" ]]; then
-  if (( UPDATE )); then
     git -C "$SUBMODULE" fetch --depth 1 origin "refs/tags/$TAG:refs/tags/$TAG"
     git -C "$SUBMODULE" checkout --detach "$RESOLVED"
-    echo "updated: third-party/tt-metal HEAD ${SUBMODULE_SHA:0:12} -> ${RESOLVED:0:12} ($TAG)"
+    echo "updated: third-party/tt-metal gitlink ${GITLINK_SHA:0:12} -> ${RESOLVED:0:12} ($TAG)"
   else
-    echo "drift: third-party/tt-metal HEAD is ${SUBMODULE_SHA:0:12}, expected ${RESOLVED:0:12} ($TAG); run: $0 --update" >&2
+    echo "drift: third-party/tt-metal gitlink is ${GITLINK_SHA:0:12}, expected ${RESOLVED:0:12} ($TAG); run: $0 --update" >&2
     exit 1
   fi
 fi
