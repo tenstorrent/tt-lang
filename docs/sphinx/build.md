@@ -207,8 +207,9 @@ from one another.
 ### Updating tt-metal
 
 Edit the canonical pin file and run the verifier in update mode. The
-verifier rewrites the `ttnn == X.Y.Z` line in `requirements-runtime.txt`
-and checks out `third-party/tt-metal` at the tag's commit:
+verifier rewrites the `ttnn == X.Y.Z` line under
+`[project.optional-dependencies] device` in `pyproject.toml` and checks
+out `third-party/tt-metal` at the tag's commit:
 
 ```bash
 echo v0.69.0 > third-party/tt-metal-version
@@ -217,10 +218,10 @@ echo v0.69.0 > third-party/tt-metal-version
 
 Background: `third-party/tt-metal-version` is the single source of truth
 for the tt-metal pin (one tt-metal release tag, e.g. `v0.69.0`). The
-submodule SHA, the `ttnn` pin in `requirements-runtime.txt`, and the
-`--build-arg TT_METAL_TAG` passed to `Dockerfile.base` are all derived from
-it. CI runs `.github/scripts/check-tt-metal-pin.sh` on every PR to catch
-drift.
+submodule SHA, the `ttnn` pin under `[project.optional-dependencies]
+device` in `pyproject.toml`, and the `--build-arg TT_METAL_TAG` passed to
+`Dockerfile.base` are all derived from it. CI runs
+`.github/scripts/check-tt-metal-pin.sh` on every PR to catch drift.
 
 ### Updating LLVM
 
@@ -281,7 +282,7 @@ pointer changes together:
 
 ```bash
 git add third-party/llvm-project third-party/tt-mlir third-party/tt-metal \
-        third-party/tt-metal-version requirements-runtime.txt
+        third-party/tt-metal-version pyproject.toml
 git commit -m "Uplift submodules"
 ```
 

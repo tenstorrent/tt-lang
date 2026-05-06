@@ -32,6 +32,26 @@ class NoSdist(_sdist):
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
 
 
+def _ttnn_device_extras():
+    """Build the `device` extras list from the canonical tt-metal pin.
+
+    third-party/tt-metal-version holds a single tt-metal release tag (e.g.
+    `v0.69.0`); the matching ttnn PyPI version is the tag minus the leading
+    `v`. Linux x86_64 / aarch64 only — ttnn isn't published for other
+    platforms.
+    """
+    pin_file = REPO_ROOT / "third-party" / "tt-metal-version"
+    tag = pin_file.read_text().strip()
+    if not tag.startswith("v"):
+        raise SystemExit(f"{pin_file}: '{tag}' must start with 'v'")
+    version = tag[1:]
+    marker = (
+        "sys_platform == 'linux' "
+        "and (platform_machine == 'x86_64' or platform_machine == 'aarch64')"
+    )
+    return [f"ttnn == {version} ; {marker}"]
+
+
 def get_version_from_git():
     """Get version from git tags, matching cmake/modules/GetVersionFromGit.cmake.
 
@@ -223,6 +243,7 @@ with open(str(readme_path), "r", encoding="utf-8") as readme_file:
 
 setup(
     version=get_version_from_git(),
+    extras_require={"device": _ttnn_device_extras()},
     packages=[
         "ttl",
         "ttl._src",

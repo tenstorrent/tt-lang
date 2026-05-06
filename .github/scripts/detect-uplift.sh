@@ -18,6 +18,7 @@ PATHS=(
     third-party/tt-mlir
     third-party/tt-metal
     .github/containers/Dockerfile.base
+    pyproject.toml
     requirements-runtime.txt
 )
 

@@ -6,9 +6,14 @@
 # release tag. The single source of truth is third-party/tt-metal-version.
 #
 # Checks:
+#   - third-party/tt-metal-version is well-formed and points at a real
+#     tt-metal release tag
 #   - third-party/tt-metal submodule HEAD == commit pointed to by the tag
-#   - requirements-runtime.txt pins ttnn == <tag minus 'v'>
 #   - Dockerfile.base does not hard-code a tt-metal SHA
+#
+# The ttnn pin in `pyproject.toml`'s `[project.optional-dependencies]
+# device` is derived dynamically from this same file by
+# setup.py:_ttnn_device_extras(); no separate verification is needed.
 #
 # Usage:
 #   .github/scripts/check-tt-metal-pin.sh           # verify only (CI mode)
@@ -20,7 +25,6 @@ set -euo pipefail
 
 ROOT=$(git rev-parse --show-toplevel)
 VERSION_FILE="$ROOT/third-party/tt-metal-version"
-REQS="$ROOT/requirements-runtime.txt"
 DOCKERFILE="$ROOT/.github/containers/Dockerfile.base"
 SUBMODULE="$ROOT/third-party/tt-metal"
 TT_METAL_REMOTE="https://github.com/tenstorrent/tt-metal"
@@ -48,37 +52,6 @@ if grep -qE 'TT_METAL_DEPENDENCIES_COMMIT=[0-9a-f]{40}' "$DOCKERFILE"; then
   exit 1
 fi
 
-# --- requirements-runtime.txt ---------------------------------------------
-PINNED=$(grep -E '^[[:space:]]*ttnn[[:space:]]*==' "$REQS" \
-  | sed -E 's/^[[:space:]]*ttnn[[:space:]]*==[[:space:]]*([0-9.]+).*/\1/' \
-  | head -n1 || true)
-
-update_reqs() {
-  python3 -c "
-import re, sys, pathlib
-p = pathlib.Path('$REQS')
-text = p.read_text()
-new = re.sub(r'^([[:space:]]*ttnn[[:space:]]*==[[:space:]]*)[0-9.]+', r'\g<1>$VERSION', text, count=1, flags=re.M)
-if new == text:
-    sys.exit('no ttnn pin to update in $REQS')
-p.write_text(new)
-" 2>/dev/null || sed -i.bak -E "s/^([[:space:]]*ttnn[[:space:]]*==[[:space:]]*)[0-9.]+/\1$VERSION/" "$REQS" && rm -f "$REQS.bak"
-}
-
-if [[ -z "$PINNED" ]]; then
-  echo "drift: $REQS has no \`ttnn == X.Y.Z\` pin" >&2
-  exit 1
-fi
-if [[ "$PINNED" != "$VERSION" ]]; then
-  if (( UPDATE )); then
-    update_reqs
-    echo "updated: $REQS ttnn==$PINNED -> ttnn==$VERSION"
-  else
-    echo "drift: $REQS pins ttnn==$PINNED, but $VERSION_FILE -> $TAG (expected ttnn==$VERSION)" >&2
-    exit 1
-  fi
-fi
-
 # --- third-party/tt-metal submodule ---------------------------------------
 # Read the gitlink SHA recorded in the parent tree. This works without
 # the submodule being checked out (CI checks out submodules: false).
@@ -99,7 +72,7 @@ if [[ "$GITLINK_SHA" != "$RESOLVED" ]]; then
 fi
 
 if (( UPDATE )); then
-  echo "ok: pins regenerated for $TAG"
+  echo "ok: submodule checked out at $TAG ($(echo "$RESOLVED" | cut -c1-12))"
 else
-  echo "ok: tt-metal $TAG ($(echo "$RESOLVED" | cut -c1-12)) matches submodule and ttnn==$VERSION"
+  echo "ok: tt-metal $TAG ($(echo "$RESOLVED" | cut -c1-12)) matches submodule (ttnn pin derived dynamically by setup.py)"
 fi

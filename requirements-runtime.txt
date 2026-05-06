@@ -7,8 +7,10 @@ PyYAML>=5.4.0,<=6.0.1
 typing_extensions>=4.12.2
 ml_dtypes>=0.1.0,<=0.6.0; python_version<'3.13'
 ml_dtypes>=0.5.0,<=0.6.0; python_version>='3.13'
-# Pinned to match TT_METAL_DEPENDENCIES_COMMIT in .github/containers/Dockerfile.base
-# (tt-metal v0.69.0). Keep the version equal to the tt-metal release tag without
-# the leading 'v'. Linux x86_64 / aarch64 only — ttnn isn't published for other
-# platforms; tt-lang on macOS / Windows is sim-only.
-ttnn == 0.69.0 ; sys_platform == "linux" and (platform_machine == "x86_64" or platform_machine == "aarch64")
+# Note: ttnn is *not* listed here because it would force every base install
+# (including sim-only / macOS / dev environments and CI sim tests) to pull
+# the ~hundreds-of-MB ttnn wheel, and importing real ttnn on a runner with
+# no hardware or sfpi crashes the process. ttnn is pinned in
+# pyproject.toml's `[project.optional-dependencies] device` extras and
+# verified by .github/scripts/check-tt-metal-pin.sh against
+# third-party/tt-metal-version.

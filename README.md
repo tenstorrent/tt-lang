@@ -212,10 +212,10 @@ cd third-party/llvm-project && git fetch && git checkout <llvm-sha> && cd ../..
 ```
 
 Update tt-metal to the compatible version. The tt-metal pin is canonical in
-`third-party/tt-metal-version` (a tt-metal release tag, e.g. `v0.69.0`); the submodule
-SHA, the `ttnn` pin in `requirements-runtime.txt`, and the docker
-`TT_METAL_TAG` build arg are all derived from it. Edit the file and let the
-verifier rewrite the rest:
+`third-party/tt-metal-version` (a tt-metal release tag, e.g. `v0.69.0`); the
+submodule SHA, the `ttnn` pin under `[project.optional-dependencies] device`
+in `pyproject.toml`, and the docker `TT_METAL_TAG` build arg are all derived
+from it. Edit the file and let the verifier rewrite the rest:
 
 ```bash
 echo v0.69.0 > third-party/tt-metal-version
@@ -226,7 +226,7 @@ Commit all submodule updates together:
 
 ```bash
 git add third-party/tt-mlir third-party/llvm-project third-party/tt-metal \
-        third-party/tt-metal-version requirements-runtime.txt
+        third-party/tt-metal-version pyproject.toml
 git commit -m "Update submodules to tt-mlir <commit>"
 ```
 
