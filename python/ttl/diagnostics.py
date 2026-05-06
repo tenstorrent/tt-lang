@@ -243,9 +243,8 @@ def format_mlir_error(
             # context.
             if note_msg.startswith("see current operation"):
                 continue
-            # Drop duplicate notes (the verifier emits one
-            # `PipeNet <N> declared here` note per pipe; a multi-pipe
-            # PipeNet repeats the note at the same location).
+            # Drop duplicate notes (some passes emit the same note
+            # at the same location more than once).
             key = (note_loc, note_msg)
             if key in seen:
                 continue
