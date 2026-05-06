@@ -664,8 +664,8 @@ private:
     SmallVector<int64_t> orderedIds;
     std::map<int64_t, std::array<bool, 3>> rolesByNet;
     for (auto [id, role] : roles) {
-      auto [it, inserted] = rolesByNet.try_emplace(
-          id, std::array<bool, 3>{false, false, false});
+      auto [it, inserted] =
+          rolesByNet.try_emplace(id, std::array<bool, 3>{false, false, false});
       if (inserted) {
         orderedIds.push_back(id);
       }
@@ -812,8 +812,7 @@ private:
       std::string name = netName(netId);
       std::string msg;
       llvm::raw_string_ostream(msg)
-          << "this `ttl.copy(pipe, buffer)` receives data from PipeNet "
-          << name
+          << "this `ttl.copy(pipe, buffer)` receives data from PipeNet " << name
           << " on a node that is not a destination of any pipe in that "
              "net; wrap the copy in `"
           << name << ".if_dst(...)` or guard with `if " << name
@@ -890,9 +889,8 @@ private:
             os << "s";
           }
           os << " ";
-          llvm::interleaveComma(ids, os, [&](int64_t id) {
-            os << netName(id);
-          });
+          llvm::interleaveComma(ids, os,
+                                [&](int64_t id) { os << netName(id); });
           os << " on launched nodes that are not part of "
              << (ids.size() == 1 ? "that net" : "those nets")
              << "; wrap the surrounding work in `if "
