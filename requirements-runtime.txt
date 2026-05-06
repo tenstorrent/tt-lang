@@ -7,3 +7,8 @@ PyYAML>=5.4.0,<=6.0.1
 typing_extensions>=4.12.2
 ml_dtypes>=0.1.0,<=0.6.0; python_version<'3.13'
 ml_dtypes>=0.5.0,<=0.6.0; python_version>='3.13'
+# Pinned to match TT_METAL_DEPENDENCIES_COMMIT in .github/containers/Dockerfile.base
+# (tt-metal v0.69.0). Keep the version equal to the tt-metal release tag without
+# the leading 'v'. Linux x86_64 / aarch64 only — ttnn isn't published for other
+# platforms; tt-lang on macOS / Windows is sim-only.
+ttnn == 0.69.0 ; sys_platform == "linux" and (platform_machine == "x86_64" or platform_machine == "aarch64")

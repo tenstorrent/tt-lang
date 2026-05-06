@@ -23,6 +23,14 @@ jobs:
     uses: ./.github/workflows/call-pre-commit.yml
     secrets: inherit
 
+  check-runtime-pins:
+    name: Verify ttnn pin tracks tt-metal SHA
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - run: python3 tools/check-runtime-pins.py
+
   build:
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
@@ -37,6 +45,7 @@ jobs:
     if: always()
     needs:
       - pre-commit
+      - check-runtime-pins
       - build
       - test-sim
     runs-on: ubuntu-latest

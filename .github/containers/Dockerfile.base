@@ -11,8 +11,12 @@ SHELL ["/bin/bash", "-c"]
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# tt-metal commit for install_dependencies.sh (must match the submodule pin)
-ARG TT_METAL_DEPENDENCIES_COMMIT=beccdb232ed7532b0748f8f97aba958ba43ddae1
+# tt-metal commit for install_dependencies.sh.
+# Derived from the ttnn pin in requirements-runtime.txt: must equal
+# tt-metal's vX.Y.Z release tag SHA, where X.Y.Z is the pinned ttnn version.
+# Verified by tools/check-runtime-pins.py; regenerate with `--update`.
+# Currently: ttnn==0.69.0 -> tt-metal v0.69.0 -> cf7232ab47227167f091c3c3cf6fdbed63c8b51c
+ARG TT_METAL_DEPENDENCIES_COMMIT=cf7232ab47227167f091c3c3cf6fdbed63c8b51c
 
 # Make apt resilient to slow/intermittent mirrors (launchpad.net in particular).
 # Applies to every apt-get invocation in this image and in any image built FROM

@@ -226,6 +226,7 @@ setup(
     packages=[
         "ttl",
         "ttl._src",
+        "ttl._setup",
         "ttl.pykernel",
         "ttl.pykernel._src",
         "ttl.sim",
@@ -234,6 +235,7 @@ setup(
     package_dir={
         "ttl": "python/ttl",
         "ttl._src": "python/ttl/_src",
+        "ttl._setup": "python/ttl/_setup",
         "ttl.pykernel": "python/pykernel",
         "ttl.pykernel._src": "python/pykernel/_src",
         "ttl.sim": "python/sim",
