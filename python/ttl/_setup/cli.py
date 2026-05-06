@@ -22,19 +22,24 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     p.add_argument(
-        "--no-host", action="store_true",
+        "--no-host",
+        action="store_true",
         help="skip sfpi install (equivalent to running tt-lang-setup-tutorials only)",
     )
     p.add_argument(
-        "--no-tutorials", action="store_true",
+        "--no-tutorials",
+        action="store_true",
         help="skip tutorial copy (equivalent to running tt-lang-setup-host only)",
     )
     p.add_argument(
-        "-t", "--tutorials-target", default="tutorials",
+        "-t",
+        "--tutorials-target",
+        default="tutorials",
         help="destination directory for tutorials (default: ./tutorials)",
     )
     p.add_argument(
-        "--force", action="store_true",
+        "--force",
+        action="store_true",
         help="reinstall sfpi and overwrite existing tutorial directories",
     )
     args = p.parse_args(argv)

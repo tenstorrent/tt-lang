@@ -51,11 +51,14 @@ def main(argv: list[str] | None = None) -> int:
         description="Copy bundled tt-lang tutorial scripts to a target directory.",
     )
     p.add_argument(
-        "-t", "--target", default="tutorials",
+        "-t",
+        "--target",
+        default="tutorials",
         help="destination directory (default: ./tutorials)",
     )
     p.add_argument(
-        "--force", action="store_true",
+        "--force",
+        action="store_true",
         help="overwrite existing tutorial subdirectories",
     )
     args = p.parse_args(argv)

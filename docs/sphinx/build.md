@@ -238,15 +238,15 @@ cd third-party/tt-mlir && git fetch && git checkout <commit> && cd ../..
 
 A submodule uplift changes what the toolchain (LLVM, tt-metal) is built
 from, so the toolchain must be rebuilt; rebuilding tt-lang alone against
-the old toolchain will not work. It is recommended to install 
+the old toolchain will not work. It is recommended to install
 the new toolchain to a separate
-directory at least initially, so the working default toolchain at 
+directory at least initially, so the working default toolchain at
 `/opt/ttlang-toolchain` is preserved
 in case the uplift fails to build. `scripts/build-and-install.sh` uses
 `build-toolchain/` as its cmake build directory by default (set
 `CMAKE_BINARY_DIR` to override); you could use a `build-uplift-toolchain/`
 to keep the existing `build-toolchain/` artifacts untouched if desired. It
-is best to remove any pre-existing uplift-related toolchain build directory 
+is best to remove any pre-existing uplift-related toolchain build directory
 before starting the new toolchain build.
 
 Build the toolchain (LLVM + tt-metal) into the parallel locations:

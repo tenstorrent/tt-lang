@@ -35,9 +35,7 @@ _ARCH_MAP = {
 def _ttnn_pkg_dir() -> Path:
     spec = find_spec("ttnn")
     if spec is None or not spec.submodule_search_locations:
-        sys.exit(
-            'ttnn is not installed; run `pip install "tt-lang[device]"` first'
-        )
+        sys.exit('ttnn is not installed; run `pip install "tt-lang[device]"` first')
     return Path(next(iter(spec.submodule_search_locations)))
 
 
@@ -117,8 +115,7 @@ def main(argv: list[str] | None = None) -> int:
 
     filename = f"sfpi_{version}_{suffix}.txz"
     url = (
-        "https://github.com/tenstorrent/sfpi/releases/download/"
-        f"{version}/{filename}"
+        "https://github.com/tenstorrent/sfpi/releases/download/" f"{version}/{filename}"
     )
 
     with tempfile.TemporaryDirectory(prefix="tt-lang-sfpi-") as tmp:
