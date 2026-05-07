@@ -434,14 +434,8 @@ def _device_target_arch(args) -> Optional[str]:
 
 
 def _resolve_grid(grid, args, kwargs):
-    """Resolve the compile-time grid: callable evaluated, "auto" and "full"
-    both expanded to the device compute grid.
-
-    The launch grid for "auto" can be smaller than the device grid when
-    PipeNets are present; that refinement happens in `_compile_kernel`
-    after PipeNet discovery, since pipe coordinates are only known once
-    the operation body has run.
-    """
+    """Resolve the compile-time grid: callable is evaluated; both "auto"
+    and "full" expand to the device compute grid."""
     if callable(grid):
         return grid(*args, **kwargs)
     if grid in ("auto", "full"):
@@ -1200,7 +1194,6 @@ def _compile_kernel(
     dst_full_sync_en: Optional[bool] = None,
     target_arch: Optional[str] = None,
     compiler_options: CompilerOptions = CompilerOptions(),
-    grid_spec: Any = None,
 ) -> Optional[CompiledTTNNKernel]:
     """
     Compile kernel function to MLIR and return CompiledTTNNKernel.
@@ -1220,11 +1213,6 @@ def _compile_kernel(
         dst_full_sync_en: Optional override for dst_full_sync_en
         target_arch: Optional TT device architecture for target-specific lowering
         compiler_options: Compiler pipeline options
-        grid_spec: Original grid spec from the decorator (e.g. "auto",
-            "full", or a tuple). Used to refine the launch grid after
-            PipeNet discovery: when grid_spec == "auto" and the operation
-            uses PipeNets, the launch grid shrinks to the per-axis
-            bounding box of pipe coordinates. Defaults to `grid`.
 
     Returns:
         CompiledTTNNKernel ready for execution
@@ -1290,17 +1278,7 @@ def _compile_kernel(
 
     pipenets = _build_operation_pipenets(f, threads)
 
-    # The launch grid may shrink below the compile-time grid when grid="auto"
-    # and the operation uses PipeNets: nodes outside the pipe-coordinate
-    # bounding box never participate in any communication, so launching
-    # them is wasted overhead. The body and MLIR remain sized by `grid`
-    # (so `ttl.grid_size()` keeps its compile-time value); only the
-    # CoreRangeSet shrinks.
     launch_grid = grid
-    if grid_spec == "auto":
-        work_extent = pipenets.work_extent()
-        if work_extent is not None:
-            launch_grid = tuple(min(w, g) for w, g in zip(work_extent, grid))
 
     cb_configs = _collect_cb_configs(threads)
 
@@ -1714,7 +1692,6 @@ def pykernel_gen(
                     dst_full_sync_en=dst_sync_override,
                     target_arch=target_arch,
                     compiler_options=compiler_options,
-                    grid_spec=grid,
                 )
 
                 if compiled_kernel is not None:

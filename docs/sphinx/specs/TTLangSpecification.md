@@ -630,15 +630,21 @@ Blocks have a life cycle that starts with acquisition by using dataflow buffer's
 
 A *pipe* is a communication primitive for organizing the passing of data between data movement kernels on different nodes. A pipe is used as a source or a destination in the `ttl.copy`. The pipe is constructed with source node coordinate (`src`) and destination (`dst`), which is either a single node coordinate for unicast or *node range* for multicast. The node range uses a combination of dimension slices and values to describe a contiguous hypercube.
 
-A node range has the same number of dimensions as `grid_size(dims=N)`, and each coordinate `c_i` lies within the corresponding grid extent `G_i` (i.e. `0 <= c_i < G_i`). The range may be smaller than the grid: pipes are not required to span every node along any dimension. Pipe coordinates should be sized from the operation's *work extent*, which may be smaller than the launch extent given by `@ttl.operation(grid=...)`. The launch extent is selected by the value passed to `grid=`:
+A node range has the same number of dimensions as `grid_size(dims=N)`, and each coordinate `c_i` lies within the corresponding grid extent `G_i` (i.e. `0 <= c_i < G_i`). The range may be smaller than the grid: pipes are not required to span every node along any dimension.
+
+Two extents are distinguished. The *work extent* of an operation is the smallest axis-aligned bounding box that contains every source coordinate and every destination range across every pipe net used by the operation. The *launch extent* is the grid on which the operation is launched, selected by the `grid=` argument of `@ttl.operation(grid=...)`. Pipe coordinates should be sized from the work extent and need not span the launch extent.
+
+For example, an operation that gathers from a 4x3 work region onto a device with an 8x8 compute grid has work extent `(4, 3)`. Under `grid="full"` it launches on all 64 nodes; the 64 - 12 = 52 nodes outside the work extent must be guarded out of the pipe-coupled regions by the user.
+
+The launch extent is selected by the value passed to `grid=`:
 
 | Value | Launch extent |
 | :---- | :---- |
-| `"auto"` | When the operation uses pipe nets, the per-axis bounding box of every pipe coordinate (the work extent); otherwise the device compute grid. |
 | `"full"` | The device compute grid, regardless of pipe coordinates. |
 | Tuple | Used verbatim. |
+| `"auto"` (future) | Currently the same as `"full"`. In future may provide grid-sizing-related optimizations. |
 
-Under `grid="full"` (or any explicit tuple wider than the work extent), the user must guard pipe-coupled regions with `net.is_src()` / `net.is_dst()` / `net.is_active()` (or equivalent coordinate predicates) so that nodes outside the corresponding role skip the pipe-coupled work. The implementation must verify these guards statically and reject programs in which a pipe-coupled operation is reachable from a node outside its declared role. Under `grid="auto"`, the launch coincides with the active set and the verification is trivially satisfied.
+Whenever the launch extent is wider than the active set (which is always the case under `"full"` or any explicit tuple, and also currently under `"auto"`), the user must guard pipe-coupled regions with `net.is_src()` / `net.is_dst()` / `net.is_active()` (or equivalent coordinate predicates) so that nodes outside the corresponding role skip the pipe-coupled work. The implementation must verify these guards statically and reject programs in which a pipe-coupled operation is reachable from a node outside its declared role.
 
 | Type alias/Function | Description |
 | :---- | :---- |

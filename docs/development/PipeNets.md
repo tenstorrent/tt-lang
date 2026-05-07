@@ -9,26 +9,22 @@ before lowering, the simulator launch semantics, and the test coverage.
 The launch grid (the grid that `@ttl.operation(grid=...)` schedules
 onto) is decoupled from the *work extent* described by the user's
 PipeNets — the per-axis bounding box of every pipe coordinate. The
-`grid=` argument selects how the launch relates to the work extent:
+`grid=` argument selects the launch:
 
-- `grid="auto"` is an optimization that shrinks the launch to the work
-  extent when the operation uses PipeNets, and resolves to the device
-  compute grid otherwise. This is the default and minimizes wasted
-  kernel launches.
-- `grid="full"` always launches on the device compute grid. The user
-  must guard pipe-coupled regions with `net.is_src()` / `net.is_dst()`
-  / `net.is_active()` (or equivalent coordinate predicates) so that
+- `grid="full"` (and `grid="auto"`, which is currently an alias for
+  `"full"`) launches on the device compute grid. The user must guard
+  pipe-coupled regions with `net.is_src()` / `net.is_dst()` /
+  `net.is_active()` (or equivalent coordinate predicates) so that
   nodes outside the work extent skip the pipe-coupled work; the
   verifier rejects any pipe-coupled op that is reachable from a node
   outside its declared role.
 - An explicit tuple is used verbatim; the verifier still requires
   guards on any pipe-coupled op reachable from a non-role node.
 
-Under `grid="auto"` every launched node is active and the verifier's
-checks are trivially satisfied. Under `grid="full"` (or an over-large
-explicit tuple) the verifier rejects unguarded pipe-coupled ops with a
-diagnostic that names the offending op, an example offending
-coordinate, the contributing PipeNet(s), and a suggested guard.
+Whenever the launch is wider than the active set, the verifier
+rejects unguarded pipe-coupled ops with a diagnostic that names the
+offending op, an example offending coordinate, the contributing
+PipeNet(s), and a suggested guard.
 
 ## Overview
 
@@ -356,11 +352,9 @@ diagnostic and an example offending coordinate either runs to
 completion in the simulator with incorrect results, or trips the
 runtime deadlock detector with no static context.
 
-Grid resolution also differs: the compiler shrinks `grid="auto"` to
-the PipeNet `work_extent()` when smaller than the device grid; the
-simulator treats `"auto"` and `"full"` identically, launching the
-default device grid. The simulator does not skip nodes outside
-PipeNet roles — user guards (`net.is_active()` or coordinate
+Grid resolution is shared: both compiler and simulator treat `"auto"`
+and `"full"` as the device compute grid. Neither side skips nodes
+outside PipeNet roles — user guards (`net.is_active()` or coordinate
 predicates) decide which nodes execute pipe-coupled work.
 
 ## Example: 2D mcast matmul
@@ -466,7 +460,7 @@ runtime-observable.
 | 50b| Pipeline lit confirms `pipenet_scope` is gone post-verifier |   |     |  X  |
 | 51 | OperationPipeNets.work_extent: empty / unicast / mcast    |     |  X  |     |
 | 52 | OperationPipeNets.work_extent: union, mixed-rank padding  |     |  X  |     |
-| 53 | grid="auto" shrinks launch + grid="full" keeps launch     |  X  |  X  |     |
+| 53 | grid="auto" and grid="full" both launch the device grid   |  X  |  X  |     |
 | 54 | Verifier accepts every `arith.cmpi` predicate kind, `andi`/`ori`/`xori` boolean composition, `subi`/`muli`/`index_cast` in `evalIndex` |  |  |  X  |
 | 55 | Verifier accepts `affine.if` over `Mul`, `Mod`, `FloorDiv` (non-zero), `CeilDiv`, `AffineSymbolExpr`, else-branch |  |  |  X  |
 | 56 | Verifier accepts pipe-coupled op inside `scf.while` / `scf.execute_region` / `affine.for` / multi-block `cf.cond_br` |  |  |  X  |
