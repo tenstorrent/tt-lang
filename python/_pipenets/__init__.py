@@ -135,7 +135,6 @@ def _validate_homogeneous_pipe_kinds(pipes: Tuple[PipeUse, ...]) -> None:
     # Spec: `ttl.PipeNet[DstT](pipes: List[ttl.Pipe[DstT]])`. The shared
     # type variable means every pipe in a PipeNet has the same destination
     # type — all unicast or all multicast.
-    # https://github.com/tenstorrent/tt-lang/blob/<spec-commit>/docs/sphinx/specs/TTLangSpecification.md#L653
     has_unicast = any(isinstance(p.dst, NodeCoord) for p in pipes)
     has_multicast = any(isinstance(p.dst, NodeRange) for p in pipes)
     if has_unicast and has_multicast:

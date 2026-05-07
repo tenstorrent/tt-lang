@@ -864,7 +864,6 @@ def _build_operation_pipenets(f: Callable, threads):
     seen: Dict[int, PipeNet] = {}
 
     def visit(func):
-        # Walk closure cells AND function globals
         if func is None:
             return
         closure = getattr(func, "__closure__", None) or ()
