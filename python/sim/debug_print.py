@@ -81,7 +81,7 @@ def _format_block(block: Block) -> str:
                     warning_msg = (
                         f"Block in {block.access_state.name} state cannot be read. "
                         f"Block is in illegal state for printing "
-                        f"(Acquisition=RESERVE, Thread=DM, Access={block.access_state.name})"
+                        f"(Acquisition=RESERVE, Kernel=DM, Access={block.access_state.name})"
                     )
                     _warn_block_in_illegal_state(block, warning_msg)
                     return f"<Block shape={block.shape} [WARNING: Cannot read - in {block.access_state.name} state]>"
@@ -90,7 +90,7 @@ def _format_block(block: Block) -> str:
                     warning_msg = (
                         f"Block in {block.access_state.name} state cannot be read. "
                         f"Block is in illegal state for printing "
-                        f"(Acquisition=WAIT, Thread=DM, Access={block.access_state.name})"
+                        f"(Acquisition=WAIT, Kernel=DM, Access={block.access_state.name})"
                     )
                     _warn_block_in_illegal_state(block, warning_msg)
                     return f"<Block shape={block.shape} [WARNING: Cannot read - in {block.access_state.name} state]>"

@@ -58,12 +58,15 @@ python examples/<example_name>.py
 
 ### Error Examples (Negative Tests)
 
-The `errors/` subdirectory contains examples with intentionally incorrect code. They demonstrate how the simulator reports common mistakes.
+The `errors/` subdirectory contains examples with intentionally incorrect or risky code. They demonstrate how the simulator reports mistakes (shape checks, dataflow locks, deadlocks). Exact wording changes over time; tests in `test/sim/test_examples.py` pin the important substrings.
 
-| Example | Description | Expected Error |
-|---------|-------------|----------------|
-| `errors/eltwise_add_error.py` | Shape mismatch in copy operation | "Tensor shape does not match Block shape" |
-| `errors/copy_lock_error.py` | Block access before wait() completes | "Cannot write to Block: Block has no access" |
+| Example | Description | Expected outcome |
+|---------|-------------|------------------|
+| `errors/eltwise_add_error.py` | Copy tile count mismatch (single tile into a multi-tile block) | Failure with a shape mismatch message (tensor vs block tile counts) and a source location on the bad `copy` call |
+| `errors/copy_lock_error.py` | Store into a block while it is still a copy destination (before waiting on that copy) | Failure with NAW / copy-destination lock wording on `this buffer block`; diagnostics include the failing line and a **Where:** line pointing at the `copy(..., block)` callsite |
+| `errors/copy_source_lock_error.py` | Store into a block while it is still a live copy *source* (ROR, before waiting on `copy(block, ...)`) | Failure with ROR / copy-source wording; **Where:** points at the `copy(block, tensor)` callsite |
+| `errors/eltwise_add_deadlock.py` | Same layout as `eltwise_add.py` but read path uses `wait()` on producer buffers instead of `reserve()`, so nothing fills them | Failure with deadlock detection (`Deadlock detected: all generators blocked`) and blocked-kernel diagnostics |
+| `errors/max_dfbs_warning.py` | Allocates more DataflowBuffers than the default hardware limit | **Warning** (not fatal): `UserWarning` about the DFB limit; script still exits successfully |
 
 ## Metal Examples
 
@@ -79,7 +82,7 @@ The `metal/` subdirectories contain reference Metal implementations for comparis
 
 ## Testing
 
-All examples (except error examples) are tested in CI via the tt-lang simulator:
+Examples under `examples/` (including those under `examples/errors/`) are exercised by the simulator test suite:
 
 ```bash
 # Run all example tests
@@ -88,3 +91,5 @@ pytest test/sim/test_examples.py -v
 # Run a specific example test
 pytest test/sim/test_examples.py::test_example_cli[eltwise_add.py] -v
 ```
+
+Note: `check-ttlang-all` does not include `pytest test/sim`; see `test/TESTING.md` for simulator test scope.
