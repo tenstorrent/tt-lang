@@ -687,6 +687,25 @@ std::optional<ScopeRoles> getPipeNetScopeRoles(PipeNetScopeOp scopeOp,
 // Lattice and analysis.
 //===----------------------------------------------------------------------===//
 
+// Pick the witness op whose location sorts lexicographically first, so the
+// "this expression is not statically analyzable" note attached to a downstream
+// diagnostic is reproducible run-to-run regardless of the order the dataflow
+// solver visits predecessors. Returns the smaller of `lhs`/`rhs`; either may
+// be null.
+static Operation *pickWitness(Operation *lhs, Operation *rhs) {
+  if (!lhs) {
+    return rhs;
+  }
+  if (!rhs) {
+    return lhs;
+  }
+  std::string lhsStr;
+  std::string rhsStr;
+  llvm::raw_string_ostream(lhsStr) << lhs->getLoc();
+  llvm::raw_string_ostream(rhsStr) << rhs->getLoc();
+  return lhsStr <= rhsStr ? lhs : rhs;
+}
+
 class DomainLattice : public dataflow::AbstractDenseLattice {
 public:
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(DomainLattice)
@@ -696,8 +715,7 @@ public:
   ChangeResult join(const AbstractDenseLattice &rhs) override {
     const auto &other = static_cast<const DomainLattice &>(rhs);
     Domain joined = domainUnion(domain_, other.domain_);
-    Operation *carriedOp =
-        unanalyzableOp_ ? unanalyzableOp_ : other.unanalyzableOp_;
+    Operation *carriedOp = pickWitness(unanalyzableOp_, other.unanalyzableOp_);
     if (joined == domain_ && carriedOp == unanalyzableOp_) {
       return ChangeResult::NoChange;
     }
