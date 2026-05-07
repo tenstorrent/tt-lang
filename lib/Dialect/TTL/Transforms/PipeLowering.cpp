@@ -165,15 +165,15 @@ LogicalResult lowerCBToPipe(CopyOp op, Value srcCB, Value pipe,
     // Determine sender CB index to check if it differs from receiver.
     // The source CB may be pre- or post-conversion, so check both BindCBOp
     // (pre-conversion) and GetCompileArgValOp (post-conversion).
-    int64_t senderCBIndex = -1;
-    Value tracedSrc = traceUnrealizedCasts(srcCB);
-    if (auto bindOp = tracedSrc.getDefiningOp<BindCBOp>()) {
-      senderCBIndex = bindOp.getCbIndex().getSExtValue();
-    } else if (auto argOp =
-                   tracedSrc.getDefiningOp<ttk::GetCompileArgValOp>()) {
-      senderCBIndex = argOp.getArgIndex();
+    std::optional<int64_t> senderCBIndex = getCBIndex(srcCB);
+    if (!senderCBIndex.has_value()) {
+      Value tracedSrc = traceUnrealizedCasts(srcCB);
+      if (auto argOp = tracedSrc.getDefiningOp<ttk::GetCompileArgValOp>()) {
+        senderCBIndex = argOp.getArgIndex();
+      }
     }
-    if (senderCBIndex >= 0 && senderCBIndex != receiverInfo->cbIndex) {
+    if (senderCBIndex.has_value() &&
+        senderCBIndex.value() != receiverInfo->cbIndex) {
       auto srcCBType = llvm::dyn_cast<ttk::CBType>(cbConverted->getType());
       auto recvCB = ttk::GetCompileArgValOp::create(
           rewriter, loc, srcCBType,

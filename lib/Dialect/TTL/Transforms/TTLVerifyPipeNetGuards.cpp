@@ -17,7 +17,6 @@
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
@@ -25,6 +24,7 @@
 #include "mlir/IR/IntegerSet.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
@@ -51,10 +51,7 @@ constexpr llvm::StringLiteral kLaunchGridAttrName = "ttl.launch_grid";
 constexpr llvm::StringLiteral kPipeNetIdsAttrName = "ttl.pipe_net_ids";
 constexpr llvm::StringLiteral kPipeNetRolesAttrName = "ttl.pipe_net_roles";
 
-//===----------------------------------------------------------------------===//
-// Coord and Domain.
-//===----------------------------------------------------------------------===//
-
+// A 2D coordinate representing a launch node.
 struct Coord {
   int64_t x = 0;
   int64_t y = 0;
@@ -65,6 +62,8 @@ struct Coord {
   bool operator==(const Coord &rhs) const { return x == rhs.x && y == rhs.y; }
 };
 
+// A set of launch nodes (coordinates). `known` is false when the verifier could
+// not determine the domain.
 struct Domain {
   bool known = true;
   std::set<Coord> nodes;
@@ -167,30 +166,6 @@ bool readI64Array(Operation *op, llvm::StringLiteral name,
   return true;
 }
 
-std::optional<std::pair<int64_t, int64_t>> readLaunchGrid(ModuleOp module) {
-  SmallVector<int64_t> values;
-  if (!readI64Array(module.getOperation(), kLaunchGridAttrName, values) ||
-      values.size() != 2) {
-    return std::nullopt;
-  }
-  if (values[0] <= 0 || values[1] <= 0) {
-    return std::nullopt;
-  }
-  return std::pair<int64_t, int64_t>{values[0], values[1]};
-}
-
-std::optional<int64_t> getCBIndex(Value cb) {
-  if (auto bindOp = cb.getDefiningOp<BindCBOp>()) {
-    return bindOp.getCbIndex().getSExtValue();
-  }
-  if (auto castOp = cb.getDefiningOp<UnrealizedConversionCastOp>()) {
-    if (castOp.getInputs().size() == 1) {
-      return getCBIndex(castOp.getInputs()[0]);
-    }
-  }
-  return std::nullopt;
-}
-
 //===----------------------------------------------------------------------===//
 // Module state collected before the analysis runs and updated during it.
 //===----------------------------------------------------------------------===//
@@ -266,15 +241,17 @@ struct ModuleState {
       return success();
     }
 
-    auto launchGrid = readLaunchGrid(module);
-    if (!launchGrid) {
+    SmallVector<int64_t> launchGrid;
+    if (!readI64Array(module.getOperation(), kLaunchGridAttrName,
+                      launchGrid) ||
+        launchGrid.size() != 2 || launchGrid[0] <= 0 || launchGrid[1] <= 0) {
       module.emitError()
           << "ttl-verify-pipenet-guards requires a `ttl.launch_grid` "
              "module attribute (an i64 array of length 2 with positive "
              "entries)";
       return failure();
     }
-    baseDomain = fullGridDomain(launchGrid->first, launchGrid->second);
+    baseDomain = fullGridDomain(launchGrid[0], launchGrid[1]);
     return success();
   }
 };
@@ -730,7 +707,8 @@ public:
   ChangeResult join(const AbstractDenseLattice &rhs) override {
     const auto &other = static_cast<const DomainLattice &>(rhs);
     Domain joined = domainUnion(domain_, other.domain_);
-    Operation *carriedOp = firstByLocation(unanalyzableOp_, other.unanalyzableOp_);
+    Operation *carriedOp =
+        firstByLocation(unanalyzableOp_, other.unanalyzableOp_);
     if (joined == domain_ && carriedOp == unanalyzableOp_) {
       return ChangeResult::NoChange;
     }
