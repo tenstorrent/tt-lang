@@ -329,9 +329,7 @@ def test_single_pending_reserve_constraint() -> None:
         assert block1 is not None
 
         # Second reserve() before push() should fail
-        with pytest.raises(
-            RuntimeError, match="Cannot call reserve\\(\\) again before push\\(\\)"
-        ):
+        with pytest.raises(RuntimeError, match="Cannot call reserve\\(\\) again"):
             dfb.reserve()
 
         # Complete the copy operation and push to get to PUSH state
@@ -377,9 +375,7 @@ def test_single_pending_wait_constraint() -> None:
         assert data1 is not None
 
         # Second wait() before pop() should fail
-        with pytest.raises(
-            RuntimeError, match="Cannot call wait\\(\\) again before pop\\(\\)"
-        ):
+        with pytest.raises(RuntimeError, match="Cannot call wait\\(\\) again"):
             dfb.wait()
 
         out_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)

@@ -1147,9 +1147,9 @@ class DataflowBuffer:
         """
         if self._pending_waited_block is not None:
             raise RuntimeError(
-                "Cannot call wait() again before pop(): "
-                "DataflowBuffer already has a pending waited block. "
-                "You must call pop() before calling wait() again."
+                "Cannot call wait() again: a block from the previous wait() was not popped. "
+                "In DM kernel context this is a simulator bug — auto-pop injection should have fired "
+                "before this wait() call. Please file a bug report with a reproducer."
             )
 
         from .greenlet_scheduler import block_if_needed
@@ -1221,9 +1221,9 @@ class DataflowBuffer:
         """
         if self._pending_reserved_block is not None:
             raise RuntimeError(
-                "Cannot call reserve() again before push(): "
-                "DataflowBuffer already has a pending reserved block. "
-                "You must call push() before calling reserve() again."
+                "Cannot call reserve() again: a block from the previous reserve() was not pushed. "
+                "In DM kernel context this is a simulator bug — auto-push injection should have fired "
+                "before this reserve() call. Please file a bug report with a reproducer."
             )
 
         from .greenlet_scheduler import block_if_needed
@@ -1416,7 +1416,9 @@ class DataflowBuffer:
             nxt = [op.name for op in block.expected_ops]
             nm = _name_phrase_for_error(block)
             errors.append(
-                f"Block{nm} is reserve() acquired at kernel exit; producer kernel needs to push() before exit.\n\n"
+                f"Block{nm} from reserve() was not pushed before kernel exit. "
+                f"This is a simulator bug — auto-push injection should have fired. "
+                f"Please file a bug report with a reproducer.\n\n"
                 f"Details: block_name={block.name!r}, acquisition=RESERVE, kernel={block.thread_type.name}, "
                 f"access={block.access_state.name}, expected_ops={nxt}."
             )
@@ -1426,7 +1428,9 @@ class DataflowBuffer:
             nxt = [op.name for op in block.expected_ops]
             nm = _name_phrase_for_error(block)
             errors.append(
-                f"Block{nm} is wait() acquired at kernel exit; consumer kernel needs to pop() before exit.\n\n"
+                f"Block{nm} from wait() was not popped before kernel exit. "
+                f"This is a simulator bug — auto-pop injection should have fired. "
+                f"Please file a bug report with a reproducer.\n\n"
                 f"Details: block_name={block.name!r}, acquisition=WAIT, kernel={block.thread_type.name}, "
                 f"access={block.access_state.name}, expected_ops={nxt}."
             )
