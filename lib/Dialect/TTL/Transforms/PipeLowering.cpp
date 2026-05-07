@@ -533,17 +533,17 @@ struct IfDstLowering : OpConversionPattern<IfDstOp> {
 // have already been replaced by their unrealized-conversion-cast stand-ins.
 static SmallVector<PipeType> collectPipesForNet(Operation *op, int64_t netId) {
   SmallVector<PipeType> result;
-  llvm::SmallSet<std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t>, 4>
-      seen;
+  using PipeKey =
+      std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t, int64_t>;
+  llvm::SmallSet<PipeKey, 4> seen;
   op->getParentOfType<ModuleOp>().walk([&](Operation *o) {
     for (Type t : o->getResultTypes()) {
       auto pt = dyn_cast<PipeType>(t);
       if (!pt || pt.getPipeNetId() != netId) {
         continue;
       }
-      auto key = std::make_tuple(pt.getSrcX(), pt.getSrcY(), pt.getDstStartX(),
-                                 pt.getDstStartY(),
-                                 pt.getDstEndX() * 256 + pt.getDstEndY());
+      PipeKey key{pt.getSrcX(),      pt.getSrcY(),      pt.getDstStartX(),
+                  pt.getDstStartY(), pt.getDstEndX(),   pt.getDstEndY()};
       if (seen.insert(key).second) {
         result.push_back(pt);
       }
