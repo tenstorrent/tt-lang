@@ -84,6 +84,7 @@ struct Domain {
   }
 };
 
+// Set union of two domains; result is unknown if either input is unknown.
 Domain domainUnion(const Domain &lhs, const Domain &rhs) {
   if (!lhs.known || !rhs.known) {
     return Domain::unknown();
@@ -95,6 +96,8 @@ Domain domainUnion(const Domain &lhs, const Domain &rhs) {
   return result;
 }
 
+// Set intersection of two domains; result is unknown if either input is
+// unknown.
 Domain domainIntersect(const Domain &lhs, const Domain &rhs) {
   if (!lhs.known || !rhs.known) {
     return Domain::unknown();
@@ -106,6 +109,7 @@ Domain domainIntersect(const Domain &lhs, const Domain &rhs) {
   return result;
 }
 
+// Set difference `lhs \ rhs`; result is unknown if either input is unknown.
 Domain domainSubtract(const Domain &lhs, const Domain &rhs) {
   if (!lhs.known || !rhs.known) {
     return Domain::unknown();
@@ -117,6 +121,7 @@ Domain domainSubtract(const Domain &lhs, const Domain &rhs) {
   return result;
 }
 
+// Domain containing every coord in the [0, gridX) x [0, gridY) launch grid.
 Domain fullGridDomain(int64_t gridX, int64_t gridY) {
   Domain result;
   for (int64_t x = 0; x < gridX; ++x) {
@@ -127,12 +132,14 @@ Domain fullGridDomain(int64_t gridX, int64_t gridY) {
   return result;
 }
 
+// Singleton domain containing the pipe's source coord.
 Domain pipeSourceDomain(PipeType pipeType) {
   Domain result;
   result.nodes.insert({pipeType.getSrcX(), pipeType.getSrcY()});
   return result;
 }
 
+// Rectangular domain spanned by the pipe's destination range.
 Domain pipeDestinationDomain(PipeType pipeType) {
   Domain result;
   for (int64_t x = pipeType.getDstStartX(); x <= pipeType.getDstEndX(); ++x) {
@@ -147,6 +154,9 @@ Domain pipeDestinationDomain(PipeType pipeType) {
 // Generic helpers.
 //===----------------------------------------------------------------------===//
 
+// Read an i64 array attribute from `op`, accepting either a DenseI64ArrayAttr
+// or an ArrayAttr of IntegerAttrs. Returns false if the attribute is missing
+// or has an incompatible element type.
 bool readI64Array(Operation *op, llvm::StringLiteral name,
                   SmallVectorImpl<int64_t> &values) {
   if (auto dense = op->getAttrOfType<DenseI64ArrayAttr>(name)) {
@@ -243,8 +253,7 @@ struct ModuleState {
     }
 
     SmallVector<int64_t> launchGrid;
-    if (!readI64Array(module.getOperation(), kLaunchGridAttrName,
-                      launchGrid) ||
+    if (!readI64Array(module.getOperation(), kLaunchGridAttrName, launchGrid) ||
         launchGrid.size() != 2 || launchGrid[0] <= 0 || launchGrid[1] <= 0) {
       module.emitError()
           << "ttl-verify-pipenet-guards requires a `ttl.launch_grid` "
@@ -266,6 +275,9 @@ struct DomainResult {
   Operation *unanalyzableOp = nullptr;
 };
 
+// Evaluate an index/integer-typed `Value` at the given launch coord by
+// substituting `core_x`/`core_y` and folding through arith add/sub/mul and
+// index_cast. Returns nullopt if any subexpression cannot be folded.
 std::optional<int64_t> evalIndex(Value value, Coord coord) {
   if (value.getDefiningOp<CoreXOp>()) {
     return coord.x;
@@ -303,6 +315,9 @@ std::optional<int64_t> evalIndex(Value value, Coord coord) {
   return std::nullopt;
 }
 
+// Evaluate an i1-typed predicate `Value` at the given launch coord by
+// folding through cmpi (over `evalIndex` operands) and the boolean
+// connectives andi/ori/xori. Returns nullopt for non-foldable subexpressions.
 std::optional<bool> evalBool(Value value, Coord coord) {
   if (value.getType().isInteger(1)) {
     if (auto constant = getConstantIntValue(value)) {
@@ -438,11 +453,11 @@ DomainResult getAffineIfDomain(affine::AffineIfOp ifOp,
   return {result, nullptr};
 }
 
-// Return whichever of `lhs`/`rhs` has the lex-smaller `getLoc()`. Used to
-// pick a deterministic op when the dataflow solver could otherwise carry
-// either of two unanalyzable predicates through the lattice; without this,
-// diagnostic notes change op across runs depending on solver order. Either
-// argument may be null.
+// Return whichever of `lhs`/`rhs` has the lexicographically smaller
+// stringified `getLoc()`. Used to pick a deterministic op when the dataflow
+// solver could otherwise carry either of two unanalyzable predicates through
+// the lattice; without this, diagnostic notes change op across runs depending
+// on solver order. Either argument may be null.
 Operation *firstByLocation(Operation *lhs, Operation *rhs) {
   if (!lhs) {
     return rhs;
@@ -463,12 +478,20 @@ struct BranchDomains {
   Operation *unanalyzableOp = nullptr;
 };
 
+// Split `current` into the then/else domains for a predicate whose statically
+// known true-set is `trueDomain` (relative to `baseDomain`).
 BranchDomains exactBranches(const Domain &trueDomain, const Domain &current,
                             const Domain &baseDomain) {
   return {domainIntersect(current, trueDomain),
           domainIntersect(current, domainSubtract(baseDomain, trueDomain))};
 }
 
+// Recursively decompose an scf.if `condition` into the then/else launch-coord
+// domains. PipeNet predicates use their declared role domain directly; arith
+// and/or compose via the standard branch algebra; coord-independent
+// subexpressions widen to `current` on both sides; coord-dependent leaves are
+// evaluated per-coord via `evalBool`. `coordCache` memoizes the
+// coord-dependence walk to keep the recursion linear over shared SSA.
 BranchDomains getBranchDomainsImpl(Value condition, const Domain &current,
                                    const ModuleState &state,
                                    llvm::DenseMap<Value, bool> &coordCache) {
@@ -519,6 +542,8 @@ BranchDomains getBranchDomainsImpl(Value condition, const Domain &current,
   return {result.thenDomain, result.elseDomain, nullptr};
 }
 
+// Public entry point for `getBranchDomainsImpl`; owns the per-call
+// coord-dependence cache.
 BranchDomains getBranchDomains(Value condition, const Domain &current,
                                const ModuleState &state) {
   llvm::DenseMap<Value, bool> coordCache;
@@ -569,6 +594,9 @@ std::string formatGuardExpression(ArrayRef<std::pair<int64_t, PipeRole>> roles,
   return buffer;
 }
 
+// Emit an op error when `current` is not a subset of `allowed`. Attaches an
+// example offending coord, the unanalyzable predicate location (if any), and
+// declaration notes for each named PipeNet role.
 void checkKnownSubset(Operation *op, const Domain &current,
                       const Domain &allowed, Operation *unanalyzableOp,
                       Twine primaryMessage,
@@ -609,6 +637,8 @@ void checkKnownSubset(Operation *op, const Domain &current,
   state.sawError = true;
 }
 
+// Diagnose a `ttl.copy` whose endpoint is a pipe but whose enclosing domain
+// extends outside the pipe's source/destination set.
 void verifyCopy(CopyOp copyOp, const Domain &current, Operation *unanalyzable,
                 ModuleState &state) {
   if (auto dstPipeType = dyn_cast<PipeType>(copyOp.getDst().getType())) {
@@ -648,6 +678,9 @@ struct ScopeRoles {
   SmallVector<std::pair<int64_t, PipeRole>> roles;
 };
 
+// Read the (id, role) attribute pair from a `pipenet_scope` op and resolve
+// it against `state`. Returns nullopt and emits an op error on a malformed
+// scope.
 std::optional<ScopeRoles> getPipeNetScopeRoles(PipeNetScopeOp scopeOp,
                                                ModuleState &state) {
   SmallVector<int64_t> ids;
@@ -871,6 +904,9 @@ private:
   ModuleState &state;
 };
 
+// Cross-check each recorded `cb_wait` against the producer domain collected
+// for the same dataflow buffer. Errors when the wait's lattice domain is not
+// covered by any producer (deadlock-prone IR).
 void verifyCBWaits(ModuleState &state) {
   for (WaitUse &use : state.waitUses) {
     auto it = state.cbProducerDomains.find(use.cbIndex);
@@ -893,6 +929,8 @@ void verifyCBWaits(ModuleState &state) {
   }
 }
 
+// Walk the module and report any `pipenet_scope` or PipeNetPredicate that
+// references a PipeNet id not declared by some `ttl.create_pipe`.
 void validatePipeNetReferences(ModuleOp module, ModuleState &state) {
   module.walk([&](Operation *op) {
     auto report = [&](int64_t netId) {

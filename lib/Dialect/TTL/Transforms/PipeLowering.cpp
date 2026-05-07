@@ -542,8 +542,8 @@ static SmallVector<PipeType> collectPipesForNet(Operation *op, int64_t netId) {
       if (!pt || pt.getPipeNetId() != netId) {
         continue;
       }
-      PipeKey key{pt.getSrcX(),      pt.getSrcY(),      pt.getDstStartX(),
-                  pt.getDstStartY(), pt.getDstEndX(),   pt.getDstEndY()};
+      PipeKey key{pt.getSrcX(),      pt.getSrcY(),    pt.getDstStartX(),
+                  pt.getDstStartY(), pt.getDstEndX(), pt.getDstEndY()};
       if (seen.insert(key).second) {
         result.push_back(pt);
       }
