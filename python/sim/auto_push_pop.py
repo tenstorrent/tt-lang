@@ -1240,9 +1240,5 @@ def install_auto_push_pop(
             ev |= sys.monitoring.events.LINE
         if return_ips_v:
             ev |= sys.monitoring.events.PY_RETURN
-            # Always co-register LINE alongside PY_RETURN.  On Linux,
-            # set_local_events() with only PY_RETURN may not arm the
-            # callback reliably; pairing it with LINE resolves this.
-            ev |= sys.monitoring.events.LINE
         if ev:
             sys.monitoring.set_local_events(_TOOL_ID, code, ev)
