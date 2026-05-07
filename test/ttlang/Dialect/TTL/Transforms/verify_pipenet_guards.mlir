@@ -96,6 +96,47 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// `getCBIndex` traces through a chain of `unrealized_conversion_cast` ops
+// before reaching the `bind_cb`. Without iteration, only the first cast
+// is followed and the producer domain is silently lost, causing a false
+// "no other thread fills" diagnostic on the consumer's `cb_wait`.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @producer_chained_cb_casts
+  // CHECK-LABEL: func.func @consumer_chained_cb_casts
+  func.func @producer_chained_cb_casts() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 5, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cast1 = builtin.unrealized_conversion_cast %cb
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        to !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cast2 = builtin.unrealized_conversion_cast %cast1
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        to !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      ttl.cb_push %cast2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    func.return
+  }
+
+  func.func @consumer_chained_cb_casts() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 5, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %view = ttl.cb_wait %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // ttl.is_src is recognized structurally: the verifier doesn't fall back to
 // per-node arith analysis.
 
