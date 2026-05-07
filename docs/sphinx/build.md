@@ -3,9 +3,10 @@
 ## Overview
 
 TT-Lang uses a CMake-based build system that compiles LLVM/MLIR, a minimal
-tt-mlir subset, tt-metal, and TT-Lang's own dialects and tools from pinned git
-submodules. A single `cmake -G Ninja -B build && cmake --build build` invocation
-produces a fully working environment.
+tt-mlir subset, tt-metal, and TT-Lang's own dialects and tools from git
+submodules at recorded commits. A single
+`cmake -G Ninja -B build && cmake --build build` invocation produces a
+fully working environment.
 
 ## Prerequisites
 
@@ -127,19 +128,19 @@ Open `http://localhost:8000` to browse the docs locally.
 
 ## Submodules
 
-`.gitmodules` pins three submodules:
+`.gitmodules` declares three submodules:
 
 | Submodule                    | Purpose                                                                      |
 | ---------------------------- | ---------------------------------------------------------------------------- |
 | `third-party/llvm-project` | LLVM/MLIR source (built at configure time)                                   |
 | `third-party/tt-mlir`      | tt-mlir source (only select directories compiled)                            |
-| `third-party/tt-metal`     | Runtime (built at configure time). Canonical pin: `third-party/tt-metal-version` |
+| `third-party/tt-metal`     | Runtime (built at configure time). Canonical version file: `third-party/tt-metal-version` |
 
 To update any of these, see [Uplifting Submodules](#uplifting-submodules).
 
 ### Switching branches
 
-Different branches may pin different submodule commits. After switching branches,
+Different branches may record different submodule commits. After switching branches,
 update the submodules to match:
 
 ```bash
@@ -186,8 +187,8 @@ mismatch.
 
 ## Uplifting Submodules
 
-Each submodule in `third-party`is pinned independently; the three pins are not derived
-from one another.
+Each submodule in `third-party` records its commit independently; the three
+recorded commits are not derived from one another.
 
 - The LLVM commit in `third-party/llvm-project` is typically newer than
   `LLVM_PROJECT_VERSION` in `third-party/tt-mlir/env/CMakeLists.txt`, and
@@ -201,27 +202,29 @@ from one another.
   `-DTTLANG_ACCEPT_LLVM_MISMATCH=ON` and `-DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON`
   to cmake. `scripts/build-and-install.sh` accepts the equivalent
   `--accept-ttmetal-mismatch` flag.
-- tt-metal is pinned via `third-party/tt-metal-version`, a one-line file
-  holding a tt-metal release tag. See [Updating tt-metal](#updating-tt-metal).
+- The tt-metal version is recorded in `third-party/tt-metal-version`, a
+  one-line file holding a tt-metal release tag. See
+  [Updating tt-metal](#updating-tt-metal).
 
 ### Updating tt-metal
 
-Edit the canonical pin file and run the verifier in update mode. The
-verifier rewrites the `ttnn == X.Y.Z` line under
-`[project.optional-dependencies] device` in `pyproject.toml` and checks
-out `third-party/tt-metal` at the tag's commit:
+Edit the canonical version file and run the verifier in update mode. The
+verifier checks out `third-party/tt-metal` at the tag's commit; the ttnn
+version under `[project.optional-dependencies] device` in `pyproject.toml`
+is computed dynamically by `setup.py` from the same file, so no rewrite
+is needed:
 
 ```bash
 echo v0.69.0 > third-party/tt-metal-version
-.github/scripts/check-tt-metal-pin.sh --update
+.github/scripts/check-tt-metal-version.sh --update
 ```
 
 Background: `third-party/tt-metal-version` is the single source of truth
-for the tt-metal pin (one tt-metal release tag, e.g. `v0.69.0`). The
-submodule SHA, the `ttnn` pin under `[project.optional-dependencies]
+for the tt-metal version (one tt-metal release tag, e.g. `v0.69.0`). The
+submodule SHA, the `ttnn` version under `[project.optional-dependencies]
 device` in `pyproject.toml`, and the `--build-arg TT_METAL_TAG` passed to
 `Dockerfile.base` are all derived from it. CI runs
-`.github/scripts/check-tt-metal-pin.sh` on every PR to catch drift.
+`.github/scripts/check-tt-metal-version.sh` on every PR to catch drift.
 
 ### Updating LLVM
 
@@ -312,8 +315,9 @@ CI uses two caching layers that must be rebuilt when submodule SHAs change:
 #### Triggering a toolchain cache rebuild on PRs
 
 By default, PR and push workflows use a pre-built Docker container and skip
-building the toolchain from source. For uplift PRs where the submodule pins have
-changed, pass `build_toolchain: true` to force a from-source build:
+building the toolchain from source. For uplift PRs where the recorded
+submodule commits have changed, pass `build_toolchain: true` to force a
+from-source build:
 
 ```yaml
 # In on-pr.yml or on-push.yml, pass build_toolchain to call-build.yml:

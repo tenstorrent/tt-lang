@@ -33,17 +33,17 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent
 
 
 def _ttnn_device_extras():
-    """Build the `device` extras list from the canonical tt-metal pin.
+    """Build the `device` extras list from the canonical tt-metal version.
 
     third-party/tt-metal-version holds a single tt-metal release tag (e.g.
     `v0.69.0`); the matching ttnn PyPI version is the tag minus the leading
     `v`. Linux x86_64 / aarch64 only — ttnn isn't published for other
     platforms.
     """
-    pin_file = REPO_ROOT / "third-party" / "tt-metal-version"
-    tag = pin_file.read_text().strip()
+    version_file = REPO_ROOT / "third-party" / "tt-metal-version"
+    tag = version_file.read_text().strip()
     if not tag.startswith("v"):
-        raise SystemExit(f"{pin_file}: '{tag}' must start with 'v'")
+        raise SystemExit(f"{version_file}: '{tag}' must start with 'v'")
     version = tag[1:]
     marker = (
         "sys_platform == 'linux' "

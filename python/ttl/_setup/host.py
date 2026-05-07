@@ -4,9 +4,10 @@
 
 """Install the sfpi runtime that ttnn needs.
 
-Runs after `pip install "tt-lang[device]"`. Reads the sfpi version pinned by
-the installed ttnn wheel, downloads the matching tarball from the sfpi GitHub
-release, verifies its sha256, and extracts it into `<ttnn>/runtime/sfpi/`.
+Runs after `pip install "tt-lang[device]"`. Reads the sfpi version recorded
+by the installed ttnn wheel, downloads the matching tarball from the sfpi
+GitHub release, verifies its sha256, and extracts it into
+`<ttnn>/runtime/sfpi/`.
 
 No sudo: the install target is inside the user's venv.
 """

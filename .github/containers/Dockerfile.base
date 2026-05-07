@@ -13,8 +13,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # tt-metal release tag (e.g. v0.69.0). Required at build time; no default.
 # build-docker-images.sh passes this via --build-arg from
-# third-party/tt-metal-version, the canonical pin. Verified by
-# .github/scripts/check-tt-metal-pin.sh.
+# third-party/tt-metal-version, the canonical version file. Verified by
+# .github/scripts/check-tt-metal-version.sh.
 ARG TT_METAL_TAG
 
 # Make apt resilient to slow/intermittent mirrors (launchpad.net in particular).

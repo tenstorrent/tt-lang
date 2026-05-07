@@ -34,7 +34,7 @@ dynamic = ["version", "readme", "dependencies", "optional-dependencies"]
 
 # `optional-dependencies` is dynamic: the `device` extras are derived from
 # third-party/tt-metal-version by setup.py:_ttnn_device_extras() so the
-# ttnn pin only ever lives in one place. Available on Linux x86_64 /
+# ttnn version only ever lives in one place. Available on Linux x86_64 /
 # aarch64 (where ttnn publishes wheels); on other platforms tt-lang is
 # sim-only and the extras list is empty.
 

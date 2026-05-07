@@ -11,15 +11,14 @@
 #   - third-party/tt-metal submodule HEAD == commit pointed to by the tag
 #   - Dockerfile.base does not hard-code a tt-metal SHA
 #
-# The ttnn pin in `pyproject.toml`'s `[project.optional-dependencies]
+# The ttnn version in `pyproject.toml`'s `[project.optional-dependencies]
 # device` is derived dynamically from this same file by
 # setup.py:_ttnn_device_extras(); no separate verification is needed.
 #
 # Usage:
-#   .github/scripts/check-tt-metal-pin.sh           # verify only (CI mode)
-#   .github/scripts/check-tt-metal-pin.sh --update  # rewrite ttnn pin and
-#                                                   # check out submodule
-#                                                   # at the tag's commit
+#   .github/scripts/check-tt-metal-version.sh           # verify only (CI mode)
+#   .github/scripts/check-tt-metal-version.sh --update  # check out submodule
+#                                                       # at the tag's commit
 
 set -euo pipefail
 
@@ -74,5 +73,5 @@ fi
 if (( UPDATE )); then
   echo "ok: submodule checked out at $TAG ($(echo "$RESOLVED" | cut -c1-12))"
 else
-  echo "ok: tt-metal $TAG ($(echo "$RESOLVED" | cut -c1-12)) matches submodule (ttnn pin derived dynamically by setup.py)"
+  echo "ok: tt-metal $TAG ($(echo "$RESOLVED" | cut -c1-12)) matches submodule (ttnn version derived dynamically by setup.py)"
 fi

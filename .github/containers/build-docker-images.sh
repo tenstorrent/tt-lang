@@ -110,8 +110,9 @@ echo "$IRD_IMAGE"  > .docker-image-ird
 
 # Read the canonical tt-metal tag from third-party/tt-metal-version and pass
 # it to the Dockerfile.base build via --build-arg. Single source of truth:
-# every tt-metal pin (submodule SHA, ttnn version, install_dependencies.sh
-# URL) is derived from this tag and verified by check-tt-metal-pin.sh.
+# every tt-metal-derived value (submodule SHA, ttnn version,
+# install_dependencies.sh URL) comes from this tag and is verified by
+# check-tt-metal-version.sh.
 TT_METAL_VERSION_FILE="$(git rev-parse --show-toplevel)/third-party/tt-metal-version"
 if [[ ! -f "$TT_METAL_VERSION_FILE" ]]; then
     echo "ERROR: missing $TT_METAL_VERSION_FILE" >&2
