@@ -16,7 +16,9 @@
 # Optional argument: root directory containing the examples/ tree.
 # Defaults to /root (matching the dist container layout).
 
-set -uo pipefail
+set -uxo pipefail
+
+TUTORIAL_TIMEOUT_SECONDS="${TUTORIAL_TIMEOUT_SECONDS:-60}"
 
 # Activate the tt-lang environment if not already active.
 if [[ "${TTLANG_ENV_ACTIVATED:-0}" != "1" ]]; then
@@ -66,11 +68,14 @@ for script in "${SCRIPTS[@]}"; do
     label="${script#"${ROOT}/"}"
     echo "--- ${label} ---"
     rc=0
-    python3 "$script" || rc=$?
+    timeout --signal=TERM --kill-after=10 "${TUTORIAL_TIMEOUT_SECONDS}" python3 "$script" || rc=$?
 
     if [[ $rc -eq 0 ]]; then
         RESULTS+=("${label} ... PASS")
         (( N_PASS++ ))
+    elif [[ $rc -eq 124 ]]; then
+        RESULTS+=("${label} ... HANG (timed out after ${TUTORIAL_TIMEOUT_SECONDS}s)")
+        (( N_FAIL++ ))
     else
         RESULTS+=("${label} ... FAIL (rc=${rc})")
         (( N_FAIL++ ))
