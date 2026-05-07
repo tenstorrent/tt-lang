@@ -852,11 +852,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
-// `scf.while` at function top level (no enclosing region narrowing the
-// lattice). The dataflow framework looks `GuardAnalysis` up by `TypeID`
-// when the back-edge re-enqueues body ops; without an explicit TypeID
-// macro on the analysis class the lookup aborts because `GuardAnalysis`
-// lives in an anonymous namespace.
+// `scf.while` at function top level, with the pipe-coupled op behind an
+// `if_src` inside the body.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @scf_while_top_level
