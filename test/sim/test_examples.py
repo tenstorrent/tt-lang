@@ -11,7 +11,6 @@ between tests for isolation. This is much faster than subprocess-based testing.
 from __future__ import annotations
 
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -31,11 +30,11 @@ from sim.program import set_max_l1_bytes
 from sim.ttlang_sim import execute_script_with_simulator
 import sim
 
-# Marker for tests that require ttnn
-requires_ttnn = pytest.mark.skipif(
+_requires_ttnn_skip = pytest.mark.skipif(
     not TTNN_AVAILABLE,
     reason="ttnn not available (required for tests using ttnn golden functions)",
 )
+requires_ttnn_marks = (pytest.mark.requires_ttnn, _requires_ttnn_skip)
 
 # Paths
 THIS_DIR = Path(__file__).resolve().parent
@@ -112,14 +111,14 @@ def run_script_in_process(
     [
         pytest.param(
             "broadcast.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
         "broadcast_demo.py",
         "group_transfer_upsample.py",
         "height_shard_gather.py",
         pytest.param(
             "general_broadcast.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
         "eltwise_add.py",
         "eltwise_add_3d.py",
@@ -137,35 +136,35 @@ def run_script_in_process(
         "eltwise_1d_broadcast.py",
         pytest.param(
             "elementwise-tutorial/step_0_ttnn_base.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
         pytest.param(
             "elementwise-tutorial/step_1_single_node_single_tile_block.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
         pytest.param(
             "elementwise-tutorial/step_2_single_node_multitile_block.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
         pytest.param(
             "elementwise-tutorial/step_3_multinode.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
         pytest.param(
             "elementwise-tutorial/step_4_multinode_grid_auto.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
         pytest.param(
             "tutorial/single_node_broadcast_single_tile_block.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
         pytest.param(
             "tutorial/single_node_broadcast_multitile_blocks.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
         pytest.param(
             "tt_upsample.py",
-            marks=requires_ttnn,
+            marks=requires_ttnn_marks,
         ),
     ],
 )
@@ -250,13 +249,18 @@ def test_copy_lock_error_fails_with_expected_error(scheduler: str) -> None:
     assert code != 0, f"Expected copy_lock_error.py to fail, but it exited with code 0"
     # Check for the core error message (copy access violation)
     assert (
-        "Cannot write to Block: Block is locked as copy destination until tx.wait() completes (copy lock error)"
-        in out
+        "Cannot write to this buffer block" in out
+        and "copy lock error" in out
+        and "in-flight" in out
     ), f"Expected error message not found in output:\n{out}"
     # Verify source location is shown (line 90 where we attempt to write to a_block)
     assert (
         "examples/errors/copy_lock_error.py:90" in out
     ), f"Expected source location not found in output:\n{out}"
+    assert (
+        "Where: copy into this block was requested at" in out
+        and "copy_lock_error.py:87" in out
+    ), f"Expected pending-copy callsite (ttl.copy line 87) in output:\n{out}"
 
     # Verify the reported line number is correct by checking the actual source
     source_file = ERRORS_DIR / "copy_lock_error.py"
@@ -271,77 +275,112 @@ def test_copy_lock_error_fails_with_expected_error(scheduler: str) -> None:
         )
 
 
-def test_eltwise_add_deadlock_detection() -> None:
-    """Test deadlock detection in eltwise_add.py with reserve() changed to wait().
+@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
+def test_copy_source_lock_error_fails_with_expected_error(scheduler: str) -> None:
+    """copy_source_lock_error.py fails with ROR copy-source lock and pending-copy Where line."""
+    code, out = run_script_in_process(
+        ERRORS_DIR / "copy_source_lock_error.py", scheduler
+    )
+    assert code != 0, f"Expected copy_source_lock_error.py to fail, got exit {code}"
+    assert (
+        "Cannot write to this buffer block" in out
+        and "ROR" in out
+        and "in-flight" in out.lower()
+    ), f"Expected ROR copy-source lock message in output:\n{out}"
+    assert (
+        "examples/errors/copy_source_lock_error.py:87" in out
+    ), f"Expected diagnostic line for bad store in output:\n{out}"
+    assert (
+        "Where: copy from this block was requested at" in out
+        and "copy_source_lock_error.py:85" in out
+    ), f"Expected pending-copy callsite (ttl.copy from block, line 85) in output:\n{out}"
 
-    Replacing a_dfb.reserve() with a_dfb.wait() in the read DM thread causes a
-    deadlock: read blocks waiting for data that only it was supposed to produce,
-    compute also blocks waiting on a_dfb, and write blocks waiting on out_dfb.
+    source_file = ERRORS_DIR / "copy_source_lock_error.py"
+    lines = source_file.read_text().splitlines()
+    assert "tx_src = ttl.copy(a_block, out[row_slice, col_slice])" in lines[84].strip()
+    assert "a_block.store(a_block)" in lines[86].strip()
+
+
+@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
+@pytest.mark.parametrize(
+    "error_script", ["copy_lock_error.py", "copy_source_lock_error.py"]
+)
+def test_operation_kernel_errors_do_not_print_simulator_stack_frames(
+    scheduler: str,
+    error_script: str,
+) -> None:
+    """Failures inside kernels driven by ``ttl.operation`` must not dump Python tracebacks through simulator internals.
+
+    The cooperative scheduler prints ``print_diagnostic_error`` (user file:line + snippet). ``ttlang_sim`` must not
+    call ``traceback.print_exception`` for those wrapped errors, which would list frames such as
+    ``greenlet_scheduler.py``, ``program.py``, or ``dfb.py``.
     """
-    import re
-    import tempfile
-
-    source_file = EXAMPLES_DIR / "eltwise_add.py"
-    with open(source_file) as f:
-        content = f.read()
-
-    original = "with a_dfb.reserve() as a_blk, b_dfb.reserve() as b_blk:"
-    modified = "with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:"
-    modified_content = content.replace(original, modified)
+    code, out = run_script_in_process(ERRORS_DIR / error_script, scheduler)
+    assert code != 0
+    assert f"examples/errors/{error_script}" in out
 
     assert (
-        modified_content != content
-    ), "Failed to modify eltwise_add.py: pattern not found"
+        "Traceback (most recent call last):" not in out
+    ), f"Expected no Python traceback header in captured output:\n{out}"
 
-    # Find line number of the modified line to verify it appears in the deadlock output
-    modified_line_num = next(
+    for path_fragment in (
+        "greenlet_scheduler.py",
+        "python/sim/program.py",
+        "python/sim/dfb.py",
+        "python/sim/greenlet_scheduler.py",
+    ):
+        assert (
+            path_fragment not in out
+        ), f"Unexpected simulator frame reference {path_fragment!r} in output:\n{out}"
+
+
+def test_eltwise_add_deadlock_detection() -> None:
+    """Deadlock example: read uses wait() on a_dfb/b_dfb instead of reserve().
+
+    See ``examples/errors/eltwise_add_deadlock.py``. Read blocks waiting for data
+    that only it was supposed to produce; compute also blocks on a_dfb/b_dfb; write
+    blocks on out_dfb.
+    """
+    import re
+
+    script = ERRORS_DIR / "eltwise_add_deadlock.py"
+    deadlock_line_mark = "with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:"
+    deadlock_lines = script.read_text().splitlines()
+    deadlock_line_num = next(
         i
-        for i, line in enumerate(modified_content.splitlines(), start=1)
-        if modified in line
+        for i, line in enumerate(deadlock_lines, start=1)
+        if deadlock_line_mark in line
     )
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp:
-        tmp.write(modified_content)
-        tmp_path = Path(tmp.name)
+    code, out = run_script_in_process(script)
 
-    try:
-        code, out = run_script_in_process(tmp_path)
+    assert code != 0, f"Expected {script.name} to fail, but it exited with code 0"
 
-        assert (
-            code != 0
-        ), f"Expected modified eltwise_add.py to fail, but it exited with code 0"
+    assert (
+        "Deadlock detected: all generators blocked" in out
+    ), f"Expected deadlock message:\n{out}"
+    assert (
+        "DataflowBuffer(a_dfb)" in out
+    ), f"Expected to see a_dfb in deadlock output:\n{out}"
+    assert (
+        "blocked on wait()" in out
+    ), f"Expected 'blocked on wait()' in deadlock output:\n{out}"
 
-        assert (
-            "Deadlock detected: all generators blocked" in out
-        ), f"Expected deadlock message:\n{out}"
-        assert (
-            "DataflowBuffer(a_dfb)" in out
-        ), f"Expected to see a_dfb in deadlock output:\n{out}"
-        assert (
-            "blocked on wait()" in out
-        ), f"Expected 'blocked on wait()' in deadlock output:\n{out}"
+    line_number_pattern = r"-->\s+.*?:(\d+):\d+"
+    reported_line_numbers = {int(n) for n in re.findall(line_number_pattern, out)}
+    assert reported_line_numbers, f"No source locations found in:\n{out}"
+    assert deadlock_line_num in reported_line_numbers, (
+        f"Expected line {deadlock_line_num} (read path wait() on a_dfb/b_dfb) in "
+        f"reported locations {reported_line_numbers}.\nOutput:\n{out}"
+    )
 
-        # Check that reported source locations point to actual wait()/reserve() calls
-        # and that the modified line is among them
-        line_number_pattern = r"-->\s+.*?:(\d+):\d+"
-        reported_line_numbers = {int(n) for n in re.findall(line_number_pattern, out)}
-        assert reported_line_numbers, f"No source locations found in:\n{out}"
-        assert modified_line_num in reported_line_numbers, (
-            f"Expected line {modified_line_num} (the wait() call) in reported "
-            f"locations {reported_line_numbers}.\nOutput:\n{out}"
+    for line_num in reported_line_numbers:
+        assert line_num <= len(deadlock_lines), f"Reported line {line_num} out of range"
+        line_content = deadlock_lines[line_num - 1]
+        assert "wait()" in line_content or "reserve()" in line_content, (
+            f"Line {line_num} does not contain wait() or reserve(): "
+            f"{line_content.strip()}"
         )
-
-        tmp_lines = tmp_path.read_text().splitlines()
-        for line_num in reported_line_numbers:
-            assert line_num <= len(tmp_lines), f"Reported line {line_num} out of range"
-            line_content = tmp_lines[line_num - 1]
-            assert "wait()" in line_content or "reserve()" in line_content, (
-                f"Line {line_num} does not contain wait() or reserve(): "
-                f"{line_content.strip()}"
-            )
-
-    finally:
-        tmp_path.unlink()
 
 
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])
@@ -420,9 +459,11 @@ def test_matmul_tutorial_sim(script_name: str) -> None:
     "script_name",
     [
         # step_0 is a plain ttnn program — requires real ttnn hardware.
-        pytest.param("step_0_ttnn_base.py", marks=requires_ttnn),
+        pytest.param("step_0_ttnn_base.py", marks=requires_ttnn_marks),
         # step_7 uses ttnn.all_reduce and ttnn.relu — requires real ttnn hardware.
-        pytest.param("step_7_multidevice_shard_k_all_reduce.py", marks=requires_ttnn),
+        pytest.param(
+            "step_7_multidevice_shard_k_all_reduce.py", marks=requires_ttnn_marks
+        ),
     ],
 )
 @pytest.mark.matmul_tutorial_ttnn
