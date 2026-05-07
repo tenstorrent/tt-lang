@@ -110,10 +110,10 @@ def operation(
             # Get registered threads
             threads = get_registered_threads()
 
-            # All kernels must define exactly 3 threads: compute, dm0, dm1
+            # All device kernels must register compute, dm0, and dm1.
             if len(threads) != 3:
                 raise ValueError(
-                    f"Kernel must define exactly 3 threads (compute, dm0, dm1), got {len(threads)}"
+                    f"Kernel must define exactly 3 kernels (compute, dm0, dm1), got {len(threads)}"
                 )
 
             # Sort threads by type to ensure consistent ordering regardless of definition order
@@ -129,11 +129,11 @@ def operation(
 
             if len(compute_threads) != 1:
                 raise ValueError(
-                    f"Kernel must define exactly 1 compute thread, got {len(compute_threads)}"
+                    f"Kernel must define exactly 1 compute kernel, got {len(compute_threads)}"
                 )
             if len(dm_threads) != 2:
                 raise ValueError(
-                    f"Kernel must define exactly 2 datamovement threads, got {len(dm_threads)}"
+                    f"Kernel must define exactly 2 datamovement kernels, got {len(dm_threads)}"
                 )
 
             # Arrange in expected order: compute, dm0, dm1
