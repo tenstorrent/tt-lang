@@ -10,26 +10,6 @@ set(TTLANG_VERSION "${_TTLANG_VERSION_FALLBACK}")
 set(_describe_failure_reason "")
 
 if(GIT_FOUND)
-  # Auto-mark the source tree as a safe.directory for git when the
-  # source is owned by a different uid than the user running cmake
-  # (typical for a host-mounted repo inside a docker container).
-  # Without this, git refuses with "fatal: detected dubious ownership"
-  # and cmake silently falls back to a placeholder version.
-  if(UNIX)
-    execute_process(
-      COMMAND ${GIT_EXECUTABLE} config --global --get-all safe.directory
-      OUTPUT_VARIABLE _safe_dirs
-      ERROR_QUIET
-    )
-    string(FIND "${_safe_dirs}" "${CMAKE_SOURCE_DIR}" _safe_match)
-    if(_safe_match EQUAL -1)
-      execute_process(
-        COMMAND ${GIT_EXECUTABLE} config --global --add
-                safe.directory ${CMAKE_SOURCE_DIR}
-        ERROR_QUIET
-      )
-    endif()
-  endif()
 
   execute_process(
     COMMAND ${GIT_EXECUTABLE} describe --tags --match "v[0-9]*" --abbrev=0
