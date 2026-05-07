@@ -936,3 +936,112 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     func.return
   }
 }
+
+// -----
+
+// `affine.if` constraint with a pure inequality (`>= 0`): `d0 - 1 >= 0`
+// narrows to {1, 2}, matching the destination range. Exercises the
+// inequality branch of `set.isEq(i) ? v != 0 : v < 0` on a constraint that
+// the verifier should accept.
+
+#dstRange = affine_set<(d0) : (d0 - 1 >= 0)>
+module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @affine_if_inequality
+  func.func @affine_if_inequality() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %x = ttl.core_x : index
+    affine.if #dstRange(%x) {
+      %recv = ttl.copy %pipe, %cb
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
+             !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+          -> !ttl.transfer_handle
+    }
+    func.return
+  }
+}
+
+// -----
+
+// `affine.if` IntegerSet with two AND'd constraints: `d0 >= 0` and
+// `0 - d0 >= 0` together imply `d0 == 0`. Exercises the per-coord
+// constraint loop that breaks on the first failing constraint.
+
+#twoConstraints = affine_set<(d0) : (d0 >= 0, 0 - d0 >= 0)>
+module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @affine_if_multi_constraint
+  func.func @affine_if_multi_constraint() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %x = ttl.core_x : index
+    affine.if #twoConstraints(%x) {
+      %send = ttl.copy %cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
+// `affine.if` with a 2-D IntegerSet using both `core_x` and `core_y`. The
+// constraint `(d0 == 0, d1 == 0)` narrows to {(0, 0)}, the pipe source.
+// Exercises operand substitution for a multi-dimensional set on a non-1D
+// launch grid.
+
+#originSet = affine_set<(d0, d1) : (d0 == 0, d1 == 0)>
+module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
+  // CHECK-LABEL: func.func @affine_if_multi_dim
+  func.func @affine_if_multi_dim() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 1) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %x = ttl.core_x : index
+    %y = ttl.core_y : index
+    affine.if #originSet(%x, %y) {
+      %send = ttl.copy %cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>)
+          -> !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
+// `affine.if` else-branch where the predicate is an inequality, not an
+// equality: `d0 - 1 >= 0` is true on {1, 2}, false on {0}. The else region
+// runs on {0} (the pipe source) and validates the send; the then region
+// runs on {1, 2} (the pipe destination range) and validates the receive.
+
+#dstHalf = affine_set<(d0) : (d0 - 1 >= 0)>
+module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @affine_if_inequality_else
+  func.func @affine_if_inequality_else() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %x = ttl.core_x : index
+    affine.if #dstHalf(%x) {
+      %recv = ttl.copy %pipe, %cb
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
+             !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+          -> !ttl.transfer_handle
+    } else {
+      %send = ttl.copy %cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}

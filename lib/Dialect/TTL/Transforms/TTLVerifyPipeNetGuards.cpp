@@ -491,7 +491,9 @@ BranchDomains exactBranches(const Domain &trueDomain, const Domain &current,
 // and/or compose via the standard branch algebra; coord-independent
 // subexpressions widen to `current` on both sides; coord-dependent leaves are
 // evaluated per-coord via `evalBool`. `coordCache` memoizes the
-// coord-dependence walk to keep the recursion linear over shared SSA.
+// coord-dependence walk so that values used by multiple operands are visited
+// once, keeping the recursion linear in the number of SSA values reachable
+// from `condition`.
 BranchDomains getBranchDomainsImpl(Value condition, const Domain &current,
                                    const ModuleState &state,
                                    llvm::DenseMap<Value, bool> &coordCache) {
@@ -718,6 +720,14 @@ std::optional<ScopeRoles> getPipeNetScopeRoles(PipeNetScopeOp scopeOp,
 // Lattice and analysis.
 //===----------------------------------------------------------------------===//
 
+// Lattice element for the guard analysis, attached to each program point.
+// Stores two things:
+//   - `domain_`: the launch coords that can reach this point under the
+//     enclosing region predicates.
+//   - `unanalyzableOp_`: the predicate op the verifier could not statically
+//     evaluate, used to attach a note on downstream pipe-coupled diagnostics.
+// `join` is set-union on `domain_` and `firstByLocation` on `unanalyzableOp_`,
+// applied at control-flow merges.
 class DomainLattice : public dataflow::AbstractDenseLattice {
 public:
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(DomainLattice)
@@ -774,6 +784,19 @@ private:
   Operation *unanalyzableOp_ = nullptr;
 };
 
+// Forward dense dataflow analysis that propagates a `DomainLattice` through
+// the IR and runs the verifier checks at each operation.
+//
+// At entry to a kernel-thread function the lattice is `baseDomain` (the full
+// launch grid). The analysis narrows the lattice in three places:
+//   - Region entry (`visitRegionBranchControlFlowTransfer`): an `scf.if` /
+//     `affine.if` / `ttl.if_src` / `ttl.if_dst` / `ttl.pipenet_scope` shrinks
+//     the inherited domain to the subset of coords where its predicate holds.
+//   - Operation visit (`visitOperation`): pipe-coupled ops (`ttl.copy` on a
+//     pipe) are checked against the current narrowed domain. CB push/wait ops
+//     are recorded into `ModuleState` for the post-pass `verifyCBWaits`
+//     cross-check.
+//   - Control-flow merges: handled by `DomainLattice::join` (set-union meet).
 class GuardAnalysis
     : public dataflow::DenseForwardDataFlowAnalysis<DomainLattice> {
 public:
@@ -811,6 +834,11 @@ public:
     return success();
   }
 
+  // Compute the lattice at the entry of a region inside a
+  // `RegionBranchOpInterface` op. The parent-into-region case
+  // (`regionFrom == nullopt`) narrows `before.getDomain()` to the coords
+  // where the chosen region's predicate holds; region exit and
+  // sibling-to-sibling transitions delegate to the base implementation.
   void visitRegionBranchControlFlowTransfer(RegionBranchOpInterface branch,
                                             std::optional<unsigned> regionFrom,
                                             std::optional<unsigned> regionTo,

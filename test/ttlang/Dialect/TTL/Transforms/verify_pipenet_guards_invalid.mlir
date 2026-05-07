@@ -244,6 +244,34 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
 
 // -----
 
+// `affine.if` IntegerSet with two AND'd constraints that together still
+// admit nodes outside the source role: `(d0 >= 0, 3 - d0 >= 0)` narrows to
+// {0..3}, but the pipe source is only {0}. Exercises the multi-constraint
+// path with a domain that the verifier must reject.
+
+#multiWide = affine_set<(d0) : (d0 >= 0, 3 - d0 >= 0)>
+module attributes {ttl.launch_grid = [8 : i64, 1 : i64]} {
+  func.func @affine_if_multi_constraint_too_wide() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-note @below {{PipeNet net_0 declared here}}
+    %pipe = ttl.create_pipe src(0, 0) dst(4, 0) to(7, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(4, 0) to(7, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %x = ttl.core_x : index
+    affine.if #multiWide(%x) {
+      // expected-error @below {{this `ttl.copy(buffer, pipe)` sends data on PipeNet net_0 from a node that is not a source}}
+      // expected-note @below {{example node where the guard does not hold: core_x=1}}
+      %send = ttl.copy %cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(4, 0) to(7, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
 #wideSet = affine_set<(d0) : (d0 - 4 >= 0)>
 module attributes {ttl.launch_grid = [8 : i64, 1 : i64]} {
   func.func @affine_if_too_wide() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
