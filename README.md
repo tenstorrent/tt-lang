@@ -33,7 +33,7 @@ source ttlang-venv/bin/activate
 
 On linux machines with Tenstorrent hardware (Linux x86_64 / aarch64):
 ```bash
-pip install "tt-lang"
+pip install tt-lang
 tt-lang-setup                     # install matching sfpi runtime + copy tutorials
 ```
 
