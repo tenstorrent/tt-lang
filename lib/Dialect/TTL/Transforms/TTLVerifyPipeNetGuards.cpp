@@ -746,6 +746,8 @@ private:
 class GuardAnalysis
     : public dataflow::DenseForwardDataFlowAnalysis<DomainLattice> {
 public:
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(GuardAnalysis)
+
   GuardAnalysis(DataFlowSolver &solver, ModuleState &state)
       : DenseForwardDataFlowAnalysis(solver), state(state) {}
 

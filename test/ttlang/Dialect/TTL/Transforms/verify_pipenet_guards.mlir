@@ -811,6 +811,42 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// `scf.while` at function top level (no enclosing region narrowing the
+// lattice). The dataflow framework looks `GuardAnalysis` up by `TypeID`
+// when the back-edge re-enqueues body ops; without an explicit TypeID
+// macro on the analysis class the lookup aborts because `GuardAnalysis`
+// lives in an anonymous namespace.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @scf_while_top_level
+  func.func @scf_while_top_level() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %c0 = arith.constant 0 : index
+    %c4 = arith.constant 4 : index
+    %c1 = arith.constant 1 : index
+    %r = scf.while (%i = %c0) : (index) -> index {
+      %lt = arith.cmpi slt, %i, %c4 : index
+      scf.condition(%lt) %i : index
+    } do {
+    ^bb0(%i: index):
+      ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        %send = ttl.copy %cb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+               !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+      }
+      %next = arith.addi %i, %c1 : index
+      scf.yield %next : index
+    }
+    func.return
+  }
+}
+
+// -----
+
 // `affine.for` adds no predicate. User guard outside still covers.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
