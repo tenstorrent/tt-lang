@@ -284,6 +284,20 @@ mlir::LogicalResult mlir::tt::ttl::CopyTileOp::verify() {
   return success();
 }
 
+mlir::LogicalResult mlir::tt::ttl::TileTypecastOp::verify() {
+  auto inputTy = mlir::cast<tt::ttcore::TileType>(getInput().getType());
+  auto resultTy = mlir::cast<tt::ttcore::TileType>(getResult().getType());
+
+  // The tile shape must be preserved; only the element data type changes.
+  if (inputTy.getShape() != resultTy.getShape()) {
+    return emitOpError()
+           << "input and result tile shapes must match, but got input: "
+           << inputTy << ", result: " << resultTy;
+  }
+
+  return success();
+}
+
 void mlir::tt::ttl::ComputeOp::print(mlir::OpAsmPrinter &p) {
   p << " ins(";
   p.printOperands(getInputs());

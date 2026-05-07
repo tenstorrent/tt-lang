@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+// SPDX-FileCopyrightText: (c) 2026 Tenstorrent USA, Inc.
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -459,10 +459,21 @@ inline FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
   }
 
   if (sawF32 && sawNonF32) {
-    return computeOp.emitOpError(
-        "mixed f32 and non-f32 tile arguments; "
-        "DST capacity uses f32 limits (4 tiles) which may produce "
-        "incorrect results");
+    // Mixed dtypes are intentional when the body performs an explicit dtype
+    // conversion (ttl.tile_typecast); fall through to f32 capacity, which is
+    // conservative and safe for that pattern. Otherwise, reject the mix
+    // because the kernel may have been authored assuming bf16 capacity.
+    bool hasIntentionalDtypeConversion = false;
+    computeOp.getRegion().walk([&](TileTypecastOp) {
+      hasIntentionalDtypeConversion = true;
+      return WalkResult::interrupt();
+    });
+    if (!hasIntentionalDtypeConversion) {
+      return computeOp.emitOpError(
+          "mixed f32 and non-f32 tile arguments; "
+          "DST capacity uses f32 limits (4 tiles) which may produce "
+          "incorrect results");
+    }
   }
 
   bool isFloat32 = sawF32 || fp32DestAccEn;
