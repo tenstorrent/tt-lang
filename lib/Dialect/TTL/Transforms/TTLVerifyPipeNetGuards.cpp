@@ -397,10 +397,9 @@ std::optional<bool> evalBool(Value value, Coord coord) {
   return std::nullopt;
 }
 
-// Memoized: a value's coord-dependence is invariant for the duration of one
-// guard analysis, and the operand graph above an `scf.if` condition can have
-// shared subexpressions (e.g. `(x + 1) * (x + 1)` reuses `x + 1`). Without
-// caching, each shared subexpression doubles the work per level.
+// Memoize so a shared SSA value reached via multiple operand chains is
+// visited once. Without the cache the walk is exponential in the size of
+// any DAG above the condition.
 bool dependsOnCoord(Value v, llvm::DenseMap<Value, bool> &cache) {
   if (auto it = cache.find(v); it != cache.end()) {
     return it->second;
