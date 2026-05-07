@@ -397,20 +397,33 @@ std::optional<bool> evalBool(Value value, Coord coord) {
   return std::nullopt;
 }
 
-bool dependsOnCoord(Value v) {
+// Memoized: a value's coord-dependence is invariant for the duration of one
+// guard analysis, and the operand graph above an `scf.if` condition can have
+// shared subexpressions (e.g. `(x + 1) * (x + 1)` reuses `x + 1`). Without
+// caching, each shared subexpression doubles the work per level.
+bool dependsOnCoord(Value v, llvm::DenseMap<Value, bool> &cache) {
+  if (auto it = cache.find(v); it != cache.end()) {
+    return it->second;
+  }
+  // Insert false first so a self-cycle (shouldn't happen in valid SSA, but
+  // also shouldn't recurse forever) terminates.
+  cache.try_emplace(v, false);
   Operation *op = v.getDefiningOp();
-  if (!op) {
-    return false;
-  }
-  if (isa<CoreXOp, CoreYOp>(op)) {
-    return true;
-  }
-  for (Value operand : op->getOperands()) {
-    if (dependsOnCoord(operand)) {
-      return true;
+  bool result = false;
+  if (op) {
+    if (isa<CoreXOp, CoreYOp>(op)) {
+      result = true;
+    } else {
+      for (Value operand : op->getOperands()) {
+        if (dependsOnCoord(operand, cache)) {
+          result = true;
+          break;
+        }
+      }
     }
   }
-  return false;
+  cache[v] = result;
+  return result;
 }
 
 // Per-coord evaluate each constraint of an `affine.if` IntegerSet via
@@ -468,6 +481,25 @@ DomainResult getAffineIfDomain(affine::AffineIfOp ifOp,
   return {result, nullptr};
 }
 
+// Pick the witness op whose location sorts lexicographically first, so the
+// "this expression is not statically analyzable" note attached to a downstream
+// diagnostic is reproducible run-to-run regardless of the order the dataflow
+// solver visits predecessors. Returns the smaller of `lhs`/`rhs`; either may
+// be null.
+Operation *pickWitness(Operation *lhs, Operation *rhs) {
+  if (!lhs) {
+    return rhs;
+  }
+  if (!rhs) {
+    return lhs;
+  }
+  std::string lhsStr;
+  std::string rhsStr;
+  llvm::raw_string_ostream(lhsStr) << lhs->getLoc();
+  llvm::raw_string_ostream(rhsStr) << rhs->getLoc();
+  return lhsStr <= rhsStr ? lhs : rhs;
+}
+
 struct BranchDomains {
   Domain thenDomain;
   Domain elseDomain;
@@ -480,33 +512,38 @@ BranchDomains exactBranches(const Domain &trueDomain, const Domain &current,
           domainIntersect(current, domainSubtract(baseDomain, trueDomain))};
 }
 
-BranchDomains getBranchDomains(Value condition, const Domain &current,
-                               const ModuleState &state) {
+BranchDomains getBranchDomainsImpl(Value condition, const Domain &current,
+                                   const ModuleState &state,
+                                   llvm::DenseMap<Value, bool> &coordCache) {
   if (auto pred = condition.getDefiningOp<PipeNetPredicateOpInterface>()) {
     Domain roleDomain = state.getRoleDomain(pred.getReferencedPipeNetId(),
                                             pred.getReferencedRole());
     return exactBranches(roleDomain, current, state.baseDomain);
   }
   if (auto andOp = condition.getDefiningOp<arith::AndIOp>()) {
-    BranchDomains a = getBranchDomains(andOp.getLhs(), current, state);
-    BranchDomains b = getBranchDomains(andOp.getRhs(), current, state);
+    BranchDomains a =
+        getBranchDomainsImpl(andOp.getLhs(), current, state, coordCache);
+    BranchDomains b =
+        getBranchDomainsImpl(andOp.getRhs(), current, state, coordCache);
     Operation *unanalyzable =
-        a.unanalyzableOp ? a.unanalyzableOp : b.unanalyzableOp;
+        pickWitness(a.unanalyzableOp, b.unanalyzableOp);
     return {
         domainIntersect(a.thenDomain, b.thenDomain),
         domainUnion(a.elseDomain, domainIntersect(a.thenDomain, b.elseDomain)),
         unanalyzable};
   }
   if (auto orOp = condition.getDefiningOp<arith::OrIOp>()) {
-    BranchDomains a = getBranchDomains(orOp.getLhs(), current, state);
-    BranchDomains b = getBranchDomains(orOp.getRhs(), current, state);
+    BranchDomains a =
+        getBranchDomainsImpl(orOp.getLhs(), current, state, coordCache);
+    BranchDomains b =
+        getBranchDomainsImpl(orOp.getRhs(), current, state, coordCache);
     Operation *unanalyzable =
-        a.unanalyzableOp ? a.unanalyzableOp : b.unanalyzableOp;
+        pickWitness(a.unanalyzableOp, b.unanalyzableOp);
     return {
         domainUnion(a.thenDomain, domainIntersect(a.elseDomain, b.thenDomain)),
         domainIntersect(a.elseDomain, b.elseDomain), unanalyzable};
   }
-  if (!dependsOnCoord(condition)) {
+  if (!dependsOnCoord(condition, coordCache)) {
     // Same value at every coord at runtime, but unknown statically: either
     // branch could execute on any coord in `current`.
     return {current, current};
@@ -523,6 +560,12 @@ BranchDomains getBranchDomains(Value condition, const Domain &current,
   }
   BranchDomains result = exactBranches(trueDomain, current, state.baseDomain);
   return {result.thenDomain, result.elseDomain, nullptr};
+}
+
+BranchDomains getBranchDomains(Value condition, const Domain &current,
+                               const ModuleState &state) {
+  llvm::DenseMap<Value, bool> coordCache;
+  return getBranchDomainsImpl(condition, current, state, coordCache);
 }
 
 //===----------------------------------------------------------------------===//
@@ -686,25 +729,6 @@ std::optional<ScopeRoles> getPipeNetScopeRoles(PipeNetScopeOp scopeOp,
 //===----------------------------------------------------------------------===//
 // Lattice and analysis.
 //===----------------------------------------------------------------------===//
-
-// Pick the witness op whose location sorts lexicographically first, so the
-// "this expression is not statically analyzable" note attached to a downstream
-// diagnostic is reproducible run-to-run regardless of the order the dataflow
-// solver visits predecessors. Returns the smaller of `lhs`/`rhs`; either may
-// be null.
-static Operation *pickWitness(Operation *lhs, Operation *rhs) {
-  if (!lhs) {
-    return rhs;
-  }
-  if (!rhs) {
-    return lhs;
-  }
-  std::string lhsStr;
-  std::string rhsStr;
-  llvm::raw_string_ostream(lhsStr) << lhs->getLoc();
-  llvm::raw_string_ostream(rhsStr) << rhs->getLoc();
-  return lhsStr <= rhsStr ? lhs : rhs;
-}
 
 class DomainLattice : public dataflow::AbstractDenseLattice {
 public:
