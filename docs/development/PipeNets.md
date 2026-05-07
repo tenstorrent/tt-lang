@@ -27,7 +27,7 @@ PipeNets — the per-axis bounding box of every pipe coordinate. The
 Under `grid="auto"` every launched node is active and the verifier's
 checks are trivially satisfied. Under `grid="full"` (or an over-large
 explicit tuple) the verifier rejects unguarded pipe-coupled ops with a
-diagnostic that names the offending op, an example out-of-role
+diagnostic that names the offending op, an example offending
 coordinate, the contributing PipeNet(s), and a suggested guard.
 
 ## Overview
@@ -78,11 +78,12 @@ both consume. It holds:
   destination coordinates.
 
 The compiler and the simulator both discover PipeNets by walking the
-closure cells of the operation function and each kernel function:
-body-local PipeNets show up through the kernel functions' closures,
-captured ones through the operation function's closure ([spec][spec-pipenet-scope]).
-
-[spec-pipenet-scope]: https://github.com/tenstorrent/tt-lang/blob/<spec-commit>/docs/sphinx/specs/TTLangSpecification.md#L647
+closure cells and module globals of the operation function and each
+kernel function: body-local PipeNets are reached through the kernel
+functions' closures, captured ones through the operation function's
+closure, and module-scope PipeNets through `__globals__`. See the
+[language specification](../sphinx/specs/TTLangSpecification.md) for
+the enclosing-scope capture rule.
 
 Operation-local ids keep `ttl.create_pipe` ids stable across
 invocations and keep TTKernel semaphore allocation
@@ -213,15 +214,13 @@ each constraint's `isEq` flag.
 ## Diagnostics
 
 Every user-facing diagnostic embeds the offending PipeNet id and a
-concrete suggested fix in the **primary** message. Structured notes
-are emitted alongside it: a witness coordinate, a `PipeNet <N>
-declared here` note pointing at the user's `ttl.PipeNet([...])` call
-site (or the first `if_src`/`if_dst` referencing it), and a
-`suggested guard:` line. The Python frontend's diagnostic formatter
-renders the primary error and each note as a separate source-context
-block, so the user can read the suggested fix and immediately see
-which `PipeNet` variable the integer id corresponds to without having
-to map ids back manually.
+suggested fix in the primary message, with structured notes alongside:
+an example offending coordinate, a `PipeNet <N> declared here` note
+pointing at the user's `ttl.PipeNet([...])` call site (or the first
+`if_src`/`if_dst` referencing it), and a `suggested guard:` line. The
+Python frontend's diagnostic formatter renders the primary error and
+each note as a separate source-context block so the integer id maps
+back to the user's `PipeNet` variable without manual lookup.
 
 `signalPassFailure()` is called once at the end so every site is
 reported in a single run rather than failing on the first.
@@ -338,16 +337,31 @@ def dm_read():
 
 ## Simulator parity
 
-The simulator does not run the MLIR verifier. It builds the
-`OperationPipeNets` from the operation's closure plus each kernel
-function's closure and validates it before execution. For `grid="auto"`,
-the simulator uses `work_extent()` to choose the same launch-grid
-bounding box as the compiler. For `grid="full"` and explicit tuple
-grids, the simulator launches every node in the resolved grid.
+Compiler and simulator share `OperationPipeNets.validate()`
+(empty PipeNets, mixed unicast/multicast, within-PipeNet multicast
+destination overlap), invoked at `PipeNet(...)` construction and again
+at operation build time. Beyond that the two diverge:
 
-The simulator does not skip nodes outside PipeNet roles. User guards
-such as `net.is_active()` or coordinate predicates decide which nodes
-execute pipe-coupled work, matching the compiler/runtime semantics.
+| Check | Compiler | Simulator |
+| --- | --- | --- |
+| Cross-pipe construction validation (above) | yes | yes |
+| `ttl.copy` reachable only from `pipe.src` / `pipe.dst` | yes (`ttl-verify-pipenet-guards`) | no |
+| `ttl.pipenet_scope` domain ⊆ declared role union | yes | no |
+| `cb_wait` covered by `cb_push` producer domain | yes (static) | runtime only (deadlock detector in `greenlet_scheduler.py`) |
+| Unanalyzable coord-dependent predicate diagnosed | yes | no |
+| Missing/malformed `ttl.launch_grid`, unknown PipeNet ids | yes | n/a (no IR) |
+
+Consequently a guard bug that the compiler rejects with a precise
+diagnostic and an example offending coordinate either runs to
+completion in the simulator with incorrect results, or trips the
+runtime deadlock detector with no static context.
+
+Grid resolution also differs: the compiler shrinks `grid="auto"` to
+the PipeNet `work_extent()` when smaller than the device grid; the
+simulator treats `"auto"` and `"full"` identically, launching the
+default device grid. The simulator does not skip nodes outside
+PipeNet roles — user guards (`net.is_active()` or coordinate
+predicates) decide which nodes execute pipe-coupled work.
 
 ## Example: 2D mcast matmul
 
@@ -546,42 +560,43 @@ rejection contract; it `pytest.skip`s on the simulator runner.
   `std::set<Coord>` representation should be replaced with a Presburger
   set or axis-aligned rectangle set so domain operations stay
   tractable.
-* **Parametric PipeNets** — runtime-bound pipe coordinates resolved at
+* Parametric PipeNets — runtime-bound pipe coordinates resolved at
   kernel-launch time rather than `@ttl.operation` decoration time. The
   current pipeline resolves `ttl.Pipe(src=..., dst=...)` arguments to
   Python `int` / `slice` literals during frontend tracing, materializes
-  them as `I64Attr`s on `ttl.create_pipe`, and bakes them into the
+  them as `I64Attr`s on `ttl.create_pipe`, and embeds them into the
   result `PipeType`. A parametric variant requires three coordinated
   changes:
-  1. **IR.** Extend `ttl.create_pipe` with an alternative form whose
+  1. IR: extend `ttl.create_pipe` with an alternative form whose
      source/destination coordinates are SSA `index` operands rather
      than attributes, and replace the static coordinate fields on
-     `PipeType` with a static *bounding-box* attribute (so the
-     verifier and downstream passes still have a coarse-grained type
+     `PipeType` with a static bounding-box attribute (so the verifier
+     and downstream passes still have a coarse-grained type
      invariant). The static form remains the lowering target for
      `@ttl.operation` invocations whose coordinates are known at
      trace time.
-  2. **Verifier.** Replace the `std::set<Coord>` `Domain` with a
-     symbolic representation — either an upstream Presburger set
+  2. Verifier: replace the `std::set<Coord>` `Domain` with a symbolic
+     representation — either an upstream Presburger set
      (`mlir::presburger::IntegerRelation`) or a structured
      axis-aligned-rectangle set with parametric bounds — and recast
-     `pipeSourceDomain` / `pipeDestinationDomain` /
-     `getBranchDomains` to produce symbolic constraints over the
-     pipe's coordinate operands and the launch-grid extents. Per-pipe
-     role containment then becomes a Presburger emptiness check
-     (`current ∩ ¬role` is empty) parameterized by the static bounds.
-     The `ttl.is_src` / `ttl.is_dst` / `ttl.is_active` recognition
-     stays structural; the per-coord enumeration in `evalBool`
-     becomes a constraint constructor.
-  3. **Lowering.** `PipeLowering.cpp` emits `arith.ConstantIndexOp` at
-     lines 363, 391, 437, 545 for source / destination coordinates
-     today. Threading SSA values through to `noc_async_write_multicast`
-     and the per-pipe match expressions is mechanical: tt-metal's
-     multicast NoC primitives already accept runtime coordinates, and
-     `IsSrcLowering` / `IsDstLowering` already construct per-pipe
-     `arith.cmpi` / `arith.andi` / `arith.ori` chains over the pipe's
-     coordinate values — they currently chain against constants but
-     would chain against the SSA operands instead.
+     `pipeSourceDomain` / `pipeDestinationDomain` / `getBranchDomains`
+     to produce symbolic constraints over the pipe's coordinate
+     operands and the launch-grid extents. Per-pipe role containment
+     then becomes a Presburger emptiness check (`current ∩ ¬role` is
+     empty) parameterized by the static bounds. The `ttl.is_src` /
+     `ttl.is_dst` / `ttl.is_active` recognition stays structural; the
+     per-coord enumeration in `evalBool` becomes a constraint
+     constructor.
+  3. Lowering: `PipeLowering.cpp` materializes pipe source/destination
+     coordinates as `arith.ConstantIndexOp` from `PipeType::getSrcX/Y`
+     and the destination range bounds. Threading SSA values through to
+     `noc_async_write_multicast` and the per-pipe match expressions is
+     mechanical: tt-metal's multicast NoC primitives already accept
+     runtime coordinates, and `IsSrcLowering` / `IsDstLowering` already
+     construct per-pipe `arith.cmpi` / `arith.andi` / `arith.ori`
+     chains over the pipe's coordinate values — they currently chain
+     against constants but would chain against the SSA operands
+     instead.
 
   Frontend surface: `ttl.Pipe(src=ttl.runtime_arg("M"), ...)` or a
   similar SSA-typed coordinate, with the `OperationPipeNets`

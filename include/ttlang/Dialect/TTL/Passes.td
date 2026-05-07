@@ -423,40 +423,27 @@ def TTLVerifyPipeNetGuards
     : Pass<"ttl-verify-pipenet-guards", "::mlir::ModuleOp"> {
   let summary = "Verify PipeNet-coupled DFB and pipe operations are role-guarded";
   let description = [{
-    Read-only `DenseForwardDataFlowAnalysis` over launch coordinates: the
-    lattice at each program point is the set of coordinates that may execute
-    there. Predicate-bearing region ops (`scf.if`, `affine.if`,
-    `ttl.if_src`, `ttl.if_dst`, `ttl.pipenet_scope`) narrow the lattice on
-    region entry; pipe-coupled ops (`ttl.copy`, `ttl.cb_wait`,
-    `ttl.cb_push`) are checked or recorded against the narrowed lattice. The
-    pass reports diagnostics for:
+    Checks that every operation coupled to a PipeNet executes only on launch
+    coordinates where its role is defined. A launch coordinate is a
+    `(core_x, core_y)` point in the 2D grid declared by the module's
+    `ttl.launch_grid` attribute; each kernel function runs once per
+    coordinate. A domain is a subset of those coordinates.
 
-    - `ttl.copy` from a DFB to a pipe outside that pipe's source domain.
-    - `ttl.copy` from a pipe to a DFB outside that pipe's destination domain.
-    - `ttl.pipenet_scope` whose surrounding predicate is broader than the
-      declared PipeNet role domain.
-    - `ttl.cb_wait` whose execution domain is not covered by any producer
-      domain for the same DFB index.
-    - Predicates that are coord-dependent but not statically analyzable.
+    A forward dataflow analysis tracks, at each program point, the domain on
+    which it may execute under the enclosing region predicates (`scf.if`,
+    `affine.if`, `ttl.if_src`, `ttl.if_dst`, `ttl.pipenet_scope`). At each
+    `ttl.copy`, `ttl.cb_wait`, and `ttl.cb_push` the analysis verifies the
+    point's domain is contained in the pipe's source or destination domain;
+    out-of-domain uses, scopes broader than their declared role, unmatched
+    `ttl.cb_wait`s, and unanalyzable coord-dependent predicates are reported.
+    Each diagnostic carries an example offending coordinate, the contributing
+    PipeNet(s), and a suggested guard.
 
-    Each violation produces one error with notes naming a witness coordinate,
-    the contributing PipeNet(s), and a suggested guard. Errors accumulate
-    and the pass signals failure once at the end.
-
-    Required input properties:
-    - One MLIR module per `@ttl.operation`.
-    - `ttl.create_pipe` source/destination coordinates are static `I64Attr`.
-    - The module carries a `ttl.launch_grid` attribute (an i64 array of
-      length 2 with positive entries). The pass emits a module-level error
-      and fails if the attribute is missing or malformed.
-    - DFB indices are stable: `ttl-annotate-cb-associations` and
-      `ttl-finalize-dfb-indices` have already run.
-
-    Tested by:
-    `test/ttlang/Dialect/TTL/Transforms/verify_pipenet_guards.mlir`
-    (positive cases),
-    `verify_pipenet_guards_invalid.mlir` (negative cases),
-    `verify_pipenet_guards_pipeline.mlir` (pipeline integration).
+    The pass expects one module per `@ttl.operation`, a well-formed
+    `ttl.launch_grid` (i64 array of length 2 with positive entries), static
+    `I64Attr` coordinates on `ttl.create_pipe`, and finalized DFB indices
+    (i.e. `ttl-annotate-cb-associations` and `ttl-finalize-dfb-indices`
+    have run).
   }];
 
   let dependentDialects = [
