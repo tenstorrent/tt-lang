@@ -17,6 +17,7 @@
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
@@ -272,16 +273,8 @@ std::optional<int64_t> evalIndex(Value value, Coord coord) {
   if (value.getDefiningOp<CoreYOp>()) {
     return coord.y;
   }
-  if (auto constant = value.getDefiningOp<arith::ConstantIndexOp>()) {
-    return constant.value();
-  }
-  if (auto constant = value.getDefiningOp<arith::ConstantIntOp>()) {
-    return constant.value();
-  }
-  if (auto constant = value.getDefiningOp<arith::ConstantOp>()) {
-    if (auto intAttr = dyn_cast<IntegerAttr>(constant.getValue())) {
-      return intAttr.getInt();
-    }
+  if (auto constant = getConstantIntValue(value)) {
+    return *constant;
   }
   if (auto castOp = value.getDefiningOp<arith::IndexCastOp>()) {
     return evalIndex(castOp.getIn(), coord);
@@ -311,15 +304,9 @@ std::optional<int64_t> evalIndex(Value value, Coord coord) {
 }
 
 std::optional<bool> evalBool(Value value, Coord coord) {
-  if (auto constant = value.getDefiningOp<arith::ConstantIntOp>()) {
-    if (constant.getType().isInteger(1)) {
-      return constant.value() != 0;
-    }
-  }
-  if (auto constant = value.getDefiningOp<arith::ConstantOp>()) {
-    if (auto intAttr = dyn_cast<IntegerAttr>(constant.getValue());
-        intAttr && intAttr.getType().isInteger(1)) {
-      return intAttr.getInt() != 0;
+  if (value.getType().isInteger(1)) {
+    if (auto constant = getConstantIntValue(value)) {
+      return *constant != 0;
     }
   }
   if (auto cmpOp = value.getDefiningOp<arith::CmpIOp>()) {
