@@ -43,6 +43,8 @@ try:
     b = torch.randn((K, N), dtype=torch.bfloat16)
     c = torch.randn((M, N), dtype=torch.bfloat16)
 
+    expected_y = torch.relu(a.float() @ b.float() + c.float()).to(torch.bfloat16)
+
     a = from_torch(a)
     b = from_torch(b)
     c = from_torch(c)
@@ -54,9 +56,6 @@ try:
     y = ttnn.relu(ttnn.add(ttnn.matmul(a, b), c))
 
     y = ttnn.to_torch(y)
-
-    # Pure ttnn result for verification:
-    expected_y = ttnn.to_torch(ttnn.relu(ttnn.add(ttnn.matmul(a, b), c)))
 
     pcc = torch.corrcoef(
         torch.stack([y.flatten().float(), expected_y.flatten().float()])

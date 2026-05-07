@@ -214,6 +214,8 @@ try:
     b = torch.randn((K, N), dtype=torch.bfloat16)
     c = torch.randn((M, N), dtype=torch.bfloat16)
 
+    expected_y = torch.relu(a.float() @ b.float() + c.float()).to(torch.bfloat16)
+
     # Distribute tensors across devices:
     #   a: sharded along M (each device gets M/n_devices rows)
     #   b: replicated on every device (all devices need the full K×N matrix)
@@ -222,11 +224,6 @@ try:
     a = from_torch(a, ttnn.ShardTensorToMesh(mesh_device, dim=0))
     b = from_torch(b, ttnn.ReplicateTensorToMesh(mesh_device))
     c = from_torch(c, ttnn.ShardTensorToMesh(mesh_device, dim=0))
-
-    expected_y = ttnn.to_torch(
-        ttnn.relu(ttnn.add(ttnn.matmul(a, b), c)),
-        mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0),
-    )
 
     y = torch.zeros((M, N), dtype=torch.bfloat16)
     y = from_torch(y, ttnn.ShardTensorToMesh(mesh_device, dim=0))

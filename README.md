@@ -40,7 +40,7 @@ tt-lang-setup                     # install matching sfpi runtime + copy tutoria
 Functional simulator-only on Linux or MacOS, does not require Tenstorrent hardware:
 ```bash
 pip install tt-lang-sim
-tt-lang-setup                     # copy bundled tutorials to ./tutorials/
+tt-lang-setup                    # copy bundled tutorials to ./tutorials/
 ```
 
 `tt-lang-setup` is idempotent (can be run multiple times without accumulating side effects).
