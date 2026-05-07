@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+#
+# TTLANG_TUTORIAL_CI: requires-multi-device
 
 #
 # Tutorial Step 7: Multi-Device, Shard K with All-Reduce

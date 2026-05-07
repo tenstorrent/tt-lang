@@ -20,7 +20,14 @@
 
 set -uxo pipefail
 
-TUTORIAL_TIMEOUT_SECONDS="${TUTORIAL_TIMEOUT_SECONDS:-60}"
+# 300s per script accommodates n150 (single-chip, partially harvested) running
+# the 8192x8192 matmul tutorials with cold JIT cache; multi-device hardware
+# completes each in 20-30s. Override via TUTORIAL_TIMEOUT_SECONDS if needed.
+TUTORIAL_TIMEOUT_SECONDS="${TUTORIAL_TIMEOUT_SECONDS:-300}"
+
+# File header tag (within first 80 lines) marking scripts that require >1
+# device. Skipped on single-device hardware (e.g. n150).
+MULTI_DEVICE_TAG="TTLANG_TUTORIAL_CI: requires-multi-device"
 
 # Activate the tt-lang environment if not already active.
 if [[ "${TTLANG_ENV_ACTIVATED:-0}" != "1" ]]; then
@@ -37,6 +44,17 @@ if [[ ! -d "$EXAMPLES_DIR" ]]; then
     echo "ERROR: Examples directory not found: $EXAMPLES_DIR" >&2
     exit 1
 fi
+
+# Query device count once. Tutorials tagged as requiring multi-device are
+# skipped when this is < 2.
+NUM_DEVICES=$(python3 -c 'import ttnn; print(ttnn.GetNumAvailableDevices())' 2>&1 \
+              | grep -E '^[0-9]+$' | tail -n1)
+NUM_DEVICES="${NUM_DEVICES:-0}"
+echo "Available devices: ${NUM_DEVICES}"
+
+file_has_tag() {
+    head -n 80 "$1" | grep -Fq "# $2"
+}
 
 # Collect tutorial scripts from the three tutorial directories.
 collect_tutorials() {
@@ -66,9 +84,17 @@ echo ""
 declare -a RESULTS=()
 N_PASS=0
 N_FAIL=0
+N_SKIP=0
 
 for script in "${SCRIPTS[@]}"; do
     label="${script#"${ROOT}/"}"
+
+    if (( NUM_DEVICES < 2 )) && file_has_tag "${script}" "${MULTI_DEVICE_TAG}"; then
+        RESULTS+=("${label} ... SKIP (requires multi-device, available=${NUM_DEVICES})")
+        (( N_SKIP++ ))
+        continue
+    fi
+
     echo "--- ${label} ---"
     rc=0
     timeout --signal=TERM --kill-after=10 "${TUTORIAL_TIMEOUT_SECONDS}" python3 "$script" || rc=$?
@@ -93,7 +119,7 @@ for r in "${RESULTS[@]}"; do
     echo "  ${r}"
 done
 echo "----------------------------------------"
-printf "  PASS: %d  FAIL: %d  Total: %d\n" "${N_PASS}" "${N_FAIL}" "${#SCRIPTS[@]}"
+printf "  PASS: %d  FAIL: %d  SKIP: %d  Total: %d\n" "${N_PASS}" "${N_FAIL}" "${N_SKIP}" "${#SCRIPTS[@]}"
 echo "========================================"
 
 if [[ ${N_FAIL} -gt 0 ]]; then
