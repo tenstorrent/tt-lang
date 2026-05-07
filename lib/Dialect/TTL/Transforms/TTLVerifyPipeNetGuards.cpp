@@ -425,9 +425,9 @@ bool dependsOnCoord(Value v, llvm::DenseMap<Value, bool> &cache) {
   return result;
 }
 
-// Per-coord evaluate each constraint of an `affine.if` IntegerSet via
-// `AffineMap::constantFold`. The map carries one result per constraint so a
-// single fold yields all sign tests for one coord.
+// Per-coord evaluate the constraints of an `affine.if` IntegerSet. Pack all
+// constraints into one AffineMap (one result per constraint) so each coord
+// requires a single `constantFold` rather than one per constraint.
 DomainResult getAffineIfDomain(affine::AffineIfOp ifOp,
                                const Domain &baseDomain) {
   IntegerSet set = ifOp.getIntegerSet();
