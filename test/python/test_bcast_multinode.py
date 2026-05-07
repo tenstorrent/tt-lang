@@ -6,14 +6,14 @@
 Broadcast multinode test: scoping-based tile reuse pattern.
 
 Key feature: Different tensor sizes with scoping-based broadcast. The L1 tensor
-(256x256) has 1 tile per core, while DRAM tensors (1024x1024) have 16 tiles per
+(224x224) has 1 tile per core, while DRAM tensors (896x896) have 16 tiles per
 core. The single L1 tile is loaded once and held in scope while iterating over
 all 16 DRAM tiles, effectively "broadcasting" the L1 value.
 
 Features:
-- 2MB DRAM tensors (1024x1024): a, b, out1, out2 - 4x4 tiles per core
-- 128KB L1 tensors (256x256): c, out3 - 1x1 tile per core
-- 8x8 multinode grid with dynamic indexing via core(dims=2)
+- DRAM tensors (896x896): a, b, out1, out2 - 4x4 tiles per core
+- L1 tensors (224x224): c, out3 - 1x1 tile per core
+- 7x7 multinode grid with dynamic indexing via core(dims=2)
 - 1x1 DFB shapes for all CBs (shapes match in binary ops)
 - L1 tile 'c' held in outer scope, reused across 16 DRAM iterations
 - 20 fused ops across 3 outputs
@@ -31,8 +31,8 @@ from ttlang_test_utils import assert_allclose, to_dram, to_l1
 import ttl
 
 TILE_SIZE = 32
-GRID_ROWS = 8
-GRID_COLS = 8
+GRID_ROWS = 7
+GRID_COLS = 7
 
 # DRAM tensors: 4x4 tiles per core = 1024x1024 total
 DRAM_CB_ROWS = 4
@@ -51,7 +51,7 @@ L1_SHAPE = (
 )
 
 
-@ttl.operation(grid=(8, 8))
+@ttl.operation(grid=(GRID_COLS, GRID_ROWS))
 def bcast_kernel(a, b, c, out1, out2, out3):
     """
     Multinode kernel with 20 fused ops across 3 outputs.
@@ -255,7 +255,7 @@ def make_bcast_granularity_kernel(granularity: int):
     Uses row broadcast (dims=[0]) pattern.
     """
 
-    @ttl.operation(grid=(8, 8))
+    @ttl.operation(grid=(GRID_COLS, GRID_ROWS))
     def bcast_granularity_kernel(inp, out):
         """multinode broadcast kernel with parameterized granularity."""
         block_rows = granularity
@@ -341,14 +341,14 @@ _bcast_kernel_g2 = make_bcast_granularity_kernel(2)
     ids=["granularity_1x1", "granularity_2x2"],
 )
 def test_bcast_multinode_granularity(device, granularity, kernel):
-    """Test ttl.math.broadcast with different DFB granularities on 8x8 grid.
+    """Test ttl.math.broadcast with different DFB granularities on 7x7 grid.
 
     Validates that broadcast works correctly with varying DFB block sizes:
     - granularity=1: 1x1 tile blocks (baseline)
     - granularity=2: 2x2 tile blocks (4 tiles per block)
 
     Each test uses shape divisible by grid and granularity:
-    - 8x8 grid * granularity * 32 tile_size
+    - 7x7 grid * granularity * 32 tile_size
     """
     # Shape must be divisible by grid_size * granularity * tile_size
     shape_dim = GRID_ROWS * granularity * TILE_SIZE  # 256 for g=1, 512 for g=2

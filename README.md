@@ -22,33 +22,30 @@ TT-Lang bridges this gap through progressive disclosure: simple kernels require 
 
 ### 2.1 Install from PyPI
 
-The fastest path. Sim-only on any OS, hardware-capable on Linux x86_64 / aarch64:
-
+On linux machines with Tenstorrent hardware (Linux x86_64 / aarch64):
 ```bash
-# Sim-only (any OS): runs kernels as pure Python via ttlang-sim.
-pip install tt-lang
-tt-lang-setup --no-host           # copy bundled tutorials to ./tutorials/
-# Run with ttlang-sim, e.g.:
-ttlang-sim tutorials/elementwise/step_1_single_node_single_tile_block.py
-
-# With Tenstorrent hardware (Linux x86_64 / aarch64):
-pip install "tt-lang[device]"
+pip install "tt-lang"
 tt-lang-setup                     # install matching sfpi runtime + copy tutorials
-# Run with ttlang-sim or directly on hardware, e.g.:
-python tutorials/elementwise/step_1_single_node_single_tile_block.py
 ```
 
-`tt-lang-setup` is idempotent. It does two things, both inside the venv (no sudo):
-- Downloads the sfpi compiler that pairs with the installed `ttnn` and extracts it under `<venv>/.../ttnn/runtime/sfpi/`.
+Functional simulator-only on Linux or MacOS, does not require Tenstorrent hardware:
+```bash
+pip install tt-lang-sim
+tt-lang-setup                     # copy bundled tutorials to ./tutorials/
+```
+
+`tt-lang-setup` is idempotent (can be run multiple times without accumulating side effects).
+It does two things, both inside the venv (no sudo):
+- Downloads the sfpi compiler that pairs with the installed `ttnn` and extracts it under `<venv>/.../ttnn/runtime/sfpi/` (for `tt-lang` installation only).
 - Copies bundled tutorials (`elementwise`, `matmul`, `broadcast`) to `./tutorials/`.
 
 For finer control: `tt-lang-setup-host` runs only the sfpi step, `tt-lang-setup-tutorials -t <DIR>` only the tutorials copy.
 
-Run a tutorial:
+Run a tutorial example:
 
 ```bash
-ttlang-sim tutorials/elementwise/step_4_multinode_grid_auto.py    # sim
-python tutorials/elementwise/step_4_multinode_grid_auto.py        # hardware
+ttlang-sim tutorials/elementwise/step_4_multinode_grid_auto.py    # simulated (no compilation, runs on CPU)
+python tutorials/elementwise/step_4_multinode_grid_auto.py        # compiles and runs on hardware
 ```
 
 To develop tt-lang itself or debug the compiler, use the Docker images below or [build from source](#25-building-without-docker).

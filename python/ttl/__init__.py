@@ -6,50 +6,60 @@
 
 from ttl.version import __version__
 
-# Export TTL DSL API directly at package level so `import ttl; ttl.operation` works
-from ttl.ttl import (
-    operation,
-    compute,
-    datamovement,
-    Program,
-    make_dataflow_buffer_like,
-    copy,
-    node,
-    grid_size,
-    math,
-)
+# `ttl._sim_only_marker` is shipped by the tt-lang-sim wheel and absent from
+# the tt-lang wheel. Detection is marker-based, not try/except, so a broken
+# hardware install still raises ImportError instead of silently degrading.
+try:
+    import ttl._sim_only_marker  # type: ignore[reportMissingImports] # noqa: F401
 
-# Export generated elementwise operators (auto-generated from TTLElementwiseOps.def)
-from ttl._generated_elementwise import *  # noqa: F401,F403
-from ttl._generated_elementwise import __all__ as _elementwise_all
+    _SIM_ONLY_INSTALL = True
+except ImportError:
+    _SIM_ONLY_INSTALL = False
 
-# Export additional TTL DSL API classes
-from ttl.operators import signpost
-from ttl.compiler_options import CompilerOptions
-from ttl.ttl_api import (
-    CircularBuffer,
-    CopyTransferHandler,
-    TensorBlock,
-)
-from ttl.pipe import Pipe, PipeNet
+if _SIM_ONLY_INSTALL:
+    _elementwise_all: list[str] = []
+    __all__ = ["__version__"]
+else:
+    from ttl.ttl import (
+        operation,
+        compute,
+        datamovement,
+        Program,
+        make_dataflow_buffer_like,
+        copy,
+        node,
+        grid_size,
+        math,
+    )
 
-__all__ = [
-    "operation",
-    "compute",
-    "datamovement",
-    "Program",
-    "CircularBuffer",
-    "CompilerOptions",
-    "TensorBlock",
-    "CopyTransferHandler",
-    "Pipe",
-    "PipeNet",
-    "make_dataflow_buffer_like",
-    "copy",
-    "node",
-    "grid_size",
-    "math",
-    "signpost",
-    # Elementwise operators are automatically included from generated file
-    *_elementwise_all,
-]
+    from ttl._generated_elementwise import *  # noqa: F401,F403
+    from ttl._generated_elementwise import __all__ as _elementwise_all
+
+    from ttl.operators import signpost
+    from ttl.compiler_options import CompilerOptions
+    from ttl.ttl_api import (
+        CircularBuffer,
+        CopyTransferHandler,
+        TensorBlock,
+    )
+    from ttl.pipe import Pipe, PipeNet
+
+    __all__ = [
+        "operation",
+        "compute",
+        "datamovement",
+        "Program",
+        "CircularBuffer",
+        "CompilerOptions",
+        "TensorBlock",
+        "CopyTransferHandler",
+        "Pipe",
+        "PipeNet",
+        "make_dataflow_buffer_like",
+        "copy",
+        "node",
+        "grid_size",
+        "math",
+        "signpost",
+        *_elementwise_all,
+    ]

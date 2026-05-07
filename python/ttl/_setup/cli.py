@@ -7,10 +7,15 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import sys
 
 from . import host as _host
 from . import tutorials as _tutorials
+
+
+def _is_sim_only_install() -> bool:
+    return importlib.util.find_spec("ttl._sim_only_marker") is not None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -43,6 +48,10 @@ def main(argv: list[str] | None = None) -> int:
         help="reinstall sfpi and overwrite existing tutorial directories",
     )
     args = p.parse_args(argv)
+
+    if _is_sim_only_install() and not args.no_host:
+        print("sim-only install (tt-lang-sim) detected; skipping sfpi install")
+        args.no_host = True
 
     if not args.no_host:
         host_argv = ["--force"] if args.force else []
