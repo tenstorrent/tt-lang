@@ -577,7 +577,7 @@ BranchDomains getBranchDomains(Value condition, const Domain &current,
 // expression joins clauses with ` or `:
 //
 //   net_0.is_src()                    (one net, one role)
-//   net_0.is_active()                 (one net, both src and dst → collapse)
+//   net_0.is_active()                 (one net, both src and dst -> collapse)
 //   net_0.is_dst() or net_1.is_src()  (different nets)
 //
 // Callers receive only `Source` or `Destination` from the `pipenet_scope`
