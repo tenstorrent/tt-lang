@@ -1132,7 +1132,17 @@ class TTLGenericCompiler(TTCompilerBase):
         return name
 
     def _collect_pipenet_roles_in_body(self, body):
-        """Return PipeNet role requirements referenced by if_src/if_dst calls."""
+        """Return PipeNet role requirements referenced by if_src/if_dst calls.
+
+        Walk is syntactic by design: matches `name.if_src(...)` /
+        `name.if_dst(...)` where `name` resolves to a `PipeNet` in
+        scope. Indirected forms (e.g. `getattr(net, "if_src")(...)`,
+        `aliased = net; aliased.if_src(...)`) are not detected and the
+        emitted `pipenet_scope` will omit those role declarations. The
+        verifier will then reject the scope as too-broad. The expected
+        DSL idiom is the direct form, so this is a knowingly-narrow
+        match rather than a missed case to generalize.
+        """
         from ..pipe import PipeNet
 
         roles = []
