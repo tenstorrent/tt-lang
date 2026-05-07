@@ -202,7 +202,15 @@ try:
     b = torch.randn((K, N), dtype=torch.bfloat16)
     c = torch.randn((M, N), dtype=torch.bfloat16)
 
-    expected_y = torch.relu(a @ b + c)
+    # Reference compute: replicate full a, b, c onto every device, run
+    # matmul/add/relu locally on each, take device 0's full result.
+    ref_a = from_torch(a, ttnn.ReplicateTensorToMesh(mesh_device))
+    ref_b = from_torch(b, ttnn.ReplicateTensorToMesh(mesh_device))
+    ref_c = from_torch(c, ttnn.ReplicateTensorToMesh(mesh_device))
+    expected_y = ttnn.to_torch(
+        ttnn.relu(ttnn.add(ttnn.matmul(ref_a, ref_b), ref_c)),
+        mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0),
+    )[:M, :]
 
     # K-sharding setup is identical to Step 6.
 
