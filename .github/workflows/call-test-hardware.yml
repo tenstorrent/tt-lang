@@ -12,7 +12,7 @@ on:
         description: 'Job timeout in minutes'
         required: false
         type: number
-        default: 60
+        default: 90
       docker_tag:
         description: 'Docker image tag for the ird container.'
         required: true
@@ -28,7 +28,7 @@ on:
         description: 'Job timeout in minutes'
         required: false
         type: number
-        default: 60
+        default: 90
       docker_tag:
         description: 'Docker image tag for the ird container.'
         required: true
