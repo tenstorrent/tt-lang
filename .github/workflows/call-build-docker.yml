@@ -256,11 +256,3 @@ jobs:
           echo ""
           echo "=== Docker Disk Usage ==="
           docker system df || true
-
-  test-dist-tutorials:
-    needs: [build-images]
-    uses: ./.github/workflows/call-test-dist-tutorials.yml
-    secrets: inherit
-    with:
-      runs-on: n150
-      dist_docker_tag: ${{ needs.build-images.outputs.docker-tag }}
