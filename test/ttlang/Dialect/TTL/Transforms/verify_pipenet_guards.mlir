@@ -906,3 +906,33 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     func.return
   }
 }
+
+// -----
+
+// Caller narrows with `if_src` then `func.call`s a helper whose body
+// performs the `ttl.copy(cb, pipe)`. Helper relies on the caller-side
+// guard flowing through the call edge.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func private @send_helper
+  // CHECK-LABEL: func.func @kernel_caller_guards
+  func.func private @send_helper(%cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+                                  %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) {
+    %x = ttl.copy %cb, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    func.return
+  }
+
+  func.func @kernel_caller_guards() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      func.call @send_helper(%cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    }
+    func.return
+  }
+}

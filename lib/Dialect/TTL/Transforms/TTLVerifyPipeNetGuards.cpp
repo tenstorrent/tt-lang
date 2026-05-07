@@ -971,9 +971,9 @@ struct TTLVerifyPipeNetGuardsPass
     validatePipeNetReferences(module, state);
 
     // Kernel-thread `func.func`s are runtime-invoked entry points with no
-    // callers in the module. Run the solver intra-procedural so each one is
-    // its own analysis root and `setToEntryState` runs per entry block.
-    DataFlowSolver solver(DataFlowConfig().setInterprocedural(false));
+    // callers (so they are analysis roots and get `setToEntryState`); helpers
+    // they call have the caller's narrowed lattice flow through `func.call`.
+    DataFlowSolver solver;
     dataflow::loadBaselineAnalyses(solver);
     solver.load<GuardAnalysis>(state);
     if (failed(solver.initializeAndRun(module))) {
