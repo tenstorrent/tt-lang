@@ -22,6 +22,15 @@ TT-Lang bridges this gap through progressive disclosure: simple kernels require 
 
 ### 2.1 Install from PyPI
 
+We provide two tt-lang packages: the [tt-lang](https://pypi.org/project/tt-lang/) package includes the tt-lang compiler, Tenstorrent hardware support and depends on the `ttnn`, `pytorch` and several smaller python packages, while [tt-lang-sim](https://pypi.org/project/tt-lang-sim/) includes only the functional simulator (no compiler or hardware support) and does not depend on `ttnn`.
+
+First, create an isolated Python environment (venv, conda, etc.) with Python 3.11 or later (python3.12 recommended). For example:
+
+```bash
+python3 -m venv --prompt ttlang ttlang-venv
+source ttlang-venv/bin/activate
+```
+
 On linux machines with Tenstorrent hardware (Linux x86_64 / aarch64):
 ```bash
 pip install "tt-lang"
@@ -52,6 +61,7 @@ To develop tt-lang itself or debug the compiler, use the Docker images below or 
 
 ### 2.2 Pre-built Docker images
 
+TT-Lang is also usable through Docker images for both users and developers.
 Two images are available:
 
 | Image                                                                                           | Purpose                                                            | Preinstalled tt-lang<br />(including ttlang-sim) | Can clone/build tt-lang? |

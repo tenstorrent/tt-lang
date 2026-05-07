@@ -161,7 +161,7 @@ def test_matmul_1d(Mt, Nt, Kt, granularity_m, granularity_n, granularity_k):
 
     matmul_1d(a, b, out, granularity_m, granularity_n, granularity_k)
 
-    golden_out = a.to_torch() @ b.to_torch()
+    golden_out = (a.to_torch().float() @ b.to_torch().float()).to(torch.bfloat16)
     assert_with_ulp(out.to_torch(), golden_out)
 
     print("PASSED!")
