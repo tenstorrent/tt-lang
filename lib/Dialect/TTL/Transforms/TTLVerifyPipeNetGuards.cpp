@@ -213,10 +213,9 @@ struct ModuleState {
 
   bool hasPipes() const { return !pipeNetLocs.empty(); }
 
-  // Frontend stamps the user's PipeNet variable name; handwritten lit IR may
-  // omit it. Synthesizing `net_<id>` here lets diagnostics use one form
-  // throughout (code spans like `net_0.is_active()` plus prose like "PipeNet
-  // net_0 declared here").
+  // Synthesize `net_<id>` for IR without the frontend's `pipeNetName` attr
+  // (typically handwritten lit cases) so every diagnostic names PipeNets the
+  // same way.
   std::string netName(int64_t netId) const {
     auto it = pipeNetNames.find(netId);
     if (it != pipeNetNames.end() && !it->second.empty()) {
@@ -281,9 +280,7 @@ struct ModuleState {
 };
 
 //===----------------------------------------------------------------------===//
-// Predicate decomposition. Inputs are MLIR values; outputs are either a
-// concrete domain or `Domain::unknown()` plus the `Operation*` that the
-// analyzer could not handle.
+// Predicate decomposition.
 //===----------------------------------------------------------------------===//
 
 struct DomainResult {
@@ -404,9 +401,6 @@ bool dependsOnCoord(Value v, llvm::DenseMap<Value, bool> &cache) {
   if (auto it = cache.find(v); it != cache.end()) {
     return it->second;
   }
-  // Insert false first so a self-cycle (shouldn't happen in valid SSA, but
-  // also shouldn't recurse forever) terminates.
-  cache.try_emplace(v, false);
   Operation *op = v.getDefiningOp();
   bool result = false;
   if (op) {
@@ -480,12 +474,12 @@ DomainResult getAffineIfDomain(affine::AffineIfOp ifOp,
   return {result, nullptr};
 }
 
-// Pick the witness op whose location sorts lexicographically first, so the
-// "this expression is not statically analyzable" note attached to a downstream
-// diagnostic is reproducible run-to-run regardless of the order the dataflow
-// solver visits predecessors. Returns the smaller of `lhs`/`rhs`; either may
-// be null.
-Operation *pickWitness(Operation *lhs, Operation *rhs) {
+// Return whichever of `lhs`/`rhs` has the lex-smaller `getLoc()`. Used to
+// pick a deterministic op when the dataflow solver could otherwise carry
+// either of two unanalyzable predicates through the lattice; without this,
+// diagnostic notes change op across runs depending on solver order. Either
+// argument may be null.
+Operation *firstByLocation(Operation *lhs, Operation *rhs) {
   if (!lhs) {
     return rhs;
   }
@@ -525,7 +519,7 @@ BranchDomains getBranchDomainsImpl(Value condition, const Domain &current,
     BranchDomains b =
         getBranchDomainsImpl(andOp.getRhs(), current, state, coordCache);
     Operation *unanalyzable =
-        pickWitness(a.unanalyzableOp, b.unanalyzableOp);
+        firstByLocation(a.unanalyzableOp, b.unanalyzableOp);
     return {
         domainIntersect(a.thenDomain, b.thenDomain),
         domainUnion(a.elseDomain, domainIntersect(a.thenDomain, b.elseDomain)),
@@ -537,7 +531,7 @@ BranchDomains getBranchDomainsImpl(Value condition, const Domain &current,
     BranchDomains b =
         getBranchDomainsImpl(orOp.getRhs(), current, state, coordCache);
     Operation *unanalyzable =
-        pickWitness(a.unanalyzableOp, b.unanalyzableOp);
+        firstByLocation(a.unanalyzableOp, b.unanalyzableOp);
     return {
         domainUnion(a.thenDomain, domainIntersect(a.elseDomain, b.thenDomain)),
         domainIntersect(a.elseDomain, b.elseDomain), unanalyzable};
@@ -571,16 +565,14 @@ BranchDomains getBranchDomains(Value condition, const Domain &current,
 // Diagnostic helpers.
 //===----------------------------------------------------------------------===//
 
-// Render the runtime predicate that matches the verifier's role domain. The
-// verifier unions all declared roles for a `pipenet_scope`, so the rendered
-// expression joins clauses with ` or `:
-//
+// Render the verifier's role domain back as a runtime predicate string.
+// Examples:
 //   net_0.is_src()                    (one net, one role)
-//   net_0.is_active()                 (one net, both src and dst -> collapse)
+//   net_0.is_active()                 (one net, src and dst both seen)
 //   net_0.is_dst() or net_1.is_src()  (different nets)
 //
-// Callers receive only `Source` or `Destination` from the `pipenet_scope`
-// validator; `Active` does not appear here.
+// Input roles are only `Source` or `Destination` (from `pipenet_scope`);
+// `is_active` is synthesized when a net has both.
 std::string formatGuardExpression(ArrayRef<std::pair<int64_t, PipeRole>> roles,
                                   const ModuleState &state) {
   SmallVector<int64_t> orderedIds;
@@ -738,7 +730,7 @@ public:
   ChangeResult join(const AbstractDenseLattice &rhs) override {
     const auto &other = static_cast<const DomainLattice &>(rhs);
     Domain joined = domainUnion(domain_, other.domain_);
-    Operation *carriedOp = pickWitness(unanalyzableOp_, other.unanalyzableOp_);
+    Operation *carriedOp = firstByLocation(unanalyzableOp_, other.unanalyzableOp_);
     if (joined == domain_ && carriedOp == unanalyzableOp_) {
       return ChangeResult::NoChange;
     }
@@ -778,9 +770,9 @@ public:
 
 private:
   Domain domain_;
-  // When `domain_.known` is false, points at the op the verifier could not
-  // statically evaluate; threaded through lattice transfers so a downstream
-  // pipe-coupled op's diagnostic can attach a note at that location.
+  // When `domain_.known` is false, points at the predicate op the verifier
+  // could not statically evaluate, so a downstream pipe-coupled op's
+  // diagnostic can attach a note at that location.
   Operation *unanalyzableOp_ = nullptr;
 };
 
@@ -832,8 +824,7 @@ public:
                                                before, after);
     };
     if (!regionTo || regionFrom) {
-      // Exiting back to the parent (or transitioning between regions of the
-      // same op): the lattice flows through unchanged.
+      // Exit to parent or transition between sibling regions: pass through.
       defaultHandling();
       return;
     }
@@ -905,7 +896,7 @@ public:
           // Body domain is unchanged; the scope is a marker, not a
           // narrowing predicate.
         })
-        .Default([&](auto) { /* fall through to default */ });
+        .Default([&](auto) {});
 
     ChangeResult result = after->setDomain(narrowed, unanalyzableOp);
     propagateIfChanged(after, result);
@@ -979,10 +970,9 @@ struct TTLVerifyPipeNetGuardsPass
 
     validatePipeNetReferences(module, state);
 
-    // Each `func.func` with `ttl.kernel_thread` is a top-level entry that the
-    // runtime invokes; the module has no callers connecting them. Configure
-    // the solver as intra-procedural so every kernel function is treated as
-    // its own analysis root and `setToEntryState` runs at every entry block.
+    // Kernel-thread `func.func`s are runtime-invoked entry points with no
+    // callers in the module. Run the solver intra-procedural so each one is
+    // its own analysis root and `setToEntryState` runs per entry block.
     DataFlowSolver solver(DataFlowConfig().setInterprocedural(false));
     dataflow::loadBaselineAnalyses(solver);
     solver.load<GuardAnalysis>(state);
