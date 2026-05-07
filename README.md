@@ -28,10 +28,14 @@ The fastest path. Sim-only on any OS, hardware-capable on Linux x86_64 / aarch64
 # Sim-only (any OS): runs kernels as pure Python via ttlang-sim.
 pip install tt-lang
 tt-lang-setup --no-host           # copy bundled tutorials to ./tutorials/
+# Run with ttlang-sim, e.g.:
+ttlang-sim tutorials/elementwise/step_1_single_node_single_tile_block.py
 
 # With Tenstorrent hardware (Linux x86_64 / aarch64):
 pip install "tt-lang[device]"
 tt-lang-setup                     # install matching sfpi runtime + copy tutorials
+# Run with ttlang-sim or directly on hardware, e.g.:
+python tutorials/elementwise/step_1_single_node_single_tile_block.py
 ```
 
 `tt-lang-setup` is idempotent. It does two things, both inside the venv (no sudo):
