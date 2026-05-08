@@ -20,17 +20,49 @@ TT-Lang bridges this gap through progressive disclosure: simple kernels require 
 
 ## 2. Quick Start
 
-The fastest way to try tt-lang is with the [functional simulator](docs/sphinx/simulator.md), which runs kernels as pure Python — no hardware, no compiler build required:
+### 2.1 Install from PyPI
+
+We provide two tt-lang packages: the [tt-lang](https://pypi.org/project/tt-lang/) package includes the tt-lang compiler, Tenstorrent hardware support and depends on the `ttnn`, `pytorch` and several smaller python packages, while [tt-lang-sim](https://pypi.org/project/tt-lang-sim/) includes only the functional simulator (no compiler or hardware support) and does not depend on `ttnn`.
+
+First, create an isolated Python environment (venv, conda, etc.) with Python 3.11 or later (python3.12 recommended). For example:
 
 ```bash
-git clone https://github.com/tenstorrent/tt-lang.git
-cd tt-lang
-cmake -G Ninja -B build -DTTLANG_SIM_ONLY=ON
-source build/env/activate
-ttlang-sim examples/eltwise_add.py
+python3 -m venv --prompt ttlang ttlang-venv
+source ttlang-venv/bin/activate
 ```
 
-To compile and run kernels on Tenstorrent hardware, use a pre-built Docker image. Two images are available:
+On linux machines with Tenstorrent hardware (Linux x86_64 / aarch64):
+```bash
+pip install tt-lang
+tt-lang-setup                     # install matching sfpi runtime + copy tutorials
+```
+
+Functional simulator-only on Linux or MacOS, does not require Tenstorrent hardware:
+```bash
+pip install tt-lang-sim
+tt-lang-setup                    # copy bundled tutorials to ./tutorials/
+```
+
+`tt-lang-setup` is idempotent (can be run multiple times without accumulating side effects).
+It does two things, both inside the venv (no sudo):
+- Downloads the sfpi compiler that pairs with the installed `ttnn` and extracts it under `<venv>/.../ttnn/runtime/sfpi/` (for `tt-lang` installation only).
+- Copies bundled tutorials (`elementwise`, `matmul`, `broadcast`) to `./tutorials/`.
+
+For finer control: `tt-lang-setup-host` runs only the sfpi step, `tt-lang-setup-tutorials -t <DIR>` only the tutorials copy.
+
+Run a tutorial example:
+
+```bash
+ttlang-sim tutorials/elementwise/step_4_multinode_grid_auto.py    # simulated (no compilation, runs on CPU)
+python tutorials/elementwise/step_4_multinode_grid_auto.py        # compiles and runs on hardware
+```
+
+To develop tt-lang itself or debug the compiler, use the Docker images below or [build from source](#25-building-without-docker).
+
+### 2.2 Pre-built Docker images
+
+TT-Lang is also usable through Docker images for both users and developers.
+Two images are available:
 
 | Image                                                                                           | Purpose                                                            | Preinstalled tt-lang<br />(including ttlang-sim) | Can clone/build tt-lang? |
 | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | :----------------------------------------------: | :----------------------: |
@@ -39,7 +71,7 @@ To compile and run kernels on Tenstorrent hardware, use a pre-built Docker image
 
 Both images can be used with `ird reserve` (see [container build docs](.github/containers/README.md) for details).
 
-### 2.1 ![dist](https://img.shields.io/badge/dist-brightgreen) Pre-built tt-lang (for users)
+### 2.3 ![dist](https://img.shields.io/badge/dist-brightgreen) Pre-built tt-lang (for users)
 
 Image: ghcr.io/tenstorrent/tt-lang/tt-lang-dist-ubuntu-22-04:latest ([all versions](https://github.com/tenstorrent/tt-lang/pkgs/container/tt-lang-dist-ubuntu-22-04))
 
@@ -73,7 +105,7 @@ python /opt/ttlang-toolchain/examples/elementwise-tutorial/step_4_multinode_grid
 
 To learn more, take a [tour](docs/sphinx/tour/index.md), explore the [programming guide](docs/sphinx/programming-guide.md) for compiler options, debugging, and performance tools, or use [Claude Code](https://claude.com/claude-code) with the built-in [slash commands](docs/sphinx/claude-skills.md) to translate kernels, profile, and optimize.
 
-### 2.2 ![ird](https://img.shields.io/badge/ird-blueviolet) Development image (for building tt-lang)
+### 2.4 ![ird](https://img.shields.io/badge/ird-blueviolet) Development image (for building tt-lang)
 
 Image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-22-04:latest ([all versions](https://github.com/tenstorrent/tt-lang/pkgs/container/tt-lang-ird-ubuntu-22-04))
 
@@ -124,15 +156,15 @@ The `-DTTLANG_USE_TOOLCHAIN=ON` flag tells CMake to use the pre-built LLVM and t
 
 Performance tracing (Tracy) is enabled by default. To disable it, add `-DTTLANG_ENABLE_PERF_TRACE=OFF` to the cmake configure command. See the [programming guide](docs/sphinx/programming-guide.md) for profiling usage.
 
-### 2.3 Building without Docker
+### 2.5 Building without Docker
 
 To build tt-lang directly on a host machine without Docker, see the [build system documentation](docs/sphinx/build.md). It covers prerequisites, all supported build modes (from submodules, reusable toolchain, pre-built toolchain), and version compatibility.
 
-### 2.4 Container Tips
+### 2.6 Container Tips
 
 To map a different TT device, change the `--device` argument (e.g., `--device=/dev/tenstorrent/1:/dev/tenstorrent/0`).
 
-### 2.5 Functional Simulator
+### 2.7 Functional Simulator
 
 tt-lang includes a functional simulator that runs kernels as pure Python, without requiring Tenstorrent hardware or the full compiler stack. Use it to validate kernel logic and debug with any Python debugger:
 
@@ -190,16 +222,23 @@ Update LLVM to the compatible version:
 cd third-party/llvm-project && git fetch && git checkout <llvm-sha> && cd ../..
 ```
 
-Update tt-metal to the compatible version:
+Update tt-metal to the compatible version. The canonical tt-metal version
+lives in `third-party/tt-metal-version` (a tt-metal release tag, e.g.
+`v0.69.0`); the submodule SHA, the `ttnn` version under
+`[project.optional-dependencies] device` in `pyproject.toml`, and the docker
+`TT_METAL_TAG` build arg are all derived from it. Edit the file and run the
+verifier in update mode to check out the submodule at the matching commit:
 
 ```bash
-cd third-party/tt-metal && git fetch && git checkout <tt-metal-sha> && cd ../..
+echo v0.69.0 > third-party/tt-metal-version
+.github/scripts/check-tt-metal-version.sh --update
 ```
 
 Commit all submodule updates together:
 
 ```bash
-git add third-party/tt-mlir third-party/llvm-project third-party/tt-metal
+git add third-party/tt-mlir third-party/llvm-project third-party/tt-metal \
+        third-party/tt-metal-version pyproject.toml
 git commit -m "Update submodules to tt-mlir <commit>"
 ```
 

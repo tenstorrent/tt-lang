@@ -58,6 +58,13 @@ jobs:
       - name: Install system dependencies
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
+          # Make apt resilient to slow/intermittent mirrors (launchpad.net).
+          # Persisted in apt.conf.d so subsequent steps (e.g. llvm.sh) inherit it.
+          sudo tee /etc/apt/apt.conf.d/99-retries-timeout > /dev/null <<'EOF'
+          Acquire::Retries "5";
+          Acquire::http::Timeout "240";
+          Acquire::https::Timeout "240";
+          EOF
           sudo apt-get update
           sudo apt-get install -y \
               build-essential \
@@ -77,7 +84,7 @@ jobs:
       - name: Install Clang 18
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
-          wget https://apt.llvm.org/llvm.sh
+          wget --tries=5 --timeout=120 --waitretry=10 https://apt.llvm.org/llvm.sh
           chmod u+x llvm.sh
           sudo ./llvm.sh 18
           sudo apt-get install -y libc++-18-dev libc++abi-18-dev
