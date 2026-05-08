@@ -106,7 +106,8 @@ static bool directDFBUseMatchesAcquire(AcquireInterval interval,
 }
 
 static bool projectToAcquireBlock(AcquireInterval interval, Operation *op,
-                                  Operation *&projected) {
+                                  Operation *&projected,
+                                  bool ignoreBoundary = false) {
   Block *block = interval.acquire->getBlock();
   projected = op->getBlock() == block ? op : block->findAncestorOpInBlock(*op);
   if (!projected) {
@@ -115,7 +116,7 @@ static bool projectToAcquireBlock(AcquireInterval interval, Operation *op,
   if (!isBefore(interval.acquire, projected)) {
     return false;
   }
-  if (interval.syncClassBoundary &&
+  if (!ignoreBoundary && interval.syncClassBoundary &&
       !isBefore(projected, interval.syncClassBoundary)) {
     return false;
   }
@@ -129,11 +130,25 @@ static void updateLatestUse(Operation *candidate, Operation *&latest) {
 }
 
 /// Find releases owned by this acquire interval.
+///
+/// `lastOwnedUse` extends the release-search upper bound past the
+/// next-acquire boundary when the interval's tensor SSA uses live past it
+/// (the deferred-use case). Without this extension the pass would not be
+/// idempotent: the cb_pop inserted after the deferred use would lie past
+/// the next-acquire boundary, and a subsequent run would re-insert it.
 static ReleaseSearch findOwnedReleases(AcquireInterval interval,
+                                       Operation *lastOwnedUse,
                                        ArrayRef<Operation *> allReleases,
                                        const DenseSet<Operation *> &erased) {
   ReleaseSearch result;
   Block *block = interval.acquire->getBlock();
+
+  // Allow same-block releases between the acquire and `lastOwnedUse`,
+  // ignoring the next-acquire boundary when the use itself sits past it.
+  bool useExtendsPastBoundary =
+      lastOwnedUse && lastOwnedUse != interval.acquire &&
+      interval.syncClassBoundary &&
+      !isBefore(lastOwnedUse, interval.syncClassBoundary);
 
   for (Operation *release : allReleases) {
     if (erased.contains(release)) {
@@ -145,10 +160,20 @@ static ReleaseSearch findOwnedReleases(AcquireInterval interval,
 
     if (release->getBlock() == block) {
       Operation *projected = nullptr;
-      if (!projectToAcquireBlock(interval, release, projected)) {
+      if (projectToAcquireBlock(interval, release, projected)) {
+        result.hasSameLevelRelease = true;
         continue;
       }
-      result.hasSameLevelRelease = true;
+      // Boundary failed. Re-check with the extended upper bound to keep
+      // the pass idempotent in the deferred-use shape: a release at or
+      // after the acquire's last owned use is the one this acquire would
+      // have inserted, so treat it as same-level.
+      if (useExtendsPastBoundary &&
+          projectToAcquireBlock(interval, release, projected,
+                                /*ignoreBoundary=*/true) &&
+          !isBefore(projected, lastOwnedUse)) {
+        result.hasSameLevelRelease = true;
+      }
       continue;
     }
 
@@ -197,17 +222,77 @@ static Operation *findNextSyncClassAcquire(Value cb, Operation *acquire,
 }
 
 /// Return the last op in `acquire`'s block that consumes the acquired slot.
-/// Tensor uses follow the acquire result; direct DFB copies use direction.
-/// `boundary` stops the scan at the next `cb_reserve` for reserve intervals or
-/// the next `cb_wait` for wait intervals.
+///
+/// ## Ownership
+///
+/// A use `U` is *owned by* `acquire` if `U` accesses the slot `acquire`
+/// acquired. Two disjoint criteria establish ownership:
+///
+/// **(a) SSA criterion** -- `U` is reachable from `acquire`'s result
+/// through identity-shaped tensor ops (`attach_cb`, `tensor.extract`,
+/// `tensor.extract_slice`, compute ops, `ttl.store`). Per-tile SSA values
+/// uniquely identify their source acquire, so this criterion has no
+/// positional bound: a use of `cb_wait t1`'s tile is owned by `t1`
+/// regardless of where it appears, even past later acquires on the same
+/// DFB.
+///
+/// **(b) Op-order criterion** -- `U` references the CB directly as a
+/// `ttl.copy` operand on the side matching the acquire's sync class (the
+/// DM-thread case, e.g. `ttl.copy %cb, %slice` for a writer). With no SSA
+/// tile handle, ownership is positional: `U` belongs to the latest
+/// acquire on `(cb, sync class)` that precedes it in op order.
+/// Equivalently, `U` is bounded between `acquire` and
+/// `interval.syncClassBoundary`.
+///
+/// The criteria are disjoint because DM-thread `ttl.copy` does not flow
+/// through `attach_cb` (it takes the CB directly), and compute-thread
+/// uses always go through `attach_cb` and never reference the CB as a
+/// direct operand of a tile op.
+///
+/// ### Why two criteria
+///
+/// Compute threads work through SSA tile handles
+/// (`cb_wait` result -> `attach_cb` -> `ttl.store` / compute ops), so (a)
+/// applies and the next-acquire boundary is irrelevant -- SSA already
+/// distinguishes which slot the use refers to. DM threads use direct CB
+/// references (`ttl.copy %cb, %slice`) where no tile handle exists, so
+/// (b) is the fallback and the boundary is essential to disambiguate
+/// between consecutive direct uses on the same CB. Unifying would require
+/// changing `ttl.copy` to take the attached tensor instead of the CB -- a
+/// dialect change deferred as future work.
+///
+/// ## Invariants on the inserted release
+///
+/// For each acquire `A`, the inserted release `R_A` must satisfy:
+///
+/// 1. **Causal dominance** -- every owned use of `A` precedes `R_A` in op
+///    order (after projecting nested uses to `A`'s block). This pass
+///    enforces it directly: the release is positioned after the last
+///    owned use returned by this function.
+///
+/// 2. **FIFO monotonicity** -- for `A_0 < A_1 < ...` on the same
+///    `(cb, sync class)`, the inserted releases satisfy
+///    `R_0 < R_1 < ...` in op order. The CB front pointer advances
+///    monotonically; out-of-order pops would advance it past slots whose
+///    data is still needed.
+///
+/// (1) is enforced explicitly here. (2) is enforced *implicitly* when
+/// consumers under criterion (a) appear in declaration order
+/// (`use(t1); use(t2); use(t3)`), because the resulting `lastUse(A_i)`
+/// values are then themselves in op order. Reordered consumes
+/// (`use(t2); use(t1)`) silently violate (2): the pass places `R_0` after
+/// `R_1` and the front pointer advances past `t1`'s slot before `t1` is
+/// read. Lifting that restriction is future work that requires a
+/// multi-tile `cb_wait_front(N)` with per-acquire `src_idx` so each
+/// consumer reads its tile by index, decoupled from pop ordering.
 static Operation *findLastOwnedUse(AcquireInterval interval) {
   Operation *last = interval.acquire;
   DenseSet<Operation *> visited;
   SmallVector<Value, 8> worklist;
 
-  auto extend = [&](Operation *user) {
+  auto extend = [&](Operation *user, bool ignoreBoundary) {
     Operation *projected = nullptr;
-    if (!projectToAcquireBlock(interval, user, projected)) {
+    if (!projectToAcquireBlock(interval, user, projected, ignoreBoundary)) {
       return false;
     }
     if (!visited.insert(user).second) {
@@ -220,6 +305,10 @@ static Operation *findLastOwnedUse(AcquireInterval interval) {
     return true;
   };
 
+  // Direct DFB uses: start from the CB value's users and recurse through
+  // their SSA results (e.g. ttl.copy returns a transfer_handle whose ttl.wait
+  // marks the actual end of the transfer). Boundary applies because two
+  // direct DFB uses on the same CB belong to different intervals.
   for (OpOperand &use : interval.cb.getUses()) {
     Operation *user = use.getOwner();
     if (user == interval.acquire) {
@@ -231,9 +320,24 @@ static Operation *findLastOwnedUse(AcquireInterval interval) {
     if (!directDFBUseMatchesAcquire(interval, user)) {
       continue;
     }
-    extend(user);
+    extend(user, /*ignoreBoundary=*/false);
+  }
+  while (!worklist.empty()) {
+    Value value = worklist.pop_back_val();
+    for (OpOperand &use : value.getUses()) {
+      Operation *user = use.getOwner();
+      if (isa<CBPushOp, CBPopOp>(user)) {
+        continue;
+      }
+      extend(user, /*ignoreBoundary=*/false);
+    }
   }
 
+  // Tensor SSA uses: start from the acquire's result and recurse through
+  // attach_cb / store / compute users. The next-acquire boundary does NOT
+  // apply: a tile produced by `cb_wait t1` may legitimately be consumed
+  // after `cb_wait t2`. Bounding this walk caused the issue #536 follow-up
+  // bug.
   if (interval.acquire->getNumResults() > 0) {
     worklist.push_back(interval.acquire->getResult(0));
   }
@@ -244,7 +348,7 @@ static Operation *findLastOwnedUse(AcquireInterval interval) {
       if (isa<CBPushOp, CBPopOp>(user)) {
         continue;
       }
-      extend(user);
+      extend(user, /*ignoreBoundary=*/true);
     }
   }
 
@@ -266,7 +370,9 @@ static void insertMissingReleases(ArrayRef<Operation *> acquires,
                                   CreateReleaseFn createRelease) {
   for (Operation *acquire : acquires) {
     AcquireInterval interval = makeAcquireInterval(acquire, acquires);
-    ReleaseSearch releaseSearch = findOwnedReleases(interval, releases, erased);
+    Operation *last = findLastOwnedUse(interval);
+    ReleaseSearch releaseSearch =
+        findOwnedReleases(interval, last, releases, erased);
     if (releaseSearch.hasSameLevelRelease) {
       continue;
     }
@@ -276,7 +382,6 @@ static void insertMissingReleases(ArrayRef<Operation *> acquires,
       nestedRelease->erase();
     }
 
-    Operation *last = findLastOwnedUse(interval);
     builder.setInsertionPointAfter(last);
     createRelease(builder, acquire->getLoc(), interval.cb);
   }
