@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 import math
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -26,10 +27,13 @@ from sim.ttnnsim import (
     TensorSpec,
 )
 
-# Marker for tests that require ttnn golden functions
-requires_ttnn = pytest.mark.skipif(
-    not TTNN_AVAILABLE, reason="ttnn not available (required for golden function tests)"
-)
+
+def requires_ttnn(func: Callable[..., Any]) -> Callable[..., Any]:
+    wrapped = pytest.mark.skipif(
+        not TTNN_AVAILABLE,
+        reason="ttnn not available (required for golden function tests)",
+    )(func)
+    return pytest.mark.requires_ttnn(wrapped)
 
 
 def test_constants_and_dtypes():
