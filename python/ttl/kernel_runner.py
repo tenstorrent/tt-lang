@@ -42,6 +42,31 @@ from .dtype_utils import (
     torch_dtype_to_ttnn_datatype,
 )
 
+def get_remaining_l1_for_core(device, core_x=0, core_y=0):
+    """
+    Get the remaining L1 for a core.
+    handles reduced worker_l1_size devices and tensor L1 allocations
+    ex:
+    device = ttnn.open_device(device_id=0, worker_l1_size=reduced_l1_size)
+    tensor = ttnn.empty([1024, 1024], device=device, memory_config=ttnn.L1_MEMORY_CONFIG)
+    
+    this helper should return 1436032 bytes for core (0, 0)
+    """
+    _ensure_ttnn()
+    info = ttnn._ttnn.reports.get_device_info(device)
+    budget_bytes = info.cb_limit
+
+    used_bytes = 0
+    for page in ttnn._ttnn.reports.get_buffer_pages(device):
+        if (
+            page.buffer_type == ttnn.BufferType.L1
+            and page.core_x == core_x
+            and page.core_y == core_y
+        ):
+            used_bytes += page.page_size
+
+    remaining_bytes = max(0, budget_bytes - used_bytes)
+    return remaining_bytes
 
 @dataclass
 class KernelSpec:
@@ -212,9 +237,17 @@ def build_cb_descriptors(
 
         total_cb_bytes += total_size
 
+    remaining_bytes = DEFAULT_L1_CB_BUDGET_BYTES
+    for tensor in tensors:
+        if tensor is not None and hasattr(tensor, "device"):
+            device = tensor.device()
+            if device is None:
+                continue
+            remaining_bytes = get_remaining_l1_for_core(device)
+
     # Must stay aligned with MLIR ttl-validate-cb-budget (TileType::getSizeBytes) and
     # tile_bytes_from_dtype; see issue #511.
-    if total_cb_bytes > DEFAULT_L1_CB_BUDGET_BYTES:
+    if total_cb_bytes > remaining_bytes:
         breakdown = "\n".join(r[3] for r in rows)
         raise ValueError(
             "Total circular buffer allocation ("

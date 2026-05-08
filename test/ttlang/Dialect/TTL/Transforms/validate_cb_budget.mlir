@@ -1,11 +1,10 @@
-// Tests for ttl-validate-cb-budget: overflow, warnings, multi-function/index behavior, and all four
+// Tests for ttl-validate-cb-budget: overflow, multi-function/index behavior, and all four
 // layout/dtype combinations for CB element types:
 //   - ttcore.tile<32x32, bf16>  -> 2048 bytes per slot (explicit tile)
 //   - ttcore.tile<32x32, f32>   -> 4096 bytes per slot (explicit tile)
 //   - bf16 (row-wise, builtin)  -> TileType::get(bf16)  -> 2048 bytes per slot
 //   - f32  (row-wise, builtin)  -> TileType::get(f32)   -> 4096 bytes per slot
 // WH/BH fallback budget B = 1432 * 1024 = 1466368 bytes when the module has no system_desc.
-// 90% warn threshold T = (B * 90) / 100 = 1319731.
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-validate-cb-budget)'
 
 // -----
@@ -43,10 +42,9 @@ func.func @no_cbs() {
 
 // -----
 
-// T < 645 * 2048 = 1320960 <= B.
+// 645 * 2048 = 1320960 <= B (high usage but under budget).
 
-func.func @warn_high_usage_tile_bf16() {
-  // expected-warning @below {{is above 90 percent}}
+func.func @high_usage_under_budget_tile_bf16() {
   %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[1, 645], !ttcore.tile<32x32, bf16>, 1>
   func.return
 }
@@ -126,10 +124,9 @@ func.func @overflow_tile_f32() {
 
 // -----
 
-// T < 323 * 4096 = 1323008 <= B.
+// 323 * 4096 = 1323008 <= B (high usage but under budget).
 
-func.func @warn_high_usage_tile_f32() {
-  // expected-warning @below {{is above 90 percent}}
+func.func @high_usage_under_budget_tile_f32() {
   %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[1, 323], !ttcore.tile<32x32, f32>, 1>
   func.return
 }
@@ -153,8 +150,7 @@ func.func @overflow_row_bf16() {
 
 // -----
 
-func.func @warn_high_usage_row_bf16() {
-  // expected-warning @below {{is above 90 percent}}
+func.func @high_usage_under_budget_row_bf16() {
   %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[1, 645], bf16, 1>
   func.return
 }
@@ -178,8 +174,7 @@ func.func @overflow_row_f32() {
 
 // -----
 
-func.func @warn_high_usage_row_f32() {
-  // expected-warning @below {{is above 90 percent}}
+func.func @high_usage_under_budget_row_f32() {
   %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[1, 323], f32, 1>
   func.return
 }

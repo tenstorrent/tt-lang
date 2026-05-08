@@ -117,7 +117,9 @@ struct TTLValidateCBBudgetPass
     ModuleOp moduleOp = getOperation();
 
     uint32_t budgetBytes = fallbackUsableL1Bytes;
-    if (auto fromDevice = tryBudgetFromModule(moduleOp)) {
+    if (l1BudgetOverride > 0) {
+      budgetBytes = l1BudgetOverride;
+    } else if (auto fromDevice = tryBudgetFromModule(moduleOp)) {
       budgetBytes = *fromDevice;
     }
 
@@ -207,22 +209,6 @@ struct TTLValidateCBBudgetPass
       emitBreakdown(diag);
       signalPassFailure();
       return;
-    }
-
-    if (warnThresholdPct > 0 && budgetBytes > 0) {
-      const uint64_t threshold =
-          (static_cast<uint64_t>(budgetBytes) * warnThresholdPct) / 100;
-      if (totalBytes > threshold) {
-        BindCBOp reportAt = bindForLargestAllocation();
-        auto diag = reportAt.emitWarning()
-                    << "circular buffer allocation (" << totalBytes
-                    << " bytes) is above "
-                    << static_cast<uint64_t>(warnThresholdPct)
-                    << " percent of L1 CB budget (" << budgetBytes
-                    << " bytes); "
-                       "this is static CB size only, not full core L1 usage";
-        emitBreakdown(diag);
-      }
     }
   }
 };

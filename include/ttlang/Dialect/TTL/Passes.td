@@ -472,17 +472,14 @@ def TTLValidateCBBudget
     the same static per-core CB region limit as Wormhole and Blackhole
     (total L1 minus reserved kernel space).
 
-    An optional warning fires when usage exceeds a configurable percentage
-    of that budget (default 90 percent).
-
     This is a static "CB region vs budget" check. It does not model
     other L1 consumers (kernel binaries, stack, runtime buffers).
   }];
 
   let options = [
-    Option<"warnThresholdPct", "warn-threshold-pct", "uint32_t", "90",
-           "Emit warning when CB usage exceeds this percentage of the "
-           "architecture-derived L1 CB budget (0 disables the warning).">
+    Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
+           "Override L1 CB budget (bytes). 0 means auto-detect from "
+           "device attributes or use architecture default.">
   ];
 }
 

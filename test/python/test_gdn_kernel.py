@@ -24,6 +24,13 @@ import ttl
 TILE = 32
 D = 32
 
+# Explicit FP32 accumulation (matches test_gdn_multicore_kernel).
+_GDN_COMPILER_OPTS = (
+    "--ttl-matmul-full-fp32 "
+    "--ttl-reduce-full-fp32 "
+    "--ttl-maximize-dst"
+)
+
 
 # ---- Helpers ----
 
@@ -76,7 +83,11 @@ def gdn_step_ref(S, q, k, v, alpha, beta):
 # ---- TT-Lang kernel (fused, implicit intermediates) ----
 
 
-@ttl.operation(grid=(1, 1))
+@ttl.operation(
+    grid=(1, 1),
+    fp32_dest_acc_en=True,
+    options=_GDN_COMPILER_OPTS,
+)
 def gdn_step(state_in, q_in, k_in, v_in, alpha_in, beta_in, state_out, out):
     """Fused GDN step: state update + output read in one kernel.
 

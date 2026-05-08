@@ -82,6 +82,7 @@ from .dtype_utils import (
 )
 from .kernel_runner import (
     KernelSpec,
+    get_remaining_l1_for_core,
     run_kernel_on_device,
     emit_runner_file,
 )
@@ -1164,6 +1165,14 @@ def _compile_kernel(
             )
             print(f"[TTNN interop] Detected {memory_space} memory space")
 
+    l1_budget_override = compiler_options.l1_budget
+    if l1_budget_override == 0 and has_ttnn_tensors:
+        try:
+            device = _require_device(args)
+            l1_budget_override = get_remaining_l1_for_core(device)
+        except ValueError:
+            pass
+
     for idx, (param_name, arg) in enumerate(zip(f_params, compile_args)):
         register_tensor_name(arg, param_name, index=idx)
 
@@ -1345,7 +1354,12 @@ def _compile_kernel(
             pipeline_passes.append("func.func(ttl-schedule-operations)")
         pipeline_passes.append("ttl-finalize-dfb-indices")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
-        pipeline_passes.append("ttl-validate-cb-budget")
+        if l1_budget_override > 0:
+            pipeline_passes.append(
+                f"ttl-validate-cb-budget{{l1-budget-override={l1_budget_override}}}"
+            )
+        else:
+            pipeline_passes.append("ttl-validate-cb-budget")
         # Add CB flow graph dump if auto-profiling or perf dump is enabled
         perf_dump = os.environ.get("TTLANG_PERF_DUMP") == "1"
         if perf_dump:
