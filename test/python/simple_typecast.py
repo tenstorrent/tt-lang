@@ -6,18 +6,19 @@
 # RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
+# RUN: %python %s > %t.hw.output 2>&1
+# RUN: FileCheck %s --check-prefix=CHECK-RESULT < %t.hw.output
 
 """
 Simple typecast kernel: convert a bf16 input tensor to f32 elementwise.
 
 Verifies that the Python ``ttl.math.typecast`` wrapper lowers to ``ttl.typecast``
 in initial IR and to ``typecast_tile_init`` / ``typecast_tile`` in the
-generated compute kernel C++.
+generated compute kernel C++. Also verifies numerical correctness against the
+torch bf16->f32 reference cast.
 """
 
 import os
-
-os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 import torch
 import ttnn
@@ -90,11 +91,17 @@ def typecast_kernel(inp, out):
 # CHECK-CPP: pack_tile<true>(
 # CHECK-CPP: tile_regs_release();
 
+# =============================================================================
+# Runtime Correctness Checks
+# =============================================================================
+
+# CHECK-RESULT: PASSED: bf16->f32 typecast matches torch reference
+
 
 if __name__ == "__main__":
     device = ttnn.open_device(device_id=0)
     try:
-        inp_torch = torch.full((32, 32), 1.5, dtype=torch.bfloat16)
+        inp_torch = torch.rand((32, 32), dtype=torch.bfloat16)
         out_torch = torch.zeros((32, 32), dtype=torch.float32)
 
         inp = ttnn.from_torch(
@@ -113,5 +120,16 @@ if __name__ == "__main__":
         )
 
         typecast_kernel(inp, out)
+
+        if not os.environ.get("TTLANG_COMPILE_ONLY"):
+            result = ttnn.to_torch(out)
+            # bf16->f32 is a lossless widening: every bf16 value has an exact
+            # f32 representation, so the hardware result must match exactly.
+            expected = inp_torch.to(torch.float32)
+            max_diff = (result - expected).abs().max().item()
+            assert max_diff == 0.0, (
+                f"bf16->f32 typecast mismatch: max_diff={max_diff}"
+            )
+            print("PASSED: bf16->f32 typecast matches torch reference")
     finally:
         ttnn.close_device(device)
