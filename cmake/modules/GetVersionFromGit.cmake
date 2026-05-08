@@ -10,27 +10,15 @@ find_package(Git QUIET)
 set(_TTLANG_VERSION_FALLBACK "0.0.0+unknown")
 
 if(GIT_FOUND)
-
   execute_process(
     COMMAND ${GIT_EXECUTABLE} describe --tags --match "v[0-9]*" --abbrev=0
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     OUTPUT_VARIABLE GIT_TAG
-    ERROR_VARIABLE GIT_TAG_ERR
-    RESULT_VARIABLE GIT_TAG_RC
     OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_STRIP_TRAILING_WHITESPACE
     ERROR_VARIABLE GIT_DESCRIBE_ERR
   )
 
-  if(NOT GIT_TAG_RC EQUAL 0 OR NOT GIT_TAG)
-    if(GIT_TAG_ERR)
-      set(_describe_failure_reason
-          "git describe failed: ${GIT_TAG_ERR}")
-    else()
-      set(_describe_failure_reason
-          "git describe found no v[0-9]* tag in this repository")
-    endif()
-  else()
+  if(GIT_TAG)
     # Strip 'v' prefix; split MAJOR.MINOR.PATCH from optional '+local' SemVer
     # build metadata (e.g., v1.0.0+uplift -> base=1.0.0, local=+uplift).
     # PEP 440 requires <release>[.devN][+local]; the local segment must come
