@@ -59,14 +59,12 @@ class TestReducedWorkerL1:
             probe = to_l1(torch.zeros(32, 32, dtype=torch.bfloat16), device)
             remaining = get_remaining_l1_for_core(device)
 
-            assert remaining < DEFAULT_L1_CB_BUDGET_BYTES, (
-                f"Expected reduced budget, got {remaining} >= {DEFAULT_L1_CB_BUDGET_BYTES}"
-            )
+            assert (
+                remaining < DEFAULT_L1_CB_BUDGET_BYTES
+            ), f"Expected reduced budget, got {remaining} >= {DEFAULT_L1_CB_BUDGET_BYTES}"
 
             with pytest.raises(ValueError, match="exceeds L1 budget"):
-                build_cb_descriptors(
-                    [probe], [_overflow_config(remaining)], None
-                )
+                build_cb_descriptors([probe], [_overflow_config(remaining)], None)
         finally:
             ttnn.close_device(device)
 
@@ -81,9 +79,7 @@ class TestL1TensorAllocation:
 
             # Height-sharded tensor on core (0,0) concentrates all L1 usage
             # on the target core.  512x512 bf16 = 256 tiles = 512 KiB.
-            big = to_l1_sharded(
-                torch.zeros(512, 512, dtype=torch.bfloat16), device
-            )
+            big = to_l1_sharded(torch.zeros(512, 512, dtype=torch.bfloat16), device)
             remaining_after = get_remaining_l1_for_core(device)
 
             assert remaining_after < remaining_empty, (
@@ -92,9 +88,7 @@ class TestL1TensorAllocation:
             )
 
             with pytest.raises(ValueError, match="exceeds L1 budget"):
-                build_cb_descriptors(
-                    [big], [_overflow_config(remaining_after)], None
-                )
+                build_cb_descriptors([big], [_overflow_config(remaining_after)], None)
         finally:
             ttnn.close_device(device)
 
@@ -109,9 +103,7 @@ class TestBothReducedL1AndTensorAllocation:
         try:
             remaining_before_tensor = get_remaining_l1_for_core(device)
 
-            big = to_l1_sharded(
-                torch.zeros(256, 256, dtype=torch.bfloat16), device
-            )
+            big = to_l1_sharded(torch.zeros(256, 256, dtype=torch.bfloat16), device)
             remaining = get_remaining_l1_for_core(device)
 
             assert remaining < remaining_before_tensor, (
@@ -124,9 +116,6 @@ class TestBothReducedL1AndTensorAllocation:
             )
 
             with pytest.raises(ValueError, match="exceeds L1 budget"):
-                build_cb_descriptors(
-                    [big], [_overflow_config(remaining)], None
-                )
+                build_cb_descriptors([big], [_overflow_config(remaining)], None)
         finally:
             ttnn.close_device(device)
-

@@ -42,6 +42,7 @@ from .dtype_utils import (
     torch_dtype_to_ttnn_datatype,
 )
 
+
 def get_remaining_l1_for_core(device, core_x=0, core_y=0):
     """
     Get the remaining L1 for a core.
@@ -49,7 +50,7 @@ def get_remaining_l1_for_core(device, core_x=0, core_y=0):
     ex:
     device = ttnn.open_device(device_id=0, worker_l1_size=reduced_l1_size)
     tensor = ttnn.empty([1024, 1024], device=device, memory_config=ttnn.L1_MEMORY_CONFIG)
-    
+
     this helper should return 1436032 bytes for core (0, 0)
     """
     _ensure_ttnn()
@@ -67,6 +68,7 @@ def get_remaining_l1_for_core(device, core_x=0, core_y=0):
 
     remaining_bytes = max(0, budget_bytes - used_bytes)
     return remaining_bytes
+
 
 @dataclass
 class KernelSpec:
