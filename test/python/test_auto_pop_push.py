@@ -4,8 +4,8 @@
 
 """Coverage for ttl-insert-cb-sync auto-injection edge cases.
 
-Each test exercises a distinct shape that the auto pop/push placement must
-handle, including the issue #536 follow-up case_a and case_b reproducers
+Each test exercises a distinct pattern that the auto pop/push placement
+must handle, including the issue #536 follow-up case_a and case_b reproducers
 (deferred consumer uses across multiple consecutive cb.wait() calls on the
 same DFB).
 
@@ -168,9 +168,9 @@ def test_issue_536_followup_case_b_four_waits_in_loop(device):
 
 @pytest.mark.requires_device
 def test_interleaved_wait_consume_pop_baseline(device):
-    """Sanity check: the safe shape (consume each wait before the next wait)
-    works after the #536 fix. This is the form the auto-pop pass currently
-    reasons about correctly."""
+    """Sanity check: the safe form (consume each wait before the next wait)
+    works after the #536 fix. This is the pattern the auto-pop pass
+    currently reasons about correctly."""
 
     @ttl.operation(grid=(1, 1))
     def repro(out):
@@ -1162,7 +1162,7 @@ def test_producer_three_reserves_deferred_stores_in_loop(device):
 # ---------------------------------------------------------------------------
 # xfail (#540). Tensor recurrence (acc = acc + ...) carrying an acquired
 # tile through scf.for iter_args. The DSL today does not lower this
-# shape consistently; PR #540 adds the missing materialization. Once
+# pattern consistently; PR #540 adds the missing materialization. Once
 # #540 lands, the auto-pop pass must follow uses through the iter_arg
 # block argument so the pop lands after the loop, not before. Mirrors
 # lit test 30 in insert_cb_sync.mlir.

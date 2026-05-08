@@ -80,8 +80,8 @@ A use `U` is *owned by* `acquire` if `U` accesses the slot `acquire` acquired.
 Two disjoint criteria establish ownership:
 
 - **Tile-SSA ownership** -- `U` is reachable from `acquire`'s result through
-  identity-shaped tensor ops (`attach_cb`, `tensor.extract`,
-  `tensor.extract_slice`, compute ops, `ttl.store`). Per-tile SSA values
+  the def-use chain over `attach_cb`, `tensor.extract`,
+  `tensor.extract_slice`, compute ops, and `ttl.store`. Per-tile SSA values
   uniquely identify their source acquire, so this criterion has no positional
   bound: a use of `cb_wait t1`'s tile is owned by `t1` regardless of where it
   appears, even past later acquires on the same DFB.

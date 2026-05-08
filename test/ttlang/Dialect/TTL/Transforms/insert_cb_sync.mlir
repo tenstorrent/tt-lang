@@ -922,11 +922,11 @@ func.func @three_consecutive_reserves_deferred_stores(
 // -----
 
 // Test 30: cb_wait result carried through scf.for iter_args. The acquired
-// tile is yielded into the loop's iter_args; the consumer store reads
-// the iter_arg inside the body. findLastOwnedUse must follow uses through
-// the iter_arg block argument so the pop lands after the loop, not before.
-// PR #540 adds DSL support for emitting this shape; this test guards the
-// pass against regressions once that lands.
+// tile flows into the loop as an iter_arg; findLastOwnedUse sees scf.for
+// as a user of the wait result via that operand edge and projects the
+// pop to after the loop. The test guards that projection -- not
+// body-internal iter-arg substitution -- so the pop lands after the
+// loop, not before. PR #540 makes this pattern reachable from the DSL.
 
 // CHECK-LABEL: func.func @wait_result_through_for_iter_args
 // CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
