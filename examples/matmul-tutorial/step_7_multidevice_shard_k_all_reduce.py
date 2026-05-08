@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
+#
+# TTLANG_TUTORIAL_CI: requires-multi-device
 
 #
 # Tutorial Step 7: Multi-Device, Shard K with All-Reduce
@@ -200,7 +202,7 @@ try:
     b = torch.randn((K, N), dtype=torch.bfloat16)
     c = torch.randn((M, N), dtype=torch.bfloat16)
 
-    expected_y = torch.relu(a @ b + c)
+    expected_y = torch.relu(a.float() @ b.float() + c.float()).to(torch.bfloat16)
 
     # K-sharding setup is identical to Step 6.
 

@@ -206,7 +206,7 @@ try:
     b = torch.randn((K, N), dtype=torch.bfloat16)
     c = torch.randn((M, N), dtype=torch.bfloat16)
 
-    expected_y = torch.relu(a @ b + c)
+    expected_y = torch.relu(a.float() @ b.float() + c.float()).to(torch.bfloat16)
 
     # Distribute tensors across devices for K-sharding:
     #   a: sharded along K (dim=1) — each device gets M×(K/n_devices) columns
