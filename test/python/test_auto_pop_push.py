@@ -8,6 +8,11 @@ Each test exercises a distinct shape that the auto pop/push placement must
 handle, including the issue #536 follow-up case_a and case_b reproducers
 (deferred consumer uses across multiple consecutive cb.wait() calls on the
 same DFB).
+
+Several tests are marked xfail(strict). Each describes a real pattern
+that currently produces wrong runtime output (or fails to compile) and
+will start passing once a tracked compiler follow-up lands. The
+explanation for each is at the test site.
 """
 
 import pytest
@@ -585,27 +590,22 @@ def test_wait_result_fanout_multiple_consumers(device):
 
 
 # ---------------------------------------------------------------------------
-# DM-thread producer with three consecutive reserves whose ttl.copy
-# completions are deferred. Stresses criterion (b) (direct CB use) at a
-# depth beyond the existing #536-fix coverage of two consecutive reserves.
-#
-# This pattern silently miscompiles today: ttl.copy takes the CB directly
-# (not the reserve result), so SSA cannot associate each copy with its
-# specific reserve. With three reserves before any copy, all copies sit
-# past r1's next-acquire boundary and get attributed to the last reserve.
-# r1's pop is inserted before any data is written. The dialect fix tracked
-# in plans/UnifyTTLCopyAcquireOwnership.md (encoding ownership in SSA via
-# the attach_cb chain) lifts this restriction; the test flips to PASS
-# then.
+# xfail (#555). DM-thread producer with three consecutive reserves
+# followed by three ttl.copy completions. ttl.copy takes a !ttl.cb operand
+# directly rather than a tensor SSA value derived from cb_reserve, so the
+# IR carries no def-use edge identifying which copy fills which reserve.
+# The pass falls back to op-order reasoning and attributes all three
+# copies to the last reserve. The push for the earlier reserves lands
+# before any data is written; the buffer's write pointer advances past
+# empty slots. Lifted by #555 (encode DFB ownership in SSA on ttl.copy).
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.requires_device
 @pytest.mark.xfail(
     strict=True,
-    reason="Batched DM-thread reserve/copy/wait/push pattern needs "
-    "ttl.copy to thread the reserve result through SSA. Lifted by "
-    "the dialect change in plans/UnifyTTLCopyAcquireOwnership.md.",
+    reason="Batched DM-thread reserve/copy/wait/push pattern. "
+    "Lifted by #555 (encode DFB ownership in SSA on ttl.copy).",
 )
 def test_dm_read_three_consecutive_reserves_deferred_copies(device):
     @ttl.operation(grid=(1, 1))
@@ -657,18 +657,20 @@ def test_dm_read_three_consecutive_reserves_deferred_copies(device):
 
 
 # ---------------------------------------------------------------------------
-# DM-thread consumer with three consecutive cb.wait() acquires whose
-# ttl.copy completions are deferred. Mirror of the dm_read producer case
-# above on the consumer side. Same dialect-level root cause.
+# xfail (#555). DM-thread consumer with three consecutive cb.wait()
+# acquires followed by three ttl.copy completions. Consumer-side mirror
+# of the dm_read case above; ttl.copy reads from the bare !ttl.cb operand
+# instead of the cb_wait result, so the pass cannot tell which copy
+# consumes which acquired slot and pops the earlier slots before the
+# corresponding copies read them. Lifted by #555.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.requires_device
 @pytest.mark.xfail(
     strict=True,
-    reason="Batched DM-thread wait/copy/wait/pop pattern needs ttl.copy "
-    "to thread the wait result through SSA. Lifted by the dialect "
-    "change in plans/UnifyTTLCopyAcquireOwnership.md.",
+    reason="Batched DM-thread wait/copy/wait/pop pattern. "
+    "Lifted by #555 (encode DFB ownership in SSA on ttl.copy).",
 )
 def test_dm_write_three_consecutive_waits_deferred_copies(device):
     @ttl.operation(grid=(1, 1))
@@ -707,11 +709,12 @@ def test_dm_write_three_consecutive_waits_deferred_copies(device):
 
 
 # ---------------------------------------------------------------------------
-# Cross-thread deferred chain. dm_read produces 4 tiles into inp_cb with
-# deferred pushes, compute consumes 4 from inp_cb with deferred uses,
-# dm_write writes 4 out with deferred pops. Exercises auto-injection
-# across all three threads simultaneously. Inherits the batched DM-thread
-# miscompile in both DM threads; the compute side already works.
+# xfail (#555). Cross-thread chain: dm_read reserves 4 slots up front then
+# writes them, compute waits 4 then consumes them, dm_write waits 4 then
+# writes them out. The compute-side auto-injection works (SSA def-use
+# anchors ownership), but both DM threads inherit the same batched
+# reserve/copy or wait/copy miscompile as the two tests above. Lifted by
+# #555.
 # ---------------------------------------------------------------------------
 
 
@@ -719,9 +722,7 @@ def test_dm_write_three_consecutive_waits_deferred_copies(device):
 @pytest.mark.xfail(
     strict=True,
     reason="Inherits the batched DM-thread reserve/wait miscompile in "
-    "the dm_read and dm_write halves. "
-    "Lifted by the dialect change in "
-    "plans/UnifyTTLCopyAcquireOwnership.md.",
+    "both dm_read and dm_write halves. Lifted by #555.",
 )
 def test_cross_thread_deferred_chain(device):
     @ttl.operation(grid=(1, 1))
@@ -793,12 +794,13 @@ def test_cross_thread_deferred_chain(device):
 
 
 # ---------------------------------------------------------------------------
-# Reordered consumes -- consumer reads tile values out of declaration
-# order. Without multi-tile coalescing, the pass places pop ops in op
-# order matching the consume sites, which violates FIFO monotonicity.
-# Documented as xfail(strict=True); flips to PASS the day the multi-tile
-# coalescing follow-on lands and provides per-acquire src_idx so
-# consumers can read by index.
+# xfail (#556). Consumer reads tile 2 before tile 1 (out of declaration
+# order). The buffer exposes a single FIFO front pointer, so there is no
+# way to release the second slot before the first; the current pass
+# places releases in the order it observes the consumes, violating FIFO
+# monotonicity. Lifted by #556 (coalesce consecutive cb_wait into one
+# cb_wait_front(N) with per-acquire src_idx, decoupling consume order
+# from release order).
 # ---------------------------------------------------------------------------
 
 
@@ -806,8 +808,7 @@ def test_cross_thread_deferred_chain(device):
 @pytest.mark.xfail(
     strict=True,
     reason="Reordered consumes (use(t2) before use(t1)) violate CB FIFO "
-    "monotonicity. Lifted by future multi-tile cb_wait_front(N) "
-    "coalescing with per-acquire src_idx.",
+    "monotonicity. Lifted by #556 (multi-tile cb_wait_front coalescing).",
 )
 def test_reordered_consumes_violate_fifo_xfail(device):
     @ttl.operation(grid=(1, 1))
@@ -1069,3 +1070,136 @@ def test_long_dm_thread_loop_64_iterations(device):
                 ttl.copy(blk, out[0, col]).wait()
 
     _run(device, repro, N, [17.0] * N)
+
+
+# ---------------------------------------------------------------------------
+# Multiple direct CB uses on a single DM-thread acquire.
+#
+# A single cb.wait() followed by two ttl.copy() reads from the same slot to
+# different output positions. Both copies are direct CB operands on the same
+# acquire (criterion-b ownership). The pop must land after the last copy; if
+# findLastOwnedUse stopped at the first copy, the pop would advance the read
+# pointer before the second copy reads, producing stale data in row 1.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.requires_device
+def test_dm_write_two_copies_same_acquire(device):
+    @ttl.operation(grid=(1, 1))
+    def repro(out):
+        cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            with cb.reserve() as v:
+                v.store(ttl.math.fill(v, 5.0))
+
+        @ttl.datamovement()
+        def dm_read():
+            pass
+
+        @ttl.datamovement()
+        def dm_write():
+            blk = cb.wait()
+            ttl.copy(blk, out[0, 0]).wait()
+            ttl.copy(blk, out[0, 1]).wait()
+
+    out_t = to_dram(torch.full((TILE, 2 * TILE), -42.0, dtype=torch.bfloat16), device)
+    repro(out_t)
+    ttnn.synchronize_device(device)
+    out_h = ttnn.to_torch(out_t)
+    assert out_h[0, 0].item() == 5.0
+    assert out_h[0, TILE].item() == 5.0
+
+
+# ---------------------------------------------------------------------------
+# Producer-side analog of case_b: 3 consecutive cb.reserve() per iteration
+# of an scf.for, with the matching stores deferred until after the third
+# reserve. Each push must land after its own slot's store, inside the loop
+# body. Symmetric coverage to test 28 in insert_cb_sync.mlir for producers.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.requires_device
+def test_producer_three_reserves_deferred_stores_in_loop(device):
+    N_ITERS = 3
+    N_PER_ITER = 3
+    TOTAL = N_ITERS * N_PER_ITER
+
+    @ttl.operation(grid=(1, 1))
+    def repro(out):
+        cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=TOTAL)
+        out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=4)
+
+        @ttl.compute()
+        def compute():
+            for _ in range(N_ITERS):
+                r1 = cb.reserve()
+                r2 = cb.reserve()
+                r3 = cb.reserve()
+                r1.store(ttl.math.fill(r1, 1.0))
+                r2.store(ttl.math.fill(r2, 2.0))
+                r3.store(ttl.math.fill(r3, 3.0))
+
+            for _ in range(TOTAL):
+                with cb.wait() as src, out_cb.reserve() as dst:
+                    dst.store(src)
+
+        @ttl.datamovement()
+        def dm_read():
+            pass
+
+        @ttl.datamovement()
+        def dm_write():
+            for col in range(TOTAL):
+                blk = out_cb.wait()
+                ttl.copy(blk, out[0, col]).wait()
+
+    expected = [1.0, 2.0, 3.0] * N_ITERS
+    _run(device, repro, TOTAL, expected)
+
+
+# ---------------------------------------------------------------------------
+# xfail (#540). Tensor recurrence (acc = acc + ...) carrying an acquired
+# tile through scf.for iter_args. The DSL today does not lower this
+# shape consistently; PR #540 adds the missing materialization. Once
+# #540 lands, the auto-pop pass must follow uses through the iter_arg
+# block argument so the pop lands after the loop, not before. Mirrors
+# lit test 30 in insert_cb_sync.mlir.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.requires_device
+@pytest.mark.xfail(
+    strict=True,
+    reason="Tensor recurrence carrying an acquired tile through scf.for "
+    "iter_args. Lifted by #540 (materialize tensor loop state).",
+)
+def test_wait_result_through_for_iter_args(device):
+    N = 4
+
+    @ttl.operation(grid=(1, 1))
+    def repro(out):
+        cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
+        out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
+
+        @ttl.compute()
+        def compute():
+            with cb.reserve() as v:
+                v.store(ttl.math.fill(v, 1.0))
+            acc = cb.wait()
+            for _ in range(N):
+                acc = acc + acc
+            with out_cb.reserve() as o:
+                o.store(acc)
+
+        @ttl.datamovement()
+        def dm_read():
+            pass
+
+        @ttl.datamovement()
+        def dm_write():
+            blk = out_cb.wait()
+            ttl.copy(blk, out[0, 0]).wait()
+
+    _run(device, repro, 1, [float(2**N)])

@@ -79,14 +79,14 @@ structured op when the exact use is nested in an `scf.for` or `scf.if` body.
 A use `U` is *owned by* `acquire` if `U` accesses the slot `acquire` acquired.
 Two disjoint criteria establish ownership:
 
-- **(a) SSA criterion** -- `U` is reachable from `acquire`'s result through
+- **Tile-SSA ownership** -- `U` is reachable from `acquire`'s result through
   identity-shaped tensor ops (`attach_cb`, `tensor.extract`,
   `tensor.extract_slice`, compute ops, `ttl.store`). Per-tile SSA values
   uniquely identify their source acquire, so this criterion has no positional
   bound: a use of `cb_wait t1`'s tile is owned by `t1` regardless of where it
   appears, even past later acquires on the same DFB.
 
-- **(b) Op-order criterion** -- `U` references the CB directly as a `ttl.copy`
+- **Direct-CB ownership** -- `U` references the CB directly as a `ttl.copy`
   operand on the side matching the acquire's sync class (the DM-thread case,
   e.g. `ttl.copy %cb, %slice` for a writer). With no SSA tile handle,
   ownership is positional: `U` belongs to the latest acquire on
@@ -101,13 +101,14 @@ The criteria are disjoint. DM-thread `ttl.copy` does not flow through
 #### Why two criteria
 
 Compute threads work through SSA tile handles
-(`cb_wait` result -> `attach_cb` -> `ttl.store` / compute ops), so (a) applies
-and the next-acquire boundary is irrelevant -- SSA already distinguishes which
-slot the use refers to. DM threads use direct CB references
-(`ttl.copy %cb, %slice`) where no tile handle exists, so (b) is the fallback
-and the boundary is essential to disambiguate consecutive direct uses on the
-same CB. Unifying would require changing `ttl.copy` to take the attached
-tensor instead of the CB, a dialect change tracked as future work.
+(`cb_wait` result -> `attach_cb` -> `ttl.store` / compute ops), so tile-SSA
+ownership applies and the next-acquire boundary is irrelevant -- SSA already
+distinguishes which slot the use refers to. DM threads use direct CB
+references (`ttl.copy %cb, %slice`) where no tile handle exists, so direct-CB
+ownership is the fallback and the boundary is essential to disambiguate
+consecutive direct uses on the same CB. Unifying would require changing
+`ttl.copy` to take the attached tensor instead of the CB, a dialect change
+tracked as future work.
 
 ### Invariants on the inserted release
 
@@ -136,11 +137,12 @@ consumer reads its tile by index, decoupled from pop ordering.
 
 When the pass runs twice on the same IR, the second run must observe the
 releases inserted by the first as already-present and skip re-injection.
-Because criterion (a) places releases past the next-acquire boundary in the
-deferred-use case, `findOwnedReleases` extends its release-search upper bound
-to the acquire's last owned use. Without this extension, the second run sees
-the inserted release as past the boundary and treats the acquire as needing
-another release.
+Because tile-SSA ownership can place a release past the next-acquire boundary
+(when a tile is consumed later than the next acquire on the same DFB),
+`findOwnedReleases` extends its release-search upper bound to the acquire's
+last owned use. Without this extension, the second run sees the inserted
+release as past the boundary and treats the acquire as needing another
+release.
 
 ### Slot State Model
 
@@ -190,10 +192,11 @@ cb_wait A  ->  owned reads  ->  cb_pop A  ->  cb_wait B
                                   inserted release
 ```
 
-Once a later acquire in the same DFB sync class starts, subsequent releases are
-considered part of that later interval. They cannot release the slot acquired by
-the earlier operation because the earlier slot must already be released before
-the DFB read or write pointer is reused.
+Direct-CB ownership is positional: a release after the next acquire in the
+same sync class is owned by that next acquire, not the earlier one. Tile-SSA
+ownership is unbounded: a release placed after a tile's last use can sit past
+the next acquire and still belong to the earlier interval. The pass
+distinguishes these two cases by use criterion, not by a single bound.
 
 ### Algorithm
 

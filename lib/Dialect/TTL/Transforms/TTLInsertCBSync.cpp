@@ -7,14 +7,9 @@
 //===----------------------------------------------------------------------===//
 //
 // Inserts missing cb_push / cb_pop for unmatched cb_reserve / cb_wait ops.
-//
-// Each acquire opens a DFB live interval. The pass finds owned uses from two
-// sources: SSA users of the acquire result, and direction-matched direct DFB
-// copy operands. Uses in descendant regions project to their ancestor in the
-// acquire block.
-//
-// Nested releases are erased and reinserted at the acquire block scope.
-// Same-level releases make the pass idempotent.
+// Owned-use discovery is asymmetric: tensor SSA uses are unbounded, direct
+// CB uses are bounded by the next same-class acquire. See
+// `docs/development/DFBManagement.md` for the ownership model.
 //
 // Legality invariants:
 //   P1. cb_push follows reserve-side writes before write pointer reuse.
@@ -129,13 +124,9 @@ static void updateLatestUse(Operation *candidate, Operation *&latest) {
   }
 }
 
-/// Find releases owned by this acquire interval.
-///
-/// `lastOwnedUse` extends the release-search upper bound past the
-/// next-acquire boundary when the interval's tensor SSA uses live past it
-/// (the deferred-use case). Without this extension the pass would not be
-/// idempotent: the cb_pop inserted after the deferred use would lie past
-/// the next-acquire boundary, and a subsequent run would re-insert it.
+/// Find releases owned by this acquire interval. When `lastOwnedUse` is
+/// non-null and falls past the next-acquire boundary, also accept releases
+/// in that extended range so the pass is idempotent on re-run.
 static ReleaseSearch findOwnedReleases(AcquireInterval interval,
                                        Operation *lastOwnedUse,
                                        ArrayRef<Operation *> allReleases,
@@ -143,8 +134,6 @@ static ReleaseSearch findOwnedReleases(AcquireInterval interval,
   ReleaseSearch result;
   Block *block = interval.acquire->getBlock();
 
-  // Allow same-block releases between the acquire and `lastOwnedUse`,
-  // ignoring the next-acquire boundary when the use itself sits past it.
   bool useExtendsPastBoundary =
       lastOwnedUse && lastOwnedUse != interval.acquire &&
       interval.syncClassBoundary &&
@@ -164,10 +153,8 @@ static ReleaseSearch findOwnedReleases(AcquireInterval interval,
         result.hasSameLevelRelease = true;
         continue;
       }
-      // Boundary failed. Re-check with the extended upper bound to keep
-      // the pass idempotent in the deferred-use shape: a release at or
-      // after the acquire's last owned use is the one this acquire would
-      // have inserted, so treat it as same-level.
+      // Re-check past the boundary: a release at or after the acquire's
+      // last owned use is one this pass would have inserted on a prior run.
       if (useExtendsPastBoundary &&
           projectToAcquireBlock(interval, release, projected,
                                 /*ignoreBoundary=*/true) &&
@@ -222,12 +209,8 @@ static Operation *findNextSyncClassAcquire(Value cb, Operation *acquire,
 }
 
 /// Return the last op in `acquire`'s block that consumes the acquired slot.
-///
-/// Use discovery walks two sources with different boundary policies: direct
-/// CB uses (bounded by the next same-class acquire) and tensor SSA uses
-/// (unbounded). See `docs/development/DFBManagement.md` "DFB Sync Insertion"
-/// for the full ownership model, why the criteria differ, and the causal /
-/// FIFO invariants the inserted release must satisfy.
+/// Direct CB uses are bounded by the next same-class acquire; tensor SSA
+/// uses are not. See `docs/development/DFBManagement.md` for the model.
 static Operation *findLastOwnedUse(AcquireInterval interval) {
   Operation *last = interval.acquire;
   DenseSet<Operation *> visited;
@@ -248,6 +231,19 @@ static Operation *findLastOwnedUse(AcquireInterval interval) {
     return true;
   };
 
+  auto drainWorklist = [&](bool ignoreBoundary) {
+    while (!worklist.empty()) {
+      Value value = worklist.pop_back_val();
+      for (OpOperand &use : value.getUses()) {
+        Operation *user = use.getOwner();
+        if (isa<CBPushOp, CBPopOp>(user)) {
+          continue;
+        }
+        extend(user, ignoreBoundary);
+      }
+    }
+  };
+
   // Direct DFB uses: start from the CB value's users and recurse through
   // their SSA results (e.g. ttl.copy returns a transfer_handle whose ttl.wait
   // marks the actual end of the transfer). Boundary applies because two
@@ -265,16 +261,7 @@ static Operation *findLastOwnedUse(AcquireInterval interval) {
     }
     extend(user, /*ignoreBoundary=*/false);
   }
-  while (!worklist.empty()) {
-    Value value = worklist.pop_back_val();
-    for (OpOperand &use : value.getUses()) {
-      Operation *user = use.getOwner();
-      if (isa<CBPushOp, CBPopOp>(user)) {
-        continue;
-      }
-      extend(user, /*ignoreBoundary=*/false);
-    }
-  }
+  drainWorklist(/*ignoreBoundary=*/false);
 
   // Tensor SSA uses: start from the acquire's result and recurse through
   // attach_cb / store / compute users. The next-acquire boundary does NOT
@@ -284,16 +271,7 @@ static Operation *findLastOwnedUse(AcquireInterval interval) {
   if (interval.acquire->getNumResults() > 0) {
     worklist.push_back(interval.acquire->getResult(0));
   }
-  while (!worklist.empty()) {
-    Value value = worklist.pop_back_val();
-    for (OpOperand &use : value.getUses()) {
-      Operation *user = use.getOwner();
-      if (isa<CBPushOp, CBPopOp>(user)) {
-        continue;
-      }
-      extend(user, /*ignoreBoundary=*/true);
-    }
-  }
+  drainWorklist(/*ignoreBoundary=*/true);
 
   return last;
 }
@@ -313,11 +291,21 @@ static void insertMissingReleases(ArrayRef<Operation *> acquires,
                                   CreateReleaseFn createRelease) {
   for (Operation *acquire : acquires) {
     AcquireInterval interval = makeAcquireInterval(acquire, acquires);
-    Operation *last = findLastOwnedUse(interval);
+    // Cheap check first: any release inside the strict next-acquire range?
     ReleaseSearch releaseSearch =
-        findOwnedReleases(interval, last, releases, erased);
+        findOwnedReleases(interval, /*lastOwnedUse=*/nullptr, releases, erased);
     if (releaseSearch.hasSameLevelRelease) {
       continue;
+    }
+
+    // Compute the last owned use; it both bounds the idempotency recheck
+    // and pinpoints the insertion point.
+    Operation *last = findLastOwnedUse(interval);
+    if (last != interval.acquire) {
+      releaseSearch = findOwnedReleases(interval, last, releases, erased);
+      if (releaseSearch.hasSameLevelRelease) {
+        continue;
+      }
     }
 
     for (Operation *nestedRelease : releaseSearch.nestedReleases) {

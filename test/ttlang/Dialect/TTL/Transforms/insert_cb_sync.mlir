@@ -781,12 +781,9 @@ func.func @dm_wait_before_reserve_same_dfb(
 
 // -----
 
-// Test 27: Three consecutive cb_wait acquires on the same DFB whose tensor
-// SSA uses are deferred until after every wait has been issued. The
-// next-acquire boundary must not clamp tensor-use discovery; each pop must
-// land after its own attach_cb's consumer use, naturally interleaving the
-// pops between the per-tile uses so the read pointer advances in FIFO
-// order. Regression for the issue #536 follow-up case_a reproducer.
+// Test 27: Three consecutive cb_wait on the same DFB; consumer stores run
+// after the third wait. Each pop must land after its own store, not clamped
+// at the next wait. Regression for issue #536 case_a.
 
 // CHECK-LABEL: func.func @three_consecutive_waits_deferred_consumers
 // CHECK: %[[CBIN:.+]] = ttl.bind_cb{cb_index = 0
@@ -832,19 +829,30 @@ func.func @three_consecutive_waits_deferred_consumers()
 
 // -----
 
-// Test 28: Four consecutive cb_wait acquires inside an scf.for, with their
-// consumer stores deferred to after every wait per iteration. Verifies the
-// boundary drop applies inside loop bodies and that pops are placed inside
-// the loop body (not hoisted past the loop). Regression for the issue #536
-// follow-up case_b reproducer.
+// Test 28: Four consecutive cb_wait inside scf.for; per-iteration stores
+// run after the fourth wait. Pops stay inside the body and interleave with
+// the stores. Regression for issue #536 case_b.
 
 // CHECK-LABEL: func.func @four_consecutive_waits_in_loop
+// CHECK: %[[CBIN:.+]] = ttl.bind_cb{cb_index = 0
+// CHECK: %[[CBOUT:.+]] = ttl.bind_cb{cb_index = 1
 // CHECK: scf.for
-// CHECK: ttl.cb_wait
-// CHECK: ttl.cb_wait
-// CHECK: ttl.cb_wait
-// CHECK: ttl.cb_wait
-// CHECK-COUNT-4: ttl.cb_pop
+// CHECK: ttl.cb_wait %[[CBIN]]
+// CHECK: ttl.cb_wait %[[CBIN]]
+// CHECK: ttl.cb_wait %[[CBIN]]
+// CHECK: ttl.cb_wait %[[CBIN]]
+// CHECK: ttl.store
+// CHECK-NEXT: ttl.cb_pop %[[CBIN]]
+// CHECK-NEXT: ttl.cb_push %[[CBOUT]]
+// CHECK: ttl.store
+// CHECK-NEXT: ttl.cb_pop %[[CBIN]]
+// CHECK-NEXT: ttl.cb_push %[[CBOUT]]
+// CHECK: ttl.store
+// CHECK-NEXT: ttl.cb_pop %[[CBIN]]
+// CHECK-NEXT: ttl.cb_push %[[CBOUT]]
+// CHECK: ttl.store
+// CHECK-NEXT: ttl.cb_pop %[[CBIN]]
+// CHECK-NEXT: ttl.cb_push %[[CBOUT]]
 // CHECK: }
 // CHECK-NOT: ttl.cb_pop
 // CHECK: return
@@ -876,6 +884,73 @@ func.func @four_consecutive_waits_in_loop()
     %r3 = ttl.cb_reserve %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.store %a3, %r3 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.cb_push %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
+  }
+  func.return
+}
+
+// -----
+
+// Test 29: Producer-side analog of test 27. Three consecutive cb_reserve;
+// stores run after the third reserve. Each push lands after its own store.
+
+// CHECK-LABEL: func.func @three_consecutive_reserves_deferred_stores
+// CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
+// CHECK: ttl.cb_reserve %[[CB]]
+// CHECK-NEXT: ttl.cb_reserve %[[CB]]
+// CHECK-NEXT: ttl.cb_reserve %[[CB]]
+// CHECK: ttl.store
+// CHECK-NEXT: ttl.cb_push %[[CB]]
+// CHECK: ttl.store
+// CHECK-NEXT: ttl.cb_push %[[CB]]
+// CHECK: ttl.store
+// CHECK-NEXT: ttl.cb_push %[[CB]]
+// CHECK-NOT: ttl.cb_push
+// CHECK: return
+func.func @three_consecutive_reserves_deferred_stores(
+    %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb = ttl.bind_cb{cb_index = 0, block_count = 3} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+  %r0 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %r1 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %r2 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 3> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %arg0, %r0 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %arg0, %r1 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %arg0, %r2 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  func.return
+}
+
+// -----
+
+// Test 30: cb_wait result carried through scf.for iter_args. The acquired
+// tile is yielded into the loop's iter_args; the consumer store reads
+// the iter_arg inside the body. findLastOwnedUse must follow uses through
+// the iter_arg block argument so the pop lands after the loop, not before.
+// PR #540 adds DSL support for emitting this shape; this test guards the
+// pass against regressions once that lands.
+
+// CHECK-LABEL: func.func @wait_result_through_for_iter_args
+// CHECK: %[[CB:.+]] = ttl.bind_cb{cb_index = 0
+// CHECK: %[[CBOUT:.+]] = ttl.bind_cb{cb_index = 1
+// CHECK: ttl.cb_wait %[[CB]]
+// CHECK: scf.for
+// CHECK: ttl.store
+// CHECK: scf.yield
+// CHECK: }
+// CHECK-NEXT: ttl.cb_pop %[[CB]]
+// CHECK: return
+func.func @wait_result_through_for_iter_args() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %cb = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_out = ttl.bind_cb{cb_index = 1, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>
+  %w = ttl.cb_wait %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %a = ttl.attach_cb %w, %cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %final = scf.for %i = %c0 to %c4 step %c1 iter_args(%carry = %a) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+    %r = ttl.cb_reserve %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %carry, %r : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
+    scf.yield %carry : tensor<1x1x!ttcore.tile<32x32, bf16>>
   }
   func.return
 }
