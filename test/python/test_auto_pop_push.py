@@ -542,3 +542,530 @@ def test_three_consecutive_reserves_deferred_stores(device):
             ttl.copy(blk, out[0, 2]).wait()
 
     _run(device, repro, 3, [7.0, 8.0, 9.0])
+
+
+# ---------------------------------------------------------------------------
+# Wait-result fanout. A single cb.wait() result is consumed by multiple
+# downstream stores; the SSA walk must discover every transitive use, not
+# just the first one. If it stops early, a later store reads from a slot
+# that has already been popped.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.requires_device
+def test_wait_result_fanout_multiple_consumers(device):
+    @ttl.operation(grid=(1, 1))
+    def repro(out):
+        cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+        out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            with cb.reserve() as v:
+                v.store(ttl.math.fill(v, 42.0))
+
+            t = cb.wait()
+            with out_cb.reserve() as o1:
+                o1.store(t)
+            with out_cb.reserve() as o2:
+                o2.store(t)
+
+        @ttl.datamovement()
+        def dm_read():
+            pass
+
+        @ttl.datamovement()
+        def dm_write():
+            blk = out_cb.wait()
+            ttl.copy(blk, out[0, 0]).wait()
+            blk = out_cb.wait()
+            ttl.copy(blk, out[0, 1]).wait()
+
+    _run(device, repro, 2, [42.0, 42.0])
+
+
+# ---------------------------------------------------------------------------
+# DM-thread producer with three consecutive reserves whose ttl.copy
+# completions are deferred. Stresses criterion (b) (direct CB use) at a
+# depth beyond the existing #536-fix coverage of two consecutive reserves.
+#
+# This pattern silently miscompiles today: ttl.copy takes the CB directly
+# (not the reserve result), so SSA cannot associate each copy with its
+# specific reserve. With three reserves before any copy, all copies sit
+# past r1's next-acquire boundary and get attributed to the last reserve.
+# r1's pop is inserted before any data is written. The dialect fix tracked
+# in plans/UnifyTTLCopyAcquireOwnership.md (encoding ownership in SSA via
+# the attach_cb chain) lifts this restriction; the test flips to PASS
+# then.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.requires_device
+@pytest.mark.xfail(
+    strict=True,
+    reason="Batched DM-thread reserve/copy/wait/push pattern needs "
+    "ttl.copy to thread the reserve result through SSA. Lifted by "
+    "the dialect change in plans/UnifyTTLCopyAcquireOwnership.md.",
+)
+def test_dm_read_three_consecutive_reserves_deferred_copies(device):
+    @ttl.operation(grid=(1, 1))
+    def repro(inp, out):
+        inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=3)
+        out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=3)
+
+        @ttl.compute()
+        def compute():
+            with inp_cb.wait() as src, out_cb.reserve() as dst:
+                dst.store(src)
+            with inp_cb.wait() as src, out_cb.reserve() as dst:
+                dst.store(src)
+            with inp_cb.wait() as src, out_cb.reserve() as dst:
+                dst.store(src)
+
+        @ttl.datamovement()
+        def dm_read():
+            r1 = inp_cb.reserve()
+            r2 = inp_cb.reserve()
+            r3 = inp_cb.reserve()
+            tx1 = ttl.copy(inp[0, 0], r1)
+            tx2 = ttl.copy(inp[1, 0], r2)
+            tx3 = ttl.copy(inp[2, 0], r3)
+            tx1.wait()
+            tx2.wait()
+            tx3.wait()
+            r1.push()
+            r2.push()
+            r3.push()
+
+        @ttl.datamovement()
+        def dm_write():
+            blk = out_cb.wait()
+            ttl.copy(blk, out[0, 0]).wait()
+            blk = out_cb.wait()
+            ttl.copy(blk, out[1, 0]).wait()
+            blk = out_cb.wait()
+            ttl.copy(blk, out[2, 0]).wait()
+
+    torch.manual_seed(11536)
+    inp_t = to_dram(torch.randn((3 * TILE, TILE), dtype=torch.bfloat16), device)
+    out_t = to_dram(torch.full((3 * TILE, TILE), -42.0, dtype=torch.bfloat16), device)
+    repro(inp_t, out_t)
+    ttnn.synchronize_device(device)
+    inp_h = ttnn.to_torch(inp_t)
+    out_h = ttnn.to_torch(out_t)
+    assert torch.equal(out_h, inp_h)
+
+
+# ---------------------------------------------------------------------------
+# DM-thread consumer with three consecutive cb.wait() acquires whose
+# ttl.copy completions are deferred. Mirror of the dm_read producer case
+# above on the consumer side. Same dialect-level root cause.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.requires_device
+@pytest.mark.xfail(
+    strict=True,
+    reason="Batched DM-thread wait/copy/wait/pop pattern needs ttl.copy "
+    "to thread the wait result through SSA. Lifted by the dialect "
+    "change in plans/UnifyTTLCopyAcquireOwnership.md.",
+)
+def test_dm_write_three_consecutive_waits_deferred_copies(device):
+    @ttl.operation(grid=(1, 1))
+    def repro(out):
+        out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=3)
+
+        @ttl.compute()
+        def compute():
+            with out_cb.reserve() as v:
+                v.store(ttl.math.fill(v, 50.0))
+            with out_cb.reserve() as v:
+                v.store(ttl.math.fill(v, 60.0))
+            with out_cb.reserve() as v:
+                v.store(ttl.math.fill(v, 70.0))
+
+        @ttl.datamovement()
+        def dm_read():
+            pass
+
+        @ttl.datamovement()
+        def dm_write():
+            b1 = out_cb.wait()
+            b2 = out_cb.wait()
+            b3 = out_cb.wait()
+            tx1 = ttl.copy(b1, out[0, 0])
+            tx2 = ttl.copy(b2, out[0, 1])
+            tx3 = ttl.copy(b3, out[0, 2])
+            tx1.wait()
+            tx2.wait()
+            tx3.wait()
+            b1.pop()
+            b2.pop()
+            b3.pop()
+
+    _run(device, repro, 3, [50.0, 60.0, 70.0])
+
+
+# ---------------------------------------------------------------------------
+# Cross-thread deferred chain. dm_read produces 4 tiles into inp_cb with
+# deferred pushes, compute consumes 4 from inp_cb with deferred uses,
+# dm_write writes 4 out with deferred pops. Exercises auto-injection
+# across all three threads simultaneously. Inherits the batched DM-thread
+# miscompile in both DM threads; the compute side already works.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.requires_device
+@pytest.mark.xfail(
+    strict=True,
+    reason="Inherits the batched DM-thread reserve/wait miscompile in "
+    "the dm_read and dm_write halves. "
+    "Lifted by the dialect change in "
+    "plans/UnifyTTLCopyAcquireOwnership.md.",
+)
+def test_cross_thread_deferred_chain(device):
+    @ttl.operation(grid=(1, 1))
+    def repro(inp, out):
+        inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=4)
+        out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=4)
+
+        @ttl.compute()
+        def compute():
+            t1 = inp_cb.wait()
+            t2 = inp_cb.wait()
+            t3 = inp_cb.wait()
+            t4 = inp_cb.wait()
+            with out_cb.reserve() as o:
+                o.store(t1)
+            with out_cb.reserve() as o:
+                o.store(t2)
+            with out_cb.reserve() as o:
+                o.store(t3)
+            with out_cb.reserve() as o:
+                o.store(t4)
+
+        @ttl.datamovement()
+        def dm_read():
+            r1 = inp_cb.reserve()
+            r2 = inp_cb.reserve()
+            r3 = inp_cb.reserve()
+            r4 = inp_cb.reserve()
+            tx1 = ttl.copy(inp[0, 0], r1)
+            tx2 = ttl.copy(inp[1, 0], r2)
+            tx3 = ttl.copy(inp[2, 0], r3)
+            tx4 = ttl.copy(inp[3, 0], r4)
+            tx1.wait()
+            tx2.wait()
+            tx3.wait()
+            tx4.wait()
+            r1.push()
+            r2.push()
+            r3.push()
+            r4.push()
+
+        @ttl.datamovement()
+        def dm_write():
+            b1 = out_cb.wait()
+            b2 = out_cb.wait()
+            b3 = out_cb.wait()
+            b4 = out_cb.wait()
+            tx1 = ttl.copy(b1, out[0, 0])
+            tx2 = ttl.copy(b2, out[1, 0])
+            tx3 = ttl.copy(b3, out[2, 0])
+            tx4 = ttl.copy(b4, out[3, 0])
+            tx1.wait()
+            tx2.wait()
+            tx3.wait()
+            tx4.wait()
+            b1.pop()
+            b2.pop()
+            b3.pop()
+            b4.pop()
+
+    torch.manual_seed(536)
+    inp_t = to_dram(torch.randn((4 * TILE, TILE), dtype=torch.bfloat16), device)
+    out_t = to_dram(torch.full((4 * TILE, TILE), -42.0, dtype=torch.bfloat16), device)
+    repro(inp_t, out_t)
+    ttnn.synchronize_device(device)
+    inp_h = ttnn.to_torch(inp_t)
+    out_h = ttnn.to_torch(out_t)
+    assert torch.equal(out_h, inp_h)
+
+
+# ---------------------------------------------------------------------------
+# Reordered consumes -- consumer reads tile values out of declaration
+# order. Without multi-tile coalescing, the pass places pop ops in op
+# order matching the consume sites, which violates FIFO monotonicity.
+# Documented as xfail(strict=True); flips to PASS the day the multi-tile
+# coalescing follow-on lands and provides per-acquire src_idx so
+# consumers can read by index.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.requires_device
+@pytest.mark.xfail(
+    strict=True,
+    reason="Reordered consumes (use(t2) before use(t1)) violate CB FIFO "
+    "monotonicity. Lifted by future multi-tile cb_wait_front(N) "
+    "coalescing with per-acquire src_idx.",
+)
+def test_reordered_consumes_violate_fifo_xfail(device):
+    @ttl.operation(grid=(1, 1))
+    def repro(out):
+        cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+        out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            with cb.reserve() as v:
+                v.store(ttl.math.fill(v, 1.0))
+            with cb.reserve() as v:
+                v.store(ttl.math.fill(v, 2.0))
+
+            t1 = cb.wait()
+            t2 = cb.wait()
+            # Consume t2 BEFORE t1 -- requires per-tile src_idx to be correct.
+            with out_cb.reserve() as o:
+                o.store(t2)
+            with out_cb.reserve() as o:
+                o.store(t1)
+
+        @ttl.datamovement()
+        def dm_read():
+            pass
+
+        @ttl.datamovement()
+        def dm_write():
+            blk = out_cb.wait()
+            ttl.copy(blk, out[0, 0]).wait()
+            blk = out_cb.wait()
+            ttl.copy(blk, out[0, 1]).wait()
+
+    _run(device, repro, 2, [2.0, 1.0])
+
+
+# ---------------------------------------------------------------------------
+# Multi-tile block shape. shape=(1,2) means each CB slot holds two tiles.
+# Consecutive cb.wait()s with deferred consumes verify the boundary
+# handling does not assume single-tile geometry.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.requires_device
+def test_multi_tile_block_shape_deferred_consumes(device):
+    @ttl.operation(grid=(1, 1))
+    def repro(inp, out):
+        cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 2), block_count=2)
+        out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 2), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            t1 = cb.wait()
+            t2 = cb.wait()
+            with out_cb.reserve() as o:
+                o.store(t1)
+            with out_cb.reserve() as o:
+                o.store(t2)
+
+        @ttl.datamovement()
+        def dm_read():
+            r1 = cb.reserve()
+            tx1 = ttl.copy(inp[0:1, 0:2], r1)
+            tx1.wait()
+            r1.push()
+            r2 = cb.reserve()
+            tx2 = ttl.copy(inp[0:1, 2:4], r2)
+            tx2.wait()
+            r2.push()
+
+        @ttl.datamovement()
+        def dm_write():
+            b1 = out_cb.wait()
+            ttl.copy(b1, out[0:1, 0:2]).wait()
+            b1.pop()
+            b2 = out_cb.wait()
+            ttl.copy(b2, out[0:1, 2:4]).wait()
+            b2.pop()
+
+    torch.manual_seed(909)
+    inp_t = to_dram(torch.randn((TILE, 4 * TILE), dtype=torch.bfloat16), device)
+    out_t = to_dram(torch.full((TILE, 4 * TILE), -42.0, dtype=torch.bfloat16), device)
+    repro(inp_t, out_t)
+    ttnn.synchronize_device(device)
+    inp_h = ttnn.to_torch(inp_t)
+    out_h = ttnn.to_torch(out_t)
+    assert torch.equal(out_h, inp_h)
+
+
+# ---------------------------------------------------------------------------
+# Tight block_count -- block_count exactly equal to the
+# consecutive-acquire count, no slack. Producer must push all 4 before the
+# consumer can read; ordering bugs that block_count slack would mask are
+# exposed here.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.requires_device
+def test_tight_block_count_four_consecutive_waits(device):
+    N = 4
+
+    @ttl.operation(grid=(1, 1))
+    def repro(out):
+        cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=N)
+        out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=N)
+
+        @ttl.compute()
+        def compute():
+            with cb.reserve() as v:
+                v.store(ttl.math.fill(v, 1.0))
+            with cb.reserve() as v:
+                v.store(ttl.math.fill(v, 2.0))
+            with cb.reserve() as v:
+                v.store(ttl.math.fill(v, 3.0))
+            with cb.reserve() as v:
+                v.store(ttl.math.fill(v, 4.0))
+
+            t1 = cb.wait()
+            t2 = cb.wait()
+            t3 = cb.wait()
+            t4 = cb.wait()
+            with out_cb.reserve() as o:
+                o.store(t1)
+            with out_cb.reserve() as o:
+                o.store(t2)
+            with out_cb.reserve() as o:
+                o.store(t3)
+            with out_cb.reserve() as o:
+                o.store(t4)
+
+        @ttl.datamovement()
+        def dm_read():
+            pass
+
+        @ttl.datamovement()
+        def dm_write():
+            for col in range(N):
+                blk = out_cb.wait()
+                ttl.copy(blk, out[0, col]).wait()
+
+    _run(device, repro, N, [1.0, 2.0, 3.0, 4.0])
+
+
+# ---------------------------------------------------------------------------
+# Producer-side mixed -- a reserve consumed immediately followed by two
+# reserves with deferred stores. Mirror of the mixed-immediate-deferred
+# consumer test above on the producer side.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.requires_device
+def test_producer_mixed_immediate_and_deferred_stores(device):
+    @ttl.operation(grid=(1, 1))
+    def repro(out):
+        cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=3)
+        out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=3)
+
+        @ttl.compute()
+        def compute():
+            # Immediate reserve + store (the with-block form).
+            with cb.reserve() as v:
+                v.store(ttl.math.fill(v, 11.0))
+            # Two deferred reserves with stores after both reserves.
+            r2 = cb.reserve()
+            r3 = cb.reserve()
+            r2.store(ttl.math.fill(r2, 22.0))
+            r3.store(ttl.math.fill(r3, 33.0))
+
+            with cb.wait() as src, out_cb.reserve() as dst:
+                dst.store(src)
+            with cb.wait() as src, out_cb.reserve() as dst:
+                dst.store(src)
+            with cb.wait() as src, out_cb.reserve() as dst:
+                dst.store(src)
+
+        @ttl.datamovement()
+        def dm_read():
+            pass
+
+        @ttl.datamovement()
+        def dm_write():
+            blk = out_cb.wait()
+            ttl.copy(blk, out[0, 0]).wait()
+            blk = out_cb.wait()
+            ttl.copy(blk, out[0, 1]).wait()
+            blk = out_cb.wait()
+            ttl.copy(blk, out[0, 2]).wait()
+
+    _run(device, repro, 3, [11.0, 22.0, 33.0])
+
+
+# ---------------------------------------------------------------------------
+# block_count=1 (single-slot CB). Degenerate but legal: every
+# producer-consumer pair must serialize through the single slot. Tests
+# the pass on the smallest legal CB topology.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.requires_device
+def test_single_slot_cb_serialized(device):
+    @ttl.operation(grid=(1, 1))
+    def repro(out):
+        cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
+        out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
+
+        @ttl.compute()
+        def compute():
+            with cb.reserve() as v:
+                v.store(ttl.math.fill(v, 99.0))
+            with cb.wait() as src, out_cb.reserve() as dst:
+                dst.store(src)
+            with cb.reserve() as v:
+                v.store(ttl.math.fill(v, 88.0))
+            with cb.wait() as src, out_cb.reserve() as dst:
+                dst.store(src)
+
+        @ttl.datamovement()
+        def dm_read():
+            pass
+
+        @ttl.datamovement()
+        def dm_write():
+            blk = out_cb.wait()
+            ttl.copy(blk, out[0, 0]).wait()
+            blk = out_cb.wait()
+            ttl.copy(blk, out[0, 1]).wait()
+
+    _run(device, repro, 2, [99.0, 88.0])
+
+
+# ---------------------------------------------------------------------------
+# Long DM-thread loop with many iterations. Exercises per-iteration pop
+# placement under wider iteration counts than case_b's 12.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.requires_device
+def test_long_dm_thread_loop_64_iterations(device):
+    N = 64
+
+    @ttl.operation(grid=(1, 1))
+    def repro(out):
+        cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=4)
+
+        @ttl.compute()
+        def compute():
+            for _ in range(N):
+                with cb.reserve() as v:
+                    v.store(ttl.math.fill(v, 17.0))
+
+        @ttl.datamovement()
+        def dm_read():
+            pass
+
+        @ttl.datamovement()
+        def dm_write():
+            for col in range(N):
+                blk = cb.wait()
+                ttl.copy(blk, out[0, col]).wait()
+
+    _run(device, repro, N, [17.0] * N)
