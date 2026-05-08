@@ -1,5 +1,5 @@
 TT-Lang Documentation
-=================
+=====================
 
 .. toctree::
    :maxdepth: 2

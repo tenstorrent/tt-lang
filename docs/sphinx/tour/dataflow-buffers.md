@@ -58,6 +58,9 @@ def some_compute():
 
 ## API Reference
 
+The Python class that represents a dataflow buffer is named `ttl.CircularBuffer`
+for historical reasons (this will be updated to ttl.DataflowBuffer in the near future); the rest of this guide uses the term "dataflow buffer" (DFB).
+
 | Function | Description |
 | :---- | :---- |
 | `ttl.make_dataflow_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape, block_count: ttl.Size) -> ttl.CircularBuffer` | Create a dataflow buffer by inheriting basic properties from `likeness_tensor`. |

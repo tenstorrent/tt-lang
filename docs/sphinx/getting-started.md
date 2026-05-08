@@ -63,6 +63,7 @@ package:
 git clone https://github.com/tenstorrent/tt-lang.git
 cd tt-lang
 cmake -G Ninja -B build -DTTLANG_SIM_ONLY=ON
+cmake --build build
 source build/env/activate
 ttlang-sim examples/eltwise_add.py
 ```
@@ -139,7 +140,7 @@ python examples/elementwise-tutorial/step_4_multinode_grid_auto.py
 
 ### Prerequisites
 
-- CMake 3.28+, Ninja, and Clang 17+ or GCC 11+
+- CMake 3.28+, Ninja, and Clang 17+ or GCC 12+
 - Python 3.11+
 - For faster builds: a pre-built toolchain at `TTLANG_TOOLCHAIN_DIR` (default
   `/opt/ttlang-toolchain`). Without one, LLVM and tt-metal build from submodules
