@@ -13,6 +13,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLFinalizeDFBIndices.cpp
   TTLValidateCBBudget.cpp
   TTLInsertCBSync.cpp
+  TTLInsertCopyWait.cpp
   TTLInsertIntermediateDFBs.cpp
   TTLAssignDST.cpp
   TTLScheduleOperations.cpp
