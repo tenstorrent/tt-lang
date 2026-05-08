@@ -17,7 +17,7 @@ func.func @overflow_with_small_override() {
 
 // -----
 
-// 1 * 2048 = 2048 bytes < override budget 4096. 90% threshold = 3686, so no warning.
+// 1 * 2048 = 2048 bytes < override budget 4096.
 
 func.func @under_small_override() {
   %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>

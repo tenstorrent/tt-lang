@@ -244,6 +244,7 @@ def build_cb_descriptors(
             if device is None:
                 continue
             remaining_bytes = get_remaining_l1_for_core(device)
+            break
 
     # Must stay aligned with MLIR ttl-validate-cb-budget (TileType::getSizeBytes) and
     # tile_bytes_from_dtype; see issue #511.
@@ -251,7 +252,7 @@ def build_cb_descriptors(
         breakdown = "\n".join(r[3] for r in rows)
         raise ValueError(
             "Total circular buffer allocation ("
-            f"{total_cb_bytes} bytes) exceeds L1 budget ({DEFAULT_L1_CB_BUDGET_BYTES} bytes). "
+            f"{total_cb_bytes} bytes) exceeds L1 budget ({remaining_bytes} bytes). "
             "This checks static CB backing store only (not all L1 on core).\n"
             + breakdown
             + "\n  hint: reduce DFB shapes or block_count."

@@ -18,7 +18,7 @@ from ttl.circular_buffer import CompilerAllocatedDFBConfig
 from ttl.kernel_runner import build_cb_descriptors
 
 # Single compiler-allocated CB: large enough to exceed DEFAULT_L1_CB_BUDGET_BYTES.
-# 400 * 2 * 2048 (bf16 tile) = 1,638,400 bytes > 1,368,064.
+# 400 * 2 * 2048 (bf16 tile) = 1,638,400 bytes > 1,466,368.
 build_cb_descriptors(
     [None],
     [
