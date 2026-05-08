@@ -56,7 +56,7 @@ jobs:
     secrets: inherit
     with:
       build_docs: ${{ github.ref == 'refs/heads/main' }}
-      docker_tag: "v1.0.2"
+      docker_tag: "v1.0.3"
       build_toolchain: ${{ needs.detect-uplift.outputs.uplift == 'true' }}
 
   test-sim:
