@@ -63,28 +63,84 @@ correct DFB interval boundary.
 
 The pass treats every acquire as opening a DFB live interval. The interval
 starts at `cb_reserve` or `cb_wait` and ends after the last operation that can
-use the acquired slot. A later acquire in the same DFB sync class bounds
-release matching and use discovery, because its release belongs to a different
-live interval.
+use the acquired slot.
 
 DFB sync classes separate the producer side from the consumer side:
 `cb_reserve`/`cb_push` form producer intervals, and `cb_wait`/`cb_pop` form
 consumer intervals. Producer acquires bound other producer intervals; consumer
 acquires bound other consumer intervals.
 
-The pass finds owned uses from two sources:
-
-- Tensor-form uses follow the result of `cb_reserve` or `cb_wait` through
-  `ttl.attach_cb`, `ttl.store`, and compute operations.
-- Direct DFB uses follow `ttl.copy` operations where the DFB operand direction
-  matches the interval's DFB sync class. Producer intervals include copies into
-  the DFB; consumer intervals include copies from the DFB. This is required for
-  data movement kernels, where copies do not use the tensor value returned by
-  the acquire op.
-
 Uses inside descendant regions are projected to their ancestor operation in the
 acquire's block. This conservatively places the release after the enclosing
 structured op when the exact use is nested in an `scf.for` or `scf.if` body.
+
+### Ownership
+
+A use `U` is *owned by* `acquire` if `U` accesses the slot `acquire` acquired.
+Two disjoint criteria establish ownership:
+
+- **(a) SSA criterion** -- `U` is reachable from `acquire`'s result through
+  identity-shaped tensor ops (`attach_cb`, `tensor.extract`,
+  `tensor.extract_slice`, compute ops, `ttl.store`). Per-tile SSA values
+  uniquely identify their source acquire, so this criterion has no positional
+  bound: a use of `cb_wait t1`'s tile is owned by `t1` regardless of where it
+  appears, even past later acquires on the same DFB.
+
+- **(b) Op-order criterion** -- `U` references the CB directly as a `ttl.copy`
+  operand on the side matching the acquire's sync class (the DM-thread case,
+  e.g. `ttl.copy %cb, %slice` for a writer). With no SSA tile handle,
+  ownership is positional: `U` belongs to the latest acquire on
+  `(cb, sync class)` that precedes it in op order. Equivalently, `U` is
+  bounded between `acquire` and the next acquire on the same sync class
+  (`interval.syncClassBoundary` in the pass).
+
+The criteria are disjoint. DM-thread `ttl.copy` does not flow through
+`attach_cb` (it takes the CB directly). Compute-thread uses always go through
+`attach_cb` and never reference the CB as a direct operand of a tile op.
+
+#### Why two criteria
+
+Compute threads work through SSA tile handles
+(`cb_wait` result -> `attach_cb` -> `ttl.store` / compute ops), so (a) applies
+and the next-acquire boundary is irrelevant -- SSA already distinguishes which
+slot the use refers to. DM threads use direct CB references
+(`ttl.copy %cb, %slice`) where no tile handle exists, so (b) is the fallback
+and the boundary is essential to disambiguate consecutive direct uses on the
+same CB. Unifying would require changing `ttl.copy` to take the attached
+tensor instead of the CB, a dialect change tracked as future work.
+
+### Invariants on the inserted release
+
+For each acquire `A`, the inserted release `R_A` must satisfy:
+
+1. **Causal dominance** -- every owned use of `A` precedes `R_A` in op order
+   (after projecting nested uses to `A`'s block). The pass enforces this
+   directly: the release is positioned after the last owned use returned by
+   `findLastOwnedUse`.
+
+2. **FIFO monotonicity** -- for `A_0 < A_1 < ...` on the same `(cb, sync
+   class)`, the inserted releases satisfy `R_0 < R_1 < ...` in op order. The
+   CB front (or back) pointer advances monotonically; out-of-order pops would
+   advance it past slots whose data is still needed.
+
+(1) is enforced explicitly by the pass. (2) is enforced *implicitly* when
+consumers under criterion (a) appear in declaration order
+(`use(t1); use(t2); use(t3)`), because the resulting `lastUse(A_i)` values are
+then themselves in op order. Reordered consumes (`use(t2); use(t1)`) silently
+violate (2): the pass places `R_0` after `R_1` and the front pointer advances
+past `t1`'s slot before `t1` is read. Lifting that restriction is future work
+that requires multi-tile `cb_wait_front(N)` with per-acquire `src_idx` so each
+consumer reads its tile by index, decoupled from pop ordering.
+
+### Idempotency
+
+When the pass runs twice on the same IR, the second run must observe the
+releases inserted by the first as already-present and skip re-injection.
+Because criterion (a) places releases past the next-acquire boundary in the
+deferred-use case, `findOwnedReleases` extends its release-search upper bound
+to the acquire's last owned use. Without this extension, the second run sees
+the inserted release as past the boundary and treats the acquire as needing
+another release.
 
 ### Slot State Model
 
