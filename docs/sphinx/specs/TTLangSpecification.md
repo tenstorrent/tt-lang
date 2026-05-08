@@ -632,9 +632,9 @@ A *pipe* is a communication primitive for organizing the passing of data between
 
 A node range has the same number of dimensions as `grid_size(dims=N)`, and each coordinate `c_i` lies within the corresponding grid extent `G_i` (i.e. `0 <= c_i < G_i`). The range may be smaller than the grid: pipes are not required to span every node along any dimension.
 
-Two extents are distinguished. The *work extent* of an operation is the smallest axis-aligned bounding box that contains every source coordinate and every destination range across every pipe net used by the operation. The *launch extent* is the grid on which the operation is launched, selected by the `grid=` argument of `@ttl.operation(grid=...)`. Pipe coordinates should be sized from the work extent and need not span the launch extent.
+The *launch extent* of an operation is the grid on which the operation is launched, selected by the `grid=` argument of `@ttl.operation(grid=...)`. Pipe coordinates need not span the launch extent: they describe only the nodes that participate as pipe sources or destinations, that is, the operation's *active set* (defined under [Pipe net](#pipe-net) below).
 
-For example, an operation that gathers from a 4x3 work region onto a device with an 8x8 compute grid has work extent `(4, 3)`. Under `grid="full"` it launches on all 64 nodes; the 64 - 12 = 52 nodes outside the work extent must be guarded out of the pipe-coupled regions by the user.
+For example, consider an operation on a device with a 4x4 compute grid whose pipe sources and destinations together cover at most a 2x3 region: its active set has at most 6 nodes. Under `grid="full"` it launches on all 16 nodes; every node outside the active set must be guarded out of the pipe-coupled regions by the user.
 
 The launch extent is selected by the value passed to `grid=`:
 
@@ -692,9 +692,10 @@ The *active set* of an operation is the union, over every pipe in every pipe net
 # ---------------------
 # gather from row y to (0, y) with unicast.
 #
-# The pipe net is sized from the operation's work extent, not the launch
-# extent. ROWS and COLS describe the gather work shape. Nodes outside the
-# active rectangle (row 0..ROWS-1, column 0..COLS-1) skip the kernel body.
+# The pipe net is sized from the active set, not the launch extent.
+# ROWS and COLS describe the rectangle that bounds the active set.
+# Nodes outside the active rectangle (row 0..ROWS-1, column 0..COLS-1)
+# skip the kernel body.
 
 ROWS = ...  # rows participating in the gather
 COLS = ...  # columns participating in the gather
