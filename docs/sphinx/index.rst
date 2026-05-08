@@ -6,8 +6,8 @@ TT-Lang Documentation
    :caption: User Guide
 
    overview
-   simulator
    getting-started
+   simulator
    tour/index
    elementwise-tutorial/index
    matmul-tutorial/index

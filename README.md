@@ -1,10 +1,28 @@
-# tt-lang
+<div align="center">
+
+<h1>
+
+[Hardware](https://tenstorrent.com/cards/) | [Documentation](https://docs.tenstorrent.com/tt-lang/) | [Discord](https://discord.gg/tenstorrent) | [Join Us](https://job-boards.greenhouse.io/tenstorrent?gh_src=22e462047us) | [Issues](https://github.com/tenstorrent/tt-lang/issues)
+
+</h1>
+
+<picture>
+  <img alt="TT-Lang" src="docs/public/images/ttlang_logo.png" height="220">
+</picture>
+
+</div>
+<br>
 
 ![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
 ![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Build Status](https://github.com/tenstorrent/tt-lang/actions/workflows/on-push.yml/badge.svg)
 
 A Python-based Domain-Specific Language (DSL) for authoring high-performance custom kernels on Tenstorrent hardware. This project is under active development — see the [functionality matrix](docs/sphinx/specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current simulator and compiler support.
+
+-----
+**Contents:** [Vision](#1-vision) · [Quick Start](#2-quick-start) · [Documentation](#3-documentation) · [Contributing](#4-contributing) · [Support](#5-support) · [License](#6-license)
+
+-----
 
 ## 1. Vision
 
