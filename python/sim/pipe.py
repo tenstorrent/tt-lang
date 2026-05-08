@@ -35,36 +35,19 @@ class Pipe(Generic[DstT]):
         DstT: The type of the destination - CoreCoord or CoreRange
 
     Attributes:
-        src_core: Core coordinates of the source/sender. Can be:
-                 - Index: Single 1D core (e.g., 0, 1, 2)
-                 - Tuple[Index, ...]: Multi-dimensional core (e.g., (0, 1), (1, 2, 3))
+        src: Core coordinates of the source/sender. Can be:
+             - Index: Single 1D core (e.g., 0, 1, 2)
+             - Tuple[Index, ...]: Multi-dimensional core (e.g., (0, 1), (1, 2, 3))
 
-        dst_core_range: Destination specification. Can be:
-                       - CoreCoord: Single destination core (unicast)
-                         Example: 5 or (1, 2)
-                       - CoreRange: Range of destination cores using slices (multicast)
-                         Example: (0, slice(1, 4)) means cores (0,1), (0,2), (0,3)
+        dst: Destination specification. Can be:
+             - CoreCoord: Single destination core (unicast)
+               Example: 5 or (1, 2)
+             - CoreRange: Range of destination cores using slices (multicast)
+               Example: (0, slice(1, 4)) means cores (0,1), (0,2), (0,3)
     """
 
-    src_core: CoreCoord
-    dst_core_range: DstT
-
-    def has_current_node(self) -> bool:
-        """Check if the current core participates in this pipe (either as source or destination).
-
-        This is useful for early-exit patterns where non-participating cores should skip work.
-        Must be called within a kernel context.
-
-        Returns:
-            True if the current core is either the source or in the destination range.
-        """
-        # Check if current core is the source
-        current_core_linear = node(dims=1)
-        pipe_src_linear = flatten_core_index(self.src_core)
-        if current_core_linear == pipe_src_linear:
-            return True
-
-        return core_in_dst_range(self.dst_core_range)
+    src: CoreCoord
+    dst: DstT
 
     def __hash__(self) -> int:
         """Custom hash implementation to handle slices and nested tuples."""
@@ -81,7 +64,7 @@ class Pipe(Generic[DstT]):
                 case _:
                     return obj
 
-        return hash((make_hashable(self.src_core), make_hashable(self.dst_core_range)))
+        return hash((make_hashable(self.src), make_hashable(self.dst)))
 
 
 # Union of Pipe instances with different destination types
@@ -112,7 +95,7 @@ class SrcPipeIdentity(Generic[DstT]):
         Returns:
             The destination specification from the pipe
         """
-        return self.pipe.dst_core_range
+        return self.pipe.dst
 
 
 # Union of SrcPipeIdentity instances with different destination types
@@ -143,7 +126,7 @@ class DstPipeIdentity:
         Returns:
             The source core coordinate from the pipe
         """
-        return self.pipe.src_core
+        return self.pipe.src
 
 
 def expand_core_range(core_range: CoreRange) -> List[CoreCoord]:
@@ -283,6 +266,32 @@ class PipeNet(Generic[DstT]):
         """
         self._pipes = pipes
 
+    def is_active(self) -> bool:
+        """Return True if the current node participates in any pipe (source or destination).
+
+        Useful for early-exit when only PipeNet participants should run thread body code.
+        Must be called within a kernel context.
+
+        Returns:
+            True if the current core is a source or destination for at least one pipe.
+        """
+        return self.is_src() or self.is_dst()
+
+    def is_src(self) -> bool:
+        """Return True if the current node is the source of at least one pipe in this net."""
+        current_core_linear = node(dims=1)
+        for pipe in self._pipes:
+            if flatten_core_index(pipe.src) == current_core_linear:
+                return True
+        return False
+
+    def is_dst(self) -> bool:
+        """Return True if the current node lies in the destination of at least one pipe."""
+        for pipe in self._pipes:
+            if core_in_dst_range(pipe.dst):
+                return True
+        return False
+
     def if_src(self, cond_fun: Callable[[SrcPipeIdentity[DstT]], None]) -> None:
         """Execute condition function for each pipe where current core is source.
 
@@ -297,7 +306,7 @@ class PipeNet(Generic[DstT]):
         current_core_linear = node(dims=1)
 
         for pipe in self._pipes:
-            pipe_src_linear = flatten_core_index(pipe.src_core)
+            pipe_src_linear = flatten_core_index(pipe.src)
             if current_core_linear == pipe_src_linear:
                 identity = SrcPipeIdentity[DstT](pipe)
                 cond_fun(identity)
@@ -314,6 +323,6 @@ class PipeNet(Generic[DstT]):
                      source via its .dst property.
         """
         for pipe in self._pipes:
-            if core_in_dst_range(pipe.dst_core_range):
+            if core_in_dst_range(pipe.dst):
                 identity = DstPipeIdentity(pipe)
                 cond_fun(identity)

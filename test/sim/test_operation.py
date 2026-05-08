@@ -11,9 +11,9 @@ from typing import cast
 import pytest
 from test_utils import make_zeros_tensor
 
-from python.sim import ttl, ttnn
-from python.sim.corecontext import flatten_core_index
-from python.sim.typedefs import Shape
+from sim import ttl, ttnn
+from sim.corecontext import flatten_core_index
+from sim.typedefs import Shape
 
 
 class TestGridSize:
@@ -1015,7 +1015,7 @@ class TestRowMajoroperation:
         DM writer copies each result row back to the output tensor.
         Verifies that layout is preserved end-to-end.
         """
-        from python.sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor as SimTensor
+        from sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor as SimTensor
 
         N, C = 4, 8
         input_data = torch.arange(N * C, dtype=torch.float32).reshape(N, C)
@@ -1066,7 +1066,7 @@ class TestRowMajoroperation:
         Distinct from test_row_major_double_rows by using a non-tile-aligned
         column count (C=6) and a single row.
         """
-        from python.sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor as SimTensor
+        from sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor as SimTensor
 
         C = 6
         input_data = torch.ones(1, C, dtype=torch.float32) * 3.0
@@ -1105,7 +1105,7 @@ class TestRowMajoroperation:
 
     def test_row_major_multirow_unary(self):
         """Row-major operation using a unary math op (exp) preserves layout and values."""
-        from python.sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor as SimTensor
+        from sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor as SimTensor
 
         N, C = 3, 5
         input_data = torch.tensor([[0.0, 1.0, 2.0, 3.0, 4.0]] * N, dtype=torch.float32)
@@ -1145,3 +1145,69 @@ class TestRowMajoroperation:
         assert torch.allclose(
             output_data, expected, atol=1e-5
         ), f"Expected exp(input), got {output_data}"
+
+
+def _make_passthrough_kernel(decorator):
+    """Build a simple copy kernel using the given @ttl.operation decorator."""
+
+    @decorator
+    def kernel(x, y):
+        x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1))
+        y_dfb = ttl.make_dataflow_buffer_like(y, shape=(1, 1))
+
+        @ttl.compute()
+        def compute():
+            with x_dfb.wait() as x_blk, y_dfb.reserve() as y_blk:
+                y_blk.store(x_blk)
+
+        @ttl.datamovement()
+        def reader():
+            with x_dfb.reserve() as blk:
+                ttl.copy(x[0, 0], blk).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with y_dfb.wait() as blk:
+                ttl.copy(blk, y[0, 0]).wait()
+
+    return kernel
+
+
+class TestHardwareKeywordsIgnored:
+    """Compiler-specific keyword arguments are silently ignored by the simulator."""
+
+    def test_fp32_dest_acc_en_accepted(self) -> None:
+        """fp32_dest_acc_en=True does not raise."""
+        a = ttnn.from_torch(torch.zeros(32, 32))
+        b = ttnn.from_torch(torch.zeros(32, 32))
+        kernel = _make_passthrough_kernel(
+            ttl.operation(grid=(1, 1), fp32_dest_acc_en=True)
+        )
+        kernel(a, b)
+
+    def test_dst_full_sync_en_accepted(self) -> None:
+        """dst_full_sync_en=False does not raise."""
+        a = ttnn.from_torch(torch.zeros(32, 32))
+        b = ttnn.from_torch(torch.zeros(32, 32))
+        kernel = _make_passthrough_kernel(
+            ttl.operation(grid=(1, 1), dst_full_sync_en=False)
+        )
+        kernel(a, b)
+
+    def test_multiple_hardware_kwargs_accepted(self) -> None:
+        """Multiple hardware kwargs together do not raise."""
+        a = ttnn.from_torch(torch.zeros(32, 32))
+        b = ttnn.from_torch(torch.zeros(32, 32))
+        kernel = _make_passthrough_kernel(
+            ttl.operation(
+                grid=(1, 1),
+                fp32_dest_acc_en=True,
+                dst_full_sync_en=False,
+            )
+        )
+        kernel(a, b)
+
+    def test_unknown_kwarg_raises(self) -> None:
+        """An unrecognised keyword argument raises TypeError."""
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            ttl.operation(grid=(1, 1), totally_unknown_option=42)

@@ -841,6 +841,52 @@ def set_matmul_promote_bf16(value: bool) -> None:
         bfloat16 = _original_bfloat16
 
 
+class _BFloat8BDtype:
+    """Sentinel class for the bfloat8_b block-floating-point dtype.
+
+    PyTorch has no native bfloat8_b type.  The simulator backs bfloat8_b
+    tensors with bfloat16 for computation.
+
+    BFP8B encoding: each element is stored as a 1-byte mantissa; every group
+    of 16 elements shares a 1-byte exponent.  Storage cost is therefore
+    n + n // 16 bytes for n elements, which is not a fixed per-element
+    constant.  Use size_in_bytes(n) for correct capacity accounting.
+    """
+
+    # Exponent group size: one shared exponent byte per this many elements.
+    _EXPONENT_GROUP_SIZE: int = 16
+
+    @property
+    def element_size(self) -> int:
+        """Mantissa storage width in bytes (excludes shared exponent overhead)."""
+        return 1
+
+    def size_in_bytes(self, n_elements: int) -> int:
+        """Total bytes required to store n_elements in BFP8B encoding.
+
+        Accounts for both the per-element mantissa byte and the shared
+        exponent byte for every group of _EXPONENT_GROUP_SIZE elements.
+        Partial groups still require a full exponent byte (ceiling division).
+        """
+        return n_elements + math.ceil(n_elements / self._EXPONENT_GROUP_SIZE)
+
+    def __repr__(self) -> str:
+        return "bfloat8_b"
+
+    def __eq__(self, other: object) -> bool:
+        match other:
+            case _BFloat8BDtype():
+                return True
+            case _:
+                return False
+
+    def __hash__(self) -> int:
+        return hash("bfloat8_b")
+
+
+bfloat8_b: _BFloat8BDtype = _BFloat8BDtype()
+
+
 class Device:
     """Simple device handle.
 
@@ -1111,6 +1157,7 @@ class Tensor:
         tensor: torch.Tensor,
         layout: IndexType = TILE_LAYOUT,
         memory_config: MemoryConfig = DRAM_MEMORY_CONFIG,
+        dtype: Any = None,
     ) -> None:
         if tensor.ndim < 1:
             raise ValueError(f"Tensor must have at least 1 dimension, got 0-d scalar")
@@ -1120,13 +1167,25 @@ class Tensor:
             tuple(tensor.shape), memory_config
         )
         self.mesh_shard_info: Optional[MeshShardInfo] = None
+        # _dtype is the declared/logical type; defaults to the tensor's native dtype.
+        self._dtype: Any = dtype if dtype is not None else tensor.dtype
 
     @property
     def shape(self) -> Shape:
         return tuple(self._tensor.shape)
 
     @property
-    def dtype(self) -> torch.dtype:
+    def dtype(self) -> Any:
+        """Declared logical dtype (e.g. bfloat8_b, torch.bfloat16, torch.float32)."""
+        return self._dtype
+
+    @property
+    def underlying_dtype(self) -> torch.dtype:
+        """PyTorch dtype used for storage and computation.
+
+        For standard types this equals dtype.  For custom types such as bfloat8_b
+        this is the native torch dtype that backs the tensor (e.g. torch.bfloat16).
+        """
         return self._tensor.dtype
 
     @property
@@ -1135,8 +1194,30 @@ class Tensor:
 
     @property
     def element_size(self) -> int:
-        """Number of bytes per element for this tensor's dtype."""
-        return self._tensor.element_size()
+        """Number of bytes per element for this tensor's declared dtype.
+
+        For dtypes with a shared exponent (e.g. bfloat8_b) this returns only
+        the mantissa byte and does not include exponent overhead.  Use
+        size_in_bytes(n) for accurate multi-element capacity accounting.
+        """
+        match self._dtype:
+            case _BFloat8BDtype():
+                return 1
+            case _:
+                return self._tensor.element_size()
+
+    def size_in_bytes(self, n_elements: int) -> int:
+        """Total bytes required to store n_elements of this tensor's dtype.
+
+        For standard torch dtypes this is n_elements * element_size.
+        For dtypes with shared exponents (e.g. bfloat8_b) this includes the
+        exponent overhead; use this method for correct capacity accounting.
+        """
+        match self._dtype:
+            case _BFloat8BDtype():
+                return self._dtype.size_in_bytes(n_elements)
+            case _:
+                return n_elements * self._tensor.element_size()
 
     def _validate_tile_alignment(self) -> None:
         """Validate that this tensor supports tile-style indexing.
@@ -1474,27 +1555,40 @@ class Tensor:
 
 def rand(
     shape: Shape,
-    dtype: torch.dtype = bfloat16,
+    dtype: Any = bfloat16,
     layout: IndexType = TILE_LAYOUT,
     device: object = None,
     memory_config: object = None,
 ) -> Tensor:
     """Create a random tensor with given shape, dtype, and layout."""
-    t = torch.rand(shape, dtype=torch.float32)
-    t = t.to(dtype)
-    return Tensor(t, layout)
+    match dtype:
+        case _BFloat8BDtype():
+            return Tensor(
+                torch.rand(shape, dtype=torch.float32).to(torch.bfloat16),
+                layout,
+                dtype=bfloat8_b,
+            )
+        case _:
+            t = torch.rand(shape, dtype=torch.float32)
+            t = t.to(dtype)
+            return Tensor(t, layout)
 
 
 def empty(
     shape: Shape,
-    dtype: torch.dtype = bfloat16,
+    dtype: Any = bfloat16,
     layout: IndexType = TILE_LAYOUT,
     device: object = None,
     memory_config: object = None,
 ) -> Tensor:
     """Create an uninitialized tensor with given shape, dtype, and layout."""
-    t = torch.empty(shape, dtype=dtype)
-    return Tensor(t, layout)
+    match dtype:
+        case _BFloat8BDtype():
+            return Tensor(
+                torch.empty(shape, dtype=torch.bfloat16), layout, dtype=bfloat8_b
+            )
+        case _:
+            return Tensor(torch.empty(shape, dtype=dtype), layout)
 
 
 def to_torch(
@@ -1568,10 +1662,16 @@ def from_torch(
         eff_dtype = dtype
         eff_mc = memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
 
-    if eff_dtype is not None and tensor.dtype != eff_dtype:
-        tensor = tensor.to(eff_dtype)
+    match eff_dtype:
+        case _BFloat8BDtype():
+            result = Tensor(
+                tensor.to(torch.bfloat16), layout, memory_config=eff_mc, dtype=bfloat8_b
+            )
+        case _ if eff_dtype is not None and tensor.dtype != eff_dtype:
+            result = Tensor(tensor.to(eff_dtype), layout, memory_config=eff_mc)
+        case _:
+            result = Tensor(tensor, layout, memory_config=eff_mc)
 
-    result = Tensor(tensor, layout, memory_config=eff_mc)
     if isinstance(mesh_mapper, ShardTensorToMesh):
         result.mesh_shard_info = MeshShardInfo(
             dim=mesh_mapper.dim % tensor.ndim,
@@ -1937,6 +2037,80 @@ def all_reduce(
     if hasattr(input_tensor, "_name"):
         result_tensor._name = input_tensor._name  # type: ignore[attr-defined]
     return result_tensor
+
+
+def all_gather(
+    input_tensor: Tensor,
+    dim: int,
+    cluster_axis: Optional[int] = None,
+    mesh_device: Optional[Any] = None,
+    memory_config: Optional[MemoryConfig] = None,
+    **kwargs: Any,
+) -> Tensor:
+    """Gather shards from all simulated devices along ``dim``.
+
+    The partition structure is read from the tensor's :attr:`~Tensor.mesh_shard_info`
+    attribute, which is set by :func:`from_torch` when a :class:`ShardTensorToMesh`
+    mapper is provided.
+
+    Each device contributes its local shard (partitioned along ``msi.dim``).
+    After the gather every device holds an identical result: all shards
+    concatenated along ``dim``.  The simulator represents n identical copies
+    by stacking them along ``msi.dim``, matching the output of
+    ``ttnn.to_torch(..., mesh_composer=ConcatMeshToTensor(mesh, msi.dim))``.
+
+    Args:
+        input_tensor: Input tensor (must have been created with ShardTensorToMesh).
+        dim: Dimension along which to concatenate the gathered shards.
+        cluster_axis: Ignored (accepted for API compatibility).
+        mesh_device: Ignored (accepted for API compatibility).
+        memory_config: Optional output memory config.
+        **kwargs: Additional keyword arguments accepted for API compatibility.
+
+    Returns:
+        Tensor where every partition contains all shards concatenated along
+        ``dim``.  Output shape equals input shape on all dimensions except
+        ``dim``, which grows by a factor of ``num_devices``.
+    """
+    msi = input_tensor.mesh_shard_info
+    if msi is None:
+        raise ValueError("Mesh device is required for all_gather operation")
+
+    t = input_tensor.to_torch()
+    shard_dim = msi.dim % t.ndim
+    n = msi.num_devices
+    shard_size = t.shape[shard_dim] // n
+
+    if t.shape[shard_dim] != n * shard_size:
+        return input_tensor
+
+    gather_dim = dim % t.ndim
+
+    # Each device's shard, sliced along shard_dim.
+    shards = [t.narrow(shard_dim, i * shard_size, shard_size) for i in range(n)]
+    # All n devices get the same result: every shard concatenated along gather_dim.
+    gathered = torch.cat(shards, dim=gather_dim)
+    # Stack n identical copies along shard_dim to match the simulator's
+    # multi-device representation (same as ConcatMeshToTensor would produce).
+    result = torch.cat([gathered] * n, dim=shard_dim).contiguous()
+
+    out_memory_config = (
+        memory_config if memory_config is not None else input_tensor.memory_config
+    )
+    result_tensor = Tensor(result, input_tensor.layout, out_memory_config)
+    result_tensor.mesh_shard_info = MeshShardInfo(dim=msi.dim, num_devices=n)
+    if hasattr(input_tensor, "_name"):
+        result_tensor._name = input_tensor._name  # type: ignore[attr-defined]
+    return result_tensor
+
+
+def synchronize_device(*args: Any, **kwargs: Any) -> None:
+    """No-op stub for ttnn.synchronize_device().
+
+    On real hardware this blocks the host until all pending device operations
+    have completed.  The simulator executes kernels synchronously, so there is
+    nothing to wait for.
+    """
 
 
 def squeeze(input_tensor: Tensor, dim: Optional[int] = None) -> Tensor:

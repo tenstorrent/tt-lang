@@ -9,7 +9,7 @@ specified grid configurations.
 """
 
 import types
-from typing import Any, Callable, Union, cast
+from typing import Any, Callable, Optional, Union, cast
 
 from .blockstate import ThreadType
 from .typedefs import Shape
@@ -39,12 +39,21 @@ def get_default_grid() -> Shape:
 
 def operation(
     grid: Union[str, Shape] = "auto",
+    fp32_dest_acc_en: Optional[bool] = None,
+    dst_full_sync_en: Optional[bool] = None,
+    **unknown: Any,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
     Decorator that generates a kernel with specified grid.
 
+    fp32_dest_acc_en and dst_full_sync_en are accepted for compatibility with
+    compiler-side code but have no effect in the simulator.  Any other
+    unrecognised keyword argument raises TypeError to catch user errors early.
+
     Args:
         grid: Grid specification. If 'auto', uses the default grid (configurable via set_default_grid())
+        fp32_dest_acc_en: Ignored; accepted for compiler compatibility.
+        dst_full_sync_en: Ignored; accepted for compiler compatibility.
 
     Returns:
         Decorated function with grid configuration
@@ -55,6 +64,12 @@ def operation(
             # grid is available as a variable here
             pass
     """
+
+    if unknown:
+        raise TypeError(
+            f"ttl.operation() received unexpected keyword argument(s): "
+            f"{', '.join(sorted(unknown))}"
+        )
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         # Create a new function with grid in its closure
@@ -95,10 +110,10 @@ def operation(
             # Get registered threads
             threads = get_registered_threads()
 
-            # All kernels must define exactly 3 threads: compute, dm0, dm1
+            # All device kernels must register compute, dm0, and dm1.
             if len(threads) != 3:
                 raise ValueError(
-                    f"Kernel must define exactly 3 threads (compute, dm0, dm1), got {len(threads)}"
+                    f"Kernel must define exactly 3 kernels (compute, dm0, dm1), got {len(threads)}"
                 )
 
             # Sort threads by type to ensure consistent ordering regardless of definition order
@@ -114,11 +129,11 @@ def operation(
 
             if len(compute_threads) != 1:
                 raise ValueError(
-                    f"Kernel must define exactly 1 compute thread, got {len(compute_threads)}"
+                    f"Kernel must define exactly 1 compute kernel, got {len(compute_threads)}"
                 )
             if len(dm_threads) != 2:
                 raise ValueError(
-                    f"Kernel must define exactly 2 datamovement threads, got {len(dm_threads)}"
+                    f"Kernel must define exactly 2 datamovement kernels, got {len(dm_threads)}"
                 )
 
             # Arrange in expected order: compute, dm0, dm1

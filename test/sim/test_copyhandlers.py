@@ -21,20 +21,20 @@ from test_utils import (
     tensors_equal,
 )
 
-from python.sim import ttnn
-from python.sim.blockstate import ThreadType
-from python.sim.context import set_current_thread_type
-from python.sim.copy import copy
-from python.sim.dfb import Block, DataflowBuffer
-from python.sim.copyhandlers import (
+from sim import ttnn
+from sim.blockstate import ThreadType
+from sim.context import set_current_thread_type
+from sim.copy import copy
+from sim.dfb import Block, DataflowBuffer
+from sim.copyhandlers import (
     BlockToPipeHandler,
     BlockToTensorHandler,
     PipeToBlockHandler,
     TensorToBlockHandler,
     HANDLER_REGISTRY,
 )
-from python.sim.pipe import Pipe
-from python.sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor
+from sim.pipe import Pipe
+from sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor
 
 if TYPE_CHECKING:
     pass
@@ -113,7 +113,7 @@ class TestPipeErrorHandling:
 
     def test_pipe_receive_timeout_no_sender(self) -> None:
         """Test that receiving from pipe with no sender is detected as deadlock."""
-        from python.sim.greenlet_scheduler import GreenletScheduler, set_scheduler
+        from sim.greenlet_scheduler import GreenletScheduler, set_scheduler
 
         # Create a minimal scheduler context for this test
         scheduler = GreenletScheduler()
@@ -684,6 +684,60 @@ class TestRowMajorCopyValidation:
         handler = TensorToBlockHandler()
         with pytest.raises(ValueError, match="tile counts"):
             handler.validate(src, blk)
+
+
+class TestPipeKeywordConstruction:
+    """Pipe can be constructed with src= and dst= keyword arguments.
+
+    All four construction styles must produce identical objects:
+    positional, src=/dst= keywords, src= only, and dst= only.
+    """
+
+    def test_keyword_src_dst_matches_positional(self) -> None:
+        """Pipe(src=..., dst=...) is equal to Pipe(..., ...)."""
+        positional = Pipe((0, 0), (1, 0))
+        keyword = Pipe(src=(0, 0), dst=(1, 0))
+        assert positional == keyword
+
+    def test_keyword_src_only(self) -> None:
+        """Pipe(src=..., dst=...) with just src= as keyword works."""
+        p1 = Pipe((2, 3), (4, 5))
+        p2 = Pipe(src=(2, 3), dst=(4, 5))
+        assert p1 == p2
+
+    def test_keyword_with_slice_dst(self) -> None:
+        """Pipe(src=..., dst=...) works when dst is a CoreRange with slices."""
+        positional = Pipe((0, 0), (slice(1, 4), 0))
+        keyword = Pipe(src=(0, 0), dst=(slice(1, 4), 0))
+        assert positional == keyword
+
+    def test_keyword_1d_cores(self) -> None:
+        """Pipe(src=int, dst=int) with keyword args works for 1-D grids."""
+        positional = Pipe(0, 3)
+        keyword = Pipe(src=0, dst=3)
+        assert positional == keyword
+
+    def test_src_and_dst_fields_accessible(self) -> None:
+        """Pipe.src and Pipe.dst expose the values passed to the constructor."""
+        p = Pipe(src=(1, 2), dst=(3, 4))
+        assert p.src == (1, 2)
+        assert p.dst == (3, 4)
+
+    def test_pipenet_with_keyword_pipes(self) -> None:
+        """PipeNet built from keyword-constructed Pipes works end-to-end."""
+        from python.sim.pipe import PipeNet
+
+        grid_x, grid_y = 3, 2
+        net = PipeNet(
+            [
+                Pipe(src=(x, y), dst=(0, y))
+                for x in range(1, grid_x)
+                for y in range(grid_y)
+            ]
+        )
+        assert len(net._pipes) == (grid_x - 1) * grid_y
+        for pipe in net._pipes:
+            assert pipe.dst[1] in range(grid_y)
 
 
 if __name__ == "__main__":

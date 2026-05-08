@@ -15,7 +15,7 @@ import torch
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 import ttl
-from utils.correctness import assert_allclose
+from ttl.utils.correctness import assert_allclose
 
 
 @ttl.operation(grid=(1, 1))

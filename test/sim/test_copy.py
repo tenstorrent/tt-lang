@@ -19,12 +19,12 @@ from test_utils import (
     tensors_equal,
 )
 
-from python.sim.blockstate import BlockAcquisition, ThreadType
-from python.sim.context import set_current_thread_type
-from python.sim.dfb import Block, DataflowBuffer
-from python.sim.ttnnsim import Tensor
-from python.sim.copy import CopyTransaction, GroupTransfer, copy
-from python.sim.pipe import Pipe
+from sim.blockstate import BlockAcquisition, ThreadType
+from sim.context import set_current_thread_type
+from sim.dfb import Block, DataflowBuffer
+from sim.ttnnsim import Tensor
+from sim.copy import CopyTransaction, GroupTransfer, copy
+from sim.pipe import Pipe
 
 
 @pytest.fixture(autouse=True)
@@ -160,14 +160,17 @@ class TestCopySourceLocking:
         # But more fundamentally, wait() blocks don't support store() - they expect POP
         with pytest.raises(
             RuntimeError,
-            match="Cannot write to Block.*has no access.*ROR state",
+            match=r"(?s)Cannot write to this buffer block.*ROR",
         ):
             source_block.store(Block.from_tensor(make_rand_tensor(64, 32)))
 
         # After wait(), the block still doesn't support store() because it's a wait() block
         tx.wait()
         # wait() blocks cannot use store() per state machine - they expect STORE_SRC
-        with pytest.raises(RuntimeError, match="Cannot perform store.*Expected one of"):
+        with pytest.raises(
+            RuntimeError,
+            match=r"(?s)Cannot perform store\(\): not a valid next dataflow step.*expected one of",
+        ):
             source_block.store(Block.from_tensor(make_rand_tensor(64, 32)))
 
     # Removed: test_can_read_from_block_source_before_wait - covered by TestCopyWithStateMachine
@@ -221,7 +224,7 @@ class TestCopyDestinationLocking:
         # Attempt to write to destination should fail (dest is in NAW state)
         with pytest.raises(
             RuntimeError,
-            match="Cannot write to Block.*copy destination.*copy lock error.*NAW",
+            match=r"(?s)Cannot write to this buffer block.*NAW.*copy lock error",
         ):
             dest_block.store(Block.from_tensor(make_rand_tensor(64, 32)))
 
@@ -230,7 +233,7 @@ class TestCopyDestinationLocking:
         # Cannot store on DM block - only Compute blocks support store
         with pytest.raises(
             RuntimeError,
-            match="Cannot perform store.*Expected one of",
+            match=r"(?s)Cannot perform store\(\): not a valid next dataflow step.*expected one of",
         ):
             dest_block.store(Block.from_tensor(make_rand_tensor(64, 32)))
 
@@ -259,7 +262,7 @@ class TestMultipleCopyOperations:
         # wait() DM blocks cannot be used as copy destinations per state machine
         with pytest.raises(
             RuntimeError,
-            match="Expected one of \\[COPY_SRC, TX_WAIT\\], but got copy \\(as destination\\)",
+            match=r"(?s)Cannot perform copy \(as destination\): not a valid next dataflow step.*\[COPY_SRC, TX_WAIT\].*attempted COPY_DST",
         ):
             copy(tensor2, block)
 
@@ -596,7 +599,7 @@ class TestCopyTransactionProperties:
 
     def test_is_completed_property(self) -> None:
         """Test that is_completed property correctly reflects transaction state."""
-        from python.sim.copy import copy
+        from sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -624,7 +627,7 @@ class TestCopyTransactionProperties:
 
     def test_multiple_wait_on_completed_transaction(self) -> None:
         """Test that calling wait() multiple times on completed transaction is safe."""
-        from python.sim.copy import copy
+        from sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -650,7 +653,7 @@ class TestCopyTransactionProperties:
 
     def test_can_wait_reflects_handler_behavior(self) -> None:
         """Test that can_wait() correctly delegates to handler."""
-        from python.sim.copy import copy
+        from sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -677,7 +680,7 @@ class TestCopyContextManagerExtraction:
 
     def test_copy_with_context_managers(self) -> None:
         """Test copy operations using context managers with Pipe."""
-        from python.sim.copy import copy
+        from sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -717,7 +720,7 @@ class TestCopyContextManagerExtraction:
 
     def test_mixed_context_managers_and_tensors(self) -> None:
         """Test mixing context managers with raw tensors."""
-        from python.sim.copy import copy
+        from sim.copy import copy
 
         set_current_thread_type(ThreadType.DM)
 
@@ -747,7 +750,7 @@ class TestCopyErrorConditions:
 
     def test_copy_creates_transaction_immediately(self) -> None:
         """Test that copy() creates transaction immediately, not on wait()."""
-        from python.sim.copy import copy, CopyTransaction
+        from sim.copy import copy, CopyTransaction
 
         set_current_thread_type(ThreadType.DM)
 
@@ -772,7 +775,7 @@ class TestCopyErrorConditions:
 
     def test_unsupported_type_combinations_raise_valueerror(self) -> None:
         """Test that unsupported copy type combinations raise ValueError."""
-        from python.sim.copy import copy
+        from sim.copy import copy
 
         tensor1 = make_ones_tile()
         tensor2 = make_zeros_tile()

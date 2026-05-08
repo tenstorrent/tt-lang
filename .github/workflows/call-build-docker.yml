@@ -1,9 +1,6 @@
 name: Build Docker Image
 
 on:
-  push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
     inputs:
       ttlang_sha_override:
@@ -18,6 +15,9 @@ on:
       docker-image-base:
         description: "Base Docker image name with tag"
         value: ${{ jobs.build-image-base.outputs.docker-image-base }}
+      docker-tag:
+        description: "Docker image tag (used as ird container tag)"
+        value: ${{ jobs.build-images.outputs.docker-tag }}
 
 permissions:
   contents: read
@@ -37,7 +37,7 @@ jobs:
       docker-image-base: ${{ steps.build.outputs.docker-image-base }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ttlang_sha_override || github.sha }}
           fetch-depth: 0
@@ -81,7 +81,7 @@ jobs:
       docker-tag: ${{ steps.docker-tag.outputs.docker-tag }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ttlang_sha_override || github.sha }}
           submodules: recursive
@@ -256,11 +256,3 @@ jobs:
           echo ""
           echo "=== Docker Disk Usage ==="
           docker system df || true
-
-  test-dist-tutorials:
-    needs: [build-images]
-    uses: ./.github/workflows/call-test-dist-tutorials.yml
-    secrets: inherit
-    with:
-      runs-on: n150
-      dist_docker_tag: ${{ needs.build-images.outputs.docker-tag }}

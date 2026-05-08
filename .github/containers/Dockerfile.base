@@ -11,8 +11,20 @@ SHELL ["/bin/bash", "-c"]
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# tt-metal commit for install_dependencies.sh (must match the submodule pin)
-ARG TT_METAL_DEPENDENCIES_COMMIT=beccdb232ed7532b0748f8f97aba958ba43ddae1
+# tt-metal release tag (e.g. v0.69.0). Required at build time; no default.
+# build-docker-images.sh passes this via --build-arg from
+# third-party/tt-metal-version, the canonical version file. Verified by
+# .github/scripts/check-tt-metal-version.sh.
+ARG TT_METAL_TAG
+
+# Make apt resilient to slow/intermittent mirrors (launchpad.net in particular).
+# Applies to every apt-get invocation in this image and in any image built FROM
+# it (including the ird/dist stages in Dockerfile).
+RUN printf '%s\n' \
+      'Acquire::Retries "5";' \
+      'Acquire::http::Timeout "240";' \
+      'Acquire::https::Timeout "240";' \
+      > /etc/apt/apt.conf.d/99-retries-timeout
 
 # System packages (mirrors tt-mlir Dockerfile.base)
 RUN <<EOT
@@ -56,14 +68,16 @@ add-apt-repository ppa:deadsnakes/ppa -y
 apt-get update -qq
 apt-get install -y -qq python3.12 python3.12-dev python3.12-venv
 
-# Install tt-metal runtime dependencies (firmware, SFPI, etc.)
-wget -q https://raw.githubusercontent.com/tenstorrent/tt-metal/${TT_METAL_DEPENDENCIES_COMMIT}/{install_dependencies.sh,tt_metal/sfpi-info.sh,tt_metal/sfpi-version}
+# Install tt-metal runtime dependencies (firmware, SFPI, etc.) at the
+# canonical release tag (passed via --build-arg TT_METAL_TAG).
+: "${TT_METAL_TAG:?TT_METAL_TAG not set; pass via --build-arg from third-party/tt-metal-version}"
+wget -q --tries=5 --timeout=120 --waitretry=10 https://raw.githubusercontent.com/tenstorrent/tt-metal/${TT_METAL_TAG}/{install_dependencies.sh,tt_metal/sfpi-info.sh,tt_metal/sfpi-version}
 chmod u+x sfpi-info.sh
 bash install_dependencies.sh --docker
 EOT
 
 # Install Clang 18
-RUN wget https://apt.llvm.org/llvm.sh && \
+RUN wget --tries=5 --timeout=120 --waitretry=10 https://apt.llvm.org/llvm.sh && \
     chmod u+x llvm.sh && \
     ./llvm.sh 18 && \
     apt-get install -y libc++-18-dev libc++abi-18-dev && \
@@ -72,8 +86,9 @@ RUN wget https://apt.llvm.org/llvm.sh && \
     ln -sf /usr/bin/clangd-18 /usr/bin/clangd && \
     rm -f llvm.sh
 
-# Copy Python requirements
-COPY requirements.txt /tmp/requirements.txt
+# Copy Python requirements. requirements.txt does `-r requirements-runtime.txt`
+# so the sibling file must be present alongside it.
+COPY requirements.txt requirements-runtime.txt /tmp/
 
 # Bootstrap pip for Python 3.12 via ensurepip (not the system python3-pip which
 # conflicts with 3.12's removal of distutils), then install dependencies.
@@ -83,7 +98,7 @@ RUN python3.12 -m ensurepip --upgrade && \
     python3.12 -m pip install --index-url https://download.pytorch.org/whl/cpu \
         torch --no-cache-dir && \
     python3.12 -m pip install -r /tmp/requirements.txt --no-cache-dir && \
-    rm /tmp/requirements.txt
+    rm /tmp/requirements.txt /tmp/requirements-runtime.txt
 
 # Create python symlink for convenience (available in all images)
 RUN ln -sf /usr/bin/python3.12 /usr/local/bin/python && \

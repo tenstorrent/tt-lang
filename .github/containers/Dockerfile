@@ -42,12 +42,13 @@ COPY --from=ird-toolchain --chmod=777 /include $TTLANG_TOOLCHAIN_DIR/include/
 COPY --from=ird-toolchain --chmod=777 /share $TTLANG_TOOLCHAIN_DIR/share/
 COPY --from=ird-toolchain --chmod=777 /src $TTLANG_TOOLCHAIN_DIR/src/
 
-# Install Python dev dependencies (black, sphinx, etc.) into the toolchain venv
-COPY requirements.txt /tmp/requirements.txt
+# Install Python dev dependencies (black, sphinx, etc.) into the toolchain venv.
+# dev-requirements.txt does `-r requirements.txt`, which does
+# `-r requirements-runtime.txt`, so all three sibling files must be copied.
+COPY requirements.txt requirements-runtime.txt dev-requirements.txt /tmp/
 COPY docs/requirements.txt /tmp/docs/requirements.txt
-COPY dev-requirements.txt /tmp/dev-requirements.txt
 RUN $TTLANG_TOOLCHAIN_DIR/venv/bin/python -m pip install -r /tmp/dev-requirements.txt tt-smi --no-cache-dir && \
-    rm -rf /tmp/requirements.txt /tmp/docs /tmp/dev-requirements.txt && \
+    rm -rf /tmp/requirements.txt /tmp/requirements-runtime.txt /tmp/docs /tmp/dev-requirements.txt && \
     apt-get update && apt-get install -y \
     ssh \
     sudo \

@@ -23,8 +23,9 @@ run_test() {
     fi
 }
 
-# Accept an optional tag argument; default to the nearest version tag.
-DOCKER_TAG="${1:-$(git describe --tags --match "v[0-9]*" --abbrev=0 2>/dev/null)}"
+# Accept an optional tag argument; default to the nearest version tag,
+# sanitized for Docker (translates '+' build-metadata separator to '-').
+DOCKER_TAG="${1:-$(git describe --tags --match "v[0-9]*" --abbrev=0 2>/dev/null | sed 's#[/:+]#-#g')}"
 if [ -z "$DOCKER_TAG" ]; then
     echo "ERROR: Could not determine Docker tag from git tags and no tag argument provided."
     exit 1
@@ -39,7 +40,7 @@ echo ""
 echo "Test 1: Basic imports"
 run_test "All imports work" "Import error" \
     sudo docker run --rm "$DIST_IMAGE" python -c "
-import pykernel; import sim; import ttl
+import ttl; import ttl.pykernel; import ttl.sim
 from ttmlir.dialects import ttkernel
 "
 echo ""
