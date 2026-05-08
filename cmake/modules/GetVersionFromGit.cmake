@@ -5,9 +5,9 @@
 
 find_package(Git QUIET)
 
-set(_TTLANG_VERSION_FALLBACK "0.0.0.dev0")
-set(TTLANG_VERSION "${_TTLANG_VERSION_FALLBACK}")
-set(_describe_failure_reason "")
+# Fallback used when git is unavailable or no v* tag is reachable.
+# Deliberately not a plausible-looking release version.
+set(_TTLANG_VERSION_FALLBACK "0.0.0+unknown")
 
 if(GIT_FOUND)
 
@@ -19,6 +19,7 @@ if(GIT_FOUND)
     RESULT_VARIABLE GIT_TAG_RC
     OUTPUT_STRIP_TRAILING_WHITESPACE
     ERROR_STRIP_TRAILING_WHITESPACE
+    ERROR_VARIABLE GIT_DESCRIBE_ERR
   )
 
   if(NOT GIT_TAG_RC EQUAL 0 OR NOT GIT_TAG)
@@ -46,13 +47,11 @@ if(GIT_FOUND)
     set(_local "${CMAKE_MATCH_4}")
     set(_base "${TTLANG_VERSION_MAJOR}.${TTLANG_VERSION_MINOR}.${TTLANG_VERSION_PATCH}")
 
-    # Get commit count since tag for dev builds
     execute_process(
       COMMAND ${GIT_EXECUTABLE} rev-list ${GIT_TAG}..HEAD --count
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
       OUTPUT_VARIABLE COMMITS_SINCE_TAG
       OUTPUT_STRIP_TRAILING_WHITESPACE
-      ERROR_QUIET
     )
 
     if(COMMITS_SINCE_TAG AND NOT COMMITS_SINCE_TAG EQUAL "0")
@@ -60,23 +59,27 @@ if(GIT_FOUND)
     else()
       set(TTLANG_VERSION "${_base}${_local}")
     endif()
+  else()
+    message(WARNING
+      "tt-lang version detection: git describe found no v* tag reachable "
+      "from HEAD in ${CMAKE_SOURCE_DIR}. Using fallback "
+      "'${_TTLANG_VERSION_FALLBACK}'.\n"
+      "Likely causes and fixes:\n"
+      "  - Tags not fetched: run `git fetch --tags origin`.\n"
+      "  - Shallow clone with no tags in history: run "
+      "`git fetch --unshallow --tags origin`.\n"
+      "  - HEAD predates the first v* tag: rebase or merge a branch that "
+      "includes one (e.g. `git merge origin/main`).\n"
+      "git stderr: ${GIT_DESCRIBE_ERR}")
+    set(TTLANG_VERSION "${_TTLANG_VERSION_FALLBACK}")
   endif()
 else()
-  set(_describe_failure_reason "git executable not found on PATH")
-endif()
-
-if(_describe_failure_reason)
-  # Surface the actual failure rather than silently stamping a
-  # placeholder. Anyone debugging "why is the version wrong?" sees the
-  # root cause in the configure log.
   message(WARNING
-    "tt-lang version: could not derive from git tag — using fallback "
+    "tt-lang version detection: git executable not found. Using fallback "
     "'${_TTLANG_VERSION_FALLBACK}'.\n"
-    "  Reason: ${_describe_failure_reason}\n"
-    "  Fix: ensure git tags are fetched (e.g. `git fetch --tags`) and "
-    "that the source tree is readable by git (mounted repos inside "
-    "containers may need `git config --global --add safe.directory "
-    "${CMAKE_SOURCE_DIR}`).")
+    "Install git (e.g. `apt-get install git`) and re-run cmake to embed an "
+    "accurate version.")
+  set(TTLANG_VERSION "${_TTLANG_VERSION_FALLBACK}")
 endif()
 
 message(STATUS "tt-lang version: ${TTLANG_VERSION}")
