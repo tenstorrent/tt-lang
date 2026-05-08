@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+// SPDX-FileCopyrightText: (c) 2026 Tenstorrent USA, Inc.
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -39,6 +39,21 @@ static bool hasF32TileArgs(ComputeOp computeOp) {
     std::optional<mlir::Type> elementType = getTileElementType(arg.getType());
     return elementType && elementType->isF32();
   });
+}
+
+static bool hasF32InputTileArgs(ComputeOp computeOp) {
+  Block *body = &computeOp.getRegion().front();
+  if (!body) {
+    return false;
+  }
+
+  unsigned numInputs = computeOp.getNumInputs();
+  return llvm::any_of(
+      body->getArguments().take_front(numInputs), [](BlockArgument arg) {
+        std::optional<mlir::Type> elementType =
+            getTileElementType(arg.getType());
+        return elementType && elementType->isF32();
+      });
 }
 
 struct TTLSetComputeKernelConfigPass
@@ -118,6 +133,23 @@ struct TTLSetComputeKernelConfigPass
     }
     if (dstFullSyncEn && !funcOp->hasAttr(kDstFullSyncEnAttrName)) {
       funcOp->setAttr(kDstFullSyncEnAttrName,
+                      BoolAttr::get(funcOp.getContext(), true));
+    }
+
+    bool needsUnpackFp32 = false;
+    funcOp->walk([&](ComputeOp computeOp) {
+      if (needsUnpackFp32) {
+        return WalkResult::interrupt();
+      }
+      if (hasF32InputTileArgs(computeOp)) {
+        needsUnpackFp32 = true;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+
+    if (needsUnpackFp32 && !funcOp->hasAttr(kUnpackToDestFp32AttrName)) {
+      funcOp->setAttr(kUnpackToDestFp32AttrName,
                       BoolAttr::get(funcOp.getContext(), true));
     }
   }

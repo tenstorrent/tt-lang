@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+// SPDX-FileCopyrightText: (c) 2026 Tenstorrent USA, Inc.
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -35,6 +35,7 @@ constexpr llvm::StringLiteral kCBIndexAttrPrefix("ttl.cb_index.");
 constexpr llvm::StringLiteral kTargetArchAttrName("ttl.target_arch");
 constexpr llvm::StringLiteral kFp32DestAccEnAttrName("fp32_dest_acc_en");
 constexpr llvm::StringLiteral kDstFullSyncEnAttrName("dst_full_sync_en");
+constexpr llvm::StringLiteral kUnpackToDestFp32AttrName("unpack_to_dest_fp32");
 
 /// Canonical target_arch values. The Python wrapper writes these exact
 /// strings into ttl.target_arch, so any rename here must be mirrored in
