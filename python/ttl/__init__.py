@@ -38,7 +38,8 @@ else:
     from ttl.operators import signpost
     from ttl.compiler_options import CompilerOptions
     from ttl.ttl_api import (
-        CircularBuffer,
+        CircularBuffer,  # Deprecated, superseded by DataflowBuffer
+        DataflowBuffer,
         CopyTransferHandler,
         TensorBlock,
     )
@@ -49,6 +50,7 @@ else:
         "compute",
         "datamovement",
         "Program",
+        "DataflowBuffer",
         "CircularBuffer",
         "CompilerOptions",
         "TensorBlock",

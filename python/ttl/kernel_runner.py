@@ -34,7 +34,7 @@ def _ensure_ttnn():
     return ttnn
 
 
-from .circular_buffer import CompilerAllocatedDFBConfig
+from .dataflow_buffer import CompilerAllocatedDFBConfig
 from .dtype_utils import (
     format_name_to_ttnn_dtype,
     tile_bytes_from_dtype,
@@ -156,9 +156,9 @@ def build_cb_descriptors(
         tensors: List of ttnn.Tensor objects. Each tensor's position (0, 1, 2, ...)
             corresponds to its CB index. For intermediate CBs (not backed by
             input/output tensors), pass None in the corresponding position.
-        cb_configs: List of CircularBuffer objects for each CB, indexed by CB index.
-            Each CB has shape, block_count, tensor (for dtype), and _cb_index attributes.
-        core_ranges: ttnn.CoreRangeSet for CB allocation.
+        cb_configs: List of DataflowBuffer objects for each DFB, indexed by DFB index.
+            Each DFB has shape, block_count, tensor (for dtype), and _cb_index attributes.
+        core_ranges: ttnn.CoreRangeSet for DFB allocation.
 
     Returns:
         List of ttnn.CBDescriptor objects.
@@ -172,7 +172,7 @@ def build_cb_descriptors(
         if cb is None:
             raise ValueError(
                 f"Missing CB config for index {i}. "
-                f"All CB indices must have associated CircularBuffer configurations."
+                f"All DFB indices must have associated DataflowBuffer configurations."
             )
 
         if isinstance(cb, CompilerAllocatedDFBConfig):
@@ -226,8 +226,8 @@ def run_kernel_on_device(
         tensors: List of ttnn.Tensor objects. Position in this list determines the
             global tensor index. Individual kernels access subsets via tensor_indices
             in each KernelSpec.
-        cb_configs: List of CircularBuffer objects for each CB, indexed by CB index.
-            Includes both tensor-backed CBs and intermediate CBs. Each CB has shape,
+        cb_configs: List of DataflowBuffer objects for each DFB, indexed by DFB index.
+            Includes both tensor-backed DFBs and intermediate DFBs. Each DFB has shape,
             block_count, tensor (for dtype), and _cb_index attributes.
         core_ranges: ttnn.CoreRangeSet for kernel execution.
         program_hash: Hash for tt-metal program cache (not yet used).
