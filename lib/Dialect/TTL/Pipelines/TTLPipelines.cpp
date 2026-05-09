@@ -25,6 +25,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
   pm.addNestedPass<func::FuncOp>(createTTLInsertCBSync());
+  pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
   pm.addPass(createTTLAnnotateL1AccLoops());
   pm.addPass(createTTLConvertTTLToCompute());
   {

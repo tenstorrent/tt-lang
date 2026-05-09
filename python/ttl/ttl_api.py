@@ -1359,6 +1359,7 @@ def _compile_kernel(
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(ttl-insert-copy-wait)",
             "func.func(ttl-insert-cb-sync)",
+            "func.func(ttl-coalesce-dfb-acquires)",
             "func.func(ttl-annotate-l1-acc-loops)",
             "func.func(convert-ttl-to-compute)",
             set_compute_config_pass,

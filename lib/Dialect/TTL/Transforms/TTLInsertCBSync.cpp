@@ -355,7 +355,8 @@ struct TTLInsertCBSyncPass
 
     insertMissingReleases(waits, pops, erased, builder,
                           [](OpBuilder &b, Location loc, Value cb) {
-                            CBPopOp::create(b, loc, cb);
+                            CBPopOp::create(b, loc, cb,
+                                            /*num_tiles=*/IntegerAttr{});
                           });
   }
 };

@@ -15,6 +15,7 @@
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "llvm/ADT/Twine.h"
@@ -40,6 +41,9 @@ inline Value addSliceOffset(Value operand, Value localIndex, OpBuilder &builder,
   if (auto extract = tensor.getDefiningOp<mlir::tensor::ExtractOp>()) {
     tensor = extract.getTensor();
   }
+  // Trace through `ttl.attach_cb` so a slice upstream of an attach_cb is
+  // still discoverable.
+  tensor = mlir::tt::ttl::traceAttachCBs(tensor);
   auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>();
   if (!slice) {
     return localIndex;

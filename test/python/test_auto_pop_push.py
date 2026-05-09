@@ -794,23 +794,17 @@ def test_cross_thread_deferred_chain(device):
 
 
 # ---------------------------------------------------------------------------
-# xfail (#556). Consumer reads tile 2 before tile 1 (out of declaration
-# order). The buffer exposes a single FIFO front pointer, so there is no
-# way to release the second slot before the first; the current pass
-# places releases in the order it observes the consumes, violating FIFO
-# monotonicity. Lifted by #556 (coalesce consecutive cb_wait into one
-# cb_wait_front(N) with per-acquire src_idx, decoupling consume order
-# from release order).
+# Reordered consumes: consumer reads tile 2 before tile 1 (out of
+# declaration order). Consecutive cb_wait acquires coalesce into one
+# multi-tile `cb_wait_front(N*k)` plus per-block `tensor.extract_slice`
+# views, so consume order is decoupled from release order; both tiles
+# are present from the single coalesced wait, and the slice offsets
+# index each block at lowering.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.requires_device
-@pytest.mark.xfail(
-    strict=True,
-    reason="Reordered consumes (use(t2) before use(t1)) violate CB FIFO "
-    "monotonicity. Lifted by #556 (multi-tile cb_wait_front coalescing).",
-)
-def test_reordered_consumes_violate_fifo_xfail(device):
+def test_reordered_consumes_decoupled_from_fifo(device):
     @ttl.operation(grid=(1, 1))
     def repro(out):
         cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
