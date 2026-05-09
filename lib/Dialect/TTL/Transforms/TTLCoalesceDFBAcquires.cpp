@@ -47,13 +47,44 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-// Ops permitted to interleave between consecutive acquires without breaking
-// a coalescable group. Verified empirically against
-// `test/ttlang/Dialect/TTL/Transforms/insert_cb_sync.mlir:812-817`: the
-// frontend emits `cb_wait` immediately followed by `attach_cb`, so a
-// three-wait group has six interleaved ops.
-static bool isInterleaveOk(Operation *op) {
-  return isa<AttachCBOp, arith::ConstantOp>(op);
+// Return true if `op` (sitting between two same-DFB acquires on `cb`) might
+// directly or transitively cause a release on `cb` before our coalesced
+// release executes -- i.e., it must terminate the candidate group. See
+// "DFB Acquire Coalescing" in `docs/development/DFBManagement.md` for the
+// correctness argument. Two locally-checkable conditions cover the cases
+// that matter:
+//
+//   1. The op operates on `cb` itself (uses `cb` as an operand) -- includes
+//      same-DFB releases (cb_pop / cb_push) and any other op that touches
+//      `cb` directly.
+//   2. The op consumes the SSA result of an in-progress group member,
+//      since that consume can flow into a release on `cb` somewhere
+//      downstream.
+//
+// Region-bearing ops are treated as opaque (terminate the group) because
+// their bodies might contain a release on `cb`.
+//
+// `ttl.attach_cb` is an SSA-only identity (lowering erases it) that always
+// references the group's results and `cb`; allow it explicitly.
+static bool mayReleaseDFB(Operation *op, Value cb,
+                          ArrayRef<Operation *> group) {
+  if (isa<AttachCBOp>(op)) {
+    return false;
+  }
+  if (op->getNumRegions() > 0) {
+    return true;
+  }
+  for (Value operand : op->getOperands()) {
+    if (operand == cb) {
+      return true;
+    }
+    for (Operation *member : group) {
+      if (operand == member->getResult(0)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 // Build the coalesced acquire's result type. For the common rank-2 case
@@ -83,24 +114,32 @@ createPerBlockSlice(OpBuilder &builder, Location loc, Value coalescedResult,
                                         offsets, sizes, strides);
 }
 
-// Detect a group of N >= 1 strictly-consecutive same-CB acquires of kind
-// `AcquireOp` starting at `start`. Returns the group; an acquire that
-// already carries a `num_tiles` attribute terminates the group (it has
-// already been coalesced or was emitted by `TTLSubblockComputeForDST`).
+// Detect a group of same-CB acquires of kind `AcquireOp` starting at
+// `start`. The group is maximal: walks forward in the block, adding each
+// same-kind same-cb acquire (with no pre-existing `num_tiles`) and skipping
+// any op that doesn't touch `cb` or the group's results (per
+// `mayReleaseDFB`). An acquire that already carries `num_tiles` (already
+// coalesced or set by `TTLSubblockComputeForDST`) terminates the group.
 template <typename AcquireOp>
 static SmallVector<AcquireOp> detectGroup(AcquireOp start) {
   SmallVector<AcquireOp> group;
   group.push_back(start);
   Value cb = start.getCb();
+  SmallVector<Operation *> groupOps = {start.getOperation()};
   for (Operation *cur = start->getNextNode(); cur; cur = cur->getNextNode()) {
     if (auto next = dyn_cast<AcquireOp>(cur)) {
-      if (next.getCb() == cb && !next.getNumTiles().has_value()) {
+      if (next.getCb() == cb) {
+        if (next.getNumTiles().has_value()) {
+          break;
+        }
         group.push_back(next);
+        groupOps.push_back(cur);
         continue;
       }
-      break; // Same-kind acquire on different CB or already coalesced.
+      // Different-CB acquire of the same kind -- doesn't touch our cb or
+      // our group's results; skip past.
     }
-    if (!isInterleaveOk(cur)) {
+    if (mayReleaseDFB(cur, cb, groupOps)) {
       break;
     }
   }
@@ -178,27 +217,36 @@ static bool tryCoalesceGroup(SmallVectorImpl<AcquireOp> &group,
   return true;
 }
 
-// Walk `block` once, applying coalescing to consecutive acquires.
+// Apply coalescing to acquires of kind `AcquireOp` in `block`. Pre-collects
+// the candidate set so that other-CB acquires which `detectGroup` skips
+// past still get a chance to lead their own group on a later iteration --
+// we don't rely on traversing erased ops via `getNextNode()`.
 template <typename AcquireOp, typename ReleaseOp>
 static void coalesceInBlock(Block &block, OpBuilder &builder) {
-  Operation *op = &block.front();
-  while (op) {
-    Operation *next = op->getNextNode();
-    if (auto acquire = dyn_cast<AcquireOp>(op)) {
-      if (!acquire.getNumTiles().has_value()) {
-        SmallVector<AcquireOp> group = detectGroup<AcquireOp>(acquire);
-        if (group.size() >= 2) {
-          // Capture the resume point before the rewrite; the last group
-          // member is erased but the op after it (if any) remains valid.
-          Operation *resume = group.back()->getNextNode();
-          if (tryCoalesceGroup<AcquireOp, ReleaseOp>(group, builder)) {
-            op = resume;
-            continue;
-          }
-        }
+  SmallVector<AcquireOp> candidates;
+  for (Operation &op : block) {
+    if (auto acquire = dyn_cast<AcquireOp>(&op)) {
+      candidates.push_back(acquire);
+    }
+  }
+  DenseSet<Operation *> erased;
+  for (AcquireOp leader : candidates) {
+    Operation *leaderOp = leader.getOperation();
+    if (erased.contains(leaderOp)) {
+      continue;
+    }
+    if (leader.getNumTiles().has_value()) {
+      continue;
+    }
+    SmallVector<AcquireOp> group = detectGroup<AcquireOp>(leader);
+    if (group.size() < 2) {
+      continue;
+    }
+    if (tryCoalesceGroup<AcquireOp, ReleaseOp>(group, builder)) {
+      for (AcquireOp member : group) {
+        erased.insert(member.getOperation());
       }
     }
-    op = next;
   }
 }
 

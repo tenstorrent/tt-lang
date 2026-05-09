@@ -167,6 +167,10 @@ func.func @interleaved_consume_not_coalesced()
 // CHECK-LABEL: func.func @alternating_cbs_not_coalesced
 // CHECK-NOT: num_tiles
 // CHECK-NOT: tensor.extract_slice
+//
+// Note: this test verifies the SINGLE-acquire-per-CB pattern is left
+// alone. Multi-acquire-per-CB interleaved across CBs (matmul-style) IS
+// coalesced and is covered by the next test.
 func.func @alternating_cbs_not_coalesced()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb_a = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -224,5 +228,43 @@ func.func @single_wait_unchanged()
   ttl.store %a, %r : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_pop %cb_in : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_push %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}
+
+// -----
+
+// Test 8: matmul-style pattern. Two waits on cb_a interleaved with two
+// waits on cb_b. Each CB independently has a coalescable group; the
+// other-CB acquire between same-CB acquires does not touch our CB or our
+// group's results, so it does not break the run.
+
+// CHECK-LABEL: func.func @matmul_style_two_cb_interleaved
+// CHECK: %[[CBA:.+]] = ttl.bind_cb{cb_index = 0
+// CHECK: %[[CBB:.+]] = ttl.bind_cb{cb_index = 1
+// CHECK: %[[GA:.+]] = ttl.cb_wait %[[CBA]] {num_tiles = 2 : i64}
+// CHECK-SAME: tensor<1x2x!ttcore.tile<32x32, bf16>>
+// CHECK: %[[GB:.+]] = ttl.cb_wait %[[CBB]] {num_tiles = 2 : i64}
+// CHECK-SAME: tensor<1x2x!ttcore.tile<32x32, bf16>>
+// CHECK-DAG: ttl.cb_pop %[[CBA]] {num_tiles = 2 : i64}
+// CHECK-DAG: ttl.cb_pop %[[CBB]] {num_tiles = 2 : i64}
+// CHECK-NOT: ttl.cb_wait
+// CHECK-NOT: ttl.cb_pop
+// CHECK: return
+func.func @matmul_style_two_cb_interleaved()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb_a = ttl.bind_cb{cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>
+  %cb_b = ttl.bind_cb{cb_index = 1, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>
+  %a1 = ttl.cb_wait %cb_a : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %aa1 = ttl.attach_cb %a1, %cb_a : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %b1 = ttl.cb_wait %cb_b : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %ab1 = ttl.attach_cb %b1, %cb_b : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %a2 = ttl.cb_wait %cb_a : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %aa2 = ttl.attach_cb %a2, %cb_a : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %b2 = ttl.cb_wait %cb_b : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %ab2 = ttl.attach_cb %b2, %cb_b : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %cb_a : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
+  ttl.cb_pop %cb_b : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
+  ttl.cb_pop %cb_a : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
+  ttl.cb_pop %cb_b : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
   func.return
 }

@@ -126,12 +126,13 @@ For each acquire `A`, the inserted release `R_A` must satisfy:
 
 (1) is enforced explicitly by the pass. (2) is enforced *implicitly* when
 consumers under criterion (a) appear in declaration order
-(`use(t1); use(t2); use(t3)`), because the resulting `lastUse(A_i)` values are
-then themselves in op order. Reordered consumes (`use(t2); use(t1)`) silently
-violate (2): the pass places `R_0` after `R_1` and the front pointer advances
-past `t1`'s slot before `t1` is read. Lifting that restriction is future work
-that requires multi-tile `cb_wait_front(N)` with per-acquire `src_idx` so each
-consumer reads its tile by index, decoupled from pop ordering.
+(`use(t1); use(t2); use(t3)`). Reordered consumes (`use(t2); use(t1)`) would
+violate FIFO monotonicity on their own, but in the current pipeline `TTLCoalesceDFBAcquires`
+runs immediately after `TTLInsertCBSync` and rewrites N consecutive same-DFB
+acquires into one multi-tile acquire plus per-block `tensor.extract_slice`
+views and a single coalesced release with `num_tiles = N*k`. Per-tile
+`src_idx` values fall out of `extract_slice` offsets, so consume order is
+decoupled from release order and (2) is preserved by construction.
 
 ### Idempotency
 
@@ -229,6 +230,149 @@ insertReleases(acquires, releases, releaseOp):
 The same-block release check makes the pass idempotent. A release after the
 next acquire in the same DFB sync class belongs to that later interval and does
 not satisfy the earlier acquire.
+
+## DFB Acquire Coalescing
+
+`TTLCoalesceDFBAcquires` runs immediately after `TTLInsertCBSync` and
+rewrites a maximal run of consecutive same-DFB acquires (and their matched
+releases) into a single multi-tile acquire plus per-block
+`tensor.extract_slice` views, with the matched releases collapsed into one
+release carrying `num_tiles = N*k`.
+
+```
+%t1 = ttl.cb_wait %cb            %g  = ttl.cb_wait %cb {num_tiles=N*k}
+%t2 = ttl.cb_wait %cb            %t1 = extract_slice %g [0, 0]   [1,k]
+...                              %t2 = extract_slice %g [0, k]   [1,k]
+ttl.cb_pop %cb                   ...
+ttl.cb_pop %cb                   ttl.cb_pop %cb {num_tiles=N*k}
+```
+
+This matches the canonical tt-metal "cumulative wait + indexed reads +
+coalesced pop" pattern (eltwise_binary.cpp, bcast_h.cpp, the matmul
+kernels). Without coalescing each acquire lowers to its own
+non-cumulative `cb_wait_front(k)` / `cb_pop_front(k)`, which races
+whenever consumes are deferred: the first pop advances the front before
+the producer has pushed enough tiles to satisfy the next read.
+
+`addSliceOffset` (`include/ttlang/Dialect/Utils/ConversionUtils.h`) folds
+each `extract_slice` offset into the per-tile `src_idx` / `dst_idx` at
+lowering, so no lowering changes are required. The producer side
+(`cb_reserve` / `cb_push`) uses the same templated helpers — per-block
+`extract_slice`s become the views of downstream `ttl.tile_store` /
+`ttl.store` ops, and `addSliceOffset` handles store-side dst indices the
+same way.
+
+### Correctness criterion
+
+For a candidate group of acquires `G = {a_1, ..., a_N}` on DFB `c`, the
+rewrite is correct iff every op `O` between consecutive group members
+preserves the synchronization invariant of `c` under the coalesced
+schedule. The coalesced acquire blocks until `N*k` tiles are present
+*before* anything between original `a_i` and `a_{i+1}` runs; the
+coalesced release runs only after the last group member's last use.
+
+This holds iff no op between members causes a release on `c` (directly or
+transitively): the original IR may have allowed the producer to recycle
+slots between `a_i` and `a_{i+1}`, and the coalesced version forbids that
+until the very end. Forbidding inter-member releases is therefore
+necessary for correctness at low `block_count`, and sufficient when paired
+with the coalesced release placement.
+
+A locally-checkable (sound, conservative) version of that criterion: an
+op `O` between members is safe to skip past iff none of:
+
+1. `O` operates on `c` directly (`c` appears as an operand). Covers
+   `cb_pop` / `cb_push` on `c` and any other op that reads or writes `c`.
+2. `O` consumes the SSA result of any current group member. A consume can
+   flow into a release on `c` somewhere downstream, and we don't perform
+   transitive analysis.
+3. `O` carries a region. Region bodies might contain a release on `c`;
+   conservative cutoff.
+
+Anything else — an acquire or release on a different DFB, `arith.constant`,
+pure compute on other DFBs — cannot affect `c` and is safe. `ttl.attach_cb`
+is explicitly excluded from rules (1)–(2): it is an SSA-only identity op
+(the metal lowering erases it) that always references the group's results
+and `cb` as operands, so the generic check would otherwise wrongly break
+the group at every `attach_cb`.
+
+#### Why this is sufficient
+
+Suppose `O` between `a_i` and `a_{i+1}` satisfies all three negations
+above. Then:
+
+- `O` does not directly call any release on `c` (rule 1).
+- `O`'s outputs do not consume any tile from `G` (rule 2 on operands; the
+  outputs cannot make further data depend on `G`'s tiles).
+- `O` has no inner region that could hide an indirect release on `c`
+  (rule 3).
+
+So the only way a release on `c` could appear before the coalesced
+release is via a transitive use of some non-`G` value. Because rule 2
+forbids `G`'s outputs from being inputs to `O`, no fresh dataflow path is
+created from `G` into a `c` release. Any release on `c` reachable from
+some unrelated value would have run in the original IR too, at exactly
+the same op-order position, so the coalesced version is no worse.
+
+#### Why this is necessary
+
+If `O` is itself a release on `c` (e.g., a user-written `cb_pop`), the
+original IR lets the producer recycle one slot at `O`, but the coalesced
+acquire holds all `N*k` slots from the start. With `block_count` only
+slightly larger than the working set, the producer cannot push the next
+batch and the consumer cannot release until all members are consumed —
+deadlock. Same argument for transitive releases via group results.
+
+### Detection algorithm
+
+Per block, pre-collect all acquires of the kind under consideration
+(`cb_wait` for the consumer pass; `cb_reserve` for the producer pass).
+For each candidate leader (in op order):
+
+```
+if leader is already coalesced (num_tiles set) or already erased:
+  continue
+
+group = [leader]
+for op = leader.nextOp; op != nullptr; op = op.nextOp:
+  if op is a same-kind same-cb acquire with no num_tiles:
+    group.push_back(op); continue
+  if op is a same-kind acquire on a different DFB:
+    continue  # benign: cannot touch our DFB or our group's results
+  if mayReleaseDFB(op, cb=leader.cb, group):
+    break
+  # else: tolerate (different-DFB op, attach_cb, arith, ...)
+
+if group.size() < 2: continue
+match N releases on cb after the last group member, in op order
+apply rewrite, mark group members as erased
+```
+
+Because the candidate set is fixed before any rewrite, acquires on a
+different DFB that the inner loop skips past (e.g., the matmul-style
+`a1, b1, a2, b2` interleave) still get a chance to lead their own group
+on a later iteration of the outer loop.
+
+### Idempotency
+
+The coalesced acquire and release carry a `num_tiles` attribute, and
+`detectGroup` skips acquires that already have one. A second run of the
+pass therefore finds no candidate groups and is a no-op. The doubled-pass
+lit invocation
+(`--pass-pipeline='builtin.module(func.func(ttl-coalesce-dfb-acquires,
+ttl-coalesce-dfb-acquires))'`) verifies this.
+
+### Limitations
+
+- Non-rank-2 acquire shapes are not coalesced. The existing `num_tiles`
+  shape convention (matching `TTLSubblockComputeForDST`) produces
+  `tensor<1, num_tiles, elem>`; the pass conservatively bails on other
+  ranks rather than picking an axis to scale.
+- Acquires already carrying `num_tiles` (set by
+  `TTLSubblockComputeForDST`) are not extended.
+- Region-bearing ops between members terminate the group, so coalescing
+  does not span control flow within an `scf.if` or `scf.for` (loop-body
+  coalescing still works because the body is its own block).
 
 ## Index Reuse
 

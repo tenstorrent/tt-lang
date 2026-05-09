@@ -81,9 +81,12 @@ def TTLCoalesceDFBAcquires
     per-tile `src_idx` at lowering time, so no lowering changes are
     required.
 
-    Symmetric on the producer side (`cb_reserve` / `cb_push`), with each
-    per-block `extract_slice` becoming the view of a downstream
-    `ttl.tile_store` / `ttl.store`.
+    The producer side (`cb_reserve` / `cb_push`) is rewritten by the same
+    templated routine: a run of `N` consecutive `cb_reserve` ops on one
+    DFB collapses into one `cb_reserve {num_tiles = N*k}` plus per-block
+    `tensor.extract_slice` views routed into the downstream
+    `ttl.tile_store` / `ttl.store` ops, and the `N` matching `cb_push`
+    ops collapse into one `cb_push {num_tiles = N*k}`.
 
     Detection: forward walk per block; an acquire group is a maximal run
     of same-kind same-DFB acquires separated only by `ttl.attach_cb` or
