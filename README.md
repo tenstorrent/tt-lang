@@ -244,10 +244,9 @@ cd third-party/llvm-project && git fetch && git checkout <llvm-sha> && cd ../..
 
 Update tt-metal to the compatible version. The canonical tt-metal version
 lives in `third-party/tt-metal-version` (a tt-metal release tag, e.g.
-`v0.69.0`); the submodule SHA, the `ttnn` version under
-`[project.optional-dependencies] device` in `pyproject.toml`, and the docker
-`TT_METAL_TAG` build arg are all derived from it. Edit the file and run the
-verifier in update mode to check out the submodule at the matching commit:
+`v0.69.0`); see [build.md](docs/sphinx/build.md#updating-tt-metal) for the
+full list of artifacts derived from it. Edit the file and run the verifier
+in update mode to check out the submodule at the matching commit:
 
 ```bash
 echo v0.69.0 > third-party/tt-metal-version

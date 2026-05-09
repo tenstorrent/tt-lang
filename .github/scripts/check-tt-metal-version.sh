@@ -11,9 +11,9 @@
 #   - third-party/tt-metal submodule HEAD == commit pointed to by the tag
 #   - Dockerfile.base does not hard-code a tt-metal SHA
 #
-# The ttnn version in `pyproject.toml`'s `[project.optional-dependencies]
-# device` is derived dynamically from this same file by
-# setup.py:_ttnn_device_extras(); no separate verification is needed.
+# The ttnn version in the wheel's install_requires is derived dynamically
+# from this same file by setup.py:_ttnn_requirement(); no separate
+# verification is needed.
 #
 # Usage:
 #   .github/scripts/check-tt-metal-version.sh           # verify only (CI mode)

@@ -4,7 +4,8 @@
 
 """Install the sfpi runtime that ttnn needs.
 
-Runs after `pip install "tt-lang[device]"`. Reads the sfpi version recorded
+Runs after `pip install tt-lang` on a Linux x86_64 / aarch64 host (where
+ttnn is pulled in as a hard dependency). Reads the sfpi version recorded
 by the installed ttnn wheel, downloads the matching tarball from the sfpi
 GitHub release, verifies its sha256, and extracts it into
 `<ttnn>/runtime/sfpi/`.
@@ -36,7 +37,10 @@ _ARCH_MAP = {
 def _ttnn_pkg_dir() -> Path:
     spec = find_spec("ttnn")
     if spec is None or not spec.submodule_search_locations:
-        sys.exit('ttnn is not installed; run `pip install "tt-lang[device]"` first')
+        sys.exit(
+            "ttnn is not installed; sfpi setup requires the device `tt-lang` "
+            "wheel. For sim-only installs run `tt-lang-setup` (skips sfpi)."
+        )
     return Path(next(iter(spec.submodule_search_locations)))
 
 
