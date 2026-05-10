@@ -170,7 +170,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     __init__.py
-    circular_buffer.py
+    dataflow_buffer.py
     compiler_options.py
     constants.py
     diagnostics.py

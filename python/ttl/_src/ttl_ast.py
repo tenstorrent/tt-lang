@@ -42,8 +42,8 @@ def _make_file_loc(ctx, source_file: str, node, line_offset: int = 0) -> Locatio
 def _get_annotation_name(annotation):
     """Extract the type name from an annotation node.
 
-    Handles both simple names (CircularBuffer) and qualified names (ttl.CircularBuffer).
-    Returns the simple type name (e.g., 'CircularBuffer') in both cases.
+    Handles both simple names (DataflowBuffer) and qualified names (ttl.DataflowBuffer).
+    Returns the simple type name (e.g., 'DataflowBuffer') in both cases.
     """
     if isinstance(annotation, ast.Name):
         return annotation.id
@@ -617,7 +617,7 @@ class TTLGenericCompiler(TTCompilerBase):
         return result
 
     def _emit_cb_from_capture(self, cb):
-        """Emit ttl.bind_cb for a captured CircularBuffer instance."""
+        """Emit ttl.bind_cb for a captured DataflowBuffer instance."""
         ttcore_dtype = tensor_dtype_to_ttcore_datatype(cb.dtype)
         element_type = ttcore.ir.TileType.get(
             self.ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
@@ -709,7 +709,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 self.streams.add(name)
 
             # Prepopulate other captures (non-tensor).
-            from ..circular_buffer import CircularBuffer
+            from ..dataflow_buffer import DataflowBuffer
             from ..pipe import Pipe, PipeNet
 
             for name, val in self.captures.items():
@@ -720,7 +720,7 @@ class TTLGenericCompiler(TTCompilerBase):
                     self._set_var(name, arith.ConstantOp(IndexType.get(self.ctx), val))
                 elif isinstance(val, float):
                     self._set_var(name, arith.ConstantOp(F32Type.get(self.ctx), val))
-                elif isinstance(val, CircularBuffer):
+                elif isinstance(val, DataflowBuffer):
                     self._set_var(name, self._emit_cb_from_capture(val))
                 elif isinstance(val, Pipe):
                     pipe_val = self._emit_pipe_from_capture(val)
@@ -1014,7 +1014,7 @@ class TTLGenericCompiler(TTCompilerBase):
 
     def visit_With(self, node):
         """
-        Handle 'with' for CircularBuffer acquire/release or signpost scopes.
+        Handle 'with' for DataflowBuffer acquire/release or signpost scopes.
 
         Signpost scopes:
             with ttl.signpost("my_region"):

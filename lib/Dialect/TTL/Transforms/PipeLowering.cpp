@@ -519,13 +519,10 @@ struct CreatePipeLowering : OpConversionPattern<CreatePipeOp> {
   LogicalResult
   matchAndRewrite(CreatePipeOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // CreatePipeOp is a Pure op that just produces a pipe type value.
-    // The pipe type carries all the coordinate information as type parameters.
-    // At runtime, pipes don't need any materialization - the coordinates are
-    // baked into the generated code through if_src/if_dst lowering.
-    //
-    // Always replace with an unrealized cast to handle uses in nested regions
-    // (like if_src/if_dst bodies) that may be processed in a different order.
+    // CreatePipeOp produces a pipe type whose parameters carry the coordinate
+    // info; coordinates are encoded into generated code by if_src/if_dst.
+    // Replace with an unrealized cast so uses in nested regions (if_src /
+    // if_dst bodies) that may be processed in a different order still resolve.
     // The unrealized cast preserves the type for downstream patterns.
     auto cast = UnrealizedConversionCastOp::create(
         rewriter, op.getLoc(), op.getResult().getType(), ValueRange{});
