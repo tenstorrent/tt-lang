@@ -22,8 +22,8 @@ inline constexpr int32_t kDefaultTileHeight = 32;
 inline constexpr int32_t kDefaultTileWidth = 32;
 inline constexpr int32_t kMaxCircularBuffers = 32;
 
-/// Purpose: Enable tagging of all tile-level operations so we can identify them
-/// later as tile-level operations without having to check individual types.
+/// Tag for tile-level operations to enable identity checks without type
+/// inspection.
 template <typename ConcreteType>
 class TTLTileOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLTileOpTrait> {};
@@ -36,9 +36,7 @@ constexpr llvm::StringLiteral kTargetArchAttrName("ttl.target_arch");
 constexpr llvm::StringLiteral kFp32DestAccEnAttrName("fp32_dest_acc_en");
 constexpr llvm::StringLiteral kDstFullSyncEnAttrName("dst_full_sync_en");
 
-/// Canonical target_arch values. The Python wrapper writes these exact
-/// strings into ttl.target_arch, so any rename here must be mirrored in
-/// python/ttl/ttl_api.py (_detect_device_arch).
+/// Canonical target_arch values. Mirrored in python/ttl/ttl_api.py.
 constexpr llvm::StringLiteral kBlackholeArchName("blackhole");
 constexpr llvm::StringLiteral kWormholeB0ArchName("wormhole_b0");
 
@@ -60,44 +58,36 @@ inline bool isWormholeB0Target(Operation *op) {
   return hasTargetArch(op, kWormholeB0ArchName);
 }
 
-/// Marks binary ops that use the FPU engine (reads from CB) instead of SFPU.
+/// Binary ops that use the FPU engine (reading from CB) rather than SFPU.
 constexpr llvm::StringLiteral kFPUBinaryAttrName("ttl.fpu_binary");
 
-/// Number of tiles to process per DST sync region (set by TTLAssignDST).
+/// Number of tiles per DST sync region.
 constexpr llvm::StringLiteral kUnrollFactorAttrName("ttl.unroll_factor");
 
-/// Marks an scf.for as a compiler-generated subblock loop. The integer value
-/// is the linearization stride of this dimension, assuming row-major tile
-/// ordering in the CB (interleaved layout).
+/// Marks an scf.for as a compiler-generated subblock loop. Integer value is
+/// the linearization stride for this dimension.
 constexpr llvm::StringLiteral
     kSubblockLoopStrideAttrName("ttl.subblock_loop_stride");
 
-/// Iteration domain dimension index on a subblock loop, recording which
-/// dimension the loop iterates over.
+/// Iteration domain dimension index on a subblock loop.
 constexpr llvm::StringLiteral kSubblockDimAttrName("ttl.subblock_dim");
 
-/// Linearization strides of the full iteration domain (before subblocking),
-/// carried on subblocked ComputeOps so tile loops get correct CB strides.
+/// Linearization strides of the full iteration domain (pre-subblocking).
 constexpr llvm::StringLiteral
     kFullLinStridesAttrName("ttl.full_linearization_strides");
 
-/// Marks an scf.for as a compiler-generated tile loop. The integer value is
-/// the linearization stride of this dimension, assuming row-major tile
-/// ordering in the CB (interleaved layout).
+/// Marks an scf.for as a compiler-generated tile loop. Integer value is the
+/// linearization stride for this dimension.
 constexpr llvm::StringLiteral kTileLoopStrideAttrName("ttl.tile_loop_stride");
 
 /// Marks an scf.for loop as iterating over a reduction dimension.
-/// Preserves the reduction semantics from iterator_types after the
-/// ComputeOp is lowered to loops.
 constexpr llvm::StringLiteral kReductionLoopAttrName("ttl.reduction_loop");
 
-/// Marks a user-written scf.for as an L1 accumulation loop. Each iteration
-/// packs to the same CB slot; pack_reconfig_l1_acc makes subsequent
-/// iterations additive. Distinct from kReductionLoopAttrName which marks
-/// compiler-generated reduction loops.
+/// Marks a user-written scf.for as an L1 accumulation loop. Distinct from
+/// kReductionLoopAttrName which marks compiler-generated reduction loops.
 constexpr llvm::StringLiteral kL1AccLoopAttrName("ttl.l1_acc_loop");
 
-/// Output CB index on tile ops that need it for init insertion.
+/// Output CB index for tile ops.
 constexpr llvm::StringLiteral
     kBcastOutputCBIndexAttrName("ttl.bcast_output_cb_index");
 constexpr llvm::StringLiteral
@@ -105,8 +95,7 @@ constexpr llvm::StringLiteral
 constexpr llvm::StringLiteral
     kTransposeOutputCBIndexAttrName("ttl.transpose_output_cb_index");
 
-/// Marks a copy_tile as a placeholder inserted during DST assignment Phase 1.
-/// Replaced with a proper copy in Phase 2b.
+/// Placeholder marker on copy_tile (replaced during DST assignment).
 constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
 
 /// Module attribute carrying compiler-allocated DFB metadata.
@@ -193,10 +182,7 @@ public:
   }
 };
 
-/// Trait for tile operations that carry an explicit output CB operand.
-/// These operations' init functions configure the PACK thread and require
-/// the output CB identifier. Affects init consolidation ordering: full-init
-/// ops (PACK-configuring) must precede short-init ops.
+/// Trait for tile operations with an explicit output CB operand.
 template <typename ConcreteType>
 class TTLCBOutputTileOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLCBOutputTileOpTrait> {};
@@ -219,7 +205,6 @@ inline void setCBIndexAttr(mlir::Operation *compute, unsigned inputIdx,
 }
 
 /// Get CB index attribute from a compute op for a specific input.
-/// Returns std::nullopt if the attribute is not present.
 inline std::optional<int64_t> getCBIndexAttr(mlir::Operation *compute,
                                              unsigned inputIdx) {
   if (auto attr = compute->getAttrOfType<mlir::IntegerAttr>(
@@ -233,9 +218,7 @@ inline std::optional<int64_t> getCBIndexAttr(mlir::Operation *compute,
 // Compiler-Allocated DFB Utilities
 //===----------------------------------------------------------------------===//
 
-/// Return the next available DFB index for the module. Scans all BindCBOp
-/// indices across all functions to find the current maximum, then returns
-/// max + 1.
+/// Return the next available DFB index for the module.
 int32_t getNextAvailableDFBIndex(mlir::ModuleOp mod);
 
 } // namespace mlir::tt::ttl

@@ -23,17 +23,12 @@
 
 namespace mlir::tt::ttl {
 
-/// Trace through unrealized conversion casts to find the original value.
-/// This is useful during dialect conversion when values are wrapped in
-/// UnrealizedConversionCastOp to represent type conversions.
-///
-/// Includes cycle detection because buggy conversion patterns can create cast
-/// cycles (see MLIR's reconcileUnrealizedCastsImpl for similar checks).
+/// Trace through unrealized conversion casts to the original value
+/// (cycle-safe).
 inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
   llvm::SmallPtrSet<mlir::Operation *, 8> visited;
   while (auto cast = value.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
     if (!visited.insert(cast).second) {
-      // Cycle detected - return current value to avoid infinite loop
       break;
     }
     if (cast.getInputs().size() == 1) {
@@ -53,22 +48,14 @@ inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
   return std::nullopt;
 }
 
-/// Return the circular buffer attached to `tensor`, or null if none/ambiguous.
-///
-/// Traces through ViewLikeOpInterface (cb_reserve, cb_wait),
-/// tensor.extract_slice, tensor.extract, unrealized_conversion_cast,
-/// and attach_cb to find the underlying CB value.
+/// Return the circular buffer attached to `tensor`, or null if none.
 inline mlir::Value getAttachedCB(mlir::Value tensor) {
-  // Trace through unrealized conversion casts (from dialect conversion).
   tensor = traceUnrealizedCasts(tensor);
 
-  // Trace through tensor.extract_slice (from compute subblocking).
   if (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
     return getAttachedCB(slice.getSource());
   }
 
-  // Trace through tensor.extract (scalar element extraction, e.g. bcast
-  // output).
   if (auto extract = tensor.getDefiningOp<mlir::tensor::ExtractOp>()) {
     return getAttachedCB(extract.getTensor());
   }
@@ -77,8 +64,6 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
     return attach.getCb();
   }
 
-  // Trace through ViewLikeOpInterface: cb_reserve and cb_wait return
-  // the CB directly as their view source.
   if (auto viewLike = tensor.getDefiningOp<mlir::ViewLikeOpInterface>()) {
     mlir::Value source = viewLike.getViewSource();
     if (mlir::isa<CircularBufferType>(source.getType())) {
@@ -90,9 +75,8 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
   return mlir::Value();
 }
 
-/// Check if an operation is a tile compute operation.
-/// Returns true for arithmetic/math tile operations (add, mul, exp, etc.).
-/// Excludes data movement ops (copy_tile) and DST lifecycle ops.
+/// True for arithmetic/math tile ops (add, mul, exp, ...); false for data
+/// movement and DST lifecycle ops.
 inline bool isTileComputeOp(mlir::Operation *op) {
   return op->hasTrait<TTLTileComputeOpTrait>();
 }
@@ -107,10 +91,9 @@ inline bool isBinaryElementwiseOp(mlir::Operation *op) {
   return op->hasTrait<TTLBinaryElementwiseOpTrait>();
 }
 
-/// Return whether a reduce op may use full-fp32 accumulation on its target.
+/// Return whether a reduce op supports full-fp32 accumulation on its target.
 inline bool isFullFp32ReduceSupported(TileReduceOp reduceOp) {
-  // Wormhole reduce lowering is validated in non-full-fp32 mode. Enabling
-  // full_fp32 also requires FP32 DST and changes existing reduce results.
+  // Wormhole full_fp32 requires FP32 DST and changes existing reduce results.
   if (isWormholeB0Target(reduceOp)) {
     return false;
   }
@@ -135,8 +118,7 @@ inline bool isTileBinaryOp(mlir::Operation *op) {
   return op->hasTrait<TTLTileBinaryOpTrait>();
 }
 
-/// Check if an operation reads inputs from CB at runtime, either by static
-/// trait (bcast, copy_tile) or by runtime FPU binary marking.
+/// True if op reads inputs from CB at runtime (by trait or FPU marking).
 inline bool isCBInputOp(mlir::Operation *op) {
   return op->hasTrait<TTLCBInputTileOpTrait>() ||
          op->hasAttr(kFPUBinaryAttrName);
@@ -147,7 +129,7 @@ inline bool isElementwiseOp(mlir::Operation *op) {
   return isUnaryElementwiseOp(op) || isBinaryElementwiseOp(op);
 }
 
-/// Get the operands of an elementwise op (1 for unary, 2 for binary).
+/// Get the operands of an elementwise op.
 inline mlir::SmallVector<mlir::Value, 2>
 getElementwiseOperands(mlir::Operation *op) {
   if (isUnaryElementwiseOp(op)) {
@@ -178,11 +160,9 @@ struct FusionTraceResult {
   mlir::Value failedValue;
 };
 
-/// Trace a value through fusable ops (elementwise, matmul, bcast) to find
-/// CB-attached roots. Recursively traces through arbitrary depth chains.
-///
-/// On failure, sets failureReason and failedValue in the result.
-/// Check failureReason == TraceFailureReason::Success to determine success.
+/// Trace a value through fusable ops (elementwise, matmul, bcast) to
+/// CB-attached roots. On failure, the result's `failureReason` and
+/// `failedValue` are set.
 FusionTraceResult traceFusionToRoots(mlir::Value value);
 
 /// Return a human-readable description of a trace failure reason.
@@ -192,10 +172,8 @@ llvm::StringRef describeTraceFailure(TraceFailureReason reason);
 // Tile operation categories for scheduling and init consolidation
 //===----------------------------------------------------------------------===//
 
-/// Operation categories for scheduling and init consolidation.
-/// Sort order matters: lower values are scheduled first within sync regions.
-/// CB-input ops that configure MATH (bcast, transpose) must precede copy_tile
-/// because their pipeline configuration can be disrupted by intervening ops.
+/// Operation categories for scheduling and init consolidation. Lower values
+/// are scheduled first; CB-input ops configuring MATH must precede copy_tile.
 enum class TileOpCategory : uint8_t {
   Bcast = 0,      // CB -> DST with PACK config (full init, must be first)
   Transpose = 1,  // CB -> DST transpose (full init, requires uninit)
@@ -245,9 +223,8 @@ inline OpTy findPrecedingOp(mlir::Operation *op, StopPredicate stopAtOp) {
 // Iter index utilities for CB tile indexing
 //===----------------------------------------------------------------------===//
 
-/// Get or create iter_index ops at the start of a compute body. Returns
-/// one Value per iteration domain dimension. Reuses existing iter_index ops
-/// if present (idempotent across multiple callers).
+/// Get or create iter_index ops at the start of a compute body, one per
+/// iteration domain dimension (idempotent across callers).
 inline SmallVector<Value> getOrCreateIterIndices(OpBuilder &builder,
                                                  ComputeOp computeOp) {
   Block &body = computeOp.getBody().front();
@@ -277,8 +254,7 @@ inline SmallVector<Value> getOrCreateIterIndices(OpBuilder &builder,
   return existing;
 }
 
-/// Apply an indexing map to induction variables, producing index-typed
-/// Values via affine composition and folding.
+/// Apply an indexing map to induction variables.
 inline SmallVector<Value> applyIndexingMap(OpBuilder &builder, Location loc,
                                            AffineMap map, ValueRange ivs) {
   SmallVector<OpFoldResult> operands(ivs.begin(), ivs.end());
@@ -297,9 +273,7 @@ inline SmallVector<Value> applyIndexingMap(OpBuilder &builder, Location loc,
   return mapped;
 }
 
-/// Trace a value through copy_tile (inserted by assign-dst) to its source
-/// block argument. Returns the block arg index, or std::nullopt if the value
-/// does not trace to a block argument.
+/// Trace a value through copy_tile to its source block argument index.
 inline std::optional<unsigned> traceToBlockArgIndex(Value val) {
   if (auto copyOp = val.getDefiningOp<CopyTileOp>()) {
     val = copyOp.getSrc();
@@ -310,8 +284,7 @@ inline std::optional<unsigned> traceToBlockArgIndex(Value val) {
   return std::nullopt;
 }
 
-/// Extract tiles from tensors by applying indexing maps to induction variables.
-/// Returns one extracted tile per tensor.
+/// Extract tiles from tensors at induction variable indices.
 inline SmallVector<Value>
 extractTilesAtIndices(OpBuilder &builder, Location loc, ValueRange tensors,
                       ArrayRef<AffineMap> indexingMaps, ValueRange ivs,
@@ -327,8 +300,8 @@ extractTilesAtIndices(OpBuilder &builder, Location loc, ValueRange tensors,
   return extracted;
 }
 
-/// Map a ComputeOp's body block arguments to extracted tile values.
-/// Also maps iter_index results to the corresponding IV values.
+/// Map a ComputeOp's body block arguments to extracted tile values, and
+/// iter_index results to the corresponding IVs.
 inline void mapComputeBodyArgs(IRMapping &mapping, ComputeOp op,
                                ArrayRef<Value> extractedInputs,
                                ArrayRef<Value> extractedOutputs,
@@ -353,7 +326,6 @@ inline void mapComputeBodyArgs(IRMapping &mapping, ComputeOp op,
 //===----------------------------------------------------------------------===//
 
 /// A live interval representing the lifetime of a value or resource.
-/// Used by linear scan allocators in TTLAssignDST and TTLFinalizeDFBIndices.
 struct Interval {
   int64_t start; // Operation index where value becomes live
   int64_t end;   // Operation index of last use
@@ -368,13 +340,6 @@ struct Interval {
 constexpr std::uint32_t kDstPhysicalSizeTiles = 16;
 
 /// Compute the logical DST capacity based on element types and sync mode.
-///
-/// The DST register file has 16 physical tiles. Logical capacity is derived:
-///   - Default (double-buffered): physical / 2 = 8 tiles
-///   - Full sync (dst_full_sync_en): no halving = 16 tiles
-///   - f32 accumulation: halved again (tiles are 2x wider)
-///
-/// Architecture-independent across Grayskull, Wormhole, and Blackhole.
 inline std::uint32_t getDstCapacity(bool isFloat32, bool fullSyncEn) {
   std::uint32_t capacity = kDstPhysicalSizeTiles;
   if (!fullSyncEn) {
@@ -386,10 +351,8 @@ inline std::uint32_t getDstCapacity(bool isFloat32, bool fullSyncEn) {
   return capacity;
 }
 
-/// Read a per-kernel bool attribute from the enclosing func.func.
-/// These are set by TTLSetComputeKernelConfig on the function (not on
-/// individual compute ops) because they are per-kernel compile-time settings.
-/// Returns false when the attribute is absent or the op has no enclosing func.
+/// Read a per-kernel bool attribute from the enclosing func.func, returning
+/// false if absent.
 inline bool getKernelBoolAttr(mlir::Operation *op, llvm::StringRef attrName) {
   auto funcOp = op->getParentOfType<mlir::func::FuncOp>();
   assert(funcOp && "getKernelBoolAttr called on op outside of func.func");
@@ -399,9 +362,7 @@ inline bool getKernelBoolAttr(mlir::Operation *op, llvm::StringRef attrName) {
   return false;
 }
 
-/// Compute DST capacity for a compute op by inspecting block argument types
-/// and the kernel-level fp32/sync-mode attributes on the enclosing function.
-/// Returns failure for mixed f32/non-f32 tile arguments.
+/// Compute DST capacity for a compute op. Fails for mixed f32/non-f32 args.
 inline FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
   bool fullSyncEn = getKernelBoolAttr(computeOp, kDstFullSyncEnAttrName);
   bool fp32DestAccEn = getKernelBoolAttr(computeOp, kFp32DestAccEnAttrName);
@@ -435,9 +396,7 @@ inline FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
   return getDstCapacity(isFloat32, fullSyncEn);
 }
 
-/// Fold a Value through constant integer arithmetic to resolve its value.
-/// Handles arith.constant directly, and recursively folds arith.addi and
-/// arith.muli where both operands are foldable.
+/// Fold a Value through constant integer arithmetic.
 inline std::optional<int64_t> foldIndexToConstant(Value val) {
   if (auto constIdx = getConstantIntValue(val)) {
     return constIdx;
@@ -463,8 +422,7 @@ inline std::optional<int64_t> foldIndexToConstant(Value val) {
   return std::nullopt;
 }
 
-/// Get the dst_index Value from a tile op, or std::nullopt if the op
-/// does not have TTLDstResultOpTrait.
+/// Get the dst_index Value from a tile op, if it has TTLDstResultOpTrait.
 inline std::optional<Value> getTileOpDstIndex(Operation *op) {
   if (op->hasTrait<TTLDstResultOpTrait>()) {
     return op->getOperand(op->getNumOperands() - 1);
@@ -479,12 +437,10 @@ inline void setTileOpDstIndex(Operation *op, Value newDstIndex) {
   op->setOperand(op->getNumOperands() - 1, newDstIndex);
 }
 
-/// Temporary marker attribute for tile ops whose dst_index has not been
-/// assigned yet.
+/// Temporary marker for unassigned dst_index.
 constexpr llvm::StringLiteral kDstPlaceholderAttrName("ttl.dst_placeholder");
 
-/// Sentinel value for unassigned DST indices. Obviously invalid so any
-/// accidental use fails loudly at TTKernel lowering or on hardware.
+/// Sentinel value for unassigned DST indices.
 constexpr int64_t kUnassignedDstIndex = -1;
 
 /// Create a placeholder dst_index constant (-1).

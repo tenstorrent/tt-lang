@@ -103,7 +103,6 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
     return emitOpError() << "cb_index must be non-negative";
   }
 
-  // Validate block count against type for consistency.
   int64_t blockCount = getBlockCount();
   if (blockCount <= 0) {
     return emitOpError() << "block_count must be > 0";
@@ -120,7 +119,6 @@ mlir::LogicalResult mlir::tt::ttl::AttachCBOp::verify() {
   auto tensorTy = mlir::cast<RankedTensorType>(getTensor().getType());
   auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
 
-  // Element types must match.
   if (tensorTy.getElementType() != cbTy.getElementType()) {
     return emitOpError() << "tensor element type (" << tensorTy.getElementType()
                          << ") must match CB element type ("
@@ -132,7 +130,6 @@ mlir::LogicalResult mlir::tt::ttl::AttachCBOp::verify() {
   // shape. For now, only validate element types match. The relationship between
   // tensor shape and CB shape needs further investigation.
 
-  // Result type must equal input tensor type (identity).
   if (getResult().getType() != getTensor().getType()) {
     return emitOpError() << "result type must equal tensor operand type";
   }
@@ -175,9 +172,7 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   const bool srcIsPipe = mlir::isa<PipeType>(srcTy);
   const bool dstIsPipe = mlir::isa<PipeType>(dstTy);
 
-  // Pipe transfers: CB <-> Pipe
   if (srcIsPipe || dstIsPipe) {
-    // For pipe transfers, one side must be a pipe and the other must be a CB.
     if (srcIsPipe && dstIsPipe) {
       return emitOpError() << "cannot copy directly between pipes";
     }
@@ -185,12 +180,9 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
       return emitOpError()
              << "pipe transfers require one operand to be !ttl.cb";
     }
-    // Valid combinations: CB->Pipe (send) or Pipe->CB (receive)
     return success();
   }
 
-  // Non-pipe transfers: CB <-> TensorSlice
-  // Exactly one side must be a CB.
   if (srcIsCb == dstIsCb) {
     return emitOpError()
            << "expects exactly one operand to be !ttl.cb; got src=" << srcTy
@@ -266,11 +258,9 @@ mlir::LogicalResult mlir::tt::ttl::WaitOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::IterIndexOp::verify() {
   int64_t dim = getDim();
 
-  // ParentOneOf<["ComputeOp"]> trait guarantees the parent is a ComputeOp.
   auto computeOp = (*this)->getParentOfType<ComputeOp>();
   assert(computeOp && "ParentOneOf trait should enforce ComputeOp parent");
 
-  // Verify dim is within the iteration domain rank.
   unsigned iterRank = computeOp.getIteratorTypesArray().size();
   if (static_cast<unsigned>(dim) >= iterRank) {
     return emitOpError() << "dimension " << dim
@@ -284,7 +274,6 @@ mlir::LogicalResult mlir::tt::ttl::IterIndexOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::CopyTileOp::verify() {
   auto srcTy = mlir::cast<tt::ttcore::TileType>(getSrc().getType());
 
-  // Verify that dst_tile type matches src type.
   auto dstTileTy = getDstTile().getType();
   if (dstTileTy != srcTy) {
     return emitOpError()
@@ -296,30 +285,25 @@ mlir::LogicalResult mlir::tt::ttl::CopyTileOp::verify() {
 }
 
 void mlir::tt::ttl::ComputeOp::print(mlir::OpAsmPrinter &p) {
-  // Print inputs (ins operands)
   p << " ins(";
   p.printOperands(getInputs());
   p << " : ";
   llvm::interleaveComma(getInputs().getTypes(), p);
   p << ")";
 
-  // Print outputs (outs operands).
   p << " outs(";
   p.printOperands(getOutputs());
   p << " : ";
   llvm::interleaveComma(getOutputs().getTypes(), p);
   p << ")";
 
-  // Print attributes (excluding operandSegmentSizes which is internal).
   SmallVector<mlir::StringRef> elidedAttrs = {"operandSegmentSizes"};
   p.printOptionalAttrDict((*this)->getAttrs(), elidedAttrs);
 
-  // Print the region.
   p << ' ';
   p.printRegion(getBody(), /*printEntryBlockArgs=*/true,
                 /*printBlockTerminators=*/true);
 
-  // Print result types.
   p << " -> ";
   if (getResults().size() == 1) {
     p.printType(getResults().front().getType());
@@ -398,12 +382,11 @@ mapOffsetsAndSizes(mlir::OpBuilder &b, mlir::Location loc, mlir::AffineMap map,
   auto operandTy = mlir::cast<mlir::RankedTensorType>(operand.getType());
   int64_t rank = operandTy.getRank();
   operandOffsets.resize(rank, b.getIndexAttr(0));
-  // Default: full operand dim (used for broadcast dims not in the map).
-  // All dimensions are static (enforced by the ComputeOp verifier).
+  // Default to full operand dim for broadcast dims not in the map. Operand
+  // shapes are static (enforced by the ComputeOp verifier).
   operandSizes = getAsIndexOpFoldResult(b.getContext(), operandTy.getShape());
   operandStrides.resize(rank, b.getIndexAttr(1));
 
-  // Override with iteration-domain offsets/sizes for mapped dims.
   for (unsigned resIdx = 0; resIdx < map.getNumResults(); ++resIdx) {
     mlir::AffineExpr expr = map.getResult(resIdx);
     if (auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr)) {
@@ -468,7 +451,6 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
   mlir::Location loc = getLoc();
   mlir::SmallVector<mlir::AffineMap> indexingMaps = getIndexingMapsArray();
 
-  // Create extract_slice for each input operand.
   mlir::SmallVector<mlir::Value> tiledInputs;
   mlir::SmallVector<mlir::Operation *> generatedSlices;
   for (auto [idx, input] : llvm::enumerate(getInputs())) {
@@ -483,7 +465,6 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
     generatedSlices.push_back(slice);
   }
 
-  // Create extract_slice for each output operand.
   size_t numInputs = getInputs().size();
   mlir::SmallVector<mlir::Value> tiledOutputs;
   for (auto [idx, output] : llvm::enumerate(getOutputs())) {
@@ -498,19 +479,13 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
     generatedSlices.push_back(slice);
   }
 
-  // Build the tiled compute op with subblock operands.
   auto tiledOp = ComputeOp::create(
       b, loc, mlir::TypeRange(tiledOutputs), tiledInputs, tiledOutputs,
       getIndexingMapsAttr(), getIteratorTypesAttr());
 
-  // Clone the body, remapping captured view references to tiled outputs.
-  // The body's tile_store ops capture the cb_reserve view from outside the
-  // compute. When tiling, these must reference the sliced output instead so
-  // that downstream lowering can compute the correct global DFB offset from
-  // the extract_slice. This applies uniformly to all computes (elementwise,
-  // matmul, reduce, etc.): iter_index produces local (subblock) coordinates,
-  // and addSliceOffset adds the global offset during TTL-to-TTKernel
-  // conversion.
+  // Body tile_store ops capture the cb_reserve view from outside the compute;
+  // when tiling, they must reference the sliced output so downstream lowering
+  // can compute the correct global DFB offset from the extract_slice.
   mlir::IRMapping mapping;
   for (size_t i = 0; i < getOutputs().size(); ++i) {
     mlir::Value origOutput = getOutputs()[i];
@@ -563,7 +538,6 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::getResultTilePosition(
 mlir::ParseResult
 mlir::tt::ttl::ComputeOp::parse(mlir::OpAsmParser &parser,
                                 mlir::OperationState &result) {
-  // Parse: ins(operands : types) outs(operands : types) attrs region -> results
   mlir::SmallVector<mlir::OpAsmParser::UnresolvedOperand> inputOperands;
   mlir::SmallVector<mlir::Type> inputTypes;
   mlir::SmallVector<mlir::OpAsmParser::UnresolvedOperand> outputOperands;
@@ -572,8 +546,6 @@ mlir::tt::ttl::ComputeOp::parse(mlir::OpAsmParser &parser,
   if (parser.parseKeyword("ins") || parser.parseLParen()) {
     return mlir::failure();
   }
-  // If we did not see a ')', parse the operand list and types, then consume
-  // the closing ')'.
   if (failed(parser.parseOptionalRParen())) {
     if (parser.parseOperandList(inputOperands) || parser.parseColon() ||
         parser.parseTypeList(inputTypes) || parser.parseRParen()) {
@@ -631,9 +603,6 @@ mlir::tt::ttl::ComputeOp::parse(mlir::OpAsmParser &parser,
   return mlir::success();
 }
 
-// Verify CB ops with tensor results (cb_reserve, cb_wait).
-// Checks that result tensor shape and element type match the CB
-// configuration.
 mlir::LogicalResult verifyCBOpWithResult(mlir::Operation *op,
                                          mlir::tt::ttl::CircularBufferType cbTy,
                                          mlir::RankedTensorType resultTy) {
@@ -666,7 +635,6 @@ mlir::LogicalResult verifyCBOpWithResult(mlir::Operation *op,
 }
 
 mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
-  // Verify body has exactly one block.
   if (getBody().getBlocks().size() != 1) {
     return emitOpError("body must have exactly one block");
   }
@@ -676,21 +644,18 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   size_t numOutputs = getOutputs().size();
   size_t numOperands = numInputs + numOutputs;
 
-  // Verify block argument count matches inputs + outputs.
   if (bodyBlock.getNumArguments() != numOperands) {
     return emitOpError("body block must have ")
            << numOperands << " arguments (matching inputs + outputs), but got "
            << bodyBlock.getNumArguments();
   }
 
-  // Verify result count matches output count (DPS semantics).
   if (getResults().size() != numOutputs) {
     return emitOpError("expected ")
            << numOutputs << " results (one per output) but got "
            << getResults().size();
   }
 
-  // Verify block argument types match operand element types.
   for (size_t i = 0; i < numOperands; ++i) {
     Value operand =
         (i < numInputs) ? getInputs()[i] : getOutputs()[i - numInputs];
@@ -712,15 +677,12 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     return emitOpError("requires indexing_maps attribute");
   }
 
-  // Verify the number of indexing maps matches inputs + outputs.
   size_t expectedMaps = numInputs + numOutputs;
   if (mapsAttr.size() != expectedMaps) {
     return emitOpError("expected ")
            << expectedMaps << " indexing maps but got " << mapsAttr.size();
   }
 
-  // Verify iterator_types and track reduction dims for map validation.
-  // Reduction dims may appear in input maps but must not appear in output maps.
   SmallVector<bool> isReductionDim(getIteratorTypes().size(), false);
   for (auto [idx, attr] : llvm::enumerate(getIteratorTypes())) {
     auto strAttr = mlir::dyn_cast<mlir::StringAttr>(attr);
@@ -734,7 +696,6 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     }
   }
 
-  // Verify terminator is YieldOp.
   if (!bodyBlock.mightHaveTerminator()) {
     return emitOpError("body block must have a terminator");
   }
@@ -742,7 +703,6 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     return emitOpError("body block must be terminated with ttl.yield");
   }
 
-  // Verify at least one output (required for SFPU packer configuration).
   // Zero inputs are allowed for ops like fill that produce output without
   // input.
   if (getOutputs().empty()) {
@@ -750,7 +710,6 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
         "requires at least one output for SFPU packer configuration");
   }
 
-  // Verify indexing maps compatibility.
   auto iteratorCount = getIteratorTypes().size();
   auto maps = mapsAttr;
 
@@ -817,7 +776,6 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     return success();
   };
 
-  // Ensure every tensor operand has an attached CB (via ttl.attach_cb).
   auto requireAttachedCB = [&](Value tensor, size_t idx,
                                StringRef kind) -> mlir::LogicalResult {
     Value cb = getAttachedCB(tensor);
@@ -829,7 +787,6 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     return success();
   };
 
-  // Inputs.
   SmallVector<bool> dimsReferencedByInputs(iteratorCount, false);
   for (size_t i = 0; i < numInputs; ++i) {
     auto tensorTy = mlir::cast<RankedTensorType>(getInputs()[i].getType());
@@ -849,7 +806,6 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     }
   }
 
-  // Outputs.
   size_t outputStart = numInputs;
   for (size_t i = 0; i < numOutputs; ++i) {
     auto tensorTy = mlir::cast<RankedTensorType>(getOutputs()[i].getType());
@@ -884,8 +840,6 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     }
   }
 
-  // Every reduction dim must be referenced by at least one input map,
-  // otherwise the reduction iterator has no operand to traverse.
   for (size_t d = 0; d < iteratorCount; ++d) {
     if (isReductionDim[d] && !dimsReferencedByInputs[d]) {
       return emitOpError()
@@ -894,11 +848,8 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     }
   }
 
-  // The body must contain at least one tile_store. tile_store is the hardware
-  // write (becomes pack_tile) and is the only mechanism for the compute to
-  // produce observable output via pack to the output circular buffer.
-  //
-  // Each tile_store's target CB must match a formal output CB.
+  // tile_store is the only op that writes to the output CB (lowers to
+  // pack_tile); each store's target CB must match a formal output CB.
   DenseSet<Value> outputCBs;
   for (Value output : getOutputs()) {
     if (Value cb = getAttachedCB(output)) {
@@ -943,8 +894,6 @@ mlir::LogicalResult mlir::tt::ttl::CBReserveOp::verify() {
   auto cbTy = mlir::cast<CircularBufferType>(getCb().getType());
   auto resultTy = mlir::cast<RankedTensorType>(getResult().getType());
 
-  // When `num_tiles` is present, the result shape is a subblock of the CB.
-  // Verify element type match and that tile count is consistent.
   if (getNumTiles()) {
     auto cbElemTy = cbTy.getElementType();
     if (cbElemTy != resultTy.getElementType()) {
