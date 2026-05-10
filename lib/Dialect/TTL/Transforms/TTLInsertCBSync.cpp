@@ -6,14 +6,13 @@
 // TTL Insert CB Sync
 //===----------------------------------------------------------------------===//
 //
-// Inserts missing cb_push / cb_pop for unmatched cb_reserve / cb_wait ops.
-// Owned-use discovery is asymmetric: tensor SSA uses are unbounded, direct
-// CB uses are bounded by the next same-class acquire. See
-// `docs/development/DFBManagement.md` for the ownership model.
-//
-// Legality invariants:
-//   P1. cb_push follows reserve-side writes before write pointer reuse.
-//   P2. cb_pop follows wait-side reads before read pointer reuse.
+// Auto-inserts a cb_push / cb_pop after each cb_reserve / cb_wait whose
+// matching release is absent in the input IR, placing each release after
+// the last use of the acquired slot so the slot is not recycled before
+// the consumer is done with it. The classification of "last use" is
+// asymmetric between direct-CB uses and tensor-SSA uses; see
+// `docs/development/DFBManagement.md` for the rules and correctness
+// argument.
 //
 //===----------------------------------------------------------------------===//
 
@@ -47,7 +46,6 @@ struct AcquireInterval {
   Operation *syncClassBoundary;
 };
 
-/// Return true if `a` is before `b` in their common block.
 static bool isBefore(Operation *a, Operation *b) {
   return a->isBeforeInBlock(b);
 }
@@ -198,9 +196,8 @@ static void updateBoundary(Value cb, Operation *acquire,
   }
 }
 
-/// Return the closest later acquire in the same DFB sync class, projected into
-/// `acquire`'s block. Producer intervals use `cb_reserve` boundaries; consumer
-/// intervals use `cb_wait` boundaries.
+/// Return the closest later acquire on `cb` in the same DFB sync class,
+/// projected into `acquire`'s block.
 static Operation *findNextSyncClassAcquire(Value cb, Operation *acquire,
                                            ArrayRef<Operation *> acquires) {
   Operation *boundary = nullptr;
@@ -208,9 +205,10 @@ static Operation *findNextSyncClassAcquire(Value cb, Operation *acquire,
   return boundary;
 }
 
-/// Return the last op in `acquire`'s block that consumes the acquired slot.
-/// Direct CB uses are bounded by the next same-class acquire; tensor SSA
-/// uses are not. See `docs/development/DFBManagement.md` for the model.
+/// Return the last op in `acquire`'s block that consumes the acquired
+/// slot. See `docs/development/DFBManagement.md` for the asymmetric
+/// classification of direct-DFB vs. tensor-SSA uses that this walk
+/// implements.
 static Operation *findLastOwnedUse(AcquireInterval interval) {
   Operation *last = interval.acquire;
   DenseSet<Operation *> visited;
@@ -244,10 +242,12 @@ static Operation *findLastOwnedUse(AcquireInterval interval) {
     }
   };
 
-  // Direct DFB uses: start from the CB value's users and recurse through
-  // their SSA results (e.g. ttl.copy returns a transfer_handle whose ttl.wait
-  // marks the actual end of the transfer). Boundary applies because two
-  // direct DFB uses on the same CB belong to different intervals.
+  // Direct-DFB uses. The walk recurses through each user's SSA results
+  // because the *true* end of the use can be a downstream op (e.g.
+  // ttl.copy returns a transfer_handle whose ttl.wait marks the actual
+  // end of the transfer). The next-acquire boundary applies: two
+  // direct-DFB uses straddling that boundary belong to different
+  // intervals.
   for (OpOperand &use : interval.cb.getUses()) {
     Operation *user = use.getOwner();
     if (user == interval.acquire) {
@@ -263,11 +263,11 @@ static Operation *findLastOwnedUse(AcquireInterval interval) {
   }
   drainWorklist(/*ignoreBoundary=*/false);
 
-  // Tensor SSA uses: start from the acquire's result and recurse through
-  // attach_cb / store / compute users. The next-acquire boundary does NOT
-  // apply: a tile produced by `cb_wait t1` may legitimately be consumed
-  // after `cb_wait t2`. Bounding this walk caused the issue #536 follow-up
-  // bug.
+  // Tensor-SSA uses. The next-acquire boundary does NOT apply: a tile
+  // produced by `cb_wait t1` may legitimately be consumed after
+  // `cb_wait t2`, since the consumer reads through the SSA value, not
+  // the slot's identity. Applying the boundary here was the root cause
+  // of the issue #536 follow-up miscompile.
   if (interval.acquire->getNumResults() > 0) {
     worklist.push_back(interval.acquire->getResult(0));
   }

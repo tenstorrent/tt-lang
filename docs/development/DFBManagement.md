@@ -364,8 +364,8 @@ ttl-coalesce-dfb-acquires))'`) verifies this.
 
 ### Limitations
 
-- Non-rank-2 acquire shapes are not coalesced. The existing `num_tiles`
-  shape convention (matching `TTLSubblockComputeForDST`) produces
+- Non-rank-2 acquire result types are not coalesced. The existing
+  `num_tiles` convention (matching `TTLSubblockComputeForDST`) produces
   `tensor<1, num_tiles, elem>`; the pass conservatively bails on other
   ranks rather than picking an axis to scale.
 - Acquires already carrying `num_tiles` (set by

@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 //
 // Rewrites N consecutive same-DFB acquires + N matching releases into the
-// canonical tt-metal cumulative-wait shape:
+// canonical tt-metal cumulative-wait pattern:
 //
 //     cb_wait_front(cb, N*k);
 //     copy_tile(cb, /*src_idx=*/0,    dst);
@@ -27,7 +27,7 @@
 // per-tile `src_idx` / `dst_idx` at lowering, so no lowering changes are
 // needed. Symmetric for `cb_reserve` / `cb_push`.
 //
-// See issue #556 and `docs/development/DFBManagement.md`.
+// See `docs/development/DFBManagement.md`.
 //===----------------------------------------------------------------------===//
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
@@ -87,10 +87,6 @@ static bool mayReleaseDFB(Operation *op, Value cb,
   return false;
 }
 
-// Build the coalesced acquire's result type. For the common rank-2 case
-// `tensor<1 x k x elem>` (matching the `num_tiles` shape convention from
-// `cb_ops_invalid.mlir` and `TTLSubblockComputeForDST`), produce
-// `tensor<1 x (N*k) x elem>`. Higher-rank shapes are not coalesced.
 static RankedTensorType buildCoalescedType(RankedTensorType unitTy,
                                            int64_t totalTiles) {
   auto shape = unitTy.getShape();
@@ -99,8 +95,9 @@ static RankedTensorType buildCoalescedType(RankedTensorType unitTy,
   return RankedTensorType::get({1, totalTiles}, unitTy.getElementType());
 }
 
-// `tensor.extract_slice` for the i-th member of an N-block group:
-// offsets = [0, i*k], sizes = [1, k], strides = [1, 1].
+// Slice into the coalesced result that recovers the i-th member's
+// original `<1, k>` view, used as the replacement value for the i-th
+// erased acquire.
 static tensor::ExtractSliceOp
 createPerBlockSlice(OpBuilder &builder, Location loc, Value coalescedResult,
                     RankedTensorType unitTy, int64_t blockIdx, int64_t k) {
@@ -114,12 +111,9 @@ createPerBlockSlice(OpBuilder &builder, Location loc, Value coalescedResult,
                                         offsets, sizes, strides);
 }
 
-// Detect a group of same-CB acquires of kind `AcquireOp` starting at
-// `start`. The group is maximal: walks forward in the block, adding each
-// same-kind same-cb acquire (with no pre-existing `num_tiles`) and skipping
-// any op that doesn't touch `cb` or the group's results (per
-// `mayReleaseDFB`). An acquire that already carries `num_tiles` (already
-// coalesced or set by `TTLSubblockComputeForDST`) terminates the group.
+// Maximal run of coalescable same-DFB acquires anchored at `start`,
+// in op order within the enclosing block. Already-coalesced acquires
+// (those with a `num_tiles` attribute) are not group members.
 template <typename AcquireOp>
 static SmallVector<AcquireOp> detectGroup(AcquireOp start) {
   SmallVector<AcquireOp> group;
@@ -146,11 +140,9 @@ static SmallVector<AcquireOp> detectGroup(AcquireOp start) {
   return group;
 }
 
-// Collect the first `count` matching releases of kind `ReleaseOp` on `cb`
-// starting at `start`, walking forward in the same block. Returns empty if
-// fewer than `count` are found before block end, or if a same-CB release
-// already carries `num_tiles` (a partial earlier coalesce we shouldn't
-// extend).
+// The `count` releases on `cb` that the coalesced release will replace,
+// in op order. Empty result means the coalesce cannot proceed: either too
+// few releases are present, or one of them is already coalesced.
 template <typename ReleaseOp>
 static SmallVector<ReleaseOp> collectReleases(Operation *start, Value cb,
                                               size_t count) {
@@ -177,9 +169,6 @@ static bool tryCoalesceGroup(SmallVectorImpl<AcquireOp> &group,
   AcquireOp leader = group.front();
   Value cb = leader.getCb();
   auto unitTy = cast<RankedTensorType>(leader.getResult().getType());
-  // Conservative: only coalesce the rank-2 leading-1 shape that the
-  // existing `num_tiles` convention covers. Other shapes flow through
-  // unchanged.
   if (unitTy.getRank() != 2 || unitTy.getShape()[0] != 1) {
     return false;
   }
@@ -217,10 +206,11 @@ static bool tryCoalesceGroup(SmallVectorImpl<AcquireOp> &group,
   return true;
 }
 
-// Apply coalescing to acquires of kind `AcquireOp` in `block`. Pre-collects
-// the candidate set so that other-CB acquires which `detectGroup` skips
-// past still get a chance to lead their own group on a later iteration --
-// we don't rely on traversing erased ops via `getNextNode()`.
+// The candidate set is pre-collected for two reasons: an acquire on a
+// different DFB that `detectGroup` walked past as a non-member must still
+// be considered as the starting point of a separate group later; and the
+// outer iteration must not depend on `getNextNode()` after the rewrite
+// erases ops in place.
 template <typename AcquireOp, typename ReleaseOp>
 static void coalesceInBlock(Block &block, OpBuilder &builder) {
   SmallVector<AcquireOp> candidates;

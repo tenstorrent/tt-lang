@@ -306,7 +306,7 @@ def test_nested_for_independent_acquires_per_loop(device):
 # ---------------------------------------------------------------------------
 # Mixed immediate + deferred consumer uses. Some cb.wait results are consumed
 # before the next wait; others are consumed after multiple subsequent waits.
-# Boundary handling must be correct for both shapes simultaneously.
+# Boundary handling must be correct for both patterns simultaneously.
 # ---------------------------------------------------------------------------
 
 

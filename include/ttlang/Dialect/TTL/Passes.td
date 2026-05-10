@@ -37,7 +37,7 @@ def TTLCoalesceDFBAcquires
     ```
 
     into the canonical tt-metal "cumulative wait + indexed reads +
-    coalesced pop" shape
+    coalesced pop" pattern
 
     ```
     cb_wait_front(cb, 3*k);
@@ -93,6 +93,11 @@ def TTLCoalesceDFBAcquires
     `arith.constant` ops. Acquires already carrying a `num_tiles`
     attribute (e.g. set by `ttl-subblock-compute-for-dst`) are not
     coalesced and terminate the group. The pass is idempotent.
+
+    Result-type constraint: only acquires whose result tensor has shape
+    `<1, k>` are coalesced; the coalesced result is `<1, N*k>`. Other
+    ranks would require a convention for which axis to extend by `N`,
+    which is not specified, and are skipped.
   }];
 
   let dependentDialects = [
