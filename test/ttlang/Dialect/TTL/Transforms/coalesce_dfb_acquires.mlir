@@ -268,3 +268,71 @@ func.func @matmul_style_two_cb_interleaved()
   ttl.cb_pop %cb_b : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
   func.return
 }
+
+// -----
+
+// Test 9: a region-bearing op (scf.if) between two same-DFB acquires
+// terminates the candidate group, even when the region's body is empty.
+// `mayReleaseDFB` treats any op with regions as opaque because the body
+// might contain a release on the DFB.
+
+// CHECK-LABEL: func.func @region_op_between_acquires_not_coalesced
+// CHECK-NOT: num_tiles
+// CHECK-NOT: tensor.extract_slice
+func.func @region_op_between_acquires_not_coalesced(%cond: i1)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb_in = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_out = ttl.bind_cb{cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %w0 = ttl.cb_wait %cb_in : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %a0 = ttl.attach_cb %w0, %cb_in : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  scf.if %cond {
+  }
+  %w1 = ttl.cb_wait %cb_in : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %a1 = ttl.attach_cb %w1, %cb_in : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %r0 = ttl.cb_reserve %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %a0, %r0 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %cb_in : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_push %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %r1 = ttl.cb_reserve %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %a1, %r1 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %cb_in : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_push %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}
+
+// -----
+
+// Test 10: stray `attach_cb` on an unrelated tensor between two same-DFB
+// acquires does NOT terminate the group. `attach_cb` is an SSA identity
+// erased at lowering and cannot release the DFB; `mayReleaseDFB`
+// allow-lists it explicitly.
+
+// CHECK-LABEL: func.func @attach_cb_unrelated_tensor_between_waits
+// CHECK: %[[CBIN:.+]] = ttl.bind_cb{cb_index = 0
+// CHECK: ttl.cb_wait %[[CBIN]] {num_tiles = 2 : i64}
+// CHECK-SAME: tensor<1x2x!ttcore.tile<32x32, bf16>>
+// CHECK-COUNT-2: tensor.extract_slice
+// CHECK: ttl.cb_pop %[[CBIN]] {num_tiles = 2 : i64}
+// CHECK-NOT: ttl.cb_wait
+// CHECK-NOT: ttl.cb_pop
+// CHECK: return
+func.func @attach_cb_unrelated_tensor_between_waits(
+    %unrelated: tensor<1x1x!ttcore.tile<32x32, bf16>>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb_in = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_out = ttl.bind_cb{cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %w0 = ttl.cb_wait %cb_in : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %a0 = ttl.attach_cb %w0, %cb_in : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %stray = ttl.attach_cb %unrelated, %cb_in : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %w1 = ttl.cb_wait %cb_in : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %a1 = ttl.attach_cb %w1, %cb_in : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %r0 = ttl.cb_reserve %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %a0, %r0 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %cb_in : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_push %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %r1 = ttl.cb_reserve %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %a1, %r1 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %cb_in : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_push %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}

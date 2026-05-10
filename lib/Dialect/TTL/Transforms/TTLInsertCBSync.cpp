@@ -9,10 +9,10 @@
 // Auto-inserts a cb_push / cb_pop after each cb_reserve / cb_wait whose
 // matching release is absent in the input IR, placing each release after
 // the last use of the acquired slot so the slot is not recycled before
-// the consumer is done with it. The classification of "last use" is
-// asymmetric between direct-CB uses and tensor-SSA uses; see
-// `docs/development/DFBManagement.md` for the rules and correctness
-// argument.
+// the consumer is done with it. "Last use" classification handles two
+// different valid IR situations -- direct-CB uses and tensor-SSA uses --
+// under different rules; see `docs/development/DFBManagement.md` for the
+// rules and correctness argument.
 //
 //===----------------------------------------------------------------------===//
 
@@ -268,9 +268,9 @@ static Operation *findLastOwnedUse(AcquireInterval interval) {
   // `cb_wait t2`, since the consumer reads through the SSA value, not
   // the slot's identity. Applying the boundary here was the root cause
   // of the issue #536 follow-up miscompile.
-  if (interval.acquire->getNumResults() > 0) {
-    worklist.push_back(interval.acquire->getResult(0));
-  }
+  assert(interval.acquire->getNumResults() == 1 &&
+         "DFB acquire ops produce exactly one tensor result");
+  worklist.push_back(interval.acquire->getResult(0));
   drainWorklist(/*ignoreBoundary=*/true);
 
   return last;

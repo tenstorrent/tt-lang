@@ -79,6 +79,8 @@ static bool mayReleaseDFB(Operation *op, Value cb,
       return true;
     }
     for (Operation *member : group) {
+      assert(member->getNumResults() == 1 &&
+             "DFB acquire ops produce exactly one tensor result");
       if (operand == member->getResult(0)) {
         return true;
       }
