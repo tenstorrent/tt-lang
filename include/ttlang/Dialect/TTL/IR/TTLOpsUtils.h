@@ -54,17 +54,6 @@ inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view) {
   return view.getDefiningOp<mlir::tt::ttl::CBReserveOp>();
 }
 
-/// Trace through any number of `ttl.attach_cb` ops and return the
-/// underlying tensor SSA value. `attach_cb` is an identity op that records
-/// a tensor->CB association; callers that want to inspect the upstream
-/// producer (e.g. a `tensor.extract_slice`) should call this first.
-inline mlir::Value traceAttachCBs(mlir::Value value) {
-  while (auto attach = value.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
-    value = attach.getTensor();
-  }
-  return value;
-}
-
 /// Return the element type for a ttcore::TileType.
 inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
   if (auto tileType = mlir::dyn_cast<ttcore::TileType>(type)) {

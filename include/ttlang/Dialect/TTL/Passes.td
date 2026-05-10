@@ -47,9 +47,9 @@ def TTLCoalesceDFBAcquires
     cb_pop_front(cb, 3*k);
     ```
 
-    used in tt-metal compute kernels (`tt-metal/tt_metal/kernels/compute/
-    eltwise_binary.cpp`, `bcast_h.cpp`, the matmul kernels, etc.) when a
-    consumer holds a fixed multi-tile window before processing it.
+    used in tt-metal compute kernels (`eltwise_binary.cpp`, `bcast_h.cpp`,
+    matmul kernels, etc.) when a consumer holds a fixed multi-tile window
+    before processing it.
 
     Pre-coalesce, each `ttl.cb_wait` lowers to its own `cb_wait_front(k)`
     and each `ttl.cb_pop` to `cb_pop_front(k)`. Because metal's
