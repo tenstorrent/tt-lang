@@ -184,7 +184,7 @@ def test_print_tensor(capsys):
         captured = capsys.readouterr()
         # Verify tensor structure
         assert "Input tensor a:" in captured.out
-        assert "<Tensor shape=(32, 32) dtype=torch.bfloat16>" in captured.out
+        assert "<Tensor shape=(32, 32) dtype=torch.float32>" in captured.out
         assert "Printing first 1 page(s):" in captured.out
         # Verify the known value (3.0) appears multiple times
         assert captured.out.count("3.") >= 10

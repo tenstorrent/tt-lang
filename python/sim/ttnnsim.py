@@ -813,32 +813,41 @@ class TensorSpec:
         )
 
 
-# Dtype aliases
-bfloat16: torch.dtype = torch.bfloat16
+# Original values saved so set_disable_float32_promotion can restore them.
+# Captured before any rebinding so they always hold the true native dtype.
+_original_bfloat16: torch.dtype = torch.bfloat16
+_original_float16: torch.dtype = torch.float16
+
+# Dtype aliases.  By default all floating-point dtypes narrower than float32
+# are promoted to float32 so the simulator runs at full precision on every
+# host architecture (e.g. Apple Silicon lacks native bfloat16/float16 support).
+# Call set_disable_float32_promotion(True) to restore native dtypes.
+torch.bfloat16 = torch.float32  # type: ignore[assignment]
+torch.float16 = torch.float32  # type: ignore[assignment]
+bfloat16: torch.dtype = torch.float32
+float16: torch.dtype = torch.float32
 float32: torch.dtype = torch.float32
 
-# Original value saved so set_matmul_promote_bf16 can restore it.
-_original_bfloat16: torch.dtype = torch.bfloat16
 
+def set_disable_float32_promotion(value: bool) -> None:
+    """Disable or re-enable the default float32 promotion of floating-point dtypes.
 
-def set_matmul_promote_bf16(value: bool) -> None:
-    """Redirect bfloat16 to float32 for the entire process when the flag is active.
-
-    When enabled, both ``torch.bfloat16`` and the module-level ``bfloat16``
-    alias are rebound to ``torch.float32``.  Any subsequent use of
-    ``dtype=torch.bfloat16`` or ``dtype=ttnn.bfloat16`` in the user script
-    therefore creates float32 tensors natively, with no dispatch overhead or
-    casting.  Note: this doubles tensor memory usage; avoid for very large
-    examples on memory-constrained machines.  When disabled the originals are
-    restored.
+    By default the simulator promotes all floating-point dtypes narrower than
+    float32 (bfloat16, float16, bfloat8_b) to float32 for accurate computation
+    on all host architectures.  Passing True restores native dtypes; passing
+    False re-enables the default float32 promotion.
     """
-    global bfloat16
+    global bfloat16, float16
     if value:
-        torch.bfloat16 = torch.float32
-        bfloat16 = torch.float32
-    else:
         torch.bfloat16 = _original_bfloat16
+        torch.float16 = _original_float16
         bfloat16 = _original_bfloat16
+        float16 = _original_float16
+    else:
+        torch.bfloat16 = torch.float32
+        torch.float16 = torch.float32
+        bfloat16 = torch.float32
+        float16 = torch.float32
 
 
 class _BFloat8BDtype:
@@ -1564,7 +1573,7 @@ def rand(
     match dtype:
         case _BFloat8BDtype():
             return Tensor(
-                torch.rand(shape, dtype=torch.float32).to(torch.bfloat16),
+                torch.rand(shape, dtype=torch.float32).to(bfloat16),
                 layout,
                 dtype=bfloat8_b,
             )
@@ -1584,9 +1593,7 @@ def empty(
     """Create an uninitialized tensor with given shape, dtype, and layout."""
     match dtype:
         case _BFloat8BDtype():
-            return Tensor(
-                torch.empty(shape, dtype=torch.bfloat16), layout, dtype=bfloat8_b
-            )
+            return Tensor(torch.empty(shape, dtype=bfloat16), layout, dtype=bfloat8_b)
         case _:
             return Tensor(torch.empty(shape, dtype=dtype), layout)
 
@@ -1665,7 +1672,7 @@ def from_torch(
     match eff_dtype:
         case _BFloat8BDtype():
             result = Tensor(
-                tensor.to(torch.bfloat16), layout, memory_config=eff_mc, dtype=bfloat8_b
+                tensor.to(bfloat16), layout, memory_config=eff_mc, dtype=bfloat8_b
             )
         case _ if eff_dtype is not None and tensor.dtype != eff_dtype:
             result = Tensor(tensor.to(eff_dtype), layout, memory_config=eff_mc)

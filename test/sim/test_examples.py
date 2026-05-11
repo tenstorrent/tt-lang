@@ -58,12 +58,22 @@ _L1_OVERRIDES: dict[str, int] = {
     "eltwise_add_3d.py": 1_572_864,  # 3 x shape=(2,2,1) x bfloat16 CBs
 }
 
+# Scripts whose correctness checks are calibrated for their declared dtypes
+# (e.g. bfloat16 ULP tolerances).  Run with float32 promotion disabled so
+# they execute with the dtypes written in the source file.
+_NO_PROMOTION_SCRIPTS: frozenset[str] = frozenset(
+    [
+        "matmul_1d.py",
+        "matmul_1d_mcast.py",
+    ]
+)
+
 
 def run_script_in_process(
     script_path: Path,
     scheduler: str = "fair",
     max_l1_bytes: int | None = None,
-    promote_bf16: bool = False,
+    no_float32_promotion: bool = False,
 ) -> tuple[int, str]:
     """Run a script in-process with simulator backend.
 
@@ -72,19 +82,17 @@ def run_script_in_process(
         scheduler: Scheduler algorithm ('greedy' or 'fair')
         max_l1_bytes: Optional L1 memory limit override in bytes; uses the
             simulator default when None
-        promote_bf16: If True, redirect bfloat16 to float32 for faster
-            computation on hardware without native bfloat16 support
+        no_float32_promotion: If True, disable the default float32 promotion so
+            the script runs with its declared dtypes (e.g. bfloat16 as bfloat16)
 
     Returns:
         (exit_code, output) tuple where exit_code is 0 on success, 1 on error
     """
-    from python.sim.ttnnsim import set_matmul_promote_bf16
-
     set_scheduler_algorithm(scheduler)
     if max_l1_bytes is not None:
         set_max_l1_bytes(max_l1_bytes)
-    if promote_bf16:
-        set_matmul_promote_bf16(True)
+    if no_float32_promotion:
+        sim.ttnn.set_disable_float32_promotion(True)
 
     # Shadow sys.modules locally (same as ttlang_sim.setup_simulator_imports())
     # Done here so it doesn't interfere with other tests in parallel execution
@@ -102,8 +110,8 @@ def run_script_in_process(
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = original
-        if promote_bf16:
-            set_matmul_promote_bf16(False)
+        if no_float32_promotion:
+            sim.ttnn.set_disable_float32_promotion(False)
 
 
 @pytest.mark.parametrize(
@@ -181,6 +189,7 @@ def test_example_cli(script_name: str, scheduler: str) -> None:
         EXAMPLES_DIR / script_name,
         scheduler,
         max_l1_bytes=_L1_OVERRIDES.get(script_name),
+        no_float32_promotion=script_name in _NO_PROMOTION_SCRIPTS,
     )
     assert code == 0, f"Script failed with code {code}. Output:\n{out}"
 
@@ -195,7 +204,11 @@ def test_example_cli(script_name: str, scheduler: str) -> None:
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])
 def test_metal_example_cli(example_path: str, scheduler: str) -> None:
     """Test metal examples run successfully with both schedulers."""
-    code, out = run_script_in_process(EXAMPLES_METAL_DIR / example_path, scheduler)
+    code, out = run_script_in_process(
+        EXAMPLES_METAL_DIR / example_path,
+        scheduler,
+        no_float32_promotion=True,
+    )
     assert code == 0, f"Script failed with code {code}. Output:\n{out}"
 
 
@@ -450,7 +463,7 @@ def test_eltwise_1d_broadcast_warning(scheduler: str) -> None:
 def test_matmul_tutorial_sim(script_name: str) -> None:
     """Test matmul-tutorial steps 2-6 on the simulator (pass --run-matmul-tutorial-no-ttnn to enable)."""
     code, out = run_script_in_process(
-        MATMUL_TUTORIAL_DIR / script_name, scheduler="fair", promote_bf16=True
+        MATMUL_TUTORIAL_DIR / script_name, scheduler="fair"
     )
     assert code == 0, f"Script failed with code {code}. Output:\n{out}"
 
@@ -470,6 +483,6 @@ def test_matmul_tutorial_sim(script_name: str) -> None:
 def test_matmul_tutorial_hw(script_name: str) -> None:
     """Test matmul-tutorial steps 0 and 7 on hardware (pass --run-matmul-tutorial-ttnn to enable)."""
     code, out = run_script_in_process(
-        MATMUL_TUTORIAL_DIR / script_name, scheduler="fair", promote_bf16=True
+        MATMUL_TUTORIAL_DIR / script_name, scheduler="fair"
     )
     assert code == 0, f"Script failed with code {code}. Output:\n{out}"

@@ -56,41 +56,42 @@ def test_bfloat8_b_capacity_bytes_statistics():
     """capacity_bytes for bfloat8_b accounts for the BFP8B shared-exponent overhead.
 
     BFP8B encodes n elements as n mantissa bytes plus one exponent byte per
-    group of 16 elements: size_in_bytes(n) = n + n // 16.
+    group of 16 elements: size_in_bytes(n) = n + ceil(n / 16).
 
     For a buffer with BLOCK_COUNT blocks of one 32x32 tile each:
       total_elements = BLOCK_COUNT * 32 * 32 = 4096
-      bfloat16: 4096 * 2            = 8192 bytes
-      bfloat8_b: 4096 + 4096 // 16 = 4352 bytes  (4096 mantissa + 256 exponent)
+      float32:   4096 * 4                 = 16384 bytes
+      bfloat8_b: 4096 + ceil(4096 / 16)  = 4352 bytes  (4096 mantissa + 256 exponent)
     """
+    import math as _math
     from python.sim.dfb import DataflowBuffer
 
     BLOCK_COUNT = 4
     TILE_SHAPE = (1, 1)
     TOTAL_ELEMENTS = BLOCK_COUNT * 32 * 32  # 4096
 
-    bf16_tensor = ttnn.rand((32, 32), dtype=ttnn.bfloat16)
+    f32_tensor = ttnn.rand((32, 32), dtype=ttnn.float32)
     bf8_tensor = ttnn.rand((32, 32), dtype=ttnn.bfloat8_b)
 
-    assert bf16_tensor.element_size == 2
+    assert f32_tensor.element_size == 4
     assert bf8_tensor.element_size == 1  # mantissa only; exponent overhead is per-group
 
-    bf16_dfb = DataflowBuffer(
-        likeness_tensor=bf16_tensor, shape=TILE_SHAPE, block_count=BLOCK_COUNT
+    f32_dfb = DataflowBuffer(
+        likeness_tensor=f32_tensor, shape=TILE_SHAPE, block_count=BLOCK_COUNT
     )
     bf8_dfb = DataflowBuffer(
         likeness_tensor=bf8_tensor, shape=TILE_SHAPE, block_count=BLOCK_COUNT
     )
 
-    expected_bf16 = TOTAL_ELEMENTS * 2  # 8192
-    expected_bf8 = TOTAL_ELEMENTS + TOTAL_ELEMENTS // 16  # 4352
+    expected_f32 = TOTAL_ELEMENTS * 4  # 16384
+    expected_bf8 = TOTAL_ELEMENTS + _math.ceil(TOTAL_ELEMENTS / 16)  # 4352
 
-    assert bf16_dfb.capacity_bytes == expected_bf16
+    assert f32_dfb.capacity_bytes == expected_f32
     assert bf8_dfb.capacity_bytes == expected_bf8
 
     # Also verify size_in_bytes is accessible directly on the tensor
     assert bf8_tensor.size_in_bytes(TOTAL_ELEMENTS) == expected_bf8
-    assert bf16_tensor.size_in_bytes(TOTAL_ELEMENTS) == expected_bf16
+    assert f32_tensor.size_in_bytes(TOTAL_ELEMENTS) == expected_f32
 
     # Partial groups: 15 elements still require 1 exponent byte (ceiling division).
     # Floor division would wrongly return 15 + 0 = 15.

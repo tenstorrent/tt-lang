@@ -208,7 +208,10 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
             if total_l1_bytes > max_l1:
                 warnings.warn(
                     f"Total DataflowBuffer capacity per core ({total_l1_bytes} bytes) "
-                    f"exceeds the L1 memory limit of {max_l1} bytes.",
+                    f"exceeds the L1 memory limit of {max_l1} bytes. "
+                    f"If the simulator is promoting narrow dtypes (bfloat16, float16) "
+                    f"to float32, each tensor uses 2x more memory than on hardware. "
+                    f"Run with --no-float32-promotion to check the on-hardware footprint.",
                     stacklevel=2,
                 )
 

@@ -516,15 +516,16 @@ if __name__ == "__main__":
 class TestMaxL1CommandLineOption:
     """Test --max-l1 command-line option in ttlang-sim.
 
-    Each CB uses shape=(1,1), block_count=2, bfloat16:
-      capacity_bytes = 2 (slots) * 32*32 (elements/slot) * 2 (bytes/element) = 4096
-    Three CBs total: 3 * 4096 = 12288 bytes.
+    Each CB uses shape=(1,1), block_count=2.  ttnn.bfloat16 is promoted to
+    float32 by default (4 bytes/element):
+      capacity_bytes = 2 (slots) * 32*32 (elements/slot) * 4 (bytes/element) = 8192
+    Three CBs total: 3 * 8192 = 24576 bytes.
 
     Exceeding the limit issues a warning but does not abort execution.
     """
 
     # Bytes used by the three CBs in create_test_script(3).
-    _TOTAL_BYTES = 12288
+    _TOTAL_BYTES = 24576
 
     @staticmethod
     def create_test_script() -> Path:
