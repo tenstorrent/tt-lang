@@ -77,4 +77,10 @@ setup_simulator_imports()
 
 import pytest  # noqa: E402
 
+# TODO: pytest-xdist (-n auto) does not work with this script because xdist
+# spawns worker processes as fresh Python interpreters that do not inherit the
+# sys.modules patches applied above (setup_simulator_imports() and the stubs).
+# Workers therefore import the real ttl/ttnn modules, fail, and collect 0 items.
+# Fix: replicate the patching logic in test/python/conftest.py so it runs in
+# every worker process via pytest_configure.
 sys.exit(pytest.main(sys.argv[1:]))
