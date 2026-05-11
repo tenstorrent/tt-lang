@@ -11,7 +11,7 @@ inner expression `a * b + c` is the target for kernel fusion: instead of
 dispatching three separate TT-NN operations that each read and write DRAM, a
 custom TT-Lang operation reads each input once, computes the result in L1, and writes
 output once. It is possible to vary the expression as well as the size of
-tensors and the data type, for example `float32`. We ecougarge the user to do this.
+tensors and the data type, for example `float32`. We encourage the user to do this.
 
 ## Step 0 — TT-NN Baseline
 

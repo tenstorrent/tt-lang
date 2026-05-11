@@ -210,9 +210,8 @@ recorded commits are not derived from one another.
 
 Edit the canonical version file and run the verifier in update mode. The
 verifier checks out `third-party/tt-metal` at the tag's commit; the ttnn
-version under `[project.optional-dependencies] device` in `pyproject.toml`
-is computed dynamically by `setup.py` from the same file, so no rewrite
-is needed:
+version that `setup.py` writes into the wheel's `install_requires` is
+computed dynamically from the same file, so no rewrite is needed:
 
 ```bash
 echo v0.69.0 > third-party/tt-metal-version
@@ -221,8 +220,8 @@ echo v0.69.0 > third-party/tt-metal-version
 
 Background: `third-party/tt-metal-version` is the single source of truth
 for the tt-metal version (one tt-metal release tag, e.g. `v0.69.0`). The
-submodule SHA, the `ttnn` version under `[project.optional-dependencies]
-device` in `pyproject.toml`, and the `--build-arg TT_METAL_TAG` passed to
+submodule SHA, the `ttnn` version that `setup.py` writes into the
+wheel's `install_requires`, and the `--build-arg TT_METAL_TAG` passed to
 `Dockerfile.base` are all derived from it. CI runs
 `.github/scripts/check-tt-metal-version.sh` on every PR to catch drift.
 
@@ -463,7 +462,7 @@ ird image tag):
 | `TTLANG_ACCEPT_LLVM_MISMATCH`    | `OFF`     | Allow LLVM SHA mismatch with pre-built installs                                      |
 | `TTLANG_ACCEPT_TTMETAL_MISMATCH` | `OFF`     | Allow tt-metal SHA mismatch with pre-built installs                                  |
 | `TTLANG_ENABLE_PERF_TRACE`       | `ON`      | Enable tt-metal performance tracing support                                          |
-| `TTLANG_SIM_ONLY`                | `OFF`     | Set up Python environment for[simulator](simulator.md) only; skip compiler build        |
+| `TTLANG_SIM_ONLY`                | `OFF`     | Set up Python environment for [simulator](simulator.md) only; skip compiler build       |
 | `TTLANG_ENABLE_DOCS`             | `OFF`     | Enable Sphinx documentation build (`ttlang-docs` target)                           |
 | `CODE_COVERAGE`                  | `OFF`     | Enable code coverage reporting                                                       |
 | `TTLANG_FORCE_TOOLCHAIN_REBUILD` | `OFF`     | Force rebuild of LLVM and tt-metal into `TTLANG_TOOLCHAIN_DIR`                     |

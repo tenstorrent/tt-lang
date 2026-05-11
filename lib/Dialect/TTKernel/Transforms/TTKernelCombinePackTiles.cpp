@@ -65,10 +65,8 @@ struct TTKernelCombinePackTilesPass
 
   void runOnOperation() override {
     getOperation().walk([](Block *block) {
-      // Skip blocks inside reduction loops: pack_tile_block is
-      // incompatible with L1 accumulation (pack_reconfig_l1_acc).
-      // L1 acc requires individual pack_tile calls so each K iteration
-      // can independently add to the existing L1 value.
+      // pack_tile_block is incompatible with pack_reconfig_l1_acc, which
+      // requires individual pack_tile calls.
       for (Operation *parent = block->getParentOp(); parent;
            parent = parent->getParentOp()) {
         if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
@@ -78,8 +76,8 @@ struct TTKernelCombinePackTilesPass
           }
         }
       }
-      // Collect all combinable runs first, then replace them. Replacing
-      // during iteration would invalidate the block's operation list.
+      // Replacing during iteration would invalidate the block list, so
+      // collect all combinable runs first.
       SmallVector<SmallVector<ttk::PackTileOp>> runs;
       SmallVector<ttk::PackTileOp> run;
 
@@ -112,10 +110,8 @@ struct TTKernelCombinePackTilesPass
           run.push_back(packOp);
         } else {
           finalizeRun();
-          // pack_tile_block always writes to the CB starting from index 0
-          // (per the op definition: the CB write pointer is reset by
-          // cb_reserve_back and advanced by ntiles per call). A run can
-          // only be combined when the first CB tile index is 0.
+          // pack_tile_block writes from CB tile 0; runs starting elsewhere
+          // cannot be combined.
           if (*getConstantIntValue(packOp.getOutIndex()) == 0) {
             run.push_back(packOp);
           }
