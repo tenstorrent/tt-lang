@@ -82,7 +82,7 @@ from .dtype_utils import (
 )
 from .kernel_runner import (
     KernelSpec,
-    get_remaining_l1_for_core,
+    get_min_remaining_l1_for_device,
     run_kernel_on_device,
     emit_runner_file,
 )
@@ -1200,7 +1200,7 @@ def _compile_kernel(
     if l1_budget_override == 0 and has_ttnn_tensors:
         try:
             device = _require_device(args)
-            l1_budget_override = get_remaining_l1_for_core(device)
+            l1_budget_override = get_min_remaining_l1_for_device(device)
         except ValueError:
             pass
 

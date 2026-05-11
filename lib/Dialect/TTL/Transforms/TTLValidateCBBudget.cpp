@@ -51,8 +51,8 @@ namespace {
 /// reserved in tt-metal dev_mem_map). Matches
 /// `ttl.constants.DEFAULT_L1_CB_BUDGET_BYTES` and
 /// `ChipDescAttr::getUsableL1Size()` for those chips when IR carries attrs.
-static constexpr uint32_t fallbackUsableL1Bytes =
-    static_cast<uint32_t>(1432 * 1024);
+static constexpr uint64_t kFallbackUsableL1Bytes =
+    static_cast<uint64_t>(1432 * 1024);
 
 static std::string formatShape(llvm::ArrayRef<int64_t> shape) {
   std::string s;
@@ -65,7 +65,7 @@ static std::string formatShape(llvm::ArrayRef<int64_t> shape) {
 
 /// If the module has a system descriptor and default device, return usable L1
 /// for chip 0; otherwise return std::nullopt (caller uses the WH/BH fallback).
-static std::optional<uint32_t> tryBudgetFromModule(ModuleOp moduleOp) {
+static std::optional<uint64_t> tryBudgetFromModule(ModuleOp moduleOp) {
   auto systemDesc = moduleOp->getAttrOfType<mlir::tt::ttcore::SystemDescAttr>(
       mlir::tt::ttcore::SystemDescAttr::name);
   if (!systemDesc) {
@@ -83,8 +83,9 @@ static std::optional<uint32_t> tryBudgetFromModule(ModuleOp moduleOp) {
     return std::nullopt;
   }
 
-  mlir::tt::ttcore::ChipDescAttr chip = systemDesc.getChipDesc(chipIds[0]);
-  return static_cast<uint32_t>(chip.getUsableL1Size());
+  return *llvm::min_element(llvm::map_range(chipIds, [&](unsigned chipId) {
+    return systemDesc.getChipDesc(chipId).getUsableL1Size();
+  }));
 }
 
 /// Bytes per CB slot: explicit ttcore.tile uses its shape/dtype; row-wise
@@ -116,7 +117,7 @@ struct TTLValidateCBBudgetPass
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
 
-    uint32_t budgetBytes = fallbackUsableL1Bytes;
+    uint64_t budgetBytes = kFallbackUsableL1Bytes;
     if (l1BudgetOverride > 0) {
       budgetBytes = l1BudgetOverride;
     } else if (auto fromDevice = tryBudgetFromModule(moduleOp)) {

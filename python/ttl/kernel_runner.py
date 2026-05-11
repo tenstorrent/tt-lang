@@ -43,7 +43,7 @@ from .dtype_utils import (
 )
 
 
-def get_remaining_l1_for_core(device, core_x=0, core_y=0):
+def get_min_remaining_l1_for_device(device):
     """
     Get the remaining L1 for a core.
     handles reduced worker_l1_size devices and tensor L1 allocations
@@ -54,20 +54,35 @@ def get_remaining_l1_for_core(device, core_x=0, core_y=0):
     this helper should return 1436032 bytes for core (0, 0)
     """
     _ensure_ttnn()
-    info = ttnn._ttnn.reports.get_device_info(device)
-    budget_bytes = info.cb_limit
+    if _ttnn is None:
+        raise RuntimeError("ttnn is not available")
+    # iterate over sub-meshes for individual devices as get_buffer_pages() does not let you do so directly
+    (rows, cols) = device.shape()
+    if rows == 0 or cols == 0:
+        raise RuntimeError("device shape not found")
+    device_min_remaining_bytes = -1
+    for r in range(rows):
+        for c in range(cols):
+            single_device = device.create_submesh(
+                ttnn.MeshShape(1, 1),
+                ttnn.MeshCoordinate(r, c),
+            )
+            info = ttnn._ttnn.reports.get_device_info(single_device)
+            budget_bytes = info.cb_limit
 
-    used_bytes = 0
-    for page in ttnn._ttnn.reports.get_buffer_pages(device):
-        if (
-            page.buffer_type == ttnn.BufferType.L1
-            and page.core_x == core_x
-            and page.core_y == core_y
-        ):
-            used_bytes += page.page_size
+            core_pages = [[]]
+            for page in ttnn._ttnn.reports.get_buffer_pages(submesh):
+                if page.buffer_type == ttnn.BufferType.L1:
+                    core_pages[page.core_y][page.core_x] += page.page_size
+            device_max_core_bytes = max(max(row) for row in core_pages)
 
-    remaining_bytes = max(0, budget_bytes - used_bytes)
-    return remaining_bytes
+            device_remaining_bytes = max(0, budget_bytes - device_max_core_bytes)
+            if (
+                device_min_remaining_bytes == -1
+                or device_remaining_bytes < device_min_remaining_bytes
+            ):
+                device_min_remaining_bytes = device_remaining_bytes
+    return device_min_remaining_bytes
 
 
 @dataclass
@@ -245,7 +260,7 @@ def build_cb_descriptors(
             device = tensor.device()
             if device is None:
                 continue
-            remaining_bytes = get_remaining_l1_for_core(device)
+            remaining_bytes = get_min_remaining_l1_for_device(device)
             break
 
     # Must stay aligned with MLIR ttl-validate-cb-budget (TileType::getSizeBytes) and
