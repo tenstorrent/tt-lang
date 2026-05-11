@@ -644,7 +644,7 @@ The launch extent is selected by the value passed to `grid=`:
 | Tuple | Used verbatim. |
 | `"auto"` (future) | Currently the same as `"full"`. In future may provide grid-sizing-related optimizations. |
 
-Whenever the launch extent is wider than the active set (which is always the case under `"full"` or any explicit tuple, and also currently under `"auto"`), the user must guard pipe-coupled regions with `net.is_src()` / `net.is_dst()` / `net.is_active()` (or equivalent coordinate predicates) so that nodes outside the corresponding role skip the pipe-coupled work. The implementation must verify these guards statically and reject programs in which a pipe-coupled operation is reachable from a node outside its declared role.
+Whenever the launch extent is wider than the active set (which is always the case under `"full"` or any explicit tuple, and also currently under `"auto"`), the user must guard pipe-coupled regions with `net.is_src()` / `net.is_dst()` / `net.is_active()` (or equivalent coordinate predicates) so that nodes outside the corresponding role skip the pipe-coupled work.
 
 | Type alias/Function | Description |
 | :---- | :---- |
@@ -660,9 +660,8 @@ Condition body function is invoked for each pipe in case of `if_src` if the curr
 
 A pipe net is constructed either in the scope of an operation function or in an enclosing scope and captured by the operation function. It can only be used with its `if_src` and `if_dst` functions inside of a data movement kernel function. The corresponding  `ttl.copy` where a pipe is a source or a destination can be called only inside of a condition body function. Calls into `if_src` and `if_dst` can be nested within condition functions for different pipe nets.
 
-The *active set* of an operation is the union, over every pipe in every pipe net in scope of the operation (constructed in its body or captured from an enclosing scope), of the pipe's source coordinate and its destination coordinate or range. The *role domain* of a pipe net is its per-net active set; `pipe_net.is_src()`, `pipe_net.is_dst()`, and `pipe_net.is_active()` are predicates that evaluate to `True` on the source role, destination role, and their union, respectively. Implementations must verify that user-written guards on pipe-coupled regions imply the correct pipe net role: a `ttl.copy` with a pipe source must be reachable only from the pipe's source coordinate; a `ttl.copy` with a pipe destination must be reachable only from the pipe's destination range; a dataflow buffer wait paired with a pipe-coupled push must be reachable only from a node where some producer pushes. The active predicates are only required for code that includes pipe-coupled computations.
-Any non-pipe-related code segment can execute on all nodes of
-the operation's grid or have its own guards that are independent of pipes.
+The *active set* of an operation is the union, over every pipe in every pipe net in scope of the operation (constructed in its body or captured from an enclosing scope), of the pipe's source coordinate and its destination coordinate or range. The *role domain* of a pipe net is its per-net active set; `pipe_net.is_src()`, `pipe_net.is_dst()`, and `pipe_net.is_active()` are predicates that evaluate to `True` on the source role, destination role, and their union, respectively.
+The active predicates are only required for code that includes pipe-coupled computations. Any non-pipe-related code segment can execute on all nodes of the operation's grid or have its own guards that are independent of pipes.
 
 | Function | Description |
 | :---- | :---- |
