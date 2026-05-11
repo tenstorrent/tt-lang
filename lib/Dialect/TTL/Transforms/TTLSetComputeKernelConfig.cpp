@@ -48,12 +48,12 @@ static bool hasF32InputTileArgs(ComputeOp computeOp) {
   }
 
   unsigned numInputs = computeOp.getNumInputs();
-  return llvm::any_of(
-      body->getArguments().take_front(numInputs), [](BlockArgument arg) {
-        std::optional<mlir::Type> elementType =
-            getTileElementType(arg.getType());
-        return elementType && elementType->isF32();
-      });
+  return llvm::any_of(body->getArguments().take_front(numInputs),
+                      [](BlockArgument arg) {
+                        std::optional<mlir::Type> elementType =
+                            getTileElementType(arg.getType());
+                        return elementType && elementType->isF32();
+                      });
 }
 
 struct TTLSetComputeKernelConfigPass
