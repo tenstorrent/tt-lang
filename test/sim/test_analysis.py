@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for automatic push/pop insertion (auto_push_pop.py).
+"""Tests for automatic copy-wait insertion (analysis.py).
 
 Tests cover:
 - AST analysis: InjectionPoint detection for reserve/wait without explicit release
@@ -11,19 +11,20 @@ Tests cover:
 - Runtime: kernel runs correctly without any explicit push/pop calls
 - Runtime: explicit push/pop still works alongside auto-insertion
 - Runtime: sequential reserve then wait on same DFB (the deadlock scenario)
+- Runtime: complex control flow (nested loops, if-inside-for, issue #536 pattern)
 """
 
 import pytest
 
-from python.sim import ttl, ttnn
-from python.sim.auto_push_pop import (
+from sim import ttl, ttnn
+from sim.analysis import (
     InjectionPoint,
     PatternViolation,
     ThreadAnalysis,
     analyze_thread_function,
     validate_thread_function,
 )
-from python.sim.context import get_context, reset_context
+from sim.context import get_context, reset_context
 
 
 # ---------------------------------------------------------------------------
@@ -44,31 +45,12 @@ def _reset():
 
 
 class TestAnalyzeThreadFunction:
-    """Verify InjectionPoint detection from function source."""
+    """Verify InjectionPoint detection from function source.
 
-    def test_reserve_without_push_detected(self):
-        """A bare reserve() with no push() produces a push injection point."""
-
-        def dm():
-            blk = dfb.reserve()  # noqa: F821
-            ttl.copy(data, blk).wait()  # noqa: F821
-
-        ips = analyze_thread_function(dm).injection_points
-        assert len(ips) == 1
-        assert ips[0].var_name == "blk"
-        assert ips[0].action == "push"
-
-    def test_wait_without_pop_detected(self):
-        """A bare wait() with no pop() produces a pop injection point."""
-
-        def compute():
-            blk = dfb.wait()  # noqa: F821
-            result = blk + blk  # noqa: F821
-
-        ips = analyze_thread_function(compute).injection_points
-        assert len(ips) == 1
-        assert ips[0].var_name == "blk"
-        assert ips[0].action == "pop"
+    Push/pop injection is now handled directly by DataflowBuffer.reserve() and
+    DataflowBuffer.wait() at runtime; AST analysis only generates 'wait'
+    injection points for unwaited ttl.copy() calls.
+    """
 
     def test_explicit_push_suppresses_injection(self):
         """When an explicit push() is present no injection point is generated."""
@@ -101,133 +83,6 @@ class TestAnalyzeThreadFunction:
 
         ips = analyze_thread_function(dm).injection_points
         assert ips == ()
-
-    def test_multiple_acquires_without_release(self):
-        """Two sequential acquires on different DFBs each get an injection point."""
-
-        def dm():
-            a = a_dfb.reserve()  # noqa: F821
-            ttl.copy(src, a).wait()  # noqa: F821
-            b = b_dfb.reserve()  # noqa: F821
-            ttl.copy(src2, b).wait()  # noqa: F821
-
-        ips = analyze_thread_function(dm).injection_points
-        assert len(ips) == 2
-        names = {ip.var_name for ip in ips}
-        assert names == {"a", "b"}
-
-    def test_scope_boundary_separates_sequential_reserves(self):
-        """The first reserve's injection fires before the second reserve."""
-
-        def dm():
-            a = dfb.reserve()  # noqa: F821
-            ttl.copy(src, a).wait()  # noqa: F821
-            b = dfb.reserve()  # noqa: F821  <- scope boundary for a
-            ttl.copy(src, b).wait()  # noqa: F821
-
-        ips = analyze_thread_function(dm).injection_points
-        # a -> inject at dfb.reserve() (scope boundary)
-        # b -> inject on return (last reserve, no boundary)
-        a_ip = next(ip for ip in ips if ip.var_name == "a")
-        b_ip = next(ip for ip in ips if ip.var_name == "b")
-        assert not a_ip.trigger_on_return
-        assert b_ip.trigger_on_return
-
-    def test_trigger_on_return_when_last_reserve(self):
-        """Last acquire in function triggers on return, not on a line."""
-
-        def dm():
-            blk = dfb.reserve()  # noqa: F821
-            ttl.copy(data, blk).wait()  # noqa: F821
-
-        ips = analyze_thread_function(dm).injection_points
-        assert len(ips) == 1
-        assert ips[0].trigger_on_return
-
-    def test_copy_hop_detects_tx_wait(self):
-        """tx = ttl.copy(src, blk); tx.wait() — last use is tx.wait(), not copy."""
-
-        def dm():
-            blk = dfb.reserve()  # noqa: F821
-            tx = ttl.copy(src, blk)  # noqa: F821  <- direct use of blk
-            tx.wait()  # noqa: F821                 <- one-hop use
-
-        ips = analyze_thread_function(dm).injection_points
-        assert len(ips) == 1
-        assert ips[0].action == "push"
-        assert ips[0].trigger_on_return  # tx.wait() is the last stmt -> return
-
-    def test_trigger_after_last_use_not_at_boundary(self):
-        """Trigger placed after last use, not at the conservative scope boundary.
-
-        blk is last used at ttl.copy().wait(); the next reserve is two lines
-        later with idle code in between.  The trigger should fire on the line
-        immediately after tx.wait(), not at the next reserve line.
-        """
-        import inspect
-
-        def dm():
-            blk = dfb.reserve()  # noqa: F821  <- line A
-            tx = ttl.copy(src, blk)  # noqa: F821
-            tx.wait()  # noqa: F821             <- last use of blk
-            x = 1 + 1  # noqa: F841            <- trigger should be HERE
-            blk2 = dfb.reserve()  # noqa: F821 <- scope boundary (conservative)
-            ttl.copy(src, blk2).wait()  # noqa: F821
-
-        src_lines, _ = inspect.getsourcelines(dm)
-        # Locate line offsets within the function source.
-        last_use_offset = next(i for i, l in enumerate(src_lines) if "tx.wait()" in l)
-        trigger_offset = last_use_offset + 1  # line immediately after last use
-        boundary_offset = next(
-            i for i, l in enumerate(src_lines) if "blk2 = dfb.reserve()" in l
-        )
-        # The trigger must be earlier than the boundary.
-        assert trigger_offset < boundary_offset
-
-        ips = analyze_thread_function(dm).injection_points
-        blk_ip = next(ip for ip in ips if ip.var_name == "blk")
-        assert not blk_ip.trigger_on_return
-        # Trigger line is not the scope boundary — it is before it.
-        blk2_ip = next(ip for ip in ips if ip.var_name == "blk2")
-        assert blk2_ip.trigger_on_return  # blk2 is last, no subsequent acquire
-        assert blk_ip.trigger_lineno is not None
-        assert blk2_ip.trigger_lineno is None
-
-    def test_trigger_after_tx_wait_not_at_copy_line(self):
-        """For a two-step copy, the trigger fires after tx.wait(), not at ttl.copy().
-
-        If copy-handle tracking is broken, ``tx = ttl.copy(src, blk)`` would
-        be the last seen use of ``blk`` and the trigger would land on the
-        ``tx.wait()`` line (firing before the copy completes).  With correct
-        tracking ``tx.wait()`` is the last use, so the trigger lands on the
-        statement after it.
-        """
-
-        def dm():
-            blk = dfb.reserve()  # noqa: F821
-            tx = ttl.copy(src, blk)  # noqa: F821  <- blk loaded here
-            tx.wait()  # noqa: F821                 <- real last use via handle
-            blk2 = dfb.reserve()  # noqa: F821      <- scope boundary
-
-        import inspect
-
-        src_lines, start = inspect.getsourcelines(dm)
-        copy_lineno = start + next(
-            i for i, l in enumerate(src_lines) if "ttl.copy" in l
-        )
-        tx_wait_lineno = start + next(
-            i for i, l in enumerate(src_lines) if "tx.wait()" in l
-        )
-
-        ips = analyze_thread_function(dm).injection_points
-        blk_ip = next(ip for ip in ips if ip.var_name == "blk")
-        assert not blk_ip.trigger_on_return
-        assert blk_ip.trigger_lineno is not None
-        # Trigger must be strictly after tx.wait() — not at or before it.
-        # (If copy-handle tracking were broken the trigger would be copy_lineno+1
-        # which equals tx_wait_lineno.)
-        assert blk_ip.trigger_lineno > tx_wait_lineno
-        assert blk_ip.trigger_lineno > copy_lineno
 
 
 # ---------------------------------------------------------------------------
@@ -378,7 +233,7 @@ class TestRuntimeAutoPushPop:
 
         op(inp, out)  # must not deadlock
 
-    def test_multi_iteration_loop_auto_push_pop(self):
+    def test_multi_iteration_loop_copy_wait(self):
         """Auto push/pop fires correctly on every iteration of a loop."""
         import torch
 
@@ -537,82 +392,6 @@ class TestDeadlockResolution:
         assert torch.allclose(out_t[0:32], inp_t, atol=1e-2)
         assert torch.allclose(out_t[32:64], inp_t, atol=1e-2)
 
-    def test_cross_dfb_dependency_resolves(self, reset_simulator_context):
-        """Cross-DFB dependency: last-use analysis places push before dfb_b.wait().
-
-        This is the canonical deadlock scenario where the naive scope-boundary
-        trigger would never fire:
-
-            dm_read:
-                blk1 = dfb_a.reserve()          # (A) reserve input slot
-                ttl.copy(inp, blk1).wait()       # (B) fill blk1 — LAST USE of blk1
-                result = dfb_b.wait()            # (C) push(blk1) fires HERE
-                blk2 = dfb_a.reserve()           # (D) scope boundary for blk1
-
-            compute:
-                in_blk = dfb_a.wait()            # needs blk1 pushed at (C) to unblock
-                out_blk = dfb_b.reserve()
-                out_blk.store(in_blk)            # echoes data back through dfb_b
-
-        Without last-use analysis: push(blk1) would trigger at line (D), but
-        dfb_b.wait() at line (C) blocks forever because compute is also blocked
-        waiting for blk1 to be pushed.
-
-        With last-use analysis: blk1's last use is at (B); the next statement (C)
-        is earlier than the scope boundary (D), so push(blk1) fires at the start
-        of line (C), BEFORE dfb_b.wait() executes.  compute can then proceed and
-        produce the dfb_b block that dm_read is waiting for.
-
-        blk2 exists solely to provide the scope boundary that enables the
-        last-use trigger for blk1.  It is filled and pushed on dm_read's return
-        (auto-push fires on return when scope_boundary is None for blk2).
-        """
-        import torch
-
-        inp = ttnn.rand((32, 32))
-        out = ttnn.empty((32, 32))
-
-        @ttl.operation(grid=(1, 1))
-        def op(inp, out):
-            # dfb_a: dm_read -> compute (input data)
-            dfb_a = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-            # dfb_b: compute -> dm_read (echoed result, used as feedback)
-            dfb_b = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-
-            @ttl.compute()
-            def compute():
-                # One iteration: receive blk1 from dm_read and echo it back via dfb_b.
-                in_blk = dfb_a.wait()  # unblocks once push(blk1) fires at (C)
-                out_blk = dfb_b.reserve()
-                out_blk.store(in_blk)  # echo data back via dfb_b
-
-            @ttl.datamovement()
-            def dm_read():
-                # (A) Reserve input slot in dfb_a.
-                blk1 = dfb_a.reserve()
-                # (B) Fill blk1 — last use of blk1.
-                ttl.copy(inp[0, 0], blk1).wait()
-                # (C) push(blk1) fires at the start of THIS line (last-use analysis).
-                # Without auto-injection the naive trigger at (D) would never be
-                # reached because this wait blocks first.
-                result = dfb_b.wait()  # unblocks once compute echoes blk1
-                # (D) scope boundary for blk1 — triggers push earlier than return.
-                blk2 = dfb_a.reserve()
-                ttl.copy(inp[0, 0], blk2).wait()  # fill blk2
-                # Write the echoed result to the output tensor.
-                ttl.copy(result, out[0, 0]).wait()
-                # push(blk2) and pop(result) auto-fire on dm_read's return.
-
-            @ttl.datamovement()
-            def dm_write():
-                pass  # dm_read writes directly to out
-
-        op(inp, out)
-        inp_t = ttnn.to_torch(inp).float()
-        out_t = ttnn.to_torch(out).float()
-        # compute echoes inp back through dfb_b; dm_read copies that to out.
-        assert torch.allclose(out_t, inp_t, atol=1e-2)
-
 
 # ---------------------------------------------------------------------------
 # Copy-wait tests
@@ -631,9 +410,7 @@ class TestCopyWaitAnalysis:
             tx.wait()
 
         ips = analyze_thread_function(dm).injection_points
-        # push for blk is auto-inserted; no extra wait injection
-        wait_ips = [ip for ip in ips if ip.action == "wait"]
-        assert wait_ips == []
+        assert ips == ()
 
     def test_assigned_copy_without_wait_detected(self):
         """tx = ttl.copy(...) with no tx.wait() produces a wait injection."""
@@ -644,9 +421,8 @@ class TestCopyWaitAnalysis:
             # no tx.wait()
 
         ips = analyze_thread_function(dm).injection_points
-        wait_ips = [ip for ip in ips if ip.action == "wait"]
-        assert len(wait_ips) == 1
-        assert wait_ips[0].var_name == "tx"
+        assert len(ips) == 1
+        assert ips[0].var_name == "tx"
 
     def test_assigned_copy_wait_triggers_on_return_when_last_stmt(self):
         """If the copy is the last statement, trigger_on_return is True."""
@@ -655,10 +431,9 @@ class TestCopyWaitAnalysis:
             blk = dfb.reserve()  # noqa: F821
             tx = ttl.copy(src, blk)  # noqa: F821
 
-        result = analyze_thread_function(dm)
-        wait_ips = [ip for ip in result.injection_points if ip.action == "wait"]
-        assert len(wait_ips) == 1
-        assert wait_ips[0].trigger_on_return is True
+        ips = analyze_thread_function(dm).injection_points
+        assert len(ips) == 1
+        assert ips[0].trigger_on_return is True
 
     def test_assigned_copy_wait_triggers_on_next_line(self):
         """If there is a statement after the copy, trigger is on that line."""
@@ -668,11 +443,10 @@ class TestCopyWaitAnalysis:
             tx = ttl.copy(src, blk)  # noqa: F821
             blk.push()  # next statement
 
-        result = analyze_thread_function(dm)
-        wait_ips = [ip for ip in result.injection_points if ip.action == "wait"]
-        assert len(wait_ips) == 1
-        assert wait_ips[0].trigger_on_return is False
-        assert wait_ips[0].trigger_lineno is not None
+        ips = analyze_thread_function(dm).injection_points
+        assert len(ips) == 1
+        assert ips[0].trigger_on_return is False
+        assert ips[0].trigger_lineno is not None
 
     def test_bare_copy_lineno_detected(self):
         """Bare ttl.copy(...) call (no assignment) records the absolute lineno."""
@@ -691,9 +465,7 @@ class TestCopyWaitAnalysis:
             blk = dfb.reserve()  # noqa: F821
             ttl.copy(src, blk)  # noqa: F821
 
-        result = analyze_thread_function(dm)
-        wait_ips = [ip for ip in result.injection_points if ip.action == "wait"]
-        assert wait_ips == []
+        assert analyze_thread_function(dm).injection_points == ()
 
     def test_non_ttl_copy_not_detected(self):
         """copy() from a different namespace is not treated as ttl.copy."""
@@ -704,8 +476,7 @@ class TestCopyWaitAnalysis:
             tx.wait()
 
         result = analyze_thread_function(dm)
-        wait_ips = [ip for ip in result.injection_points if ip.action == "wait"]
-        assert wait_ips == []
+        assert result.injection_points == ()
         assert result.bare_copy_linenos == frozenset()
 
 
@@ -790,79 +561,6 @@ class TestCopyWaitRuntime:
 # ---------------------------------------------------------------------------
 # Unit tests: AST analysis — inline DFB acquires
 # ---------------------------------------------------------------------------
-
-
-class TestInlineAcquireAnalysis:
-    """Verify InjectionPoint detection for dfb.wait()/reserve() inline in ttl.copy()."""
-
-    def test_inline_wait_in_copy_detected(self):
-        """ttl.copy(dfb.wait(), dst) produces a pop_dfb injection point."""
-
-        def dm():
-            ttl.copy(out_dfb.wait(), dst)  # noqa: F821
-
-        result = analyze_thread_function(dm)
-        pop_ips = [ip for ip in result.injection_points if ip.action == "pop_dfb"]
-        assert len(pop_ips) == 1
-        assert pop_ips[0].var_name == "out_dfb"
-        assert pop_ips[0].trigger_on_return is True
-
-    def test_inline_reserve_in_copy_detected(self):
-        """ttl.copy(src, dfb.reserve()) produces a push_dfb injection point."""
-
-        def dm():
-            ttl.copy(src, inp_dfb.reserve())  # noqa: F821
-
-        result = analyze_thread_function(dm)
-        push_ips = [ip for ip in result.injection_points if ip.action == "push_dfb"]
-        assert len(push_ips) == 1
-        assert push_ips[0].var_name == "inp_dfb"
-        assert push_ips[0].trigger_on_return is True
-
-    def test_inline_acquire_with_next_stmt_uses_scope_boundary(self):
-        """With a second acquire on the same DFB, trigger is at the boundary line."""
-
-        def dm():
-            ttl.copy(out_dfb.wait(), dst[0])  # noqa: F821
-            ttl.copy(out_dfb.wait(), dst[1])  # noqa: F821
-
-        result = analyze_thread_function(dm)
-        pop_ips = [ip for ip in result.injection_points if ip.action == "pop_dfb"]
-        # First inline acquire: scope boundary is the second acquire's line.
-        # Second inline acquire: no next acquire -> trigger_on_return.
-        assert len(pop_ips) == 2
-        first = min(pop_ips, key=lambda ip: ip.trigger_lineno or float("inf"))
-        second = max(pop_ips, key=lambda ip: ip.trigger_lineno or float("inf"))
-        assert first.trigger_on_return is False
-        assert first.trigger_lineno is not None
-        assert second.trigger_on_return is True
-
-    def test_named_acquire_scope_constrained_by_inline(self):
-        """Named acquire scope boundary is correctly constrained by inline acquire."""
-
-        def dm():
-            blk = out_dfb.wait()  # noqa: F821
-            ttl.copy(out_dfb.wait(), dst)  # noqa: F821
-
-        result = analyze_thread_function(dm)
-        pop_ips = [ip for ip in result.injection_points if ip.action == "pop"]
-        # The named acquire's scope boundary should be the inline acquire's line.
-        assert len(pop_ips) == 1
-        assert pop_ips[0].trigger_on_return is False
-
-    def test_inline_in_assigned_copy_detected(self):
-        """tx = ttl.copy(dfb.wait(), dst) produces both a wait and pop_dfb injection."""
-
-        def dm():
-            tx = ttl.copy(out_dfb.wait(), dst)  # noqa: F821
-
-        result = analyze_thread_function(dm)
-        wait_ips = [ip for ip in result.injection_points if ip.action == "wait"]
-        pop_ips = [ip for ip in result.injection_points if ip.action == "pop_dfb"]
-        assert len(wait_ips) == 1  # Case B: tx.wait() injection
-        assert len(pop_ips) == 1  # Inline acquire: pop_dfb injection
-        assert wait_ips[0].var_name == "tx"
-        assert pop_ips[0].var_name == "out_dfb"
 
 
 # ---------------------------------------------------------------------------
@@ -993,87 +691,7 @@ class TestInlineAcquireRuntime:
 
 
 class TestValidateThreadFunction:
-    """Verify that validate_thread_function catches unsupported patterns."""
-
-    # ---- DFB acquire violations ----
-
-    def test_bare_reserve_is_violation(self):
-        """dfb.reserve() as a bare statement (return value discarded) is flagged."""
-
-        def dm():
-            dfb.reserve()  # noqa: F821  bare — discards the block
-
-        violations = validate_thread_function(dm)
-        assert len(violations) == 1
-        assert "reserve()" in violations[0].message
-        assert isinstance(violations[0], PatternViolation)
-
-    def test_reserve_passed_to_function_is_violation(self):
-        """dfb.reserve() passed to a non-ttl.copy() function is flagged."""
-
-        def dm():
-            some_func(dfb.reserve())  # noqa: F821
-
-        violations = validate_thread_function(dm)
-        assert len(violations) == 1
-        assert "reserve()" in violations[0].message
-
-    def test_wait_passed_to_function_is_violation(self):
-        """dfb.wait() passed to a non-ttl.copy() function is flagged."""
-
-        def dm():
-            some_func(dfb.wait())  # noqa: F821
-
-        violations = validate_thread_function(dm)
-        assert len(violations) == 1
-        assert "wait()" in violations[0].message
-
-    def test_named_assign_reserve_is_ok(self):
-        """blk = dfb.reserve() is a supported pattern; no violation."""
-
-        def dm():
-            blk = dfb.reserve()  # noqa: F821
-            ttl.copy(src, blk).wait()  # noqa: F821
-
-        assert validate_thread_function(dm) == []
-
-    def test_with_reserve_is_ok(self):
-        """with dfb.reserve() as blk: is a supported pattern; no violation."""
-
-        def dm():
-            with dfb.reserve() as blk:  # noqa: F821
-                ttl.copy(src, blk).wait()  # noqa: F821
-
-        assert validate_thread_function(dm) == []
-
-    def test_inline_reserve_in_copy_is_ok(self):
-        """ttl.copy(src, dfb.reserve()) is a supported pattern; no violation."""
-
-        def dm():
-            ttl.copy(src, dfb.reserve())  # noqa: F821
-
-        assert validate_thread_function(dm) == []
-
-    def test_tx_wait_not_flagged(self):
-        """tx.wait() (CopyTransaction) shares the wait() shape but is not flagged."""
-
-        def dm():
-            tx = ttl.copy(src, dst)  # noqa: F821
-            tx.wait()  # noqa: F821
-
-        assert validate_thread_function(dm) == []
-
-    def test_multiple_violations_all_reported(self):
-        """All unsupported sites in a single function are returned."""
-
-        def dm():
-            some_func(dfb.reserve())  # noqa: F821  violation 1
-            some_other(dfb.wait())  # noqa: F821  violation 2
-
-        violations = validate_thread_function(dm)
-        assert len(violations) == 2
-
-    # ---- ttl.copy() violations ----
+    """Verify that validate_thread_function catches unsupported ttl.copy() patterns."""
 
     def test_copy_passed_to_function_is_violation(self):
         """ttl.copy() nested inside another function call is flagged."""
@@ -1108,7 +726,7 @@ class TestValidateThreadFunction:
         """PatternViolation has a valid source file and line number."""
 
         def dm():
-            some_func(dfb.reserve())  # noqa: F821
+            group.add(ttl.copy(src, dst))  # noqa: F821
 
         violations = validate_thread_function(dm)
         assert len(violations) == 1
@@ -1122,38 +740,269 @@ class TestValidateThreadFunction:
         """PatternViolation.func_name matches the thread function name."""
 
         def my_dm_thread():
-            some_func(dfb.reserve())  # noqa: F821
+            group.add(ttl.copy(src, dst))  # noqa: F821
 
         violations = validate_thread_function(my_dm_thread)
         assert violations[0].func_name == "my_dm_thread"
 
 
-class TestValidationRaisesAtRuntime:
-    """Verify that kernels with unsupported patterns abort with diagnostics."""
+# ---------------------------------------------------------------------------
+# Complex control-flow tests (issue #536 and related patterns)
+# ---------------------------------------------------------------------------
 
-    def test_unsupported_pattern_raises_runtime_error(self, reset_simulator_context):
-        """A kernel with dfb.reserve() in an unsupported position raises RuntimeError."""
+
+class TestComplexControlFlow:
+    """Auto-injection with nested loops, conditionals, and the #536 pop-hoisting pattern.
+
+    Issue #536 describes a compiler bug where auto-inserted cb_pop_front calls
+    are hoisted past subsequent cb_wait_front calls on the same DFB, causing
+    the read pointer to never advance.  The tests here verify that the simulator
+    correctly interleaves push/pop with the surrounding control flow.
+    """
+
+    # ------------------------------------------------------------------
+    # Issue #536: two consecutive wait() calls on the same DFB (no loop)
+    # ------------------------------------------------------------------
+
+    def test_sequential_waits_same_dfb_runtime(self, reset_simulator_context):
+        """Two consecutive wait() calls on the same DFB produce distinct values (#536).
+
+        The producer fills two slots with distinct values (7.0 and 8.0).  The
+        second ``out_cb.wait()`` auto-pops blk1 before acquiring blk2, so the
+        read pointer advances and the consumer sees [7.0, 8.0] rather than
+        stalling at slot 0.
+        """
+        import torch
+
+        TILE = 32
+        out = ttnn.empty((2 * TILE, TILE))
 
         @ttl.operation(grid=(1, 1))
-        def op(inp, out):
-            dfb = ttl.make_dataflow_buffer_like(
-                inp, shape=(1, 1), block_count=2
-            )  # noqa: F841
+        def op(out):
+            out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
             @ttl.compute()
             def compute():
-                pass  # noqa: F821
+                # Fill slot 0 with 7.0, slot 1 with 8.0.
+                with out_cb.reserve() as v:
+                    v.store(ttl.math.fill(v, 7.0))
+                with out_cb.reserve() as v:
+                    v.store(ttl.math.fill(v, 8.0))
 
             @ttl.datamovement()
             def dm_read():
-                some_func(dfb.reserve())  # noqa: F821  unsupported
+                pass
 
             @ttl.datamovement()
             def dm_write():
-                pass  # noqa: F821
+                # Consume both slots; pop(blk1) must fire before second wait().
+                blk1 = out_cb.wait()
+                ttl.copy(blk1, out[0, 0]).wait()
+                blk2 = out_cb.wait()
+                ttl.copy(blk2, out[1, 0]).wait()
 
-        inp = ttnn.from_torch(__import__("torch").ones(32, 32))
-        out = ttnn.from_torch(__import__("torch").zeros(32, 32))
+        op(out)
+        out_t = ttnn.to_torch(out).float()
+        assert torch.allclose(
+            out_t[0:TILE], torch.full((TILE, TILE), 7.0), atol=1e-2
+        ), f"Slot 0 expected 7.0, got {out_t[0, 0].item()}"
+        assert torch.allclose(
+            out_t[TILE:], torch.full((TILE, TILE), 8.0), atol=1e-2
+        ), f"Slot 1 expected 8.0, got {out_t[TILE, 0].item()}"
 
-        with pytest.raises(RuntimeError, match="unsupported pattern"):
-            op(inp, out)
+    # ------------------------------------------------------------------
+    # Nested for loops
+    # ------------------------------------------------------------------
+
+    def test_nested_for_loop_runtime(self, reset_simulator_context):
+        """Auto push/pop fires correctly at each inner-loop iteration.
+
+        The outer loop runs OUTER times; the inner loop runs INNER times per
+        outer iteration, producing one block each.  The total block count is
+        OUTER * INNER.  Every block must be pushed and popped in order.
+        """
+        import torch
+
+        OUTER = 2
+        INNER = 3
+        TOTAL = OUTER * INNER
+        inp = ttnn.rand((TOTAL * 32, 32))
+        out = ttnn.empty((TOTAL * 32, 32))
+
+        @ttl.operation(grid=(1, 1))
+        def op(inp, out):
+            dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+            @ttl.compute()
+            def compute():
+                for _ in range(TOTAL):
+                    blk = dfb.wait()
+                    ob = out_dfb.reserve()
+                    ob.store(blk)
+
+            @ttl.datamovement()
+            def dm_read():
+                for _i in range(OUTER):
+                    for _j in range(INNER):
+                        blk = dfb.reserve()
+                        idx = _i * INNER + _j
+                        ttl.copy(inp[idx, 0], blk).wait()
+                        # auto push before next inner iteration
+
+            @ttl.datamovement()
+            def dm_write():
+                for i in range(TOTAL):
+                    blk = out_dfb.wait()
+                    ttl.copy(blk, out[i, 0]).wait()
+
+        op(inp, out)
+        assert torch.allclose(
+            ttnn.to_torch(inp).float(), ttnn.to_torch(out).float(), atol=1e-2
+        )
+
+    def test_nested_for_loop_sequential_waits(self, reset_simulator_context):
+        """Two nested loops each doing wait/copy on the same DFB advance the pointer.
+
+        Outer produces N*M blocks; the inner consumer loop consumes each block
+        immediately, so pops must interleave with the inner-loop waits.
+        """
+        import torch
+
+        OUTER = 2
+        INNER = 2
+        TOTAL = OUTER * INNER
+        inp = ttnn.rand((TOTAL * 32, 32))
+        out = ttnn.empty((TOTAL * 32, 32))
+
+        @ttl.operation(grid=(1, 1))
+        def op(inp, out):
+            dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+            @ttl.compute()
+            def compute():
+                for _ in range(TOTAL):
+                    src = dfb.wait()
+                    dst = out_dfb.reserve()
+                    dst.store(src)
+
+            @ttl.datamovement()
+            def dm_read():
+                for i in range(TOTAL):
+                    blk = dfb.reserve()
+                    ttl.copy(inp[i, 0], blk).wait()
+
+            @ttl.datamovement()
+            def dm_write():
+                for _i in range(OUTER):
+                    for _j in range(INNER):
+                        idx = _i * INNER + _j
+                        blk = out_dfb.wait()
+                        ttl.copy(blk, out[idx, 0]).wait()
+                        # auto pop before next inner-loop wait
+
+        op(inp, out)
+        assert torch.allclose(
+            ttnn.to_torch(inp).float(), ttnn.to_torch(out).float(), atol=1e-2
+        )
+
+    # ------------------------------------------------------------------
+    # if inside for
+    # ------------------------------------------------------------------
+
+    def test_if_inside_for_runtime(self, reset_simulator_context):
+        """Conditional reserve inside a loop: push fires even when the if branch is not taken.
+
+        dm_read iterates 2*ITERS times but only reserves inside an ``if i % 2 == 0``
+        guard, producing ITERS blocks total.  On the odd iterations the LINE callback
+        for the reserve line does not fire, so the auto-push for the block from the
+        previous even iteration is deferred until the NEXT even iteration's reserve
+        line (or function return for the last block).  The pipeline must drain cleanly.
+        """
+        import torch
+
+        ITERS = 3  # blocks produced; loop runs 2*ITERS times
+        inp = ttnn.rand((ITERS * 32, 32))
+        out = ttnn.empty((ITERS * 32, 32))
+
+        @ttl.operation(grid=(1, 1))
+        def op(inp, out):
+            dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+            @ttl.compute()
+            def compute():
+                for _ in range(ITERS):
+                    blk = dfb.wait()
+                    ob = out_dfb.reserve()
+                    ob.store(blk)
+
+            @ttl.datamovement()
+            def dm_read():
+                for i in range(ITERS * 2):
+                    if i % 2 == 0:
+                        blk = dfb.reserve()
+                        ttl.copy(inp[i // 2, 0], blk).wait()
+                        # auto push deferred to next even iteration (or return)
+
+            @ttl.datamovement()
+            def dm_write():
+                for i in range(ITERS):
+                    blk = out_dfb.wait()
+                    ttl.copy(blk, out[i, 0]).wait()
+
+        op(inp, out)
+        assert torch.allclose(
+            ttnn.to_torch(inp).float(), ttnn.to_torch(out).float(), atol=1e-2
+        )
+
+    # ------------------------------------------------------------------
+    # post-loop trigger (code after for loop)
+    # ------------------------------------------------------------------
+
+    def test_post_loop_trigger_fires_at_post_loop_code_runtime(
+        self, reset_simulator_context
+    ):
+        """Kernel with a producing loop followed by unrelated code runs cleanly.
+
+        The final-iteration push must fire at the post-loop statement, not at
+        function return, so the consumer can drain before the producer returns.
+        """
+        import torch
+
+        ITERS = 3
+        inp = ttnn.rand((ITERS * 32, 32))
+        out = ttnn.empty((ITERS * 32, 32))
+
+        @ttl.operation(grid=(1, 1))
+        def op(inp, out):
+            dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+            @ttl.compute()
+            def compute():
+                for _ in range(ITERS):
+                    blk = dfb.wait()
+                    ob = out_dfb.reserve()
+                    ob.store(blk)
+
+            @ttl.datamovement()
+            def dm_read():
+                for i in range(ITERS):
+                    blk = dfb.reserve()
+                    ttl.copy(inp[i, 0], blk).wait()
+                # Post-loop code: the final auto-push should have fired
+                # at this point so the consumer is not blocked.
+                _ = 0  # noqa: F841
+
+            @ttl.datamovement()
+            def dm_write():
+                for i in range(ITERS):
+                    blk = out_dfb.wait()
+                    ttl.copy(blk, out[i, 0]).wait()
+
+        op(inp, out)
+        assert torch.allclose(
+            ttnn.to_torch(inp).float(), ttnn.to_torch(out).float(), atol=1e-2
+        )

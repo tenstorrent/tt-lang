@@ -1112,6 +1112,10 @@ class DataflowBuffer:
         self._pending_reserved_block: Optional[Block] = None
         self._pending_waited_block: Optional[Block] = None
         self._pending_confirmations: set[Block] = set()
+        # Greenlet that owns the current pending reserved/waited block.
+        # Prevents a different kernel function's cleanup from touching this block.
+        self._pending_reserved_greenlet: object = None
+        self._pending_waited_greenlet: object = None
 
         # Create and configure the ring-buffer state immediately.
         self._state = DFBState()
@@ -1146,11 +1150,7 @@ class DataflowBuffer:
             RuntimeError: If called again before pop()
         """
         if self._pending_waited_block is not None:
-            raise RuntimeError(
-                "Cannot call wait() again: a block from the previous wait() was not popped. "
-                "In DM kernel context this is a simulator bug — auto-pop injection should have fired "
-                "before this wait() call. Please file a bug report with a reproducer."
-            )
+            self.auto_pop_block()
 
         from .greenlet_scheduler import block_if_needed
 
@@ -1174,6 +1174,9 @@ class DataflowBuffer:
         )
         block.dfb = self
         self._pending_waited_block = block
+        from greenlet import getcurrent
+
+        self._pending_waited_greenlet = getcurrent()
 
         tiles = math.prod(state.shape)
         trace(
@@ -1220,11 +1223,7 @@ class DataflowBuffer:
             RuntimeError: If called again before push()
         """
         if self._pending_reserved_block is not None:
-            raise RuntimeError(
-                "Cannot call reserve() again: a block from the previous reserve() was not pushed. "
-                "In DM kernel context this is a simulator bug — auto-push injection should have fired "
-                "before this reserve() call. Please file a bug report with a reproducer."
-            )
+            self.auto_push_block()
 
         from .greenlet_scheduler import block_if_needed
 
@@ -1258,6 +1257,9 @@ class DataflowBuffer:
         block.dfb_slot_idx = slot_idx
 
         self._pending_reserved_block = block
+        from greenlet import getcurrent
+
+        self._pending_reserved_greenlet = getcurrent()
 
         tiles = math.prod(state.shape)
         trace(
@@ -1288,6 +1290,7 @@ class DataflowBuffer:
         if self._pending_reserved_block is not None:
             self._pending_reserved_block.mark_push_complete()
             self._pending_reserved_block = None
+            self._pending_reserved_greenlet = None
 
         state = self._state
         if state.reserved < 1:
@@ -1308,6 +1311,7 @@ class DataflowBuffer:
         if self._pending_waited_block is not None:
             self._pending_waited_block.mark_pop_complete()
             self._pending_waited_block = None
+            self._pending_waited_greenlet = None
 
         state = self._state
         if state.visible < 1:
@@ -1319,24 +1323,30 @@ class DataflowBuffer:
         trace("dfb_pop", dfb=get_dfb_name(self), occupied=state.visible)
 
     def auto_push_block(self) -> None:
-        """Push the reserved block if one is pending; no-op otherwise.
+        """Push the reserved block if one is pending for the current greenlet.
 
-        Used by the simulator's auto-push injection to release inline DFB
-        acquires (``dfb.reserve()`` passed directly as a ``ttl.copy()``
-        argument).  Calling this when no block is pending is safe.
+        No-op when no block is pending or when the pending block belongs to
+        a different greenlet (i.e., a different thread function).
         """
         if self._pending_reserved_block is None:
+            return
+        from greenlet import getcurrent
+
+        if self._pending_reserved_greenlet is not getcurrent():
             return
         self.push_block()
 
     def auto_pop_block(self) -> None:
-        """Pop the waited block if one is pending; no-op otherwise.
+        """Pop the waited block if one is pending for the current greenlet.
 
-        Used by the simulator's auto-pop injection to release inline DFB
-        acquires (``dfb.wait()`` passed directly as a ``ttl.copy()``
-        argument).  Calling this when no block is pending is safe.
+        No-op when no block is pending or when the pending block belongs to
+        a different greenlet (i.e., a different thread function).
         """
         if self._pending_waited_block is None:
+            return
+        from greenlet import getcurrent
+
+        if self._pending_waited_greenlet is not getcurrent():
             return
         self.pop_block()
 

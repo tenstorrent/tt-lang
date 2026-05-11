@@ -22,9 +22,9 @@ from .blockstate import ThreadType
 from .context import get_context
 from .greenlet_scheduler import GreenletScheduler, set_scheduler
 from .ttnnsim import Tensor
-from .auto_push_pop import (
+from .analysis import (
     analyze_thread_function,
-    install_auto_push_pop,
+    install_copy_wait_hooks,
     PatternViolation,
 )
 from .diagnostics import print_diagnostic_error
@@ -282,23 +282,32 @@ def Program(*funcs: BindableTemplate, grid: Shape) -> Any:
                     def _tagged(
                         fn: Callable[[], Any] = bound_func,
                         c: int = core,
+                        core_ctx: Dict[str, Any] = core_context,
                     ) -> None:
                         getcurrent()._sim_core = c  # type: ignore[attr-defined]
                         fn()
+                        # Auto-push/pop any blocks still pending when the thread
+                        # function returns normally (final-iteration cleanup).
+                        # This must not run during exception propagation, so it
+                        # is placed after fn() rather than in a finally block.
+                        for _val in core_ctx.values():
+                            if isinstance(_val, DataflowBuffer):
+                                _val.auto_push_block()
+                                _val.auto_pop_block()
 
                     # Add to scheduler
                     thread_name = f"core{core}-{tmpl.__name__}"
                     scheduler.add_thread(thread_name, _tagged, thread_type)
 
             # Install injection hooks in the current context's active_hooks.
-            # The global tracer (_global_tracer in auto_push_pop.py) is
+            # The global tracer (_global_tracer in analysis.py) is
             # installed once per session and reads active_hooks dynamically,
             # so no sys.settrace bookkeeping is needed here.
             injection_map = {
                 tmpl.__wrapped__.__code__: ctx.injection_points_cache[tmpl.__wrapped__]
                 for tmpl in [compute_func_tmpl, dm0_tmpl, dm1_tmpl]
             }
-            install_auto_push_pop(injection_map)
+            install_copy_wait_hooks(injection_map)
 
             # Emit operation_start for each node before the scheduler runs.
             for core in range(total_cores):

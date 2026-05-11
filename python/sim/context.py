@@ -64,8 +64,14 @@ def reset_context() -> None:
     """Reset context for current greenlet to defaults.
 
     Creates a fresh context, discarding any previous state.
+    Also frees the sys.monitoring tool slot used for copy-wait injection so
+    the next simulation run can re-register its callbacks from a clean state.
     Primarily useful for test cleanup.
     """
+    import sys
+
+    if sys.monitoring.get_tool(sys.monitoring.OPTIMIZER_ID) is not None:
+        sys.monitoring.free_tool_id(sys.monitoring.OPTIMIZER_ID)
     getcurrent()._sim_context = SimulatorContext()  # type: ignore
 
 
