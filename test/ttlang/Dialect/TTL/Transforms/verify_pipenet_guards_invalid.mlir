@@ -115,6 +115,102 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// `arith.andi` of two unanalyzable predicates: the verifier attaches the
+// "not statically analyzable" note to the source-earliest predicate, so the
+// diagnostic is the same regardless of dataflow visit order.
+
+module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
+  func.func @two_unanalyzable_predicates_andi(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %core_y = ttl.core_y : index
+    %scaled_x = arith.muli %core_x, %runtime : index
+    %scaled_y = arith.muli %core_y, %runtime : index
+    %zero = arith.constant 0 : index
+    // expected-note @below {{this expression is not statically analyzable}}
+    %cond_x = arith.cmpi eq, %scaled_x, %zero : index
+    %cond_y = arith.cmpi eq, %scaled_y, %zero : index
+    %cond = arith.andi %cond_x, %cond_y : i1
+    scf.if %cond {
+      // expected-error @below {{could not statically analyze the PipeNet guard}}
+      %send = ttl.copy %cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Source order, not operand position, determines which predicate the note
+// attaches to. The source-earliest predicate (`%cond_x`) is the *rhs* of
+// the `arith.andi`; a "pick lhs" implementation would attach the note to
+// `%cond_y` instead and the test would fail.
+
+module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
+  func.func @source_order_beats_operand_position(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %core_y = ttl.core_y : index
+    %scaled_x = arith.muli %core_x, %runtime : index
+    %scaled_y = arith.muli %core_y, %runtime : index
+    %zero = arith.constant 0 : index
+    // expected-note @below {{this expression is not statically analyzable}}
+    %cond_x = arith.cmpi eq, %scaled_x, %zero : index
+    %cond_y = arith.cmpi eq, %scaled_y, %zero : index
+    %cond = arith.andi %cond_y, %cond_x : i1
+    scf.if %cond {
+      // expected-error @below {{could not statically analyze the PipeNet guard}}
+      %send = ttl.copy %cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Same as above, but with `arith.ori`. The note still attaches to the
+// source-earliest unanalyzable predicate.
+
+module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
+  func.func @two_unanalyzable_predicates_ori(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %core_y = ttl.core_y : index
+    %scaled_x = arith.muli %core_x, %runtime : index
+    %scaled_y = arith.muli %core_y, %runtime : index
+    %zero = arith.constant 0 : index
+    // expected-note @below {{this expression is not statically analyzable}}
+    %cond_x = arith.cmpi eq, %scaled_x, %zero : index
+    %cond_y = arith.cmpi eq, %scaled_y, %zero : index
+    %cond = arith.ori %cond_x, %cond_y : i1
+    scf.if %cond {
+      // expected-error @below {{could not statically analyze the PipeNet guard}}
+      %send = ttl.copy %cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // Waiting on a DFB with no producer domain is rejected.
 
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {

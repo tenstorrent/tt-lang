@@ -669,9 +669,9 @@ the operation's grid or have its own guards that are independent of pipes.
 | `ttl.PipeNet[DstT](pipes: List[ttl.Pipe[DstT]]) -> ttl.PipeNet[DstT]` | Constructs pipe net. |
 | `ttl.PipeNet[DstT].if_src(self, cond_fun: Callable[[ttl.SrcPipeIdentity[DstT]], None])` | Call condition function for each pipe in the pipe net that is a source. |
 | `ttl.PipeNet[DstT].if_dst(self, cond_fun: Callable[[ttl.DstPipeIdentity], None])` | Call condition function for each pipe in the pipe net that is a destination. |
-| `ttl.PipeNet[DstT].is_src(self) -> bool` | Predicate: `True` on the current node iff it is a source coordinate of any pipe in the pipe net. |
-| `ttl.PipeNet[DstT].is_dst(self) -> bool` | Predicate: `True` on the current node iff it is in the destination range of any pipe in the pipe net. |
-| `ttl.PipeNet[DstT].is_active(self) -> bool` | Predicate: `True` on the current node iff `is_src()` or `is_dst()` is `True`. |
+| `ttl.PipeNet[DstT].is_src(self) -> bool` | Predicate: `True` on the current node if and only if it is a source coordinate of any pipe in the pipe net. |
+| `ttl.PipeNet[DstT].is_dst(self) -> bool` | Predicate: `True` on the current node if and only if it is in the destination range of any pipe in the pipe net. |
+| `ttl.PipeNet[DstT].is_active(self) -> bool` | Predicate: `True` on the current node if and only if `is_src()` or `is_dst()` is `True`. |
 | `@property ttl.SrcPipeIdentity[DstT].dst(self) -> DstT` | Get destination node or node range for pipe in `if_src`. |
 | `@property ttl.DstPipeIdentity.src(self) -> ttl.NodeCoord` | Get source node for pipe in `if_dst`. |
 

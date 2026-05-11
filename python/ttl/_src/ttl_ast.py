@@ -520,6 +520,19 @@ class TTLGenericCompiler(TTCompilerBase):
                     raise
                 self._raise_error(node, str(e))
 
+    def visit_Compare(self, node):
+        """Attach the comparison's AST source location to the emitted
+        `arith.cmpi`, so verifier and runtime diagnostics that reference the
+        predicate point at the comparison itself rather than the enclosing
+        function or block."""
+        with self._loc_for_node(node):
+            try:
+                return super(TTLGenericCompiler, self).visit_Compare(node)
+            except (ValueError, TypeError, NotImplementedError) as e:
+                if isinstance(e, TTLangCompileError):
+                    raise
+                self._raise_error(node, str(e))
+
     def visit_Name(self, node):
         """Override to check function globals for simple constants."""
         result = super().visit_Name(node)

@@ -453,18 +453,54 @@ DomainResult getAffineIfDomain(affine::AffineIfOp ifOp,
   return {result, nullptr};
 }
 
-// Return whichever of `lhs`/`rhs` has the lexicographically smaller
-// stringified `getLoc()`. Used to pick a deterministic op when the dataflow
-// solver could otherwise carry either of two unanalyzable predicates through
-// the lattice; without this, diagnostic notes change op across runs depending
-// on solver order. Either argument may be null.
-Operation *firstByLocation(Operation *lhs, Operation *rhs) {
+// Walk a Location to find a FileLineColLoc, recursing into FusedLoc (first
+// inner location) and CallSiteLoc (callee, then caller). Returns null if
+// none is reachable.
+static FileLineColLoc findFileLineColLoc(Location loc) {
+  if (auto fl = dyn_cast<FileLineColLoc>(loc)) {
+    return fl;
+  }
+  if (auto fused = dyn_cast<FusedLoc>(loc)) {
+    for (Location inner : fused.getLocations()) {
+      if (auto fl = findFileLineColLoc(inner)) {
+        return fl;
+      }
+    }
+  }
+  if (auto call = dyn_cast<CallSiteLoc>(loc)) {
+    if (auto fl = findFileLineColLoc(call.getCallee())) {
+      return fl;
+    }
+    if (auto fl = findFileLineColLoc(call.getCaller())) {
+      return fl;
+    }
+  }
+  return {};
+}
+
+// Pick the op whose source Location sorts earlier, so diagnostic notes
+// are deterministic across runs even when the dataflow solver visits
+// operands in varying order. Either argument may be null.
+Operation *pickEarlierBySourceLoc(Operation *lhs, Operation *rhs) {
   if (!lhs) {
     return rhs;
   }
   if (!rhs) {
     return lhs;
   }
+  // Comparing Location attributes directly is pointer-based and not
+  // stable across runs (Attribute uniquing order depends on allocation),
+  // so compare (filename, line, column) extracted from a FileLineColLoc.
+  FileLineColLoc lfl = findFileLineColLoc(lhs->getLoc());
+  FileLineColLoc rfl = findFileLineColLoc(rhs->getLoc());
+  if (lfl && rfl) {
+    auto key = [](FileLineColLoc fl) {
+      return std::tuple(fl.getFilename().getValue(), fl.getLine(),
+                        fl.getColumn());
+    };
+    return key(lfl) <= key(rfl) ? lhs : rhs;
+  }
+  // Fallback for locations with no reachable FileLineColLoc (rare).
   std::string lhsStr;
   std::string rhsStr;
   llvm::raw_string_ostream(lhsStr) << lhs->getLoc();
@@ -508,7 +544,7 @@ BranchDomains getBranchDomainsImpl(Value condition, const Domain &current,
     BranchDomains b =
         getBranchDomainsImpl(andOp.getRhs(), current, state, coordCache);
     Operation *unanalyzable =
-        firstByLocation(a.unanalyzableOp, b.unanalyzableOp);
+        pickEarlierBySourceLoc(a.unanalyzableOp, b.unanalyzableOp);
     return {
         domainIntersect(a.thenDomain, b.thenDomain),
         domainUnion(a.elseDomain, domainIntersect(a.thenDomain, b.elseDomain)),
@@ -520,7 +556,7 @@ BranchDomains getBranchDomainsImpl(Value condition, const Domain &current,
     BranchDomains b =
         getBranchDomainsImpl(orOp.getRhs(), current, state, coordCache);
     Operation *unanalyzable =
-        firstByLocation(a.unanalyzableOp, b.unanalyzableOp);
+        pickEarlierBySourceLoc(a.unanalyzableOp, b.unanalyzableOp);
     return {
         domainUnion(a.thenDomain, domainIntersect(a.elseDomain, b.thenDomain)),
         domainIntersect(a.elseDomain, b.elseDomain), unanalyzable};
@@ -726,8 +762,8 @@ std::optional<ScopeRoles> getPipeNetScopeRoles(PipeNetScopeOp scopeOp,
 //     enclosing region predicates.
 //   - `unanalyzableOp_`: the predicate op the verifier could not statically
 //     evaluate, used to attach a note on downstream pipe-coupled diagnostics.
-// `join` is set-union on `domain_` and `firstByLocation` on `unanalyzableOp_`,
-// applied at control-flow merges.
+// `join` is set-union on `domain_` and `pickEarlierBySourceLoc` on
+// `unanalyzableOp_`, applied at control-flow merges.
 class DomainLattice : public dataflow::AbstractDenseLattice {
 public:
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(DomainLattice)
@@ -738,7 +774,7 @@ public:
     const auto &other = static_cast<const DomainLattice &>(rhs);
     Domain joined = domainUnion(domain_, other.domain_);
     Operation *carriedOp =
-        firstByLocation(unanalyzableOp_, other.unanalyzableOp_);
+        pickEarlierBySourceLoc(unanalyzableOp_, other.unanalyzableOp_);
     if (joined == domain_ && carriedOp == unanalyzableOp_) {
       return ChangeResult::NoChange;
     }
