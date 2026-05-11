@@ -504,12 +504,10 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
     I64Attr:$dstEndX,
     I64Attr:$dstEndY,
     I64Attr:$pipeNetId,
-    // Diagnostic-only: the Python variable name the user assigned the
-    // owning PipeNet to, when available. The Python frontend stamps
-    // this from the capture / global symbol where the PipeNet was
-    // bound. The verifier reads it to render diagnostics like
-    // `wrap the surrounding work in `if mcast_a_net.is_active(): ...``
-    // instead of falling back to `net_<id>`. Lowering ignores it.
+    // Optional user-facing name for the owning PipeNet, used only to
+    // render diagnostics in source-level terms (e.g.
+    // `mcast_a_net.is_active()` instead of `net_<id>.is_active()`).
+    // No effect on op semantics.
     OptionalAttr<StrAttr>:$pipeNetName
   );
   let results = (outs TTL_Pipe:$result);
@@ -626,7 +624,7 @@ def TTL_IsSrcOp : TTL_Op<"is_src",
   let description = [{
     Returns `true` on nodes that match the `src` of at least one pipe in the
     named PipeNet, `false` elsewhere. The value-returning sibling of
-    `ttl.if_src`; used as the condition of an `scf.if` to gate pipe-coupled
+    `ttl.if_src`; used as the condition of an `scf.if` to guard pipe-coupled
     work without entering a region.
   }];
   let arguments = (ins I64Attr:$pipe_net_id);

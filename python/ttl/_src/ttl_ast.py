@@ -178,8 +178,8 @@ class TTLGenericCompiler(TTCompilerBase):
         # Capture PipeNet variable names so the verifier can render
         # diagnostics in user-facing terms (e.g. `mcast_a_net.is_active()`
         # instead of `net_0.is_active()`). Body-local PipeNet assignments
-        # land here too — `mcast_a_net = ttl.PipeNet(a_pipes)` evaluates
-        # the RHS at trace time and stores the resulting PipeNet object.
+        # are recorded here too — `mcast_a_net = ttl.PipeNet(a_pipes)`
+        # evaluates the RHS at trace time and stores the resulting object.
         from ..pipe import PipeNet
 
         if isinstance(value, PipeNet):

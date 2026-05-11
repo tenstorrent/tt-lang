@@ -1252,7 +1252,6 @@ mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {
 
   // Spec NodeRange: each axis is `0 <= c_i < G_i`, so the destination
   // is a non-empty contiguous hypercube with `start <= end`.
-  // https://github.com/tenstorrent/tt-lang/blob/<spec-commit>/docs/sphinx/specs/TTLangSpecification.md#L633
   if (dstStartX > dstEndX || dstStartY > dstEndY) {
     return emitOpError()
            << "destination start must not exceed destination end on any axis";
