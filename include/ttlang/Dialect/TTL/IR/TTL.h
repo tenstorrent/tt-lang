@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: (c) 2026 Tenstorrent USA, Inc.
+// SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -35,7 +35,7 @@ constexpr llvm::StringLiteral kCBIndexAttrPrefix("ttl.cb_index.");
 constexpr llvm::StringLiteral kTargetArchAttrName("ttl.target_arch");
 constexpr llvm::StringLiteral kFp32DestAccEnAttrName("fp32_dest_acc_en");
 constexpr llvm::StringLiteral kDstFullSyncEnAttrName("dst_full_sync_en");
-constexpr llvm::StringLiteral kUnpackToDestFp32AttrName("unpack_to_dest_fp32");
+constexpr llvm::StringLiteral kUnpackToDestFp32AttrName("ttl.unpack_to_dest_fp32");
 
 /// Canonical target_arch values. Mirrored in python/ttl/ttl_api.py.
 constexpr llvm::StringLiteral kBlackholeArchName("blackhole");
