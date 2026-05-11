@@ -125,7 +125,7 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     encoding (transfers all tiles via loop).
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
-    ttkernel noc ops land in tt-mlir. Issue: #87.
+    ttkernel noc ops are available in tt-mlir. Issue: #87.
 
     Example:
 
@@ -164,7 +164,7 @@ def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
     used.
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
-    barriers land in ttkernel (tt-mlir). Issue: #87.
+    barriers are available in ttkernel (tt-mlir). Issue: #87.
 
     Example:
 
@@ -372,7 +372,7 @@ def TTL_DstSectionOp : TTL_Op<"dst_section", [
 
 def TTL_InitSFPUOp : TTL_Op<"init_sfpu",
     [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "Initialize SFPU unpacker/packer for CB data formats.";
+  let summary = "Initialize SFPU unpacker/packer for CB data formats";
   let description = [{
     Configures the unpacker and packer hardware for SFPU operations based
     on the data formats of the input and output circular buffers. Must be
@@ -388,7 +388,7 @@ def TTL_InitSFPUOp : TTL_Op<"init_sfpu",
 
 def TTL_TileRegsAcquireOp : TTL_Op<"tile_regs_acquire",
     [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "Acquire the DST register lock.";
+  let summary = "Acquire the DST register lock";
   let description = [{
     Acquire an exclusive lock on the DST register before issuing tile
     computations that write to DST. This mirrors the TTKernel
@@ -402,7 +402,7 @@ def TTL_TileRegsAcquireOp : TTL_Op<"tile_regs_acquire",
 
 def TTL_TileRegsCommitOp : TTL_Op<"tile_regs_commit",
     [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "Commit the DST register lock (MATH thread).";
+  let summary = "Commit the DST register lock (MATH thread)";
   let description = [{
     Release the DST register lock held by the MATH thread, mirroring
     `ttkernel.tile_regs_commit`. This is blocking and must be paired with a
@@ -413,7 +413,7 @@ def TTL_TileRegsCommitOp : TTL_Op<"tile_regs_commit",
 
 def TTL_TileRegsWaitOp : TTL_Op<"tile_regs_wait",
     [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "Wait for DST register availability (PACK thread).";
+  let summary = "Wait for DST register availability (PACK thread)";
   let description = [{
     Acquire the DST register lock for the PACK thread, blocking until the MATH
     thread commits. Mirrors `ttkernel.tile_regs_wait`.
@@ -423,7 +423,7 @@ def TTL_TileRegsWaitOp : TTL_Op<"tile_regs_wait",
 
 def TTL_TileRegsReleaseOp : TTL_Op<"tile_regs_release",
     [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "Release DST register lock (PACK thread).";
+  let summary = "Release DST register lock (PACK thread)";
   let description = [{
     Release the DST register lock held by the PACK thread, mirroring
     `ttkernel.tile_regs_release`. Must be paired with a preceding

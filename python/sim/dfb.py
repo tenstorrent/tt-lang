@@ -20,6 +20,7 @@ from typing import (
     List,
     NamedTuple,
     Optional,
+    Tuple,
     Union,
     cast,
 )
@@ -34,8 +35,11 @@ from .blockstate import (
     BlockStateMachine,
     ExpectedOp,
     ThreadType,
+    format_cannot_read_block,
+    format_cannot_write_block,
 )
 from .context import get_current_thread_type
+from .diagnostics import find_user_code_location
 from .dfbstate import DFBState
 from .constants import TILE_SHAPE
 from .errors import DFBContractError
@@ -48,6 +52,14 @@ from .ttnnsim import (
 )
 from .trace import get_dfb_name, trace
 from .typedefs import Index, IndexType, PositiveInt, Shape, Size
+
+
+def _name_phrase_for_error(block: "Block") -> str:
+    """Short `` (name: …)`` when ``reserve(name=…)`` or ``wait(name=…)`` was used."""
+    n = block.name
+    if n and str(n).strip():
+        return f" (name: {n!r})"
+    return ""
 
 
 class Block:
@@ -72,6 +84,9 @@ class Block:
         "_store_confirmation_pending",  # Set by assign_src; cleared by mark_store_read_complete
         "_source_blocks",  # Track wait() blocks that contributed to this temporary block
         "_broadcast_dims",  # Pending broadcast dimensions (None or tuple of ints)
+        "_name",  # optional label from reserve(name=) / wait(name=); used in dataflow error messages
+        "_pending_copy_dest_location",  # user (file, line) of copy(..., self) while destination copy is in flight (NAW)
+        "_pending_copy_src_location",  # user (file, line) of copy(self, ...) while source copies may be in flight (ROR)
         "dfb",  # Reference to DataflowBuffer for context manager cleanup
         "dfb_state",  # DFBState reference for updating ring-buffer slot on copy_as_dest
         "dfb_slot_idx",  # Index of this block's slot in the ring buffer
@@ -90,6 +105,7 @@ class Block:
         thread_type: ThreadType,
         is_temporary: bool = False,
         dfb: Optional["DataflowBuffer"] = None,
+        name: Optional[str] = None,
     ):
         self._buf = tensor
         self._shape = shape
@@ -106,6 +122,9 @@ class Block:
         self.dfb = dfb  # Reference to DataflowBuffer for context manager support
         self.dfb_state: Optional[DFBState] = None
         self.dfb_slot_idx: int = -1
+        self._name: Optional[str] = name.strip() if name and name.strip() else None
+        self._pending_copy_dest_location: Optional[Tuple[str, int]] = None
+        self._pending_copy_src_location: Optional[Tuple[str, int]] = None
 
         # Delegate all access-state logic to BlockStateMachine
         self._sm: BlockStateMachine = BlockStateMachine(acquisition, thread_type)
@@ -169,7 +188,7 @@ class Block:
             f"shape={self._shape}, "
             f"data={repr(self._buf.to_torch())}, "
             f"acq={acq}, "
-            f"thread={self._thread_type.name}, "
+            f"kernel={self._thread_type.name}, "
             f"access={self._access_state.name}, "
             f"expected={expected})"
         )
@@ -188,17 +207,54 @@ class Block:
             )
         self.dfb.push_block()
 
+    def _pending_copy_site_for_errors(self) -> Optional[Tuple[str, int]]:
+        """User callsite for copy(...) involving this block while NAW or ROR (for error messages)."""
+        if self._access_state == AccessState.NAW:
+            return self._pending_copy_dest_location
+        if self._access_state == AccessState.ROR:
+            return self._pending_copy_src_location
+        return None
+
     def mark_copy_as_source(self) -> None:
         """Mark that this block is being used as a copy source."""
-        self._sm.transition("copy_src", "copy (as source)", ExpectedOp.COPY_SRC)
+        pending = self._pending_copy_site_for_errors()
+        self._sm.transition(
+            "copy_src",
+            "copy (as source)",
+            ExpectedOp.COPY_SRC,
+            pending_copy_location=pending,
+        )
+        try:
+            self._pending_copy_src_location = find_user_code_location()
+        except RuntimeError:
+            self._pending_copy_src_location = None
 
     def mark_copy_as_dest(self) -> None:
         """Mark that this block is being used as a copy destination."""
-        self._sm.transition("copy_dst", "copy (as destination)", ExpectedOp.COPY_DST)
+        pending = self._pending_copy_site_for_errors()
+        self._sm.transition(
+            "copy_dst",
+            "copy (as destination)",
+            ExpectedOp.COPY_DST,
+            pending_copy_location=pending,
+        )
+        try:
+            self._pending_copy_dest_location = find_user_code_location()
+        except RuntimeError:
+            self._pending_copy_dest_location = None
 
     def mark_tx_wait_complete(self) -> None:
         """Mark that tx.wait() has completed for a copy operation."""
-        self._sm.transition("tx_wait", "tx.wait()", ExpectedOp.TX_WAIT)
+        pending = self._pending_copy_site_for_errors()
+        self._sm.transition(
+            "tx_wait",
+            "tx.wait()",
+            ExpectedOp.TX_WAIT,
+            pending_copy_location=pending,
+        )
+        self._pending_copy_dest_location = None
+        if self._access_state != AccessState.ROR:
+            self._pending_copy_src_location = None
 
     def mark_assign_src_complete(self) -> None:
         """Mark that this block's data was used as an arithmetic operand.
@@ -225,22 +281,36 @@ class Block:
         been popped.
         """
         if self._sm.access_state != AccessState.OS:
-            self._sm.transition("store_src", "store (as source)", ExpectedOp.STORE_SRC)
+            self._sm.transition(
+                "store_src",
+                "store (as source)",
+                ExpectedOp.STORE_SRC,
+                pending_copy_location=self._pending_copy_site_for_errors(),
+            )
         self._store_confirmation_pending = False
         if self.dfb is not None:
             self.dfb.discard_pending_confirmation(self)
 
     def mark_store_complete(self) -> None:
         """Mark that store() has completed on this block (as destination)."""
-        self._sm.transition("store_dst", "store()", ExpectedOp.STORE)
+        self._sm.transition(
+            "store_dst",
+            "store()",
+            ExpectedOp.STORE,
+            pending_copy_location=self._pending_copy_site_for_errors(),
+        )
 
     def mark_push_complete(self) -> None:
         """Mark that push() has completed (RESERVE blocks only)."""
-        self._sm.transition_push()
+        self._sm.transition_push(
+            pending_copy_location=self._pending_copy_site_for_errors(),
+        )
 
     def mark_pop_complete(self) -> None:
         """Mark that pop() has completed (WAIT blocks only)."""
-        self._sm.transition_pop()
+        self._sm.transition_pop(
+            pending_copy_location=self._pending_copy_site_for_errors(),
+        )
 
     def __len__(self) -> Size:
         return math.prod(self._shape)
@@ -262,28 +332,24 @@ class Block:
 
         # State machine check
         if self._access_state == AccessState.MW:
-            expected_ops_str = (
-                ", ".join(
-                    op.name for op in sorted(self._expected_ops, key=lambda x: x.name)
-                )
-                if self._expected_ops
-                else "DONE"
-            )
             raise RuntimeError(
-                f"Cannot read from Block: Block is in must-write (MW) state. "
-                f"Current state: {self._access_state.name}, Expected operations: [{expected_ops_str}]"
+                format_cannot_read_block(
+                    self._access_state,
+                    self._expected_ops,
+                    self.acquisition,
+                    self.name,
+                    pending_copy_location=self._pending_copy_site_for_errors(),
+                )
             )
         if self._access_state in (AccessState.NAW, AccessState.OS):
-            expected_ops_str = (
-                ", ".join(
-                    op.name for op in sorted(self._expected_ops, key=lambda x: x.name)
-                )
-                if self._expected_ops
-                else "DONE"
-            )
             raise RuntimeError(
-                f"Cannot read from Block: Block has no access ({self._access_state.name} state). "
-                f"Current state: {self._access_state.name}, Expected operations: [{expected_ops_str}]"
+                format_cannot_read_block(
+                    self._access_state,
+                    self._expected_ops,
+                    self.acquisition,
+                    self.name,
+                    pending_copy_location=self._pending_copy_site_for_errors(),
+                )
             )
         # ROR state (async read in progress) allows reads since we're copying FROM this block
 
@@ -299,22 +365,22 @@ class Block:
 
         # State machine check
         if self._access_state == AccessState.NAW:
-            # NAW: Block is locked as copy destination until tx.wait() completes
             raise RuntimeError(
-                f"Cannot write to Block: Block is locked as copy destination until tx.wait() completes (copy lock error). "
-                f"Current state: {self._access_state.name}, Expected operations: [TX_WAIT]"
+                format_cannot_write_block(
+                    self._access_state,
+                    self._expected_ops,
+                    self.name,
+                    pending_copy_location=self._pending_copy_site_for_errors(),
+                )
             )
         if self._access_state in (AccessState.ROR, AccessState.OS):
-            expected_ops_str = (
-                ", ".join(
-                    op.name for op in sorted(self._expected_ops, key=lambda x: x.name)
-                )
-                if self._expected_ops
-                else "DONE"
-            )
             raise RuntimeError(
-                f"Cannot write to Block: Block has no access ({self._access_state.name} state). "
-                f"Current state: {self._access_state.name}, Expected operations: [{expected_ops_str}]"
+                format_cannot_write_block(
+                    self._access_state,
+                    self._expected_ops,
+                    self.name,
+                    pending_copy_location=self._pending_copy_site_for_errors(),
+                )
             )
         # Note: We allow writing in MR/RW states as appropriate for the operation
 
@@ -891,7 +957,7 @@ class Block:
 
     @property
     def thread_type(self) -> ThreadType:
-        """Get the thread type (DM or Compute) that acquired this block."""
+        """Get the kernel role (DM or Compute) that acquired this block."""
         return self._thread_type
 
     @property
@@ -908,6 +974,11 @@ class Block:
     def expected_ops(self) -> set[ExpectedOp]:
         """Get the set of expected operations for this block."""
         return self._expected_ops
+
+    @property
+    def name(self) -> Optional[str]:
+        """Optional label from ``DataflowBuffer.reserve`` / ``wait`` (``name=``); used in pipeline validation errors."""
+        return self._name
 
     @property
     def shape(self) -> Shape:
@@ -1053,11 +1124,15 @@ class DataflowBuffer:
     # Public interface
     # ------------------------------------------------------------------
 
-    def wait(self) -> Block:
+    def wait(self, name: Optional[str] = None) -> Block:
         """Wait for data to be available and return a read view.
 
         Blocks until one operation slot is visible, then returns a Block
         providing access to that slot's tiles.
+
+        Args:
+            name: Optional label for this buffer block; included in
+                ``validate_no_pending_blocks`` error text when set.
 
         Usage:
             blk = dfb.wait()
@@ -1095,6 +1170,7 @@ class DataflowBuffer:
             shape=state.shape,
             acquisition=BlockAcquisition.WAIT,
             thread_type=thread_type,
+            name=name,
         )
         block.dfb = self
         self._pending_waited_block = block
@@ -1122,11 +1198,15 @@ class DataflowBuffer:
         """Remove block from pending store confirmation set."""
         self._pending_confirmations.discard(block)
 
-    def reserve(self) -> Block:
+    def reserve(self, name: Optional[str] = None) -> Block:
         """Reserve one operation slot for writing and return a write view.
 
         Blocks until a free slot is available. The slot is zero-initialized
         before being returned.
+
+        Args:
+            name: Optional label for this buffer block; included in
+                ``validate_no_pending_blocks`` error text when set.
 
         Usage:
             blk = dfb.reserve()
@@ -1171,6 +1251,7 @@ class DataflowBuffer:
             shape=state.shape,
             acquisition=BlockAcquisition.RESERVE,
             thread_type=thread_type,
+            name=name,
         )
         block.dfb = self
         block.dfb_state = state
@@ -1310,33 +1391,37 @@ class DataflowBuffer:
 
         if self._pending_reserved_block is not None:
             block = self._pending_reserved_block
+            nxt = [op.name for op in block.expected_ops]
+            nm = _name_phrase_for_error(block)
             errors.append(
-                f"Pending reserved block: Block(acquisition={block.acquisition.name}, "
-                f"thread={block.thread_type.name}, access={block.access_state.name}, "
-                f"expected_ops={[op.name for op in block.expected_ops]}). "
-                f"Did you forget to call push()?"
+                f"Block{nm} is reserve() acquired at kernel exit; producer kernel needs to push() before exit.\n\n"
+                f"Details: block_name={block.name!r}, acquisition=RESERVE, kernel={block.thread_type.name}, "
+                f"access={block.access_state.name}, expected_ops={nxt}."
             )
 
         if self._pending_waited_block is not None:
             block = self._pending_waited_block
+            nxt = [op.name for op in block.expected_ops]
+            nm = _name_phrase_for_error(block)
             errors.append(
-                f"Pending waited block: Block(acquisition={block.acquisition.name}, "
-                f"thread={block.thread_type.name}, access={block.access_state.name}, "
-                f"expected_ops={[op.name for op in block.expected_ops]}). "
-                f"Did you forget to call pop()?"
+                f"Block{nm} is wait() acquired at kernel exit; consumer kernel needs to pop() before exit.\n\n"
+                f"Details: block_name={block.name!r}, acquisition=WAIT, kernel={block.thread_type.name}, "
+                f"access={block.access_state.name}, expected_ops={nxt}."
             )
 
         for block in self._pending_confirmations:
+            nm = _name_phrase_for_error(block)
             errors.append(
-                f"Block(acquisition={block.acquisition.name}, "
-                f"thread={block.thread_type.name}, access={block.access_state.name}): "
-                f"block data was used in arithmetic but never reached a store()."
+                f"Block{nm} from wait() was used in an expression but never reached a store the simulator can see; "
+                f"route the data to a destination store (or mark_store_read_complete) before exit.\n\n"
+                f"Details: block_name={block.name!r}, access={block.access_state.name}."
             )
 
         if errors:
             raise RuntimeError(
-                f"DataflowBuffer {self} has incomplete blocks at end of execution:\n"
-                + "\n".join(f"  - {err}" for err in errors)
+                f"DataflowBuffer {self} has incomplete or unconsumed dataflow at end of execution. Each issue "
+                f"below is one place to fix:\n"
+                + "\n\n---\n\n".join(f"{i+1}) {err}" for i, err in enumerate(errors))
             )
 
     def __deepcopy__(self, memo: Dict[int, Any]) -> "DataflowBuffer":

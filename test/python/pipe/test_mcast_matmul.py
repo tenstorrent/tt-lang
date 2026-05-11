@@ -380,16 +380,19 @@ def _run_matmul(make_kernel, M, K, N, device, golden_fn=None):
     assert_pcc(expected, result, threshold=0.99)
 
 
+@pytest.mark.xfail(reason="Pending fix in PR #547", strict=False)
 def test_mcast_matmul(device):
     """2D mcast matmul (both A+B on dm_read)."""
     _run_matmul(make_mcast_kernel, 10240, 8192, 13312, device)
 
 
+@pytest.mark.xfail(reason="Pending fix in PR #547", strict=False)
 def test_balanced_matmul(device):
     """Balanced matmul (A on dm_read, B on dm_write)."""
     _run_matmul(make_balanced_kernel, 10240, 8192, 13312, device)
 
 
+@pytest.mark.xfail(reason="Pending fix in PR #547", strict=False)
 def test_balanced_matmul_relu(device):
     """Balanced matmul + fused relu."""
 

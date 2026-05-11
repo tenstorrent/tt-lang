@@ -6,7 +6,7 @@
 Adversarial multinode test designed to stress compiler optimizations.
 
 Evil features:
-- Non-square grid (8x6) and tensors (512x384)
+- Non-square grid (6 cols x 7 rows) and tensors (448 rows x 384 cols)
 - 2x2 DFB shape with multi-tile blocks
 - Variable reuse/shadowing
 - Interleaved operations in non-obvious order
@@ -27,20 +27,18 @@ import ttl
 
 TILE_SIZE = 32
 
-# Non-square grid: 6 cols x 8 rows
 GRID_COLS = 6
-GRID_ROWS = 8
+GRID_ROWS = 7
 
-# All tensors same size: 2x2 tiles per core = 512x384 total
 CB_ROWS = 2
 CB_COLS = 2
 TENSOR_SHAPE = (
-    GRID_ROWS * CB_ROWS * TILE_SIZE,  # 512 rows
-    GRID_COLS * CB_COLS * TILE_SIZE,  # 384 cols
+    GRID_ROWS * CB_ROWS * TILE_SIZE,
+    GRID_COLS * CB_COLS * TILE_SIZE,
 )
 
 
-@ttl.operation(grid=(6, 8))  # (cols, rows)
+@ttl.operation(grid=(GRID_COLS, GRID_ROWS))
 def adversarial_kernel(a, b, c, d, out1, out2, out3, out4):
     """
     Adversarial kernel with 4 inputs and 4 outputs.

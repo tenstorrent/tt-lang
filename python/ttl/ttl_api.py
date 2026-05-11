@@ -66,7 +66,12 @@ from ._src.tensor_registry import (
     register_tensor_source,
 )
 from ._src.ttl_ast import TTLGenericCompiler
-from .circular_buffer import CircularBuffer, CompilerAllocatedDFBConfig, get_cb_count
+from .dataflow_buffer import (
+    CircularBuffer,
+    CompilerAllocatedDFBConfig,
+    DataflowBuffer,
+    get_cb_count,
+)
 from .pipe import Pipe, PipeNet
 from .constants import SUPPORTED_MEMORY_SPACES
 from .diagnostics import (
@@ -862,7 +867,7 @@ def _compile_ttnn_kernel(
 
 def _collect_captures(
     f: Callable,
-) -> Dict[str, Union[int, CircularBuffer, Pipe]]:
+) -> Dict[str, Union[int, DataflowBuffer, Pipe]]:
     """
     Collect and convert captured variables from function closure.
 
@@ -883,7 +888,7 @@ def _collect_captures(
             return val
         elif is_ttnn_tensor(val):
             return val
-        elif isinstance(val, CircularBuffer):
+        elif isinstance(val, DataflowBuffer):
             return val
         elif isinstance(val, Pipe):
             return val
@@ -899,9 +904,9 @@ def _collect_captures(
 
 
 def _collect_cb_configs(threads):
-    """Extract CircularBuffer objects from thread closures, indexed by cb_index.
+    """Extract DataflowBuffer objects from thread closures, indexed by dfb index.
 
-    Returns a list of CircularBuffer objects indexed by cb_index. Each CB has
+    Returns a list of DataflowBuffer objects indexed by dfb index. Each DFB has
     shape, block_count, tensor (for dtype), and _cb_index attributes.
     """
     cb_configs_dict = {}
@@ -912,7 +917,7 @@ def _collect_cb_configs(threads):
             continue
         for cell in closure:
             val = cell.cell_contents
-            if isinstance(val, CircularBuffer):
+            if isinstance(val, DataflowBuffer):
                 cb_configs_dict[val._cb_index] = val
 
     if not cb_configs_dict:
@@ -1231,7 +1236,7 @@ def _compile_kernel(
         if injected_kwarg in f_params:
             kwargs[injected_kwarg] = val
 
-    from .circular_buffer import _reset_cb_counter, CircularBuffer
+    from .dataflow_buffer import _reset_cb_counter
     from .operators import _set_current_grid
 
     _reset_cb_counter()
@@ -1706,6 +1711,7 @@ __all__ = [
     "compute",
     "datamovement",
     "TensorBlock",
+    "DataflowBuffer",
     "CircularBuffer",
     "CopyTransferHandler",
     "copy",

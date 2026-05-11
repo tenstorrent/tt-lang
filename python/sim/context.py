@@ -70,19 +70,19 @@ def reset_context() -> None:
 
 
 def get_current_thread_type() -> ThreadType:
-    """Get the current thread type.
+    """Get the current kernel role (compute vs datamovement).
 
     Returns:
         ThreadType
 
     Raises:
-        RuntimeError: If thread type is not set (not within a thread context)
+        RuntimeError: If kernel role is not set (not within a running compute/DM kernel)
     """
     current_thread_type = get_context().current_thread_type
     if current_thread_type is None:
         raise RuntimeError(
-            "Thread context not set. Must be called within a kernel thread or after "
-            "calling set_current_thread_type()."
+            "Compute/DM kernel context is not set. Use this only while a compute or "
+            "datamovement kernel is running, or after calling set_current_thread_type()."
         )
     return current_thread_type
 
