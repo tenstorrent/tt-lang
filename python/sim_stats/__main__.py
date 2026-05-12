@@ -4,8 +4,11 @@
 """
 Post-processing tool for simulator trace files.
 
-Reads a JSON Lines trace file produced by ttlang-sim --trace and derives the
-same statistics that --show-stats reports during a live simulation run:
+The ``ttlang-sim-stats`` console command is bundled with ``pip install tt-lang-sim``
+(or full ``tt-lang``); there is no standalone package for this tool.
+
+Reads a JSON Lines trace file produced by ttlang-sim --trace and derives
+simulator summary tables:
 
   Tensor Access Statistics   -- reads/writes and tile counts per tensor name
   Pipe Transfer Statistics   -- sends/receives and tile counts per pipe
@@ -365,8 +368,8 @@ def main() -> None:
         prog="ttlang-sim-stats",
         description=(
             "Derive simulator statistics from a ttlang-sim trace file.\n\n"
-            "Produces the same tables as running ttlang-sim with --show-stats,\n"
-            "but reads from a pre-recorded JSON Lines trace instead of a live run.\n"
+            "Reads the JSON Lines trace written by ttlang-sim --trace and prints\n"
+            "tensor, pipe, and dataflow-buffer summary tables.\n"
             "DFB statistics include a per-core breakdown with a per-DFB subtotal."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,

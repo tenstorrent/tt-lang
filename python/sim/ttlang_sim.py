@@ -9,7 +9,8 @@ without requiring any code changes to the kernel files.
 
 Usage:
     ttlang-sim examples/eltwise_add.py
-    ttlang-sim examples/single_node_matmul.py --show-stats --grid 4,4
+    ttlang-sim examples/single_node_matmul.py --trace /tmp/matmul.jsonl --grid 4,4
+    ttlang-sim-stats /tmp/matmul.jsonl
 """
 
 import sys
