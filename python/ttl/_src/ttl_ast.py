@@ -215,7 +215,7 @@ class TTLGenericCompiler(TTCompilerBase):
             ttl.element_write(blk, 0, 0, best_idx)  # reads memref
         """
         if not isinstance(node.targets[0], ast.Tuple):
-            if isinstance(node.targets[0], ast.Name) and self._in_loop_body():
+            if isinstance(node.targets[0], ast.Name) and self._in_nested_scope():
                 var_name = node.targets[0].id
                 value = self.visit(node.value)
 
@@ -294,8 +294,8 @@ class TTLGenericCompiler(TTCompilerBase):
         ty = value.type
         return isinstance(ty, IntegerType) and ty.width == 32
 
-    def _in_loop_body(self):
-        """Check if we're inside a loop body (more than one symbol table scope)."""
+    def _in_nested_scope(self):
+        """Check if we're inside a nested scope (loop, if-block, or with-block)."""
         return len(self.symbol_tables) > 1
 
     def _find_outer_scope(self, var_name):

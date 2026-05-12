@@ -1,6 +1,49 @@
 // Summary: verify element_read/element_write verifiers reject invalid inputs.
-// Tests W2 (static bounds check) and W3 (single-tile block requirement).
+// Tests W2 (static bounds check), W3 (single-tile block requirement),
+// and DM-only enforcement (element ops in compute thread).
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics
+
+// -----
+// DM-only: element_read inside a compute kernel function.
+
+func.func @read_in_compute_thread()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %wait = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  // expected-error @below {{'ttl.element_read' op is a datamovement-only operation but appears inside a compute kernel function 'read_in_compute_thread'}}
+  %val = ttl.element_read %wait[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, bf16>> -> i32
+  func.return
+}
+
+// -----
+// DM-only: element_write inside a compute kernel function.
+
+func.func @write_in_compute_thread()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %reserve = ttl.cb_reserve %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %val = arith.constant 42 : i32
+  // expected-error @below {{'ttl.element_write' op is a datamovement-only operation but appears inside a compute kernel function 'write_in_compute_thread'}}
+  ttl.element_write %reserve[%c0, %c0], %val : tensor<1x1x!ttcore.tile<32x32, bf16>>, i32
+  func.return
+}
+
+// -----
+// Write direction: element_write on a cb_wait (read-only) block.
+
+func.func @write_to_wait_block()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %wait = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %block = ttl.attach_cb %wait, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %val = arith.constant 42 : i32
+  // expected-error @below {{'ttl.element_write' op writes to a read-only block from cb_wait; use a block from cb_reserve instead}}
+  ttl.element_write %block[%c0, %c0], %val : tensor<1x1x!ttcore.tile<32x32, bf16>>, i32
+  func.return
+}
 
 // -----
 // W2: element_read with row index out of bounds (row=32 on a 32x32 tile).

@@ -714,7 +714,8 @@ def TTL_DPrintOp : TTL_Op<"dprint", []> {
 // Element-Level Access Operations (for use in datamovement threads)
 //===----------------------------------------------------------------------===//
 
-def TTL_ElementReadOp : TTL_Op<"element_read", [MemoryEffects<[MemRead]>]> {
+def TTL_ElementReadOp : TTL_Op<"element_read", [MemoryEffects<[MemRead]>,
+    TTL_DataMovementOpTrait]> {
   let summary = "Read a single element from a CB block at tile coordinates";
   let description = [{
     Reads a single bf16/f32 element from a circular buffer block at the given
@@ -743,7 +744,8 @@ def TTL_ElementReadOp : TTL_Op<"element_read", [MemoryEffects<[MemRead]>]> {
   let hasVerifier = 1;
 }
 
-def TTL_ElementWriteOp : TTL_Op<"element_write", [MemoryEffects<[MemWrite]>]> {
+def TTL_ElementWriteOp : TTL_Op<"element_write", [MemoryEffects<[MemWrite]>,
+    TTL_DataMovementOpTrait]> {
   let summary = "Write a single element to a CB block at tile coordinates";
   let description = [{
     Writes a single element to a circular buffer block at the given tile

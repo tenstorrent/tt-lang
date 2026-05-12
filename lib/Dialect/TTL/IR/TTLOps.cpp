@@ -18,6 +18,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h" // IWYU pragma: keep
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "llvm/ADT/TypeSwitch.h" // IWYU pragma: keep
 #include <cstdint>
 #include <functional>
@@ -35,6 +36,25 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.cpp.inc"
 
 namespace mlir::tt::ttl {
+
+mlir::LogicalResult verifyDataMovementOnlyOp(mlir::Operation *op) {
+  auto func = op->getParentOfType<mlir::func::FuncOp>();
+  if (!func) {
+    return mlir::success();
+  }
+  auto threadAttr =
+      func->getAttrOfType<ttkernel::ThreadTypeAttr>("ttl.kernel_thread");
+  if (!threadAttr) {
+    return mlir::success();
+  }
+  if (threadAttr.getValue() == ttkernel::ThreadType::Compute) {
+    return op->emitOpError()
+           << "is a datamovement-only operation but appears inside a "
+              "compute kernel function '"
+           << func.getName() << "'";
+  }
+  return mlir::success();
+}
 
 void TTLDialect::registerAttributes() {
   addAttributes<
@@ -1283,11 +1303,39 @@ static mlir::LogicalResult verifyElementAccessOp(mlir::Operation *op,
 }
 
 mlir::LogicalResult mlir::tt::ttl::ElementReadOp::verify() {
+  if (failed(verifyDataMovementOnlyOp(getOperation()))) {
+    return mlir::failure();
+  }
   return verifyElementAccessOp(getOperation(), getBlock(), getRow(), getCol());
 }
 
 mlir::LogicalResult mlir::tt::ttl::ElementWriteOp::verify() {
-  return verifyElementAccessOp(getOperation(), getBlock(), getRow(), getCol());
+  if (failed(verifyDataMovementOnlyOp(getOperation()))) {
+    return mlir::failure();
+  }
+  if (failed(verifyElementAccessOp(getOperation(), getBlock(), getRow(),
+                                   getCol()))) {
+    return mlir::failure();
+  }
+
+  // Reject writes to read-only blocks from cb_wait. Trace through
+  // attach_cb and unrealized_conversion_cast to find the originating op.
+  mlir::Value traced = traceUnrealizedCasts(getBlock());
+  if (auto attach = traced.getDefiningOp<AttachCBOp>()) {
+    mlir::Value tensor = traceUnrealizedCasts(attach.getTensor());
+    if (tensor.getDefiningOp<CBWaitOp>()) {
+      return emitOpError() << "writes to a read-only block from cb_wait; "
+                              "use a block from cb_reserve instead";
+    }
+  }
+  if (auto viewLike = traced.getDefiningOp<mlir::ViewLikeOpInterface>()) {
+    if (mlir::isa<CBWaitOp>(viewLike.getOperation())) {
+      return emitOpError() << "writes to a read-only block from cb_wait; "
+                              "use a block from cb_reserve instead";
+    }
+  }
+
+  return mlir::success();
 }
 
 mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {

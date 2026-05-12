@@ -1474,7 +1474,7 @@ def _compile_kernel(
         pipeline_passes += [
             "ttl-lower-dprint-to-emitc",
             "ttl-lower-element-access-to-emitc",
-            "convert-ttl-to-ttkernel",
+            f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag}}}",
             "ttkernel-insert-inits",
             "ttkernel-insert-l1-accumulation",
         ]

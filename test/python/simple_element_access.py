@@ -75,16 +75,26 @@ def element_copy_kernel(inp, out):
 # =============================================================================
 # Second kernel: loop variables, if conditionals, scalar arithmetic
 #
-# WARNING: This kernel compares bf16 element values as raw i32 bit patterns.
-# Equality (==) works correctly, but magnitude comparisons (>, <) on raw i32
-# bit patterns are NOT correct for bf16 because bf16 uses sign-magnitude
-# representation. See https://github.com/tenstorrent/tt-lang/issues/572
+# This test validates compile-time lowering only (TTLANG_COMPILE_ONLY=1).
+# It does NOT test numerical correctness on hardware.
+#
+# WARNING: element_read returns raw element bits as i32. Equality (==) on
+# these bit patterns is correct, but magnitude comparisons (>, <) on raw i32
+# are NOT correct for bf16 because bf16 uses sign-magnitude representation.
+# A runtime argmax using this pattern would produce wrong results for inputs
+# containing negative or mixed-sign values.
+# See https://github.com/tenstorrent/tt-lang/issues/572
 # =============================================================================
 
 
 @ttl.operation(grid=(1, 1))
 def element_scan_kernel(inp, out):
-    """Scan a tile column-by-column, compare elements, write computed index."""
+    """Scan a tile column-by-column, compare elements, write computed index.
+
+    Compile-only test: verifies the lowering of loop variables, if-blocks,
+    and scalar arithmetic with element_read/element_write. Does not validate
+    numerical correctness. See issue #572 for bf16 comparison limitations.
+    """
     inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 

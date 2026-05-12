@@ -240,7 +240,7 @@ def _to_index(value):
     """Convert an MLIR value to Index type if needed."""
     if hasattr(value, "type") and isinstance(value.type, IndexType):
         return value
-    return arith.IndexCastOp(IndexType.get(), value)
+    return arith.IndexCastOp(IndexType.get(), value).result
 
 
 def _to_i32(value):
@@ -252,11 +252,11 @@ def _to_i32(value):
         if hasattr(value.type, "width") and value.type.width == 32:
             return value
         if isinstance(value.type, IndexType):
-            return arith.IndexCastOp(i32_type, value)
+            return arith.IndexCastOp(i32_type, value).result
         if hasattr(value.type, "width") and value.type.width > 32:
-            return arith.TruncIOp(i32_type, value)
+            return arith.TruncIOp(i32_type, value).result
         if hasattr(value.type, "width") and value.type.width < 32:
-            return arith.ExtUIOp(i32_type, value)
+            return arith.ExtUIOp(i32_type, value).result
     return value
 
 
@@ -269,6 +269,21 @@ def _is_block(value) -> bool:
         return False
     owner_name = value.owner.name
     return owner_name == "ttl.attach_cb"
+
+
+def _is_write_block(block) -> bool:
+    """Check if a block originates from cb_reserve (writable).
+
+    Returns False for cb_wait (read-only) blocks.
+    """
+    if not _is_block(block):
+        return False
+    tensor = block.owner.operands[0]
+    return (
+        hasattr(tensor, "owner")
+        and tensor.owner is not None
+        and (tensor.owner.name == "ttl.cb_reserve")
+    )
 
 
 def _get_reserve_from_block(block):
@@ -704,6 +719,11 @@ def element_write(block, row, col, value):
     """
     if not _is_block(block):
         raise ValueError("element_write requires a block from cb.reserve()")
+    if not _is_write_block(block):
+        raise ValueError(
+            "element_write requires a writable block from cb.reserve(), "
+            "got a read-only block from cb.wait()"
+        )
     row = _to_index(row)
     col = _to_index(col)
     value = _to_i32(value)

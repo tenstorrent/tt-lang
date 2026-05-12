@@ -9,7 +9,7 @@
 // Test: bf16 element_read from a cb_wait block produces get_read_ptr + _ttl_elem_read_bf16.
 
 // CHECK-LABEL: func.func @read_bf16_from_wait
-// CHECK: emitc.verbatim "auto _ttl_elem_read_bf16
+// CHECK: emitc.verbatim "auto _ttl_elem_read_bf16{{.*}}ASSERT(row < 32 && col < 32)
 // CHECK: emitc.literal "get_compile_time_arg_val(0)"
 // CHECK: emitc.call_opaque "get_read_ptr"
 // CHECK: emitc.call_opaque "_ttl_elem_read_bf16"

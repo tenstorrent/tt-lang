@@ -71,6 +71,9 @@ static FailureOr<std::string> resolveBlockDirection(Value block) {
     }
   }
 
+  // Fallback: CBWaitOp and CBReserveOp implement ViewLikeOpInterface, so when
+  // the block reaches here without an AttachCBOp wrapper (e.g., future IR
+  // patterns or canonicalization), we can still resolve direction directly.
   if (auto viewLike = traced.getDefiningOp<ViewLikeOpInterface>()) {
     if (isa<CBWaitOp>(viewLike.getOperation())) {
       return std::string("read");
@@ -255,6 +258,27 @@ struct ElementWriteLowering : OpConversionPattern<ElementWriteOp> {
 
 /// Emit inline C++ helper functions for element access at the start of
 /// a function. These handle face-based tile layout for 32x32 tiles.
+///
+/// Tile layout (bf16 and f32 both use this face-based arrangement):
+///   A 32x32 tile is divided into 4 contiguous 16x16 "faces" in memory:
+///     Face 0: rows  0-15, cols  0-15  (offset    0..255)
+///     Face 1: rows  0-15, cols 16-31  (offset  256..511)
+///     Face 2: rows 16-31, cols  0-15  (offset  512..767)
+///     Face 3: rows 16-31, cols 16-31  (offset  768..1023)
+///
+///   Formula:  face = (row >= 16 ? 2 : 0) + (col >= 16 ? 1 : 0)
+///             offset = face * 256 + (row % 16) * 16 + (col % 16)
+///
+///   Constants:
+///     16  = kFaceDim (face is 16x16 elements)
+///     256 = kFaceDim * kFaceDim (elements per face)
+///
+///   For bf16, each element is uint16_t (2 bytes); for f32, each element
+///   is uint32_t (4 bytes). The face indexing formula is identical for both.
+///
+///   Reference: tt-metal tile layout described in
+///   tt-metal/tt_metal/hw/inc/dataflow_api.h (tilized data format).
+///   TODO(#572): validate f32 face ordering on hardware with a runtime test.
 static void addElementAccessHelpers(func::FuncOp func, OpBuilder &builder,
                                     bool needsBF16, bool needsF32) {
   builder.setInsertionPointToStart(&func.getBody().front());
@@ -266,6 +290,7 @@ static void addElementAccessHelpers(func::FuncOp func, OpBuilder &builder,
     emitVerbatim(loc,
                  "auto _ttl_elem_read_bf16 = [](uint32_t l1_addr, uint32_t row,"
                  " uint32_t col) -> uint32_t {"
+                 " ASSERT(row < 32 && col < 32);"
                  " volatile tt_l1_ptr uint16_t* base ="
                  " reinterpret_cast<volatile tt_l1_ptr uint16_t*>(l1_addr);"
                  " uint32_t face = (row >= 16 ? 2 : 0) + (col >= 16 ? 1 : 0);"
@@ -277,6 +302,7 @@ static void addElementAccessHelpers(func::FuncOp func, OpBuilder &builder,
         loc,
         "auto _ttl_elem_write_bf16 = [](uint32_t l1_addr, uint32_t row,"
         " uint32_t col, uint32_t val) {"
+        " ASSERT(row < 32 && col < 32);"
         " volatile tt_l1_ptr uint16_t* base ="
         " reinterpret_cast<volatile tt_l1_ptr uint16_t*>(l1_addr);"
         " uint32_t face = (row >= 16 ? 2 : 0) + (col >= 16 ? 1 : 0);"
@@ -290,6 +316,7 @@ static void addElementAccessHelpers(func::FuncOp func, OpBuilder &builder,
     emitVerbatim(loc,
                  "auto _ttl_elem_read_f32 = [](uint32_t l1_addr, uint32_t row,"
                  " uint32_t col) -> uint32_t {"
+                 " ASSERT(row < 32 && col < 32);"
                  " volatile tt_l1_ptr uint32_t* base ="
                  " reinterpret_cast<volatile tt_l1_ptr uint32_t*>(l1_addr);"
                  " uint32_t face = (row >= 16 ? 2 : 0) + (col >= 16 ? 1 : 0);"
@@ -300,6 +327,7 @@ static void addElementAccessHelpers(func::FuncOp func, OpBuilder &builder,
     emitVerbatim(loc,
                  "auto _ttl_elem_write_f32 = [](uint32_t l1_addr, uint32_t row,"
                  " uint32_t col, uint32_t val) {"
+                 " ASSERT(row < 32 && col < 32);"
                  " volatile tt_l1_ptr uint32_t* base ="
                  " reinterpret_cast<volatile tt_l1_ptr uint32_t*>(l1_addr);"
                  " uint32_t face = (row >= 16 ? 2 : 0) + (col >= 16 ? 1 : 0);"

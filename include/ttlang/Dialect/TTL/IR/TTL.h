@@ -119,7 +119,14 @@ constexpr llvm::StringLiteral
 /// CTA layout is [CBs, TAs], so this equals the number of CBs.
 constexpr llvm::StringLiteral kBaseCTAIndexAttrName("ttl.base_cta_index");
 
-/// Trait for data movement operations (copy_tile, copy_dst).
+/// Verify that an op is not inside a compute kernel function. Defined in
+/// TTLOps.cpp to avoid header dependency on TTKernel. Used by element_read
+/// and element_write verifiers.
+mlir::LogicalResult verifyDataMovementOnlyOp(mlir::Operation *op);
+
+/// Trait for data movement operations (copy_tile, copy_dst). Used as a
+/// classification marker for lowering phase selection; does NOT enforce
+/// thread context (copy_tile appears in compute functions after lowering).
 template <typename ConcreteType>
 class TTLDataMovementOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLDataMovementOpTrait> {};
