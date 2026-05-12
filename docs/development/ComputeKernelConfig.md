@@ -24,21 +24,21 @@ A tile op's inputs reach the math engine via one of two strategies:
   SFPU binary ops.
 - FPU strategy. The unpacker loads the input CB into SRCA/SRCB; the FPU
   reads from SRCA/B and writes the result to DST. Used by `tile_reduce`,
-  `tile_matmul_block`, and `tile_add`/`sub`/`mul` marked `ttl.fpu_binary`.
+  `tile_matmul_block`, and `tile_add_fpu`/`tile_sub_fpu`/`tile_mul_fpu`.
 
 The strategy is a structural property of the IR:
 
-| Classification                                       | Strategy |
-|------------------------------------------------------|----------|
-| `TTLDSTInputsTrait` and not `isCBInputOp(op)`        | SFPU     |
-| `TTLCBInputTileOpTrait` or attribute `ttl.fpu_binary`| FPU      |
+| Classification                                | Strategy |
+|-----------------------------------------------|----------|
+| `TTLDSTInputsTrait` and not `isCBInputOp(op)` | SFPU     |
+| `TTLCBInputTileOpTrait`                     | FPU      |
 
 `isCBInputOp(op)` (in `TTLOpsUtils.h`) returns true for ops carrying
-`TTLCBInputTileOpTrait` and for ops with the `ttl.fpu_binary` attribute.
-FPU-mode `tile_add`/`sub`/`mul` are tile ops that statically carry
-`TTLDSTInputsTrait` but override the classification at compute-pipeline
-time via the attribute (see [FPU Binary Marking](#fpu-binary-marking)
-below).
+`TTLCBInputTileOpTrait`. Polymorphic `ttl.tile_add`/`tile_sub`/`tile_mul`
+(with `TTLPolymorphicBinaryTileOpTrait`) are lowered by `ttl-lower-binary-tiles`
+to either `ttl.tile_*_fpu` (CB inputs) or `ttl.tile_*_sfpu` (DST inputs)
+before `TTLSetComputeKernelConfig` and `TTLAssignDST` run; see
+[FPU binary lowering](#fpu-binary-lowering) below.
 
 ### Dtype-Dependent Strategies
 
@@ -98,25 +98,26 @@ mirrors tt-metal's `preserve_fp32_precision` policy in
 `ttnn/operations/copy/typecast/typecast.cpp`, which sets the flag only for
 SFPU-strategy ops.
 
-## FPU Binary Marking
+## FPU binary lowering
 
-`tile_add`, `tile_sub`, and `tile_mul` carry `TTLDSTInputsTrait` by default,
-so without the `ttl.fpu_binary` attribute `isCBInputOp` would classify them
-as SFPU. The classification is materialized by a function-level pass
-`TTLMarkFPUBinaries`, scheduled in `createTTLToTTKernelPipeline` between
-`convert-ttl-to-compute` and the first consumer (`TTLSetComputeKernelConfig`,
+Polymorphic `ttl.tile_add`, `ttl.tile_sub`, and `ttl.tile_mul` carry
+`TTLPolymorphicBinaryTileOpTrait` (and not `TTLDSTInputsTrait`) until
+`TTLLowerBinaryTiles` runs. That pass replaces each op with `ttl.tile_*_fpu`
+(`TTLCBInputTileOpTrait`) when `isFpuBinaryEligible` holds and
+`enable-fpu-binary-ops` is true, otherwise with `ttl.tile_*_sfpu`
+(`TTLDSTInputsTrait`). The pass is scheduled in `createTTLToTTKernelPipeline`
+between `convert-ttl-to-compute` and the first consumer (`TTLSetComputeKernelConfig`,
 then `TTLAssignDST`, then `ConvertTTLTileOpsToTTKernel`).
 
-The pass walks each `ttl.compute` body and, for every tile op for which the
-shared predicate `isFpuBinaryEligible` (in `TTLOpsUtils.h`) holds, sets
-`ttl.fpu_binary`. The predicate accepts `tile_add`/`sub`/`mul` whose two
-operands are input block arguments of the enclosing `ttl.compute` with
-matching indexing maps. The `enable-fpu-binary-ops` option gates the pass:
-when false, the pass is a no-op and all binary ops lower as SFPU.
+The pass walks each `ttl.compute` body and applies the shared predicate
+`isFpuBinaryEligible` (in `TTLOpsUtils.h`). The predicate accepts
+`tile_add`/`sub`/`mul` whose two operands are input block arguments of the
+enclosing `ttl.compute` with matching indexing maps. The
+`enable-fpu-binary-ops` option gates FPU selection: when false, eligible ops
+still lower to `ttl.tile_*_sfpu` (they are never left polymorphic).
 
-Consumers never re-evaluate the predicate; they read the attribute via
-`isCBInputOp`. This keeps the SFPU/FPU decision a single structural property
-of the IR.
+Consumers use `isCBInputOp` (trait-only) and `isFpuBinaryTileOp` where needed.
+This keeps the SFPU/FPU decision a single structural property of the IR.
 
 ## Current Limitation
 

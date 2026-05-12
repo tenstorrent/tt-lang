@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-mark-fpu-binaries{enable-fpu-binary-ops=0}, ttl-assign-dst),cse,canonicalize)' | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-lower-binary-tiles{enable-fpu-binary-ops=0}, ttl-assign-dst),cse,canonicalize)' | FileCheck %s
 
 // Basic elementwise operations lowered to ttl.compute with tile ops and DST assignment.
 // Note: enable-fpu-binary-ops=0 keeps SFPU lowering path (not testing FPU detection).
@@ -21,7 +21,7 @@ func.func @binary_add(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>, %arg1: tensor
   // Copies at first use (tile_add): LHS then RHS
   // CHECK:        %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[LHS]]
   // CHECK:        %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[RHS]]
-  // CHECK:        %[[SUM:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] into dst[%c0]
+  // CHECK:        %[[SUM:.*]] = ttl.tile_add_sfpu %[[DTILE0]], %[[DTILE1]] into dst[%c0]
   // CHECK:        ttl.tile_store
   // CHECK:        ttl.yield
   // CHECK:      } -> tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -93,7 +93,7 @@ func.func @chain_binary_unary(%arg0: tensor<4x4x!ttcore.tile<32x32, f32>>, %arg1
   // CHECK:      ^bb0(%[[LHS:.*]]: !ttcore.tile<32x32, f32>, %[[RHS:.*]]: !ttcore.tile<32x32, f32>, %[[OUT0:.*]]: !ttcore.tile<32x32, f32>):
   // CHECK:        %[[DTOK0:.*]], %[[DTILE0:.*]] = ttl.copy_tile %[[LHS]]
   // CHECK:        %[[DTOK1:.*]], %[[DTILE1:.*]] = ttl.copy_tile %[[RHS]]
-  // CHECK:        %[[SUM:.*]] = ttl.tile_add %[[DTILE0]], %[[DTILE1]] into dst[%c0]
+  // CHECK:        %[[SUM:.*]] = ttl.tile_add_sfpu %[[DTILE0]], %[[DTILE1]] into dst[%c0]
   // CHECK:        ttl.tile_store
   // CHECK:        ttl.yield
   // CHECK:      } -> tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -138,7 +138,7 @@ func.func @multiple_binary(%a: tensor<4x4x!ttcore.tile<32x32, f32>>, %b: tensor<
   %b_cb = ttl.attach_cb %b, %cb1 : (tensor<4x4x!ttcore.tile<32x32, f32>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x4x!ttcore.tile<32x32, f32>>
 
   // CHECK: %[[ADD:.*]] = ttl.compute
-  // CHECK: ttl.tile_add {{.*}} into dst[%c0]
+  // CHECK: ttl.tile_add_sfpu {{.*}} into dst[%c0]
   // CHECK: ttl.tile_store
   %reserve0 = ttl.cb_reserve %cb2 : <[4, 4], !ttcore.tile<32x32, f32>, 2> -> tensor<4x4x!ttcore.tile<32x32, f32>>
   %0 = ttl.add %a_cb, %b_cb : tensor<4x4x!ttcore.tile<32x32, f32>>, tensor<4x4x!ttcore.tile<32x32, f32>> -> tensor<4x4x!ttcore.tile<32x32, f32>>
@@ -150,7 +150,7 @@ func.func @multiple_binary(%a: tensor<4x4x!ttcore.tile<32x32, f32>>, %b: tensor<
   %c_cb = ttl.attach_cb %c, %cb3 : (tensor<4x4x!ttcore.tile<32x32, f32>>, !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>) -> tensor<4x4x!ttcore.tile<32x32, f32>>
 
   // CHECK: ttl.compute
-  // CHECK: ttl.tile_mul {{.*}} into dst[%c0]
+  // CHECK: ttl.tile_mul_sfpu {{.*}} into dst[%c0]
   // CHECK: ttl.tile_store
   %reserve1 = ttl.cb_reserve %cb4 : <[4, 4], !ttcore.tile<32x32, f32>, 2> -> tensor<4x4x!ttcore.tile<32x32, f32>>
   %1 = ttl.mul %add_cb, %c_cb : tensor<4x4x!ttcore.tile<32x32, f32>>, tensor<4x4x!ttcore.tile<32x32, f32>> -> tensor<4x4x!ttcore.tile<32x32, f32>>

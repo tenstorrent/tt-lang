@@ -296,7 +296,6 @@ static FailureOr<Value> getSrcDstIndex(Value operand, Location loc,
 ///
 /// Source DST indices are resolved from the operand-defining ops' dst_index.
 /// The output index comes from this op's dst_index operand.
-/// Ops marked with kFPUBinaryAttrName are skipped (handled by FPU pattern).
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
 struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
   using OpConversionPattern<SourceOp>::OpConversionPattern;
@@ -304,10 +303,6 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // FPU-marked ops are handled by TTLTileBinaryFPUToTTKernel.
-    if (op->hasAttr(kFPUBinaryAttrName)) {
-      return failure();
-    }
 
     Location loc = op.getLoc();
 
@@ -362,8 +357,6 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
 /// Generic pattern for lowering TTL binary tile ops to TTKernel FPU ops.
 /// FPU binary ops: read both operands from CBs, write result to DST.
 /// add_tiles(in0_cb, in1_cb, in0_tile_index, in1_tile_index, dst_index)
-///
-/// Only matches ops marked with kFPUBinaryAttrName (set by TTLAssignDST).
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
 struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
   using OpConversionPattern<SourceOp>::OpConversionPattern;
@@ -371,10 +364,6 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // Only match FPU-marked ops.
-    if (!op->hasAttr(kFPUBinaryAttrName)) {
-      return failure();
-    }
 
     Location loc = op.getLoc();
     auto funcOp = op->template getParentOfType<func::FuncOp>();
@@ -417,7 +406,7 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
     }
 
     // CB tile index: both operands share the same index because
-    // TTLAssignDST only marks ops as FPU-eligible when both have
+    // ttl-lower-binary-tiles only selects FPU lowering when both operands have
     // identical indexing maps.
     auto cbIdx = computeCBTileIndex(op.getLhs(), rewriter, loc);
     if (failed(cbIdx)) {
@@ -786,9 +775,9 @@ struct TTLTileTransposeToTTKernel : OpConversionPattern<TileTransposeOp> {
       TTLTileUnaryToTTKernel<TILE_OP, ttk::TTK_INIT, ttk::TTK_COMPUTE>;
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-// Generate type aliases for binary tile op lowerings (standard 3-arg form)
-#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
-  using TTL_OP##TileLowering =                                                 \
+// Generate type aliases for binary SFPU tile op lowerings (standard 3-arg form)
+#define TTL_SFPU_BINARY_TILE_OP(TILE_OP, TTK_INIT, TTK_COMPUTE)                \
+  using TILE_OP##KernelLowering =                                              \
       TTLTileBinaryToTTKernel<TILE_OP, ttk::TTK_INIT, ttk::TTK_COMPUTE>;
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
@@ -799,8 +788,8 @@ struct TTLTileTransposeToTTKernel : OpConversionPattern<TileTransposeOp> {
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
 // Generate type aliases for FPU binary tile op lowerings
-#define TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)         \
-  using TTL_OP##FPUTileLowering =                                              \
+#define TTL_FPU_BINARY_TILE_OP(TILE_OP, TTK_INIT, TTK_COMPUTE)                 \
+  using TILE_OP##FPUKernelLowering =                                           \
       TTLTileBinaryFPUToTTKernel<TILE_OP, ttk::TTK_INIT, ttk::TTK_COMPUTE>;
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
@@ -997,9 +986,9 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   patterns.add<TTL_OP##TileLowering>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-  // Binary ops (ttl.tile_* → ttkernel.*_tiles)
-#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
-  patterns.add<TTL_OP##TileLowering>(ctx);
+  // Binary SFPU ops (ttl.tile_*_sfpu, ttl.tile_div → ttkernel.*_binary_tiles)
+#define TTL_SFPU_BINARY_TILE_OP(TILE_OP, TTK_INIT, TTK_COMPUTE)               \
+  patterns.add<TILE_OP##KernelLowering>(ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   // Special binary ops (non-standard lowering template)
@@ -1008,8 +997,8 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   // FPU binary ops (CB -> DST, needs type converter for CB lookup)
-#define TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)         \
-  patterns.add<TTL_OP##FPUTileLowering>(*typeConverter, ctx);
+#define TTL_FPU_BINARY_TILE_OP(TILE_OP, TTK_INIT, TTK_COMPUTE)                 \
+  patterns.add<TILE_OP##FPUKernelLowering>(*typeConverter, ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   // DST-based ops (no type converter needed).

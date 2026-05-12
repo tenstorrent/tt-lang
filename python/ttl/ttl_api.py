@@ -1440,7 +1440,7 @@ def _compile_kernel(
         # test/me2e/builder/pipeline.py and lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
         fpu_flag = int(compiler_options.enable_fpu_binary_ops)
         mark_fpu_pass = (
-            f"func.func(ttl-mark-fpu-binaries{{enable-fpu-binary-ops={fpu_flag}}})"
+            f"func.func(ttl-lower-binary-tiles{{enable-fpu-binary-ops={fpu_flag}}})"
         )
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)

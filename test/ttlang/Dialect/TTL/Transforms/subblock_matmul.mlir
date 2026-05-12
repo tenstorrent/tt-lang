@@ -3,7 +3,7 @@
 // tiles count toward the DST budget. Subblocking partitions the M*N output
 // space while keeping K whole in each subblock.
 
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-mark-fpu-binaries{enable-fpu-binary-ops=0}, ttl-set-compute-kernel-config, ttl-assign-dst, ttl-subblock-compute-for-dst))' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-lower-binary-tiles{enable-fpu-binary-ops=0}, ttl-set-compute-kernel-config, ttl-assign-dst, ttl-subblock-compute-for-dst))' --split-input-file | FileCheck %s
 
 // -----
 

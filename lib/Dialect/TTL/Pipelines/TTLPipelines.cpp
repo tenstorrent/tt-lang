@@ -28,9 +28,9 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addPass(createTTLAnnotateL1AccLoops());
   pm.addPass(createTTLConvertTTLToCompute());
   {
-    TTLMarkFPUBinariesOptions markOpts;
-    markOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
-    pm.addPass(createTTLMarkFPUBinaries(markOpts));
+    TTLLowerBinaryTilesOptions lowerOpts;
+    lowerOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
+    pm.addPass(createTTLLowerBinaryTiles(lowerOpts));
   }
   {
     TTLSetComputeKernelConfigOptions configOpts;
@@ -60,6 +60,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   {
     TTLConvertTTLToTTKernelOptions ttkOpts;
     ttkOpts.reduceFullFp32 = options.reduceFullFp32;
+    ttkOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
     pm.addPass(createTTLConvertTTLToTTKernel(ttkOpts));
   }
   pm.addPass(createTTKernelInsertInits());

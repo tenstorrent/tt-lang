@@ -15,7 +15,7 @@
 // | false     | true       | 16       | 16            |
 // | true      | true       | 8        | 8             |
 //
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst))' --split-input-file \
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles, ttl-assign-dst))' --split-input-file \
 // RUN:   | FileCheck %s
 
 // bf16, double-buffered (default): capacity=8, unroll_factor=8.

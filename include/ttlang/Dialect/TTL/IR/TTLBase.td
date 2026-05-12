@@ -73,6 +73,8 @@ def TTL_TileUnaryOpTrait : TTL_Trait<"TTLTileUnaryOpTrait", []>;
 def TTL_TileBinaryOpTrait : TTL_Trait<"TTLTileBinaryOpTrait", []>;
 def TTL_CBInputTileOpTrait : TTL_Trait<"TTLCBInputTileOpTrait", []>;
 def TTL_DSTInputsTrait : TTL_Trait<"TTLDSTInputsTrait", []>;
+def TTL_PolymorphicBinaryTileOpTrait
+    : TTL_Trait<"TTLPolymorphicBinaryTileOpTrait", []>;
 def TTL_InPlaceOpTrait : TTL_Trait<"TTLInPlaceOpTrait", []>;
 def TTL_AccumulatingOpTrait : TTL_Trait<"TTLAccumulatingOpTrait", []>;
 def TTL_CBOutputTileOpTrait : TTL_Trait<"TTLCBOutputTileOpTrait", []>;

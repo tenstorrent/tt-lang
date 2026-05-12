@@ -841,8 +841,11 @@ def TTL_CopyDstOp : TTL_Op<"copy_dst",
   let assemblyFormat = "$src_tile `into` `dst` `[` $dst_index `]` attr-dict `:` type($src_tile) `->` type($result)";
 }
 
-// Note: DSTInputsTrait is the default for binary ops. FPU-marked binaries
-// (ttl.fpu_binary) read from CB instead; use isCBInputOp() to check at runtime.
+// Note: DSTInputsTrait is the default for binary tile ops that read both
+// operands from DST (SFPU path). FPU binary ops use TTL_CBInputTileOpTrait
+// instead. Polymorphic add/sub/mul use TTL_PolymorphicBinaryTileOpTrait until
+// ttl-lower-binary-tiles selects the concrete op. Use isCBInputOp() to test
+// for CB-fed tile ops at runtime.
 class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
     : TTL_TileOp<mnemonic, !listconcat(traits, [TTL_TileBinaryOpTrait,
                                                  TTL_DSTInputsTrait,
@@ -852,6 +855,58 @@ class TTL_TileBinaryOp<string mnemonic, list<Trait> traits = []>
   let arguments = (ins TTL_TileType:$lhs, TTL_TileType:$rhs, Index:$dst_index);
   let results = (outs TTL_TileType:$result);
   let assemblyFormat = "$lhs `,` $rhs `into` `dst` `[` $dst_index `]` attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
+}
+
+/// Polymorphic tile add/sub/mul: lowered by ttl-lower-binary-tiles to
+/// tile_*_fpu or tile_*_sfpu before assign-dst and convert-ttl-to-ttkernel.
+class TTL_TilePolymorphicBinaryOp<string mnemonic, list<Trait> traits = []>
+    : TTL_TileOp<mnemonic, !listconcat(traits, [
+        TTL_TileBinaryOpTrait,
+        TTL_PolymorphicBinaryTileOpTrait,
+        TTL_DstResultOpTrait,
+        AllTypesMatch<["lhs", "rhs", "result"]>
+      ])> {
+  let summary = "Binary tile operation (FPU or SFPU lowering pending)";
+  let arguments = (ins TTL_TileType:$lhs, TTL_TileType:$rhs, Index:$dst_index);
+  let results = (outs TTL_TileType:$result);
+  let assemblyFormat = "$lhs `,` $rhs `into` `dst` `[` $dst_index `]` attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
+}
+
+/// Concrete FPU or SFPU binary tile op (add/sub/mul after lowering).
+class TTL_TileBinaryVariantOp<string mnemonic, list<Trait> inputTraits>
+    : TTL_TileOp<mnemonic, !listconcat(inputTraits, [
+        TTL_TileBinaryOpTrait,
+        TTL_DstResultOpTrait,
+        AllTypesMatch<["lhs", "rhs", "result"]>
+      ])> {
+  let arguments = (ins TTL_TileType:$lhs, TTL_TileType:$rhs, Index:$dst_index);
+  let results = (outs TTL_TileType:$result);
+  let assemblyFormat = "$lhs `,` $rhs `into` `dst` `[` $dst_index `]` attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
+}
+
+def AddFpuTileOp : TTL_TileBinaryVariantOp<"tile_add_fpu", [TTL_CBInputTileOpTrait]> {
+  let summary = "Tile-level add (FPU binary, operands from CB)";
+  let description = [{Maps to ttkernel.add_tiles after ttl-assign-dst.}];
+}
+def AddSfpuTileOp : TTL_TileBinaryVariantOp<"tile_add_sfpu", [TTL_DSTInputsTrait]> {
+  let summary = "Tile-level add (SFPU binary, operands from DST)";
+  let description = [{Maps to ttkernel.add_binary_tiles.}];
+}
+def SubFpuTileOp : TTL_TileBinaryVariantOp<"tile_sub_fpu", [TTL_CBInputTileOpTrait]> {
+  let summary = "Tile-level sub (FPU binary, operands from CB)";
+  let description = [{Maps to ttkernel.sub_tiles after ttl-assign-dst.}];
+}
+def SubSfpuTileOp : TTL_TileBinaryVariantOp<"tile_sub_sfpu", [TTL_DSTInputsTrait]> {
+  let summary = "Tile-level sub (SFPU binary, operands from DST)";
+  let description = [{Maps to ttkernel.sub_binary_tiles.}];
+}
+def MulFpuTileOp : TTL_TileBinaryVariantOp<"tile_mul_fpu", [TTL_CBInputTileOpTrait]> {
+  let summary = "Tile-level mul (FPU binary, operands from CB)";
+  let description = [{Maps to ttkernel.mul_tiles after ttl-assign-dst.}];
+}
+def MulSfpuTileOp : TTL_TileBinaryVariantOp<"tile_mul_sfpu", [TTL_DSTInputsTrait]> {
+  let summary = "Tile-level mul (SFPU binary, operands from DST)";
+  let description = [{Maps to ttkernel.mul_binary_tiles.}];
 }
 
 class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
@@ -869,6 +924,19 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
 // Binary Elementwise Operations (Tensor + Tile Ops)
 //===----------------------------------------------------------------------===//
 
+// Multiclass for defining paired tensor + polymorphic tile binary ops
+// (add, sub, mul). The tile op is lowered by ttl-lower-binary-tiles.
+multiclass TTL_BinaryPolymorphicElementwisePair<string mnemonic, string kernelOp> {
+  // Tensor-level op (operates on full tensors)
+  def Op : TTL_ElementWiseBinary<mnemonic> {
+    let description = "Elementwise "#mnemonic#" on tensors. Lowered to ttl.compute with ttl.tile_"#mnemonic#", then to ttl.tile_"#mnemonic#"_fpu or ttl.tile_"#mnemonic#"_sfpu.";
+  }
+  // Tile-level op (operates inside ttl.compute body)
+  def TileOp : TTL_TilePolymorphicBinaryOp<"tile_"#mnemonic> {
+    let description = "Tile-level "#mnemonic#". Maps to ttkernel."#kernelOp#" after ttl-lower-binary-tiles selects FPU vs SFPU.";
+  }
+}
+
 // Multiclass for defining paired tensor + tile binary ops
 multiclass TTL_BinaryElementwisePair<string mnemonic, string kernelOp,
                                      list<Trait> extraTraits = []> {
@@ -883,9 +951,9 @@ multiclass TTL_BinaryElementwisePair<string mnemonic, string kernelOp,
 }
 
 // Define all binary elementwise ops using the multiclass
-defm TTL_Add : TTL_BinaryElementwisePair<"add", "add_tiles">;
-defm TTL_Sub : TTL_BinaryElementwisePair<"sub", "sub_tiles">;
-defm TTL_Mul : TTL_BinaryElementwisePair<"mul", "mul_tiles">;
+defm TTL_Add : TTL_BinaryPolymorphicElementwisePair<"add", "add_tiles">;
+defm TTL_Sub : TTL_BinaryPolymorphicElementwisePair<"sub", "sub_tiles">;
+defm TTL_Mul : TTL_BinaryPolymorphicElementwisePair<"mul", "mul_tiles">;
 defm TTL_Div : TTL_BinaryElementwisePair<"div", "div_binary_tile">;
 defm TTL_Max : TTL_BinaryElementwisePair<"max", "max_tiles",
                                          [TTL_InPlaceOpTrait]>;

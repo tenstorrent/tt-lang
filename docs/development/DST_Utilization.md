@@ -108,10 +108,10 @@ FPU-aware execution (component 8) reduces $D$ for FPU-eligible binary
 ops. An FPU binary uses 0 DST input slots (operands come from CBs), so
 `tile_add %a, %b` where both are block args costs 1 DST slot (output
 only) instead of 3 (2 copies + output). This is
-detected in Phase 0 of `TTLAssignDST` and marked with the
-`ttl.fpu_binary` attribute. Phase 0 is gated by the
-`enable-fpu-binary-ops` option (default true); when disabled, all binary
-ops use the SFPU path with `copy_tile`.
+selected by `ttl-lower-binary-tiles` (before `TTLAssignDST`), which lowers
+to `ttl.tile_*_fpu`. The pass is gated by the
+`enable-fpu-binary-ops` option (default true); when disabled, eligible ops
+lower to `ttl.tile_*_sfpu` and use the SFPU path with `copy_tile`.
 
 FPU/accumulating DST register reuse prevention: When multiple
 FPU binary ops or `tile_matmul_block` ops appear in the same compute
@@ -619,9 +619,9 @@ The full DST maximization pipeline is operational. The pipeline computes
 the correct subblock size (with FPU-aware DST pressure), partitions the
 iteration space via TilingInterface, emits unrolled subblock bodies with
 one sync region per subblock, groups operations by kind, and consolidates
-init ops. FPU binary detection (component 8) marks
-`tile_add`/`tile_sub`/`tile_mul` with both block-arg operands as
-`ttl.fpu_binary`, reducing per-iteration DST pressure (0 input slots
+init ops. FPU binary lowering (component 8) replaces polymorphic
+`tile_add`/`tile_sub`/`tile_mul` with `tile_*_fpu` when both operands are
+block arguments with matching indexing maps, reducing per-iteration DST pressure (0 input slots
 instead of 2). The allocator prevents DST register reuse between FPU
 binary ops via an interval extension (see component 1-2 details);
 hardware testing confirmed this is necessary — FPU ops accumulate
@@ -736,8 +736,8 @@ operands are needed by all compute lowering.
 
 With `--no-ttl-fpu-binary-ops`:
 
-Phase 0 of `TTLAssignDST` is skipped. Binary add/sub/mul ops are not
-marked with `ttl.fpu_binary` and use the SFPU path (copy_tile for both
+`ttl-lower-binary-tiles` selects the SFPU tile ops (`ttl.tile_*_sfpu`).
+Binary add/sub/mul use the SFPU path (copy_tile for both
 operands, `add_binary_tile`/`sub_binary_tile`/`mul_binary_tile` instead
 of `add_tiles`/`sub_tiles`/`mul_tiles`). The consolidation pass emits
 `init_sfpu` instead of `binary_op_init_common`.

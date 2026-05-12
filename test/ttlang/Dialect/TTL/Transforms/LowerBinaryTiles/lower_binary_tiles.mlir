@@ -1,20 +1,20 @@
-// Tests for ttl-mark-fpu-binaries. The pass sets ttl.fpu_binary on tile
-// add/sub/mul ops whose operands are both input block arguments with
-// matching indexing maps. Downstream passes (TTLSetComputeKernelConfig,
-// TTLAssignDST, ConvertTTLTileOpsToTTKernel) consume the attribute via
-// isCBInputOp.
+// Tests for ttl-lower-binary-tiles. The pass replaces polymorphic ttl.tile_add,
+// ttl.tile_sub, and ttl.tile_mul with ttl.tile_*_fpu (TTL_CBInputTileOpTrait)
+// when isFpuBinaryEligible holds and enable-fpu-binary-ops is true, otherwise
+// with ttl.tile_*_sfpu (TTL_DSTInputsTrait). Downstream passes use isCBInputOp.
 
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries))' --split-input-file | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries{enable-fpu-binary-ops=0}))' --split-input-file | FileCheck %s --check-prefix=DISABLED
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles))' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles{enable-fpu-binary-ops=0}))' --split-input-file | FileCheck %s --check-prefix=DISABLED
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // Purpose: tile_add with both operands as input block args and matching
-// indexing maps is marked ttl.fpu_binary.
+// indexing maps lowers to tile_add_fpu when FPU path is enabled.
 // CHECK-LABEL: func.func @simple_add_marked
-// CHECK:           ttl.tile_add {{.*}} {ttl.fpu_binary}
+// CHECK:           ttl.tile_add_fpu
 // DISABLED-LABEL: func.func @simple_add_marked
-// DISABLED-NOT:   ttl.fpu_binary
+// DISABLED:        ttl.tile_add_sfpu
+// DISABLED-NOT:    ttl.tile_add_fpu
 func.func @simple_add_marked(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                              %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
@@ -48,13 +48,14 @@ func.func @simple_add_marked(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 #map = affine_map<(d0, d1) -> (d0, d1)>
 #map_bcast = affine_map<(d0, d1) -> (0, 0)>
 
-// Purpose: tile_add with mismatched indexing maps cannot use a single CB
-// tile index for both operands, so it lowers as an SFPU binary op and is
-// NOT marked.
+// Purpose: tile_add with mismatched indexing maps lowers to tile_add_sfpu, not
+// tile_add_fpu.
 // CHECK-LABEL: func.func @mismatched_indexing_unmarked
-// CHECK-NOT:       ttl.fpu_binary
+// CHECK:           ttl.tile_add_sfpu
+// CHECK-NOT:       ttl.tile_add_fpu
 // DISABLED-LABEL: func.func @mismatched_indexing_unmarked
-// DISABLED-NOT:   ttl.fpu_binary
+// DISABLED:        ttl.tile_add_sfpu
+// DISABLED-NOT:    ttl.tile_add_fpu
 func.func @mismatched_indexing_unmarked(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                         %b: tensor<1x1x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
@@ -88,12 +89,14 @@ func.func @mismatched_indexing_unmarked(%a: tensor<2x2x!ttcore.tile<32x32, f32>>
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // Purpose: tile_add whose lhs is a previously computed DST value (not an
-// input block arg) cannot use FPU and is NOT marked.
+// input block arg) lowers to tile_add_sfpu, not tile_add_fpu.
 // CHECK-LABEL: func.func @lhs_from_dst_unmarked
 // CHECK:           ttl.tile_exp
-// CHECK-NOT:       ttl.fpu_binary
+// CHECK:           ttl.tile_add_sfpu
+// CHECK-NOT:       ttl.tile_add_fpu
 // DISABLED-LABEL: func.func @lhs_from_dst_unmarked
-// DISABLED-NOT:   ttl.fpu_binary
+// DISABLED:        ttl.tile_add_sfpu
+// DISABLED-NOT:    ttl.tile_add_fpu
 func.func @lhs_from_dst_unmarked(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                  %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
@@ -129,10 +132,13 @@ func.func @lhs_from_dst_unmarked(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 
 // Purpose: tile_sub and tile_mul follow the same predicate as tile_add.
 // CHECK-LABEL: func.func @sub_mul_marked
-// CHECK:           ttl.tile_sub {{.*}} {ttl.fpu_binary}
-// CHECK:           ttl.tile_mul {{.*}} {ttl.fpu_binary}
+// CHECK:           ttl.tile_sub_fpu
+// CHECK:           ttl.tile_mul_fpu
 // DISABLED-LABEL: func.func @sub_mul_marked
-// DISABLED-NOT:   ttl.fpu_binary
+// DISABLED:        ttl.tile_sub_sfpu
+// DISABLED:        ttl.tile_mul_sfpu
+// DISABLED-NOT:    ttl.tile_sub_fpu
+// DISABLED-NOT:    ttl.tile_mul_fpu
 func.func @sub_mul_marked(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                           %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
@@ -167,12 +173,13 @@ func.func @sub_mul_marked(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // Purpose: tile_add whose rhs is the output block argument (accumulation
-// pattern) is NOT eligible -- the output slot is not an input CB. The
-// predicate must reject this.
+// pattern) is not FPU-eligible; it lowers to tile_add_sfpu.
 // CHECK-LABEL: func.func @rhs_is_output_arg_unmarked
-// CHECK-NOT:       ttl.fpu_binary
+// CHECK:           ttl.tile_add_sfpu
+// CHECK-NOT:       ttl.tile_add_fpu
 // DISABLED-LABEL: func.func @rhs_is_output_arg_unmarked
-// DISABLED-NOT:   ttl.fpu_binary
+// DISABLED:        ttl.tile_add_sfpu
+// DISABLED-NOT:    ttl.tile_add_fpu
 func.func @rhs_is_output_arg_unmarked(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
                                       %b: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {

@@ -2,7 +2,7 @@
 // performs an explicit dtype conversion via ttl.tile_typecast. The companion
 // negative test (invalid/dst_mixed_dtypes_invalid.mlir) covers the case
 // where there is no such intentional conversion.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst),canonicalize,cse)' | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles, ttl-assign-dst),canonicalize,cse)' | FileCheck %s
 
 #idx_map = affine_map<(d0, d1) -> (d0, d1)>
 

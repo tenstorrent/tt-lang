@@ -21,6 +21,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LogicalResult.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
@@ -1295,6 +1296,20 @@ struct TTLConvertTTLToTTKernelPass
     // DstSectionOp body and inserts acquire/commit/wait/release around it,
     // with stores reordered to the pack phase (after wait).
     expandDstSections(mod);
+
+    // Lower polymorphic ttl.tile_add/sub/mul (including outside ttl.compute)
+    // before dialect conversion, which only matches concrete *_fpu / *_sfpu
+    // tile ops.
+    {
+      OpPassManager pm(ModuleOp::getOperationName());
+      TTLLowerBinaryTilesOptions lowerOpts;
+      lowerOpts.enableFPUBinaryOps = enableFPUBinaryOps;
+      pm.addNestedPass<func::FuncOp>(createTTLLowerBinaryTiles(lowerOpts));
+      if (failed(runPipeline(pm, mod))) {
+        signalPassFailure();
+        return;
+      }
+    }
 
     // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)
     if (failed(lowerTTLOpsToTTKernel(mod, ctx, typeConverter, getName()))) {

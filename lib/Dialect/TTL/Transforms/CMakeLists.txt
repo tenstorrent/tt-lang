@@ -17,7 +17,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLVerifyPipeNetGuards.cpp
   TTLErasePipeNetScopes.cpp
   TTLAssignDST.cpp
-  TTLMarkFPUBinaries.cpp
+  TTLLowerBinaryTiles.cpp
   TTLScheduleOperations.cpp
   TTLSetComputeKernelConfig.cpp
   TTLSubblockComputeForDST.cpp

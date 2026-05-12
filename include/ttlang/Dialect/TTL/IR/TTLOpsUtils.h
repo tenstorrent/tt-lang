@@ -129,10 +129,14 @@ inline bool isTileBinaryOp(mlir::Operation *op) {
   return op->hasTrait<TTLTileBinaryOpTrait>();
 }
 
-/// True if op reads inputs from CB at runtime (by trait or FPU marking).
+/// True if op reads inputs from CB at runtime (tile trait).
 inline bool isCBInputOp(mlir::Operation *op) {
-  return op->hasTrait<TTLCBInputTileOpTrait>() ||
-         op->hasAttr(kFPUBinaryAttrName);
+  return op->hasTrait<TTLCBInputTileOpTrait>();
+}
+
+/// True for concrete FPU binary tile ops (CB inputs, add_tiles family).
+inline bool isFpuBinaryTileOp(mlir::Operation *op) {
+  return llvm::isa<AddFpuTileOp, SubFpuTileOp, MulFpuTileOp>(op);
 }
 
 /// True when `op` is a tile add/sub/mul whose two operands are input block

@@ -87,7 +87,7 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
       }};
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
+#define TTL_SFPU_BINARY_TILE_OP(TILE_OP, TTK_INIT, TTK_COMPUTE)                \
   map[mlir::TypeID::get<ttk::TTK_COMPUTE>()] = {                               \
       [](OpBuilder &b, Location l, Operation *) {                              \
         ttk::TTK_INIT::create(b, l);                                           \
@@ -101,7 +101,7 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
       }};
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-#define TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)         \
+#define TTL_FPU_BINARY_TILE_OP(TILE_OP, TTK_INIT, TTK_COMPUTE)                 \
   map[mlir::TypeID::get<ttk::TTK_COMPUTE>()] = {                               \
       [](OpBuilder &b, Location l, Operation *computeOp) {                     \
         ttk::TTK_INIT::create(b, l, computeOp->getOperand(0),                  \

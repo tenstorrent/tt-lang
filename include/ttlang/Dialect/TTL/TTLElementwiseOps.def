@@ -15,22 +15,24 @@
 // definitions and registration.
 //
 // Macro signatures:
-//   TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
+//   TTL_TENSOR_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
+//   TTL_SFPU_BINARY_TILE_OP(TILE_OP, TTK_INIT, TTK_COMPUTE)
 //   TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 //   TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
-//   TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
+//   TTL_FPU_BINARY_TILE_OP(TILE_OP, TTK_INIT, TTK_COMPUTE)
 //   TTL_CB_UNARY_ATTR_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 //
 // Parameters:
 //   TTL_OP     - TTL tensor op name (e.g., Add -> ttl::AddOp)
-//   TILE_OP   - TTL tile op name (e.g., AddTileOp -> ttl::AddTileOp)
+//   TILE_OP   - TTL tile op class name (polymorphic AddTileOp or concrete
+//               AddSfpuTileOp / AddFpuTileOp)
 //   TTK_INIT  - TTKernel init op (e.g., AddBinaryTilesInitOp)
 //   TTK_COMPUTE - TTKernel compute op (e.g., AddBinaryTilesOp)
 //
 // Usage:
 //   #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE) ...
 //   #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE) ...
-//   #define TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE) ...
+//   #define TTL_FPU_BINARY_TILE_OP(TILE_OP, TTK_INIT, TTK_COMPUTE) ...
 //   #define TTL_CB_UNARY_ATTR_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE) ...
 //   #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 //
@@ -40,8 +42,12 @@
 // Elementwise operation mappings
 //===----------------------------------------------------------------------===//
 
-#ifndef TTL_BINARY_TILE_OP
-#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
+#ifndef TTL_TENSOR_BINARY_TILE_OP
+#define TTL_TENSOR_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
+#endif
+
+#ifndef TTL_SFPU_BINARY_TILE_OP
+#define TTL_SFPU_BINARY_TILE_OP(TILE_OP, TTK_INIT, TTK_COMPUTE)
 #endif
 
 #ifndef TTL_UNARY_TILE_OP
@@ -54,10 +60,9 @@
 #define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #endif
 
-// FPU binary ops: CB[src0], CB[src1] -> DST[dst]
-// E.g., TTL_FPU_BINARY_TILE_OP(Add, AddTileOp, AddTilesInitOp, AddTilesOp)
+// FPU binary ops: CB[src0], CB[src1] -> DST[dst] (concrete *_fpu tile ops).
 #ifndef TTL_FPU_BINARY_TILE_OP
-#define TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
+#define TTL_FPU_BINARY_TILE_OP(TILE_OP, TTK_INIT, TTK_COMPUTE)
 #endif
 
 // CB -> DST unary ops with an attribute (e.g., bcast).
@@ -66,12 +71,19 @@
 #define TTL_CB_UNARY_ATTR_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #endif
 
-// Binary operations: TTL tensor op -> TTL tile op -> TTKernel init/compute ops
-// These use the standard 3-arg binary template: DST[odst] = op(DST[src0], DST[src1])
-TTL_BINARY_TILE_OP(Add, AddTileOp, AddBinaryTilesInitOp, AddBinaryTilesOp)
-TTL_BINARY_TILE_OP(Sub, SubTileOp, SubBinaryTilesInitOp, SubBinaryTilesOp)
-TTL_BINARY_TILE_OP(Mul, MulTileOp, MulBinaryTilesInitOp, MulBinaryTilesOp)
-TTL_BINARY_TILE_OP(Div, DivTileOp, DivBinaryTilesInitOp, DivBinaryTilesOp)
+// Tensor binary ops -> tile ops inside ttl.compute (polymorphic add/sub/mul
+// or ordinary div). Polymorphic tile ops are lowered by ttl-lower-binary-tiles
+// before TTKernel conversion.
+TTL_TENSOR_BINARY_TILE_OP(Add, AddTileOp, AddBinaryTilesInitOp, AddBinaryTilesOp)
+TTL_TENSOR_BINARY_TILE_OP(Sub, SubTileOp, SubBinaryTilesInitOp, SubBinaryTilesOp)
+TTL_TENSOR_BINARY_TILE_OP(Mul, MulTileOp, MulBinaryTilesInitOp, MulBinaryTilesOp)
+TTL_TENSOR_BINARY_TILE_OP(Div, DivTileOp, DivBinaryTilesInitOp, DivBinaryTilesOp)
+
+// SFPU binary tile ops (DST operands) for TTKernel lowering.
+TTL_SFPU_BINARY_TILE_OP(AddSfpuTileOp, AddBinaryTilesInitOp, AddBinaryTilesOp)
+TTL_SFPU_BINARY_TILE_OP(SubSfpuTileOp, SubBinaryTilesInitOp, SubBinaryTilesOp)
+TTL_SFPU_BINARY_TILE_OP(MulSfpuTileOp, MulBinaryTilesInitOp, MulBinaryTilesOp)
+TTL_SFPU_BINARY_TILE_OP(DivTileOp, DivBinaryTilesInitOp, DivBinaryTilesOp)
 
 // Binary ops with 2-arg in-place form (TTLTileMaxToTTKernel template)
 TTL_BINARY_TILE_OP_MINMAX(Max, MaxTileOp, BinaryMaxTileInitOp, BinaryMaxTileOp)
@@ -112,12 +124,13 @@ TTL_UNARY_TILE_OP(Trunc, TruncTileOp, RoundingTileInitOp, TruncTileOp)
 // CB -> DST ops with attribute
 TTL_CB_UNARY_ATTR_OP(Bcast, TileBcastOp, UnaryBcastInitOp, UnaryBcastTileOp)
 
-// FPU binary: read from CB, write to DST
-TTL_FPU_BINARY_TILE_OP(Add, AddTileOp, AddTilesInitOp, AddTilesOp)
-TTL_FPU_BINARY_TILE_OP(Sub, SubTileOp, SubTilesInitOp, SubTilesOp)
-TTL_FPU_BINARY_TILE_OP(Mul, MulTileOp, MulTilesInitOp, MulTilesOp)
+// FPU binary: read from CB, write to DST (concrete *_fpu tile ops).
+TTL_FPU_BINARY_TILE_OP(AddFpuTileOp, AddTilesInitOp, AddTilesOp)
+TTL_FPU_BINARY_TILE_OP(SubFpuTileOp, SubTilesInitOp, SubTilesOp)
+TTL_FPU_BINARY_TILE_OP(MulFpuTileOp, MulTilesInitOp, MulTilesOp)
 
-#undef TTL_BINARY_TILE_OP
+#undef TTL_TENSOR_BINARY_TILE_OP
+#undef TTL_SFPU_BINARY_TILE_OP
 #undef TTL_UNARY_TILE_OP
 #undef TTL_CB_UNARY_ATTR_OP
 #undef TTL_BINARY_TILE_OP_MINMAX

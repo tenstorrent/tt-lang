@@ -36,7 +36,7 @@ def compile_ttl_to_ttkernel(
         Compiled module with TTKernel/EmitC ops.
     """
     fpu_flag = int(enable_fpu_binary_ops)
-    mark_fpu_pass = f"ttl-mark-fpu-binaries{{enable-fpu-binary-ops={fpu_flag}}}"
+    lower_binary_tiles_pass = f"ttl-lower-binary-tiles{{enable-fpu-binary-ops={fpu_flag}}}"
 
     # Build per-function passes.
     func_passes = [
@@ -44,7 +44,7 @@ def compile_ttl_to_ttkernel(
         "ttl-insert-copy-wait",
         "ttl-insert-cb-sync",
         "convert-ttl-to-compute",
-        mark_fpu_pass,
+        lower_binary_tiles_pass,
         "ttl-assign-dst",
     ]
     if maximize_dst:

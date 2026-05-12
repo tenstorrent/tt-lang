@@ -6,7 +6,7 @@
 // RUN: ttlang-opt %s \
 // RUN:   -pass-pipeline='builtin.module( \
 // RUN:     func.func(ttl-annotate-l1-acc-loops, convert-ttl-to-compute, \
-// RUN:       ttl-mark-fpu-binaries{enable-fpu-binary-ops=0}, ttl-assign-dst, \
+// RUN:       ttl-lower-binary-tiles{enable-fpu-binary-ops=0}, ttl-assign-dst, \
 // RUN:       ttl-subblock-compute-for-dst, \
 // RUN:       ttl-lower-to-loops{dst-accumulation=1}, ttl-schedule-operations, \
 // RUN:       ttl-annotate-cb-associations), \

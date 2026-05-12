@@ -1,5 +1,5 @@
 // Summary: tile_bcast reads from CB (not DST), so no copy_tile for its input.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles, ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s
 
 // Verify no placeholder copies remain in final IR
 // CHECK-NOT: placeholder
@@ -122,7 +122,7 @@ func.func @bcast_then_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // Bcast reads from CB directly. B copy_tile inserted at first use (tile_add).
 // CHECK-NEXT:   %[[BCAST:.*]] = ttl.tile_bcast %[[A]], %[[OUT]] 2 : i32 into dst[%c0]
 // CHECK-NEXT:   %[[DTOK:.*]], %[[DTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]] into dst[%[[C1]]]
-// CHECK-NEXT:   %[[ADD:.*]] = ttl.tile_add %[[BCAST]], %[[DTILE]] into dst[%c0]
+// CHECK-NEXT:   %[[ADD:.*]] = ttl.tile_add_sfpu %[[BCAST]], %[[DTILE]] into dst[%c0]
 // CHECK-NEXT:   ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:   ttl.yield
   %out_view = ttl.cb_reserve %cb2 : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>

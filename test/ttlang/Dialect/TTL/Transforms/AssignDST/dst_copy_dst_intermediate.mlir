@@ -15,7 +15,7 @@
 //   rsqrt(abs)       -> DST[1]  (in-place on abs result)
 //   mul(x, rsqrt)    -> DST[0]  (SFPU binary, consumes original x at DST[0])
 
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst{dst-capacity=8}),canonicalize)' | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles, ttl-assign-dst{dst-capacity=8}),canonicalize)' | FileCheck %s
 
 // CHECK-LABEL: func.func @dst_intermediate_reuse_unary_chain
 // CHECK:           ttl.compute
@@ -23,7 +23,7 @@
 // CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary mul: both operands are block args -> DST[0]
-// CHECK-NEXT:      %[[X:.*]] = ttl.tile_mul %[[A]], %[[B]] into dst[%c0] {ttl.fpu_binary} : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+// CHECK-NEXT:      %[[X:.*]] = ttl.tile_mul_fpu %[[A]], %[[B]] into dst[%c0]  : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
 // copy_dst preserves x in DST[1] before destructive abs
 // CHECK-NEXT:      %[[COPY:.*]] = ttl.copy_dst %[[X]] into dst[%c1] : !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
 // abs overwrites DST[1] in-place
@@ -31,7 +31,7 @@
 // rsqrt overwrites DST[1] in-place
 // CHECK-NEXT:      %[[RSQRT:.*]] = ttl.tile_rsqrt %[[ABS]] into dst[%c1] : !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
 // SFPU binary mul: x at DST[0], rsqrt at DST[1] -> DST[0]
-// CHECK-NEXT:      %[[RESULT:.*]] = ttl.tile_mul %[[X]], %[[RSQRT]] into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+// CHECK-NEXT:      %[[RESULT:.*]] = ttl.tile_mul_sfpu %[[X]], %[[RSQRT]] into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
 // CHECK:           ttl.tile_store %[[RESULT]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield
 

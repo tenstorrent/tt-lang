@@ -187,12 +187,12 @@ static Value emitTileOpFor(OpBuilder &b, Location loc, Operation *sourceOp,
   if (isa<TTL_OP##Op>(sourceOp))                                               \
     return createTileOpWithPlaceholderDstIndex<TILE_OP>(b, loc, tileType,      \
                                                         tileOperands[0]);
-#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
+#define TTL_TENSOR_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   if (isa<TTL_OP##Op>(sourceOp))                                               \
     return createTileOpWithPlaceholderDstIndex<TILE_OP>(                       \
         b, loc, tileType, tileOperands[0], tileOperands[1]);
 #define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
-  TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
+  TTL_TENSOR_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   // FillOp: no tile operands, just a value attribute.
@@ -1558,7 +1558,7 @@ struct LowerTransposeToCompute : OpRewritePattern<TransposeOp> {
 
 // Generate type aliases for binary operations using tile ops
 // (TTK_INIT and TTK_COMPUTE are unused here, only needed for TTKernel lowering)
-#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
+#define TTL_TENSOR_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   using Lower##TTL_OP = LowerBinaryToCompute<TTL_OP##Op, TILE_OP>;
 #define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   using Lower##TTL_OP = LowerBinaryToCompute<TTL_OP##Op, TILE_OP>;
@@ -1613,7 +1613,7 @@ void populateTTLToComputePatterns(RewritePatternSet &patterns) {
   // These are generated from TTLElementwiseOps.def using tile-based mappings.
   // (TTK_INIT and TTK_COMPUTE are unused here, only needed for TTKernel
   // lowering)
-#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
+#define TTL_TENSOR_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   patterns.add<Lower##TTL_OP>(ctx);
 #define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
   patterns.add<Lower##TTL_OP>(ctx);

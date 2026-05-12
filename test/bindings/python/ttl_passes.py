@@ -19,7 +19,7 @@ def test_ttl_passes_registered():
     # Function-level passes.
     func_passes = [
         "convert-ttl-to-compute",
-        "ttl-mark-fpu-binaries",
+        "ttl-lower-binary-tiles",
         "ttl-assign-dst",
         "ttl-lower-to-loops",
         "ttl-annotate-cb-associations",
@@ -29,7 +29,7 @@ def test_ttl_passes_registered():
         PassManager.parse(f"builtin.module(func.func({pass_name}))", context=ctx)
         print(f"{pass_name} pass registered")
         # CHECK: convert-ttl-to-compute pass registered
-        # CHECK: ttl-mark-fpu-binaries pass registered
+        # CHECK: ttl-lower-binary-tiles pass registered
         # CHECK: ttl-assign-dst pass registered
         # CHECK: ttl-lower-to-loops pass registered
         # CHECK: ttl-annotate-cb-associations pass registered

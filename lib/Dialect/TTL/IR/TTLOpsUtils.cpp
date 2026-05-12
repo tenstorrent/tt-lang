@@ -25,11 +25,11 @@ TileOpCategory classifyTileOp(Operation *op) {
   if (isa<TileMatmulBlockOp>(op)) {
     return TileOpCategory::FPUBinary;
   }
-  // TODO: add TileOpCategory::Transpose case when TTL transpose op is added.
-
-  // FPU binary: marked by kFPUBinaryAttrName attribute.
-  if (op->hasAttr(kFPUBinaryAttrName)) {
+  if (isFpuBinaryTileOp(op)) {
     return TileOpCategory::FPUBinary;
+  }
+  if (op->hasTrait<TTLPolymorphicBinaryTileOpTrait>()) {
+    return TileOpCategory::Unknown;
   }
   // SFPU unary: tile unary ops that operate in-place on DST.
   if (op->hasTrait<TTLTileUnaryOpTrait>()) {

@@ -1,6 +1,6 @@
 // Summary: three-op chain (add -> mul -> exp) with DST register reuse.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst{dst-capacity=8 separate-output-region=1}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles, ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles, ttl-assign-dst{dst-capacity=8 separate-output-region=1}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
 
 // Verify no placeholder copies remain in final IR
 // CHECK-NOT: placeholder
@@ -28,18 +28,18 @@
 // CHECK-NEXT: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, f32>, %[[B:.*]]: !ttcore.tile<32x32, f32>, %[[C:.*]]: !ttcore.tile<32x32, f32>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
 // CHECK-NEXT:   %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:   %[[I1:.*]] = ttl.iter_index 1 : index
-// CHECK-NEXT:   %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%c0] {ttl.fpu_binary} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[ADD:.*]] = ttl.tile_add_fpu %[[A]], %[[B]] into dst[%c0]  : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[C]][%[[I0]], %[[I1]]] into dst[%[[C1]]]
-// CHECK-NEXT:   %[[MUL:.*]] = ttl.tile_mul %[[ADD]], %[[DTILE]] into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK-NEXT:   %[[MUL:.*]] = ttl.tile_mul_sfpu %[[ADD]], %[[DTILE]] into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   %[[EXP:.*]] = ttl.tile_exp %[[MUL]] into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK-NEXT:   ttl.tile_store %[[EXP]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:   ttl.yield
 // CHECK-NEXT: } -> tensor<2x2x!ttcore.tile<32x32, f32>>
 // CHECK-NEXT: return %[[RES]]
 // SEPARATE-LABEL: func.func @add_mul_exp_chain
-// SEPARATE:      %[[ADDS:.*]] = ttl.tile_add {{.*}} into dst[%c0] {ttl.fpu_binary}
+// SEPARATE:      %[[ADDS:.*]] = ttl.tile_add_fpu {{.*}} into dst[%c0] 
 // SEPARATE:      %{{.*}}, %[[DTILES:.*]] = ttl.copy_tile {{.*}}
-// SEPARATE-NEXT: %[[MULS:.*]] = ttl.tile_mul %[[ADDS]], %[[DTILES]] into dst[%c2]
+// SEPARATE-NEXT: %[[MULS:.*]] = ttl.tile_mul_sfpu %[[ADDS]], %[[DTILES]] into dst[%c2]
 // SEPARATE-NEXT: %[[EXPS:.*]] = ttl.tile_exp %[[MULS]] into dst[%c2]
 // SEPARATE:      ttl.tile_store
 // SEPARATE-NEXT: ttl.yield

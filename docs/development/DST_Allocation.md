@@ -189,14 +189,11 @@ tt-metal patterns documented for future implementation.
 | Transpose (CB) | | x | | | — |
 | Transpose (DST) | x | | x | | — |
 
-Notes on FPU binary: FPU binary ops share the same TTL op definitions
-as SFPU binary ops (`TTL_TileBinaryOp` with `DSTInputsTrait`). The
-distinction is made at runtime: `TTLAssignDST` Phase 0 marks eligible
-ops with the `ttl.fpu_binary` attribute when both operands are CB-backed
-block arguments. Operations marked `fpu_binary` bypass `copy_tile` and
-read directly from CBs, so their `DSTInputsTrait` is effectively
-overridden — the allocator checks `isCBInputOp()` at runtime rather
-than the static trait.
+Notes on FPU binary: Polymorphic `ttl.tile_add`/`sub`/`mul` are lowered by
+`ttl-lower-binary-tiles` to `ttl.tile_*_fpu` (`TTLCBInputTileOpTrait`) or
+`ttl.tile_*_sfpu` (`TTLDSTInputsTrait`) before `TTLAssignDST`. FPU variants
+bypass `copy_tile` and read directly from CBs; the allocator uses
+`isCBInputOp()` (trait-based).
 
 Notes on in-place binary (max, min): These binary ops carry both
 `DSTInputsTrait` (from the `TTL_TileBinaryOp` base class) and
@@ -261,20 +258,15 @@ References:
 - Christian Wimmer and Michael Franz. 2010. Linear scan register allocation on SSA form. In Proceedings of CGO '10. https://doi.org/10.1145/1772954.1772979
 - P. S. Rawat et al. 2019. Associative instruction reordering to alleviate register pressure. In Proceedings of SC '18. https://doi.org/10.1109/SC.2018.00049
 
-### Phase 0: FPU Binary Detection
+### Phase 0: FPU binary lowering (pre-assign)
 
-[Source: TTLAssignDST.cpp](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLAssignDST.cpp#L577-L626)
-
-Identifies binary tile operations (`add`, `sub`, `mul`) eligible for
-FPU execution and marks them with the `ttl.fpu_binary` attribute. An
-op qualifies when both operands are input block arguments with identical
-indexing maps (ensuring both can be read from CBs via the SrcA/SrcB
-unpackers). This phase is gated by the `enable-fpu-binary-ops` pipeline
-option (default: true); when disabled, all binary ops use the SFPU path.
-
-FPU-marked ops bypass `copy_tile` during lowering and read operands
-directly from CBs, reducing per-iteration DST pressure from 3 slots
-(2 copies + 1 output) to 1 slot (output only). This feeds into the
+`ttl-lower-binary-tiles` (scheduled before `TTLAssignDST`) replaces
+polymorphic `ttl.tile_add`/`sub`/`mul` with `ttl.tile_*_fpu` or
+`ttl.tile_*_sfpu` using `isFpuBinaryEligible` and the
+`enable-fpu-binary-ops` pipeline option. FPU tile ops bypass `copy_tile`
+during lowering and read operands directly from CBs, reducing
+per-iteration DST pressure from 3 slots (2 copies + 1 output) to 1 slot
+(output only). This feeds into the
 `unroll_factor` computation at the end of allocation.
 
 ### Future: Operation Scheduling for Register Pressure

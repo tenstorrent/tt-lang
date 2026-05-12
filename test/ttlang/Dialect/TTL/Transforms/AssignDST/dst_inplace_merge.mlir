@@ -1,6 +1,6 @@
 // Summary: In-place SFPU ops merge dst_idx with their copy_tile source.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst{dst-capacity=8 separate-output-region=1}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles, ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles, ttl-assign-dst{dst-capacity=8 separate-output-region=1}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
 
 // Verify no placeholder copies remain in final IR
 // CHECK-NOT: placeholder
@@ -77,7 +77,7 @@ func.func @inplace_unary_chain(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 // copy B to DST[1]
 // CHECK:           %{{.*}}, %[[BTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]] into dst[%c1]
 // SFPU binary add: reads exp result (DST[0]) and B copy (DST[1])
-// CHECK-NEXT:      %[[ADD:.*]] = ttl.tile_add %[[EXP]], %[[BTILE]] into dst[%c0]
+// CHECK-NEXT:      %[[ADD:.*]] = ttl.tile_add_sfpu %[[EXP]], %[[BTILE]] into dst[%c0]
 // CHECK:           ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield
 func.func @inplace_feeds_sfpu_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -128,7 +128,7 @@ func.func @inplace_feeds_sfpu_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // copy B -> DST[1]
 // CHECK:           %{{.*}}, %[[BTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]] into dst[%c1]
 // mul reads exp result (DST[0]) and B (DST[1])
-// CHECK-NEXT:      %[[MUL:.*]] = ttl.tile_mul %[[EXP]], %[[BTILE]] into dst[%c0]
+// CHECK-NEXT:      %[[MUL:.*]] = ttl.tile_mul_sfpu %[[EXP]], %[[BTILE]] into dst[%c0]
 // CHECK:           ttl.tile_store %[[MUL]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield
 func.func @inplace_chain_feeds_non_inplace(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
@@ -180,7 +180,7 @@ func.func @inplace_chain_feeds_non_inplace(%a: tensor<2x2x!ttcore.tile<32x32, f3
 // CHECK:           %{{.*}}, %[[BTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]] into dst[%c1]
 // CHECK-NEXT:      %[[ABS:.*]] = ttl.tile_abs %[[BTILE]] into dst[%c1]
 // add reads from DST[0] and DST[1]
-// CHECK-NEXT:      %[[ADD:.*]] = ttl.tile_add %[[EXP]], %[[ABS]] into dst[%c0]
+// CHECK-NEXT:      %[[ADD:.*]] = ttl.tile_add_sfpu %[[EXP]], %[[ABS]] into dst[%c0]
 // CHECK:           ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield
 func.func @two_inplace_chains_feed_binary(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,

@@ -3,12 +3,12 @@
 
 // FPU path (default): binary add uses add_tiles (reads from CB).
 // RUN: ttlang-opt %s --split-input-file \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst, ttl-subblock-compute-for-dst, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles, ttl-assign-dst, ttl-subblock-compute-for-dst, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   | FileCheck %s --check-prefix=FPU
 
 // SFPU path: binary add uses copy_tile + add_binary_tile.
 // RUN: ttlang-opt %s --split-input-file \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries{enable-fpu-binary-ops=0}, ttl-assign-dst, ttl-subblock-compute-for-dst, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles{enable-fpu-binary-ops=0}, ttl-assign-dst, ttl-subblock-compute-for-dst, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   | FileCheck %s --check-prefix=SFPU
 
 #map = affine_map<(d0, d1) -> (d0, d1)>

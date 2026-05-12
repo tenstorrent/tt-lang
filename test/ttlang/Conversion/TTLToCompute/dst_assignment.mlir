@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-mark-fpu-binaries{enable-fpu-binary-ops=0}, ttl-assign-dst),canonicalize)' | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-lower-binary-tiles{enable-fpu-binary-ops=0}, ttl-assign-dst),canonicalize)' | FileCheck %s
 
 // Test: token-based lowering with dst_idx annotations on math ops.
 // Note: enable-fpu-binary-ops=0 keeps SFPU lowering path (not testing FPU detection).
@@ -19,6 +19,6 @@ func.func @ok(%a: tensor<2x2x!ttcore.tile<32x32, f32>>, %b: tensor<2x2x!ttcore.t
 // CHECK-LABEL: func.func @ok
 // CHECK: tensor.empty
 // CHECK: ttl.compute
-// CHECK: ttl.tile_add {{.*}} into dst[%c0]
+// CHECK: ttl.tile_add_sfpu {{.*}} into dst[%c0]
 // CHECK: ttl.tile_store
 // CHECK: ttl.yield

@@ -6,8 +6,8 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{reduce-full-fp32=0}))' --split-input-file | FileCheck %s --check-prefix=NO-REDUCE-FP32
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --split-input-file | FileCheck %s --check-prefix=BLACKHOLE
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --split-input-file | FileCheck %s --check-prefix=WORMHOLE
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-set-compute-kernel-config))' --split-input-file | FileCheck %s --check-prefix=UNPACK
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries{enable-fpu-binary-ops=0}, ttl-set-compute-kernel-config))' --split-input-file | FileCheck %s --check-prefix=UNPACK-NOFPU
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles, ttl-set-compute-kernel-config))' --split-input-file | FileCheck %s --check-prefix=UNPACK
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles{enable-fpu-binary-ops=0}, ttl-set-compute-kernel-config))' --split-input-file | FileCheck %s --check-prefix=UNPACK-NOFPU
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -704,7 +704,7 @@ func.func @f32_matmul_no_unpack(
 #map_unpack_add = affine_map<(d0, d1) -> (d0, d1)>
 
 // Purpose: f32 add with both operands as input block args is marked
-// ttl.fpu_binary by TTLMarkFPUBinaries (FPU strategy). The pass must NOT set
+// ttl.tile_add_fpu by TTLLowerBinaryTiles (FPU strategy). The pass must NOT set
 // ttl.unpack_to_dest_fp32 — the inputs go to SRCA/B, not DST. Regression for
 // the case where TTLSetComputeKernelConfig misclassified pre-marking ops as
 // SFPU.

@@ -6,7 +6,7 @@
 // RUN: ttlang-opt %s \
 // RUN:   --pass-pipeline='builtin.module(func.func( \
 // RUN:     ttl-annotate-l1-acc-loops, convert-ttl-to-compute, \
-// RUN:     ttl-mark-fpu-binaries{enable-fpu-binary-ops=0}, ttl-assign-dst, \
+// RUN:     ttl-lower-binary-tiles{enable-fpu-binary-ops=0}, ttl-assign-dst, \
 // RUN:     ttl-subblock-compute-for-dst{strict-f32-acc=true}))' \
 // RUN:   --verify-diagnostics --split-input-file
 

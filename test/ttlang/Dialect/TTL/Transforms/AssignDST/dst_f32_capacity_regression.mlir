@@ -1,5 +1,5 @@
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries{enable-fpu-binary-ops=0}, ttl-assign-dst))' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles{enable-fpu-binary-ops=0}, ttl-assign-dst))' \
 // RUN:   | FileCheck %s
 //
 // Verify that f32 tiles get the correct DST capacity (4, not the bf16

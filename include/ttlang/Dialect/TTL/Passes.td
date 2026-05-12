@@ -50,7 +50,9 @@ def TTLConvertTTLToTTKernel
 
   let options = [
     Option<"reduceFullFp32", "reduce-full-fp32", "bool", "true",
-           "Enable FP32 accumulation for reduce operations.">
+           "Enable FP32 accumulation for reduce operations.">,
+    Option<"enableFPUBinaryOps", "enable-fpu-binary-ops", "bool", "true",
+           "Forwarded to ttl-lower-binary-tiles before tile lowering.">
   ];
 
   let dependentDialects = [
@@ -203,18 +205,23 @@ def TTLAssignDST
   ];
 }
 
-def TTLMarkFPUBinaries
-    : Pass<"ttl-mark-fpu-binaries", "::mlir::func::FuncOp"> {
-  let summary = "Mark tile add/sub/mul ops eligible for FPU lowering";
+def TTLLowerBinaryTiles
+    : Pass<"ttl-lower-binary-tiles", "::mlir::func::FuncOp"> {
+  let summary = "Lower polymorphic tile add/sub/mul to FPU or SFPU tile ops";
   let description = [{
-    Sets the `ttl.fpu_binary` attribute on every op in each `ttl.compute`
-    body for which `isFpuBinaryEligible` holds (see TTLOpsUtils.h).
-    Consumers test the attribute via `isCBInputOp`.
+    Replaces each `ttl.tile_add`, `ttl.tile_sub`, and `ttl.tile_mul` in the
+    function with `ttl.tile_*_fpu` (CB input trait) when the op is inside a
+    `ttl.compute` body, `isFpuBinaryEligible` holds, and `enable-fpu-binary-ops`
+    is true; otherwise with `ttl.tile_*_sfpu` (DST input trait). Polymorphic
+    tile binares outside `ttl.compute` always lower to `*_sfpu` so standalone
+    tile lowering can resolve DST indices (including function-parameter fallback
+    in ConvertTTLTileOpsToTTKernel). Downstream passes use `isCBInputOp`
+    (trait-based).
   }];
 
   let options = [
     Option<"enableFPUBinaryOps", "enable-fpu-binary-ops", "bool", "true",
-           "When false, the pass is a no-op.">
+           "When false, eligible ops still lower to *_sfpu variants (never left polymorphic).">,
   ];
 
   let dependentDialects = [

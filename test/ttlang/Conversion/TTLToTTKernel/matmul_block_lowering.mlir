@@ -5,10 +5,10 @@
 // DFB lifecycle (wait/pop/reserve/push) comes from user code, not the pass.
 
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-mark-fpu-binaries{enable-fpu-binary-ops=0}, ttl-assign-dst, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-lower-binary-tiles{enable-fpu-binary-ops=0}, ttl-assign-dst, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   --split-input-file | FileCheck %s
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-mark-fpu-binaries{enable-fpu-binary-ops=0}, ttl-assign-dst, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, func.func(ttkernel-combine-pack-tiles), canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-lower-binary-tiles{enable-fpu-binary-ops=0}, ttl-assign-dst, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, func.func(ttkernel-combine-pack-tiles), canonicalize, cse)' \
 // RUN:   --split-input-file | FileCheck %s --check-prefix=COMBINED
 
 // =============================================================================

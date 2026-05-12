@@ -1,5 +1,5 @@
 // Summary: Test unary operation interval merging - verify live intervals via LLVM_DEBUG.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst))' -debug-only=ttl-assign-dst --split-input-file 2>&1 | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles, ttl-assign-dst))' -debug-only=ttl-assign-dst --split-input-file 2>&1 | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -14,7 +14,7 @@
 // - Block arg and all unary results should have the same interval [0, 3]
 // - All values get allocated to the same DST register
 
-// FPU binary marking happens in a separate pass (TTLMarkFPUBinaries).
+// FPU vs SFPU tile ops are selected in a separate pass (TTLLowerBinaryTiles).
 // CHECK: === Phase 1: Copy Insertion ===
 
 // Verify Phase 2 merging happens
@@ -90,7 +90,7 @@ func.func @unary_chain_shared_dst(%a: tensor<2x2x!ttcore.tile<32x32, f32>>)
 // Expected: tile_mul and tile_abs share the same DST (merged interval [3, 5])
 // FPU binary: block args don't need DST registers
 
-// FPU binary marking happens in a separate pass (TTLMarkFPUBinaries) before
+// FPU vs SFPU tile ops are selected in a separate pass (TTLLowerBinaryTiles) before
 // this one and is verified by its own lit test; we only require the marked
 // attribute to be respected during interval merging here.
 

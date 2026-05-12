@@ -3,8 +3,8 @@
 // region when the leader value is not yielded, even though one of its merged partners
 // IS yielded. The fix ensures Phase 3 skips merged sets if ANY member is yielded.
 //
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst{separate-output-region=1}))' -debug-only=ttl-assign-dst 2>&1 | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst{separate-output-region=1}), canonicalize, cse)' | FileCheck %s --check-prefix=IR
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles, ttl-assign-dst{separate-output-region=1}))' -debug-only=ttl-assign-dst 2>&1 | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles, ttl-assign-dst{separate-output-region=1}), canonicalize, cse)' | FileCheck %s --check-prefix=IR
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -15,7 +15,7 @@
 // After fix: Phase 3 sees %abs (merged with %mul) is yielded, skips the merged set.
 //            Phase 4 allocates the entire merged set to output region.
 
-// FPU binary marking happens in TTLMarkFPUBinaries (separate pass);
+// FPU vs SFPU tile ops are selected in TTLLowerBinaryTiles (separate pass);
 // verified by its own lit test. Here we only require the attribute is
 // respected during interval merging below.
 
@@ -45,7 +45,7 @@
 // IR-LABEL: func.func @binary_unary_merged_output
 // IR-DAG: %[[C0:.*]] = arith.constant 0 : index
 // IR: ttl.compute
-// IR: ttl.tile_mul {{.*}} into dst[%[[C0]]] {ttl.fpu_binary}
+// IR: ttl.tile_mul_fpu {{.*}} into dst[%[[C0]]] 
 // IR: ttl.tile_abs {{.*}} into dst[%[[C0]]]
 // IR: ttl.tile_store
 

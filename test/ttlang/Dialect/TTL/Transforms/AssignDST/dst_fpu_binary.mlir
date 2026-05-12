@@ -3,9 +3,9 @@
 // engine which reads from CB, consuming 0 DST input slots. This doubles the
 // achievable unroll_factor for simple binary patterns.
 
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst{dst-capacity=8}), canonicalize, cse)' --split-input-file | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst{dst-capacity=8 separate-output-region=1}), canonicalize, cse)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries{enable-fpu-binary-ops=0}, ttl-assign-dst{dst-capacity=8}), canonicalize, cse)' --split-input-file | FileCheck %s --check-prefix=SFPU
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles, ttl-assign-dst{dst-capacity=8}), canonicalize, cse)' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles, ttl-assign-dst{dst-capacity=8 separate-output-region=1}), canonicalize, cse)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles{enable-fpu-binary-ops=0}, ttl-assign-dst{dst-capacity=8}), canonicalize, cse)' --split-input-file | FileCheck %s --check-prefix=SFPU
 
 // Verify no placeholder copies remain in final IR
 // CHECK-NOT: placeholder
@@ -29,12 +29,12 @@
 // CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // No copy_tile - FPU reads from CB
 // CHECK-NOT:       ttl.copy_tile
-// CHECK:           %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%[[C0]]] {ttl.fpu_binary} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK:           %[[ADD:.*]] = ttl.tile_add_fpu %[[A]], %[[B]] into dst[%[[C0]]]  : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:           ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield
 // SEPARATE-LABEL:  func.func @simple_fpu_add
 // SEPARATE-DAG:       %[[C0:.*]] = arith.constant 0 : index
-// SEPARATE:        %[[ADDS:.*]] = ttl.tile_add {{.*}} into dst[%[[C0]]] {ttl.fpu_binary}
+// SEPARATE:        %[[ADDS:.*]] = ttl.tile_add_fpu {{.*}} into dst[%[[C0]]] 
 // SEPARATE:        ttl.tile_store
 // SEPARATE-NEXT:   ttl.yield
 //
@@ -46,10 +46,10 @@
 // SFPU-NEXT:      ^bb0(%[[A:[^:]*]]: !ttcore.tile<32x32, f32>, %[[B:[^:]*]]: !ttcore.tile<32x32, f32>, %[[OUT:[^:]*]]: !ttcore.tile<32x32, f32>):
 // SFPU-NEXT:        %[[SI0:.*]] = ttl.iter_index 0 : index
 // SFPU-NEXT:        %[[SI1:.*]] = ttl.iter_index 1 : index
-// SFPU-NOT:       fpu_binary
+// SFPU-NOT: tile_add_fpu
 // SFPU:           %{{.*}}, %[[ATILE:.*]] = ttl.copy_tile %[[A]][%[[SI0]], %[[SI1]]] into dst[%[[C0]]]
 // SFPU:           %{{.*}}, %[[BTILE:.*]] = ttl.copy_tile %[[B]][%[[SI0]], %[[SI1]]] into dst[%c1]
-// SFPU:      %[[ADD:.*]] = ttl.tile_add %[[ATILE]], %[[BTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// SFPU:      %[[ADD:.*]] = ttl.tile_add_sfpu %[[ATILE]], %[[BTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // SFPU:           ttl.tile_store %[[ADD]], %{{.*}}[%[[SI0]], %[[SI1]]]
 // SFPU-NEXT:      ttl.yield
 
@@ -98,18 +98,18 @@ func.func @simple_fpu_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary add: both block args, reads from CB
-// CHECK:           %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%[[C0]]] {ttl.fpu_binary} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK:           %[[ADD:.*]] = ttl.tile_add_fpu %[[A]], %[[B]] into dst[%[[C0]]]  : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // C copied for SFPU mul
 // CHECK:           %{{.*}}, %[[CTILE:.*]] = ttl.copy_tile %[[C]][%[[I0]], %[[I1]]] into dst[%c1]
 // SFPU mul: one operand from DST (add result), one from copy_tile
-// CHECK:      %[[MUL:.*]] = ttl.tile_mul %[[ADD]], %[[CTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK:      %[[MUL:.*]] = ttl.tile_mul_sfpu %[[ADD]], %[[CTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:           ttl.tile_store %[[MUL]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield
 // SEPARATE-LABEL:  func.func @mixed_fpu_sfpu
 // SEPARATE-DAG:       %[[C0:.*]] = arith.constant 0 : index
 // SEPARATE-DAG:       %[[C2:.*]] = arith.constant 2 : index
-// SEPARATE:        %[[ADDS:.*]] = ttl.tile_add {{.*}} into dst[%[[C0]]] {ttl.fpu_binary}
-// SEPARATE:        ttl.tile_mul {{.*}} into dst[%[[C2]]]
+// SEPARATE:        %[[ADDS:.*]] = ttl.tile_add_fpu {{.*}} into dst[%[[C0]]] 
+// SEPARATE:        ttl.tile_mul_sfpu {{.*}} into dst[%[[C2]]]
 //
 // SFPU path: all binary ops use copy_tile for both operands, no fpu_binary
 // SFPU-LABEL: func.func @mixed_fpu_sfpu
@@ -119,14 +119,14 @@ func.func @simple_fpu_add(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // SFPU-NEXT:      ^bb0(%[[A:[^:]*]]: !ttcore.tile<32x32, f32>, %[[B:[^:]*]]: !ttcore.tile<32x32, f32>, %[[C:[^:]*]]: !ttcore.tile<32x32, f32>, %[[OUT:[^:]*]]: !ttcore.tile<32x32, f32>):
 // SFPU-NEXT:        %[[SI0:.*]] = ttl.iter_index 0 : index
 // SFPU-NEXT:        %[[SI1:.*]] = ttl.iter_index 1 : index
-// SFPU-NOT:       fpu_binary
+// SFPU-NOT: tile_add_fpu
 // copy A and B for SFPU add
 // SFPU:           %{{.*}}, %[[ATILE:.*]] = ttl.copy_tile %[[A]][%[[SI0]], %[[SI1]]] into dst[%[[C0]]]
 // SFPU:           %{{.*}}, %[[BTILE:.*]] = ttl.copy_tile %[[B]][%[[SI0]], %[[SI1]]] into dst[%c1]
-// SFPU:      %[[ADD:.*]] = ttl.tile_add %[[ATILE]], %[[BTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// SFPU:      %[[ADD:.*]] = ttl.tile_add_sfpu %[[ATILE]], %[[BTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // copy C for SFPU mul
 // SFPU:           %{{.*}}, %[[CTILE:.*]] = ttl.copy_tile %[[C]][%[[SI0]], %[[SI1]]] into dst[%c1]
-// SFPU:      %[[MUL:.*]] = ttl.tile_mul %[[ADD]], %[[CTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// SFPU:      %[[MUL:.*]] = ttl.tile_mul_sfpu %[[ADD]], %[[CTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // SFPU:           ttl.tile_store %[[MUL]], %{{.*}}[%[[SI0]], %[[SI1]]]
 // SFPU-NEXT:      ttl.yield
 
@@ -179,26 +179,26 @@ func.func @mixed_fpu_sfpu(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // No FPU binary in this compute body - one operand is always computed
-// CHECK-NOT:       fpu_binary
+// CHECK-NOT: tile_add_fpu
 // A needs copy_tile for exp (SFPU unary)
 // CHECK:           %{{.*}}, %[[ATILE:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
 // CHECK:      %[[EXP:.*]] = ttl.tile_exp %[[ATILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // B needs copy_tile for SFPU add; no fpu_binary between exp and copy_tile
-// CHECK-NOT:       fpu_binary
+// CHECK-NOT: tile_add_fpu
 // CHECK:           %{{.*}}, %[[BTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]] into dst[%c1]
 // tile_add is SFPU (one operand computed) - attribute dict closes after dst_idx
-// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[EXP]], %[[BTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK:      %[[ADD:.*]] = ttl.tile_add_sfpu %[[EXP]], %[[BTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:           ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield
 //
 // SFPU path: same as CHECK - one operand is always computed, so no FPU possible
 // SFPU-LABEL: func.func @not_fpu_computed_operand
 // SFPU:           ttl.compute
-// SFPU-NOT:       fpu_binary
+// SFPU-NOT: tile_add_fpu
 // SFPU:           ttl.copy_tile
 // SFPU:           ttl.tile_exp
 // SFPU:           ttl.copy_tile
-// SFPU:           %[[ADDS:.*]] = ttl.tile_add {{.*}} : !ttcore.tile<32x32, f32>
+// SFPU:           %[[ADDS:.*]] = ttl.tile_add_sfpu {{.*}} : !ttcore.tile<32x32, f32>
 // SFPU:            ttl.tile_store
 // SFPU-NEXT:       ttl.yield
 
@@ -252,9 +252,9 @@ func.func @not_fpu_computed_operand(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:      %[[I1:.*]] = ttl.iter_index 1 : index
 // No copy_tile for any op - all FPU
 // CHECK-NOT:       ttl.copy_tile
-// CHECK:           %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%[[C0]]] {ttl.fpu_binary} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-// CHECK:      %[[SUB:.*]] = ttl.tile_sub %[[A]], %[[B]] into dst[%[[C1]]] {ttl.fpu_binary} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-// CHECK:      %[[MUL:.*]] = ttl.tile_mul %[[A]], %[[B]] into dst[%[[C2]]] {ttl.fpu_binary} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK:           %[[ADD:.*]] = ttl.tile_add_fpu %[[A]], %[[B]] into dst[%[[C0]]]  : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK:      %[[SUB:.*]] = ttl.tile_sub_fpu %[[A]], %[[B]] into dst[%[[C1]]]  : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK:      %[[MUL:.*]] = ttl.tile_mul_fpu %[[A]], %[[B]] into dst[%[[C2]]]  : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:           ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK:           ttl.tile_store %[[SUB]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK:           ttl.tile_store %[[MUL]], %{{.*}}[%[[I0]], %[[I1]]]
@@ -267,13 +267,13 @@ func.func @not_fpu_computed_operand(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // SFPU-DAG:       %[[C3:.*]] = arith.constant 3 : index
 // SFPU:           ttl.compute
 // SFPU-SAME:      ttl.unroll_factor = 2
-// SFPU-NOT:       fpu_binary
+// SFPU-NOT: tile_add_fpu
 // copy A and B for SFPU ops
 // SFPU:           %{{.*}}, %[[ATILE:.*]] = ttl.copy_tile {{.*}}
 // SFPU:           %{{.*}}, %[[BTILE:.*]] = ttl.copy_tile {{.*}}
-// SFPU:           %[[ADD:.*]] = ttl.tile_add %[[ATILE]], %[[BTILE]] into dst[%[[C2]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-// SFPU:      %[[SUB:.*]] = ttl.tile_sub %[[ATILE]], %[[BTILE]] into dst[%[[C3]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-// SFPU:      %[[MUL:.*]] = ttl.tile_mul %[[ATILE]], %[[BTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// SFPU:           %[[ADD:.*]] = ttl.tile_add_sfpu %[[ATILE]], %[[BTILE]] into dst[%[[C2]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// SFPU:      %[[SUB:.*]] = ttl.tile_sub_sfpu %[[ATILE]], %[[BTILE]] into dst[%[[C3]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// SFPU:      %[[MUL:.*]] = ttl.tile_mul_sfpu %[[ATILE]], %[[BTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // SFPU:            ttl.tile_store
 // SFPU:            ttl.tile_store
 // SFPU:            ttl.tile_store
@@ -338,7 +338,7 @@ func.func @all_fpu_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK:           %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:      %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary: reads A and B from CB
-// CHECK:           %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%[[C0]]] {ttl.fpu_binary} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK:           %[[ADD:.*]] = ttl.tile_add_fpu %[[A]], %[[B]] into dst[%[[C0]]]  : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // copy_tile A for SFPU exp
 // CHECK:           %{{.*}}, %[[ATILE:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%[[C1]]]
 // CHECK:      %[[EXP:.*]] = ttl.tile_exp %[[ATILE]] into dst[%[[C1]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
@@ -352,11 +352,11 @@ func.func @all_fpu_ops(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // SFPU-DAG:       %[[C1:.*]] = arith.constant 1 : index
 // SFPU:           ttl.compute
 // SFPU-SAME:      ttl.unroll_factor = 4
-// SFPU-NOT:       fpu_binary
+// SFPU-NOT: tile_add_fpu
 // copy A and B for SFPU add
 // SFPU:           %{{.*}}, %[[ATILE1:.*]] = ttl.copy_tile %{{.*}}[%{{.*}}, %{{.*}}] into dst[%[[C0]]]
 // SFPU:           %{{.*}}, %[[BTILE:.*]] = ttl.copy_tile %{{.*}}[%{{.*}}, %{{.*}}] into dst[%[[C1]]]
-// SFPU:      %[[ADD:.*]] = ttl.tile_add %[[ATILE1]], %[[BTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// SFPU:      %[[ADD:.*]] = ttl.tile_add_sfpu %[[ATILE1]], %[[BTILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // copy A again for exp
 // SFPU:           %{{.*}}, %[[ATILE2:.*]] = ttl.copy_tile %{{.*}}[%{{.*}}, %{{.*}}] into dst[%[[C1]]]
 // SFPU:      %[[EXP:.*]] = ttl.tile_exp %[[ATILE2]] into dst[%[[C1]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
@@ -426,13 +426,13 @@ func.func @block_arg_fpu_and_sfpu(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // CHECK:           %{{.*}}, %[[ATILE:.*]] = ttl.copy_tile %[[A]][%[[I0]], %[[I1]]] into dst[%[[C0]]]
 // CHECK:      %[[ABS:.*]] = ttl.tile_abs %[[ATILE]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // FPU add: reads from CB, gets DST[1]
-// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%[[C1]]] {ttl.fpu_binary} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK:      %[[ADD:.*]] = ttl.tile_add_fpu %[[A]], %[[B]] into dst[%[[C1]]]  : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // SFPU binary: abs + add -> DST[0]
-// CHECK:      %[[SUM1:.*]] = ttl.tile_add %[[ABS]], %[[ADD]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK:      %[[SUM1:.*]] = ttl.tile_add_sfpu %[[ABS]], %[[ADD]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // FPU mul: reads from CB, gets DST[2] (NOT DST[1] - no reuse!)
-// CHECK:      %[[MUL:.*]] = ttl.tile_mul %[[A]], %[[B]] into dst[%[[C2]]] {ttl.fpu_binary} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK:      %[[MUL:.*]] = ttl.tile_mul_fpu %[[A]], %[[B]] into dst[%[[C2]]]  : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // SFPU binary: sum1 + mul -> DST[0]
-// CHECK:      %[[SUM2:.*]] = ttl.tile_add %[[SUM1]], %[[MUL]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK:      %[[SUM2:.*]] = ttl.tile_add_sfpu %[[SUM1]], %[[MUL]] into dst[%[[C0]]] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 // CHECK:           ttl.tile_store %[[SUM2]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield
 //
@@ -444,16 +444,16 @@ func.func @block_arg_fpu_and_sfpu(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 // SFPU-DAG:       %[[C1:.*]] = arith.constant 1 : index
 // SFPU:           ttl.compute
 // SFPU-SAME:      ttl.unroll_factor = 2
-// SFPU-NOT:       fpu_binary
+// SFPU-NOT: tile_add_fpu
 // SFPU:           ttl.copy_tile {{.*}}
 // SFPU:           ttl.tile_abs {{.*}} into dst[%[[C0]]]
 // SFPU:           ttl.copy_tile {{.*}}
 // SFPU:           ttl.copy_tile {{.*}}
-// SFPU:           ttl.tile_add {{.*}} into dst[%[[C1]]]
-// SFPU:           ttl.tile_add {{.*}} into dst[%[[C0]]]
+// SFPU:           ttl.tile_add_sfpu {{.*}} into dst[%[[C1]]]
+// SFPU:           ttl.tile_add_sfpu {{.*}} into dst[%[[C0]]]
 // SFPU:           ttl.copy_tile {{.*}}
-// SFPU:           ttl.tile_mul {{.*}} into dst[%[[C1]]]
-// SFPU:           %[[SUM2S:.*]] = ttl.tile_add {{.*}} into dst[%[[C0]]]
+// SFPU:           ttl.tile_mul_sfpu {{.*}} into dst[%[[C1]]]
+// SFPU:           %[[SUM2S:.*]] = ttl.tile_add_sfpu {{.*}} into dst[%[[C0]]]
 // SFPU:            ttl.tile_store
 // SFPU-NEXT:       ttl.yield
 

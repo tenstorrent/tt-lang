@@ -1,6 +1,6 @@
 // Summary: separate-output-region=1 with small capacity overflows when enough
 // unary results are simultaneously live.
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst{dst-capacity=2 separate-output-region=1}))' --verify-diagnostics
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles, ttl-assign-dst{dst-capacity=2 separate-output-region=1}))' --verify-diagnostics
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 

@@ -395,7 +395,7 @@ static void buildLiveIntervals(Block *body,
     // accumulates into DST and its slot must not be reused by another
     // accumulating op within the same sync region.
     auto isFPUAccumulatingOp = [](Operation &op) {
-      return op.hasAttr(kFPUBinaryAttrName) || isa<TileMatmulBlockOp>(&op);
+      return isFpuBinaryTileOp(&op) || isa<TileMatmulBlockOp>(&op);
     };
 
     SmallVector<int64_t> fpuBinaryStarts;
@@ -568,7 +568,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       OpBuilder builder(body, body->begin());
 
       //=== Phase 1: Copy Insertion ===
-      // FPU binary ops (carrying ttl.fpu_binary) read from CB, needing 0
+      // FPU binary ops read from CB, needing 0
       // DST input slots. SFPU binary ops and unary ops require DST input
       // slots and copy_tile insertion below.
       //

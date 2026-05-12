@@ -68,9 +68,6 @@ enum class PipeRole : int64_t {
   Active = 2,
 };
 
-/// Binary ops that use the FPU engine (reading from CB) rather than SFPU.
-constexpr llvm::StringLiteral kFPUBinaryAttrName("ttl.fpu_binary");
-
 /// Number of tiles per DST sync region.
 constexpr llvm::StringLiteral kUnrollFactorAttrName("ttl.unroll_factor");
 
@@ -162,6 +159,12 @@ class TTLCBInputTileOpTrait
 template <typename ConcreteType>
 class TTLDSTInputsTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLDSTInputsTrait> {};
+
+/// Trait for polymorphic tile add/sub/mul before ttl-lower-binary-tiles.
+template <typename ConcreteType>
+class TTLPolymorphicBinaryTileOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType,
+                                      TTLPolymorphicBinaryTileOpTrait> {};
 
 /// Trait for tile operations whose result overwrites the DST input in-place.
 template <typename ConcreteType>

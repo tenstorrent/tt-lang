@@ -1,7 +1,7 @@
 // Summary: Seven-operation fused chain to verify DST allocation handles long chains.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst{dst-capacity=8}), canonicalize, cse)' | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst{dst-capacity=8 separate-output-region=1}), canonicalize, cse)' | FileCheck %s --check-prefix=SEPARATE
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries{enable-fpu-binary-ops=0}, ttl-assign-dst{dst-capacity=8}), canonicalize, cse)' | FileCheck %s --check-prefix=SFPU
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles, ttl-assign-dst{dst-capacity=8}), canonicalize, cse)' | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles, ttl-assign-dst{dst-capacity=8 separate-output-region=1}), canonicalize, cse)' | FileCheck %s --check-prefix=SEPARATE
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-lower-binary-tiles{enable-fpu-binary-ops=0}, ttl-assign-dst{dst-capacity=8}), canonicalize, cse)' | FileCheck %s --check-prefix=SFPU
 
 // Verify no placeholder copies remain in final IR
 // CHECK-NOT: placeholder
@@ -26,11 +26,11 @@
 // CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary add: both operands are block args, no copy_tile needed
-// CHECK:        %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%[[C0]]] {ttl.fpu_binary}
+// CHECK:        %[[ADD:.*]] = ttl.tile_add_fpu %[[A]], %[[B]] into dst[%[[C0]]] 
 // Copy B for sub/mul (SFPU operand needs copy_tile)
 // CHECK:             %{{.*}}, %[[DTILE:.*]] = ttl.copy_tile %[[B]][%[[I0]], %[[I1]]] into dst[%c1]
-// CHECK:        %[[SUB:.*]] = ttl.tile_sub %[[ADD]], %[[DTILE]] into dst[%[[C0]]]
-// CHECK:        %[[MUL:.*]] = ttl.tile_mul %[[SUB]], %[[DTILE]] into dst[%[[C0]]]
+// CHECK:        %[[SUB:.*]] = ttl.tile_sub_sfpu %[[ADD]], %[[DTILE]] into dst[%[[C0]]]
+// CHECK:        %[[MUL:.*]] = ttl.tile_mul_sfpu %[[SUB]], %[[DTILE]] into dst[%[[C0]]]
 // CHECK:        %[[EXP:.*]] = ttl.tile_exp %[[MUL]] into dst[%[[C0]]]
 // CHECK:        %[[LOG:.*]] = ttl.tile_log %[[EXP]] into dst[%[[C0]]]
 // CHECK:        %[[NEG:.*]] = ttl.tile_neg %[[LOG]] into dst[%[[C0]]]
@@ -46,14 +46,14 @@
 // SFPU:           %[[CB2S:.*]] = ttl.bind_cb{cb_index = 2, block_count = 1}
 // SFPU:           ttl.compute
 // SFPU:           ^bb0
-// SFPU-NOT:         fpu_binary
+// SFPU-NOT: tile_add_fpu
 // copy A and B for SFPU add
 // SFPU:             ttl.copy_tile {{.*}}
 // SFPU:             ttl.copy_tile {{.*}}
-// SFPU:             ttl.tile_add {{.*}} into dst[%[[C0]]]
+// SFPU:             ttl.tile_add_sfpu {{.*}} into dst[%[[C0]]]
 // sub, mul reuse the B copy (dst_tile_1 at slot 1)
-// SFPU:             ttl.tile_sub {{.*}} into dst[%[[C0]]]
-// SFPU:             ttl.tile_mul {{.*}} into dst[%[[C0]]]
+// SFPU:             ttl.tile_sub_sfpu {{.*}} into dst[%[[C0]]]
+// SFPU:             ttl.tile_mul_sfpu {{.*}} into dst[%[[C0]]]
 // SFPU:             ttl.tile_exp {{.*}} into dst[%[[C0]]]
 // SFPU:             ttl.tile_log {{.*}} into dst[%[[C0]]]
 // SFPU:             ttl.tile_neg {{.*}} into dst[%[[C0]]]
