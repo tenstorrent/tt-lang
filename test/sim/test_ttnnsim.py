@@ -40,7 +40,7 @@ def test_constants_and_dtypes():
     assert isinstance(ttnn.TILE_SIZE, int)
     assert ttnn.TILE_SIZE > 0
     assert hasattr(ttnn, "TILE_LAYOUT")
-    assert ttnn.bfloat16 == torch.bfloat16
+    assert torch.tensor([], dtype=ttnn.bfloat16).element_size() == 2
     assert ttnn.float32 == torch.float32
     assert hasattr(ttnn, "bfloat8_b")
     assert ttnn.bfloat8_b == ttnn.bfloat8_b
@@ -49,7 +49,7 @@ def test_constants_and_dtypes():
     assert ttnn.bfloat8_b.element_size == 1
     t_bf8 = ttnn.rand((32, 32), dtype=ttnn.bfloat8_b)
     assert t_bf8.dtype == ttnn.bfloat8_b
-    assert t_bf8.underlying_dtype == torch.bfloat16
+    assert t_bf8.underlying_dtype == torch.float32
 
 
 def test_bfloat8_b_capacity_bytes_statistics():
@@ -100,6 +100,45 @@ def test_bfloat8_b_capacity_bytes_statistics():
     assert ttnn.bfloat8_b.size_in_bytes(17) == 17 + 2
 
 
+def test_bfloat8_b_promoted_to_float32_by_default():
+    """bfloat8_b tensors use float32 backing when float32 promotion is active."""
+    t_rand = ttnn.rand((32, 32), dtype=ttnn.bfloat8_b)
+    t_empty = ttnn.empty((32, 32), dtype=ttnn.bfloat8_b)
+    t_from = ttnn.from_torch(torch.zeros(32, 32), dtype=ttnn.bfloat8_b)
+
+    for t in (t_rand, t_empty, t_from):
+        assert t.dtype == ttnn.bfloat8_b, "declared dtype must remain bfloat8_b"
+        assert (
+            t.underlying_dtype == torch.float32
+        ), "backing dtype must be float32 when promotion is active"
+
+
+def test_bfloat8_b_no_promotion_uses_bfloat16_backing():
+    """bfloat8_b tensors use bfloat16 backing when float32 promotion is disabled."""
+    ttnn.set_disable_float32_promotion(True)
+    try:
+        t_rand = ttnn.rand((32, 32), dtype=ttnn.bfloat8_b)
+        t_empty = ttnn.empty((32, 32), dtype=ttnn.bfloat8_b)
+        t_from = ttnn.from_torch(torch.zeros(32, 32), dtype=ttnn.bfloat8_b)
+
+        for t in (t_rand, t_empty, t_from):
+            assert t.dtype == ttnn.bfloat8_b, "declared dtype must remain bfloat8_b"
+            assert (
+                t.underlying_dtype == ttnn.bfloat16
+            ), "backing dtype must be bfloat16 when promotion is disabled"
+    finally:
+        ttnn.set_disable_float32_promotion(False)
+
+
+def test_bfloat8_b_promotion_restored_after_reenable():
+    """Re-enabling float32 promotion restores float32 backing for bfloat8_b."""
+    ttnn.set_disable_float32_promotion(True)
+    ttnn.set_disable_float32_promotion(False)
+
+    t = ttnn.rand((32, 32), dtype=ttnn.bfloat8_b)
+    assert t.underlying_dtype == torch.float32
+
+
 def test_device_open_close():
     dev = ttnn.open_device(0)
     assert repr(dev).startswith("Device(id=")
@@ -129,7 +168,7 @@ def test_tensor_rand_and_empty_and_to_torch():
     t2 = ttnn.empty(shape, dtype=ttnn.bfloat16)
     assert isinstance(t2, ttnn.Tensor)
     assert t2.shape == shape
-    assert t2.dtype == torch.bfloat16
+    assert t2.dtype == ttnn.bfloat16
 
     # to_torch accepts both wrapper and raw torch tensors
     tt = ttnn.to_torch(t1)
@@ -738,7 +777,7 @@ def test_from_torch_dtype_conversion():
     t = torch.randn((32, 32), dtype=torch.float32)
     tensor = ttnn.from_torch(t, dtype=ttnn.bfloat16)
 
-    assert tensor.dtype == torch.bfloat16
+    assert tensor.dtype == ttnn.bfloat16
     assert tensor.shape == (32, 32)
 
 
@@ -802,7 +841,7 @@ def test_from_torch_all_parameters():
     )
 
     assert tensor.shape == (128, 128)
-    assert tensor.dtype == torch.bfloat16
+    assert tensor.dtype == ttnn.bfloat16
     ttnn.close_device(device)
 
 

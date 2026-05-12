@@ -90,21 +90,19 @@ bfloat16). Run these with `--no-float32-promotion`:
 - `examples/metal_examples/single_node_matmul/ttlang/single_node_matmul.py`
 - `examples/metal_examples/multinode_matmul/ttlang/multinode_matmul.py`
 
-**L1 memory budget.** Promotion from a narrow type to float32 increases
-per-element storage: bfloat16 uses 2 bytes per element, float32 uses 4 bytes.
-Kernels that are already near the L1 memory limit may exceed it after
-promotion. The simulator issues a warning when the total `DataflowBuffer`
-capacity for a core exceeds the L1 limit:
+**L1 memory budget.** The simulator uses the declared dtype for all
+`DataflowBuffer` capacity accounting so the reported footprint always matches
+what the hardware would allocate, regardless of whether float32 promotion is
+active. If the total buffer capacity for a core exceeds the L1 limit, the
+simulator issues a warning:
 
 ```
 UserWarning: Total DataflowBuffer capacity per core (N bytes) exceeds the L1 memory limit of M bytes.
-If the simulator is promoting narrow dtypes (bfloat16, float16) to float32, each tensor uses 2x
-more memory than on hardware. Run with --no-float32-promotion to check the on-hardware footprint.
+Memory is accounted using declared dtypes, so this reflects the on-hardware footprint of the kernel.
 ```
 
 This warning does not abort execution, but it indicates that the kernel would
-not fit in hardware L1 when using the promoted dtype. Run with
-`--no-float32-promotion` to check the actual on-hardware memory footprint.
+not fit in hardware L1.
 
 **Dtype-specific behavior.** If a kernel explicitly tests dtype identity,
 overflow behavior, or precision characteristics of a specific narrow type,
