@@ -1,16 +1,72 @@
 # Getting Started
 
-The fastest way to get started with TT-Lang is with the [functional simulator](simulator.md), which runs operations as pure Python — no Tenstorrent hardware, no compiler build required:
+The fastest way to get started with TT-Lang is to install a pre-built package
+from PyPI. To develop TT-Lang itself or debug the compiler, use the Docker
+images or [build from source](#building-without-docker).
+
+## Install from PyPI
+
+We provide two TT-Lang packages: the
+[tt-lang](https://pypi.org/project/tt-lang/) package includes the TT-Lang
+compiler and Tenstorrent hardware support and depends on `ttnn`, `pytorch`, and
+several smaller Python packages, while
+[tt-lang-sim](https://pypi.org/project/tt-lang-sim/) includes only the
+functional simulator (no compiler or hardware support) and does not depend on
+`ttnn`.
+
+First, create an isolated Python environment (venv, conda, etc.) with Python
+3.11 or later (Python 3.12 recommended):
+
+```bash
+python3 -m venv --prompt ttlang ttlang-venv
+source ttlang-venv/bin/activate
+```
+
+On Linux machines with Tenstorrent hardware (Linux x86_64 / aarch64):
+
+```bash
+pip install tt-lang
+tt-lang-setup                     # install matching sfpi runtime + copy tutorials
+```
+
+Functional simulator only on Linux or macOS, does not require Tenstorrent
+hardware:
+
+```bash
+pip install tt-lang-sim
+tt-lang-setup                     # copy bundled tutorials to ./tutorials/
+```
+
+`tt-lang-setup` is idempotent (safe to run multiple times). Inside the venv it:
+
+- Downloads the sfpi compiler that pairs with the installed `ttnn` and extracts
+  it under `<venv>/.../ttnn/runtime/sfpi/` (only for the `tt-lang` package).
+- Copies bundled tutorials (`elementwise`, `matmul`, `broadcast`) to
+  `./tutorials/`.
+
+For finer control, `tt-lang-setup-host` runs only the sfpi step and
+`tt-lang-setup-tutorials -t <DIR>` only the tutorials copy.
+
+Run a tutorial example:
+
+```bash
+ttlang-sim tutorials/elementwise/step_4_multinode_grid_auto.py    # simulator (no compilation, runs on CPU)
+python tutorials/elementwise/step_4_multinode_grid_auto.py        # compiles and runs on hardware
+```
+
+## Build from source for the simulator only
+
+To run the simulator from a source checkout without installing the PyPI
+package:
 
 ```bash
 git clone https://github.com/tenstorrent/tt-lang.git
 cd tt-lang
 cmake -G Ninja -B build -DTTLANG_SIM_ONLY=ON
+cmake --build build
 source build/env/activate
 ttlang-sim examples/eltwise_add.py
 ```
-
-To compile and run operations on hardware, use a pre-built Docker image or build from source as described below.
 
 ## Docker quick start
 
@@ -84,7 +140,7 @@ python examples/elementwise-tutorial/step_4_multinode_grid_auto.py
 
 ### Prerequisites
 
-- CMake 3.28+, Ninja, and Clang 17+ or GCC 11+
+- CMake 3.28+, Ninja, and Clang 17+ or GCC 12+
 - Python 3.11+
 - For faster builds: a pre-built toolchain at `TTLANG_TOOLCHAIN_DIR` (default
   `/opt/ttlang-toolchain`). Without one, LLVM and tt-metal build from submodules

@@ -858,14 +858,18 @@ def test_pending_confirmation_raises_at_termination_if_never_stored() -> None:
     # Compute thread: use block in arithmetic but discard the result without storing
     set_current_thread_type(ThreadType.COMPUTE)
     try:
-        with src_dfb.wait() as c_blk:
+        with src_dfb.wait(name="arith_src") as c_blk:
             _unused = c_blk + Block.from_tensor(
                 ttnn.Tensor(torch.full(TILE_SHAPE, 1.0))
             )
             # _unused is never stored
 
-        with pytest.raises(RuntimeError, match="never reached a store"):
+        with pytest.raises(RuntimeError) as err:
             src_dfb.validate_no_pending_blocks()
+        out = str(err.value)
+        assert "never reached a store" in out
+        assert "name: 'arith_src'" in out
+        assert "block_name='arith_src'" in out
     finally:
         clear_current_thread_type()
 

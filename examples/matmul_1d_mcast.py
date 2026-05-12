@@ -167,7 +167,9 @@ def test_matmul_1d(Mt, Nt, Kt, granularity_m, granularity_n, granularity_k):
     print("PASSED!")
 
 
-test_matmul_1d(1, 1, 1, 1, 1, 1)
+# test_matmul_1d(1, 1, 1, 1, 1, 1) is degenerate: Nb=1 reduces to a single
+# working node, which leaves the mcast PipeNet's destination slice empty.
+# Hardware and the simulator both (correctly) reject empty slices.
 
 test_matmul_1d(1, 64, 1, 1, 1, 1)
 test_matmul_1d(1, 113, 1, 1, 1, 1)

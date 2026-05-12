@@ -1780,14 +1780,19 @@ def to_memory_config(tensor: Tensor, memory_config: MemoryConfig) -> Tensor:
     return result
 
 
-def multiply(
-    a: Union[Tensor, torch.Tensor],
-    b: Union[Tensor, torch.Tensor],
-) -> Tensor:
+def multiply(a: Tensor, b: Tensor) -> Tensor:
     """Element-wise multiply (simulator shim for ttnn.multiply)."""
-    a_t = to_torch(a) if isinstance(a, Tensor) else a
-    b_t = to_torch(b) if isinstance(b, Tensor) else b
-    return Tensor(a_t * b_t)
+    return Tensor(a.to_torch() * b.to_torch())
+
+
+def matmul(a: Tensor, b: Tensor) -> Tensor:
+    """Matrix multiply (simulator shim for ttnn.matmul)."""
+    return Tensor(a.to_torch() @ b.to_torch())
+
+
+def relu(a: Tensor) -> Tensor:
+    """Element-wise ReLU (simulator shim for ttnn.relu)."""
+    return Tensor(torch.relu(a.to_torch()))
 
 
 def split_work_to_cores(

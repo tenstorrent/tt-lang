@@ -12,6 +12,7 @@ import pathlib
 import platform
 import shutil
 import subprocess
+import sys
 
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
@@ -32,13 +33,59 @@ class NoSdist(_sdist):
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
 
 
+def _ttnn_requirement():
+    """Build the platform-conditional ttnn requirement from the canonical
+    tt-metal version.
+
+    third-party/tt-metal-version holds a single tt-metal release tag (e.g.
+    `v0.69.0`); the matching ttnn PyPI version is the tag minus the leading
+    `v`. ttnn only publishes wheels for Linux x86_64 / aarch64, so the
+    requirement is conditioned on those platforms via a PEP 508 marker;
+    on macOS / Windows it is silently skipped (those platforms are
+    sim-only via the separate `tt-lang-sim` package).
+    """
+    version_file = REPO_ROOT / "third-party" / "tt-metal-version"
+    tag = version_file.read_text().strip()
+    if not tag.startswith("v"):
+        raise SystemExit(f"{version_file}: '{tag}' must start with 'v'")
+    version = tag[1:]
+    marker = (
+        "sys_platform == 'linux' "
+        "and (platform_machine == 'x86_64' or platform_machine == 'aarch64')"
+    )
+    return f"ttnn == {version} ; {marker}"
+
+
+def _read_install_requires():
+    """Read base runtime requirements from requirements-runtime.txt and
+    append the dynamic ttnn requirement.
+    """
+    req_file = REPO_ROOT / "requirements-runtime.txt"
+    requirements = []
+    for line in req_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        requirements.append(line)
+    requirements.append(_ttnn_requirement())
+    return requirements
+
+
 def get_version_from_git():
     """Get version from git tags, matching cmake/modules/GetVersionFromGit.cmake.
 
     Tag format: vMAJOR.MINOR.PATCH[+LOCAL]. Per PEP 440 the .devN segment must
     sit between the public release and the +local label, so the tag is split
     on '+' before the dev counter is inserted.
+
+    Override mechanism: if TTLANG_PRETEND_VERSION is set in the environment, it
+    is returned verbatim. Used by the publish-pypi workflow to stamp wheels
+    built from a branch with a caller-supplied PEP 440 version (e.g. an rc/dev
+    pre-release) when no matching git tag exists.
     """
+    pretend = os.environ.get("TTLANG_PRETEND_VERSION", "").strip()
+    if pretend:
+        return pretend
     try:
         tag = (
             subprocess.check_output(
@@ -209,26 +256,44 @@ class CMakeBuild(build_ext):
 
 ttlang_c = TTLangExtension("ttl")
 
+sys.path.insert(0, str(REPO_ROOT / "packaging"))
+from rewrite_readme import absolutize_readme_images, ref_for_version  # noqa: E402
+
+_version = get_version_from_git()
+
 readme_path = REPO_ROOT / "README.md"
 with open(str(readme_path), "r", encoding="utf-8") as readme_file:
-    readme = readme_file.read()
+    readme = absolutize_readme_images(
+        readme_file.read(), ref_for_version(_version), REPO_ROOT
+    )
 
 setup(
-    version=get_version_from_git(),
+    version=_version,
+    install_requires=_read_install_requires(),
     packages=[
         "ttl",
         "ttl._src",
+        "ttl._setup",
         "ttl.pykernel",
         "ttl.pykernel._src",
         "ttl.sim",
+        "ttl.tutorials",
+        "ttl.tutorials.elementwise",
+        "ttl.tutorials.matmul",
+        "ttl.tutorials.broadcast",
         "ttl.utils",
     ],
     package_dir={
         "ttl": "python/ttl",
         "ttl._src": "python/ttl/_src",
+        "ttl._setup": "python/ttl/_setup",
         "ttl.pykernel": "python/pykernel",
         "ttl.pykernel._src": "python/pykernel/_src",
         "ttl.sim": "python/sim",
+        "ttl.tutorials": "python/ttl/tutorials",
+        "ttl.tutorials.elementwise": "examples/elementwise-tutorial",
+        "ttl.tutorials.matmul": "examples/matmul-tutorial",
+        "ttl.tutorials.broadcast": "examples/tutorial",
         "ttl.utils": "python/utils",
     },
     ext_modules=[ttlang_c],

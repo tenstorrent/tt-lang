@@ -95,7 +95,7 @@ def pipe_chain(inp, weight, out):
                 tx.wait()
                 # Send last tile to next core
                 if local_t == TILES_PER_CORE - 1:
-                    if core_x < N_CORES - 1:
+                    if net.is_src():
 
                         def send(pipe):
                             xf = ttl.copy(blk, pipe)

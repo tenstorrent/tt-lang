@@ -6,10 +6,26 @@ The simulator typically supports more language features than the compiler at any
 
 ## Setup
 
-The simulator does not require building the compiler. Configure with `-DTTLANG_SIM_ONLY=ON` to create just the Python environment:
+The recommended path is to install the simulator from PyPI:
+
+```bash
+python3 -m venv --prompt ttlang ttlang-venv
+source ttlang-venv/bin/activate
+pip install tt-lang-sim
+tt-lang-setup
+```
+
+See [Getting Started — Install from PyPI](getting-started.md#install-from-pypi)
+for details. `tt-lang-sim` runs on Linux and macOS and does not require
+Tenstorrent hardware.
+
+To run the simulator from a source checkout instead (without building the
+compiler), configure with `-DTTLANG_SIM_ONLY=ON` to create just the Python
+environment:
 
 ```bash
 cmake -G Ninja -B build -DTTLANG_SIM_ONLY=ON
+cmake --build build
 source build/env/activate
 ```
 
@@ -49,14 +65,11 @@ Create a debug configuration in `.vscode/launch.json`:
   "name": "Debug TT-Lang Simulator",
   "type": "debugpy",
   "request": "launch",
-  "module": "sim.ttlang_sim",
+  "module": "ttl.sim.ttlang_sim",
   "args": ["${file}"],
   "console": "integratedTerminal",
   "justMyCode": false,
-  "cwd": "${workspaceFolder}",
-  "env": {
-    "PYTHONPATH": "${workspaceFolder}/python"
-  }
+  "cwd": "${workspaceFolder}"
 }
 ```
 

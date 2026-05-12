@@ -2,7 +2,7 @@
 
 ## Overview
 
-Python `print()` inside TT-Lang operations lowers to device debug prints via a `ttl.dprint` op and a dedicated lowering pass. The pass has full compiler context (DST assignments, CB indices, thread types) and emits the appropriate tt-metal DPRINT calls.
+Python `print()` inside TT-Lang operations lowers to device debug prints via a `ttl.dprint` op and a dedicated lowering pass. The pass has full compiler context (DST assignments, DFB indices, thread types) and emits the appropriate tt-metal DPRINT calls.
 
 Enabled at runtime by `TT_METAL_DPRINT_CORES=0,0`. Zero overhead when not set (tt-metal compiles DPRINT to dead code).
 
@@ -23,25 +23,25 @@ print(3.14)
 
 Supported argument types: string constants, integer constants, float constants, integer variables (index, i32). Error on unsupported types.
 
-### Circular buffer details
+### Dataflow buffer details
 
 ```python
 with inp_dfb.wait() as tile:
     print(inp_dfb)
 ```
 
-Prints CB metadata: size, limit, page_size, num_pages, rd_ptr, wr_ptr.
+Prints DFB metadata: size, limit, page_size, num_pages, rd_ptr, wr_ptr.
 
-### Tile from CB (full tile)
+### Tile from DFB (full tile)
 
 ```python
 with inp_dfb.wait() as tile:
     print(tile, thread="pack")
 ```
 
-Prints the full 32x32 tile contents from the CB. The tile must be live (between wait/pop or reserve/push).
+Prints the full 32x32 tile contents from the DFB. The tile must be live (between wait/pop or reserve/push).
 
-Note: will dump all registers in a block if using multi-tile block size (cb shape > 1x1) as the print will be inside the loop generated.
+Note: will dump all registers in a block if using multi-tile block size (DFB shape > 1x1) as the print will be inside the loop generated.
 
 Note: unsupported on math thread.
 
@@ -73,7 +73,7 @@ print(_dump_dst_registers=True, label="after exp")
 
 Dumps all DST register slots that are live at this program point. The pass resolves assigned DST indices and includes the label and producing op name for each slot.
 
-Note: will dump all registers in a block if using multi-tile block size (cb shape > 1x1) as the print will be inside the loop generated.
+Note: will dump all registers in a block if using multi-tile block size (DFB shape > 1x1) as the print will be inside the loop generated.
 
 Note: only supports bf16.
 
@@ -87,7 +87,7 @@ print(tile, thread="pack")
 print(inp_dfb, thread="unpack")
 ```
 
-When `thread` is specified, the print is wrapped in the corresponding `DPRINT_MATH(...)`, `DPRINT_PACK(...)`, or `DPRINT_UNPACK(...)` macro. In compute kernels, the thread is automatically selected based on the print mode when no explicit `thread` is given: scalar and DST prints use `math`, CB and tile prints use `pack`. Tensor page prints (`num_pages=`) are only supported in datamovement kernels. In datamovement kernels, no wrapping is applied when `thread` is omitted.
+When `thread` is specified, the print is wrapped in the corresponding `DPRINT_MATH(...)`, `DPRINT_PACK(...)`, or `DPRINT_UNPACK(...)` macro. In compute kernels, the thread is automatically selected based on the print mode when no explicit `thread` is given: scalar and DST prints use `math`, DFB and tile prints use `pack`. Tensor page prints (`num_pages=`) are only supported in datamovement kernels. In datamovement kernels, no wrapping is applied when `thread` is omitted.
 
 ## In depth + code gen
 
@@ -102,7 +102,7 @@ ttmlir::dprint("x = ", v0, "\n");
 
 Scalars can stay on the existing `ttkernel.dprint` -> `ttmlir::dprint` path. The lowering pass does not need to touch these.
 
-### CB details
+### DFB details
 
 ```python
 print(inp_dfb)
@@ -111,7 +111,7 @@ print(inp_dfb)
 print_cb_details(get_compile_time_arg_val(0));
 ```
 
-Pass resolves the CB index from the `cb_index` attribute on the defining `bind_cb` (or the lowered ttkernel compile-time arg).
+Pass resolves the DFB index from the `cb_index` attribute on the defining `bind_cb` (or the lowered ttkernel compile-time arg).
 
 ### Tile (full)
 
@@ -123,7 +123,7 @@ with inp_dfb.wait() as tile:
 print_full_tile(get_compile_time_arg_val(0), 0, true);
 ```
 
-Pass traces the tile value back to its CB via `cb_wait`/`attach_cb`, resolves the CB index and tile index within the block.
+Pass traces the tile value back to its DFB via `cb_wait`/`attach_cb`, resolves the DFB index and tile index within the block.
 
 ### Tensor pages
 
@@ -166,7 +166,7 @@ DPRINT_MATH(
 );
 ```
 
-Wraps the entire emitted block in the specified thread macro. In compute kernels, the thread is auto-selected per mode when not specified (scalar/DST -> math, CB/tile -> pack).
+Wraps the entire emitted block in the specified thread macro. In compute kernels, the thread is auto-selected per mode when not specified (scalar/DST -> math, DFB/tile -> pack).
 
 ## Example: instrumented compute kernel
 
