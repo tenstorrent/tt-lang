@@ -3,8 +3,8 @@
 // unroll_factor = min(capacity, 16).
 //
 // The pass derives capacity from the IR, not from pass options:
-//   - isFloat32: true when tile element type is f32 or fp32_dest_acc_en is set on the function.
-//   - fullSyncEn: true when dst_full_sync_en attribute is set on the function.
+//   - isFloat32: true when tile element type is f32 or ttl.fp32_dest_acc_en is set on the function.
+//   - fullSyncEn: true when ttl.dst_full_sync_en attribute is set on the function.
 // Each test case below uses different tile types and compute attributes to
 // exercise a different combination.
 //
@@ -15,7 +15,7 @@
 // | false     | true       | 16       | 16            |
 // | true      | true       | 8        | 8             |
 //
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst))' --split-input-file \
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst))' --split-input-file \
 // RUN:   | FileCheck %s
 
 // bf16, double-buffered (default): capacity=8, unroll_factor=8.
@@ -99,7 +99,7 @@ func.func @f32_double_buffer()
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 func.func @bf16_full_sync()
-    attributes {dst_full_sync_en = true,
+    attributes {ttl.dst_full_sync_en = true,
                 ttl.base_cta_index = 3 : i32, ttl.crta_indices = [],
                 ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, bf16>, 2>
@@ -137,7 +137,7 @@ func.func @bf16_full_sync()
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 func.func @f32_full_sync()
-    attributes {dst_full_sync_en = true,
+    attributes {ttl.dst_full_sync_en = true,
                 ttl.base_cta_index = 3 : i32, ttl.crta_indices = [],
                 ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>

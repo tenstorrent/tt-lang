@@ -1,7 +1,7 @@
 // Summary: ensure DST assignment and tile_regs sync are correctly inserted in ttl.compute.
 // FPU binary ops (both operands from CB block args) get ttl.fpu_binary and need no copy_tile.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst), canonicalize, cse)' --split-input-file | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}), canonicalize, cse)' --split-input-file | FileCheck %s --check-prefix=SFPU
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst), canonicalize, cse)' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries{enable-fpu-binary-ops=0}, ttl-assign-dst), canonicalize, cse)' --split-input-file | FileCheck %s --check-prefix=SFPU
 
 // Verify no placeholder copies remain in final IR
 // CHECK-NOT: placeholder

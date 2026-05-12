@@ -5,12 +5,12 @@
 
 // FPU path (default): add_tiles reads from CB, binary_op_init_common init.
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-subblock-compute-for-dst{subblock-sync=true}, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst, ttl-subblock-compute-for-dst{subblock-sync=true}, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   --split-input-file | FileCheck %s --check-prefix=FPU
 
 // SFPU path: add_binary_tile reads from DST, init_sfpu init.
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-subblock-compute-for-dst{subblock-sync=true}, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries{enable-fpu-binary-ops=0}, ttl-assign-dst, ttl-subblock-compute-for-dst{subblock-sync=true}, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   --split-input-file | FileCheck %s --check-prefix=SFPU
 
 // =============================================================================
@@ -409,7 +409,7 @@ func.func @fpu_add_tanh_f32()
       ins(%lhs, %rhs : tensor<2x3x!ttcore.tile<32x32, f32>>,
                         tensor<2x3x!ttcore.tile<32x32, f32>>)
       outs(%out_cb : tensor<2x3x!ttcore.tile<32x32, f32>>)
-      {fp32_dest_acc_en = true,
+      {ttl.fp32_dest_acc_en = true,
        indexing_maps = [#map2, #map2, #map2],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%lhs_tile: !ttcore.tile<32x32, f32>,

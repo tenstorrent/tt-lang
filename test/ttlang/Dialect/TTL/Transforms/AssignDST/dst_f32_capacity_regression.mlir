@@ -1,5 +1,5 @@
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}))' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries{enable-fpu-binary-ops=0}, ttl-assign-dst))' \
 // RUN:   | FileCheck %s
 //
 // Verify that f32 tiles get the correct DST capacity (4, not the bf16
@@ -33,7 +33,7 @@ func.func @f32_capacity()
       ins(%lhs, %rhs : tensor<2x3x!ttcore.tile<32x32, f32>>,
                         tensor<2x3x!ttcore.tile<32x32, f32>>)
       outs(%out_cb : tensor<2x3x!ttcore.tile<32x32, f32>>)
-      {fp32_dest_acc_en = true,
+      {ttl.fp32_dest_acc_en = true,
        indexing_maps = [#map, #map, #map],
        iterator_types = ["parallel", "parallel"]} {
   ^bb0(%lhs_tile: !ttcore.tile<32x32, f32>,

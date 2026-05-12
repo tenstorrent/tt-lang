@@ -33,8 +33,8 @@ constexpr llvm::StringLiteral kCBIndexAttrPrefix("ttl.cb_index.");
 
 /// Runtime configuration attributes.
 constexpr llvm::StringLiteral kTargetArchAttrName("ttl.target_arch");
-constexpr llvm::StringLiteral kFp32DestAccEnAttrName("fp32_dest_acc_en");
-constexpr llvm::StringLiteral kDstFullSyncEnAttrName("dst_full_sync_en");
+constexpr llvm::StringLiteral kFp32DestAccEnAttrName("ttl.fp32_dest_acc_en");
+constexpr llvm::StringLiteral kDstFullSyncEnAttrName("ttl.dst_full_sync_en");
 constexpr llvm::StringLiteral
     kUnpackToDestFp32AttrName("ttl.unpack_to_dest_fp32");
 

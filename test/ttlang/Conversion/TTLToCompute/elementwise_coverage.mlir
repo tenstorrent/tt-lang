@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-assign-dst{enable-fpu-binary-ops=0}),cse,canonicalize)' | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-mark-fpu-binaries{enable-fpu-binary-ops=0}, ttl-assign-dst),cse,canonicalize)' | FileCheck %s
 
 // Note: enable-fpu-binary-ops=0 keeps SFPU lowering path (not testing FPU detection).
 // Test: Binary elementwise operations lower to ttl.compute with tile ops

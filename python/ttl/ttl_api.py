@@ -755,8 +755,12 @@ def _compile_ttnn_kernel(
     noc_kernel_idx = 0
     kernel_bool_attrs = {
         name: {
-            "fp32_dest_acc_en": _get_kernel_bool_attr(module, name, "fp32_dest_acc_en"),
-            "dst_full_sync_en": _get_kernel_bool_attr(module, name, "dst_full_sync_en"),
+            "fp32_dest_acc_en": _get_kernel_bool_attr(
+                module, name, "ttl.fp32_dest_acc_en"
+            ),
+            "dst_full_sync_en": _get_kernel_bool_attr(
+                module, name, "ttl.dst_full_sync_en"
+            ),
             "unpack_to_dest_fp32": _get_kernel_bool_attr(
                 module, name, "ttl.unpack_to_dest_fp32"
             ),
@@ -1374,7 +1378,9 @@ def _compile_kernel(
         # NOTE: Pipeline pass ordering is mirrored in
         # test/me2e/builder/pipeline.py and lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
         fpu_flag = int(compiler_options.enable_fpu_binary_ops)
-        assign_dst_pass = f"ttl-assign-dst{{enable-fpu-binary-ops={fpu_flag}}}"
+        mark_fpu_pass = (
+            f"func.func(ttl-mark-fpu-binaries{{enable-fpu-binary-ops={fpu_flag}}})"
+        )
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
         pipeline_passes = [
@@ -1383,8 +1389,9 @@ def _compile_kernel(
             "func.func(ttl-insert-cb-sync)",
             "func.func(ttl-annotate-l1-acc-loops)",
             "func.func(convert-ttl-to-compute)",
+            mark_fpu_pass,
             set_compute_config_pass,
-            f"func.func({assign_dst_pass})",
+            "func.func(ttl-assign-dst)",
         ]
         if compiler_options.maximize_dst:
             subblock_sync = "true" if compiler_options.subblock_sync else "false"

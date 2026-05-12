@@ -15,6 +15,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLInsertCopyWait.cpp
   TTLInsertIntermediateDFBs.cpp
   TTLAssignDST.cpp
+  TTLMarkFPUBinaries.cpp
   TTLScheduleOperations.cpp
   TTLSetComputeKernelConfig.cpp
   TTLSubblockComputeForDST.cpp

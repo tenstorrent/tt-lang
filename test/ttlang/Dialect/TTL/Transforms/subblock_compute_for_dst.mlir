@@ -1,13 +1,13 @@
 // Tests for ttl-subblock-compute-for-dst pass: partitioning ttl.compute into
-// DST-sized subblocks. Verifies that ttl-assign-dst computes unroll_factor and
+// DST-sized subblocks. Verifies that ttl-mark-fpu-binaries, ttl-assign-dst computes unroll_factor and
 // ttl-subblock-compute-for-dst partitions the compute into subblocks.
 // Multi-dimensional tensors are tiled across multiple dimensions.
 
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}))' --split-input-file | FileCheck %s --check-prefix=ASSIGN
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8},ttl-subblock-compute-for-dst,canonicalize,cse))' --split-input-file | FileCheck %s --check-prefix=TILED
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst{dst-capacity=8}))' --split-input-file | FileCheck %s --check-prefix=ASSIGN
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst{dst-capacity=8},ttl-subblock-compute-for-dst,canonicalize,cse))' --split-input-file | FileCheck %s --check-prefix=TILED
 // Actual DST capacity (no override) for broadcast tests where FPU detection matters:
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst))' --split-input-file | FileCheck %s --check-prefix=BCAST-ASSIGN
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst,ttl-subblock-compute-for-dst,canonicalize,cse))' --split-input-file | FileCheck %s --check-prefix=BCAST-TILED
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst))' --split-input-file | FileCheck %s --check-prefix=BCAST-ASSIGN
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst,ttl-subblock-compute-for-dst,canonicalize,cse))' --split-input-file | FileCheck %s --check-prefix=BCAST-TILED
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 

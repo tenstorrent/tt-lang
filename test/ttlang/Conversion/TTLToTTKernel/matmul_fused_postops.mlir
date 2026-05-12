@@ -3,7 +3,7 @@
 // matmul_block followed by mul_binary_tile and add_binary_tile.
 
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-mark-fpu-binaries{enable-fpu-binary-ops=0}, ttl-assign-dst, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
 // RUN:   --split-input-file | FileCheck %s
 
 // CHECK-LABEL: func.func @matmul_scale_bias

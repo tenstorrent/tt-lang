@@ -194,14 +194,30 @@ def TTLAssignDST
            "For single-buffering mode (dst_full_sync_en=true), use: "
            "f32=8, f16/bf16=16. For double-buffering (default): f32=4, f16/bf16=8.">,
     Option<"separateOutputRegion", "separate-output-region", "bool", "false",
-           "Allocate outputs in separate DST region (needed for reductions and some loop optimizations).">,
-    Option<"enableFPUBinaryOps", "enable-fpu-binary-ops", "bool", "true",
-           "Use FPU for binary add/sub/mul when both operands come from CBs. "
-           "When disabled, binary ops use the SFPU path instead.">
+           "Allocate outputs in separate DST region (needed for reductions and some loop optimizations).">
   ];
 
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
+def TTLMarkFPUBinaries
+    : Pass<"ttl-mark-fpu-binaries", "::mlir::func::FuncOp"> {
+  let summary = "Mark tile add/sub/mul ops eligible for FPU lowering";
+  let description = [{
+    Sets the `ttl.fpu_binary` attribute on every op in each `ttl.compute`
+    body for which `isFpuBinaryEligible` holds (see TTLOpsUtils.h).
+    Consumers test the attribute via `isCBInputOp`.
+  }];
+
+  let options = [
+    Option<"enableFPUBinaryOps", "enable-fpu-binary-ops", "bool", "true",
+           "When false, the pass is a no-op.">
+  ];
+
+  let dependentDialects = [
     "::mlir::tt::ttl::TTLDialect"
   ];
 }
@@ -226,11 +242,7 @@ def TTLSetComputeKernelConfig
            "Sets fp32_dest_acc_en on the kernel when any compute op contains reduce.">,
     Option<"matmulFullFp32", "matmul-full-fp32", "bool", "true",
            "Enable FP32 accumulation for matmul operations. "
-           "Sets fp32_dest_acc_en on the kernel when any compute op contains matmul_block.">,
-    Option<"enableFPUBinaryOps", "enable-fpu-binary-ops", "bool", "true",
-           "Must match the value passed to TTLAssignDST. Used to predict "
-           "whether tile add/sub/mul ops will be lowered to FPU binaries so "
-           "that unpack_to_dest_fp32 is not enabled on their CB inputs.">
+           "Sets fp32_dest_acc_en on the kernel when any compute op contains matmul_block.">
   ];
 
   let dependentDialects = [

@@ -1,6 +1,6 @@
 // Summary: Verify f32 compute ops use reduced DST capacity.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst),canonicalize,cse)' --split-input-file | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=OVERRIDE
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst),canonicalize,cse)' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=OVERRIDE
 
 #idx_map = affine_map<(d0, d1) -> (d0, d1)>
 

@@ -124,12 +124,9 @@ inline bool isCBInputOp(mlir::Operation *op) {
          op->hasAttr(kFPUBinaryAttrName);
 }
 
-/// Predicate for tile add/sub/mul ops that will be lowered to FPU binary
-/// kernels (reading from CB via SRCA/B). Matches the criteria applied by
-/// TTLAssignDST when it sets kFPUBinaryAttrName: both operands must be input
-/// block arguments of `computeOp` and the indexing maps of those operands
-/// must match. Returns false when `enableFPUBinaryOps` is false (binary ops
-/// then fall back to the SFPU path).
+/// True when `op` is a tile add/sub/mul whose two operands are input block
+/// arguments of `computeOp` with matching indexing maps. False when
+/// `enableFPUBinaryOps` is false.
 inline bool isFpuBinaryEligible(mlir::Operation *op, ComputeOp computeOp,
                                 bool enableFPUBinaryOps) {
   if (!enableFPUBinaryOps) {

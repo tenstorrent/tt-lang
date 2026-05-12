@@ -41,25 +41,22 @@ static bool hasF32TileArgs(ComputeOp computeOp) {
   });
 }
 
-// True when the body has an op whose lowering reads an f32 input CB into DST
-// (rather than into SRCA/B). Required to enable UnpackToDestFp32; setting it
-// on a CB used by an SRCA/B reader silently zeros the result. See
-// docs/development/ComputeKernelConfig.md for the categorization and the
-// llk constraint behind it.
-//
-// kFPUBinaryAttrName is set later by TTLAssignDST, so we cannot rely on
-// isCBInputOp alone to classify tile add/sub/mul. We also exclude ops that
-// satisfy isFpuBinaryEligible — TTLAssignDST will mark them with
-// kFPUBinaryAttrName under the same predicate.
-static bool hasDstUnpackF32Op(ComputeOp computeOp, bool enableFPUBinaryOps) {
+// True when an SFPU-strategy op in the body consumes an f32 input block
+// argument of `computeOp` (i.e., an f32 CB). See
+// docs/development/ComputeKernelConfig.md for why operand-on-DST and
+// FPU-strategy ops are excluded.
+static bool hasDstUnpackF32Op(ComputeOp computeOp) {
+  unsigned numInputs = computeOp.getNumInputs();
   bool found = false;
   computeOp.walk([&](Operation *op) -> WalkResult {
-    bool sfpuStrategy = op->hasTrait<TTLDSTInputsTrait>() && !isCBInputOp(op) &&
-                        !isFpuBinaryEligible(op, computeOp, enableFPUBinaryOps);
-    if (!sfpuStrategy) {
+    if (!op->hasTrait<TTLDSTInputsTrait>() || isCBInputOp(op)) {
       return WalkResult::advance();
     }
     for (Value operand : op->getOperands()) {
+      auto blockArg = dyn_cast<BlockArgument>(operand);
+      if (!blockArg || blockArg.getArgNumber() >= numInputs) {
+        continue;
+      }
       std::optional<mlir::Type> elemType =
           getTileElementType(operand.getType());
       if (elemType && elemType->isF32()) {
@@ -157,7 +154,7 @@ struct TTLSetComputeKernelConfigPass
       if (needsUnpackFp32) {
         return WalkResult::interrupt();
       }
-      if (hasDstUnpackF32Op(computeOp, enableFPUBinaryOps)) {
+      if (hasDstUnpackF32Op(computeOp)) {
         needsUnpackFp32 = true;
         return WalkResult::interrupt();
       }

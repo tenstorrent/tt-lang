@@ -28,16 +28,16 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addPass(createTTLAnnotateL1AccLoops());
   pm.addPass(createTTLConvertTTLToCompute());
   {
-    TTLSetComputeKernelConfigOptions configOpts;
-    configOpts.reduceFullFp32 = options.reduceFullFp32;
-    configOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
-    pm.addPass(createTTLSetComputeKernelConfig(configOpts));
+    TTLMarkFPUBinariesOptions markOpts;
+    markOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
+    pm.addPass(createTTLMarkFPUBinaries(markOpts));
   }
   {
-    TTLAssignDSTOptions assignDstOpts;
-    assignDstOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
-    pm.addPass(createTTLAssignDST(assignDstOpts));
+    TTLSetComputeKernelConfigOptions configOpts;
+    configOpts.reduceFullFp32 = options.reduceFullFp32;
+    pm.addPass(createTTLSetComputeKernelConfig(configOpts));
   }
+  pm.addPass(createTTLAssignDST());
   if (options.maximizeDST) {
     TTLSubblockComputeForDSTOptions subblockOpts;
     subblockOpts.subblockSync = options.subblockSync;

@@ -3,7 +3,7 @@
 // tiles count toward the DST budget. Subblocking partitions the M*N output
 // space while keeping K whole in each subblock.
 
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-set-compute-kernel-config, ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-subblock-compute-for-dst))' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-mark-fpu-binaries{enable-fpu-binary-ops=0}, ttl-set-compute-kernel-config, ttl-assign-dst, ttl-subblock-compute-for-dst))' --split-input-file | FileCheck %s
 
 // -----
 
@@ -12,7 +12,7 @@
 // Loop on M (dim 0): 0 to 4 step 1. K (dim 2) stays at 3 in each subblock.
 
 // CHECK-LABEL: func.func @matmul_subblock_k_excluded
-// CHECK-SAME:  fp32_dest_acc_en = true
+// CHECK-SAME:  ttl.fp32_dest_acc_en = true
 // Outer subblock loop over M dimension.
 // CHECK:       scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
 // A sliced on M, K kept whole: [iv, 0] [1, 3].
@@ -49,7 +49,7 @@ func.func @matmul_subblock_k_excluded(
 // needed -- the entire matmul fits in one DST sync region.
 
 // CHECK-LABEL: func.func @matmul_fits_in_dst
-// CHECK-SAME:  fp32_dest_acc_en = true
+// CHECK-SAME:  ttl.fp32_dest_acc_en = true
 // No subblock loop.
 // CHECK-NOT:   scf.for
 // CHECK:       ttl.compute

@@ -567,33 +567,15 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
 
       OpBuilder builder(body, body->begin());
 
-      //=== Phase 0: FPU Binary Detection ===
-      // Mark add/sub/mul ops as FPU-eligible when both operands are input
-      // block arguments (CB-backed). FPU reads from CB, needing 0 DST input
-      // slots. Output block arguments are excluded because they may represent
-      // accumulation patterns that require DST copy_tile.
+      //=== Phase 1: Copy Insertion ===
+      // FPU binaries (ops carrying ttl.fpu_binary) read from CB, needing 0
+      // DST input slots. SFPU binaries and unary ops require DST input
+      // slots and copy_tile insertion below.
       //
       // TODO: Support mixed operands (one CB, one DST) via
       // ttkernel.binary_dest_reuse_tiles with DEST_TO_SRCA/DEST_TO_SRCB.
       // This would allow FPU lowering for patterns like
       // tile_add %arg0, %computed where one operand is already in DST.
-      LLVM_DEBUG(llvm::dbgs() << "=== Phase 0: FPU Binary Detection ===\n");
-      if (enableFPUBinaryOps) {
-        for (Operation &op : *body) {
-          if (isFpuBinaryEligible(&op, computeOp, enableFPUBinaryOps)) {
-            op.setAttr(kFPUBinaryAttrName, builder.getUnitAttr());
-            LLVM_DEBUG({
-              llvm::dbgs() << "Phase 0: Marked FPU binary: " << op.getName()
-                           << "\n";
-            });
-          }
-        }
-      } else {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "Phase 0: FPU binary ops disabled, skipping\n");
-      }
-
-      //=== Phase 1: Copy Insertion ===
       LLVM_DEBUG(llvm::dbgs() << "=== Phase 1: Copy Insertion ===\n");
       insertCopiesForMultiConsumerValues(computeOp, builder);
 

@@ -1,6 +1,6 @@
 // Tests for subblock compute edge cases not covered by the main subblock test.
 //
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=4},ttl-subblock-compute-for-dst))' --split-input-file | FileCheck %s --check-prefix=TILED
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-mark-fpu-binaries, ttl-assign-dst{dst-capacity=4},ttl-subblock-compute-for-dst))' --split-input-file | FileCheck %s --check-prefix=TILED
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
