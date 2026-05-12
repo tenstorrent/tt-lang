@@ -1250,5 +1250,75 @@ mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {
     return emitOpError() << "destination coordinates must be non-negative";
   }
 
+  // Spec NodeRange: each axis is `0 <= c_i < G_i`, so the destination
+  // is a non-empty contiguous hypercube with `start <= end`.
+  if (dstStartX > dstEndX || dstStartY > dstEndY) {
+    return emitOpError()
+           << "destination start must not exceed destination end on any axis";
+  }
+
   return success();
+}
+
+//===----------------------------------------------------------------------===//
+// PipeNetPredicateOpInterface implementations.
+//===----------------------------------------------------------------------===//
+
+int64_t mlir::tt::ttl::IsSrcOp::getReferencedPipeNetId() {
+  return getPipeNetId();
+}
+mlir::tt::ttl::PipeRole mlir::tt::ttl::IsSrcOp::getReferencedRole() {
+  return PipeRole::Source;
+}
+
+int64_t mlir::tt::ttl::IsDstOp::getReferencedPipeNetId() {
+  return getPipeNetId();
+}
+mlir::tt::ttl::PipeRole mlir::tt::ttl::IsDstOp::getReferencedRole() {
+  return PipeRole::Destination;
+}
+
+int64_t mlir::tt::ttl::IsActiveOp::getReferencedPipeNetId() {
+  return getPipeNetId();
+}
+mlir::tt::ttl::PipeRole mlir::tt::ttl::IsActiveOp::getReferencedRole() {
+  return PipeRole::Active;
+}
+
+//===----------------------------------------------------------------------===//
+// RegionBranchOpInterface implementations for TTL region ops.
+//
+// `IfSrcOp` / `IfDstOp` execute the body conditionally on coord; from a
+// type-system perspective both successors (body and parent-after-op) are
+// possible, and the analysis decides which path applies via the lattice.
+// `PipeNetScopeOp` is unconditional: control always enters the body.
+//===----------------------------------------------------------------------===//
+
+void mlir::tt::ttl::IfSrcOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent()) {
+    regions.push_back(RegionSuccessor(&getBody()));
+    regions.push_back(RegionSuccessor::parent());
+    return;
+  }
+  regions.push_back(RegionSuccessor::parent());
+}
+
+void mlir::tt::ttl::IfDstOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent()) {
+    regions.push_back(RegionSuccessor(&getBody()));
+    regions.push_back(RegionSuccessor::parent());
+    return;
+  }
+  regions.push_back(RegionSuccessor::parent());
+}
+
+void mlir::tt::ttl::PipeNetScopeOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent()) {
+    regions.push_back(RegionSuccessor(&getBody()));
+    return;
+  }
+  regions.push_back(RegionSuccessor::parent());
 }
