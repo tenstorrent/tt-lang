@@ -740,6 +740,7 @@ def TTL_ElementReadOp : TTL_Op<"element_read", [MemoryEffects<[MemRead]>]> {
   let results = (outs I32:$result);
 
   let assemblyFormat = "$block `[` $row `,` $col `]` attr-dict `:` type($block) `->` type($result)";
+  let hasVerifier = 1;
 }
 
 def TTL_ElementWriteOp : TTL_Op<"element_write", [MemoryEffects<[MemWrite]>]> {
@@ -763,6 +764,7 @@ def TTL_ElementWriteOp : TTL_Op<"element_write", [MemoryEffects<[MemWrite]>]> {
   let arguments = (ins AnyRankedTensor:$block, Index:$row, Index:$col, I32:$value);
 
   let assemblyFormat = "$block `[` $row `,` $col `]` `,` $value attr-dict `:` type($block) `,` type($value)";
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//

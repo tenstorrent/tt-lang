@@ -57,30 +57,33 @@ static FailureOr<int64_t> resolveCBIndex(Value cbValue, Operation *op) {
 }
 
 /// Determine whether a block tensor originates from cb_wait (read) or
-/// cb_reserve (write). Returns "read" or "write".
-static std::string resolveBlockDirection(Value block) {
+/// cb_reserve (write). Returns "read" or "write", or failure if the
+/// block provenance cannot be determined.
+static FailureOr<std::string> resolveBlockDirection(Value block,
+                                                    Operation *op) {
   Value traced = traceUnrealizedCasts(block);
 
   if (auto attach = traced.getDefiningOp<AttachCBOp>()) {
     Value tensor = traceUnrealizedCasts(attach.getTensor());
     if (tensor.getDefiningOp<CBWaitOp>()) {
-      return "read";
+      return std::string("read");
     }
     if (tensor.getDefiningOp<CBReserveOp>()) {
-      return "write";
+      return std::string("write");
     }
   }
 
   if (auto viewLike = traced.getDefiningOp<ViewLikeOpInterface>()) {
     if (isa<CBWaitOp>(viewLike.getOperation())) {
-      return "read";
+      return std::string("read");
     }
     if (isa<CBReserveOp>(viewLike.getOperation())) {
-      return "write";
+      return std::string("write");
     }
   }
 
-  return "read";
+  return op->emitError("cannot determine block direction: block must trace "
+                       "to cb_wait (read) or cb_reserve (write)");
 }
 
 /// Get the tile element type from a block tensor.
@@ -99,8 +102,8 @@ static FailureOr<Type> getBlockElementType(Value block, Operation *op) {
 /// Create an emitc.call_opaque op via OperationState (avoids EmitC C++
 /// header dependency). Returns the created operation.
 static Operation *createCallOpaque(Location loc, StringRef callee,
-                                    Type resultType, ValueRange operands,
-                                    OpBuilder &builder) {
+                                   Type resultType, ValueRange operands,
+                                   OpBuilder &builder) {
   OperationState state(loc, "emitc.call_opaque");
   state.addAttribute("callee", builder.getStringAttr(callee));
   if (resultType) {
@@ -111,8 +114,8 @@ static Operation *createCallOpaque(Location loc, StringRef callee,
 }
 
 /// Create an emitc.literal op that produces a C++ expression as-is.
-static Operation *createLiteral(Location loc, Type resultType,
-                                 StringRef value, OpBuilder &builder) {
+static Operation *createLiteral(Location loc, Type resultType, StringRef value,
+                                OpBuilder &builder) {
   OperationState state(loc, "emitc.literal");
   state.addAttribute("value", builder.getStringAttr(value));
   state.addTypes(resultType);
@@ -141,8 +144,7 @@ struct ElementReadLowering : OpConversionPattern<ElementReadOp> {
     // Trace block -> CB
     Value cb = getAttachedCB(block);
     if (!cb) {
-      return op.emitError(
-          "cannot find attached CB for element_read block");
+      return op.emitError("cannot find attached CB for element_read block");
     }
     auto cbIdx = resolveCBIndex(cb, op);
     if (failed(cbIdx)) {
@@ -150,8 +152,11 @@ struct ElementReadLowering : OpConversionPattern<ElementReadOp> {
     }
 
     // Determine read_ptr vs write_ptr
-    std::string dir = resolveBlockDirection(block);
-    std::string ptrFn = (dir == "write") ? "get_write_ptr" : "get_read_ptr";
+    auto dir = resolveBlockDirection(block, op);
+    if (failed(dir)) {
+      return failure();
+    }
+    std::string ptrFn = (*dir == "write") ? "get_write_ptr" : "get_read_ptr";
 
     // Determine bf16 vs f32
     auto elemType = getBlockElementType(block, op);
@@ -166,13 +171,12 @@ struct ElementReadLowering : OpConversionPattern<ElementReadOp> {
     // Step 1: Get CB compile-time arg val as a literal expression
     auto *ctaOp = createLiteral(
         loc, i32Type,
-        "get_compile_time_arg_val(" + std::to_string(*cbIdx) + ")",
-        rewriter);
+        "get_compile_time_arg_val(" + std::to_string(*cbIdx) + ")", rewriter);
     Value ctaVal = ctaOp->getResult(0);
 
     // Step 2: Get read/write pointer
-    auto *ptrOp = createCallOpaque(loc, ptrFn, i32Type,
-                                    ValueRange{ctaVal}, rewriter);
+    auto *ptrOp =
+        createCallOpaque(loc, ptrFn, i32Type, ValueRange{ctaVal}, rewriter);
     Value l1Addr = ptrOp->getResult(0);
 
     // Step 3: Cast row/col from Index to i32
@@ -182,8 +186,7 @@ struct ElementReadLowering : OpConversionPattern<ElementReadOp> {
     // Step 4: Call helper function
     // emitc.call_opaque "helperName"(l1_addr, row, col) -> i32
     auto *readOp = createCallOpaque(
-        loc, helperName, i32Type,
-        ValueRange{l1Addr, rowI32, colI32}, rewriter);
+        loc, helperName, i32Type, ValueRange{l1Addr, rowI32, colI32}, rewriter);
 
     rewriter.replaceOp(op, readOp->getResults());
     return success();
@@ -202,8 +205,7 @@ struct ElementWriteLowering : OpConversionPattern<ElementWriteOp> {
     // Trace block -> CB
     Value cb = getAttachedCB(block);
     if (!cb) {
-      return op.emitError(
-          "cannot find attached CB for element_write block");
+      return op.emitError("cannot find attached CB for element_write block");
     }
     auto cbIdx = resolveCBIndex(cb, op);
     if (failed(cbIdx)) {
@@ -211,8 +213,11 @@ struct ElementWriteLowering : OpConversionPattern<ElementWriteOp> {
     }
 
     // Determine read_ptr vs write_ptr
-    std::string dir = resolveBlockDirection(block);
-    std::string ptrFn = (dir == "write") ? "get_write_ptr" : "get_read_ptr";
+    auto dir = resolveBlockDirection(block, op);
+    if (failed(dir)) {
+      return failure();
+    }
+    std::string ptrFn = (*dir == "write") ? "get_write_ptr" : "get_read_ptr";
 
     // Determine bf16 vs f32
     auto elemType = getBlockElementType(block, op);
@@ -227,13 +232,12 @@ struct ElementWriteLowering : OpConversionPattern<ElementWriteOp> {
     // Step 1: Get CB compile-time arg val as a literal expression
     auto *ctaOp = createLiteral(
         loc, i32Type,
-        "get_compile_time_arg_val(" + std::to_string(*cbIdx) + ")",
-        rewriter);
+        "get_compile_time_arg_val(" + std::to_string(*cbIdx) + ")", rewriter);
     Value ctaVal = ctaOp->getResult(0);
 
     // Step 2: Get read/write pointer
-    auto *ptrOp = createCallOpaque(loc, ptrFn, i32Type,
-                                    ValueRange{ctaVal}, rewriter);
+    auto *ptrOp =
+        createCallOpaque(loc, ptrFn, i32Type, ValueRange{ctaVal}, rewriter);
     Value l1Addr = ptrOp->getResult(0);
 
     // Step 3: Cast row/col from Index to i32
@@ -241,9 +245,9 @@ struct ElementWriteLowering : OpConversionPattern<ElementWriteOp> {
     Value colI32 = indexToI32(loc, op.getCol(), rewriter);
 
     // Step 4: Call helper function (void return)
-    createCallOpaque(
-        loc, helperName, /*resultType=*/nullptr,
-        ValueRange{l1Addr, rowI32, colI32, op.getValue()}, rewriter);
+    createCallOpaque(loc, helperName, /*resultType=*/nullptr,
+                     ValueRange{l1Addr, rowI32, colI32, op.getValue()},
+                     rewriter);
 
     rewriter.eraseOp(op);
     return success();
@@ -257,7 +261,7 @@ struct ElementWriteLowering : OpConversionPattern<ElementWriteOp> {
 /// Emit inline C++ helper functions for element access at the start of
 /// a function. These handle face-based tile layout for 32x32 tiles.
 static void addElementAccessHelpers(func::FuncOp func, OpBuilder &builder,
-                                     bool needsBF16, bool needsF32) {
+                                    bool needsBF16, bool needsF32) {
   builder.setInsertionPointToStart(&func.getBody().front());
   auto loc = func.getLoc();
 
@@ -265,16 +269,17 @@ static void addElementAccessHelpers(func::FuncOp func, OpBuilder &builder,
   // function definitions, which are not allowed in C++.
   if (needsBF16) {
     emitVerbatim(loc,
-        "auto _ttl_elem_read_bf16 = [](uint32_t l1_addr, uint32_t row,"
-        " uint32_t col) -> uint32_t {"
-        " volatile tt_l1_ptr uint16_t* base ="
-        " reinterpret_cast<volatile tt_l1_ptr uint16_t*>(l1_addr);"
-        " uint32_t face = (row >= 16 ? 2 : 0) + (col >= 16 ? 1 : 0);"
-        " uint32_t offset = face * 256 + (row % 16) * 16 + (col % 16);"
-        " return (uint32_t)base[offset];"
-        " };",
-        builder);
-    emitVerbatim(loc,
+                 "auto _ttl_elem_read_bf16 = [](uint32_t l1_addr, uint32_t row,"
+                 " uint32_t col) -> uint32_t {"
+                 " volatile tt_l1_ptr uint16_t* base ="
+                 " reinterpret_cast<volatile tt_l1_ptr uint16_t*>(l1_addr);"
+                 " uint32_t face = (row >= 16 ? 2 : 0) + (col >= 16 ? 1 : 0);"
+                 " uint32_t offset = face * 256 + (row % 16) * 16 + (col % 16);"
+                 " return (uint32_t)base[offset];"
+                 " };",
+                 builder);
+    emitVerbatim(
+        loc,
         "auto _ttl_elem_write_bf16 = [](uint32_t l1_addr, uint32_t row,"
         " uint32_t col, uint32_t val) {"
         " volatile tt_l1_ptr uint16_t* base ="
@@ -288,25 +293,25 @@ static void addElementAccessHelpers(func::FuncOp func, OpBuilder &builder,
 
   if (needsF32) {
     emitVerbatim(loc,
-        "auto _ttl_elem_read_f32 = [](uint32_t l1_addr, uint32_t row,"
-        " uint32_t col) -> uint32_t {"
-        " volatile tt_l1_ptr uint32_t* base ="
-        " reinterpret_cast<volatile tt_l1_ptr uint32_t*>(l1_addr);"
-        " uint32_t face = (row >= 16 ? 2 : 0) + (col >= 16 ? 1 : 0);"
-        " uint32_t offset = face * 256 + (row % 16) * 16 + (col % 16);"
-        " return base[offset];"
-        " };",
-        builder);
+                 "auto _ttl_elem_read_f32 = [](uint32_t l1_addr, uint32_t row,"
+                 " uint32_t col) -> uint32_t {"
+                 " volatile tt_l1_ptr uint32_t* base ="
+                 " reinterpret_cast<volatile tt_l1_ptr uint32_t*>(l1_addr);"
+                 " uint32_t face = (row >= 16 ? 2 : 0) + (col >= 16 ? 1 : 0);"
+                 " uint32_t offset = face * 256 + (row % 16) * 16 + (col % 16);"
+                 " return base[offset];"
+                 " };",
+                 builder);
     emitVerbatim(loc,
-        "auto _ttl_elem_write_f32 = [](uint32_t l1_addr, uint32_t row,"
-        " uint32_t col, uint32_t val) {"
-        " volatile tt_l1_ptr uint32_t* base ="
-        " reinterpret_cast<volatile tt_l1_ptr uint32_t*>(l1_addr);"
-        " uint32_t face = (row >= 16 ? 2 : 0) + (col >= 16 ? 1 : 0);"
-        " uint32_t offset = face * 256 + (row % 16) * 16 + (col % 16);"
-        " base[offset] = val;"
-        " };",
-        builder);
+                 "auto _ttl_elem_write_f32 = [](uint32_t l1_addr, uint32_t row,"
+                 " uint32_t col, uint32_t val) {"
+                 " volatile tt_l1_ptr uint32_t* base ="
+                 " reinterpret_cast<volatile tt_l1_ptr uint32_t*>(l1_addr);"
+                 " uint32_t face = (row >= 16 ? 2 : 0) + (col >= 16 ? 1 : 0);"
+                 " uint32_t offset = face * 256 + (row % 16) * 16 + (col % 16);"
+                 " base[offset] = val;"
+                 " };",
+                 builder);
   }
 }
 
@@ -315,8 +320,7 @@ static void addElementAccessHelpers(func::FuncOp func, OpBuilder &builder,
 //===----------------------------------------------------------------------===//
 
 struct TTLLowerElementAccessToEmitCPass
-    : impl::TTLLowerElementAccessToEmitCBase<
-          TTLLowerElementAccessToEmitCPass> {
+    : impl::TTLLowerElementAccessToEmitCBase<TTLLowerElementAccessToEmitCPass> {
   void runOnOperation() override {
     MLIRContext &ctx = getContext();
     ModuleOp mod = getOperation();

@@ -12,6 +12,7 @@ This pattern is used by every existing tt-lang kernel.
 """
 
 import os
+
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 import torch
@@ -60,11 +61,13 @@ def passthrough_kernel(inp, out):
 # Compile test
 inp = ttnn.from_torch(
     torch.randn(32, 64, dtype=torch.bfloat16),
-    dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+    dtype=ttnn.bfloat16,
+    layout=ttnn.TILE_LAYOUT,
 )
 out = ttnn.from_torch(
     torch.zeros(32, 64, dtype=torch.bfloat16),
-    dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+    dtype=ttnn.bfloat16,
+    layout=ttnn.TILE_LAYOUT,
 )
 passthrough_kernel(inp, out)
 print("PASS: DM write for-loop with tx.wait() compiles")

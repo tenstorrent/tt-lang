@@ -683,9 +683,7 @@ def element_read(block, row, col):
         i32 value containing the raw element bits
     """
     if not _is_block(block):
-        raise ValueError(
-            "element_read requires a block from cb.wait() or cb.reserve()"
-        )
+        raise ValueError("element_read requires a block from cb.wait() or cb.reserve()")
     row = _to_index(row)
     col = _to_index(col)
     return ttl.element_read(block, row, col)
@@ -705,9 +703,7 @@ def element_write(block, row, col, value):
         value: i32 value containing the raw element bits
     """
     if not _is_block(block):
-        raise ValueError(
-            "element_write requires a block from cb.reserve()"
-        )
+        raise ValueError("element_write requires a block from cb.reserve()")
     row = _to_index(row)
     col = _to_index(col)
     value = _to_i32(value)

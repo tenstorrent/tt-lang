@@ -476,6 +476,10 @@ def TTLLowerDPrintToEmitC
     and data formats from the IR. Runs before convert-ttl-to-ttkernel
     so that DST assignments and CB annotations are still available.
   }];
+
+  let dependentDialects = [
+    "::mlir::emitc::EmitCDialect"
+  ];
 }
 
 def TTLLowerElementAccessToEmitC
@@ -488,6 +492,10 @@ def TTLLowerElementAccessToEmitC
     C++ helper functions. Runs before convert-ttl-to-ttkernel (same stage
     as dprint lowering).
   }];
+
+  let dependentDialects = [
+    "::mlir::emitc::EmitCDialect"
+  ];
 }
 
 def TTLLowerSignpostToEmitC
@@ -499,6 +507,10 @@ def TTLLowerSignpostToEmitC
     convert-ttl-to-ttkernel to keep profiling concerns separate from
     the main dialect conversion.
   }];
+
+  let dependentDialects = [
+    "::mlir::emitc::EmitCDialect"
+  ];
 }
 
 def TTLFinalizeDFBIndices

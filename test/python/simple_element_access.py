@@ -22,15 +22,14 @@ import ttnn
 import ttl
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def element_copy_kernel(inp, out):
     """Read element [0,0] from input tile, write to output tile [0,0]."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
-        # Pass-through: just move data through CBs
         with inp_dfb.wait() as blk:
             pass
         for _ in range(1):
@@ -42,19 +41,15 @@ def element_copy_kernel(inp, out):
         with inp_dfb.reserve() as blk:
             tx = ttl.copy(inp[0, 0], blk)
             tx.wait()
-            blk.push()
 
     @ttl.datamovement()
     def dm_write():
-        # Read element from input CB, write to output CB
         with inp_dfb.wait() as rblk:
             val = ttl.element_read(rblk, 0, 5)
             with out_dfb.reserve() as wblk:
                 ttl.element_write(wblk, 0, 0, val)
                 tx = ttl.copy(wblk, out[0, 0])
                 tx.wait()
-                wblk.pop()
-            rblk.pop()
 
 
 # =============================================================================
@@ -79,14 +74,19 @@ def element_copy_kernel(inp, out):
 
 # =============================================================================
 # Second kernel: loop variables, if conditionals, scalar arithmetic
+#
+# WARNING: This kernel compares bf16 element values as raw i32 bit patterns.
+# Equality (==) works correctly, but magnitude comparisons (>, <) on raw i32
+# bit patterns are NOT correct for bf16 because bf16 uses sign-magnitude
+# representation. See https://github.com/tenstorrent/tt-lang/issues/572
 # =============================================================================
 
 
-@ttl.kernel(grid=(1, 1))
+@ttl.operation(grid=(1, 1))
 def element_scan_kernel(inp, out):
     """Scan a tile column-by-column, compare elements, write computed index."""
-    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), buffer_factor=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), buffer_factor=2)
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
@@ -100,7 +100,6 @@ def element_scan_kernel(inp, out):
         with inp_dfb.reserve() as blk:
             tx = ttl.copy(inp[0, 0], blk)
             tx.wait()
-            blk.push()
 
     @ttl.datamovement()
     def dm_write():
@@ -113,8 +112,6 @@ def element_scan_kernel(inp, out):
                         ttl.element_write(wblk, 0, 0, c * 32 + 1)
                 tx = ttl.copy(wblk, out[0, 0])
                 tx.wait()
-                wblk.pop()
-            rblk.pop()
 
 
 # Second kernel C++ checks: loop var, if, scalar arithmetic

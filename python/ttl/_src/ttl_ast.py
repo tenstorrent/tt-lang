@@ -167,7 +167,6 @@ class TTLGenericCompiler(TTCompilerBase):
         for name, val in TTLGenericCompiler._syntax.items():
             self._fn_map[name] = val
 
-<<<<<<< HEAD
         # Map id(PipeNet object) -> Python variable name the user assigned
         # it to. Populated from captures/globals at function entry and
         # from body-local PipeNet assignments. Read by `_emit_pipe_from_capture`
@@ -241,8 +240,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 # stay as plain SSA to avoid breaking tensor subscript indexing.
                 if outer_table is None and self._is_i32_scalar(value):
                     mr = self._alloca_scalar(value)
-                    enclosing = self.symbol_tables[-2] if len(self.symbol_tables) > 1 else self.symbol_tables[-1]
-                    enclosing[var_name] = mr
+                    self.symbol_tables[0][var_name] = mr
                     return
 
                 # Everything else: normal SSA assignment
@@ -272,13 +270,16 @@ class TTLGenericCompiler(TTCompilerBase):
         Integer scalars get memref<1xi32> treatment for cross-scope survival
         in loops and if-blocks.  Values are cast to i32 via _cast_to_i32.
         Tensors, transfer handles, CBs, etc. use normal SSA assignment.
+
+        Excludes i1 (boolean from comparisons) since booleans are control-flow
+        values that should not be promoted to memrefs.
         """
         if not hasattr(value, "type"):
             return False
         ty = value.type
         if isinstance(ty, IndexType):
             return True
-        return isinstance(ty, IntegerType)
+        return isinstance(ty, IntegerType) and ty.width > 1
 
     @staticmethod
     def _is_i32_scalar(value):
@@ -313,21 +314,23 @@ class TTLGenericCompiler(TTCompilerBase):
         value at the current insertion point.
 
         The alloca is placed at the start of the function entry block so it
-        dominates all uses (including after loops and if-blocks).  The store
-        is emitted at the current insertion point.
+        dominates all uses (including after loops and if-blocks).  The initial
+        store is emitted at the current insertion point because ``init_value``
+        may be an SSA value defined after the entry block (e.g., result of
+        element_read inside a with-block), and must not be used before it
+        dominates.
 
         Returns the alloca result (Value with MemRefType).
         """
+        assert self._func_entry_block is not None, (
+            "_alloca_scalar requires _func_entry_block; was the compiler "
+            "initialized with _compile_thread?"
+        )
         i32_type = IntegerType.get_signless(32, self.ctx)
         memref_type = MemRefType.get([1], i32_type)
 
-        # Place alloca at the function entry block start. We saved a
-        # reference to the entry block's first op during compiler init.
-        if self._func_entry_block is not None:
-            first_op = self._func_entry_block.operations[0]
-            with InsertionPoint(first_op):
-                alloca = memref.AllocaOp(memref_type, [], []).result
-        else:
+        first_op = self._func_entry_block.operations[0]
+        with InsertionPoint(first_op):
             alloca = memref.AllocaOp(memref_type, [], []).result
 
         idx = arith.ConstantOp(IndexType.get(self.ctx), 0)
@@ -336,7 +339,13 @@ class TTLGenericCompiler(TTCompilerBase):
         return alloca
 
     def _cast_to_i32(self, value):
-        """Cast a scalar MLIR value to i32 if needed."""
+        """Cast a scalar MLIR value to i32 if needed.
+
+        Uses zero-extension (ExtUIOp) for narrower types to match the
+        convention in operators.py _to_i32. Element values in tt-lang
+        are unsigned bit patterns (bf16/f32 reinterpreted as integers),
+        so zero-extension preserves the correct bit pattern.
+        """
         i32_type = IntegerType.get_signless(32, self.ctx)
         val = value
         if hasattr(val, "type") and isinstance(val.type, IndexType):
@@ -344,7 +353,7 @@ class TTLGenericCompiler(TTCompilerBase):
         if hasattr(val, "type") and hasattr(val.type, "width") and val.type.width != 32:
             if val.type.width > 32:
                 return arith.TruncIOp(i32_type, val).result
-            return arith.ExtSIOp(i32_type, val).result
+            return arith.ExtUIOp(i32_type, val).result
         return val
 
     def _store_to_memref(self, mr, value):
@@ -672,9 +681,17 @@ class TTLGenericCompiler(TTCompilerBase):
                 self._raise_error(node, str(e))
 
     def visit_Name(self, node):
-        """Override to check function globals for simple constants."""
+        """Override to check function globals for simple constants.
+
+        Also auto-loads from memref<1xi32> variables so that scalar
+        variables promoted to memrefs for cross-scope survival are
+        transparently read back as i32 values.
+        """
         result = super().visit_Name(node)
         if result is not None:
+            if hasattr(result, "type") and isinstance(result.type, MemRefType):
+                idx = arith.ConstantOp(IndexType.get(self.ctx), 0)
+                return memref.LoadOp(result, [idx]).result
             return result
 
         # Check if it's a module-level constant

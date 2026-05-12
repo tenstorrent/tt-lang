@@ -1220,6 +1220,76 @@ mlir::LogicalResult mlir::tt::ttl::TransposeOp::verify() {
   return success();
 }
 
+//===----------------------------------------------------------------------===//
+// ElementReadOp / ElementWriteOp
+//===----------------------------------------------------------------------===//
+
+/// Shared verifier logic for element_read and element_write. Checks that the
+/// block tensor is a single-tile tensor (W3) and that statically known row/col
+/// indices are within the tile bounds (W2).
+static mlir::LogicalResult verifyElementAccessOp(mlir::Operation *op,
+                                                 mlir::Value block,
+                                                 mlir::Value row,
+                                                 mlir::Value col) {
+  auto tensorTy = mlir::cast<mlir::RankedTensorType>(block.getType());
+
+  // W3: Block must be a single-tile tensor. Multi-tile element access is not
+  // supported because the lowering emits a single get_read_ptr/get_write_ptr
+  // call that addresses only one tile's worth of L1 memory.
+  for (int64_t i = 0; i < tensorTy.getRank(); ++i) {
+    if (tensorTy.getDimSize(i) != 1) {
+      return op->emitOpError()
+             << "element access requires a single-tile block "
+                "(all tensor dimensions must be 1), but dimension "
+             << i << " is " << tensorTy.getDimSize(i);
+    }
+  }
+
+  auto tileType =
+      mlir::dyn_cast<mlir::tt::ttcore::TileType>(tensorTy.getElementType());
+  if (!tileType) {
+    return op->emitOpError() << "block element type must be !ttcore.tile, got "
+                             << tensorTy.getElementType();
+  }
+
+  // W2: When row/col are statically known constants, verify they are within
+  // the tile dimensions [0, height-1] and [0, width-1].
+  int64_t tileHeight = tileType.getHeight();
+  int64_t tileWidth = tileType.getWidth();
+
+  auto checkBound = [&](mlir::Value idx, int64_t bound,
+                        llvm::StringRef name) -> mlir::LogicalResult {
+    auto constVal = mlir::getConstantIntValue(idx);
+    if (!constVal) {
+      return mlir::success();
+    }
+    int64_t v = *constVal;
+    if (v < 0 || v >= bound) {
+      return op->emitOpError()
+             << name << " index " << v << " is out of range [0, " << bound - 1
+             << "] for tile of size " << tileHeight << "x" << tileWidth;
+    }
+    return mlir::success();
+  };
+
+  if (failed(checkBound(row, tileHeight, "row"))) {
+    return mlir::failure();
+  }
+  if (failed(checkBound(col, tileWidth, "col"))) {
+    return mlir::failure();
+  }
+
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::ElementReadOp::verify() {
+  return verifyElementAccessOp(getOperation(), getBlock(), getRow(), getCol());
+}
+
+mlir::LogicalResult mlir::tt::ttl::ElementWriteOp::verify() {
+  return verifyElementAccessOp(getOperation(), getBlock(), getRow(), getCol());
+}
+
 mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {
   auto pipeType = mlir::cast<PipeType>(getResult().getType());
 
