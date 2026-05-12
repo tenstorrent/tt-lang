@@ -70,9 +70,11 @@ def transpose_kernel(inp, out):
 
 # CHECK-CPP: // transpose_compute
 # CHECK-CPP: void kernel_main()
+# CHECK-CPP-DAG: experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-CPP-DAG: experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
 
-# CHECK-CPP: cb_wait_front(get_compile_time_arg_val(0),
-# CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(1),
+# CHECK-CPP: [[CB0]].wait_front(
+# CHECK-CPP: [[CB1]].reserve_back(
 
 # CHECK-CPP: tile_regs_acquire();
 
@@ -86,8 +88,8 @@ def transpose_kernel(inp, out):
 
 # CHECK-CPP: tile_regs_release();
 
-# CHECK-CPP: cb_push_back(get_compile_time_arg_val(1),
-# CHECK-CPP: cb_pop_front(get_compile_time_arg_val(0),
+# CHECK-CPP: [[CB1]].push_back(
+# CHECK-CPP: [[CB0]].pop_front(
 
 
 if __name__ == "__main__":
