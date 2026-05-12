@@ -412,8 +412,51 @@ class TestCopyWaitAnalysis:
         ips = analyze_thread_function(dm).injection_points
         assert ips == ()
 
+    def test_wait_before_assignment_does_not_suppress_injection(self):
+        """tx.wait() appearing before tx = ttl.copy(...) must not suppress injection.
+
+        In loop bodies a wait at the top of the iteration releases the previous
+        iteration's copy; the new copy at the bottom still needs auto-injection.
+        The copy is the last statement in the flat list, so the trigger must be
+        on function return (not on the preceding tx.wait() line).
+        """
+
+        def dm():
+            for _i in range(2):  # noqa: F821
+                tx.wait()  # noqa: F821 — releases previous iteration's copy
+                blk = dfb.reserve()  # noqa: F821
+                tx = ttl.copy(src, blk)  # noqa: F821 — new copy, must be injected
+
+        ips = analyze_thread_function(dm).injection_points
+        assert len(ips) == 1
+        assert ips[0].var_name == "tx"
+        # The copy is the last statement in source order; no later line exists to
+        # trigger on, so the injection fires at function return.
+        assert ips[0].trigger_on_return is True
+
+    def test_var_name_reused_for_dfb_then_copy(self):
+        """tx = dfb.reserve(); ...; tx = ttl.copy(...) — the DFB assignment must not
+        suppress or confuse the copy-wait injection for the later copy assignment.
+
+        The copy is the last statement so the trigger must be on function return,
+        confirming the injection point corresponds to the ttl.copy() line and not
+        to the earlier dfb.reserve() assignment.
+        """
+
+        def dm():
+            tx = dfb.reserve()  # noqa: F821 — DFB block, not a copy
+            tx.store(src)  # noqa: F821
+            tx = ttl.copy(
+                src, blk
+            )  # noqa: F821 — name reused for a copy, needs injection
+
+        ips = analyze_thread_function(dm).injection_points
+        assert len(ips) == 1
+        assert ips[0].var_name == "tx"
+        assert ips[0].trigger_on_return is True
+
     def test_assigned_copy_without_wait_detected(self):
-        """tx = ttl.copy(...) with no tx.wait() produces a wait injection."""
+        """tx = ttl.copy(...) with no tx.wait() produces a wait injection on return."""
 
         def dm():
             blk = dfb.reserve()  # noqa: F821
@@ -423,6 +466,42 @@ class TestCopyWaitAnalysis:
         ips = analyze_thread_function(dm).injection_points
         assert len(ips) == 1
         assert ips[0].var_name == "tx"
+        assert ips[0].trigger_on_return is True
+
+    def test_copy_in_outer_loop_triggers_at_inner_for_not_inside_it(self):
+        """A copy in the outer loop body must trigger at the inner for statement.
+
+        The trigger must not bleed into the inner loop body — it fires at the
+        line of the inner for statement (the next statement after the copy), not
+        at any line inside the inner loop.
+        """
+        import inspect
+
+        def dm():
+            for _i in range(2):  # noqa: F821
+                tx = ttl.copy(
+                    src, blk
+                )  # noqa: F821 -- outer copy; trigger should be the inner for
+                for _j in range(3):  # noqa: F821
+                    pass
+
+        analysis = analyze_thread_function(dm)
+        assert len(analysis.injection_points) == 1
+        ip = analysis.injection_points[0]
+        assert ip.var_name == "tx"
+        assert ip.trigger_on_return is False
+
+        # The trigger line must be the inner `for` statement, not any line inside it.
+        src_lines, start = inspect.getsourcelines(dm)
+        # Find the line numbers of the inner for and the pass inside it.
+        inner_for_lineno = next(
+            start + i for i, ln in enumerate(src_lines) if "for _j" in ln
+        )
+        pass_lineno = next(
+            start + i for i, ln in enumerate(src_lines) if ln.strip() == "pass"
+        )
+        assert ip.trigger_lineno == inner_for_lineno
+        assert ip.trigger_lineno != pass_lineno
 
     def test_assigned_copy_wait_triggers_on_return_when_last_stmt(self):
         """If the copy is the last statement, trigger_on_return is True."""
@@ -433,20 +512,28 @@ class TestCopyWaitAnalysis:
 
         ips = analyze_thread_function(dm).injection_points
         assert len(ips) == 1
+        assert ips[0].var_name == "tx"
         assert ips[0].trigger_on_return is True
 
     def test_assigned_copy_wait_triggers_on_next_line(self):
-        """If there is a statement after the copy, trigger is on that line."""
+        """If there is a statement after the copy, trigger is on that exact line."""
+        import inspect
 
         def dm():
             blk = dfb.reserve()  # noqa: F821
             tx = ttl.copy(src, blk)  # noqa: F821
-            blk.push()  # next statement
+            blk.push()  # next statement — trigger must land here
 
         ips = analyze_thread_function(dm).injection_points
         assert len(ips) == 1
+        assert ips[0].var_name == "tx"
         assert ips[0].trigger_on_return is False
-        assert ips[0].trigger_lineno is not None
+
+        src_lines, start = inspect.getsourcelines(dm)
+        push_lineno = next(
+            start + i for i, ln in enumerate(src_lines) if "blk.push()" in ln
+        )
+        assert ips[0].trigger_lineno == push_lineno
 
     def test_bare_copy_lineno_detected(self):
         """Bare ttl.copy(...) call (no assignment) records the absolute lineno."""
@@ -478,6 +565,76 @@ class TestCopyWaitAnalysis:
         result = analyze_thread_function(dm)
         assert result.injection_points == ()
         assert result.bare_copy_linenos == frozenset()
+
+    def test_chained_wait_produces_no_injection(self):
+        """ttl.copy(...).wait() is already waited inline — no injection needed.
+
+        The chained form is an ast.Expr whose value is the .wait() Call, not
+        the ttl.copy() Call, so _is_ttl_copy_call returns False and the
+        statement is not recorded as either a bare copy or an assigned copy.
+        """
+
+        def dm():
+            blk = dfb.reserve()  # noqa: F821
+            ttl.copy(src, blk).wait()  # noqa: F821  chained wait
+
+        result = analyze_thread_function(dm)
+        assert result.injection_points == ()
+        assert result.bare_copy_linenos == frozenset()
+
+    def test_copy_inside_if_triggers_at_post_if_statement(self):
+        """A copy inside an if block triggers at the first statement after the if.
+
+        _all_stmts_flat flattens the if body into the overall statement list, so
+        the next statement in source order after the copy is the post-if statement.
+        """
+        import inspect
+
+        def dm():
+            if cond:  # noqa: F821
+                tx = ttl.copy(src, blk)  # noqa: F821
+            post_if_call()  # noqa: F821
+
+        analysis = analyze_thread_function(dm)
+        assert len(analysis.injection_points) == 1
+        ip = analysis.injection_points[0]
+        assert ip.var_name == "tx"
+        assert ip.trigger_on_return is False
+
+        src_lines, start = inspect.getsourcelines(dm)
+        post_if_lineno = next(
+            start + i for i, ln in enumerate(src_lines) if "post_if_call" in ln
+        )
+        assert ip.trigger_lineno == post_if_lineno
+
+    def test_same_variable_two_copies_both_get_injection(self):
+        """tx reused for two successive copies: both copies get independent injection points.
+
+        The first copy's trigger is the line of the second tx = ttl.copy(...);
+        at that point tx still holds the first CopyTransaction so the wait fires
+        on the right object.  The second copy's trigger is the following statement.
+        """
+        import inspect
+
+        def dm():
+            tx = ttl.copy(src, blk)  # noqa: F821  first copy
+            tx = ttl.copy(src, blk)  # noqa: F821  second copy
+            done()  # noqa: F821
+
+        analysis = analyze_thread_function(dm)
+        assert len(analysis.injection_points) == 2
+
+        src_lines, start = inspect.getsourcelines(dm)
+        second_copy_lineno = next(
+            start + i for i, ln in enumerate(src_lines) if "second copy" in ln
+        )
+        done_lineno = next(
+            start + i for i, ln in enumerate(src_lines) if "done()" in ln
+        )
+
+        trigger_linenos = {ip.trigger_lineno for ip in analysis.injection_points}
+        assert second_copy_lineno in trigger_linenos
+        assert done_lineno in trigger_linenos
 
 
 class TestCopyWaitRuntime:

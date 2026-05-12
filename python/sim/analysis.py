@@ -3,33 +3,33 @@
 # SPDX-License-Identifier: Apache-2.0
 """Automatic copy-wait insertion for simulator thread functions.
 
-This module handles ``ttl.copy()`` calls that are missing the paired
-``tx.wait()`` call, mirroring the compiler's ``ttl-insert-copy-wait`` pass:
+This module handles `ttl.copy()` calls that are missing the paired
+`tx.wait()` call, mirroring the compiler's `ttl-insert-copy-wait` pass:
 
-* **Bare copy calls** (``ttl.copy(src, dst)`` with no assignment) — the
-  ``copy()`` function itself calls ``wait()`` immediately before returning
+* **Bare copy calls** (`ttl.copy(src, dst)` with no assignment) — the
+  `copy()` function itself calls `wait()` immediately before returning
   because the handle will be discarded and nothing else can wait on it.
-* **Assigned copies with no wait** (``tx = ttl.copy(...)`` with no
-  ``tx.wait()``) — an injection point is inserted on the very next
-  statement so that ``tx.wait()`` fires before anything else runs.
+* **Assigned copies with no wait** (`tx = ttl.copy(...)` with no
+  `tx.wait()`) — an injection point is inserted on the very next
+  statement so that `tx.wait()` fires before anything else runs.
 
-Push/pop injection for ``dfb.reserve()`` / ``dfb.wait()`` blocks is handled
-directly inside ``DataflowBuffer`` at runtime, not here:
+Push/pop injection for `dfb.reserve()` / `dfb.wait()` blocks is handled
+directly inside `DataflowBuffer` at runtime, not here:
 
-* A second ``dfb.reserve()`` on the same buffer auto-pushes the previous block.
-* A second ``dfb.wait()`` on the same buffer auto-pops the previous block.
+* A second `dfb.reserve()` on the same buffer auto-pushes the previous block.
+* A second `dfb.wait()` on the same buffer auto-pops the previous block.
 * When a thread function returns normally, any remaining pending blocks are
-  auto-pushed/popped by the ``_tagged`` wrapper in ``program.py``.
+  auto-pushed/popped by the `_tagged` wrapper in `program.py`.
 
 The analysis approach:
 
-1. **AST analysis** (``analyze_thread_function``) — parse the source of the
+1. **AST analysis** (`analyze_thread_function`) — parse the source of the
    thread function, walk it as an ordered statement list, and for each
-   unwaited ``tx = ttl.copy(...)`` compute an *injection point*: the first
+   unwaited `tx = ttl.copy(...)` compute an *injection point*: the first
    line the runtime should execute after the copy call.
 
-2. **Runtime interception** (``install_copy_wait_hooks``) — register
-   ``sys.monitoring`` callbacks (Python 3.12+) that fire ``tx.wait()`` at
+2. **Runtime interception** (`install_copy_wait_hooks`) — register
+   `sys.monitoring` callbacks (Python 3.12+) that fire `tx.wait()` at
    the computed injection point.  The original source is never modified;
    debuggers see unaltered line numbers.
 
@@ -38,8 +38,8 @@ Design constraints
 * The original source must remain untouched (no AST rewriting, no exec of
   modified code) so that Python debuggers work on the original file.
 * The analysis runs once per thread function and the result is stored in
-  ``SimulatorContext.injection_points_cache`` by the caller.
-* ``sys.monitoring`` allows multiple independent tools (debugger, coverage,
+  `SimulatorContext.injection_points_cache` by the caller.
+* `sys.monitoring` allows multiple independent tools (debugger, coverage,
   this module) to coexist without any chaining or mutual interference.
 """
 
@@ -159,21 +159,29 @@ def _find_copy_records(
         elif isinstance(stmt, ast.Expr) and _is_ttl_copy_call(stmt.value):
             bare_linenos.append(abs_lineno)
 
-    # Collect variables that have an explicit .wait() call anywhere in the function.
-    # Any copy var present here does not need injection.
-    waited_vars = {
-        stmt.value.func.value.id
-        for stmt in stmts
+    # Map each variable name to the absolute line numbers where .wait() is called.
+    # A copy assignment is only disqualified if the matching .wait() appears
+    # *after* it; a wait that precedes the assignment (e.g. at the top of a loop
+    # body to release the previous iteration's copy) must not suppress injection.
+    wait_abs_linenos: dict[str, list[int]] = {}
+    for stmt in stmts:
         if (
             isinstance(stmt, ast.Expr)
             and isinstance(stmt.value, ast.Call)
             and isinstance(stmt.value.func, ast.Attribute)
             and stmt.value.func.attr == "wait"
             and isinstance(stmt.value.func.value, ast.Name)
-        )
-    }
+        ):
+            name = stmt.value.func.value.id
+            wait_abs_linenos.setdefault(name, []).append(
+                file_start_line + stmt.lineno - 1
+            )
 
-    return [(var, ln) for var, ln in assigned if var not in waited_vars], bare_linenos
+    return [
+        (var, ln)
+        for var, ln in assigned
+        if not any(wl > ln for wl in wait_abs_linenos.get(var, []))
+    ], bare_linenos
 
 
 # ---------------------------------------------------------------------------
