@@ -42,7 +42,7 @@ def compile_ttl_to_ttkernel(
     func_passes = [
         "ttl-insert-intermediate-dfbs",
         "ttl-insert-copy-wait",
-        "ttl-insert-cb-sync",
+        "ttl-auto-sync",
         "convert-ttl-to-compute",
         assign_dst_pass,
     ]
@@ -59,6 +59,8 @@ def compile_ttl_to_ttkernel(
         f"func.func({func_pipeline}),"
         f"ttl-finalize-dfb-indices,"
         f"func.func(ttl-annotate-cb-associations),"
+        f"ttl-verify-pipenet-guards,"
+        f"ttl-erase-pipenet-scopes,"
         f"convert-ttl-to-ttkernel,"
         f"ttkernel-insert-inits,"
         f"canonicalize,"

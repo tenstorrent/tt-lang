@@ -9,12 +9,14 @@
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "llvm/ADT/Twine.h"
@@ -39,6 +41,11 @@ inline Value addSliceOffset(Value operand, Value localIndex, OpBuilder &builder,
   Value tensor = operand;
   if (auto extract = tensor.getDefiningOp<mlir::tensor::ExtractOp>()) {
     tensor = extract.getTensor();
+  }
+  // Skip past any `ttl.attach_cb` (SSA identity) so the next
+  // `getDefiningOp` finds the extract_slice rather than the attach_cb.
+  while (auto attach = tensor.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
+    tensor = attach.getTensor();
   }
   auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>();
   if (!slice) {
