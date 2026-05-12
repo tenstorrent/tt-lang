@@ -29,7 +29,11 @@
 // FPU-DAG:   size_t [[STEP:v[0-9]+]] = 1
 // FPU-DAG:   size_t [[ZERO:v[0-9]+]] = 0
 
-// FPU:       cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+// CB wrappers declared at top of kernel
+// FPU:       experimental::CircularBuffer [[FPU_CB0:.*]](get_compile_time_arg_val(0));
+// FPU:       experimental::CircularBuffer [[FPU_CB1:.*]](get_compile_time_arg_val(1));
+// FPU:       experimental::CircularBuffer [[FPU_CB2:.*]](get_compile_time_arg_val(2));
+// FPU:       [[FPU_CB2]].reserve_back([[TILES]]);
 // FPU:       binary_op_init_common(get_compile_time_arg_val(0), get_compile_time_arg_val(1), get_compile_time_arg_val(2));
 
 // FPU:       for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[STEP]]) {
@@ -68,7 +72,11 @@
 // SFPU-DAG:   size_t [[STEP:v[0-9]+]] = 1
 // SFPU-DAG:   size_t [[ZERO:v[0-9]+]] = 0
 
-// SFPU:       cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+// CB wrappers declared at top of kernel
+// SFPU:       experimental::CircularBuffer [[SFPU_CB0:.*]](get_compile_time_arg_val(0));
+// SFPU:       experimental::CircularBuffer [[SFPU_CB1:.*]](get_compile_time_arg_val(1));
+// SFPU:       experimental::CircularBuffer [[SFPU_CB2:.*]](get_compile_time_arg_val(2));
+// SFPU:       [[SFPU_CB2]].reserve_back([[TILES]]);
 // SFPU:       init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
 
 // SFPU:       for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[STEP]]) {

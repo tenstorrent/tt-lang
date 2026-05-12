@@ -66,19 +66,19 @@ def signpost_test_kernel(inp, out):
 
 # Check for cb_wait signpost (scoped around the operation)
 # CHECK: DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_wait")
-# CHECK: cb_wait_front(
+# CHECK: .wait_front(
 
 # Check for cb_reserve signpost (scoped around the operation)
 # CHECK: DeviceZoneScopedN("compute_L{{[0-9]+}}_cb_reserve")
-# CHECK: cb_reserve_back(
+# CHECK: .reserve_back(
 
 # Check for implicit cb_push signpost (from 'with' exit)
 # CHECK: DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_push")
-# CHECK: cb_push_back(
+# CHECK: .push_back(
 
 # Check for implicit cb_pop signpost (from 'with' exit)
 # CHECK: DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_pop")
-# CHECK: cb_pop_front(
+# CHECK: .pop_front(
 
 # Check dm_read kernel has signposts
 # CHECK: === dm_read kernel written to
