@@ -30,8 +30,10 @@ static void emitVerbatim(Location loc, StringRef value, BuilderT &builder) {
   builder.create(state);
 }
 
-/// Resolve the CB index from a CB value.
-static FailureOr<int64_t> resolveCBIndex(Value cbValue, Operation *op) {
+/// Resolve the CB index from a CB value. Returns failure without emitting
+/// diagnostics; callers inside pattern rewriters must use
+/// notifyMatchFailure to report the error.
+static FailureOr<int64_t> resolveCBIndex(Value cbValue) {
   cbValue = traceUnrealizedCasts(cbValue);
 
   if (auto bindOp = cbValue.getDefiningOp<BindCBOp>()) {
@@ -46,21 +48,17 @@ static FailureOr<int64_t> resolveCBIndex(Value cbValue, Operation *op) {
       if (cbIdx) {
         return *cbIdx;
       }
-      return op->emitError("CB index annotation missing for compute input ")
-             << argIdx;
+      return failure();
     }
   }
 
-  return op->emitError(
-      "cannot resolve CB index: value must trace to ttl.bind_cb "
-      "or be a compute block argument with CB annotation");
+  return failure();
 }
 
 /// Determine whether a block tensor originates from cb_wait (read) or
-/// cb_reserve (write). Returns "read" or "write", or failure if the
-/// block provenance cannot be determined.
-static FailureOr<std::string> resolveBlockDirection(Value block,
-                                                    Operation *op) {
+/// cb_reserve (write). Returns "read" or "write", or failure without
+/// emitting diagnostics.
+static FailureOr<std::string> resolveBlockDirection(Value block) {
   Value traced = traceUnrealizedCasts(block);
 
   if (auto attach = traced.getDefiningOp<AttachCBOp>()) {
@@ -82,19 +80,19 @@ static FailureOr<std::string> resolveBlockDirection(Value block,
     }
   }
 
-  return op->emitError("cannot determine block direction: block must trace "
-                       "to cb_wait (read) or cb_reserve (write)");
+  return failure();
 }
 
-/// Get the tile element type from a block tensor.
-static FailureOr<Type> getBlockElementType(Value block, Operation *op) {
+/// Get the tile element type from a block tensor. Returns failure without
+/// emitting diagnostics.
+static FailureOr<Type> getBlockElementType(Value block) {
   auto tensorType = dyn_cast<RankedTensorType>(block.getType());
   if (!tensorType) {
-    return op->emitError("element access block must be a ranked tensor");
+    return failure();
   }
   auto tileType = dyn_cast<ttcore::TileType>(tensorType.getElementType());
   if (!tileType) {
-    return op->emitError("element access block element type is not a tile");
+    return failure();
   }
   return tileType.getElementType();
 }
@@ -141,50 +139,48 @@ struct ElementReadLowering : OpConversionPattern<ElementReadOp> {
     auto loc = op.getLoc();
     Value block = op.getBlock();
 
-    // Trace block -> CB
     Value cb = getAttachedCB(block);
     if (!cb) {
-      return op.emitError("cannot find attached CB for element_read block");
+      return rewriter.notifyMatchFailure(
+          op, "cannot find attached CB for element_read block");
     }
-    auto cbIdx = resolveCBIndex(cb, op);
+    auto cbIdx = resolveCBIndex(cb);
     if (failed(cbIdx)) {
-      return failure();
+      return rewriter.notifyMatchFailure(
+          op, "cannot resolve CB index: value must trace to ttl.bind_cb "
+              "or be a compute block argument with CB annotation");
     }
 
-    // Determine read_ptr vs write_ptr
-    auto dir = resolveBlockDirection(block, op);
+    auto dir = resolveBlockDirection(block);
     if (failed(dir)) {
-      return failure();
+      return rewriter.notifyMatchFailure(
+          op, "cannot determine block direction: block must trace "
+              "to cb_wait (read) or cb_reserve (write)");
     }
     std::string ptrFn = (*dir == "write") ? "get_write_ptr" : "get_read_ptr";
 
-    // Determine bf16 vs f32
-    auto elemType = getBlockElementType(block, op);
+    auto elemType = getBlockElementType(block);
     if (failed(elemType)) {
-      return failure();
+      return rewriter.notifyMatchFailure(
+          op, "element access block must be a ranked tensor of tiles");
     }
     std::string helperName =
         elemType->isBF16() ? "_ttl_elem_read_bf16" : "_ttl_elem_read_f32";
 
     auto i32Type = rewriter.getI32Type();
 
-    // Step 1: Get CB compile-time arg val as a literal expression
     auto *ctaOp = createLiteral(
         loc, i32Type,
         "get_compile_time_arg_val(" + std::to_string(*cbIdx) + ")", rewriter);
     Value ctaVal = ctaOp->getResult(0);
 
-    // Step 2: Get read/write pointer
     auto *ptrOp =
         createCallOpaque(loc, ptrFn, i32Type, ValueRange{ctaVal}, rewriter);
     Value l1Addr = ptrOp->getResult(0);
 
-    // Step 3: Cast row/col from Index to i32
     Value rowI32 = indexToI32(loc, op.getRow(), rewriter);
     Value colI32 = indexToI32(loc, op.getCol(), rewriter);
 
-    // Step 4: Call helper function
-    // emitc.call_opaque "helperName"(l1_addr, row, col) -> i32
     auto *readOp = createCallOpaque(
         loc, helperName, i32Type, ValueRange{l1Addr, rowI32, colI32}, rewriter);
 
@@ -202,49 +198,48 @@ struct ElementWriteLowering : OpConversionPattern<ElementWriteOp> {
     auto loc = op.getLoc();
     Value block = op.getBlock();
 
-    // Trace block -> CB
     Value cb = getAttachedCB(block);
     if (!cb) {
-      return op.emitError("cannot find attached CB for element_write block");
+      return rewriter.notifyMatchFailure(
+          op, "cannot find attached CB for element_write block");
     }
-    auto cbIdx = resolveCBIndex(cb, op);
+    auto cbIdx = resolveCBIndex(cb);
     if (failed(cbIdx)) {
-      return failure();
+      return rewriter.notifyMatchFailure(
+          op, "cannot resolve CB index: value must trace to ttl.bind_cb "
+              "or be a compute block argument with CB annotation");
     }
 
-    // Determine read_ptr vs write_ptr
-    auto dir = resolveBlockDirection(block, op);
+    auto dir = resolveBlockDirection(block);
     if (failed(dir)) {
-      return failure();
+      return rewriter.notifyMatchFailure(
+          op, "cannot determine block direction: block must trace "
+              "to cb_wait (read) or cb_reserve (write)");
     }
     std::string ptrFn = (*dir == "write") ? "get_write_ptr" : "get_read_ptr";
 
-    // Determine bf16 vs f32
-    auto elemType = getBlockElementType(block, op);
+    auto elemType = getBlockElementType(block);
     if (failed(elemType)) {
-      return failure();
+      return rewriter.notifyMatchFailure(
+          op, "element access block must be a ranked tensor of tiles");
     }
     std::string helperName =
         elemType->isBF16() ? "_ttl_elem_write_bf16" : "_ttl_elem_write_f32";
 
     auto i32Type = rewriter.getI32Type();
 
-    // Step 1: Get CB compile-time arg val as a literal expression
     auto *ctaOp = createLiteral(
         loc, i32Type,
         "get_compile_time_arg_val(" + std::to_string(*cbIdx) + ")", rewriter);
     Value ctaVal = ctaOp->getResult(0);
 
-    // Step 2: Get read/write pointer
     auto *ptrOp =
         createCallOpaque(loc, ptrFn, i32Type, ValueRange{ctaVal}, rewriter);
     Value l1Addr = ptrOp->getResult(0);
 
-    // Step 3: Cast row/col from Index to i32
     Value rowI32 = indexToI32(loc, op.getRow(), rewriter);
     Value colI32 = indexToI32(loc, op.getCol(), rewriter);
 
-    // Step 4: Call helper function (void return)
     createCallOpaque(loc, helperName, /*resultType=*/nullptr,
                      ValueRange{l1Addr, rowI32, colI32, op.getValue()},
                      rewriter);
@@ -348,7 +343,7 @@ struct TTLLowerElementAccessToEmitCPass
       }
 
       auto &info = funcsWithElementOps[func];
-      auto elemType = getBlockElementType(block, op);
+      auto elemType = getBlockElementType(block);
       if (succeeded(elemType)) {
         if (elemType->isBF16()) {
           info.needsBF16 = true;
