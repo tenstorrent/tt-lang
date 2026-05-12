@@ -5,7 +5,7 @@
 
 import pytest
 
-from _pipenets import (
+from ttl._pipenets import (
     NodeCoord,
     NodeRange,
     OperationPipeNets,
