@@ -66,8 +66,9 @@ def fill_kernel(out):
 
 # CHECK-CPP: // fill_compute
 # CHECK-CPP: void kernel_main()
+# CHECK-CPP-DAG: experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 
-# CHECK-CPP: cb_reserve_back(get_compile_time_arg_val(0),
+# CHECK-CPP: [[CB0]].reserve_back(
 
 # CHECK-CPP: tile_regs_acquire();
 
@@ -81,7 +82,7 @@ def fill_kernel(out):
 
 # CHECK-CPP: tile_regs_release();
 
-# CHECK-CPP: cb_push_back(get_compile_time_arg_val(0),
+# CHECK-CPP: [[CB0]].push_back(
 
 
 device = ttnn.open_device(device_id=0)

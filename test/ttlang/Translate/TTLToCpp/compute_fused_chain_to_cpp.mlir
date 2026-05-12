@@ -1,6 +1,6 @@
 // FPU path (default): add uses add_tiles (reads from CB), mul uses SFPU.
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse, lower-affine)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse, lower-affine)' \
 // RUN:   -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
@@ -8,7 +8,7 @@
 
 // SFPU path: all binary ops use copy_tile + SFPU binary ops.
 // RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-assign-dst{enable-fpu-binary-ops=0}, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse, lower-affine)' \
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse, lower-affine)' \
 // RUN:   -o %t.sfpu.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.sfpu.ttkernel.mlir -o %t.sfpu.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.sfpu.cpp %t.sfpu.emitc.mlir
@@ -29,7 +29,11 @@
 // FPU-DAG:   size_t [[STEP:v[0-9]+]] = 1
 // FPU-DAG:   size_t [[ZERO:v[0-9]+]] = 0
 
-// FPU:       cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+// CB wrappers declared at top of kernel
+// FPU:       experimental::CircularBuffer [[FPU_CB0:.*]](get_compile_time_arg_val(0));
+// FPU:       experimental::CircularBuffer [[FPU_CB1:.*]](get_compile_time_arg_val(1));
+// FPU:       experimental::CircularBuffer [[FPU_CB2:.*]](get_compile_time_arg_val(2));
+// FPU:       [[FPU_CB2]].reserve_back([[TILES]]);
 // FPU:       binary_op_init_common(get_compile_time_arg_val(0), get_compile_time_arg_val(1), get_compile_time_arg_val(2));
 
 // FPU:       for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[STEP]]) {
@@ -68,7 +72,11 @@
 // SFPU-DAG:   size_t [[STEP:v[0-9]+]] = 1
 // SFPU-DAG:   size_t [[ZERO:v[0-9]+]] = 0
 
-// SFPU:       cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+// CB wrappers declared at top of kernel
+// SFPU:       experimental::CircularBuffer [[SFPU_CB0:.*]](get_compile_time_arg_val(0));
+// SFPU:       experimental::CircularBuffer [[SFPU_CB1:.*]](get_compile_time_arg_val(1));
+// SFPU:       experimental::CircularBuffer [[SFPU_CB2:.*]](get_compile_time_arg_val(2));
+// SFPU:       [[SFPU_CB2]].reserve_back([[TILES]]);
 // SFPU:       init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
 
 // SFPU:       for (size_t [[I:.*]] = [[ZERO]]; [[I]] < [[BOUND]]; [[I]] += [[STEP]]) {

@@ -1,9 +1,10 @@
 // RUN: ttlang-opt %s --convert-ttl-to-ttkernel -split-input-file -verify-diagnostics
 
 // FPU binary op where lhs and rhs CBs have different tile counts.
-// The lhs CB is [2, 2] (4 tiles) while the rhs CB is [1, 2] (2 tiles).
-// The FPU lowering pattern rejects this because it uses the same linearized
-// tile index for both operands, which requires matching CB shapes.
+// The lhs CB is [2, 2] (4 tiles) while the rhs CB is [1, 2] (2 tiles). Both
+// tensor.extract ops use identical indices so isFPUEligibleBinaryOp picks the
+// FPU pattern, which rejects the mismatched per-block shape; the SFPU pattern
+// also rejects (predicate is true), so the op fails to legalize.
 func.func @fpu_add_cb_shape_mismatch()
     attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [],
                 ttl.kernel_thread = #ttkernel.thread<compute>} {
@@ -22,7 +23,7 @@ func.func @fpu_add_cb_shape_mismatch()
   %rhs_tile = tensor.extract %rhs[%c0, %c0] : tensor<1x2x!ttcore.tile<32x32, bf16>>
 
   // expected-error @+1 {{failed to legalize operation 'ttl.tile_add' that was explicitly marked illegal}}
-  %sum = ttl.tile_add %lhs_tile, %rhs_tile into dst[%c0] {ttl.fpu_binary} : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+  %sum = ttl.tile_add %lhs_tile, %rhs_tile into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
 
   %out_view = ttl.cb_reserve %cb1 : <[2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
   %out = tensor.insert %sum into %out_view[%c0, %c0] : tensor<2x2x!ttcore.tile<32x32, bf16>>
