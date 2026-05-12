@@ -100,15 +100,6 @@ static std::string getThreadType(func::FuncOp func) {
   return "unknown";
 }
 
-/// Get the CB index from a CB value (trace to bind_cb).
-static int64_t getCBIndex(Value cb) {
-  cb = traceUnrealizedCasts(cb);
-  if (auto bindOp = cb.getDefiningOp<BindCBOp>()) {
-    return bindOp.getCbIndex().getSExtValue();
-  }
-  return -1;
-}
-
 /// Check if a type is a CB type.
 static bool isCBType(Type type) { return isa<CircularBufferType>(type); }
 
@@ -150,66 +141,67 @@ struct TTLDumpCBFlowGraphPass
           }
         } else if (auto waitOp = dyn_cast<CBWaitOp>(op)) {
           // Consumer: cb_wait
-          int64_t cbIndex = getCBIndex(waitOp.getCb());
-          if (cbIndex >= 0) {
-            CBOpInfo info{kernelName, threadType, getLineNumber(op), "cb_wait",
-                          ""};
-            cbFlows[cbIndex].consumers.push_back(info);
-          }
+          std::optional<int64_t> cbIndex = getCBIndex(waitOp.getCb());
+          assert(cbIndex.has_value() &&
+                 "cb_wait operand must trace to a bind_cb");
+          CBOpInfo info{kernelName, threadType, getLineNumber(op), "cb_wait",
+                        ""};
+          cbFlows[cbIndex.value()].consumers.push_back(info);
         } else if (auto reserveOp = dyn_cast<CBReserveOp>(op)) {
           // Producer: cb_reserve
-          int64_t cbIndex = getCBIndex(reserveOp.getCb());
-          if (cbIndex >= 0) {
-            CBOpInfo info{kernelName, threadType, getLineNumber(op),
-                          "cb_reserve", ""};
-            cbFlows[cbIndex].producers.push_back(info);
-          }
+          std::optional<int64_t> cbIndex = getCBIndex(reserveOp.getCb());
+          assert(cbIndex.has_value() &&
+                 "cb_reserve operand must trace to a bind_cb");
+          CBOpInfo info{kernelName, threadType, getLineNumber(op), "cb_reserve",
+                        ""};
+          cbFlows[cbIndex.value()].producers.push_back(info);
         } else if (auto copyOp = dyn_cast<CopyOp>(op)) {
-          // DMA operation: copy
-          // Determine which operand is the CB
+          // DMA operation: one operand is a CB, the other a tensor.
           Value src = copyOp.getSrc();
           Value dst = copyOp.getDst();
           std::string direction;
-          int64_t cbIndex = -1;
+          std::optional<int64_t> cbIndex;
 
           if (isCBType(dst.getType())) {
-            // Copy TO CB (read from tensor)
             cbIndex = getCBIndex(dst);
             direction = "read"; // Reading from DRAM to CB
           } else if (isCBType(src.getType())) {
-            // Copy FROM CB (write to tensor)
             cbIndex = getCBIndex(src);
             direction = "write"; // Writing from CB to DRAM
+          } else {
+            return; // Tensor-to-tensor copy: no CB to record.
           }
 
-          if (cbIndex >= 0) {
-            CBOpInfo info{kernelName, threadType, getLineNumber(op), "copy",
-                          direction};
-            cbFlows[cbIndex].dmaOps.push_back(info);
-          }
+          assert(cbIndex.has_value() &&
+                 "copy CB operand must trace to a bind_cb");
+          CBOpInfo info{kernelName, threadType, getLineNumber(op), "copy",
+                        direction};
+          cbFlows[cbIndex.value()].dmaOps.push_back(info);
         } else if (auto waitOp = dyn_cast<WaitOp>(op)) {
-          // DMA wait/barrier
+          // DMA wait/barrier — trace back to the copy op to find the CB.
+          auto copyOp = waitOp.getXf().getDefiningOp<CopyOp>();
+          if (!copyOp) {
+            return;
+          }
           std::string direction =
               getTransferDirection(waitOp.getXf().getType());
+          Value src = copyOp.getSrc();
+          Value dst = copyOp.getDst();
+          std::optional<int64_t> cbIndex;
 
-          // Try to trace back to the copy op to get CB index
-          if (auto copyOp = waitOp.getXf().getDefiningOp<CopyOp>()) {
-            Value src = copyOp.getSrc();
-            Value dst = copyOp.getDst();
-            int64_t cbIndex = -1;
-
-            if (isCBType(dst.getType())) {
-              cbIndex = getCBIndex(dst);
-            } else if (isCBType(src.getType())) {
-              cbIndex = getCBIndex(src);
-            }
-
-            if (cbIndex >= 0) {
-              CBOpInfo info{kernelName, threadType, getLineNumber(op), "wait",
-                            direction};
-              cbFlows[cbIndex].waitOps.push_back(info);
-            }
+          if (isCBType(dst.getType())) {
+            cbIndex = getCBIndex(dst);
+          } else if (isCBType(src.getType())) {
+            cbIndex = getCBIndex(src);
+          } else {
+            return; // Tensor-to-tensor copy: no CB to record.
           }
+
+          assert(cbIndex.has_value() &&
+                 "copy CB operand must trace to a bind_cb");
+          CBOpInfo info{kernelName, threadType, getLineNumber(op), "wait",
+                        direction};
+          cbFlows[cbIndex.value()].waitOps.push_back(info);
         }
       });
     });

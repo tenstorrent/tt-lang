@@ -30,8 +30,7 @@ namespace mlir::tt::ttl {
 /// Populate patterns for lowering TTL elementwise tensor ops to ttl.compute.
 void populateTTLToComputePatterns(RewritePatternSet &patterns);
 
-/// Populate patterns for lowering ttl.tile_* ops to TTKernel (tile-only pass).
-/// CB associations are read from ttl.cb_index.N attributes on ttl.compute ops.
+/// Populate patterns for lowering ttl.tile_* ops to TTKernel.
 void populateTTLTileOpsToTTKernelPatterns(mlir::TypeConverter *typeConverter,
                                           RewritePatternSet &patterns,
                                           bool reduceFullFp32 = true);

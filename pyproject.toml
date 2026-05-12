@@ -30,13 +30,14 @@ classifiers = [
   "Topic :: Software Development :: Code Generators"
 ]
 
-dynamic = ["version", "readme", "dependencies", "optional-dependencies"]
+dynamic = ["version", "readme", "dependencies"]
 
-# `optional-dependencies` is dynamic: the `device` extras are derived from
-# third-party/tt-metal-version by setup.py:_ttnn_device_extras() so the
-# ttnn version only ever lives in one place. Available on Linux x86_64 /
-# aarch64 (where ttnn publishes wheels); on other platforms tt-lang is
-# sim-only and the extras list is empty.
+# `dependencies` is dynamic: setup.py reads requirements-runtime.txt and
+# appends a platform-conditional `ttnn` requirement derived from
+# third-party/tt-metal-version, so the ttnn version only ever lives in one
+# place. ttnn installs automatically on Linux x86_64 / aarch64 (where ttnn
+# publishes wheels); on macOS / Windows the marker skips it and users
+# wanting a sim-only install should `pip install tt-lang-sim` instead.
 
 [project.scripts]
 ttlang-sim = "ttl.sim.ttlang_sim:main"
@@ -48,9 +49,6 @@ tt-lang-setup-tutorials = "ttl._setup.tutorials:main"
 Homepage = "https://github.com/tenstorrent/tt-lang"
 Repository = "https://github.com/tenstorrent/tt-lang"
 Issues = "https://github.com/tenstorrent/tt-lang/issues"
-
-[tool.setuptools.dynamic]
-dependencies = {file = ["requirements-runtime.txt"]}
 
 [tool.pyright]
 typeCheckingMode = "strict"

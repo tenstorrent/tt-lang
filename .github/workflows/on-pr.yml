@@ -45,14 +45,21 @@ jobs:
           fetch-depth: 0
           submodules: false
       - id: detect
-        run: .github/scripts/detect-uplift.sh "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          if [[ -z "$BASE" || -z "$HEAD" ]]; then
+            HEAD=$(git rev-parse HEAD)
+            BASE=$(git rev-parse HEAD~1)
+          fi
+          .github/scripts/detect-uplift.sh "$BASE" "$HEAD"
 
   build:
     needs: detect-uplift
     uses: ./.github/workflows/call-build.yml
     secrets: inherit
     with:
-      docker_tag: "v1.0.2"
+      docker_tag: "v1.0.3"
       build_toolchain: ${{ needs.detect-uplift.outputs.uplift == 'true' }}
 
   test-sim:

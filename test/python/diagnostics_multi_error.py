@@ -50,11 +50,11 @@ def main() -> None:
         Failure while executing pass pipeline:
         error: "{__file__}":{first_line}:1: 'fake.op' op first violation
          note: "{__file__}":{first_line}:1: see current operation: %0 = "fake.op"() : () -> ()
-         note: "{__file__}":{first_line}:1: first witness here
+         note: "{__file__}":{first_line}:1: first example here
          note: "{__file__}":{first_decl_line}:1: first thing declared here
          note: "{__file__}":{first_decl_line}:1: first thing declared here
         error: "{__file__}":{second_line}:1: 'fake.op' op second violation
-         note: "{__file__}":{second_line}:1: second witness here
+         note: "{__file__}":{second_line}:1: second example here
          note: "{__file__}":{second_decl_line}:1: second thing declared here
         """
     )
@@ -99,7 +99,7 @@ if __name__ == "__main__":
 
 # Notes indent two spaces; `see current operation` dropped; duplicate
 # `first thing declared here` rendered once.
-# CHECK: {{^  note: first witness here}}
+# CHECK: {{^  note: first example here}}
 # CHECK-NOT: see current operation
 # CHECK: {{^  note: first thing declared here}}
 # CHECK: --> {{.*}}diagnostics_multi_error.py:[[FIRST_DECL_LINE]]:1
@@ -110,7 +110,7 @@ if __name__ == "__main__":
 # CHECK: error: second violation
 # CHECK-NEXT: --> {{.*}}diagnostics_multi_error.py:[[SECOND_LINE]]:1
 # CHECK: SECOND_ERROR_ANCHOR
-# CHECK: {{^  note: second witness here}}
+# CHECK: {{^  note: second example here}}
 # CHECK: {{^  note: second thing declared here}}
 # CHECK: --> {{.*}}diagnostics_multi_error.py:[[SECOND_DECL_LINE]]:1
 # CHECK: SECOND_DECLARED_ANCHOR
