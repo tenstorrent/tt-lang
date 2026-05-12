@@ -32,13 +32,16 @@
 // FPU-DAG:   size_t [[PAGE_SIZE:v[0-9]+]] = 4096
 // FPU-DAG:   size_t [[ZERO:v[0-9]+]] = 0
 
+// CB wrappers declared at top of kernel
+// FPU:   experimental::CircularBuffer [[FPU_R_CB0:.*]](get_compile_time_arg_val(0));
+// FPU:   experimental::CircularBuffer [[FPU_R_CB1:.*]](get_compile_time_arg_val(1));
+
 // Read tensor A into CB0
 // FPU:   int32_t [[RT_ARG_A:.*]] = get_common_arg_val<uint32_t>([[ZERO]]);
 // FPU-NEXT:   auto [[ARGS_A:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 2>(), 0>();
 // FPU-NEXT:   TensorAccessor [[ACC_A:.*]] = TensorAccessor([[ARGS_A]], [[RT_ARG_A]],
-// CB pointer casting chain: int32_t -> ptrdiff_t -> size_t
-// FPU:   int32_t [[CB0_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(0));
-// FPU-NEXT:   ptrdiff_t [[CB0_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB0_PTR]];
+// CB pointer casting chain: ptrdiff_t -> size_t
+// FPU-NEXT:   ptrdiff_t [[CB0_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[FPU_R_CB0]].get_write_ptr();
 // FPU-NEXT:   size_t [[CB0_PTR_IDX:v[0-9]+]] = (size_t) [[CB0_PTR_PTRDIFF]];
 // FPU:   for (size_t [[I_A:.*]] = [[ZERO]]; [[I_A]] < [[BOUND]]; [[I_A]] += [[ONE]]) {
 // FPU-NEXT:     for (size_t [[J_A:.*]] = [[ZERO]]; [[J_A]] < [[BOUND]]; [[J_A]] += [[ONE]]) {
@@ -62,9 +65,8 @@
 // FPU:   int32_t [[RT_ARG_B:.*]] = get_common_arg_val<uint32_t>([[ONE]]);
 // FPU-NEXT:   auto [[ARGS_B:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<1, 2>(), 1>();
 // FPU-NEXT:   TensorAccessor [[ACC_B:.*]] = TensorAccessor([[ARGS_B]], [[RT_ARG_B]],
-// CB pointer casting chain: int32_t -> ptrdiff_t -> size_t
-// FPU:   int32_t [[CB1_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(1));
-// FPU-NEXT:   ptrdiff_t [[CB1_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB1_PTR]];
+// CB pointer casting chain: ptrdiff_t -> size_t
+// FPU-NEXT:   ptrdiff_t [[CB1_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[FPU_R_CB1]].get_write_ptr();
 // FPU-NEXT:   size_t [[CB1_PTR_IDX:v[0-9]+]] = (size_t) [[CB1_PTR_PTRDIFF]];
 // FPU:   for (size_t [[I_B:.*]] = [[ZERO]]; [[I_B]] < [[BOUND]]; [[I_B]] += [[ONE]]) {
 // FPU-NEXT:     for (size_t [[J_B:.*]] = [[ZERO]]; [[J_B]] < [[BOUND]]; [[J_B]] += [[ONE]]) {
@@ -95,9 +97,13 @@
 // FPU-DAG:   size_t [[CBOUND:v[0-9]+]] = 2
 // FPU-DAG:   size_t [[CZERO:v[0-9]+]] = 0
 
-// FPU:       cb_wait_front(get_compile_time_arg_val(0), [[TILES]]);
-// FPU-NEXT:  cb_wait_front(get_compile_time_arg_val(1), [[TILES]]);
-// FPU-NEXT:  cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+// CB wrappers declared at top of kernel
+// FPU:       experimental::CircularBuffer [[FPU_C_CB0:.*]](get_compile_time_arg_val(0));
+// FPU:       experimental::CircularBuffer [[FPU_C_CB1:.*]](get_compile_time_arg_val(1));
+// FPU:       experimental::CircularBuffer [[FPU_C_CB2:.*]](get_compile_time_arg_val(2));
+// FPU:       [[FPU_C_CB0]].wait_front([[TILES]]);
+// FPU-NEXT:  [[FPU_C_CB1]].wait_front([[TILES]]);
+// FPU-NEXT:  [[FPU_C_CB2]].reserve_back([[TILES]]);
 // FPU-NEXT:  binary_op_init_common(get_compile_time_arg_val(0), get_compile_time_arg_val(1), get_compile_time_arg_val(2));
 
 // FPU:       for (size_t [[CI:.*]] = [[CZERO]]; [[CI]] < [[CBOUND]]; [[CI]] += [[STEP]]) {
@@ -117,7 +123,7 @@
 // FPU-NEXT:      tile_regs_wait();
 // pack_tile reuses the same linearized CB index as add_tiles.
 // FPU:           pack_tile<true>([[CZERO]], get_compile_time_arg_val(2), [[CTILE_IDX]]);
-// FPU-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
+// FPU-NEXT:      [[FPU_C_CB2]].push_back([[TILES]]);
 // FPU-NEXT:      tile_regs_release();
 
 // FPU-NOT:   init_sfpu
@@ -132,12 +138,13 @@
 // FPU-DAG:   size_t [[WONE:v[0-9]+]] = 1
 // FPU-DAG:   size_t [[WPAGE:v[0-9]+]] = 4096
 // FPU-DAG:   size_t [[WZERO:v[0-9]+]] = 0
+// CB wrapper declared at top of kernel
+// FPU:   experimental::CircularBuffer [[FPU_W_CB2:.*]](get_compile_time_arg_val(2));
 // FPU:   int32_t [[WRT_ARG:.*]] = get_common_arg_val<uint32_t>([[WZERO]]);
 // FPU-NEXT:   auto [[WARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
 // FPU-NEXT:   TensorAccessor [[WACC:.*]] = TensorAccessor([[WARGS]], [[WRT_ARG]],
-// CB pointer casting chain: int32_t -> ptrdiff_t -> size_t
-// FPU:   int32_t [[WR_PTR:.*]] = get_read_ptr(get_compile_time_arg_val(2));
-// FPU-NEXT:   ptrdiff_t [[WR_PTR_PD:v[0-9]+]] = (ptrdiff_t) [[WR_PTR]];
+// CB pointer casting chain: ptrdiff_t -> size_t
+// FPU-NEXT:   ptrdiff_t [[WR_PTR_PD:v[0-9]+]] = (ptrdiff_t) [[FPU_W_CB2]].get_read_ptr();
 // FPU-NEXT:   size_t [[WR_PTR_IDX:v[0-9]+]] = (size_t) [[WR_PTR_PD]];
 // FPU:   for (size_t [[WI:.*]] = [[WZERO]]; [[WI]] < [[WBOUND]]; [[WI]] += [[WONE]]) {
 // FPU-NEXT:     for (size_t [[WJ:.*]] = [[WZERO]]; [[WJ]] < [[WBOUND]]; [[WJ]] += [[WONE]]) {
@@ -167,13 +174,16 @@
 // SFPU-DAG:   size_t [[PAGE_SIZE:v[0-9]+]] = 4096
 // SFPU-DAG:   size_t [[ZERO:v[0-9]+]] = 0
 
+// CB wrappers declared at top of kernel
+// SFPU:   experimental::CircularBuffer [[SFPU_R_CB0:.*]](get_compile_time_arg_val(0));
+// SFPU:   experimental::CircularBuffer [[SFPU_R_CB1:.*]](get_compile_time_arg_val(1));
+
 // Read tensor A into CB0
 // SFPU:   int32_t [[RT_ARG_A:.*]] = get_common_arg_val<uint32_t>([[ZERO]]);
 // SFPU-NEXT:   auto [[ARGS_A:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 2>(), 0>();
 // SFPU-NEXT:   TensorAccessor [[ACC_A:.*]] = TensorAccessor([[ARGS_A]], [[RT_ARG_A]],
-// CB pointer casting chain: int32_t -> ptrdiff_t -> size_t
-// SFPU:   int32_t [[CB0_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(0));
-// SFPU-NEXT:   ptrdiff_t [[CB0_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB0_PTR]];
+// CB pointer casting chain: ptrdiff_t -> size_t
+// SFPU-NEXT:   ptrdiff_t [[CB0_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[SFPU_R_CB0]].get_write_ptr();
 // SFPU-NEXT:   size_t [[CB0_PTR_IDX:v[0-9]+]] = (size_t) [[CB0_PTR_PTRDIFF]];
 // SFPU:   for (size_t [[I_A:.*]] = [[ZERO]]; [[I_A]] < [[BOUND]]; [[I_A]] += [[ONE]]) {
 // SFPU-NEXT:     for (size_t [[J_A:.*]] = [[ZERO]]; [[J_A]] < [[BOUND]]; [[J_A]] += [[ONE]]) {
@@ -197,9 +207,8 @@
 // SFPU:   int32_t [[RT_ARG_B:.*]] = get_common_arg_val<uint32_t>([[ONE]]);
 // SFPU-NEXT:   auto [[ARGS_B:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<1, 2>(), 1>();
 // SFPU-NEXT:   TensorAccessor [[ACC_B:.*]] = TensorAccessor([[ARGS_B]], [[RT_ARG_B]],
-// CB pointer casting chain: int32_t -> ptrdiff_t -> size_t
-// SFPU:   int32_t [[CB1_PTR:.*]] = get_write_ptr(get_compile_time_arg_val(1));
-// SFPU-NEXT:   ptrdiff_t [[CB1_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB1_PTR]];
+// CB pointer casting chain: ptrdiff_t -> size_t
+// SFPU-NEXT:   ptrdiff_t [[CB1_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[SFPU_R_CB1]].get_write_ptr();
 // SFPU-NEXT:   size_t [[CB1_PTR_IDX:v[0-9]+]] = (size_t) [[CB1_PTR_PTRDIFF]];
 // SFPU:   for (size_t [[I_B:.*]] = [[ZERO]]; [[I_B]] < [[BOUND]]; [[I_B]] += [[ONE]]) {
 // SFPU-NEXT:     for (size_t [[J_B:.*]] = [[ZERO]]; [[J_B]] < [[BOUND]]; [[J_B]] += [[ONE]]) {
@@ -230,9 +239,13 @@
 // SFPU-DAG:   size_t [[CBOUND:v[0-9]+]] = 2
 // SFPU-DAG:   size_t [[CZERO:v[0-9]+]] = 0
 
-// SFPU:       cb_wait_front(get_compile_time_arg_val(0), [[TILES]]);
-// SFPU-NEXT:  cb_wait_front(get_compile_time_arg_val(1), [[TILES]]);
-// SFPU-NEXT:  cb_reserve_back(get_compile_time_arg_val(2), [[TILES]]);
+// CB wrappers declared at top of kernel
+// SFPU:       experimental::CircularBuffer [[SFPU_C_CB0:.*]](get_compile_time_arg_val(0));
+// SFPU:       experimental::CircularBuffer [[SFPU_C_CB1:.*]](get_compile_time_arg_val(1));
+// SFPU:       experimental::CircularBuffer [[SFPU_C_CB2:.*]](get_compile_time_arg_val(2));
+// SFPU:       [[SFPU_C_CB0]].wait_front([[TILES]]);
+// SFPU-NEXT:  [[SFPU_C_CB1]].wait_front([[TILES]]);
+// SFPU-NEXT:  [[SFPU_C_CB2]].reserve_back([[TILES]]);
 // SFPU-NEXT:  init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
 
 // SFPU:       for (size_t [[CI:.*]] = [[CZERO]]; [[CI]] < [[CBOUND]]; [[CI]] += [[STEP]]) {
@@ -252,7 +265,7 @@
 // SFPU-NEXT:      tile_regs_commit();
 // SFPU-NEXT:      tile_regs_wait();
 // SFPU-NEXT:      pack_tile<true>([[CZERO]], get_compile_time_arg_val(2), [[CTILE_IDX]]);
-// SFPU-NEXT:      cb_push_back(get_compile_time_arg_val(2), [[TILES]]);
+// SFPU-NEXT:      [[SFPU_C_CB2]].push_back([[TILES]]);
 // SFPU-NEXT:      tile_regs_release();
 
 // SFPU-NOT:   binary_op_init_common
@@ -267,12 +280,13 @@
 // SFPU-DAG:   size_t [[WONE:v[0-9]+]] = 1
 // SFPU-DAG:   size_t [[WPAGE:v[0-9]+]] = 4096
 // SFPU-DAG:   size_t [[WZERO:v[0-9]+]] = 0
+// CB wrapper declared at top of kernel
+// SFPU:   experimental::CircularBuffer [[SFPU_W_CB2:.*]](get_compile_time_arg_val(2));
 // SFPU:   int32_t [[WRT_ARG:.*]] = get_common_arg_val<uint32_t>([[WZERO]]);
 // SFPU-NEXT:   auto [[WARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
 // SFPU-NEXT:   TensorAccessor [[WACC:.*]] = TensorAccessor([[WARGS]], [[WRT_ARG]],
-// CB pointer casting chain: int32_t -> ptrdiff_t -> size_t
-// SFPU:   int32_t [[WR_PTR:.*]] = get_read_ptr(get_compile_time_arg_val(2));
-// SFPU-NEXT:   ptrdiff_t [[WR_PTR_PD:v[0-9]+]] = (ptrdiff_t) [[WR_PTR]];
+// CB pointer casting chain: ptrdiff_t -> size_t
+// SFPU-NEXT:   ptrdiff_t [[WR_PTR_PD:v[0-9]+]] = (ptrdiff_t) [[SFPU_W_CB2]].get_read_ptr();
 // SFPU-NEXT:   size_t [[WR_PTR_IDX:v[0-9]+]] = (size_t) [[WR_PTR_PD]];
 // SFPU:   for (size_t [[WI:.*]] = [[WZERO]]; [[WI]] < [[WBOUND]]; [[WI]] += [[WONE]]) {
 // SFPU-NEXT:     for (size_t [[WJ:.*]] = [[WZERO]]; [[WJ]] < [[WBOUND]]; [[WJ]] += [[WONE]]) {
