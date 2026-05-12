@@ -83,24 +83,28 @@ def bcast_multitile_kernel(
 
 # CHECK:          // demo_compute
 # CHECK:          void kernel_main()
+# CHECK-DAG:          experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-DAG:          experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+# CHECK-DAG:          experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
+# CHECK-DAG:          experimental::CircularBuffer [[CB3:.*]](get_compile_time_arg_val(3));
 
 # CHECK-NOT:      DeviceZoneScopedN(
 # CHECK:          DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_cb_wait");
-# CHECK-NEXT:     cb_wait_front(get_compile_time_arg_val(2), {{.*}});
+# CHECK-NEXT:     [[CB2]].wait_front({{.*}});
 # CHECK:          }
 # CHECK-NEXT:     for (size_t [[I:.*]] = [[V6:.*]]; [[I]] < [[V7:.*]]; [[I]] += [[V5:.*]]) {
 # CHECK-NEXT:       for (size_t [[J:.*]] = [[V6]]; [[J]] < [[V7]]; [[J]] += [[V5]]) {
 # CHECK-NEXT:         {
 # CHECK-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_cb_wait");
-# CHECK-NEXT:         cb_wait_front(get_compile_time_arg_val(0), {{.*}});
+# CHECK-NEXT:         [[CB0]].wait_front({{.*}});
 # CHECK-NEXT:         }
 # CHECK-NEXT:         {
 # CHECK-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_cb_wait");
-# CHECK-NEXT:         cb_wait_front(get_compile_time_arg_val(1), {{.*}});
+# CHECK-NEXT:         [[CB1]].wait_front({{.*}});
 # CHECK-NEXT:         }
 # CHECK-NEXT:         {
 # CHECK-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_cb_reserve");
-# CHECK-NEXT:         cb_reserve_back(get_compile_time_arg_val(3), {{.*}});
+# CHECK-NEXT:         [[CB3]].reserve_back({{.*}});
 # CHECK-NEXT:         }
 # CHECK-NEXT:         {
 # CHECK-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}");
@@ -130,21 +134,21 @@ def bcast_multitile_kernel(
 # CHECK-NEXT:         }
 # CHECK-NEXT:         {
 # CHECK-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_implicit_cb_push");
-# CHECK-NEXT:         cb_push_back(get_compile_time_arg_val(3), {{.*}});
+# CHECK-NEXT:         [[CB3]].push_back({{.*}});
 # CHECK-NEXT:         }
 # CHECK-NEXT:         {
 # CHECK-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_implicit_cb_pop");
-# CHECK-NEXT:         cb_pop_front(get_compile_time_arg_val(1), {{.*}});
+# CHECK-NEXT:         [[CB1]].pop_front({{.*}});
 # CHECK-NEXT:         }
 # CHECK-NEXT:         {
 # CHECK-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_implicit_cb_pop");
-# CHECK-NEXT:         cb_pop_front(get_compile_time_arg_val(0), {{.*}});
+# CHECK-NEXT:         [[CB0]].pop_front({{.*}});
 # CHECK-NEXT:         }
 # CHECK-NEXT:       }
 # CHECK-NEXT:     }
 # CHECK-NEXT:     {
 # CHECK-NEXT:     DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_implicit_cb_pop");
-# CHECK-NEXT:     cb_pop_front(get_compile_time_arg_val(2), {{.*}});
+# CHECK-NEXT:     [[CB2]].pop_front({{.*}});
 # CHECK-NEXT:     }
 # CHECK-NEXT:     return;
 # CHECK-NEXT:   }
@@ -157,24 +161,28 @@ def bcast_multitile_kernel(
 
 # CHECK-FPU:          // demo_compute
 # CHECK-FPU:          void kernel_main()
+# CHECK-FPU-DAG:          experimental::CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
+# CHECK-FPU-DAG:          experimental::CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
+# CHECK-FPU-DAG:          experimental::CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
+# CHECK-FPU-DAG:          experimental::CircularBuffer [[CB3:.*]](get_compile_time_arg_val(3));
 
 # CHECK-FPU-NOT:      DeviceZoneScopedN(
 # CHECK-FPU:          DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_cb_wait");
-# CHECK-FPU-NEXT:     cb_wait_front(get_compile_time_arg_val(2), {{.*}});
+# CHECK-FPU-NEXT:     [[CB2]].wait_front({{.*}});
 # CHECK-FPU:          }
 # CHECK-FPU-NEXT:     for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
 # CHECK-FPU-NEXT:       for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
 # CHECK-FPU-NEXT:         {
 # CHECK-FPU-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_cb_wait");
-# CHECK-FPU-NEXT:         cb_wait_front(get_compile_time_arg_val(0), {{.*}});
+# CHECK-FPU-NEXT:         [[CB0]].wait_front({{.*}});
 # CHECK-FPU-NEXT:         }
 # CHECK-FPU-NEXT:         {
 # CHECK-FPU-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_cb_wait");
-# CHECK-FPU-NEXT:         cb_wait_front(get_compile_time_arg_val(1), {{.*}});
+# CHECK-FPU-NEXT:         [[CB1]].wait_front({{.*}});
 # CHECK-FPU-NEXT:         }
 # CHECK-FPU-NEXT:         {
 # CHECK-FPU-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_cb_reserve");
-# CHECK-FPU-NEXT:         cb_reserve_back(get_compile_time_arg_val(3), {{.*}});
+# CHECK-FPU-NEXT:         [[CB3]].reserve_back({{.*}});
 # CHECK-FPU-NEXT:         }
 # CHECK-FPU-NEXT:         {
 # CHECK-FPU-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}");
@@ -231,21 +239,21 @@ def bcast_multitile_kernel(
 # CHECK-FPU-NEXT:         }
 # CHECK-FPU-NEXT:         {
 # CHECK-FPU-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_implicit_cb_push");
-# CHECK-FPU-NEXT:         cb_push_back(get_compile_time_arg_val(3), {{.*}});
+# CHECK-FPU-NEXT:         [[CB3]].push_back({{.*}});
 # CHECK-FPU-NEXT:         }
 # CHECK-FPU-NEXT:         {
 # CHECK-FPU-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_implicit_cb_pop");
-# CHECK-FPU-NEXT:         cb_pop_front(get_compile_time_arg_val(1), {{.*}});
+# CHECK-FPU-NEXT:         [[CB1]].pop_front({{.*}});
 # CHECK-FPU-NEXT:         }
 # CHECK-FPU-NEXT:         {
 # CHECK-FPU-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_implicit_cb_pop");
-# CHECK-FPU-NEXT:         cb_pop_front(get_compile_time_arg_val(0), {{.*}});
+# CHECK-FPU-NEXT:         [[CB0]].pop_front({{.*}});
 # CHECK-FPU-NEXT:         }
 # CHECK-FPU-NEXT:       }
 # CHECK-FPU-NEXT:     }
 # CHECK-FPU-NEXT:     {
 # CHECK-FPU-NEXT:     DeviceZoneScopedN("demo_compute_L{{[0-9]+}}_implicit_cb_pop");
-# CHECK-FPU-NEXT:     cb_pop_front(get_compile_time_arg_val(2), {{.*}});
+# CHECK-FPU-NEXT:     [[CB2]].pop_front({{.*}});
 # CHECK-FPU-NEXT:     }
 # CHECK-FPU-NEXT:     return;
 # CHECK-FPU-NEXT:   }

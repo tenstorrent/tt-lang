@@ -144,7 +144,7 @@ def matmul_l1_acc(a, b, out):
 # CHECK-CPP:        pack_tile
 # CHECK-CPP:        if (
 # CHECK-CPP-NEXT:   PACK((llk_pack_reconfig_l1_acc([[ENABLE]])));
-# CHECK-CPP:      cb_push_back(
+# CHECK-CPP:      .push_back(
 # CHECK-CPP:      PACK((llk_pack_reconfig_l1_acc([[DISABLE]])));
 
 # CHECK-RESULT: PASS

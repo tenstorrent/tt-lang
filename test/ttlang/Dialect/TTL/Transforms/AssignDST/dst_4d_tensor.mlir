@@ -1,7 +1,7 @@
 // Summary: verify DST assignment and copy insertion on 4D tensors
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 separate-output-region=1}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-assign-dst{dst-capacity=8 enable-fpu-binary-ops=0}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SFPU
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{dst-capacity=8 separate-output-region=1}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SEPARATE
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' --split-input-file | FileCheck %s --check-prefix=SFPU
 
 // Verify no placeholder copies remain in final IR
 // CHECK-NOT: placeholder
@@ -33,11 +33,11 @@ func.func @add_4d(%a: tensor<3x6x4x2x!ttcore.tile<32x32, f32>>,
 // CHECK-NEXT:   %[[I3:.*]] = ttl.iter_index 3 : index
 // FPU binary: no copy_tile needed.
 // CHECK-NOT:  ttl.copy_tile
-// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%c0] {ttl.fpu_binary}
+// CHECK:      %[[ADD:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%c0]
 // CHECK-NEXT: ttl.tile_store %[[ADD]], %{{.*}}[%[[I0]], %[[I1]], %[[I2]], %[[I3]]]
 // CHECK-NEXT: ttl.yield
 // SEPARATE-LABEL: func.func @add_4d
-// SEPARATE:      %[[ADDS:.*]] = ttl.tile_add {{.*}} into dst[%c0] {ttl.fpu_binary}
+// SEPARATE:      %[[ADDS:.*]] = ttl.tile_add {{.*}} into dst[%c0]
 // SEPARATE:      ttl.tile_store
 // SEPARATE-NEXT: ttl.yield
 //
