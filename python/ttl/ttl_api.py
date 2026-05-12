@@ -760,7 +760,7 @@ def _compile_ttnn_kernel(
             "fp32_dest_acc_en": _get_kernel_bool_attr(module, name, "fp32_dest_acc_en"),
             "dst_full_sync_en": _get_kernel_bool_attr(module, name, "dst_full_sync_en"),
             "unpack_to_dest_fp32": _get_kernel_bool_attr(
-                module, name, "unpack_to_dest_fp32"
+                module, name, "ttl.unpack_to_dest_fp32"
             ),
         }
         for name, _ in kernel_info
