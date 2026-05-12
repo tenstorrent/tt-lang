@@ -49,8 +49,8 @@ func.func @simple_add_marked(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
 #map_bcast = affine_map<(d0, d1) -> (0, 0)>
 
 // Purpose: tile_add with mismatched indexing maps cannot use a single CB
-// tile index for both operands, so it lowers as an SFPU binary and is NOT
-// marked.
+// tile index for both operands, so it lowers as an SFPU binary op and is
+// NOT marked.
 // CHECK-LABEL: func.func @mismatched_indexing_unmarked
 // CHECK-NOT:       ttl.fpu_binary
 // DISABLED-LABEL: func.func @mismatched_indexing_unmarked

@@ -568,8 +568,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       OpBuilder builder(body, body->begin());
 
       //=== Phase 1: Copy Insertion ===
-      // FPU binaries (ops carrying ttl.fpu_binary) read from CB, needing 0
-      // DST input slots. SFPU binaries and unary ops require DST input
+      // FPU binary ops (carrying ttl.fpu_binary) read from CB, needing 0
+      // DST input slots. SFPU binary ops and unary ops require DST input
       // slots and copy_tile insertion below.
       //
       // TODO: Support mixed operands (one CB, one DST) via

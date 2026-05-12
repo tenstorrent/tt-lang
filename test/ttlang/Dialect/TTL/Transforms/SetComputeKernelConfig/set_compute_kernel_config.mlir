@@ -717,7 +717,7 @@ func.func @f32_matmul_no_unpack(
 // WORMHOLE-LABEL: func.func @f32_fpu_add_no_unpack
 // UNPACK-LABEL: func.func @f32_fpu_add_no_unpack
 // UNPACK-NOT: ttl.unpack_to_dest_fp32
-// With FPU binary marking disabled, the tile_add lowers as an SFPU binary.
+// With FPU binary marking disabled, the tile_add lowers as an SFPU binary op.
 // Its f32 operands are input block args, so the pass must set
 // ttl.unpack_to_dest_fp32 so copy_tile preserves f32 into DST.
 // UNPACK-NOFPU-LABEL: func.func @f32_fpu_add_no_unpack
