@@ -632,11 +632,7 @@ def _set_unpack_to_dest_fp32(config, ttnn_mod) -> None:
     num_cbs = 64
     modes = config.unpack_to_dest_mode
     for i in range(num_cbs):
-        modes.append(
-            unpack_mode.UnpackToDestFp32
-            if i == 0
-            else unpack_mode.Default
-        )
+        modes.append(unpack_mode.UnpackToDestFp32 if i == 0 else unpack_mode.Default)
 
 
 def _get_kernel_bool_attr(module, kernel_name: str, attr_name: str) -> bool:
@@ -762,7 +758,7 @@ def _compile_ttnn_kernel(
             "fp32_dest_acc_en": _get_kernel_bool_attr(module, name, "fp32_dest_acc_en"),
             "dst_full_sync_en": _get_kernel_bool_attr(module, name, "dst_full_sync_en"),
             "unpack_to_dest_fp32": _get_kernel_bool_attr(
-                module, name, "unpack_to_dest_fp32"
+                module, name, "ttl.unpack_to_dest_fp32"
             ),
         }
         for name, _ in kernel_info
