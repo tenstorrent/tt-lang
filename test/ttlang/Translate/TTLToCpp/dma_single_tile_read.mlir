@@ -13,11 +13,11 @@
 // CHECK: void kernel_main() {
 // CHECK-DAG:   int32_t [[ZERO:v[0-9]+]] = 0;
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 4096;
+// CHECK:   experimental::CircularBuffer [[CB:.*]](get_compile_time_arg_val(0));
 // CHECK:   int32_t [[RT_ARG:v[0-9]+]] = get_common_arg_val<uint32_t>([[RT_ARG_IDX:v[0-9]+]]);
 // CHECK:   auto [[ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
 // CHECK:   TensorAccessor [[ACCESSOR:v[0-9]+]] = TensorAccessor([[ARGS]], [[RT_ARG]], [[ADDR]]);
-// CHECK:   int32_t [[CB_PTR:v[0-9]+]] = get_write_ptr(get_compile_time_arg_val(0));
-// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR]], [[CB_PTR]]);
+// CHECK-NEXT:   noc_async_read_tile([[ZERO]], [[ACCESSOR]], [[CB]].get_write_ptr());
 // CHECK:   noc_async_read_barrier();
 // CHECK:   return;
 // CHECK-NEXT: }
