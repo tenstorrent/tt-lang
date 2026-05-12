@@ -317,10 +317,14 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 }
 
 def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
-    ParentOneOf<["ComputeOp", "DstSectionOp"]>]> {
-  let summary = "Terminate a ttl.compute or ttl.dst_section region";
+    ParentOneOf<["ComputeOp", "DstSectionOp", "IfSrcOp", "IfDstOp",
+                 "PipeNetScopeOp"]>]> {
+  let summary = "Terminate a TTL region body";
   let description = [{
-    `ttl.yield` terminates the body of `ttl.compute` or `ttl.dst_section`.
+    `ttl.yield` terminates the body of `ttl.compute`, `ttl.dst_section`,
+    `ttl.if_src`, `ttl.if_dst`, and `ttl.pipenet_scope`. It carries no
+    operands and produces no results; the trait
+    `SingleBlockImplicitTerminator` auto-inserts it.
   }];
   let assemblyFormat = "attr-dict";
   let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
@@ -499,7 +503,12 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
     I64Attr:$dstStartY,
     I64Attr:$dstEndX,
     I64Attr:$dstEndY,
-    I64Attr:$pipeNetId
+    I64Attr:$pipeNetId,
+    // Optional user-facing name for the owning PipeNet, used only to
+    // render diagnostics in source-level terms (e.g.
+    // `mcast_a_net.is_active()` instead of `net_<id>.is_active()`).
+    // No effect on op semantics.
+    OptionalAttr<StrAttr>:$pipeNetName
   );
   let results = (outs TTL_Pipe:$result);
   let assemblyFormat = [{
@@ -513,7 +522,7 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
                    "int64_t":$dstX, "int64_t":$dstY), [{
       build($_builder, $_state, srcX, srcY, dstX, dstY, dstX, dstY, 0);
     }]>,
-    // Builder with all coordinates
+    // Builder with all coordinates (no name)
     OpBuilder<(ins "int64_t":$srcX, "int64_t":$srcY,
                    "int64_t":$dstStartX, "int64_t":$dstStartY,
                    "int64_t":$dstEndX, "int64_t":$dstEndY,
@@ -528,12 +537,15 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
             $_builder.getI64IntegerAttr(dstStartY),
             $_builder.getI64IntegerAttr(dstEndX),
             $_builder.getI64IntegerAttr(dstEndY),
-            $_builder.getI64IntegerAttr(pipeNetId));
+            $_builder.getI64IntegerAttr(pipeNetId),
+            /*pipeNetName=*/StringAttr());
     }]>
   ];
 }
 
-def TTL_IfSrcOp : TTL_Op<"if_src", [SingleBlock, NoTerminator]> {
+def TTL_IfSrcOp : TTL_Op<"if_src",
+    [SingleBlockImplicitTerminator<"YieldOp">,
+     DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
   let summary = "Execute region if current core is the source of a pipe";
   let description = [{
     Executes the body region if the current core's coordinates match the
@@ -559,7 +571,9 @@ def TTL_IfSrcOp : TTL_Op<"if_src", [SingleBlock, NoTerminator]> {
   }];
 }
 
-def TTL_IfDstOp : TTL_Op<"if_dst", [SingleBlock, NoTerminator]> {
+def TTL_IfDstOp : TTL_Op<"if_dst",
+    [SingleBlockImplicitTerminator<"YieldOp">,
+     DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
   let summary = "Execute region if current core is a destination of a pipe";
   let description = [{
     Executes the body region if the current core's coordinates fall within
@@ -583,6 +597,64 @@ def TTL_IfDstOp : TTL_Op<"if_dst", [SingleBlock, NoTerminator]> {
   let assemblyFormat = [{
     $pipe `:` type($pipe) $body attr-dict
   }];
+}
+
+def TTL_PipeNetScopeOp : TTL_Op<"pipenet_scope",
+    [SingleBlockImplicitTerminator<"YieldOp">,
+     DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+  let summary = "Mark a DFB region that depends on PipeNet roles";
+  let description = [{
+    Marks a region whose dataflow-buffer acquire/release sequence must execute
+    only on nodes with specific PipeNet roles. The operation does not change
+    runtime behavior; it records the role contract for the enclosed region.
+
+    Role requirements are stored in attributes:
+
+    - `ttl.pipe_net_ids`: array of PipeNet ids.
+    - `ttl.pipe_net_roles`: array of role ids, where 0 is source and 1 is
+      destination.
+  }];
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "attr-dict-with-keyword $body";
+}
+
+def TTL_IsSrcOp : TTL_Op<"is_src",
+    [Pure, DeclareOpInterfaceMethods<TTL_PipeNetPredicateOpInterface>]> {
+  let summary = "Predicate: current node is a source of any pipe in the PipeNet";
+  let description = [{
+    Returns `true` on nodes that match the `src` of at least one pipe in the
+    named PipeNet, `false` elsewhere. The value-returning sibling of
+    `ttl.if_src`; used as the condition of an `scf.if` to guard pipe-coupled
+    work without entering a region.
+  }];
+  let arguments = (ins I64Attr:$pipe_net_id);
+  let results = (outs I1:$result);
+  let assemblyFormat = "attr-dict";
+}
+
+def TTL_IsDstOp : TTL_Op<"is_dst",
+    [Pure, DeclareOpInterfaceMethods<TTL_PipeNetPredicateOpInterface>]> {
+  let summary = "Predicate: current node is a destination of any pipe in the PipeNet";
+  let description = [{
+    Returns `true` on nodes whose coordinate falls within the `dst` range of
+    at least one pipe in the named PipeNet, `false` elsewhere. The
+    value-returning sibling of `ttl.if_dst`.
+  }];
+  let arguments = (ins I64Attr:$pipe_net_id);
+  let results = (outs I1:$result);
+  let assemblyFormat = "attr-dict";
+}
+
+def TTL_IsActiveOp : TTL_Op<"is_active",
+    [Pure, DeclareOpInterfaceMethods<TTL_PipeNetPredicateOpInterface>]> {
+  let summary = "Predicate: current node is a source or destination in the PipeNet";
+  let description = [{
+    Returns `true` on nodes that are either a source or a destination of at
+    least one pipe in the named PipeNet (the union of `is_src` and `is_dst`).
+  }];
+  let arguments = (ins I64Attr:$pipe_net_id);
+  let results = (outs I1:$result);
+  let assemblyFormat = "attr-dict";
 }
 
 //===----------------------------------------------------------------------===//
